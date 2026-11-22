@@ -24,7 +24,7 @@ const QUOTED_OR_COMMENT = /'[^']*'|"(?:\\[\s\S]|[^"\\])*"|(?<=^|[\s;&|(])#[^\n]*
 const COMMAND_SEPARATOR = /&&|\|\||[;|\n]/u;
 // Commands that print other change requests' URLs, so output beside them proves nothing.
 const LISTS_CHANGE_REQUESTS =
-  /\b(?:gh\s+(?:pr\s+(?:list|status)|search\s+prs|api)|glab\s+(?:mr\s+list|api))\b/u;
+  /\b(?:gh\s+(?:pr\s+(?:view|list|status)|search\s+prs|api)|glab\s+(?:mr\s+(?:view|list)|api))\b/u;
 const URL_LINE = /^[ \t]*(https?:\/\/\S+)[ \t]*$/gmu;
 
 /** The script a shell input runs, unwrapped from Codex's `sh -lc`. */
@@ -84,18 +84,23 @@ export function changeRequestsCreatedBy(
   input: string,
   output: string,
   parseUrl: (url: string, kind?: SourceControlProviderKind) => SourceControlPullRequestRef | null,
+  allowedGitLabHosts: ReadonlySet<string> = new Set(["gitlab.com"]),
 ) {
   if (!CREATE_COMMANDS.some(({ command }) => command.test(input))) return [];
   const script = shellScript(input);
-  const code = shellCode(script);
+  const code = shellCode(script).trim();
   const creates = createCommandCount(code);
-  if (creates === 0) return [];
+  // A successful shell exit only proves the create ran when it is the final
+  // command in a plain && chain. Branches, pipelines and later lookups are ambiguous.
+  if (creates !== 1 || /[;|\n&`(){}]/u.test(code.replaceAll("&&", ""))) return [];
+  const finalCommand = code.split("&&").at(-1) ?? "";
+  if (createCommandCount(finalCommand) !== 1) return [];
   const otherCommands = code
     .split(COMMAND_SEPARATOR)
     .filter((part) => createCommandCount(part) === 0)
     .join("\n");
   if (LISTS_CHANGE_REQUESTS.test(otherCommands)) return [];
-  const otherScript = shellSegments(script)
+  const otherScript = shellSegments(script.replace(HEREDOC_BODY, "<<"))
     .filter((segment) => createCommandCount(shellCode(segment)) === 0)
     .join("\n");
   const creators = new Set(
@@ -106,13 +111,25 @@ export function changeRequestsCreatedBy(
     const kind = url.includes("/-/merge_requests/") ? "gitlab" : "github";
     const link = parseUrl(url, kind);
     if (link?.provider === "github" && link.host !== "github.com") continue;
+    if (link?.provider === "gitlab" && !allowedGitLabHosts.has(link.host)) continue;
     if (link === null || !creators.has(link.provider)) continue;
     const expectedPath = link.provider === "github" ? "/pull/" : "/-/merge_requests/";
-    if (!url.endsWith(expectedPath + link.number)) continue;
+    const parsed = new URL(url);
+    if (
+      parsed.search ||
+      parsed.hash ||
+      parsed.username ||
+      parsed.password ||
+      parsed.protocol !== "https:" ||
+      parsed.port ||
+      parsed.pathname !== "/" + link.repository + expectedPath + link.number
+    )
+      continue;
     const named = new RegExp(`(?:^|(?<=[\\s#/=("']))${link.number}(?=$|[\\s);&|/"'])`, "u");
     // Quoted text in the other commands counts, as in `printf '.../pull/12'`.
     if (named.test(otherScript)) continue;
-    created.set(url, { ...link, url });
+    const canonical = "https://" + link.host + parsed.pathname;
+    created.set(canonical, { ...link, url: canonical });
   }
   return created.size > creates ? [] : [...created.values()];
 }

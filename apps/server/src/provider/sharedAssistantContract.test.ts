@@ -332,6 +332,8 @@ describe("sharedAssistantContract", () => {
     expect(text).not.toContain('subagent_type: "Explore"');
     expect(text).toContain("Use sub-agents only when the task requires them");
     expect(text).toContain("wait for results before reporting them");
+    expect(text).toContain("Never delegate understanding");
+    expect(text).toContain("never fabricate results");
     // Plan instructions travel as SDK planModeInstructions, not in the append,
     // so the append is identical for plan and default sessions.
     expect(text).not.toContain("# Plan Mode (Conversational)");

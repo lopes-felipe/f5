@@ -24,6 +24,7 @@ import { UsageService } from "../../usage/Services/UsageService.ts";
 import { resolveAccountUsageLimit } from "../../provider/usageLimitMessages.ts";
 import { toOrchestrationUsageLimit } from "../providerTerminalLifecycle.ts";
 import { ServerSettingsService } from "../../serverSettings";
+import { ForgeAccounts } from "../../sourceControl/accountRouting";
 import { readProjectSettings } from "../../project/projectSettings";
 import { createHash } from "node:crypto";
 import * as NodeFs from "node:fs/promises";
@@ -383,7 +384,7 @@ interface OpenCommandExecutionState {
   readonly threadId: ThreadId;
   readonly turnId: TurnId;
   readonly providerItemId: ProviderItemId;
-  readonly command: string;
+  command: string;
   cwd: string | undefined;
   description: string | undefined;
   title: string | null;
@@ -740,25 +741,38 @@ function normalizeLifecycleCommandExecutionTitle(
   return backgroundStatus ? `${searchSummary} — ${backgroundStatus}` : searchSummary;
 }
 
+function extractRawCommandExecutionCommand(
+  event: Extract<
+    ProviderRuntimeEvent,
+    { type: "item.started" | "item.updated" | "item.completed" }
+  >,
+): string | undefined {
+  const data = asRecord(event.payload.data);
+  const item = asRecord(data?.item);
+  const itemInput = asRecord(item?.input);
+  const toolInput = asRecord(data?.input);
+  const itemResult = asRecord(item?.result);
+  return (
+    normalizeCommandValue(item?.command) ??
+    normalizeCommandValue(itemInput?.command) ??
+    normalizeCommandValue(toolInput?.command) ??
+    normalizeCommandValue(itemResult?.command) ??
+    normalizeCommandValue(data?.command)
+  );
+}
+
 function extractCommandExecutionCommand(
   event: Extract<
     ProviderRuntimeEvent,
     { type: "item.started" | "item.updated" | "item.completed" }
   >,
 ): string {
-  const data = asRecord(event.payload.data);
-  const item = asRecord(data?.item);
-  const itemInput = asRecord(item?.input);
-  const itemResult = asRecord(item?.result);
   const payloadTitle =
     typeof event.payload.title === "string" && !isGenericCommandTitle(event.payload.title)
       ? event.payload.title
       : undefined;
   return (
-    normalizeCommandValue(item?.command) ??
-    normalizeCommandValue(itemInput?.command) ??
-    normalizeCommandValue(itemResult?.command) ??
-    normalizeCommandValue(data?.command) ??
+    extractRawCommandExecutionCommand(event) ??
     event.payload.detail ??
     payloadTitle ??
     event.payload.title ??
@@ -2502,6 +2516,7 @@ const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const serverConfig = yield* ServerConfig;
   const serverSettings = yield* ServerSettingsService;
+  const forgeAccounts = yield* Effect.serviceOption(ForgeAccounts);
   const providerService = yield* ProviderService;
   const usageService = yield* Effect.serviceOption(UsageService);
   const providerRegistry = yield* Effect.serviceOption(ProviderRegistry);
@@ -4073,6 +4088,8 @@ const make = Effect.gen(function* () {
       } satisfies OpenCommandExecutionState);
 
     commandExecution.cwd = eventCwd ?? commandExecution.cwd ?? fallbackCwd;
+    commandExecution.command =
+      extractRawCommandExecutionCommand(input.event) ?? commandExecution.command;
     commandExecution.description = eventDescription ?? commandExecution.description;
     commandExecution.title = normalizedTitle ?? commandExecution.title;
     commandExecution.detail = input.event.payload.detail ?? commandExecution.detail;
@@ -4084,8 +4101,9 @@ const make = Effect.gen(function* () {
         : laterIsoTimestamp(input.event.createdAt, pendingOutput.updatedAt);
     commandExecution.completedAt =
       input.event.type === "item.completed" ? input.event.createdAt : commandExecution.completedAt;
-    // Claude names the tool in `command` and puts the shell text in `detail`; either may
-    // arrive after the item starts. Output not flushed yet is still in `bufferedOutput`.
+    // Structured shell input can arrive after the item starts. Keep its full text,
+    // even when later lifecycle events carry only a shortened display summary.
+    // Output not flushed yet is still in `bufferedOutput`.
     if (
       commandExecution.pullRequestCreateOutput === null &&
       (commandCreatesPullRequest(commandExecution.command) ||
@@ -4143,10 +4161,22 @@ const make = Effect.gen(function* () {
       (commandExecution.exitCode !== null && commandExecution.exitCode !== 0)
     )
       return;
+    const allowedGitLabHosts = new Set(["gitlab.com"]);
+    if (
+      Option.isSome(forgeAccounts) &&
+      commandExecution.pullRequestCreateOutput.includes("/-/merge_requests/")
+    ) {
+      const accounts = yield* forgeAccounts.value
+        .listAccounts()
+        .pipe(Effect.catch(() => Effect.succeed([])));
+      for (const account of accounts)
+        if (account.provider === "gitlab") allowedGitLabHosts.add(account.host);
+    }
     const pullRequest = detectCreatedPullRequest({
       command: commandExecution.command,
       detail: commandExecution.detail,
       output: commandExecution.pullRequestCreateOutput,
+      allowedGitLabHosts,
     });
     if (!pullRequest) return;
     commandExecution.pullRequestCreateOutput = null;

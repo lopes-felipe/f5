@@ -1,5 +1,19 @@
 import { expect, it } from "vitest";
-import { captureAssistantQuoteSelection } from "./assistantQuoteSelection";
+import {
+  captureAssistantQuoteSelection,
+  readSelectedMarkdownHtml,
+} from "./assistantQuoteSelection";
+
+it("keeps rich list and emphasis formatting beside copied TeX", () => {
+  const root = document.createElement("div");
+  root.innerHTML =
+    '<ul><li><strong>Formula</strong> <span data-markdown-copy="\\(x&lt;y\\)"><span>x y</span><button>TeX</button></span></li></ul>';
+  const range = document.createRange();
+  range.selectNodeContents(root);
+  expect(readSelectedMarkdownHtml(range)).toBe(
+    "<ul><li><strong>Formula</strong> \\(x&lt;y\\)</li></ul>",
+  );
+});
 
 it.each([
   ["<p>First paragraph.</p><p>Second paragraph.</p>", "First paragraph.\n\nSecond paragraph."],

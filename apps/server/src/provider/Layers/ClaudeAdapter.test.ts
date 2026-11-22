@@ -16756,6 +16756,43 @@ it.effect("returns bypass removal warnings directly without opening an approval"
   }).pipe(Effect.provide(h.layer));
 });
 
+it.effect("passes bypass permission mode and managed rule source to approval presentation", () => {
+  const h = makeHarness();
+  return Effect.gen(function* () {
+    const adapter = yield* ClaudeAdapter;
+    yield* adapter.startSession({
+      threadId: THREAD_ID,
+      provider: "claudeAgent",
+      runtimeMode: "full-access",
+    });
+    const pending = h.getLastCreateQueryInput()!.options.canUseTool!(
+      "Bash",
+      { command: "pwd" },
+      {
+        signal: new AbortController().signal,
+        toolUseID: "managed-ask",
+        requestId: "managed-ask",
+        decisionReason: "Managed policy",
+        matchedAskRule: { source: "policySettings", toolName: "Bash", ruleContent: "*" },
+      },
+    );
+    const requested = yield* Stream.runHead(
+      adapter.streamEvents.pipe(Stream.filter((event) => event.type === "request.opened")),
+    );
+    assert.equal(requested._tag, "Some");
+    if (requested._tag !== "Some") return;
+    const payload = JSON.stringify(requested.value.payload);
+    assert.include(payload, '"fullAccessOverride":"ask_rule"');
+    assert.include(payload, '"askRuleSource":"policySettings"');
+    yield* adapter.respondToRequest(
+      THREAD_ID,
+      ApprovalRequestId.makeUnsafe(requested.value.requestId!),
+      "accept",
+    );
+    assert.equal((yield* Effect.promise(() => Promise.resolve(pending)))?.behavior, "allow");
+  }).pipe(Effect.provide(h.layer));
+});
+
 it.effect("surfaces a native child's approval in the parent and answers only that child", () => {
   const h = makeHarness();
   return Effect.gen(function* () {

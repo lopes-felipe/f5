@@ -1,5 +1,5 @@
 import { Effect, Option, Schema } from "effect";
-import type { PrHubChangeBreakdown } from "@t3tools/contracts";
+import type { PrHubChangeBreakdown, PrHubChangeBreakdownResult } from "@t3tools/contracts";
 import { classifyChangedFile } from "@t3tools/shared/changedFileKind";
 import type { GitHubApiResponse } from "../git/githubApi";
 import { SourceControlProviderError } from "../sourceControl/SourceControlProvider";
@@ -46,7 +46,7 @@ export function gitHubStatsComparison(response: GitHubApiResponse): string | nul
 /** One stats-only GraphQL read per page; refuse moving refs, duplicates and provider caps. */
 export function readGitHubFileStats(
   read: (cursor: string | null) => Effect.Effect<GitHubApiResponse, SourceControlProviderError>,
-): Effect.Effect<PrHubChangeBreakdown | null, SourceControlProviderError> {
+): Effect.Effect<PrHubChangeBreakdownResult | null, SourceControlProviderError> {
   return Effect.gen(function* () {
     const totals: Record<keyof PrHubChangeBreakdown, { additions: number; deletions: number }> = {
       code: { additions: 0, deletions: 0 },
@@ -87,7 +87,9 @@ export function readGitHubFileStats(
         bucket.deletions += file.deletions;
       }
       if (!decoded.files.pageInfo.hasNextPage)
-        return paths.size === decoded.changedFiles ? totals : null;
+        return paths.size === decoded.changedFiles
+          ? { breakdown: totals, headOid: decoded.headRefOid, baseOid: decoded.baseRefOid }
+          : null;
       cursor = decoded.files.pageInfo.endCursor;
       if (!cursor || cursors.has(cursor)) return null;
       cursors.add(cursor);

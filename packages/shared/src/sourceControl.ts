@@ -167,6 +167,7 @@ export function detectCreatedPullRequest(input: {
   readonly command: string | null | undefined;
   readonly detail: string | null | undefined;
   readonly output: string;
+  readonly allowedGitLabHosts?: ReadonlySet<string>;
 }): ThreadPullRequestLink | null {
   const commandText = commandCreatesPullRequest(input.command)
     ? input.command!
@@ -178,6 +179,7 @@ export function detectCreatedPullRequest(input: {
     commandText.replace(/^Bash:\s*/, ""),
     input.output,
     parseSourceControlPullRequestUrl,
+    input.allowedGitLabHosts,
   );
   // F5 keeps one linked PR per thread; ambiguous multi-create output is left to explicit linking.
   if (created.length !== 1) return null;

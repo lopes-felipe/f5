@@ -39,6 +39,26 @@ function selectedTextBoundary(range: Range, node: Node, last: boolean): Text | n
   return null;
 }
 
+/** Preserve rich formatting while replacing KaTeX's duplicate representations with TeX. */
+export function readSelectedMarkdownHtml(range: Range): string {
+  const doc = range.startContainer.ownerDocument!;
+  const container = doc.createElement("div");
+  const ancestor =
+    range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
+      ? (range.commonAncestorContainer as Element)
+      : range.commonAncestorContainer.parentElement;
+  const math = ancestor?.closest("[data-markdown-copy]");
+  if (math) {
+    container.textContent = math.getAttribute("data-markdown-copy");
+  } else {
+    container.append(range.cloneContents());
+    for (const node of container.querySelectorAll("[data-markdown-copy]"))
+      node.replaceWith(doc.createTextNode(node.getAttribute("data-markdown-copy") ?? ""));
+    for (const node of container.querySelectorAll(EXCLUDED)) node.remove();
+  }
+  return container.innerHTML;
+}
+
 /** Read selected display text without changing the native selection or including row metadata. */
 export function readSelectedMarkdownText(source: Element, range: Range): string {
   let result = "";

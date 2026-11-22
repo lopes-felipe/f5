@@ -1,8 +1,30 @@
-import { Effect } from "effect";
+import { Deferred, Effect, Fiber } from "effect";
 import { describe, expect, it } from "vitest";
 import { makeChangeBreakdownCache } from "./changeBreakdownCache";
 
 describe("breakdown cache", () => {
+  it("keeps the shared fetch alive when its first reader is interrupted", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const read = yield* makeChangeBreakdownCache;
+        const started = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<null>();
+        let calls = 0;
+        const fetch = Effect.gen(function* () {
+          calls++;
+          yield* Deferred.succeed(started, undefined);
+          return yield* Deferred.await(release);
+        });
+        const first = yield* Effect.forkChild(read("shared", fetch));
+        yield* Deferred.await(started);
+        const second = yield* Effect.forkChild(read("shared", fetch));
+        yield* Fiber.interrupt(first);
+        yield* Deferred.succeed(release, null);
+        expect(yield* Fiber.join(second)).toBeNull();
+        expect(calls).toBe(1);
+      }),
+    );
+  });
   it("coalesces requests and separates accounts and comparison revisions", async () => {
     let calls = 0;
     await Effect.runPromise(

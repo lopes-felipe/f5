@@ -426,7 +426,7 @@ import type {
   PrHubDetailResult,
   PrHubFilesInput,
   PrHubFilesPage,
-  PrHubChangeBreakdown,
+  PrHubChangeBreakdownResult,
   PrHubThreadsInput,
   PrHubReplyInput,
   PrHubRecoverReplyInput,
@@ -1590,7 +1590,7 @@ export interface NativeApi {
     getTimeline: (input: PrHubTimelineInput) => Promise<PrHubTimelinePage>;
     getUnresolvedThreads: (input: PrHubDetailInput) => Promise<PrHubUnresolvedThreadsResult>;
     getFiles: (input: PrHubFilesInput) => Promise<PrHubFilesPage>;
-    getChangeBreakdown: (input: PrHubDetailInput) => Promise<PrHubChangeBreakdown | null>;
+    getChangeBreakdown: (input: PrHubDetailInput) => Promise<PrHubChangeBreakdownResult | null>;
     replyReviewThread: (input: PrHubReplyInput) => Promise<PrHubReplyOperation>;
     getReplyOperation: (input: PrHubThreadsInput) => Promise<PrHubReplyOperation | null>;
     recoverReply: (input: PrHubRecoverReplyInput) => Promise<PrHubReplyOperation>;

@@ -1,4 +1,22 @@
 import type { DesktopBridge, DesktopUpdateState } from "@t3tools/contracts";
+import { APP_VERSION } from "../branding";
+
+function redactReportUrls(text: string): string {
+  return text.replace(/\b[a-z][\w+.-]*:\/\/[^\s<>]+/gi, (token) => {
+    // Match the entire authority, including punctuation in userinfo. Parsing a prefix
+    // ending at ')' would leave the rest of a password in the report.
+    const suffix = /[)'",;\]]+$/.exec(token)?.[0] ?? "";
+    const candidate = suffix ? token.slice(0, -suffix.length) : token;
+    try {
+      const url = new URL(candidate);
+      // Vite places stack-frame coordinates after its cache-busting query.
+      const coordinates = /:\d+:\d+$/.exec(url.search)?.[0] ?? "";
+      return url.pathname + coordinates + suffix;
+    } catch {
+      return "[URL redacted]" + suffix;
+    }
+  });
+}
 
 // Deliberately independent of React, the router and application state.
 export async function resolveDebugCommand(
@@ -24,16 +42,16 @@ export function buildBootErrorReport(error: unknown): string {
     } catch {
       parts.push("(error could not be described)");
     }
-    current = current instanceof Error ? current.cause : undefined;
+    try {
+      current = current instanceof Error ? current.cause : undefined;
+    } catch {
+      break;
+    }
   }
   return (
-    parts
-      .join("\nCaused by: ")
-      .replace(/\b[a-z][\w+.-]*:\/\/[^\s/?#)'"]+/gi, "")
-      .replace(/[?#][^\s)'"]+/g, "")
-      .slice(0, 6000) +
+    redactReportUrls(parts.join("\nCaused by: ")).slice(0, 6000) +
     "\n\nF5 " +
-    import.meta.env.APP_VERSION +
+    APP_VERSION +
     "\n" +
     navigator.userAgent
   );

@@ -35,8 +35,10 @@ describe("GitHub file statistics", () => {
       ),
     );
     expect(calls).toBe(2);
-    expect(value?.code.additions).toBe(3);
-    expect(value?.tests.additions).toBe(3);
+    expect(value?.breakdown.code.additions).toBe(3);
+    expect(value?.breakdown.tests.additions).toBe(3);
+    expect(value?.headOid).toBe("head");
+    expect(value?.baseOid).toBe("base");
     expect(PR_FILE_STATS_QUERY).not.toMatch(/\bpatch\b/);
   });
   it("refuses a comparison changed between pages", async () => {

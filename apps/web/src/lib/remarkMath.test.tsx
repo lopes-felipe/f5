@@ -16,6 +16,7 @@ describe("math tokenization", () => {
     "Run $browser then $deploy on it.",
     "Price $5 and $10 stays literal.",
     "Set $TOKEN, then open [users](https://example.com/?$select=id)",
+    "$TOKEN then see [docs](/api?$filter=1)",
     "$   $",
     "\\( \\) prose",
     "\\[1,2\\] prose",
@@ -30,6 +31,9 @@ describe("math tokenization", () => {
   });
   it("preserves escaped dollars inside formulas", () => {
     expect(render("$a\\$b$")).toContain(">a\\$b</code>");
+  });
+  it("keeps adjacent brackets in explicit display math", () => {
+    expect(render("$$[a](b)$$")).toContain(">[a](b)</code>");
   });
   it("does not absorb the next equation after an empty TeX span", () => {
     const html = render("\\( \\) prose \\(x\\)");
@@ -62,6 +66,12 @@ describe("math tokenization", () => {
     expect(render("$a_b")).not.toContain("language-math");
   });
   it("allows display math across lines", () => {
-    expect(render("$$a +\nb$$")).toContain("math-display");
+    const html = render("$$a + % comment\nb$$");
+    expect(html).toContain("math-display");
+    expect(html).toContain("a + % comment\nb</code>");
+  });
+  it("preserves math content without blockquote or list continuation prefixes", () => {
+    expect(render("> $$a + % comment\n> b$$")).toContain("a + % comment\nb</code>");
+    expect(render("- $$a +\n  b$$")).toContain("a +\nb</code>");
   });
 });

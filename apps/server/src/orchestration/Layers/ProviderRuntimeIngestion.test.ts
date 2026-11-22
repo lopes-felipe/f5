@@ -8291,6 +8291,7 @@ describe("ProviderRuntimeIngestion", () => {
       readonly output: string;
       readonly outputAfterCompletion?: boolean;
       readonly gitLabLinking?: boolean;
+      readonly fullCommand?: string;
     }) => {
       const harness = await createHarness({
         settings: { autoLinkShellCreatedMergeRequests: input.gitLabLinking ?? false },
@@ -8325,6 +8326,9 @@ describe("ProviderRuntimeIngestion", () => {
           status: "inProgress",
           title: "Command run",
           detail: input.detail,
+          ...(input.fullCommand
+            ? { data: { toolName: "Bash", input: { command: input.fullCommand } } }
+            : {}),
         },
       });
       if (!input.outputAfterCompletion) output();
@@ -8381,6 +8385,28 @@ describe("ProviderRuntimeIngestion", () => {
       });
       const links = await linksOf(harness);
       expect(links.map((link) => link.number)).toEqual(enabled ? [7] : []);
+    });
+    it("uses the complete Claude command instead of its truncated display summary", async () => {
+      const fullCommand =
+        'gh pr create --body "' + "body mentions gh api and gh pr list. ".repeat(30) + '"';
+      const harness = await runCommand({
+        key: "long-claude-body",
+        provider: "claudeAgent",
+        detail: "Bash: " + fullCommand.slice(0, 400) + "…",
+        fullCommand,
+        status: "completed",
+        output: prUrl,
+      });
+      expect((await linksOf(harness)).map((link) => link.number)).toEqual([493]);
+      const ambiguous = await runCommand({
+        key: "long-claude-trailing-lookup",
+        provider: "claudeAgent",
+        detail: "Bash: " + fullCommand.slice(0, 400) + "…",
+        fullCommand: fullCommand + "; gh pr view feature --json url",
+        status: "completed",
+        output: prUrl,
+      });
+      expect(await linksOf(ambiguous)).toEqual([]);
     });
 
     it("links a PR whose URL arrives after the command completed", async () => {

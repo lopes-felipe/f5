@@ -33,7 +33,7 @@ export function PrChangeStat({
     retry: false,
   });
   const totals = query.data
-    ? Object.values(query.data).reduce(
+    ? Object.values(query.data.breakdown).reduce(
         (sum, item) => ({
           additions: sum.additions + item.additions,
           deletions: sum.deletions + item.deletions,
@@ -43,17 +43,21 @@ export function PrChangeStat({
     : null;
   // A push can land between the header read and the files read.
   const breakdown =
-    totals?.additions === pr.additions && totals.deletions === pr.deletions ? query.data : null;
+    query.data?.headOid === pr.headRefOid &&
+    totals?.additions === pr.additions &&
+    totals.deletions === pr.deletions
+      ? query.data.breakdown
+      : null;
   return (
     <Tooltip>
       <TooltipTrigger
-        render={<span tabIndex={0} />}
+        render={<span tabIndex={eager ? 0 : undefined} />}
         onPointerEnter={() => {
           cancelHover();
           hoverTimer.current = setTimeout(() => setRequested(true), 250);
         }}
         onPointerLeave={cancelHover}
-        onFocus={() => setRequested(true)}
+        onFocus={eager ? () => setRequested(true) : undefined}
         className="inline-flex gap-1.5 font-mono tabular-nums"
       >
         <span className="text-success-foreground">+{pr.additions}</span>

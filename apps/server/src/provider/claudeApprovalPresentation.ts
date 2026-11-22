@@ -77,7 +77,12 @@ export function claudeApprovalPresentation(
   const decisionReason = text(options.decisionReason);
   const blockedPath = text(options.blockedPath);
   const agentId = text(options.agentID);
+  const askRuleSource =
+    context.permissionMode === "bypassPermissions"
+      ? text(options.matchedAskRule?.source)
+      : undefined;
   const presentation: ProviderApprovalPresentation = {
+    ...(askRuleSource ? { askRuleSource } : {}),
     ...(context.permissionMode === "bypassPermissions"
       ? {
           fullAccessOverride:

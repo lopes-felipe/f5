@@ -17,7 +17,7 @@ import type {
   PrHubDetailResult,
   PrHubFilesInput,
   PrHubFilesPage,
-  PrHubChangeBreakdown,
+  PrHubChangeBreakdownResult,
   PrHubThreadsInput,
   PrHubReplyInput,
   PrHubRecoverReplyInput,
@@ -206,7 +206,7 @@ export interface PrHubServiceShape {
   ) => Effect.Effect<PrHubFilesPage, SourceControlProviderError>;
   readonly getChangeBreakdown: (
     input: PrHubDetailInput,
-  ) => Effect.Effect<PrHubChangeBreakdown | null, SourceControlProviderError>;
+  ) => Effect.Effect<PrHubChangeBreakdownResult | null, SourceControlProviderError>;
   readonly updateComment: (
     input: PrHubUpdateCommentInput,
   ) => Effect.Effect<PrHubDetailMutationResult, SourceControlProviderError>;

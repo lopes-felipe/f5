@@ -1,4 +1,13 @@
-import type { InlineCode, Root, RootContent } from "mdast";
+import type { Text, Root, RootContent } from "mdast";
+type MathNode = Omit<Text, "type"> & { type: "f5Math" };
+declare module "mdast" {
+  interface PhrasingContentMap {
+    f5Math: MathNode;
+  }
+  interface RootContentMap {
+    f5Math: MathNode;
+  }
+}
 const whitespace = (code: Code) => code === 32 || code === 9 || code === 44;
 
 type Code = number | null;
@@ -52,7 +61,12 @@ const tokenize: Tokenizer = (effects, ok, nok) => {
       first = false;
     }
     if (code === null || (!display && code < 0)) return nok(code);
-    if (code === 96 || (code === 47 && previous === 47 && beforePrevious === 58)) return nok(code);
+    if (
+      code === 96 ||
+      (code === 47 && previous === 47 && beforePrevious === 58) ||
+      (!display && close[0] === 36 && code === 40 && previous === 93)
+    )
+      return nok(code);
     if (code === close[0] && hasContent) {
       if (dataOpen) {
         effects.exit("f5MathData");
@@ -133,9 +147,12 @@ const tokenize: Tokenizer = (effects, ok, nok) => {
 };
 
 interface CompileContext {
-  enter(node: InlineCode, token: unknown): void;
+  enter(node: Text | MathNode, token: unknown): void;
   exit(token: unknown): void;
   sliceSerialize(token: unknown): string;
+  buffer(): void;
+  resume(): string;
+  stack: (Text | MathNode)[];
 }
 
 export function remarkMath(this: unknown) {
@@ -169,12 +186,12 @@ export function remarkMath(this: unknown) {
           authoredSource?.slice(position.start.offset, position.end.offset) ??
           this.sliceSerialize(token);
         const display = source.startsWith("$$") || source.startsWith("\\[");
-        const width = source.startsWith("$") && !display ? 1 : 2;
         this.enter(
           {
-            type: "inlineCode",
-            value: source.slice(width, -width),
+            type: "f5Math",
+            value: "",
             data: {
+              hName: "code",
               hProperties: {
                 className: ["language-math", display ? "math-display" : "math-inline"],
               },
@@ -182,10 +199,25 @@ export function remarkMath(this: unknown) {
           },
           token,
         );
+        this.buffer();
+      },
+      f5MathData(this: CompileContext, token: unknown) {
+        this.enter({ type: "text", value: "" }, token);
       },
     },
     exit: {
       f5Math(this: CompileContext, token: unknown) {
+        const value = this.resume();
+        const node = this.stack.at(-1)!;
+        node.value = value;
+        node.data!.hChildren = [{ type: "text", value }];
+        this.exit(token);
+      },
+      f5MathData(this: CompileContext, token: unknown) {
+        const position = token as { start: { offset: number }; end: { offset: number } };
+        this.stack.at(-1)!.value =
+          authoredSource?.slice(position.start.offset, position.end.offset) ??
+          this.sliceSerialize(token);
         this.exit(token);
       },
     },
@@ -218,7 +250,7 @@ export function remarkMath(this: unknown) {
     const pipes = new Set<number>();
     const visit = (node: Root | RootContent) => {
       if (
-        node.type === "inlineCode" &&
+        node.type === "f5Math" &&
         String(node.data?.hProperties?.className).includes("language-math")
       ) {
         const start = node.position?.start.offset;

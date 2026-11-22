@@ -37,4 +37,12 @@ describe("startup recovery", () => {
     expect(frame).not.toContain("secret");
     expect(frame).not.toContain("localhost");
   });
+  it("redacts punctuation in credentials and keeps Vite frame coordinates and plain text", () => {
+    const report = buildBootErrorReport(
+      "at x (https://user:)secret@private-host/src/main.tsx?t=secret:12:3)\n#private and what? remain text",
+    );
+    expect(report).toContain("/src/main.tsx:12:3)");
+    expect(report).toContain("#private and what? remain text");
+    expect(report).not.toMatch(/secret|private-host|user:|undefined/);
+  });
 });

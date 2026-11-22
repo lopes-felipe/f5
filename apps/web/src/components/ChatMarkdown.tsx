@@ -44,7 +44,7 @@ import remarkGfm from "remark-gfm";
 import { useDiffWordWrap, useAppSettingsSelector } from "../appSettings";
 import { remarkMath } from "../lib/remarkMath";
 import { MarkdownMath } from "./chat/MarkdownMath";
-import { readSelectedMarkdownText } from "../lib/assistantQuoteSelection";
+import { readSelectedMarkdownText, readSelectedMarkdownHtml } from "../lib/assistantQuoteSelection";
 import { openMarkdownFileLink } from "../lib/openMarkdownFileLink";
 import { showLocalPathContextMenu } from "../lib/localPathContextMenu";
 import { resolveDiffThemeName, type DiffThemeName } from "../lib/diffRendering";
@@ -751,6 +751,7 @@ const MarkdownContainer = memo(function MarkdownContainer(props: {
         )
           return;
         event.clipboardData.setData("text/plain", readSelectedMarkdownText(root, range));
+        event.clipboardData.setData("text/html", readSelectedMarkdownHtml(range));
         event.preventDefault();
       }}
     >

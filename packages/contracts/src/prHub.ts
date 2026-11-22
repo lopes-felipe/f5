@@ -992,6 +992,12 @@ export const PrHubChangeBreakdown = Schema.Struct({
   docs: PrHubDiffTotals,
 });
 export type PrHubChangeBreakdown = typeof PrHubChangeBreakdown.Type;
+export const PrHubChangeBreakdownResult = Schema.Struct({
+  breakdown: PrHubChangeBreakdown,
+  headOid: Schema.String,
+  baseOid: Schema.String,
+});
+export type PrHubChangeBreakdownResult = typeof PrHubChangeBreakdownResult.Type;
 
 export const PrHubReviewComment = Schema.Struct({
   /** Explicit host permission; absent retains the host-specific fallback. */

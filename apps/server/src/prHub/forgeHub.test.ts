@@ -466,6 +466,15 @@ it.layer(SqliteClient.layerMemory())("native forge hub", (it) => {
               ["Downstream: deploy", "failure"],
             ],
           );
+          const beforeStats = yield* hub.getSnapshot;
+          assert.equal(yield* hub.getChangeBreakdown({ key: pr.key }), null);
+          assert.deepEqual(yield* hub.getSnapshot, beforeStats);
+          const untracked = PullRequestKey.makeUnsafe(String(pr.key).replace(/7$/, "999"));
+          assert.equal(
+            (yield* hub.getChangeBreakdown({ key: untracked }).pipe(Effect.result))._tag,
+            "Failure",
+          );
+          assert.deepEqual(yield* hub.getSnapshot, beforeStats);
           const files = yield* hub.getFiles({ key: pr.key });
           assert.equal((yield* hub.getSnapshot).pullRequests[0]?.checkRollup, "failure");
           assert.equal(files.files.length, 1);

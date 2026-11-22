@@ -6,6 +6,19 @@ import {
 } from "./claudeApprovalPresentation.ts";
 
 describe("Claude approval presentation", () => {
+  it.each(["policySettings", "cliArg"] as const)("retains the ask-rule source %s", (source) => {
+    expect(
+      claudeApprovalPresentation(
+        {
+          matchedAskRule: { source, toolName: "Bash", ruleContent: "*" },
+        },
+        { permissionMode: "bypassPermissions" },
+      ),
+    ).toMatchObject({
+      fullAccessOverride: "ask_rule",
+      askRuleSource: source,
+    });
+  });
   it("explains bypass overrides and strips terminal formatting", () => {
     expect(
       claudeApprovalPresentation(
@@ -16,7 +29,7 @@ describe("Claude approval presentation", () => {
     const matchedAskRule = { source: "userSettings" as const, toolName: "Bash", ruleContent: "*" };
     expect(
       claudeApprovalPresentation({ matchedAskRule }, { permissionMode: "bypassPermissions" }),
-    ).toEqual({ fullAccessOverride: "ask_rule" });
+    ).toEqual({ fullAccessOverride: "ask_rule", askRuleSource: "userSettings" });
     expect(
       claudeApprovalPresentation({ matchedAskRule }, { permissionMode: "plan" }),
     ).toBeUndefined();

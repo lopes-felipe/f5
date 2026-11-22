@@ -4,7 +4,7 @@ import { THEME_TOKEN_NAMES } from "@t3tools/shared/themeTokens";
 export const HTML_RENDER_THEME_GUIDE =
   "Use theme CSS variables: " +
   THEME_TOKEN_NAMES.map((name) => "--" + name).join(", ") +
-  "; --chart-1 to --chart-6, --radius, --font-sans, --font-mono.";
+  "; --chart-1 to --chart-6, --radius, --font-sans, --font-mono. Colors are hex: use var(--primary) directly, never hsl(var(--primary)). Pair each surface with its matching foreground (e.g. --primary/--primary-foreground). Use --chart-1 through --chart-6 in order for chart series.";
 
 export const HTML_RENDER_LAYOUT_GUIDE =
   "Fluid reply width (default " +
