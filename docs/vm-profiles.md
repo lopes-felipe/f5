@@ -8,14 +8,14 @@ A Linux VM profile runs its backend, providers, terminals, Git and local MCP pro
 
 ## Status
 
-| Step                                                 | State                                                                                                             |
-| ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| Phase 0 feasibility gate                             | **Pending.** Needs a packaged, Developer-ID-signed build on Apple Silicon; it can't run in CI or the agent shell. |
-| Profile model, lazy registry v2, fail-closed refusal | Done                                                                                                              |
-| Backend channel and launcher abstraction             | Done (host implementation only)                                                                                   |
-| Guest image pipeline, VM launcher, lifecycle         | Not started; blocked on the gate                                                                                  |
-| Exports, clones, network, forwards, login            | Not started; blocked on the gate                                                                                  |
-| UI, certification run, opt-in preview                | Not started                                                                                                       |
+| Step                                                 | State                                                                       |
+| ---------------------------------------------------- | --------------------------------------------------------------------------- |
+| Phase 0 feasibility gate                             | **Passed** 2026-11-22, with two caveats ([result](#gate-result-2026-11-22)) |
+| Profile model, lazy registry v2, fail-closed refusal | Done                                                                        |
+| Backend channel and launcher abstraction             | Done (host implementation only)                                             |
+| Guest image pipeline, VM launcher, lifecycle         | Not started; unblocked                                                      |
+| Exports, clones, network, forwards, login            | Not started; unblocked                                                      |
+| UI, certification run, opt-in preview                | Not started                                                                 |
 
 This build can't create or start a Linux VM profile. `ProfileRegistryStore.create` refuses `executionEnvironment: "linux-vm"`, because the provisioning lifecycle a VM record needs doesn't exist yet. A VM record can still show up, for example after rolling back from a VM-capable build, so everything below handles one.
 
@@ -46,9 +46,31 @@ Record the results as `docs/computer-certification/<date>-macos-linux-vm-gate.js
 
 GitHub-hosted macOS ARM64 runners can't run nested Virtualization.framework VMs. VM integration coverage needs a self-hosted Apple Silicon runner, or a recorded manual gate like the [real-provider release gate](profiles.md#real-provider-release-gate).
 
+### Gate result (2026-11-22)
+
+**Passed.** The evidence is in [`2026-11-22-macos-linux-vm-gate.json`](computer-certification/2026-11-22-macos-linux-vm-gate.json). It was run on F5 0.1.11-beta.15 (Developer ID, hardened runtime) on an M4 Pro with macOS 27.2.1, using Lima 2.3.0 and the digest-pinned Debian 13 image. The run had two phases, so that a Cortex XDR kill couldn't cost in-progress work:
+
+- **Phase A**, in Terminal outside F5: download, first boot, provisioning and every guest-side check.
+- **Phase B**, in an F5 agent shell inside the unchanged backend sandbox: the same VM restarted, plus every check that depends on the sandbox. The shell's AppleEvents were refused, and the protected GUI service lookups were denied, before Lima started and while it ran.
+
+Two caveats carry into delivery:
+
+- **Signing.** Lima's own ad hoc signature (with the virtualization entitlement) was used. Re-signing the bundled `limactl` with Developer ID and hardened runtime is part of the release pipeline in step 3 and must be rechecked there.
+- **Claude sandbox.** Child sandboxing was verified with `@anthropic-ai/sandbox-runtime` 0.0.83, the library the Claude CLI's sandbox is built on, run through `srt` as `f5`: commands ran, while network access and writes outside the working directory were blocked. The Claude CLI driving a model still needs the fake-model provider test.
+
+Measured: cold boot of a provisioned guest took 8 to 10 s inside the sandbox and 6.5 s outside it. First boot with apt provisioning took 84 s. At idle, the host's VZ process used about 690 MiB RSS and the guest used 250 MiB.
+
+Findings that change the remaining steps:
+
+- **virtiofs ignores guest identity.** Every guest write lands as the host user, whatever the guest UID, so guest users don't protect exported files. That fits the rule that exports are fully guest-writable.
+- **A bubblewrap sandbox that binds `/` still reaches guest UNIX sockets.** DNS resolved through systemd-resolved's socket with the network namespace unshared. The child-sandbox policy must hide `/run/systemd`, the D-Bus socket and similar paths.
+- **`sandbox-runtime` refuses to run without ripgrep,** so the image must keep it.
+- **The guest's DNS server is the host gateway** (192.168.5.2, served by Lima's gvproxy). The egress policy's only exception on the gateway is port 53.
+- **Judge channel shutdown by the scope, not the exit code.** In one run, the `limactl shell` process exited 241 after main closed the channel, even though the scope had stopped correctly.
+
 ## Remaining delivery
 
-After the gate passes:
+The gate has passed, so these steps are unblocked:
 
 - **Guest image and VM lifecycle.** CI builds a digest-pinned Debian 13 arm64 image with Git, bubblewrap, socat, ripgrep, nftables, the root-owned launcher `/opt/f5/bin/f5-guest-launch`, users `f5` (no sudo) and admin, and the organization policy files. It downloads on first use. A persistent data disk at `/var/lib/f5` survives root-image replacement. `LIMA_HOME=<profile-state>/vm/lima`, and instance config comes only from F5's typed builder. The backend is installed from the bundled linux-arm64 CLI archive whenever its version differs. A `VmBackendLauncher` registers a `streamBackendChannel` with the computer channel.
 - **Sharing and network.** Folders are exported only through the picker and only as separate clones, never a host repo's `.git`. Guest egress is internet-only. Main owns every port forward on `127.0.0.1`. The installation-wide login lease is held through the channel. VM-profile backends can't mutate installation state.
