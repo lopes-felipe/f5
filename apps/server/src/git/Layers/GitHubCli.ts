@@ -210,14 +210,11 @@ export const makeGitHubCli = (
               })
             : null;
           if (saved || isolated) return saved ?? "";
-          const readEnv = (name: string) =>
-            Object.entries(process.env)
-              .find(([key]) => key.toUpperCase() === name)?.[1]
-              ?.trim();
+          const env = process.env;
           const ambient = isGitHubCloudHost(host)
-            ? readEnv("GH_TOKEN") || readEnv("GITHUB_TOKEN")
-            : readEnv("GH_HOST")?.toLowerCase() === host
-              ? readEnv("GH_ENTERPRISE_TOKEN") || readEnv("GITHUB_ENTERPRISE_TOKEN")
+            ? env.GH_TOKEN?.trim() || env.GITHUB_TOKEN?.trim()
+            : env.GH_HOST?.trim().toLowerCase() === host
+              ? env.GH_ENTERPRISE_TOKEN?.trim() || env.GITHUB_ENTERPRISE_TOKEN?.trim()
               : undefined;
           if (ambient) return ambient;
           // The profile projection answers disconnected hosts with a placeholder, and gh exits
