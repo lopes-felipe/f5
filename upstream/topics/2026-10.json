@@ -43779,14 +43779,16 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
-      "decidedAt": "2026-11-13T14:45:41.681Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T17:22:51.894Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-23135",
+      "reason": "F5 has no equivalent cross-thread agent-message surface.",
+      "reasonKey": "not-applicable",
       "relatedTopics": [
         "pr-18194"
       ],
-      "status": "port",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "timeline",
@@ -48812,11 +48814,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
-      "decidedAt": "2026-11-13T14:45:41.681Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T17:22:51.894Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-24104",
-      "status": "port",
+      "reason": "Guest sharing requires T3 Connect, excluded by relay-cloud policy.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "sharing"
