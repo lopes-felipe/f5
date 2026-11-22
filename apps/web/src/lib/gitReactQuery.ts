@@ -11,16 +11,21 @@ export function applyTurnGitStatus(
   cwd: string,
   status: GitStatusResult,
 ): void {
-  queryClient.setQueriesData<GitStatusResult>({ queryKey: ["git", "status", cwd] }, (previous) =>
-    previous
-      ? {
-          ...status,
-          ...(previous.branch === status.branch
-            ? { pr: previous.pr, changeRequest: previous.changeRequest }
-            : {}),
-        }
-      : previous,
+  let branchChanged = false;
+  queryClient.setQueriesData<GitStatusResult>(
+    { queryKey: gitQueryKeys.status(cwd) },
+    (previous) => {
+      if (!previous) return previous;
+      if (previous.branch !== status.branch) {
+        branchChanged = true;
+        return status;
+      }
+      return { ...status, pr: previous.pr, changeRequest: previous.changeRequest };
+    },
   );
+  if (branchChanged) {
+    void queryClient.invalidateQueries({ queryKey: gitQueryKeys.branches(cwd) });
+  }
 }
 const GIT_STATUS_REFETCH_INTERVAL_MS = 60_000;
 const GIT_BRANCHES_STALE_TIME_MS = 15_000;

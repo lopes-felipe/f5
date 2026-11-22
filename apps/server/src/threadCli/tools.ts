@@ -171,7 +171,11 @@ export function makeOwnerThreadTools(
         title: z.string().trim().min(1).max(200),
         provider: id.optional(),
         model: id.optional(),
-        worktree: id.optional(),
+        worktree: id
+          .describe(
+            "Worktree base ref. For independent work, use the remote default branch (for example origin/main), or the local default if there is no remote. Honor an explicit or dependent local base.",
+          )
+          .optional(),
         branch: id.optional(),
       }),
       false,
@@ -215,7 +219,11 @@ export function makeOwnerThreadTools(
             input.worktree !== undefined || defaults.defaultThreadEnvMode === "worktree";
           const base =
             input.worktree ??
-            (useWorktree ? yield* host.getProjectGitBranch(project.workspaceRoot) : null);
+            (useWorktree ? yield* host.getIndependentWorktreeBase(project.workspaceRoot) : null);
+          if (useWorktree && base === null)
+            return yield* fail(
+              "Could not identify the default branch. Supply a worktree base explicitly.",
+            );
           const threadId = ThreadId.makeUnsafe(randomUUID());
           return yield* submit(
             buildNewThreadSubmission({

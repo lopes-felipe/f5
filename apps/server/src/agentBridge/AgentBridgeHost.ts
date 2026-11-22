@@ -71,6 +71,7 @@ export interface AgentBridgeHostShape {
   readonly getSettings: Effect.Effect<ServerSettings, AgentBridgeHostError>;
   /** Current branch of a project checkout, or null when it is not a git repository. */
   readonly getProjectGitBranch: (cwd: string) => Effect.Effect<string | null>;
+  readonly getIndependentWorktreeBase: (cwd: string) => Effect.Effect<string | null>;
   readonly submitTurnSubmission: (
     body: NextTurnQueueSubmitInput,
     options: { readonly submissionSource: "automation" },

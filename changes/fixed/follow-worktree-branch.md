@@ -1,0 +1,1 @@
+- Threads update their displayed branch when Git status detects a new checkout in their worktree.

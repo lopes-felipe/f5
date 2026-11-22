@@ -186,6 +186,10 @@ export class FakeAgentBridgeHost {
     getSettings: Effect.sync(() => this.settings),
     getProjectGitBranch: (cwd) =>
       Effect.sync(() => (this.branches.has(cwd) ? (this.branches.get(cwd) ?? null) : "main")),
+    getIndependentWorktreeBase: (cwd) =>
+      Effect.sync(() =>
+        this.branches.has(cwd) && this.branches.get(cwd) === null ? null : "main",
+      ),
     submitTurnSubmission: (body, options) =>
       Effect.suspend(() =>
         this.submissionGate ? Deferred.await(this.submissionGate) : Effect.void,

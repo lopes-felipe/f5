@@ -126,6 +126,23 @@ it("uses all owner projects, project defaults and the common submission path wit
   });
 });
 
+it("uses the independent default branch when a worktree is configured without an explicit base", async () => {
+  const { dir, host } = await setup();
+  host.settings = { ...host.settings, defaultThreadEnvMode: "worktree" };
+  host.branches.set(dir, "unrelated-feature");
+  await withThreadClient(dir, (call) =>
+    call(
+      "f5_thread_launch",
+      { projectId: "private", prompt: "Independent work", title: "Worktree" },
+      submittedSchema,
+    ),
+  );
+  expect(host.submissions[0]?.command.bootstrap?.prepareWorktree).toMatchObject({
+    baseBranch: "main",
+    requireWorktree: true,
+  });
+});
+
 it("loads activities only for the requested recent page, even with unloaded old archives", async () => {
   const { dir, host } = await setup();
   host.threads = Array.from({ length: 250 }, (_, index) =>

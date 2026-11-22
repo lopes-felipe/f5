@@ -588,6 +588,8 @@ it.layer(SqliteClient.layerMemory())("native forge hub", (it) => {
                 repository: "group/repo",
               }),
             fetch: (async (url: string | URL | Request) => {
+              if (new URL(String(url)).pathname === "/api/graphql")
+                return Response.json({ data: { project: { mergeRequests: { nodes: [] } } } });
               if (new URL(String(url)).pathname.endsWith("/diffs"))
                 return Response.json([
                   { new_path: "a.ts", old_path: "a.ts", diff: "@@ -1 +1 @@\n-old\n+new" },

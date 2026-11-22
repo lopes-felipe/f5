@@ -67,8 +67,7 @@ export function groupTimelineReviewThreads(
   // Entries arrive newest first, so the last member seen is the thread's oldest loaded comment.
   const anchorByThread = new Map<string, PrHubTimelineComment>();
   for (const entry of entries) {
-    if (entry.type !== "comment" || entry.kind !== "review-comment" || loaded.has(entry.id))
-      continue;
+    if (entry.type !== "comment" || loaded.has(entry.id)) continue;
     const thread = threadByCommentId.get(entry.id);
     if (!thread) continue;
     loaded.set(entry.id, entry);
@@ -101,8 +100,7 @@ export function groupTimelineReviewThreads(
       rowByAnchor.delete(entry.id);
       continue;
     }
-    if (entry.type === "comment" && entry.kind === "review-comment" && loaded.has(entry.id))
-      continue;
+    if (entry.type === "comment" && loaded.has(entry.id)) continue;
     rows.push({ type: "entry", entry });
   }
   return rows;

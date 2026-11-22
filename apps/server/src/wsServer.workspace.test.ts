@@ -140,6 +140,47 @@ describe("WebSocket Server", () => {
       expect(run("branch", "--show-current")).toBe("topic");
     });
 
+    it("follows a branch checked out externally in an attached worktree", async () => {
+      const { cwd, run } = repoWithTopic();
+      const baseDir = fs.realpathSync(makeTempDir("f5-observed-branch-"));
+      const stateDir = path.join(baseDir, "state");
+      const worktree = path.join(baseDir, "worktrees", "topic");
+      run("worktree", "add", "-q", worktree, "topic");
+      h.server = await createTestServer({ cwd, stateDir, autoBootstrapProjectFromCwd: true });
+      const addr = h.server.address();
+      const [ws] = await connectAndAwaitWelcome(typeof addr === "object" && addr ? addr.port : 0);
+      connections.push(ws);
+      const before = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot);
+      const project = (before.result as OrchestrationReadModel).projects[0]!;
+      const created = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+        type: "thread.create",
+        commandId: "create-observed-branch",
+        threadId: "observed-branch",
+        projectId: project.id,
+        title: "Observed branch",
+        model: "gpt-5-codex",
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: "topic",
+        worktreePath: worktree,
+        createdAt: new Date().toISOString(),
+      });
+      expect(created.error).toBeUndefined();
+      run("-C", worktree, "switch", "-qc", "next-topic");
+      const status = await sendRequest(ws, WS_METHODS.gitStatus, {
+        cwd: worktree,
+        includeRemote: false,
+        includePullRequest: false,
+      });
+      expect(status.result).toMatchObject({ branch: "next-topic" });
+      const after = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot);
+      expect(
+        (after.result as OrchestrationReadModel).threads.find(
+          (thread) => thread.id === "observed-branch",
+        ),
+      ).toMatchObject({ branch: "next-topic", worktreePath: worktree });
+    });
+
     it("commits a feature branch in a nested checkout and leaves the thread at the project root", async () => {
       const { cwd, run } = repoWithTopic();
       const nested = path.join(cwd, "nested");

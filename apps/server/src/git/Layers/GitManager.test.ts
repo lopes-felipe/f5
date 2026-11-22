@@ -232,6 +232,21 @@ describe("GitManager unit", () => {
     expect(git.calls.statusDetails).toHaveLength(1);
     expect(git.calls.inspectCheckoutIdentity).toHaveLength(0);
   });
+  it("does not query the forge for a branch that only tracks a local branch", async () => {
+    const { manager, github } = await makeManager({
+      gitCore: {
+        statusDetails: () => Effect.succeed({ ...cleanStatus, upstreamRef: "test" }),
+        readConfigValue: (_cwd, key) =>
+          Effect.succeed(key === "branch.feature/test.remote" ? "." : null),
+        resolveCommit: (_cwd, ref) =>
+          Effect.succeed(ref === "refs/heads/feature/test" ? "local-head" : null),
+      },
+    });
+    const status = await Effect.runPromise(manager.status({ cwd }));
+    expect(status.pr).toBeNull();
+    expect(status.changeRequest).toBeNull();
+    expect(github.calls).toEqual([]);
+  });
   it("rejects remote metadata when the checked-out branch changes during the lookup", async () => {
     let reads = 0;
     const { manager } = await makeManager({

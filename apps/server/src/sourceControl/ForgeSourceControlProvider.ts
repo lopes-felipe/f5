@@ -5,6 +5,7 @@ import {
   type ForgeAction,
   type ForgeCapabilities,
   type PrHubCheck,
+  type PrReviewDecision,
   type SourceControlPullRequestAction,
   type SourceControlPullRequestRef,
 } from "@t3tools/contracts";
@@ -44,6 +45,8 @@ export interface ForgeDetail extends SourceControlPullRequestSummary {
   readonly raw: Readonly<Record<string, unknown>>;
   readonly checks?: ReadonlyArray<PrHubCheck>;
   readonly checksComplete?: boolean;
+  readonly reviewDecision?: PrReviewDecision;
+  readonly viewerCanDeleteBranch?: boolean;
 }
 export interface ForgeCommentInput {
   readonly ref: SourceControlPullRequestRef;
@@ -88,7 +91,11 @@ export interface ForgeProvider extends SourceControlProvider {
   ) => Effect.Effect<ReadonlyArray<ForgeDetail>, SourceControlProviderError>;
   readonly getDetail: (
     ref: SourceControlPullRequestRef,
-    options?: { readonly checks?: boolean },
+    options?: {
+      readonly checks?: boolean;
+      readonly branchPermission?: boolean;
+      readonly review?: boolean;
+    },
   ) => Effect.Effect<ForgeDetail, SourceControlProviderError>;
   readonly getFiles: (
     ref: SourceControlPullRequestRef,
@@ -262,6 +269,7 @@ export function makeForgeSourceControlProvider(options: {
     raw = false,
     repositoryOverride?: string,
     graphql = false,
+    extraHeaders?: Readonly<Record<string, string>>,
   ) =>
     Effect.gen(function* () {
       const a = yield* account(ref, cwd);
@@ -313,6 +321,7 @@ export function makeForgeSourceControlProvider(options: {
               try: async (signal) => {
                 const headers: Record<string, string> = {
                   Accept: raw ? "text/plain" : "application/json",
+                  ...extraHeaders,
                 };
                 if (kind === "gitlab") headers["PRIVATE-TOKEN"] = a.token;
                 else
@@ -520,11 +529,229 @@ export function makeForgeSourceControlProvider(options: {
         return yield* error("reference", "Invalid pull request reference.", "invalid_response");
       return ref;
     });
-  const getDetail = (ref: SourceControlPullRequestRef, options?: { readonly checks?: boolean }) =>
+  const gitLabGraphql = (
+    ref: SourceControlPullRequestRef,
+    query: string,
+    variables: Record<string, unknown>,
+  ) =>
+    request(
+      ref,
+      undefined,
+      "",
+      "POST",
+      {
+        query,
+        variables: { fullPath: ref.repository, ...variables },
+      },
+      false,
+      undefined,
+      true,
+    ).pipe(
+      Effect.flatMap((value) => {
+        const data = object(object(value).data);
+        return rows(object(value).errors).length || !Object.keys(data).length
+          ? Effect.fail(
+              error(
+                "graphql",
+                "GitLab returned an incomplete GraphQL response.",
+                "invalid_response",
+              ),
+            )
+          : Effect.succeed(data);
+      }),
+    );
+  const gitLabOptional = <A>(read: Effect.Effect<A, SourceControlProviderError>, fallback: A) =>
+    read.pipe(
+      Effect.catch((cause) =>
+        cause.kind === "unauthenticated" || cause.kind === "rate_limited"
+          ? Effect.fail(cause)
+          : Effect.succeed(fallback),
+      ),
+    );
+  const gitLabSourceBranch = (ref: SourceControlPullRequestRef) =>
+    gitLabGraphql(
+      ref,
+      `query($fullPath: ID!, $iid: String!) {
+        project(fullPath: $fullPath) {
+          mergeRequest(iid: $iid) {
+            state sourceBranch diffHeadSha
+            sourceProject { fullPath }
+            userPermissions { removeSourceBranch }
+          }
+        }
+      }`,
+      { iid: String(ref.number) },
+    ).pipe(Effect.map((data) => object(object(data.project).mergeRequest)));
+  const gitLabDiscussions = (ref: SourceControlPullRequestRef, compare: boolean) =>
+    Effect.gen(function* () {
+      const discussions = yield* pagedRows(ref, pull(ref) + "/discussions");
+      if (!discussions.length) return discussions;
+      const edits = new Map<string, string>();
+      let after: string | null = null;
+      const query = `query($fullPath: ID!, $iid: String!, $after: String) {
+        project(fullPath: $fullPath) {
+          mergeRequest(iid: $iid) {
+            notes(first: 100, after: $after) {
+              pageInfo { hasNextPage endCursor }
+              nodes { id lastEditedAt lastEditedBy { username } resolved }
+            }
+          }
+        }
+      }`;
+      const refs =
+        compare &&
+        discussions.some((discussion) => rows(discussion.notes).some((note) => note.position))
+          ? yield* gitLabOptional(
+              request(ref, undefined, pull(ref)).pipe(
+                Effect.map((value) => object(object(value).diff_refs)),
+              ),
+              {},
+            )
+          : {};
+      for (let page = 0; page < 10; page++) {
+        const data = yield* gitLabOptional(
+          gitLabGraphql(ref, query, { iid: String(ref.number), after }),
+          {},
+        );
+        const notes = object(object(object(data.project).mergeRequest).notes);
+        for (const note of rows(notes.nodes)) {
+          const id = text(note.id).trim().split("/").at(-1);
+          const edited = text(note.lastEditedAt);
+          if (
+            id &&
+            /^\d+$/.test(id) &&
+            edited &&
+            text(object(note.lastEditedBy).username).trim() &&
+            note.resolved !== true
+          )
+            edits.set(id, edited);
+        }
+        const pageInfo = object(notes.pageInfo);
+        const cursor = text(pageInfo.endCursor);
+        if (pageInfo.hasNextPage !== true || !cursor || cursor === after) break;
+        after = cursor;
+      }
+      const keys = ["base_sha", "start_sha", "head_sha"] as const;
+      return discussions.map((discussion) => {
+        const notes = rows(discussion.notes).filter((note) => note.system !== true);
+        const root = notes[0];
+        const position = object(root?.position);
+        const outdated =
+          keys.every((key) => text(position[key]) && text(refs[key])) &&
+          keys.some((key) => position[key] !== refs[key]);
+        const overviewFinding =
+          discussion.individual_note !== true &&
+          root?.resolvable === true &&
+          root.resolved !== true &&
+          !position.new_path &&
+          !position.old_path;
+        return {
+          ...discussion,
+          isOutdated: outdated,
+          overviewFinding,
+          notes: notes.map((note, index) => ({
+            ...note,
+            updated_at: edits.get(String(note.id)) ?? null,
+            overviewFinding: overviewFinding && index === 0,
+            web_url:
+              text(note.web_url) ||
+              "https://" +
+                ref.host +
+                "/" +
+                ref.repository +
+                "/-/merge_requests/" +
+                ref.number +
+                "#note_" +
+                String(note.id),
+          })),
+        };
+      });
+    });
+  const gitLabListFacts = (ref: SourceControlPullRequestRef, details: ReadonlyArray<ForgeDetail>) =>
+    Effect.gen(function* () {
+      if (!details.length) return details;
+      const data = yield* gitLabOptional(
+        gitLabGraphql(
+          ref,
+          `query($fullPath: ID!, $iids: [String!]) {
+            metadata { enterprise }
+            project(fullPath: $fullPath) {
+              mergeRequests(iids: $iids, first: 100) {
+                nodes {
+                  iid approved approvedBy(first: 1) { nodes { username } }
+                  reviewers(first: 20) { nodes { mergeRequestInteraction { reviewState } } }
+                  headPipeline { status }
+                }
+              }
+            }
+          }`,
+          { iids: details.map((detail) => String(detail.number)) },
+        ),
+        {},
+      );
+      const facts = new Map(
+        rows(object(object(data.project).mergeRequests).nodes).map((row) => [Number(row.iid), row]),
+      );
+      return details.map((detail): ForgeDetail => {
+        const row = facts.get(detail.number);
+        if (!row) return detail;
+        const approvals = object(row.approvedBy).nodes;
+        const hasApprovals = Array.isArray(approvals) && approvals.length > 0;
+        const enterprise = object(data.metadata).enterprise;
+        const changesRequested = rows(object(row.reviewers).nodes).some(
+          (reviewer) =>
+            object(reviewer.mergeRequestInteraction).reviewState === "REQUESTED_CHANGES",
+        );
+        const reviewDecision = changesRequested
+          ? "changes_requested"
+          : typeof row.approved !== "boolean" || !Array.isArray(approvals)
+            ? undefined
+            : row.approved
+              ? hasApprovals
+                ? "approved"
+                : "none"
+              : hasApprovals || enterprise === true
+                ? "review_required"
+                : enterprise === false
+                  ? "none"
+                  : undefined;
+        return {
+          ...detail,
+          ...(reviewDecision === undefined ? {} : { reviewDecision }),
+          ...(Object.hasOwn(row, "headPipeline")
+            ? {
+                raw: { ...detail.raw, head_pipeline: row.headPipeline },
+                checks: gitLabHeadPipelineChecks(row.headPipeline),
+                checksComplete: true,
+              }
+            : {}),
+        };
+      });
+    });
+  const getDetail = (
+    ref: SourceControlPullRequestRef,
+    options?: {
+      readonly checks?: boolean;
+      readonly branchPermission?: boolean;
+      readonly review?: boolean;
+    },
+  ) =>
     request(ref, undefined, pull(ref)).pipe(
       Effect.flatMap((value) =>
         Effect.gen(function* () {
           let detail = summary(value, ref);
+          if (kind === "gitlab" && options?.review) {
+            const [facts] = yield* gitLabListFacts(ref, [detail]);
+            if (facts?.reviewDecision !== undefined)
+              detail = { ...detail, reviewDecision: facts.reviewDecision };
+          }
+          if (kind === "gitlab" && options?.branchPermission && detail.state !== "open") {
+            const source = yield* gitLabOptional(gitLabSourceBranch(ref), {});
+            detail = {
+              ...detail,
+              viewerCanDeleteBranch: object(source.userPermissions).removeSourceBranch === true,
+            };
+          }
           if (kind === "gitlab" && detail.isCrossRepository) {
             const source = object(value).source_project_id;
             const project = object(
@@ -1168,6 +1395,72 @@ export function makeForgeSourceControlProvider(options: {
     ).replace(/^refs\/heads\//, "") || null;
   return {
     kind,
+    ...(kind === "gitlab"
+      ? ({
+          deletePullRequestBranch: (input) =>
+            Effect.gen(function* () {
+              const ref = parseSourceControlPullRequestUrl(input.url, "gitlab");
+              const refused = (detail: string) =>
+                error("delete-branch", detail, "forbidden", false);
+              if (!ref) return yield* refused("Invalid GitLab merge request reference.");
+              const source = yield* gitLabSourceBranch(ref);
+              const repository = text(object(source.sourceProject).fullPath);
+              const branch = text(source.sourceBranch);
+              const headOid = text(source.diffHeadSha);
+              if (
+                !["closed", "merged"].includes(text(source.state).toLowerCase()) ||
+                !repository ||
+                !branch ||
+                !headOid ||
+                headOid !== input.expectedHeadOid
+              )
+                return yield* refused(
+                  "The closed or merged request's source branch could not be verified.",
+                );
+              const endpoint = "/repository/branches/" + enc(branch);
+              const current = yield* request(
+                ref,
+                undefined,
+                endpoint,
+                "GET",
+                undefined,
+                false,
+                repository,
+              ).pipe(
+                Effect.catch((cause) =>
+                  input.inspectOnly && cause.kind === "not_found"
+                    ? Effect.succeed(null)
+                    : Effect.fail(cause),
+                ),
+              );
+              const result = { host: ref.host, repository, branch, headOid };
+              if (current === null && input.inspectOnly) return { ...result, absent: true };
+              const commit = object(object(current).commit);
+              if (object(current).default !== false || commit.id !== headOid)
+                return yield* refused(
+                  "The source branch is the default branch or its head changed.",
+                );
+              if (input.inspectOnly) return { ...result, absent: false };
+              if (object(source.userPermissions).removeSourceBranch !== true)
+                return yield* refused("GitLab does not allow you to delete this source branch.");
+              const authoredAt = Date.parse(text(commit.authored_date));
+              yield* request(
+                ref,
+                undefined,
+                endpoint,
+                "DELETE",
+                undefined,
+                false,
+                repository,
+                false,
+                Number.isFinite(authoredAt)
+                  ? { "If-Unmodified-Since": new Date(authoredAt).toUTCString() }
+                  : undefined,
+              );
+              return { ...result, absent: true };
+            }),
+        } satisfies Pick<ForgeProvider, "deletePullRequestBranch">)
+      : {}),
     openChangeRequest: (input) =>
       Effect.gen(function* () {
         const { ref, head } = input;
@@ -1249,7 +1542,12 @@ export function makeForgeSourceControlProvider(options: {
                 }[options?.state ?? "open"] +
                 "&$top=" +
                 Math.min(limit, 100),
-      ).pipe(Effect.map((value) => rows(value).map((value) => summary(value, ref)))),
+      ).pipe(
+        Effect.map((value) => rows(value).map((value) => summary(value, ref))),
+        Effect.flatMap((details) =>
+          kind === "gitlab" ? gitLabListFacts(ref, details) : Effect.succeed(details),
+        ),
+      ),
     forgeCapabilities: caps,
     capability,
     capabilities: SOURCE_CONTROL_PULL_REQUEST_ACTIONS.map(capability),
@@ -1273,44 +1571,43 @@ export function makeForgeSourceControlProvider(options: {
     performAction,
     setReviewers,
     getReviewThreads: (ref) =>
-      kind !== "forgejo"
-        ? pagedRows(
-            ref,
-            `${pull(ref)}/${kind === "gitlab" ? "discussions" : kind === "azure-devops" ? "threads" : "comments"}`,
-          )
-        : pagedRows(ref, `${pull(ref)}/reviews`).pipe(
-            Effect.flatMap((reviews) =>
-              Effect.forEach(
-                reviews,
-                (review) =>
-                  pagedRows(ref, `${pull(ref)}/reviews/${Number(review.id)}/comments`).pipe(
-                    Effect.map((comments) => ({ ...review, comments })),
-                  ),
-                { concurrency: 4 },
-              ),
-            ),
-          ),
-    getComments: (ref) =>
-      kind === "forgejo"
-        ? Effect.all([
-            pagedRows(ref, `${issue(ref)}/comments`),
-            pagedRows(ref, `${pull(ref)}/reviews`).pipe(
+      kind === "gitlab"
+        ? gitLabDiscussions(ref, true)
+        : kind !== "forgejo"
+          ? pagedRows(ref, `${pull(ref)}/${kind === "azure-devops" ? "threads" : "comments"}`)
+          : pagedRows(ref, `${pull(ref)}/reviews`).pipe(
               Effect.flatMap((reviews) =>
                 Effect.forEach(
-                  rows(reviews),
+                  reviews,
                   (review) =>
-                    pagedRows(ref, `${pull(ref)}/reviews/${enc(String(review.id))}/comments`).pipe(
+                    pagedRows(ref, `${pull(ref)}/reviews/${Number(review.id)}/comments`).pipe(
                       Effect.map((comments) => ({ ...review, comments })),
                     ),
                   { concurrency: 4 },
                 ),
               ),
             ),
-          ]).pipe(Effect.map(([comments, reviews]) => [...rows(comments), ...reviews]))
-        : pagedRows(
-            ref,
-            `${pull(ref)}/${kind === "gitlab" ? "discussions" : kind === "azure-devops" ? "threads" : "comments"}`,
-          ),
+    getComments: (ref) =>
+      kind === "gitlab"
+        ? gitLabDiscussions(ref, false)
+        : kind === "forgejo"
+          ? Effect.all([
+              pagedRows(ref, `${issue(ref)}/comments`),
+              pagedRows(ref, `${pull(ref)}/reviews`).pipe(
+                Effect.flatMap((reviews) =>
+                  Effect.forEach(
+                    rows(reviews),
+                    (review) =>
+                      pagedRows(
+                        ref,
+                        `${pull(ref)}/reviews/${enc(String(review.id))}/comments`,
+                      ).pipe(Effect.map((comments) => ({ ...review, comments }))),
+                    { concurrency: 4 },
+                  ),
+                ),
+              ),
+            ]).pipe(Effect.map(([comments, reviews]) => [...rows(comments), ...reviews]))
+          : pagedRows(ref, `${pull(ref)}/${kind === "azure-devops" ? "threads" : "comments"}`),
     getDiff: (ref) =>
       kind === "azure-devops"
         ? azureFiles(ref).pipe(Effect.map((files) => files.map((f) => f.patch ?? "").join("\n")))

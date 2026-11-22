@@ -190,6 +190,18 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
             "invalid_response",
           );
         const previous = state.get(formatSourceControlPullRequestKey(ref));
+        if (previous && detail.headRefOid && previous.pr.headRefOid === detail.headRefOid) {
+          const permission = previous.detail.detail.providerDetails;
+          detail = {
+            ...detail,
+            reviewDecision: detail.reviewDecision ?? previous.pr.reviewDecision,
+            ...(detail.state === previous.pr.state &&
+            "viewerCanDeleteBranch" in permission &&
+            detail.viewerCanDeleteBranch === undefined
+              ? { viewerCanDeleteBranch: permission.viewerCanDeleteBranch }
+              : {}),
+          };
+        }
         // Comparison-only reads must not erase checks verified for the same head.
         if (
           detail.checks === undefined &&
@@ -215,7 +227,13 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
               }
             : {}),
           ...(old && old.headRefOid === normalized.headRefOid
-            ? { additions: old.additions, deletions: old.deletions, changedFiles: old.changedFiles }
+            ? {
+                additions: old.additions,
+                deletions: old.deletions,
+                changedFiles: old.changedFiles,
+                unresolvedThreadCount: old.unresolvedThreadCount,
+                actionableUnresolvedThreadCount: old.actionableUnresolvedThreadCount,
+              }
             : {}),
         };
         if (old && old.headRefOid !== normalized.headRefOid) {
@@ -242,7 +260,10 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
       });
     const refreshOne = (ref: SourceControlPullRequestRef) =>
       Effect.gen(function* () {
-        const detail = yield* provider.getDetail(ref, { checks: true });
+        const detail = yield* provider.getDetail(ref, {
+          checks: true,
+          ...(ref.provider === "gitlab" ? { branchPermission: true, review: true } : {}),
+        });
         return yield* saveDetail(ref, detail);
       });
     const refreshNow: PrHubServiceShape["refreshNow"] = (input) =>
@@ -295,7 +316,25 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
               const discoveredRef = { ...ref, number: detail.number };
               const saved = yield* (
                 account.provider === "gitlab" || account.provider === "forgejo"
-                  ? refreshOne(discoveredRef)
+                  ? provider.getDetail(discoveredRef, { checks: true }).pipe(
+                      Effect.flatMap((fresh) =>
+                        saveDetail(discoveredRef, {
+                          ...fresh,
+                          ...(detail.reviewDecision === undefined
+                            ? {}
+                            : { reviewDecision: detail.reviewDecision }),
+                          ...(account.provider === "gitlab" &&
+                          fresh.checks?.length === 0 &&
+                          detail.checks?.length &&
+                          fresh.headRefOid === detail.headRefOid
+                            ? {
+                                checks: detail.checks,
+                                checksComplete: detail.checksComplete === true,
+                              }
+                            : {}),
+                        }),
+                      ),
+                    )
                   : saveDetail(discoveredRef, detail)
               ).pipe(Effect.result);
               if (saved._tag === "Failure") failures++;
@@ -542,10 +581,7 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
               id: String(comment.id ?? ""),
               databaseId: null,
               kind:
-                record(comment.position).new_path ||
-                record(comment.position).old_path ||
-                record(comment.inline).path ||
-                comment.path
+                nativeCommentIsInline(comment) || comment.overviewFinding === true
                   ? "review-comment"
                   : "issue-comment",
               author: login(comment.author ?? comment.user)
@@ -560,7 +596,9 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
                 validDate(comment.created_at ?? comment.created_on ?? comment.publishedDate) ??
                 new Date().toISOString(),
               updatedAt: validDate(comment.updated_at ?? comment.updated_on),
-              url: text(comment.html_url) ?? text(record(record(comment.links).html).href),
+              url:
+                text(comment.html_url ?? comment.web_url) ??
+                text(record(record(comment.links).html).href),
               path: null,
               line: null,
               reviewState: null,
@@ -585,12 +623,16 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
           return value;
         }),
       );
-    const readThreads = (input: { key: string; accountGeneration?: string | undefined }) =>
+    const readThreads = (input: {
+      key: string;
+      accountGeneration?: string | undefined;
+      mode?: "force" | "if_stale" | undefined;
+    }) =>
       gate.withPermits(1)(
         Effect.gen(function* () {
           const ref = yield* refFor(input.key, input.accountGeneration),
             cached = threadsCache.get(input.key);
-          if (cached && Date.now() - cached.attemptedAt < CACHE_MS) {
+          if (input.mode !== "force" && cached && Date.now() - cached.attemptedAt < CACHE_MS) {
             if (cached.value) return { threads: cached.value, stale: cached.failed };
             if (cached.error) return yield* cached.error;
           }
@@ -607,6 +649,27 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
             return yield* read.failure;
           }
           const threads = forgeReviewThreads(read.success, provider);
+          const stored = state.get(input.key);
+          if (stored && ref.provider === "gitlab") {
+            const unresolved = threads.filter((thread) => !thread.isResolved);
+            const unresolvedThreadCount = unresolved.length;
+            const actionableUnresolvedThreadCount = unresolved.filter(
+              (thread) => !thread.isOutdated,
+            ).length;
+            if (
+              stored.pr.unresolvedThreadCount !== unresolvedThreadCount ||
+              stored.pr.actionableUnresolvedThreadCount !== actionableUnresolvedThreadCount
+            ) {
+              const previous = snapshot();
+              const updated = {
+                ...stored,
+                pr: { ...stored.pr, unresolvedThreadCount, actionableUnresolvedThreadCount },
+              };
+              yield* persist(updated);
+              state.set(input.key, updated);
+              yield* publish(previous);
+            }
+          }
           if (threadsCache.size >= 100 && !cached)
             threadsCache.delete(threadsCache.keys().next().value!);
           remember(threadsCache, input.key, { value: threads, attemptedAt: now, failed: false });
