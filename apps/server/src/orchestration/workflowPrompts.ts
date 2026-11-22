@@ -100,12 +100,19 @@ export function buildRevisionPromptSections(input: {
   readonly reviews: ReadonlyArray<ReviewInput>;
   readonly targetSlot: WorkflowModelSlot;
   readonly retry?: WorkflowRetryContext | undefined;
+  /**
+   * Resend the reviewed plan itself. Only for a retry after the author thread was
+   * compacted past the plan: otherwise the thread still holds it, and rendering
+   * it again only pushes large plans over the message limit.
+   */
+  readonly includeOriginalPlan?: boolean | undefined;
 }): ReadonlyArray<string | null | undefined> {
   const reviewSections = input.reviews.map(
     (review) => `## ${review.reviewerLabel}\n\n${review.reviewMarkdown}`,
   );
 
   return [
+    input.includeOriginalPlan ? `## Original plan\n\n${input.originalPlan.markdown}` : null,
     `Reviewers have provided feedback on your plan. Their reviews are:
 
 ${reviewSections.join("\n\n")}`,
