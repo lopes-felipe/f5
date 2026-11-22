@@ -2288,13 +2288,24 @@ describe("ChatView timeline (full app)", () => {
   );
   it("keeps the full find count while painting only the nearby matches of a long message", async () => {
     const targetMessageId = "find-long-message" as MessageId;
-    const totalMatches = 30_000;
-    const targetText = Array.from({ length: totalMatches / 10 }, () => "needle ".repeat(10)).join(
-      "\n",
-    );
+    const nearbyMessageId = "msg-user-2";
+    const targetText =
+      "alternate " + Array.from({ length: 3_000 }, () => "needle ".repeat(10)).join("\n");
+    const snapshot = createSnapshotForTargetUser({ targetMessageId, targetText });
+    const thread = snapshot.threads[0]!;
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
-      snapshot: createSnapshotForTargetUser({ targetMessageId, targetText }),
+      snapshot: {
+        ...snapshot,
+        threads: [
+          {
+            ...thread,
+            messages: thread.messages.map((message) =>
+              message.id === nearbyMessageId ? { ...message, text: "A nearby needle" } : message,
+            ),
+          },
+        ],
+      },
       configureFixture: (next) => {
         next.serverConfig = {
           ...next.serverConfig,
@@ -2305,13 +2316,13 @@ describe("ChatView timeline (full app)", () => {
             ? {
                 type: "result",
                 result: {
-                  totalMatches,
+                  totalMatches: body.query === "needle" ? 30_001 : 1,
                   activeIndex: 0,
                   match: {
                     entryId: targetMessageId,
                     kind: "message",
                     occurrence: 0,
-                    snippet: "needle",
+                    snippet: body.query,
                   },
                 },
               }
@@ -2329,12 +2340,16 @@ describe("ChatView timeline (full app)", () => {
           cancelable: true,
         }),
       );
-      await page.getByRole("textbox", { name: "Find in thread" }).fill("needle");
+      const search = page.getByRole("textbox", { name: "Find in thread" });
+      await search.fill("needle");
       await expect
-        .element(page.getByRole("status").filter({ hasText: "1 of 30000" }))
+        .element(page.getByRole("status").filter({ hasText: "1 of 30001" }))
         .toBeVisible();
       const highlights = () => [...(CSS.highlights.get("f5-thread-find") ?? [])] as Range[];
       const active = () => [...(CSS.highlights.get("f5-thread-find-active") ?? [])][0] as Range;
+      const rowId = (range: Range) =>
+        range.startContainer.parentElement?.closest<HTMLElement>("[data-timeline-row-id]")?.dataset
+          .timelineRowId;
       const scroller = document.querySelector<HTMLElement>(
         '[data-slot="messages-scroll-container"]',
       )!;
@@ -2345,12 +2360,13 @@ describe("ChatView timeline (full app)", () => {
           const viewport = scroller.getBoundingClientRect();
           expect(firstRect.top).toBeGreaterThanOrEqual(viewport.top);
           expect(firstRect.bottom).toBeLessThanOrEqual(viewport.bottom);
-          expect(highlights().length).toBeGreaterThan(0);
+          expect(highlights().some((range) => rowId(range) === nearbyMessageId)).toBe(true);
         },
         { timeout: 5_000 },
       );
       const first = active();
-      const initial = highlights()[0]!;
+      const nearby = highlights().find((range) => rowId(range) === nearbyMessageId)!;
+      const initial = highlights().find((range) => rowId(range) === targetMessageId)!;
       const viewport = scroller.getBoundingClientRect();
       expect(highlights().length).toBeLessThan(5_000);
 
@@ -2358,10 +2374,22 @@ describe("ChatView timeline (full app)", () => {
       await vi.waitFor(() => {
         expect(highlights().length).toBeGreaterThan(0);
         expect(highlights()).not.toContain(initial);
+        expect(highlights()).not.toContain(nearby);
         expect(initial.getBoundingClientRect().bottom).toBeLessThan(viewport.top - viewport.height);
       });
       expect(highlights().length).toBeLessThan(5_000);
       expect(active()).toBe(first);
+
+      await search.fill("alternate");
+      await vi.waitFor(() => {
+        expect(active()?.toString()).toBe("alternate");
+        expect(highlights()).toHaveLength(0);
+      });
+      await page.getByRole("button", { name: "Close find" }).click();
+      await vi.waitFor(() => {
+        expect(CSS.highlights.has("f5-thread-find")).toBe(false);
+        expect(CSS.highlights.has("f5-thread-find-active")).toBe(false);
+      });
     } finally {
       await mounted.cleanup();
     }

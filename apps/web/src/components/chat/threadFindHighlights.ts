@@ -102,7 +102,8 @@ function findOccurrence(
   return null;
 }
 
-export function threadFindRanges(root: HTMLElement, query: string, occurrence = 0) {
+/** @internal Browser tests only. Materializes every range without applying a viewport. */
+export function threadFindRangesForTest(root: HTMLElement, query: string, occurrence = 0) {
   const blocks = indexText(root, query);
   const ranges = blocks.flatMap((block) =>
     block.offsets.map((_, index) => setMatch(new Range(), block, index, query.length)),
@@ -110,7 +111,6 @@ export function threadFindRanges(root: HTMLElement, query: string, occurrence = 
   return {
     ranges,
     selected: ranges[occurrence] ?? ranges[0],
-    exact: ranges[occurrence] !== undefined,
   };
 }
 

@@ -1,5 +1,5 @@
 import { expect, it, vi } from "vitest";
-import { threadFindRanges, watchThreadFindHighlights } from "./threadFindHighlights";
+import { threadFindRangesForTest, watchThreadFindHighlights } from "./threadFindHighlights";
 
 function mountTimeline(html: string) {
   const container = document.body.appendChild(document.createElement("div"));
@@ -18,21 +18,21 @@ it("matches across inline spans without joining separate blocks or hidden contro
   const root = document.createElement("div");
   root.innerHTML =
     '<h2 class="sr-only">Needle</h2><p>Hello <strong>bold</strong> world</p><p>Other</p><button>Needle</button><pre><span>const </span><span>value</span> = 1</pre>';
-  expect(threadFindRanges(root, "bold world").ranges.map((range) => range.toString())).toEqual([
-    "bold world",
-  ]);
-  expect(threadFindRanges(root, "worldOther").ranges).toHaveLength(0);
-  expect(threadFindRanges(root, "Needle").ranges).toHaveLength(0);
-  expect(threadFindRanges(root, "const value").selected?.toString()).toBe("const value");
+  expect(
+    threadFindRangesForTest(root, "bold world").ranges.map((range) => range.toString()),
+  ).toEqual(["bold world"]);
+  expect(threadFindRangesForTest(root, "worldOther").ranges).toHaveLength(0);
+  expect(threadFindRangesForTest(root, "Needle").ranges).toHaveLength(0);
+  expect(threadFindRangesForTest(root, "const value").selected?.toString()).toBe("const value");
 });
 it("preserves occurrence order and offsets during Unicode case folding", () => {
   const root = document.createElement("div");
   root.textContent = "İ ΟΣ " + "needle ".repeat(3000);
-  const result = threadFindRanges(root, "needle", 2999);
+  const result = threadFindRangesForTest(root, "needle", 2999);
   expect(result.ranges).toHaveLength(3000);
   expect(result.selected?.toString()).toBe("needle");
   expect(result.selected?.startOffset).toBe(5 + 2999 * 7);
-  expect(threadFindRanges(root, "σ").selected?.toString()).toBe("Σ");
+  expect(threadFindRangesForTest(root, "σ").selected?.toString()).toBe("Σ");
 });
 it("paints a stand-in but reports only the requested occurrence when it renders", async () => {
   using timeline = mountTimeline(

@@ -676,26 +676,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   }, [enteringRowIds]);
 
   const rowCount = rows.length;
-  const find = useContext(ThreadFindContext);
-  const findQuery = find?.query;
-  const hasTimelineList = hasMessages || isWorking;
-  const findSelectionRef = useRef<typeof find>(null);
   const refreshFindRef = useRef<(() => void) | null>(null);
-  useEffect(() => {
-    if (!findQuery || !hasTimelineList) return;
-    const node = listRef.current?.getScrollableNode?.();
-    if (!(node instanceof HTMLElement)) return;
-    const highlights = watchThreadFindHighlights(node, findQuery, () => findSelectionRef.current);
-    refreshFindRef.current = highlights.refresh;
-    return () => {
-      refreshFindRef.current = null;
-      highlights.clear();
-    };
-  }, [findQuery, hasTimelineList, listRef, threadId]);
-  useEffect(() => {
-    findSelectionRef.current = find;
-    refreshFindRef.current?.();
-  }, [find]);
 
   useEffect(() => {
     // The empty pane has no list. Keep its initial measured end target armed
@@ -1791,6 +1772,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
               />
             }
           />
+          <ThreadFindHighlighter key={threadId} listRef={listRef} refreshRef={refreshFindRef} />
           {/* Outside the virtualized list so scrolling and cell recycling never unmount it. */}
           {ribbonOrigin && isWorking ? (
             <LiveWorkingRibbon
@@ -1998,6 +1980,44 @@ function RevertStatusPill({ label }: { label: string }) {
     </div>
   );
 }
+
+const ThreadFindHighlighter = memo(function ThreadFindHighlighter({
+  listRef,
+  refreshRef,
+}: {
+  listRef: MessagesTimelineProps["listRef"];
+  refreshRef: MutableRefObject<(() => void) | null>;
+}) {
+  const find = useContext(ThreadFindContext);
+  const query = find?.query;
+  const selectionRef = useRef<typeof find>(null);
+  useEffect(() => {
+    if (!query) return;
+    let attachFrame = 0;
+    let clear: (() => void) | undefined;
+    const attach = () => {
+      const node = listRef.current?.getScrollableNode?.();
+      if (!(node instanceof HTMLElement)) {
+        attachFrame = requestAnimationFrame(attach);
+        return;
+      }
+      const highlights = watchThreadFindHighlights(node, query, () => selectionRef.current);
+      refreshRef.current = highlights.refresh;
+      clear = highlights.clear;
+    };
+    attach();
+    return () => {
+      cancelAnimationFrame(attachFrame);
+      refreshRef.current = null;
+      clear?.();
+    };
+  }, [listRef, query, refreshRef]);
+  useEffect(() => {
+    selectionRef.current = find;
+    refreshRef.current?.();
+  }, [find, refreshRef]);
+  return null;
+});
 
 // Wraps each row with the DOM attributes that tests and selectors depend on
 // (data-timeline-row-id, data-timeline-row-kind, data-message-id, data-message-role).
