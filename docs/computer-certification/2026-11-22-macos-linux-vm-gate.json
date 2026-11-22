@@ -1,0 +1,512 @@
+{
+  "gate": "linux-vm-profiles-phase-0",
+  "evidenceId": "macos-linux-vm-gate-2026-11-22",
+  "verdict": "passed",
+  "plan": "docs/vm-profiles.md#phase-0-feasibility-gate",
+  "tested": {
+    "date": "2026-11-22",
+    "f5": {
+      "version": "0.1.11-beta.15",
+      "signature": "Developer ID Application (TeamIdentifier FYUEW6EB5V), hardened runtime",
+      "commit": "5563771bc4"
+    },
+    "host": {
+      "macos": "27.2.1 (26B131)",
+      "hardware": "Apple M4 Pro, 48 GiB"
+    },
+    "lima": {
+      "version": "2.3.0",
+      "archive": "lima-2.3.0-Darwin-arm64.tar.gz",
+      "sha256": "b7af444bd8f91d3c307477e562f2cf3bd7595d62b9429185e4fa841563578cfc",
+      "signature": "ad hoc, entitlements com.apple.security.virtualization, network.client, network.server"
+    },
+    "image": {
+      "location": "https://cloud.debian.org/images/cloud/trixie/20261103-2651/debian-13-genericcloud-arm64-20261103-2651.qcow2",
+      "digest": "sha512:5d3ecec46fd29605db4084388a1e2eb82fd19a80202898f962840ea73793261de721e505e3877c829ae86c37fdd2f6c205b0b3b1337a89d0d4b98d9081adc0c2"
+    },
+    "vm": {
+      "vmType": "vz",
+      "cpus": 2,
+      "memory": "4GiB",
+      "disk": "8GiB sparse",
+      "mountType": "virtiofs",
+      "network": "Lima user-mode (gvproxy), gateway 192.168.5.2"
+    },
+    "sandboxSampleRuntime": "@anthropic-ai/sandbox-runtime 0.0.83",
+    "phases": {
+      "a": "Terminal outside F5: download, first boot and provisioning, every guest-side check",
+      "b": "F5 agent shell inside the backend GUI-denial sandbox (MAC_BACKEND_COMPUTER_SANDBOX, unchanged): restart and sandbox-dependent checks"
+    },
+    "kit": {
+      "location": "~/.f5-vmgate (not committed; throwaway spike)",
+      "note": "Hashes are as of Phase B. Before Phase B, gate-sandbox.sh got a corrected bubblewrap network probe and the srt -c invocation; gate.sh moved those checks into a shared function.",
+      "files": [
+        {
+          "sha256": "ec8fab8b25c21460e21967a6e63bf1f5261581f81ab94985d970bf76d115f386",
+          "file": "gate.sh"
+        },
+        {
+          "sha256": "b5c55f063a931ba86deab883dbf1b2bd7f1a89122da9a4cbe81e84927da401af",
+          "file": "channel-test.ts"
+        },
+        {
+          "sha256": "66fe6aa55835b197207770f4f233ec4ce886bcf7b2119fb50218cfa6b79dd46d",
+          "file": "guest/echo-backend.py"
+        },
+        {
+          "sha256": "b63a139a674c1c634700454444ea4d843390f36d91d4d9dcda3b13929aa20c8d",
+          "file": "guest/f5-egress-apply"
+        },
+        {
+          "sha256": "11572017c53dd96ca1eed9a59e79d7f85c25aa3b47d9327fb44788b97f61d0d1",
+          "file": "guest/f5-egress.service"
+        },
+        {
+          "sha256": "48bae3354f868c2c64562275c29381c5597eb5677b5a84bdd7d2cb33860ad5fd",
+          "file": "guest/f5-guest-launch"
+        },
+        {
+          "sha256": "4963e4b52b1be669722b7a92f05ffe76fd642791af511dba67ca2f57bcaaf370",
+          "file": "guest/gate-egress.sh"
+        },
+        {
+          "sha256": "97e3efc5f7e5b9618900ffaf19b269494c42efda805debf4c26df4e7f937cb24",
+          "file": "guest/gate-facts.sh"
+        },
+        {
+          "sha256": "0a0cd75ae4671fd1abee403ec1b86388177cf7545876a957cb7bcb953a7646db",
+          "file": "guest/gate-http.sh"
+        },
+        {
+          "sha256": "b41bf320ca0aeb200d923bc1518c3614002e579f64ff152353fe6b07e374af2d",
+          "file": "guest/gate-sandbox.sh"
+        },
+        {
+          "sha256": "560df39f19413f846bb40a6add39a3d4d85e9b9bd7d7b2763567866c43e59821",
+          "file": "guest/gate-scope.sh"
+        },
+        {
+          "sha256": "0ae0a3af420c8963be03a7621bc6326e6db9fe58fc48fb9e007f1fe14714dac6",
+          "file": "guest/gate-virtiofs.sh"
+        },
+        {
+          "sha256": "cb608242a6f025769e54d58d0ff6b7d534e6b6db5ab6245e53b1e2d031ebfec3",
+          "file": "guest/install.sh"
+        },
+        {
+          "sha256": "008fb5ceaa022d8c9d7625d5a805d120717da2a277ec99f0041661d7a5cbc7c2",
+          "file": "f5src/BackendChannel.ts"
+        },
+        {
+          "sha256": "d17a77bd4f8018895f021775672752c3b4c48b7c15585423a179775ad3f8730e",
+          "file": "f5src/backendFrames.ts"
+        }
+      ],
+      "f5Sources": "f5src/ holds verbatim copies of BackendChannel.ts and backendFrames.ts from 5563771bc4, import path made relative"
+    }
+  },
+  "requirements": [
+    {
+      "id": 1,
+      "requirement": "Bundled limactl with the virtualization entitlement boots a VZ guest from inside the sandboxed backend subtree, without QEMU",
+      "result": "passed-with-caveat",
+      "evidence": [
+        "b:vz.cold_boot_inside_sandbox",
+        "b:vz.stop_inside_sandbox",
+        "a:lima.virtualization_entitlement",
+        "a:lima.qemu_absent"
+      ],
+      "caveat": "Lima's own ad hoc signature was used. Re-signing with Developer ID and hardened runtime belongs to the release pipeline (delivery step 3) and must be rechecked there. An ad hoc probe signed with --options runtime and the same entitlement also started a VZ VM from the sandbox."
+    },
+    {
+      "id": 2,
+      "requirement": "Host GUI probes stay denied while Lima's host processes run",
+      "result": "passed",
+      "evidence": [
+        "b:sandbox.shell_inside_backend_sandbox",
+        "b:gui.denied_with_lima_running"
+      ],
+      "note": "Probes ran from the sandboxed shell whose descendants are limactl and its host agent; the sandbox is inherited, and ps is denied there, so the host agent itself was not probed directly. The VZ VM process is Apple's XPC service, launched outside the sandbox by design."
+    },
+    {
+      "id": 3,
+      "requirement": "A virtiofs export mounts at its canonical path",
+      "result": "passed",
+      "evidence": [
+        "a:virtiofs.canonical_mount",
+        "b:virtiofs.canonical_mount_inside_sandbox",
+        "a:virtiofs.guest_reads_host_file",
+        "a:virtiofs.admin_write"
+      ]
+    },
+    {
+      "id": 4,
+      "requirement": "As a non-sudo f5 user, bubblewrap and socat let the Claude CLI sandbox enforce a child sandbox",
+      "result": "passed-with-caveat",
+      "evidence": [
+        "b:sandbox.bwrap_unprivileged",
+        "b:sandbox.socat",
+        "b:sandbox.claude_sandbox_runtime",
+        "a:guest.f5_cannot_sudo"
+      ],
+      "caveat": "Verified with sandbox-runtime (the library the Claude CLI's sandbox uses) via srt, not with the Claude CLI driving a model; the provider test against a fake model server remains in the test plan."
+    },
+    {
+      "id": 5,
+      "requirement": "Root-owned nftables block the host gateway, RFC1918, link-local and CGNAT while DNS and public egress work",
+      "result": "passed",
+      "evidence": [
+        "a:egress.control_without_policy",
+        "a:egress.public_https",
+        "a:egress.dns",
+        "a:egress.host_gateway",
+        "a:egress.lan_router",
+        "a:egress.cgnat",
+        "a:egress.link_local_metadata",
+        "a:guest.f5_cannot_flush_nftables",
+        "a:egress.policy_loaded_at_boot",
+        "b:egress.policy_loaded_at_boot"
+      ],
+      "note": "Host gateway, LAN router and CGNAT were reachable without the policy and blocked with it. Link-local had no responder either way, so it is covered only by the rule."
+    },
+    {
+      "id": 6,
+      "requirement": "The limactl shell stdio channel carries frames; stdin EOF stops the backend's systemd scope",
+      "result": "passed",
+      "evidence": [
+        "a:channel.stdio_frames_and_eof",
+        "b:channel.stdio_frames_and_eof"
+      ],
+      "note": "Used F5's merged streamBackendChannel. A 1 MiB frame echoed; a detached grandchild in its own session died with the scope while the backend ignored EOF."
+    },
+    {
+      "id": 7,
+      "requirement": "A main-owned ssh ControlMaster adds and cancels 127.0.0.1 forwards at runtime under the sandbox",
+      "result": "passed",
+      "evidence": [
+        "b:forwards.controlmaster_add_cancel",
+        "b:forwards.lima_autoforward_ignored",
+        "a:forwards.controlmaster_add_cancel"
+      ]
+    },
+    {
+      "id": 8,
+      "requirement": "Cold-boot time and resident memory recorded",
+      "result": "recorded",
+      "values": {
+        "coldBootInsideSandboxSeconds": [
+          9.8,
+          8.2
+        ],
+        "coldBootOutsideSandboxSeconds": 6.5,
+        "firstBootWithAptProvisioningSeconds": 83.7,
+        "hostRssMiB": {
+          "Virtualization.VirtualMachine": 691,
+          "limactl": 68
+        },
+        "guestUsedMiB": 248,
+        "instanceDiskAfterProvisioning": "1.6G"
+      }
+    }
+  ],
+  "supersededChecks": [
+    {"check": "a:sandbox.bwrap_unprivileged", "status": "fail", "reason": "Probe defect: it tested the network with getent, which resolves through systemd-resolved's UNIX socket even with the network namespace unshared. b:sandbox.bwrap_unprivileged reran it with a TCP connection to an IP address: NONET."},
+    {"check": "a:sandbox.claude_sandbox_runtime", "status": "inconclusive", "reason": "ripgrep was missing from the spike guest. Rerun in Phase B after installing it. A first Phase B run passed wrongly (srt was given the command as one argv and the check matched text inside its error), so that run was discarded; the recorded Phase B run uses srt -c and exact matching."}
+  ],
+  "designFindings": [
+    "virtiofs maps every guest write to the host user (502:20) whatever the guest uid, so guest users do not protect exported files. Exports must be treated as fully guest-writable, as the plan already says.",
+    "A bubblewrap sandbox that binds / still reaches guest UNIX sockets: DNS resolved through systemd-resolved's socket with the network namespace unshared. Child-sandbox policy must hide sockets such as /run/systemd and the D-Bus bus.",
+    "sandbox-runtime refuses to run without ripgrep; the guest image must keep it.",
+    "The guest's DNS server is the gateway (192.168.5.2:53 via gvproxy), so the policy needs its narrow DNS exception on the host gateway.",
+    "Idle host RSS is about 0.7 GiB per VM with 4 GiB configured; that supports the cap of two running VMs.",
+    "Lima's host agent already keeps its own persistent ControlMaster; a separate main-owned master with its own ControlPath coexisted with it.",
+    "First boot with apt provisioning took 84 s; the prebuilt image removes that. Cold boots of a provisioned guest took 6.5 to 9.8 s.",
+    "In one Phase B run the limactl shell process exited 241 after main closed the channel, though the scope had been stopped; the rerun exited 0. The VM launcher should judge success by the scope, not by that exit code."
+  ],
+  "phaseA": {
+    "phase": "a",
+    "startedAt": "2026-11-22T13:58:29Z",
+    "finishedAt": "2026-11-22T14:01:28+00:00",
+    "summary": {
+      "pass": 22,
+      "fail": 1,
+      "inconclusive": 2,
+      "info": 11
+    },
+    "checks": [
+      {
+        "check": "host.macos",
+        "status": "info",
+        "evidence": "27.2.1 (26B131), arm64, 48 GiB"
+      },
+      {
+        "check": "host.free_disk",
+        "status": "info",
+        "evidence": "10 GiB free before the run"
+      },
+      {
+        "check": "lima.release_checksum",
+        "status": "pass",
+        "evidence": "b7af444bd8f91d3c307477e562f2cf3bd7595d62b9429185e4fa841563578cfc  lima-2.3.0-Darwin-arm64.tar.gz"
+      },
+      {
+        "check": "lima.version",
+        "status": "info",
+        "evidence": "limactl version 2.3.0"
+      },
+      {
+        "check": "lima.virtualization_entitlement",
+        "status": "pass",
+        "evidence": "com.apple.security.network.client com.apple.security.network.server com.apple.security.virtualization | CodeDirectory v=20400 size=67401 flags=0x2(adhoc) hashes=2095+7 location=embedded Signature=adhoc TeamIdentifier=not set "
+      },
+      {
+        "check": "lima.qemu_absent",
+        "status": "info",
+        "evidence": "qemu-system-aarch64: not installed"
+      },
+      {
+        "check": "vz.first_boot_with_provisioning",
+        "status": "pass",
+        "evidence": "83.7s (VZ, no QEMU)"
+      },
+      {
+        "check": "guest.install_via_limactl_copy",
+        "status": "pass",
+        "evidence": "limactl copy + root-owned install to /opt/f5"
+      },
+      {
+        "check": "guest.facts",
+        "status": "info",
+        "evidence": "KERNEL=6.12.115+deb13.1-cloud-arm64;GATEWAY=192.168.5.2;RESOLVERS=127.0.0.53,192.168.5.2;EXPORT_MOUNT=virtiofs ~/.f5-vmgate/export;USERNS=1/15365;F5_ID=uid=1500(f5) gid=1500(f5) groups=1500(f5);ADMIN=host-user nopasswd_rules=1;FREE_MB=3923 total, 319 used;"
+      },
+      {
+        "check": "guest.f5_user_no_sudo_group",
+        "status": "pass",
+        "evidence": "uid=1500(f5) gid=1500(f5) groups=1500(f5)"
+      },
+      {
+        "check": "virtiofs.canonical_mount",
+        "status": "pass",
+        "evidence": "virtiofs ~/.f5-vmgate/export"
+      },
+      {
+        "check": "virtiofs.guest_reads_host_file",
+        "status": "pass",
+        "evidence": "ok written on the host 2026-11-22T14:00:07Z"
+      },
+      {
+        "check": "virtiofs.admin_write",
+        "status": "pass",
+        "evidence": "ok user=host-user uid=502; host sees: 502:20 ~/.f5-vmgate/export/from-admin.txt"
+      },
+      {
+        "check": "virtiofs.f5_write",
+        "status": "info",
+        "evidence": "ok uid=1500; host sees: 502:20 ~/.f5-vmgate/export/from-f5.txt"
+      },
+      {
+        "check": "sandbox.bwrap_unprivileged",
+        "status": "fail",
+        "evidence": "RO NET 1500 (userns 1/15365)"
+      },
+      {
+        "check": "sandbox.socat",
+        "status": "pass",
+        "evidence": "socat version 1.8.0.3 on 03 Sep 2026 20:58:48"
+      },
+      {
+        "check": "sandbox.claude_sandbox_runtime",
+        "status": "inconclusive",
+        "evidence": "ok=[Error: Sandbox dependencies not available: ripgrep (rg) not found] net=[Error: Sandbox dependencies not available: ripgrep (rg) not found] write=[Error: Sandbox dependencies not available: ripgrep (rg) not found] version=[0.0.83]"
+      },
+      {
+        "check": "guest.f5_cannot_flush_nftables",
+        "status": "pass",
+        "evidence": "nft flush ruleset as f5: denied"
+      },
+      {
+        "check": "guest.f5_cannot_sudo",
+        "status": "pass",
+        "evidence": "sudo -n true as f5: denied"
+      },
+      {
+        "check": "guest.admin_user_sudo",
+        "status": "info",
+        "evidence": "Lima admin user: host-user nopasswd_rules=1 (spike keeps Lima's default sudo; the product narrows it to the launcher)"
+      },
+      {
+        "check": "egress.control_without_policy",
+        "status": "info",
+        "evidence": "public_https ok rc=0;dns ok 151.101.6.132;host_gateway ok rc=0;lan_router ok rc=0;link_local_metadata blocked rc=7;cgnat ok rc=0;nft_table missing;"
+      },
+      {
+        "check": "egress.policy_apply",
+        "status": "pass",
+        "evidence": "Finished f5-egress.service - F5 guest egress policy."
+      },
+      {
+        "check": "egress.public_https",
+        "status": "pass",
+        "evidence": "want ok, without policy: ok, with policy: ok rc=0 200"
+      },
+      {
+        "check": "egress.dns",
+        "status": "pass",
+        "evidence": "want ok, without policy: ok, with policy: ok 151.101.6.132"
+      },
+      {
+        "check": "egress.host_gateway",
+        "status": "pass",
+        "evidence": "want blocked, without policy: ok, with policy: blocked rc=28 curl: (28) Connection timed out after 4007 milliseconds 000"
+      },
+      {
+        "check": "egress.lan_router",
+        "status": "pass",
+        "evidence": "want blocked, without policy: ok, with policy: blocked rc=28 curl: (28) Connection timed out after 4005 milliseconds 000"
+      },
+      {
+        "check": "egress.link_local_metadata",
+        "status": "inconclusive",
+        "evidence": "blocked with the policy, but also unreachable without it: blocked rc=28 curl: (28) Connection timed out after 4005 milliseconds 000"
+      },
+      {
+        "check": "egress.cgnat",
+        "status": "pass",
+        "evidence": "want blocked, without policy: ok, with policy: blocked rc=28 curl: (28) Connection timed out after 4003 milliseconds 000"
+      },
+      {
+        "check": "channel.stdio_frames_and_eof",
+        "status": "pass",
+        "evidence": "{\"incarnation\":\"gate1795356026\",\"hello\":{\"type\":\"hello-ack\",\"uid\":1500,\"user\":\"f5\",\"pid\":8874,\"msFromSpawn\":150},\"largeFrameEcho\":true,\"spawned\":{\"type\":\"spawned\",\"pid\":8876},\"scopeBefore\":\"TasksCurrent=2 ActiveState=active procs=2\",\"launcherExitCode\":0,\"scopeAfter\":\"TasksCurrent=[not set] ActiveState=inactive procs=0\",\"pass\":true,\"launcherStderr\":\"\"}"
+      },
+      {
+        "check": "forwards.lima_autoforward_ignored",
+        "status": "pass",
+        "evidence": "guest listener on 127.0.0.1:8765 not forwarded by Lima"
+      },
+      {
+        "check": "forwards.controlmaster_add_cancel",
+        "status": "pass",
+        "evidence": "add=[] http_with_forward=200 listen=[127.0.0.1:18765 ] cancel=[] http_after_cancel=000"
+      },
+      {
+        "check": "vz.cold_boot",
+        "status": "pass",
+        "evidence": "6.5s to limactl ready (2 vCPU, 4 GiB)"
+      },
+      {
+        "check": "egress.policy_loaded_at_boot",
+        "status": "pass",
+        "evidence": "f5-egress.service=active, table f5_egress loaded"
+      },
+      {
+        "check": "memory.host_rss",
+        "status": "info",
+        "evidence": "/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine=691 MiB; ~/.f5-vmgate/lima/bin/limactl=68 MiB; "
+      },
+      {
+        "check": "memory.guest",
+        "status": "info",
+        "evidence": "248 MiB used of 3923"
+      },
+      {
+        "check": "host.free_disk_after",
+        "status": "info",
+        "evidence": "7 GiB free; instance dir 1.6G"
+      }
+    ]
+  },
+  "phaseB": {
+    "phase": "b",
+    "startedAt": "2026-11-22T14:03:43Z",
+    "finishedAt": "2026-11-22T14:04:23+00:00",
+    "summary": {
+      "pass": 15,
+      "fail": 0,
+      "inconclusive": 0,
+      "info": 1
+    },
+    "checks": [
+      {
+        "check": "sandbox.shell_inside_backend_sandbox",
+        "status": "pass",
+        "evidence": "AppleEvent: 40:44: execution error: File permission error. (-54) exit=1 ; protectedServiceLookupsDenied=true"
+      },
+      {
+        "check": "vz.cold_boot_inside_sandbox",
+        "status": "pass",
+        "evidence": "8.2s to limactl ready"
+      },
+      {
+        "check": "gui.denied_with_lima_running",
+        "status": "pass",
+        "evidence": "AppleEvent: 40:44: execution error: File permission error. (-54) exit=1 ; protectedServiceLookupsDenied=true; screencapture: could not create image from display NO_IMAGE "
+      },
+      {
+        "check": "virtiofs.canonical_mount_inside_sandbox",
+        "status": "pass",
+        "evidence": "virtiofs ~/.f5-vmgate/export"
+      },
+      {
+        "check": "egress.policy_loaded_at_boot",
+        "status": "pass",
+        "evidence": "f5-egress.service=active, table f5_egress loaded"
+      },
+      {
+        "check": "guest.ripgrep_install",
+        "status": "pass",
+        "evidence": "ripgrep 14.1.1"
+      },
+      {
+        "check": "sandbox.bwrap_unprivileged",
+        "status": "pass",
+        "evidence": "RO NONET DNS_VIA_UNIX_SOCKET 1500 (userns 1/15365)"
+      },
+      {
+        "check": "sandbox.socat",
+        "status": "pass",
+        "evidence": "socat version 1.8.0.3 on 03 Sep 2026 20:58:48"
+      },
+      {
+        "check": "sandbox.claude_sandbox_runtime",
+        "status": "pass",
+        "evidence": "ok=[SANDBOXED_OK] net=[NET_BLOCKED] write=[WRITE_BLOCKED] version=[0.0.83]"
+      },
+      {
+        "check": "guest.f5_cannot_flush_nftables",
+        "status": "pass",
+        "evidence": "nft flush ruleset as f5: denied"
+      },
+      {
+        "check": "guest.f5_cannot_sudo",
+        "status": "pass",
+        "evidence": "sudo -n true as f5: denied"
+      },
+      {
+        "check": "guest.admin_user_sudo",
+        "status": "info",
+        "evidence": "Lima admin user: host-user nopasswd_rules=1 (spike keeps Lima's default sudo; the product narrows it to the launcher)"
+      },
+      {
+        "check": "channel.stdio_frames_and_eof",
+        "status": "pass",
+        "evidence": "{\"incarnation\":\"gate1795356247\",\"hello\":{\"type\":\"hello-ack\",\"uid\":1500,\"user\":\"f5\",\"pid\":1376,\"msFromSpawn\":117},\"largeFrameEcho\":true,\"spawned\":{\"type\":\"spawned\",\"pid\":1378},\"scopeBefore\":\"TasksCurrent=2 ActiveState=active procs=2\",\"launcherExitCode\":0,\"scopeAfter\":\"TasksCurrent=[not set] ActiveState=inactive procs=0\",\"pass\":true,\"launcherStderr\":\"\"}"
+      },
+      {
+        "check": "forwards.lima_autoforward_ignored",
+        "status": "pass",
+        "evidence": "guest listener on 127.0.0.1:8765 not forwarded by Lima"
+      },
+      {
+        "check": "forwards.controlmaster_add_cancel",
+        "status": "pass",
+        "evidence": "add=[] http_with_forward=200 listen=[127.0.0.1:18765 ] cancel=[] http_after_cancel=000"
+      },
+      {
+        "check": "vz.stop_inside_sandbox",
+        "status": "pass",
+        "evidence": "limactl stop"
+      }
+    ]
+  }
+}
