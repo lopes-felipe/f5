@@ -64527,9 +64527,11 @@
     },
     {
       "createdAt": "2026-11-22T13:13:51.143Z",
+      "decidedAt": "2026-11-22T18:05:28.460Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-35925",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "git",
