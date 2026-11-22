@@ -450,6 +450,12 @@ describe("serverSettings helpers", () => {
       authMethod: "gemini-api-key",
       apiKey: "new-key",
     });
+    // A blank value is the redacted form too, even with whitespace.
+    expect(patch({ authMethod: "gemini-api-key", apiKey: "   " })).toEqual({
+      authMethod: "gemini-api-key",
+      apiKey: "",
+      apiKeyRedacted: true,
+    });
     // Omitting the key on a retained instance preserves it.
     expect(patch({ authMethod: "gemini-api-key" })).toEqual({
       authMethod: "gemini-api-key",

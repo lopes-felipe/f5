@@ -12,7 +12,10 @@ features are written to fail closed when the live shape differs:
 - Native Auto, Plan and the thinking control are used only when the session advertises them.
 - Auto-accept edits asks for anything it cannot recognise as an in-workspace edit.
 - A key launches nothing until a Connect succeeds.
-- Discovery restores the original model after any switch.
+- Discovery reads only the current model's levels: `DISCOVERY_CYCLES_MODELS` is `false` until
+  `checks.defaultRestoredInFreshProcess` is `true`. Thread sessions fill in other models' levels,
+  and the catalog stays partial until they do. With cycling turned on, a restore that can't be
+  read back is reported as the failure class "Default model not restored".
 
 ## R0 captures (to be run by a maintainer)
 
@@ -33,19 +36,21 @@ F5_PROBE_GEMINI_API_KEY=... bun apps/server/scripts/acp-capability-probe.ts \
 Record one run on a personal Google account eligible for Neon and Orchestrator, and one on a
 disposable API key. Commit only the projected fixture.
 
-| Check                                                        | Fixture field                             | Decision it drives                                                                                                                                          |
-| ------------------------------------------------------------ | ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Cycling `setModel` changes the account default on disk       | `checks.defaultModelPersistsAfterCycling` | Paired with the next row                                                                                                                                    |
-| The restored default holds in a new process                  | `checks.defaultRestoredInFreshProcess`    | If `false`, set `DISCOVERY_CYCLES_MODELS = false` in `AntigravityDriver.ts`; thread sessions then populate levels                                           |
-| `GEMINI_API_KEY` visible to shell commands                   | `checks.apiKeyVisibleToShell`             | Keeps or removes the key-exposure warning in the settings field and docs                                                                                    |
-| `GEMINI_API_KEY` visible to stdio MCP children               | `checks.apiKeyVisibleToMcpChildren`       | Same warning; also an input to F3                                                                                                                           |
-| Catalog identical under client identity `f5`                 | `checks.catalogIdenticalUnderF5`          | The runtime sends `{ name: "f5", version: "1" }`, as before this change; any change waits on this                                                           |
-| Project hooks and plugins executed                           | `checks.executedProjectHooks`             | `null` until recorded by hand: add a project hook and plugin to the throwaway repo and note which ran. A one-time per-project notice if they run unprompted |
-| `session/set_mode` rejected                                  | `checks.rejectedModes`                    | Steps for a rejected mode are skipped, so permissions are never labelled with an unconfirmed mode                                                           |
-| Permission requests per mode (`default`, `auto`, `plan`)     | `permissions`                             | Confirms the approval table and the Auto-accept edits shape (tool names, target fields)                                                                     |
-| `usage_update` frames and prompt-response totals             | `usage`                                   | Confirms the context meter shape, including frames before `session/new` returns                                                                             |
-| Cold resume returns config options and keeps the saved model | `resume`                                  | Confirms resume never replaces the saved model                                                                                                              |
-| Background command after the prompt; stop then resend        | `backgroundWake`, `stopResend`            | Inputs to F2                                                                                                                                                |
+| Check                                                           | Fixture field                             | Decision it drives                                                                                                                                          |
+| --------------------------------------------------------------- | ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Cycling `setModel` changes the account default on disk          | `checks.defaultModelPersistsAfterCycling` | Paired with the next row                                                                                                                                    |
+| The restored default holds in a new process                     | `checks.defaultRestoredInFreshProcess`    | Only if `true` (and the row above is understood), set `DISCOVERY_CYCLES_MODELS = true` in `AntigravityDriver.ts`. Off by default                            |
+| `authenticate { methodId: "gemini-api-key" }` validates the key | Recorded by hand                          | Connect a revoked or malformed key. If `authenticate` succeeds, Connect must also run a minimal request before marking the key verified                     |
+| Steering with a second `session/prompt`                         | `steer`                                   | `inconclusive: true` means the first prompt finished before the second was sent; rerun before deciding                                                      |
+| `GEMINI_API_KEY` visible to shell commands                      | `checks.apiKeyVisibleToShell`             | Keeps or removes the key-exposure warning in the settings field and docs                                                                                    |
+| `GEMINI_API_KEY` visible to stdio MCP children                  | `checks.apiKeyVisibleToMcpChildren`       | Same warning; also an input to F3                                                                                                                           |
+| Catalog identical under client identity `f5`                    | `checks.catalogIdenticalUnderF5`          | The runtime sends `{ name: "f5", version: "1" }`, as before this change; any change waits on this                                                           |
+| Project hooks and plugins executed                              | `checks.executedProjectHooks`             | `null` until recorded by hand: add a project hook and plugin to the throwaway repo and note which ran. A one-time per-project notice if they run unprompted |
+| `session/set_mode` rejected                                     | `checks.rejectedModes`                    | Steps for a rejected mode are skipped, so permissions are never labelled with an unconfirmed mode                                                           |
+| Permission requests per mode (`default`, `auto`, `plan`)        | `permissions`                             | Confirms the approval table and the Auto-accept edits shape (tool names, target fields)                                                                     |
+| `usage_update` frames and prompt-response totals                | `usage`                                   | Confirms the context meter shape, including frames before `session/new` returns                                                                             |
+| Cold resume returns config options and keeps the saved model    | `resume`                                  | Confirms resume never replaces the saved model                                                                                                              |
+| Background command after the prompt; stop then resend           | `backgroundWake`, `stopResend`            | Inputs to F2                                                                                                                                                |
 
 ## Follow-ons
 

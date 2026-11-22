@@ -46,6 +46,8 @@ export interface AntigravityCaptureRaw {
   readonly steer?: {
     readonly secondPromptAccepted: boolean;
     readonly stopReasons: ReadonlyArray<unknown>;
+    /** The first prompt finished before the second was sent, so nothing was steered. */
+    readonly inconclusive?: boolean;
   };
   readonly backgroundWake?: { readonly updatesAfterPromptResponse: ReadonlyArray<unknown> };
   readonly stopResend?: { readonly firstStopReason?: unknown; readonly secondStopReason?: unknown };
@@ -102,6 +104,7 @@ export interface AntigravityCaptureFixture {
   readonly steer: {
     readonly secondPromptAccepted: boolean;
     readonly stopReasons: ReadonlyArray<string>;
+    readonly inconclusive: boolean;
   } | null;
   readonly backgroundWake: {
     readonly updatesAfterPromptResponse: number;
@@ -279,6 +282,7 @@ export function projectAntigravityCapture(
       ? {
           secondPromptAccepted: raw.steer.secondPromptAccepted,
           stopReasons: raw.steer.stopReasons.flatMap((reason) => stopReason(reason) ?? []),
+          inconclusive: raw.steer.inconclusive === true,
         }
       : null,
     backgroundWake: raw.backgroundWake

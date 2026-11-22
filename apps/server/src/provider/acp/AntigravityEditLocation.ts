@@ -251,14 +251,23 @@ const recordOf = (value: unknown): Record<string, unknown> | undefined =>
     ? (value as Record<string, unknown>)
     : undefined;
 
-/** Realpath of the nearest existing ancestor, with the missing tail appended lexically. */
+/** A `..` segment would be applied lexically here but after links by the filesystem. */
+const hasParentSegment = (target: string) => target.split(/[\\/]+/).includes("..");
+
+/**
+ * Realpath of the nearest existing ancestor, with the missing tail appended. Only components
+ * the filesystem reports missing (`ENOENT`) are appended; any other resolution error, or a `..`
+ * segment, is ambiguous and returns `undefined` so the request is asked.
+ */
 function canonicalTarget(target: string): string | undefined {
+  if (hasParentSegment(target)) return undefined;
   let existing = NodePath.resolve(target);
   const tail: string[] = [];
   for (let depth = 0; depth < 256; depth++) {
     try {
       return NodePath.join(NodeFS.realpathSync.native(existing), ...tail.toReversed());
-    } catch {
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") return undefined;
       const parent = NodePath.dirname(existing);
       if (parent === existing) return undefined;
       tail.push(NodePath.basename(existing));
@@ -267,6 +276,20 @@ function canonicalTarget(target: string): string | undefined {
   }
   return undefined;
 }
+
+function canonicalWorkspaceRoot(root: string): string | undefined {
+  try {
+    return NodeFS.realpathSync.native(root);
+  } catch {
+    return undefined;
+  }
+}
+
+const isParentTraversal = (relative: string) =>
+  relative === ".." || relative.startsWith(`..${NodePath.sep}`);
+/** Git metadata such as hooks runs code later; edits there are always asked. */
+const isGitMetadata = (relative: string) =>
+  relative.split(NodePath.sep)[0]?.toLowerCase() === ".git";
 
 /**
  * Auto-accept edits approves a request only when it is a recognised edit with no command
@@ -302,14 +325,20 @@ export function antigravityEditTargetsInWorkspace(
   }
   for (const key of TARGET_KEYS) if (typeof raw?.[key] === "string") targets.add(raw[key]);
   if (targets.size === 0) return false;
-  const root = canonicalTarget(workspaceRoot);
+  const root = canonicalWorkspaceRoot(workspaceRoot);
   if (!root) return false;
   for (const target of targets) {
     if (!target || target.includes("\0") || !NodePath.isAbsolute(target)) return false;
     const canonical = canonicalTarget(target);
     if (!canonical) return false;
     const relative = NodePath.relative(root, canonical);
-    if (relative === "" || relative.startsWith("..") || NodePath.isAbsolute(relative)) return false;
+    if (
+      relative === "" ||
+      isParentTraversal(relative) ||
+      NodePath.isAbsolute(relative) ||
+      isGitMetadata(relative)
+    )
+      return false;
   }
   return true;
 }

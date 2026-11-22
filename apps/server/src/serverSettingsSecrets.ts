@@ -48,6 +48,12 @@ export function prepareSettingsSecrets(
         value: null,
       });
   }
+  const hadStoredSecret = (id: string, redactedField: string) => {
+    const config = (previous.providerInstances as Record<string, { config?: unknown } | undefined>)[
+      id
+    ]?.config;
+    return record(config) && config[redactedField] === true;
+  };
   const protect = (
     config: Record<string, unknown>,
     name: string,
@@ -114,7 +120,12 @@ export function prepareSettingsSecrets(
                     providerInstanceSecretName(secret, id),
                     secret,
                     // OpenCode keeps its historical behaviour of never deleting on a blank save.
-                    { deleteWhenCleared: secret !== opencodeSecret },
+                    // Others delete only a secret that was stored, so saving an instance that
+                    // never had one touches no secret-store entry.
+                    {
+                      deleteWhenCleared:
+                        secret !== opencodeSecret && hadStoredSecret(id, secret.redactedField),
+                    },
                   ),
                 }
               : instance,

@@ -115,6 +115,8 @@ export function createAntigravityAccountProcess(input: {
     Effect.runPromise(
       Effect.gen(function* () {
         const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        // A never-enabled instance has no profile folder yet.
+        yield* Effect.promise(() => fs.mkdir(profileDirectory, { recursive: true, mode: 0o700 }));
         const temporary = yield* Effect.acquireRelease(
           Effect.promise(() => fs.mkdtemp(path.join(profileDirectory, ".account-"))),
           (directory) => Effect.promise(() => fs.rm(directory, { recursive: true, force: true })),
@@ -169,10 +171,12 @@ export function createAntigravityAccountProcess(input: {
       });
     }
     // The stored key itself is cleared by the account service through settings.
-    await advanceAntigravityRevision(profileDirectory, (state) => {
-      const { keyFingerprint: _key, accountFingerprint: _account, ...rest } = state;
-      return { ...rest, verified: false };
-    });
+    // `undefined` fields clear the merged values; JSON omits them.
+    await advanceAntigravityRevision(profileDirectory, () => ({
+      keyFingerprint: undefined,
+      accountFingerprint: undefined,
+      verified: false,
+    }));
   };
   // AccountService registers its handlers in the same turn before this starts.
   queueMicrotask(() => {

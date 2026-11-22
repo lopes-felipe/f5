@@ -12,7 +12,7 @@ import { RUNTIME_MODE_VALUES } from "@t3tools/contracts";
 import { normalizeModelSlug } from "@t3tools/shared/model";
 import {
   runtimeModeCapabilities,
-  supportedRuntimeModeOrNarrowest,
+  supportedRuntimeModeAtOrBelow,
 } from "@t3tools/shared/runtimeMode";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDownIcon } from "lucide-react";
@@ -208,17 +208,21 @@ export function WorkflowImplementDialog(props: {
 
   // The workflow runs on the provider's default instance, so its snapshot decides per-instance
   // modes such as native Antigravity Auto.
-  const availableRuntimeModes = serverConfigQuery.data?.providers.find(
+  const availableRuntimeModes = serverConfigQuery.data?.providers?.find(
     (entry) => entry.instanceId === defaultInstanceIdForDriver(ProviderDriverKind.make(provider)),
   )?.availableRuntimeModes;
   const capabilities = useMemo(
     () => runtimeModeCapabilities(provider, availableRuntimeModes),
     [provider, availableRuntimeModes],
   );
+  // Narrow an unsupported mode automatically, but never widen it: when only wider modes exist,
+  // the user picks one and Start stays disabled until then.
   useEffect(() => {
-    if (!capabilities.has(runtimeMode))
-      setRuntimeMode(supportedRuntimeModeOrNarrowest(capabilities, runtimeMode));
+    if (capabilities.has(runtimeMode)) return;
+    const narrower = supportedRuntimeModeAtOrBelow(capabilities, runtimeMode);
+    if (narrower) setRuntimeMode(narrower);
   }, [capabilities, runtimeMode]);
+  const runtimeModeUnsupported = !capabilities.has(runtimeMode);
 
   useEffect(() => {
     if (props.open && !wasOpenRef.current) {
@@ -264,7 +268,8 @@ export function WorkflowImplementDialog(props: {
   }, [model, provider, selection, serverConfigQuery.data]);
 
   const needsBaseBranch = envMode === "worktree" && !baseBranch;
-  const submitDisabled = submitting || needsBaseBranch || serverConfigQuery.data === undefined;
+  const submitDisabled =
+    submitting || needsBaseBranch || runtimeModeUnsupported || serverConfigQuery.data === undefined;
 
   const onSubmit = async () => {
     const api = readNativeApi();
@@ -410,7 +415,11 @@ export function WorkflowImplementDialog(props: {
           >
             <WorkflowOptionField
               label="Access mode"
-              hint={RUNTIME_MODE_PRESENTATION[runtimeMode].description}
+              hint={
+                runtimeModeUnsupported
+                  ? "This provider does not offer this access mode. Choose one to continue."
+                  : RUNTIME_MODE_PRESENTATION[runtimeMode].description
+              }
             >
               <select
                 id="workflow-runtime-mode"

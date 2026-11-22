@@ -218,6 +218,16 @@ export interface ServerSettingsShape {
   readonly updateSettings: (
     patch: ServerSettingsPatch,
   ) => Effect.Effect<ServerSettings, ServerSettingsError>;
+  /**
+   * Internal: patch settings, optionally building the patch from the current (materialized)
+   * settings inside the write lock, so a read-modify-write cannot lose a concurrent save. A
+   * builder returning `undefined` writes nothing. `heldAccountChanges` names instances whose
+   * account guard the caller already holds.
+   */
+  readonly updateSettingsWith?: (
+    patch: ServerSettingsPatch | ((current: ServerSettings) => ServerSettingsPatch | undefined),
+    options?: { readonly heldAccountChanges?: ReadonlyArray<string> },
+  ) => Effect.Effect<ServerSettings | undefined, ServerSettingsError>;
   /** Internal: remember a location only after Git has created a checkout there. */
   readonly recordWorktreeLocation?: (directory: string) => Effect.Effect<void, ServerSettingsError>;
 
@@ -904,10 +914,24 @@ const makeServerSettings = Effect.gen(function* () {
           );
         }),
       ),
-    updateSettings: (patch) =>
+    updateSettings(patch) {
+      return this.updateSettingsWith!(patch).pipe(
+        Effect.flatMap((settings) => (settings ? Effect.succeed(settings) : this.getSettings)),
+      );
+    },
+    updateSettingsWith: (patchOrBuild, options) =>
       writeSemaphore.withPermits(1)(
         Effect.gen(function* () {
-          patch = yield* normalizeStorageDiscoveryPatch(patch);
+          // A builder reads the current (materialized) settings inside the write lock.
+          const built =
+            typeof patchOrBuild === "function"
+              ? patchOrBuild(
+                  yield* materializeProviderEnvironmentSecrets(yield* reloadSettingsForWrite),
+                )
+              : patchOrBuild;
+          if (!built) return undefined;
+          const heldAccountChanges = new Set(options?.heldAccountChanges ?? []);
+          let patch = yield* normalizeStorageDiscoveryPatch(built);
           const migratedKeys = ["defaultThreadEnvMode", "enableAssistantStreaming"] as const;
           const markers = Object.fromEntries(
             migratedKeys
@@ -1076,8 +1100,11 @@ const makeServerSettings = Effect.gen(function* () {
               try: () => {
                 const releases: Array<() => void> = [];
                 try {
+                  // An account job that already holds this instance's guard (sign-out
+                  // clearing its own key) passes it in instead of acquiring it again.
                   for (const id of accountChanges)
-                    releases.push(beginAccountChange(serverConfig.stateDir, id));
+                    if (!heldAccountChanges.has(id))
+                      releases.push(beginAccountChange(serverConfig.stateDir, id));
                 } catch (cause) {
                   for (const release of releases) release();
                   throw cause;

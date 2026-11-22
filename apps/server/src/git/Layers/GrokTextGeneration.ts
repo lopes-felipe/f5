@@ -83,11 +83,14 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
     normalizeModel: (model: string) => string;
     defaultModelSelection: ModelSelection;
     useAccountDefaultModel?: boolean;
-    /** Replaces the generic model write, for runtimes with their own selection rules. */
+    /**
+     * Replaces the generic model write, for runtimes with their own selection rules. It may
+     * return an effect that restores the previous selection; it runs after the prompt.
+     */
     applyModelSelection?: (
       runtime: AcpSessionRuntimeShape,
       modelSelection: ModelSelection,
-    ) => Effect.Effect<void, EffectAcpErrors.AcpError | Error>;
+    ) => Effect.Effect<Effect.Effect<void> | void, EffectAcpErrors.AcpError | Error>;
   },
 ) {
   const resolveSelection = (selection: ModelSelection | undefined, model?: string) =>
@@ -147,22 +150,24 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
         return Ref.update(outputRef, (current) => current + content.text);
       });
 
+      let restoreSelection: Effect.Effect<void> = Effect.void;
       const promptResult = yield* Effect.gen(function* () {
         const started = yield* runtime.start();
         if (options?.applyModelSelection) {
-          yield* options
-            .applyModelSelection(runtime, modelSelection)
-            .pipe(
-              Effect.mapError((cause) =>
-                cause instanceof Error && !("_tag" in cause)
-                  ? new TextGenerationError({ operation, detail: cause.message })
-                  : mapGrokAcpError(
-                      operation,
-                      "Failed to set the model for text generation.",
-                      cause as EffectAcpErrors.AcpError,
-                    ),
-              ),
-            );
+          restoreSelection =
+            (yield* options
+              .applyModelSelection(runtime, modelSelection)
+              .pipe(
+                Effect.mapError((cause) =>
+                  cause instanceof Error && !("_tag" in cause)
+                    ? new TextGenerationError({ operation, detail: cause.message })
+                    : mapGrokAcpError(
+                        operation,
+                        "Failed to set the model for text generation.",
+                        cause as EffectAcpErrors.AcpError,
+                      ),
+                ),
+              )) ?? Effect.void;
         } else
           yield* applyGrokAcpModelSelection({
             runtime,
@@ -190,6 +195,9 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
         });
       }).pipe(
         Effect.timeoutOption(GROK_TIMEOUT_MS),
+        // Put back what the selection changed, whether the prompt succeeded or not, while the
+        // runtime is still open.
+        Effect.ensuring(Effect.suspend(() => restoreSelection)),
         Effect.flatMap(
           Option.match({
             onNone: () =>

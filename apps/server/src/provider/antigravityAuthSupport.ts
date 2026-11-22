@@ -194,6 +194,8 @@ export interface AntigravityAuthState {
     readonly revision: number;
     readonly version: string | null;
     readonly autoAdvertised: boolean;
+    /** The sign-in method Auto was advertised under. */
+    readonly method?: AntigravityAuthMethod;
   };
 }
 
@@ -208,19 +210,33 @@ function decodeCatalog(value: unknown): Pick<AntigravityAuthState, "catalog"> {
   if (value === null || typeof value !== "object") return {};
   const fields = value as Record<string, unknown>;
   if (typeof fields.revision !== "number" || !Number.isSafeInteger(fields.revision)) return {};
+  const method = ANTIGRAVITY_AUTH_METHODS.find((entry) => entry.value === fields.method)?.value;
   return {
     catalog: {
       revision: fields.revision,
       version: typeof fields.version === "string" ? fields.version : null,
       autoAdvertised: fields.autoAdvertised === true,
+      ...(method ? { method } : {}),
     },
   };
 }
 
+class AntigravityAuthStateUnreadableError extends Error {
+  constructor(cause: unknown) {
+    super("Antigravity account state could not be read. Check the instance profile folder.", {
+      cause,
+    });
+  }
+}
+
 function decodeState(text: string): AntigravityAuthState {
+  return decodeStateOrUndefined(text) ?? EMPTY_STATE;
+}
+
+function decodeStateOrUndefined(text: string): AntigravityAuthState | undefined {
   try {
     const value: unknown = JSON.parse(text);
-    if (value === null || typeof value !== "object") return EMPTY_STATE;
+    if (value === null || typeof value !== "object") return undefined;
     const fields = value as Record<string, unknown>;
     const method = ANTIGRAVITY_AUTH_METHODS.find((entry) => entry.value === fields.method)?.value;
     return {
@@ -241,10 +257,11 @@ function decodeState(text: string): AntigravityAuthState {
       ...decodeCatalog(fields.catalog),
     };
   } catch {
-    return EMPTY_STATE;
+    return undefined;
   }
 }
 
+/** Status reads fall back to an unready state; they never write. */
 export async function readAntigravityAuthState(
   profileDirectory: string,
 ): Promise<AntigravityAuthState> {
@@ -253,6 +270,25 @@ export async function readAntigravityAuthState(
   } catch {
     return EMPTY_STATE;
   }
+}
+
+/**
+ * Reads for a write. Only a missing file is a new profile: an unreadable or invalid file stops
+ * the write, so a revision is never reset to zero and reused.
+ */
+async function readAntigravityAuthStateForUpdate(
+  profileDirectory: string,
+): Promise<AntigravityAuthState> {
+  let text: string;
+  try {
+    text = await fs.readFile(statePath(profileDirectory), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return EMPTY_STATE;
+    throw new AntigravityAuthStateUnreadableError(error);
+  }
+  const state = decodeStateOrUndefined(text);
+  if (!state) throw new AntigravityAuthStateUnreadableError(undefined);
+  return state;
 }
 
 // One writer per profile in this process; account jobs and drivers share it.
@@ -266,7 +302,7 @@ export function updateAntigravityAuthState(
   const next = previous
     .catch(() => undefined)
     .then(async () => {
-      const current = await readAntigravityAuthState(profileDirectory);
+      const current = await readAntigravityAuthStateForUpdate(profileDirectory);
       const updated = update(current);
       // The revision is monotonic even if an updater forgets to carry it.
       const result = { ...updated, revision: Math.max(updated.revision, current.revision) };
@@ -283,24 +319,29 @@ export function updateAntigravityAuthState(
       return result;
     });
   stateWrites.set(profileDirectory, next);
-  void next.finally(() => {
+  // Handled on both branches: the caller observes `next`'s failure, and this chain never rejects.
+  const cleanup = () => {
     if (stateWrites.get(profileDirectory) === next) stateWrites.delete(profileDirectory);
-  });
+  };
+  next.then(cleanup, cleanup);
   return next;
 }
 
 /** Advance the revision: connect, disconnect, key or method change, or a failed transition. */
 export function advanceAntigravityRevision(
   profileDirectory: string,
-  patch: (
-    state: AntigravityAuthState,
-  ) => Partial<Omit<AntigravityAuthState, "version">> = () => ({}),
+  /** Fields to set; an `undefined` value removes that field. */
+  patch: (state: AntigravityAuthState) => {
+    readonly [K in Exclude<keyof AntigravityAuthState, "version">]?:
+      | AntigravityAuthState[K]
+      | undefined;
+  } = () => ({}),
 ): Promise<AntigravityAuthState> {
-  return updateAntigravityAuthState(profileDirectory, (state) => ({
-    ...state,
-    ...patch(state),
-    revision: state.revision + 1,
-  }));
+  return updateAntigravityAuthState(profileDirectory, (state) => {
+    const merged: Record<string, unknown> = { ...state, ...patch(state) };
+    for (const key of Object.keys(merged)) if (merged[key] === undefined) delete merged[key];
+    return { ...(merged as unknown as AntigravityAuthState), revision: state.revision + 1 };
+  });
 }
 
 async function readOAuthAccountFingerprint(profileDirectory: string) {
@@ -345,11 +386,15 @@ export function reconcileAntigravityAuthState(
         state.accountFingerprint !== undefined &&
         state.accountFingerprint !== accountFingerprint;
       const { keyFingerprint: _key, accountFingerprint: _account, ...rest } = state;
+      // A momentarily unreadable token keeps the last known account, so a different account
+      // appearing later is still detected. Only an explicit transition clears it.
+      const knownAccount =
+        oauth && !methodChanged ? (accountFingerprint ?? state.accountFingerprint) : undefined;
       const next: AntigravityAuthState = {
         ...rest,
         method: auth.authMethod,
         ...(keyFingerprint ? { keyFingerprint } : {}),
-        ...(oauth && accountFingerprint ? { accountFingerprint } : {}),
+        ...(knownAccount ? { accountFingerprint: knownAccount } : {}),
       };
       if (methodChanged || keyChanged || accountChanged)
         return { ...next, revision: state.revision + 1, verified: false };

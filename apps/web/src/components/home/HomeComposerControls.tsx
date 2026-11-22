@@ -9,6 +9,10 @@ import {
 } from "@t3tools/contracts";
 import { resolveSelectableModel } from "@t3tools/shared/model";
 import {
+  runtimeModeCapabilities,
+  supportedRuntimeModeAtOrBelow,
+} from "@t3tools/shared/runtimeMode";
+import {
   getMessageTextLengthIssue,
   getThreadReferenceLimitIssue,
 } from "@t3tools/shared/providerInput";
@@ -197,6 +201,20 @@ export default function HomeComposerControls(props: {
   const providersLoading = serverConfig === undefined;
   const noProviderAvailable = !providersLoading && dispatch.noProviderAvailable;
 
+  // Switching instances keeps the access mode when the new one offers it, narrows it when
+  // it does not, and never widens it: with only wider modes left, the user picks one.
+  const selectedAvailableRuntimeModes = dispatch.selectedProviderSnapshot?.availableRuntimeModes;
+  const runtimeCapabilities = useMemo(
+    () => runtimeModeCapabilities(dispatch.selectedProvider, selectedAvailableRuntimeModes),
+    [dispatch.selectedProvider, selectedAvailableRuntimeModes],
+  );
+  const runtimeModeUnsupported = !runtimeCapabilities.has(runtimeMode);
+  useEffect(() => {
+    if (providersLoading || runtimeCapabilities.has(runtimeMode)) return;
+    const narrower = supportedRuntimeModeAtOrBelow(runtimeCapabilities, runtimeMode);
+    if (narrower) useComposerDraftStore.getState().setRuntimeMode(draftId, narrower);
+  }, [draftId, providersLoading, runtimeCapabilities, runtimeMode]);
+
   useImperativeHandle(
     props.handleRef,
     () => ({
@@ -210,6 +228,9 @@ export default function HomeComposerControls(props: {
         }
         if (workspaceLoading) {
           throw new Error("Still reading the project's workspace. Try again in a moment.");
+        }
+        if (runtimeModeUnsupported) {
+          throw new Error("This provider does not offer this access mode. Choose one to continue.");
         }
         if (envMode === "worktree" && !currentBranch) {
           throw new Error(
@@ -257,6 +278,7 @@ export default function HomeComposerControls(props: {
       projectSettings.enableAssistantStreaming,
       providersLoading,
       runtimeMode,
+      runtimeModeUnsupported,
       scratch,
       selectionKey,
       workspaceLoading,

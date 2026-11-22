@@ -185,6 +185,8 @@ export interface AntigravityCatalogObservation {
   readonly thinking: AntigravityThinkingLevels | null;
   readonly modelChoices: ReadonlyArray<{ readonly value: string; readonly name: string }>;
   readonly advertisedModes: ReadonlyArray<string>;
+  /** The account revision the observing session started under; others are discarded. */
+  readonly accountRevision?: number;
 }
 
 export interface AntigravityAdapterHooks {
@@ -246,6 +248,15 @@ interface GrokSessionContext {
   nativeChildrenPolling: boolean;
   /** Antigravity: the native mode as last written or reported (`ModeChanged`). */
   antigravityMode: string | undefined;
+  /**
+   * Antigravity: native Auto was unavailable or rejected for this session, which then runs as
+   * Supervised. Later turns do not retry it, so its one warning is not repeated.
+   */
+  antigravityAutoUnavailable: boolean;
+  /** Antigravity: private-format readers are certified for the runtime this session launched. */
+  readonly antigravityNativeReaders: boolean;
+  /** Antigravity: the account revision this session started under. */
+  readonly antigravityAccountRevision: number | undefined;
   readonly antigravitySelection: AntigravitySelectionState;
   /** Antigravity: last context sample emitted, for coalescing. */
   lastContextUsage: string | undefined;
@@ -364,6 +375,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
     const observeAntigravityCatalog = (
       acp: AcpSessionRuntimeShape,
       selection: AntigravitySelectionState,
+      accountRevision: number | undefined,
     ) =>
       options?.antigravity?.observeCatalog
         ? Effect.gen(function* () {
@@ -385,6 +397,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               ),
               advertisedModes: antigravityAdvertisedModes(yield* acp.getModeState, configOptions)
                 .modes,
+              ...(accountRevision !== undefined ? { accountRevision } : {}),
             });
           })
         : Effect.void;
@@ -1056,11 +1069,20 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                       }
                     );
                   }
+                  // The runtime applies mode notifications and `set_mode` responses in transport
+                  // order, so its state cannot be overwritten by a stale queued `ModeChanged`.
+                  const nativeMode =
+                    PROVIDER === "antigravity"
+                      ? antigravityAdvertisedModes(
+                          yield* acp.getModeState,
+                          yield* acp.getConfigOptions,
+                        ).current
+                      : undefined;
                   const antigravityDecision =
                     PROVIDER === "antigravity"
                       ? antigravityApprovalDecision({
                           runtimeMode: input.runtimeMode,
-                          sessionMode: live?.antigravityMode,
+                          sessionMode: nativeMode ?? live?.antigravityMode,
                           computerRequest: Boolean(computerRequest),
                           toolCall: params.toolCall,
                           workspaceRoot: cwd,
@@ -1230,16 +1252,24 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           const antigravitySelection = makeAntigravitySelectionState();
           const antigravityStartWarnings: string[] = [];
           let antigravityStartMode: string | undefined;
+          let antigravityAutoUnavailable = false;
+          // Certified once, for the runtime this session just launched.
+          const antigravityNativeReaders =
+            PROVIDER === "antigravity" && options?.antigravity?.nativeReaders
+              ? yield* options.antigravity.nativeReaders
+              : true;
           if (PROVIDER === "antigravity") {
             const mapStartError = antigravityErrorMapper(input.threadId, "startSession");
             const advertised = antigravityAdvertisedModes(
               yield* acp.getModeState,
               yield* acp.getConfigOptions,
             );
-            if (input.runtimeMode === "auto" && !advertised.modes.includes("auto"))
+            if (input.runtimeMode === "auto" && !advertised.modes.includes("auto")) {
+              antigravityAutoUnavailable = true;
               antigravityStartWarnings.push(
                 "This Antigravity session does not offer native Auto, so it runs as Supervised and asks before acting.",
               );
+            }
             antigravityStartMode = yield* applyAntigravitySessionMode({
               runtime: acp,
               target: antigravityTargetMode({
@@ -1248,7 +1278,10 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 advertised: advertised.modes,
               }),
               mapError: mapStartError,
-              onAutoFallback: (warning) => antigravityStartWarnings.push(warning),
+              onAutoFallback: (warning) => {
+                antigravityAutoUnavailable = true;
+                antigravityStartWarnings.push(warning);
+              },
             });
           }
           // Custom ACP and Antigravity write the model config option; Grok uses session/set_model.
@@ -1268,7 +1301,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                       if (selection.warning) antigravityStartWarnings.push(selection.warning);
                     }),
                   ),
-                  Effect.tap(() => observeAntigravityCatalog(acp, antigravitySelection)),
+                  Effect.tap(() =>
+                    observeAntigravityCatalog(acp, antigravitySelection, accountRevision),
+                  ),
                   Effect.map((selection) => selection.model),
                 )
               : yield* applyGrokAcpModelSelection({
@@ -1346,6 +1381,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             normalizeAntigravityTool: makeAntigravityToolNormalizer(),
             nativeChildrenPolling: false,
             antigravityMode: antigravityStartMode,
+            antigravityAutoUnavailable,
+            antigravityNativeReaders,
+            antigravityAccountRevision: PROVIDER === "antigravity" ? accountRevision : undefined,
             antigravitySelection,
             lastContextUsage: undefined,
           };
@@ -1695,12 +1733,16 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 ctx.antigravityMode = yield* applyAntigravitySessionMode({
                   runtime: ctx.acp,
                   target: antigravityTargetMode({
-                    runtimeMode: ctx.session.runtimeMode,
+                    // Once Auto fell back for this session, later turns stay Supervised.
+                    runtimeMode: ctx.antigravityAutoUnavailable
+                      ? "approval-required"
+                      : ctx.session.runtimeMode,
                     plan: input.interactionMode === "plan",
                     advertised: advertised.modes,
                   }),
                   mapError: mapTurnError,
                   onAutoFallback: (warning) => {
+                    ctx.antigravityAutoUnavailable = true;
                     antigravityModeWarning = warning;
                   },
                 });
@@ -1723,10 +1765,17 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                         Effect.tap((selection) =>
                           Effect.sync(() => {
                             antigravityTurnWarning = selection.warning;
+                            // The native session has switched: keep the cache in step even if
+                            // the turn fails later (an attachment, an empty prompt).
+                            ctx.currentModelId = selection.model;
                           }),
                         ),
                         Effect.tap(() =>
-                          observeAntigravityCatalog(ctx.acp, ctx.antigravitySelection),
+                          observeAntigravityCatalog(
+                            ctx.acp,
+                            ctx.antigravitySelection,
+                            ctx.antigravityAccountRevision,
+                          ),
                         ),
                         Effect.map((selection) => selection.model),
                       )
@@ -1898,11 +1947,11 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         );
 
         return yield* Effect.gen(function* () {
-          // Private-format readers run only on runtime versions certified for them.
+          // Private-format readers run only when the session's own runtime was certified.
           const nativeProfileDirectory =
             PROVIDER === "antigravity" &&
             options?.antigravityProfileDirectory &&
-            (options.antigravity?.nativeReaders ? yield* options.antigravity.nativeReaders : true)
+            prepared.context.antigravityNativeReaders
               ? options.antigravityProfileDirectory
               : undefined;
           const checkOutcome = nativeProfileDirectory

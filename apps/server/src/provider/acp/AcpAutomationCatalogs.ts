@@ -161,17 +161,38 @@ export const prepareAcpAutomationCatalogs = (input: {
     const scrubber = new AcpCredentialScrubber();
     const launchCredentials = (input.credentials ?? []).filter((value) => value.length >= 8);
     for (const credential of launchCredentials) scrubber.register(credential);
-    // Exact-value replacement on the serialized event; a key echoed in tool output or an error
-    // never reaches the client.
-    const scrubLaunchCredentials = (event: ProviderRuntimeEvent): ProviderRuntimeEvent => {
-      if (launchCredentials.length === 0) return event;
-      const text = JSON.stringify(event);
-      if (!launchCredentials.some((credential) => text.includes(credential))) return event;
-      let scrubbed = text;
-      for (const credential of launchCredentials)
-        scrubbed = scrubbed.replaceAll(credential, "[redacted]");
-      return JSON.parse(scrubbed) as ProviderRuntimeEvent;
+    // Exact-value replacement in every decoded string value, so JSON escaping (quotes,
+    // backslashes) cannot hide an echoed key. Object keys, and so routing fields, are untouched.
+    const scrubValue = (value: unknown): unknown => {
+      if (typeof value === "string") {
+        let scrubbed = value;
+        for (const credential of launchCredentials)
+          scrubbed = scrubbed.replaceAll(credential, "[redacted]");
+        return scrubbed;
+      }
+      if (Array.isArray(value)) {
+        let changed = false;
+        const next = value.map((entry) => {
+          const scrubbed = scrubValue(entry);
+          changed ||= scrubbed !== entry;
+          return scrubbed;
+        });
+        return changed ? next : value;
+      }
+      if (value !== null && typeof value === "object") {
+        let changed = false;
+        const next: Record<string, unknown> = {};
+        for (const [key, entry] of Object.entries(value)) {
+          const scrubbed = scrubValue(entry);
+          changed ||= scrubbed !== entry;
+          next[key] = scrubbed;
+        }
+        return changed ? next : value;
+      }
+      return value;
     };
+    const scrubLaunchCredentials = (event: ProviderRuntimeEvent): ProviderRuntimeEvent =>
+      launchCredentials.length === 0 ? event : (scrubValue(event) as ProviderRuntimeEvent);
     const serverName = `f5_computer_${randomBytes(4).toString("hex")}`;
     let computerCapable = input.computerCapableLineage === true;
     let disposed = false;

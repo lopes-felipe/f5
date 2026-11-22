@@ -788,6 +788,33 @@ rootIt.layer(
     }).pipe(Effect.scoped),
   );
 
+  it.effect("scrubs a key containing characters JSON escapes", () =>
+    Effect.gen(function* () {
+      const key = 'AIza"quoted\\fixture-key-0000';
+      const { adapter, events } = yield* antigravityProfileAdapter({
+        env: { F5_ACP_ECHO_TEXT: key },
+        credentials: [key],
+      });
+      const threadId = ThreadId.make("agy-key-scrub-escaped");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      yield* adapter.sendTurn({ threadId, input: "Show the env", attachments: [] });
+      const strings: string[] = [];
+      const collect = (value: unknown): void => {
+        if (typeof value === "string") strings.push(value);
+        else if (value && typeof value === "object") Object.values(value).forEach(collect);
+      };
+      collect(events);
+      assert.isFalse(strings.some((value) => value.includes(key)));
+      assert.isTrue(strings.some((value) => value.includes("[redacted]")));
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("refuses new work once newer sign-in settings were published", () =>
     Effect.gen(function* () {
       let stale: string | undefined;

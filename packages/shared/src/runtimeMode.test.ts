@@ -1,6 +1,45 @@
 import { describe, expect, it } from "vitest";
 
-import { runtimeModeCapabilities, runtimeModeUnsupportedReason } from "./runtimeMode";
+import {
+  runtimeModeCapabilities,
+  runtimeModeUnsupportedReason,
+  supportedRuntimeModeAtOrBelow,
+} from "./runtimeMode";
+
+describe("snapshot runtime modes", () => {
+  it("lets a snapshot narrow its kind's table and widen only where the kind allows", () => {
+    expect([
+      ...runtimeModeCapabilities("antigravity", ["approval-required", "auto-accept-edits", "auto"]),
+    ]).toEqual(["approval-required", "auto-accept-edits", "auto"]);
+    // Cursor never offers Auto or Auto-accept edits, whatever a snapshot claims.
+    expect([...runtimeModeCapabilities("cursor", ["auto", "full-access"])]).toEqual([
+      "full-access",
+    ]);
+    // Nothing allowed in the list: the kind's own table.
+    expect([...runtimeModeCapabilities("grok", ["auto"])]).toEqual([
+      "approval-required",
+      "full-access",
+    ]);
+  });
+});
+
+describe("supportedRuntimeModeAtOrBelow", () => {
+  it("keeps a supported mode and otherwise narrows, never widens", () => {
+    const antigravity = runtimeModeCapabilities("antigravity");
+    expect(supportedRuntimeModeAtOrBelow(antigravity, "auto-accept-edits")).toBe(
+      "auto-accept-edits",
+    );
+    // Auto is not offered: the next narrower mode, not Full access.
+    expect(supportedRuntimeModeAtOrBelow(antigravity, "auto")).toBe("auto-accept-edits");
+    expect(supportedRuntimeModeAtOrBelow(runtimeModeCapabilities("cursor"), "auto")).toBe(
+      "approval-required",
+    );
+    // Muse has nothing at or below Supervised: the caller must ask.
+    expect(
+      supportedRuntimeModeAtOrBelow(runtimeModeCapabilities("muse"), "approval-required"),
+    ).toBeUndefined();
+  });
+});
 
 describe("runtimeModeCapabilities", () => {
   it("rejects unsupported Antigravity Auto consistently with scheduled tasks", () => {

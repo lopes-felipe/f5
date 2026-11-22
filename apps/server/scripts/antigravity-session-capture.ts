@@ -43,12 +43,17 @@ class AgentConnection {
     number,
     { resolve: (v: unknown) => void; reject: (e: Error) => void }
   >();
+  private readonly exited: Promise<void>;
   private constructor(private readonly child: ChildProcessWithoutNullStreams) {
     child.stdout.on("data", (chunk: Buffer) => this.onData(chunk.toString("utf8")));
     child.stderr.resume();
-    child.on("exit", () => {
-      for (const { reject } of this.pending.values()) reject(new Error("agent-exited"));
-      this.pending.clear();
+    this.exited = new Promise((resolve) => {
+      child.on("exit", () => {
+        for (const { reject } of this.pending.values()) reject(new Error("agent-exited"));
+        this.pending.clear();
+        resolve();
+      });
+      child.on("error", () => resolve());
     });
   }
   static start(command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv) {
@@ -122,6 +127,19 @@ class AgentConnection {
     this.child.stdin.end();
     this.child.kill("SIGTERM");
   }
+  /** Asks the agent to exit and waits for it, killing it if it outlives `timeoutMs`. */
+  async shutdown(timeoutMs = 5_000) {
+    if (this.child.exitCode !== null || this.child.signalCode !== null) return;
+    this.close();
+    const timedOut = await Promise.race([
+      this.exited.then(() => false),
+      sleep(timeoutMs).then(() => true),
+    ]);
+    if (timedOut) {
+      this.child.kill("SIGKILL");
+      await Promise.race([this.exited, sleep(1_000)]);
+    }
+  }
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -129,6 +147,10 @@ const modelOption = (configOptions: unknown) =>
   (Array.isArray(configOptions) ? configOptions : [])
     .map(record)
     .find((option) => option?.category === "model" || option?.id === "model");
+const modeOption = (configOptions: unknown) =>
+  (Array.isArray(configOptions) ? configOptions : [])
+    .map(record)
+    .find((option) => option?.category === "mode" || option?.id === "mode");
 const optionValues = (option: Json | undefined) =>
   (Array.isArray(option?.options) ? option.options : []).flatMap((entry) => {
     const fields = record(entry);
@@ -191,19 +213,27 @@ export async function captureAntigravitySession(input: {
     () => "",
   );
   raw.helpText = helpText;
+  // Every agent started here, shut down before the directories it uses are removed.
+  const agents = new Set<AgentConnection>();
   const connect = async (clientName = "f5") => {
     const agent = AgentConnection.start(prepared.executable.executablePath, args, workspace, env);
-    const initialize = await agent.request("initialize", {
-      protocolVersion: 1,
-      clientCapabilities: {
-        elicitation: { form: {} },
-        fs: { readTextFile: false, writeTextFile: false },
-        terminal: false,
-      },
-      clientInfo: { name: clientName, version: "1" },
-    });
-    await agent.request("authenticate", { methodId: auth.authMethod });
-    return { agent, initialize };
+    agents.add(agent);
+    try {
+      const initialize = await agent.request("initialize", {
+        protocolVersion: 1,
+        clientCapabilities: {
+          elicitation: { form: {} },
+          fs: { readTextFile: false, writeTextFile: false },
+          terminal: false,
+        },
+        clientInfo: { name: clientName, version: "1" },
+      });
+      await agent.request("authenticate", { methodId: auth.authMethod });
+      return { agent, initialize };
+    } catch (error) {
+      await agent.shutdown();
+      throw error;
+    }
   };
   try {
     await promisify(execFile)("git", ["init", "-q"], { cwd: workspace });
@@ -293,6 +323,7 @@ export async function captureAntigravitySession(input: {
     if (input.scripted) await runScripted(agent, sessionId, raw, session, auth, connect, workspace);
     agent.close();
   } finally {
+    await Promise.all([...agents].map((agent) => agent.shutdown()));
     await rm(workspace, { recursive: true, force: true });
     await rm(runtimeTemp, { recursive: true, force: true });
   }
@@ -314,11 +345,15 @@ async function runScripted(
   connect: (name?: string) => Promise<{ agent: AgentConnection; initialize: unknown }>,
   workspace: string,
 ) {
-  const modes = (
+  // Modes may be advertised as session modes, as a mode config option, or both.
+  const sessionModes = (
     Array.isArray(record(session?.modes)?.availableModes)
       ? (record(session?.modes)!.availableModes as unknown[])
       : []
   ).flatMap((mode) => (typeof record(mode)?.id === "string" ? [String(record(mode)!.id)] : []));
+  const modeConfig = modeOption(session?.configOptions);
+  const configModes = optionValues(modeConfig);
+  const modes = [...new Set([...sessionModes, ...configModes])];
   const promptResponses: unknown[] = [];
   const prompt = async (text: string, timeoutMs = 300_000) => {
     const response = await agent.request(
@@ -332,9 +367,18 @@ async function runScripted(
   // Permissions are labelled only with a mode the CLI confirmed; a rejected write is recorded
   // and that mode's step is skipped.
   const rejectedModes: string[] = [];
+  // A mode the config option lists is written there, as F5 does; otherwise via set_mode.
   const setMode = async (mode: string) => {
-    const accepted = await agent
-      .request("session/set_mode", { sessionId, modeId: mode })
+    const viaConfig = typeof modeConfig?.id === "string" && configModes.includes(mode);
+    const accepted = await (
+      viaConfig
+        ? agent.request("session/set_config_option", {
+            sessionId,
+            configId: modeConfig.id,
+            value: mode,
+          })
+        : agent.request("session/set_mode", { sessionId, modeId: mode })
+    )
       .then(() => true)
       .catch(() => false);
     if (accepted) agent.sessionMode = mode;
@@ -353,10 +397,15 @@ async function runScripted(
   raw.checks = { ...raw.checks, rejectedModes };
 
   agent.step = "steer";
-  const first = prompt("Count slowly from 1 to 30, one number per line.").catch(
-    (error: Error) => error,
-  );
+  let firstSettled = false;
+  const first = prompt("Count slowly from 1 to 30, one number per line.")
+    .catch((error: Error) => error)
+    .finally(() => {
+      firstSettled = true;
+    });
   await sleep(1_500);
+  // A first prompt that already finished leaves nothing to steer: the result proves nothing.
+  const inconclusive = firstSettled;
   const second = await prompt("Stop counting and reply STEERED.").catch((error: Error) => error);
   const firstResult = await first;
   raw.steer = {
@@ -364,6 +413,7 @@ async function runScripted(
     stopReasons: [firstResult, second].map((value) =>
       value instanceof Error ? value.message : value,
     ),
+    inconclusive,
   };
 
   agent.step = "background";

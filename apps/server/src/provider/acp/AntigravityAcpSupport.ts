@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { Deferred, Effect, Layer, Scope } from "effect";
+import { Deferred, Duration, Effect, Layer, Scope } from "effect";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import * as AcpErrors from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/schema";
@@ -58,10 +58,16 @@ export async function linkAntigravityUserConfigFiles(
         if (hasErrorCode(error, ["ENOENT"])) return undefined;
         throw error;
       });
-      const ownsCopy = await fs.stat(marker).then(
-        () => true,
-        () => false,
+      // The marker holds the hash of the copy F5 last published. A target edited since then no
+      // longer matches it and is left alone, never refreshed or removed.
+      const publishedHash = await fs.readFile(marker, "utf8").then(
+        (text) => text.trim(),
+        () => undefined,
       );
+      const ownsCopy =
+        publishedHash !== undefined &&
+        existing?.isFile() === true &&
+        sha256(await fs.readFile(target)) === publishedHash;
       if (!sourceStat?.isFile()) {
         if (existing?.isSymbolicLink()) await fs.unlink(target);
         else if (existing && ownsCopy) {
@@ -77,7 +83,7 @@ export async function linkAntigravityUserConfigFiles(
         const current = existing ? await fs.readFile(target).catch(() => undefined) : undefined;
         if (current?.equals(contents)) continue;
         await publishProfileFile(target, contents.toString("utf8"));
-        await fs.writeFile(marker, "");
+        await fs.writeFile(marker, sha256(contents));
         continue;
       }
       if (existing?.isSymbolicLink()) {
@@ -100,6 +106,8 @@ export async function linkAntigravityUserConfigFiles(
     }
   }
 }
+
+const sha256 = (contents: Buffer) => createHash("sha256").update(contents).digest("hex");
 
 async function publishProfileFile(file: string, contents: string): Promise<void> {
   const temporary = `${file}.${randomUUID()}.tmp`;
@@ -517,6 +525,7 @@ export const applyAntigravityModelSelection = <E>(input: {
       const suffix = base ? target.slice(base.length + 1) : undefined;
       let translated = false;
       if (base && suffix) {
+        const priorLevel = antigravityThinkingOption(options)?.currentValue || undefined;
         if (base !== current) yield* lift(input.runtime.setModel(base));
         const levels = antigravityThinkingLevels(yield* read);
         if (levels?.levels.some((level) => level.value === suffix)) {
@@ -525,7 +534,16 @@ export const applyAntigravityModelSelection = <E>(input: {
           explicitLevel ??= suffix;
           target = base;
         } else if (base !== current && current) {
+          // A rejected translation leaves the model and level that were active before it.
           yield* lift(input.runtime.setModel(current));
+          const restored = antigravityThinkingOption(yield* read);
+          if (
+            priorLevel &&
+            restored &&
+            restored.currentValue !== priorLevel &&
+            selectValues(restored).some((entry) => entry.value === priorLevel)
+          )
+            yield* lift(input.runtime.setConfigOption(restored.id, priorLevel));
         }
       }
       if (!translated)
@@ -663,8 +681,13 @@ const writeAntigravitySessionMode = <E>(input: {
     if (advertised.current === input.target) return input.target;
     if (!advertised.modes.includes(input.target)) {
       // A session that names no `default` mode keeps its own; F5 still answers its requests.
-      // Staying in Plan is never silent: the turn would run under Plan's rules.
-      if (input.target === "default" && advertised.current !== "plan")
+      // Staying in Plan or native Auto is never silent: in Plan the turn would run under Plan's
+      // rules, and in Auto Antigravity's own reviewer would approve what F5 never sees.
+      if (
+        input.target === "default" &&
+        advertised.current !== "plan" &&
+        advertised.current !== "auto"
+      )
         return advertised.current ?? input.target;
       return yield* Effect.fail(
         input.mapError(
@@ -673,7 +696,9 @@ const writeAntigravitySessionMode = <E>(input: {
               ? "This Antigravity runtime does not offer Plan mode. Update Antigravity in Settings, or turn Plan off."
               : advertised.current === "plan"
                 ? "This Antigravity session could not leave Plan mode. Start a new session to continue."
-                : `This Antigravity session does not offer the '${input.target}' mode.`,
+                : advertised.current === "auto"
+                  ? "This Antigravity session could not leave native Auto, so F5 cannot enforce the selected access mode. Start a new session to continue."
+                  : `This Antigravity session does not offer the '${input.target}' mode.`,
           ),
         ),
       );
@@ -732,6 +757,29 @@ export function antigravityTextGenerationModel(
   );
 }
 
+/** Known thinking levels from least to most effort; unknown names rank after them. */
+const THINKING_LEVEL_ORDER = ["none", "off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/** The least-effort level by name, never by the agent's listing order. */
+export function lowestAntigravityThinkingLevel(
+  levels: ReadonlyArray<{ readonly value: string }>,
+): string | undefined {
+  const rank = (value: string) => {
+    const index = THINKING_LEVEL_ORDER.indexOf(value.toLowerCase());
+    return index === -1 ? THINKING_LEVEL_ORDER.length : index;
+  };
+  return levels
+    .map((level, index) => ({ value: level.value, index }))
+    .toSorted((left, right) => rank(left.value) - rank(right.value) || left.index - right.index)[0]
+    ?.value;
+}
+
+/**
+ * Text generation runs in the user's profile, where a model switch may persist as the account
+ * default. With no explicit model it uses a light model at its lowest level; an explicit model
+ * keeps the requested level (or one from a legacy suffix), or the model's default. Returns an
+ * effect that restores the model and level that were active before, to run after the prompt.
+ */
 export const applyAntigravityTextGenerationSelection = (input: {
   readonly runtime: Pick<
     AcpSessionRuntimeShape,
@@ -739,23 +787,48 @@ export const applyAntigravityTextGenerationSelection = (input: {
   >;
   readonly model: string;
   readonly thinking: string | undefined;
-}): Effect.Effect<void, AcpErrors.AcpError | AntigravityModelUnavailableError> =>
+  readonly customModels?: ReadonlyArray<string>;
+}): Effect.Effect<Effect.Effect<void>, AcpErrors.AcpError | AntigravityModelUnavailableError> =>
   Effect.gen(function* () {
+    const before = yield* input.runtime.getConfigOptions;
+    const originalModel = findModelConfigOption(before)?.currentValue || undefined;
+    const originalLevel = antigravityThinkingOption(before)?.currentValue || undefined;
     const explicit = input.model !== ANTIGRAVITY_DEFAULT_MODEL;
-    const model = explicit
-      ? input.model
-      : antigravityTextGenerationModel(yield* input.runtime.getConfigOptions);
+    const model = explicit ? input.model : antigravityTextGenerationModel(before);
     const state = makeAntigravitySelectionState();
-    yield* applyAntigravityModelSelection({
+    const selected = yield* applyAntigravityModelSelection({
       runtime: input.runtime,
       requestedModel: model,
       requestedThinking: explicit ? input.thinking : undefined,
+      ...(input.customModels ? { customModels: input.customModels } : {}),
       state,
       mapError: (cause) => cause,
     });
-    if (explicit && input.thinking) return;
-    const lowest = antigravityThinkingLevels(yield* input.runtime.getConfigOptions)?.levels[0];
-    const thought = antigravityThinkingOption(yield* input.runtime.getConfigOptions);
-    if (lowest && thought && thought.currentValue !== lowest.value)
-      yield* input.runtime.setConfigOption(thought.id, lowest.value);
+    if (!explicit) {
+      const options = yield* input.runtime.getConfigOptions;
+      const lowest = lowestAntigravityThinkingLevel(
+        antigravityThinkingLevels(options)?.levels ?? [],
+      );
+      const thought = antigravityThinkingOption(options);
+      if (lowest && thought && thought.currentValue !== lowest)
+        yield* input.runtime.setConfigOption(thought.id, lowest);
+    }
+    const restore = Effect.gen(function* () {
+      if (originalModel && selected.model !== originalModel)
+        yield* input.runtime.setModel(originalModel);
+      const thought = antigravityThinkingOption(yield* input.runtime.getConfigOptions);
+      if (
+        originalLevel &&
+        thought &&
+        thought.currentValue !== originalLevel &&
+        selectValues(thought).some((entry) => entry.value === originalLevel)
+      )
+        yield* input.runtime.setConfigOption(thought.id, originalLevel);
+    }).pipe(
+      Effect.timeout(Duration.seconds(10)),
+      Effect.catchCause(() =>
+        Effect.logWarning("Antigravity text generation could not restore the model selection."),
+      ),
+    );
+    return restore;
   });

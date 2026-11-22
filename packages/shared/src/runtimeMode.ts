@@ -14,14 +14,25 @@ const REVIEWED_MODES = new Set<RuntimeMode>([
 
 /**
  * Runtime modes a provider supports. An instance's `availableRuntimeModes` (from its status
- * snapshot) overrides the per-kind default table, so per-instance support such as native
- * Antigravity Auto is enforced everywhere the table is.
+ * snapshot) replaces the per-kind default table, so per-instance support such as native
+ * Antigravity Auto is enforced everywhere the table is. The snapshot list is security policy,
+ * so it is intersected with the modes each kind may ever offer: a snapshot can narrow its kind's
+ * table, and widen it only where the kind allows (Antigravity's native Auto).
  */
 export function runtimeModeCapabilities(
   provider: ProviderKind,
   available?: ReadonlyArray<RuntimeMode> | null,
 ): ReadonlySet<RuntimeMode> {
-  if (available && available.length > 0) return new Set(available);
+  const table = defaultRuntimeModes(provider);
+  if (available && available.length > 0) {
+    const ceiling = provider === "antigravity" ? REVIEWED_MODES : table;
+    const allowed = new Set(available.filter((mode) => ceiling.has(mode)));
+    if (allowed.size > 0) return allowed;
+  }
+  return table;
+}
+
+function defaultRuntimeModes(provider: ProviderKind): ReadonlySet<RuntimeMode> {
   switch (provider) {
     case "codex":
     // Claude `auto` fails closed to asking when the model or CLI lacks it.
@@ -66,15 +77,18 @@ const RUNTIME_MODES_BY_AUTONOMY: ReadonlyArray<RuntimeMode> = [
 ];
 
 /**
- * `preferred` when supported, otherwise the least autonomous supported mode, so switching
- * provider never widens access on the user's behalf.
+ * `preferred` when supported, otherwise the most autonomous supported mode that is still
+ * narrower than `preferred`. `undefined` when every supported mode is wider: switching provider
+ * never widens access on the user's behalf, so the caller must ask the user to choose.
  */
-export function supportedRuntimeModeOrNarrowest(
+export function supportedRuntimeModeAtOrBelow(
   capabilities: ReadonlySet<RuntimeMode>,
   preferred: RuntimeMode,
-): RuntimeMode {
-  if (capabilities.has(preferred)) return preferred;
-  return RUNTIME_MODES_BY_AUTONOMY.find((mode) => capabilities.has(mode)) ?? "approval-required";
+): RuntimeMode | undefined {
+  const ceiling = RUNTIME_MODES_BY_AUTONOMY.indexOf(preferred);
+  return RUNTIME_MODES_BY_AUTONOMY.slice(0, ceiling + 1)
+    .toReversed()
+    .find((mode) => capabilities.has(mode));
 }
 
 export function runtimeModeGloss(runtimeMode: RuntimeMode): string {

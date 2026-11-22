@@ -1,13 +1,11 @@
 import { accountLoginOutput } from "./accountLoginOutput";
 import { ChevronDownIcon, CopyIcon, ExternalLinkIcon, RotateCwIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
 import type { ProfileSummary, ProviderInstanceId } from "@t3tools/contracts";
 
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { cn } from "../../lib/utils";
 import { readNativeApi } from "../../nativeApi";
-import { serverConfigQueryOptions } from "../../lib/serverReactQuery";
 import { refreshProfiles } from "../../profileState";
 import { onProviderAccountEvent } from "../../wsNativeApi";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
@@ -27,9 +25,12 @@ export function ProviderAccountPanel({
   autoStart = false,
   cancelOnUnmount = false,
   onLoginFinished,
+  authType,
 }: {
   readonly instanceId: ProviderInstanceId;
   readonly driver?: string;
+  /** The instance's sign-in method from its provider snapshot, when the caller has it. */
+  readonly authType?: string | undefined;
   /**
    * When the caller already knows the account state (the Profiles surface),
    * only the relevant primary action is offered. Omitted on the Providers
@@ -66,10 +67,6 @@ export function ProviderAccountPanel({
   const { copyToClipboard, isCopied } = useCopyToClipboard();
   const api = readNativeApi()?.profiles;
   // API-key instances verify the key instead of signing in through a browser.
-  const serverConfigQuery = useQuery(serverConfigQueryOptions());
-  const authType = serverConfigQuery.data?.providers.find(
-    (provider) => provider.instanceId === instanceId,
-  )?.auth.type;
   const signInLabel =
     driver === "antigravity" && authType === "gemini-api-key" ? "Connect" : "Sign in";
 

@@ -11,12 +11,22 @@ const runtime = vi.hoisted(() => ({
   advance: vi.fn(
     async (
       _profileDirectory: string,
-      _patch?: (state: { version: 1; revision: number; verified: boolean }) => unknown,
+      _patch?: (state: {
+        version: 1;
+        revision: number;
+        verified: boolean;
+        keyFingerprint?: string;
+        accountFingerprint?: string;
+      }) => unknown,
     ) => ({ version: 1, revision: 1, verified: true }),
   ),
 }));
 
+const fsCalls = vi.hoisted(() => ({ mkdir: [] as string[] }));
 vi.mock("node:fs/promises", () => ({
+  mkdir: async (directory: string) => {
+    fsCalls.mkdir.push(directory);
+  },
   mkdtemp: async () => "/tmp/f5-login-test",
   rm: async () => {},
 }));
@@ -131,6 +141,8 @@ it("verifies a Gemini API key through a disposable authenticate and records the 
   expect(runtime.requests.map((request) => request.method)).toEqual(["initialize", "authenticate"]);
   expect(runtime.requests[1]?.params).toEqual({ methodId: "gemini-api-key" });
   expect(runtime.advance).toHaveBeenCalledTimes(1);
+  // A never-enabled instance gets its profile folder before the account workspace.
+  expect(fsCalls.mkdir).toHaveLength(1);
   expect(output.join("")).toContain("Antigravity accepted the Gemini API key.");
   // A successful connect requests one model discovery.
   expect(
@@ -146,4 +158,17 @@ it("signs out of a key instance without an ACP logout and advances the revision"
   expect(await exited).toBe(0);
   expect(runtime.requests).toEqual([]);
   expect(runtime.advance).toHaveBeenCalledTimes(1);
+  // The disconnect clears the stored fingerprints instead of merging the old ones back.
+  const patch = runtime.advance.mock.calls[0]?.[1]?.({
+    version: 1,
+    revision: 3,
+    verified: true,
+    keyFingerprint: "old-key",
+    accountFingerprint: "old-account",
+  });
+  expect(patch).toEqual({
+    keyFingerprint: undefined,
+    accountFingerprint: undefined,
+    verified: false,
+  });
 });

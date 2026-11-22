@@ -194,7 +194,9 @@ function preserveRedactedProviderSecrets(
     // A blank value (the redacted form the client read back) keeps the stored secret, as does an
     // omitted field where the driver preserves on omission. A new value rotates it;
     // `redacted: false` clears it.
-    const keeps = patchValue === "" || (patchValue === undefined && secret.preserveWhenOmitted);
+    const keeps =
+      (typeof patchValue === "string" && patchValue.trim() === "") ||
+      (patchValue === undefined && secret.preserveWhenOmitted);
     if (!keeps || patchInstance.config[secret.redactedField] === false) {
       continue;
     }

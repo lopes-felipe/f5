@@ -194,4 +194,57 @@ describe("Antigravity account revision", () => {
     await updateAntigravityAuthState(directory, (state) => ({ ...state, revision: 0 }));
     expect((await readAntigravityAuthState(directory)).revision).toBe(5);
   });
+  it("refuses to write over an unreadable state instead of restarting at revision zero", async () => {
+    const directory = await profile();
+    await fs.writeFile(path.join(directory, "f5-auth-state.json"), "{not json");
+    await expect(advanceAntigravityRevision(directory)).rejects.toThrow(/could not be read/);
+    expect(await fs.readFile(path.join(directory, "f5-auth-state.json"), "utf8")).toBe("{not json");
+    // Status reads still fall back to an unready state.
+    expect((await readAntigravityAuthState(directory)).verified).toBe(false);
+  });
+  it("reports a failed write to the caller without an unhandled rejection", async () => {
+    const directory = await profile();
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      // A directory where the state file should be makes the rename fail.
+      await fs.mkdir(path.join(directory, "f5-auth-state.json", "blocker"), { recursive: true });
+      await expect(advanceAntigravityRevision(directory)).rejects.toThrow();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unhandled).toEqual([]);
+      // The queue recovers for the next writer.
+      await fs.rm(path.join(directory, "f5-auth-state.json"), { recursive: true });
+      expect((await advanceAntigravityRevision(directory)).revision).toBe(1);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+  it("keeps the last account while the token is unreadable, so a new account still advances", async () => {
+    const directory = await profile();
+    const oauth = { authMethod: "oauth-personal", apiKey: "" } as const;
+    await writeToken(directory, { client_id: "c", refresh_token: "account-a" });
+    await reconcileAntigravityAuthState(directory, oauth);
+    await fs.rm(path.join(directory, "antigravity-acp", "acp_token.json"));
+    expect((await reconcileAntigravityAuthState(directory, oauth)).revision).toBe(0);
+    await writeToken(directory, { client_id: "c", refresh_token: "account-b" });
+    expect((await reconcileAntigravityAuthState(directory, oauth)).revision).toBe(1);
+    // The same account coming back keeps its revision.
+    expect((await reconcileAntigravityAuthState(directory, oauth)).revision).toBe(1);
+  });
+  it("removes fields a revision patch sets to undefined", async () => {
+    const directory = await profile();
+    await updateAntigravityAuthState(directory, (state) => ({
+      ...state,
+      keyFingerprint: "k",
+      accountFingerprint: "a",
+      verified: true,
+    }));
+    const state = await advanceAntigravityRevision(directory, () => ({
+      keyFingerprint: undefined,
+      accountFingerprint: undefined,
+      verified: false,
+    }));
+    expect(state).toEqual({ version: 1, revision: 1, verified: false });
+  });
 });

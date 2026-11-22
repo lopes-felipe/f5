@@ -106,6 +106,13 @@ export interface ProviderInstance {
   readonly requestModelDiscovery?: Effect.Effect<void>;
   readonly updateModelCatalog?: (models: ReadonlyArray<ServerProviderModel>) => Effect.Effect<void>;
   /**
+   * Boot only: the models from this instance's cached status snapshot, offered before the first
+   * live probe is published, so a restart can restore a catalog the live probe cannot rebuild.
+   */
+  readonly hydrateModelCatalog?: (
+    models: ReadonlyArray<ServerProviderModel>,
+  ) => Effect.Effect<void>;
+  /**
    * Read-only hooks/plugins/connectors/agents inventory for this instance.
    * `projectRoot` is resolved by the server from a project id, never taken
    * from the browser. Instance-private entries come from this instance's own

@@ -15,9 +15,10 @@ import {
   type ServerProviderModel,
   type ServerProviderSkill,
 } from "@t3tools/contracts";
+import { customModelSlug } from "@t3tools/shared/customModels";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { PROVIDER_INSTANCE_SECRET_FIELDS } from "@t3tools/shared/serverSettings";
-import { Cause, Duration, Effect, FileSystem, Path, Schema, Stream } from "effect";
+import { Cause, Duration, Effect, FileSystem, Path, Schema, Scope, Stream } from "effect";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { ServerConfig } from "../../config.ts";
 import { makeGrokTextGeneration } from "../../git/Layers/GrokTextGeneration.ts";
@@ -69,11 +70,18 @@ const DISCOVERY_TIMEOUT = Duration.seconds(90);
 const DISCOVERY_MAX_MODEL_CHANGES = 24;
 const DISCOVERY_FAILURE_BACKOFF_MS = 60_000;
 /**
- * Cycling `setModel` reads every model's levels before the first thread. Set to false if the
- * R0 capture shows the account default persists and cannot be restored reliably; thread
- * sessions then populate levels as they select models.
+ * Cycling `setModel` would read every model's levels before the first thread, but a switch may
+ * persist as the account default. Off until the R0 capture confirms a restored default holds in
+ * a fresh process (`checks.defaultRestoredInFreshProcess`); until then discovery reads the
+ * current model and thread sessions populate the rest as they select models.
  */
-const DISCOVERY_CYCLES_MODELS = true;
+export const DISCOVERY_CYCLES_MODELS = false;
+
+class AntigravityDiscoveryRestoreError extends Error {
+  constructor() {
+    super("Antigravity catalog discovery could not confirm the default model was restored.");
+  }
+}
 /** Static runtime modes; native Auto is added per instance once a session advertised it. */
 const STATIC_RUNTIME_MODES: ReadonlyArray<RuntimeMode> = [
   "approval-required",
@@ -99,6 +107,7 @@ interface AntigravityCatalog {
 export function antigravityDiscoveryFailureClass(cause: Cause.Cause<unknown>): string {
   const error = Cause.squash(cause);
   if (Cause.isTimeoutError(error)) return "Timed out";
+  if (error instanceof AntigravityDiscoveryRestoreError) return "Default model not restored";
   const record = typeof error === "object" && error !== null ? (error as object) : {};
   const tag = "_tag" in record ? String(record._tag) : "";
   const detail = "detail" in record ? String(record.detail) : "";
@@ -160,6 +169,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
   create: ({ instanceId, displayName, accentColor, enabled, config, environment }) =>
     Effect.gen(function* () {
       const server = yield* ServerConfig;
+      const instanceScope = yield* Scope.Scope;
       const eventLoggers = yield* ProviderEventLoggers;
       const fileSystem = yield* FileSystem.FileSystem;
       const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -181,12 +191,14 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
       // A method or key change since the last build advances the account revision, so sessions
       // and cached catalogs from the previous account are not reused.
       const before = yield* Effect.promise(() => readAntigravityAuthState(profileDirectory));
-      const reconciled = enabled
-        ? yield* Effect.promise(() => reconcileAntigravityAuthState(profileDirectory, auth))
-        : before;
-      const accountRevision = Effect.promise(() =>
-        reconcileAntigravityAuthState(profileDirectory, auth).then((state) => state.revision),
-      );
+      // An unreadable state file refuses writes; the instance still builds and reports the
+      // state it could read, and nothing reuses a revision.
+      const reconcile = () =>
+        reconcileAntigravityAuthState(profileDirectory, auth).catch(() =>
+          readAntigravityAuthState(profileDirectory),
+        );
+      const reconciled = enabled ? yield* Effect.promise(reconcile) : before;
+      const accountRevision = Effect.promise(() => reconcile().then((state) => state.revision));
       const staleAccount = Effect.sync(() =>
         isAntigravityAuthCurrent(server.stateDir, instanceId, auth)
           ? undefined
@@ -217,7 +229,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
       let catalog: AntigravityCatalog | undefined;
       let hydratable = reconciled.revision === before.revision;
       let discoveryRequested = false;
-      let discoveryInFlight: Promise<void> | undefined;
+      let discoveryInFlight = false;
       let lastDiscoveryFailureAt = 0;
       let lastDiscoveryFailure: { failureClass: string; at: string } | undefined;
       let refreshSnapshot: Effect.Effect<void> = Effect.void;
@@ -243,15 +255,21 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         const state = await readAntigravityAuthState(profileDirectory);
         const version = await runtimeVersion();
         if (!catalog || catalog.revision !== state.revision || catalog.version !== version) {
-          // Native Auto stays offered across restarts for the account and runtime that
-          // advertised it, so Auto threads and scheduled tasks keep starting.
-          const remembered = rememberedCatalog(state, version);
+          // Native Auto stays offered across restarts and reconnects while the runtime version
+          // and sign-in method that advertised it are unchanged, so saved Auto threads and
+          // scheduled tasks keep starting; a session that no longer offers it falls back to
+          // Supervised with one warning.
+          const autoCarried =
+            state.catalog?.autoAdvertised === true &&
+            state.catalog.version === version &&
+            state.catalog.method !== undefined &&
+            state.catalog.method === state.method;
           catalog = {
             revision: state.revision,
             version,
             choices: [],
             thinking: new Map(),
-            advertisedModes: remembered?.autoAdvertised ? ["auto"] : undefined,
+            advertisedModes: autoCarried ? ["auto"] : undefined,
             lastSuccessAt: undefined,
             partial: false,
           };
@@ -268,6 +286,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
                   revision: entry.revision,
                   version: entry.version,
                   autoAdvertised: entry.advertisedModes?.includes("auto") ?? false,
+                  ...(state.method ? { method: state.method } : {}),
                 },
               }
             : state,
@@ -285,6 +304,13 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
       const observeCatalog = (observation: AntigravityCatalogObservation) =>
         Effect.promise(async () => {
           const entry = await currentCatalog();
+          // A session from an older account revision can still report after the account
+          // advanced; its choices belong to the previous account.
+          if (
+            observation.accountRevision !== undefined &&
+            observation.accountRevision !== entry.revision
+          )
+            return false;
           hydratable = false;
           const changed = observe(entry, observation);
           if (changed) await persistCatalogIdentity(entry);
@@ -298,14 +324,15 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
        */
       const discover = Effect.gen(function* () {
         const entry = yield* Effect.promise(currentCatalog);
-        yield* Effect.acquireRelease(
-          Effect.try({
-            try: () => acquireAccountAdmission(server.stateDir, instanceId),
-            catch: (cause) =>
-              new AcpErrors.AcpTransportError({ detail: "Account change in progress.", cause }),
-          }),
-          (release) => Effect.sync(release),
-        );
+        // Admission covers the launch only, so a sign-out or settings change is never refused
+        // while discovery runs. Results are published only for the revision discovery started
+        // under, and a settings change rebuilds the instance, which interrupts it.
+        const releaseAdmission = yield* Effect.try({
+          try: () => acquireAccountAdmission(server.stateDir, instanceId),
+          catch: (cause) =>
+            new AcpErrors.AcpTransportError({ detail: "Account change in progress.", cause }),
+        });
+        yield* Effect.addFinalizer(() => Effect.sync(releaseAdmission));
         const cwd = yield* fileSystem
           .makeTempDirectoryScoped({ prefix: "f5-antigravity-catalog-" })
           .pipe(
@@ -330,6 +357,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
           Effect.succeed({ outcome: { outcome: "cancelled" as const } }),
         );
         yield* runtime.start();
+        releaseAdmission();
         entry.partial = true;
         const read = Effect.gen(function* () {
           const configOptions = yield* runtime.getConfigOptions;
@@ -355,21 +383,19 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         if (DISCOVERY_CYCLES_MODELS && initial.current) {
           const original = initial.current;
           let switched = false;
+          let restored = true;
           // Restore the account default after any switch, on success, failure or timeout.
-          // Finalizers run before the runtime's scope closes; the restore is bounded.
+          // Finalizers run before the runtime's scope closes; the restore is bounded, and only
+          // a read-back of the original counts as restored.
           const restore = Effect.gen(function* () {
             yield* runtime.setModel(original);
-            const restored = yield* read;
-            if (restored.current !== original)
-              yield* Effect.logWarning(
-                "Antigravity catalog discovery could not restore the default model.",
-              );
+            restored = (yield* read).current === original;
           }).pipe(
             Effect.timeout(Duration.seconds(10)),
             Effect.catchCause(() =>
-              Effect.logWarning(
-                "Antigravity catalog discovery could not restore the default model.",
-              ),
+              Effect.sync(() => {
+                restored = false;
+              }),
             ),
           );
           yield* Effect.gen(function* () {
@@ -384,8 +410,12 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
               entry.thinking.set(model, antigravityThinkingLevels(after));
             }
           }).pipe(Effect.ensuring(Effect.suspend(() => (switched ? restore : Effect.void))));
+          // Observations stay published as partial; a later explicit refresh retries.
+          if (!restored) return yield* Effect.fail(new AntigravityDiscoveryRestoreError());
         }
-        entry.partial = false;
+        // Complete only when every advertised model's levels were read (`null`, no control,
+        // counts as read).
+        entry.partial = entry.choices.some((choice) => !entry.thinking.has(choice.value));
         entry.lastSuccessAt = new Date().toISOString();
         yield* Effect.promise(() => persistCatalogIdentity(entry));
       }).pipe(Effect.scoped, Effect.timeout(DISCOVERY_TIMEOUT));
@@ -405,7 +435,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
             updateAntigravityAuthState(
               profileDirectory,
               ({ discoveryRequested: _, ...rest }) => rest,
-            ),
+            ).catch(() => undefined),
           );
         }
         if (!discoveryRequested || discoveryInFlight) return;
@@ -416,36 +446,38 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         if (Date.now() - lastDiscoveryFailureAt < DISCOVERY_FAILURE_BACKOFF_MS) return;
         discoveryRequested = false;
         hydratable = false;
-        discoveryInFlight = Effect.runPromise(
-          discover.pipe(
-            Effect.provideService(FileSystem.FileSystem, fileSystem),
-            Effect.tap(() =>
-              Effect.sync(() => {
-                lastDiscoveryFailure = undefined;
-              }),
-            ),
-            Effect.catchCause((cause) =>
-              Effect.sync(() => {
-                lastDiscoveryFailureAt = Date.now();
-                lastDiscoveryFailure = {
-                  failureClass: antigravityDiscoveryFailureClass(cause),
-                  at: new Date(lastDiscoveryFailureAt).toISOString(),
-                };
-              }).pipe(
-                Effect.andThen(
-                  Effect.logWarning("Antigravity catalog discovery failed.", {
-                    failureClass: lastDiscoveryFailure?.failureClass,
-                  }),
-                ),
+        discoveryInFlight = true;
+        // Forked in the instance scope: replacing or disabling the instance interrupts it.
+        yield* discover.pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.tap(() =>
+            Effect.sync(() => {
+              lastDiscoveryFailure = undefined;
+            }),
+          ),
+          Effect.catchCause((cause) =>
+            Effect.sync(() => {
+              lastDiscoveryFailureAt = Date.now();
+              lastDiscoveryFailure = {
+                failureClass: antigravityDiscoveryFailureClass(cause),
+                at: new Date(lastDiscoveryFailureAt).toISOString(),
+              };
+            }).pipe(
+              Effect.andThen(
+                Effect.logWarning("Antigravity catalog discovery failed.", {
+                  failureClass: lastDiscoveryFailure?.failureClass,
+                }),
               ),
             ),
           ),
-        )
-          .finally(() => {
-            discoveryInFlight = undefined;
-          })
-          .then(() => Effect.runPromise(refreshSnapshot))
-          .catch(() => undefined);
+          Effect.ensuring(
+            Effect.sync(() => {
+              discoveryInFlight = false;
+            }),
+          ),
+          Effect.andThen(Effect.suspend(() => refreshSnapshot)),
+          Effect.forkIn(instanceScope),
+        );
       });
 
       const previewMcp = Option.getOrUndefined(yield* Effect.serviceOption(PreviewMcpHttpServer));
@@ -542,6 +574,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
               runtime,
               model: normalizeModel(modelSelection.model),
               thinking: getModelSelectionStringOptionValue(modelSelection, "thinking"),
+              customModels: config.customModels.map(customModelSlug),
             }),
         },
       );
@@ -565,7 +598,12 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         path.join(profileDirectory, "config", "plugins"),
         path.join(profileDirectory, "config", "config.json"),
       ];
-      let skillCache: { signature: string; skills: ReadonlyArray<ServerProviderSkill> } | undefined;
+      // Root stats catch added and removed skills; an edit inside an existing SKILL.md does not
+      // touch them, so the cache also expires after a few minutes.
+      const SKILL_CACHE_TTL_MS = 5 * 60_000;
+      let skillCache:
+        | { signature: string; at: number; skills: ReadonlyArray<ServerProviderSkill> }
+        | undefined;
       const homeSkills = Effect.gen(function* () {
         const signature = JSON.stringify(
           yield* Effect.promise(() =>
@@ -579,9 +617,10 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
             ),
           ),
         );
-        if (skillCache?.signature === signature) return skillCache.skills;
+        if (skillCache?.signature === signature && Date.now() - skillCache.at < SKILL_CACHE_TTL_MS)
+          return skillCache.skills;
         const skills = yield* scanHomeSkills;
-        skillCache = { signature, skills };
+        skillCache = { signature, at: Date.now(), skills };
         return skills;
       });
       const checkProvider = Effect.gen(function* () {
@@ -660,12 +699,14 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         // The catalog is keyed by account revision and runtime version, so sign-in, sign-out
         // and method changes already invalidate it. Only an explicit "Refresh provider status"
         // requests discovery.
+        // An explicit refresh also rescans home skills, so an edited `SKILL.md` shows up.
         requestModelDiscovery: Effect.sync(() => {
           discoveryRequested = true;
+          skillCache = undefined;
         }),
-        // Restores the persisted catalog at startup, only for the revision and runtime version
-        // it was recorded under.
-        updateModelCatalog: (models: ReadonlyArray<ServerProviderModel>) =>
+        // Restores the cached catalog before the first live probe (at startup, or when the
+        // instance is rebuilt), only for the revision and runtime version it was recorded under.
+        hydrateModelCatalog: (models: ReadonlyArray<ServerProviderModel>) =>
           Effect.promise(async () => {
             if (!hydratable) return;
             const entry = await currentCatalog();
@@ -673,11 +714,11 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
             const state = await readAntigravityAuthState(profileDirectory);
             if (!rememberedCatalog(state, entry.version) || state.revision !== entry.revision)
               return;
-            hydratable = false;
             const native = models.filter(
               (model) => !model.isCustom && model.slug !== ANTIGRAVITY_DEFAULT_MODEL,
             );
             if (native.length === 0) return;
+            hydratable = false;
             entry.choices = native.map((model) => ({ value: model.slug, name: model.name }));
             for (const model of native) {
               const thinking = antigravityThinkingFromModel(model);

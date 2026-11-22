@@ -14,6 +14,7 @@ import {
   applyAntigravityModelSelection,
   applyAntigravitySessionMode,
   applyAntigravityTextGenerationSelection,
+  lowestAntigravityThinkingLevel,
   makeAntigravitySelectionState,
 } from "./AntigravityAcpSupport.ts";
 import { antigravityEditTargetsInWorkspace } from "./AntigravityEditLocation.ts";
@@ -150,12 +151,13 @@ describe("Antigravity model and thinking selection", () => {
     expect(session.writes).toEqual([]);
   });
 
-  it("picks Hydrogen at its lowest level for text generation", async () => {
+  it("picks Hydrogen at its lowest level for text generation, then restores the selection", async () => {
     const session = fakeSession("neon");
+    await select(session, "neon", "high");
     expect(antigravityTextGenerationModel(await run(session.runtime.getConfigOptions))).toBe(
       "hydrogen",
     );
-    await run(
+    const restore = await run(
       applyAntigravityTextGenerationSelection({
         runtime: session.runtime,
         model: "antigravity-default",
@@ -163,6 +165,46 @@ describe("Antigravity model and thinking selection", () => {
       }),
     );
     expect(session.current()).toEqual({ model: "hydrogen", level: "minimal" });
+    await run(restore);
+    expect(session.current()).toEqual({ model: "neon", level: "high" });
+  });
+
+  it("keeps an explicit model's requested, suffixed or default level for text generation", async () => {
+    const selectFor = (session: ReturnType<typeof fakeSession>, model: string) =>
+      run(
+        applyAntigravityTextGenerationSelection({
+          runtime: session.runtime,
+          model,
+          thinking: undefined,
+        }).pipe(Effect.asVoid),
+      );
+    const explicit = fakeSession("neon");
+    await selectFor(explicit, "carbon");
+    // No level requested: the model's own default, not the lowest.
+    expect(explicit.writes).toEqual(["model=carbon"]);
+    // Hydrogen defaults to `low`; the `-minimal` suffix is kept, not replaced by the lowest.
+    const suffixed = fakeSession("neon");
+    await selectFor(suffixed, "hydrogen-minimal");
+    expect(suffixed.current()).toEqual({ model: "hydrogen", level: "minimal" });
+    const neonSuffix = fakeSession("carbon");
+    await selectFor(neonSuffix, "neon-high");
+    expect(neonSuffix.current()).toEqual({ model: "neon", level: "high" });
+  });
+
+  it("orders levels by name when choosing the lowest", () => {
+    expect(
+      lowestAntigravityThinkingLevel([{ value: "high" }, { value: "low" }, { value: "medium" }]),
+    ).toBe("low");
+    expect(lowestAntigravityThinkingLevel([{ value: "turbo" }, { value: "minimal" }])).toBe(
+      "minimal",
+    );
+  });
+
+  it("restores the previous model and level when a legacy suffix is rejected", async () => {
+    const session = fakeSession("neon");
+    await select(session, "neon", "high");
+    await expect(select(session, "carbon-medium", undefined)).rejects.toThrow(/unavailable/);
+    expect(session.current()).toEqual({ model: "neon", level: "high" });
   });
 });
 
@@ -265,6 +307,14 @@ describe("Antigravity session modes", () => {
   it("fails rather than silently staying in Plan", async () => {
     const session = modeRuntime({ modeState: modes("plan", "plan") });
     await expect(applyMode(session.runtime, "default")).rejects.toThrow("could not leave Plan");
+  });
+
+  it("fails rather than silently staying in native Auto", async () => {
+    // A resumed session in Auto that does not offer `default`.
+    const session = modeRuntime({ modeState: modes("auto", "auto", "plan") });
+    await expect(applyMode(session.runtime, "default")).rejects.toThrow(
+      "could not leave native Auto",
+    );
   });
 
   it("falls back to default with one warning when native Auto is rejected", async () => {
@@ -394,18 +444,63 @@ describe("Antigravity approval policy", () => {
   });
 
   it("requires every edit target to be inside the canonical workspace", () => {
+    const edit = (...paths: string[]) => ({
+      kind: "edit",
+      title: "write_to_file",
+      locations: paths.map((path) => ({ path })),
+    });
+    // The same request without the outside diff is approved, so the diff is what refuses it.
+    expect(antigravityEditTargetsInWorkspace(edit(NodePath.join(root, "a.ts")), root)).toBe(true);
     expect(
       antigravityEditTargetsInWorkspace(
         {
-          kind: "edit",
-          locations: [{ path: NodePath.join(root, "a.ts") }],
+          ...edit(NodePath.join(root, "a.ts")),
           content: [{ type: "diff", path: NodePath.join(outside, "b.ts") }],
         },
         root,
       ),
     ).toBe(false);
+    expect(antigravityEditTargetsInWorkspace(edit(root), root)).toBe(false);
+  });
+
+  it("asks when a link precedes a parent segment, since the filesystem follows the link first", () => {
+    // `<root>/escape` links outside; `<root>/escape/../x` opens `<outside's parent>/x`.
     expect(
-      antigravityEditTargetsInWorkspace({ kind: "edit", locations: [{ path: root }] }, root),
+      antigravityEditTargetsInWorkspace(
+        { kind: "edit", title: "write_to_file", locations: [{ path: `${root}/escape/../x.ts` }] },
+        root,
+      ),
     ).toBe(false);
+    expect(
+      antigravityEditTargetsInWorkspace(
+        { kind: "edit", title: "write_to_file", locations: [{ path: `${root}/sub/../x.ts` }] },
+        root,
+      ),
+    ).toBe(false);
+  });
+
+  it("asks when a path component exists but cannot be resolved as a directory", async () => {
+    await fs.writeFile(NodePath.join(root, "plain-file"), "x");
+    expect(
+      antigravityEditTargetsInWorkspace(
+        {
+          kind: "edit",
+          title: "write_to_file",
+          locations: [{ path: NodePath.join(root, "plain-file", "child.ts") }],
+        },
+        root,
+      ),
+    ).toBe(false);
+  });
+
+  it("asks for Git metadata and accepts names that only start with two dots", () => {
+    const write = (path: string) =>
+      antigravityEditTargetsInWorkspace(
+        { kind: "edit", title: "write_to_file", locations: [{ path }] },
+        root,
+      );
+    expect(write(NodePath.join(root, ".git", "hooks", "pre-commit"))).toBe(false);
+    expect(write(NodePath.join(root, "..notes.md"))).toBe(true);
+    expect(write(NodePath.join(root, "new-dir", "new-file.ts"))).toBe(true);
   });
 });

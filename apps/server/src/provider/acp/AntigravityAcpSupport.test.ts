@@ -8,8 +8,57 @@ import {
   antigravityAuthorizationUrl,
   antigravityEnvironment,
   antigravityProfileDirectory,
+  linkAntigravityUserConfigFiles,
   linkAntigravityUserSkills,
 } from "./AntigravityAcpSupport.ts";
+
+describe("Antigravity user configuration copies on Windows", () => {
+  const setup = async () => {
+    const base = await fs.mkdtemp(NodePath.join(os.tmpdir(), "f5-agy-copy-"));
+    const userHome = NodePath.join(base, "user");
+    const home = NodePath.join(base, "profile");
+    await fs.mkdir(NodePath.join(userHome, ".gemini"), { recursive: true });
+    await fs.mkdir(home, { recursive: true });
+    return { base, userHome, home, source: NodePath.join(userHome, ".gemini", "AGENTS.md") };
+  };
+
+  it("refreshes its own copy and leaves a copy the user edited", async () => {
+    const { base, userHome, home, source } = await setup();
+    const target = NodePath.join(home, "AGENTS.md");
+    try {
+      await fs.writeFile(source, "v1");
+      await linkAntigravityUserConfigFiles(home, userHome, "win32");
+      expect(await fs.readFile(target, "utf8")).toBe("v1");
+      await fs.writeFile(source, "v2");
+      await linkAntigravityUserConfigFiles(home, userHome, "win32");
+      expect(await fs.readFile(target, "utf8")).toBe("v2");
+      // The user edits the profile copy: later source changes and removal leave it in place.
+      await fs.writeFile(target, "edited");
+      await fs.writeFile(source, "v3");
+      await linkAntigravityUserConfigFiles(home, userHome, "win32");
+      expect(await fs.readFile(target, "utf8")).toBe("edited");
+      await fs.rm(source);
+      await linkAntigravityUserConfigFiles(home, userHome, "win32");
+      expect(await fs.readFile(target, "utf8")).toBe("edited");
+    } finally {
+      await fs.rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it("removes its unedited copy when the source is gone", async () => {
+    const { base, userHome, home, source } = await setup();
+    const target = NodePath.join(home, "AGENTS.md");
+    try {
+      await fs.writeFile(source, "v1");
+      await linkAntigravityUserConfigFiles(home, userHome, "win32");
+      await fs.rm(source);
+      await linkAntigravityUserConfigFiles(home, userHome, "win32");
+      await expect(fs.stat(target)).rejects.toThrow();
+    } finally {
+      await fs.rm(base, { recursive: true, force: true });
+    }
+  });
+});
 import {
   antigravityApprovalOptions,
   antigravityQuestion,

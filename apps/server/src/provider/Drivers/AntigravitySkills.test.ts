@@ -101,6 +101,61 @@ describe("Antigravity skill discovery", () => {
     expect(skills.map((entry) => entry.name)).toEqual(["inside"]);
   });
 
+  it("skips one oversized or unterminated skill instead of dropping the whole scan", async () => {
+    const { userHome, profileDirectory, cwd } = await layout();
+    const root = NodePath.join(cwd, ".agents", "skills");
+    await skill(NodePath.join(root, "a-good"), "good");
+    await fs.mkdir(NodePath.join(root, "b-huge"), { recursive: true });
+    await fs.writeFile(
+      NodePath.join(root, "b-huge", "SKILL.md"),
+      `---\nname: huge\n${"x".repeat(1_100_000)}`,
+    );
+    await skill(NodePath.join(root, "c-after"), "after");
+    const skills = await discoverAntigravitySkills({ cwd, userHome, profileDirectory });
+    expect(skills.map((entry) => entry.name)).toEqual(["after", "good"]);
+  });
+
+  it("reads only delimiter lines, so dashes inside a value do not end the frontmatter", async () => {
+    const { userHome, profileDirectory, cwd } = await layout();
+    const directory = NodePath.join(cwd, ".agents", "skills", "dashes");
+    await fs.mkdir(directory, { recursive: true });
+    await fs.writeFile(
+      NodePath.join(directory, "SKILL.md"),
+      `---\nname: dashes\ndescription: "Fast --- safe"\n---\nbody\n`,
+    );
+    const skills = await discoverAntigravitySkills({ cwd, userHome, profileDirectory });
+    expect(skills).toEqual([
+      expect.objectContaining({ name: "dashes", description: "Fast --- safe" }),
+    ]);
+  });
+
+  it("allows names starting with two dots and filters a configured skill directory by name", async () => {
+    const { userHome, profileDirectory, cwd } = await layout();
+    await skill(NodePath.join(cwd, "..local", "kept"), "kept");
+    await skill(NodePath.join(cwd, "shared", "skip"), "skip");
+    await fs.mkdir(NodePath.join(cwd, ".agents"), { recursive: true });
+    await fs.writeFile(
+      NodePath.join(cwd, ".agents", "skills.json"),
+      JSON.stringify({
+        entries: [{ path: "..local" }, { path: "shared/skip/", exclude: ["skip"] }],
+      }),
+    );
+    const skills = await discoverAntigravitySkills({ cwd, userHome, profileDirectory });
+    expect(skills.map((entry) => entry.name)).toEqual(["kept"]);
+  });
+
+  it("does not read plugin metadata outside the allowed roots", async () => {
+    const { userHome, profileDirectory, cwd, outside } = await layout();
+    await skill(NodePath.join(outside, "plugins", "evil", "skills", "leak"), "leak");
+    await fs.mkdir(NodePath.join(profileDirectory, "config"), { recursive: true });
+    await fs.symlink(
+      NodePath.join(outside, "plugins"),
+      NodePath.join(profileDirectory, "config", "plugins"),
+    );
+    const skills = await discoverAntigravitySkills({ cwd, userHome, profileDirectory });
+    expect(skills).toEqual([]);
+  });
+
   it("decodes skills.json entries and filters and rejects malformed files", () => {
     expect(
       parseAntigravitySkillsConfig(

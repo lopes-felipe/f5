@@ -32,8 +32,6 @@ interface SkillEntryFilter {
 
 const EMPTY_FILTER: SkillEntryFilter = { includeGroups: [], excludeNames: [] };
 
-export class AntigravitySkillsScanError extends Error {}
-
 const stringList = (value: unknown): ReadonlyArray<string> | undefined =>
   Array.isArray(value) && value.every((entry) => typeof entry === "string") ? value : undefined;
 
@@ -92,13 +90,23 @@ function skillPathSortKey(entry: string) {
   );
 }
 
+/** A frontmatter delimiter is a line of exactly `---` (trailing spaces and `\r` allowed). */
+const isDelimiterLine = (line: string) => /^---[ \t]*\r?$/.test(line);
+
 function parseFrontmatter(contents: string, fileName: string) {
-  const start = contents.indexOf("---");
+  const lines = contents.split("\n");
+  const start = lines.findIndex(isDelimiterLine);
   if (start === -1) return undefined;
-  const end = contents.indexOf("---", start + 3);
+  const end = lines.findIndex((line, index) => index > start && isDelimiterLine(line));
   if (end === -1) return undefined;
   try {
-    const parsed: unknown = parseYamlDocument(contents.slice(start + 3, end).trim()) ?? {};
+    const parsed: unknown =
+      parseYamlDocument(
+        lines
+          .slice(start + 1, end)
+          .join("\n")
+          .trim(),
+      ) ?? {};
     const fields = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
     const name = (typeof fields.name === "string" && fields.name) || fileName.slice(0, -3);
     const description =
@@ -116,9 +124,15 @@ const statOrUndefined = (target: string) => NodeFSP.stat(target).catch(() => und
 const resolveConfigPath = (rawPath: string, baseDir: string) =>
   NodePath.isAbsolute(rawPath) ? NodePath.resolve(rawPath) : NodePath.resolve(baseDir, rawPath);
 
+/** Rejects a leading parent segment or an absolute result; `..local` is a valid child. */
 const isWithin = (target: string, root: string) => {
   const relative = NodePath.relative(root, target);
-  return relative === "" || (!relative.startsWith("..") && !NodePath.isAbsolute(relative));
+  return (
+    relative === "" ||
+    (relative !== ".." &&
+      !relative.startsWith(`..${NodePath.sep}`) &&
+      !NodePath.isAbsolute(relative))
+  );
 };
 
 export async function discoverAntigravitySkills(input: {
@@ -145,15 +159,68 @@ export async function discoverAntigravitySkills(input: {
     return (await realRoots).some((root) => isWithin(real, root));
   };
 
+  /**
+   * Opens a regular file and binds the containment check to it: the opened file must be the
+   * file its link-resolved path names, and that path must be under an allowed root. A path
+   * swapped between the check and the open therefore cannot substitute another file.
+   */
+  const openContained = async (target: string) => {
+    const handle = await NodeFSP.open(target, "r").catch(() => undefined);
+    if (!handle) return undefined;
+    try {
+      const opened = await handle.stat();
+      const real = await NodeFSP.realpath(target).catch(() => undefined);
+      const named = real ? await statOrUndefined(real) : undefined;
+      if (
+        opened.isFile() &&
+        named !== undefined &&
+        named.ino === opened.ino &&
+        named.dev === opened.dev &&
+        (await allowed(real!))
+      )
+        return handle;
+    } catch {
+      /* fall through: refuse */
+    }
+    await handle.close();
+    return undefined;
+  };
+
+  /** Reads up to `limit` bytes; `undefined` when the file is larger (skipped, not fatal). */
+  const readBounded = async (target: string, limit: number) => {
+    const handle = await openContained(target);
+    if (!handle) return undefined;
+    try {
+      const buffer = Buffer.alloc(limit + 1);
+      let total = 0;
+      while (total <= limit) {
+        const { bytesRead } = await handle.read(buffer, total, buffer.length - total, total);
+        if (bytesRead === 0) break;
+        total += bytesRead;
+      }
+      budget.bytes -= Math.min(total, limit);
+      return total > limit ? undefined : buffer.subarray(0, total).toString("utf8");
+    } finally {
+      await handle.close();
+    }
+  };
+
+  /**
+   * Reads the file up to the end of its frontmatter (the second delimiter line). A file over the
+   * per-file or remaining scan budget, or one that cannot be opened safely, is skipped.
+   */
   const readFrontmatter = async (skillPath: string) => {
     const limit = Math.min(MAX_SKILL_BYTES, budget.bytes);
-    const handle = await NodeFSP.open(skillPath, "r").catch(() => undefined);
+    if (limit <= 0) return undefined;
+    const handle = await openContained(skillPath);
     if (!handle) return undefined;
     try {
       const chunks: Buffer[] = [];
       let total = 0;
-      let markers = 0;
-      let dashes = 0;
+      let delimiters = 0;
+      // The current line's first bytes, enough to recognise `---` plus trailing spaces.
+      let line = "";
+      let lineTooLong = false;
       for (;;) {
         const buffer = Buffer.alloc(SKILL_READ_CHUNK_BYTES);
         const { bytesRead } = await handle.read(buffer, 0, buffer.length, total);
@@ -161,19 +228,26 @@ export async function discoverAntigravitySkills(input: {
         const chunk = buffer.subarray(0, bytesRead);
         let end: number | undefined;
         for (let index = 0; index < chunk.length; index++) {
-          dashes = chunk[index] === 0x2d ? dashes + 1 : 0;
-          if (dashes === 3) {
-            dashes = 0;
-            markers++;
-            if (markers === 2) {
-              end = index + 1;
-              break;
-            }
+          const byte = chunk[index]!;
+          if (byte !== 0x0a) {
+            if (line.length < 16) line += String.fromCharCode(byte);
+            else lineTooLong = true;
+            continue;
+          }
+          if (!lineTooLong && isDelimiterLine(line)) delimiters++;
+          line = "";
+          lineTooLong = false;
+          if (delimiters === 2) {
+            end = index + 1;
+            break;
           }
         }
         chunks.push(end === undefined ? chunk : chunk.subarray(0, end));
         total += end ?? bytesRead;
-        if (total > limit) throw new AntigravitySkillsScanError(`Skill scan limit at ${skillPath}`);
+        if (total > limit) {
+          budget.bytes -= limit;
+          return undefined;
+        }
         if (end !== undefined) break;
       }
       budget.bytes -= total;
@@ -187,12 +261,32 @@ export async function discoverAntigravitySkills(input: {
     const fileName = NodePath.basename(skillPath);
     if (fileName.toLowerCase() !== "skill.md" || !fileName.endsWith(".md")) return;
     const info = await statOrUndefined(skillPath);
-    if (!info?.isFile() || !(await allowed(skillPath))) return;
+    if (!info?.isFile()) return;
     const contents = await readFrontmatter(skillPath);
     if (contents === undefined) return;
     const skill = parseFrontmatter(contents, fileName);
     if (!skill || skills.has(skill.name)) return;
     skills.set(skill.name, { ...skill, path: skillPath, scope, enabled: true });
+  };
+
+  /**
+   * Lists at most the remaining entry budget, reading the directory incrementally, so a huge
+   * directory never loads in full. Every listing (skill roots and plugins) is charged.
+   */
+  const listDirectory = async (directory: string): Promise<string[] | undefined> => {
+    const dir = await NodeFSP.opendir(directory).catch(() => undefined);
+    if (!dir) return undefined;
+    const names: string[] = [];
+    try {
+      for await (const entry of dir) {
+        if (budget.entries === 0) break;
+        budget.entries--;
+        names.push(entry.name);
+      }
+    } catch {
+      return names;
+    }
+    return names;
   };
 
   const scanDirectory = async (
@@ -205,22 +299,22 @@ export async function discoverAntigravitySkills(input: {
     const info = await statOrUndefined(directory);
     if (!info || !(await allowed(directory))) return;
     if (info.isFile() && acceptSkillFile) {
-      if (budget.entries === 0) throw new AntigravitySkillsScanError("Skill scan entry limit");
+      if (budget.entries === 0) return;
       budget.entries--;
       if (matchesFilter(NodePath.basename(NodePath.dirname(directory)), filter))
         await addSkillFile(directory, scope);
       return;
     }
     if (!info.isDirectory()) return;
-    const entries = await NodeFSP.readdir(directory).catch(() => undefined);
+    const entries = await listDirectory(directory);
     if (!entries) return;
-    if (entries.length > budget.entries)
-      throw new AntigravitySkillsScanError("Skill scan entry limit");
-    budget.entries -= entries.length;
     const sorted = entries.toSorted();
     const skillFile = sorted.find((entry) => entry.toLowerCase() === "skill.md");
     if (skillFile !== undefined) {
-      await addSkillFile(NodePath.join(directory, skillFile), scope);
+      // A configured directory that is itself a skill is filtered by its own name, like an
+      // entry that names its SKILL.md directly.
+      if (matchesFilter(NodePath.basename(directory), filter))
+        await addSkillFile(NodePath.join(directory, skillFile), scope);
       return;
     }
     if (!scanChildren) return;
@@ -245,11 +339,9 @@ export async function discoverAntigravitySkills(input: {
     if (visited.has(resolved) || !(await allowed(resolved))) return;
     const info = await statOrUndefined(resolved);
     if (!info?.isFile()) return;
-    if (info.size > Math.min(MAX_SKILL_BYTES, budget.bytes))
-      throw new AntigravitySkillsScanError(`Skill scan limit at ${resolved}`);
-    const raw = await NodeFSP.readFile(resolved, "utf8").catch(() => undefined);
+    // Bounded by the read itself, not the earlier stat: a file that grew is skipped.
+    const raw = await readBounded(resolved, Math.min(MAX_SKILL_BYTES, budget.bytes));
     if (raw === undefined) return;
-    budget.bytes -= Buffer.byteLength(raw, "utf8");
     const parsed = parseAntigravitySkillsConfig(raw);
     if (!parsed) return;
     const nextVisited = new Set(visited).add(resolved);
@@ -312,14 +404,16 @@ export async function discoverAntigravitySkills(input: {
     await scanConfig(config.configPath, config.baseDir, config.scope, EMPTY_FILTER, new Set(), 0);
 
   const pluginsDirectory = NodePath.join(input.profileDirectory, "config", "plugins");
-  const plugins = await NodeFSP.readdir(pluginsDirectory).catch(() => undefined);
+  const plugins = (await allowed(pluginsDirectory))
+    ? await listDirectory(pluginsDirectory)
+    : undefined;
   if (plugins && plugins.length > 0) {
     const configPath = NodePath.join(input.profileDirectory, "config", "config.json");
-    const configInfo = await statOrUndefined(configPath);
+    const configText = await readBounded(configPath, Math.min(MAX_SKILL_BYTES, budget.bytes));
     let disabled = new Set<string>();
-    if (configInfo?.isFile() && configInfo.size <= MAX_SKILL_BYTES) {
+    if (configText !== undefined) {
       try {
-        const preferences: unknown = JSON.parse(await NodeFSP.readFile(configPath, "utf8"));
+        const preferences: unknown = JSON.parse(configText);
         const entries =
           preferences && typeof preferences === "object"
             ? (preferences as { plugins?: unknown }).plugins
