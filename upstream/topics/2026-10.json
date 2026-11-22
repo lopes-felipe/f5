@@ -46002,11 +46002,21 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-03T18:46:47.105Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T23:43:46.164Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/terminal/Layers/Manager.ts:950",
+          "apps/server/src/terminal/Layers/Manager.ts:1565"
+        ],
+        "f5Refs": [
+          "2b6e7ce029d851b15e9b5cd20c8adbb07d3ef262"
+        ]
+      },
       "id": "pr-23664",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "terminal",
@@ -48417,11 +48427,21 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-03T18:46:47.105Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T23:43:46.164Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/web/src/components/ChatView.tsx:3435",
+          "apps/web/src/components/ChatView.tsx:9099"
+        ],
+        "f5Refs": [
+          "2b6e7ce029d851b15e9b5cd20c8adbb07d3ef262"
+        ]
+      },
       "id": "pr-24020",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "terminal"
@@ -48464,11 +48484,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-03T10:30:22.437Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T23:43:46.164Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-24024",
-      "status": "port",
+      "reason": "The affected agent-owned terminal chunk stream is specific to upstream’s ACP adapter.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -50693,11 +50715,20 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T23:43:46.164Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/web/src/components/ThreadStatusNotificationController.tsx:136"
+        ],
+        "f5Refs": [
+          "2b6e7ce029d851b15e9b5cd20c8adbb07d3ef262"
+        ]
+      },
       "id": "pr-24493",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "threads",
@@ -53165,11 +53196,20 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T23:43:46.165Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:590"
+        ],
+        "f5Refs": [
+          "2b6e7ce029d851b15e9b5cd20c8adbb07d3ef262"
+        ]
+      },
       "id": "pr-24871",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "pr hub",
@@ -59347,14 +59387,25 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-03T10:30:22.437Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T23:43:46.165Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/keybindings.ts:617",
+          "apps/server/src/keybindings.ts:646",
+          "packages/shared/src/keybindings.ts:594"
+        ],
+        "f5Refs": [
+          "2b6e7ce029d851b15e9b5cd20c8adbb07d3ef262"
+        ]
+      },
       "id": "pr-25556",
+      "reason": "Already present in f5",
       "relatedTopics": [
         "pr-22496"
       ],
-      "status": "port",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "settings",
