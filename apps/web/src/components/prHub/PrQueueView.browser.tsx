@@ -360,6 +360,49 @@ it("groups the queue by section with counts and loads nothing for collapsed sect
   expect(window.localStorage.getItem(PR_QUEUE_COLLAPSE_STORAGE_KEY)).toBe('{"team":false}');
 });
 
+it("warms a rested row from the cache and ignores touch and a pointer that leaves", async () => {
+  api.getDetail.mockImplementation(async (input: { cacheOnly?: boolean }) => {
+    if (input.cacheOnly) throw new Error("Cold detail cache");
+    return { stale: false, detail: { body: "Description from the live detail read." } };
+  });
+  await renderQueue();
+  await expect.element(row("Alpha review")).toBeVisible();
+  const alpha = row("Alpha review").element();
+  const dispatch = (event: string, pointerType: string) =>
+    alpha.dispatchEvent(new PointerEvent(event, { bubbles: true, pointerType }));
+  dispatch("pointerover", "touch");
+  dispatch("pointerout", "touch");
+  dispatch("pointerover", "mouse");
+  dispatch("pointerout", "mouse");
+  await row("Charlie fix").hover();
+  await vi.waitFor(() =>
+    expect(api.getDetail).toHaveBeenCalledExactlyOnceWith({
+      key: keyOf(3),
+      accountGeneration: "gen-1",
+      cacheOnly: true,
+    }),
+  );
+  await row("Charlie fix").click();
+  await expect.element(peek(3).getByText("Description from the live detail read.")).toBeVisible();
+  expect(api.getDetail).toHaveBeenLastCalledWith({ key: keyOf(3), accountGeneration: "gen-1" });
+});
+
+it("prefetches the active row when focus rests on the queue", async () => {
+  await renderQueue();
+  await expect.element(row("Alpha review")).toBeVisible();
+  const listbox = page.getByRole("listbox", { name: "Pull requests" }).element() as HTMLElement;
+  listbox.focus();
+  await userEvent.keyboard("j");
+  await expect.element(row("Alpha review")).toHaveAttribute("aria-selected", "true");
+  await vi.waitFor(() =>
+    expect(api.getDetail).toHaveBeenCalledWith({
+      key: keyOf(1),
+      accountGeneration: "gen-1",
+      cacheOnly: true,
+    }),
+  );
+});
+
 it("shows each row's next step and its linked thread", async () => {
   await renderQueue();
   await expect.element(page.getByRole("button", { name: "Review: octo/repo#1" })).toBeVisible();

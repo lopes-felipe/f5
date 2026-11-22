@@ -16,11 +16,7 @@ import { prComparisonsEqual } from "@t3tools/shared/prReview";
 import { PrHubJobCoordinator } from "../Services/PrHubJobCoordinator.ts";
 
 import { PrHubReviewOperations } from "../Services/PrHubReviewOperations.ts";
-import {
-  PR_DETAIL_CACHE_TTL_MS,
-  readPrDetailCache,
-  type CachedPrDetailRead,
-} from "../detailCache.ts";
+import { readPrDetailCache, type CachedPrDetailRead } from "../detailCache.ts";
 import { fetchGitHubPrFiles } from "../githubPrFiles.ts";
 import {
   readGitHubFileStats,
@@ -397,8 +393,9 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
 
     const trackedPrByKey = (
       key: PullRequestKey,
+      snapshotRead = getSnapshot,
     ): Effect.Effect<TrackedPullRequest, SourceControlProviderError> =>
-      getSnapshot.pipe(
+      snapshotRead.pipe(
         Effect.flatMap((snapshot) => {
           const pr = [...snapshot.pullRequests, ...snapshot.recentlyResolved].find((candidate) =>
             sourceControlPullRequestKeysEqual(candidate.key, key),
@@ -1131,14 +1128,20 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
           ? Effect.gen(function* () {
               const snapshot = yield* getSnapshot;
               const generation = snapshot.account?.generation;
-              const pr = yield* trackedPrByKey(input.key);
-              const cached =
-                generation && generation === input.accountGeneration
-                  ? detailCache.get(generation + ":" + pr.key)
-                  : undefined;
-              if (cached && Date.now() - cached.storedAt < PR_DETAIL_CACHE_TTL_MS)
+              const missing = prHubActionError(
+                "No cached pull request detail for the current account.",
+              );
+              if (!generation || generation !== input.accountGeneration) return yield* missing;
+              const pr = yield* trackedPrByKey(input.key, Effect.succeed(snapshot));
+              const key = generation + ":" + pr.key;
+              if (!detailCache.has(key)) return yield* missing;
+              const context = yield* githubCli
+                .getCredentialContext({ cwd, host, cacheOnly: true })
+                .pipe(Effect.option);
+              const cached = detailCache.get(key);
+              if (Option.isSome(context) && context.value.generation === generation && cached)
                 return cached.value;
-              return yield* prHubActionError("No fresh cached pull request detail.");
+              return yield* missing;
             })
           : withPrAccount(operations.getDetail(input), input, false),
       getTimeline: (input) => withPrAccount(operations.getTimeline(input), input, false),

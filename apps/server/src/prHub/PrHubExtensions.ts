@@ -132,7 +132,10 @@ export const makePrHubExtensions = Effect.gen(function* () {
       const tracked =
         snapshot?.pullRequests.find((pr) => sourceControlPullRequestKeysEqual(pr.key, key)) ??
         snapshot?.recentlyResolved.find((pr) => sourceControlPullRequestKeysEqual(pr.key, key));
-      if (tracked) return prHubPeekFromTracked(tracked);
+      if (tracked)
+        return yield* Schema.decodeUnknownEffect(PrHubPeek)(prHubPeekFromTracked(tracked)).pipe(
+          Effect.mapError(() => failure("Invalid link preview.", "invalid_response")),
+        );
 
       return yield* permit.withPermits(1)(
         Effect.gen(function* () {

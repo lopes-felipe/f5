@@ -12,6 +12,7 @@ import type {
   PrHubReviewComment,
   PrHubSavedQuery,
   PullRequestKey,
+  TrackedPullRequest,
 } from "@t3tools/contracts";
 
 import { ensureNativeApi } from "../nativeApi";
@@ -109,9 +110,7 @@ export async function prefetchCachedPrHubDetail(
   const accountGeneration = getPrHubAccountGeneration();
   const queryKey = prHubQueryKeys.detail(key);
   const before = client.getQueryState(queryKey);
-  if (!accountGeneration || before?.fetchStatus === "fetching") return;
-  if (before?.data && !before.isInvalidated && Date.now() - before.dataUpdatedAt < DETAIL_STALE_MS)
-    return;
+  if (!accountGeneration || before?.data || before?.fetchStatus === "fetching") return;
   try {
     const detail = await ensureNativeApi().prHub.getDetail({
       key,
@@ -235,9 +234,8 @@ export function prHubReviewThreadCommentsQueryOptions(key: PullRequestKey, threa
 }
 
 export function prHubFilesQueryOptions(
-  key: PullRequestKey,
+  { key, headRefOid }: Pick<TrackedPullRequest, "key" | "headRefOid">,
   comparisonMode: "current_pr" | "changes_since_review" = "current_pr",
-  expectedHead?: string | null,
 ) {
   const accountGeneration = getPrHubAccountGeneration();
   return infiniteQueryOptions({
@@ -253,7 +251,7 @@ export function prHubFilesQueryOptions(
         }),
       (value) => {
         const files = Schema.decodeUnknownSync(PrHubFilesPage)(value);
-        if (!expectedHead || !files.comparison || files.comparison.headOid === expectedHead)
+        if (!headRefOid || !files.comparison || files.comparison.headOid === headRefOid)
           return files;
       },
       true,

@@ -190,7 +190,7 @@ export const makeGitHubCli = (
     const api = makeGitHubApi(
       transport,
       scheduler,
-      (host, cwd) =>
+      (host, cwd, bypassCliCache) =>
         Effect.gen(function* () {
           if (options.resolveToken) return yield* options.resolveToken(host, cwd);
           const saved = Option.isSome(secretStore)
@@ -221,7 +221,8 @@ export const makeGitHubCli = (
           // non-zero ("no oauth token") for hosts it does not know. Both mean "not connected";
           // anything else (timeout, missing gh, unavailable credentials) keeps its real cause.
           const cachedToken = cliTokens.get(host);
-          if (cachedToken && cachedToken.expires > Date.now()) return cachedToken.token;
+          if (!bypassCliCache && cachedToken && cachedToken.expires > Date.now())
+            return cachedToken.token;
           const projected = yield* execute({
             cwd,
             args: ["auth", "token", "--hostname", host],

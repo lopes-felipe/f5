@@ -2458,6 +2458,7 @@ it.effect("refuses to merge a clean PR that still requires a review", () => {
 
 it.effect("loads GitHub detail surfaces and retains cached data on transient failures", () => {
   const calls = makeCalls();
+  let generation = "test-account";
   const pr = makePrNode({ id: "PR_detail", number: 30, author: "me" });
   const transientFailure = new GitHubCliError({
     operation: "graphql",
@@ -2481,6 +2482,10 @@ it.effect("loads GitHub detail surfaces and retains cached data on transient fai
     assert.equal(calls.graphql.length, previousCalls);
     const detail = yield* service.getDetail({ key: tracked.key });
     assert.deepStrictEqual(yield* service.getDetail(cacheOnly), detail);
+    generation = "credential-switched";
+    assert.equal((yield* service.getSnapshot).account?.generation, "test-account");
+    assert.equal((yield* Effect.exit(service.getDetail(cacheOnly)))._tag, "Failure");
+    generation = "test-account";
     assert.equal(
       (yield* Effect.exit(service.getDetail({ ...cacheOnly, accountGeneration: "other" })))._tag,
       "Failure",
@@ -2500,6 +2505,7 @@ it.effect("loads GitHub detail surfaces and retains cached data on transient fai
     Effect.provide(
       makeLayer({
         calls,
+        credentialContext: () => ({ host: "github.com", viewerId: 1, login: "me", generation }),
         searchResponses: [searchResponse("author", [pr])],
         prDetailResponses: [prDetailResponse({ title: "Fresh detail" }), transientFailure],
         timelineResponses: [prTimelineResponse()],

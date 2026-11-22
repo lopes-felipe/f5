@@ -126,6 +126,7 @@ export function PrLinkPreview({ url, children }: { url: string; children: ReactN
   const openLink = useOpenLink();
   const thread = useContext(OpenLinkThread);
   const [open, setOpen] = useState(false);
+  // Changing the selected account must discard the previous account's preview on render.
   useAppSettingsSelector((settings) => settings.prHubAccountId);
   const client = useQueryClient();
   const options = prHubPeekQueryOptions(url);

@@ -1,5 +1,5 @@
-import { memo, useDeferredValue, useEffect, useMemo, useRef } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { memo, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { PrChangeStat } from "./PrChangeStat";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { ChevronRightIcon } from "lucide-react";
@@ -40,6 +40,17 @@ import type { PrQueueGroup } from "./usePrQueue";
 const VIRTUALIZE_THRESHOLD = 60;
 const FIRST_PAINT_ITEMS = 24;
 const DETAIL_INTENT_MS = 150;
+
+function startDetailIntent(client: QueryClient, key: PullRequestKey) {
+  let active = true;
+  const timer = setTimeout(() => {
+    void prefetchCachedPrHubDetail(client, key, () => active);
+  }, DETAIL_INTENT_MS);
+  return () => {
+    active = false;
+    clearTimeout(timer);
+  };
+}
 
 export const PR_TONE_DOT: Record<PrTone, string> = {
   success: "bg-success",
@@ -163,9 +174,9 @@ const PrQueueRow = memo(function PrQueueRow({
   onOpenThread,
 }: RowProps) {
   const client = useQueryClient();
-  const intent = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const intent = useRef<(() => void) | undefined>(undefined);
   const cancelIntent = () => {
-    clearTimeout(intent.current);
+    intent.current?.();
     intent.current = undefined;
   };
   useEffect(() => cancelIntent, [pr.key]);
@@ -184,10 +195,7 @@ const PrQueueRow = memo(function PrQueueRow({
       data-unread={unread || undefined}
       onPointerEnter={(event) => {
         if (event.pointerType === "touch" || intent.current !== undefined) return;
-        const timer = setTimeout(() => {
-          void prefetchCachedPrHubDetail(client, pr.key, () => intent.current === timer);
-        }, DETAIL_INTENT_MS);
-        intent.current = timer;
+        intent.current = startDetailIntent(client, pr.key);
       }}
       onPointerLeave={cancelIntent}
       // Shift-click extends the selection; it must not select the text in between.
@@ -452,6 +460,12 @@ export function PrQueueTable({
   const items = itemsOf(groups);
   const virtualize = items.length > VIRTUALIZE_THRESHOLD;
   const cursorIndex = cursorKey ? items.findIndex((item) => item.id === cursorKey) : -1;
+  const client = useQueryClient();
+  const [listFocused, setListFocused] = useState(false);
+  const focusedKey = listFocused && cursorIndex >= 0 ? cursorKey : null;
+  useEffect(() => {
+    if (focusedKey) return startDetailIntent(client, focusedKey);
+  }, [client, focusedKey]);
   const hasRows = groups.some((group) => !group.collapsed && group.rows.length > 0);
   const showAllItems = useDeferredValue(hasRows, false);
   const visibleItems =
@@ -557,6 +571,8 @@ export function PrQueueTable({
         // The keys move a cursor, not the focus. Focusable with the cursor row as its active
         // descendant, the list announces that row to a screen reader as it moves.
         tabIndex={0}
+        onFocus={(event) => setListFocused(event.target === event.currentTarget)}
+        onBlur={() => setListFocused(false)}
         aria-activedescendant={cursorKey ? prQueueRowId(cursorKey) : undefined}
         className={cn(
           "min-h-0 flex-1 outline-none transition-opacity focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",

@@ -37,7 +37,7 @@ export function PrFilesTab({ pr, active }: { pr: TrackedPullRequest; active: boo
   );
   const [expandedOverrides, setExpandedOverrides] = useState<Record<string, boolean>>({});
   const query = useInfiniteQuery({
-    ...prHubFilesQueryOptions(pr.key, comparisonMode, pr.headRefOid),
+    ...prHubFilesQueryOptions(pr, comparisonMode),
     enabled: active,
   });
   const pages = query.data?.pages ?? [];
@@ -282,7 +282,7 @@ export function PrFilesTab({ pr, active }: { pr: TrackedPullRequest; active: boo
         <Button
           size="sm"
           variant="outline"
-          disabled={query.isFetching}
+          disabled={query.isFetchingNextPage || !query.isFetched}
           onClick={() => void query.fetchNextPage()}
         >
           {query.isFetchingNextPage ? "Loading…" : "Load more files"}
