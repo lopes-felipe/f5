@@ -80,8 +80,18 @@ describe("ContextMeter", () => {
       expect(percent?.textContent).toBe("19");
       expect(getComputedStyle(percent!).opacity).toBe("0");
       expect(document.querySelector('[data-slot="context-auto-compact-mark"]')).not.toBeNull();
+      const restingWidth = (meter as HTMLElement).getBoundingClientRect().width;
       await page.getByRole("button", { name: /Context window occupancy/ }).hover();
       await vi.waitFor(() => expect(getComputedStyle(percent!).opacity).toBe("1"));
+      // The ring grows by transform, so neighbouring composer controls don't move.
+      expect((meter as HTMLElement).getBoundingClientRect().width).toBe(restingWidth);
+      await vi.waitFor(() =>
+        expect(
+          document
+            .querySelector<HTMLElement>('[data-slot="context-ring-scale"]')!
+            .getBoundingClientRect().width,
+        ).toBeGreaterThan(20),
+      );
       await vi.waitFor(() =>
         expect(document.body.textContent).toContain("Auto-compacts around 117,000 tokens"),
       );

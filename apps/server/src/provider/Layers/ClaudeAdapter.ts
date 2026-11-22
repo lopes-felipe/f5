@@ -1071,13 +1071,24 @@ const CLAUDE_MISSING_SESSION_PATTERNS = [
   "could not find session",
 ] as const;
 
+// Narrow fallback for the CLI's own sign-in wording. Typed signals (the
+// assistant `authentication_failed` error, HTTP 401) are checked first.
 const CLAUDE_AUTH_FAILURE_PATTERN =
-  /authentication_failed|failed to authenticate|oauth (?:session|token) (?:has )?expired|could not be refreshed|invalid api key|invalid x-api-key|\bunauthorized\b|run \/login|please (?:run )?\/?login|not logged in/i;
+  /oauth (?:session|token) (?:has )?expired|oauth token (?:could not|cannot) be refreshed|please run \/login|run \/login to/i;
+
+/**
+ * True when the error text names a rejected configured API key. Signing in
+ * through the browser can't fix that: the key in provider settings has to change.
+ */
+export function isClaudeApiKeyFailureText(text: string | null | undefined): boolean {
+  return !!text && /\b(?:invalid|incorrect|revoked) (?:x-)?api[ -]?key\b|x-api-key/i.test(text);
+}
 
 /** True when a Claude failure means the account must sign in again (not billing or limits). */
 export function isClaudeAuthFailureText(text: string | null | undefined): boolean {
   if (!text) return false;
   if (/billing|account.on.hold|usage.?limit|rate.?limit/i.test(text)) return false;
+  if (isClaudeApiKeyFailureText(text)) return false;
   return CLAUDE_AUTH_FAILURE_PATTERN.test(text);
 }
 
@@ -5794,11 +5805,15 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             yield* invalidateClaudeResumeState(context, "resume-session-not-found");
             resumeRejected = true;
           }
-          // A 403 is a permission refusal that signing in again cannot fix.
+          // A 403 is a permission refusal that signing in again cannot fix, and a
+          // rejected configured API key needs a settings change, not a browser login.
           const authFailure =
             !usageLimit &&
             !permissionDenied &&
+            !isClaudeApiKeyFailureText(originalError) &&
+            !isClaudeApiKeyFailureText(errorMessage) &&
             (context.turnState.authenticationFailureMessage !== undefined ||
+              (message.subtype === "success" && message.api_error_status === 401) ||
               isClaudeAuthFailureText(originalError) ||
               isClaudeAuthFailureText(errorMessage));
           yield* emitRuntimeError(context, errorMessage ?? "Claude turn failed.", {

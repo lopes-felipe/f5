@@ -25,8 +25,24 @@ const next = (patch: Record<string, unknown>) =>
   ({ ...previous, authFailure: undefined, ...patch }) as Parameters<typeof carryAuthFailure>[0];
 
 describe("carryAuthFailure", () => {
-  it("keeps the failure while the failed turn completes with an error", () => {
-    expect(carryAuthFailure(next({ lastErrorId: "turn-completed" }), previous)).toEqual(failure);
+  it("keeps the failure across status refreshes that keep the same error", () => {
+    expect(carryAuthFailure(next({ status: "ready" }), previous)).toEqual(failure);
+  });
+
+  it("keeps the failure while the failed turn is still the active one", () => {
+    expect(
+      carryAuthFailure(next({ activeTurnId: "failed-turn", lastErrorId: "other" }), previous),
+    ).toEqual(failure);
+  });
+
+  it("ends on a new error, such as a later send that fails before its turn starts", () => {
+    // Shaped like recordTurnStartFailure: no active turn, a new error id.
+    expect(
+      carryAuthFailure(
+        next({ lastError: "Provider session is not ready", lastErrorId: "start-failure" }),
+        previous,
+      ),
+    ).toBeNull();
   });
 
   it("uses an explicit value, including an explicit clear", () => {

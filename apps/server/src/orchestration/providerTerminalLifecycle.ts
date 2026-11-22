@@ -255,6 +255,13 @@ export function makeTurnCompletedSessionSetCommand(input: {
       usageLimit: failed
         ? toOrchestrationUsageLimit(event.payload?.usageLimit, event, thread)
         : null,
+      // The failed turn's own terminal carries its expired-login failure forward;
+      // the decider drops the failure on any other new error.
+      ...(failed &&
+      event.turnId !== undefined &&
+      thread.session?.authFailure?.turnId === String(event.turnId)
+        ? { authFailure: thread.session.authFailure }
+        : {}),
       lastErrorOccurredAt: failed ? createdAt : null,
       ...(event.payload?.totalCostUsd !== undefined
         ? { turnCostUsd: event.payload.totalCostUsd }

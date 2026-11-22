@@ -114,11 +114,17 @@ export function ContextMeter(props: {
         <span className="relative inline-flex">
           {context ? (
             // The ring alone carries occupancy; hovering enlarges it to show the percentage.
+            // It grows with a transform inside a fixed 16px box, so the footer never reflows.
             <span
               data-slot="context-ring"
-              className="relative inline-flex size-4 shrink-0 items-center justify-center transition-[width,height] duration-(--duration-fast) group-hover/context-meter:size-7 group-focus-visible/context-meter:size-7 group-data-popup-open/context-meter:size-7"
+              className="relative inline-flex size-4 shrink-0 items-center justify-center"
             >
-              <ContextRing ratio={context.ratio} tone={tone} thresholdRatio={thresholdRatio} />
+              <span
+                data-slot="context-ring-scale"
+                className="absolute inset-0 transition-transform duration-(--duration-fast) group-hover/context-meter:scale-175 group-focus-visible/context-meter:scale-175 group-data-popup-open/context-meter:scale-175"
+              >
+                <ContextRing ratio={context.ratio} tone={tone} thresholdRatio={thresholdRatio} />
+              </span>
               <span
                 aria-hidden="true"
                 data-slot="context-percent"

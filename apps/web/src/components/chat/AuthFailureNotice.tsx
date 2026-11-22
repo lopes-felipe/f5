@@ -22,7 +22,9 @@ import { getThreadErrorBannerMessage } from "./ThreadErrorBanner";
 /**
  * A turn failed because the provider login expired. One click signs in again
  * through the provider's own CLI flow and, once that succeeds, resends the
- * message the provider never received.
+ * message, but only when the server confirms the turn never started working.
+ * If the thread was busy at that moment, a plain Resend stays available so a
+ * retry doesn't need another sign-in.
  */
 export function AuthFailureNotice(props: {
   readonly threadId: ThreadId;
@@ -37,6 +39,9 @@ export function AuthFailureNotice(props: {
   // One resend per failure, however many times the login reports success.
   const resentKey = useRef<string | null>(null);
   const failureKey = authFailureKey(props.failure);
+  // Signed in, but the thread was busy: offer Resend instead of another sign-in.
+  const [retryKey, setRetryKey] = useState<string | null>(null);
+  const canResend = failureKey !== null && retryKey === failureKey;
 
   const resend = async () => {
     const api = readNativeApi();
@@ -48,8 +53,9 @@ export function AuthFailureNotice(props: {
         threadId: props.threadId,
         expectedFailureKey: failureKey,
       });
+      setOpen(false);
       if (result.kind === "sent") {
-        setOpen(false);
+        setRetryKey(null);
         toastManager.add({
           type: "success",
           title: `Signed in to ${props.providerLabel}`,
@@ -58,12 +64,12 @@ export function AuthFailureNotice(props: {
         return;
       }
       resentKey.current = null;
+      setRetryKey(result.kind === "busy" ? failureKey : null);
       toastManager.add({
         type: result.kind === "busy" ? "warning" : "info",
         title: `Signed in to ${props.providerLabel}`,
         description: result.reason ?? "Send your message again to continue.",
       });
-      setOpen(false);
     } catch (error) {
       resentKey.current = null;
       toastManager.add({
@@ -89,7 +95,17 @@ export function AuthFailureNotice(props: {
           />
         </AlertDescription>
         <AlertAction>
-          <Button size="xs" disabled={resending} onClick={() => setOpen(true)}>
+          {canResend ? (
+            <Button size="xs" disabled={resending} onClick={() => void resend()}>
+              Resend
+            </Button>
+          ) : null}
+          <Button
+            size="xs"
+            variant={canResend ? "outline" : "default"}
+            disabled={resending}
+            onClick={() => setOpen(true)}
+          >
             Sign in again
           </Button>
           <button
@@ -107,7 +123,8 @@ export function AuthFailureNotice(props: {
           <DialogHeader>
             <DialogTitle>Sign in to {props.providerLabel}</DialogTitle>
             <DialogDescription>
-              Finish signing in below. Your message is sent again as soon as the login succeeds.
+              Finish signing in below. If the turn never started, your message is sent again as soon
+              as the login succeeds.
             </DialogDescription>
           </DialogHeader>
           <DialogPanel>
@@ -117,6 +134,7 @@ export function AuthFailureNotice(props: {
                 driver={props.driver}
                 status="unauthenticated"
                 autoStart
+                cancelOnUnmount
                 onLoginFinished={(succeeded) => {
                   if (succeeded) void resend();
                 }}

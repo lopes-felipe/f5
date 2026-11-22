@@ -23,6 +23,7 @@ export function ProviderAccountPanel({
   status,
   className,
   autoStart = false,
+  cancelOnUnmount = false,
   onLoginFinished,
 }: {
   readonly instanceId: ProviderInstanceId;
@@ -36,6 +37,12 @@ export function ProviderAccountPanel({
   readonly className?: string;
   /** Start the default sign-in as soon as the panel mounts (one-click recovery). */
   readonly autoStart?: boolean;
+  /**
+   * Cancel the sign-ins this panel started when it unmounts. A transient surface
+   * (a dialog) sets it so closing mid-login frees the shared login lease instead
+   * of blocking every profile's sign-in until the CLI times out.
+   */
+  readonly cancelOnUnmount?: boolean;
   /** Called once per sign-in this panel started, when its CLI process exits. */
   readonly onLoginFinished?: (succeeded: boolean) => void;
 }) {
@@ -86,6 +93,19 @@ export function ProviderAccountPanel({
   useEffect(() => {
     if (handle !== null) setOutputOpen(true);
   }, [handle]);
+
+  const cancelOnUnmountRef = useRef(cancelOnUnmount);
+  cancelOnUnmountRef.current = cancelOnUnmount;
+  useEffect(
+    () => () => {
+      if (!cancelOnUnmountRef.current) return;
+      const profiles = readNativeApi()?.profiles;
+      for (const running of ownLoginHandles.current)
+        void profiles?.cancel({ handle: running }).catch(() => undefined);
+      ownLoginHandles.current.clear();
+    },
+    [],
+  );
 
   // Assigned below once the API is known; the mount effect starts sign-in exactly once.
   const startLoginRef = useRef<(() => void) | null>(null);

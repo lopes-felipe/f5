@@ -61,9 +61,11 @@ export const GLOBAL_PIN_AGGREGATE_ID = ProjectId.makeUnsafe("f5-global-pins");
 type SessionSetInput = Extract<OrchestrationCommand, { type: "thread.session.set" }>["session"];
 
 /**
- * An expired-login failure outlives the session updates that follow it (the
- * failed turn completing, status refreshes) and ends when a different turn
- * starts, the error clears, or the session moves to another provider account.
+ * An expired-login failure lasts only while session updates still concern it:
+ * updates for the failed turn itself, or status refreshes that keep the same
+ * error. A different turn, a new error (such as a later send that fails before
+ * starting), a cleared error, or another provider account ends it. Ingestion
+ * passes the failure explicitly when the failed turn completes.
  */
 export function carryAuthFailure(
   next: SessionSetInput,
@@ -73,10 +75,10 @@ export function carryAuthFailure(
   const failure = previous?.authFailure;
   if (!failure) return null;
   if (next.lastError === null) return null;
-  if (next.activeTurnId && next.activeTurnId !== failure.turnId) return null;
   if ((next.providerInstanceId ?? failure.providerInstanceId) !== failure.providerInstanceId)
     return null;
-  return failure;
+  if (next.activeTurnId) return next.activeTurnId === failure.turnId ? failure : null;
+  return (next.lastErrorId ?? null) === (previous?.lastErrorId ?? null) ? failure : null;
 }
 
 /** The scratch project is server-owned: its folder, actions, memories and skills stay fixed. */

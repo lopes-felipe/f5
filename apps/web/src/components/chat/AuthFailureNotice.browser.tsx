@@ -124,4 +124,56 @@ describe("AuthFailureNotice", () => {
       await screen.unmount();
     }
   });
+
+  it("offers a plain Resend after signing in while the thread was busy", async () => {
+    mocks.resend.mockResolvedValueOnce({ kind: "busy", reason: "The thread is busy." });
+    const screen = await render(
+      <AuthFailureNotice
+        threadId={threadId}
+        failure={failure}
+        providerLabel="Claude"
+        driver="claudeAgent"
+        error="Claude login expired"
+        onDismiss={() => {}}
+      />,
+    );
+    try {
+      await page.getByRole("button", { name: "Sign in again" }).click();
+      await vi.waitFor(() => expect(mocks.loginStart).toHaveBeenCalledTimes(1));
+      mocks.listener?.({ handle: "login-1", instanceId, type: "exited", data: "0" });
+      const resendButton = page.getByRole("button", { name: "Resend", exact: true });
+      await expect.element(resendButton).toBeVisible();
+      await resendButton.click();
+      await vi.waitFor(() => expect(mocks.resend).toHaveBeenCalledTimes(2));
+      // Retrying never needed a second CLI login.
+      expect(mocks.loginStart).toHaveBeenCalledTimes(1);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("cancels its running login when the dialog closes mid-sign-in", async () => {
+    const { readNativeApi } = await import("../../nativeApi");
+    const cancel = readNativeApi()!.profiles.cancel as ReturnType<typeof vi.fn>;
+    cancel.mockClear();
+    const screen = await render(
+      <AuthFailureNotice
+        threadId={threadId}
+        failure={failure}
+        providerLabel="Codex"
+        driver="codex"
+        error="401 Unauthorized"
+        onDismiss={() => {}}
+      />,
+    );
+    try {
+      await page.getByRole("button", { name: "Sign in again" }).click();
+      await vi.waitFor(() => expect(mocks.loginStart).toHaveBeenCalled());
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await vi.waitFor(() => expect(cancel).toHaveBeenCalledWith({ handle: "login-1" }));
+    } finally {
+      await screen.unmount();
+    }
+  });
 });

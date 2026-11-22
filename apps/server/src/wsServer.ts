@@ -8,7 +8,6 @@ import { desktopBusyThreadCount } from "./orchestration/sessionBusy.ts";
 import { DESKTOP_ACTIVITY_PATH, type DesktopBackendActivity } from "@t3tools/shared/backendPaths";
 import { bindSubmissionTurnIds } from "./nextTurnQueue/submissionStatus.ts";
 import { cancelQueuedSubmission } from "./nextTurnQueue/cancelSubmission.ts";
-import { resendAuthFailedTurn } from "./nextTurnQueue/authFailureResend.ts";
 import { makeScheduledNotificationDelivery } from "./scheduledTasks/notificationDelivery.ts";
 import { resolveTemporaryWorktreeBranch } from "./git/temporaryWorktreeBranch.ts";
 import { parseNaturalLanguageSchedule } from "./scheduledTasks/naturalLanguage.ts";
@@ -7247,15 +7246,10 @@ export const createServer = Effect.fn(function* (
       }
       case WS_METHODS.nextTurnQueueResendAuthFailedTurn: {
         const body = stripRequestTag(request.body);
-        const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
-        return yield* resendAuthFailedTurn(orchestrationEngine, body).pipe(
-          Effect.mapError(
-            (error) =>
-              new RouteRequestError({
-                message: `Could not resend the turn: ${error instanceof Error ? error.message : String(error)}`,
-              }),
-          ),
-        );
+        const { nextTurnQueueDispatcher } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* nextTurnQueueDispatcher
+          .resendAuthFailedTurn(body)
+          .pipe(Effect.mapError(mapNextTurnQueueRouteError));
       }
       case WS_METHODS.nextTurnQueueCancelUsageLimitResume: {
         const body = stripRequestTag(request.body);

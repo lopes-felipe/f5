@@ -1,6 +1,8 @@
 import type { WorkerAdmissionError } from "@t3tools/shared/DrainableWorker";
 import type {
   CommandId,
+  NextTurnQueueResendAuthFailedTurnInput,
+  NextTurnQueueResendAuthFailedTurnResult,
   NextTurnQueueSnapshot,
   NextTurnQueueSummary,
   ThreadId,
@@ -20,6 +22,10 @@ export interface NextTurnQueueDispatcherShape {
     expectedLimitKey?: string | undefined;
     source?: "manual" | "auto" | undefined;
   }) => Effect.Effect<NextTurnQueueSnapshot, NextTurnQueueError>;
+  /** Queue the turn an expired login rejected, once, after the user signs in again. */
+  readonly resendAuthFailedTurn: (
+    input: NextTurnQueueResendAuthFailedTurnInput,
+  ) => Effect.Effect<NextTurnQueueResendAuthFailedTurnResult, NextTurnQueueError>;
   readonly cancelUsageLimitResume: (input: {
     threadId: ThreadId;
     itemId: CommandId;

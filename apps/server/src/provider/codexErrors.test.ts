@@ -154,6 +154,10 @@ describe("Codex auth failures", () => {
     { errorInfo: { httpConnectionFailed: { httpStatusCode: 503 } } },
     { message: "stream disconnected before completion" },
     { message: "You've hit your usage limit. Sign in again after the reset." },
+    // Unrelated tools and gateways also say these; only Codex's own wording counts.
+    { message: "gh: not logged in to any hosts. Please log in again." },
+    { message: "MCP server github: please authenticate" },
+    { message: "401 Unauthorized: Incorrect API key provided" },
   ])("ignores %j", (input) => {
     expect(isCodexAuthFailure(input)).toBe(false);
   });

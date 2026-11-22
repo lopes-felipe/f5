@@ -1,1 +1,1 @@
-- When a Claude or Codex turn fails because the account's login expired, the thread now offers **Sign in again**. It runs the provider's sign-in in place and resends the message once the login succeeds.
+- When a Claude or Codex turn fails because the account's login expired, the thread now offers **Sign in again**. It runs the provider's sign-in in place. Once the login succeeds, it resends the message with its original settings, but only if the turn hadn't started working yet.

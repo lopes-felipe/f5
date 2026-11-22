@@ -180,7 +180,7 @@ export function resolveCodexCompletionErrorInfo(input: {
 }
 
 const CODEX_AUTH_FAILURE_PATTERN =
-  /\b401\b.*unauthorized|\bunauthorized\b.*\b401\b|refresh token (?:has )?(?:expired|was revoked|is invalid)|access token could not be refreshed|token_expired|refresh_token_(?:expired|reused|invalidated)|(?:sign|log) ?in again|not logged in|please (?:re-?)?authenticate/i;
+  /\b401\b.*unauthorized|\bunauthorized\b.*\b401\b|refresh token (?:has )?(?:expired|was revoked|is invalid)|access token could not be refreshed|token_expired|refresh_token_(?:expired|reused|invalidated)/i;
 
 /**
  * True when a Codex failure means the ChatGPT or API-key login must be renewed.
@@ -204,7 +204,8 @@ export function isCodexAuthFailure(input: {
     }
   }
   const message = input.message ?? "";
-  if (/usage limit|rate limit|credits/i.test(message)) return false;
+  // A rejected API key needs a settings change, not a ChatGPT sign-in.
+  if (/usage limit|rate limit|credits|api[ _-]?key/i.test(message)) return false;
   return CODEX_AUTH_FAILURE_PATTERN.test(message);
 }
 
