@@ -91,11 +91,11 @@ function normalizeHost(host: string): string {
   return normalized;
 }
 
-function isCloudHost(host: string): boolean {
+export function isGitHubCloudHost(host: string): boolean {
   return host === "github.com" || host.endsWith(".ghe.com");
 }
 
-function cleanEnvironment(): NodeJS.ProcessEnv {
+export function cleanGitHubEnvironment(): NodeJS.ProcessEnv {
   return Object.fromEntries(
     Object.entries(process.env).filter(([key]) => {
       const name = key.toUpperCase();
@@ -107,9 +107,9 @@ function cleanEnvironment(): NodeJS.ProcessEnv {
 
 function tokenEnvironment(host: string, token: string): NodeJS.ProcessEnv {
   return {
-    ...cleanEnvironment(),
+    ...cleanGitHubEnvironment(),
     GH_HOST: host,
-    [isCloudHost(host) ? "GH_TOKEN" : "GH_ENTERPRISE_TOKEN"]: token,
+    [isGitHubCloudHost(host) ? "GH_TOKEN" : "GH_ENTERPRISE_TOKEN"]: token,
   };
 }
 

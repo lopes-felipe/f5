@@ -262,6 +262,71 @@ it.effect(
     }),
 );
 
+it.effect.each(["GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"] as const)(
+  "uses %s only for GH_HOST and keeps the stored CLI login available on other hosts",
+  (name) =>
+    Effect.gen(function* () {
+      vi.stubEnv(name, "ambient-token");
+      vi.stubEnv("GH_HOST", " GHE.Corp.Example ");
+      vi.stubEnv("GH_CONFIG_DIR", "/host-gh");
+      vi.stubEnv("GH_DEBUG", "api");
+      mockedRunProcess.mockResolvedValue({
+        stdout: "stored-token\n",
+        stderr: "",
+        code: 0,
+        signal: null,
+        timedOut: false,
+      });
+      const fetcher = vi.fn<(...args: Parameters<typeof fetch>) => Promise<Response>>(async () =>
+        Response.json({ id: 123, login: "alice" }),
+      );
+      vi.stubGlobal("fetch", fetcher);
+      const gh = yield* GitHubCli;
+
+      yield* gh.getCredentialContext({ cwd: "/repo", host: "git.other.example" });
+      yield* gh.getCredentialContext({ cwd: "/repo", host: "ghe.corp.example" });
+      vi.stubEnv("GH_HOST", undefined);
+      // Windows environment lookups are case-insensitive at the OS level.
+      if (process.platform !== "win32") vi.stubEnv("gh_host", "git.unconfigured.example");
+      yield* gh.getCredentialContext({ cwd: "/repo", host: "git.unconfigured.example" });
+
+      expect(mockedRunProcess.mock.calls.map(([, args]) => args)).toEqual([
+        ["auth", "token", "--hostname", "git.other.example"],
+        ["auth", "token", "--hostname", "git.unconfigured.example"],
+      ]);
+      for (const [, , options] of mockedRunProcess.mock.calls) {
+        expect(options.env?.GH_CONFIG_DIR).toBe("/host-gh");
+        expect(options.env?.GH_PROMPT_DISABLED).toBe("1");
+        expect(options.env?.GH_DEBUG).toBeUndefined();
+        expect(options.env?.GH_ENTERPRISE_TOKEN).toBeUndefined();
+        expect(options.env?.GITHUB_ENTERPRISE_TOKEN).toBeUndefined();
+      }
+      expect(
+        fetcher.mock.calls.map(([, options]) => new Headers(options?.headers).get("authorization")),
+      ).toEqual(["Bearer stored-token", "Bearer ambient-token", "Bearer stored-token"]);
+    }).pipe(Effect.provide(GitHubCliLive)),
+);
+
+it.effect("uses the cloud token for GHE.com tenants even when GH_HOST matches", () =>
+  Effect.gen(function* () {
+    vi.stubEnv("GH_HOST", "tenant.ghe.com");
+    vi.stubEnv("GH_TOKEN", "cloud-token");
+    vi.stubEnv("GH_ENTERPRISE_TOKEN", "enterprise-token");
+    const fetcher = vi.fn<(...args: Parameters<typeof fetch>) => Promise<Response>>(async () =>
+      Response.json({ id: 123, login: "alice" }),
+    );
+    vi.stubGlobal("fetch", fetcher);
+    const gh = yield* GitHubCli;
+
+    yield* gh.getCredentialContext({ cwd: "/repo", host: "tenant.ghe.com" });
+
+    expect(new Headers(fetcher.mock.lastCall?.[1]?.headers).get("authorization")).toBe(
+      "Bearer cloud-token",
+    );
+    expect(mockedRunProcess).not.toHaveBeenCalled();
+  }).pipe(Effect.provide(GitHubCliLive)),
+);
+
 it.effect.each(["gh", "http"] as const)(
   "sends captured requests through the %s transport the setting names",
   (githubTransport) =>
