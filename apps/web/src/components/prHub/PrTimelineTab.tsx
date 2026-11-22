@@ -480,7 +480,7 @@ export function PrTimelineTab({
           <Button
             size="sm"
             variant="outline"
-            disabled={query.isFetchingNextPage}
+            disabled={query.isFetchingNextPage || !query.isFetched}
             onClick={() => void query.fetchNextPage()}
           >
             {query.isFetchingNextPage ? "Loading…" : "Load older activity"}

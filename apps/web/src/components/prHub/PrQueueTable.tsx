@@ -1,4 +1,5 @@
-import { memo, useEffect, useMemo, useRef } from "react";
+import { memo, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { PrChangeStat } from "./PrChangeStat";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { ChevronRightIcon } from "lucide-react";
@@ -11,6 +12,7 @@ import type {
 } from "@t3tools/contracts";
 
 import { formatAbsoluteTimeLabel, formatRelativeTimeLabel } from "../../lib/relativeTime";
+import { prefetchCachedPrHubDetail } from "../../lib/prHubReactQuery";
 import { cn } from "../../lib/utils";
 import { useStore } from "../../store";
 import { selectThreadById, useThread } from "../../threadSelectors";
@@ -36,6 +38,19 @@ import type { PrQueueGroup } from "./usePrQueue";
 
 /** Longer tables render through LegendList to stay responsive. */
 const VIRTUALIZE_THRESHOLD = 60;
+const FIRST_PAINT_ITEMS = 24;
+const DETAIL_INTENT_MS = 150;
+
+function startDetailIntent(client: QueryClient, key: PullRequestKey) {
+  let active = true;
+  const timer = setTimeout(() => {
+    void prefetchCachedPrHubDetail(client, key, () => active);
+  }, DETAIL_INTENT_MS);
+  return () => {
+    active = false;
+    clearTimeout(timer);
+  };
+}
 
 export const PR_TONE_DOT: Record<PrTone, string> = {
   success: "bg-success",
@@ -158,6 +173,13 @@ const PrQueueRow = memo(function PrQueueRow({
   onAction,
   onOpenThread,
 }: RowProps) {
+  const client = useQueryClient();
+  const intent = useRef<(() => void) | undefined>(undefined);
+  const cancelIntent = () => {
+    intent.current?.();
+    intent.current = undefined;
+  };
+  useEffect(() => cancelIntent, [pr.key]);
   const runningThreadId = useRunningPrThread(links);
   const action = prRowPrimaryAction(pr, { runningThreadId });
   const reference = `${pr.repository.nameWithOwner}#${pr.number}`;
@@ -171,6 +193,11 @@ const PrQueueRow = memo(function PrQueueRow({
       data-pr-key={pr.key}
       data-open={isOpen || undefined}
       data-unread={unread || undefined}
+      onPointerEnter={(event) => {
+        if (event.pointerType === "touch" || intent.current !== undefined) return;
+        intent.current = startDetailIntent(client, pr.key);
+      }}
+      onPointerLeave={cancelIntent}
       // Shift-click extends the selection; it must not select the text in between.
       onMouseDown={(event) => {
         if (event.shiftKey) event.preventDefault();
@@ -433,6 +460,16 @@ export function PrQueueTable({
   const items = itemsOf(groups);
   const virtualize = items.length > VIRTUALIZE_THRESHOLD;
   const cursorIndex = cursorKey ? items.findIndex((item) => item.id === cursorKey) : -1;
+  const client = useQueryClient();
+  const [listFocused, setListFocused] = useState(false);
+  const focusedKey = listFocused && cursorIndex >= 0 ? cursorKey : null;
+  useEffect(() => {
+    if (focusedKey) return startDetailIntent(client, focusedKey);
+  }, [client, focusedKey]);
+  const hasRows = groups.some((group) => !group.collapsed && group.rows.length > 0);
+  const showAllItems = useDeferredValue(hasRows, false);
+  const visibleItems =
+    !hasRows || showAllItems ? items : items.slice(0, Math.max(FIRST_PAINT_ITEMS, cursorIndex + 1));
   const listRef = useRef<LegendListRef | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -442,7 +479,7 @@ export function PrQueueTable({
       rootRef.current
         ?.querySelector(`[data-pr-key="${CSS.escape(cursorKey)}"]`)
         ?.scrollIntoView({ block: "nearest" });
-  }, [cursorIndex, cursorKey, virtualize]);
+  }, [cursorIndex, cursorKey, showAllItems, virtualize]);
 
   const renderItem = (item: Item) => {
     switch (item.type) {
@@ -534,6 +571,8 @@ export function PrQueueTable({
         // The keys move a cursor, not the focus. Focusable with the cursor row as its active
         // descendant, the list announces that row to a screen reader as it moves.
         tabIndex={0}
+        onFocus={(event) => setListFocused(event.target === event.currentTarget)}
+        onBlur={() => setListFocused(false)}
         aria-activedescendant={cursorKey ? prQueueRowId(cursorKey) : undefined}
         className={cn(
           "min-h-0 flex-1 outline-none transition-opacity focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
@@ -552,7 +591,7 @@ export function PrQueueTable({
             style={{ height: "100%" }}
           />
         ) : (
-          items.map((item) => <div key={item.id}>{renderItem(item)}</div>)
+          visibleItems.map((item) => <div key={item.id}>{renderItem(item)}</div>)
         )}
       </div>
     </div>

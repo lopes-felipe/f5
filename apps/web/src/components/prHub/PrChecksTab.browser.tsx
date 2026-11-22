@@ -14,6 +14,7 @@ import { page } from "vitest/browser";
 import { render } from "vitest-browser-react";
 
 import { setPrHubAccount } from "../../lib/prHubAccount";
+import { prHubChecksQueryOptions } from "../../lib/prHubReactQuery";
 import { PrChecksTab, type PrChecksTabProps } from "./PrChecksTab";
 
 const api = vi.hoisted(() => ({ getChecks: vi.fn(), getCheckLog: vi.fn() }));
@@ -90,10 +91,12 @@ const DEFAULT_CHECKS = [
 ];
 
 let active: Awaited<ReturnType<typeof render>> | undefined;
-async function mount(props: Partial<PrChecksTabProps> = {}) {
-  const client = new QueryClient({
+async function mount(
+  props: Partial<PrChecksTabProps> = {},
+  client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-  });
+  }),
+) {
   active = await render(
     <QueryClientProvider client={client}>
       <PrChecksTab pr={pr()} {...props} />
@@ -108,6 +111,32 @@ beforeEach(() => {
   api.getCheckLog.mockImplementation(({ checkId }: { checkId: string }) =>
     Promise.resolve(log(checkId)),
   );
+});
+
+it("renders restored check status before enabling logs and check actions", async () => {
+  const client = new QueryClient();
+  const checks = result([check("501", "build", "failure")]);
+  const options = prHubChecksQueryOptions(KEY, checks.headOid);
+  const query = client.getQueryCache().build(client, { queryKey: options.queryKey });
+  query.setState({ data: checks, status: "success", dataUpdatedAt: 1 });
+  let finish!: (checks: PrHubChecksResult) => void;
+  api.getChecks.mockReturnValueOnce(
+    new Promise((resolve) => {
+      finish = resolve;
+    }),
+  );
+  await mount({ onRerun: vi.fn(), onFixCi: vi.fn() }, client);
+  const panel = page.getByRole("tabpanel", { name: "Checks" });
+  try {
+    await expect.element(panel.getByText("build", { exact: true })).toBeVisible();
+    expect(panel.getByRole("button", { name: "Re-run failed jobs" }).query()).toBeNull();
+    expect(panel.getByRole("button", { name: "Fix CI with F5" }).query()).toBeNull();
+    expect(api.getCheckLog).not.toHaveBeenCalled();
+  } finally {
+    finish(checks);
+  }
+  await expect.element(panel.getByRole("button", { name: "Re-run failed jobs" })).toBeVisible();
+  await expect.element(panel.getByRole("group", { name: "Log of build" })).toBeVisible();
 });
 afterEach(async () => {
   await active?.unmount();

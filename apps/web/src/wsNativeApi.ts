@@ -84,6 +84,7 @@ import {
   setPrHubAccount,
   getPrHubSelectedAccountId,
 } from "./lib/prHubAccount";
+import { clearPrHubReadCache } from "./lib/prHubReadCache";
 
 let instance: { api: NativeApi; transport: WsTransport } | null = null;
 const profilesListeners = new Set<(payload: typeof ProfileListResult.Type) => void>();
@@ -558,7 +559,10 @@ export function createWsNativeApi(): NativeApi {
       githubLoginStatus: requestMethod(WS_METHODS.githubLoginStatus),
       githubLoginCancel: requestMethod(WS_METHODS.githubLoginCancel),
       githubSet: requestMethod(WS_METHODS.githubAccountSet),
-      githubRemove: requestMethod(WS_METHODS.githubAccountRemove),
+      githubRemove: async (input) => {
+        await transport.request(WS_METHODS.githubAccountRemove, input);
+        await clearPrHubReadCache();
+      },
       githubStatus: requestMethod(WS_METHODS.githubAccountStatus),
       githubCliCandidates: () => transport.request(WS_METHODS.githubAccountCliCandidates, {}),
       githubCliImport: requestMethod(WS_METHODS.githubAccountCliImport),
@@ -1139,7 +1143,10 @@ export function createWsNativeApi(): NativeApi {
     prHub: {
       listAccounts: () => transport.request(PR_HUB_WS_METHODS.listAccounts, {}),
       saveAccount: (input) => transport.request(PR_HUB_WS_METHODS.saveAccount, input),
-      removeAccount: (input) => transport.request(PR_HUB_WS_METHODS.removeAccount, input),
+      removeAccount: async (input) => {
+        await transport.request(PR_HUB_WS_METHODS.removeAccount, input);
+        await clearPrHubReadCache();
+      },
       listAccountRouting: () => transport.request(PR_HUB_WS_METHODS.listAccountRouting, {}),
       setAccountRouting: (input) => transport.request(PR_HUB_WS_METHODS.setAccountRouting, input),
       removeAccountRouting: (input) =>
@@ -1218,7 +1225,14 @@ export function createWsNativeApi(): NativeApi {
       setReaction: (input) => requestPrHub(PR_HUB_WS_METHODS.setReaction, input),
       changeReviewers: (input) => requestPrHub(PR_HUB_WS_METHODS.changeReviewers, input),
       updateBranch: (input) => requestPrHub(PR_HUB_WS_METHODS.updateBranch, input),
-      clearData: (input = {}) => requestPrHub(PR_HUB_WS_METHODS.clearData, input),
+      clearData: async (input = {}) => {
+        const result = await requestPrHub<Awaited<ReturnType<NativeApi["prHub"]["clearData"]>>>(
+          PR_HUB_WS_METHODS.clearData,
+          input,
+        );
+        await clearPrHubReadCache();
+        return result;
+      },
       onChanged: (callback) => onPrHubChanged(callback),
       onAdvisoriesUpdated: (callback) => onPrHubAdvisoriesUpdated(callback),
     },

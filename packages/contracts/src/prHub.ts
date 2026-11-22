@@ -843,6 +843,8 @@ export const PrHubDetailInput = Schema.Struct({
   accountGeneration: Schema.optional(Schema.String),
   key: PullRequestKey,
   mode: Schema.optional(PrHubReadMode),
+  /** A speculative read may use fresh local detail only. */
+  cacheOnly: Schema.optional(Schema.Boolean),
 });
 export type PrHubDetailInput = typeof PrHubDetailInput.Type;
 

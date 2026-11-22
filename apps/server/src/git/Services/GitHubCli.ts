@@ -49,6 +49,7 @@ export interface GitHubCliShape {
   readonly getCredentialContext: (input: {
     cwd: string;
     host: string;
+    cacheOnly?: boolean;
   }) => Effect.Effect<GitHubCredentialContext, GitHubCliError>;
   /**
    * Execute a GitHub CLI command and return full process output.

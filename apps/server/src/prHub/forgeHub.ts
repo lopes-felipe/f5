@@ -341,43 +341,56 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
         }),
       );
     const getDetail: PrHubServiceShape["getDetail"] = (input) =>
-      gate.withPermits(1)(
-        Effect.gen(function* () {
-          const ref = yield* refFor(input.key, input.accountGeneration),
-            cached = state.get(input.key);
+      input.cacheOnly
+        ? Effect.gen(function* () {
+            yield* refFor(input.key, input.accountGeneration);
+            const detail = state.get(input.key)?.detail;
+            if (
+              input.accountGeneration === account.generation &&
+              detail &&
+              !detailErrors.has(input.key) &&
+              Date.now() - Date.parse(detail.refreshedAt) < CACHE_MS
+            )
+              return detail;
+            return yield* error("No fresh cached pull request detail.", "not_found");
+          })
+        : gate.withPermits(1)(
+            Effect.gen(function* () {
+              const ref = yield* refFor(input.key, input.accountGeneration),
+                cached = state.get(input.key);
 
-          if (
-            input.mode !== "force" &&
-            cached &&
-            Date.now() - (detailAttempts.get(input.key) ?? 0) < CACHE_MS
-          )
-            return { ...cached.detail, stale: detailErrors.has(input.key) };
-          if (
-            input.mode !== "force" &&
-            Date.now() - (detailAttempts.get(input.key) ?? 0) < CACHE_MS &&
-            detailErrors.has(input.key)
-          )
-            return yield* detailErrors.get(input.key)!;
-          remember(detailAttempts, input.key, Date.now(), MAX_TRACKED);
-          const previous = snapshot(),
-            read = yield* refreshOne(ref).pipe(Effect.result);
-          if (read._tag === "Failure") {
-            remember(detailErrors, input.key, read.failure, MAX_TRACKED);
-            if (cached)
-              return {
-                ...cached.detail,
-                stale: true,
-                readErrorKind: read.failure.kind === "rate_limited" ? "rate_limited" : "failed",
-                ...(read.failure.rateLimit ? { rateLimit: read.failure.rateLimit } : {}),
-                warning: "Forge refresh failed; showing the last verified detail.",
-              };
-            return yield* read.failure;
-          }
-          detailErrors.delete(input.key);
-          yield* publish(previous);
-          return state.get(input.key)!.detail;
-        }),
-      );
+              if (
+                input.mode !== "force" &&
+                cached &&
+                Date.now() - (detailAttempts.get(input.key) ?? 0) < CACHE_MS
+              )
+                return { ...cached.detail, stale: detailErrors.has(input.key) };
+              if (
+                input.mode !== "force" &&
+                Date.now() - (detailAttempts.get(input.key) ?? 0) < CACHE_MS &&
+                detailErrors.has(input.key)
+              )
+                return yield* detailErrors.get(input.key)!;
+              remember(detailAttempts, input.key, Date.now(), MAX_TRACKED);
+              const previous = snapshot(),
+                read = yield* refreshOne(ref).pipe(Effect.result);
+              if (read._tag === "Failure") {
+                remember(detailErrors, input.key, read.failure, MAX_TRACKED);
+                if (cached)
+                  return {
+                    ...cached.detail,
+                    stale: true,
+                    readErrorKind: read.failure.kind === "rate_limited" ? "rate_limited" : "failed",
+                    ...(read.failure.rateLimit ? { rateLimit: read.failure.rateLimit } : {}),
+                    warning: "Forge refresh failed; showing the last verified detail.",
+                  };
+                return yield* read.failure;
+              }
+              detailErrors.delete(input.key);
+              yield* publish(previous);
+              return state.get(input.key)!.detail;
+            }),
+          );
     const getFiles: PrHubServiceShape["getFiles"] = (input) =>
       gate.withPermits(1)(
         Effect.gen(function* () {

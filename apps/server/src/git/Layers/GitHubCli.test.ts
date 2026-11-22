@@ -262,6 +262,34 @@ it.effect(
     }),
 );
 
+it.effect("checks fresh CLI identity for cache-only reads without a GitHub request", () =>
+  Effect.gen(function* () {
+    vi.stubEnv("GH_TOKEN", "");
+    vi.stubEnv("GITHUB_TOKEN", "");
+    const cli = (token: string) => ({
+      stdout: token,
+      stderr: "",
+      code: 0,
+      signal: null,
+      timedOut: false,
+    });
+    mockedRunProcess.mockResolvedValue(cli("old-token"));
+    const fetcher = vi.fn(async () => Response.json({ id: 123, login: "alice" }));
+    vi.stubGlobal("fetch", fetcher);
+    const { makeGitHubCli } = yield* Effect.promise(() => import("./GitHubCli.ts"));
+    const gh = yield* makeGitHubCli();
+    const target = { cwd: "/repo", host: "github.com" };
+    const verified = yield* gh.getCredentialContext(target);
+    expect(yield* gh.getCredentialContext({ ...target, cacheOnly: true })).toBe(verified);
+    mockedRunProcess.mockResolvedValue(cli("replacement-token"));
+    expect((yield* Effect.exit(gh.getCredentialContext({ ...target, cacheOnly: true })))._tag).toBe(
+      "Failure",
+    );
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(mockedRunProcess).toHaveBeenCalledTimes(3);
+  }),
+);
+
 it.effect.each(["GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"] as const)(
   "uses %s only for GH_HOST and keeps the stored CLI login available on other hosts",
   (name) =>
