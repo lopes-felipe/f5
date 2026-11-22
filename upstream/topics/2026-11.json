@@ -84813,9 +84813,11 @@
     },
     {
       "createdAt": "2026-11-20T11:12:41.766Z",
+      "decidedAt": "2026-11-22T18:07:38.087Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-39378",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers",
@@ -91406,9 +91408,13 @@
     },
     {
       "createdAt": "2026-11-22T13:13:51.143Z",
+      "decidedAt": "2026-11-22T18:07:28.805Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-40736",
-      "status": "inbox",
+      "reason": "Not applicable to f5",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "sidebar"
