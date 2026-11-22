@@ -142,9 +142,9 @@ function run(
         Layer.mergeAll(
           Layer.succeed(OrchestrationEngineService, engine as never),
           Layer.succeed(NextTurnQueueStore, store as never),
+          SqlitePersistenceMemory,
         ),
       ),
-      Effect.provide(SqlitePersistenceMemory),
     ),
   );
 }
