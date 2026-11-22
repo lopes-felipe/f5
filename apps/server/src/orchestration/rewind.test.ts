@@ -756,13 +756,14 @@ layer("conversation rewind recovery", (it) => {
 layer("native file rewind in non-git Claude projects", (it) => {
   for (const canRewind of [true, false])
     it.effect(
-      `native rewind ${canRewind ? "restores files before conversation rewind" : "refusal leaves the conversation untouched"}`,
+      `native rewind in a folder with nested Git repositories ${canRewind ? "restores files before conversation rewind" : "leaves the conversation untouched on refusal"}`,
       () =>
         Effect.gen(function* () {
           const workspace = yield* Effect.acquireRelease(
             Effect.sync(() => fs.mkdtempSync(path.join(os.tmpdir(), "f5-native-rewind-"))),
             (cwd) => Effect.sync(() => fs.rmSync(cwd, { recursive: true, force: true })),
           );
+          fs.mkdirSync(path.join(workspace, "service", ".git"), { recursive: true });
           const h = yield* harness(`native-files:${canRewind}`, null, null, {
             nativeClaude: true,
             nativeCanRewind: canRewind,
@@ -777,7 +778,7 @@ layer("native file rewind in non-git Claude projects", (it) => {
           assert.equal(h.rollbackCalls(), canRewind ? 1 : 0);
           if (canRewind)
             assert(h.activityCommandIds.some((id) => id.startsWith("native-files-warning:")));
-        }),
+        }).pipe(Effect.provide(nodeFileSystem)),
     );
   it.effect("never calls native rewind in a git project", () =>
     Effect.gen(function* () {

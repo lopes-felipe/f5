@@ -746,8 +746,13 @@ const make = Effect.gen(function* () {
       project: readModel.projects.find((project) => project.id === thread.projectId),
     });
     turnRepositories.delete(thread.id);
-    if (repositories.length === 0) {
-      if (thread.session?.providerName === "claudeAgent" && Option.isSome(sqlOption)) {
+    const nativeFiles =
+      thread.session?.providerName === "claudeAgent" &&
+      Option.isSome(sqlOption) &&
+      (!thread.worktreePath || repositories.length === 0) &&
+      !(yield* checkpointStore.isGitRepository(sessionRuntime.value.cwd));
+    if (nativeFiles || repositories.length === 0) {
+      if (nativeFiles) {
         yield* Effect.gen(function* () {
           const history = (yield* turns.listByThreadId({ threadId: thread.id }))
             .filter((turn) => turn.turnId !== null)
@@ -848,6 +853,7 @@ const make = Effect.gen(function* () {
       repositories,
       targetCheckpointRef,
       event.payload.turnCount === 0,
+      !thread.worktreePath,
     );
     if (restore.skipped.length > 0) {
       yield* orchestrationEngine
@@ -859,7 +865,9 @@ const make = Effect.gen(function* () {
             id: EventId.makeUnsafe(timeOrderedUuid()),
             tone: "info",
             kind: "checkpoint.revert.skipped-repositories",
-            summary: "Some repositories had no checkpoint and kept their files.",
+            summary: thread.worktreePath
+              ? "Some repositories had no checkpoint and kept their files."
+              : "Repository files outside the primary checkout were kept.",
             payload: { repositories: restore.skipped.map((repository) => repository.relativePath) },
             turnId: null,
             createdAt: now,

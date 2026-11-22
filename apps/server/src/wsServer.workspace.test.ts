@@ -145,6 +145,8 @@ describe("WebSocket Server", () => {
       const nested = path.join(cwd, "nested");
       fs.mkdirSync(nested);
       run("-C", nested, "init", "-q", "-b", "main");
+      run("-C", nested, "config", "user.name", "F5 Test");
+      run("-C", nested, "config", "user.email", "f5@example.test");
       fs.writeFileSync(path.join(nested, "app.txt"), "initial\n");
       run("-C", nested, "add", "app.txt");
       run("-C", nested, "commit", "-qm", "init nested");
@@ -156,6 +158,13 @@ describe("WebSocket Server", () => {
       connections.push(ws);
       const threadId = (welcome.data as { bootstrapThreadId: string }).bootstrapThreadId;
       expect(threadId).toBeTruthy();
+      const nonMember = makeTempDir("f5-nonmember-");
+      const rejected = await sendRequest(ws, WS_METHODS.gitCheckout, {
+        threadId,
+        cwd: nonMember,
+        branch: "topic",
+      });
+      expect(rejected.error?.message).toContain("does not match this conversation's workspace");
       fs.writeFileSync(path.join(nested, "app.txt"), "edited\n");
       run("-C", nested, "add", "app.txt");
 

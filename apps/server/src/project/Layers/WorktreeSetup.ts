@@ -14,7 +14,6 @@ import { WorktreePreparation } from "../Services/WorktreePreparation.ts";
 import { readProjectSettings } from "../projectSettings.ts";
 import { discoverConfiguredProjectRepositories } from "../discoverProjectRepositories.ts";
 import {
-  prepareNestedRepositoryWorktrees,
   selectNestedWorktreeRepositories,
   nestedWorktreeOwner,
 } from "../worktreeRepositoryPaths.ts";
@@ -869,29 +868,27 @@ export const makeWorktreeSetup = Effect.gen(function* () {
             return next;
           });
         }
-        if (worktreePath && (selectedRepositories.length > 0 || layoutCreate))
+        if (worktreePath && (selectedRepositories.length > 0 || layoutCreate)) {
+          if (!project || !git.prepareWorktreeGroup)
+            return yield* new WorktreeSetupError({
+              message: "Worktree group setup is unavailable.",
+            });
           yield* withWorktreeLifecycleLock(
             worktreePath,
-            project && git.prepareWorktreeGroup
-              ? git.prepareWorktreeGroup({
-                  ...(layoutCreate ? { layoutCreate, retryLayout: initial.generation > 1 } : {}),
-                  rooted: true,
-                  projectId: project.id,
-                  threadId,
-                  projectRoot: request.projectCwd,
-                  path: worktreePath,
-                  branch: request.branch,
-                  baseBranch: request.baseBranch,
-                  repositories: nestedRepositories.map(({ path }) => path),
-                  selected: selectedRepositories.map(({ path }) => path),
-                })
-              : prepareNestedRepositoryWorktrees(git, {
-                  worktreeRoot: worktreePath,
-                  repositories: selectedRepositories,
-                  branch: request.branch,
-                  baseBranch: request.baseBranch,
-                }),
+            git.prepareWorktreeGroup({
+              ...(layoutCreate ? { layoutCreate, retryLayout: initial.generation > 1 } : {}),
+              rooted: true,
+              projectId: project.id,
+              threadId,
+              projectRoot: request.projectCwd,
+              path: worktreePath,
+              branch: request.branch,
+              baseBranch: request.baseBranch,
+              repositories: nestedRepositories.map(({ path }) => path),
+              selected: selectedRepositories.map(({ path }) => path),
+            }),
           );
+        }
         yield* dispatchVerifiedWorkspace(engine, git, {
           type: "thread.meta.update",
           commandId: serverCommandId("meta"),

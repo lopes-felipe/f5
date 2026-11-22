@@ -13,7 +13,11 @@ import { makeRefSnapshotCache } from "../refSnapshotCache.ts";
 import { gitMutatesRefSnapshot } from "../refMutation.ts";
 import { makeMoveSnapshotOperations } from "../moveSnapshot.ts";
 import { checkoutFingerprint } from "../checkoutFingerprint.ts";
-import { blockingIgnoredEntriesOnDisk } from "../worktreeIgnoredFiles.ts";
+import {
+  blockingIgnoredEntriesOnDisk,
+  scopeIgnoredFilesRemovalPolicy,
+  type IgnoredFilesRemovalPolicy,
+} from "../worktreeIgnoredFiles.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { parseCleanupSafetyStatus } from "../cleanupSafety.ts";
 import { basename, dirname, relative } from "node:path";
@@ -1787,17 +1791,22 @@ const makeGitCore = Effect.gen(function* () {
         return { ready: false, recoverable: false };
       let ready = true;
       let recoverable = true;
+      const workspaceExists = yield* fileSystem.exists(target);
+      if (!workspaceExists && (yield* preparations.getGroupLayoutPhase(target)) === "done")
+        return { ready: false, recoverable: false };
       if (group.root) {
         if (
-          (yield* resolveCommonDir(group.projectRoot).pipe(Effect.flatMap(canonicalPath))) !==
-          group.root.identity
+          (yield* resolveCommonDir(group.projectRoot).pipe(
+            Effect.flatMap(canonicalPath),
+            Effect.orElseSucceed(() => null),
+          )) !== group.root.identity
         )
           return { ready: false, recoverable: false };
         const root = (yield* listWorktrees(group.projectRoot)).find(
           (entry) =>
             !entry.isMain && entry.canonicalPath === target && entry.branch === group.branch,
         );
-        if (yield* fileSystem.exists(target)) {
+        if (workspaceExists) {
           const checkout = yield* inspectCheckoutIdentity(target);
           if (
             !root ||
@@ -1818,6 +1827,7 @@ const makeGitCore = Effect.gen(function* () {
         );
         const sourceIdentity = yield* resolveCommonDir(member.source).pipe(
           Effect.flatMap(canonicalPath),
+          Effect.orElseSucceed(() => null),
         );
         if (sourceIdentity !== member.identity) return { ready: false, recoverable: false };
         if (destination.kind === "missing" || destination.kind === "empty") {
@@ -4057,7 +4067,11 @@ const makeGitCore = Effect.gen(function* () {
       ),
     );
 
-  const verifyGroupMemberRemoval = (path: string, identity: string) =>
+  const verifyGroupMemberRemoval = (
+    path: string,
+    identity: string,
+    policy?: IgnoredFilesRemovalPolicy,
+  ) =>
     Effect.gen(function* () {
       if (
         !(yield* fileSystem
@@ -4078,7 +4092,9 @@ const makeGitCore = Effect.gen(function* () {
         checkout.hasTrackedChanges ||
         checkout.hasUntrackedChanges ||
         checkout.ignoredTruncated ||
-        checkout.ignoredEntries.length > 0
+        (yield* Effect.promise(() =>
+          blockingIgnoredEntriesOnDisk(path, checkout.ignoredEntries, policy),
+        )).length > 0
       )
         return yield* groupError(path, "Local changes or checkout state prevent safe removal.");
     });
@@ -4089,6 +4105,8 @@ const makeGitCore = Effect.gen(function* () {
       const group = yield* preparations
         .getGroup(target)
         .pipe(Effect.mapError((error) => groupError(target, error.message)));
+      const memberIgnoredFiles = (path: string) =>
+        scopeIgnoredFilesRemovalPolicy(relative(target, path), input.ignoredFiles);
       const runLayoutRemoval =
         group && input.layoutRemove
           ? withRepositoryLifecycleLock(
@@ -4119,7 +4137,11 @@ const makeGitCore = Effect.gen(function* () {
               member.path,
               "Repository worktree ownership could not be verified.",
             );
-          yield* verifyGroupMemberRemoval(member.path, member.identity);
+          yield* verifyGroupMemberRemoval(
+            member.path,
+            member.identity,
+            memberIgnoredFiles(member.path),
+          );
         }
         if (
           runLayoutRemoval &&
@@ -4130,10 +4152,17 @@ const makeGitCore = Effect.gen(function* () {
           Effect.mapError((error) => groupError(target, error.message)),
         );
         for (const member of group.members)
-          yield* removeWorktree({ cwd: member.source, path: member.path });
+          yield* removeWorktree({
+            cwd: member.source,
+            path: member.path,
+            ...(input.ignoredFiles ? { ignoredFiles: memberIgnoredFiles(member.path)! } : {}),
+          });
         yield* Effect.tryPromise(() => cleanPlainWorktreeLayout(group, true)).pipe(
           Effect.mapError((error) => groupError(target, error.message)),
         );
+        yield* preparations
+          .deleteGroup(group)
+          .pipe(Effect.mapError((error) => groupError(target, error.message)));
         return;
       }
       const entry = (yield* listWorktrees(input.cwd)).find(
@@ -4146,6 +4175,7 @@ const makeGitCore = Effect.gen(function* () {
             phase: "skipped",
             error: "Checkout was safely removed.",
           });
+        if (group) yield* preparations.deleteGroup(group);
       }).pipe(
         Effect.mapError((error) =>
           createGitCommandError("GitCore.removeWorktree", input.cwd, [], error.message),
@@ -4191,13 +4221,24 @@ const makeGitCore = Effect.gen(function* () {
         }
         children.push(child);
       }
+      const verifyChildren = Effect.gen(function* () {
+        for (const child of children)
+          yield* verifyGroupMemberRemoval(
+            child.path,
+            child.repositoryIdentity,
+            memberIgnoredFiles(child.path),
+          );
+      });
       const removeChildren = Effect.gen(function* () {
         for (const child of children)
-          yield* verifyGroupMemberRemoval(child.path, child.repositoryIdentity);
-        for (const child of children)
-          yield* removeWorktree({ cwd: child.projectIdentity, path: child.path });
+          yield* removeWorktree({
+            cwd: child.projectIdentity,
+            path: child.path,
+            ...(input.ignoredFiles ? { ignoredFiles: memberIgnoredFiles(child.path)! } : {}),
+          });
       });
       if (!(yield* checkoutExists(target))) {
+        yield* verifyChildren;
         yield* removeChildren;
         yield* clearMissingRegistrationUnlocked(input.cwd, target);
         return yield* finishRemoval;
@@ -4256,14 +4297,17 @@ const makeGitCore = Effect.gen(function* () {
           "Checkout identity, local changes, or protected ignored files prevent removal.",
         );
       }
-      yield* removeChildren;
+      yield* verifyChildren;
       if (runLayoutRemoval && !discardsReviewedChanges) {
         yield* runLayoutRemoval;
+        yield* verifyChildren;
         if (!(yield* checkoutExists(target))) {
+          yield* removeChildren;
           yield* clearMissingRegistrationUnlocked(input.cwd, target);
           return yield* finishRemoval;
         }
       }
+      yield* removeChildren;
       if (discardsReviewedChanges) {
         // Discard exactly the reviewed paths instead of forcing removal: a file
         // an editor or watcher writes after the review stays a local change, and

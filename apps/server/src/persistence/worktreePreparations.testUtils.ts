@@ -38,6 +38,13 @@ export function makeMemoryWorktreePreparations() {
         groups.set(group.path, group);
         return Effect.void;
       }),
+    deleteGroup: (group) =>
+      Effect.sync(() => {
+        if (groups.get(group.path)?.threadId === group.threadId) {
+          groups.delete(group.path);
+          layoutPhases.delete(group.path);
+        }
+      }),
     unfinished: Effect.sync(() =>
       rows.filter((row) => !["completed", "skipped"].includes(row.phase)),
     ),

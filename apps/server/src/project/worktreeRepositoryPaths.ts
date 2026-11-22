@@ -1,4 +1,13 @@
-import { lstat, mkdir, readdir, readlink, rmdir, symlink, unlink } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  readdir,
+  readlink,
+  realpath,
+  rmdir,
+  symlink,
+  unlink,
+} from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { Effect } from "effect";
@@ -14,37 +23,46 @@ export function runApprovedWorktreeLayout(
   command: string,
   baseBranch: string,
 ) {
-  return Effect.acquireUseRelease(
-    startOwnedSetupScript({
-      command,
-      cwd: group.projectRoot,
-      env: {
-        T3_PROJECT_ROOT: group.projectRoot,
-        T3_WORKTREE_ROOT: group.path,
-        T3_WORKTREE_PROJECT_PATH: group.path,
-        T3_WORKTREE_BRANCH: group.branch,
-        T3_WORKTREE_BASE: baseBranch,
-        T3_WORKTREE_REPOSITORIES: group.members.map((member) => member.source).join("\n"),
-        T3CODE_PROJECT_ROOT: group.projectRoot,
-        T3CODE_WORKTREE_PATH: group.path,
-      },
-      onLine: () => {},
-    }),
-    (process) =>
-      process.exit.pipe(
-        Effect.timeout("10 minutes"),
-        Effect.flatMap((code) =>
-          code === 0
-            ? Effect.void
-            : Effect.fail(
-                new Error(
-                  "Approved worktree layout command exited with " + (code ?? "no status") + ".",
+  return Effect.suspend(() => {
+    const tail: string[] = [];
+    return Effect.acquireUseRelease(
+      startOwnedSetupScript({
+        command,
+        cwd: group.projectRoot,
+        env: {
+          T3_PROJECT_ROOT: group.projectRoot,
+          T3_WORKTREE_ROOT: group.path,
+          T3_WORKTREE_PROJECT_PATH: group.path,
+          T3_WORKTREE_BRANCH: group.branch,
+          T3_WORKTREE_BASE: baseBranch,
+          T3_WORKTREE_REPOSITORIES: group.members.map((member) => member.source).join("\n"),
+          T3CODE_PROJECT_ROOT: group.projectRoot,
+          T3CODE_WORKTREE_PATH: group.path,
+        },
+        onLine: (line) => {
+          tail.push(line.slice(0, 300));
+          if (tail.length > 5) tail.shift();
+        },
+      }),
+      (process) =>
+        process.exit.pipe(
+          Effect.timeout("10 minutes"),
+          Effect.flatMap((code) =>
+            code === 0
+              ? Effect.void
+              : Effect.fail(
+                  new Error(
+                    "Approved worktree layout command exited with " +
+                      (code ?? "no status") +
+                      "." +
+                      (tail.length ? "\n" + tail.join("\n") : ""),
+                  ),
                 ),
-              ),
+          ),
         ),
-      ),
-    (process) => process.kill,
-  );
+      (process) => process.kill,
+    );
+  });
 }
 
 export function externalRepositoryPath(source: string) {
@@ -79,6 +97,20 @@ export async function linkPlainWorktreeFiles(
         continue;
       }
       const entry = await lstat(from);
+      // Repository paths are canonical. An alias must never expose the original checkout
+      // inside an isolated workspace, even when it points at a corridor holding a repo.
+      if (entry.isSymbolicLink()) {
+        const canonical = await realpath(from).catch(() => null);
+        if (
+          canonical &&
+          repositoryPaths.some(
+            (repository) =>
+              isInsideProjectWorkspace(canonical, repository) ||
+              isInsideProjectWorkspace(repository, canonical),
+          )
+        )
+          continue;
+      }
       const linkType =
         process.platform === "win32" ? (entry.isDirectory() ? "junction" : "file") : undefined;
       try {
@@ -198,74 +230,3 @@ export const resolveNestedWorktreeBase = (
       (yield* git.resolveCommit(cwd, "refs/remotes/origin/" + branch))
     );
   });
-
-/** The primary checkout has already finished, including any post-checkout hook. */
-export function prepareNestedRepositoryWorktrees(
-  git: Pick<
-    GitCoreShape,
-    | "branchExists"
-    | "createWorktree"
-    | "ensureWorktree"
-    | "readDefaultBranch"
-    | "readWorktreePreparation"
-    | "resolveCommit"
-  >,
-  input: {
-    readonly worktreeRoot: string;
-    readonly repositories: ReadonlyArray<ProjectRepository>;
-    readonly branch: string;
-    readonly baseBranch: string;
-  },
-) {
-  return Effect.gen(function* () {
-    const root = yield* Effect.tryPromise(() => canonicalWorktreePath(input.worktreeRoot));
-    const owner = nestedWorktreeOwner(root);
-    for (const repository of input.repositories) {
-      if (repository.relativePath === ".") continue;
-      const destination = yield* inspectNestedWorktreeDestination(root, repository.relativePath);
-      if (destination.kind === "occupied") continue;
-      const previous = yield* git.readWorktreePreparation(destination.target);
-      const branchExists = yield* git.branchExists(repository.path, input.branch);
-      if (branchExists && (previous?.owner !== owner || previous.branch !== input.branch)) {
-        return yield* Effect.fail(
-          new Error(
-            "The branch " + input.branch + " already exists in " + repository.relativePath + ".",
-          ),
-        );
-      }
-      const selectedBase = branchExists
-        ? yield* git.resolveCommit(repository.path, "refs/heads/" + input.branch)
-        : yield* resolveNestedWorktreeBase(git, repository.path, input.baseBranch);
-      const defaultBranch = selectedBase ? null : yield* git.readDefaultBranch(repository.path);
-      const base =
-        selectedBase ?? (yield* git.resolveCommit(repository.path, defaultBranch ?? "HEAD"));
-      // An unborn repository has no commit from which to make a worktree.
-      if (!base) continue;
-      yield* Effect.tryPromise(() => mkdir(path.dirname(destination.target), { recursive: true }));
-      const latest = yield* inspectNestedWorktreeDestination(root, repository.relativePath);
-      if (latest.kind === "occupied") continue;
-      if (latest.kind === "empty") yield* Effect.tryPromise(() => rmdir(latest.target));
-      if (branchExists) {
-        yield* git.ensureWorktree({
-          cwd: repository.path,
-          path: latest.target,
-          branch: input.branch,
-          owner,
-        });
-        continue;
-      }
-      const created = yield* git.createWorktree({
-        cwd: repository.path,
-        path: latest.target,
-        branch: defaultBranch ?? input.baseBranch,
-        baseRefName: base,
-        newBranch: input.branch,
-        preparation: { owner, runSetupScript: false, setupIdentity: null },
-      });
-      if (created.worktree.branch !== input.branch)
-        return yield* Effect.fail(
-          new Error("The repository branch changed during worktree setup."),
-        );
-    }
-  });
-}

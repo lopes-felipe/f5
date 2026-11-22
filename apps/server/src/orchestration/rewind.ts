@@ -171,7 +171,7 @@ export const makeConversationRewind = Effect.gen(function* () {
         request.restoreFiles &&
         thread.session?.providerName === "claudeAgent" &&
         !!workspace &&
-        scoped.length === 0 &&
+        (!thread.worktreePath || scoped.length === 0) &&
         !(yield* checkpoints.isGitRepository(workspace));
       if (
         nativeFiles &&

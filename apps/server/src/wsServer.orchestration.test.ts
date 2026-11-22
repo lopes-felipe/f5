@@ -1426,6 +1426,13 @@ describe("WebSocket Server", () => {
         }
         await vi.waitFor(() => expect(sentTurns).toHaveLength(1), SLOW_WAIT);
         expect(startedCwds).toContain(workspace);
+        const switched = await sendRequest(ws, WS_METHODS.gitCheckout, {
+          cwd: workspace,
+          branch: "other",
+          threadId: "plain-worktree",
+          create: true,
+        });
+        expect(switched.error).toMatchObject({ code: "WorkspaceRequiresNewWorktree" });
       });
 
       it("rejects a required worktree before creating the thread", async () => {

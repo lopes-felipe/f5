@@ -64,6 +64,10 @@ effectIt.effect("upgrades a version 173 database for managed workspace groups", 
       yield* preparations.saveGroup(group);
       expect(yield* preparations.getGroup(group.path)).toEqual(group);
       expect(yield* preparations.getGroupLayoutPhase(group.path)).toBe("pending");
+      yield* preparations.deleteGroup({ ...group, threadId: "other-thread" });
+      expect(yield* preparations.getGroup(group.path)).toEqual(group);
+      yield* preparations.deleteGroup(group);
+      expect(yield* preparations.getGroup(group.path)).toBeNull();
       yield* sql`WITH RECURSIVE paths(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM paths WHERE i < 128)
         INSERT INTO project_repository_roots(project_id, path)
         SELECT 'project', '/extra-' || i FROM paths`;

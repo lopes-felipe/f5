@@ -1,4 +1,14 @@
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -8,7 +18,6 @@ import { expect, it } from "vitest";
 import {
   inspectNestedWorktreeDestination,
   externalRepositoryPath,
-  prepareNestedRepositoryWorktrees,
   selectNestedWorktreeRepositories,
 } from "./worktreeRepositoryPaths.ts";
 import { ServerConfig } from "../config.ts";
@@ -66,6 +75,19 @@ it("prepares and resumes an isolated workspace for a plain project folder", asyn
       await init(directory, "app.txt", "original");
     }
     await writeFile(path.join(project, "README.md"), "shared");
+    await symlink(repositoryPaths[0]!, path.join(project, "api-alias"), "junction");
+    await writeFile(path.join(repositoryPaths[1]!, ".gitignore"), ".env\n");
+    run(repositoryPaths[1]!, "add", ".gitignore");
+    run(
+      repositoryPaths[1]!,
+      "-c",
+      "user.name=F5 Test",
+      "-c",
+      "user.email=f5@example.test",
+      "commit",
+      "-qm",
+      "ignore env",
+    );
     await init(external, "external.txt", "external");
     await Effect.runPromise(
       Effect.gen(function* () {
@@ -96,6 +118,9 @@ it("prepares and resumes an isolated workspace for a plain project folder", asyn
         expect(
           yield* Effect.promise(() => readFile(path.join(worktree, "README.md"), "utf8")),
         ).toBe("shared");
+        yield* Effect.promise(() =>
+          expect(readFile(path.join(worktree, "api-alias", "app.txt"), "utf8")).rejects.toThrow(),
+        );
         expect(
           yield* git.ensureWorktree({
             cwd: project,
@@ -129,6 +154,30 @@ it("prepares and resumes an isolated workspace for a plain project folder", asyn
         expect(refused._tag).toBe("Failure");
         expect(run(apiCheckout, "branch", "--show-current")).toBe("feature");
         yield* Effect.promise(() => writeFile(path.join(webCheckout, "app.txt"), "original"));
+        yield* Effect.promise(() => writeFile(path.join(webCheckout, ".env"), "keep"));
+        expect(
+          yield* Effect.result(git.removeWorktree({ cwd: project, path: worktree })),
+        ).toMatchObject({
+          _tag: "Failure",
+        });
+        yield* git.removeWorktree({
+          cwd: project,
+          path: worktree,
+          ignoredFiles: { kind: "manual", approvedEntries: ["web/.env"] },
+        });
+        expect(yield* git.readWorktreeGroup!(worktree)).toBeNull();
+        yield* git.prepareWorktreeGroup!({ ...input, threadId: "next-thread", branch: "next" });
+        expect(yield* git.readWorktreeGroup!(worktree)).toMatchObject({ threadId: "next-thread" });
+        yield* Effect.promise(() => rename(repositoryPaths[1]!, path.join(project, "moved")));
+        expect(
+          yield* git.inspectWorktreeGroup!({
+            path: worktree,
+            projectRoot: project,
+            branch: "next",
+            threadId: "next-thread",
+          }),
+        ).toEqual({ ready: false, recoverable: false });
+        yield* Effect.promise(() => rename(path.join(project, "moved"), repositoryPaths[1]!));
         yield* git.removeWorktree({ cwd: project, path: worktree });
 
         for (const [invalidPath, message] of [
@@ -178,6 +227,17 @@ it("prepares and resumes an isolated workspace for a plain project folder", asyn
             "--show-current",
           ),
         ).toBe("custom");
+        const displaced = customPath + "-displaced";
+        yield* Effect.promise(() => rename(customPath, displaced));
+        expect(
+          yield* git.inspectWorktreeGroup!({
+            path: customPath,
+            projectRoot: project,
+            branch: "custom",
+            threadId: "custom-thread",
+          }),
+        ).toEqual({ ready: false, recoverable: false });
+        yield* Effect.promise(() => rename(displaced, customPath));
         yield* git.removeWorktree({
           cwd: project,
           path: customPath,
@@ -305,7 +365,7 @@ it("checks out a nested repository on the thread branch and preserves dirty nest
   const repo = path.join(project, "service");
   const second = path.join(project, "web");
   try {
-    await init(project, ".gitignore", "/service/\n/web/\n");
+    await init(project, "README.md", "primary");
     for (const directory of [repo, second]) {
       await mkdir(directory);
       await init(directory, "app.txt", "committed\n");
@@ -318,13 +378,20 @@ it("checks out a nested repository on the thread branch and preserves dirty nest
           branch: "main",
           newBranch: "feature",
           path: null,
+          preparation: {
+            owner: "thread:rooted-thread",
+            runSetupScript: false,
+            setupIdentity: null,
+          },
         });
-        yield* prepareNestedRepositoryWorktrees(git, {
-          worktreeRoot: worktree.path,
-          repositories: [
-            { path: repo, relativePath: "service" },
-            { path: second, relativePath: "web" },
-          ],
+        yield* git.prepareWorktreeGroup!({
+          projectId: "project",
+          threadId: "rooted-thread",
+          projectRoot: project,
+          rooted: true,
+          path: worktree.path,
+          repositories: [repo, second],
+          selected: [repo, second],
           branch: "feature",
           baseBranch: "main",
         });
@@ -340,15 +407,24 @@ it("checks out a nested repository on the thread branch and preserves dirty nest
         expect(run(checkout, "branch", "--show-current")).toBe("feature");
         expect(run(dirty, "status", "--short")).toContain("M app.txt");
         yield* Effect.promise(() => writeFile(path.join(dirty, "app.txt"), "committed\n"));
+        const failedLayout = yield* Effect.result(
+          git.removeWorktree({
+            cwd: project,
+            path: worktree.path,
+            layoutRemove: `"${process.execPath}" -e "console.error('layout cleanup failed'); process.exit(4)"`,
+          }),
+        );
+        expect(failedLayout).toMatchObject({
+          _tag: "Failure",
+          failure: { detail: expect.stringContaining("layout cleanup failed") },
+        });
+        expect(run(checkout, "branch", "--show-current")).toBe("feature");
         yield* git.removeWorktree({ cwd: project, path: worktree.path });
         expect(run(repo, "worktree", "list", "--porcelain")).not.toContain("refs/heads/feature");
         expect(run(repo, "show-ref", "--verify", "refs/heads/feature")).toContain(
           "refs/heads/feature",
         );
-        expect(
-          yield* git.ensureWorktree({ cwd: project, path: worktree.path, branch: "feature" }),
-        ).toEqual({ recreated: true });
-        expect(run(checkout, "branch", "--show-current")).toBe("feature");
+        expect(yield* git.readWorktreeGroup!(worktree.path)).toBeNull();
       }).pipe(
         Effect.provide(
           GitCoreTestLive.pipe(

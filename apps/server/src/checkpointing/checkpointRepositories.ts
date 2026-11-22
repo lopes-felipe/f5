@@ -51,6 +51,7 @@ export function restoreCheckpointRepositories(
   repositories: ReadonlyArray<ProjectRepository>,
   checkpointRef: CheckpointRef,
   fallbackToHead = false,
+  rootOnly = false,
 ) {
   return Effect.gen(function* () {
     if (repositories.length === 1 && repositories[0]?.relativePath === ".") {
@@ -62,9 +63,12 @@ export function restoreCheckpointRepositories(
       });
       return { restored, skipped: restored ? [] : [repository] };
     }
-    const available = yield* checkpointRepositoriesWithRef(store, repositories, checkpointRef);
+    const targets = rootOnly
+      ? repositories.filter((repository) => repository.relativePath === ".")
+      : repositories;
+    const available = yield* checkpointRepositoriesWithRef(store, targets, checkpointRef);
     const restored = yield* Effect.forEach(
-      repositories.filter(
+      targets.filter(
         (repository) =>
           available.includes(repository) || (fallbackToHead && repository.relativePath === "."),
       ),

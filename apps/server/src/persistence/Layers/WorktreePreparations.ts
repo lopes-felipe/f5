@@ -105,6 +105,12 @@ export const makeWorktreePreparations = Effect.gen(function* () {
             path: group.path,
           });
       }).pipe(Effect.mapError(queryError)),
+    deleteGroup: (group) =>
+      sql`DELETE FROM worktree_groups
+        WHERE workspace_path = ${group.path} AND json_extract(plan_json, '$.threadId') = ${group.threadId}`.pipe(
+        Effect.asVoid,
+        Effect.mapError(queryError),
+      ),
     unfinished: sql<Row>`${select} WHERE phase NOT IN ('completed', 'skipped')`.pipe(
       Effect.map((rows) => rows.map(decode)),
       Effect.mapError(queryError),
