@@ -84822,11 +84822,13 @@
     },
     {
       "createdAt": "2026-11-20T11:12:41.766Z",
-      "decidedAt": "2026-11-20T11:45:15.779Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T22:24:33.713Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-39325",
-      "status": "port",
+      "reason": "F5’s providers own child-task lifecycle and F5 has no delegated-task finalizer that reads child turn history.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "performance",
@@ -85268,14 +85270,16 @@
     },
     {
       "createdAt": "2026-11-20T11:12:41.766Z",
-      "decidedAt": "2026-11-20T11:44:39.946Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T22:24:33.713Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-39415",
+      "reason": "F5’s desktop preview has no server-side loopback tunnel.",
+      "reasonKey": "not-applicable",
       "relatedTopics": [
         "pr-37947"
       ],
-      "status": "port",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "security",
@@ -85648,11 +85652,21 @@
     },
     {
       "createdAt": "2026-11-20T11:12:41.766Z",
-      "decidedAt": "2026-11-20T11:44:39.946Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T22:24:33.713Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/wsServer.ts:2178",
+          "apps/server/src/wsServer.ts:1221"
+        ],
+        "f5Refs": [
+          "2bf3550a6a2560959d09ce69fad543460605823e"
+        ]
+      },
       "id": "pr-39464",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "security",
@@ -85921,11 +85935,22 @@
     },
     {
       "createdAt": "2026-11-20T11:12:41.766Z",
-      "decidedAt": "2026-11-20T11:44:39.946Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T22:24:33.713Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/assetHttp.ts:23",
+          "apps/server/src/wsServer.ts:5903",
+          "apps/server/src/WorkspaceAssetAuthorizer.ts:530"
+        ],
+        "f5Refs": [
+          "2bf3550a6a2560959d09ce69fad543460605823e"
+        ]
+      },
       "id": "pr-39491",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "security",
