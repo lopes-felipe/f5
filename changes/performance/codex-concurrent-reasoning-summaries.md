@@ -1,0 +1,1 @@
+- Codex can start tool calls while a detailed reasoning summary is still being generated. Reasoning summaries appear one section at a time.

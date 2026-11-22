@@ -1,5 +1,6 @@
-import { Effect, FileSystem, Path, Schema } from "effect";
+import { Effect, FileSystem, Schema } from "effect";
 import { fromLenientJson } from "@t3tools/shared/schemaJson";
+import { claudeSettingsFilesByPrecedence } from "./claudeSettingsFiles.ts";
 
 // Match Claude Code's auto:N parsing, including clamped endpoints and grouped integers.
 export function claudeToolSearchOverride(value: string | undefined): "true" | undefined {
@@ -36,47 +37,7 @@ export const resolveClaudeToolSearchOverride = Effect.fn("resolveClaudeToolSearc
     readonly environment: NodeJS.ProcessEnv;
   }) {
     const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const mainCheckout = (checkout: string) =>
-      fs.readFileString(path.join(checkout, ".git")).pipe(
-        Effect.flatMap((pointer) => {
-          const gitDir = /^gitdir:\s*(.+)$/m.exec(pointer)?.[1]?.trim();
-          if (!gitDir) return Effect.succeed(checkout);
-          const worktreeGitDir = path.resolve(checkout, gitDir);
-          return fs.readFileString(path.join(worktreeGitDir, "commondir")).pipe(
-            Effect.map((commonDir) => {
-              const common = path.resolve(worktreeGitDir, commonDir.trim());
-              return path.basename(common) === ".git" ? path.dirname(common) : checkout;
-            }),
-          );
-        }),
-        Effect.orElseSucceed(() => checkout),
-      );
-    let localDirectory = input.cwd;
-    if (input.cwd && input.platform !== "win32") {
-      for (let directory = path.resolve(input.cwd); ; directory = path.dirname(directory)) {
-        if (
-          yield* fs.exists(path.join(directory, ".git")).pipe(Effect.orElseSucceed(() => false))
-        ) {
-          const root = yield* mainCheckout(directory);
-          localDirectory = root === input.homeDirectory ? input.cwd : root;
-          break;
-        }
-        if (path.dirname(directory) === directory) break;
-      }
-    }
-    const files = [
-      ...(input.cwd && localDirectory
-        ? [
-            path.join(localDirectory, ".claude", "settings.local.json"),
-            ...(localDirectory === input.cwd
-              ? []
-              : [path.join(input.cwd, ".claude", "settings.local.json")]),
-            path.join(input.cwd, ".claude", "settings.json"),
-          ]
-        : []),
-      path.join(input.configDirectory, "settings.json"),
-    ];
+    const files = yield* claudeSettingsFilesByPrecedence(input);
     for (const file of files) {
       const value = yield* fs.readFileString(file).pipe(
         Effect.flatMap(decodeSettings),

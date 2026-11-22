@@ -10,6 +10,7 @@ import path from "node:path";
 
 import type { ThreadId } from "@t3tools/contracts";
 import { Cause, Effect } from "effect";
+import { readCodexToolOutputImage } from "../codexToolOutputImages.ts";
 import { appendProviderLog, closeProviderLogs } from "../logWriterRegistry.ts";
 
 import { toSafeThreadAttachmentSegment } from "../../attachmentStore.ts";
@@ -55,11 +56,21 @@ function resolveStreamLabel(stream: EventNdjsonStream): string {
   }
 }
 
-/** Replaces inline base64 image blocks (Claude and MCP shapes) so logs never hold screenshots. */
+/** Replaces inline base64 image blocks so logs never hold screenshots. */
 export function scrubInlineImagesReplacer(_key: string, value: unknown): unknown {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
   const record = value as Record<string, unknown>;
-  if (record.type !== "image") return value;
+  if (record.type !== "image") {
+    const codexImage = readCodexToolOutputImage(record);
+    return codexImage
+      ? {
+          type: "image",
+          mimeType: codexImage.mimeType,
+          omitted: true,
+          base64Chars: codexImage.data.length,
+        }
+      : value;
+  }
   const source =
     record.source && typeof record.source === "object"
       ? (record.source as Record<string, unknown>)

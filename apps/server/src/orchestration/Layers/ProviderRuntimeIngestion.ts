@@ -384,6 +384,7 @@ interface OpenCommandExecutionState {
   readonly threadId: ThreadId;
   readonly turnId: TurnId;
   readonly providerItemId: ProviderItemId;
+  readonly nativeThreadId?: string;
   command: string;
   cwd: string | undefined;
   description: string | undefined;
@@ -4062,6 +4063,11 @@ const make = Effect.gen(function* () {
     );
     const fallbackCwd =
       eventCwd ?? existing?.cwd ?? (yield* resolveWorkspaceCwdForThread(input.threadId));
+    const data = asRecord(input.event.payload.data);
+    const nativeThreadId =
+      input.event.provider === "codex"
+        ? (asString(data?.threadId) ?? asString(data?.thread_id))
+        : undefined;
     const commandExecution: OpenCommandExecutionState =
       existing ??
       ({
@@ -4069,6 +4075,7 @@ const make = Effect.gen(function* () {
         threadId: input.threadId,
         turnId: input.turnId,
         providerItemId: input.providerItemId,
+        ...(nativeThreadId ? { nativeThreadId } : {}),
         command,
         cwd: fallbackCwd,
         description: eventDescription,
@@ -4277,6 +4284,8 @@ const make = Effect.gen(function* () {
     readonly event: ProviderRuntimeEvent;
     readonly threadId: ThreadId;
     readonly turnId?: TurnId;
+    readonly nativeThreadId?: string;
+    readonly excludeTurnId?: TurnId | null;
     readonly status: Exclude<
       OrchestrationCommandExecutionStatus,
       "running" | "completed" | "declined"
@@ -4288,6 +4297,9 @@ const make = Effect.gen(function* () {
       (commandExecution) =>
         commandExecution.threadId === input.threadId &&
         (input.turnId === undefined || commandExecution.turnId === input.turnId) &&
+        commandExecution.turnId !== input.excludeTurnId &&
+        (input.nativeThreadId === undefined ||
+          commandExecution.nativeThreadId === input.nativeThreadId) &&
         commandExecution.completedAt === null,
     );
 
@@ -5407,6 +5419,23 @@ const make = Effect.gen(function* () {
       }
 
       if (event.type === "thread.state.changed" && event.payload.state === "closed") {
+        if (event.provider === "codex") {
+          const detail = asRecord(event.payload.detail);
+          const nativeThreadId = asString(detail?.threadId) ?? asString(detail?.thread_id);
+          if (nativeThreadId) {
+            yield* finalizeOpenCommandExecutions({
+              event,
+              threadId: thread.id,
+              nativeThreadId,
+              excludeTurnId:
+                activeTurnId ??
+                (thread.latestTurn?.state === "running" ? thread.latestTurn.turnId : null),
+              status: "interrupted",
+              updatedAt: now,
+              commandTag: "command-execution-thread-closed-finalize",
+            });
+          }
+        }
         yield* orchestrationEngine.dispatch({
           type: "thread.session.set",
           commandId: providerCommandId(event, "thread-provider-state-set"),
