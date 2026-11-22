@@ -47157,9 +47157,11 @@
     },
     {
       "createdAt": "2026-11-22T13:13:51.143Z",
+      "decidedAt": "2026-11-22T18:06:25.448Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-33286",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "timeline"
@@ -51558,9 +51560,11 @@
     },
     {
       "createdAt": "2026-11-22T13:13:51.143Z",
+      "decidedAt": "2026-11-22T18:06:32.118Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-34027",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "desktop",
