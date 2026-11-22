@@ -24,6 +24,7 @@ export const ClientCapabilities = Generated.ClientCapabilities.pipe(
     ),
   }),
 );
+export type ClientCapabilities = typeof ClientCapabilities.Type;
 export const InitializeRequest = Generated.InitializeRequest.pipe(
   Schema.fieldsAssign({ clientCapabilities: Schema.optionalKey(ClientCapabilities) }),
 );

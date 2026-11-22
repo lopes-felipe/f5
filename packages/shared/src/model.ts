@@ -895,7 +895,10 @@ export function normalizeCodexModelOptions(
       ? resolveCodexEffectiveReasoningEffort(model, modelOptions.reasoningEffort, reported)
       : undefined;
     const reportedOptions: CodexModelOptions = {
-      ...(modelOptions?.cyberAccessProgram && selectDescriptor(reported, "cyberAccessProgram")
+      ...(modelOptions?.cyberAccessProgram &&
+      selectDescriptor(reported, "cyberAccessProgram")?.options.some(
+        (option) => option.id === modelOptions.cyberAccessProgram,
+      )
         ? { cyberAccessProgram: modelOptions.cyberAccessProgram }
         : {}),
       ...(effort && effort !== capabilities.defaultEffort ? { reasoningEffort: effort } : {}),
@@ -1374,7 +1377,7 @@ export function createReportedCodexModelCapabilities(
   const cyber = [...new Set(info.availableAccessPrograms?.cyber ?? [])].filter((program) =>
     ["standard", "daybreakBlue", "daybreakRed"].includes(program),
   );
-  const defaultCyberProgram = cyber.includes("standard") ? "standard" : cyber[0];
+  const defaultCyberProgram = "standard";
   const cyberOptions: ProviderOptionDescriptor[] = cyber.length
     ? [
         {

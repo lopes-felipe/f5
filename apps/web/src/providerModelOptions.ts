@@ -78,11 +78,11 @@ export function normalizeProviderModelOptions(
   // No model is known here, so every valid effort is kept: a model's reported
   // default can differ from the provider-wide one (Sol reports "low"), and only
   // `normalizeCodexModelOptions` knows which effort is the default to omit.
-  const cyberAccessProgram = ["standard", "daybreakBlue", "daybreakRed"].includes(
-    String(codexCandidate?.cyberAccessProgram),
-  )
-    ? (codexCandidate?.cyberAccessProgram as NonNullable<CodexModelOptions["cyberAccessProgram"]>)
-    : undefined;
+  const cyberAccessProgram =
+    typeof codexCandidate?.cyberAccessProgram === "string" &&
+    ["standard", "daybreakBlue", "daybreakRed"].includes(codexCandidate.cyberAccessProgram)
+      ? (codexCandidate?.cyberAccessProgram as NonNullable<CodexModelOptions["cyberAccessProgram"]>)
+      : undefined;
   const baseCodex = codexReasoningEffort
     ? {
         reasoningEffort: codexReasoningEffort,

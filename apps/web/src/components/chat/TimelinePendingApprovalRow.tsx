@@ -4,9 +4,11 @@ import {
   canApproveRequest,
 } from "./ComposerPendingApprovalActions";
 import type { ComponentProps } from "react";
+import { ApprovalPresentation } from "./ApprovalPresentation";
 
 export type TimelineApprovalActions = {
   respondingRequestIds: readonly string[];
+  focusedRequestIds?: Set<string>;
   onRespondToApproval: ComponentProps<typeof ComposerPendingApprovalActions>["onRespondToApproval"];
 };
 
@@ -22,6 +24,7 @@ export function TimelinePendingApprovalRow({
       className="my-2 min-w-0 rounded-lg border border-warning/40 p-3"
       aria-label="Pending approval"
     >
+      <ApprovalPresentation approval={approval} />
       <pre
         tabIndex={0}
         className="max-h-60 overflow-auto whitespace-pre-wrap text-xs wrap-anywhere"
@@ -47,6 +50,7 @@ export function TimelinePendingApprovalRow({
             defaultToNo={approval.presentation?.defaultToNo}
             suppressAlwaysAllowRule={approval.presentation?.suppressAlwaysAllowRule}
             inline
+            focusedRequestIds={actions.focusedRequestIds}
           />
         ) : null}
       </div>

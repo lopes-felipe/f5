@@ -12,7 +12,7 @@ export function sidebarWeeklyUsageWindow(windows: ReadonlyArray<QuotaWindow>) {
 }
 
 /** Uses reported window identities and durations, so new model versions need no catalog update. */
-export function sidebarUsageWindows(account: UsageAccount) {
+export function sidebarUsageWindows(account: UsageAccount, persistent = false) {
   const reported = account.sections.flatMap((section) =>
     quotaWindowsFromSection(section).map((window) => ({
       ...window,
@@ -26,7 +26,7 @@ export function sidebarUsageWindows(account: UsageAccount) {
       byKey.set(window.windowKey, window);
   }
   const windows = [...byKey.values()];
-  if (account.provider === "codex") {
+  if (account.provider === "codex" && !persistent) {
     const weekly = windows.filter((window) => window.durationMinutes === 10_080);
     const main = weekly.filter((window) => window.windowKey.startsWith("codex:"));
     return main.length ? main : weekly;

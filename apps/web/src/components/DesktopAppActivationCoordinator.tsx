@@ -21,11 +21,12 @@ export function DesktopAppActivationCoordinator() {
             let error: string | undefined;
             try {
               await open(request.path, async () => {
+                const pending = await bridge.isAppActivationPending?.(request.id);
                 if (disposed)
                   throw new Error(
                     "Desktop activation was interrupted. Retry to reuse the project.",
                   );
-                if ((await bridge.isAppActivationPending?.(request.id)) === false)
+                if (pending === false)
                   throw new Error("Desktop activation expired. Retry to reuse the project.");
               });
             } catch (cause) {

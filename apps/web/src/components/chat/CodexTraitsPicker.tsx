@@ -122,7 +122,11 @@ function CodexTraitsMenuContentImpl(props: {
               <MenuGroup>
                 <MenuGroupLabel>Cyber Access</MenuGroupLabel>
                 <MenuRadioGroup
-                  value={modelOptions?.cyberAccessProgram ?? cyber.currentValue ?? ""}
+                  value={
+                    cyber.options.some((option) => option.id === modelOptions?.cyberAccessProgram)
+                      ? modelOptions?.cyberAccessProgram
+                      : (cyber.currentValue ?? "")
+                  }
                   onValueChange={(value) => {
                     if (value === "standard" || value === "daybreakBlue" || value === "daybreakRed")
                       setCodexModelOptions({ ...modelOptions, cyberAccessProgram: value });

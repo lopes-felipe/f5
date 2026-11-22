@@ -15,7 +15,7 @@ describe("Codex Cyber Access", () => {
       (option) => option.id === "cyberAccessProgram",
     );
   it("offers Standard as an explicit opt-out and prefers Blue when configured", () => {
-    expect(descriptor({})?.currentValue).toBe("daybreakRed");
+    expect(descriptor({})?.currentValue).toBe("standard");
     expect(descriptor({ daybreak: true })?.currentValue).toBe("daybreakBlue");
     expect(descriptor(undefined)?.currentValue).toBeUndefined();
     expect(descriptor({ daybreak: true })?.type).toBe("select");
@@ -28,6 +28,13 @@ describe("Codex Cyber Access", () => {
     expect(descriptor({}, "apiKey")).toBeDefined();
   });
   it("keeps explicit choices only for reported eligible models", () => {
+    const blueOnly = createReportedCodexModelCapabilities({
+      model: "gpt-blue",
+      availableAccessPrograms: { cyber: ["daybreakBlue"] },
+    });
+    expect(
+      normalizeCodexModelOptions("gpt-blue", { cyberAccessProgram: "daybreakRed" }, blueOnly),
+    ).toBeUndefined();
     expect(
       normalizeCodexModelOptions("gpt-test", { cyberAccessProgram: "standard" }, capabilities),
     ).toEqual({ cyberAccessProgram: "standard" });

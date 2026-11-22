@@ -42,7 +42,7 @@ export function makeAcpNoticeEvent(input: {
       message: input.notice.description
         ? input.notice.title + "\n\n" + input.notice.description
         : input.notice.title,
-      detail: { severity: input.notice.severity },
+      detail: { severity: input.notice.severity, noticeTitle: input.notice.title },
       category: "provider",
     },
   };

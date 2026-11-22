@@ -178,7 +178,7 @@ function RuntimeSettings() {
     >
       <SettingsRow
         title="Keep the server awake while agents work"
-        description="Prevent idle sleep on the server's computer during active runs, releasing one minute after the last run ends."
+        description="Keep standalone servers awake during active runs, releasing one minute after the last run ends. Desktop servers use the desktop Keep Awake controls. On Linux, this also blocks manual suspend while active."
         control={
           <Switch
             aria-label="Keep the server awake while agents work"

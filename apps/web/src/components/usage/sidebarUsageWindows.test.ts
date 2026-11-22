@@ -77,3 +77,37 @@ it("shows each reported window once and retains the newest snapshot regardless o
     expect(sidebarUsageWindows({ ...account, sections })).toHaveLength(1);
   }
 });
+
+it("retains Codex short-term limits only in the persistent display", () => {
+  const account: UsageAccount = {
+    key: "codex",
+    provider: "codex",
+    providerInstanceId: null,
+    displayName: "Codex",
+    enabled: true,
+    refreshState: "idle",
+    sections: [
+      {
+        ...section(20, "2026-11-14T11:00:00Z"),
+        kind: "codex-limits",
+        snapshot: {
+          fetchedAt: "2026-11-14T11:00:00Z",
+          data: {
+            rateLimits: [
+              {
+                id: "codex",
+                name: null,
+                planType: null,
+                credits: null,
+                primary: { usedPercent: 20, windowDurationMins: 300, resetsAt: null },
+                secondary: { usedPercent: 40, windowDurationMins: 10_080, resetsAt: null },
+              },
+            ],
+          },
+        },
+      },
+    ],
+  };
+  expect(sidebarUsageWindows(account)).toHaveLength(1);
+  expect(sidebarUsageWindows(account, true)).toHaveLength(2);
+});

@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import { InitializeRequest, SessionNotification } from "./compat";
+import type { ClientCapabilities } from "./schema";
 
 describe("session notice compatibility", () => {
   const decode = Schema.decodeUnknownSync(SessionNotification);
@@ -21,9 +22,10 @@ describe("session notice compatibility", () => {
     expect(() => decode({ sessionId: "session", update })).toThrow();
   });
   it("preserves notice capabilities on the initialize wire", () => {
+    const capabilities: ClientCapabilities = { session: { notices: {} } };
     const request = {
       protocolVersion: 1,
-      clientCapabilities: { session: { notices: {} } },
+      clientCapabilities: capabilities,
     };
     expect(Schema.encodeSync(InitializeRequest)(request)).toEqual(request);
   });

@@ -4,10 +4,39 @@ import { expect, it } from "vitest";
 import { page } from "vitest/browser";
 import { render } from "vitest-browser-react";
 
-import { ComposerLimitRow } from "./ComposerUsageLimits";
+import { ComposerLimitRow, PersistentUsageLimits } from "./ComposerUsageLimits";
 
 const NOW = Date.parse("2026-11-17T21:00:00.000Z");
 const HOUR = 3_600_000;
+
+it("warns about stale persistent limits and announces data changes without clock ticks", async () => {
+  const windows = [weekly()];
+  const view = await render(
+    <PersistentUsageLimits windows={windows} now={NOW} label="Codex" stale />,
+  );
+  try {
+    await expect
+      .element(page.getByText("Collected limits may be stale.", { exact: true }))
+      .toBeVisible();
+    const announcement = page.getByRole("status").element().textContent;
+    await view.rerender(
+      <PersistentUsageLimits windows={windows} now={NOW + 30_000} label="Codex" stale />,
+    );
+    expect(page.getByRole("status").element().textContent).toBe(announcement);
+    await view.rerender(
+      <PersistentUsageLimits
+        windows={[weekly({ usedPercent: 10 })]}
+        now={NOW}
+        label="Codex"
+        stale={false}
+      />,
+    );
+    expect(page.getByRole("status").element().textContent).toContain("10% used");
+    expect(page.getByText("Collected limits may be stale.", { exact: true }).all()).toHaveLength(0);
+  } finally {
+    await view.unmount();
+  }
+});
 
 function weekly(overrides: Partial<Parameters<typeof ComposerLimitRow>[0]["window"]> = {}) {
   return {

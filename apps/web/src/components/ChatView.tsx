@@ -2624,10 +2624,12 @@ export default memo(function ChatView({
     window.addEventListener("f5:response-source", onSource);
     return () => window.removeEventListener("f5:response-source", onSource);
   }, [threadId, navigateTimeline]);
-  const shouldRenderTimeline = shouldRenderTimelineContent({
-    detailsLoaded: activeThread?.detailsLoaded ?? false,
-    hasRenderableMessage: timelineMessages.length > 0,
-  });
+  const shouldRenderTimeline =
+    activePendingApproval !== null ||
+    shouldRenderTimelineContent({
+      detailsLoaded: activeThread?.detailsLoaded ?? false,
+      hasRenderableMessage: timelineMessages.length > 0,
+    });
   useEffect(() => {
     if (!activeThread?.detailsLoaded || !shouldRenderTimeline) {
       return;
@@ -6049,9 +6051,10 @@ export default memo(function ChatView({
     [activeThreadId, setStoreThreadError],
   );
 
+  const [focusedApprovalIds] = useState(() => new Set<string>());
   const timelineApprovalActions = useMemo(
-    () => ({ respondingRequestIds, onRespondToApproval }),
-    [respondingRequestIds, onRespondToApproval],
+    () => ({ respondingRequestIds, onRespondToApproval, focusedRequestIds: focusedApprovalIds }),
+    [respondingRequestIds, onRespondToApproval, focusedApprovalIds],
   );
   const onRespondToUserInput = useCallback(
     async (requestId: ApprovalRequestId, answers: Record<string, unknown>, dismissed = false) => {
@@ -8625,6 +8628,23 @@ export default memo(function ChatView({
                     redesign={composerRedesign}
                     className={isGitRepo ? "pb-0.5" : "pb-3 sm:pb-4"}
                   >
+                    {activePendingApproval ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          const entry = timelineEntries.find(
+                            (entry) =>
+                              entry.kind === "work" &&
+                              entry.entry.pendingApproval?.requestId ===
+                                activePendingApproval.requestId,
+                          );
+                          if (entry) navigateTimeline(entry.id, { focus: true, position: 0.6 });
+                        }}
+                      >
+                        Approval pending · Jump to request
+                      </Button>
+                    ) : null}
                     <ComposerStatusStripHostProvider>
                       {/* The panel unmounts inside a closed chip popover, so the
                       queue's loading and announcements live here. */}

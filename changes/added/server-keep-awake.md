@@ -1,1 +1,1 @@
-- Enable “Keep the server awake while agents work” in Threads settings to prevent server idle sleep during active runs, with a one-minute grace period after they finish.
+- Enable “Keep the server awake while agents work” in Threads settings for standalone servers, with a one-minute grace period after runs finish. Linux also inhibits manual suspend while active. Desktop servers keep using their existing Keep Awake controls and safeguards.

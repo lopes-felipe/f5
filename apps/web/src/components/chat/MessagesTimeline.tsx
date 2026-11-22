@@ -5665,7 +5665,6 @@ export function buildTimelineRows(input: {
       // A steer leaves a running subagent working, so its group stays open until it ends.
       const isPriorTurn =
         index < lastUserMessageEntryIndex &&
-        !groupedEntries.some((entry) => entry.pendingApproval) &&
         !groupedEntries.some((entry) => entry.subagentType && entry.status === "inProgress");
       // Only the working turn's calls can still be running; elsewhere an in-progress
       // snapshot is a completion that never arrived.

@@ -121,10 +121,17 @@ export const makeSleepInhibitor = (
 
 export const startKeepAwake = (
   engine: Pick<OrchestrationEngineShape, "getReadModel" | "streamDomainEvents">,
-  settings: Pick<ServerSettingsShape, "getSettings">,
-  options: { hold?: Effect.Effect<void>; platform?: NodeJS.Platform; kernelRelease?: string } = {},
+  settings: Pick<ServerSettingsShape, "getSettings" | "subscribeChanges">,
+  options: {
+    hold?: Effect.Effect<void>;
+    platform?: NodeJS.Platform;
+    kernelRelease?: string;
+    desktop?: boolean;
+  } = {},
 ) =>
   Effect.gen(function* () {
+    // Desktop owns its own blocker, including battery and thermal safeguards.
+    if (options.desktop) return;
     const command = inhibitorCommand(
       options.platform ?? process.platform,
       process.pid,
@@ -132,7 +139,12 @@ export const startKeepAwake = (
     );
     if (!command) return;
     const hold = options.hold ?? makeSleepInhibitor(command);
-    const wanted = Stream.merge(
+    const settingsChanges = yield* settings.subscribeChanges;
+    let enabled = yield* settings.getSettings.pipe(
+      Effect.map((settings) => settings.keepAwakeWhileAgentsWork),
+      Effect.orElseSucceed(() => false),
+    );
+    const ticks = Stream.merge(
       Stream.fromEffect(Effect.void).pipe(Stream.repeat(Schedule.spaced("5 seconds"))),
       engine.streamDomainEvents.pipe(
         Stream.filter(
@@ -140,10 +152,20 @@ export const startKeepAwake = (
         ),
         Stream.map(() => undefined),
       ),
+    );
+    const wanted = Stream.merge(
+      ticks,
+      settingsChanges.pipe(
+        Stream.tap((settings) =>
+          Effect.sync(() => {
+            enabled = settings.keepAwakeWhileAgentsWork;
+          }),
+        ),
+        Stream.map(() => undefined),
+      ),
     ).pipe(
       Stream.mapEffect(() =>
         Effect.gen(function* () {
-          const enabled = (yield* settings.getSettings).keepAwakeWhileAgentsWork;
           return enabled && busyThreadIds(yield* engine.getReadModel()).size > 0;
         }).pipe(Effect.orElseSucceed(() => false)),
       ),

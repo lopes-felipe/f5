@@ -17,21 +17,26 @@ it("compacts optional metadata while preserving closed objects and real numeric 
   });
   expect(schema.properties.cursor.anyOf).toHaveLength(2);
 });
-it("merges tagged shapes without advertising branch-only fields as required", () => {
-  expect(
-    advertisedJsonSchema({
-      anyOf: [
-        {
-          type: "object",
-          properties: { action: { const: "read" }, id: { type: "string" } },
-          required: ["action", "id"],
-        },
-        { type: "object", properties: { action: { const: "list" } }, required: ["action"] },
-      ],
-    }),
-  ).toEqual({
-    type: "object",
-    properties: { action: { type: "string", enum: ["read", "list"] }, id: { type: "string" } },
-    required: ["action"],
-  });
+it("preserves required fields within each discriminated branch", () => {
+  const schema = {
+    anyOf: [
+      {
+        type: "object",
+        properties: { action: { const: "read" }, id: { type: "string" } },
+        required: ["action", "id"],
+      },
+      { type: "object", properties: { action: { const: "list" } }, required: ["action"] },
+    ],
+  };
+  expect(advertisedJsonSchema(schema)).toEqual(schema);
+});
+it("never empties nullable-only or JSON-string-only unions", () => {
+  for (const branch of [
+    { type: "null" },
+    { type: "string", contentMediaType: "application/json" },
+  ]) {
+    expect(
+      advertisedJsonSchema({ type: "object", properties: { value: { anyOf: [branch] } } }),
+    ).toEqual({ type: "object", properties: { value: branch } });
+  }
 });

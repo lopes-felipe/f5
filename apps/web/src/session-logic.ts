@@ -1998,6 +1998,12 @@ export function deriveWorkLogEntries(
         ...(userInput ? { userInput } : {}),
         ...(startedAt ? { startedAt } : {}),
       };
+      if (
+        activity.kind === "runtime.warning" &&
+        asPayloadRecord(payload?.detail)?.noticeTitle &&
+        typeof payload?.message === "string"
+      )
+        entry.detail = payload.message;
       if (activity.kind === "native.aside") {
         const aside = payload?.nativeAside as Record<string, unknown> | undefined;
         entry.label = "Aside: " + String(aside?.question ?? "");

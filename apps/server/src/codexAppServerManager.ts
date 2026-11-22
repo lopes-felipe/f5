@@ -975,7 +975,8 @@ export function buildCodexTurnStartParams(
   if (cyber?.type === "select") {
     const program = [input.cyberAccessProgram, cyber.currentValue].find(
       (value): value is "standard" | "daybreakBlue" | "daybreakRed" =>
-        value === "standard" || value === "daybreakBlue" || value === "daybreakRed",
+        (value === "standard" || value === "daybreakBlue" || value === "daybreakRed") &&
+        cyber.options.some((option) => option.id === value),
     );
     if (program) turnStartParams.cyberAccessProgram = program;
   }
@@ -1753,7 +1754,11 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     const { serviceTier: _requestedTier, ...inputWithoutTier } = input;
     const turnInput =
       input.serviceTier === null && !context.serviceTierApplied ? inputWithoutTier : input;
-    const cyberModel = normalizeCodexModelSlug(input.model ?? context.session.model);
+    const cyberModel =
+      resolveCodexModelForAccount(
+        normalizeCodexModelSlug(input.model ?? context.session.model),
+        context.account,
+      ) ?? DEFAULT_MODEL_BY_PROVIDER.codex;
     const cyberCapabilities = cyberModel
       ? context.reportedModelCapabilities?.get(cyberModel)
       : undefined;

@@ -8,6 +8,17 @@ import * as TestClock from "effect/testing/TestClock";
 import { holdWhileWanted, inhibitorCommand, startKeepAwake, makeSleepInhibitor } from "./KeepAwake";
 
 describe("server sleep inhibition", () => {
+  it.effect("leaves desktop sleep control to its existing controller", () =>
+    Effect.gen(function* () {
+      const read = vi.fn();
+      yield* startKeepAwake(
+        { getReadModel: read, streamDomainEvents: Stream.never },
+        { getSettings: Effect.sync(read), subscribeChanges: Effect.succeed(Stream.never) },
+        { desktop: true },
+      );
+      expect(read).not.toHaveBeenCalled();
+    }).pipe(Effect.scoped),
+  );
   it.effect("owns the WSL stdin pipe for the inhibitor lifetime and closes it on teardown", () =>
     Effect.gen(function* () {
       const spawned = yield* Queue.unbounded<void>();
@@ -64,64 +75,71 @@ describe("server sleep inhibition", () => {
     expect(inhibitorCommand("win32", 123)?.args.at(-1)).toContain("Wait-Process -Id 123");
     expect(inhibitorCommand("freebsd", 123)).toBeUndefined();
   });
-  it.effect(
-    "gates the inhibitor, polls settings and work every five seconds, and releases on shutdown",
-    () =>
-      Effect.gen(function* () {
-        let enabled = false;
-        let busy = true;
-        let reads = 0;
-        const transitions = yield* Queue.unbounded<string>();
-        const hold = Effect.acquireRelease(Queue.offer(transitions, "held"), () =>
-          Queue.offer(transitions, "released"),
-        ).pipe(Effect.andThen(Effect.never), Effect.scoped);
-        const scope = yield* Scope.make();
-        yield* Scope.provide(
-          startKeepAwake(
-            {
-              getReadModel: () =>
-                Effect.sync(
-                  () =>
-                    ({
-                      threads: busy
-                        ? [
-                            {
-                              id: "thread",
-                              deletedAt: null,
-                              session: { status: "running", activeTurnId: null },
-                            },
-                          ]
-                        : [],
-                    }) as unknown as OrchestrationReadModel,
-                ),
-              streamDomainEvents: Stream.never,
-            },
-            {
-              getSettings: Effect.sync(() => {
-                reads++;
-                return { ...DEFAULT_SERVER_SETTINGS, keepAwakeWhileAgentsWork: enabled };
+  it.effect("watches settings, polls work only when enabled, and releases on shutdown", () =>
+    Effect.gen(function* () {
+      let enabled = false;
+      let busy = true;
+      let reads = 0;
+      let workReads = 0;
+      const settingsChanges = yield* Queue.unbounded<typeof DEFAULT_SERVER_SETTINGS>();
+      const transitions = yield* Queue.unbounded<string>();
+      const hold = Effect.acquireRelease(Queue.offer(transitions, "held"), () =>
+        Queue.offer(transitions, "released"),
+      ).pipe(Effect.andThen(Effect.never), Effect.scoped);
+      const scope = yield* Scope.make();
+      yield* Scope.provide(
+        startKeepAwake(
+          {
+            getReadModel: () =>
+              Effect.sync(() => {
+                workReads++;
+                return {
+                  threads: busy
+                    ? [
+                        {
+                          id: "thread",
+                          deletedAt: null,
+                          session: { status: "running", activeTurnId: null },
+                        },
+                      ]
+                    : [],
+                } as unknown as OrchestrationReadModel;
               }),
-            },
-            { hold, platform: "linux", kernelRelease: "microsoft-WSL2" },
-          ),
-          scope,
-        );
-        yield* TestClock.adjust("5 seconds");
-        expect(yield* Queue.size(transitions)).toBe(0);
-        const previousReads = reads;
-        enabled = true;
-        yield* TestClock.adjust("5 seconds");
-        expect(reads).toBeGreaterThan(previousReads);
-        expect(yield* Queue.take(transitions)).toBe("held");
-        busy = false;
-        yield* TestClock.adjust("70 seconds");
-        expect(yield* Queue.take(transitions)).toBe("released");
-        busy = true;
-        yield* TestClock.adjust("5 seconds");
-        expect(yield* Queue.take(transitions)).toBe("held");
-        yield* Scope.close(scope, Exit.void);
-        expect(yield* Queue.take(transitions)).toBe("released");
-      }).pipe(Effect.scoped),
+            streamDomainEvents: Stream.never,
+          },
+          {
+            subscribeChanges: Effect.succeed(Stream.fromQueue(settingsChanges)),
+            getSettings: Effect.sync(() => {
+              reads++;
+              return { ...DEFAULT_SERVER_SETTINGS, keepAwakeWhileAgentsWork: enabled };
+            }),
+          },
+          { hold, platform: "linux", kernelRelease: "microsoft-WSL2" },
+        ),
+        scope,
+      );
+      yield* TestClock.adjust("5 seconds");
+      expect(yield* Queue.size(transitions)).toBe(0);
+      expect(reads).toBe(1);
+      expect(workReads).toBe(0);
+      enabled = true;
+      yield* Queue.offer(settingsChanges, {
+        ...DEFAULT_SERVER_SETTINGS,
+        keepAwakeWhileAgentsWork: true,
+      });
+      yield* TestClock.adjust("5 seconds");
+      expect(reads).toBe(1);
+      expect(workReads).toBeGreaterThan(0);
+      expect(yield* Queue.take(transitions)).toBe("held");
+      busy = false;
+      yield* TestClock.adjust("70 seconds");
+      expect(yield* Queue.take(transitions)).toBe("released");
+      busy = true;
+      yield* TestClock.adjust("5 seconds");
+      expect(yield* Queue.take(transitions)).toBe("held");
+      yield* Scope.close(scope, Exit.void);
+      expect(yield* Queue.take(transitions)).toBe("released");
+    }).pipe(Effect.scoped),
   );
   it.effect("reuses the hold across queued work and releases after the last grace period", () =>
     Effect.gen(function* () {

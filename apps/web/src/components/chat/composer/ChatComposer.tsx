@@ -474,7 +474,11 @@ export function ChatComposer({
           {settings.persistentUsageLimits ? (
             <section className="mb-2 space-y-2 rounded-lg border p-3" aria-label="Usage">
               <ComposerUsageLimits threadId={threadId} persistent />
-              <p className="text-xs text-muted-foreground">{contextUsageSummaryLine(tokenUsage)}</p>
+              {contextUsageSummaryLine(tokenUsage) ? (
+                <p className="text-xs text-muted-foreground">
+                  {contextUsageSummaryLine(tokenUsage)}
+                </p>
+              ) : null}
             </section>
           ) : null}
           <div
@@ -879,54 +883,52 @@ export function ChatComposer({
             </div>
 
             {/* Bottom toolbar */}
-            {
-              <div
-                data-chat-composer-footer="true"
-                className={cn(
-                  "@container/composer-footer flex w-full shrink-0 items-center justify-between px-2 pb-2",
-                  isComposerFooterCompact ? "gap-1.5" : "flex-wrap gap-2 sm:flex-nowrap sm:gap-1",
-                )}
-              >
-                <ComposerFooterControls
-                  threadId={threadId}
-                  compact={isComposerFooterCompact}
-                  isComposerApprovalState={isComposerApprovalState}
-                  model={modelControls}
-                  mode={modeControls}
-                  send={sendControls}
-                  onAttachFiles={(files) => {
-                    // Attaching expands a scroll-collapsed composer (redesign).
-                    expand();
-                    attachments.onAttachFiles(files);
-                  }}
-                  onMentionFile={handleMentionFile}
-                  contextSummary={contextSummary}
-                  projectPicker={projectPicker}
-                />
-                <ComposerPrimaryAction
-                  prompt={prompt}
-                  send={sendControls}
-                  mode={modeControls}
-                  pending={pendingInteraction}
-                  sendShortcutLabel={sendShortcutLabel}
-                  leading={
-                    isComposerFooterCompact ? null : (
-                      <>
-                        {sendControls.phase !== "running" && !activePendingProgress ? (
-                          <span
-                            data-composer-send-hint=""
-                            className="hidden text-2xs whitespace-nowrap text-faint-foreground @xl/composer-footer:inline"
-                          >
-                            {sendShortcutLabel} to send
-                          </span>
-                        ) : null}
-                        <ContextMeter tokenUsage={tokenUsage} promptCache={promptCache} />
-                      </>
-                    )
-                  }
-                />
-              </div>
-            }
+            <div
+              data-chat-composer-footer="true"
+              className={cn(
+                "@container/composer-footer flex w-full shrink-0 items-center justify-between px-2 pb-2",
+                isComposerFooterCompact ? "gap-1.5" : "flex-wrap gap-2 sm:flex-nowrap sm:gap-1",
+              )}
+            >
+              <ComposerFooterControls
+                threadId={threadId}
+                compact={isComposerFooterCompact}
+                isComposerApprovalState={isComposerApprovalState}
+                model={modelControls}
+                mode={modeControls}
+                send={sendControls}
+                onAttachFiles={(files) => {
+                  // Attaching expands a scroll-collapsed composer (redesign).
+                  expand();
+                  attachments.onAttachFiles(files);
+                }}
+                onMentionFile={handleMentionFile}
+                contextSummary={contextSummary}
+                projectPicker={projectPicker}
+              />
+              <ComposerPrimaryAction
+                prompt={prompt}
+                send={sendControls}
+                mode={modeControls}
+                pending={pendingInteraction}
+                sendShortcutLabel={sendShortcutLabel}
+                leading={
+                  isComposerFooterCompact ? null : (
+                    <>
+                      {sendControls.phase !== "running" && !activePendingProgress ? (
+                        <span
+                          data-composer-send-hint=""
+                          className="hidden text-2xs whitespace-nowrap text-faint-foreground @xl/composer-footer:inline"
+                        >
+                          {sendShortcutLabel} to send
+                        </span>
+                      ) : null}
+                      <ContextMeter tokenUsage={tokenUsage} promptCache={promptCache} />
+                    </>
+                  )
+                }
+              />
+            </div>
           </div>
         </form>
       </PopupFocusContext>

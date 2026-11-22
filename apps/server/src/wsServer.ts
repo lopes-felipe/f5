@@ -3281,7 +3281,10 @@ export const createServer = Effect.fn(function* (
       yield* Scope.provide(pullRequestWatches.start, subscriptionsScope);
       yield* Scope.provide(threadSettlement.start, subscriptionsScope);
       yield* Scope.provide(defaultBranchAutoPull.start, subscriptionsScope);
-      yield* Scope.provide(startKeepAwake(orchestrationEngine, serverSettings), subscriptionsScope);
+      yield* Scope.provide(
+        startKeepAwake(orchestrationEngine, serverSettings, { desktop: mode === "desktop" }),
+        subscriptionsScope,
+      );
       if (diskSpaceMonitor._tag === "Some")
         yield* Scope.provide(
           diskSpaceMonitor.value.start({

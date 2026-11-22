@@ -38,6 +38,41 @@ afterEach(async () => {
 });
 
 describe("Antigravity explicit installation", () => {
+  it("does not let concurrent installers select an older complete release", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "f5-antigravity-race-"));
+    roots.push(root);
+    const pinned = { ...asset, version: "1.5.13" };
+    const official = resolveAntigravityReleaseAsset(process.platform, process.arch)!;
+    const updates = ["1.5.14", "1.5.15"].map((version, index) => ({
+      ...official,
+      version,
+      url: official.url.replace("1.5.13", version),
+      sha512: String(index + 1).repeat(128),
+      archiveSizeUnknown: true,
+      executable: { name: official.executable.name },
+    }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(zip)),
+    );
+    const base = new AntigravityInstallation(root, pinned, async () => null);
+    await base.install();
+    for (const update of updates) {
+      const directory = path.join(base.directory, update.sha512);
+      await fs.mkdir(directory, { recursive: true });
+      await fs.writeFile(
+        path.join(directory, "complete.json"),
+        JSON.stringify({ sha512: update.sha512, version: update.version }),
+      );
+      await fs.writeFile(path.join(directory, update.executable.name), "complete");
+    }
+    await Promise.all(
+      updates.map((update) =>
+        new AntigravityInstallation(root, pinned, async () => update).install(),
+      ),
+    );
+    expect((await base.resolve()).version).toBe("1.5.15");
+  });
   it("estimates unknown-size staging from the pin, not the maximum allowed download", () => {
     const { harness: _harness, ...base } = asset;
     const pinned = { ...base, archiveBytes: 100 * 1024 * 1024 };
@@ -80,12 +115,23 @@ describe("Antigravity explicit installation", () => {
     expect((await install.install()).version).toBe("1.5.14");
     const restarted = new AntigravityInstallation(root, pinned, lookup);
     expect((await restarted.resolve()).version).toBe("1.5.14");
+    await fs.rm(path.dirname((await restarted.resolve()).executablePath), { recursive: true });
+    expect((await restarted.resolve()).version).toBe("1.5.13");
+    expect((await restarted.install()).version).toBe("1.5.13");
+    expect((await restarted.resolve()).version).toBe("1.5.13");
+    expect((await restarted.install()).version).toBe("1.5.14");
     lookup.mockRejectedValueOnce(new Error("Manifest lookup failed"));
     await expect(restarted.install()).rejects.toThrow("Manifest lookup failed");
     expect((await restarted.resolve()).version).toBe("1.5.14");
     lookup.mockResolvedValueOnce({ ...update, version: "1.5.15", sha512: "a".repeat(128) });
     await expect(restarted.install()).rejects.toThrow("integrity");
     expect((await restarted.resolve()).version).toBe("1.5.14");
+    await fs.writeFile((await restarted.resolve()).executablePath, "");
+    expect((await restarted.resolve()).version).toBe("1.5.13");
+    expect((await restarted.install()).version).toBe("1.5.13");
+    expect(
+      JSON.parse(await fs.readFile(path.join(restarted.directory, "active.json"), "utf8")).version,
+    ).toBe("1.5.13");
   });
   it("resolves supported 1.5 CLI assets for every platform including Intel Mac", () => {
     for (const platform of ["darwin", "linux", "win32"] as const) {

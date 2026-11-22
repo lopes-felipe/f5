@@ -4,6 +4,7 @@ import * as fs from "node:fs/promises";
 import { createWriteStream } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { acquireInstanceLock, ProfileBusyError } from "../profiles/InstanceLock";
 import { compareCliVersions } from "./cliVersion";
 import { lookupAntigravityCliRelease, parseAntigravityCliRelease } from "./antigravityCliRelease";
 import { Readable, Transform } from "node:stream";
@@ -63,7 +64,14 @@ export class AntigravityInstallation {
   }
   async resolve(): Promise<AntigravityExecutable> {
     const active = await this.activeAsset();
-    return this.resolveRelease(active ?? this.asset);
+    if (active) {
+      try {
+        return await this.resolveRelease(active);
+      } catch {
+        // A removed or damaged update must not hide the verified bundled pin.
+      }
+    }
+    return this.resolveRelease(this.asset);
   }
   private async activeAsset(): Promise<AntigravityReleaseAsset | null> {
     if (!this.lookupUpdate) return null;
@@ -168,6 +176,8 @@ export class AntigravityInstallation {
         );
     }
     if (current) {
+      const selected = await this.activeAsset();
+      if (selected && current.version === asset.version) return this.activate(asset);
       const update = await this.lookupUpdate?.(signal);
       if (!update || compareCliVersions(update.version, current.version) <= 0) return current;
       asset = update;
@@ -258,11 +268,32 @@ export class AntigravityInstallation {
     }
   }
   private async activate(asset: AntigravityReleaseAsset) {
+    // Reuse the crash-safe SQLite exclusion used by profile ownership. The
+    // comparison and atomic pointer replacement must share one process lock.
+    const lockPath = path.join(this.directory, "..", "activation.lock");
+    let lock: Awaited<ReturnType<typeof acquireInstanceLock>> | undefined;
+    for (let attempt = 0; !lock; attempt++) {
+      try {
+        lock = await acquireInstanceLock(lockPath);
+      } catch (error) {
+        if (!(error instanceof ProfileBusyError) || attempt >= 100) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+    try {
+      return await this.activateLocked(asset);
+    } finally {
+      lock.release();
+    }
+  }
+  private async activateLocked(asset: AntigravityReleaseAsset) {
     const executable = await this.resolveRelease(asset);
     const active = await this.activeAsset();
-    if (active && compareCliVersions(active.version, asset.version) > 0)
-      return this.resolveRelease(active);
-    if (asset !== this.asset) {
+    if (active && compareCliVersions(active.version, asset.version) > 0) {
+      const newer = await this.resolveRelease(active).catch(() => undefined);
+      if (newer) return newer;
+    }
+    if (this.lookupUpdate) {
       const temporary = path.join(this.directory, ".active-" + randomUUID());
       try {
         const handle = await fs.open(temporary, "wx", 0o600);
