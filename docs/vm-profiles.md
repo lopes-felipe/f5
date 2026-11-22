@@ -8,8 +8,8 @@ A Linux VM profile runs its backend, providers, terminals, Git and local MCP pro
 
 ## Status
 
-| Step                                                 | State                                                                                                             |
-| ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| Step                                                 | State                                                                       |
+| ---------------------------------------------------- | --------------------------------------------------------------------------- |
 | Phase 0 feasibility gate                             | **Passed** 2026-11-22, with two caveats ([result](#gate-result-2026-11-22)) |
 | Profile model, lazy registry v2, fail-closed refusal | Done                                                                        |
 | Backend channel and launcher abstraction             | Done (host implementation only)                                             |

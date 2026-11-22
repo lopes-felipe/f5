@@ -122,10 +122,7 @@
       "id": 2,
       "requirement": "Host GUI probes stay denied while Lima's host processes run",
       "result": "passed",
-      "evidence": [
-        "b:sandbox.shell_inside_backend_sandbox",
-        "b:gui.denied_with_lima_running"
-      ],
+      "evidence": ["b:sandbox.shell_inside_backend_sandbox", "b:gui.denied_with_lima_running"],
       "note": "Probes ran from the sandboxed shell whose descendants are limactl and its host agent; the sandbox is inherited, and ps is denied there, so the host agent itself was not probed directly. The VZ VM process is Apple's XPC service, launched outside the sandbox by design."
     },
     {
@@ -173,10 +170,7 @@
       "id": 6,
       "requirement": "The limactl shell stdio channel carries frames; stdin EOF stops the backend's systemd scope",
       "result": "passed",
-      "evidence": [
-        "a:channel.stdio_frames_and_eof",
-        "b:channel.stdio_frames_and_eof"
-      ],
+      "evidence": ["a:channel.stdio_frames_and_eof", "b:channel.stdio_frames_and_eof"],
       "note": "Used F5's merged streamBackendChannel. A 1 MiB frame echoed; a detached grandchild in its own session died with the scope while the backend ignored EOF."
     },
     {
@@ -194,10 +188,7 @@
       "requirement": "Cold-boot time and resident memory recorded",
       "result": "recorded",
       "values": {
-        "coldBootInsideSandboxSeconds": [
-          9.8,
-          8.2
-        ],
+        "coldBootInsideSandboxSeconds": [9.8, 8.2],
         "coldBootOutsideSandboxSeconds": 6.5,
         "firstBootWithAptProvisioningSeconds": 83.7,
         "hostRssMiB": {
@@ -210,8 +201,16 @@
     }
   ],
   "supersededChecks": [
-    {"check": "a:sandbox.bwrap_unprivileged", "status": "fail", "reason": "Probe defect: it tested the network with getent, which resolves through systemd-resolved's UNIX socket even with the network namespace unshared. b:sandbox.bwrap_unprivileged reran it with a TCP connection to an IP address: NONET."},
-    {"check": "a:sandbox.claude_sandbox_runtime", "status": "inconclusive", "reason": "ripgrep was missing from the spike guest. Rerun in Phase B after installing it. A first Phase B run passed wrongly (srt was given the command as one argv and the check matched text inside its error), so that run was discarded; the recorded Phase B run uses srt -c and exact matching."}
+    {
+      "check": "a:sandbox.bwrap_unprivileged",
+      "status": "fail",
+      "reason": "Probe defect: it tested the network with getent, which resolves through systemd-resolved's UNIX socket even with the network namespace unshared. b:sandbox.bwrap_unprivileged reran it with a TCP connection to an IP address: NONET."
+    },
+    {
+      "check": "a:sandbox.claude_sandbox_runtime",
+      "status": "inconclusive",
+      "reason": "ripgrep was missing from the spike guest. Rerun in Phase B after installing it. A first Phase B run passed wrongly (srt was given the command as one argv and the check matched text inside its error), so that run was discarded; the recorded Phase B run uses srt -c and exact matching."
+    }
   ],
   "designFindings": [
     "virtiofs maps every guest write to the host user (502:20) whatever the guest uid, so guest users do not protect exported files. Exports must be treated as fully guest-writable, as the plan already says.",
