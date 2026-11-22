@@ -1023,6 +1023,8 @@ export function createWsNativeApi(): NativeApi {
       setPaused: requestMethod(WS_METHODS.nextTurnQueueSetPaused),
       scheduleUsageLimitResume: (input) =>
         transport.request(WS_METHODS.nextTurnQueueScheduleUsageLimitResume, input),
+      resendAuthFailedTurn: (input) =>
+        transport.request(WS_METHODS.nextTurnQueueResendAuthFailedTurn, input),
       cancelUsageLimitResume: (input) =>
         transport.request(WS_METHODS.nextTurnQueueCancelUsageLimitResume, input),
       refreshUsageLimitResume: (input) =>

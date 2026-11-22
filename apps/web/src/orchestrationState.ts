@@ -142,6 +142,7 @@ export function mapSessionFromReadModel(
     status: toLegacySessionStatus(incoming.status),
     orchestrationStatus: incoming.status,
     usageLimit: incoming.usageLimit ?? null,
+    ...(incoming.authFailure ? { authFailure: incoming.authFailure } : {}),
     activeTurnId: incoming.activeTurnId ?? undefined,
     createdAt: incoming.updatedAt,
     updatedAt: incoming.updatedAt,
@@ -174,6 +175,7 @@ export function mapSessionFromReadModel(
     previous.lastErrorId === next.lastErrorId &&
     previous.lastErrorOccurredAt === next.lastErrorOccurredAt &&
     areUnknownEqual(previous.usageLimit ?? null, next.usageLimit ?? null) &&
+    areUnknownEqual(previous.authFailure ?? null, next.authFailure ?? null) &&
     previous.tokenUsageSource === next.tokenUsageSource &&
     previous.autoCompactThreshold === next.autoCompactThreshold &&
     areUnknownEqual(previous.extensionStatuses ?? [], next.extensionStatuses ?? []) &&

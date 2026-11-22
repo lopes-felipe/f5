@@ -110,6 +110,8 @@ const RuntimeErrorClass = Schema.Literals([
   "transport_error",
   "permission_error",
   "validation_error",
+  /** The provider account's login expired or was rejected; signing in again fixes it. */
+  "auth_error",
   "unknown",
 ]);
 export type RuntimeErrorClass = typeof RuntimeErrorClass.Type;

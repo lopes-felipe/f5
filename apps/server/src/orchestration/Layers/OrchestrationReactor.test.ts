@@ -141,6 +141,7 @@ describe("OrchestrationReactor", () => {
                   resumes += 1;
                 }).pipe(Effect.andThen(Effect.die("Unexpected continue for an unsent message"))),
               cancelUsageLimitResume: () => Effect.die("unsupported"),
+              resendAuthFailedTurn: () => Effect.die("unsupported"),
               refreshUsageLimitResume: () => Effect.die("unsupported"),
               getBlockingDelivery: () => Effect.succeed(null),
               reconcileDeliveryPause: () => Effect.void,

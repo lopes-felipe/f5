@@ -740,16 +740,28 @@ export default function Sidebar() {
     },
   );
 
+  const toggleProjectPin = useStableCallback((project: Project) => {
+    void updateProjectVisibility(project.id, { pinned: !project.pinned }).catch((error) => {
+      toastManager.add({
+        type: "error",
+        title: "Could not update project pin",
+        description: String(error),
+      });
+    });
+  });
+
   const handleProjectContextMenu = useStableCallback(
     async (projectId: ProjectId, position: { x: number; y: number }) => {
       const api = readNativeApi();
       if (!api) return;
       // The home for threads without a project has no path, worktrees or identity to change.
-      const scratch = isScratchProject(projects.find((entry) => entry.id === projectId));
+      const menuProject = projects.find((entry) => entry.id === projectId);
+      const scratch = isScratchProject(menuProject);
       const clicked = await api.contextMenu.show(
         scratch
           ? [{ id: "settle-idle", label: "Settle idle threads" }]
           : [
+              { id: "toggle-pin", label: menuProject?.pinned ? "Unpin project" : "Pin project" },
               { id: "worktrees", label: "Worktrees…" },
               { id: "settle-idle", label: "Settle idle threads" },
               { id: "settings", label: "Project settings…" },
@@ -761,6 +773,10 @@ export default function Sidebar() {
       );
       const project = projects.find((entry) => entry.id === projectId);
       if (!project) return;
+      if (clicked === "toggle-pin") {
+        toggleProjectPin(project);
+        return;
+      }
       if (clicked === "settle-idle") {
         try {
           const result = await api.threadSettlement.settleProjectIdle({ projectId });
@@ -955,13 +971,7 @@ export default function Sidebar() {
         const project = projects.find((entry) => entry.id === projectId);
         if (!project || isScratchProject(project)) return;
         event.preventDefault();
-        void updateProjectVisibility(project.id, { pinned: !project.pinned }).catch((error) => {
-          toastManager.add({
-            type: "error",
-            title: "Could not update project pin",
-            description: String(error),
-          });
-        });
+        toggleProjectPin(project);
         return;
       }
 

@@ -75,19 +75,31 @@ export interface ProfileWarning {
   readonly key: string;
   readonly title: string;
   readonly detail: string;
+  /** Per-entry lines shown behind a disclosure when a warning groups several. */
+  readonly items?: readonly string[];
 }
 
 /**
  * Flatten the two optional warning arrays the server attaches to the active
- * profile into a single renderable list with user-facing copy.
+ * profile into a single renderable list with user-facing copy. Unavailable
+ * project folders share one warning so a long list never floods the card.
  */
 export function profileWarnings(profile: ProfileSummary): readonly ProfileWarning[] {
   const warnings: ProfileWarning[] = [];
-  for (const entry of profile.invalidDirectories ?? []) {
+  const invalid = profile.invalidDirectories ?? [];
+  if (invalid.length === 1) {
+    const [entry] = invalid;
     warnings.push({
-      key: `directory:${entry.directory}`,
+      key: "directories",
       title: "Project folder is unavailable",
-      detail: `${entry.directory} — ${entry.reason} Update the project folder or worktree before running commands.`,
+      detail: `${entry!.directory} — ${entry!.reason} Update the project folder before running commands.`,
+    });
+  } else if (invalid.length > 1) {
+    warnings.push({
+      key: "directories",
+      title: `${invalid.length} project folders are unavailable`,
+      detail: "Update or remove these projects before running commands in them.",
+      items: invalid.map((entry) => `${entry.directory} — ${entry.reason}`),
     });
   }
   for (const repository of profile.sharedRepositories ?? []) {

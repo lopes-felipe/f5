@@ -42,6 +42,7 @@ import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapa
 import {
   formatCodexUsageError,
   detectCodexUsageLimit,
+  isCodexAuthFailure,
   mergeCodexLimitSnapshot,
   resolveCodexCompletionErrorInfo,
   type CodexLimitSnapshot,
@@ -1563,7 +1564,27 @@ function mapToRuntimeEvents(
     const errorMessage = rawErrorMessage
       ? formatCodexUsageError(rawErrorMessage, limits, event.createdAt, errorInfo)
       : undefined;
+    // A failure the `error` notification already reported keeps its class; only an
+    // unannounced expired login needs its own typed error so the thread can offer sign-in.
+    const unannouncedAuthFailure =
+      toTurnStatus(turn?.status) === "failed" &&
+      !previousFailure &&
+      !usageLimit &&
+      isCodexAuthFailure({ message: rawErrorMessage, errorInfo });
     return [
+      ...(unannouncedAuthFailure
+        ? [
+            {
+              ...runtimeEventBase(event, canonicalThreadId),
+              eventId: EventId.makeUnsafe(`auth-failure:${event.id}`),
+              type: "runtime.error" as const,
+              payload: {
+                message: errorMessage ?? "Codex login expired. Sign in again, then retry.",
+                class: "auth_error" as const,
+              },
+            },
+          ]
+        : []),
       {
         ...runtimeEventBase(event, canonicalThreadId),
         type: "turn.completed",
@@ -2391,6 +2412,10 @@ function mapToRuntimeEvents(
           at: event.createdAt,
           deferMessageReset: true,
         });
+    const authFailure =
+      !willRetry &&
+      !usageLimit &&
+      isCodexAuthFailure({ message, errorInfo: asObject(payload?.error)?.codexErrorInfo });
     return [
       {
         type: willRetry ? "runtime.warning" : "runtime.error",
@@ -2404,7 +2429,9 @@ function mapToRuntimeEvents(
                 event.createdAt,
                 asObject(payload?.error)?.codexErrorInfo,
               ),
-          ...(!willRetry ? { class: "provider_error" as const } : {}),
+          ...(!willRetry
+            ? { class: authFailure ? ("auth_error" as const) : ("provider_error" as const) }
+            : {}),
           ...(usageLimit ? { usageLimit } : {}),
           ...(event.payload !== undefined ? { detail: event.payload } : {}),
         },

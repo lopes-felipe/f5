@@ -1,0 +1,1 @@
+- The Claude Ultracode switch now stays on when turned on, in the composer and in workflow model slots.

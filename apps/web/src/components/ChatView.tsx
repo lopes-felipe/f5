@@ -462,6 +462,7 @@ import {
 import { UsageLimitNotice } from "./chat/UsageLimitNotice";
 import { resolveUsageLimitNotice } from "./chat/UsageLimitNotice.logic";
 import { ThreadErrorBanner } from "./chat/ThreadErrorBanner";
+import { AuthFailureNotice } from "./chat/AuthFailureNotice";
 import { dismissThreadSessionError } from "../threadErrorDismissals";
 import { PendingSendRecoveryBanner } from "./chat/PendingSendRecoveryBanner";
 
@@ -8005,6 +8006,10 @@ export default memo(function ChatView({
     activeThread.error && activeThread.session?.lastError === activeThread.error
       ? (activeThread.session.usageLimit ?? null)
       : null;
+  const activeAuthFailure =
+    activeThread.error && activeThread.session?.lastError === activeThread.error
+      ? (activeThread.session.authFailure ?? null)
+      : null;
   const usageLimitNotice = activeUsageLimit
     ? resolveUsageLimitNotice(activeUsageLimit, nextTurnQueueState.snapshot)
     : null;
@@ -8021,6 +8026,15 @@ export default memo(function ChatView({
               ? PROVIDER_DISPLAY_NAMES[activeThread.session.provider]
               : "Provider"
           }
+          onDismiss={dismissActiveThreadError}
+        />
+      ) : activeAuthFailure && activeThread.session ? (
+        <AuthFailureNotice
+          threadId={activeThread.id}
+          failure={activeAuthFailure}
+          providerLabel={PROVIDER_DISPLAY_NAMES[activeThread.session.provider]}
+          driver={activeThread.session.provider}
+          error={activeThread.error}
           onDismiss={dismissActiveThreadError}
         />
       ) : (

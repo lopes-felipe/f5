@@ -201,6 +201,7 @@ const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
 const ProjectionThreadSessionDbRowSchema = ProjectionThreadSession.mapFields(
   Struct.assign({
     usageLimit: Schema.NullOr(Schema.fromJsonString(ProjectionThreadSession.fields.usageLimit)),
+    authFailure: Schema.NullOr(Schema.fromJsonString(ProjectionThreadSession.fields.authFailure)),
     capabilities: Schema.NullOr(Schema.fromJsonString(ProjectionThreadSession.fields.capabilities)),
     extensionStatuses: Schema.NullOr(
       Schema.fromJsonString(ProjectionThreadSession.fields.extensionStatuses),
@@ -1489,6 +1490,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           last_error AS "lastError",
           last_error_id AS "lastErrorId",
           usage_limit_json AS "usageLimit",
+          auth_failure_json AS "authFailure",
           last_error_occurred_at AS "lastErrorOccurredAt",
           last_error_retryability AS "lastErrorRetryability",
           estimated_context_tokens AS "estimatedContextTokens",
@@ -2865,6 +2867,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           lastError: row.lastError,
           lastErrorId: row.lastErrorId,
           usageLimit: row.usageLimit ?? null,
+          ...(row.authFailure ? { authFailure: row.authFailure } : {}),
           providerInstanceId: row.providerInstanceId ?? null,
           lastErrorOccurredAt: row.lastErrorOccurredAt,
           lastErrorRetryability: row.lastErrorRetryability,

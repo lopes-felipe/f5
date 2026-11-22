@@ -2195,6 +2195,61 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("classifies Codex expired logins as auth errors on both terminal paths", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const errorFirst = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+      lifecycleManager.emit("event", {
+        id: asEventId("auth-error-notification"),
+        kind: "notification",
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        createdAt: "2026-10-01T00:00:00Z",
+        method: "error",
+        turnId: asTurnId("auth-turn-a"),
+        payload: {
+          error: { message: "unexpected status 401 Unauthorized", codexErrorInfo: "unauthorized" },
+          willRetry: false,
+        },
+      } satisfies ProviderEvent);
+      const errorEvent = yield* Fiber.join(errorFirst);
+      if (errorEvent._tag !== "Some" || errorEvent.value.type !== "runtime.error")
+        assert.fail("Expected a runtime error");
+      assert.equal(errorEvent.value.payload.class, "auth_error");
+
+      // A failed terminal with no earlier error announces the auth failure first,
+      // under its own event id.
+      const terminalEvents = yield* Stream.take(adapter.streamEvents, 2).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      lifecycleManager.emit("event", {
+        id: asEventId("auth-terminal"),
+        kind: "notification",
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        createdAt: "2026-10-01T00:00:01Z",
+        method: "turn/completed",
+        turnId: asTurnId("auth-turn-b"),
+        payload: {
+          turn: {
+            id: "auth-turn-b",
+            status: "failed",
+            error: {
+              message:
+                "Your access token could not be refreshed because your refresh token has expired.",
+            },
+          },
+        },
+      } satisfies ProviderEvent);
+      const [announced, completed] = Array.from(yield* Fiber.join(terminalEvents));
+      if (announced?.type !== "runtime.error") assert.fail("Expected a runtime error first");
+      assert.equal(announced.payload.class, "auth_error");
+      assert.notEqual(announced.eventId, completed?.eventId);
+      assert.equal(completed?.type, "turn.completed");
+    }),
+  );
+
   it.effect("classifies Codex retry exhaustion on HTTP 429 as a usage limit", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;

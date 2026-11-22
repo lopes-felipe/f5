@@ -18,6 +18,21 @@ describe("providerModelOptions", () => {
     const selections = providerModelOptionsToSelections("codex", options);
     expect(selections).toEqual([{ id: "fastMode", value: false }]);
   });
+  it("keeps Claude Ultracode through draft normalization and selection conversion", () => {
+    const options = providerSelectionsToModelOptions("claudeAgent", [
+      { id: "effort", value: "high" },
+      { id: "ultracode", value: true },
+    ]);
+    expect(options).toEqual({ claudeAgent: { effort: "high", ultracode: true } });
+    expect(normalizeProviderModelOptions(options)).toEqual(options);
+    expect(providerModelOptionsToSelections("claudeAgent", options)).toEqual([
+      { id: "effort", value: "high" },
+      { id: "ultracode", value: true },
+    ]);
+    expect(normalizeProviderModelOptions({ claudeAgent: { ultracode: true } })).toEqual({
+      claudeAgent: { ultracode: true },
+    });
+  });
   it.each(["off", "minimal", "low", "medium", "high", "xhigh", "max"])(
     "round-trips Pi's native thinking level without changing its meaning: %s",
     (thinking) => {

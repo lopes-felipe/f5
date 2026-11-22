@@ -8,6 +8,7 @@
  */
 import {
   RuntimeMode,
+  OrchestrationAuthFailure,
   OrchestrationUsageLimit,
   IsoDateTime,
   NonNegativeInt,
@@ -37,6 +38,7 @@ export const ProjectionThreadSession = Schema.Struct({
   lastError: Schema.NullOr(Schema.String),
   lastErrorId: Schema.NullOr(Schema.String),
   usageLimit: Schema.optional(Schema.NullOr(OrchestrationUsageLimit)),
+  authFailure: Schema.optional(Schema.NullOr(OrchestrationAuthFailure)),
   lastErrorOccurredAt: Schema.NullOr(IsoDateTime),
   lastErrorRetryability: Schema.NullOr(Schema.Literals(["retryable", "non-retryable"])),
   estimatedContextTokens: Schema.NullOr(NonNegativeInt),

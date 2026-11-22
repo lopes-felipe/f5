@@ -1,0 +1,1 @@
+- Projects are pinned and unpinned from their actions menu. The always-visible pin button in the sidebar header is gone; pinned projects show a small pin next to their name.

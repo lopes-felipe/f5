@@ -186,6 +186,7 @@ import {
   NextTurnQueueRestoreInput,
   NextTurnQueueRetryDeliveryInput,
   NextTurnQueueRetryInput,
+  NextTurnQueueResendAuthFailedTurnInput,
   NextTurnQueueScheduleUsageLimitResumeInput,
   NextTurnQueueSetPausedInput,
   NextTurnQueueSteerInput,
@@ -702,6 +703,10 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(
     WS_METHODS.nextTurnQueueScheduleUsageLimitResume,
     NextTurnQueueScheduleUsageLimitResumeInput,
+  ),
+  tagRequestBody(
+    WS_METHODS.nextTurnQueueResendAuthFailedTurn,
+    NextTurnQueueResendAuthFailedTurnInput,
   ),
   tagRequestBody(
     WS_METHODS.nextTurnQueueCancelUsageLimitResume,

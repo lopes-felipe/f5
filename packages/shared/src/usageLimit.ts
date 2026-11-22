@@ -37,6 +37,21 @@ export function usageLimitFailureKey(
   return null;
 }
 
+/** Identity of one expired-login failure; resending is idempotent per key. */
+export function authFailureKey(
+  failure:
+    | {
+        readonly providerInstanceId: string;
+        readonly turnId: string | null;
+        readonly occurredAt: string;
+      }
+    | null
+    | undefined,
+): string | null {
+  if (!failure) return null;
+  return `instance:${failure.providerInstanceId}:turn:${failure.turnId ?? "none"}:at:${failure.occurredAt}`;
+}
+
 export function codexRateLimitWindowLabel(
   window: Pick<CodexAccountRateLimitWindow, "windowDurationMins">,
   fallback: string,

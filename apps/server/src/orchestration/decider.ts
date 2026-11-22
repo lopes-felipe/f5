@@ -58,6 +58,29 @@ const nowIso = () => new Date().toISOString();
 const DEFAULT_ASSISTANT_DELIVERY_MODE = "buffered" as const;
 export const GLOBAL_PIN_AGGREGATE_ID = ProjectId.makeUnsafe("f5-global-pins");
 
+type SessionSetInput = Extract<OrchestrationCommand, { type: "thread.session.set" }>["session"];
+
+/**
+ * An expired-login failure lasts only while session updates still concern it:
+ * updates for the failed turn itself, or status refreshes that keep the same
+ * error. A different turn, a new error (such as a later send that fails before
+ * starting), a cleared error, or another provider account ends it. Ingestion
+ * passes the failure explicitly when the failed turn completes.
+ */
+export function carryAuthFailure(
+  next: SessionSetInput,
+  previous: OrchestrationReadModel["threads"][number]["session"] | null | undefined,
+): SessionSetInput["authFailure"] {
+  if (next.authFailure !== undefined) return next.authFailure;
+  const failure = previous?.authFailure;
+  if (!failure) return null;
+  if (next.lastError === null) return null;
+  if ((next.providerInstanceId ?? failure.providerInstanceId) !== failure.providerInstanceId)
+    return null;
+  if (next.activeTurnId) return next.activeTurnId === failure.turnId ? failure : null;
+  return (next.lastErrorId ?? null) === (previous?.lastErrorId ?? null) ? failure : null;
+}
+
 /** The scratch project is server-owned: its folder, actions, memories and skills stay fixed. */
 function scratchProjectRefusal(commandType: string, what: string) {
   return new OrchestrationCommandInvariantError({
@@ -2143,6 +2166,7 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
                       command.session.activeTurnId === previous.session?.usageLimit?.turnId)
                   ? (previous.session?.usageLimit ?? null)
                   : null,
+            authFailure: carryAuthFailure(command.session, previous.session),
           },
           ...(command.settledTurnId !== undefined ? { settledTurnId: command.settledTurnId } : {}),
           ...(command.usageFact !== undefined ? { usageFact: command.usageFact } : {}),

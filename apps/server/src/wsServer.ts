@@ -7244,6 +7244,13 @@ export const createServer = Effect.fn(function* (
           .scheduleUsageLimitResume({ ...body, source: "manual" })
           .pipe(Effect.mapError(mapNextTurnQueueRouteError));
       }
+      case WS_METHODS.nextTurnQueueResendAuthFailedTurn: {
+        const body = stripRequestTag(request.body);
+        const { nextTurnQueueDispatcher } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* nextTurnQueueDispatcher
+          .resendAuthFailedTurn(body)
+          .pipe(Effect.mapError(mapNextTurnQueueRouteError));
+      }
       case WS_METHODS.nextTurnQueueCancelUsageLimitResume: {
         const body = stripRequestTag(request.body);
         const { nextTurnQueueDispatcher } = yield* awaitOrchestrationRuntimeForRoute;

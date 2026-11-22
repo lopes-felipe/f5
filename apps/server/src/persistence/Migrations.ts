@@ -4,6 +4,7 @@ import Migration0169 from "./Migrations/169_ThreadContextBoundaries.ts";
 import Migration0170 from "./Migrations/170_ProjectPinArchive.ts";
 import Migration0171 from "./Migrations/171_SessionAutoCompactThreshold.ts";
 import Migration0172 from "./Migrations/172_ThreadSideChat.ts";
+import Migration0173 from "./Migrations/173_SessionAuthFailure.ts";
 import Migration0161 from "./Migrations/161_UsageNativeIdentity.ts";
 import Migration0154 from "./Migrations/154_DesktopActivityPendingIndex.ts";
 import Migration0155 from "./Migrations/155_BackgroundWorkNativeParentSession.ts";
@@ -209,6 +210,7 @@ export const MIGRATIONS = {
   "170_ProjectPinArchive": Migration0170,
   "171_SessionAutoCompactThreshold": Migration0171,
   "172_ThreadSideChat": Migration0172,
+  "173_SessionAuthFailure": Migration0173,
   "168_ProviderExtensionStatuses": Migration0168,
   "161_UsageNativeIdentity": Migration0161,
   "154_DesktopActivityPendingIndex": Migration0154,

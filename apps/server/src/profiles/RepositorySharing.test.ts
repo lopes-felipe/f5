@@ -12,7 +12,7 @@ import * as FS from "node:fs/promises";
 import * as OS from "node:os";
 import * as Path from "node:path";
 import { expect, it } from "vitest";
-import { canonicalGitCommonDirectory } from "./RepositorySharing";
+import { canonicalGitCommonDirectory, invalidExecutionDirectories } from "./RepositorySharing";
 
 it("recognizes linked worktrees without treating separate clones as shared", async () => {
   const root = await FS.mkdtemp(Path.join(OS.tmpdir(), "f5-common-dir-"));
@@ -189,6 +189,37 @@ it("ignores a ready Linux VM sibling, whose state lives on the guest disk", asyn
     await expect(assertExclusiveProfileCheckout(config, checkout)).resolves.toBeUndefined();
     const roots = await readOtherProfileManagedRoots(config, { destructive: true });
     expect(roots.some((managed) => managed.startsWith(guestState))).toBe(false);
+  } finally {
+    await FS.rm(root, { recursive: true, force: true });
+  }
+});
+
+it("reports only live project folders, not thread worktrees or archived projects", async () => {
+  const root = await FS.mkdtemp(Path.join(OS.tmpdir(), "f5-invalid-dirs-"));
+  try {
+    const database = new DatabaseSync(Path.join(root, "state.sqlite"));
+    database.exec(`
+      CREATE TABLE projection_projects (
+        project_id TEXT PRIMARY KEY, workspace_root TEXT NOT NULL DEFAULT '',
+        deleted_at TEXT, archived INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE projection_threads (
+        thread_id TEXT PRIMARY KEY, worktree_path TEXT, deleted_at TEXT
+      );
+    `);
+    const missing = (name: string) => Path.join(root, name);
+    const insertProject = database.prepare("INSERT INTO projection_projects VALUES (?, ?, ?, ?)");
+    insertProject.run("live", missing("live-project"), null, 0);
+    insertProject.run("archived", missing("archived-project"), null, 1);
+    insertProject.run("deleted", missing("deleted-project"), "2026-01-01T00:00:00.000Z", 0);
+    insertProject.run("blank", "", null, 0);
+    database
+      .prepare("INSERT INTO projection_threads VALUES (?, ?, ?)")
+      .run("thread", missing("thread-worktree"), null);
+    database.close();
+
+    const issues = await invalidExecutionDirectories(root);
+    expect(issues.map((issue) => issue.directory)).toEqual([missing("live-project")]);
   } finally {
     await FS.rm(root, { recursive: true, force: true });
   }

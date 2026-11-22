@@ -21,6 +21,30 @@ import {
   profileWarnings,
 } from "./profileStatus";
 
+function ProfileWarningItems({ items }: { readonly items: readonly string[] }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Collapsible open={open} onOpenChange={setOpen} className="mt-1">
+      <CollapsibleTrigger className="inline-flex items-center gap-1 font-medium text-foreground underline-offset-2 hover:underline">
+        {open ? "Hide folders" : "Show folders"}
+        <ChevronDownIcon
+          aria-hidden="true"
+          className={cn("size-3 transition-transform", open && "rotate-180")}
+        />
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <ul className="mt-1 space-y-0.5">
+          {items.map((item) => (
+            <li key={item} className="break-all">
+              {item}
+            </li>
+          ))}
+        </ul>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
 export function ProfileCard({
   profile,
   profiles,
@@ -136,6 +160,7 @@ export function ProfileCard({
                 <AlertTitle>{warning.title}</AlertTitle>
                 <AlertDescription>
                   <span className="break-all">{warning.detail}</span>
+                  {warning.items ? <ProfileWarningItems items={warning.items} /> : null}
                 </AlertDescription>
               </Alert>
             ))}

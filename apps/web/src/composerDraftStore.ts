@@ -4,7 +4,6 @@ import {
   normalizeResponseReply,
   splitResponseReply,
 } from "@t3tools/shared/assistantResponseContext";
-import { processComposerImageBounded } from "./lib/imageCompression";
 import { getServerAttachmentLimits } from "./protocolState";
 import {
   uploadAttachment,
@@ -60,11 +59,11 @@ import {
   type StorageValue,
 } from "zustand/middleware";
 import { randomUUID } from "./lib/utils";
-import {
-  compressImageForComposer,
-  imageCompressionFailureMessage,
-  type ComposerImageProcessor,
-} from "./lib/imageCompression";
+import type { ComposerImageProcessor } from "./lib/imageCompression";
+import { processComposerImageBounded } from "./lib/imageCompressionQueue";
+
+// Image preparation loads on the first attachment, keeping it out of the startup bundle.
+const loadImageCompression = () => import("./lib/imageCompression");
 
 export const COMPOSER_DRAFT_STORAGE_KEY = "t3code:composer-drafts:v1";
 export const COMPOSER_DRAFT_PERSISTENCE_ERROR_EVENT = "f5:composer-draft-persistence-error";
@@ -2718,7 +2717,10 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
         const importId = randomUUID();
         const controller = new AbortController();
         registerImageImportController(threadId, importId, controller);
-        const processor = options?.processor ?? compressImageForComposer;
+        const processor: ComposerImageProcessor =
+          options?.processor ??
+          (async (file, processorOptions) =>
+            (await loadImageCompression()).compressImageForComposer(file, processorOptions));
         const processed = await Promise.all(
           acceptedFiles.map(async (file) => {
             try {
@@ -2762,6 +2764,10 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
         );
         const imported: ComposerImageImportSuccess[] = [];
         const nextImages: ComposerImageAttachment[] = [];
+        // Failure messages share the compressor's chunk; load it only when one is needed.
+        const imageCompressionFailureMessage = processed.some(({ result }) => !result.ok)
+          ? (await loadImageCompression()).imageCompressionFailureMessage
+          : (fileName: string) => `'${fileName}' could not be read as an image.`;
         for (const [index, { file, result }] of processed.entries()) {
           const preparing = preparingImages[index]!;
           if (!stillPreparingIds.has(preparing.id)) continue;

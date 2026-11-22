@@ -560,6 +560,67 @@ describe("ProviderRuntimeIngestion", () => {
     ]);
   });
 
+  it("keeps an expired-login failure through the failed terminal and clears it on the next turn", async () => {
+    const instance = ProviderInstanceId.makeUnsafe("claude-test");
+    const harness = await createHarness();
+    await Effect.runPromise(
+      harness.providerSessionDirectory.upsert({
+        threadId: asThreadId("thread-1"),
+        provider: "claudeAgent",
+        providerInstanceId: instance,
+        runtimePayload: { sessionGeneration: 0, activeTurnId: "auth-turn" },
+      }),
+    );
+    harness.emit({
+      type: "runtime.error",
+      eventId: asEventId("auth-error"),
+      provider: "claudeAgent",
+      providerInstanceId: instance,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("auth-turn"),
+      createdAt: "2026-11-22T12:59:00Z",
+      payload: {
+        message: "Failed to authenticate: OAuth session expired and could not be refreshed",
+        class: "auth_error",
+      },
+    });
+    const failed = await waitForThread(harness.engine, (thread) => !!thread.session?.authFailure);
+    expect(failed.session?.authFailure).toMatchObject({
+      providerInstanceId: instance,
+      turnId: "auth-turn",
+    });
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("auth-terminal"),
+      provider: "claudeAgent",
+      providerInstanceId: instance,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("auth-turn"),
+      createdAt: "2026-11-22T12:59:00Z",
+      payload: { state: "failed", errorMessage: "Claude login expired" },
+    });
+    const terminal = await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.lastErrorId === "auth-terminal",
+    );
+    expect(terminal.session?.authFailure?.turnId).toBe("auth-turn");
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("next-turn-started"),
+      provider: "claudeAgent",
+      providerInstanceId: instance,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("next-turn"),
+      createdAt: "2026-11-22T13:05:00Z",
+      payload: {},
+    });
+    const resumed = await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.activeTurnId === "next-turn",
+    );
+    expect(resumed.session?.authFailure ?? null).toBeNull();
+  });
+
   it("never infers the failed provider instance from the current composer selection", async () => {
     const harness = await createHarness();
     const readModel = await Effect.runPromise(harness.engine.getReadModel());

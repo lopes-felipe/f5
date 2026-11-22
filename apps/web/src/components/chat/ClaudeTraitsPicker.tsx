@@ -5,14 +5,15 @@ import {
   type ServerProviderModel,
   type ThreadId,
 } from "@t3tools/contracts";
-import { getProviderOptionCurrentLabel, getProviderOptionDescriptors } from "@t3tools/shared/model";
+import { getProviderOptionDescriptors } from "@t3tools/shared/model";
 import { memo, useState } from "react";
-import { ChevronDownIcon, WorkflowIcon } from "lucide-react";
+import { ChevronDownIcon } from "lucide-react";
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
 import { COMPOSER_CHIP_CLASS_NAME } from "./composer/composerChip";
-import { FastModeTriggerIcon } from "./EffortMenuSection";
 import { getEffortChipClass } from "./effortLevels";
+import { traitsTriggerParts } from "./traitsTrigger";
+import { TraitsTriggerIcons } from "./TraitsTriggerIcons";
 import { Menu, MenuPopup, MenuTrigger } from "../ui/menu";
 import { getProviderModelCapabilities } from "../../providerModels";
 import { withComposerModelDefaults } from "./composerModelDefaults";
@@ -29,44 +30,19 @@ type ClaudeTraitsInput = {
   readonly modelOptions?: ReadonlyArray<ProviderOptionSelection> | null | undefined;
 };
 
-function getClaudeOptionDescriptors(
-  input: ClaudeTraitsInput,
-): ReadonlyArray<ProviderOptionDescriptor> {
+function getClaudeTriggerPresentation(input: ClaudeTraitsInput): {
+  label: string;
+  icons: ReadonlyArray<"fastMode" | "ultracode">;
+  effortTint: { level: string; className: string } | null;
+} {
   const caps = getProviderModelCapabilities(input.models, input.model, CLAUDE_PROVIDER);
-  return getProviderOptionDescriptors({
+  const descriptors: ReadonlyArray<ProviderOptionDescriptor> = getProviderOptionDescriptors({
     caps,
     selections: withComposerModelDefaults(caps, input.modelOptions),
   });
-}
-
-function getClaudeTriggerPresentation(input: ClaudeTraitsInput): {
-  label: string;
-  fastModeEnabled: boolean;
-  ultracodeEnabled: boolean;
-  effortTint: { level: string; className: string } | null;
-} {
-  const descriptors = getClaudeOptionDescriptors(input);
   return {
-    ultracodeEnabled: descriptors.some(
-      (descriptor) => descriptor.id === "ultracode" && descriptor.currentValue === true,
-    ),
+    ...traitsTriggerParts({ descriptors, defaults: caps.optionDescriptors }),
     effortTint: getEffortChipClass(descriptors),
-    label: descriptors
-      .map((descriptor) => {
-        if (descriptor.type === "boolean") {
-          if (descriptor.id === "fastMode") return null;
-          return `${descriptor.label} ${descriptor.currentValue === true ? "On" : "Off"}`;
-        }
-        return getProviderOptionCurrentLabel(descriptor);
-      })
-      .filter((label): label is string => typeof label === "string" && label.length > 0)
-      .join(" · "),
-    fastModeEnabled: descriptors.some(
-      (descriptor) =>
-        descriptor.type === "boolean" &&
-        descriptor.id === "fastMode" &&
-        descriptor.currentValue === true,
-    ),
   };
 }
 
@@ -136,10 +112,7 @@ export const ClaudeTraitsPicker = memo(function ClaudeTraitsPicker(props: {
         }
       >
         <span>{trigger.label}</span>
-        {trigger.fastModeEnabled ? <FastModeTriggerIcon /> : null}
-        {trigger.ultracodeEnabled ? (
-          <WorkflowIcon className="size-3" aria-label="Ultracode" />
-        ) : null}
+        <TraitsTriggerIcons icons={trigger.icons} />
         <ChevronDownIcon aria-hidden="true" className="size-3 opacity-60" />
       </MenuTrigger>
       <MenuPopup align="start">

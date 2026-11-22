@@ -15,8 +15,10 @@ import { memo, useCallback, useState } from "react";
 import type { VariantProps } from "class-variance-authority";
 import { ChevronDownIcon } from "lucide-react";
 import { Button, buttonVariants } from "../ui/button";
-import { EffortMenuSection, FastModeLabel, FastModeTriggerIcon } from "./EffortMenuSection";
+import { EffortMenuSection, FastModeLabel } from "./EffortMenuSection";
 import { getEffortChipClass, isEffortDescriptor } from "./effortLevels";
+import { traitsTriggerParts } from "./traitsTrigger";
+import { TraitsTriggerIcons } from "./TraitsTriggerIcons";
 import {
   Menu,
   MenuCheckboxItem,
@@ -289,7 +291,7 @@ export const TraitsPicker = memo(function TraitsPicker({
   ...persistence
 }: TraitsMenuContentProps & TraitsPersistence & { disabled?: boolean }) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const { descriptors, fastModeEnabled } = getTraitsSectionVisibility({
+  const { caps, descriptors } = getTraitsSectionVisibility({
     provider,
     models,
     model,
@@ -306,19 +308,10 @@ export const TraitsPicker = memo(function TraitsPicker({
     return null;
   }
 
-  const triggerLabel =
-    descriptors
-      .map((descriptor) => {
-        if (descriptor.type === "boolean") {
-          if (descriptor.id === "fastMode") {
-            return null;
-          }
-          return `${descriptor.label} ${descriptor.currentValue === true ? "On" : "Off"}`;
-        }
-        return getProviderOptionCurrentLabel(descriptor);
-      })
-      .filter((label): label is string => typeof label === "string" && label.length > 0)
-      .join(" · ") || "";
+  const { label: triggerLabel, icons: triggerIcons } = traitsTriggerParts({
+    descriptors,
+    defaults: caps?.optionDescriptors,
+  });
 
   const isCodexStyle = provider === "codex";
   const effortTint = tintTrigger ? getEffortChipClass(descriptors) : null;
@@ -350,13 +343,13 @@ export const TraitsPicker = memo(function TraitsPicker({
         {isCodexStyle ? (
           <span className="flex min-w-0 w-full items-center gap-2">
             <span className="truncate">{triggerLabel}</span>
-            {fastModeEnabled ? <FastModeTriggerIcon /> : null}
+            <TraitsTriggerIcons icons={triggerIcons} />
             <ChevronDownIcon aria-hidden="true" className="size-3 shrink-0 opacity-60" />
           </span>
         ) : (
           <>
             <span>{triggerLabel}</span>
-            {fastModeEnabled ? <FastModeTriggerIcon /> : null}
+            <TraitsTriggerIcons icons={triggerIcons} />
             <ChevronDownIcon aria-hidden="true" className="size-3 opacity-60" />
           </>
         )}

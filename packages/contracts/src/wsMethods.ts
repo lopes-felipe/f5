@@ -164,6 +164,7 @@ export const WS_METHODS = {
   nextTurnQueueSteer: "nextTurnQueue.steer",
   nextTurnQueueSetPaused: "nextTurnQueue.setPaused",
   nextTurnQueueScheduleUsageLimitResume: "nextTurnQueue.scheduleUsageLimitResume",
+  nextTurnQueueResendAuthFailedTurn: "nextTurnQueue.resendAuthFailedTurn",
   nextTurnQueueCancelUsageLimitResume: "nextTurnQueue.cancelUsageLimitResume",
   nextTurnQueueRefreshUsageLimitResume: "nextTurnQueue.refreshUsageLimitResume",
   nextTurnQueueDuplicate: "nextTurnQueue.duplicate",

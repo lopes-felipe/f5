@@ -93,6 +93,7 @@ import {
 } from "@t3tools/shared/orchestrationActivityPayload";
 
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
+import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import { isSyntheticClaudeThreadId, isUuid } from "../../provider/claudeResumeState.ts";
 import { ProviderSessionDirectory } from "../../provider/Services/ProviderSessionDirectory.ts";
 import { ThreadCommandExecutionQuery } from "../Services/ThreadCommandExecutionQuery.ts";
@@ -2501,6 +2502,7 @@ const make = Effect.gen(function* () {
   const serverSettings = yield* ServerSettingsService;
   const providerService = yield* ProviderService;
   const usageService = yield* Effect.serviceOption(UsageService);
+  const providerRegistry = yield* Effect.serviceOption(ProviderRegistry);
   const ingestionScope = yield* Effect.scope;
   const mcpEventBus = yield* Effect.serviceOption(CodexMcpEventBus);
   const pendingMcpPushes = new Map<
@@ -6273,6 +6275,16 @@ const make = Effect.gen(function* () {
           : activeTurnId === null || eventTurnId === undefined || sameId(activeTurnId, eventTurnId);
 
         if (shouldApplyRuntimeError) {
+          const errorProviderInstanceId =
+            event.providerInstanceId ?? thread.session?.providerInstanceId ?? null;
+          const authFailure =
+            event.payload.class === "auth_error" && errorProviderInstanceId
+              ? {
+                  providerInstanceId: errorProviderInstanceId,
+                  turnId: eventTurnId ?? activeTurnId ?? null,
+                  occurredAt: now,
+                }
+              : undefined;
           yield* orchestrationEngine.dispatch({
             type: "thread.session.set",
             commandId: providerCommandId(event, "runtime-error-session-set"),
@@ -6281,8 +6293,8 @@ const make = Effect.gen(function* () {
               threadId: thread.id,
               status: "error",
               providerName: event.provider,
-              providerInstanceId:
-                event.providerInstanceId ?? thread.session?.providerInstanceId ?? null,
+              providerInstanceId: errorProviderInstanceId,
+              ...(authFailure ? { authFailure } : {}),
               runtimeMode: thread.session?.runtimeMode ?? thread.runtimeMode,
               activeTurnId:
                 activeTurnId === null && thread.session?.usageLimit?.turnId === eventTurnId
@@ -6296,6 +6308,15 @@ const make = Effect.gen(function* () {
             },
             createdAt: now,
           });
+          // Re-probe the account so Settings and the picker show it signed out too.
+          if (authFailure && Option.isSome(providerRegistry)) {
+            yield* Effect.forkIn(
+              providerRegistry.value
+                .refreshInstance(authFailure.providerInstanceId)
+                .pipe(Effect.ignoreCause({ log: true })),
+              ingestionScope,
+            );
+          }
         }
       }
 
