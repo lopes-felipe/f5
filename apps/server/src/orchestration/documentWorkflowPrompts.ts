@@ -93,6 +93,15 @@ export function buildDocumentRevisionPrompt(
 ): string {
   return joinPromptSections([
     `Reviewers have provided feedback on your ${WORKFLOW_DOCUMENT_PROFILES[input.documentType].label} draft.`,
+    // After compaction the thread no longer holds the draft verbatim; a full
+    // replacement written from a summary would silently drop content.
+    input.includeOriginalPlan
+      ? envelope(
+          "Your reviewed draft",
+          normalizeDocumentMarkdown(input.originalPlan.markdown),
+          input.originalPlan.source,
+        )
+      : null,
     ...input.reviews.map((review) =>
       envelope(review.reviewerLabel, review.reviewMarkdown, review.source),
     ),

@@ -11325,7 +11325,11 @@ describe("WorkflowService", () => {
       statusB: PlanningWorkflow["branchB"]["status"];
       contextTokens: number;
       reportedWindow?: number;
+      /** Branch A's author conversation was compacted at this time. */
+      compactedAt?: string;
+      planMarkdown?: string;
     }) {
+      const branchPlanMarkdown = input.planMarkdown ?? planMarkdown;
       const base = makeWorkflow();
       const reviewThreads: OrchestrationReadModel["threads"][number][] = [];
       const authors = [base.branchA, base.branchB].map((branch) => {
@@ -11378,6 +11382,22 @@ describe("WorkflowService", () => {
             id: branch.authorThreadId,
             model: branch.authorSlot.model,
             estimatedContextTokens: isBranchA ? input.contextTokens : 0,
+            ...(isBranchA && input.compactedAt
+              ? {
+                  compaction: {
+                    kind: "summary" as const,
+                    trigger: "manual" as const,
+                    summary: "Compacted author conversation",
+                    estimatedTokens: input.contextTokens,
+                    modelContextWindowTokens: 200_000,
+                    direction: null,
+                    pivotMessageId: null,
+                    fromTurnCount: 1,
+                    toTurnCount: 1,
+                    createdAt: input.compactedAt,
+                  },
+                }
+              : {}),
             session: {
               threadId: branch.authorThreadId,
               providerName: branch.authorSlot.provider,
@@ -11394,7 +11414,7 @@ describe("WorkflowService", () => {
               {
                 id: OrchestrationProposedPlanId.makeUnsafe(planTurnId),
                 turnId: planTurnId,
-                planMarkdown,
+                planMarkdown: branchPlanMarkdown,
                 implementedAt: null,
                 implementationThreadId: null,
                 createdAt: planCreatedAt,
@@ -11483,6 +11503,7 @@ describe("WorkflowService", () => {
           statusA: "error",
           statusB: "revising",
           contextTokens: 5_000,
+          compactedAt: "2026-03-26T12:00:30.000Z",
         });
         const { branchA, branchB } = fixture.workflow;
         const retry = () =>
@@ -11525,6 +11546,79 @@ describe("WorkflowService", () => {
         });
       },
     );
+
+    it("retries a large plan without resending it while the author thread still holds it", async () => {
+      // About 90k characters: rendering it again would breach the 116k message limit.
+      const largePlan = "# Original plan\n\n" + "y".repeat(90_000);
+      const fixture = revisionFixture({
+        statusA: "error",
+        statusB: "revising",
+        contextTokens: 5_000,
+        planMarkdown: largePlan,
+      });
+      const { branchA } = fixture.workflow;
+      harness = await createHarness(makeReadModel(fixture));
+
+      expect(
+        await Effect.runPromise(harness.service.retryWorkflow({ workflowId: fixture.workflow.id })),
+      ).toEqual({ status: "started" });
+
+      const [revision] = turnStartsForThread(harness.dispatched, branchA.authorThreadId);
+      expect(revision?.message.text).not.toContain("## Original plan");
+      expect(revision?.message.text).toContain(crossReview);
+      expect(harness.getSnapshot().planningWorkflows[0]?.branchA).toMatchObject({
+        status: "revising",
+        error: null,
+      });
+    });
+
+    it("fails visibly, without a compaction hint, when a compacted plan can't be resent in one message", async () => {
+      const largePlan = "# Original plan\n\n" + "y".repeat(120_000);
+      const fixture = revisionFixture({
+        statusA: "error",
+        statusB: "revising",
+        contextTokens: 5_000,
+        reportedWindow: 1_000_000,
+        planMarkdown: largePlan,
+        compactedAt: "2026-03-26T12:00:30.000Z",
+      });
+      const { branchA } = fixture.workflow;
+      harness = await createHarness(makeReadModel(fixture));
+
+      await Effect.runPromise(harness.service.retryWorkflow({ workflowId: fixture.workflow.id }));
+
+      expect(turnStartsForThread(harness.dispatched, branchA.authorThreadId)).toHaveLength(0);
+      const failed = harness.getSnapshot().planningWorkflows[0]?.branchA;
+      expect(failed).toMatchObject({ status: "error", errorStage: "revision" });
+      expect(failed?.error).toContain("no longer fit in one message");
+      expect(failed?.error).not.toContain("Compact the Branch A author conversation, then retry");
+    });
+
+    it("marks only the branch whose revision delivery can't resume at startup", async () => {
+      const fixture = revisionFixture({
+        statusA: "revising",
+        statusB: "revising",
+        contextTokens: 5_000,
+      });
+      const { branchA, branchB } = fixture.workflow;
+      harness = await createHarness(makeReadModel(fixture), {
+        recheckDelivery: (threadId) =>
+          Effect.succeed(
+            threadId === branchB.authorThreadId
+              ? { ...makeProviderTurnDelivery(threadId, "ambiguous"), createdAt: NOW }
+              : null,
+          ),
+      });
+
+      await harness.start();
+
+      expect(turnStartsForThread(harness.dispatched, branchA.authorThreadId)).toHaveLength(1);
+      expect(turnStartsForThread(harness.dispatched, branchB.authorThreadId)).toHaveLength(0);
+      const workflow = harness.getSnapshot().planningWorkflows[0];
+      expect(workflow?.branchA).toMatchObject({ status: "revising", error: null });
+      expect(workflow?.branchB).toMatchObject({ status: "error", errorStage: "revision" });
+      expect(workflow?.branchB.error).toContain("delivery is 'ambiguous'");
+    });
 
     it("does not send a new revision when the provider accepted the existing one", async () => {
       const fixture = revisionFixture({

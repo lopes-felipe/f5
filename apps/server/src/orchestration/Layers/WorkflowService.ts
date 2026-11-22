@@ -22,12 +22,8 @@ import {
   type WorkflowReviewSlot,
 } from "@t3tools/contracts";
 import { createHash } from "node:crypto";
-import { Cause, Clock, Duration, Effect, Exit, Layer, Option, Scope, Stream } from "effect";
-import {
-  estimateModelContextWindowTokens,
-  normalizeModelSlug,
-  roughTokenEstimateFromCharacters,
-} from "@t3tools/shared/model";
+import { Cause, Clock, Duration, Effect, Layer, Option, Scope, Stream } from "effect";
+import { roughTokenEstimateFromCharacters } from "@t3tools/shared/model";
 import {
   defaultDocumentReaderSlot,
   documentWorkflowForThread,
@@ -98,6 +94,8 @@ import {
   reviewFeedbackForPinnedTurn,
   slotLabel,
   type WorkflowFitThread,
+  WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT,
+  workflowContextTarget,
   workflowPromptFitError,
   workflowPromptFit,
 } from "../workflowSharedUtils.ts";
@@ -159,6 +157,8 @@ function stableWorkflowCommandId(
 ): CommandId {
   return CommandId.makeUnsafe(`workflow:${namespace}:${stableWorkflowUuid(namespace, ...parts)}`);
 }
+
+const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 function workflowPromptInvariant(input: {
   readonly workflow: PlanningWorkflow;
@@ -1419,42 +1419,61 @@ export const makeWorkflowService = Effect.gen(function* () {
       }),
     );
 
+  /**
+   * Fail one branch's revision visibly (error with Retry), unless the branch moved
+   * on since `input.workflow` was read. The sibling branch is left alone.
+   */
+  const rejectRevision = (
+    input: Pick<Parameters<typeof prepareRevisionTurn>[0], "workflow" | "branch" | "createdAt">,
+    error: string,
+  ) => {
+    const branchKey = input.branch.branchId === "a" ? "branchA" : "branchB";
+    const expected = input.workflow[branchKey];
+    return withWorkflowGate(
+      input.workflow.id,
+      Effect.gen(function* () {
+        const current = yield* readWorkflow(orchestrationEngine, input.workflow.id);
+        if (!current) return input.workflow;
+        const branch = current[branchKey];
+        if (
+          isArchivedWorkflow(current) ||
+          branch.status !== expected.status ||
+          branch.updatedAt !== expected.updatedAt ||
+          branch.planTurnId !== expected.planTurnId
+        ) {
+          return current;
+        }
+        const failed = markBranchError(current, input.branch.branchId, {
+          error,
+          stage: "revision",
+          updatedAt: input.createdAt,
+        });
+        const next = {
+          ...failed,
+          updatedAt: current.updatedAt > failed.updatedAt ? current.updatedAt : failed.updatedAt,
+        };
+        yield* writeWorkflow(next);
+        return next;
+      }),
+    );
+  };
+
   const dispatchRevisionTurn = (
     input: Parameters<typeof prepareRevisionTurn>[0],
     priorFailure?: string,
   ) =>
     Effect.gen(function* () {
-      const prepared = prepareRevisionTurn(input);
+      // Size and send the prompt for the model dispatch will actually use: the
+      // model-selection guard swaps an unavailable saved model at dispatch.
+      const authorSlot = resolveAvailableWorkflowModelSlot(
+        input.branch.authorSlot,
+        yield* getWorkflowProviders,
+      );
+      const prepared = prepareRevisionTurn({ ...input, branch: { ...input.branch, authorSlot } });
       if ("rejection" in prepared) {
-        const branchKey = input.branch.branchId === "a" ? "branchA" : "branchB";
-        const expected = input.workflow[branchKey];
-        const workflow = yield* withWorkflowGate(
-          input.workflow.id,
-          Effect.gen(function* () {
-            const current = yield* readWorkflow(orchestrationEngine, input.workflow.id);
-            if (!current) return input.workflow;
-            const branch = current[branchKey];
-            if (
-              isArchivedWorkflow(current) ||
-              branch.status !== expected.status ||
-              branch.updatedAt !== expected.updatedAt ||
-              branch.planTurnId !== expected.planTurnId
-            ) {
-              return current;
-            }
-            const failed = markBranchError(current, input.branch.branchId, {
-              error: priorFailure ? `${priorFailure} ${prepared.rejection}` : prepared.rejection,
-              stage: "revision",
-              updatedAt: input.createdAt,
-            });
-            const next = {
-              ...failed,
-              updatedAt:
-                current.updatedAt > failed.updatedAt ? current.updatedAt : failed.updatedAt,
-            };
-            yield* writeWorkflow(next);
-            return next;
-          }),
+        const workflow = yield* rejectRevision(
+          input,
+          priorFailure ? `${priorFailure} ${prepared.rejection}` : prepared.rejection,
         );
         return { workflow, started: false };
       }
@@ -2631,18 +2650,27 @@ export const makeWorkflowService = Effect.gen(function* () {
         yield* upsertWorkflow(current);
       }
 
+      // Each branch settles on its own: a delivery that can't resume, or a start that
+      // fails, marks only that branch failed (with Retry), and the caller always learns
+      // which branches did start so the startup audit leaves them alone.
       const dispatched = new Set<ThreadId>();
-      const attempts = yield* Effect.forEach(inputs, (input) =>
-        Effect.exit(
+      yield* Effect.forEach(
+        inputs,
+        (input) =>
           Effect.gen(function* () {
             if (!input) return;
             const { branch, thread } = input;
-            const existingDelivery = yield* deliveryForStage(
-              branch.authorThreadId,
-              branch.updatedAt,
-            );
+            const existingDelivery = behavior.idempotentStageSetup
+              ? yield* deliveryForStage(branch.authorThreadId, branch.updatedAt)
+              : null;
             const deliveryError = ensureDeliveryCanResume(existingDelivery, "Plan revision");
-            if (deliveryError) return yield* Effect.fail(deliveryError);
+            if (deliveryError) {
+              current = yield* rejectRevision(
+                { workflow: current, branch, createdAt: updatedAt },
+                deliveryError.message,
+              );
+              return;
+            }
             if (
               existingDelivery ||
               (thread?.latestTurn &&
@@ -2658,11 +2686,28 @@ export const makeWorkflowService = Effect.gen(function* () {
             });
             if (outcome.started) dispatched.add(branch.authorThreadId);
             current = outcome.workflow;
-          }),
-        ),
+          }).pipe(
+            Effect.catchCause((cause) =>
+              Cause.hasInterruptsOnly(cause)
+                ? Effect.failCause(cause)
+                : Effect.logWarning("workflow revision start failed", {
+                    workflowId: workflow.id,
+                    branchId: input?.branch.branchId,
+                    cause: Cause.pretty(cause),
+                  }).pipe(
+                    Effect.andThen(
+                      input
+                        ? rejectRevision(
+                            { workflow: current, branch: input.branch, createdAt: updatedAt },
+                            `Plan revision could not be started: ${errorMessage(Cause.squash(cause))}`,
+                          ).pipe(Effect.map((next) => void (current = next)))
+                        : Effect.void,
+                    ),
+                  ),
+            ),
+          ),
+        { discard: true },
       );
-      const failed = attempts.find(Exit.isFailure);
-      if (failed) return yield* Effect.failCause(failed.cause);
       return dispatched;
     });
 
@@ -3748,23 +3793,10 @@ export const makeWorkflowService = Effect.gen(function* () {
     thread: OrchestrationThread,
     slot: NonNullable<PlanningWorkflow["implementation"]>["implementationSlot"],
   ) => {
-    const matchingModel =
-      normalizeModelSlug(thread.model, slot.provider) ===
-      normalizeModelSlug(slot.model, slot.provider);
-    const matchingInstance =
-      !thread.modelSelection ||
-      thread.session?.providerInstanceId == null ||
-      thread.session.providerInstanceId === thread.modelSelection.instanceId;
-    const session =
-      matchingModel && matchingInstance && thread.session?.providerName === slot.provider
-        ? thread.session
-        : null;
-    const matchingThread =
-      matchingModel && (thread.session?.providerName == null || session !== null);
-    const contextWindowTokens =
-      (session?.modelContextWindowTokens || undefined) ??
-      (matchingThread ? thread.modelContextWindowTokens || undefined : undefined) ??
-      estimateModelContextWindowTokens(slot.model, slot.provider);
+    // Same window resolution as planning revisions. Apply Reviews additionally
+    // treats a compaction estimate as a full window, because it compacts on its
+    // own before dispatching when the live fit fails.
+    const { session, matchingThread, contextWindowTokens } = workflowContextTarget(slot, thread);
     const compactionEstimateOnly =
       matchingThread &&
       thread.compaction &&
@@ -7432,16 +7464,30 @@ export const makeWorkflowService = Effect.gen(function* () {
           const authorThread = snapshot.threads.find(
             (entry) => entry.id === originalBranch.authorThreadId,
           );
+          // The reviewed plan is pinned by turn id, as automatic revision setup reads
+          // it. A newer unsettled turn (such as a native compaction) can't hide it.
+          const pinnedPlan = originalBranch.planTurnId
+            ? authorThread?.proposedPlans.find((plan) => plan.turnId === originalBranch.planTurnId)
+            : undefined;
+          if (
+            !pinnedPlan &&
+            resolveWorkflowBehavior({
+              runKind: "planning",
+              templateId: workflow.templateId,
+              templateVersion: workflow.templateVersion,
+            }).templateVersion === 2
+          ) {
+            retriedWorkflow = yield* rejectRevision(
+              { workflow: retriedWorkflow, branch: originalBranch, createdAt: updatedAt },
+              `The reviewed ${isDocumentWorkflow(workflow) ? "draft" : "plan"} for Branch ${branchId.toUpperCase()} could not be found, so the revision was not sent.`,
+            );
+            continue;
+          }
           const revisionOutcome = yield* dispatchRevisionTurn({
             workflow: retriedWorkflow,
             branch: originalBranch,
-            originalPlanMarkdown:
-              completedProposedPlanForTurn(
-                snapshot,
-                originalBranch.authorThreadId,
-                originalBranch.planTurnId,
-                originalBranch.updatedAt,
-              )?.planMarkdown ?? "# Original plan unavailable",
+            originalPlanMarkdown: pinnedPlan?.planMarkdown ?? "# Original plan unavailable",
+            ...(pinnedPlan ? { originalPlanCreatedAt: pinnedPlan.createdAt } : {}),
             reviews: revisionFeedback.get(branchId)!,
             ...(authorThread ? { thread: authorThread } : {}),
             createdAt: updatedAt,
@@ -8025,6 +8071,7 @@ function prepareRevisionTurn({
   thread,
   createdAt,
   retry,
+  originalPlanCreatedAt,
 }: {
   workflow: PlanningWorkflow;
   branch: PlanningWorkflow["branchA"];
@@ -8034,12 +8081,27 @@ function prepareRevisionTurn({
     readonly reviewMarkdown: string;
     readonly source: Parameters<typeof buildRevisionPrompt>[0]["reviews"][number]["source"];
   }>;
-  thread?: WorkflowFitThread | undefined;
+  thread?:
+    | (WorkflowFitThread & {
+        readonly compaction?: { readonly createdAt: string } | null;
+      })
+    | undefined;
   createdAt: string;
   retry?: WorkflowRetryContext;
+  /** When the reviewed plan was produced; a retry resends it only after a later compaction. */
+  originalPlanCreatedAt?: string | undefined;
 }): { readonly command: ThreadTurnStartCommand } | { readonly rejection: string } {
   const budgetError = workflowBudgetError(workflow);
   if (budgetError) return { rejection: budgetError.detail };
+  // Format repairs and interrupted retries run in a thread that still holds the
+  // plan, so only a manual retry after compaction resends it.
+  const includeOriginalPlan =
+    retry?.kind === "retry" &&
+    !retry.formatRepair &&
+    !retry.interrupted &&
+    originalPlanCreatedAt !== undefined &&
+    !!thread?.compaction &&
+    thread.compaction.createdAt > originalPlanCreatedAt;
   const documentType = planningWorkflowDocumentType(workflow);
   const prompt = (documentType ? buildDocumentRevisionPrompt : buildRevisionPrompt)({
     documentType: documentType ?? "custom",
@@ -8055,7 +8117,14 @@ function prepareRevisionTurn({
     reviews,
     targetSlot: branch.authorSlot,
     retry,
+    includeOriginalPlan,
   });
+  if (includeOriginalPlan && prompt.length > WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT) {
+    // Compacting again can't shrink this: the plan itself has to travel in the message.
+    return {
+      rejection: `The reviewed ${documentType ? "draft" : "plan"} and its reviews (${prompt.length.toLocaleString("en-US")} characters) no longer fit in one message now that the Branch ${branch.branchId.toUpperCase()} author conversation was compacted. Revise it manually in that thread, or restart the workflow with shorter reviews.`,
+    };
+  }
   const promptError = workflowPromptInvariant({
     workflow,
     prompt,

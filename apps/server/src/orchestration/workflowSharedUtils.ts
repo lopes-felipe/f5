@@ -12,12 +12,20 @@ export const WORKFLOW_AUTHORITATIVE_ARTIFACT_TOKEN_SHARE = 0.5;
 export const WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT = 116_000;
 
 export type WorkflowFitThread = Partial<
-  Pick<OrchestrationThread, "estimatedContextTokens" | "model">
+  Pick<
+    OrchestrationThread,
+    "estimatedContextTokens" | "model" | "modelSelection" | "modelContextWindowTokens"
+  >
 > & {
-  readonly session?: Pick<
-    NonNullable<OrchestrationThread["session"]>,
-    "providerName" | "modelContextWindowTokens"
-  > | null;
+  readonly session?:
+    | (Pick<NonNullable<OrchestrationThread["session"]>, "providerName"> &
+        Partial<
+          Pick<
+            NonNullable<OrchestrationThread["session"]>,
+            "modelContextWindowTokens" | "providerInstanceId"
+          >
+        >)
+    | null;
 };
 
 interface WorkflowArtifactFitInput {
@@ -470,26 +478,50 @@ export function truncateWorkflowPromptArtifact(text: string, maxChars = 60_000):
   }).output;
 }
 
-function workflowContextWindowTokens(
+/**
+ * Where a workflow turn on `slot` will run in `thread`: the thread's session when
+ * it is the same model on the same provider and instance, and the context window
+ * that turn gets. A provider-reported window (session first, then the thread's
+ * last report) wins over static metadata only for that matching model. Planning
+ * revisions and Apply Reviews both size their prompts with this.
+ */
+export function workflowContextTarget<T extends WorkflowFitThread>(
   slot: WorkflowModelSlot,
-  thread?: WorkflowFitThread | null,
-): number {
-  const reportedWindow = thread?.session?.modelContextWindowTokens;
-  if (
-    reportedWindow &&
-    reportedWindow > 0 &&
-    thread.session?.providerName === slot.provider &&
+  thread: T | null | undefined,
+): {
+  readonly session: NonNullable<T["session"]> | null;
+  readonly matchingThread: boolean;
+  readonly contextWindowTokens: number;
+} {
+  const staticWindow = estimateModelContextWindowTokens(slot.model, slot.provider);
+  if (!thread) return { session: null, matchingThread: false, contextWindowTokens: staticWindow };
+  const matchingModel =
     normalizeModelSlug(thread.model, slot.provider) ===
-      normalizeModelSlug(slot.model, slot.provider)
-  ) {
-    return reportedWindow;
-  }
-  return estimateModelContextWindowTokens(slot.model, slot.provider);
+    normalizeModelSlug(slot.model, slot.provider);
+  const matchingInstance =
+    !thread.modelSelection ||
+    thread.session?.providerInstanceId == null ||
+    thread.session.providerInstanceId === thread.modelSelection.instanceId;
+  const session =
+    matchingModel && matchingInstance && thread.session?.providerName === slot.provider
+      ? (thread.session as NonNullable<T["session"]>)
+      : null;
+  const matchingThread =
+    matchingModel && (thread.session?.providerName == null || session !== null);
+  return {
+    session,
+    matchingThread,
+    contextWindowTokens:
+      (session?.modelContextWindowTokens || undefined) ??
+      (matchingThread ? thread.modelContextWindowTokens || undefined : undefined) ??
+      staticWindow,
+  };
 }
 
 function contextHeadroom(input: WorkflowArtifactFitInput): number {
   const contextWindow =
-    input.contextWindowTokens ?? workflowContextWindowTokens(input.targetSlot, input.thread);
+    input.contextWindowTokens ??
+    workflowContextTarget(input.targetSlot, input.thread).contextWindowTokens;
   const outputReserve = Math.max(8_000, Math.floor(contextWindow * 0.15));
   const contextTokens = input.contextUsageTokens ?? input.thread?.estimatedContextTokens ?? 0;
   return Math.max(
