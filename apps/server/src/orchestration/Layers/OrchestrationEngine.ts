@@ -727,6 +727,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           .withTransaction(
             Effect.gen(function* () {
               yield* checkWorkspaceBarrier;
+              yield* envelope.workspaceWrite?.commitObservation ?? Effect.void;
               if (
                 envelope.command.type === "thread.compacted.record" &&
                 envelope.command.freshSessionGuard

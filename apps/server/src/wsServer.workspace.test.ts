@@ -140,46 +140,116 @@ describe("WebSocket Server", () => {
       expect(run("branch", "--show-current")).toBe("topic");
     });
 
-    it("follows a branch checked out externally in an attached worktree", async () => {
-      const { cwd, run } = repoWithTopic();
-      const baseDir = fs.realpathSync(makeTempDir("f5-observed-branch-"));
-      const stateDir = path.join(baseDir, "state");
-      const worktree = path.join(baseDir, "worktrees", "topic");
-      run("worktree", "add", "-q", worktree, "topic");
-      h.server = await createTestServer({ cwd, stateDir, autoBootstrapProjectFromCwd: true });
-      const addr = h.server.address();
-      const [ws] = await connectAndAwaitWelcome(typeof addr === "object" && addr ? addr.port : 0);
-      connections.push(ws);
-      const before = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot);
-      const project = (before.result as OrchestrationReadModel).projects[0]!;
-      const created = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
-        type: "thread.create",
-        commandId: "create-observed-branch",
-        threadId: "observed-branch",
-        projectId: project.id,
-        title: "Observed branch",
-        model: "gpt-5-codex",
-        runtimeMode: "full-access",
-        interactionMode: "default",
-        branch: "topic",
-        worktreePath: worktree,
-        createdAt: new Date().toISOString(),
-      });
-      expect(created.error).toBeUndefined();
-      run("-C", worktree, "switch", "-qc", "next-topic");
-      const status = await sendRequest(ws, WS_METHODS.gitStatus, {
-        cwd: worktree,
-        includeRemote: false,
-        includePullRequest: false,
-      });
-      expect(status.result).toMatchObject({ branch: "next-topic" });
-      const after = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot);
-      expect(
-        (after.result as OrchestrationReadModel).threads.find(
-          (thread) => thread.id === "observed-branch",
-        ),
-      ).toMatchObject({ branch: "next-topic", worktreePath: worktree });
-    });
+    it.each([
+      { managed: true, follow: true, shared: false },
+      { managed: false, follow: true, shared: true },
+      { managed: false, follow: false, shared: false },
+    ])(
+      "observes worktree switches with managed=$managed follow=$follow shared=$shared",
+      async ({ managed, follow, shared }) => {
+        const { cwd, run } = repoWithTopic();
+        const baseDir = fs.realpathSync(makeTempDir("f5-observed-branch-"));
+        const stateDir = path.join(baseDir, "state");
+        const worktree = path.join(baseDir, "worktrees", "topic");
+        run("worktree", "add", "-q", worktree, "topic");
+        h.server = await createTestServer({
+          cwd,
+          stateDir,
+          autoBootstrapProjectFromCwd: true,
+          persistenceLayer: makeSqlitePersistenceLive(path.join(stateDir, "state.sqlite")).pipe(
+            Layer.provide(NodeServices.layer),
+          ),
+        });
+        const addr = h.server.address();
+        const [ws] = await connectAndAwaitWelcome(typeof addr === "object" && addr ? addr.port : 0);
+        connections.push(ws);
+        const before = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot);
+        const project = (before.result as OrchestrationReadModel).projects[0]!;
+        const createThread = (threadId: string, sharedFilesystemConfirmed = false) =>
+          sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+            type: "thread.create",
+            commandId: "create-" + threadId,
+            threadId,
+            projectId: project.id,
+            title: "Observed branch",
+            model: "gpt-5-codex",
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: "topic",
+            worktreePath: worktree,
+            sharedFilesystemConfirmed,
+            createdAt: new Date().toISOString(),
+          });
+        const created = await createThread("observed-branch");
+        expect(created.error).toBeUndefined();
+        if (shared) expect((await createThread("sharing-branch", true)).error).toBeUndefined();
+        const db = new DatabaseSync(path.join(stateDir, "state.sqlite"));
+        try {
+          if (managed) {
+            db.prepare("INSERT INTO worktree_groups(workspace_path, plan_json) VALUES (?, ?)").run(
+              worktree,
+              JSON.stringify({
+                path: worktree,
+                projectId: project.id,
+                projectRoot: cwd,
+                threadId: "observed-branch",
+                branch: "topic",
+                root: { identity: path.join(cwd, ".git"), baseOid: run("rev-parse", "topic") },
+                repositories: [],
+                members: [],
+              }),
+            );
+          }
+          if (follow)
+            expect(
+              (
+                await sendRequest(ws, WS_METHODS.serverUpdateSettings, {
+                  followWorktreeBranchChanges: true,
+                })
+              ).error,
+            ).toBeUndefined();
+          run("-C", worktree, "switch", "-qc", "next-topic");
+          const status = await sendRequest(ws, WS_METHODS.gitStatus, {
+            cwd: worktree,
+            includeRemote: false,
+            includePullRequest: false,
+          });
+          expect(status.result).toMatchObject({ branch: "next-topic" });
+          const observedThread = async () => {
+            const after = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot);
+            return (after.result as OrchestrationReadModel).threads.find(
+              (thread) => thread.id === "observed-branch",
+            );
+          };
+          if (managed) {
+            await expect
+              .poll(observedThread)
+              .toMatchObject({ branch: "next-topic", worktreePath: worktree });
+            expect(
+              db
+                .prepare(
+                  "SELECT json_extract(plan_json, '$.branch') AS branch FROM worktree_groups WHERE workspace_path = ?",
+                )
+                .get(worktree),
+            ).toMatchObject({ branch: "next-topic" });
+          } else {
+            const state = await sendRequest(ws, WS_METHODS.worktreesThreadState, {
+              threadId: "observed-branch",
+            });
+            expect(state.result).toMatchObject({
+              branchDriftOnly: true,
+              checkoutBranch: "next-topic",
+            });
+            expect(await observedThread()).toMatchObject({
+              branch: "topic",
+              worktreePath: worktree,
+            });
+          }
+        } finally {
+          db.close();
+        }
+      },
+    );
 
     it("commits a feature branch in a nested checkout and leaves the thread at the project root", async () => {
       const { cwd, run } = repoWithTopic();

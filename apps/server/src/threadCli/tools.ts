@@ -219,11 +219,7 @@ export function makeOwnerThreadTools(
             input.worktree !== undefined || defaults.defaultThreadEnvMode === "worktree";
           const base =
             input.worktree ??
-            (useWorktree ? yield* host.getIndependentWorktreeBase(project.workspaceRoot) : null);
-          if (useWorktree && base === null)
-            return yield* fail(
-              "Could not identify the default branch. Supply a worktree base explicitly.",
-            );
+            (useWorktree ? yield* host.getProjectGitBranch(project.workspaceRoot) : null);
           const threadId = ThreadId.makeUnsafe(randomUUID());
           return yield* submit(
             buildNewThreadSubmission({

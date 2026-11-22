@@ -31,7 +31,8 @@ export function readPullRequestWatchRemarks(input: {
       const createdAt = comment.createdAt;
       if (!comment.id.trim() || !createdAt || !Number.isFinite(Date.parse(createdAt))) return;
       // Native timeline reads are forced, while the review thread may come from its cache.
-      const timelineRemark = threaded && !input.github ? remarks.get(comment.id) : undefined;
+      const timelineRemark =
+        threaded && input.key.startsWith("gitlab:") ? remarks.get(comment.id) : undefined;
       const author = threaded
         ? comment.author
           ? { login: comment.author, name: null, avatarUrl: null }

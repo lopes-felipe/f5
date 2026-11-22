@@ -126,10 +126,10 @@ it("uses all owner projects, project defaults and the common submission path wit
   });
 });
 
-it("uses the independent default branch when a worktree is configured without an explicit base", async () => {
+it.each(["feature", null])("preserves the implicit launch base for checkout %s", async (branch) => {
   const { dir, host } = await setup();
   host.settings = { ...host.settings, defaultThreadEnvMode: "worktree" };
-  host.branches.set(dir, "unrelated-feature");
+  host.branches.set(dir, branch);
   await withThreadClient(dir, (call) =>
     call(
       "f5_thread_launch",
@@ -137,10 +137,9 @@ it("uses the independent default branch when a worktree is configured without an
       submittedSchema,
     ),
   );
-  expect(host.submissions[0]?.command.bootstrap?.prepareWorktree).toMatchObject({
-    baseBranch: "main",
-    requireWorktree: true,
-  });
+  const preparation = host.submissions[0]?.command.bootstrap?.prepareWorktree;
+  if (branch) expect(preparation).toMatchObject({ baseBranch: branch, requireWorktree: true });
+  else expect(preparation).toBeUndefined();
 });
 
 it("loads activities only for the requested recent page, even with unloaded old archives", async () => {

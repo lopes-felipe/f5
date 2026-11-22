@@ -608,7 +608,8 @@ export function makeForgeSourceControlProvider(options: {
               {},
             )
           : {};
-      for (let page = 0; page < 10; page++) {
+      // The fresh timeline owns edit timestamps, including when a watch also reads threads.
+      for (let page = 0; !compare && page < 10; page++) {
         const data = yield* gitLabOptional(
           gitLabGraphql(ref, query, { iid: String(ref.number), after }),
           {},
@@ -667,7 +668,11 @@ export function makeForgeSourceControlProvider(options: {
         };
       });
     });
-  const gitLabListFacts = (ref: SourceControlPullRequestRef, details: ReadonlyArray<ForgeDetail>) =>
+  const gitLabListFacts = (
+    ref: SourceControlPullRequestRef,
+    details: ReadonlyArray<ForgeDetail>,
+    includePipeline = true,
+  ) =>
     Effect.gen(function* () {
       if (!details.length) return details;
       const data = yield* gitLabOptional(
@@ -680,7 +685,7 @@ export function makeForgeSourceControlProvider(options: {
                 nodes {
                   iid approved approvedBy(first: 1) { nodes { username } }
                   reviewers(first: 20) { nodes { mergeRequestInteraction { reviewState } } }
-                  headPipeline { status }
+                  ${includePipeline ? "headPipeline { status }" : ""}
                 }
               }
             }
@@ -740,8 +745,8 @@ export function makeForgeSourceControlProvider(options: {
       Effect.flatMap((value) =>
         Effect.gen(function* () {
           let detail = summary(value, ref);
-          if (kind === "gitlab" && options?.review) {
-            const [facts] = yield* gitLabListFacts(ref, [detail]);
+          if (kind === "gitlab" && options?.review && detail.state === "open") {
+            const [facts] = yield* gitLabListFacts(ref, [detail], false);
             if (facts?.reviewDecision !== undefined)
               detail = { ...detail, reviewDecision: facts.reviewDecision };
           }

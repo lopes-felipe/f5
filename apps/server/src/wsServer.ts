@@ -105,7 +105,8 @@ import {
 import { removeWorktreeSafely } from "./project/worktreeClaims.ts";
 import { WorktreeManager, type WorktreeManagerShape } from "./project/Services/WorktreeManager.ts";
 import { canonicalWorktreePath, isTemporaryWorktreeBranch } from "./git/worktreePaths.ts";
-import { dispatchVerifiedWorkspace } from "./project/workspaceTransitionContext.ts";
+import { WorkspaceWriteContext } from "./project/workspaceTransitionContext.ts";
+import { followsCheckoutBranchAtTurnEnd } from "./project/worktreeReadiness.ts";
 import { ProjectionProjectRepository } from "./persistence/Services/ProjectionProjects";
 import { ProjectionProjectRepositoryLive } from "./persistence/Layers/ProjectionProjects";
 import {
@@ -2931,50 +2932,105 @@ export const createServer = Effect.fn(function* (
   const previewFileServer = makePreviewFileServer(workspaceAssetAuthorizer);
   yield* Effect.addFinalizer(() => Effect.promise(previewFileServer.close));
   const subscriptionsScope = yield* Scope.make("sequential");
-  const observeWorktreeBranch = (
+  const reconcileWorktreeBranch = (
     engine: import("./orchestration/Services/OrchestrationEngine.ts").OrchestrationEngineShape,
     cwd: string,
     branch: string | null,
   ) =>
     Effect.gen(function* () {
-      if (!branch || isTemporaryWorktreeBranch(branch)) return;
-      const { threads } = yield* engine.getReadModel();
-      const candidates = threads.filter(
+      const adopt = git.adoptObservedWorktreeBranch;
+      if (!adopt || !branch || isTemporaryWorktreeBranch(branch)) return;
+      const target = NodePath.resolve(cwd);
+      const { projects, threads } = yield* engine.getReadModel();
+      const thread = threads.find(
         (thread) =>
-          thread.deletedAt === null && thread.worktreePath !== null && thread.branch !== branch,
+          thread.deletedAt === null &&
+          thread.worktreePath &&
+          NodePath.resolve(thread.worktreePath) === target,
       );
-      if (!candidates.length) return;
-      const checkout = yield* git.inspectCheckoutIdentity(cwd);
-      if (!checkout.canonicalRoot || checkout.branch !== branch) return;
-      const matches = new Map<string, boolean>();
-      for (const thread of candidates) {
-        const worktreePath = thread.worktreePath!;
-        let matching = matches.get(worktreePath);
-        if (matching === undefined) {
-          matching =
-            worktreePath === checkout.canonicalRoot ||
-            (yield* Effect.tryPromise(() => canonicalWorktreePath(worktreePath)).pipe(
-              Effect.orElseSucceed(() => null),
-            )) === checkout.canonicalRoot;
-          matches.set(worktreePath, matching);
-        }
-        if (!matching) continue;
-        yield* dispatchVerifiedWorkspace(
-          engine,
-          git,
-          {
-            type: "thread.meta.update",
-            commandId: CommandId.makeUnsafe("server:worktree-branch:" + randomUUID()),
-            threadId: thread.id,
-            branch,
+      const worktreePath = thread?.worktreePath;
+      if (!thread || !worktreePath || thread.branch === branch) return;
+      if (!(yield* serverSettings.getSettings).followWorktreeBranchChanges) return;
+      const project = projects.find(
+        (project) => project.id === thread.projectId && project.deletedAt === null,
+      );
+      if (!project) return;
+      const commitObservation = Effect.gen(function* () {
+        if (
+          !(yield* followsCheckoutBranchAtTurnEnd(
+            yield* engine.getReadModel(),
+            thread.id,
             worktreePath,
-            expectedBranch: thread.branch,
-            expectedWorktreePath: worktreePath,
-          },
-          { observation: true },
-        ).pipe(Effect.ignore);
+            branch,
+          ))
+        )
+          return yield* Effect.fail(new Error("The worktree is shared with another conversation."));
+        yield* adopt({
+          projectRoot: project.workspaceRoot,
+          path: worktreePath,
+          threadId: thread.id,
+          previousBranch: thread.branch,
+          branch,
+        });
+      }).pipe(
+        Effect.mapError(
+          (error) =>
+            new OrchestrationCommandInvariantError({
+              commandType: "thread.meta.update",
+              detail: error.message,
+            }),
+        ),
+      );
+      yield* engine
+        .dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.makeUnsafe("server:worktree-branch:" + randomUUID()),
+          threadId: thread.id,
+          branch,
+          worktreePath,
+          expectedBranch: thread.branch,
+          expectedWorktreePath: worktreePath,
+        })
+        .pipe(
+          Effect.provideService(WorkspaceWriteContext, {
+            expected: {
+              branch: thread.branch,
+              worktreePath,
+              sessionUpdatedAt: thread.session?.updatedAt ?? null,
+            },
+            observation: true,
+            commitObservation,
+          }),
+        );
+    });
+  const pendingBranchObservations = new Map<string, { branch: string | null }>();
+  const observeWorktreeBranch = (
+    engine: Parameters<typeof reconcileWorktreeBranch>[0],
+    cwd: string,
+    branch: string | null,
+  ) =>
+    Effect.suspend(() => {
+      const target = NodePath.resolve(cwd);
+      const pending = pendingBranchObservations.get(target);
+      if (pending) {
+        pending.branch = branch;
+        return Effect.void;
       }
-    }).pipe(Effect.ignore);
+      if (!branch || pendingBranchObservations.size >= 64) return Effect.void;
+      const observation: { branch: string | null } = { branch };
+      pendingBranchObservations.set(target, observation);
+      return Effect.gen(function* () {
+        let observed: string | null;
+        do {
+          observed = observation.branch;
+          yield* reconcileWorktreeBranch(engine, target, observed).pipe(Effect.ignore);
+        } while (observed !== observation.branch);
+      }).pipe(
+        Effect.ensuring(Effect.sync(() => pendingBranchObservations.delete(target))),
+        Effect.forkIn(subscriptionsScope),
+        Effect.asVoid,
+      );
+    });
   if (git.subscribeStatusRefresh) {
     const unsubscribe = yield* git.subscribeStatusRefresh((cwd) => {
       Effect.runFork(pushBus.publishAll(WS_CHANNELS.gitStatusInvalidated, { cwd }));
@@ -3236,9 +3292,9 @@ export const createServer = Effect.fn(function* (
             .status({ cwd, includeRemote: false, includePullRequest: false })
             .pipe(Effect.orElseSucceed(() => null)),
         publish: (cwd, status) =>
-          observeWorktreeBranch(orchestrationEngine, cwd, status.branch).pipe(
-            Effect.andThen(pushBus.publishAll(WS_CHANNELS.gitStatusInvalidated, { cwd, status })),
-          ),
+          pushBus
+            .publishAll(WS_CHANNELS.gitStatusInvalidated, { cwd, status })
+            .pipe(Effect.andThen(observeWorktreeBranch(orchestrationEngine, cwd, status.branch))),
       });
       yield* Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) =>
         Effect.gen(function* () {
@@ -3810,20 +3866,6 @@ export const createServer = Effect.fn(function* (
         ),
         Effect.orElseSucceed(() => null),
       ),
-    getIndependentWorktreeBase: (cwd) =>
-      Effect.gen(function* () {
-        const remotes = yield* git.listRemotes(cwd);
-        if (remotes.some((remote) => remote.name === "origin")) {
-          const remoteDefault =
-            (yield* git.readDefaultBranch(cwd)) ??
-            (yield* git.readAdvertisedDefaultBranch(cwd).pipe(Effect.orElseSucceed(() => null)));
-          if (remoteDefault) return "origin/" + remoteDefault;
-        }
-        for (const branch of ["main", "master"]) {
-          if (yield* git.branchExists(cwd, branch)) return branch;
-        }
-        return null;
-      }).pipe(Effect.orElseSucceed(() => null)),
     submitTurnSubmission: (body, options) =>
       turnSubmissions(body, options).pipe(
         Effect.mapError(toAgentBridgeHostError),

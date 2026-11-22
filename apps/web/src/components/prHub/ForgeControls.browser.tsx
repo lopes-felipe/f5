@@ -206,6 +206,37 @@ it("leaves reviewers to the Overview's reviewer picker", async () => {
   expect(api.listReviewerCandidates).not.toHaveBeenCalled();
 });
 
+it.each([
+  { state: "merged", allowed: true, visible: true },
+  { state: "closed", allowed: false, visible: false },
+  { state: "open", allowed: true, visible: false },
+] as const)(
+  "gates GitLab deletion for $state when permission is $allowed",
+  async ({ state, allowed, visible }) => {
+    const base = fixture("gitlab");
+    const pr = {
+      ...base,
+      state,
+      forgeCapabilities: {
+        ...base.forgeCapabilities!,
+        actions: ["close", "delete-branch"] as const,
+      },
+    };
+    mount(
+      <ForgeControls
+        pr={pr}
+        detail={{ state, providerDetails: { provider: "gitlab", viewerCanDeleteBranch: allowed } }}
+      />,
+    );
+    await expect
+      .element(page.getByRole("combobox", { name: "Forge action", exact: true }))
+      .toBeVisible();
+    expect(
+      document.querySelector('[aria-label="Forge action"]')?.textContent?.includes("delete branch"),
+    ).toBe(visible);
+  },
+);
+
 it("recovers a persisted ambiguous operation without preparing or submitting again", async () => {
   const pr = fixture(),
     payload = { kind: "action" as const, action: "close" as const };

@@ -118,6 +118,20 @@ it("retains edit times and bounds the text kept for a watch message", async () =
   );
   expect(result?.[0]?.editedAt).toBe(editedAt);
   expect(result?.[0]?.body).toHaveLength(1000);
+  const gitLab = await Effect.runPromise(
+    readPullRequestWatchRemarks({
+      key: PullRequestKey.makeUnsafe("gitlab:gitlab.com/org/repo#1"),
+      accountGeneration: "one",
+      github: false,
+      hub: {
+        getTimeline: () =>
+          Effect.succeed({ ...timeline, entries: [{ ...entry, body: "Current text" }] }),
+        getReviewThreads: () =>
+          Effect.succeed(threads([thread({ comments: [comment("edited")] })])),
+      },
+    }),
+  );
+  expect(gitLab?.[0]).toMatchObject({ body: "Current text", editedAt, path: "a.ts" });
 });
 
 it("trusts only comments from the repository's owner, members and collaborators", async () => {

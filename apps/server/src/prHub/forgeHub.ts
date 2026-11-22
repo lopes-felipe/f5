@@ -231,8 +231,6 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
                 additions: old.additions,
                 deletions: old.deletions,
                 changedFiles: old.changedFiles,
-                unresolvedThreadCount: old.unresolvedThreadCount,
-                actionableUnresolvedThreadCount: old.actionableUnresolvedThreadCount,
               }
             : {}),
         };
@@ -258,11 +256,11 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
         pendingTracked.delete(pr.key);
         return pr;
       });
-    const refreshOne = (ref: SourceControlPullRequestRef) =>
+    const refreshOne = (ref: SourceControlPullRequestRef, branchPermission = false) =>
       Effect.gen(function* () {
         const detail = yield* provider.getDetail(ref, {
           checks: true,
-          ...(ref.provider === "gitlab" ? { branchPermission: true, review: true } : {}),
+          ...(ref.provider === "gitlab" ? { branchPermission, review: true } : {}),
         });
         return yield* saveDetail(ref, detail);
       });
@@ -410,9 +408,10 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
                 detailErrors.has(input.key)
               )
                 return yield* detailErrors.get(input.key)!;
-              remember(detailAttempts, input.key, Date.now(), MAX_TRACKED);
+              if (!input.omitBranchPermission)
+                remember(detailAttempts, input.key, Date.now(), MAX_TRACKED);
               const previous = snapshot(),
-                read = yield* refreshOne(ref).pipe(Effect.result);
+                read = yield* refreshOne(ref, !input.omitBranchPermission).pipe(Effect.result);
               if (read._tag === "Failure") {
                 remember(detailErrors, input.key, read.failure, MAX_TRACKED);
                 if (cached)
@@ -649,27 +648,6 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
             return yield* read.failure;
           }
           const threads = forgeReviewThreads(read.success, provider);
-          const stored = state.get(input.key);
-          if (stored && ref.provider === "gitlab") {
-            const unresolved = threads.filter((thread) => !thread.isResolved);
-            const unresolvedThreadCount = unresolved.length;
-            const actionableUnresolvedThreadCount = unresolved.filter(
-              (thread) => !thread.isOutdated,
-            ).length;
-            if (
-              stored.pr.unresolvedThreadCount !== unresolvedThreadCount ||
-              stored.pr.actionableUnresolvedThreadCount !== actionableUnresolvedThreadCount
-            ) {
-              const previous = snapshot();
-              const updated = {
-                ...stored,
-                pr: { ...stored.pr, unresolvedThreadCount, actionableUnresolvedThreadCount },
-              };
-              yield* persist(updated);
-              state.set(input.key, updated);
-              yield* publish(previous);
-            }
-          }
           if (threadsCache.size >= 100 && !cached)
             threadsCache.delete(threadsCache.keys().next().value!);
           remember(threadsCache, input.key, { value: threads, attemptedAt: now, failed: false });

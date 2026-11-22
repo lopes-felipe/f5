@@ -1,5 +1,4 @@
 import { Effect, Option } from "effect";
-import type { SourceControlPullRequestRef } from "@t3tools/contracts";
 import { GitCommandError } from "../git/Errors.ts";
 import type { PullRequestBranchDeletionResult } from "../git/githubBranchDeletion.ts";
 import { GitCore } from "../git/Services/GitCore.ts";
@@ -7,10 +6,7 @@ import { ProjectionProjectRepository } from "../persistence/Services/ProjectionP
 import { resolveLocalCheckout } from "./localCheckout.ts";
 
 /** Best-effort local cleanup after a confirmed remote result; never changes a checkout. */
-export function cleanupLocalPrBranch(
-  source: PullRequestBranchDeletionResult,
-  provider: SourceControlPullRequestRef["provider"] = "github",
-) {
+export function cleanupLocalPrBranch(source: PullRequestBranchDeletionResult) {
   return Effect.gen(function* () {
     if (!source.absent)
       return "Remote branch deletion was not confirmed; local branches were kept.";
@@ -19,15 +15,13 @@ export function cleanupLocalPrBranch(
     if (Option.isNone(git) || Option.isNone(projects))
       return "Remote branch deleted; local branch cleanup is unavailable.";
     const entries = yield* projects.value.listAll();
-    const parts = source.repository.split("/");
-    const owner = parts.slice(0, -1).join("/");
-    const repo = parts.at(-1)!;
+    const [owner, repo] = source.repository.split("/");
     const candidates = yield* Effect.tryPromise({
       try: (signal) =>
         resolveLocalCheckout({
-          provider,
+          provider: "github",
           host: source.host,
-          repository: { owner, repo, nameWithOwner: source.repository },
+          repository: { owner: owner!, repo: repo!, nameWithOwner: source.repository },
           projects: entries
             .filter((project) => project.deletedAt === null)
             .map((project) => ({

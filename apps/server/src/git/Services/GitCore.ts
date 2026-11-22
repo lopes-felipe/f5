@@ -223,6 +223,14 @@ export interface GitCoreShape extends MoveSnapshotOperations {
     branch: string | null;
     threadId?: string;
   }) => Effect.Effect<{ ready: boolean; recoverable: boolean } | null, GitCommandError>;
+  /** Recheck an observed checkout and update its group in the caller's metadata transaction. */
+  readonly adoptObservedWorktreeBranch?: (input: {
+    projectRoot: string;
+    path: string;
+    threadId: string;
+    previousBranch: string | null;
+    branch: string;
+  }) => Effect.Effect<void, GitCommandError>;
   /** Await refreshes admitted for an owned checkout before releasing its files. */
   readonly drainUpstreamRefreshes?: (cwd: string) => Effect.Effect<void>;
 

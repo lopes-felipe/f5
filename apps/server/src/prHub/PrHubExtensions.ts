@@ -351,6 +351,7 @@ export const makePrHubExtensions = Effect.gen(function* () {
         supported =
           (!p.deleteBranch ||
             ((p.action === "merge" || p.action === "close") &&
+              runtime.account.provider !== "gitlab" &&
               caps.actions.includes("delete-branch") &&
               !!runtime.provider.deletePullRequestBranch)) &&
           (p.action !== "delete-branch" || !!runtime.provider.deletePullRequestBranch) &&
@@ -833,7 +834,7 @@ export const makePrHubExtensions = Effect.gen(function* () {
                         expectedHeadOid: saved.operation.expectedHeadOid,
                       }),
                     );
-                    branchWarning = yield* cleanupLocalPrBranch(deleted, ref.provider);
+                    branchWarning = yield* cleanupLocalPrBranch(deleted);
                   }
                   return null;
                 }

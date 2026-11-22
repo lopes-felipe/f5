@@ -98,7 +98,7 @@ describe("forge adapters", () => {
 
   it("compares every GitLab diff ref and retains unpositioned replies", async () => {
     const refs = { base_sha: "base", start_sha: "start", head_sha: "head" };
-    const { provider, ref } = fixture("gitlab", [
+    const { provider, ref, calls } = fixture("gitlab", [
       [
         {
           id: "old",
@@ -110,7 +110,6 @@ describe("forge adapters", () => {
         { id: "current", notes: [{ id: 3, position: { ...refs, new_path: "a.ts", new_line: 4 } }] },
       ],
       { diff_refs: refs },
-      { data: { project: { mergeRequest: { notes: { nodes: [] } } } } },
     ]);
     const threads = forgeReviewThreads(
       await Effect.runPromise(provider.getReviewThreads(ref)),
@@ -127,6 +126,7 @@ describe("forge adapters", () => {
       },
       { id: "current", isOutdated: false },
     ]);
+    expect(calls.map(({ init }) => init.method)).toEqual(["GET", "GET"]);
   });
 
   it("loads review decisions and head pipeline status in one GitLab list request", async () => {

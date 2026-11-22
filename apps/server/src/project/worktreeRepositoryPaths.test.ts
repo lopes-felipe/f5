@@ -44,6 +44,57 @@ const init = async (directory: string, file: string, contents: string) => {
   );
 };
 
+it("reconciles an F5-prepared group only when its live branch matches the observation", async () => {
+  const project = await mkdtemp(path.join(tmpdir(), "f5-observed-group-"));
+  try {
+    await init(project, "README.md", "project");
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const git = yield* GitCore;
+        const { worktree } = yield* git.createWorktree({
+          cwd: project,
+          branch: "main",
+          newBranch: "feature",
+          path: null,
+          preparation: { owner: "thread:thread", runSetupScript: false, setupIdentity: null },
+        });
+        const input = { projectRoot: project, path: worktree.path, threadId: "thread" };
+        yield* git.prepareWorktreeGroup!({
+          ...input,
+          projectId: "project",
+          rooted: true,
+          branch: "feature",
+          baseBranch: "main",
+          repositories: [],
+          selected: [],
+        });
+        run(worktree.path, "switch", "-qc", "new-topic");
+        const observe = (branch: string) =>
+          git.adoptObservedWorktreeBranch!({ ...input, previousBranch: "feature", branch });
+        expect((yield* observe("stale-topic").pipe(Effect.result))._tag).toBe("Failure");
+        expect((yield* git.readWorktreeGroup!(worktree.path))?.branch).toBe("feature");
+        yield* observe("new-topic");
+        expect((yield* git.readWorktreeGroup!(worktree.path))?.branch).toBe("new-topic");
+        yield* assertWorktreeReady(git, {
+          projectCwd: project,
+          worktreePath: worktree.path,
+          branch: "new-topic",
+        });
+      }).pipe(
+        Effect.provide(
+          GitCoreTestLive.pipe(
+            Layer.provide(ServerConfig.layerTest(project, { prefix: "f5-wt-" })),
+            Layer.provide(GitServiceLive),
+            Layer.provide(NodeServices.layer),
+          ),
+        ),
+      ),
+    );
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
 it("defaults to eight checkouts and keeps the root checkout available above the limit", async () => {
   const repositories = Array.from({ length: 9 }, (_, i) => ({
     path: "/project/repo-" + i,

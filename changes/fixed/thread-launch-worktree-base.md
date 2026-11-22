@@ -1,1 +1,1 @@
-- The thread CLI bases independent worktrees on the remote’s default branch when you leave the base unspecified.
+- Thread CLI help identifies the remote default branch as the base to pass for independent worktrees.

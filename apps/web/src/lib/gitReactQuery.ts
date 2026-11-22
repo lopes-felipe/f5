@@ -20,7 +20,12 @@ export function applyTurnGitStatus(
         branchChanged = true;
         return status;
       }
-      return { ...status, pr: previous.pr, changeRequest: previous.changeRequest };
+      const { changeRequest: _changeRequest, ...localStatus } = status;
+      return {
+        ...localStatus,
+        pr: previous.pr,
+        ...(previous.changeRequest === undefined ? {} : { changeRequest: previous.changeRequest }),
+      };
     },
   );
   if (branchChanged) {

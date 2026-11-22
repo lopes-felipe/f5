@@ -1,1 +1,1 @@
-- Threads update their displayed branch when Git status detects a new checkout in their worktree.
+- Enable **Follow worktree branch switches** in Git settings to update a conversation’s recorded branch after an external checkout. The setting is off by default.

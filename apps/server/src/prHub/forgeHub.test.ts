@@ -75,6 +75,50 @@ const detail = {
 };
 
 it.layer(SqliteClient.layerMemory())("native forge hub", (it) => {
+  it.effect("checks GitLab deletion permission on detail reads only", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* Migration102;
+        const graphql = vi.fn(() =>
+          Response.json({
+            data: {
+              project: {
+                mergeRequest: {
+                  userPermissions: { removeSourceBranch: true },
+                },
+              },
+            },
+          }),
+        );
+        const provider = makeForgeSourceControlProvider({
+          kind: "gitlab",
+          resolveAccount: () =>
+            Effect.succeed({
+              kind: "gitlab",
+              host: account.host,
+              login: account.login,
+              token: "fixture",
+              repository: "group/repo",
+            }),
+          fetch: (async (url: string | URL | Request) =>
+            new URL(String(url)).pathname === "/api/graphql"
+              ? graphql()
+              : Response.json({ ...detail, state: "merged" })) as typeof fetch,
+        });
+        const hub = yield* makeForgePrHubService(
+          { ...account, id: "gitlab-delete-permission" },
+          provider,
+        ).pipe(Effect.provideService(ServerSettingsService, settings));
+        const { key } = yield* hub.track({ url: detail.web_url });
+        yield* hub.refreshNow({ mode: "force" });
+        yield* hub.getDetail({ key, mode: "force", omitBranchPermission: true });
+        assert.equal(graphql.mock.calls.length, 0);
+        const result = yield* hub.getDetail({ key });
+        assert.propertyVal(result.detail.providerDetails, "viewerCanDeleteBranch", true);
+        assert.equal(graphql.mock.calls.length, 1);
+      }),
+    ).pipe(Effect.provide(SqliteClient.layerMemory())),
+  );
   it.effect(
     "refreshes discovered Forgejo checks on every poll and passes required checks through to watches",
     () =>

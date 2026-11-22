@@ -10,6 +10,8 @@ export interface WorkspaceWrite {
   readonly operationId?: string;
   readonly version?: number;
   readonly observation?: boolean;
+  /** Revalidate observed Git state and persist its group alongside the metadata event. */
+  readonly commitObservation?: Effect.Effect<void, OrchestrationCommandInvariantError>;
 }
 export const WorkspaceWriteContext = ServiceMap.Reference<WorkspaceWrite | null>(
   "f5/WorkspaceWriteContext",
