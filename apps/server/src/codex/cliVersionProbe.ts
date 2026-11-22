@@ -37,7 +37,7 @@ export async function probeCodexCliVersion(input: CodexVersionProbeInput): Promi
     input.processEnvironment,
     home ? { CODEX_HOME: home } : undefined,
   );
-  const invocation = resolveInvocation(
+  const invocation = await resolveInvocation(
     resolveCodexCommand(input.binaryPath),
     prependCodexCliTelemetryDisabledConfig(["--version"], {
       managedCredentials: env.F5_PROFILE_ISOLATED === "1",

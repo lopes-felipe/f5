@@ -362,9 +362,11 @@ it.effect("bounds Git bursts across services without timing out queued commands"
       { concurrency: "unbounded" },
     ).pipe(Effect.forkChild);
 
+    // Wait for the first wave's executable lookups before advancing the clock.
+    yield* Effect.forEach(Array.from({ length: 8 }), () => Queue.take(starts));
     // The queued commands' one-second deadline has passed; they have not started.
     yield* TestClock.adjust("2 seconds");
-    assert.equal(yield* Queue.size(starts), 8);
+    assert.equal(yield* Queue.size(starts), 0);
     assert.equal(counters.peak, 8);
     yield* Deferred.succeed(gate, undefined);
     const results = yield* Fiber.join(burst);
@@ -408,8 +410,7 @@ it.effect.each([{ timeoutMs: null }, { timeoutMs: 30_001 }])(
         { concurrency: "unbounded" },
       ).pipe(Effect.forkChild);
 
-      yield* TestClock.adjust("0 seconds");
-      assert.equal(yield* Queue.size(starts), 8);
+      yield* Effect.forEach(Array.from({ length: 8 }), () => Queue.take(starts));
       assert.equal(counters.active, 9);
       yield* Deferred.succeed(fastGate, undefined);
       assert.equal((yield* Fiber.join(burst)).length, 8);

@@ -57,21 +57,21 @@ export function clearClaudeExecutableVersionCache(): void {
  * `claude --version` of a custom executable, cached per file identity. Undefined when the
  * executable cannot run or prints no version; callers then keep the older behavior.
  */
-export function readClaudeExecutableVersion(
+export async function readClaudeExecutableVersion(
   binaryPath: string,
   environment: NodeJS.ProcessEnv,
   cwd?: string,
 ): Promise<string | undefined> {
-  let invocation: ReturnType<typeof resolveClaudeCliInvocation>;
+  let invocation: Awaited<ReturnType<typeof resolveClaudeCliInvocation>>;
   try {
-    invocation = resolveClaudeCliInvocation(
+    invocation = await resolveClaudeCliInvocation(
       binaryPath,
       ["--version"],
       environment,
       cwd ? { cwd } : {},
     );
   } catch {
-    return Promise.resolve(undefined);
+    return undefined;
   }
   const key = claudeVersionCacheKey(invocation);
   const cached = versions.get(key);

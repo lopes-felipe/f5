@@ -209,12 +209,12 @@ export async function runProcess(
   await ensureWindowsPathHydrated(environment);
   const executable =
     process.platform === "win32"
-      ? resolveExecutable(command, environment, { cwd: options.cwd })
+      ? await resolveExecutable(command, environment, { cwd: options.cwd })
       : null;
   const profileLauncher = executable ? resolveProfileGithubLauncher(executable, environment) : null;
   const invocation = profileLauncher
     ? { file: profileLauncher.runtime, args: [profileLauncher.script, ...args] }
-    : resolveInvocation(command, args, environment, { cwd: options.cwd });
+    : await resolveInvocation(command, args, environment, { cwd: options.cwd });
   const spawnEnvironment = profileLauncher
     ? { ...environment, ELECTRON_RUN_AS_NODE: "1" }
     : environment;

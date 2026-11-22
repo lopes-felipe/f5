@@ -1,0 +1,1 @@
+- F5 stays responsive on Windows while looking up executables for providers, terminals, and editors.

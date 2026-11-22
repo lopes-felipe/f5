@@ -56,8 +56,8 @@ for (const scenario of [
       );
       expect(account.environment.CLAUDE_CODE_ENTRYPOINT).toBe(scenario.expected);
       expect(account.environment.CLAUDE_CONFIG_DIR).toBe(Path.join(root, ".claude"));
-      expect(account.invocation(["auth", "status"]).args).toContain("status");
-      expect(account.invocation(["auth", "login"]).args).toContain("login");
+      expect((await account.invocation(["auth", "status"])).args).toContain("status");
+      expect((await account.invocation(["auth", "login"])).args).toContain("login");
     } finally {
       vi.unstubAllEnvs();
       await FS.rm(root, { recursive: true, force: true });

@@ -227,14 +227,14 @@ describe("buildOpenCodePermissionRules", () => {
 });
 
 describe("resolveOpenCodeInvocation", () => {
-  it("routes OpenCode commands through the shared invocation resolver", () => {
-    expect(resolveOpenCodeInvocation(process.execPath, ["serve", "--port=0"], process.env)).toEqual(
-      {
-        file: process.execPath,
-        args: ["serve", "--port=0"],
-        kind: "native",
-      },
-    );
+  it("routes OpenCode commands through the shared invocation resolver", async () => {
+    expect(
+      await resolveOpenCodeInvocation(process.execPath, ["serve", "--port=0"], process.env),
+    ).toEqual({
+      file: process.execPath,
+      args: ["serve", "--port=0"],
+      kind: "native",
+    });
   });
 
   it.skipIf(process.platform !== "win32")(

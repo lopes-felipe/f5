@@ -195,8 +195,8 @@ export const makeProviderUpdateAdvisor = (
         const next = new Map<ProviderInstanceId, ProviderInstallTarget | null>();
         const passRegistries = new Map<string, boolean | null>();
         for (const instance of instances) {
-          const detected = yield* Effect.try({
-            try: () => instance.resolveInstallTarget?.() ?? null,
+          const detected = yield* Effect.tryPromise({
+            try: async () => instance.resolveInstallTarget?.() ?? null,
             catch: () => null,
           }).pipe(Effect.orElseSucceed(() => null));
           let target = detected;
@@ -810,8 +810,8 @@ export const makeProviderUpdateAdvisor = (
           const active = yield* Ref.get(inFlightRef);
           if (active) {
             const activeInstance = instance;
-            const target = yield* Effect.try({
-              try: () => activeInstance.resolveInstallTarget?.() ?? null,
+            const target = yield* Effect.tryPromise({
+              try: async () => activeInstance.resolveInstallTarget?.() ?? null,
               catch: () => null,
             }).pipe(Effect.orElseSucceed(() => null));
             if (active.affectedIds.includes(instanceId) || target?.installKey === active.installKey)
