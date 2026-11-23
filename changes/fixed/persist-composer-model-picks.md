@@ -1,1 +1,1 @@
-- Model and reasoning-option picks are saved to the conversation before its next message or question response.
+- Model and reasoning-option picks on the current provider instance are saved for the next turn. Switching provider instances takes effect when you send. Answers to pending questions stay with the running session.

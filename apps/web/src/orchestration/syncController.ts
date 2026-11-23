@@ -30,6 +30,7 @@ import {
   ThreadId,
   type OrchestrationEvent,
   type OrchestrationReadModel,
+  type OrchestrationStartupSnapshot,
   type OrchestrationThreadTailDetails,
   type WsWelcomePayload,
 } from "@t3tools/contracts";
@@ -91,7 +92,12 @@ import { affectsWorktreeInventory } from "../lib/worktreeInventoryInvalidation";
 
 import type { NativeApi } from "@t3tools/contracts";
 import type { EventRouterScheduler } from "./eventRouter";
-import { fetchStartupSnapshot, startupSnapshotCache } from "./startupSnapshotCache";
+import {
+  type fetchStartupSnapshot,
+  requestStartupSnapshot,
+  type startupSnapshotCache,
+  startupReplayEvents,
+} from "./startupSnapshotCache";
 
 export function applyProviderAdvisoriesToServerConfig(
   existing: ServerConfig | undefined,
@@ -568,6 +574,8 @@ export function createOrchestrationSyncController(deps: OrchestrationSyncControl
   };
 
   const readSnapshot = async (): Promise<RouterSnapshot> => {
+    const reconnectIncarnation = resumeIncarnation;
+    resumeIncarnation = undefined;
     const welcome = pendingWelcomeRecovery?.payload;
     const scope = welcome?.backendIncarnation
       ? {
@@ -575,35 +583,33 @@ export function createOrchestrationSyncController(deps: OrchestrationSyncControl
           profileId: welcome.profile?.id,
         }
       : undefined;
-    let cachedSnapshot: Awaited<ReturnType<typeof startupSnapshotCache.read>>;
+    let cachedEntry: Awaited<ReturnType<typeof startupSnapshotCache.read>>;
     if (!triedColdCache && scope && !useStore.getState().threadsHydrated) {
       triedColdCache = true;
-      cachedSnapshot = await deps.startupCache?.read(scope).catch(() => undefined);
+      cachedEntry = await deps.startupCache?.read(scope).catch(() => undefined);
     }
     const incarnation =
-      resumeIncarnation ?? (cachedSnapshot ? scope?.backendIncarnation : undefined);
-    resumeIncarnation = undefined;
+      reconnectIncarnation ?? (cachedEntry ? scope?.backendIncarnation : undefined);
     let replay: ReadonlyArray<OrchestrationEvent> | undefined;
+    let cachedSnapshot: OrchestrationStartupSnapshot | undefined;
     let httpIncarnation: string | undefined;
     if (incarnation !== undefined) {
-      const afterSequence = cachedSnapshot?.snapshotSequence ?? router.committedSequence;
+      const afterSequence = cachedEntry?.sequence ?? router.committedSequence;
       const resumed = await api.orchestration
         .getLatestSequence({
           resume: { afterSequence, backendIncarnation: incarnation },
         })
         .catch(() => undefined);
-      if (
-        resumed?.backendIncarnation === incarnation &&
-        resumed.events !== undefined &&
-        resumed.events.length === resumed.latestSequence - afterSequence &&
-        resumed.events.every((event, index) => event.sequence === afterSequence + index + 1)
-      ) {
-        if (cachedSnapshot) replay = resumed.events;
-        else
+      const events = startupReplayEvents(resumed, incarnation, afterSequence);
+      if (events !== undefined) {
+        if (cachedEntry) {
+          cachedSnapshot = cachedEntry.decode();
+          if (cachedSnapshot) replay = events;
+        } else
           return {
-            sequence: resumed.latestSequence,
+            sequence: afterSequence + events.length,
             provisional: false,
-            replay: resumed.events,
+            replay: events,
             merge: () => {
               invalidateAllWorkspaceQueries(queryClient);
               pendingCommandExecutionDetailInvalidation = false;
@@ -614,7 +620,6 @@ export function createOrchestrationSyncController(deps: OrchestrationSyncControl
             },
           };
       } else {
-        cachedSnapshot = undefined;
         if (resumed?.backendIncarnation === incarnation && resumed.snapshotRequired) {
           httpIncarnation = incarnation;
         }
@@ -635,12 +640,19 @@ export function createOrchestrationSyncController(deps: OrchestrationSyncControl
     const rewindDraftReadTicket = nextRewindDraftReadTicket();
     const startupResult = cachedSnapshot
       ? { snapshot: cachedSnapshot, threadTailDetails: null }
-      : ((httpIncarnation !== undefined
-          ? await deps.readHttpStartupSnapshot?.(httpIncarnation).catch(() => undefined)
-          : undefined) ??
-        (await api.orchestration.getStartupSnapshot(
-          startupDetailThreadId ? { detailThreadId: startupDetailThreadId } : undefined,
-        )));
+      : await requestStartupSnapshot(
+          () =>
+            api.orchestration.getStartupSnapshot(
+              startupDetailThreadId ? { detailThreadId: startupDetailThreadId } : undefined,
+            ),
+          httpIncarnation !== undefined && deps.readHttpStartupSnapshot
+            ? deps.readHttpStartupSnapshot.bind(
+                undefined,
+                httpIncarnation,
+                startupDetailThreadId ?? undefined,
+              )
+            : undefined,
+        );
     const snapshot = startupResult.snapshot;
     const bundledThreadTailDetails = startupResult.threadTailDetails;
     const snapshotIsProvisional =

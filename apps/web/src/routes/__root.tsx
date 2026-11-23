@@ -233,12 +233,8 @@ function EventRouter() {
       navigate,
       updateSettings,
       queryClient,
-      ...(import.meta.env.MODE === "test"
-        ? {}
-        : {
-            startupCache: startupSnapshotCache,
-            readHttpStartupSnapshot: fetchStartupSnapshot,
-          }),
+      ...(window.desktopBridge ? { startupCache: startupSnapshotCache } : {}),
+      readHttpStartupSnapshot: fetchStartupSnapshot,
       pathnameRef,
       visibleRouteMatchRef,
       handledBootstrapThreadIdRef,

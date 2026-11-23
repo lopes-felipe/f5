@@ -238,7 +238,11 @@ export async function detectProviderInstallTarget(
     dependencies: deps,
   });
   if (mise) {
-    const source = mise.upgrade ? { kind: "mise" as const, ...mise.upgrade } : null;
+    // The mise registry follows OpenCode into 2.x, which this adapter cannot run.
+    const source =
+      mise.upgrade && input.driver !== "opencode"
+        ? { kind: "mise" as const, ...mise.upgrade }
+        : null;
     const environmentKey = createHash("sha256")
       .update(
         JSON.stringify(Object.entries(miseEnvironment).sort(([a], [b]) => a.localeCompare(b))),
@@ -252,7 +256,9 @@ export async function detectProviderInstallTarget(
       source,
       source
         ? "Update using the mise installation that owns this executable."
-        : "Manage this provider in mise, then refresh and verify.",
+        : input.driver === "opencode"
+          ? "Manage OpenCode in mise and keep it on the supported 1.x release line."
+          : "Manage this provider in mise, then refresh and verify.",
       source
         ? { sourceKey: JSON.stringify([source, mise.key, environmentKey]) }
         : {
@@ -497,12 +503,13 @@ export function filterProviderUpdateEnvironment(
 
 export function makeInstanceInstallTargetResolver(
   input: Omit<DetectProviderInstallTargetInput, "updateEnvironment"> & {
+    readonly miseOnly?: boolean;
     readonly instanceEnvironment: ProviderInstanceEnvironment;
     readonly claudeConfigDir?: string | undefined;
   },
   dependencies: Partial<InstallTargetDependencies> = {},
 ): () => Promise<ProviderInstallTarget | null> {
-  return () => {
+  return async () => {
     const base = { ...process.env };
     for (const key of Object.keys(base))
       if (key.toUpperCase() === "F5_PROFILE_ISOLATED") delete base[key];
@@ -517,7 +524,8 @@ export function makeInstanceInstallTargetResolver(
     if (input.claudeConfigDir) updateEnvironment.CLAUDE_CONFIG_DIR = input.claudeConfigDir;
     for (const key of Object.keys(updateEnvironment))
       if (key.toUpperCase() === "F5_PROFILE_ISOLATED") delete updateEnvironment[key];
-    return detectProviderInstallTarget({ ...input, updateEnvironment }, dependencies);
+    const target = await detectProviderInstallTarget({ ...input, updateEnvironment }, dependencies);
+    return input.miseOnly && target?.channel !== "mise" ? null : target;
   };
 }
 

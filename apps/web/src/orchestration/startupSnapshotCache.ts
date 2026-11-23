@@ -1,12 +1,16 @@
 import {
   OrchestrationStartupSnapshot,
   OrchestrationGetStartupSnapshotResult,
+  type OrchestrationGetLatestSequenceResult,
+  type ThreadId,
 } from "@t3tools/contracts";
 import { ORCHESTRATION_STARTUP_SNAPSHOT_PATH } from "@t3tools/shared/backendPaths";
+import { isLoopbackPreviewHost } from "@t3tools/shared/preview";
 import { Schema } from "effect";
 import { getServerHttpOrigin } from "../lib/serverHttpOrigin";
 
 const CACHE_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+const CACHE_READ_TIMEOUT_MS = 250;
 const STORE = "shell";
 const SAVED_AT_INDEX = "savedAt";
 const decodeSnapshot = Schema.decodeUnknownSync(OrchestrationStartupSnapshot);
@@ -21,6 +25,7 @@ interface CacheEntry {
   readonly backendIncarnation: string;
   readonly origin: string;
   readonly savedAt: number;
+  readonly snapshotSequence: number;
   readonly snapshot: OrchestrationStartupSnapshot;
 }
 
@@ -29,43 +34,104 @@ export function readCachedStartupSnapshot(
   backendIncarnation: string,
   origin: string,
   now = Date.now(),
-): OrchestrationStartupSnapshot | undefined {
+) {
   if (
     entry?.backendIncarnation !== backendIncarnation ||
     entry.origin !== origin ||
     !Number.isFinite(entry.savedAt) ||
     entry.savedAt > now ||
-    now - entry.savedAt >= CACHE_MAX_AGE_MS
+    now - entry.savedAt >= CACHE_MAX_AGE_MS ||
+    !Number.isSafeInteger(entry.snapshotSequence) ||
+    entry.snapshotSequence < 0
   )
     return undefined;
-  try {
-    return decodeSnapshot(entry.snapshot);
-  } catch {
-    return undefined;
-  }
+  return {
+    sequence: entry.snapshotSequence,
+    decode: () => {
+      try {
+        const snapshot = decodeSnapshot(entry.snapshot);
+        return snapshot.snapshotSequence === entry.snapshotSequence ? snapshot : undefined;
+      } catch {
+        return undefined;
+      }
+    },
+  };
 }
 
-async function openCache(): Promise<IDBDatabase> {
+export function startupReplayEvents(
+  result: OrchestrationGetLatestSequenceResult | undefined,
+  incarnation: string,
+  afterSequence: number,
+) {
+  if (
+    result?.backendIncarnation === incarnation &&
+    result.events !== undefined &&
+    result.events.length === result.latestSequence - afterSequence &&
+    result.events.every((event, index) => event.sequence === afterSequence + index + 1)
+  )
+    return result.events;
+  return undefined;
+}
+
+export async function requestStartupSnapshot(
+  readWebSocket: () => Promise<OrchestrationGetStartupSnapshotResult>,
+  readHttp?: () => Promise<OrchestrationGetStartupSnapshotResult | undefined>,
+) {
+  return (await readHttp?.().catch(() => undefined)) ?? readWebSocket();
+}
+
+async function openCache(signal?: AbortSignal): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open("f5-orchestration-startup", 1);
     request.onupgradeneeded = () =>
       request.result.createObjectStore(STORE).createIndex(SAVED_AT_INDEX, SAVED_AT_INDEX);
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-    request.onblocked = () => reject(new Error("Startup cache is busy."));
+    const abort = () => reject(signal?.reason);
+    let blocked = false;
+    signal?.addEventListener("abort", abort, { once: true });
+    request.onsuccess = () => {
+      signal?.removeEventListener("abort", abort);
+      if (blocked || signal?.aborted) request.result.close();
+      else resolve(request.result);
+    };
+    request.onerror = () => {
+      signal?.removeEventListener("abort", abort);
+      reject(request.error);
+    };
+    request.onblocked = () => {
+      blocked = true;
+      signal?.removeEventListener("abort", abort);
+      reject(new Error("Startup cache is busy."));
+    };
   });
 }
 
 export const startupSnapshotCache = {
   async read(scope: CacheScope) {
     const origin = getServerHttpOrigin();
-    const db = await openCache();
+    const signal = AbortSignal.timeout(CACHE_READ_TIMEOUT_MS);
+    const db = await openCache(signal);
     try {
       const entry = await new Promise<CacheEntry | undefined>((resolve, reject) => {
+        if (signal.aborted) return reject(signal.reason);
         const transaction = db.transaction(STORE, "readonly");
         const request = transaction.objectStore(STORE).get(scope.profileId ?? origin);
-        request.onsuccess = () => resolve(request.result);
-        transaction.onabort = () => reject(transaction.error);
+        const abort = () => {
+          reject(signal.reason);
+          try {
+            transaction.abort();
+          } catch {
+            /* Already settled. */
+          }
+        };
+        signal.addEventListener("abort", abort, { once: true });
+        transaction.oncomplete = () => {
+          signal.removeEventListener("abort", abort);
+          resolve(request.result);
+        };
+        transaction.onabort = () => {
+          signal.removeEventListener("abort", abort);
+          reject(transaction.error);
+        };
       });
       return readCachedStartupSnapshot(entry, scope.backendIncarnation, origin);
     } finally {
@@ -79,6 +145,7 @@ export const startupSnapshotCache = {
       backendIncarnation: scope.backendIncarnation,
       origin,
       savedAt: Date.now(),
+      snapshotSequence: snapshot.snapshotSequence,
       snapshot,
     };
     const db = await openCache();
@@ -93,7 +160,7 @@ export const startupSnapshotCache = {
             existing &&
             (existing.savedAt > entry.savedAt ||
               (existing.backendIncarnation === entry.backendIncarnation &&
-                existing.snapshot.snapshotSequence > snapshot.snapshotSequence))
+                existing.snapshotSequence > snapshot.snapshotSequence))
           )
             return;
           store.put(entry, key);
@@ -118,9 +185,11 @@ export const startupSnapshotCache = {
   },
 };
 
-export async function fetchStartupSnapshot(backendIncarnation: string) {
+export async function fetchStartupSnapshot(backendIncarnation: string, detailThreadId?: ThreadId) {
   const url = new URL(ORCHESTRATION_STARTUP_SNAPSHOT_PATH, getServerHttpOrigin());
+  if (isLoopbackPreviewHost(url.hostname)) return undefined;
   url.searchParams.set("incarnation", backendIncarnation);
+  if (detailThreadId) url.searchParams.set("detailThreadId", detailThreadId);
   const response = await fetch(url, {
     credentials: "include",
     cache: "no-store",

@@ -1,1 +1,1 @@
-- The thread list reuses a recent saved snapshot on startup when it matches the current server. Larger sync gaps reload the list over compressed HTTP.
+- The desktop thread list can reuse a recent snapshot from the same server on startup. Remote connections reload larger sync gaps over compressed HTTP.

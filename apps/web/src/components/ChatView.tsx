@@ -139,7 +139,11 @@ import {
   getThreadReferenceLimitIssue,
 } from "@t3tools/shared/providerInput";
 import { formatByteSize } from "@t3tools/shared/byteSize";
-import { createModelSelection, resolveSelectableModel } from "@t3tools/shared/model";
+import {
+  createModelSelection,
+  inferProviderForModel,
+  resolveSelectableModel,
+} from "@t3tools/shared/model";
 import {
   latestMcpStatusActivities,
   readRuntimeConfiguredPayload,
@@ -3676,7 +3680,19 @@ export default memo(function ChatView({
       return;
     savedModelPick.current = modelPick;
     const api = readNativeApi();
-    if (!api || noProviderAvailable) return;
+    if (
+      !api ||
+      noProviderAvailable ||
+      selectedModelSelectionForDispatch.instanceId !==
+        (serverThread.session?.providerInstanceId ??
+          serverThread.modelSelection?.instanceId ??
+          defaultInstanceIdForDriver(
+            ProviderDriverKind.make(
+              serverThread.session?.provider ?? inferProviderForModel(serverThread.model, "codex"),
+            ),
+          ))
+    )
+      return;
     void queueComposerModelPick(threadId, () =>
       api.orchestration.dispatchCommand({
         type: "thread.meta.update",
@@ -6181,21 +6197,19 @@ export default memo(function ChatView({
       setRespondingUserInputRequestIds((existing) =>
         existing.includes(requestId) ? existing : [...existing, requestId],
       );
-      await Promise.resolve(pendingComposerModelPick(activeThreadId))
-        .then(() =>
-          api.orchestration.dispatchCommand({
-            type: dismissed ? "thread.user-input.dismiss" : "thread.user-input.respond",
-            commandId: newCommandId(),
-            threadId: activeThreadId,
-            requestId,
-            answers,
-            attachments: (answerAttachments[requestId] ?? []).map((attachment) => ({
-              type: "upload" as const,
-              uploadId: attachment.uploadId,
-            })),
-            createdAt: new Date().toISOString(),
-          }),
-        )
+      await api.orchestration
+        .dispatchCommand({
+          type: dismissed ? "thread.user-input.dismiss" : "thread.user-input.respond",
+          commandId: newCommandId(),
+          threadId: activeThreadId,
+          requestId,
+          answers,
+          attachments: (answerAttachments[requestId] ?? []).map((attachment) => ({
+            type: "upload" as const,
+            uploadId: attachment.uploadId,
+          })),
+          createdAt: new Date().toISOString(),
+        })
         .then(async () => {
           if (dismissed && answerAttachments[requestId]?.length)
             await api.attachments.releaseUploads({

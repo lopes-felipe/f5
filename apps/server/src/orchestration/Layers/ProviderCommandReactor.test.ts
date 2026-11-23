@@ -6066,6 +6066,35 @@ describe("ProviderCommandReactor", () => {
       if (!intent || intent.type !== "thread.turn-start-requested")
         throw new Error("Missing native intent.");
       expect(intent.payload.continuationRequestId).toBe("owned-wake");
+      if (live) {
+        await Effect.runPromise(
+          harness.engine.dispatch({
+            type: "thread.session.set",
+            commandId: CommandId.make("pi-wake-live-session"),
+            threadId,
+            session: {
+              threadId,
+              status: "ready",
+              providerName: "pi",
+              runtimeMode: "approval-required",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: createdAt,
+            },
+            createdAt,
+          }),
+        );
+      }
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.make("future-pi-model"),
+          threadId,
+          model: "another-pi-model",
+          deferModelSwitch: true,
+        }),
+      );
+      await harness.drain();
       const result = await Effect.runPromise(
         harness.reactor.deliverTurnStart(intent).pipe(Effect.result, Effect.scoped),
       );
@@ -6082,6 +6111,7 @@ describe("ProviderCommandReactor", () => {
       else expect(harness.sendTurn).not.toHaveBeenCalled();
       expect(harness.startSession).not.toHaveBeenCalled();
       expect(harness.ensureWorktree).not.toHaveBeenCalled();
+      if (live) expect(harness.runtimeSessions[0]?.model).toBe("default");
     },
   );
 

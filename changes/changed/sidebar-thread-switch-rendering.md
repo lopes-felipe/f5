@@ -1,1 +1,1 @@
-- Sidebar thread actions keep a stable identity when switching threads, so unchanged rows can reuse their render.
+- Switching conversations is smoother in sidebars with many threads.

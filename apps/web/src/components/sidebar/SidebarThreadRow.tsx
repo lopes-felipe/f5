@@ -460,6 +460,8 @@ function SidebarThreadRowImpl(props: SidebarThreadRowProps) {
 }
 
 export const SidebarThreadRow = memo(SidebarThreadRowImpl, (prev, next) => {
+  // Keep this comparison in sync with SidebarThreadRowProps. Callers may also
+  // spread sidebar indicators such as prPending that the row does not render.
   return (
     prev.thread === next.thread &&
     prev.section === next.section &&

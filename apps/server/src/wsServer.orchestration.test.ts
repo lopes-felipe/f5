@@ -118,11 +118,40 @@ describe("WebSocket Server", () => {
     });
     const url = new URL(ORCHESTRATION_STARTUP_SNAPSHOT_PATH, "http://127.0.0.1:" + port);
     url.searchParams.set("incarnation", incarnation);
+    const createdAt = new Date().toISOString();
+    const project = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+      type: "project.create",
+      commandId: "cmd-gzip-project",
+      projectId: "gzip-project",
+      title: "Gzip project",
+      workspaceRoot: makeTempDir("f5-ws-gzip-project-"),
+      defaultModel: "gpt-5-codex",
+      createdAt,
+    });
+    expect(project.error).toBeUndefined();
+    const thread = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+      type: "thread.create",
+      commandId: "cmd-gzip-thread",
+      threadId: "gzip-thread",
+      projectId: "gzip-project",
+      title: "Gzip thread",
+      model: "gpt-5-codex",
+      runtimeMode: "approval-required",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdAt,
+    });
+    expect(thread.error).toBeUndefined();
+    url.searchParams.set("detailThreadId", "gzip-thread");
     const response = await fetch(url, { headers: { "Accept-Encoding": "gzip" } });
     expect(response.status).toBe(200);
     expect(response.headers.get("content-encoding")).toBe("gzip");
     expect(response.headers.get("cache-control")).toBe("no-store");
-    const startup = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getStartupSnapshot, {});
+    const startup = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getStartupSnapshot, {
+      detailThreadId: "gzip-thread",
+    });
+    expect(startup.result).toMatchObject({ threadTailDetails: { threadId: "gzip-thread" } });
     expect(await response.json()).toEqual(startup.result);
     url.searchParams.set("incarnation", "previous-backend");
     expect((await fetch(url)).status).toBe(409);

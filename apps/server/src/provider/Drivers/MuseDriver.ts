@@ -116,6 +116,7 @@ export const MuseDriver: ProviderDriver<MuseSettings, MuseDriverEnv> = {
         instanceId,
         driverKind: DRIVER_KIND,
         resolveInstallTarget: makeInstanceInstallTargetResolver({
+          miseOnly: true,
           driver: DRIVER_KIND,
           binaryPath: effectiveConfig.binaryPath,
           instanceId,

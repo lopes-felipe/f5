@@ -25,3 +25,15 @@ it("queues picks in order and leaves other threads free to send", async () => {
   expect(send).toHaveBeenCalledOnce();
   expect(pendingComposerModelPick(thread)).toBeUndefined();
 });
+
+it("lets the next turn proceed when the pending save fails", async () => {
+  const thread = ThreadId.makeUnsafe("failed-pick-thread");
+  const pick = queueComposerModelPick(thread, async () => {
+    throw new Error("offline");
+  });
+  const send = vi.fn();
+  const turn = pendingComposerModelPick(thread)?.then(send);
+  await expect(pick).rejects.toThrow("offline");
+  await turn;
+  expect(send).toHaveBeenCalledOnce();
+});

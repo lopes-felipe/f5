@@ -185,6 +185,7 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
         instanceId,
         driverKind,
         resolveInstallTarget: makeInstanceInstallTargetResolver({
+          miseOnly: true,
           driver: driverKind,
           binaryPath: settings.binaryPath,
           instanceId,

@@ -26,5 +26,6 @@ export function queueComposerModelPick(threadId: ThreadId, save: () => Promise<u
 }
 
 export function pendingComposerModelPick(threadId: ThreadId): Promise<unknown> | undefined {
-  return pending.get(threadId);
+  // The turn carries its own selection, so a metadata failure cannot block delivery.
+  return pending.get(threadId)?.catch(() => undefined);
 }

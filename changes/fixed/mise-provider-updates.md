@@ -1,1 +1,1 @@
-- F5 checks and updates mise-managed providers through mise. Version-pinned installs stay manual.
+- F5 checks and updates supported mise-managed providers through mise. Version-pinned installs and OpenCode 1.x stay manual.

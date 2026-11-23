@@ -143,6 +143,54 @@ describe("provider installation ownership", () => {
     },
   );
 
+  it.each(["opencode", "grok"])(
+    "keeps mise in charge of %s when upgrade eligibility is unverified",
+    async (tool) => {
+      const mise = "/usr/local/bin/mise";
+      const executable = "/custom/tools/" + tool + "/latest/bin/" + tool;
+      const binary = executable.replace("/latest/", "/1.0.0/");
+      const target = await detectProviderInstallTarget(
+        {
+          driver: ProviderDriverKind.make(tool),
+          resolutionEnvironment: {},
+          updateEnvironment: {},
+        },
+        {
+          platform: "linux",
+          resolveExecutable: async (command) => (command === "mise" ? mise : executable),
+          realpath: (file) => (file === executable ? binary : file),
+          isMiseWrapper: () => false,
+          runProcess: async (_command, args) => {
+            if (tool === "grok" && args[0] === "ls") throw new Error("probe failed");
+            return {
+              stdout:
+                args[0] === "which"
+                  ? binary
+                  : JSON.stringify([
+                      {
+                        install_path: "/custom/tools/opencode/1.0.0",
+                        active: true,
+                        requested_version: "latest",
+                      },
+                    ]),
+              stderr: "",
+              code: 0,
+              timedOut: false,
+              signal: null,
+            };
+          },
+        },
+      );
+      expect(target).toMatchObject({
+        channel: "mise",
+        latestSource: null,
+        blockedReason: "unsupported_source",
+      });
+      if (tool === "opencode") expect(target?.guidance).toContain("1.x");
+      expect(buildProviderUpdateCommand(target!, "linux", "2.0.0")).toBeNull();
+    },
+  );
+
   it("does not group bundled Codex and Claude as one shared installation", async () => {
     const codex = (await fixture("", { driver: "codex", binaryPath: "codex" })).target!;
     const claude = (await fixture("", { driver: "claudeAgent", binaryPath: "claude" })).target!;

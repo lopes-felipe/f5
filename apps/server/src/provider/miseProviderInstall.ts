@@ -106,14 +106,18 @@ export async function detectMiseProviderInstall(input: {
     });
     return result.code === 0 && !result.timedOut ? result.stdout.trim() : "";
   };
+  const [which, listing] = await Promise.all([
+    probe(["which", tool]).catch(() => ""),
+    probe(["ls", "--json", "--installed", tool]).catch(() => ""),
+  ]);
+  const selected = path.isAbsolute(which) ? canonical(which) : null;
+  const binary = shim ? selected : realPath;
+  if (!binary) return fallback;
+  const manualSelection =
+    selected && normalize(selected) === normalize(binary)
+      ? { realPath: binary, key: normalize(binary), upgrade: null }
+      : fallback;
   try {
-    const [which, listing] = await Promise.all([
-      probe(["which", tool]),
-      probe(["ls", "--json", "--installed", tool]),
-    ]);
-    const selected = path.isAbsolute(which) ? canonical(which) : null;
-    const binary = shim ? selected : realPath;
-    if (!binary) return fallback;
     const byTool = decodeInstalls(JSON.parse(listing));
     const candidates = Array.isArray(byTool)
       ? (byTool as ReadonlyArray<typeof install.Type>)
@@ -141,6 +145,6 @@ export async function detectMiseProviderInstall(input: {
           : null,
     };
   } catch {
-    return fallback;
+    return manualSelection;
   }
 }

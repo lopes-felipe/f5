@@ -237,6 +237,7 @@ import {
   type OrchestrationEvent,
   ORCHESTRATION_WS_CHANNELS,
   ORCHESTRATION_WS_METHODS,
+  type OrchestrationGetStartupSnapshotInput,
   PR_HUB_WS_CHANNELS,
   PR_HUB_WS_METHODS,
   ProjectId,
@@ -2425,8 +2426,22 @@ export const createServer = Effect.fn(function* (
             respond(409, headers);
             return;
           }
+          const detailThreadId = url.searchParams.get("detailThreadId");
+          const parsedDetailThreadId =
+            detailThreadId === null
+              ? Option.none()
+              : Schema.decodeUnknownOption(ThreadId)(detailThreadId);
+          if (detailThreadId !== null && Option.isNone(parsedDetailThreadId)) {
+            respond(400, headers);
+            return;
+          }
           yield* awaitOrchestrationRuntimeForRoute;
-          const snapshot = yield* projectionReadModelQuery.getStartupSnapshot();
+          const snapshot = yield* readStartupSnapshot(
+            Option.isSome(parsedDetailThreadId)
+              ? { detailThreadId: parsedDetailThreadId.value }
+              : {},
+            "http",
+          );
           const json = JSON.stringify(snapshot);
           const acceptGzip = req.headers["accept-encoding"]
             ?.split(",")
@@ -4108,6 +4123,30 @@ export const createServer = Effect.fn(function* (
       });
     });
 
+  const readStartupSnapshot = (
+    body: OrchestrationGetStartupSnapshotInput,
+    transport: "ws" | "http",
+  ) =>
+    withWsThreadOpenTiming({
+      method: ORCHESTRATION_WS_METHODS.getStartupSnapshot,
+      threadId: body.detailThreadId ?? null,
+      effect: Effect.gen(function* () {
+        if (body.detailThreadId) {
+          yield* reconcileThreadSnapshotsInBackground({
+            threadId: body.detailThreadId,
+            reason: transport + ":getStartupSnapshot",
+          });
+        }
+        return yield* projectionReadModelQuery.getStartupSnapshot(body);
+      }),
+      summarize: (result) => ({
+        snapshotSequence: result.snapshot.snapshotSequence,
+        threadCount: result.snapshot.threads.length,
+        bundledTailMessages: result.threadTailDetails?.messages.length ?? 0,
+        bundledTailCheckpoints: result.threadTailDetails?.checkpoints.length ?? 0,
+      }),
+    });
+
   const resolveMcpAccount = async <
     T extends {
       binaryPath?: string | undefined;
@@ -4950,28 +4989,8 @@ export const createServer = Effect.fn(function* (
         return yield* orchestrationEngine.getReadModel();
       }
 
-      case ORCHESTRATION_WS_METHODS.getStartupSnapshot: {
-        const body = stripRequestTag(request.body);
-        return yield* withWsThreadOpenTiming({
-          method: ORCHESTRATION_WS_METHODS.getStartupSnapshot,
-          threadId: body?.detailThreadId ?? null,
-          effect: Effect.gen(function* () {
-            if (body?.detailThreadId) {
-              yield* reconcileThreadSnapshotsInBackground({
-                threadId: body.detailThreadId,
-                reason: "ws:getStartupSnapshot",
-              });
-            }
-            return yield* projectionReadModelQuery.getStartupSnapshot(body);
-          }),
-          summarize: (result) => ({
-            snapshotSequence: result.snapshot.snapshotSequence,
-            threadCount: result.snapshot.threads.length,
-            bundledTailMessages: result.threadTailDetails?.messages.length ?? 0,
-            bundledTailCheckpoints: result.threadTailDetails?.checkpoints.length ?? 0,
-          }),
-        });
-      }
+      case ORCHESTRATION_WS_METHODS.getStartupSnapshot:
+        return yield* readStartupSnapshot(stripRequestTag(request.body), "ws");
 
       case ORCHESTRATION_WS_METHODS.getRewindDrafts: {
         const body = stripRequestTag(request.body);
