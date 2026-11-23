@@ -13,25 +13,41 @@ import type { OrchestrationReadModel, OrchestrationSession } from "@t3tools/cont
 
 type ThreadTurnState = Pick<OrchestrationReadModel["threads"][number], "session" | "latestTurn">;
 
+/** States a turn settles into; the session is idle until ingestion starts the next turn. */
+const SETTLED_STATUSES: ReadonlySet<OrchestrationSession["status"]> = new Set([
+  "ready",
+  "interrupted",
+  "error",
+]);
+
 /**
  * Keeps the running turn only when the bound session is the same live session
  * (provider and instance), both sides report `running`, and the thread's latest
  * turn is that turn and still running. `updatedAt` then never moves back to the
- * adapter's older record. Anything else writes the session as given.
+ * adapter's older record.
+ *
+ * A re-bind never moves the same session into `running`: runtime ingestion owns
+ * that transition, and an adapter record taken before the turn settled would
+ * otherwise mark an idle thread busy. Anything else writes the session as given.
  */
 export function resolveRebindSessionTurn(
   current: ThreadTurnState,
   incoming: OrchestrationSession,
 ): OrchestrationSession {
   const previous = current.session;
-  const turnId = previous?.activeTurnId ?? null;
   if (
     incoming.status !== "running" ||
     previous == null ||
-    previous.status !== "running" ||
-    turnId === null ||
     previous.providerName !== incoming.providerName ||
-    (previous.providerInstanceId ?? null) !== (incoming.providerInstanceId ?? null) ||
+    (previous.providerInstanceId ?? null) !== (incoming.providerInstanceId ?? null)
+  ) {
+    return incoming;
+  }
+  if (SETTLED_STATUSES.has(previous.status)) return { ...incoming, status: previous.status };
+  if (previous.status !== "running") return incoming;
+  const turnId = previous.activeTurnId;
+  if (
+    turnId === null ||
     current.latestTurn?.turnId !== turnId ||
     current.latestTurn.state !== "running"
   ) {

@@ -1514,18 +1514,22 @@ const make = Effect.gen(function* () {
         }).pipe(Effect.withSpan("provider.start-session"));
       };
 
+      /**
+       * `start`: a started or replaced session. `fresh-compaction`: a session
+       * launched to continue from a compaction. `rebind`: the live session the
+       * thread already runs, which may keep its running turn.
+       */
       const bindSessionToThread = (
         session: ProviderSession,
-        freshCompactionLaunch = false,
-        rebind = false,
+        mode: "start" | "fresh-compaction" | "rebind" = "start",
       ) =>
         bindSessionToThreadWithContext({
           thread,
           session,
           createdAt,
           desiredRuntimeMode,
-          freshCompactionLaunch,
-          rebind,
+          freshCompactionLaunch: mode === "fresh-compaction",
+          rebind: mode === "rebind",
           ...(desiredModel ? { desiredModel } : {}),
           instructionContext: {
             ...instructionContext,
@@ -1560,7 +1564,7 @@ const make = Effect.gen(function* () {
             carriesHandoff: true,
             discardResumeCursor: true,
           });
-          yield* bindSessionToThread(started, true);
+          yield* bindSessionToThread(started, "fresh-compaction");
           yield* sqlOption.value.unsafe(
             "UPDATE thread_context_boundaries SET prepared = 1 WHERE thread_id = ?",
             [threadId],
@@ -1984,7 +1988,7 @@ const make = Effect.gen(function* () {
           !shouldRestartForWorkflowExecutionProfileChange
         ) {
           if (activeSession) {
-            yield* bindSessionToThread(activeSession, false, true);
+            yield* bindSessionToThread(activeSession, "rebind");
           }
           yield* recordEffectiveStartConfig();
           yield* Effect.annotateCurrentSpan({
@@ -2137,7 +2141,10 @@ const make = Effect.gen(function* () {
           : {}),
         ...(startCarriesHandoff ? { carriesHandoff: true } : {}),
       });
-      yield* bindSessionToThread(startedSession, freshCompactionLaunch);
+      yield* bindSessionToThread(
+        startedSession,
+        freshCompactionLaunch ? "fresh-compaction" : "start",
+      );
       yield* recordEffectiveStartConfig();
       if (
         resumeCursorForStoppedSession === undefined &&

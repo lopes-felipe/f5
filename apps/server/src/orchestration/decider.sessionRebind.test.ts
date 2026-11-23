@@ -108,6 +108,7 @@ async function decide(input: {
 describe("re-binding a live session", () => {
   it("keeps the running turn and never moves updatedAt backwards", async () => {
     const session = await decide({});
+    expect(session.status).toBe("running");
     expect(session.activeTurnId).toBe(turnId);
     expect(session.updatedAt).toBe(projectedAt);
   });
@@ -123,15 +124,21 @@ describe("re-binding a live session", () => {
       current: { ...runningSession, status: "ready", activeTurnId: null },
       latestTurn: { ...runningTurn, state: "completed", completedAt: projectedAt },
     });
+    // The adapter's stale `running` must not mark the idle thread busy again.
+    expect(session.status).toBe("ready");
     expect(session.activeTurnId).toBeNull();
     expect(session.updatedAt).toBe(adapterAt);
   });
 
-  it("does not revive a leftover turn id on a session that is not running", async () => {
-    for (const status of ["error", "interrupted", "ready", "starting"] as const) {
+  it("keeps a settled status and never revives a leftover turn id", async () => {
+    for (const status of ["error", "interrupted", "ready"] as const) {
       const session = await decide({ current: { ...runningSession, status } });
+      expect(session.status).toBe(status);
       expect(session.activeTurnId).toBeNull();
     }
+    const starting = await decide({ current: { ...runningSession, status: "starting" } });
+    expect(starting.status).toBe("running");
+    expect(starting.activeTurnId).toBeNull();
   });
 
   it("requires the latest turn to be that turn and still running", async () => {
@@ -159,5 +166,11 @@ describe("re-binding a live session", () => {
     const session = await decide({ rebindLiveSession: false });
     expect(session.activeTurnId).toBeNull();
     expect(session.updatedAt).toBe(adapterAt);
+    // A start or restart writes its status as given, even over a settled session.
+    const started = await decide({
+      rebindLiveSession: false,
+      current: { ...runningSession, status: "ready", activeTurnId: null },
+    });
+    expect(started.status).toBe("running");
   });
 });
