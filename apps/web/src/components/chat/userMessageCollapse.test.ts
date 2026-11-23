@@ -20,7 +20,28 @@ describe("userMessageCollapse", () => {
     expect(shouldCollapseUserMessage(card + "\n\nA short comment")).toBe(false);
     const longMessage = card + "\n\n" + "a".repeat(700);
     expect(shouldCollapseUserMessage(longMessage)).toBe(true);
-    expect(buildCollapsedUserMessageText(longMessage)).toBe(card + "\n\n" + "a".repeat(598));
+    expect(buildCollapsedUserMessageText(longMessage)).toBe(card + "\n\n" + "a".repeat(600));
+  });
+
+  it("does not count the separators beside a card as comment lines", () => {
+    const card = serializeAssistantResponseContext({
+      version: 1,
+      kind: "quote",
+      threadId: ThreadId.make("source"),
+      messageId: MessageId.make("response"),
+      text: "Quoted",
+    });
+    const lines = (count: number) =>
+      Array.from({ length: count }, (_, index) => `line-${index}`).join("\n");
+    // Displayed: the card, then eight comment lines.
+    expect(shouldCollapseUserMessage(`${card}\n\n${lines(8)}`)).toBe(false);
+    expect(shouldCollapseUserMessage(`${card}\n\n${lines(9)}`)).toBe(true);
+    expect(buildCollapsedUserMessageText(`${card}\n\n${lines(9)}`)).toBe(`${card}\n\n${lines(8)}`);
+    // A card between two texts starts a new line: one line before, the card, seven after.
+    expect(shouldCollapseUserMessage(`intro\n\n${card}\n\n${lines(7)}`)).toBe(false);
+    expect(buildCollapsedUserMessageText(`intro\n\n${card}\n\n${lines(8)}`)).toBe(
+      `intro\n\n${card}\n\n${lines(7)}`,
+    );
   });
 
   it("does not collapse empty text", () => {

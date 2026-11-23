@@ -1,5 +1,6 @@
 import { expect, it, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
+import { useRef } from "react";
 import { render } from "vitest-browser-react";
 import { AssistantQuoteToolbar } from "./AssistantQuoteToolbar";
 
@@ -109,32 +110,222 @@ it("restores the quoted selection when stepping back from the comment", async ()
   }
 });
 
-it("keeps stepped-back actions when the quoted text re-rendered, until focus moves on", async () => {
+const selectAnswer = (paragraph: Element) => {
+  window.getSelection()!.setBaseAndExtent(paragraph.firstChild!, 0, paragraph.firstChild!, 8);
+  paragraph.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+};
+
+it("restores a stepped-back quote whose row moved while the comment was open", async () => {
   const { screen, paragraph } = await renderAnswer();
-  const outside = document.createElement("button");
-  outside.textContent = "Outside";
-  document.body.append(outside);
   try {
-    window.getSelection()!.setBaseAndExtent(paragraph.firstChild!, 0, paragraph.firstChild!, 8);
-    paragraph.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+    selectAnswer(paragraph);
     await page.getByRole("button", { name: "Quote reply" }).click();
     await page.getByRole("textbox", { name: "Quote comment" }).fill("A comment");
-    // A re-render replaces the quoted text node, collapsing the saved range.
-    paragraph.replaceChildren(document.createTextNode("Selected answer"));
+    // A virtualized list moves rows out of and back into the DOM, keeping their text nodes.
+    const parent = paragraph.parentNode!;
+    const next = paragraph.nextSibling;
+    paragraph.remove();
+    parent.insertBefore(paragraph, next);
     await page.getByRole("button", { name: "Back", exact: true }).click();
     const quote = page.getByRole("button", { name: "Quote reply" });
-    await nextFrames();
-    await expect.element(quote).toBeVisible();
+    await expect.poll(() => window.getSelection()!.toString()).toBe("Selected");
+    const text = document.createRange();
+    text.setStart(paragraph.firstChild!, 0);
+    text.setEnd(paragraph.firstChild!, 8);
+    const popup = quote.element().getBoundingClientRect();
+    expect(popup.left < text.getBoundingClientRect().right).toBe(true);
+    expect(popup.right > text.getBoundingClientRect().left).toBe(true);
     await quote.click();
     await expect
       .element(page.getByRole("textbox", { name: "Quote comment" }))
       .toHaveValue("A comment");
+  } finally {
+    window.getSelection()?.removeAllRanges();
+    await screen.unmount();
+  }
+});
+
+it("drops a stepped-back quote whose text was replaced while the comment was open", async () => {
+  const { screen, paragraph } = await renderAnswer();
+  try {
+    selectAnswer(paragraph);
+    await page.getByRole("button", { name: "Quote reply" }).click();
+    await page.getByRole("textbox", { name: "Quote comment" }).fill("A comment");
+    paragraph.replaceChildren(document.createTextNode("Selected answer"));
     await page.getByRole("button", { name: "Back", exact: true }).click();
+    await expect.element(page.getByRole("button", { name: "Quote reply" })).not.toBeInTheDocument();
+  } finally {
+    window.getSelection()?.removeAllRanges();
+    await screen.unmount();
+  }
+});
+
+it("steps back from the comment on Escape from the text box or a button", async () => {
+  const { screen, paragraph } = await renderAnswer();
+  try {
+    selectAnswer(paragraph);
+    const quote = page.getByRole("button", { name: "Quote reply" });
+    const comment = page.getByRole("textbox", { name: "Quote comment" });
+    await quote.click();
+    await comment.fill("A comment");
+    await userEvent.keyboard("{Escape}");
+    await expect.element(comment).not.toBeInTheDocument();
+    await expect.element(quote).toBeVisible();
+    await quote.click();
+    await expect.element(comment).toHaveValue("A comment");
+    // Escape with focus on a dialog button goes through the popup's own dismissal.
+    page.getByRole("button", { name: "Cancel", exact: true }).element().focus();
+    await userEvent.keyboard("{Escape}");
+    await expect.element(comment).not.toBeInTheDocument();
+    await expect.element(quote).toBeVisible();
+    await expect.poll(() => window.getSelection()!.toString()).toBe("Selected");
+  } finally {
+    window.getSelection()?.removeAllRanges();
+    await screen.unmount();
+  }
+});
+
+it("starts a new quote with an empty comment", async () => {
+  const { screen, paragraph } = await renderAnswer();
+  try {
+    selectAnswer(paragraph);
+    const quote = page.getByRole("button", { name: "Quote reply" });
+    const comment = page.getByRole("textbox", { name: "Quote comment" });
+    await quote.click();
+    await comment.fill("For the first passage");
+    await page.getByRole("button", { name: "Back", exact: true }).click();
+    await expect.poll(() => window.getSelection()!.toString()).toBe("Selected");
+    // Select a different passage.
+    paragraph.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    window.getSelection()!.setBaseAndExtent(paragraph.firstChild!, 9, paragraph.firstChild!, 15);
+    paragraph.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+    await quote.click();
+    await expect.element(comment).toHaveValue("");
+  } finally {
+    window.getSelection()?.removeAllRanges();
+    await screen.unmount();
+  }
+});
+
+it("only offers selections inside its own chat", async () => {
+  const insertMain = vi.fn(() => ({ inserted: true }));
+  const insertSide = vi.fn(() => ({ inserted: true }));
+  function Chat({ id, onInsert }: { id: string; onInsert: () => { inserted: boolean } }) {
+    const rootRef = useRef<HTMLDivElement>(null);
+    return (
+      <div ref={rootRef}>
+        <p data-message-role="assistant" data-message-id={id}>
+          Answer in {id}
+        </p>
+        <AssistantQuoteToolbar
+          onInsert={onInsert}
+          currentLength={0}
+          maxLength={120000}
+          rootRef={rootRef}
+        />
+      </div>
+    );
+  }
+  const screen = await render(
+    <>
+      <Chat id="main" onInsert={insertMain} />
+      <Chat id="side" onInsert={insertSide} />
+    </>,
+  );
+  try {
+    const side = document.querySelector('[data-message-id="side"]')!;
+    window.getSelection()!.setBaseAndExtent(side.firstChild!, 0, side.firstChild!, 6);
+    side.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+    await expect.element(page.getByRole("button", { name: "Quote reply" })).toBeVisible();
     await nextFrames();
-    outside.focus();
+    expect(page.getByRole("button", { name: "Quote reply" }).elements()).toHaveLength(1);
+    await page.getByRole("button", { name: "Quote reply" }).click();
+    await page.getByRole("button", { name: "Add quote to composer" }).click();
+    expect(insertSide).toHaveBeenCalledWith(
+      { messageId: "side", text: "Answer", comment: "" },
+      false,
+    );
+    expect(insertMain).not.toHaveBeenCalled();
+  } finally {
+    window.getSelection()?.removeAllRanges();
+    await screen.unmount();
+  }
+});
+
+it("hides on presses that stop propagation", async () => {
+  const { screen, paragraph } = await renderAnswer();
+  const stopper = document.createElement("div");
+  stopper.addEventListener("pointerdown", (event) => event.stopPropagation());
+  document.body.append(stopper);
+  try {
+    selectAnswer(paragraph);
+    const quote = page.getByRole("button", { name: "Quote reply" });
+    await expect.element(quote).toBeVisible();
+    stopper.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
     await expect.element(quote).not.toBeInTheDocument();
   } finally {
-    outside.remove();
+    stopper.remove();
+    window.getSelection()?.removeAllRanges();
+    await screen.unmount();
+  }
+});
+
+it("reads the selection when a press ends without a pointerup", async () => {
+  const { screen, paragraph } = await renderAnswer();
+  try {
+    const quote = page.getByRole("button", { name: "Quote reply" });
+    // A touch long-press ends in pointercancel.
+    paragraph.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    window.getSelection()!.setBaseAndExtent(paragraph.firstChild!, 0, paragraph.firstChild!, 8);
+    paragraph.dispatchEvent(new PointerEvent("pointercancel", { bubbles: true }));
+    await expect.element(quote).toBeVisible();
+    // A release outside the window never arrives; the next buttonless move ends the press.
+    paragraph.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    await expect.element(quote).not.toBeInTheDocument();
+    window.getSelection()!.setBaseAndExtent(paragraph.firstChild!, 0, paragraph.firstChild!, 6);
+    await nextFrames();
+    await expect.element(quote).not.toBeInTheDocument();
+    paragraph.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, buttons: 0 }));
+    await expect.element(quote).toBeVisible();
+  } finally {
+    window.getSelection()?.removeAllRanges();
+    await screen.unmount();
+  }
+});
+
+it("keeps the composer caret when a quote is added right after stepping back", async () => {
+  const composer = document.createElement("div");
+  composer.contentEditable = "true";
+  composer.textContent = "Draft";
+  document.body.append(composer);
+  const insert = vi.fn(() => {
+    // Like the composer: focus it and put the caret at the end.
+    composer.focus();
+    window.getSelection()!.setBaseAndExtent(composer.firstChild!, 5, composer.firstChild!, 5);
+    return { inserted: true };
+  });
+  const screen = await render(
+    <>
+      <p data-message-role="assistant" data-message-id="answer">
+        Selected answer
+      </p>
+      <AssistantQuoteToolbar onInsert={insert} currentLength={0} maxLength={120000} />
+    </>,
+  );
+  try {
+    const paragraph = document.querySelector('[data-message-id="answer"]')!;
+    selectAnswer(paragraph);
+    await page.getByRole("button", { name: "Quote reply" }).click();
+    // Reopen the comment before the deferred restore of the quoted selection runs.
+    (page.getByRole("button", { name: "Back", exact: true }).element() as HTMLElement).click();
+    await Promise.resolve();
+    (page.getByRole("button", { name: "Quote reply" }).element() as HTMLElement).click();
+    await page.getByRole("button", { name: "Add quote to composer" }).click();
+    expect(insert).toHaveBeenCalledOnce();
+    await nextFrames();
+    expect(composer.contains(window.getSelection()!.anchorNode)).toBe(true);
+  } finally {
+    composer.remove();
     window.getSelection()?.removeAllRanges();
     await screen.unmount();
   }

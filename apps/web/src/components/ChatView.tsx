@@ -964,6 +964,8 @@ export default memo(function ChatView({
   // The tail when the reader left the end. The pill mounts after a debounce,
   // so it compares against this rather than the tail at mount.
   const latestTimelineTailRef = useRef<ReturnType<typeof timelineTailSnapshot> | null>(null);
+  // Scopes the selection quote actions to this chat when another one is open beside it.
+  const quoteRootRef = useRef<HTMLDivElement>(null);
   const [leftEndTail, setLeftEndTail] = useState<ReturnType<typeof timelineTailSnapshot> | null>(
     null,
   );
@@ -8506,6 +8508,7 @@ export default memo(function ChatView({
           </DialogPopup>
         </Dialog>
         <div
+          ref={quoteRootRef}
           className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-background"
           data-chat-view-thread-id={threadId}
           {...testRenderCountProps}
@@ -8519,6 +8522,7 @@ export default memo(function ChatView({
             currentLength={prompt.length}
             maxLength={isConnecting ? 0 : getServerSendLimits().maxInputChars}
             onInsert={insertAssistantQuote}
+            rootRef={quoteRootRef}
           />
           {/* Top bar */}
           <AppTitlebar className={isElectron ? undefined : "sm:px-4"}>

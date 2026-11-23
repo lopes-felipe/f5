@@ -203,6 +203,7 @@ import {
   clipUserMessageSegments,
   hasUserMessageMarkup,
   parseUserMessageMarkup,
+  trimResponseCardSeparators,
   userMessageSegmentDisplayText,
 } from "../../lib/userMessageMarkup";
 import { ReasoningSection } from "./ReasoningSection";
@@ -2370,8 +2371,18 @@ function renderWithThreadReferences(text: string): ReactNode {
   if (matches.length === 0) return text;
   const nodes: ReactNode[] = [];
   let cursor = 0;
+  let afterCard = false;
   for (const match of matches) {
-    if (match.start > cursor) nodes.push(text.slice(cursor, match.start));
+    const isCard = "record" in match;
+    if (match.start > cursor) {
+      const between = trimResponseCardSeparators(
+        text.slice(cursor, match.start),
+        afterCard,
+        isCard,
+      );
+      if (between) nodes.push(between);
+    }
+    afterCard = isCard;
     if ("record" in match) {
       nodes.push(<AssistantResponseCard key={match.start} record={match.record} />);
       cursor = match.end;
@@ -2387,7 +2398,10 @@ function renderWithThreadReferences(text: string): ReactNode {
     );
     cursor = match.end;
   }
-  if (cursor < text.length) nodes.push(text.slice(cursor));
+  if (cursor < text.length) {
+    const rest = trimResponseCardSeparators(text.slice(cursor), afterCard, false);
+    if (rest) nodes.push(rest);
+  }
   return nodes;
 }
 

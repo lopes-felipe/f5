@@ -400,19 +400,39 @@ export function clipUserMessageSegments(
   return clipped;
 }
 
+const LEADING_CARD_SEPARATOR = /^\r?\n(?:\r?\n)?/;
+const TRAILING_CARD_SEPARATOR = /(?:\r?\n)?\r?\n$/;
+
 /**
- * The displayed text of the text segment at `index`. A response card renders as a block, so
- * the blank-line separator beside it would add empty lines beyond the card's margin; one
- * separator is dropped on each side that touches a card. The source is unchanged.
+ * The length of the blank-line separator `text` starts (`leading`) or ends with, up to one
+ * blank line. A response card renders as a block, so that separator would only add empty
+ * lines beyond the card's margin.
  */
+export function responseCardSeparatorLength(text: string, leading: boolean): number {
+  return (leading ? LEADING_CARD_SEPARATOR : TRAILING_CARD_SEPARATOR).exec(text)?.[0].length ?? 0;
+}
+
+/** `text` without the separator on each side that touches a response card. */
+export function trimResponseCardSeparators(
+  text: string,
+  afterCard: boolean,
+  beforeCard: boolean,
+): string {
+  const start = afterCard ? responseCardSeparatorLength(text, true) : 0;
+  const end = beforeCard ? text.length - responseCardSeparatorLength(text, false) : text.length;
+  return start < end ? text.slice(start, end) : "";
+}
+
+/** The displayed text of the text segment at `index`. The source is unchanged. */
 export function userMessageSegmentDisplayText(
   segments: readonly UserMessageSegment[],
   index: number,
 ): string {
-  let text = segments[index]!.raw;
-  if (segments[index - 1]?.kind === "response-context") text = text.replace(/^\r?\n(?:\r?\n)?/, "");
-  if (segments[index + 1]?.kind === "response-context") text = text.replace(/(?:\r?\n)?\r?\n$/, "");
-  return text;
+  return trimResponseCardSeparators(
+    segments[index]!.raw,
+    segments[index - 1]?.kind === "response-context",
+    segments[index + 1]?.kind === "response-context",
+  );
 }
 
 export function hasUserMessageMarkup(segments: readonly UserMessageSegment[]): boolean {

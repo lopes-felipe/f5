@@ -1,5 +1,5 @@
 import { TextQuoteIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
 import { captureAssistantQuoteSelection } from "../../lib/assistantQuoteSelection";
 import { Button } from "../ui/button";
 import { Popover, PopoverPopup } from "../ui/popover";
@@ -15,23 +15,29 @@ interface SelectionAnchor {
 }
 
 /**
- * Positions the quote actions against the selected text. The range is a clone, so it keeps
- * its geometry after focus moves into the comment box and replaces the document selection.
- * A collapsed or detached range measures as an empty rect; the last real rect is kept then.
+ * The selected text's boundaries, kept as positions rather than a live Range: a virtualized
+ * timeline moves rows in and out of the DOM, which collapses any Range pointing into them even
+ * though the same text nodes come back.
  */
-export function createSelectionAnchor(range: Range, contextElement: Element): SelectionAnchor {
-  let lastRect = range.getBoundingClientRect();
+interface QuoteBounds {
+  startContainer: Node;
+  startOffset: number;
+  endContainer: Node;
+  endOffset: number;
+  text: string;
+}
+
+function boundsOf(range: Range): QuoteBounds {
   return {
-    contextElement,
-    getBoundingClientRect() {
-      const rect = range.getBoundingClientRect();
-      if (rect.width > 0 || rect.height > 0) lastRect = rect;
-      return lastRect;
-    },
+    startContainer: range.startContainer,
+    startOffset: range.startOffset,
+    endContainer: range.endContainer,
+    endOffset: range.endOffset,
+    text: range.toString(),
   };
 }
 
-function sameRange(left: Range, right: Range): boolean {
+function sameBounds(left: QuoteBounds, right: QuoteBounds): boolean {
   return (
     left.startContainer === right.startContainer &&
     left.startOffset === right.startOffset &&
@@ -40,10 +46,51 @@ function sameRange(left: Range, right: Range): boolean {
   );
 }
 
+/** A fresh range over the quoted text, or null once that text is gone or has changed. */
+function rangeFromBounds(bounds: QuoteBounds): Range | null {
+  if (!bounds.startContainer.isConnected || !bounds.endContainer.isConnected) return null;
+  const range = bounds.startContainer.ownerDocument!.createRange();
+  try {
+    range.setStart(bounds.startContainer, bounds.startOffset);
+    range.setEnd(bounds.endContainer, bounds.endOffset);
+  } catch {
+    return null;
+  }
+  return range.toString() === bounds.text ? range : null;
+}
+
+/**
+ * Positions the quote actions against the selected text, which stays measurable after focus
+ * moves into the comment box and replaces the document selection. While the text is
+ * unavailable, the last real rect is kept.
+ */
+export function createSelectionAnchor(
+  bounds: QuoteBounds,
+  contextElement: Element,
+): SelectionAnchor {
+  let lastRect = rangeFromBounds(bounds)?.getBoundingClientRect() ?? new DOMRect();
+  return {
+    contextElement,
+    getBoundingClientRect() {
+      const rect = rangeFromBounds(bounds)?.getBoundingClientRect();
+      if (rect && (rect.width > 0 || rect.height > 0)) lastRect = rect;
+      return lastRect;
+    },
+  };
+}
+
+interface QuoteSelection {
+  messageId: string;
+  text: string;
+  bounds: QuoteBounds;
+  anchor: SelectionAnchor;
+}
+
 export function AssistantQuoteToolbar({
   onInsert,
   currentLength,
   maxLength,
+  rootRef,
 }: {
   onInsert: (
     quote: AssistantQuote,
@@ -51,79 +98,95 @@ export function AssistantQuoteToolbar({
   ) => Promise<{ inserted: boolean; error?: string }> | { inserted: boolean; error?: string };
   currentLength: number;
   maxLength: number;
+  /** Only selections inside this element are offered, so side-by-side chats stay separate. */
+  rootRef?: RefObject<HTMLElement | null>;
 }) {
-  const [selection, setSelection] = useState<{
-    messageId: string;
-    text: string;
-    range: Range;
-    anchor: SelectionAnchor;
-  } | null>(null);
+  const [selection, setSelection] = useState<QuoteSelection | null>(null);
   const [editing, setEditing] = useState(false);
   const [comment, setComment] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [alreadyInserted, setAlreadyInserted] = useState(false);
+  const selectionRef = useRef<QuoteSelection | null>(null);
   const pointerSelectingRef = useRef(false);
-  // After stepping back from the comment, the quoted text may no longer be selected (the
-  // comment box took the selection, and the message can re-render meanwhile). The actions
-  // then stay until a new press, Escape, or a new quotable selection replaces them.
+  // Stepping back from the comment: until the quoted text is selected again, empty selection
+  // reads come from focus moving out of the comment box and must not hide the actions.
   const detachedRef = useRef(false);
-  const restoreRangeRef = useRef<Range | null>(null);
+  const restoreBoundsRef = useRef<QuoteBounds | null>(null);
   // Only a real dismissal hands focus back; the popup otherwise moves focus to the composer
   // when its contents change.
   const closingRef = useRef(false);
   const quoteButtonRef = useRef<HTMLButtonElement>(null);
+  /** Shows other actions, or none; a draft never carries over to a different quote. */
+  const replaceSelection = useCallback((next: QuoteSelection | null) => {
+    const current = selectionRef.current;
+    if (
+      current === next ||
+      (current &&
+        next &&
+        current.messageId === next.messageId &&
+        current.text === next.text &&
+        sameBounds(current.bounds, next.bounds))
+    ) {
+      return;
+    }
+    selectionRef.current = next;
+    setSelection(next);
+    setComment("");
+    setError("");
+    setAlreadyInserted(false);
+  }, []);
   useEffect(() => {
     if (editing) return;
     const inToolbar = (event: Event) =>
       event.target instanceof Element && event.target.closest("[data-quote-toolbar]") !== null;
     const capture = () => {
       const selected = captureAssistantQuoteSelection(window.getSelection());
-      if (!selected) {
-        if (!detachedRef.current) setSelection(null);
+      const root = rootRef?.current;
+      if (!selected || (root && !root.contains(selected.source))) {
+        if (!detachedRef.current) replaceSelection(null);
         return;
       }
       detachedRef.current = false;
       closingRef.current = false;
-      const messageId = selected.source.getAttribute("data-message-id")!;
-      setSelection((current) =>
-        current &&
-        current.messageId === messageId &&
-        current.text === selected.text &&
-        sameRange(current.range, selected.range)
-          ? current
-          : {
-              messageId,
-              text: selected.text,
-              range: selected.range,
-              anchor: createSelectionAnchor(selected.range, selected.source),
-            },
-      );
+      const bounds = boundsOf(selected.range);
+      replaceSelection({
+        messageId: selected.source.getAttribute("data-message-id")!,
+        text: selected.text,
+        bounds,
+        anchor: createSelectionAnchor(bounds, selected.source),
+      });
     };
-    // A new press clears stale actions; its selection is read once the press ends.
+    const clear = () => {
+      detachedRef.current = false;
+      restoreBoundsRef.current = null;
+      replaceSelection(null);
+    };
+    // A new press clears stale actions; its selection is read once the press ends. Pointer
+    // listeners capture, so presses that stop propagation still count.
     const onPointerDown = (event: Event) => {
       if (inToolbar(event)) return;
       pointerSelectingRef.current = true;
-      detachedRef.current = false;
-      restoreRangeRef.current = null;
-      setSelection(null);
+      clear();
     };
     const onPointerUp = (event: Event) => {
       pointerSelectingRef.current = false;
       if (inToolbar(event)) return;
       // Buttons can preserve a prior DOM selection; do not reopen actions beside them.
       if (event.target instanceof Element && event.target.closest("button, [role=button]")) {
-        setSelection(null);
+        clear();
         return;
       }
       capture();
     };
-    // Detached actions have no selection to follow; moving focus elsewhere moves on from them.
-    const onFocusIn = (event: Event) => {
-      if (!detachedRef.current || inToolbar(event)) return;
-      detachedRef.current = false;
-      restoreRangeRef.current = null;
-      setSelection(null);
+    // A release outside the window never arrives; a move with no button pressed ends the press.
+    const onPointerMove = (event: PointerEvent) => {
+      if (!pointerSelectingRef.current || (event.buttons & 1) !== 0) return;
+      pointerSelectingRef.current = false;
+      capture();
+    };
+    const onBlur = () => {
+      pointerSelectingRef.current = false;
     };
     // Keyboard and touch-handle selections report only through selectionchange.
     let frame = 0;
@@ -135,51 +198,60 @@ export function AssistantQuoteToolbar({
       });
     };
     // Leaving the comment box: the popup moves focus as the box unmounts, so let that settle,
-    // then focus the action and re-highlight the quoted text if its range is still intact.
+    // then focus the action and re-highlight the quoted text. If that text is gone, so is
+    // the quote.
     let restoreFrame = 0;
-    if (restoreRangeRef.current) {
+    if (restoreBoundsRef.current) {
       restoreFrame = requestAnimationFrame(() => {
         restoreFrame = requestAnimationFrame(() => {
           restoreFrame = 0;
-          const range = restoreRangeRef.current;
-          restoreRangeRef.current = null;
-          if (!range) return;
+          const bounds = restoreBoundsRef.current;
+          restoreBoundsRef.current = null;
+          const range = bounds && rangeFromBounds(bounds);
+          if (!range) {
+            clear();
+            return;
+          }
           quoteButtonRef.current?.focus({ preventScroll: true });
-          if (range.collapsed || !range.startContainer.isConnected) return;
           const live = window.getSelection();
           live?.removeAllRanges();
-          live?.addRange(range.cloneRange());
+          live?.addRange(range);
         });
       });
     }
-    document.addEventListener("pointerdown", onPointerDown);
-    document.addEventListener("pointerup", onPointerUp);
-    document.addEventListener("pointercancel", onPointerUp);
+    const capturing = { capture: true } as const;
+    document.addEventListener("pointerdown", onPointerDown, capturing);
+    document.addEventListener("pointerup", onPointerUp, capturing);
+    document.addEventListener("pointercancel", onPointerUp, capturing);
+    document.addEventListener("pointermove", onPointerMove, capturing);
     document.addEventListener("selectionchange", onSelectionChange);
-    document.addEventListener("focusin", onFocusIn);
+    window.addEventListener("blur", onBlur);
     return () => {
       cancelAnimationFrame(frame);
       cancelAnimationFrame(restoreFrame);
-      document.removeEventListener("focusin", onFocusIn);
-      document.removeEventListener("pointerdown", onPointerDown);
-      document.removeEventListener("pointerup", onPointerUp);
-      document.removeEventListener("pointercancel", onPointerUp);
+      restoreBoundsRef.current = null;
+      document.removeEventListener("pointerdown", onPointerDown, capturing);
+      document.removeEventListener("pointerup", onPointerUp, capturing);
+      document.removeEventListener("pointercancel", onPointerUp, capturing);
+      document.removeEventListener("pointermove", onPointerMove, capturing);
       document.removeEventListener("selectionchange", onSelectionChange);
+      window.removeEventListener("blur", onBlur);
     };
-  }, [editing]);
+  }, [editing, replaceSelection, rootRef]);
   if (!selection) return null;
+  const close = () => {
+    detachedRef.current = false;
+    restoreBoundsRef.current = null;
+    replaceSelection(null);
+    setEditing(false);
+  };
   const dismiss = () => {
     closingRef.current = true;
-    detachedRef.current = false;
-    setSelection(null);
-    setComment("");
-    setEditing(false);
-    setAlreadyInserted(false);
-    setError("");
+    close();
   };
   const leaveEditing = () => {
     detachedRef.current = true;
-    restoreRangeRef.current = selection.range;
+    restoreBoundsRef.current = selection.bounds;
     setEditing(false);
   };
   const insert = async (send = false) => {
@@ -204,10 +276,7 @@ export function AssistantQuoteToolbar({
     } finally {
       setBusy(false);
     }
-    setComment("");
-    setSelection(null);
-    setEditing(false);
-    setError("");
+    close();
     // Inserting focuses the composer; only clear a selection still left on the quoted text.
     const live = window.getSelection();
     if (live?.anchorNode && selection.anchor.contextElement.contains(live.anchorNode)) {
