@@ -459,6 +459,8 @@ async function createHarness(
   options?: {
     getDeliveryByCommandId?: ProviderTurnDeliveryRepositoryShape["getByCommandId"];
     providerTurnDeliveryWorker?: Partial<ProviderTurnDeliveryWorkerShape>;
+    /** Holds a dispatch until the returned promise settles. */
+    beforeDispatch?: (command: OrchestrationCommand) => Promise<void> | undefined;
   },
 ) {
   let snapshot = initialSnapshot;
@@ -477,7 +479,9 @@ async function createHarness(
     getReadModel: () => Effect.succeed(snapshot),
     readEvents: () => Stream.empty,
     dispatch: (command) =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
+        const gate = options?.beforeDispatch?.(command);
+        if (gate) yield* Effect.promise(() => gate);
         dispatched.push(command);
         snapshot = applyInvestigationWorkflowCommandToSnapshot(snapshot, command);
         return { sequence: dispatched.length };
@@ -893,6 +897,60 @@ describe("InvestigationWorkflowService", () => {
     const current = harness.getSnapshot().investigationWorkflows[0]!;
     expect(current.investigatorA.crossReviewStatus).toBe("running");
     expect(current.investigatorA.crossReviewDispatchCommandId).not.toBe(neverSent);
+  });
+
+  it("runs a manual retry only after the reconciliation launching a review finishes", async () => {
+    const completed = makeCompletedInvestigationWorkflow();
+    const workflow: InvestigationWorkflow = {
+      ...completed,
+      investigatorA: {
+        ...completed.investigatorA,
+        crossReviewThreadId: ThreadId.makeUnsafe("cross-review-a"),
+        crossReviewStatus: "running",
+        crossReviewDispatchCommandId: CommandId.makeUnsafe("cross-review-a-never-sent"),
+      },
+    };
+    const threads = makeFullyReviewedThreads(workflow)
+      .slice(0, 2)
+      .concat(makeThread({ id: ThreadId.makeUnsafe("cross-review-a") }));
+    let releaseLaunch!: () => void;
+    const launchHeld = new Promise<void>((resolve) => {
+      releaseLaunch = resolve;
+    });
+    let launchReached = false;
+    harness = await createHarness(makeReadModel({ workflow, threads }), {
+      getDeliveryByCommandId: () => Effect.succeed(null),
+      beforeDispatch: (command) => {
+        if (command.type !== "thread.turn.start" || command.threadId !== "cross-review-a") {
+          return undefined;
+        }
+        if (launchReached) return undefined;
+        launchReached = true;
+        return launchHeld;
+      },
+    });
+
+    const started = harness.start();
+    await vi.waitFor(() => expect(launchReached).toBe(true));
+    const dispatchedBeforeRetry = harness.dispatched.length;
+    let retryDone = false;
+    const retried = Effect.runPromise(
+      harness.service.retryWorkflow({ workflowId: workflow.id }),
+    ).then(() => {
+      retryDone = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    // The retry waits for the launch in progress instead of reading the workflow mid-launch.
+    expect(retryDone).toBe(false);
+    expect(harness.dispatched).toHaveLength(dispatchedBeforeRetry);
+
+    releaseLaunch();
+    await Promise.all([started, retried]);
+    expect(
+      threadTurnStartCommands(harness.dispatched).filter(
+        (command) => command.threadId === "cross-review-a",
+      ),
+    ).toHaveLength(1);
   });
 
   it("rejects a repeated model among three investigators", async () => {

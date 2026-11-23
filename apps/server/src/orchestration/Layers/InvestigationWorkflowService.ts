@@ -36,7 +36,7 @@ import {
 import { makeBackgroundWorker } from "../../backgroundWorker.ts";
 import { isArchivedWorkflow, isDeletedWorkflow } from "@t3tools/shared/workflowArchive";
 import { makeWorkflowArchiveLifecycle } from "../workflowArchiveLifecycle.ts";
-import { Cause, Effect, Layer, Scope, Stream } from "effect";
+import { Cause, Effect, Layer, Scope, Semaphore, Stream } from "effect";
 
 import { TextGeneration } from "../../git/Services/TextGeneration.ts";
 import { buildFallbackTitle, resolveBestEffortGeneratedTitle } from "../../threadTitle.ts";
@@ -1037,6 +1037,10 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
   );
   const providerTurnDeliveryWorker = yield* Effect.serviceOption(ProviderTurnDeliveryWorker);
   const deliveryRepository = yield* Effect.serviceOption(ProviderTurnDeliveryRepository);
+  // Serializes the event fiber, reconciliation and manual retries: each reads a workflow, then
+  // writes and launches from that read, so two at once could launch the same queued review.
+  const workflowWriteLock = yield* Semaphore.make(1);
+  const withWorkflowWriteLock = workflowWriteLock.withPermits(1);
   const resolveStageDispatch = yield* makeWorkflowStageDispatchResolver;
 
   const titleGenerationWorker = yield* makeBackgroundWorker(
@@ -2137,6 +2141,7 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
     if (sources.stopped) return;
     yield* Effect.addFinalizer(() => sources.stop);
     yield* reconcileStuckWorkflows.pipe(
+      withWorkflowWriteLock,
       Effect.catchCause((cause) =>
         Effect.logError("InvestigationWorkflowService.reconcileStuckWorkflows failed", {
           cause,
@@ -2158,7 +2163,9 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
           )
         : domainEvents;
     yield* Stream.runForEach(work, (item) =>
-      item.kind === "event" ? handleDomainEvent(item.event) : handleDeliveryOutcome(item.outcome),
+      withWorkflowWriteLock(
+        item.kind === "event" ? handleDomainEvent(item.event) : handleDeliveryOutcome(item.outcome),
+      ),
     ).pipe(
       Scope.provide(sources.scope),
       Effect.forkIn(sources.scope, { startImmediately: true }),
@@ -2495,7 +2502,7 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
       const snapshot = yield* orchestrationEngine.getReadModel();
       nextWorkflow = yield* maybeStartReviews(nextWorkflow, snapshot, updatedAt);
       yield* maybeStartSynthesis(nextWorkflow, snapshot, updatedAt);
-    });
+    }).pipe(withWorkflowWriteLock);
 
   const workflowForThread: InvestigationWorkflowServiceShape["workflowForThread"] = (threadId) =>
     orchestrationEngine.getReadModel().pipe(

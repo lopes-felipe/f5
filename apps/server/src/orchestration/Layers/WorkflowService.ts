@@ -2387,6 +2387,45 @@ export const makeWorkflowService = Effect.gen(function* () {
     return plans;
   };
 
+  /** Plan review threads whose turn this process dispatched; empty again after a restart. */
+  const dispatchedPlanReviewThreads = new Set<ThreadId>();
+  /**
+   * Requeued plan reviews whose failed delivery is resent (same delivery, same duplicate-risk
+   * choice) when the launcher admits them, rather than as a new turn.
+   */
+  const requeuedPlanReviewDeliveries = new Map<
+    ThreadId,
+    { readonly allowPossibleDuplicate: boolean }
+  >();
+
+  /**
+   * Whether a plan review holds one of the `WORKFLOW_MAX_ACTIVE_REVIEW_TURNS` slots. A running
+   * review holds one once its turn or delivery exists, or this process dispatched it. A failed
+   * review whose delivery is being resent stays visibly failed, but holds a slot while that
+   * delivery or a turn on its thread is live.
+   */
+  const planReviewHoldsSlot = (
+    review: WorkflowBranch["reviews"][number],
+    snapshot: OrchestrationReadModel,
+    idempotentStageSetup: boolean,
+  ) =>
+    Effect.gen(function* () {
+      const thread = snapshot.threads.find((entry) => entry.id === review.threadId);
+      if (review.status === "error") {
+        return hasActiveRunningTurn(thread) || (yield* hasDeliveryInFlight(review.threadId));
+      }
+      if (review.status !== "running") return false;
+      // A turn requested before the review was (re)queued is an earlier attempt's. A resent
+      // delivery keeps its original row, so an unsettled one also marks the review in flight.
+      const currentTurn =
+        thread?.latestTurn != null && thread.latestTurn.requestedAt >= review.updatedAt;
+      if (currentTurn || dispatchedPlanReviewThreads.has(review.threadId)) return true;
+      const delivery = idempotentStageSetup
+        ? yield* deliveryForStage(review.threadId, review.updatedAt)
+        : null;
+      return delivery !== null || (yield* hasDeliveryInFlight(review.threadId));
+    });
+
   /**
    * Plan review launcher, one pass. When every plan is saved it first records every expected
    * review as `pending` in one write; each pass then admits pending reviews (and re-dispatches
@@ -2394,8 +2433,6 @@ export const makeWorkflowService = Effect.gen(function* () {
    * until `WORKFLOW_MAX_ACTIVE_REVIEW_TURNS` are running. Each review launches on its own, so one
    * failure marks only that review. Results are applied by thread id onto a fresh read.
    */
-  /** Plan review threads whose turn this process dispatched; empty again after a restart. */
-  const dispatchedPlanReviewThreads = new Set<ThreadId>();
 
   const maybeStartReviews = (
     workflow: PlanningWorkflow,
@@ -2409,6 +2446,7 @@ export const makeWorkflowService = Effect.gen(function* () {
       for (const branch of branches) {
         for (const review of branch.reviews) {
           if (review.status !== "running") dispatchedPlanReviewThreads.delete(review.threadId);
+          if (review.status !== "pending") requeuedPlanReviewDeliveries.delete(review.threadId);
         }
       }
       const startsFresh = branches.every(
@@ -2492,18 +2530,10 @@ export const makeWorkflowService = Effect.gen(function* () {
       const resumes: ReviewRecord[] = [];
       let inFlight = 0;
       for (const record of records) {
-        if (record.review.status !== "running") continue;
-        const thread = snapshot.threads.find((entry) => entry.id === record.review.threadId);
-        const delivery = behavior.idempotentStageSetup
-          ? yield* deliveryForStage(record.review.threadId, record.review.updatedAt)
-          : null;
-        if (
-          thread?.latestTurn ||
-          delivery ||
-          dispatchedPlanReviewThreads.has(record.review.threadId)
-        )
+        if (record.review.status !== "running" && record.review.status !== "error") continue;
+        if (yield* planReviewHoldsSlot(record.review, snapshot, behavior.idempotentStageSetup))
           inFlight += 1;
-        else resumes.push(record);
+        else if (record.review.status === "running") resumes.push(record);
       }
       const pending = records.filter((record) => record.review.status === "pending");
 
@@ -2512,6 +2542,15 @@ export const makeWorkflowService = Effect.gen(function* () {
           const { branch, review, reviewerBranchId } = record;
           const budgetError = workflowBudgetError(intentWorkflow);
           if (budgetError) return yield* Effect.fail(budgetError);
+          const redelivery = requeuedPlanReviewDeliveries.get(review.threadId);
+          if (redelivery && providerTurnDeliveryWorker._tag === "Some") {
+            requeuedPlanReviewDeliveries.delete(review.threadId);
+            yield* providerTurnDeliveryWorker.value.retry({
+              threadId: review.threadId,
+              allowPossibleDuplicate: redelivery.allowPossibleDuplicate,
+            });
+            return;
+          }
           const reviewerSlot = requirePlanningBranch(intentWorkflow, reviewerBranchId).authorSlot;
           const reviewThread = snapshot.threads.find((thread) => thread.id === review.threadId);
           if (!reviewThread) {
@@ -2783,6 +2822,24 @@ export const makeWorkflowService = Effect.gen(function* () {
             workflow.merge.updatedAt,
           ),
         );
+      if (startsFresh) {
+        // Checked before the start is saved: a merge whose inputs can never fit (every revised
+        // plan in one prompt) or that is over budget fails visibly, instead of sitting
+        // `in_progress` with no turn.
+        const preflightError =
+          workflowBudgetError(workflow) ??
+          workflowPromptInvariant({
+            workflow,
+            prompt: buildWorkflowMergePrompt(workflow, plans, retry),
+            artifacts: plans,
+            targetSlot: workflow.merge.mergeSlot,
+            artifactLabel: "Merge inputs",
+          });
+        if (preflightError) {
+          yield* upsertWorkflow(markMergeError(workflow, preflightError.message, updatedAt));
+          return;
+        }
+      }
       const intentWorkflow = startsFresh
         ? markMergeStarted(workflow, mergeThreadId, updatedAt)
         : workflow;
@@ -7290,9 +7347,46 @@ export const makeWorkflowService = Effect.gen(function* () {
         }
       }
 
+      // A failed plan-review delivery takes a review slot like any launch. Resends start now
+      // while slots are free; the rest are requeued, and the launcher resends each delivery when
+      // it admits that review. Legacy branch-level review errors keep the direct resend.
+      const requeuedReviewDeliveries = new Set<ThreadId>();
+      {
+        const allReviews = planningBranches(workflow).flatMap((branch) => branch.reviews);
+        const resendCandidates = planningBranches(workflow)
+          .filter(
+            (branch) => !(planningWorkflowBranchFailureStage(branch) === "reviews" && branch.error),
+          )
+          .flatMap((branch) => branch.reviews)
+          .filter(
+            (review) =>
+              failedThreadIds.has(review.threadId) && deliveryMode(review.threadId) === "retry",
+          )
+          .map((review) => review.threadId);
+        const idempotentStageSetup = resolveWorkflowBehavior({
+          runKind: "planning",
+          templateId: workflow.templateId,
+          templateVersion: workflow.templateVersion,
+        }).idempotentStageSetup;
+        let activeReviews = 0;
+        for (const review of allReviews) {
+          if (resendCandidates.includes(review.threadId)) continue;
+          if (yield* planReviewHoldsSlot(review, snapshot, idempotentStageSetup)) {
+            activeReviews += 1;
+          }
+        }
+        for (const threadId of resendCandidates) {
+          if (activeReviews < WORKFLOW_MAX_ACTIVE_REVIEW_TURNS) activeReviews += 1;
+          else requeuedReviewDeliveries.add(threadId);
+        }
+      }
+
       if (providerTurnDeliveryWorker._tag === "Some") {
         yield* Effect.forEach(
-          [...failedThreadIds].filter((threadId) => deliveryMode(threadId) === "retry"),
+          [...failedThreadIds].filter(
+            (threadId) =>
+              deliveryMode(threadId) === "retry" && !requeuedReviewDeliveries.has(threadId),
+          ),
           (threadId) =>
             providerTurnDeliveryWorker.value.retry({
               threadId,
@@ -7358,6 +7452,14 @@ export const makeWorkflowService = Effect.gen(function* () {
             continue;
           }
           const mode = deliveryMode(review.threadId);
+          if (requeuedReviewDeliveries.has(review.threadId)) {
+            requeuedPlanReviewDeliveries.set(review.threadId, {
+              allowPossibleDuplicate: input.allowPossibleDuplicate ?? false,
+            });
+            retriedWorkflow = setReviewPending(retriedWorkflow, branchId, review.threadId);
+            yield* upsertWorkflow(retriedWorkflow);
+            continue;
+          }
           if (mode === "queued" || mode === "retry") {
             if (originalStage === "reviews" && originalBranch.error) {
               retriedWorkflow = preserveLegacyReviewError(
@@ -7522,7 +7624,10 @@ export const makeWorkflowService = Effect.gen(function* () {
         yield* upsertWorkflow(retriedWorkflow);
       }
 
-      if (reviewRetries.size > 0 && !retriesLegacyReviewSetup) {
+      if (
+        (reviewRetries.size > 0 || requeuedReviewDeliveries.size > 0) &&
+        !retriesLegacyReviewSetup
+      ) {
         yield* maybeStartReviews(retriedWorkflow, snapshot, updatedAt, reviewRetries);
         const refreshed = yield* orchestrationEngine.getReadModel();
         retriedWorkflow =
