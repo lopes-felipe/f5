@@ -1,1 +1,0 @@
-- Pi models that advertise service tiers offer Standard, Fast, and Ultrafast speeds independently of thinking effort.
