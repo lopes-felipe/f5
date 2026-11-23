@@ -1,5 +1,11 @@
 import { AGENT_BRIDGE_ACTIVATION_VERSION } from "@t3tools/contracts";
 import { validateManagedHome } from "./profiles/providerIsolation";
+import { beginAccountChange } from "./profiles/ProviderAccountGuard.ts";
+import {
+  antigravityAuthConfigFromRaw,
+  publishAntigravityAuthIdentity,
+  retireAntigravityAuthIdentity,
+} from "./provider/antigravityAuthSupport.ts";
 import { validateWorktreeLocation, unusedWorktreeLocation } from "./worktreeLocationValidation.ts";
 import { assertAccountEnvironmentOverrides } from "./providerProcessEnv";
 import { normalizeRepositorySearchRoots } from "./storage/storageDiscovery.ts";
@@ -57,6 +63,7 @@ import { type DeepPartial, deepMerge } from "@t3tools/shared/Struct";
 import { fromLenientJson } from "@t3tools/shared/schemaJson";
 import {
   applyServerSettingsPatch,
+  providerInstanceSecretField,
   resolveTextGenerationProvider,
 } from "@t3tools/shared/serverSettings";
 import { ServerSecretStoreLive } from "./auth/Layers/ServerSecretStore.ts";
@@ -104,20 +111,63 @@ function redactProviderEnvironmentVariable(
 }
 
 function redactProviderInstanceConfig(instance: ProviderInstanceConfig): ProviderInstanceConfig {
+  const secret = providerInstanceSecretField(instance.driver);
   if (
-    instance.driver !== "opencode" ||
+    !secret ||
     instance.config === null ||
     typeof instance.config !== "object" ||
-    !("serverPassword" in instance.config)
+    !(secret.field in instance.config)
   ) {
     return instance;
   }
+  const config = instance.config as Record<string, unknown>;
   return {
     ...instance,
     config: {
-      ...instance.config,
-      serverPassword: "",
+      ...config,
+      [secret.field]: "",
+      // OpenCode's client contract predates the presence flag; keep its shape unchanged.
+      ...(secret.field === "serverPassword"
+        ? {}
+        : {
+            [secret.redactedField]: Boolean(config[secret.field] || config[secret.redactedField]),
+          }),
     },
+  };
+}
+
+/** Antigravity instances whose sign-in method or key differs between two settings versions. */
+export function antigravityAccountTransitions(
+  current: ServerSettings,
+  next: ServerSettings,
+): ReadonlyArray<string> {
+  const auth = (instance: ProviderInstanceConfig | undefined) => {
+    if (instance?.driver !== "antigravity") return undefined;
+    const config = (instance.config ?? {}) as Record<string, unknown>;
+    return JSON.stringify([config.authMethod ?? "oauth-personal", config.apiKey ?? ""]);
+  };
+  return Object.keys(current.providerInstances).filter((id) => {
+    const before = auth(current.providerInstances[id as keyof ServerSettings["providerInstances"]]);
+    const after = auth(next.providerInstances[id as keyof ServerSettings["providerInstances"]]);
+    return before !== undefined && after !== undefined && before !== after;
+  });
+}
+
+/** Antigravity instances a save removes (or turns into another driver) and creates. */
+export function antigravityInstanceLifecycle(
+  current: ServerSettings,
+  next: ServerSettings,
+): { readonly removed: ReadonlyArray<string>; readonly created: ReadonlyArray<string> } {
+  const isAntigravity = (settings: ServerSettings, id: string) =>
+    settings.providerInstances[id as keyof ServerSettings["providerInstances"]]?.driver ===
+    "antigravity";
+  const ids = new Set([
+    ...Object.keys(current.providerInstances),
+    ...Object.keys(next.providerInstances),
+  ]);
+  return {
+    removed: [...ids].filter((id) => isAntigravity(current, id) && !isAntigravity(next, id)),
+    created: [...ids].filter((id) => !isAntigravity(current, id) && isAntigravity(next, id)),
   };
 }
 
@@ -187,6 +237,16 @@ export interface ServerSettingsShape {
   readonly updateSettings: (
     patch: ServerSettingsPatch,
   ) => Effect.Effect<ServerSettings, ServerSettingsError>;
+  /**
+   * Internal: patch settings, optionally building the patch from the current (materialized)
+   * settings inside the write lock, so a read-modify-write cannot lose a concurrent save. A
+   * builder returning `undefined` writes nothing. `heldAccountChanges` names instances whose
+   * account guard the caller already holds.
+   */
+  readonly updateSettingsWith?: (
+    patch: ServerSettingsPatch | ((current: ServerSettings) => ServerSettingsPatch | undefined),
+    options?: { readonly heldAccountChanges?: ReadonlyArray<string> },
+  ) => Effect.Effect<ServerSettings | undefined, ServerSettingsError>;
   /** Internal: remember a location only after Git has created a checkout there. */
   readonly recordWorktreeLocation?: (directory: string) => Effect.Effect<void, ServerSettingsError>;
 
@@ -873,10 +933,25 @@ const makeServerSettings = Effect.gen(function* () {
           );
         }),
       ),
-    updateSettings: (patch) =>
+    updateSettings(patch) {
+      return this.updateSettingsWith!(patch).pipe(
+        Effect.flatMap((settings) => (settings ? Effect.succeed(settings) : this.getSettings)),
+      );
+    },
+    updateSettingsWith: (patchOrBuild, options) =>
       writeSemaphore.withPermits(1)(
         Effect.gen(function* () {
-          patch = yield* normalizeStorageDiscoveryPatch(patch);
+          // One snapshot, read inside the write lock, is both what a builder sees and what the
+          // patch is merged into: a builder's whole-map patch can't land on a newer base it
+          // never checked.
+          const current = yield* reloadSettingsForWrite;
+          const built =
+            typeof patchOrBuild === "function"
+              ? patchOrBuild(yield* materializeProviderEnvironmentSecrets(current))
+              : patchOrBuild;
+          if (!built) return undefined;
+          const heldAccountChanges = new Set(options?.heldAccountChanges ?? []);
+          let patch = yield* normalizeStorageDiscoveryPatch(built);
           const migratedKeys = ["defaultThreadEnvMode", "enableAssistantStreaming"] as const;
           const markers = Object.fromEntries(
             migratedKeys
@@ -922,7 +997,6 @@ const makeServerSettings = Effect.gen(function* () {
                 }),
             });
           }
-          const current = yield* reloadSettingsForWrite;
           const providerIds = new Set([
             ...Object.keys(current.providerInstances),
             ...Object.keys(patch.providerInstances ?? {}),
@@ -1032,7 +1106,78 @@ const makeServerSettings = Effect.gen(function* () {
                 }),
             ),
           );
-          return yield* publishSettings(next, prepared.changes);
+          // A sign-in method or key change is an account transition. It does not wait: while
+          // the instance is running work (a turn, a title or commit message) or another account
+          // job, the whole save is refused with a message to save again. Both sides are compared
+          // materialized: the cache holds references, `patched` holds values.
+          const currentMaterialized = yield* materializeProviderEnvironmentSecrets(current);
+          const accountChanges = antigravityAccountTransitions(currentMaterialized, patched);
+          // Removing or creating an instance moves its fence too, so a recreated ID is judged
+          // by its own settings, not an identity published for the instance it replaced.
+          const lifecycleChanges = antigravityInstanceLifecycle(currentMaterialized, patched);
+          const fences: Array<() => void> = [];
+          return yield* Effect.acquireUseRelease(
+            Effect.try({
+              try: () => {
+                const releases: Array<() => void> = [];
+                try {
+                  // An account job that already holds this instance's guard (sign-out
+                  // clearing its own key) passes it in instead of acquiring it again.
+                  for (const id of accountChanges)
+                    if (!heldAccountChanges.has(id))
+                      releases.push(beginAccountChange(serverConfig.stateDir, id));
+                } catch (cause) {
+                  for (const release of releases) release();
+                  throw cause;
+                }
+                // The instances built from the old settings refuse new work from here on,
+                // until the registry replaces them.
+                for (const id of accountChanges)
+                  fences.push(
+                    publishAntigravityAuthIdentity(
+                      serverConfig.stateDir,
+                      id,
+                      antigravityAuthConfigFromRaw(
+                        patched.providerInstances[id as keyof ServerSettings["providerInstances"]]
+                          ?.config,
+                      ),
+                    ),
+                  );
+                for (const id of lifecycleChanges.removed)
+                  fences.push(retireAntigravityAuthIdentity(serverConfig.stateDir, id));
+                for (const id of lifecycleChanges.created)
+                  fences.push(
+                    publishAntigravityAuthIdentity(
+                      serverConfig.stateDir,
+                      id,
+                      antigravityAuthConfigFromRaw(
+                        patched.providerInstances[id as keyof ServerSettings["providerInstances"]]
+                          ?.config,
+                      ),
+                    ),
+                  );
+                return releases;
+              },
+              catch: (cause) =>
+                new ServerSettingsError({
+                  settingsPath: serverConfig.settingsPath ?? "<memory>",
+                  detail: `Antigravity sign-in settings can't change while this instance is running work or another account job. Nothing was saved; save again when it finishes. (${cause instanceof Error ? cause.message : String(cause)})`,
+                  cause,
+                }),
+            }),
+            () =>
+              publishSettings(next, prepared.changes).pipe(
+                Effect.onError(() =>
+                  Effect.sync(() => {
+                    for (const restore of fences.toReversed()) restore();
+                  }),
+                ),
+              ),
+            (releases) =>
+              Effect.sync(() => {
+                for (const release of releases) release();
+              }),
+          );
         }),
       ),
     get streamChanges() {

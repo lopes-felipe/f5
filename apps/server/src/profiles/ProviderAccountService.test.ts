@@ -257,7 +257,10 @@ describe("Antigravity account ownership", () => {
       const b = Path.join(root, "b");
       const token = Path.join(antigravityProfileDirectory(a, instanceId), "antigravity-acp");
       await FS.mkdir(token, { recursive: true });
-      await FS.writeFile(Path.join(token, "acp_token.json"), '{"token":"synthetic"}');
+      await FS.writeFile(
+        Path.join(token, "acp_token.json"),
+        '{"client_id":"synthetic","refresh_token":"synthetic"}',
+      );
       expect((await make(a).status(instanceId)).status).toBe("authenticated");
       expect((await make(b).status(instanceId)).status).toBe("unauthenticated");
     } finally {
@@ -312,6 +315,101 @@ describe("Antigravity account ownership", () => {
       install.mockRestore();
       await FS.rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("Antigravity key sign-out", () => {
+  const keyed = (instanceId: ProviderInstanceId, apiKey: string) =>
+    Schema.decodeUnknownSync(ServerSettings)({
+      providerInstances: {
+        [instanceId]: { driver: "antigravity", config: { authMethod: "gemini-api-key", apiKey } },
+      },
+    });
+  const run = async (input: { readonly storedAtExit: string; readonly failWrite?: boolean }) => {
+    const root = await FS.mkdtemp(Path.join(OS.tmpdir(), "f5-agy-signout-"));
+    const instanceId = ProviderInstanceId.make("agy-key");
+    let exit!: (event: { exitCode: number; signal: number | null }) => void;
+    const spawn = vi
+      .spyOn(antigravityAccountProcess, "createAntigravityAccountProcess")
+      .mockReturnValue({
+        pid: 1,
+        write() {},
+        resize() {},
+        kill() {},
+        onData: () => () => {},
+        onExit(callback) {
+          exit = callback;
+          return () => {};
+        },
+      });
+    let settings = keyed(instanceId, "key-one-0123456789");
+    const writes: unknown[] = [];
+    let guardHeldDuringWrite = false;
+    const events: Array<{ type: string; data: string }> = [];
+    const service = new ProviderAccountService(
+      { stateDir: root, profilesRoot: root } as ServerConfigShape,
+      {
+        getSettings: Effect.sync(() => settings),
+        updateSettings: () => Effect.die("unexpected whole-map write"),
+        updateSettingsWith: (build: unknown, options?: { heldAccountChanges?: string[] }) =>
+          Effect.suspend(() => {
+            guardHeldDuringWrite = options?.heldAccountChanges?.includes(instanceId) === true;
+            // Another admission fails while the sign-out still holds the guard.
+            const admission = Effect.runSync(
+              Effect.void.pipe(withAccountAdmission(root, instanceId, "sendTurn"), Effect.exit),
+            );
+            guardHeldDuringWrite &&= admission._tag === "Failure";
+            if (input.failWrite) return Effect.die("disk full");
+            const patch = (build as (current: ServerSettings) => unknown)(settings);
+            if (patch) writes.push(patch);
+            return Effect.succeed(undefined);
+          }),
+      } as unknown as ServerSettingsShape,
+      {} as TerminalManagerShape,
+      (event) => events.push(event as { type: string; data: string }),
+      async () => {},
+      async () => false,
+    );
+    try {
+      await service.start(instanceId, true);
+      // A save rotates the key while the sign-out process runs.
+      settings = keyed(instanceId, input.storedAtExit);
+      exit({ exitCode: 0, signal: null });
+      await vi.waitFor(() => expect(events.some((event) => event.type === "exited")).toBe(true));
+      return { writes, guardHeldDuringWrite, events };
+    } finally {
+      await service.dispose();
+      spawn.mockRestore();
+      await FS.rm(root, { recursive: true, force: true });
+    }
+  };
+
+  it("clears the signed-out key under the held guard and reports success after", async () => {
+    const result = await run({ storedAtExit: "key-one-0123456789" });
+    expect(result.guardHeldDuringWrite).toBe(true);
+    expect(result.writes).toHaveLength(1);
+    // The write clears the key, not merely writes something back.
+    expect(result.writes[0]).toMatchObject({
+      providerInstances: {
+        "agy-key": { config: { apiKey: "", apiKeyRedacted: false } },
+      },
+    });
+    expect(result.events.filter((event) => event.type === "exited")).toEqual([
+      { handle: expect.any(String), instanceId: "agy-key", type: "exited", data: "0" },
+    ]);
+  });
+
+  it("keeps a replacement key saved during the sign-out", async () => {
+    const result = await run({ storedAtExit: "key-two-0123456789" });
+    expect(result.writes).toEqual([]);
+  });
+
+  it("reports a failed key deletion instead of success", async () => {
+    const result = await run({ storedAtExit: "key-one-0123456789", failWrite: true });
+    expect(result.events.find((event) => event.type === "error")?.data).toContain(
+      "could not remove the stored Gemini API key",
+    );
+    expect(result.events.find((event) => event.type === "exited")?.data).toBe("1");
   });
 });
 

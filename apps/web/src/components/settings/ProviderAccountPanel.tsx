@@ -25,9 +25,12 @@ export function ProviderAccountPanel({
   autoStart = false,
   cancelOnUnmount = false,
   onLoginFinished,
+  authType,
 }: {
   readonly instanceId: ProviderInstanceId;
   readonly driver?: string;
+  /** The instance's sign-in method from its provider snapshot, when the caller has it. */
+  readonly authType?: string | undefined;
   /**
    * When the caller already knows the account state (the Profiles surface),
    * only the relevant primary action is offered. Omitted on the Providers
@@ -63,6 +66,9 @@ export function ProviderAccountPanel({
   const [detailsOpen, setDetailsOpen] = useState(false);
   const { copyToClipboard, isCopied } = useCopyToClipboard();
   const api = readNativeApi()?.profiles;
+  // API-key instances verify the key instead of signing in through a browser.
+  const signInLabel =
+    driver === "antigravity" && authType === "gemini-api-key" ? "Connect" : "Sign in";
 
   useEffect(
     () =>
@@ -179,7 +185,7 @@ export function ProviderAccountPanel({
         ) : null}
         {showSignIn ? (
           <Button size="xs" disabled={pending || isRunning} onClick={() => void startLogin()}>
-            Sign in
+            {signInLabel}
           </Button>
         ) : null}
         {showSignIn && driver === "codex" ? (

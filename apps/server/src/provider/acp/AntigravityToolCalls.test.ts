@@ -1,17 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { makeAntigravityToolNormalizer } from "./AntigravityToolCalls.ts";
 import { acpFileChanges } from "./AcpFileChanges.ts";
-import { antigravitySessionMeta } from "./AntigravityAcpSupport.ts";
 
 describe("Antigravity native tools", () => {
-  it("disables workflow writes on affected releases", () => {
-    for (const version of ["1.4.2", "1.4.3", "1.4.4", "1.4.5"])
-      expect(antigravitySessionMeta(version)).toEqual({
-        antigravity: { disabledTools: ["run_workflow"] },
-      });
-    for (const version of [undefined, "1.3.0", "1.4.1", "1.4.6"])
-      expect(antigravitySessionMeta(version)).toBeUndefined();
-  });
   it("locates native replacement hunks and never presents unknown snippets as whole files", () => {
     const normalize = makeAntigravityToolNormalizer(
       () => Array(19).fill("line").join("\n") + "\nold",

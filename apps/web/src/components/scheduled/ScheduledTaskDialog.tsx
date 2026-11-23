@@ -597,6 +597,7 @@ export function ScheduledTaskDialog(props: {
                   {isKnownProviderKind(driver) && (
                     <RuntimeModePicker
                       provider={driver}
+                      availableRuntimeModes={provider?.availableRuntimeModes}
                       value={runtimeMode}
                       onValueChange={(runtimeMode) => update({ runtimeMode })}
                     />

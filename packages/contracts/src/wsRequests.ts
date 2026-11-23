@@ -310,6 +310,7 @@ import { ReviewPreviewDiffInput } from "./review";
 import {
   ServerAddKeybindingInput,
   ServerCheckProviderUpdatesInput,
+  ServerRefreshProvidersInput,
   ServerRemoveKeybindingInput,
   ServerResetKeybindingsInput,
   ServerRunProviderUpdateInput,
@@ -647,7 +648,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.serverGetProjectSettings, Schema.Struct({ projectId: ProjectId })),
   tagRequestBody(WS_METHODS.serverMigrateClientSetting, MigrateClientSettingInput.members[0]),
   tagRequestBody(WS_METHODS.serverMigrateClientSetting, MigrateClientSettingInput.members[1]),
-  tagRequestBody(WS_METHODS.serverRefreshProviders, ServerCheckProviderUpdatesInput),
+  tagRequestBody(WS_METHODS.serverRefreshProviders, ServerRefreshProvidersInput),
   tagRequestBody(WS_METHODS.serverCheckProviderUpdates, ServerCheckProviderUpdatesInput),
   tagRequestBody(WS_METHODS.serverRunProviderUpdate, ServerRunProviderUpdateInput),
   tagRequestBody(WS_METHODS.serverValidateHarnesses, ServerValidateHarnessesInput),

@@ -102,7 +102,21 @@ import {
   makeAcpRequestResolvedEvent,
   makeAcpToolCallEvent,
 } from "../acp/AcpCoreRuntimeEvents.ts";
-import { parsePermissionRequest } from "../acp/AcpRuntimeModel.ts";
+import { findModelConfigOption, parsePermissionRequest } from "../acp/AcpRuntimeModel.ts";
+import {
+  AntigravityModelUnavailableError,
+  AntigravityModeUnavailableError,
+  antigravityAdvertisedModes,
+  antigravityApprovalDecision,
+  antigravityTargetMode,
+  antigravityThinkingLevels,
+  applyAntigravityModelSelection,
+  applyAntigravitySessionMode,
+  makeAntigravitySelectionState,
+  type AntigravitySelectionState,
+  type AntigravityThinkingLevels,
+} from "../acp/AntigravityAcpSupport.ts";
+import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { canonicalJson } from "../../canonicalJsonHash.ts";
 import { makeAcpNativeLoggers, redactAcpLogPayload } from "../acp/AcpNativeLogging.ts";
 import {
@@ -162,6 +176,36 @@ export interface GrokAdapterLiveOptions {
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
   readonly instanceId?: typeof ProviderInstanceId.Type;
+  /** Antigravity policy hooks, added per workstream (account, catalog, modes). */
+  readonly antigravity?: AntigravityAdapterHooks;
+}
+
+export interface AntigravityCatalogObservation {
+  readonly model: string | undefined;
+  readonly thinking: AntigravityThinkingLevels | null;
+  readonly modelChoices: ReadonlyArray<{ readonly value: string; readonly name: string }>;
+  readonly advertisedModes: ReadonlyArray<string>;
+  /** The account revision the observing session started under; others are discarded. */
+  readonly accountRevision?: number;
+}
+
+export interface AntigravityAdapterHooks {
+  /** Account revision; a resume cursor from another revision starts a fresh native session. */
+  readonly accountRevision?: Effect.Effect<number>;
+  /** Thread sessions report the catalog entry for the model they select. */
+  readonly observeCatalog?: (observation: AntigravityCatalogObservation) => Effect.Effect<void>;
+  /**
+   * A reason to refuse new work, set once settings published another sign-in method or key than
+   * this instance was built with; the registry replaces the instance shortly after.
+   */
+  readonly staleAccount?: Effect.Effect<string | undefined>;
+  /** Launch credentials (the Gemini API key) registered with each session's scrubber. */
+  readonly credentials?: ReadonlyArray<string>;
+  /**
+   * Whether the runtime version is certified for the private turn-outcome and child-work
+   * formats. When false the session runs standard ACP only. Absent means certified.
+   */
+  readonly nativeReaders?: (runtime: object) => Effect.Effect<boolean>;
 }
 
 interface PendingApproval {
@@ -202,6 +246,24 @@ interface GrokSessionContext {
   readonly antigravityTasks: AntigravityTasks;
   readonly normalizeAntigravityTool: ReturnType<typeof makeAntigravityToolNormalizer>;
   nativeChildrenPolling: boolean;
+  /** Antigravity: the native mode as last written or reported (`ModeChanged`). */
+  antigravityMode: string | undefined;
+  /**
+   * Antigravity: native Auto was unavailable or rejected for this session, which then runs as
+   * Supervised. Later turns do not retry it, so its one warning is not repeated.
+   */
+  antigravityAutoUnavailable: boolean;
+  /** Antigravity: the latest turn asked for Plan; its requests keep Plan's rules. */
+  antigravityPlanRequested: boolean;
+  /** Antigravity: a mode warning not yet published, kept until a turn starts. */
+  antigravityPendingWarning: string | undefined;
+  /** Antigravity: private-format readers are certified for the runtime this session launched. */
+  readonly antigravityNativeReaders: boolean;
+  /** Antigravity: the account revision this session started under. */
+  readonly antigravityAccountRevision: number | undefined;
+  readonly antigravitySelection: AntigravitySelectionState;
+  /** Antigravity: last context sample emitted, for coalescing. */
+  lastContextUsage: string | undefined;
 }
 
 function settlePendingApprovalsAsCancelled(
@@ -228,11 +290,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function parseGrokResume(raw: unknown): { sessionId: string } | undefined {
+function parseGrokResume(raw: unknown): { sessionId: string; accountRevision: number } | undefined {
   if (!isRecord(raw)) return undefined;
   if (raw.schemaVersion !== GROK_RESUME_VERSION) return undefined;
   if (typeof raw.sessionId !== "string" || !raw.sessionId.trim()) return undefined;
-  return { sessionId: raw.sessionId.trim() };
+  return {
+    sessionId: raw.sessionId.trim(),
+    // Cursors written before account revisions existed belong to revision zero.
+    accountRevision:
+      typeof raw.accountRevision === "number" && Number.isSafeInteger(raw.accountRevision)
+        ? raw.accountRevision
+        : 0,
+  };
 }
 
 function encodeJsonStringForDiagnostics(input: unknown): string | undefined {
@@ -283,6 +352,59 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
     const providerLabel =
       PROVIDER === "acp" ? "Custom ACP agent" : PROVIDER === "antigravity" ? "Antigravity" : "Grok";
     const normalizeModel = options?.normalizeModel ?? resolveGrokAcpBaseModelId;
+    /** Unavailable models and modes fail as validation errors before anything is sent. */
+    const antigravityErrorMapper =
+      (threadId: ThreadId, operation: "startSession" | "sendTurn") =>
+      (
+        cause:
+          | EffectAcpErrors.AcpError
+          | AntigravityModelUnavailableError
+          | AntigravityModeUnavailableError,
+      ) =>
+        cause instanceof AntigravityModelUnavailableError ||
+        cause instanceof AntigravityModeUnavailableError
+          ? new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation,
+              issue: cause.message,
+            })
+          : mapAcpToAdapterError(
+              PROVIDER,
+              threadId,
+              operation === "startSession" ? "session/configure" : "session/set_config_option",
+              cause,
+              automationCatalogs.get(threadId)?.scrubDiagnostic,
+              automationCatalogs.get(threadId)?.hasSensitiveConfiguration() ?? false,
+            );
+    const observeAntigravityCatalog = (
+      acp: AcpSessionRuntimeShape,
+      selection: AntigravitySelectionState,
+      accountRevision: number | undefined,
+    ) =>
+      options?.antigravity?.observeCatalog
+        ? Effect.gen(function* () {
+            const configOptions = yield* acp.getConfigOptions;
+            const modelOption = findModelConfigOption(configOptions);
+            const model = modelOption?.currentValue || undefined;
+            const levels = antigravityThinkingLevels(configOptions);
+            // The current value is this thread's selection; the catalog's default is the level
+            // the model reported right after `setModel`, before F5 wrote one.
+            const baseline =
+              selection.baseline && selection.baseline.model === model
+                ? selection.baseline.level
+                : undefined;
+            yield* options.antigravity!.observeCatalog!({
+              model,
+              thinking: levels && { ...levels, defaultLevel: baseline ?? levels.defaultLevel },
+              modelChoices: (modelOption?.options ?? []).flatMap((entry) =>
+                "value" in entry ? [entry] : entry.options,
+              ),
+              advertisedModes: antigravityAdvertisedModes(yield* acp.getModeState, configOptions)
+                .modes,
+              ...(accountRevision !== undefined ? { accountRevision } : {}),
+            });
+          })
+        : Effect.void;
     const adapterScope = yield* Scope.Scope;
     const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make(PROVIDER);
     const fileSystem = yield* FileSystem.FileSystem;
@@ -654,6 +776,15 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               issue: "cwd is required and must be non-empty.",
             });
           }
+          const staleStart = options?.antigravity?.staleAccount
+            ? yield* options.antigravity.staleAccount
+            : undefined;
+          if (staleStart)
+            return yield* new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "startSession",
+              issue: staleStart,
+            });
 
           const cwd = nodePath.resolve(input.cwd);
           const grokModelSelection =
@@ -681,7 +812,18 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           const discoveredSkillCommands = yield* (
             options?.discoverSkillCommands?.(cwd) ?? Effect.succeed([])
           );
-          const resumeSessionId = parseGrokResume(input.resumeCursor)?.sessionId;
+          const accountRevision =
+            PROVIDER === "antigravity" && options?.antigravity?.accountRevision
+              ? yield* options.antigravity.accountRevision
+              : 0;
+          const parsedResume = parseGrokResume(input.resumeCursor);
+          // A cursor from another account revision starts a fresh native session over the
+          // retained F5 history; the old account's session is never resumed.
+          const resumeSessionId =
+            parsedResume &&
+            (PROVIDER !== "antigravity" || parsedResume.accountRevision === accountRevision)
+              ? parsedResume.sessionId
+              : undefined;
           const catalogs = yield* prepareAcpAutomationCatalogs({
             threadId: input.threadId,
             provider: PROVIDER as "cursor" | "grok" | "antigravity" | "acp",
@@ -692,6 +834,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               : {}),
             ...(options?.automationCatalogVerification
               ? { verification: options.automationCatalogVerification }
+              : {}),
+            ...(options?.antigravity?.credentials
+              ? { credentials: options.antigravity.credentials }
               : {}),
             readOnlyWorkflow: !!input.workflowExecutionProfile,
             threadSession:
@@ -928,41 +1073,68 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                       }
                     );
                   }
+                  // The runtime applies mode notifications and `set_mode` responses in transport
+                  // order, so its state cannot be overwritten by a stale queued `ModeChanged`.
+                  const nativeMode =
+                    PROVIDER === "antigravity"
+                      ? antigravityAdvertisedModes(
+                          yield* acp.getModeState,
+                          yield* acp.getConfigOptions,
+                        ).current
+                      : undefined;
+                  const antigravityDecision =
+                    PROVIDER === "antigravity"
+                      ? antigravityApprovalDecision({
+                          runtimeMode: input.runtimeMode,
+                          sessionMode: nativeMode ?? live?.antigravityMode,
+                          planRequested: live?.antigravityPlanRequested === true,
+                          computerRequest: Boolean(computerRequest),
+                          toolCall: params.toolCall,
+                          workspaceRoot: cwd,
+                        })
+                      : undefined;
                   const sessionApprovedOptionId =
-                    approvalKey !== undefined && sessionApprovedOperations.has(approvalKey)
+                    approvalKey !== undefined &&
+                    antigravityDecision?.kind !== "allow" &&
+                    (antigravityDecision === undefined || antigravityDecision.applyThreadGrants) &&
+                    sessionApprovedOperations.has(approvalKey)
                       ? selectPermissionOptionId(params, "accept")
                       : undefined;
                   if (sessionApprovedOptionId !== undefined)
                     return {
                       outcome: { outcome: "selected" as const, optionId: sessionApprovedOptionId },
                     };
-                  const runtimeMode: RuntimeMode = input.runtimeMode;
-                  switch (runtimeMode) {
-                    case "full-access": {
-                      const autoApprovedOptionId =
-                        PROVIDER === "antigravity"
-                          ? selectPermissionOptionId(params, "accept")
-                          : selectAutoApprovedPermissionOption(params);
-                      if (!computerRequest && autoApprovedOptionId !== undefined) {
-                        return {
-                          outcome: {
-                            outcome: "selected" as const,
-                            optionId: autoApprovedOptionId,
-                          },
-                        };
-                      }
-                      break;
-                    }
-                    case "approval-required":
-                      break;
-                    case "auto-accept-edits":
-                    case "auto":
-                      throw new Error(
-                        `${providerLabel} does not support runtime mode '${runtimeMode}'.`,
-                      );
-                    default:
-                      return assertNever(runtimeMode, `${providerLabel} approval mode`);
+                  if (antigravityDecision?.kind === "allow") {
+                    // Single-use allow; "always" options are never chosen on the user's behalf.
+                    const allowOnce = selectPermissionOptionId(params, "accept");
+                    if (allowOnce !== undefined)
+                      return { outcome: { outcome: "selected" as const, optionId: allowOnce } };
                   }
+                  const runtimeMode: RuntimeMode = input.runtimeMode;
+                  if (PROVIDER !== "antigravity")
+                    switch (runtimeMode) {
+                      case "full-access": {
+                        const autoApprovedOptionId = selectAutoApprovedPermissionOption(params);
+                        if (!computerRequest && autoApprovedOptionId !== undefined) {
+                          return {
+                            outcome: {
+                              outcome: "selected" as const,
+                              optionId: autoApprovedOptionId,
+                            },
+                          };
+                        }
+                        break;
+                      }
+                      case "approval-required":
+                        break;
+                      case "auto-accept-edits":
+                      case "auto":
+                        throw new Error(
+                          `${providerLabel} does not support runtime mode '${runtimeMode}'.`,
+                        );
+                      default:
+                        return assertNever(runtimeMode, `${providerLabel} approval mode`);
+                    }
                   const permissionRequest = parsePermissionRequest(params);
                   const requestId = ApprovalRequestId.make(yield* Random.nextUUIDv4);
                   const runtimeRequestId = RuntimeRequestId.make(requestId);
@@ -983,7 +1155,11 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                           "[unserializable params]"),
                       ...(PROVIDER === "antigravity"
                         ? {
-                            approvalOptions: antigravityApprovalOptions(params),
+                            approvalOptions: antigravityApprovalOptions(params, {
+                              allowThreadGrants:
+                                antigravityDecision?.kind !== "ask" ||
+                                antigravityDecision.applyThreadGrants,
+                            }),
                           }
                         : {}),
                       args: params,
@@ -992,8 +1168,16 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                       rawPayload: params,
                     }),
                   );
-                  const resolved = yield* Deferred.await(decision);
+                  const answered = yield* Deferred.await(decision);
                   pendingApprovals.delete(requestId);
+                  // Where thread grants do not apply (Plan, computer consent), a thread-wide
+                  // answer is enforced as single-use so the CLI never receives `allow_always`.
+                  const resolved: ProviderApprovalDecision =
+                    answered === "acceptForSession" &&
+                    antigravityDecision?.kind === "ask" &&
+                    !antigravityDecision.applyThreadGrants
+                      ? "accept"
+                      : answered;
                   yield* offerRuntimeEvent(
                     makeAcpRequestResolvedEvent({
                       stamp: yield* makeEventStamp(ctx),
@@ -1007,7 +1191,13 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   );
                   const selectedOptionId =
                     resolved === "cancel" ? undefined : selectPermissionOptionId(params, resolved);
-                  if (resolved === "acceptForSession" && selectedOptionId && approvalKey)
+                  if (
+                    resolved === "acceptForSession" &&
+                    selectedOptionId &&
+                    approvalKey &&
+                    (antigravityDecision === undefined ||
+                      (antigravityDecision.kind === "ask" && antigravityDecision.applyThreadGrants))
+                  )
                     sessionApprovedOperations.add(approvalKey);
                   return {
                     outcome: selectedOptionId
@@ -1050,41 +1240,106 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 ),
               );
           if (options?.onRuntimeReady) yield* options.onRuntimeReady(acp, started);
+          // Session recovery passes the persisted `model` and `modelOptions` instead of a
+          // selection; Antigravity restores both so a resume never keeps the account default.
+          const recoveredModel =
+            PROVIDER === "antigravity" && !grokModelSelection ? input.model?.trim() : undefined;
           const requestedStartModelId = grokModelSelection?.model
             ? normalizeModel(grokModelSelection.model)
-            : undefined;
+            : recoveredModel
+              ? normalizeModel(recoveredModel)
+              : undefined;
+          const requestedStartThinking = grokModelSelection
+            ? getModelSelectionStringOptionValue(grokModelSelection, "thinking")
+            : PROVIDER === "antigravity"
+              ? input.modelOptions?.antigravity?.thinking
+              : undefined;
+          const antigravitySelection = makeAntigravitySelectionState();
+          const antigravityStartWarnings: string[] = [];
+          let antigravityStartMode: string | undefined;
+          let antigravityAutoUnavailable = false;
+          // Certified once, for the runtime this session just launched.
+          const antigravityNativeReaders =
+            PROVIDER === "antigravity" && options?.antigravity?.nativeReaders
+              ? yield* options.antigravity.nativeReaders(acp)
+              : true;
+          if (PROVIDER === "antigravity") {
+            const mapStartError = antigravityErrorMapper(input.threadId, "startSession");
+            const advertised = antigravityAdvertisedModes(
+              yield* acp.getModeState,
+              yield* acp.getConfigOptions,
+            );
+            if (input.runtimeMode === "auto" && !advertised.modes.includes("auto")) {
+              antigravityAutoUnavailable = true;
+              antigravityStartWarnings.push(
+                "This Antigravity session does not offer native Auto, so it runs as Supervised and asks before acting.",
+              );
+            }
+            antigravityStartMode = yield* applyAntigravitySessionMode({
+              runtime: acp,
+              target: antigravityTargetMode({
+                runtimeMode: input.runtimeMode,
+                plan: false,
+                advertised: advertised.modes,
+              }),
+              mapError: mapStartError,
+              onAutoFallback: (warning) => {
+                antigravityAutoUnavailable = true;
+                antigravityStartWarnings.push(warning);
+              },
+            });
+          }
           // Custom ACP and Antigravity write the model config option; Grok uses session/set_model.
           const writesConfigOption = PROVIDER !== "grok";
-          const boundModelId = yield* applyGrokAcpModelSelection({
-            runtime: acp,
-            defaultModelId: PROVIDER === "acp" ? "acp-default" : "grok-build",
-            currentModelId: currentGrokModelIdFromSessionSetup(
-              started.sessionSetupResult,
-              writesConfigOption ? "config-option" : "model-state",
-            ),
-            ...(writesConfigOption
-              ? {
-                  availableModels: {
-                    offered: offeredAcpModelIds(started.sessionSetupResult),
-                    custom: grokSettings.customModels.map(customModelSlug),
-                  },
-                }
-              : {}),
-            requestedModelId:
-              (PROVIDER === "antigravity" && requestedStartModelId === "antigravity-default") ||
-              (PROVIDER === "acp" && requestedStartModelId === "acp-default")
-                ? undefined
-                : requestedStartModelId,
-            mapError: (cause) =>
-              mapAcpToAdapterError(
-                PROVIDER,
-                input.threadId,
-                "session/set_model",
-                cause,
-                automationCatalogs.get(input.threadId)?.scrubDiagnostic,
-                automationCatalogs.get(input.threadId)?.hasSensitiveConfiguration() ?? false,
-              ),
-          });
+          const boundModelId =
+            PROVIDER === "antigravity"
+              ? yield* applyAntigravityModelSelection({
+                  runtime: acp,
+                  requestedModel: requestedStartModelId,
+                  requestedThinking: requestedStartThinking,
+                  customModels: grokSettings.customModels.map(customModelSlug),
+                  state: antigravitySelection,
+                  mapError: antigravityErrorMapper(input.threadId, "startSession"),
+                }).pipe(
+                  Effect.tap((selection) =>
+                    Effect.sync(() => {
+                      if (selection.warning) antigravityStartWarnings.push(selection.warning);
+                    }),
+                  ),
+                  Effect.tap(() =>
+                    observeAntigravityCatalog(acp, antigravitySelection, accountRevision),
+                  ),
+                  Effect.map((selection) => selection.model),
+                )
+              : yield* applyGrokAcpModelSelection({
+                  runtime: acp,
+                  defaultModelId: PROVIDER === "acp" ? "acp-default" : "grok-build",
+                  currentModelId: currentGrokModelIdFromSessionSetup(
+                    started.sessionSetupResult,
+                    writesConfigOption ? "config-option" : "model-state",
+                  ),
+                  ...(writesConfigOption
+                    ? {
+                        availableModels: {
+                          offered: offeredAcpModelIds(started.sessionSetupResult),
+                          custom: grokSettings.customModels.map(customModelSlug),
+                        },
+                      }
+                    : {}),
+                  requestedModelId:
+                    PROVIDER === "acp" && requestedStartModelId === "acp-default"
+                      ? undefined
+                      : requestedStartModelId,
+                  mapError: (cause) =>
+                    mapAcpToAdapterError(
+                      PROVIDER,
+                      input.threadId,
+                      "session/set_model",
+                      cause,
+                      automationCatalogs.get(input.threadId)?.scrubDiagnostic,
+                      automationCatalogs.get(input.threadId)?.hasSensitiveConfiguration() ?? false,
+                    ),
+                });
 
           const now = yield* nowIso;
           const session: ProviderSession = {
@@ -1099,6 +1354,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               schemaVersion: GROK_RESUME_VERSION,
               sessionId: started.sessionId,
               ...(catalogs.computerCapable() ? { computerCapable: true } : {}),
+              ...(PROVIDER === "antigravity" ? { accountRevision } : {}),
             },
             createdAt: now,
             updatedAt: now,
@@ -1129,6 +1385,14 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             antigravityTasks: new AntigravityTasks(),
             normalizeAntigravityTool: makeAntigravityToolNormalizer(),
             nativeChildrenPolling: false,
+            antigravityMode: antigravityStartMode,
+            antigravityAutoUnavailable,
+            antigravityPlanRequested: false,
+            antigravityPendingWarning: undefined,
+            antigravityNativeReaders,
+            antigravityAccountRevision: PROVIDER === "antigravity" ? accountRevision : undefined,
+            antigravitySelection,
+            lastContextUsage: undefined,
           };
 
           let nativeSkillCommands: typeof discoveredSkillCommands = [];
@@ -1173,7 +1437,29 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     ).pipe(Effect.forkIn(adapterScope));
                     return;
                   case "ModeChanged":
+                    ctx.antigravityMode = event.modeId;
                     return;
+                  case "UsageUpdated": {
+                    // Context samples only; prompt-response totals never overwrite the window.
+                    if (PROVIDER !== "antigravity") return;
+                    if (ctx.stopped || sessions.get(ctx.threadId) !== ctx) return;
+                    const sample = `${event.used}/${event.size}`;
+                    if (ctx.lastContextUsage === sample) return;
+                    ctx.lastContextUsage = sample;
+                    yield* offerRuntimeEvent({
+                      type: "thread.token-usage.updated",
+                      ...(yield* makeEventStamp(ctx)),
+                      provider: PROVIDER,
+                      threadId: ctx.threadId,
+                      ...(ctx.activeTurnId ? { turnId: ctx.activeTurnId } : {}),
+                      payload: {
+                        usage: {},
+                        contextTokens: event.used,
+                        modelContextWindowTokens: event.size,
+                      },
+                    });
+                    return;
+                  }
                   case "AssistantItemStarted":
                     yield* offerRuntimeEvent(
                       makeAcpAssistantItemEvent({
@@ -1356,6 +1642,14 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             threadId: input.threadId,
             payload: { providerThreadId: started.sessionId },
           });
+          for (const message of antigravityStartWarnings)
+            yield* offerRuntimeEvent({
+              type: "runtime.warning",
+              ...(yield* makeEventStamp(ctx)),
+              provider: PROVIDER,
+              threadId: input.threadId,
+              payload: { message },
+            });
 
           return session;
         }).pipe(Effect.scoped),
@@ -1367,6 +1661,15 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           input.threadId,
           Effect.gen(function* () {
             const ctx = yield* requireSession(input.threadId);
+            const staleTurn = options?.antigravity?.staleAccount
+              ? yield* options.antigravity.staleAccount
+              : undefined;
+            if (staleTurn)
+              return yield* new ProviderAdapterValidationError({
+                provider: PROVIDER,
+                operation: "sendTurn",
+                issue: staleTurn,
+              });
             if (
               PROVIDER === "antigravity" &&
               !options?.nativeCompaction &&
@@ -1425,25 +1728,100 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               const requestedTurnModelId = turnModelSelection?.model
                 ? normalizeModel(turnModelSelection.model)
                 : undefined;
-              const currentModelId = yield* applyGrokAcpModelSelection({
-                runtime: ctx.acp,
-                defaultModelId: PROVIDER === "acp" ? "acp-default" : "grok-build",
-                currentModelId: ctx.currentModelId,
-                requestedModelId:
-                  (PROVIDER === "antigravity" && requestedTurnModelId === "antigravity-default") ||
-                  (PROVIDER === "acp" && requestedTurnModelId === "acp-default")
-                    ? undefined
-                    : requestedTurnModelId,
-                mapError: (cause) =>
-                  mapAcpToAdapterError(
-                    PROVIDER,
-                    input.threadId,
-                    "session/set_model",
-                    cause,
-                    automationCatalogs.get(input.threadId)?.scrubDiagnostic,
-                    automationCatalogs.get(input.threadId)?.hasSensitiveConfiguration() ?? false,
-                  ),
-              });
+              let antigravityTurnWarning: string | undefined;
+              let antigravityModeWarning: string | undefined;
+              if (PROVIDER === "antigravity" && steeringTurnId === undefined) {
+                // Steers stay inside the running turn: no mode, model or level writes.
+                const mapTurnError = antigravityErrorMapper(input.threadId, "sendTurn");
+                // Set before the mode write, so a request that arrives while the native mode
+                // lags behind is still held to Plan's rules.
+                ctx.antigravityPlanRequested = input.interactionMode === "plan";
+                const advertised = antigravityAdvertisedModes(
+                  yield* ctx.acp.getModeState,
+                  yield* ctx.acp.getConfigOptions,
+                );
+                ctx.antigravityMode = yield* applyAntigravitySessionMode({
+                  runtime: ctx.acp,
+                  target: antigravityTargetMode({
+                    // Once Auto fell back for this session, later turns stay Supervised.
+                    runtimeMode: ctx.antigravityAutoUnavailable
+                      ? "approval-required"
+                      : ctx.session.runtimeMode,
+                    plan: input.interactionMode === "plan",
+                    advertised: advertised.modes,
+                  }),
+                  mapError: mapTurnError,
+                  onAutoFallback: (warning) => {
+                    ctx.antigravityAutoUnavailable = true;
+                    // Kept on the session until a turn publishes it: a turn that fails later
+                    // (an attachment, an empty prompt) must not swallow the only warning.
+                    ctx.antigravityPendingWarning = warning;
+                  },
+                });
+                antigravityModeWarning = ctx.antigravityPendingWarning;
+              }
+              const currentModelId =
+                PROVIDER === "antigravity"
+                  ? steeringTurnId !== undefined || turnModelSelection === undefined
+                    ? ctx.currentModelId
+                    : yield* applyAntigravityModelSelection({
+                        runtime: ctx.acp,
+                        requestedModel: requestedTurnModelId,
+                        requestedThinking: getModelSelectionStringOptionValue(
+                          turnModelSelection,
+                          "thinking",
+                        ),
+                        customModels: grokSettings.customModels.map(customModelSlug),
+                        state: ctx.antigravitySelection,
+                        mapError: antigravityErrorMapper(input.threadId, "sendTurn"),
+                      }).pipe(
+                        Effect.tap((selection) =>
+                          Effect.sync(() => {
+                            antigravityTurnWarning = selection.warning;
+                            // The native session has switched: keep the cache in step even if
+                            // the turn fails later (an attachment, an empty prompt).
+                            ctx.currentModelId = selection.model;
+                          }),
+                        ),
+                        // A selection can switch the model and then fail on the level: read back
+                        // the native model so a later turn without a selection reports the
+                        // model it really runs on.
+                        Effect.tapError(() =>
+                          ctx.acp.getConfigOptions.pipe(
+                            Effect.map((options) => {
+                              const active = findModelConfigOption(options)?.currentValue;
+                              if (typeof active === "string" && active) ctx.currentModelId = active;
+                            }),
+                          ),
+                        ),
+                        Effect.tap(() =>
+                          observeAntigravityCatalog(
+                            ctx.acp,
+                            ctx.antigravitySelection,
+                            ctx.antigravityAccountRevision,
+                          ),
+                        ),
+                        Effect.map((selection) => selection.model),
+                      )
+                  : yield* applyGrokAcpModelSelection({
+                      runtime: ctx.acp,
+                      defaultModelId: PROVIDER === "acp" ? "acp-default" : "grok-build",
+                      currentModelId: ctx.currentModelId,
+                      requestedModelId:
+                        PROVIDER === "acp" && requestedTurnModelId === "acp-default"
+                          ? undefined
+                          : requestedTurnModelId,
+                      mapError: (cause) =>
+                        mapAcpToAdapterError(
+                          PROVIDER,
+                          input.threadId,
+                          "session/set_model",
+                          cause,
+                          automationCatalogs.get(input.threadId)?.scrubDiagnostic,
+                          automationCatalogs.get(input.threadId)?.hasSensitiveConfiguration() ??
+                            false,
+                        ),
+                    });
 
               const userText = input.input ?? "";
               const text = (yield* rewriteUserText(userText, ctx.session.cwd)).trim();
@@ -1562,6 +1940,17 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   turnId,
                   payload: displayModel ? { model: displayModel } : {},
                 });
+                if (antigravityModeWarning !== undefined) ctx.antigravityPendingWarning = undefined;
+                for (const message of [antigravityModeWarning, antigravityTurnWarning])
+                  if (message)
+                    yield* offerRuntimeEvent({
+                      type: "runtime.warning",
+                      ...(yield* makeEventStamp(ctx)),
+                      provider: PROVIDER,
+                      threadId: input.threadId,
+                      turnId,
+                      payload: { message },
+                    });
               }
 
               return {
@@ -1583,13 +1972,19 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         );
 
         return yield* Effect.gen(function* () {
-          const checkOutcome =
-            PROVIDER === "antigravity" && options?.antigravityProfileDirectory
-              ? yield* watchAntigravityPromptOutcome(
-                  options.antigravityProfileDirectory,
-                  prepared.context.acpSessionId,
-                )
+          // Private-format readers run only when the session's own runtime was certified.
+          const nativeProfileDirectory =
+            PROVIDER === "antigravity" &&
+            options?.antigravityProfileDirectory &&
+            prepared.context.antigravityNativeReaders
+              ? options.antigravityProfileDirectory
               : undefined;
+          const checkOutcome = nativeProfileDirectory
+            ? yield* watchAntigravityPromptOutcome(
+                nativeProfileDirectory,
+                prepared.context.acpSessionId,
+              )
+            : undefined;
           const deadline =
             options?.promptInactivityTimeoutMs ??
             (PROVIDER === "antigravity" ? 15 * 60_000 : undefined);
@@ -1661,14 +2056,13 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             ),
           );
           const nativeFailure = checkOutcome ? yield* checkOutcome(result) : undefined;
-          const nativeChildren =
-            PROVIDER === "antigravity" && options?.antigravityProfileDirectory
-              ? yield* readAntigravityChildrenAtWork({
-                  profileDirectory: options.antigravityProfileDirectory,
-                  rootSessionId: prepared.context.acpSessionId,
-                  toolCallIds: prepared.context.antigravityTasks.taskIds,
-                })
-              : [];
+          const nativeChildren = nativeProfileDirectory
+            ? yield* readAntigravityChildrenAtWork({
+                profileDirectory: nativeProfileDirectory,
+                rootSessionId: prepared.context.acpSessionId,
+                toolCallIds: prepared.context.antigravityTasks.taskIds,
+              })
+            : [];
 
           return yield* withThreadLock(
             input.threadId,
@@ -1715,13 +2109,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     threadId: ctx.threadId,
                     turnId: prepared.turnId,
                   } as ProviderRuntimeEvent);
-                if (
-                  nativeChildren.length &&
-                  !ctx.nativeChildrenPolling &&
-                  options?.antigravityProfileDirectory
-                ) {
+                if (nativeChildren.length && !ctx.nativeChildrenPolling && nativeProfileDirectory) {
                   ctx.nativeChildrenPolling = true;
-                  const profileDirectory = options.antigravityProfileDirectory;
+                  const profileDirectory = nativeProfileDirectory;
                   yield* Effect.gen(function* () {
                     while (!ctx.stopped && ctx.antigravityTasks.taskIds.length) {
                       yield* Effect.sleep(Duration.seconds(2));

@@ -304,8 +304,9 @@ export function ProvidersSettings() {
   const refreshProviders = () => {
     if (isRefreshingProviders) return;
     setIsRefreshingProviders(true);
+    // The explicit refresh here is what runs Antigravity's model discovery.
     void ensureNativeApi()
-      .server.refreshProviders()
+      .server.refreshProviders({ discoverModels: true })
       .then(({ providers }) => {
         queryClient.setQueryData(serverQueryKeys.config(), (existing) =>
           existing ? { ...existing, providers } : existing,

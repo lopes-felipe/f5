@@ -1,15 +1,27 @@
 import { beginAccountChange } from "./ProviderAccountGuard.ts";
 import { createAntigravityAccountProcess } from "./AntigravityAccountProcess.ts";
-import { hasAntigravityAccount } from "../provider/Layers/AntigravityProvider.ts";
+import {
+  antigravityAuthConfig,
+  antigravityReadiness,
+  isAntigravityAuthMethodExposed,
+} from "../provider/antigravityAuthSupport.ts";
+import { antigravityProfileDirectory } from "../provider/acp/AntigravityAcpSupport.ts";
+import {
+  isProviderSecretUnavailable,
+  PROVIDER_SECRET_UNAVAILABLE,
+} from "../serverSettingsSecrets.ts";
+import { PROVIDER_INSTANCE_SECRET_FIELDS } from "@t3tools/shared/serverSettings";
 import { parseClaudeAuthStatusFromOutput } from "../provider/Layers/ProviderHealth";
 import * as Path from "node:path";
 import { randomUUID } from "node:crypto";
 import { Effect, Schema } from "effect";
 import {
+  AntigravitySettings,
   ClaudeSettings,
   CodexSettings,
   type ProviderInstanceId,
   type ProviderAccountEvent,
+  type ServerSettings,
 } from "@t3tools/contracts";
 import type { ServerConfigShape } from "../config";
 import { terminalOwnerKey, type TerminalManagerShape } from "../terminal/Services/Manager";
@@ -43,6 +55,8 @@ interface Job {
   process: PtyProcess;
   done: Promise<void>;
   timeout: ReturnType<typeof setTimeout>;
+  /** The process has exited; teardown waits on `done` without killing it. */
+  exited?: boolean;
 }
 export class ProviderAccountService {
   private readonly jobs = new Map<string, Job>();
@@ -114,14 +128,25 @@ export class ProviderAccountService {
   }
   async status(instanceId: ProviderInstanceId) {
     const settings = await Effect.runPromise(this.settings.getSettings);
-    if (deriveProviderInstanceConfigMap(settings)[instanceId]?.driver === "antigravity") {
-      const authenticated = await hasAntigravityAccount(this.config.stateDir, instanceId);
+    const antigravityInstance = deriveProviderInstanceConfigMap(settings)[instanceId];
+    if (antigravityInstance?.driver === "antigravity") {
+      const config = Schema.decodeUnknownSync(AntigravitySettings)(
+        antigravityInstance.config ?? {},
+      );
+      const readiness = await antigravityReadiness({
+        profileDirectory: antigravityProfileDirectory(this.config.stateDir, instanceId),
+        auth: antigravityAuthConfig(config),
+        keyUnavailable: isProviderSecretUnavailable(
+          PROVIDER_INSTANCE_SECRET_FIELDS.antigravity,
+          config,
+        ),
+      });
       await this.refresh(instanceId);
       return {
-        status: authenticated ? "authenticated" : "unauthenticated",
-        detail: authenticated
-          ? "Signed in to this profile’s Antigravity account."
-          : "Install Antigravity and sign in using Settings.",
+        status: readiness.ready ? "authenticated" : "unauthenticated",
+        detail: readiness.ready
+          ? `Connected with ${readiness.authLabel} for this profile’s Antigravity instance.`
+          : (readiness.message ?? "Install Antigravity and sign in using Settings."),
       };
     }
     const resolved = await this.resolve(instanceId);
@@ -167,6 +192,41 @@ export class ProviderAccountService {
       }),
     );
   }
+  /**
+   * Sign-out for the key method deletes the stored key (an explicit clear), but only the key
+   * this sign-out started with: a replacement saved meanwhile is kept. The read and write run
+   * inside one settings transaction, under the account guard the caller still holds.
+   */
+  private async clearAntigravityKey(
+    instanceId: ProviderInstanceId,
+    signedOutKey: string,
+  ): Promise<void> {
+    const build = (settings: ServerSettings) => {
+      const instance = settings.providerInstances[instanceId];
+      if (
+        instance?.driver !== "antigravity" ||
+        !instance.config ||
+        typeof instance.config !== "object"
+      )
+        return undefined;
+      const config = instance.config as Record<string, unknown>;
+      if (config.apiKey !== signedOutKey) return undefined;
+      return {
+        providerInstances: {
+          ...settings.providerInstances,
+          [instanceId]: { ...instance, config: { ...config, apiKey: "", apiKeyRedacted: false } },
+        },
+      };
+    };
+    if (this.settings.updateSettingsWith) {
+      await Effect.runPromise(
+        this.settings.updateSettingsWith(build, { heldAccountChanges: [instanceId] }),
+      );
+      return;
+    }
+    const patch = build(await Effect.runPromise(this.settings.getSettings));
+    if (patch) await Effect.runPromise(this.settings.updateSettings(patch));
+  }
   async start(
     instanceId: ProviderInstanceId,
     logout = false,
@@ -181,6 +241,24 @@ export class ProviderAccountService {
     if (method === "install" && (!antigravity || logout))
       throw new Error("Installation is supported only for Antigravity setup.");
     const resolved = antigravity ? undefined : await this.resolve(instanceId);
+    const readAntigravityAuth = (config: unknown) => {
+      const decoded = Schema.decodeUnknownSync(AntigravitySettings)(config ?? {});
+      const auth = antigravityAuthConfig(decoded);
+      if (method !== "install" && !logout) {
+        if (!isAntigravityAuthMethodExposed(auth.authMethod))
+          throw new Error("This Antigravity sign-in method is not available in F5 yet.");
+        if (
+          auth.authMethod === "gemini-api-key" &&
+          isProviderSecretUnavailable(PROVIDER_INSTANCE_SECRET_FIELDS.antigravity, decoded)
+        )
+          throw new Error(PROVIDER_SECRET_UNAVAILABLE);
+        if (auth.authMethod === "gemini-api-key" && !auth.apiKey)
+          throw new Error("Enter a Gemini API key in the Antigravity provider settings first.");
+      }
+      return auth;
+    };
+    // Validated early for a fast error, then read again once the account guard is held.
+    let antigravityAuth = antigravity ? readAntigravityAuth(instance.config) : undefined;
     if (this.disconnectedOwners.has(owner)) throw new Error("Account connection closed.");
     const createProcess = this.terminals.createAccountProcess;
     if (!antigravity && !createProcess)
@@ -205,6 +283,14 @@ export class ProviderAccountService {
     try {
       if (antigravity && method !== "install") {
         releaseAccountChange = beginAccountChange(this.config.stateDir, instanceId);
+        // A settings save that changed the key or method either committed before this read or
+        // now fails on the guard, so the child gets the stored credentials.
+        const guarded = deriveProviderInstanceConfigMap(
+          await Effect.runPromise(this.settings.getSettings),
+        )[instanceId];
+        if (guarded?.driver !== "antigravity")
+          throw new Error("This Antigravity instance changed. Retry from Settings.");
+        antigravityAuth = readAntigravityAuth(guarded.config);
         if (await this.isBusy(instanceId))
           throw new Error("Stop this instance's active turn before changing its account.");
         await this.stopIdleSessions(instanceId);
@@ -215,7 +301,15 @@ export class ProviderAccountService {
         ? createAntigravityAccountProcess({
             stateDir: this.config.stateDir,
             instanceId,
-            action: method === "install" ? "install" : logout ? "logout" : "login",
+            action:
+              method === "install"
+                ? { type: "install" }
+                : logout
+                  ? { type: "disconnect" }
+                  : antigravityAuth!.authMethod === "gemini-api-key"
+                    ? { type: "key-connect" }
+                    : { type: "oauth-connect" },
+            auth: antigravityAuth!,
             environment: buildAccountExecutionEnvironment({
               purpose: "account",
               profile: this.config.profile,
@@ -255,21 +349,58 @@ export class ProviderAccountService {
         },
         method === "install" ? 45 * 60_000 : 600000,
       );
-      this.jobs.set(handle, { instanceId, process: child, done, timeout, owner });
+      const job: Job = { instanceId, process: child, done, timeout, owner };
+      this.jobs.set(handle, job);
+      // Tracked until `done`, which a key sign-out settles only after its settings write, so
+      // disposal still waits for that write and the guard it holds.
+      void done.then(() => {
+        if (this.jobs.get(handle) === job) this.jobs.delete(handle);
+      });
       const unsubscribe = child.onData((data) =>
         this.emit({ handle, instanceId, type: "output", data }, owner),
       );
       child.onExit((event) => {
         clearTimeout(timeout);
         unsubscribe();
-        this.jobs.delete(handle);
-        releaseAccountChange();
+        job.exited = true;
         lease.release();
-        finish();
-        this.emit({ handle, instanceId, type: "exited", data: String(event.exitCode) }, owner);
+        const signedOutKey =
+          logout && antigravityAuth?.authMethod === "gemini-api-key" && event.exitCode === 0
+            ? antigravityAuth.apiKey
+            : undefined;
+        const exited = (code: string) =>
+          this.emit({ handle, instanceId, type: "exited", data: code }, owner);
+        if (!signedOutKey) {
+          releaseAccountChange();
+          finish();
+          exited(String(event.exitCode));
+        }
         void (async () => {
           if (logout && !antigravity && event.exitCode === 0)
             await this.clearConfiguredCredentials(instanceId);
+          if (signedOutKey) {
+            // The guard stays held until the key is gone. Success is reported only then; a
+            // failed delete is reported so the user can retry sign-out.
+            try {
+              await this.clearAntigravityKey(instanceId, signedOutKey);
+            } catch {
+              this.emit(
+                {
+                  handle,
+                  instanceId,
+                  type: "error",
+                  data: "Antigravity signed out, but F5 could not remove the stored Gemini API key. Sign out again to retry.",
+                },
+                owner,
+              );
+              exited("1");
+              return;
+            } finally {
+              releaseAccountChange();
+              finish();
+            }
+            exited("0");
+          }
           await this.refresh(instanceId);
         })().catch(() =>
           this.emit(
@@ -296,13 +427,18 @@ export class ProviderAccountService {
   }
   input(handle: string, data: string, owner: object = this): void {
     const job = this.jobs.get(handle);
-    if (!job || job.owner !== owner) throw new Error("Unknown or expired account terminal.");
+    if (!job || job.owner !== owner || job.exited)
+      throw new Error("Unknown or expired account terminal.");
     job.process.write(data);
   }
   async cancel(handle: string, owner: object = this): Promise<void> {
     const job = this.jobs.get(handle);
     if (!job) return;
     if (job.owner !== owner) throw new Error("Account terminal belongs to another connection.");
+    if (job.exited) {
+      await job.done;
+      return;
+    }
     job.process.kill();
     const force = setTimeout(() => job.process.kill("SIGKILL"), 3000);
     try {

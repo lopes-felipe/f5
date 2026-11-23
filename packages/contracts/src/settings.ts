@@ -203,12 +203,48 @@ export const MuseSettings = Schema.Struct({
 });
 export type MuseSettings = typeof MuseSettings.Type;
 
+/** Antigravity sign-in methods, named as upstream T3 Code and the `agy` CLI name them. */
+export const ANTIGRAVITY_AUTH_METHODS = [
+  { value: "oauth-personal", label: "Google account" },
+  { value: "oauth-business", label: "Gemini Enterprise" },
+  { value: "gemini-api-key", label: "Gemini API key" },
+  { value: "agent-platform", label: "Agent Platform (Vertex AI)" },
+] as const;
+export const AntigravityAuthMethod = Schema.Literals(
+  ANTIGRAVITY_AUTH_METHODS.map((method) => method.value),
+);
+export type AntigravityAuthMethod = typeof AntigravityAuthMethod.Type;
+/**
+ * Methods F5 offers and accepts. The others decode (so settings written by a newer build or by
+ * upstream round-trip) but stay unavailable until their live checks pass.
+ */
+export const ANTIGRAVITY_EXPOSED_AUTH_METHODS = [
+  "oauth-personal",
+  "gemini-api-key",
+] as const satisfies ReadonlyArray<AntigravityAuthMethod>;
+
 export const AntigravitySettings = Schema.Struct({
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   customModels: Schema.Array(CustomModelSetting).pipe(Schema.withDecodingDefault(() => [])),
   nativeCompaction: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  authMethod: AntigravityAuthMethod.pipe(
+    Schema.withDecodingDefault(() => "oauth-personal" as const),
+  ),
+  /** Gemini API key. Persisted only as a secret-store reference (`apiKeyRedacted`). */
+  apiKey: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
+  apiKeyRedacted: Schema.optionalKey(Schema.Boolean),
 });
 export type AntigravitySettings = typeof AntigravitySettings.Type;
+
+/**
+ * The legacy `providers.antigravity` block never carries a key. Only explicit instances keep one,
+ * in the secret store; a key written into the legacy block by hand is dropped on decode, so it is
+ * never stored in plaintext, sent to clients or left behind by sign-out. Editing the default
+ * instance in Settings moves it into `providerInstances`, where the key can be entered.
+ */
+export const LegacyAntigravitySettings = AntigravitySettings.mapFields(
+  ({ apiKey: _apiKey, apiKeyRedacted: _apiKeyRedacted, ...fields }) => fields,
+);
 
 /** Pi is instantiated only through an explicit provider-instance entry. */
 export const PiSettings = Schema.Struct({
@@ -676,7 +712,7 @@ export const ServerSettings = Schema.Struct({
     cursor: CursorSettings.pipe(Schema.withDecodingDefault(() => ({}))),
     opencode: OpenCodeSettings.pipe(Schema.withDecodingDefault(() => ({}))),
     grok: GrokSettings.pipe(Schema.withDecodingDefault(() => ({}))),
-    antigravity: AntigravitySettings.pipe(Schema.withDecodingDefault(() => ({}))),
+    antigravity: LegacyAntigravitySettings.pipe(Schema.withDecodingDefault(() => ({}))),
     muse: MuseSettings.pipe(Schema.withDecodingDefault(() => ({}))),
   }).pipe(Schema.withDecodingDefault(() => ({}))),
   // New driver-agnostic instance map. Keyed by `ProviderInstanceId`; values

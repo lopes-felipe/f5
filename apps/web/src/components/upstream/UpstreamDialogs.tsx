@@ -492,6 +492,7 @@ export function StartPortDialog(props: {
                 <RuntimeModePicker
                   disabled={locked}
                   provider={driver}
+                  availableRuntimeModes={provider?.availableRuntimeModes}
                   value={runtimeMode}
                   onValueChange={setRuntimeMode}
                 />

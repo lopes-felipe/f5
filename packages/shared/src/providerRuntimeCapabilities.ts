@@ -66,13 +66,16 @@ export function providerRuntimeCapabilities(
       driver === "codex" ||
       driver === "muse" ||
       driver === "acp" ||
-      driver === "pi",
+      driver === "pi" ||
+      // Antigravity sessions report each model's `thought_level` option.
+      driver === "antigravity",
     sessionCommandCatalog:
       driver === "claudeAgent" ||
       driver === "codex" ||
       driver === "grok" ||
       driver === "acp" ||
-      driver === "pi",
+      driver === "pi" ||
+      driver === "antigravity",
     instanceInventory: driver === "claudeAgent" || driver === "codex",
     nativeSessionCleanup: driver === "claudeAgent",
   };

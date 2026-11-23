@@ -25,6 +25,7 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
   planSidebarOpen: boolean;
   runtimeMode: RuntimeMode;
   provider: ProviderKind;
+  availableRuntimeModes?: ReadonlyArray<RuntimeMode> | undefined;
   traitsMenuContent?: ReactNode;
   /** Context-window summary shown as an info row, since the meter is hidden when compact. */
   contextSummary?: string | null;
@@ -98,6 +99,7 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
           <RuntimeModeMenuItems
             disabled={props.disabled}
             provider={props.provider}
+            availableRuntimeModes={props.availableRuntimeModes}
             value={props.runtimeMode}
             onValueChange={props.onRuntimeModeChange}
           />

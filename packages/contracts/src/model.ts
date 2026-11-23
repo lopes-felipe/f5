@@ -79,13 +79,19 @@ export const PiModelOptions = Schema.Struct({
 });
 export type PiModelOptions = typeof PiModelOptions.Type;
 
+/** Antigravity thinking level: a value the selected model lists in its `thought_level` option. */
+export const AntigravityModelOptions = Schema.Struct({
+  thinking: Schema.optional(TrimmedNonEmptyString),
+});
+export type AntigravityModelOptions = typeof AntigravityModelOptions.Type;
+
 export const ProviderModelOptions = Schema.Struct({
   codex: Schema.optional(CodexModelOptions),
   claudeAgent: Schema.optional(ClaudeModelOptions),
   cursor: Schema.optional(CursorModelOptions),
   opencode: Schema.optional(OpenCodeModelOptions),
   grok: Schema.optional(Schema.Struct({})),
-  antigravity: Schema.optional(Schema.Struct({})),
+  antigravity: Schema.optional(AntigravityModelOptions),
   muse: Schema.optional(MuseModelOptions),
   acp: Schema.optional(Schema.Struct({})),
   pi: Schema.optional(PiModelOptions),

@@ -87,7 +87,10 @@ import {
 import { describeMcpReloadFailure, MCP_RELOAD_RETRY_DELAYS_MS } from "../mcpReconcile.ts";
 import { getProviderEnvironmentKey } from "@t3tools/shared/providerOptions";
 import { getProviderTurnInputLengthIssue } from "@t3tools/shared/providerInput";
-import { runtimeModeUnsupportedReason } from "@t3tools/shared/runtimeMode";
+import {
+  runtimeModeUnsupportedReason,
+  savedRuntimeModeUnsupportedReason,
+} from "@t3tools/shared/runtimeMode";
 import {
   Duration,
   Deferred,
@@ -739,6 +742,20 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           ),
       });
 
+    /** Per-instance runtime-mode support from the status snapshot, when it narrows the default. */
+    const readAvailableRuntimeModes = (instanceId: ProviderInstanceId) =>
+      Option.match(providerRegistry, {
+        onNone: () => Effect.succeed<ReadonlyArray<RuntimeMode> | undefined>(undefined),
+        onSome: (service) =>
+          service.getProviders.pipe(
+            Effect.map(
+              (providers) =>
+                providers.find((provider) => provider.instanceId === instanceId)
+                  ?.availableRuntimeModes,
+            ),
+          ),
+      });
+
     const snapshotSessionCapabilities = (input: {
       readonly threadId: ThreadId;
       readonly instanceId: ProviderInstanceId;
@@ -1342,9 +1359,11 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         });
 
         const recoveredRuntimeMode = input.binding.runtimeMode ?? DEFAULT_RUNTIME_MODE;
-        const unsupportedRuntimeMode = runtimeModeUnsupportedReason(
+        // A saved selection: the adapter's own fallback handles a mode the session lost.
+        const unsupportedRuntimeMode = savedRuntimeModeUnsupportedReason(
           input.binding.provider,
           recoveredRuntimeMode,
+          yield* readAvailableRuntimeModes(bindingInstanceId),
         );
         if (unsupportedRuntimeMode) {
           return yield* toValidationError(input.operation, unsupportedRuntimeMode);
@@ -1771,6 +1790,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           const unsupportedRuntimeMode = runtimeModeUnsupportedReason(
             resolvedProvider,
             parsed.runtimeMode,
+            yield* readAvailableRuntimeModes(requestedInstanceId),
           );
           if (unsupportedRuntimeMode) {
             return yield* toValidationError("ProviderService.startSession", unsupportedRuntimeMode);

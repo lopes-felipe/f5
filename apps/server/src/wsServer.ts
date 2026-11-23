@@ -6929,7 +6929,14 @@ export const createServer = Effect.fn(function* (
       }
 
       case WS_METHODS.serverRefreshProviders: {
-        const { instanceId } = stripRequestTag(request.body);
+        const { instanceId, discoverModels } = stripRequestTag(request.body);
+        // Only the Settings refresh asks for it: drivers with an expensive catalog discovery
+        // (Antigravity) run it then, never for health checks, session restarts, startup or
+        // periodic refreshes.
+        if (discoverModels === true)
+          for (const instance of yield* providerInstanceRegistry.listInstances)
+            if (instanceId === undefined || instance.instanceId === instanceId)
+              yield* instance.requestModelDiscovery ?? Effect.void;
         if (instanceId) yield* providerRegistry.refreshInstance(instanceId);
         else yield* providerRegistry.refresh();
         const providers = yield* providerAdvisoryProjection.getProviders;
