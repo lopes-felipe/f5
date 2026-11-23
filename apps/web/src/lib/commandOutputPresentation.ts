@@ -48,8 +48,11 @@ export type SearchSegment =
       readonly type: "group";
       /** The path as printed, or the single searched file. */
       readonly displayPath: string;
-      /** Resolved against the command's cwd, for opening. */
-      readonly filePath: string;
+      /**
+       * Resolved against the command's cwd, for opening; null without a path
+       * (`grep -h`) or when a `cd` before the search may have failed.
+       */
+      readonly filePath: string | null;
       readonly language: string;
       /** False when the previous group is the same file. */
       readonly showHeader: boolean;
@@ -85,8 +88,12 @@ export type CommandOutputPresentation =
     }
   | {
       readonly kind: "file";
-      readonly displayPath: string;
-      readonly filePath: string;
+      /**
+       * The one file read, or null when the command read several files.
+       * `filePath` is null when where it ran is unknown, so it cannot be opened.
+       */
+      readonly file: { readonly displayPath: string; readonly filePath: string | null } | null;
+      readonly fileCount: number;
       readonly language: string;
       /** The file text shown, without any line-number prefixes. */
       readonly code: string;
@@ -117,7 +124,9 @@ export type CommandOutputPresentation =
  */
 export const MAX_PRESENTED_LINES = 4_000;
 
-function countLinesUpTo(text: string, limit: number): number {
+/** Counts output rows like `outputLines`: a final line break ends the last row. */
+function countLinesUpTo(output: string, limit: number): number {
+  const text = output.endsWith("\n") ? output.slice(0, output.endsWith("\r\n") ? -2 : -1) : output;
   let lines = 1;
   for (
     let index = text.indexOf("\n");
@@ -223,10 +232,29 @@ function classifyFileRead(input: ClassifyCommandOutputInput): CommandOutputPrese
     }
   }
 
+  // Reads of different files in one language are highlighted together, but
+  // no single file can be named or opened for them. A read after `cd x;` may
+  // have run in either directory, so it is named but cannot be opened.
+  const filePaths = new Set(
+    parsed.segments.map((segment) =>
+      resolveCommandPath(segment.filePath, input.cwd, segment.cwdOffset),
+    ),
+  );
+  const displayPaths = new Set(parsed.segments.map((segment) => segment.filePath));
+  const cwdKnown = parsed.segments.every((segment) => segment.cwdKnown);
+  const file =
+    filePaths.size === 1 && cwdKnown
+      ? {
+          displayPath: first.filePath,
+          filePath: resolveCommandPath(first.filePath, input.cwd, first.cwdOffset),
+        }
+      : displayPaths.size === 1
+        ? { displayPath: first.filePath, filePath: null }
+        : null;
   return {
     kind: "file",
-    displayPath: first.filePath,
-    filePath: resolveCommandPath(first.filePath, input.cwd, first.cwdOffset),
+    file,
+    fileCount: displayPaths.size,
     language,
     code,
     lineNumbers: single ? lineNumbers : null,
@@ -275,48 +303,82 @@ function posixClassesToJs(pattern: string): string {
   return pattern.replace(/\[:([a-z]+):\]/g, (whole, name: string) => POSIX_CLASSES[name] ?? whole);
 }
 
+/** Quantifiers that can repeat without limit (`*`, `+`, `{n,}`, large `{n,m}`). */
 const MAX_UNBOUNDED_QUANTIFIERS = 2;
+/** All quantifiers, `?` and `{n}` included. */
+const MAX_QUANTIFIERS = 8;
+/** A `{n,m}` bound above this counts as unbounded. */
+const LARGE_REPEAT_BOUND = 32;
+const QUANTIFIER_PATTERN = /^(?:[*+?]|\{(\d+)(?:(,)(\d*))?\})/;
 
 /**
  * Whether a JS regex source could backtrack badly. grep and ripgrep match in
- * linear time, but this runs in the UI thread's backtracking engine, so any
- * pattern shaped like `(a+)*`, `(a|ab)+` or `.*.*.*x`, or with
- * backreferences, gets no match marks rather than a chance to hang.
+ * linear time, but this runs in the UI thread's backtracking engine, so these
+ * get no match marks rather than a chance to hang:
+ * - backreferences;
+ * - a quantified group that contains any quantifier or an alternation, such
+ *   as `(a+)*`, `(a|ab)+`, `(a?){30}` or `(a{0,30}){0,30}`;
+ * - more than {@link MAX_UNBOUNDED_QUANTIFIERS} unbounded quantifiers
+ *   (`.*.*.*x`), or more than {@link MAX_QUANTIFIERS} quantifiers of any kind
+ *   (thirty `a?` in a row).
  */
 export function isRiskyRegexSource(source: string): boolean {
   if (/\\[1-9]|\\k</.test(source)) return true;
   // Each open group records whether it contains a quantifier or alternation.
   const groups: boolean[] = [];
   let unbounded = 0;
+  let quantifiers = 0;
   let inClass = false;
-  const markOpenGroups = () => groups.fill(true);
+  // Whether the previous token can take a quantifier (so `?` after `(` or
+  // after another quantifier is syntax, not a repeat).
+  let quantifiable = false;
   for (let index = 0; index < source.length; index += 1) {
     const char = source[index]!;
     if (char === "\\") {
       index += 1;
+      quantifiable = true;
       continue;
     }
     if (inClass) {
-      if (char === "]") inClass = false;
+      if (char === "]") {
+        inClass = false;
+        quantifiable = true;
+      }
       continue;
     }
+    const quantifier = quantifiable ? QUANTIFIER_PATTERN.exec(source.slice(index)) : null;
+    if (quantifier) {
+      const [text, min, comma, max] = quantifier;
+      const isUnbounded =
+        text === "*" ||
+        text === "+" ||
+        (comma === "," && (max === "" || Number(max) > LARGE_REPEAT_BOUND)) ||
+        Number(min ?? 0) > LARGE_REPEAT_BOUND;
+      quantifiers += 1;
+      if (isUnbounded) unbounded += 1;
+      groups.fill(true);
+      index += text.length - 1;
+      // A lazy or possessive suffix (`+?`) is part of this quantifier.
+      if (source[index + 1] === "?") index += 1;
+      quantifiable = false;
+      continue;
+    }
+    quantifiable = true;
     if (char === "[") {
       inClass = true;
+      quantifiable = false;
     } else if (char === "(") {
       groups.push(false);
+      quantifiable = false;
     } else if (char === "|") {
-      markOpenGroups();
-    } else if (char === "*" || char === "+" || /^\{\d*,\}/.test(source.slice(index, index + 12))) {
-      unbounded += 1;
-      markOpenGroups();
+      groups.fill(true);
+      quantifiable = false;
     } else if (char === ")") {
       const repeatsInside = groups.pop() ?? false;
-      if (repeatsInside && /^(?:[*+]|\{\d*,?\d*\})/.test(source.slice(index + 1, index + 13))) {
-        return true;
-      }
+      if (repeatsInside && QUANTIFIER_PATTERN.test(source.slice(index + 1))) return true;
     }
   }
-  return unbounded > MAX_UNBOUNDED_QUANTIFIERS;
+  return unbounded > MAX_UNBOUNDED_QUANTIFIERS || quantifiers > MAX_QUANTIFIERS;
 }
 
 /** A global matcher for the search's patterns, or null when they do not translate. */
@@ -403,8 +465,29 @@ function parseSearchLine(
       text: match[3]!,
     };
   }
-  // Context lines read `path-12-text`, which is ambiguous on its own (paths
-  // contain hyphens), so the path must be one a match line printed.
+  const match = PATH_LINE_PATTERN.exec(line);
+  const context = parseContextLine(line, matchPaths);
+  const matchRow = match
+    ? {
+        path: match[1]!,
+        lineNumber: Number.parseInt(match[2]!, 10),
+        isMatch: match[3] === ":",
+        text: match[4]!,
+      }
+    : null;
+  if (matchRow?.isMatch) {
+    // `a-1-file.ts:9:foo` is a match in `a-1-file.ts` or line 1 of `a`; when
+    // both files printed matches there is no telling which.
+    return context && context.path !== matchRow.path ? null : matchRow;
+  }
+  return context ?? matchRow;
+}
+
+/**
+ * A context line, `path-12-text`. That is ambiguous on its own (paths contain
+ * hyphens), so the path must be one that a match line printed.
+ */
+function parseContextLine(line: string, matchPaths: ReadonlySet<string>): ParsedSearchLine | null {
   for (let index = line.indexOf("-"); index > 0; index = line.indexOf("-", index + 1)) {
     const context = /^(\d+)-(.*)$/.exec(line.slice(index + 1));
     if (context && matchPaths.has(line.slice(0, index))) {
@@ -416,14 +499,7 @@ function parseSearchLine(
       };
     }
   }
-  const match = PATH_LINE_PATTERN.exec(line);
-  if (!match) return null;
-  return {
-    path: match[1]!,
-    lineNumber: Number.parseInt(match[2]!, 10),
-    isMatch: match[3] === ":",
-    text: match[4]!,
-  };
+  return null;
 }
 
 function classifySearch(input: ClassifyCommandOutputInput): CommandOutputPresentation | null {
@@ -453,7 +529,10 @@ function classifySearch(input: ClassifyCommandOutputInput): CommandOutputPresent
     segments.push({
       type: "group",
       displayPath: group.displayPath,
-      filePath: resolveCommandPath(group.displayPath, input.cwd, search.cwdOffset),
+      filePath:
+        group.displayPath.length > 0 && search.cwdKnown
+          ? resolveCommandPath(group.displayPath, input.cwd, search.cwdOffset)
+          : null,
       language: languageForPath(group.displayPath),
       showHeader: group.displayPath !== state.lastGroupPath,
       lines: group.lines,
@@ -468,7 +547,16 @@ function classifySearch(input: ClassifyCommandOutputInput): CommandOutputPresent
     const match = PATH_LINE_PATTERN.exec(line);
     if (match?.[3] === ":") matchPaths.add(match[1]!);
   }
+  // Output of statements after the search follows its matches. Once a line
+  // is not a result, or a file's line numbers stop increasing, every later
+  // line is that output, even one shaped like `12: build complete`.
+  let searchEnded = false;
+  const lastLineByPath = new Map<string, number>();
   for (const line of lines) {
+    if (searchEnded) {
+      state.plainLines.push(line);
+      continue;
+    }
     if (line === "--") {
       flushGroup();
       flushPlain();
@@ -476,13 +564,17 @@ function classifySearch(input: ClassifyCommandOutputInput): CommandOutputPresent
       continue;
     }
     const parsed = parseSearchLine(line, search, singleFile, matchPaths);
-    if (!parsed) {
+    const displayPath = parsed?.path ?? "";
+    const outOfOrder =
+      parsed !== null && parsed.lineNumber <= (lastLineByPath.get(displayPath) ?? 0);
+    if (!parsed || (search.followedByOtherStatements && outOfOrder)) {
       flushGroup();
       state.plainLines.push(line);
+      searchEnded = search.followedByOtherStatements;
       continue;
     }
+    lastLineByPath.set(displayPath, parsed.lineNumber);
     flushPlain();
-    const displayPath = parsed.path ?? "";
     if (state.group && state.group.displayPath !== displayPath) flushGroup();
     const group = state.group ?? { displayPath, lines: [] };
     state.group = group;
@@ -540,6 +632,8 @@ function classifyDiff(input: ClassifyCommandOutputInput): CommandOutputPresentat
   let newRemaining = 0;
   let currentHasHunk = false;
   let hunkCount = 0;
+  // A hunk that ended before all the rows its header declared (`| head`).
+  let incompleteHunk = false;
   let additions = 0;
   let deletions = 0;
 
@@ -577,6 +671,7 @@ function classifyDiff(input: ClassifyCommandOutputInput): CommandOutputPresentat
         continue;
       }
       // Malformed or shortened hunk: stop reading it as content.
+      incompleteHunk = true;
       oldRemaining = 0;
       newRemaining = 0;
     }
@@ -619,6 +714,7 @@ function classifyDiff(input: ClassifyCommandOutputInput): CommandOutputPresentat
     if (currentHasHunk) startFile();
     meta(line);
   }
+  if (oldRemaining > 0 || newRemaining > 0) incompleteHunk = true;
   if (current.rows.length > 0) files.push(current);
   if (hunkCount === 0) return null;
   return {
@@ -631,7 +727,7 @@ function classifyDiff(input: ClassifyCommandOutputInput): CommandOutputPresentat
     additions,
     deletions,
     showLineNumbers: !input.shortened,
-    partial: input.shortened === true,
+    partial: input.shortened === true || incompleteHunk,
   };
 }
 

@@ -5,7 +5,7 @@ import type { OrchestrationCommandExecution } from "@t3tools/contracts";
 import { TurnId } from "@t3tools/contracts";
 import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { page } from "vitest/browser";
+import { page, userEvent } from "vitest/browser";
 import { render } from "vitest-browser-react";
 
 import { FileNavigationProvider } from "../../fileNavigationContext";
@@ -612,24 +612,129 @@ describe("CommandTranscriptCard", () => {
     const host = document.createElement("div");
     document.body.append(host);
     const screen = await renderWithQueryClient(
-      <CommandTranscriptCard
-        execution={makeExecution({ command: "cat src/big.ts", output: lines.join("\n") })}
-        expanded
-        timestampFormat="locale"
-        onToggle={() => {}}
-        onExpandedBodyResize={() => {}}
-      />,
+      <>
+        {/* A small control proves the grammar loaded, so a missing color in
+            the big card is the size guard and not the Suspense fallback. */}
+        <CommandTranscriptCard
+          execution={makeExecution({
+            id: "command-execution-small" as OrchestrationCommandExecution["id"],
+            command: "cat src/small.ts",
+            output: 'const small = "x";\n',
+          })}
+          expanded
+          timestampFormat="locale"
+          onToggle={() => {}}
+          onExpandedBodyResize={() => {}}
+        />
+        <CommandTranscriptCard
+          execution={makeExecution({
+            id: "command-execution-big" as OrchestrationCommandExecution["id"],
+            command: "cat src/big.ts",
+            output: lines.join("\n"),
+          })}
+          expanded
+          timestampFormat="locale"
+          onToggle={() => {}}
+          onExpandedBodyResize={() => {}}
+        />
+      </>,
       host,
     );
 
     try {
-      const body = await vi.waitFor(() => {
-        const element = host.querySelector<HTMLElement>("[data-output-kind='file']");
-        expect(element).not.toBeNull();
-        return element!;
+      const [small, big] = await vi.waitFor(
+        () => {
+          const cards = host.querySelectorAll<HTMLElement>("[data-output-kind='file']");
+          expect(cards).toHaveLength(2);
+          expect(cards[0]!.querySelector("span[style*='color']")).not.toBeNull();
+          return [...cards];
+        },
+        { timeout: 10_000 },
+      );
+      expect(small).toBeDefined();
+      expect(big!.querySelectorAll("[data-line-number]")).toHaveLength(500);
+      expect(big!.querySelector("span[style*='color']")).toBeNull();
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("renders a diff -u that exits 1, but not a failed one", async () => {
+    const unified = "--- a.txt\n+++ b.txt\n@@ -1 +1 @@\n-a\n+b\n";
+    const host = document.createElement("div");
+    document.body.append(host);
+    const card = (id: string, exitCode: number) => (
+      <CommandTranscriptCard
+        execution={makeExecution({
+          id: id as OrchestrationCommandExecution["id"],
+          command: "diff -u a.txt b.txt",
+          output: unified,
+          status: "failed",
+          exitCode,
+        })}
+        expanded
+        timestampFormat="locale"
+        onToggle={() => {}}
+        onExpandedBodyResize={() => {}}
+      />
+    );
+    const screen = await renderWithQueryClient(
+      <>
+        {card("command-execution-differ", 1)}
+        {card("command-execution-error", 2)}
+      </>,
+      host,
+    );
+
+    try {
+      await vi.waitFor(() => {
+        const kinds = [...host.querySelectorAll("[data-output-kind]")].map((element) =>
+          element.getAttribute("data-output-kind"),
+        );
+        expect(kinds).toEqual(["diff", "plain"]);
       });
-      expect(body.querySelectorAll("[data-line-number]")).toHaveLength(500);
-      expect(body.querySelector("span[style*='color']")).toBeNull();
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("reaches line numbers from the keyboard as one tab stop", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const navigate = vi.fn(() => true);
+    const screen = await renderWithQueryClient(
+      <FileNavigationProvider value={navigate}>
+        <CommandTranscriptCard
+          execution={makeExecution({
+            command: "sed -n 750,752p src/a.ts",
+            output: "a\nb\nc\n",
+          })}
+          expanded
+          timestampFormat="locale"
+          workspaceRoot="/repo"
+          onToggle={() => {}}
+          onExpandedBodyResize={() => {}}
+        />
+      </FileNavigationProvider>,
+      host,
+    );
+
+    try {
+      const buttons = await vi.waitFor(() => {
+        const found = host.querySelectorAll<HTMLButtonElement>("button[data-gutter-button]");
+        expect(found).toHaveLength(3);
+        return [...found];
+      });
+      expect(buttons.map((button) => button.tabIndex)).toEqual([0, -1, -1]);
+      buttons[0]!.focus();
+      await userEvent.keyboard("{ArrowDown}{ArrowDown}");
+      expect(document.activeElement).toBe(buttons[2]);
+      await userEvent.keyboard("{Enter}");
+      expect(navigate).toHaveBeenCalledWith("/repo/src/a.ts:752", undefined);
+      await userEvent.keyboard("{Home}");
+      expect(document.activeElement).toBe(buttons[0]);
     } finally {
       await screen.unmount();
       host.remove();

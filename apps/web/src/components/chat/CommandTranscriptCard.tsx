@@ -27,7 +27,7 @@ import type { TimestampFormat } from "../../appSettings";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
 import { HighlightedCommandText } from "./HighlightedCommandText";
 import { retryableImport } from "../../lib/retryableImport";
-import { stripAnsi } from "../../lib/ansiOutput";
+import { escapeSafeCutIndex, stripAnsi } from "../../lib/ansiOutput";
 import type { CommandOutputBlockProps } from "./CommandOutputView";
 import { classifyCodeHighlight } from "../../lib/codeHighlightPolicy";
 import {
@@ -166,8 +166,12 @@ function buildInlineOutputPreview(output: string): {
     0,
     INLINE_OUTPUT_PREVIEW_CHAR_LIMIT - headChars - INLINE_OUTPUT_PREVIEW_MARKER.length,
   );
-  const head = output.slice(0, headChars);
-  const tail = tailChars > 0 ? output.slice(-tailChars) : "";
+  // Neither cut may split an escape sequence, or its remains show as text.
+  const head = output.slice(0, escapeSafeCutIndex(output, headChars, "end"));
+  const tail =
+    tailChars > 0
+      ? output.slice(escapeSafeCutIndex(output, output.length - tailChars, "start"))
+      : "";
   return {
     text: `${head}${INLINE_OUTPUT_PREVIEW_MARKER}${tail}`,
     shortened: true,
@@ -180,7 +184,8 @@ function buildInlineOutputPreview(output: string): {
  * budget from the end so minified or single-line output stays cheap to render.
  */
 function buildOutputTail(output: string): string {
-  const tail = stripAnsi(output.slice(-FAILED_OUTPUT_TAIL_SCAN_CHARS))
+  const scanStart = Math.max(0, output.length - FAILED_OUTPUT_TAIL_SCAN_CHARS);
+  const tail = stripAnsi(output.slice(escapeSafeCutIndex(output, scanStart, "start")))
     .split("\n")
     .filter((line) => line.trim().length > 0)
     .slice(-FAILED_OUTPUT_TAIL_LINES)

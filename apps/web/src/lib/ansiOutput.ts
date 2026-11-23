@@ -28,12 +28,18 @@ export interface ParsedAnsiOutput {
   readonly lines: ReadonlyArray<ReadonlyArray<AnsiSpan>>;
 }
 
-// CSI (`ESC [ … final`); OSC (`ESC ] … BEL` or `ESC ] … ESC \`), which ends
-// at a line break when its terminator was cut off; charset selection
-// (`ESC ( B`, from `tput sgr0`); and the remaining two-byte escapes.
+// - CSI: `ESC [ … final`.
+// - OSC: `ESC ] … BEL` or `ESC ] … ESC \`.
+// - DCS, SOS, PM and APC: `ESC P|X|^|_ … ESC \`. These are strings, so their
+//   payload goes with them.
+// An OSC or string control whose terminator was cut off ends at the line break.
+// Then charset selection (`ESC ( B`, from `tput sgr0`) and the remaining
+// two-byte escapes.
 const ESCAPE_PATTERN =
   // oxlint-disable-next-line no-control-regex
-  /\x1b\[([0-?]*)[ -/]*([@-~])|\x1b\][^\x07\x1b\n]*(?:\x07|\x1b\\)?|\x1b[()*+][0-9A-Za-z]|\x1b[@-Z\\-_]/g;
+  /\x1b\[([0-?]*)[ -/]*([@-~])|\x1b\][^\x07\x1b\n]*(?:\x07|\x1b\\)?|\x1b[PX^_][^\x1b\n]*(?:\x1b\\)?|\x1b[()*+][0-9A-Za-z]|\x1b[@-Z\\-_]/g;
+/** The longest escape a preview cut can split without it being a payload. */
+const MAX_SPLIT_ESCAPE_CHARS = 64;
 
 export function hasAnsiEscapes(output: string): boolean {
   return output.includes("\x1b");
@@ -41,6 +47,23 @@ export function hasAnsiEscapes(output: string): boolean {
 
 export function stripAnsi(output: string): string {
   return output.includes("\x1b") ? output.replace(ESCAPE_PATTERN, "") : output;
+}
+
+/**
+ * Moves `index` out of any escape sequence it falls inside: back to the
+ * sequence start for a cut that ends text (`"end"`), forward past it for a
+ * cut that starts text (`"start"`). Cutting there leaves no `[31m` fragment
+ * that stripping can no longer recognize.
+ */
+export function escapeSafeCutIndex(text: string, index: number, side: "start" | "end"): number {
+  const escapeStart = text.lastIndexOf("\x1b", index - 1);
+  if (escapeStart === -1 || index - escapeStart > MAX_SPLIT_ESCAPE_CHARS) return index;
+  const pattern = new RegExp(ESCAPE_PATTERN.source, "y");
+  pattern.lastIndex = escapeStart;
+  const match = pattern.exec(text);
+  const escapeEnd = match ? escapeStart + match[0].length : escapeStart + 1;
+  if (escapeEnd <= index) return index;
+  return side === "end" ? escapeStart : escapeEnd;
 }
 
 const CUBE_LEVELS = [0, 95, 135, 175, 215, 255] as const;
@@ -73,7 +96,18 @@ type MutableStyle = {
   -readonly [Key in keyof AnsiStyle]?: AnsiStyle[Key];
 };
 
-/** Reads an extended color (`5;n` or `2;r;g;b`) starting at `params[index]`. */
+function rgbColor(
+  red: number | undefined,
+  green: number | undefined,
+  blue: number | undefined,
+): AnsiColor | null {
+  const valid = [red, green, blue].every(
+    (value) => value !== undefined && Number.isInteger(value) && value >= 0 && value <= 255,
+  );
+  return valid ? rgb(red!, green!, blue!) : null;
+}
+
+/** Reads a legacy extended color (`;5;n` or `;2;r;g;b`) starting at `params[index]`. */
 function readExtendedColor(
   params: ReadonlyArray<number>,
   index: number,
@@ -83,24 +117,47 @@ function readExtendedColor(
     return { color: ansi256Color(params[index + 1] ?? -1), next: index + 2 };
   }
   if (mode === 2) {
-    const [red, green, blue] = [params[index + 1], params[index + 2], params[index + 3]];
-    const valid = [red, green, blue].every(
-      (value) => value !== undefined && Number.isInteger(value) && value >= 0 && value <= 255,
-    );
-    return { color: valid ? rgb(red!, green!, blue!) : null, next: index + 4 };
+    return {
+      color: rgbColor(params[index + 1], params[index + 2], params[index + 3]),
+      next: index + 4,
+    };
   }
   return { color: null, next: params.length };
 }
 
+/**
+ * An ITU colon-form color, one parameter with subparameters: `38:5:n`,
+ * `38:2::r:g:b` (with a color-space id, often empty) or `38:2:r:g:b`.
+ */
+function readColonColor(subparams: ReadonlyArray<number>): AnsiColor | null {
+  const [mode, ...rest] = subparams;
+  if (mode === 5) return ansi256Color(rest[0] ?? -1);
+  if (mode !== 2) return null;
+  const [red, green, blue] = rest.length >= 4 ? rest.slice(1) : rest;
+  return rgbColor(red, green, blue);
+}
+
+function toNumber(part: string): number {
+  return part === "" ? 0 : Number.parseInt(part, 10);
+}
+
 export function applySgr(style: AnsiStyle, rawParams: string): AnsiStyle {
-  const params =
-    rawParams.length === 0
-      ? [0]
-      : rawParams.split(/[;:]/).map((part) => (part === "" ? 0 : Number.parseInt(part, 10)));
+  // `;` separates parameters; `:` separates one parameter's subparameters.
+  const groups = rawParams.length === 0 ? [["0"]] : rawParams.split(";").map((p) => p.split(":"));
+  const params = groups.map((group) => toNumber(group[0]!));
   const next: MutableStyle = { ...style };
   for (let index = 0; index < params.length; index += 1) {
     const code = params[index]!;
     if (Number.isNaN(code)) continue;
+    const subparams = groups[index]!.slice(1);
+    if ((code === 38 || code === 48) && subparams.length > 0) {
+      const color = readColonColor(subparams.map(toNumber));
+      if (color) {
+        if (code === 38) next.fg = color;
+        else next.bg = color;
+      }
+      continue;
+    }
     if (code === 0) {
       for (const key of Object.keys(next) as Array<keyof MutableStyle>) delete next[key];
     } else if (code === 1) next.bold = true;

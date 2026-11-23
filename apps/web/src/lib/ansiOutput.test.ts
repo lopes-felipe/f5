@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { ansi256Color, applySgr, hasAnsiEscapes, parseAnsiOutput, stripAnsi } from "./ansiOutput";
+import {
+  ansi256Color,
+  applySgr,
+  escapeSafeCutIndex,
+  hasAnsiEscapes,
+  parseAnsiOutput,
+  stripAnsi,
+} from "./ansiOutput";
 
 describe("parseAnsiOutput", () => {
   it("styles text with 16-color SGR and resets", () => {
@@ -41,6 +48,35 @@ describe("parseAnsiOutput", () => {
     expect(stripAnsi("\x1b[1mbold\x1b(B\x1b[m rest")).toBe("bold rest");
     expect(parseAnsiOutput("a\x1b]8;;https://x.test\nnext line").text).toBe("a\nnext line");
     expect(hasAnsiEscapes("\x1b(B")).toBe(true);
+  });
+
+  it("drops DCS, SOS, PM and APC strings with their payload", () => {
+    expect(stripAnsi("before\x1bP$qm\x1b\\after")).toBe("beforeafter");
+    expect(stripAnsi("a\x1b_payload\x1b\\b\x1b^pm\x1b\\c\x1bXsos\x1b\\d")).toBe("abcd");
+    expect(parseAnsiOutput("x\x1bPcut off\nnext").text).toBe("x\nnext");
+  });
+
+  it("keeps colon-form color subparameters together", () => {
+    expect(applySgr({}, "38:2::10:20:1")).toEqual({ fg: { kind: "rgb", value: "#0a1401" } });
+    expect(applySgr({}, "38:2:10:20:1")).toEqual({ fg: { kind: "rgb", value: "#0a1401" } });
+    expect(applySgr({}, "48:5:196;1")).toEqual({
+      bg: { kind: "rgb", value: "#ff0000" },
+      bold: true,
+    });
+    // The legacy semicolon form still works, with a following attribute.
+    expect(applySgr({}, "38;2;10;20;1;4")).toEqual({
+      fg: { kind: "rgb", value: "#0a1401" },
+      underline: true,
+    });
+  });
+
+  it("finds cut points outside escape sequences", () => {
+    const text = "ab\x1b[31mred\x1b[0m";
+    // A cut inside `\x1b[31m` moves to its start (end of text) or past it (start of text).
+    expect(escapeSafeCutIndex(text, 4, "end")).toBe(2);
+    expect(escapeSafeCutIndex(text, 4, "start")).toBe(7);
+    expect(escapeSafeCutIndex(text, 8, "start")).toBe(8);
+    expect(escapeSafeCutIndex("plain text", 4, "start")).toBe(4);
   });
 
   it("toggles attributes off", () => {

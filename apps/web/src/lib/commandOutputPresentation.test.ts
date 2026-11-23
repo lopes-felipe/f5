@@ -26,8 +26,8 @@ describe("classifyCommandOutput: file reads", () => {
     });
     expect(result).toEqual({
       kind: "file",
-      displayPath: "src/a.tsx",
-      filePath: "/repo/apps/web/src/a.tsx",
+      file: { displayPath: "src/a.tsx", filePath: "/repo/apps/web/src/a.tsx" },
+      fileCount: 1,
       language: languageForPath("a.tsx"),
       code: "const a = 1;\nconst b = 2;\nconst c = 3;",
       lineNumbers: [750, 751, 752],
@@ -50,6 +50,29 @@ describe("classifyCommandOutput: file reads", () => {
 
   it("falls back to plain for reads in different languages", () => {
     expect(classify({ command: "cat a.ts; cat b.py", output: "x\ny" }).kind).toBe("plain");
+  });
+
+  it("names no single file for reads of several files in one language", () => {
+    expect(classify({ command: "cat a.ts; cat b.ts", output: "x\ny" })).toMatchObject({
+      kind: "file",
+      file: null,
+      fileCount: 2,
+      lineNumbers: null,
+    });
+  });
+
+  it("names but does not link a file read after a cd that may have failed", () => {
+    expect(
+      classify({ command: "cd src && sed -n 1,2p a.ts; sed -n 9,10p a.ts", output: "a\nb\nc\nd" }),
+    ).toMatchObject({ kind: "file", file: { displayPath: "a.ts", filePath: null } });
+  });
+
+  it("does not count a final line break as an extra row", () => {
+    const rows = Array.from({ length: MAX_PRESENTED_LINES }, (_, index) => `row ${index}`);
+    expect(classify({ command: "cat a.ts", output: `${rows.join("\n")}\n` }).kind).toBe("file");
+    expect(classify({ command: "cat a.ts", output: `${rows.join("\n")}\nextra\n` }).kind).toBe(
+      "plain",
+    );
   });
 
   it("moves nl -ba / cat -n numbers into the gutter", () => {
@@ -166,7 +189,62 @@ describe("classifyCommandOutput: search results", () => {
     const result = classify({ command: "grep -rnh foo src", output: "3:foo\n9:foo\n" });
     expect(result).toMatchObject({
       kind: "search",
-      segments: [{ type: "group", displayPath: "", lines: [{ lineNumber: 3 }, { lineNumber: 9 }] }],
+      segments: [
+        {
+          type: "group",
+          displayPath: "",
+          filePath: null,
+          lines: [{ lineNumber: 3 }, { lineNumber: 9 }],
+        },
+      ],
+    });
+  });
+
+  it("names but does not link results after a cd that may have failed", () => {
+    expect(classify({ command: "cd src; rg -n foo", output: "a.ts:3:foo\n" })).toMatchObject({
+      kind: "search",
+      segments: [{ type: "group", displayPath: "a.ts", filePath: null }],
+    });
+  });
+
+  it("prefers a match row over an ambiguous context reading, or keeps it plain", () => {
+    // `a-1-file.ts:9:foo` is a match in a-1-file.ts or line 1 of `a`.
+    const result = classify({
+      command: "grep -n -C1 foo a a-1-file.ts",
+      output: "a:3:foo\na-1-file.ts:9:foo\n",
+    });
+    expect(result).toMatchObject({
+      kind: "search",
+      matchCount: 1,
+      segments: [
+        { type: "group", displayPath: "a" },
+        { type: "plain", text: "a-1-file.ts:9:foo" },
+      ],
+    });
+    // Without a competing `a` match, the row is a plain match.
+    expect(
+      classify({ command: "grep -n foo b a-1-file.ts", output: "a-1-file.ts:9:foo\n" }),
+    ).toMatchObject({ kind: "search", matchCount: 1, fileCount: 1 });
+  });
+
+  it("keeps output from statements after the search out of the results", () => {
+    const result = classify({
+      command: "grep -n foo a.ts; printf '12: build complete\\n'",
+      output: "40:foo\n12: build complete\n",
+    });
+    expect(result).toMatchObject({
+      kind: "search",
+      matchCount: 1,
+      segments: [{ type: "group" }, { type: "plain", text: "12: build complete" }],
+    });
+    // Once a line is not a result, everything after it is that later output.
+    const after = classify({
+      command: "grep -n foo a.ts; ls",
+      output: "4:foo\nnotes.md\n12-notes.md\n",
+    });
+    expect(after).toMatchObject({
+      kind: "search",
+      segments: [{ type: "group" }, { type: "plain", text: "notes.md\n12-notes.md" }],
     });
   });
 });
@@ -211,10 +289,17 @@ describe("buildSearchMatcher", () => {
         perlRegex: true,
       }),
     ).toBeNull();
+    // Optional and bounded repeats count too.
+    expect(matcher(`${"a?".repeat(30)}${"a".repeat(30)}`)).toBeNull();
+    expect(matcher("(a{0,30}){0,30}")).toBeNull();
+    expect(matcher("(a?){30}")).toBeNull();
+    expect(matcher("x{0,500}y{0,500}z{0,500}")).toBeNull();
     // Ordinary patterns, including quantifiers and optional groups, still mark.
     expect(matcher("use(Theme|Memo)\\(")).not.toBeNull();
     expect(matcher("\\w+Draft(Thread)?")).not.toBeNull();
     expect(matcher("[(+*)]+x")).not.toBeNull();
+    expect(matcher("(?:foo|bar)\\d{2,4}-?x")).not.toBeNull();
+    expect(matcher("colou?r .+? done")).not.toBeNull();
   });
 
   it("matches only the start of very long lines", () => {
@@ -323,6 +408,19 @@ describe("classifyCommandOutput: diffs", () => {
     expect(
       classify({ command: "cat x.patch", output: unified, status: "failed", exitCode: 1 }).kind,
     ).toBe("plain");
+  });
+
+  it("marks a diff partial when a hunk ends before its declared rows", () => {
+    const cut = "--- a.txt\n+++ b.txt\n@@ -1,2 +1,2 @@\n keep\n";
+    expect(classify({ command: "git diff | head -4", output: cut })).toMatchObject({
+      kind: "diff",
+      partial: true,
+    });
+    const complete = "--- a.txt\n+++ b.txt\n@@ -1,2 +1,2 @@\n keep\n-a\n+b\n";
+    expect(classify({ command: "git diff", output: complete })).toMatchObject({
+      kind: "diff",
+      partial: false,
+    });
   });
 });
 

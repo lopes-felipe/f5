@@ -1,4 +1,4 @@
-import { Suspense, useMemo, type CSSProperties, type ReactNode } from "react";
+import { Suspense, useMemo, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
 
 import { useTheme } from "../../hooks/useTheme";
 import { useOpenWorkspaceFile } from "../../hooks/useOpenWorkspaceFile";
@@ -131,11 +131,39 @@ function gutterWidth(maxNumber: number): string {
   return `${String(maxNumber).length + 1}ch`;
 }
 
+const GUTTER_BUTTON_SELECTOR = "button[data-gutter-button]";
+
+/**
+ * Line-number buttons are one tab stop: the first is in the tab order, and
+ * the arrow keys (plus Home and End) move between them.
+ */
+function handleGutterKeyDown(event: KeyboardEvent<HTMLElement>) {
+  const target = event.target as HTMLElement;
+  if (!target.matches(GUTTER_BUTTON_SELECTOR)) return;
+  const buttons = [...event.currentTarget.querySelectorAll<HTMLElement>(GUTTER_BUTTON_SELECTOR)];
+  const index = buttons.indexOf(target);
+  const nextIndex =
+    event.key === "ArrowDown"
+      ? index + 1
+      : event.key === "ArrowUp"
+        ? index - 1
+        : event.key === "Home"
+          ? 0
+          : event.key === "End"
+            ? buttons.length - 1
+            : null;
+  if (nextIndex === null) return;
+  event.preventDefault();
+  buttons[Math.max(0, Math.min(buttons.length - 1, nextIndex))]?.focus();
+}
+
 function LineRow(props: {
   number?: number | null;
   gutter?: string | null;
   onOpenLine?: ((line: number) => void) | null;
-  openLabel?: string;
+  openLabel?: string | undefined;
+  /** This row's line button is the block's tab stop. */
+  tabStop?: boolean;
   className?: string | undefined;
   children: ReactNode;
 }) {
@@ -146,10 +174,14 @@ function LineRow(props: {
         onOpenLine && typeof number === "number" ? (
           <button
             type="button"
-            tabIndex={-1}
+            data-gutter-button
+            tabIndex={props.tabStop ? 0 : -1}
             aria-label={`${props.openLabel ?? "Open"} at line ${number}`}
             title={`Open at line ${number}`}
-            className={cn(GUTTER_CLASS_NAME, "hover:text-foreground hover:underline")}
+            className={cn(
+              GUTTER_CLASS_NAME,
+              "rounded-xs outline-none hover:text-foreground hover:underline focus-visible:text-foreground focus-visible:ring-2 focus-visible:ring-ring",
+            )}
             style={{ width: gutter }}
             onClick={() => onOpenLine(number)}
           >
@@ -177,7 +209,9 @@ function FileOutput(props: {
   const numbers = presentation.lineNumbers;
   // Numbers only increase, so the last one is the widest.
   const gutter = numbers && numbers.length > 0 ? gutterWidth(numbers[numbers.length - 1]!) : null;
-  const openLine = (line: number) => props.openFile(`${presentation.filePath}:${line}`);
+  const { file } = presentation;
+  const openPath = file?.filePath ?? null;
+  const openLine = openPath ? (line: number) => props.openFile(`${openPath}:${line}`) : null;
   return (
     <CodeLines
       code={presentation.code}
@@ -192,7 +226,8 @@ function FileOutput(props: {
             number={numbers?.[index] ?? null}
             gutter={gutter}
             onOpenLine={openLine}
-            openLabel={`Open ${basename(presentation.displayPath)}`}
+            openLabel={file ? `Open ${basename(file.displayPath)}` : undefined}
+            tabStop={index === 0}
           >
             {renderLine(index)}
           </LineRow>
@@ -204,6 +239,8 @@ function FileOutput(props: {
 
 function SearchGroup(props: {
   segment: Extract<SearchSegment, { type: "group" }>;
+  /** The first openable group holds the block's line-button tab stop. */
+  firstGroup: boolean;
   gutter: string;
   theme: Theme;
   highlight: boolean;
@@ -211,17 +248,22 @@ function SearchGroup(props: {
 }) {
   const { segment } = props;
   const code = useMemo(() => segment.lines.map((line) => line.text).join("\n"), [segment.lines]);
-  // `grep -h` prints no path, so there is no file to open.
-  const canOpen = segment.displayPath.length > 0;
-  const openLine = canOpen ? (line: number) => props.openFile(`${segment.filePath}:${line}`) : null;
+  // No file to open without a path (`grep -h`) or a known directory.
+  const { filePath } = segment;
+  const openLine = filePath ? (line: number) => props.openFile(`${filePath}:${line}`) : null;
   return (
     <div data-testid="command-output-search-group">
-      {segment.showHeader && segment.displayPath.length > 0 && (
+      {segment.showHeader && segment.displayPath.length > 0 && !filePath && (
+        <p className="mt-1 mb-0.5 max-w-full select-none truncate text-2xs text-muted-foreground first:mt-0">
+          {segment.displayPath}
+        </p>
+      )}
+      {segment.showHeader && filePath && (
         <button
           type="button"
           className="mt-1 mb-0.5 block max-w-full select-none truncate rounded-sm text-left text-2xs text-muted-foreground outline-none first:mt-0 hover:text-foreground hover:underline focus-visible:ring-2 focus-visible:ring-ring"
           title={`Open ${segment.displayPath}`}
-          onClick={() => props.openFile(`${segment.filePath}:${segment.lines[0]?.lineNumber ?? 1}`)}
+          onClick={() => props.openFile(`${filePath}:${segment.lines[0]?.lineNumber ?? 1}`)}
         >
           {segment.displayPath}
         </button>
@@ -240,6 +282,7 @@ function SearchGroup(props: {
               gutter={props.gutter}
               onOpenLine={openLine}
               openLabel={`Open ${basename(segment.displayPath)}`}
+              tabStop={props.firstGroup && index === 0}
               className={line.isMatch ? undefined : "opacity-60"}
             >
               {renderLine(index, line.matches)}
@@ -258,6 +301,9 @@ function SearchOutput(props: {
   openFile: (path: string) => void;
 }) {
   const { segments } = props.presentation;
+  const firstOpenableGroup = segments.findIndex(
+    (segment) => segment.type === "group" && segment.filePath !== null,
+  );
   const gutter = useMemo(() => {
     let max = 1;
     for (const segment of segments) {
@@ -283,6 +329,7 @@ function SearchOutput(props: {
       <SearchGroup
         key={index}
         segment={segment}
+        firstGroup={index === firstOpenableGroup}
         gutter={gutter}
         theme={props.theme}
         highlight={props.highlight}
@@ -471,6 +518,20 @@ function OutputChip(props: {
         : null,
       presentation.language !== "text" ? presentation.language : null,
     ].filter((detail): detail is string => detail !== null);
+    const { file } = presentation;
+    const openPath = file?.filePath ?? null;
+    if (!file || !openPath) {
+      return (
+        <span data-testid="command-output-chip" className={CHIP_CLASS_NAME}>
+          <span className="truncate">
+            {file ? basename(file.displayPath) : pluralize(presentation.fileCount, "file")}
+          </span>
+          {details.length > 0 && (
+            <span className="shrink-0 text-muted-foreground">{details.join(" · ")}</span>
+          )}
+        </span>
+      );
+    }
     return (
       <button
         type="button"
@@ -479,10 +540,10 @@ function OutputChip(props: {
           CHIP_CLASS_NAME,
           "outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring",
         )}
-        title={`Open ${presentation.displayPath}`}
-        onClick={() => props.openFile(`${presentation.filePath}${first ? `:${first}` : ""}`)}
+        title={`Open ${file.displayPath}`}
+        onClick={() => props.openFile(`${openPath}${first ? `:${first}` : ""}`)}
       >
-        <span className="truncate">{basename(presentation.displayPath)}</span>
+        <span className="truncate">{basename(file.displayPath)}</span>
         {details.length > 0 && (
           <span className="shrink-0 text-muted-foreground">{details.join(" · ")}</span>
         )}
@@ -615,17 +676,21 @@ export interface CommandOutputBlockProps extends ClassifyCommandOutputInput {
  */
 export function CommandOutputBlock(props: CommandOutputBlockProps) {
   const { resolvedTheme } = useTheme();
-  const { command, output, status, cwd, shortened } = props;
+  const { command, output, status, cwd, exitCode, shortened } = props;
   const presentation = useMemo(
-    () => classifyCommandOutput({ command, output, status, cwd, shortened }),
-    [command, output, status, cwd, shortened],
+    () => classifyCommandOutput({ command, output, status, cwd, exitCode, shortened }),
+    [command, output, status, cwd, exitCode, shortened],
   );
   const openFile = useOpenWorkspaceFile({ workspaceRoot: props.workspaceRoot });
   return (
     <div data-output-kind={presentation.kind}>
       {props.renderHeader(<OutputChip presentation={presentation} openFile={openFile} />)}
       <div className="mt-1 max-h-80 overflow-auto rounded-md bg-background/70 p-2">
-        <div data-testid="command-output-body" className={OUTPUT_TEXT_CLASS_NAME}>
+        <div
+          data-testid="command-output-body"
+          className={OUTPUT_TEXT_CLASS_NAME}
+          onKeyDown={handleGutterKeyDown}
+        >
           <OutputBody presentation={presentation} theme={resolvedTheme} openFile={openFile} />
         </div>
       </div>
