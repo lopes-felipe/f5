@@ -1,3 +1,5 @@
+import { parseLocalEditorFileUrl } from "@t3tools/shared/editorLinks";
+
 export function getSafeExternalUrl(rawUrl: unknown): string | null {
   if (typeof rawUrl !== "string" || rawUrl.length === 0) return null;
   try {
@@ -14,4 +16,10 @@ export function getSafeBrowserLoginUrl(rawUrl: unknown): string | null {
   if (!safe || safe.length > 4096) return null;
   const parsed = new URL(safe);
   return parsed.username || parsed.password ? null : safe;
+}
+export function getSafeShellExternalUrl(rawUrl: unknown): string | null {
+  return (
+    getSafeExternalUrl(rawUrl) ??
+    (typeof rawUrl === "string" ? (parseLocalEditorFileUrl(rawUrl)?.href ?? null) : null)
+  );
 }

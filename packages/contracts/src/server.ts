@@ -132,7 +132,7 @@ export type ServerProviderVersionAdvisoryStatus = typeof ServerProviderVersionAd
 export const ServerProviderUpdateCommand = Schema.Struct({
   executable: TrimmedNonEmptyString,
   args: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(() => [])),
-  channel: Schema.Literals(["npm", "homebrew", "self-update"]),
+  channel: Schema.Literals(["npm", "homebrew", "mise", "self-update"]),
   shell: Schema.optional(Schema.Literals(["posix", "powershell"])),
   pathPrepend: Schema.optional(FilesystemPath),
   cwd: Schema.optional(FilesystemPath),
@@ -142,7 +142,7 @@ export type ServerProviderUpdateCommand = typeof ServerProviderUpdateCommand.Typ
 
 export const ServerProviderVersionAdvisory = Schema.Struct({
   installChannel: Schema.optional(
-    Schema.Literals(["bundled", "npm", "homebrew", "self-update", "unmanaged", "remote"]),
+    Schema.Literals(["bundled", "npm", "homebrew", "mise", "self-update", "unmanaged", "remote"]),
   ),
   executablePath: Schema.optional(Schema.String),
   installKey: Schema.optional(Schema.String),

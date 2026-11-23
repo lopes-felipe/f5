@@ -1,6 +1,7 @@
 import { createContext, useContext, useCallback } from "react";
 import { useRouter } from "@tanstack/react-router";
 import { formatSourceControlPullRequestKey } from "@t3tools/shared/sourceControl";
+import { parseLocalEditorFileUrl } from "@t3tools/shared/editorLinks";
 import { parsePullRequestReference } from "../lib/pullRequestReference";
 import { ThreadId } from "@t3tools/contracts";
 import { type AppSettings, useAppSettingsSelector } from "../appSettings";
@@ -58,6 +59,11 @@ export function useOpenLink(threadId?: ThreadId) {
         return;
       }
       const target = new URL(url, window.location.href);
+      if (parseLocalEditorFileUrl(target.href)) {
+        if (window.desktopBridge) await window.desktopBridge.openExternal(target.href);
+        else window.open(target.href, "_blank", "noopener,noreferrer");
+        return;
+      }
       if (!["http:", "https:", "mailto:"].includes(target.protocol)) return;
       const owner = threadId;
       const pr = parsePullRequestReference(target.href);

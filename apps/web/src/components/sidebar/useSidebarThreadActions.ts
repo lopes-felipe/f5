@@ -1,7 +1,7 @@
 import type { ProjectId, ThreadId } from "@t3tools/contracts";
 import { threadAttachmentWorkspaceRoots } from "@t3tools/shared/threadWorkspace";
 import { useNavigate } from "@tanstack/react-router";
-import { useCallback, useState, type MouseEvent } from "react";
+import { useCallback, useMemo, useState, type MouseEvent } from "react";
 
 import { applyBulkThreadAction } from "../../bulkThreadActions";
 import {
@@ -12,6 +12,7 @@ import {
 import { isElectron } from "../../env";
 import { useCreateProjectBackedDraftThread } from "../../hooks/useCreateProjectBackedDraftThread";
 import { useStartScratchThread } from "../../hooks/useStartScratchThread";
+import { useStableCallback } from "../../hooks/useStableCallback";
 import {
   nativeThreadActionMenuItems,
   pickSnoozeMenuPreset,
@@ -81,7 +82,7 @@ export function useSidebarThreadActions(input: {
   const [renamingThreadId, setRenamingThreadId] = useState<ThreadId | null>(null);
   const [contextMenuOpen, setContextMenuOpen] = useState(false);
 
-  const attachDropToThread = (event: React.DragEvent, thread: ThreadListItem) => {
+  const attachDropToThread = useStableCallback((event: React.DragEvent, thread: ThreadListItem) => {
     if (!event.dataTransfer.types.includes("Files")) return;
     event.preventDefault();
     event.stopPropagation();
@@ -114,7 +115,7 @@ export function useSidebarThreadActions(input: {
       else if (result.imported.length)
         toastManager.add({ type: "success", title: `Files added to ${thread.title}` });
     });
-  };
+  });
 
   // A PR menu choice passes no event: the menu already handled its click.
   const openPrLink = useCallback((event: React.MouseEvent<HTMLElement> | null, prUrl: string) => {
@@ -139,13 +140,12 @@ export function useSidebarThreadActions(input: {
     });
   }, []);
 
-  const handleNewThread = useCallback(
+  const handleNewThread = useStableCallback(
     (projectId: ProjectId | null, options?: NewThreadOptions) => {
       if (projectId === null) return startScratchThread(options);
       setProjectExpanded(projectId, true);
       return createProjectBackedDraftThread(projectId, options);
     },
-    [createProjectBackedDraftThread, setProjectExpanded, startScratchThread],
   );
 
   /**
@@ -153,7 +153,7 @@ export function useSidebarThreadActions(input: {
    * branch and worktree when it belongs to the same project. Shift forces the
    * alternate workspace mode; Cmd/Ctrl+Shift opens the thread in a new window.
    */
-  const createThreadInProject = useCallback(
+  const createThreadInProject = useStableCallback(
     (projectId: ProjectId | null, modifiers: NewThreadModifiers) => {
       const intent = resolveSidebarNewThreadIntent(modifiers);
       const activeProjectThread = activeThread?.projectId === projectId ? activeThread : undefined;
@@ -188,7 +188,6 @@ export function useSidebarThreadActions(input: {
           });
         });
     },
-    [activeDraftThread, activeThread, handleNewThread],
   );
 
   const cancelRename = useCallback(() => {
@@ -201,7 +200,7 @@ export function useSidebarThreadActions(input: {
 
   const {
     archiveThread,
-    deleteThreads,
+    deleteThreads: deleteThreadsFromController,
     executeAction: executeThreadAction,
     loadMenuItemsForThread: threadActionMenuItems,
     renameThread,
@@ -209,6 +208,7 @@ export function useSidebarThreadActions(input: {
     activeThreadId: routeThreadId,
     onRenameRequested: startThreadRename,
   });
+  const deleteThreads = useStableCallback(deleteThreadsFromController);
 
   const commitRename = useCallback(
     async (threadId: ThreadId, newTitle: string) => {
@@ -233,14 +233,11 @@ export function useSidebarThreadActions(input: {
     [executeThreadAction, threadActionMenuItems, threads],
   );
 
-  const togglePinThread = useCallback(
-    (threadId: ThreadId) => {
-      const thread = threads.find((entry) => entry.id === threadId);
-      if (!thread) return;
-      void executeThreadAction(threadId, thread.pinnedAt != null ? "unpin" : "pin");
-    },
-    [executeThreadAction, threads],
-  );
+  const togglePinThread = useStableCallback((threadId: ThreadId) => {
+    const thread = threads.find((entry) => entry.id === threadId);
+    if (!thread) return;
+    void executeThreadAction(threadId, thread.pinnedAt != null ? "unpin" : "pin");
+  });
 
   const handleMultiSelectContextMenu = useCallback(
     async (position: { x: number; y: number }) => {
@@ -337,7 +334,7 @@ export function useSidebarThreadActions(input: {
   );
 
   /** Right-click / context-menu key on a row. */
-  const openThreadContextMenu = useCallback(
+  const openThreadContextMenu = useStableCallback(
     (
       event: React.MouseEvent<HTMLElement>,
       threadId: ThreadId,
@@ -370,7 +367,6 @@ export function useSidebarThreadActions(input: {
         trackMenu(handleThreadContextMenu(threadId, position));
       }
     },
-    [clearSelection, handleMultiSelectContextMenu, handleThreadContextMenu],
   );
 
   const handleThreadClick = useCallback(
@@ -485,28 +481,52 @@ export function useSidebarThreadActions(input: {
     [renamingThreadId, startThreadRename],
   );
 
-  return {
-    renamingThreadId,
-    contextMenuOpen,
-    togglePinThread,
-    attachDropToThread,
-    openPrLink,
-    handleNewThread,
-    createThreadInProject,
-    cancelRename,
-    commitRename,
-    archiveThread,
-    unsettleThread: (threadId: ThreadId) =>
-      executeThreadAction(threadId, "unsettle").catch(() => {
-        toastManager.add({ type: "error", title: "Could not unsettle thread" });
-      }),
-    deleteThreads,
-    openThreadContextMenu,
-    openThread,
-    handleThreadClick,
-    handleThreadRowKeyDown,
-    handleThreadRowDoubleClick,
-  };
+  const unsettleThread = useStableCallback((threadId: ThreadId) =>
+    executeThreadAction(threadId, "unsettle").catch(() => {
+      toastManager.add({ type: "error", title: "Could not unsettle thread" });
+    }),
+  );
+
+  return useMemo(
+    () => ({
+      renamingThreadId,
+      contextMenuOpen,
+      togglePinThread,
+      attachDropToThread,
+      openPrLink,
+      handleNewThread,
+      createThreadInProject,
+      cancelRename,
+      commitRename,
+      archiveThread,
+      unsettleThread,
+      deleteThreads,
+      openThreadContextMenu,
+      openThread,
+      handleThreadClick,
+      handleThreadRowKeyDown,
+      handleThreadRowDoubleClick,
+    }),
+    [
+      renamingThreadId,
+      contextMenuOpen,
+      togglePinThread,
+      attachDropToThread,
+      openPrLink,
+      handleNewThread,
+      createThreadInProject,
+      cancelRename,
+      commitRename,
+      archiveThread,
+      unsettleThread,
+      deleteThreads,
+      openThreadContextMenu,
+      openThread,
+      handleThreadClick,
+      handleThreadRowKeyDown,
+      handleThreadRowDoubleClick,
+    ],
+  );
 }
 
 export type SidebarThreadActions = ReturnType<typeof useSidebarThreadActions>;

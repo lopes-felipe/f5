@@ -1,0 +1,1 @@
+- Model and reasoning-option picks on the current provider instance are saved for the next turn. Switching provider instances takes effect when you send. Answers to pending questions stay with the running session.

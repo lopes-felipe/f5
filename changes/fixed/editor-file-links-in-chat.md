@@ -1,0 +1,1 @@
+- Cursor and VS Code links to local files open the named editor at the specified line and column when clicked in chat.

@@ -220,6 +220,25 @@ describe("source-specific lookups", () => {
         ),
       ),
     );
+  it.effect("uses mise's version for a mise install", () =>
+    lookupLatestVersion(
+      { kind: "mise", executable: "/bin/mise", tool: "grok" },
+      {
+        environment: { MISE_DATA_DIR: "/mise-data" },
+        runProcess: async (command, args, options) => {
+          assert.strictEqual(command, "/bin/mise");
+          assert.deepStrictEqual(args, ["latest", "grok"]);
+          assert.deepStrictEqual(options.env, { MISE_DATA_DIR: "/mise-data" });
+          return { code: 0, signal: null, timedOut: false, stdout: "1.2.3\n", stderr: "" };
+        },
+      },
+    ).pipe(
+      Effect.provide(httpClientLayer(new Response(""))),
+      Effect.map((result) =>
+        assert.deepStrictEqual(result, { _tag: "success", latestVersion: "1.2.3" }),
+      ),
+    ),
+  );
   it.effect("maps a failing brew info to parse", () =>
     lookupLatestVersion(
       { kind: "brew-local", brewExecutable: "/brew", ref: "custom/tap/cli", cask: false },

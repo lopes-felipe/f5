@@ -1,0 +1,1 @@
+- The desktop thread list can reuse a recent snapshot from the same server on startup. Remote connections reload larger sync gaps over compressed HTTP.
