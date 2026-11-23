@@ -1,6 +1,5 @@
 import { ServerShutdown } from "../shutdown.ts";
 import { normalizeSupportedSlashCommands } from "./supportedSlashCommands.ts";
-import * as NodePath from "node:path";
 import { pathToFileURL } from "node:url";
 
 import type {
@@ -117,21 +116,9 @@ export interface OpenCodeCommandResult {
   readonly code: number;
 }
 
-type OpenCodeInventoryModel = Pick<
-  ProviderListResponse["all"][number]["models"][string],
-  "id" | "name" | "variants"
->;
-
 export interface OpenCodeInventory {
-  readonly providerList: {
-    readonly connected: ReadonlyArray<string>;
-    readonly all: ReadonlyArray<{
-      readonly id: string;
-      readonly name: string;
-      readonly models: Readonly<Record<string, OpenCodeInventoryModel>>;
-    }>;
-  };
-  readonly agents: ReadonlyArray<Pick<Agent, "name" | "mode" | "hidden">>;
+  readonly providerList: ProviderListResponse;
+  readonly agents: ReadonlyArray<Agent>;
   readonly skills?: ReadonlyArray<ServerProviderSkill>;
 }
 
@@ -172,7 +159,6 @@ export interface OpenCodeRuntimeShape {
   readonly runOpenCodeCommand: (input: {
     readonly binaryPath: string;
     readonly args: ReadonlyArray<string>;
-    readonly cwd?: string;
     readonly timeoutMs?: number;
     readonly environment?: NodeJS.ProcessEnv;
   }) => Effect.Effect<OpenCodeCommandResult, OpenCodeRuntimeError>;
@@ -425,23 +411,7 @@ function ensureRuntimeError(
     : new OpenCodeRuntimeError({ operation, detail, cause });
 }
 
-export function normalizeOpenCodeSkills(skills: unknown): ReadonlyArray<ServerProviderSkill> {
-  if (!Array.isArray(skills)) return [];
-  return skills.flatMap((skill: unknown) => {
-    if (typeof skill !== "object" || skill === null) return [];
-    const name = "name" in skill && typeof skill.name === "string" ? skill.name.trim() : "";
-    const path =
-      "location" in skill && typeof skill.location === "string" ? skill.location.trim() : "";
-    const description =
-      "description" in skill && typeof skill.description === "string"
-        ? skill.description.trim()
-        : "";
-    return name && path
-      ? [{ name, path, enabled: true, ...(description ? { description } : {}) }]
-      : [];
-  });
-}
-
+/** Workspace skills are read over HTTP; the CLI can truncate inventories at a pipe buffer. */
 export const loadOpenCodeSkills = (
   client: OpencodeClient,
 ): Effect.Effect<ReadonlyArray<ServerProviderSkill>, OpenCodeRuntimeError> =>
@@ -456,7 +426,22 @@ export const loadOpenCodeSkills = (
           }),
         ),
     }),
-    Effect.map((response) => normalizeOpenCodeSkills(response.data)),
+    Effect.map((response) =>
+      (response.data ?? []).flatMap((skill) => {
+        const name = skill.name.trim();
+        const path = skill.location.trim();
+        return name && path
+          ? [
+              {
+                name,
+                path,
+                enabled: true,
+                ...(skill.description.trim() ? { description: skill.description.trim() } : {}),
+              },
+            ]
+          : [];
+      }),
+    ),
   );
 
 export const loadOpenCodeCommands = (client: OpencodeClient) =>
@@ -488,20 +473,10 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
   const runOpenCodeCommand: OpenCodeRuntimeShape["runOpenCodeCommand"] = (input) =>
     Effect.gen(function* () {
       const environment = input.environment ?? process.env;
-      // Keep relative executable paths anchored where the version probe and
-      // managed server launch resolve them, even for a workspace-scoped probe.
-      const binaryPath =
-        input.cwd &&
-        process.platform !== "win32" &&
-        !NodePath.isAbsolute(input.binaryPath) &&
-        input.binaryPath.includes("/")
-          ? NodePath.resolve(input.binaryPath)
-          : input.binaryPath;
-      const invocation = yield* resolveInvocationEffect(binaryPath, input.args, environment);
+      const invocation = yield* resolveInvocationEffect(input.binaryPath, input.args, environment);
       const child = yield* spawner.spawn(
         ChildProcess.make(invocation.file, [...invocation.args], {
           env: environment,
-          ...(input.cwd ? { cwd: input.cwd } : {}),
         }),
       );
       const [stdout, stderr, code] = yield* Effect.all(

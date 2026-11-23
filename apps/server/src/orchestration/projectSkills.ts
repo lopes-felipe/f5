@@ -187,13 +187,26 @@ export function parseClaudeSkillDocument(input: {
   };
 }
 
+function parseClaudeFrontmatterBoolean(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") return value;
+  if (value === 1 || value === 0) return value === 1;
+  if (typeof value !== "string") return undefined;
+  const text = value.trim().toLowerCase();
+  if (["true", "yes", "on", "y"].includes(text)) return true;
+  if (["false", "no", "off", "n"].includes(text)) return false;
+  return undefined;
+}
+
 export function readClaudeSkillInvocationFlags(documentText: string) {
   try {
     const { frontmatterText } = splitFrontmatter(documentText);
     const frontmatter = frontmatterText ? parseYamlFrontmatter(frontmatterText) : {};
     return {
-      userInvocable: readYamlValue(frontmatter, "user-invocable") !== false,
-      userInvocationOnly: readYamlValue(frontmatter, "disable-model-invocation") === true,
+      userInvocable:
+        parseClaudeFrontmatterBoolean(readYamlValue(frontmatter, "user-invocable")) !== false,
+      userInvocationOnly:
+        parseClaudeFrontmatterBoolean(readYamlValue(frontmatter, "disable-model-invocation")) ===
+        true,
     };
   } catch {
     return undefined;

@@ -141,6 +141,7 @@ describe("parseClaudeLaunchArgs", () => {
     "--session-id=abc",
     "--resume=xyz",
     "--mcp-config=./foo.json",
+    "--add-dir /tmp",
     "--allow-dangerously-skip-permissions",
   ])("rejects reserved flag %s", (input) => {
     const result = parseClaudeLaunchArgs(input);
@@ -148,18 +149,6 @@ describe("parseClaudeLaunchArgs", () => {
     if (!result.ok) {
       expect(result.error).toMatch(/managed by the app/);
     }
-  });
-
-  it("keeps repeated, variadic, and quoted additional directories separate from extraArgs", () => {
-    expect(
-      parseClaudeLaunchArgs('--add-dir one "two words" --verbose --add-dir=three --add-dir four'),
-    ).toEqual({
-      ok: true,
-      args: { verbose: null },
-      additionalDirectories: ["one", "two words", "three", "four"],
-    });
-    expect(parseClaudeLaunchArgs("--add-dir --verbose")).toMatchObject({ ok: false });
-    expect(parseClaudeLaunchArgs('--add-dir=""')).toMatchObject({ ok: false });
   });
 
   it("accepts the append system prompt flags", () => {

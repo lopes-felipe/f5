@@ -2003,6 +2003,7 @@ function buildPromptText(
     readonly sessionModel?: string;
     readonly allowsWorkspaceEdits: boolean;
     readonly reportedCapabilities?: ModelCapabilities;
+    readonly skillDispatchedSeparately?: boolean;
   },
 ): string {
   const userPrompt = applyClaudeModelPromptEffort(
@@ -2013,7 +2014,7 @@ function buildPromptText(
   );
   // Claude Code slash commands must remain the leading prompt text so the CLI
   // can recognize them before normal model dispatch.
-  const slashCommand = userPrompt.startsWith("/");
+  const slashCommand = userPrompt.startsWith("/") && !options.skillDispatchedSeparately;
   const runtimeContext = slashCommand
     ? undefined
     : buildClaudeTurnRuntimeContext(options.activeModel, {
@@ -2091,6 +2092,7 @@ function buildUserMessageEffect(
         ...(dependencies.activeModel ? { activeModel: dependencies.activeModel } : {}),
         ...(dependencies.sessionModel ? { sessionModel: dependencies.sessionModel } : {}),
         allowsWorkspaceEdits: dependencies.allowsWorkspaceEdits,
+        skillDispatchedSeparately: dependencies.skillDispatch !== undefined,
         ...(dependencies.reportedCapabilities
           ? { reportedCapabilities: dependencies.reportedCapabilities }
           : {}),
@@ -2599,7 +2601,6 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       planClaudeSkillDispatch({
         text: text?.trim() ?? "",
         cwd: context.queryOptions.cwd,
-        additionalDirectories: context.queryOptions.additionalDirectories,
         environment: context.processEnvironment,
         fileSystem,
         nativeCommands: context.slashCommandsLoaded
@@ -8887,15 +8888,6 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           );
         };
         const spawnClaudeCodeProcess = makeClaudeProcessGroupSpawner(recordStderr);
-        const additionalDirectories = [
-          ...(input.cwd ? [input.cwd] : []),
-          ...(providerOptions.confineWritesToWorkspace === true
-            ? []
-            : [
-                ...(options?.oneOffProviderOptions?.additionalDirectories ?? []),
-                ...(providerOptions.additionalDirectories ?? []),
-              ].map((directory) => NodePath.resolve(input.cwd ?? process.cwd(), directory))),
-        ];
         const queryOptions: ClaudeQueryOptions = {
           ...(pendingForks.has(threadId) ? { forkSession: true } : {}),
           enableFileCheckpointing: providerOptions?.enableFileCheckpointing !== false,
@@ -8989,7 +8981,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           onUserDialog,
           supportedDialogKinds: providerOptions?.resumeCompactionPrompt ? ["resume_return"] : [],
           env: queryEnvironment,
-          ...(additionalDirectories.length > 0 ? { additionalDirectories } : {}),
+          ...(input.cwd ? { additionalDirectories: [input.cwd] } : {}),
           systemPrompt,
           planModeInstructions,
         } satisfies ClaudeQueryOptions;

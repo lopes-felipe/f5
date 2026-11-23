@@ -1,1 +1,1 @@
-- When a Claude prompt invokes multiple skills, earlier user-only skills are identified as user requests and the final skill still runs through Claude’s native slash command.
+- When a Claude prompt invokes multiple skills, earlier user-only skills are identified as user requests, the prompt keeps its runtime and MCP App context, and the final skill runs through Claude’s native slash command.

@@ -2,8 +2,7 @@ import assert from "node:assert/strict";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
-import { Effect, Fiber, Layer, Schema } from "effect";
-import * as TestClock from "effect/testing/TestClock";
+import { Effect, Layer, Schema } from "effect";
 import { beforeEach } from "vitest";
 
 import { OpenCodeSettings } from "@t3tools/contracts";
@@ -35,9 +34,7 @@ const runtimeMock = {
     versionStdout: DEFAULT_VERSION_STDOUT,
     inventoryError: null as Error | null,
     closeCalls: 0,
-    commands: [] as string[][],
-    clientPassword: undefined as string | undefined,
-    modelExitCodes: [] as number[],
+    probePassword: undefined as string | undefined,
     inventory: {
       providerList: { connected: [] as string[], all: [] as unknown[], default: {} },
       agents: [] as unknown[],
@@ -48,9 +45,7 @@ const runtimeMock = {
     this.state.versionStdout = DEFAULT_VERSION_STDOUT;
     this.state.inventoryError = null;
     this.state.closeCalls = 0;
-    this.state.commands = [];
-    this.state.clientPassword = undefined;
-    this.state.modelExitCodes = [];
+    this.state.probePassword = undefined;
     this.state.inventory = {
       providerList: { connected: [], all: [] as unknown[], default: {} },
       agents: [] as unknown[],
@@ -64,7 +59,7 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
       url: "http://127.0.0.1:4301",
       exitCode: Effect.never,
     }),
-  connectToOpenCodeServer: ({ serverUrl, serverPassword }) =>
+  connectToOpenCodeServer: ({ serverUrl, serverPassword, environment }) =>
     Effect.gen(function* () {
       if (!serverUrl) {
         yield* Effect.addFinalizer(() =>
@@ -73,48 +68,27 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
           }),
         );
       }
+      const password =
+        serverPassword ?? (serverUrl ? undefined : environment?.OPENCODE_SERVER_PASSWORD);
       return {
         url: serverUrl ?? "http://127.0.0.1:4301",
         exitCode: null,
         external: Boolean(serverUrl),
-        ...(serverPassword ? { serverPassword } : {}),
+        ...(password ? { serverPassword: password } : {}),
       };
     }),
-  runOpenCodeCommand: ({ args }) =>
-    Effect.suspend(() => {
-      runtimeMock.state.commands.push([...args]);
-      if (runtimeMock.state.runVersionError) {
-        return Effect.fail(
+  runOpenCodeCommand: () =>
+    runtimeMock.state.runVersionError
+      ? Effect.fail(
           new OpenCodeRuntimeError({
             operation: "runOpenCodeCommand",
             detail: runtimeMock.state.runVersionError.message,
             cause: runtimeMock.state.runVersionError,
           }),
-        );
-      }
-      const inventory = runtimeMock.state.inventory as OpenCodeInventory;
-      const stdout =
-        args[0] === "models"
-          ? inventory.providerList.all
-              .flatMap((provider) =>
-                Object.values(provider.models).map(
-                  (model) => provider.id + "/" + model.id + "\n" + JSON.stringify(model),
-                ),
-              )
-              .join("\n")
-          : args[0] === "agent"
-            ? inventory.agents.map((agent) => agent.name + " (" + agent.mode + ")\n  []").join("\n")
-            : args[0] === "debug"
-              ? '[{"name":"build-tools","location":"/skills/build-tools/SKILL.md","description":"Build tools"}]'
-              : runtimeMock.state.versionStdout;
-      return Effect.succeed({
-        stdout,
-        stderr: "",
-        code: args[0] === "models" ? (runtimeMock.state.modelExitCodes.shift() ?? 0) : 0,
-      });
-    }),
+        )
+      : Effect.succeed({ stdout: runtimeMock.state.versionStdout, stderr: "", code: 0 }),
   createOpenCodeSdkClient: ({ serverPassword }) => {
-    runtimeMock.state.clientPassword = serverPassword;
+    runtimeMock.state.probePassword = serverPassword;
     return {} as ReturnType<OpenCodeRuntimeShape["createOpenCodeSdkClient"]>;
   },
   loadOpenCodeInventory: () =>
@@ -235,25 +209,17 @@ it.layer(testLayer)("checkOpenCodeProviderStatus", (it) => {
         agentDescriptor.options.find((option) => option.isDefault === true)?.id,
         "build",
       );
-      assert.equal(snapshot.skills[0]?.name, "build-tools");
     }),
   );
 
-  it.effect("retries a failed CLI inventory command once without starting a server", () =>
+  it.effect("closes the local OpenCode server scope after provider refresh", () =>
     Effect.gen(function* () {
-      runtimeMock.state.modelExitCodes = [1, 1];
-      const probe = yield* checkOpenCodeProviderStatus(makeOpenCodeSettings(), process.cwd()).pipe(
-        Effect.forkChild,
-      );
-      yield* TestClock.adjust("1 second");
-      const snapshot = yield* Fiber.join(probe);
-      assert.equal(snapshot.status, "warning");
-      assert.equal(runtimeMock.state.closeCalls, 0);
-      assert.equal(
-        runtimeMock.state.commands.filter(([command]) => command === "models").length,
-        2,
-      );
-      assert.equal(runtimeMock.state.commands.filter(([command]) => command === "agent").length, 1);
+      yield* checkOpenCodeProviderStatus(makeOpenCodeSettings(), process.cwd(), {
+        OPENCODE_SERVER_PASSWORD: "local-probe-password",
+      });
+
+      assert.equal(runtimeMock.state.closeCalls, 1);
+      assert.equal(runtimeMock.state.probePassword, "local-probe-password");
     }),
   );
 });
@@ -272,11 +238,11 @@ it.layer(testLayer)("checkOpenCodeProviderStatus with configured server URL", (i
 
       assert.equal(snapshot.status, "error");
       assert.equal(snapshot.installed, true);
-      assert.equal(runtimeMock.state.clientPassword, "secret-password");
       assert.equal(
         snapshot.message,
         "OpenCode server rejected authentication. Check the server URL and password.",
       );
+      assert.equal(runtimeMock.state.probePassword, "secret-password");
     }),
   );
 

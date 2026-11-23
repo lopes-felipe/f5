@@ -1,1 +1,0 @@
-- Claude honors repeated and multi-directory `--add-dir` launch arguments, including for skill discovery.

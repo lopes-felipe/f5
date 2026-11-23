@@ -59,9 +59,6 @@ export function resolveProviderOptionsForDispatch(input: {
       ),
       ...(projectSettings.subagentEffort ? { subagentEffort: projectSettings.subagentEffort } : {}),
       ...(launchArgs ? { launchArgs } : {}),
-      ...(parsedLaunchArgs.ok && parsedLaunchArgs.additionalDirectories
-        ? { additionalDirectories: parsedLaunchArgs.additionalDirectories }
-        : {}),
     },
   };
 }

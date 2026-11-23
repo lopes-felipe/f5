@@ -4,7 +4,7 @@ import { resolveProviderOptionsForDispatch } from "./providerOptionsForDispatch"
 
 const baseSettings = {
   claudeBinaryPath: "/opt/claude",
-  claudeLaunchArgs: '--debug --header="x y" --add-dir one "two words" --add-dir=three',
+  claudeLaunchArgs: '--debug --header="x y"',
   claudeProjectSettings: {
     "project-1": {
       subagentsEnabled: false,
@@ -43,7 +43,6 @@ describe("resolveProviderOptionsForDispatch", () => {
         subagentsEnabled: false,
         subagentModel: "claude-haiku-4-5",
         launchArgs: { debug: null, header: "x y" },
-        additionalDirectories: ["one", "two words", "three"],
       },
     });
   });

@@ -62,7 +62,6 @@ function pluginSkillDirectories(fileSystem: FileSystem.FileSystem, installPath: 
 export function planClaudeSkillDispatch(input: {
   readonly text: string;
   readonly cwd: string | undefined;
-  readonly additionalDirectories: ReadonlyArray<string> | undefined;
   readonly environment: NodeJS.ProcessEnv;
   readonly fileSystem: FileSystem.FileSystem;
   readonly nativeCommands: ReadonlySet<string> | undefined;
@@ -81,9 +80,7 @@ export function planClaudeSkillDispatch(input: {
     const configDir = resolveClaudeConfigDir(input.environment, cwd);
     const skillRoots = [
       NodePath.join(configDir, "skills"),
-      ...[...new Set([cwd, ...(input.additionalDirectories ?? [])])].map((directory) =>
-        NodePath.join(directory, ".claude", "skills"),
-      ),
+      NodePath.join(cwd, ".claude", "skills"),
     ];
     const knownMentions = mentions.filter(
       (mention) => input.nativeCommands?.has(mention.name) ?? true,

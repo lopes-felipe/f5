@@ -1,1 +1,0 @@
-- Refreshing a local OpenCode provider now discovers models, agents, and skills through the CLI without starting an OpenCode server.

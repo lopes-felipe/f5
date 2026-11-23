@@ -22,8 +22,7 @@ import {
   openCodeRuntimeErrorDetail,
   type OpenCodeInventory,
 } from "../opencodeRuntime.ts";
-import { loadOpenCodeCliInventory } from "../openCodeCliInventory.ts";
-import type { Agent } from "@opencode-ai/sdk/v2";
+import type { Agent, ProviderListResponse } from "@opencode-ai/sdk/v2";
 import {
   isOpenCodePasswordUnavailable,
   OPENCODE_PASSWORD_UNAVAILABLE,
@@ -165,7 +164,7 @@ function inferDefaultVariant(
   return undefined;
 }
 
-function inferDefaultAgent(agents: ReadonlyArray<Pick<Agent, "name">>): string | undefined {
+function inferDefaultAgent(agents: ReadonlyArray<Agent>): string | undefined {
   return agents.find((agent) => agent.name === "build")?.name ?? agents[0]?.name ?? undefined;
 }
 
@@ -175,8 +174,8 @@ const DEFAULT_OPENCODE_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabi
 
 function openCodeCapabilitiesForModel(input: {
   readonly providerID: string;
-  readonly model: OpenCodeInventory["providerList"]["all"][number]["models"][string];
-  readonly agents: OpenCodeInventory["agents"];
+  readonly model: ProviderListResponse["all"][number]["models"][string];
+  readonly agents: ReadonlyArray<Agent>;
 }): ModelCapabilities {
   const variantValues = Object.keys(input.model.variants ?? {});
   const defaultVariant = inferDefaultVariant(input.providerID, variantValues);
@@ -419,35 +418,38 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
   }
 
   const inventoryExit = yield* Effect.exit(
-    (isExternalServer
-      ? Effect.scoped(
-          Effect.gen(function* () {
-            const server = yield* openCodeRuntime.connectToOpenCodeServer({
-              binaryPath: openCodeSettings.binaryPath,
-              serverUrl: openCodeSettings.serverUrl,
-              ...(openCodeSettings.serverPassword
-                ? { serverPassword: openCodeSettings.serverPassword }
-                : {}),
-              environment,
-            });
-            return yield* openCodeRuntime.loadOpenCodeInventory(
-              openCodeRuntime.createOpenCodeSdkClient({
-                baseUrl: server.url,
-                directory: cwd,
-                ...(server.serverPassword ? { serverPassword: server.serverPassword } : {}),
-              }),
-            );
-          }),
-        )
-      : loadOpenCodeCliInventory(openCodeRuntime.runOpenCodeCommand, {
-          binaryPath: openCodeSettings.binaryPath,
-          cwd,
-          environment,
-        })
-    ).pipe(
-      Effect.mapError(
-        (cause) => new OpenCodeProbeError({ cause, detail: openCodeRuntimeErrorDetail(cause) }),
-      ),
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* openCodeRuntime
+          .connectToOpenCodeServer({
+            binaryPath: openCodeSettings.binaryPath,
+            serverUrl: openCodeSettings.serverUrl,
+            ...(openCodeSettings.serverPassword
+              ? { serverPassword: openCodeSettings.serverPassword }
+              : {}),
+            environment,
+          })
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new OpenCodeProbeError({ cause, detail: openCodeRuntimeErrorDetail(cause) }),
+            ),
+          );
+        return yield* openCodeRuntime
+          .loadOpenCodeInventory(
+            openCodeRuntime.createOpenCodeSdkClient({
+              baseUrl: server.url,
+              directory: cwd,
+              ...(server.serverPassword ? { serverPassword: server.serverPassword } : {}),
+            }),
+          )
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new OpenCodeProbeError({ cause, detail: openCodeRuntimeErrorDetail(cause) }),
+            ),
+          );
+      }),
     ),
   );
   if (inventoryExit._tag === "Failure") {

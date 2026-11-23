@@ -7,7 +7,7 @@ import {
 import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
 import { loadOpenCodeCommands } from "../opencodeRuntime.ts";
 import { leadingSlashCommandName } from "../nativeCommandInput.ts";
-import { openCodeClaudeUsageLimit, usageLimitFromWindows } from "../usageLimitMessages.ts";
+import { openCodeClaudeUsageLimit } from "../usageLimitMessages.ts";
 import {
   EventId,
   type OpenCodeSettings,
@@ -1309,11 +1309,7 @@ export function makeOpenCodeAdapter(
           const error = event.properties.error;
           // OpenCode 1.x carries HTTP payment failures in APIError.data.statusCode.
           const statusCode = error?.name === "APIError" ? error.data?.statusCode : undefined;
-          const usageLimit =
-            statusCode === 402
-              ? undefined
-              : (openCodeClaudeUsageLimit(message) ??
-                (statusCode === 429 ? usageLimitFromWindows([], "typed", null) : undefined));
+          const usageLimit = statusCode === 402 ? undefined : openCodeClaudeUsageLimit(message);
           const activeTurnId = context.activeTurnId;
           context.activeTurnId = undefined;
           updateProviderSession(

@@ -57,7 +57,6 @@ export const ClaudeProviderStartOptions = Schema.Struct({
    */
   confineWritesToWorkspace: Schema.optional(Schema.Boolean),
   launchArgs: Schema.optional(Schema.Record(Schema.String, Schema.NullOr(Schema.String))),
-  additionalDirectories: Schema.optional(Schema.Array(Schema.String)),
 });
 
 const CursorProviderStartOptions = Schema.Struct({
