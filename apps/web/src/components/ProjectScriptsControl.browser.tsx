@@ -87,7 +87,8 @@ describe("ProjectScriptsControl", () => {
   });
 
   it("keeps a multi-word label on one line so the chevron stays inside its track", async () => {
-    // Electron sizes the header track at its min-content width; force that here.
+    // Force the track to its min-content width (the suspected Electron sizing), where a label
+    // that can wrap would push the chevron out.
     await render(
       <div style={{ containerType: "inline-size", containerName: "header-actions", width: 768 }}>
         <div style={{ width: "min-content" }}>

@@ -1056,7 +1056,7 @@ function RepositoryGitActionsControl({
           onClick={() => initMutation.mutate()}
         >
           <GitBranchPlusIcon aria-hidden="true" className="size-4 @xl/header-actions:hidden" />
-          <span className="sr-only @xl/header-actions:not-sr-only">
+          <span className="sr-only @xl/header-actions:not-sr-only @xl/header-actions:whitespace-nowrap">
             {initMutation.isPending ? "Initializing..." : "Initialize Git"}
           </span>
         </Button>
