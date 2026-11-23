@@ -16,6 +16,7 @@ import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { GitCommandError, GitManagerError } from "./git/Errors.ts";
+import { canonicalWorktreePath } from "./git/worktreePaths.ts";
 import { makeSqlitePersistenceLive } from "./persistence/Layers/Sqlite.ts";
 import { type GitManagerShape } from "./git/Services/GitManager.ts";
 import { withProviderThreadAccess } from "./provider/providerThreadAccess.ts";
@@ -150,8 +151,9 @@ describe("WebSocket Server", () => {
         const { cwd, run } = repoWithTopic();
         const baseDir = fs.realpathSync(makeTempDir("f5-observed-branch-"));
         const stateDir = path.join(baseDir, "state");
-        const worktree = path.join(baseDir, "worktrees", "topic");
-        run("worktree", "add", "-q", worktree, "topic");
+        const worktreeLocation = path.join(baseDir, "worktrees", "topic");
+        run("worktree", "add", "-q", worktreeLocation, "topic");
+        const worktree = await canonicalWorktreePath(worktreeLocation);
         h.server = await createTestServer({
           cwd,
           stateDir,
@@ -191,10 +193,15 @@ describe("WebSocket Server", () => {
               JSON.stringify({
                 path: worktree,
                 projectId: project.id,
-                projectRoot: cwd,
+                projectRoot: await canonicalWorktreePath(cwd),
                 threadId: "observed-branch",
                 branch: "topic",
-                root: { identity: path.join(cwd, ".git"), baseOid: run("rev-parse", "topic") },
+                root: {
+                  identity: await canonicalWorktreePath(
+                    run("rev-parse", "--path-format=absolute", "--git-common-dir"),
+                  ),
+                  baseOid: run("rev-parse", "topic"),
+                },
                 repositories: [],
                 members: [],
               }),
