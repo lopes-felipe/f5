@@ -89,8 +89,8 @@ async function smokeClaudeRuntime(): Promise<void> {
       if (!checked) throw new Error("Bundled Codex has no signed native binaries.");
     }
     console.log(JSON.stringify({ codexVersion }));
-    const invocation = resolveClaudeCliInvocation("claude", ["--version"], environment);
-    const sdkOptions = resolveClaudeSdkExecutableOptions("claude", environment);
+    const invocation = await resolveClaudeCliInvocation("claude", ["--version"], environment);
+    const sdkOptions = await resolveClaudeSdkExecutableOptions("claude", environment);
     if (isAsarExecutablePath(invocation.file)) {
       throw new Error("Claude native executable must be outside the ASAR archive.");
     }

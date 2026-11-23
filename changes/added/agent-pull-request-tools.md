@@ -1,0 +1,1 @@
+- Agents can read pull requests and CI on the thread's forge and make changes in the thread's repository through F5's forge sign-in, including re-running jobs and merging GitHub stacks.

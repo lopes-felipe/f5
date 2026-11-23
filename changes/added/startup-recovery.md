@@ -1,0 +1,1 @@
+- Startup failures now show reload and update actions, terminal debugging guidance, and copyable crash details with a link to report the problem.

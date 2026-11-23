@@ -189,6 +189,7 @@ describe("parsePersistedAppSettings", () => {
     const parsed = parsePersistedAppSettings(null);
     expect(parsed.diffIgnoreWhitespace).toBe(false);
     expect(parsed.diffWordWrap).toBe(false);
+    expect(parsed.mathRenderingEnabled).toBe(false);
   });
 
   it("clamps persisted sidebar thread preview count", () => {

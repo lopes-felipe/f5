@@ -122,6 +122,7 @@ import { claudeApiErrorText } from "../claudeApiErrorText.ts";
 import { appendClaudeStderrTail, parseClaudeProcessExit } from "../claudeProcessExit.ts";
 import { makeClaudeProcessGroupSpawner } from "../claudeProcessGroup.ts";
 import { resolveClaudeToolSearchOverride } from "../claudeToolSearch.ts";
+import { resolveClaudeAutoCompactWindow } from "../claudeAutoCompactWindow.ts";
 import {
   joinClaudeSystemPromptAppend,
   resolveClaudeLaunchAppendSystemPrompt,
@@ -220,6 +221,7 @@ import {
   createModelSelection,
   getClaudeContextWindowTokens,
   getEffectiveClaudeCodeEffort,
+  getModelOptions,
   getProviderOptionBooleanSelectionValue,
   getProviderOptionStringSelectionValue,
   normalizeClaudeContextWindow,
@@ -689,6 +691,8 @@ interface ClaudeSessionContext {
   readonly processDiagnostics: { stderrTail: string };
   resumeInvalidatedTurnId: TurnId | undefined;
   modelContextWindowTokens: number;
+  readonly resultContextWindows: Map<string, number>;
+  autoCompactWindow?: number | undefined;
   /** Resolved by completeTurn while Stop waits for Claude to abort the turn. */
   interruptedTurnSettled: Deferred.Deferred<void> | undefined;
   stopped: boolean;
@@ -1546,6 +1550,10 @@ function getClaudeSessionModel(context: ClaudeSessionContext): string | undefine
     normalizeOptionalString(context.configuredBase.model) ??
     normalizeOptionalString(context.session.model)
   );
+}
+
+function claudeContextWindowKey(model: string): string {
+  return normalizeModelSlug(model, "claudeAgent") ?? model;
 }
 
 function getConfiguredClaudeContextWindow(
@@ -2901,6 +2909,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           sessions.get(context.session.threadId) !== context ||
           reportedTokens === undefined ||
           requestedModel !== getClaudeSessionModel(context) ||
+          context.resultContextWindows.has(claudeContextWindowKey(requestedModel)) ||
           reportedTokens === context.modelContextWindowTokens
         ) {
           return;
@@ -2909,6 +2918,64 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         context.modelContextWindowTokens = reportedTokens;
         yield* emitSessionConfigured(context, context.configuredBase);
       });
+
+    const refreshAutoCompactWindow = (
+      context: ClaudeSessionContext,
+      model = getClaudeSessionModel(context),
+    ) =>
+      Effect.gen(function* () {
+        context.autoCompactWindow = context.nativeCompactionEnabled
+          ? yield* resolveClaudeAutoCompactWindow({
+              cwd: context.queryOptions.cwd,
+              configDirectory: resolveClaudeConfigDir(
+                context.processEnvironment,
+                context.queryOptions.cwd,
+              ),
+              homeDirectory: NodeOS.homedir(),
+              platform: process.platform,
+              environment: context.processEnvironment,
+              model: model === undefined ? undefined : claudeContextWindowKey(model),
+              launchSettings: context.queryOptions.settings,
+            })
+          : undefined;
+      }).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, toolSearchPath),
+      );
+
+    const emitContextUsage = Effect.fnUntraced(function* (
+      context: ClaudeSessionContext,
+      message: SDKMessage,
+      rawMethod: string,
+    ) {
+      const usage = context.latestUsage;
+      const measuredUsage = usage && claudeInputTokens(usage) > 0 ? usage : undefined;
+      if (!measuredUsage && message.type !== "result") return;
+      const modelContextWindowTokens = emittedModelContextWindowTokens(context);
+      const window = context.autoCompactWindow;
+      const autoCompactThreshold =
+        window !== undefined &&
+        (modelContextWindowTokens === undefined || window < modelContextWindowTokens)
+          ? window - 33_000
+          : undefined;
+      const stamp = yield* makeEventStamp(context);
+      yield* offerRuntimeEvent({
+        type: "thread.token-usage.updated",
+        ...stamp,
+        eventId: stamp.eventId,
+        provider: PROVIDER,
+        createdAt: stamp.createdAt,
+        threadId: context.session.threadId,
+        ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
+        payload: {
+          usage: measuredUsage ?? {},
+          ...(autoCompactThreshold !== undefined ? { autoCompactThreshold } : {}),
+          ...(modelContextWindowTokens !== undefined ? { modelContextWindowTokens } : {}),
+        },
+        providerRefs: nativeProviderRefs(context),
+        raw: { source: "claude.sdk.message", method: rawMethod, payload: message },
+      });
+    });
 
     /**
      * After init: verify the preview server's `sdk` provenance once, then poll
@@ -3422,14 +3489,16 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             eligibility: "recovery-required" as const,
             reason: "Browser control from an earlier session hasn't stopped yet.",
           };
-        let executablePath: string | undefined;
-        try {
-          executablePath = resolveClaudeSdkExecutableOptions(
-            options?.oneOffProviderOptions?.binaryPath,
-            environment,
-            process.platform,
-          ).pathToClaudeCodeExecutable;
-        } catch {
+        const executableOptions = yield* Effect.option(
+          Effect.tryPromise(() =>
+            resolveClaudeSdkExecutableOptions(
+              options?.oneOffProviderOptions?.binaryPath,
+              environment,
+              process.platform,
+            ),
+          ),
+        );
+        if (Option.isNone(executableOptions)) {
           return {
             eligibility: "unavailable" as const,
             reason: "F5 couldn't resolve this agent's Claude executable.",
@@ -3437,7 +3506,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         }
         const availability = yield* Effect.promise(() =>
           claudeChromeAvailability({
-            executablePath,
+            executablePath: executableOptions.value.pathToClaudeCodeExecutable,
             resolveDefaultExecutable: resolveBundledClaudeExecutable,
             ...claudeChromeAvailabilityInput(environment, serverConfig.stateDir),
           }),
@@ -4644,38 +4713,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           }
           context.latestUsage = mergedUsage;
           // Zero-input starts are proxy placeholders, not context measurements.
-          if (claudeInputTokens(mergedUsage) <= 0) return;
-          const modelContextWindowTokens = emittedModelContextWindowTokens(context);
-          const configuredWindow = Number(
-            asUnknownRecord(context.queryOptions.settings)?.autoCompactWindow,
-          );
-          const autoCompactThreshold =
-            context.nativeCompactionEnabled &&
-            configuredWindow > 33_000 &&
-            (modelContextWindowTokens === undefined || configuredWindow < modelContextWindowTokens)
-              ? configuredWindow - 33_000
-              : null;
-          const stamp = yield* makeEventStamp(context);
-          yield* offerRuntimeEvent({
-            type: "thread.token-usage.updated",
-            ...stamp,
-            eventId: stamp.eventId,
-            provider: PROVIDER,
-            createdAt: stamp.createdAt,
-            threadId: context.session.threadId,
-            ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
-            payload: {
-              usage: mergedUsage,
-              ...(autoCompactThreshold !== null ? { autoCompactThreshold } : {}),
-              ...(modelContextWindowTokens !== undefined ? { modelContextWindowTokens } : {}),
-            },
-            providerRefs: nativeProviderRefs(context),
-            raw: {
-              source: "claude.sdk.message",
-              method: usageSnapshot.rawMethod,
-              payload: message,
-            },
-          });
+          yield* emitContextUsage(context, message, usageSnapshot.rawMethod);
         }
 
         if (event.type === "content_block_delta") {
@@ -5684,6 +5722,28 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           return;
         }
 
+        const selectedModel = getClaudeSessionModel(context);
+        if (selectedModel) {
+          const normalizedModel = claudeContextWindowKey(selectedModel);
+          if (!getModelOptions("claudeAgent").some((option) => option.slug === normalizedModel)) {
+            const entry = Object.entries(message.modelUsage ?? {}).find(
+              ([id]) => claudeContextWindowKey(id) === normalizedModel,
+            );
+            const window = entry?.[1]?.contextWindow;
+            if (typeof window === "number" && Number.isSafeInteger(window) && window > 0) {
+              context.resultContextWindows.set(normalizedModel, window);
+              if (context.resultContextWindows.size > 128)
+                context.resultContextWindows.delete(
+                  context.resultContextWindows.keys().next().value!,
+                );
+              if (window !== context.modelContextWindowTokens) {
+                context.modelContextWindowTokens = window;
+                yield* emitContextUsage(context, message, "claude/result");
+              }
+            }
+          }
+        }
+
         if (!context.turnState) {
           if (turnStatusFromResult(message) === "failed") {
             recordClaudeResult(context.lifecycle, message);
@@ -6068,10 +6128,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               context.configuredBase = message as Record<string, unknown>;
               const configuredModel = getClaudeSessionModel(context);
               if (configuredModel !== undefined && configuredModel !== previousModel) {
-                context.modelContextWindowTokens = estimateModelContextWindowTokens(
-                  configuredModel,
-                  "claudeAgent",
-                );
+                context.modelContextWindowTokens =
+                  context.resultContextWindows.get(claudeContextWindowKey(configuredModel)) ??
+                  estimateModelContextWindowTokens(configuredModel, "claudeAgent");
+                yield* refreshAutoCompactWindow(context, configuredModel);
               }
               yield* emitSessionConfigured(context, context.configuredBase);
               if (configuredModel !== undefined) {
@@ -7374,8 +7434,15 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         // bypass permissions, we keep the explicit tool-deny gate active here.
 
         const queryRuntime = yield* Effect.tryPromise({
-          try: (signal) =>
-            createQuery(
+          try: async (signal) => {
+            const executableOptions = await resolveClaudeSdkExecutableOptions(
+              providerOptions?.binaryPath,
+              queryEnvironment,
+              process.platform,
+              input.cwd,
+            );
+            signal.throwIfAborted();
+            return createQuery(
               {
                 prompt,
                 options: {
@@ -7387,12 +7454,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                       : {}),
                   ...(traits?.effectiveEffort ? { effort: traits.effectiveEffort } : {}),
                   ...(Object.keys(settings).length > 0 ? { settings } : {}),
-                  ...resolveClaudeSdkExecutableOptions(
-                    providerOptions?.binaryPath,
-                    queryEnvironment,
-                    process.platform,
-                    input.cwd,
-                  ),
+                  ...executableOptions,
                   settingSources: [...CLAUDE_SETTING_SOURCES],
                   ...(permissionMode ? { permissionMode } : {}),
                   ...(thinkingResolution.thinking ? { thinking: thinkingResolution.thinking } : {}),
@@ -7417,7 +7479,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 } satisfies ClaudeQueryOptions,
               },
               signal,
-            ),
+            );
+          },
           catch: (cause) =>
             new ProviderAdapterProcessError({
               provider: PROVIDER,
@@ -8350,6 +8413,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               const requestType = classifyRequestType(toolName);
               const detail = summarizeToolRequest(toolName, toolInput);
               const presentation = claudeApprovalPresentation(callbackOptions, {
+                permissionMode:
+                  typeof context.configuredBase?.permissionMode === "string"
+                    ? context.configuredBase.permissionMode
+                    : context.basePermissionMode,
                 // A session accept saves the CLI's suggestions, or F5's preview grant. Workflow
                 // stages return above without a card, and "mutate" implies an agent browser.
                 sessionGrantAvailable:
@@ -8667,12 +8734,21 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           thinkingResolution.thinking,
           launchInstanceSettings.showThinkingSummaries,
         );
+        const autoCompactWindow = providerOptions?.autoCompactWindow;
         const settings = {
           cleanupPeriodDays: launchInstanceSettings.cleanupPeriodDays,
-          ...(toolSearchOverride ? { env: { ENABLE_TOOL_SEARCH: toolSearchOverride } } : {}),
-          ...(providerOptions?.autoCompactWindow
-            ? { autoCompactWindow: providerOptions.autoCompactWindow }
+          ...(toolSearchOverride || autoCompactWindow
+            ? {
+                env: {
+                  ...(toolSearchOverride ? { ENABLE_TOOL_SEARCH: toolSearchOverride } : {}),
+                  // Claude Code checks this variable before the settings keys.
+                  ...(autoCompactWindow
+                    ? { CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(autoCompactWindow) }
+                    : {}),
+                },
+              }
             : {}),
+          ...(autoCompactWindow ? { autoCompactWindow } : {}),
           // With F5's compaction in charge, Claude must not compact behind F5's summaries.
           ...(providerOptions?.nativeCompaction === false ? { idleCompaction: false } : {}),
           permissions: buildClaudeFlagPermissions({
@@ -8745,7 +8821,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           workflowExecutionProfile: input.workflowExecutionProfile,
         });
 
-        const sdkExecutableOptions = yield* Effect.try({
+        const sdkExecutableOptions = yield* Effect.tryPromise({
           try: () =>
             resolveClaudeSdkExecutableOptions(
               providerOptions?.binaryPath,
@@ -9259,11 +9335,13 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           modelContextWindowTokens:
             runtimeModelSelection.contextWindowTokens ??
             estimateModelContextWindowTokens(selectedModel, "claudeAgent"),
+          resultContextWindows: new Map(),
           interruptedTurnSettled: undefined,
           stopped: false,
           retiring: false,
           agentBrowser: agentBrowserState,
         };
+        yield* refreshAutoCompactWindow(context);
         yield* Ref.set(contextRef, context);
         sessions.set(threadId, context);
         if (context.chromeGeneration && computerBroker) {
@@ -9633,6 +9711,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             );
             context.modelContextWindowTokens =
               runtimeModelSelection.contextWindowTokens ??
+              context.resultContextWindows.get(
+                claudeContextWindowKey(runtimeModelSelection.baseModel),
+              ) ??
               estimateModelContextWindowTokens(runtimeModelSelection.baseModel, "claudeAgent");
             if (
               shouldSetModel &&
@@ -9686,6 +9767,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           };
         }
 
+        yield* refreshAutoCompactWindow(context);
         context.requestedRuntime = {
           ...(appliedUltracode !== undefined ? { ultracode: appliedUltracode } : {}),
           model: input.model ?? context.startInput.model,

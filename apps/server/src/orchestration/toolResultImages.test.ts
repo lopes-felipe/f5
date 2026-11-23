@@ -45,6 +45,29 @@ afterEach(() => {
 });
 
 describe("extractToolResultImages", () => {
+  it("extracts and scrubs inline Codex tool images while retaining remote URLs", () => {
+    const remote = { type: "inputImage", imageUrl: "https://example.com/image.png" };
+    const value = {
+      item: {
+        type: "dynamicToolCall",
+        contentItems: [
+          { type: "inputImage", imageUrl: "data:IMAGE/PNG;base64," + PNG_BASE64 },
+          remote,
+        ],
+      },
+    };
+    const extraction = extractToolResultImages(value);
+    expect(extraction.images.map((image) => image.mimeType)).toEqual(["image/png"]);
+    expect(extraction.omitted).toBe(0);
+    expect(extraction.scrubbed).toEqual({
+      item: {
+        type: "dynamicToolCall",
+        contentItems: [{ type: "image", mimeType: "image/png", omitted: true }, remote],
+      },
+    });
+    expect(JSON.stringify(value, scrubInlineImagesReplacer)).not.toContain(PNG_BASE64);
+  });
+
   it("extracts Claude and MCP image blocks and removes their base64", () => {
     const result = {
       result: {

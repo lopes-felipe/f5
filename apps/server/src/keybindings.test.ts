@@ -437,20 +437,45 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
       }).pipe(Effect.provide(makeKeybindingsLayer())),
   );
 
+  it.effect("keeps an individual unassignment across startup default cleanup", () =>
+    Effect.gen(function* () {
+      const { keybindingsConfigPath } = yield* ServerConfig;
+      const unassigned = { key: "f6", command: "workspace.focusNext", when: "false" } as const;
+      yield* writeKeybindingsConfig(keybindingsConfigPath, [unassigned]);
+      const keybindings = yield* Keybindings;
+      yield* keybindings.syncDefaultKeybindingsOnStartup;
+      assert.deepEqual(yield* readKeybindingsConfig(keybindingsConfigPath), [unassigned]);
+      const state = yield* keybindings.loadConfigState;
+      const bindings = state.keybindings.filter(({ command }) => command === "workspace.focusNext");
+      assert.strictEqual(bindings.length, 2);
+      assert.deepEqual(bindings.find(({ shortcut }) => !shortcut.modKey)?.whenAst, {
+        type: "identifier",
+        name: "false",
+      });
+      assert.isUndefined(bindings.find(({ shortcut }) => shortcut.modKey)?.whenAst);
+    }).pipe(Effect.provide(makeKeybindingsLayer())),
+  );
+
   it.effect("does not persist defaults when a custom shortcut conflicts with a default", () =>
     Effect.gen(function* () {
       const { keybindingsConfigPath } = yield* ServerConfig;
-      yield* writeKeybindingsConfig(keybindingsConfigPath, [
-        { key: "mod+j", command: "script.custom-action.run" },
-      ]);
+      const custom = [
+        { key: "mod+shift+b", command: "script.custom-action.run" },
+        { key: "mod+shift+b", command: "script.custom-composer.run", when: "composerFocus" },
+      ] as const;
+      yield* writeKeybindingsConfig(keybindingsConfigPath, custom);
 
-      yield* Effect.gen(function* () {
-        const keybindings = yield* Keybindings;
-        yield* keybindings.syncDefaultKeybindingsOnStartup;
-      });
+      const keybindings = yield* Keybindings;
+      yield* keybindings.syncDefaultKeybindingsOnStartup;
 
-      const persisted = yield* readKeybindingsConfig(keybindingsConfigPath);
-      assert.deepEqual(persisted, [{ key: "mod+j", command: "script.custom-action.run" }]);
+      assert.deepEqual(yield* readKeybindingsConfig(keybindingsConfigPath), custom);
+      const state = yield* keybindings.loadConfigState;
+      assert.deepEqual(
+        state.keybindings
+          .filter(({ shortcut }) => shortcut.key === "b" && shortcut.modKey && shortcut.shiftKey)
+          .map(({ command }) => command),
+        ["agents.toggle", "script.custom-action.run", "script.custom-composer.run"],
+      );
     }).pipe(Effect.provide(makeKeybindingsLayer())),
   );
 
@@ -724,12 +749,12 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
         Effect.provide(Layer.fresh(KeybindingsLive)),
         Effect.provideService(FileSystem.FileSystem, {
           ...fs,
-          writeFileString: (path) =>
+          open: (path) =>
             Effect.fail(
               PlatformError.systemError({
                 _tag: "PermissionDenied",
                 module: "FileSystem",
-                method: "writeFileString",
+                method: "open",
                 pathOrDescriptor: path,
                 description: "Test directory is not writable",
               }),

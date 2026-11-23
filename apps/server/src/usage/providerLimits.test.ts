@@ -220,6 +220,24 @@ describe("provider limits", () => {
     ).toEqual([{ id: "weekly", label: "Go · weekly", usedPercent: 0, resetsAt: null }]);
     expect(normalizeProviderLimits("antigravity", {})).toEqual([]);
   });
+  it("labels Gemini 4 Neon, Carbon and Hydrogen buckets as Gemini quota", () => {
+    const windows = normalizeProviderLimits(
+      "antigravity",
+      {
+        buckets: [
+          { bucketId: "gemini-4-neon-5h", remainingFraction: 0.4, window: "5h" },
+          { bucketId: "gemini-4-carbon-weekly", remainingFraction: 0.75, window: "weekly" },
+          { bucketId: "gemini-4-hydrogen-5h", remainingFraction: 1, window: "5h" },
+        ],
+      },
+      Date.parse("2026-11-22T00:00:00Z"),
+    );
+    expect(windows.map(({ id, label, usedPercent }) => ({ id, label, usedPercent }))).toEqual([
+      { id: "gemini-4-neon-5h", label: "Gemini · 5-hour", usedPercent: 60 },
+      { id: "gemini-4-carbon-weekly", label: "Gemini · Weekly", usedPercent: 25 },
+      { id: "gemini-4-hydrogen-5h", label: "Gemini · 5-hour", usedPercent: 0 },
+    ]);
+  });
   it("keeps main and Spark windows separate and distinguishes omitted reset credits", () => {
     const limits = normalizeRateLimits({
       rateLimits: { limitId: "spark", primary: { usedPercent: 90 } },
@@ -332,5 +350,45 @@ it("reads only the configured hub account and never sends its management key to 
     ]);
   } finally {
     vi.unstubAllGlobals();
+  }
+});
+
+it("skips the private token reader on an uncertified Antigravity version", async () => {
+  const profileDirectory = await mkdtemp(path.join(os.tmpdir(), "f5-agy-uncertified-"));
+  await mkdir(path.join(profileDirectory, "antigravity-acp"), { recursive: true });
+  await writeFile(
+    path.join(profileDirectory, "antigravity-acp", "acp_token.json"),
+    JSON.stringify({ client_id: "c", client_secret: "s", refresh_token: "r" }),
+  );
+  const fetchMock = vi.fn();
+  vi.stubGlobal("fetch", fetchMock);
+  try {
+    const snapshot = await Effect.runPromise(
+      Effect.gen(function* () {
+        const capability = yield* makeProviderLimits({
+          provider: "antigravity",
+          instanceId: ProviderInstanceId.make("antigravity-test"),
+          displayName: "Account",
+          enabled: true,
+          environment: {},
+          antigravityProfileDirectory: profileDirectory,
+          antigravityNativeReaders: async () => false,
+        });
+        const permits = yield* Semaphore.make(1);
+        yield* capability.refresh("force", permits);
+        for (let index = 0; index < 20; index++) {
+          const value = yield* capability.getSnapshot;
+          if (value.refreshState === "idle") return value;
+          yield* Effect.sleep("10 millis");
+        }
+        return yield* capability.getSnapshot;
+      }).pipe(Effect.scoped),
+    );
+    expect(snapshot.sections[0]?.outcome).toBe("unavailable");
+    expect(snapshot.sections[0]?.errorCode).toBe("unsupported");
+    expect(fetchMock).not.toHaveBeenCalled();
+  } finally {
+    vi.unstubAllGlobals();
+    await rm(profileDirectory, { recursive: true, force: true });
   }
 });

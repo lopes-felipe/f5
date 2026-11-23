@@ -13,17 +13,39 @@ import { makeRefSnapshotCache } from "../refSnapshotCache.ts";
 import { gitMutatesRefSnapshot } from "../refMutation.ts";
 import { makeMoveSnapshotOperations } from "../moveSnapshot.ts";
 import { checkoutFingerprint } from "../checkoutFingerprint.ts";
-import { blockingIgnoredEntriesOnDisk } from "../worktreeIgnoredFiles.ts";
+import {
+  blockingIgnoredEntriesOnDisk,
+  scopeIgnoredFilesRemovalPolicy,
+  type IgnoredFilesRemovalPolicy,
+} from "../worktreeIgnoredFiles.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { parseCleanupSafetyStatus } from "../cleanupSafety.ts";
-import { basename, dirname } from "node:path";
+import { basename, dirname, relative } from "node:path";
 import {
   WorktreePreparations,
   type WorktreePreparationReceipt,
+  type WorktreeGroupPlan,
 } from "../../persistence/Services/WorktreePreparations.ts";
-import { lstat as inspectPath, readFile, writeFile, rm, stat, utimes } from "node:fs/promises";
+import {
+  lstat as inspectPath,
+  readFile,
+  writeFile,
+  rm,
+  rmdir,
+  stat,
+  utimes,
+} from "node:fs/promises";
 import { parseWorktreeListPorcelain, stripPathTerminator } from "../worktreeList.ts";
 import { branchNameFromHeadRef } from "../headBranch.ts";
+import {
+  inspectNestedWorktreeDestination,
+  cleanPlainWorktreeLayout,
+  externalRepositoryPath,
+  runApprovedWorktreeLayout,
+  linkPlainWorktreeFiles,
+  nestedWorktreeOwner,
+  resolveNestedWorktreeBase,
+} from "../../project/worktreeRepositoryPaths.ts";
 import { isRefLockFailure, networkFailureDetail } from "../networkFailureDetail.ts";
 import {
   gitDeletesWorktreeFiles,
@@ -1556,7 +1578,7 @@ const makeGitCore = Effect.gen(function* () {
       });
     }).pipe(Effect.ignoreCause({ log: true }));
 
-  const ensureWorktree: GitCoreShape["ensureWorktree"] = (input) =>
+  const ensureSingleWorktree: GitCoreShape["ensureWorktree"] = (input) =>
     withWorktreeLifecycleLock(
       input.path,
       Effect.gen(function* () {
@@ -1726,6 +1748,433 @@ const makeGitCore = Effect.gen(function* () {
               [],
               error instanceof Error ? error.message : String(error),
             ),
+      ),
+    );
+
+  const groupError = (path: string, detail: string) =>
+    createGitCommandError("GitCore.worktreeGroup", path, [], detail);
+  const listProjectRepositoryRoots: NonNullable<GitCoreShape["listProjectRepositoryRoots"]> = (
+    id,
+  ) =>
+    preparations
+      .listProjectRepositoryRoots(id)
+      .pipe(Effect.mapError((error) => groupError(id, error.message)));
+  const setProjectRepositoryRoot: NonNullable<GitCoreShape["setProjectRepositoryRoot"]> = (input) =>
+    Effect.gen(function* () {
+      if (!isAbsolutePath(input.path))
+        return yield* groupError(input.path, "Choose an absolute repository folder.");
+      if (!input.tracked)
+        return yield* preparations.setProjectRepositoryRoot(input.projectId, input.path, false);
+      const path = yield* canonicalPath(input.path);
+      const project = yield* canonicalPath(input.projectRoot);
+      if (pathContains(project, path) || pathContains(path, project))
+        return yield* groupError(
+          path,
+          "Choose a repository outside the project and its parent folders.",
+        );
+      const checkout = yield* inspectCheckoutIdentity(path);
+      if (checkout.canonicalRoot !== path)
+        return yield* groupError(path, "Choose the repository root.");
+      yield* preparations.setProjectRepositoryRoot(input.projectId, path, true);
+    }).pipe(Effect.mapError((error) => groupError(input.path, error.message)));
+
+  const inspectWorktreeGroup: NonNullable<GitCoreShape["inspectWorktreeGroup"]> = (input) =>
+    Effect.gen(function* () {
+      const target = yield* canonicalPath(input.path);
+      const group = yield* preparations.getGroup(target);
+      if (!group) return null;
+      if (
+        group.projectRoot !== (yield* canonicalPath(input.projectRoot)) ||
+        group.branch !== input.branch ||
+        (input.threadId !== undefined && group.threadId !== input.threadId)
+      )
+        return { ready: false, recoverable: false };
+      let ready = true;
+      let recoverable = true;
+      const workspaceExists = yield* fileSystem.exists(target);
+      if (!workspaceExists && (yield* preparations.getGroupLayoutPhase(target)) === "done")
+        return { ready: false, recoverable: false };
+      if (group.root) {
+        if (
+          (yield* resolveCommonDir(group.projectRoot).pipe(
+            Effect.flatMap(canonicalPath),
+            Effect.orElseSucceed(() => null),
+          )) !== group.root.identity
+        )
+          return { ready: false, recoverable: false };
+        const root = (yield* listWorktrees(group.projectRoot)).find(
+          (entry) =>
+            !entry.isMain && entry.canonicalPath === target && entry.branch === group.branch,
+        );
+        if (workspaceExists) {
+          const checkout = yield* inspectCheckoutIdentity(target);
+          if (
+            !root ||
+            checkout.canonicalRoot !== target ||
+            checkout.commonDir !== group.root.identity ||
+            checkout.branch !== group.branch
+          )
+            return { ready: false, recoverable: false };
+        } else {
+          ready = false;
+          recoverable = yield* branchExists(group.projectRoot, group.branch);
+        }
+      }
+      for (const member of group.members) {
+        const destination = yield* inspectNestedWorktreeDestination(
+          target,
+          relative(target, member.path),
+        );
+        const sourceIdentity = yield* resolveCommonDir(member.source).pipe(
+          Effect.flatMap(canonicalPath),
+          Effect.orElseSucceed(() => null),
+        );
+        if (sourceIdentity !== member.identity) return { ready: false, recoverable: false };
+        if (destination.kind === "missing" || destination.kind === "empty") {
+          ready = false;
+          const receipt = yield* preparations.latest(member.path);
+          const branch = yield* branchExists(member.source, group.branch);
+          recoverable &&= branch ? receipt?.owner === nestedWorktreeOwner(target) : !receipt;
+          continue;
+        }
+        const receipt = yield* preparations.latest(member.path);
+        if (!receipt && group.root) continue;
+        if (
+          receipt?.owner !== nestedWorktreeOwner(target) ||
+          receipt.repositoryIdentity !== member.identity
+        )
+          return { ready: false, recoverable: false };
+        const checkout = yield* inspectCheckoutIdentity(member.path).pipe(Effect.option);
+        if (
+          Option.isNone(checkout) ||
+          checkout.value.commonDir !== member.identity ||
+          checkout.value.canonicalRoot !== member.path
+        )
+          return { ready: false, recoverable: false };
+        const registered = yield* listWorktrees(member.source);
+        if (
+          !registered.some(
+            (entry) =>
+              !entry.isMain &&
+              entry.canonicalPath === member.path &&
+              entry.branch === checkout.value.branch,
+          )
+        )
+          return { ready: false, recoverable: false };
+      }
+      return { ready, recoverable };
+    }).pipe(Effect.mapError((error) => groupError(input.path, error.message)));
+
+  const materializeWorktreeGroup = (
+    group: WorktreeGroupPlan,
+    options: { custom?: boolean; adopt?: boolean } = {},
+  ) =>
+    Effect.gen(function* () {
+      if (!group.root && !options.custom)
+        yield* Effect.tryPromise(() => linkPlainWorktreeFiles(group, group.repositories));
+      const owner = nestedWorktreeOwner(group.path);
+      for (const member of group.members) {
+        const destination = yield* inspectNestedWorktreeDestination(
+          group.path,
+          relative(group.path, member.path),
+        );
+        if (
+          (yield* resolveCommonDir(member.source).pipe(Effect.flatMap(canonicalPath))) !==
+          member.identity
+        )
+          return yield* groupError(member.path, "The source repository identity changed.");
+        if (destination.kind === "occupied") {
+          let receipt = yield* preparations.latest(member.path);
+          if (!receipt && group.root && !options.adopt) continue;
+          const checkout = yield* inspectCheckoutIdentity(member.path).pipe(Effect.option);
+          if (
+            Option.isNone(checkout) ||
+            checkout.value.commonDir !== member.identity ||
+            checkout.value.canonicalRoot !== member.path ||
+            (!receipt && checkout.value.branch !== group.branch)
+          )
+            if (!receipt && group.root) continue;
+            else return yield* groupError(member.path, "The planned checkout path is occupied.");
+          if (!receipt && options.adopt) {
+            const registrated = (yield* listWorktrees(member.source)).find(
+              (entry) =>
+                !entry.isMain &&
+                entry.canonicalPath === member.path &&
+                entry.branch === group.branch &&
+                entry.locked === null,
+            );
+            if (!registrated)
+              return yield* groupError(
+                member.path,
+                "The layout must create a registered Git worktree.",
+              );
+            receipt = yield* preparations.allocate({
+              operationId: randomUUID(),
+              repositoryIdentity: member.identity,
+              projectIdentity: member.source,
+              owner,
+              requestedBase: member.baseOid,
+              baseOid: member.baseOid,
+              path: member.path,
+              branch: group.branch,
+              namingIntent: "existing",
+              setupIdentity: null,
+              runSetupScript: false,
+            });
+            receipt = yield* preparations.update(receipt, {
+              phase: "completed",
+              createdCheckout: true,
+            });
+          }
+          if (receipt?.owner !== owner || receipt.repositoryIdentity !== member.identity)
+            return yield* groupError(member.path, "The planned checkout path is occupied.");
+          continue;
+        }
+        const prior = yield* preparations.latest(member.path);
+        const existing = yield* branchExists(member.source, group.branch);
+        if (
+          existing &&
+          (prior?.owner !== owner ||
+            prior.repositoryIdentity !== member.identity ||
+            prior.branch !== group.branch)
+        )
+          return yield* groupError(member.path, "The planned branch belongs to another checkout.");
+        if (destination.kind === "empty") yield* Effect.tryPromise(() => rmdir(member.path));
+        yield* fileSystem.makeDirectory(dirname(member.path), { recursive: true });
+        if (existing) {
+          yield* ensureSingleWorktree({
+            cwd: member.source,
+            path: member.path,
+            branch: group.branch,
+            owner,
+          });
+        } else {
+          const created = yield* createWorktree({
+            cwd: member.source,
+            path: member.path,
+            branch: member.baseOid,
+            newBranch: group.branch,
+            baseRefName: member.baseOid,
+            preparation: { owner, runSetupScript: false, setupIdentity: null },
+          });
+          if (created.worktree.branch !== group.branch)
+            return yield* groupError(member.path, "The planned branch changed during checkout.");
+        }
+      }
+      const state = yield* inspectWorktreeGroup({
+        path: group.path,
+        projectRoot: group.projectRoot,
+        branch: group.branch,
+        threadId: group.threadId,
+      });
+      if (!state?.ready)
+        return yield* groupError(group.path, "The worktree group failed verification.");
+    });
+
+  const prepareWorktreeGroupLayout = (
+    group: WorktreeGroupPlan,
+    options: { layoutCreate?: string; retryLayout?: boolean; baseBranch: string },
+  ) =>
+    Effect.gen(function* () {
+      const phase = yield* preparations.getGroupLayoutPhase(group.path);
+      if (!options.layoutCreate || phase === "done") {
+        if (phase === "running")
+          return yield* groupError(group.path, "The approved worktree layout did not finish.");
+        return yield* materializeWorktreeGroup(group, { custom: phase === "done" });
+      }
+      if (phase === "running" && !options.retryLayout)
+        return yield* groupError(
+          group.path,
+          "Retry explicitly to rerun an interrupted layout command.",
+        );
+      yield* preparations.setGroupLayoutPhase(group.path, "running");
+      yield* fileSystem.makeDirectory(group.path, { recursive: true });
+      yield* withRepositoryLifecycleLock(
+        baseDir,
+        group.projectRoot,
+        runApprovedWorktreeLayout(group, options.layoutCreate, options.baseBranch),
+      );
+      yield* materializeWorktreeGroup(group, { custom: true, adopt: true });
+      yield* preparations.setGroupLayoutPhase(group.path, "done");
+    });
+
+  const prepareWorktreeGroup: NonNullable<GitCoreShape["prepareWorktreeGroup"]> = (input) =>
+    withWorktreeLifecycleLock(
+      input.path,
+      Effect.gen(function* () {
+        const path = yield* canonicalPath(input.path);
+        const projectRoot = yield* canonicalPath(input.projectRoot);
+        const managed = yield* managedWorktreesRoots;
+        if (
+          !managed.some((root) => path !== root && pathContains(root, path)) ||
+          pathContains(projectRoot, path) ||
+          pathContains(path, projectRoot)
+        )
+          return yield* groupError(
+            path,
+            "The workspace must be in a managed worktree directory outside the project.",
+          );
+        const existing = yield* preparations.getGroup(path);
+        if (existing) {
+          if (
+            existing.threadId !== input.threadId ||
+            existing.projectId !== input.projectId ||
+            existing.projectRoot !== projectRoot ||
+            existing.branch !== input.branch
+          )
+            return yield* groupError(path, "The workspace is owned by another worktree group.");
+          return yield* prepareWorktreeGroupLayout(existing, input);
+        }
+        const root = input.rooted ? yield* preparations.latest(path) : null;
+        if (
+          input.rooted &&
+          (!root?.createdCheckout ||
+            !root.baseOid ||
+            root.owner !== "thread:" + input.threadId ||
+            root.branch !== input.branch ||
+            root.projectIdentity !== projectRoot)
+        )
+          return yield* groupError(path, "The primary checkout does not belong to this thread.");
+        if (!input.rooted && (yield* fileSystem.exists(path)))
+          return yield* groupError(path, "The managed workspace path is occupied.");
+        const members: WorktreeGroupPlan["members"][number][] = [];
+        const repositories = yield* Effect.forEach([...new Set(input.repositories)], canonicalPath);
+        const external = yield* preparations.listProjectRepositoryRoots(input.projectId);
+        for (const source of repositories) {
+          if (
+            source === projectRoot ||
+            (!pathContains(projectRoot, source) && !external.includes(source))
+          )
+            return yield* groupError(source, "The repository is outside the project.");
+        }
+        for (const sourcePath of new Set(input.selected)) {
+          const source = yield* canonicalPath(sourcePath);
+          if (!repositories.includes(source))
+            return yield* groupError(source, "The repository is no longer in the project.");
+          const inspection = yield* inspectCheckoutIdentity(source);
+          if (inspection.canonicalRoot !== source)
+            return yield* groupError(source, "The selected path is not a repository root.");
+          const chosen = yield* resolveNestedWorktreeBase(
+            { resolveCommit },
+            source,
+            input.baseBranch,
+          );
+          const fallback = chosen ? null : yield* resolveDefaultBranchName(source, "origin");
+          const baseOid = chosen ?? (yield* resolveCommit(source, fallback ?? "HEAD"));
+          if (baseOid)
+            members.push({
+              source,
+              identity: inspection.commonDir,
+              path: joinPath(
+                path,
+                pathContains(projectRoot, source)
+                  ? relative(projectRoot, source)
+                  : externalRepositoryPath(source),
+              ),
+              baseOid,
+            });
+        }
+        if (members.length === 0 && !root)
+          return yield* groupError(
+            path,
+            "Select a repository with a commit before creating a worktree.",
+          );
+        const group = {
+          ...(root?.baseOid
+            ? { root: { identity: root.repositoryIdentity, baseOid: root.baseOid } }
+            : {}),
+          path,
+          projectId: input.projectId,
+          projectRoot,
+          threadId: input.threadId,
+          branch: input.branch,
+          repositories,
+          members,
+        };
+        yield* preparations.saveGroup(group);
+        yield* prepareWorktreeGroupLayout(group, input);
+      }),
+    ).pipe(Effect.mapError((error) => groupError(input.path, error.message)));
+
+  const ensureWorktree: GitCoreShape["ensureWorktree"] = (input) =>
+    withWorktreeLifecycleLock(
+      input.path,
+      Effect.gen(function* () {
+        const target = yield* canonicalPath(input.path);
+        const group = yield* preparations.getGroup(target);
+        if (group) {
+          if (
+            input.owner !== "thread:" + group.threadId ||
+            group.branch !== input.branch ||
+            group.projectRoot !== (yield* canonicalPath(input.cwd))
+          )
+            return yield* groupError(target, "The worktree group owner does not match.");
+          const state = yield* inspectWorktreeGroup({
+            path: target,
+            projectRoot: input.cwd,
+            branch: input.branch,
+            threadId: group.threadId,
+          });
+          if (state?.ready) return { recreated: false };
+          if (!state?.recoverable)
+            return yield* groupError(target, "The worktree group is not recoverable.");
+          if (group.root) yield* ensureSingleWorktree(input);
+          const phase = yield* preparations.getGroupLayoutPhase(target);
+          if (phase === "running")
+            return yield* groupError(
+              target,
+              "Retry the interrupted approved layout from the setup card.",
+            );
+          yield* materializeWorktreeGroup(group, { custom: phase === "done" });
+          return { recreated: true };
+        }
+        const result = yield* ensureSingleWorktree(input);
+        const children = yield* preparations.listByOwner(nestedWorktreeOwner(target));
+        const seen = new Set<string>();
+        for (const child of children) {
+          if (seen.has(child.path)) continue;
+          seen.add(child.path);
+          if (!child.createdCheckout) continue;
+          if (child.path === target || !pathContains(target, child.path)) {
+            return yield* createGitCommandError(
+              "GitCore.ensureWorktree",
+              input.cwd,
+              [],
+              "A nested checkout no longer matches its worktree preparation.",
+            );
+          }
+          // A recreated parent can run a checkout hook that supplies the child path.
+          const destination = yield* inspectNestedWorktreeDestination(
+            target,
+            relative(target, child.path),
+          );
+          if (destination.kind !== "missing") continue;
+          const repository = yield* resolveCommonDir(child.projectIdentity).pipe(
+            Effect.flatMap(canonicalPath),
+          );
+          if (repository !== child.repositoryIdentity)
+            return yield* createGitCommandError(
+              "GitCore.ensureWorktree",
+              input.cwd,
+              [],
+              "A nested repository no longer matches its worktree preparation.",
+            );
+          yield* fileSystem.makeDirectory(dirname(child.path), { recursive: true });
+          yield* ensureSingleWorktree({
+            cwd: child.projectIdentity,
+            path: child.path,
+            branch: child.branch,
+            owner: child.owner,
+            ...(input.submodules === undefined ? {} : { submodules: input.submodules }),
+          });
+        }
+        return result;
+      }),
+    ).pipe(
+      Effect.mapError((error) =>
+        Schema.is(GitCommandError)(error)
+          ? error
+          : createGitCommandError("GitCore.ensureWorktree", input.cwd, [], error.message),
       ),
     );
 
@@ -1939,6 +2388,7 @@ const makeGitCore = Effect.gen(function* () {
 
   const prepareCommitContext: GitCoreShape["prepareCommitContext"] = (cwd, filePaths) =>
     Effect.gen(function* () {
+      if (filePaths?.length === 0) return null;
       const prepared = yield* withPreparedIndex(cwd, filePaths, (env) =>
         Effect.gen(function* () {
           const paths = filePaths?.length ? ["--", ...filePaths.map(topLiteralGitPathspec)] : [];
@@ -3617,9 +4067,104 @@ const makeGitCore = Effect.gen(function* () {
       ),
     );
 
-  const removeWorktreeUnlocked = (input: Parameters<GitCoreShape["removeWorktree"]>[0]) =>
+  const verifyGroupMemberRemoval = (
+    path: string,
+    identity: string,
+    policy?: IgnoredFilesRemovalPolicy,
+  ) =>
+    Effect.gen(function* () {
+      if (
+        !(yield* fileSystem
+          .exists(path)
+          .pipe(Effect.mapError((error) => groupError(path, error.message))))
+      )
+        return;
+      const checkout = yield* inspectCheckout(path);
+      if (
+        checkout.canonicalRoot !== path ||
+        checkout.commonDir !== identity ||
+        !checkout.branch ||
+        !checkout.registration ||
+        checkout.registration.isMain ||
+        checkout.registration.locked !== null ||
+        checkout.operation ||
+        checkout.hasInitializedSubmodules ||
+        checkout.hasTrackedChanges ||
+        checkout.hasUntrackedChanges ||
+        checkout.ignoredTruncated ||
+        (yield* Effect.promise(() =>
+          blockingIgnoredEntriesOnDisk(path, checkout.ignoredEntries, policy),
+        )).length > 0
+      )
+        return yield* groupError(path, "Local changes or checkout state prevent safe removal.");
+    });
+
+  const removeWorktreeUnlocked: GitCoreShape["removeWorktree"] = (input) =>
     Effect.gen(function* () {
       const target = yield* canonicalPath(resolvePath(input.cwd, input.path));
+      const group = yield* preparations
+        .getGroup(target)
+        .pipe(Effect.mapError((error) => groupError(target, error.message)));
+      const memberIgnoredFiles = (path: string) =>
+        scopeIgnoredFilesRemovalPolicy(relative(target, path), input.ignoredFiles);
+      const runLayoutRemoval =
+        group && input.layoutRemove
+          ? withRepositoryLifecycleLock(
+              baseDir,
+              group.projectRoot,
+              runApprovedWorktreeLayout(group, input.layoutRemove, ""),
+            ).pipe(Effect.mapError((error) => groupError(target, error.message)))
+          : null;
+      if (group && !group.root) {
+        const managed = yield* managedWorktreesRoots;
+        if (
+          group.projectRoot !== (yield* canonicalPath(input.cwd)) ||
+          !managed.some((root) => target !== root && pathContains(root, target))
+        )
+          return yield* groupError(target, "The workspace group owner could not be verified.");
+        for (const member of group.members) {
+          const owner = yield* preparations
+            .latest(member.path)
+            .pipe(Effect.mapError((error) => groupError(target, error.message)));
+          if (
+            !owner ||
+            owner.owner !== nestedWorktreeOwner(target) ||
+            owner.repositoryIdentity !== member.identity ||
+            (yield* resolveCommonDir(member.source).pipe(Effect.flatMap(canonicalPath))) !==
+              member.identity
+          )
+            return yield* groupError(
+              member.path,
+              "Repository worktree ownership could not be verified.",
+            );
+          yield* verifyGroupMemberRemoval(
+            member.path,
+            member.identity,
+            memberIgnoredFiles(member.path),
+          );
+        }
+        if (
+          runLayoutRemoval &&
+          (yield* fileSystem.exists(target).pipe(Effect.orElseSucceed(() => false)))
+        )
+          yield* runLayoutRemoval;
+        yield* Effect.tryPromise(() => cleanPlainWorktreeLayout(group, false)).pipe(
+          Effect.mapError((error) => groupError(target, error.message)),
+        );
+        for (const member of group.members)
+          yield* removeWorktree({
+            cwd: member.source,
+            path: member.path,
+            ...(input.ignoredFiles ? { ignoredFiles: memberIgnoredFiles(member.path)! } : {}),
+          });
+        yield* Effect.tryPromise(() => cleanPlainWorktreeLayout(group, true)).pipe(
+          Effect.mapError((error) => groupError(target, error.message)),
+        );
+        yield* preparations
+          .deleteGroup(group)
+          .pipe(Effect.mapError((error) => groupError(target, error.message)));
+        return;
+      }
       const entry = (yield* listWorktrees(input.cwd)).find(
         (entry) => entry.canonicalPath === target,
       );
@@ -3630,12 +4175,71 @@ const makeGitCore = Effect.gen(function* () {
             phase: "skipped",
             error: "Checkout was safely removed.",
           });
+        if (group) yield* preparations.deleteGroup(group);
       }).pipe(
         Effect.mapError((error) =>
           createGitCommandError("GitCore.removeWorktree", input.cwd, [], error.message),
         ),
       );
+      const ownedChildren = yield* preparations
+        .listByOwner(nestedWorktreeOwner(target))
+        .pipe(
+          Effect.mapError((error) =>
+            createGitCommandError("GitCore.removeWorktree", input.cwd, [], error.message),
+          ),
+        );
+      const children: WorktreePreparationReceipt[] = [];
+      const seen = new Set<string>();
+      for (const child of ownedChildren) {
+        if (seen.has(child.path)) continue;
+        seen.add(child.path);
+        if (!child.createdCheckout || child.error === "Checkout was safely removed.") continue;
+        const current = yield* preparations
+          .latest(child.path)
+          .pipe(
+            Effect.mapError((error) =>
+              createGitCommandError("GitCore.removeWorktree", input.cwd, [], error.message),
+            ),
+          );
+        const actual = yield* canonicalPath(child.path);
+        const repository = yield* resolveCommonDir(child.projectIdentity).pipe(
+          Effect.flatMap(canonicalPath),
+        );
+        if (
+          actual !== child.path ||
+          actual === target ||
+          !pathContains(target, actual) ||
+          current?.operationId !== child.operationId ||
+          repository !== child.repositoryIdentity
+        ) {
+          return yield* createGitCommandError(
+            "GitCore.removeWorktree",
+            input.cwd,
+            [],
+            "A nested checkout no longer matches its worktree preparation.",
+          );
+        }
+        children.push(child);
+      }
+      const verifyChildren = Effect.gen(function* () {
+        for (const child of children)
+          yield* verifyGroupMemberRemoval(
+            child.path,
+            child.repositoryIdentity,
+            memberIgnoredFiles(child.path),
+          );
+      });
+      const removeChildren = Effect.gen(function* () {
+        for (const child of children)
+          yield* removeWorktree({
+            cwd: child.projectIdentity,
+            path: child.path,
+            ...(input.ignoredFiles ? { ignoredFiles: memberIgnoredFiles(child.path)! } : {}),
+          });
+      });
       if (!(yield* checkoutExists(target))) {
+        yield* verifyChildren;
+        yield* removeChildren;
         yield* clearMissingRegistrationUnlocked(input.cwd, target);
         return yield* finishRemoval;
       }
@@ -3648,7 +4252,7 @@ const makeGitCore = Effect.gen(function* () {
         );
       const inspection = yield* inspectCheckout(
         target,
-        input.discardChanges ? { changesFingerprint: true } : undefined,
+        input.discardChanges || children.length > 0 ? { changesFingerprint: true } : undefined,
       );
       if (inspection.hasInitializedSubmodules)
         return yield* createGitCommandError(
@@ -3658,7 +4262,12 @@ const makeGitCore = Effect.gen(function* () {
           "Initialized submodules prevent safe removal. Deinitialize them after preserving their local work, then retry.",
         );
       const expectedCommon = yield* resolveCommonDir(input.cwd).pipe(Effect.flatMap(canonicalPath));
-      const hasChanges = inspection.hasTrackedChanges || inspection.hasUntrackedChanges;
+      const isChild = (entryPath: string) =>
+        children.some((child) => pathContains(child.path, resolvePath(target, entryPath)));
+      const untrackedPaths = (inspection.untrackedPaths ?? []).filter((entry) => !isChild(entry));
+      const hasChanges =
+        inspection.hasTrackedChanges ||
+        (children.length === 0 ? inspection.hasUntrackedChanges : untrackedPaths.length > 0);
       // Discarding is allowed only for the exact reviewed change set, unchanged since review.
       const discardsReviewedChanges =
         hasChanges &&
@@ -3671,10 +4280,14 @@ const makeGitCore = Effect.gen(function* () {
         inspection.registration?.canonicalPath !== target ||
         (inspection.branch === null && input.allowDetachedHead !== true) ||
         inspection.operation !== null ||
-        (hasChanges && !discardsReviewedChanges) ||
+        (hasChanges && (!discardsReviewedChanges || children.length > 0)) ||
         inspection.ignoredTruncated ||
         (yield* Effect.promise(() =>
-          blockingIgnoredEntriesOnDisk(target, inspection.ignoredEntries, input.ignoredFiles),
+          blockingIgnoredEntriesOnDisk(
+            target,
+            inspection.ignoredEntries.filter((entry) => !isChild(entry)),
+            input.ignoredFiles,
+          ),
         )).length > 0
       ) {
         return yield* createGitCommandError(
@@ -3684,6 +4297,17 @@ const makeGitCore = Effect.gen(function* () {
           "Checkout identity, local changes, or protected ignored files prevent removal.",
         );
       }
+      yield* verifyChildren;
+      if (runLayoutRemoval && !discardsReviewedChanges) {
+        yield* runLayoutRemoval;
+        yield* verifyChildren;
+        if (!(yield* checkoutExists(target))) {
+          yield* removeChildren;
+          yield* clearMissingRegistrationUnlocked(input.cwd, target);
+          return yield* finishRemoval;
+        }
+      }
+      yield* removeChildren;
       if (discardsReviewedChanges) {
         // Discard exactly the reviewed paths instead of forcing removal: a file
         // an editor or watcher writes after the review stays a local change, and
@@ -3777,7 +4401,16 @@ const makeGitCore = Effect.gen(function* () {
   const removeWorktree: GitCoreShape["removeWorktree"] = (input) =>
     withWorktreeLifecycleLock(
       resolvePath(input.cwd, input.path),
-      withRepositoryLock("GitCore.removeWorktree", input.cwd, removeWorktreeUnlocked(input)),
+      Effect.gen(function* () {
+        const target = yield* canonicalPath(resolvePath(input.cwd, input.path));
+        const group = yield* preparations.getGroup(target);
+        if (group && !group.root) return yield* removeWorktreeUnlocked(input);
+        return yield* withRepositoryLock(
+          "GitCore.removeWorktree",
+          input.cwd,
+          removeWorktreeUnlocked(input),
+        );
+      }),
     ).pipe(
       Effect.mapError((error) =>
         Schema.is(GitCommandError)(error)
@@ -3997,6 +4630,15 @@ const makeGitCore = Effect.gen(function* () {
         ),
       ),
     allocateWorktreePath,
+    prepareWorktreeGroup,
+    inspectWorktreeGroup,
+    listProjectRepositoryRoots,
+    setProjectRepositoryRoot,
+    readWorktreeGroup: (path) =>
+      canonicalPath(path).pipe(
+        Effect.flatMap(preparations.getGroup),
+        Effect.mapError((error) => groupError(path, error.message)),
+      ),
     isValidBranchName,
     resolveAvailableBranchName,
     fastForwardTo: (cwd, sha, expectedBranch) =>

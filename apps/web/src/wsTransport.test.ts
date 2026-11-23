@@ -520,6 +520,50 @@ describe("WsTransport", () => {
     transport.dispose();
   });
 
+  it("retries a lost socket quickly and backs off when the replacement also drops", () => {
+    const transport = new WsTransport("ws://localhost:3020");
+    getSocket().open();
+    getSocket().close();
+    vi.advanceTimersByTime(187);
+    expect(sockets).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(sockets).toHaveLength(2);
+
+    getSocket().open();
+    getSocket().close();
+    vi.advanceTimersByTime(2_999);
+    expect(sockets).toHaveLength(2);
+    vi.advanceTimersByTime(1);
+    expect(sockets).toHaveLength(3);
+    transport.dispose();
+  });
+
+  it.each([false, true])(
+    "checks a socket after a long resume with inbound frames = %s",
+    async (receivesFrame) => {
+      const transport = new WsTransport("ws://localhost:3020");
+      const socket = getSocket();
+      socket.open();
+      const pendingRead = transport.request(WS_METHODS.serverGetConfig).catch(() => undefined);
+      Object.defineProperty(document, "visibilityState", { value: "hidden" });
+      document.dispatchEvent(new Event("visibilitychange"));
+      await vi.advanceTimersByTimeAsync(10_000);
+      Object.defineProperty(document, "visibilityState", { value: "visible" });
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(socket.sent).toHaveLength(2);
+      if (receivesFrame) {
+        const { id } = JSON.parse(socket.sent[0]!) as { id: string };
+        socket.serverMessage(JSON.stringify({ id, result: {} }));
+      }
+      await vi.advanceTimersByTimeAsync(1_499);
+      expect(sockets).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(sockets).toHaveLength(receivesFrame ? 1 : 2);
+      transport.dispose();
+      await pendingRead;
+    },
+  );
+
   it("coalesces focus, online, and visibility probes to one per ten seconds", async () => {
     const transport = new WsTransport("ws://localhost:3020");
     const socket = getSocket();

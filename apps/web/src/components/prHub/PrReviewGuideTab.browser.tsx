@@ -10,6 +10,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
 import { render } from "vitest-browser-react";
 import { PrReviewGuideTab } from "./PrReviewGuideTab";
+import { prHubFilesQueryOptions } from "../../lib/prHubReactQuery";
 
 const api = vi.hoisted(() => ({
   getReviewGuide: vi.fn(),
@@ -82,15 +83,41 @@ afterEach(async () => {
   await active?.unmount();
   active = undefined;
 });
-async function mount() {
+async function mount(client = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
   active = await render(
-    <QueryClientProvider
-      client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
-    >
+    <QueryClientProvider client={client}>
       <PrReviewGuideTab pr={{ key, headRefOid: "head" }} />
     </QueryClientProvider>,
   );
 }
+it("shows a restored excerpt and waits for a live cursor before paging", async () => {
+  const client = new QueryClient();
+  const options = prHubFilesQueryOptions({ key, headRefOid: "head" });
+  const query = client.getQueryCache().build(client, { queryKey: options.queryKey });
+  query.setState({
+    data: {
+      pages: [{ ...files, pageInfo: { hasNextPage: true, endCursor: "saved", truncated: false } }],
+      pageParams: [undefined],
+    },
+    status: "success",
+    dataUpdatedAt: 1,
+  });
+  let finish!: (page: PrHubFilesPage) => void;
+  api.getFiles.mockReturnValueOnce(
+    new Promise((resolve) => {
+      finish = resolve;
+    }),
+  );
+  await mount(client);
+  const more = page.getByRole("button", { name: "Load more changed files" });
+  try {
+    await expect.element(page.getByText("1  new-contract", { exact: true })).toBeVisible();
+    await expect.element(more).toBeDisabled();
+  } finally {
+    finish({ ...files, pageInfo: { hasNextPage: true, endCursor: "live", truncated: false } });
+  }
+  await expect.element(more).toBeEnabled();
+});
 it("renders validated excerpts and moves through the review stops", async () => {
   await mount();
   await expect.element(page.getByText("1  new-contract", { exact: true })).toBeVisible();

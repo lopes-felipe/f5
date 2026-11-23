@@ -117,6 +117,30 @@ describe("ServerSettings project overrides across versions", () => {
   });
 });
 
+describe("ServerSettings legacy Antigravity block", () => {
+  it("drops a Gemini key written into the legacy block, keeping the other fields", () => {
+    const settings = decodeServerSettings({
+      providers: {
+        antigravity: {
+          enabled: true,
+          authMethod: "gemini-api-key",
+          apiKey: "AIzaSyLegacyPlaintext00000",
+          apiKeyRedacted: true,
+        },
+      },
+    });
+    expect(settings.providers.antigravity).toMatchObject({
+      enabled: true,
+      authMethod: "gemini-api-key",
+    });
+    expect(settings.providers.antigravity).not.toHaveProperty("apiKey");
+    expect(settings.providers.antigravity).not.toHaveProperty("apiKeyRedacted");
+    expect(JSON.stringify(Schema.encodeSync(ServerSettings)(settings))).not.toContain(
+      "AIzaSyLegacyPlaintext",
+    );
+  });
+});
+
 describe("ServerSettings computer defaults", () => {
   it("enables background computer use for new and unset settings", () => {
     for (const settings of [DEFAULT_SERVER_SETTINGS, decodeServerSettings({})]) {

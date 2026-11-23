@@ -155,6 +155,7 @@ const SHORTCUT_SECTION_DEFINITIONS: ReadonlyArray<{
       "terminal.new",
       "terminal.close",
       "diff.toggle",
+      "agents.toggle",
       "rightPanel.closeTab",
       "rightPanel.tabMenu",
       "rightPanel.reopenClosed",

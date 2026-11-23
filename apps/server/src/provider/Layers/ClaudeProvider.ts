@@ -491,7 +491,14 @@ export function withClaudeProbeQuery<A>(
     return Effect.gen(function* () {
       const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment);
       const q = yield* Effect.tryPromise({
-        try: async () => {
+        try: async (signal) => {
+          const executableOptions = await resolveClaudeSdkExecutableOptions(
+            claudeSettings.binaryPath,
+            claudeEnvironment,
+            process.platform,
+            cwd,
+          );
+          signal.throwIfAborted();
           const q = (options.createQuery ?? claudeQuery)({
             // Never yield: closing stdin before the control request can terminate the CLI.
             // oxlint-disable-next-line require-yield
@@ -500,13 +507,7 @@ export function withClaudeProbeQuery<A>(
             })(),
             options: {
               persistSession: false,
-              // Keep resolution inside tryPromise: Windows shim resolution throws synchronously.
-              ...resolveClaudeSdkExecutableOptions(
-                claudeSettings.binaryPath,
-                claudeEnvironment,
-                process.platform,
-                cwd,
-              ),
+              ...executableOptions,
               cwd,
               abortController: abort,
               settingSources: ["user", "project", "local"],
@@ -749,7 +750,7 @@ const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (
   cwd?: string,
 ) {
   const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment);
-  const invocation = yield* Effect.try({
+  const invocation = yield* Effect.tryPromise({
     try: () => resolveClaudeCliInvocation(claudeSettings.binaryPath, args, claudeEnvironment),
     catch: (cause) =>
       cause instanceof CommandNotFoundError

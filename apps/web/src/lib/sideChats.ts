@@ -5,7 +5,7 @@ import { useRightPanelStore } from "../rightPanelStore";
 
 const pending = new Map<string, Promise<ThreadId>>();
 /** One explicit fork per click; keep a pending request shared across composer entry points. */
-export function openNewSideChat(parentId: ThreadId, initialText = ""): Promise<ThreadId> {
+export function openNewSideChat(parentId: ThreadId): Promise<ThreadId> {
   const existing = pending.get(parentId);
   if (existing) return existing;
   const promise = (async () => {
@@ -28,17 +28,7 @@ export function openNewSideChat(parentId: ThreadId, initialText = ""): Promise<T
     for (let attempt = 0; attempt < 600; attempt++) {
       const child = useStore.getState().threads.find((thread) => thread.id === target);
       if (child) {
-        if (initialText.trim()) {
-          const { useComposerDraftStore } = await import("../composerDraftStore");
-          useComposerDraftStore.getState().setPrompt(target, initialText);
-        }
         useRightPanelStore.getState().openSideChat(parentId, target, "Side chat");
-        if (initialText.trim()) {
-          const { sendThreadReply } = await import("./sendThreadReply");
-          await sendThreadReply({ thread: child, text: initialText });
-          const { useComposerDraftStore } = await import("../composerDraftStore");
-          useComposerDraftStore.getState().setPrompt(target, "");
-        }
         return target;
       }
       if (attempt % 4 === 0) {

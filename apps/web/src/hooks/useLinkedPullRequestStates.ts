@@ -1,6 +1,8 @@
 import { useQueries } from "@tanstack/react-query";
 import { isScratchProject } from "@t3tools/shared/scratchProject";
 import { useMemo } from "react";
+import { hasSafeRelativePathShape } from "@t3tools/shared/checkedInProjectFile";
+import { resolvePathLinkTarget } from "../terminal-links";
 
 import { threadPullRequestQueryOptions } from "../lib/gitReactQuery";
 import type { LinkedPullRequestState } from "../lib/threadPullRequests";
@@ -26,6 +28,18 @@ export function linkedPullRequestLookupCwd(
   project: { readonly cwd: string; readonly kind?: string | undefined } | undefined,
 ): string | null {
   return project && !isScratchProject(project) ? project.cwd : null;
+}
+
+export function linkedRepositoryCwd(
+  cwd: string | null,
+  repositoryPath?: string,
+  externalCwds?: Readonly<Record<string, string>>,
+): string | null {
+  if (!cwd || !repositoryPath || repositoryPath === ".") return cwd;
+  if (repositoryPath.startsWith(".f5-repositories/")) return externalCwds?.[repositoryPath] ?? null;
+  return hasSafeRelativePathShape(repositoryPath)
+    ? resolvePathLinkTarget("./" + repositoryPath, cwd)
+    : null;
 }
 
 const targetKey = (cwd: string | null, url: string) => `${cwd ?? ""}\0${url}`;

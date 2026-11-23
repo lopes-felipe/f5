@@ -1000,7 +1000,11 @@ const make = Effect.gen(function* () {
       cwd: effectiveCwd,
       workflowExecutionProfile,
     });
-    return { thread, instructionContext, effectiveCwd };
+    return {
+      thread,
+      instructionContext,
+      effectiveCwd,
+    };
   });
 
   const resolveThreadSessionStartContext = Effect.fnUntraced(function* (
@@ -2181,11 +2185,11 @@ const make = Effect.gen(function* () {
       const live = (yield* providerService.listSessions()).find(
         (session) => session.threadId === input.threadId && session.status !== "closed",
       );
+      // A native wake belongs to an existing session. Its adapter validates the
+      // request's generation, while the thread model may be a pick for a later turn.
       if (
         !live ||
         live.runtimeMode !== thread.runtimeMode ||
-        (live.model !== undefined &&
-          live.model !== (thread.modelSelection?.model ?? thread.model)) ||
         (thread.modelSelection && thread.modelSelection.instanceId !== live.providerInstanceId)
       )
         return yield* new ProviderTurnDeliveryError({
@@ -2199,8 +2203,6 @@ const make = Effect.gen(function* () {
         input: input.providerInput,
         ...(input.deliveryId ? { deliveryId: input.deliveryId } : {}),
         submissionSource: "automation",
-        ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
-        ...(input.model ? { model: input.model } : {}),
         ...(input.interactionMode ? { interactionMode: input.interactionMode } : {}),
         ...(input.workflowExecutionProfile
           ? { workflowExecutionProfile: input.workflowExecutionProfile }
@@ -4142,9 +4144,9 @@ const make = Effect.gen(function* () {
           // Titles and observed checkout branches do not change the provider
           // launch context. Re-reading its stale session would erase turn errors.
           if (
-            event.payload.model === undefined &&
-            event.payload.modelSelection === undefined &&
-            event.payload.worktreePath === undefined
+            event.payload.worktreePath === undefined &&
+            (event.payload.deferModelSwitch ||
+              (event.payload.model === undefined && event.payload.modelSelection === undefined))
           )
             return;
           if (!thread?.session || thread.session.status === "stopped") {

@@ -41,7 +41,10 @@ import { flushSync } from "react-dom";
 import type { Components, ExtraProps } from "react-markdown";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { useDiffWordWrap } from "../appSettings";
+import { useDiffWordWrap, useAppSettingsSelector } from "../appSettings";
+import { remarkMath } from "../lib/remarkMath";
+import { MarkdownMath } from "./chat/MarkdownMath";
+import { readSelectedMarkdownText, readSelectedMarkdownHtml } from "../lib/assistantQuoteSelection";
 import { openMarkdownFileLink } from "../lib/openMarkdownFileLink";
 import { showLocalPathContextMenu } from "../lib/localPathContextMenu";
 import { resolveDiffThemeName, type DiffThemeName } from "../lib/diffRendering";
@@ -148,8 +151,10 @@ function extractCodeBlock(
 
   const onlyChild = childNodes[0];
   if (
-    !isValidElement<{ className?: string; children?: ReactNode }>(onlyChild) ||
-    onlyChild.type !== "code"
+    !isValidElement<{ className?: string; children?: ReactNode; node?: { tagName?: string } }>(
+      onlyChild,
+    ) ||
+    (onlyChild.type !== "code" && onlyChild.props.node?.tagName !== "code")
   ) {
     return null;
   }
@@ -732,6 +737,23 @@ const MarkdownContainer = memo(function MarkdownContainer(props: {
     <div
       className="chat-markdown w-full min-w-0 leading-relaxed text-foreground"
       data-streaming={props.streaming ? "true" : undefined}
+      onCopy={(event) => {
+        const selection = window.getSelection();
+        if (!selection || selection.isCollapsed || selection.rangeCount !== 1) return;
+        const range = selection.getRangeAt(0);
+        const root =
+          event.currentTarget.closest('[data-message-role="assistant"]') ?? event.currentTarget;
+        if (!root.contains(range.commonAncestorContainer)) return;
+        if (
+          !Array.from(root.querySelectorAll("[data-markdown-copy]")).some((node) =>
+            range.intersectsNode(node),
+          )
+        )
+          return;
+        event.clipboardData.setData("text/plain", readSelectedMarkdownText(root, range));
+        event.clipboardData.setData("text/html", readSelectedMarkdownHtml(range));
+        event.preventDefault();
+      }}
     >
       {props.children}
     </div>
@@ -779,6 +801,7 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
   // would remount every element of the active block, including rendered diagrams.
   const textRef = useRef(text);
   textRef.current = text;
+  const mathEnabled = useAppSettingsSelector((settings) => settings.mathRenderingEnabled);
   const wordWrap = useDiffWordWrap();
   const { resolvedTheme } = useTheme();
   const diffThemeName = resolveDiffThemeName(resolvedTheme);
@@ -899,6 +922,17 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
           labeledChip
         );
       },
+      code({ node: _node, className, children, ...props }) {
+        if (mathEnabled && className?.includes("math-inline"))
+          return <MarkdownMath tex={nodeToPlainText(children)} display={false} />;
+        if (mathEnabled && className?.includes("math-display"))
+          return <MarkdownMath tex={nodeToPlainText(children)} display />;
+        return (
+          <code className={className} {...props}>
+            {children}
+          </code>
+        );
+      },
       pre({ node, children, ...props }) {
         const codeBlock = extractCodeBlock(children);
         if (!codeBlock) {
@@ -906,6 +940,20 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
         }
 
         const language = extractFenceLanguage(codeBlock.className);
+        if (
+          mathEnabled &&
+          language === "math" &&
+          (mode === "settled" ||
+            codeBlock.className?.includes("math-display") ||
+            hasClosedCodeFence(
+              textRef.current,
+              node?.position?.start.offset,
+              node?.position?.end.offset,
+              codeBlock.code,
+            ))
+        ) {
+          return <MarkdownMath tex={codeBlock.code} display />;
+        }
         const isClosedFence = () =>
           hasClosedCodeFence(
             textRef.current,
@@ -1009,6 +1057,7 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
       mode,
       resolvedTheme,
       wordWrap,
+      mathEnabled,
       openLink,
       openLinkContextMenu,
     ],
@@ -1018,6 +1067,7 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
     <CodeBlockFoldContext value={foldCodeBlocks}>
       <ReactMarkdown
         remarkPlugins={[
+          ...(mathEnabled ? [remarkMath] : []),
           remarkGfm,
           remarkModelMentions,
           remarkGfmAlerts,

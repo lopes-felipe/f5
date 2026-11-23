@@ -13,16 +13,18 @@ import {
   SunriseIcon,
   TerminalIcon,
 } from "lucide-react";
-import { type DragEvent, type ReactNode, useEffect, useRef } from "react";
+import { type DragEvent, type ReactNode, memo, useEffect, useRef } from "react";
 import {
   isThreadReferenceId,
   THREAD_REFERENCE_MAX_PER_MESSAGE,
 } from "@t3tools/shared/threadReferences";
 
 import { useStore } from "../../store";
+import { arraysShallowEqual } from "../../orchestrationState";
 import { ProjectIcon } from "../ProjectIcon";
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { synchronizeStatusPulse } from "../../lib/statusPulse";
+import { useTestRenderCountProps } from "../../lib/testRenderCount";
 import { writeThreadReferenceDrag } from "../../lib/threadReferenceDrag";
 import { selectThreadById } from "../../threadSelectors";
 import { cn } from "../../lib/utils";
@@ -150,8 +152,9 @@ export function threadReferenceDragItems(input: {
     .map((id) => ({ threadId: id, title: input.titleOf(id) ?? "Thread" }));
 }
 
-export function SidebarThreadRow(props: SidebarThreadRowProps) {
+function SidebarThreadRowImpl(props: SidebarThreadRowProps) {
   "use memo";
+  const testRenderCountProps = useTestRenderCountProps();
   const {
     thread,
     section,
@@ -308,6 +311,7 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
       {...(section === "attention" ? {} : { "data-thread-item": true })}
     >
       <SidebarMenuSubButton
+        {...testRenderCountProps}
         // Inside a project the row is a tree item, reached with the arrow keys from the
         // tree's single Tab stop; attention rows outside the tree keep their own stop.
         render={peekTrigger(
@@ -455,6 +459,28 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
   );
 }
 
+export const SidebarThreadRow = memo(SidebarThreadRowImpl, (prev, next) => {
+  // Keep this comparison in sync with SidebarThreadRowProps. Callers may also
+  // spread sidebar indicators such as prPending that the row does not render.
+  return (
+    prev.thread === next.thread &&
+    prev.section === next.section &&
+    prev.isActive === next.isActive &&
+    prev.isDraft === next.isDraft &&
+    prev.displayTitle === next.displayTitle &&
+    prev.workflowTitle === next.workflowTitle &&
+    prev.workflowRoleLabel === next.workflowRoleLabel &&
+    prev.trailingMeta === next.trailingMeta &&
+    prev.threadStatus === next.threadStatus &&
+    prev.prStatus === next.prStatus &&
+    prev.isUnread === next.isUnread &&
+    prev.isRenaming === next.isRenaming &&
+    prev.actions === next.actions &&
+    prev.workflowStep === next.workflowStep &&
+    (prev.orderedIds === next.orderedIds || arraysShallowEqual(prev.orderedIds, next.orderedIds))
+  );
+});
+
 /** The row title; the full title (and a workflow child's thread title) is in the peek card. */
 export function SidebarThreadTitle({
   thread,
@@ -469,7 +495,10 @@ export function SidebarThreadTitle({
   const fullTitle = displayTitle && displayTitle !== thread.title ? thread.title : visibleTitle;
   return (
     <span
-      className="min-w-0 flex-1 truncate"
+      className={cn(
+        "min-w-0 flex-1 truncate",
+        thread.titleRegeneration && "sidebar-title-regenerating",
+      )}
       {...(withTestId ? { "data-testid": `thread-title-${thread.id}` } : {})}
     >
       {visibleTitle}

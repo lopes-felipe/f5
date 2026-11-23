@@ -1132,6 +1132,7 @@ export function makeCursorAdapter(
                     ).pipe(Effect.forkIn(adapterScope));
                     return;
                   case "ModeChanged":
+                  case "UsageUpdated":
                     return;
                   case "NoticeReceived":
                     yield* offerRuntimeEvent(

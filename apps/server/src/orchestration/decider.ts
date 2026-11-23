@@ -1353,6 +1353,7 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
           ...(command.modelSelection !== undefined
             ? { modelSelection: command.modelSelection }
             : {}),
+          ...(command.deferModelSwitch ? { deferModelSwitch: true as const } : {}),
           ...(command.branch !== undefined ? { branch: command.branch } : {}),
           ...(command.worktreePath !== undefined ? { worktreePath: command.worktreePath } : {}),
           updatedAt: occurredAt,

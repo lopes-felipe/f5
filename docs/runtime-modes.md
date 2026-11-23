@@ -31,8 +31,12 @@ choose it per thread from the access chip in the composer.
 | OpenCode    |    Yes     |        Yes        |  No  |     Yes     |
 | Cursor      |    Yes     |        No         |  No  |     Yes     |
 | Grok        |    Yes     |        No         |  No  |     Yes     |
-| Antigravity |    Yes     |        No         |  No  |     Yes     |
+| Antigravity |    Yes     |        Yes        |  \*  |     Yes     |
 | Muse Code   |     No     |        Yes        |  No  |     Yes     |
+
+\* Antigravity offers **Auto** only when the installed version advertises its own reviewer. F5
+enforces the other modes itself, and asks before every action while **Plan** is on. See
+[Antigravity](providers/antigravity.md).
 
 Muse Code approves in-workspace edits in every mode, so F5 never offers Supervised for it. See
 [Muse Code](providers/muse.md).

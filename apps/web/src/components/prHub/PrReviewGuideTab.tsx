@@ -33,7 +33,7 @@ export function PrReviewGuideTab({ pr }: { pr: Pick<TrackedPullRequest, "key" | 
     },
   });
   const files = useInfiniteQuery({
-    ...prHubFilesQueryOptions(pr.key),
+    ...prHubFilesQueryOptions(pr),
     enabled: !!query.data?.guide,
   });
   const data = query.data;
@@ -181,7 +181,7 @@ export function PrReviewGuideTab({ pr }: { pr: Pick<TrackedPullRequest, "key" | 
             {files.hasNextPage ? (
               <Button
                 size="xs"
-                disabled={files.isFetchingNextPage}
+                disabled={files.isFetchingNextPage || !files.isFetched}
                 onClick={() => void files.fetchNextPage()}
               >
                 Load more changed files

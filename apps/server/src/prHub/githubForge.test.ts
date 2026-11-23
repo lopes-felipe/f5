@@ -97,6 +97,57 @@ function fixture(
   };
 }
 describe("typed GitHub forge", () => {
+  it("sends inline comments with the verdict in one GitHub review write", async () => {
+    const { provider, calls } = fixture();
+    await Effect.runPromise(
+      provider.submitReview({
+        ref,
+        body: "Review",
+        verdict: "request-changes",
+        headSha: "head-sha",
+        comments: [{ path: "src/test.ts", line: 5, side: "old", body: "Fix this" }],
+      }),
+    );
+    expect(calls).toMatchObject([
+      {
+        endpoint: "repos/team/repo/pulls/7/reviews",
+        method: "POST",
+        body: {
+          event: "REQUEST_CHANGES",
+          commit_id: "head-sha",
+          comments: [{ path: "src/test.ts", line: 5, side: "LEFT", body: "Fix this" }],
+        },
+      },
+    ]);
+  });
+  it("opens a draft from a pushed branch and returns an existing PR without another write", async () => {
+    const { provider, calls } = fixture([[], { default_branch: "main" }, pr, [pr]]);
+    const open = () =>
+      Effect.runPromise(
+        provider.openChangeRequest!({
+          ref,
+          head: "feature",
+          title: "Scoped pull request",
+          body: "Description",
+          draft: true,
+        }),
+      );
+    expect((await open()).number).toBe(7);
+    expect((await open()).number).toBe(7);
+    expect(calls.filter((call) => call.method === "POST")).toEqual([
+      expect.objectContaining({
+        endpoint: "repos/team/repo/pulls",
+        body: {
+          base: "main",
+          head: "feature",
+          title: "Scoped pull request",
+          body: "Description",
+          draft: true,
+        },
+      }),
+    ]);
+    expect(calls[0]?.query).toMatchObject({ state: "open", head: "team:feature" });
+  });
   it("looks up an exact issue number and keeps search qualifiers repository-scoped", async () => {
     const { provider, calls, queries } = fixture([{ number: 123, title: "Exact issue" }]);
     expect(

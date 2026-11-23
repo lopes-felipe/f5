@@ -229,6 +229,8 @@ export const ProviderApprovalPresentation = Schema.Struct({
   description: Schema.optional(Schema.String),
   displayName: Schema.optional(Schema.String),
   decisionReason: Schema.optional(Schema.String),
+  fullAccessOverride: Schema.optional(Schema.Literals(["ask_rule", "provider_check"])),
+  askRuleSource: Schema.optional(Schema.String),
   blockedPath: Schema.optional(Schema.String),
   agentId: Schema.optional(Schema.String),
   defaultToNo: Schema.optional(Schema.Boolean),
@@ -314,6 +316,7 @@ export const ProjectScript = Schema.Struct({
   command: TrimmedNonEmptyString,
   icon: ProjectScriptIcon,
   runOnWorktreeCreate: Schema.Boolean,
+  worktreeLayout: Schema.optionalKey(Schema.Literals(["create", "remove"])),
   runOnWorktreeSettle: Schema.optional(Schema.Boolean),
   stopOnSettle: Schema.optional(Schema.Boolean),
   /**
@@ -723,6 +726,7 @@ export type OrchestrationSession = typeof OrchestrationSession.Type;
 
 export const OrchestrationCheckpointFile = Schema.Struct({
   path: FilesystemPath,
+  repositoryPath: Schema.optionalKey(FilesystemPath),
   kind: TrimmedNonEmptyString,
   additions: NonNegativeInt,
   deletions: NonNegativeInt,
@@ -1008,6 +1012,7 @@ export type ThreadSettledBy = typeof ThreadSettledBy.Type;
 
 export const ThreadPullRequestLink = Schema.Struct({
   ...SourceControlPullRequestRef.fields,
+  repositoryPath: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(2048))),
   title: TrimmedNonEmptyString.check(Schema.isMaxLength(1000)),
   url: TrimmedNonEmptyString.check(Schema.isMaxLength(2048), Schema.isPattern(/^https?:\/\//)),
 });
@@ -1469,6 +1474,8 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   regenerateTitle: Schema.optional(Schema.Literal(true)),
   model: Schema.optional(TrimmedNonEmptyString),
   modelSelection: Schema.optional(ModelSelection),
+  /** Save the composer's next-turn choice without refreshing the live session. */
+  deferModelSwitch: Schema.optional(Schema.Literal(true)),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(FilesystemPath)),
   expectedArchivedAt: Schema.optional(IsoDateTime),
@@ -1526,6 +1533,9 @@ export const ThreadTurnStartBootstrapPrepareWorktree = Schema.Struct({
   projectCwd: FilesystemPath,
   baseBranch: TrimmedNonEmptyString,
   branch: Schema.optional(TrimmedNonEmptyString),
+  repositoryPaths: Schema.optionalKey(
+    Schema.Array(TrimmedNonEmptyString).check(Schema.isMaxLength(128)),
+  ),
   /**
    * Reject the send, before the thread exists, when no separate worktree can
    * be prepared, instead of falling back to the project checkout. Multi-model
@@ -2445,6 +2455,7 @@ export const ThreadMetaUpdatedPayload = Schema.Struct({
   titleRegeneration: Schema.optional(Schema.NullOr(ThreadTitleRegeneration)),
   model: Schema.optional(TrimmedNonEmptyString),
   modelSelection: Schema.optional(ModelSelection),
+  deferModelSwitch: Schema.optional(Schema.Literal(true)),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(FilesystemPath)),
   updatedAt: IsoDateTime,
@@ -3684,15 +3695,28 @@ export const OrchestrationStartImplementationInput = Schema.Struct({
 export type OrchestrationStartImplementationInput =
   typeof OrchestrationStartImplementationInput.Type;
 
+export const OrchestrationGetLatestSequenceInput = Schema.Struct({
+  resume: Schema.optional(
+    Schema.Struct({
+      afterSequence: NonNegativeInt,
+      backendIncarnation: Schema.String,
+    }),
+  ),
+});
+export type OrchestrationGetLatestSequenceInput = typeof OrchestrationGetLatestSequenceInput.Type;
+
 export const OrchestrationGetLatestSequenceResult = Schema.Struct({
   latestSequence: NonNegativeInt,
   backendIncarnation: Schema.String,
+  /** Present when the entire requested range can be replayed, including an empty range. */
+  events: Schema.optional(Schema.Array(OrchestrationEvent)),
+  /** A matched backend could not replay this gap. Read the shell snapshot over HTTP. */
+  snapshotRequired: Schema.optional(Schema.Literal(true)),
 });
 export type OrchestrationGetLatestSequenceResult = typeof OrchestrationGetLatestSequenceResult.Type;
 
-export const OrchestrationRpcSchemas = {
+const orchestrationRpcSchemas = {
   searchThread: { input: ThreadSearchInput, output: ThreadSearchResult },
-  getLatestSequence: { input: Schema.Struct({}), output: OrchestrationGetLatestSequenceResult },
   getSnapshot: {
     input: OrchestrationGetSnapshotInput,
     output: OrchestrationGetSnapshotResult,
@@ -3826,3 +3850,18 @@ export const OrchestrationRpcSchemas = {
     output: Schema.Void,
   },
 } as const;
+
+// Refer to the replay schema by name rather than expanding its event union
+// into the already large declaration for the table.
+export const OrchestrationRpcSchemas: typeof orchestrationRpcSchemas & {
+  readonly getLatestSequence: {
+    readonly input: typeof OrchestrationGetLatestSequenceInput;
+    readonly output: typeof OrchestrationGetLatestSequenceResult;
+  };
+} = {
+  ...orchestrationRpcSchemas,
+  getLatestSequence: {
+    input: OrchestrationGetLatestSequenceInput,
+    output: OrchestrationGetLatestSequenceResult,
+  },
+};

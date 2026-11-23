@@ -3,6 +3,7 @@ import type { ProfileExecutionEnvironment, ProfileRecord } from "@t3tools/contra
 import { profileExecutionEnvironment } from "@t3tools/shared/profileExecution";
 import { isolatedBackendCommand } from "./backendComputerIsolation";
 import { childProcessBackendChannel, type BackendChannel } from "./computer/BackendChannel";
+import { BACKEND_READINESS_TIMEOUT_MS } from "./profileRuntime";
 
 export interface BackendLaunchRequest {
   /** Server entry script on the host. */
@@ -11,6 +12,12 @@ export interface BackendLaunchRequest {
   readonly cwd: string;
   readonly env: NodeJS.ProcessEnv;
   readonly incarnation: string;
+  readonly profileId: string;
+  /** The profile's host state directory. */
+  readonly profileStateDir: string;
+  /** The loopback port main reserved; the backend must answer on host 127.0.0.1 here. */
+  readonly port: number;
+  readonly authToken: string;
 }
 
 export interface BackendLaunch {
@@ -21,13 +28,31 @@ export interface BackendLaunch {
   readonly process: ChildProcess.ChildProcess;
   /** Main's private channel to this incarnation. */
   readonly channel: BackendChannel;
+  /** False when stdout carries the channel and must not be read as log output. */
+  readonly stdoutIsLog: boolean;
+  /**
+   * Resolves once the profile's port reaches this backend. Until then main sends the port
+   * no authenticated request: another local process could be listening on it. Absent when
+   * the backend binds the port itself.
+   */
+  readonly reachable?: Promise<void>;
 }
 
 /** Starts one backend incarnation for a profile in its execution environment. */
 export interface ProfileBackendLauncher {
   readonly environment: ProfileExecutionEnvironment;
+  /** How long a new incarnation may take to answer readiness before recovery is offered. */
+  readonly readinessTimeoutMs: number;
+  /**
+   * How long main lets a stopping backend process exit on its own before force-killing its
+   * process tree. A VM supervisor shuts its VM down first and must not be killed mid-stop.
+   */
+  readonly stopGraceMs: number;
   launch(request: BackendLaunchRequest): BackendLaunch;
 }
+
+/** Host backends: SIGTERM, then the whole tree is force-killed after this long. */
+export const HOST_BACKEND_STOP_GRACE_MS = 2_000;
 
 type Spawn = (
   command: string,
@@ -47,6 +72,8 @@ export function hostBackendLauncher(options: {
   const spawn = options.spawn ?? ChildProcess.spawn;
   return {
     environment: "host",
+    readinessTimeoutMs: BACKEND_READINESS_TIMEOUT_MS,
+    stopGraceMs: HOST_BACKEND_STOP_GRACE_MS,
     launch: (request) => {
       const isolated = isolatedBackendCommand(
         options.platform,
@@ -66,7 +93,7 @@ export function hostBackendLauncher(options: {
         },
         stdio: ["ignore", "pipe", "pipe", "ipc"],
       });
-      return { process: child, channel: childProcessBackendChannel(child) };
+      return { process: child, channel: childProcessBackendChannel(child), stdoutIsLog: true };
     },
   };
 }

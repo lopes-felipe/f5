@@ -78,6 +78,18 @@ describe("resolveThreadPullRequests", () => {
 });
 
 describe("summaries", () => {
+  it("resolves a stored pull request in its linked repository", () => {
+    const nested = { ...link(2), repositoryPath: "packages/web" };
+    const items = resolveThreadPullRequests({
+      branchPr: null,
+      links: [nested],
+      linkState: (url, repositoryPath) =>
+        url === nested.url && repositoryPath === "packages/web"
+          ? { state: "open", title: "Nested" }
+          : undefined,
+    });
+    expect(items.map(({ title }) => title)).toEqual(["Nested"]);
+  });
   it("picks the most actionable state", () => {
     const items = resolveThreadPullRequests({
       branchPr: branchPr(1, "closed"),

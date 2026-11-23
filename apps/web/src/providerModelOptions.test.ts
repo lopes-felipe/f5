@@ -23,6 +23,17 @@ describe("providerModelOptions", () => {
     const selections = providerModelOptionsToSelections("codex", options);
     expect(selections).toEqual([{ id: "fastMode", value: false }]);
   });
+  it("round-trips the Antigravity thinking level", () => {
+    const options = providerSelectionsToModelOptions("antigravity", [
+      { id: "thinking", value: "low" },
+    ]);
+    expect(options).toEqual({ antigravity: { thinking: "low" } });
+    expect(normalizeProviderModelOptions(options)).toEqual(options);
+    expect(providerModelOptionsToSelections("antigravity", options)).toEqual([
+      { id: "thinking", value: "low" },
+    ]);
+    expect(providerSelectionsToModelOptions("antigravity", [])).toBeNull();
+  });
   it("keeps Claude Ultracode through draft normalization and selection conversion", () => {
     const options = providerSelectionsToModelOptions("claudeAgent", [
       { id: "effort", value: "high" },

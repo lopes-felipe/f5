@@ -153,6 +153,7 @@ function RightPanelEmptyState(props: {
   planAvailable: boolean;
   agentsAvailable: boolean;
   liveAgentCount: number;
+  agentsShortcutLabel: string | null;
   diffShortcutLabel: string | null;
 }) {
   const actions = [
@@ -164,7 +165,7 @@ function RightPanelEmptyState(props: {
       available: props.agentsAvailable,
       disabledReason: SURFACE_DISABLED_REASONS.agents,
       onClick: props.onAddAgents,
-      shortcut: null,
+      shortcut: props.agentsShortcutLabel,
     },
     {
       kind: "diff",
@@ -376,6 +377,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             planAvailable={props.planAvailable}
             agentsAvailable={props.agentsAvailable}
             liveAgentCount={props.liveAgentCount}
+            agentsShortcutLabel={shortcutLabelForCommand(keybindings, "agents.toggle")}
             diffShortcutLabel={shortcutLabelForCommand(keybindings, "diff.toggle")}
           />
         ) : (
@@ -581,6 +583,7 @@ const RightPanelTabStrip = memo(function RightPanelTabStrip(props: RightPanelTab
                 </MenuTrigger>
                 <MenuPopup align="start" side="bottom" sideOffset={6} className="min-w-44">
                   <SurfaceMenuItem
+                    shortcut={shortcutLabelForCommand(keybindings, "agents.toggle")}
                     available={props.agentsAvailable}
                     disabledReason={SURFACE_DISABLED_REASONS.agents}
                     onClick={props.onAddAgents}

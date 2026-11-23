@@ -68,6 +68,7 @@ function makeProps(overrides: Partial<ChatHeaderProps> = {}): ChatHeaderProps {
     previewAvailable: false,
     liveAgentCount: 0,
     terminalToggleShortcutLabel: null,
+    agentsToggleShortcutLabel: null,
     diffToggleShortcutLabel: null,
     gitCwd: null,
     diffState: "closed",
@@ -214,6 +215,28 @@ describe("ChatHeader", () => {
       await expect.element(filesToggle).toBeEnabled();
       await filesToggle.click();
       expect(onToggleFiles).toHaveBeenCalledTimes(1);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("shows the working-tree change breakdown on the Diff button", async () => {
+    const screen = await renderHeader({
+      workingTree: {
+        files: [
+          { path: "src/main.ts", insertions: 3, deletions: 1 },
+          { path: "src/main.test.ts", insertions: 5, deletions: 0 },
+          { path: "README.md", insertions: 2, deletions: 1 },
+        ],
+        insertions: 10,
+        deletions: 2,
+      },
+    });
+    try {
+      await page.getByRole("button", { name: "Toggle diff panel" }).hover();
+      await expect.element(page.getByText("tests", { exact: true })).toBeVisible();
+      await expect.element(page.getByText("docs", { exact: true })).toBeVisible();
+      await expect.element(page.getByText("+10", { exact: true })).toBeVisible();
     } finally {
       await screen.unmount();
     }

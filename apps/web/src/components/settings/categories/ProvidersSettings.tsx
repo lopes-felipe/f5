@@ -42,6 +42,7 @@ const BUILT_IN_PROVIDER_DRIVERS = [
   ProviderDriverKind.make("cursor"),
   ProviderDriverKind.make("opencode"),
   ProviderDriverKind.make("grok"),
+  ProviderDriverKind.make("antigravity"),
   ProviderDriverKind.make("muse"),
 ] as const;
 
@@ -304,8 +305,9 @@ export function ProvidersSettings() {
   const refreshProviders = () => {
     if (isRefreshingProviders) return;
     setIsRefreshingProviders(true);
+    // The explicit refresh here is what runs Antigravity's model discovery.
     void ensureNativeApi()
-      .server.refreshProviders()
+      .server.refreshProviders({ discoverModels: true })
       .then(({ providers }) => {
         queryClient.setQueryData(serverQueryKeys.config(), (existing) =>
           existing ? { ...existing, providers } : existing,
@@ -321,7 +323,6 @@ export function ProvidersSettings() {
 
   return (
     <>
-      <TextGeneratorsSettings />
       <section
         className="rounded-2xl border border-border bg-card"
         data-settings-search-target="providers.instances"
@@ -512,6 +513,8 @@ export function ProvidersSettings() {
           })}
         </div>
       </section>
+
+      <TextGeneratorsSettings />
 
       <LegacyProviderOverridesCard rows={providerInstanceRows} onMove={updateProviderInstance} />
 

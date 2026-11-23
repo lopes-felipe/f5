@@ -1,7 +1,8 @@
 import { writeAcpWrapper } from "../../testUtils/cli.ts";
 import * as os from "node:os";
 import * as path from "node:path";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { createModelSelection } from "@t3tools/shared/model";
 import { fileURLToPath } from "node:url";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -492,6 +493,359 @@ it.layer(AntigravityAdapterTestLayer)("Antigravity native questions", (it) => {
       assert.equal(result._tag, "Failure");
       yield* adapter.stopSession(threadId);
     }),
+  );
+});
+
+const antigravityProfileAdapter = (input: {
+  readonly env?: Record<string, string>;
+  readonly accountRevision?: number;
+  readonly credentials?: ReadonlyArray<string>;
+  readonly staleAccount?: () => string | undefined;
+}) =>
+  Effect.gen(function* () {
+    // Removed when the test's scope closes, also after a failed setup or assertion.
+    const dir = yield* Effect.acquireRelease(
+      Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "agy-profile-"))),
+      (directory) => Effect.promise(() => rm(directory, { recursive: true, force: true })),
+    );
+    const requestLogPath = path.join(dir, "requests.ndjson");
+    const wrapperPath = writeAcpWrapper(path.join(dir, "agent"), mockAgentPath, {
+      env: {
+        F5_ACP_ANTIGRAVITY_PROFILE: "1",
+        T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+        ...input.env,
+      },
+    });
+    const adapter = yield* makeGrokAdapter(
+      Schema.decodeSync(GrokSettings)({ binaryPath: wrapperPath }),
+      {
+        provider: "antigravity",
+        instanceId: ProviderInstanceId.make("antigravity"),
+        antigravity: {
+          accountRevision: Effect.succeed(input.accountRevision ?? 0),
+          ...(input.credentials ? { credentials: input.credentials } : {}),
+          ...(input.staleAccount ? { staleAccount: Effect.sync(input.staleAccount) } : {}),
+        },
+      },
+    );
+    const requests = () =>
+      Effect.promise(async () =>
+        (await readFile(requestLogPath, "utf8").catch(() => ""))
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as { method?: string; params?: Record<string, unknown> }),
+      );
+    const events: ProviderRuntimeEvent[] = [];
+    yield* adapter.streamEvents.pipe(
+      Stream.runForEach((event) => Effect.sync(() => events.push(event))),
+      Effect.forkChild,
+    );
+    return { adapter, requests, events };
+  });
+
+const antigravityModelSelection = (model: string, thinking?: string) =>
+  createModelSelection(
+    ProviderInstanceId.make("antigravity"),
+    model,
+    thinking ? [{ id: "thinking", value: thinking }] : [],
+  );
+
+rootIt.layer(
+  ServerConfig.layerTest(process.cwd(), { prefix: "f5-agy-profile-test-" }).pipe(
+    Layer.provideMerge(NodeServices.layer),
+  ),
+)("Antigravity session control", (it) => {
+  it.effect("writes the model's thinking level, the plan mode and the context meter", () =>
+    Effect.gen(function* () {
+      const { adapter, requests, events } = yield* antigravityProfileAdapter({
+        env: { F5_ACP_USAGE_FRAMES: "1" },
+      });
+      const threadId = ThreadId.make("agy-session-control");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+        modelSelection: antigravityModelSelection("gemini-4-neon", "low"),
+      });
+      const configWrites = (yield* requests()).filter(
+        (request) => request.method === "session/set_config_option",
+      );
+      assert.deepEqual(
+        configWrites.map((request) => [request.params?.configId, request.params?.value]),
+        [
+          ["model", "gemini-4-neon"],
+          ["thought_level", "low"],
+        ],
+      );
+
+      yield* adapter.sendTurn({
+        threadId,
+        input: "Plan the change",
+        attachments: [],
+        interactionMode: "plan",
+      });
+      const modeWrites = (yield* requests()).filter(
+        (request) => request.method === "session/set_mode",
+      );
+      assert.deepEqual(
+        modeWrites.map((request) => request.params?.modeId),
+        ["plan"],
+      );
+      yield* adapter.sendTurn({ threadId, input: "Implement it", attachments: [] });
+      assert.deepEqual(
+        (yield* requests())
+          .filter((request) => request.method === "session/set_mode")
+          .map((request) => request.params?.modeId),
+        ["plan", "default"],
+      );
+
+      const usage = events.filter((event) => event.type === "thread.token-usage.updated");
+      assert.deepEqual(
+        usage.map((event) =>
+          event.type === "thread.token-usage.updated"
+            ? [event.payload.contextTokens, event.payload.modelContextWindowTokens]
+            : undefined,
+        ),
+        [
+          [1200, 1_048_576],
+          [2400, 1_048_576],
+        ],
+      );
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("starts a fresh native session when the account revision changed", () =>
+    Effect.gen(function* () {
+      const { adapter, requests } = yield* antigravityProfileAdapter({ accountRevision: 2 });
+      const threadId = ThreadId.make("agy-revision");
+      const session = yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+        resumeCursor: { schemaVersion: 1, sessionId: "old-account-session", accountRevision: 1 },
+      });
+      const methods = (yield* requests()).map((request) => request.method);
+      assert.include(methods, "session/new");
+      assert.notInclude(methods, "session/load");
+      assert.notInclude(methods, "session/resume");
+      assert.deepInclude(session.resumeCursor as Record<string, unknown>, { accountRevision: 2 });
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("asks before a command under Auto-accept edits", () =>
+    Effect.gen(function* () {
+      const { adapter, events } = yield* antigravityProfileAdapter({
+        env: { T3_ACP_EMIT_TOOL_CALLS: "1" },
+      });
+      const threadId = ThreadId.make("agy-auto-accept");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "auto-accept-edits",
+      });
+      const turn = yield* adapter
+        .sendTurn({ threadId, input: "Read the package", attachments: [] })
+        .pipe(Effect.forkChild);
+      yield* Effect.promise(() =>
+        vi.waitFor(() => assert.ok(events.some((event) => event.type === "request.opened"))),
+      );
+      const opened = events.find((event) => event.type === "request.opened");
+      assert.ok(opened?.requestId);
+      yield* adapter.respondToRequest(
+        threadId,
+        ApprovalRequestId.make(opened.requestId),
+        "decline",
+      );
+      yield* Fiber.join(turn);
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("publishes the latest context sample sent before session/new returned", () =>
+    Effect.gen(function* () {
+      const { adapter, events } = yield* antigravityProfileAdapter({
+        env: { F5_ACP_STARTUP_USAGE: "1" },
+      });
+      const threadId = ThreadId.make("agy-startup-usage");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      // Hardened sessions drop frames for a session not yet adopted; the latest sample survives.
+      yield* Effect.promise(() =>
+        vi.waitFor(() =>
+          assert.deepEqual(
+            events.flatMap((event) =>
+              event.type === "thread.token-usage.updated" ? [event.payload.contextTokens] : [],
+            ),
+            [500],
+          ),
+        ),
+      );
+      yield* adapter.stopSession(threadId);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        ServerConfig.layerTest(
+          process.cwd(),
+          { prefix: "f5-agy-hardened-usage-" },
+          { acpHardeningEnabled: true },
+        ).pipe(Layer.provideMerge(NodeServices.layer)),
+      ),
+    ),
+  );
+
+  it.effect("restores the persisted model and level on session recovery", () =>
+    Effect.gen(function* () {
+      const { adapter, requests } = yield* antigravityProfileAdapter({});
+      const threadId = ThreadId.make("agy-recovery");
+      // ProviderService recovery passes `model` and `modelOptions`, not a selection; the mock's
+      // account default is Carbon.
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+        model: "gemini-4-neon",
+        modelOptions: { antigravity: { thinking: "low" } },
+      });
+      assert.deepEqual(
+        (yield* requests())
+          .filter((request) => request.method === "session/set_config_option")
+          .map((request) => [request.params?.configId, request.params?.value]),
+        [
+          ["model", "gemini-4-neon"],
+          ["thought_level", "low"],
+        ],
+      );
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("never sends a persistent grant from Plan mode", () =>
+    Effect.gen(function* () {
+      const { adapter, events, requests } = yield* antigravityProfileAdapter({
+        env: { T3_ACP_EMIT_TOOL_CALLS: "1" },
+      });
+      const threadId = ThreadId.make("agy-plan-grant");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter
+        .sendTurn({ threadId, input: "Plan it", attachments: [], interactionMode: "plan" })
+        .pipe(Effect.forkChild);
+      yield* Effect.promise(() =>
+        vi.waitFor(() => assert.ok(events.some((event) => event.type === "request.opened"))),
+      );
+      const opened = events.find((event) => event.type === "request.opened");
+      assert.ok(opened?.type === "request.opened" && opened.requestId);
+      assert.notInclude(
+        (opened.payload.approvalOptions ?? []).map((option) => option.decision),
+        "acceptForSession",
+      );
+      // Even a thread-wide answer is delivered to the CLI as single-use.
+      yield* adapter.respondToRequest(
+        threadId,
+        ApprovalRequestId.make(opened.requestId),
+        "acceptForSession",
+      );
+      yield* Fiber.join(turn);
+      const selected = (yield* requests()).flatMap((frame) => {
+        const result = (frame as { result?: { outcome?: { optionId?: string } } }).result;
+        return result?.outcome?.optionId ? [result.outcome.optionId] : [];
+      });
+      assert.include(selected, "allow-once");
+      assert.notInclude(selected, "allow-always");
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("scrubs the configured Gemini key from client events", () =>
+    Effect.gen(function* () {
+      const key = "AIzaSyEchoedFixtureKey00000000";
+      const { adapter, events } = yield* antigravityProfileAdapter({
+        env: { F5_ACP_ECHO_TEXT: key },
+        credentials: [key],
+      });
+      const threadId = ThreadId.make("agy-key-scrub");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      yield* adapter.sendTurn({ threadId, input: "Show the env", attachments: [] });
+      const published = JSON.stringify(events);
+      assert.notInclude(published, key);
+      assert.include(published, "[redacted]");
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("scrubs a key containing characters JSON escapes", () =>
+    Effect.gen(function* () {
+      const key = 'AIza"quoted\\fixture-key-0000';
+      const { adapter, events } = yield* antigravityProfileAdapter({
+        env: { F5_ACP_ECHO_TEXT: key },
+        credentials: [key],
+      });
+      const threadId = ThreadId.make("agy-key-scrub-escaped");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      yield* adapter.sendTurn({ threadId, input: "Show the env", attachments: [] });
+      const strings: string[] = [];
+      const collect = (value: unknown): void => {
+        if (typeof value === "string") strings.push(value);
+        else if (value && typeof value === "object") Object.values(value).forEach(collect);
+      };
+      collect(events);
+      assert.isFalse(strings.some((value) => value.includes(key)));
+      assert.isTrue(strings.some((value) => value.includes("[redacted]")));
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("refuses new work once newer sign-in settings were published", () =>
+    Effect.gen(function* () {
+      let stale: string | undefined;
+      const { adapter } = yield* antigravityProfileAdapter({ staleAccount: () => stale });
+      const threadId = ThreadId.make("agy-stale");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      stale = "Antigravity sign-in settings just changed. Retry in a moment.";
+      const turn = yield* adapter
+        .sendTurn({ threadId, input: "Hello", attachments: [] })
+        .pipe(Effect.result);
+      assert.equal(turn._tag, "Failure");
+      const start = yield* adapter
+        .startSession({
+          threadId: ThreadId.make("agy-stale-2"),
+          provider: "antigravity",
+          cwd: process.cwd(),
+          runtimeMode: "approval-required",
+        })
+        .pipe(Effect.result);
+      assert.equal(start._tag, "Failure");
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped),
   );
 });
 

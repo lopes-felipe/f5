@@ -535,15 +535,20 @@ export default async function f5McpExtension(pi: ExtensionAPI) {
     }
   });
 
-  // Deliver orchestration guidance through pi's real system-prompt channel.
-  // Wrapping the first user message instead would stop it from starting
-  // with "/" and silently break slash-command expansion.
+  // Keep guidance in the system prompt so leading slash commands still expand.
   pi.on("before_agent_start", (event, ctx) => {
     reconcileDiscovery(ctx);
     // Only a catalog that can preview and publish pages gets the chart nudge.
     const names = new Set(catalog.map((tool) => tool.name));
     const charts = names.has("html_render") && names.has("html_preview") ? " " + CHART_INSTRUCTIONS : "";
-    return { systemPrompt: event.systemPrompt + "\\n\\n" + ORCHESTRATION_INSTRUCTIONS + charts };
+    const guidance = ORCHESTRATION_INSTRUCTIONS + charts;
+    const options = event.systemPromptOptions;
+    const sections = options?.sections;
+    if (sections && typeof sections === "object" && options?.forceSystemPrompt === undefined) {
+      sections.f5_orchestration = guidance;
+      return undefined;
+    }
+    return { systemPrompt: event.systemPrompt + "\\n\\n" + guidance };
   });
 }
 `;

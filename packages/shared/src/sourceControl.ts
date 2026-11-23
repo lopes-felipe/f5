@@ -6,6 +6,7 @@ import {
   type SourceControlPullRequestRef,
   type ThreadPullRequestLink,
 } from "@t3tools/contracts";
+import { changeRequestsCreatedBy } from "./createdChangeRequests";
 
 const SOURCE_CONTROL_PROVIDER_KINDS = [
   "github",
@@ -140,15 +141,12 @@ export function sourceControlPullRequestKeysEqual(
   );
 }
 
-const GH_PR_CREATE_PATTERN = /\bgh\s+pr\s+create\b/;
-// A bare PR URL: a path, query or fragment after the number (comments, files) is not one.
-const GITHUB_PR_URL_PATTERN =
-  /https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/([0-9]+)(?![\w/#?=&-])/g;
+const PR_CREATE_PATTERN = /\b(?:gh\s+pr|glab\s+mr)\s+create\b/;
 const GH_PR_TITLE_PATTERN = /(?:^|\s)(?:--title|-t)(?:\s+|=)(?:"((?:[^"\\]|\\.)*)"|'([^']*)')/;
 
-/** Whether a shell command (or a provider's command detail) runs `gh pr create`. */
+/** Fast candidate check; actual execution and output are validated by the detector. */
 export function commandCreatesPullRequest(text: string | null | undefined): boolean {
-  return text != null && GH_PR_CREATE_PATTERN.test(text);
+  return text != null && PR_CREATE_PATTERN.test(text);
 }
 
 function parseGhPullRequestTitle(text: string): string | null {
@@ -162,14 +160,14 @@ function parseGhPullRequestTitle(text: string): string | null {
 }
 
 /**
- * The PR a completed `gh pr create` printed. Providers put the command text in either
- * `command` (Codex) or `detail` (Claude's `command` is the tool name); `gh` prints the
- * new PR URL last.
+ * The unambiguous PR URL a completed forge create command printed on its own line.
+ * Providers put shell text in either command (Codex) or detail (Claude).
  */
 export function detectCreatedPullRequest(input: {
   readonly command: string | null | undefined;
   readonly detail: string | null | undefined;
   readonly output: string;
+  readonly allowedGitLabHosts?: ReadonlySet<string>;
 }): ThreadPullRequestLink | null {
   const commandText = commandCreatesPullRequest(input.command)
     ? input.command!
@@ -177,19 +175,22 @@ export function detectCreatedPullRequest(input: {
       ? input.detail!
       : null;
   if (commandText === null) return null;
-  const matches = [...input.output.matchAll(GITHUB_PR_URL_PATTERN)];
-  const last = matches.at(-1);
-  if (!last) return null;
-  const number = Number(last[3]);
-  if (!Number.isSafeInteger(number) || number < 1) return null;
-  const repository = `${last[1]}/${last[2]}`;
+  const created = changeRequestsCreatedBy(
+    commandText.replace(/^Bash:\s*/, ""),
+    input.output,
+    parseSourceControlPullRequestUrl,
+    input.allowedGitLabHosts,
+  );
+  // F5 keeps one linked PR per thread; ambiguous multi-create output is left to explicit linking.
+  if (created.length !== 1) return null;
+  const { number, repository, provider, host, url } = created[0]!;
   return {
-    provider: "github",
-    host: "github.com",
+    provider,
+    host,
     repository,
     number,
     title: parseGhPullRequestTitle(commandText) ?? `Pull request #${number}`,
-    url: `https://github.com/${repository}/pull/${number}`,
+    url,
   };
 }
 

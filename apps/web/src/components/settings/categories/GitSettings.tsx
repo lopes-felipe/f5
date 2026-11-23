@@ -165,6 +165,9 @@ function WorktreeSettings() {
 function SyncSettings() {
   const { settings, defaults, updateSettings } = useSettingsRouteContext();
   const autoPullDefaultBranch = useSettings((unified) => unified.autoPullDefaultBranch);
+  const autoLinkShellCreatedMergeRequests = useSettings(
+    (unified) => unified.autoLinkShellCreatedMergeRequests,
+  );
   const { updateSettings: updateServerSettings } = useUpdateSettings();
   const gitAutoRefreshEnabled = settings.enableGitStatusAutoRefresh;
 
@@ -234,6 +237,26 @@ function SyncSettings() {
                 }),
               )
             }
+          />
+        }
+      />
+      <SettingsRow
+        title="Link shell-created GitLab merge requests"
+        description="Link a merge request to its thread when an agent creates it with glab. Off by default; existing GitHub PR linking is unchanged."
+        control={
+          <Switch
+            aria-label="Link shell-created GitLab merge requests"
+            checked={autoLinkShellCreatedMergeRequests}
+            onCheckedChange={(value) => {
+              void updateServerSettings({ autoLinkShellCreatedMergeRequests: value }).catch(
+                (error: unknown) =>
+                  toastManager.add({
+                    type: "error",
+                    title: "Could not save merge request linking",
+                    description: errorMessage(error),
+                  }),
+              );
+            }}
           />
         }
       />

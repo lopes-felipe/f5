@@ -1,6 +1,16 @@
-/** Read-only probe: initialize only, never authenticate or create/load a session. */
+/**
+ * Read-only probe: initialize only, never authenticate or create/load a session.
+ *
+ * Antigravity R0 capture (run by the user; never by status polling):
+ *   --antigravity-session --state-dir <dir> --instance-id <id>
+ *     [--auth-method oauth-personal|gemini-api-key] [--account-tier <label>] [--scripted]
+ *     [--out <fixture.json>]
+ * creates one session (no prompt) and prints the allowlisted fixture projection. `--scripted`
+ * also runs the behaviour capture, which spends quota. For the key run, pass the disposable key
+ * in F5_PROBE_GEMINI_API_KEY.
+ */
 import { execFile, spawn } from "node:child_process";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -9,6 +19,7 @@ import { buildGrokAcpSpawnInput } from "../src/provider/acp/GrokAcpSupport";
 import { antigravityEnvironment } from "../src/provider/acp/AntigravityAcpSupport";
 import { AntigravityInstallation } from "../src/provider/AntigravityInstallation";
 import type { AcpSpawnInput } from "../src/provider/acp/AcpSessionRuntime";
+import { captureAntigravitySession } from "./antigravity-session-capture";
 
 async function initialize(input: AcpSpawnInput): Promise<unknown> {
   return new Promise((resolve) => {
@@ -79,6 +90,32 @@ async function version(command: string) {
   } catch {
     return "unavailable";
   }
+}
+const argument = (name: string) => {
+  const index = process.argv.indexOf(name);
+  return index >= 0 ? process.argv[index + 1] : undefined;
+};
+if (process.argv.includes("--antigravity-session")) {
+  const stateDir = argument("--state-dir");
+  const instanceId = argument("--instance-id");
+  if (!stateDir || !instanceId) {
+    process.stderr.write("--antigravity-session needs --state-dir and --instance-id.\n");
+    process.exit(2);
+  }
+  const authMethod =
+    argument("--auth-method") === "gemini-api-key" ? "gemini-api-key" : "oauth-personal";
+  const fixture = await captureAntigravitySession({
+    stateDir: path.resolve(stateDir),
+    instanceId,
+    authMethod,
+    accountTier: argument("--account-tier") ?? "unknown",
+    scripted: process.argv.includes("--scripted"),
+  });
+  const text = JSON.stringify(fixture, null, 2) + "\n";
+  const out = argument("--out");
+  if (out) await writeFile(out, text);
+  else process.stdout.write(text);
+  process.exit(0);
 }
 const cwd = process.cwd();
 const results: Record<string, unknown> = {};

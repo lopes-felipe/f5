@@ -1,0 +1,58 @@
+#!/bin/bash
+# Internet-only egress for the guest, over IPv4: drop new outbound connections to the host
+# gateway, private, CGNAT and link-local ranges. DNS goes only to the discovered resolvers.
+# IPv6 carries only neighbor and router discovery and path MTU: through the host's NAT a
+# LAN peer with a global IPv6 address looks like the internet, so the rest is rejected
+# (quickly, so clients fall back to IPv4).
+set -euo pipefail
+
+RESOLV_FILES=(/run/systemd/resolve/resolv.conf /etc/resolv.conf)
+DISCOVERY_ATTEMPTS=${F5_EGRESS_DISCOVERY_ATTEMPTS:-15}
+
+# Prints the non-loopback IPv4 resolvers, comma-separated; nothing if there are none yet.
+discover_resolvers() {
+  { resolvectl dns 2>/dev/null | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' || true
+    awk '/^nameserver/ {print $2}' "${RESOLV_FILES[@]}" 2>/dev/null || true; } |
+    grep -E '^([0-9]{1,3}\.){3}[0-9]{1,3}$' | grep -vE '^127\.' | sort -u | paste -sd, - || true
+}
+
+# Prints the ruleset for the given comma-separated resolvers. Order matters: the first
+# matching verdict wins.
+render_ruleset() {
+  local resolvers=$1
+  cat <<EOF
+table inet f5_egress
+delete table inet f5_egress
+table inet f5_egress {
+  chain output {
+    type filter hook output priority 0; policy accept;
+    ct state established,related accept
+    oifname "lo" accept
+    icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert, packet-too-big } accept
+    ip daddr { $resolvers } meta l4proto { udp, tcp } th dport 53 accept
+    meta l4proto { udp, tcp } th dport 53 counter drop
+    ct state new ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } counter drop
+    meta nfproto ipv6 counter reject with icmpx type admin-prohibited
+  }
+}
+EOF
+}
+
+main() {
+  local resolvers="" attempt
+  # On first boot the resolver can appear after this unit starts.
+  for ((attempt = 1; attempt <= DISCOVERY_ATTEMPTS; attempt++)); do
+    resolvers=$(discover_resolvers)
+    [ -n "$resolvers" ] && break
+    sleep 2
+  done
+  if [ -z "$resolvers" ]; then
+    echo "f5-egress-apply: no resolver found" >&2
+    exit 1
+  fi
+  render_ruleset "$resolvers" | nft -f -
+  echo "f5 egress policy loaded (resolvers: $resolvers)"
+}
+
+# Sourced by the guest tests for its functions; executed by f5-egress.service.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then main "$@"; fi

@@ -6,6 +6,34 @@ import {
 } from "./claudeApprovalPresentation.ts";
 
 describe("Claude approval presentation", () => {
+  it.each(["policySettings", "cliArg"] as const)("retains the ask-rule source %s", (source) => {
+    expect(
+      claudeApprovalPresentation(
+        {
+          matchedAskRule: { source, toolName: "Bash", ruleContent: "*" },
+        },
+        { permissionMode: "bypassPermissions" },
+      ),
+    ).toMatchObject({
+      fullAccessOverride: "ask_rule",
+      askRuleSource: source,
+    });
+  });
+  it("explains bypass overrides and strips terminal formatting", () => {
+    expect(
+      claudeApprovalPresentation(
+        { decisionReason: "\u001b[31mSafety check\u001b[0m" },
+        { permissionMode: "bypassPermissions" },
+      ),
+    ).toEqual({ decisionReason: "Safety check", fullAccessOverride: "provider_check" });
+    const matchedAskRule = { source: "userSettings" as const, toolName: "Bash", ruleContent: "*" };
+    expect(
+      claudeApprovalPresentation({ matchedAskRule }, { permissionMode: "bypassPermissions" }),
+    ).toEqual({ fullAccessOverride: "ask_rule", askRuleSource: "userSettings" });
+    expect(
+      claudeApprovalPresentation({ matchedAskRule }, { permissionMode: "plan" }),
+    ).toBeUndefined();
+  });
   it.each([
     "Dangerous rm command. Use a safer path.",
     "Dangerous rmdir command.",

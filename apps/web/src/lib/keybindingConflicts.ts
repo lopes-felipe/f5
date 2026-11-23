@@ -269,6 +269,8 @@ export function formatKeybindingCommandLabel(
       return "Close terminal";
     case "diff.toggle":
       return "Toggle diff panel";
+    case "agents.toggle":
+      return "Toggle Agents panel";
     case "chat.new":
       return "New thread";
     case "chat.newLocal":

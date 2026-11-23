@@ -44,6 +44,97 @@ const permissionRequestCount = Math.max(
 );
 const sessionId = "mock-session-1";
 
+/**
+ * Antigravity profile: Gemini models with per-model `thought_level` options,
+ * native session modes (`default`, `plan`, and `auto` when advertised), usage
+ * frames and post-prompt wakes. Shapes follow the R0 capture allowlist.
+ */
+const antigravityProfile = process.env.F5_ACP_ANTIGRAVITY_PROFILE === "1";
+const antigravityAuto = process.env.F5_ACP_ANTIGRAVITY_AUTO === "1";
+const antigravityModeConfig = process.env.F5_ACP_ANTIGRAVITY_MODE_CONFIG === "1";
+const antigravityNoPlan = process.env.F5_ACP_ANTIGRAVITY_NO_PLAN === "1";
+const emitUsageFrames = process.env.F5_ACP_USAGE_FRAMES === "1";
+const postPromptWakeMs = Math.max(
+  0,
+  Number.parseInt(process.env.F5_ACP_POST_PROMPT_WAKE_MS ?? "0", 10) || 0,
+);
+const ANTIGRAVITY_MODELS: ReadonlyArray<{
+  readonly value: string;
+  readonly name: string;
+  readonly levels: ReadonlyArray<string>;
+  readonly defaultLevel?: string;
+}> = [
+  { value: "gemini-4-orchestrator", name: "Gemini 4 Orchestrator", levels: [] },
+  {
+    value: "gemini-4-neon",
+    name: "Gemini 4 Neon",
+    // Google lists four Neon thinking levels.
+    levels: ["low", "medium", "high", "xhigh"],
+    defaultLevel: "high",
+  },
+  {
+    value: "gemini-4-carbon",
+    name: "Gemini 4 Carbon",
+    levels: ["low", "high"],
+    defaultLevel: "low",
+  },
+  {
+    value: "gemini-4-hydrogen",
+    name: "Gemini 4 Hydrogen",
+    levels: ["minimal", "low", "medium"],
+    defaultLevel: "low",
+  },
+];
+let antigravityModelId = process.env.F5_ACP_ANTIGRAVITY_DEFAULT_MODEL ?? "gemini-4-carbon";
+const antigravityLevelFor = (model: string) =>
+  ANTIGRAVITY_MODELS.find((entry) => entry.value === model)?.defaultLevel;
+let antigravityLevel = antigravityLevelFor(antigravityModelId);
+const antigravityModes = (): ReadonlyArray<AcpSchema.SessionMode> => [
+  { id: "default", name: "Default", description: "Ask before acting" },
+  ...(antigravityNoPlan ? [] : [{ id: "plan", name: "Plan", description: "Plan only" }]),
+  ...(antigravityAuto ? [{ id: "auto", name: "Auto", description: "Native review" }] : []),
+];
+let antigravityModeId = "default";
+let usageUsed = 0;
+
+function antigravityConfigOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
+  const model = ANTIGRAVITY_MODELS.find((entry) => entry.value === antigravityModelId);
+  return [
+    ...(antigravityModeConfig
+      ? [
+          {
+            id: "mode",
+            name: "Mode",
+            category: "mode",
+            type: "select" as const,
+            currentValue: antigravityModeId,
+            options: antigravityModes().map((mode) => ({ value: mode.id, name: mode.name })),
+          },
+        ]
+      : []),
+    {
+      id: "model",
+      name: "Model",
+      category: "model",
+      type: "select" as const,
+      currentValue: antigravityModelId,
+      options: ANTIGRAVITY_MODELS.map((entry) => ({ value: entry.value, name: entry.name })),
+    },
+    ...(model && model.levels.length > 0 && antigravityLevel
+      ? [
+          {
+            id: "thought_level",
+            name: "Thinking",
+            category: "thought_level",
+            type: "select" as const,
+            currentValue: antigravityLevel,
+            options: model.levels.map((level) => ({ value: level, name: level })),
+          },
+        ]
+      : []),
+  ];
+}
+
 const urlModes = process.env.T3_ACP_URL_MODES === "1";
 const modeId = (id: string) =>
   urlModes ? "https://agentclientprotocol.com/protocol/session-modes#" + id : id;
@@ -213,6 +304,7 @@ function primaryConfigOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
 }
 
 function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
+  if (antigravityProfile) return antigravityConfigOptions();
   const options = primaryConfigOptions().filter(
     (option) => !urlModes || option.category !== "mode",
   );
@@ -249,11 +341,20 @@ const availableModes: ReadonlyArray<AcpSchema.SessionMode> = [
   },
 ];
 
-function modeState(): AcpSchema.SessionModeState {
+function modeState(): AcpSchema.SessionModeState | undefined {
+  if (antigravityProfile)
+    return antigravityModeConfig
+      ? undefined
+      : { currentModeId: antigravityModeId, availableModes: antigravityModes() };
   return {
     currentModeId,
     availableModes,
   };
+}
+
+function withModes(): { modes?: AcpSchema.SessionModeState } {
+  const modes = modeState();
+  return modes ? { modes } : {};
 }
 
 const program = Effect.gen(function* () {
@@ -316,7 +417,15 @@ const program = Effect.gen(function* () {
           },
         });
       }
-      return { sessionId, modes: modeState(), configOptions: configOptions() };
+      // A context sample before session/new returns; the client must keep the latest one.
+      if (process.env.F5_ACP_STARTUP_USAGE === "1") {
+        for (const used of [300, 500])
+          yield* agent.raw.notify("session/update", {
+            sessionId,
+            update: { sessionUpdate: "usage_update", used, size: 1_048_576 },
+          });
+      }
+      return { sessionId, ...withModes(), configOptions: configOptions() };
     }),
   );
 
@@ -326,7 +435,7 @@ const program = Effect.gen(function* () {
         return yield* AcpError.AcpRequestError.resourceNotFound("Mock session not found");
       if (process.env.T3_ACP_RESUME_FAIL === "transient")
         return yield* AcpError.AcpRequestError.internalError("Mock temporary failure");
-      return { modes: modeState(), configOptions: configOptions() };
+      return { ...withModes(), configOptions: configOptions() };
     }),
   );
 
@@ -358,7 +467,7 @@ const program = Effect.gen(function* () {
         yield* Effect.sleep(`${loadResponseDelayMs} millis`);
       }
       return {
-        modes: modeState(),
+        ...withModes(),
         configOptions: configOptions(),
       };
     }),
@@ -379,6 +488,21 @@ const program = Effect.gen(function* () {
             params: request,
           },
         );
+      }
+      if (antigravityProfile && typeof request.value === "string") {
+        if (request.configId === "model") {
+          if (!ANTIGRAVITY_MODELS.some((entry) => entry.value === request.value))
+            return yield* AcpError.AcpRequestError.invalidParams("Unknown model");
+          antigravityModelId = request.value;
+          antigravityLevel = antigravityLevelFor(antigravityModelId);
+        } else if (request.configId === "thought_level") {
+          antigravityLevel = request.value;
+        } else if (request.configId === "mode") {
+          if (!antigravityModes().some((mode) => mode.id === request.value))
+            return yield* AcpError.AcpRequestError.invalidParams("Unknown mode");
+          antigravityModeId = request.value;
+        }
+        return { configOptions: configOptions() };
       }
       if (request.configId === "mode" && typeof request.value === "string") {
         currentModeId = request.value;
@@ -424,6 +548,28 @@ const program = Effect.gen(function* () {
         )
       ) {
         return yield* Effect.never;
+      }
+      // Echo a value (a configured secret, say) in assistant text and a tool update.
+      const echo = process.env.F5_ACP_ECHO_TEXT;
+      if (echo) {
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: `echo ${echo}` },
+          },
+        });
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "echo-tool",
+            title: "Read environment",
+            kind: "read",
+            status: "completed",
+            rawInput: { value: echo },
+          },
+        });
       }
       if (process.env.T3_ACP_FAIL_PROMPT_TRANSPORT === "exit") process.exit(7);
       if (process.env.T3_ACP_FAIL_PROMPT_TRANSPORT === "malformed") {
@@ -641,7 +787,7 @@ const program = Effect.gen(function* () {
           sessionId: requestedSessionId,
           update: {
             sessionUpdate: "agent_message_chunk",
-            content: { type: "text", text: "after tool" },
+            content: { type: "text", text: promptResponseText ?? "after tool" },
           },
         });
 
@@ -901,6 +1047,30 @@ const program = Effect.gen(function* () {
         },
       });
 
+      if (emitUsageFrames) {
+        usageUsed += 1200;
+        yield* agent.raw.notify("session/update", {
+          sessionId: requestedSessionId,
+          update: { sessionUpdate: "usage_update", used: usageUsed, size: 1_048_576 },
+        });
+        // Malformed frames must be ignored by the client.
+        yield* agent.raw.notify("session/update", {
+          sessionId: requestedSessionId,
+          update: { sessionUpdate: "usage_update", used: -1, size: 0 },
+        });
+      }
+      if (postPromptWakeMs > 0) {
+        yield* agent.client
+          .sessionUpdate({
+            sessionId: requestedSessionId,
+            update: {
+              sessionUpdate: "agent_message_chunk",
+              content: { type: "text", text: "background work finished" },
+            },
+          })
+          .pipe(Effect.delay(`${postPromptWakeMs} millis`), Effect.ignore, Effect.forkDetach);
+      }
+
       return { stopReason: "end_turn" };
     }),
   );
@@ -930,6 +1100,17 @@ const program = Effect.gen(function* () {
         ? params.sessionId
         : sessionId;
 
+    if (antigravityProfile && typeof nextModeId === "string") {
+      if (!antigravityModes().some((mode) => mode.id === nextModeId))
+        return Effect.fail(AcpError.AcpRequestError.invalidParams("Unknown mode"));
+      antigravityModeId = nextModeId;
+      return agent.client
+        .sessionUpdate({
+          sessionId: requestedSessionId,
+          update: { sessionUpdate: "current_mode_update", currentModeId: antigravityModeId },
+        })
+        .pipe(Effect.as({}));
+    }
     if (typeof nextModeId === "string" && nextModeId.trim()) {
       currentModeId = nextModeId.trim();
       saveMode();

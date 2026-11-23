@@ -1238,7 +1238,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const readEvents: OrchestrationEngineShape["readEvents"] = (fromSequenceExclusive, options) =>
     eventStore.readFromSequence(
       fromSequenceExclusive,
-      options === undefined ? undefined : Number.MAX_SAFE_INTEGER,
+      options?.limit ?? (options === undefined ? undefined : Number.MAX_SAFE_INTEGER),
       options,
     );
 

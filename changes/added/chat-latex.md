@@ -1,0 +1,1 @@
+- An opt-in Appearance setting renders LaTeX equations in chat, with lazy-loaded typesetting and copyable TeX source.

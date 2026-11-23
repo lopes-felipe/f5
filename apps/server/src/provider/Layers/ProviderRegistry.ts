@@ -617,6 +617,21 @@ export const ProviderRegistryLive = Layer.effect(
           newlyAdded.push([instanceId, instance] as const);
         }
 
+        // Before a new or rebuilt instance's first probe is published, offer it the models of
+        // its current snapshot (the identity-checked cache at boot), so a driver that cannot
+        // rebuild its catalog from a probe restores it instead of losing it.
+        const knownProviders = yield* Ref.get(providersRef);
+        for (const [instanceId, instance] of newlyAdded) {
+          // Same driver only: an ID reused for another driver must not inherit its models.
+          const known = knownProviders.find(
+            (provider) =>
+              snapshotInstanceKey(provider) === instanceId &&
+              provider.driver === instance.driverKind,
+          );
+          if (known && instance.hydrateModelCatalog)
+            yield* instance.hydrateModelCatalog(known.models);
+        }
+
         // Fork long-lived subscriptions to each new/rebuilt instance's
         // change stream BEFORE kicking off refreshes — if the driver's
         // own initial probe (line 140 in `makeManagedServerProvider`)

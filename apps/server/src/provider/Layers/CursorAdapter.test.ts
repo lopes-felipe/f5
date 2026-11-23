@@ -127,43 +127,64 @@ const cursorAdapterTestLayer = it.layer(
 );
 
 cursorAdapterTestLayer("CursorAdapterLive", (it) => {
-  it.effect("fails a turn containing only a transport diagnostic", () =>
-    Effect.gen(function* () {
-      const adapter = yield* CursorAdapter;
-      const settings = yield* ServerSettingsService;
-      const threadId = ThreadId.make("cursor-transport-failure");
-      const diagnostic = "Error: ConnectError: [unavailable] connection lost";
-      const wrapperPath = yield* Effect.promise(() =>
-        makeMockAgentWrapper({
-          T3_ACP_PROMPT_RESPONSE_TEXT: diagnostic,
-        }),
-      );
-      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
-      const startup = yield* adapter
-        .startSession({
-          threadId,
-          provider: ProviderDriverKind.make("cursor"),
-          cwd: process.cwd(),
-          runtimeMode: "full-access",
-        })
-        .pipe(Effect.forkChild);
-      yield* Fiber.join(startup);
-      const eventsFiber = yield* adapter.streamEvents.pipe(
-        Stream.takeUntil((event) => event.type === "turn.completed"),
-        Stream.runCollect,
-        Effect.forkChild,
-      );
-      const sent = yield* adapter.sendTurn({ threadId, input: "hello", attachments: [] });
-      assert.equal(sent.threadId, threadId);
-      const events = Array.from(yield* Fiber.join(eventsFiber));
-      const completed = events.find((event) => event.type === "turn.completed");
-      assert.isDefined(completed);
-      if (completed?.type === "turn.completed") {
-        assert.equal(completed.payload.state, "failed");
-        assert.equal(completed.payload.errorMessage, diagnostic);
-      }
-      yield* adapter.stopSession(threadId);
-    }),
+  it.effect.each([
+    {
+      label: "as the only assistant message",
+      diagnostic: "Error: ConnectError: [unavailable] connection lost",
+      hasCommentary: false,
+    },
+    {
+      label: "after commentary and a tool call",
+      diagnostic: "Error: RetriableError: WritableIterable is closed",
+      hasCommentary: true,
+    },
+  ])(
+    "fails a turn with a standalone transport diagnostic $label",
+    ({ diagnostic, hasCommentary }) =>
+      Effect.gen(function* () {
+        const adapter = yield* CursorAdapter;
+        const settings = yield* ServerSettingsService;
+        const threadId = ThreadId.make("cursor-transport-failure");
+        const wrapperPath = yield* Effect.promise(() =>
+          makeMockAgentWrapper({
+            T3_ACP_PROMPT_RESPONSE_TEXT: diagnostic,
+            T3_ACP_EMIT_INTERLEAVED_ASSISTANT_TOOL_CALLS: hasCommentary ? "1" : "0",
+          }),
+        );
+        yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+        const startup = yield* adapter
+          .startSession({
+            threadId,
+            provider: ProviderDriverKind.make("cursor"),
+            cwd: process.cwd(),
+            runtimeMode: "full-access",
+          })
+          .pipe(Effect.forkChild);
+        yield* Fiber.join(startup);
+        const eventsFiber = yield* adapter.streamEvents.pipe(
+          Stream.takeUntil((event) => event.type === "turn.completed"),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        const sent = yield* adapter.sendTurn({ threadId, input: "hello", attachments: [] });
+        assert.equal(sent.threadId, threadId);
+        const events = Array.from(yield* Fiber.join(eventsFiber));
+        if (hasCommentary) {
+          const deltas = events.filter((event) => event.type === "content.delta");
+          assert.deepEqual(
+            deltas.map((event) => event.payload.delta),
+            ["before tool", diagnostic],
+          );
+          assert.notEqual(deltas[0]?.itemId, deltas[1]?.itemId);
+        }
+        const completed = events.find((event) => event.type === "turn.completed");
+        assert.isDefined(completed);
+        if (completed?.type === "turn.completed") {
+          assert.equal(completed.payload.state, "failed");
+          assert.equal(completed.payload.errorMessage, diagnostic);
+        }
+        yield* adapter.stopSession(threadId);
+      }),
   );
 
   it.effect("starts a session and maps mock ACP prompt flow to runtime events", () =>

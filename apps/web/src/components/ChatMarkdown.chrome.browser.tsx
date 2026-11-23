@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
 import { FileNavigationProvider } from "../fileNavigationContext";
-import { threadFindRanges } from "./chat/threadFindHighlights";
+import { threadFindRangesForTest } from "./chat/threadFindHighlights";
 import ChatMarkdown from "./ChatMarkdown";
 import { toastManager } from "./ui/toast";
 
@@ -157,7 +157,7 @@ describe("code block header", () => {
 
 describe("thread find alignment", () => {
   function domMatches(root: HTMLElement, query: string): Range[] {
-    return threadFindRanges(root, query).ranges;
+    return threadFindRangesForTest(root, query).ranges;
   }
   function serverCount(markdown: string, query: string) {
     return searchableThreadSegments(markdown).reduce(
@@ -174,14 +174,14 @@ describe("thread find alignment", () => {
     });
     expect(serverCount(markdown, "TypeScript")).toBe(2);
     expect(domMatches(host, "TypeScript")).toHaveLength(2);
-    const second = threadFindRanges(host, "TypeScript", 1).selected!;
+    const second = threadFindRangesForTest(host, "TypeScript", 1).selected!;
     expect(second.startContainer.textContent).toContain("TypeScript second");
 
     await vi.waitFor(() => expect(host.querySelector(".chat-markdown-shiki pre")).not.toBeNull());
     expect(domMatches(host, "TypeScript")).toHaveLength(2);
-    expect(threadFindRanges(host, "TypeScript", 1).selected!.startContainer.textContent).toContain(
-      "TypeScript second",
-    );
+    expect(
+      threadFindRangesForTest(host, "TypeScript", 1).selected!.startContainer.textContent,
+    ).toContain("TypeScript second");
   });
 
   it("highlights an alert body, not its title", async () => {
@@ -189,7 +189,7 @@ describe("thread find alignment", () => {
     const host = document.body.appendChild(document.createElement("div"));
     await render(<ChatMarkdown text={markdown} cwd={undefined} />, { container: host });
     expect(serverCount(markdown, "Warning")).toBe(1);
-    const { ranges, selected } = threadFindRanges(host, "Warning");
+    const { ranges, selected } = threadFindRangesForTest(host, "Warning");
     expect(ranges).toHaveLength(1);
     expect(selected!.startContainer.parentElement!.tagName).toBe("P");
   });
@@ -199,6 +199,6 @@ describe("thread find alignment", () => {
     const host = document.body.appendChild(document.createElement("div"));
     await render(<ChatMarkdown text={markdown} cwd={undefined} />, { container: host });
     expect(serverCount(markdown, "Text")).toBe(1);
-    expect(threadFindRanges(host, "Text").ranges).toHaveLength(1);
+    expect(threadFindRangesForTest(host, "Text").ranges).toHaveLength(1);
   });
 });

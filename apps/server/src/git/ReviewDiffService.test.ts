@@ -226,8 +226,9 @@ describe("getReviewPreviewDiff", () => {
 
   it("previews deletion metadata over the byte limit without needless index updates", async () => {
     const cwd = makeRepository();
-    for (let index = 0; index < 4200; index += 1) {
-      write(cwd, "vendor/" + String(index).padStart(5, "0") + "-".repeat(60) + ".txt", "old\n");
+    // Cross the metadata byte budget with long names and fewer filesystem operations.
+    for (let index = 0; index < 1600; index += 1) {
+      write(cwd, "vendor/" + String(index).padStart(5, "0") + "-".repeat(160) + ".txt", "old\n");
     }
     git(cwd, ["add", "vendor"]);
     git(cwd, ["commit", "-m", "add vendor files"]);

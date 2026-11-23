@@ -92,7 +92,11 @@ async function checkProviderCompatibility(
   const { resolveInvocation } = await import("../spawn/resolveCommand");
   const { runProcess } = await import("../processRunner");
   try {
-    const command = resolveInvocation(resolveCodexCommand(binaryPath), ["--version"], environment);
+    const command = await resolveInvocation(
+      resolveCodexCommand(binaryPath),
+      ["--version"],
+      environment,
+    );
     const result = await runProcess(command.file, command.args, {
       env: environment,
       timeoutMs: 15000,

@@ -1,5 +1,6 @@
 import {
   PI_THINKING_LEVELS,
+  type AntigravityModelOptions,
   type PiModelOptions,
   type ClaudeCodeEffort,
   type ClaudeModelOptions,
@@ -66,6 +67,7 @@ export function normalizeProviderModelOptions(
   const grokCandidate = readRecordField(candidate, "grok");
   const museCandidate = readRecordField(candidate, "muse");
   const piCandidate = readRecordField(candidate, "pi");
+  const antigravityCandidate = readRecordField(candidate, "antigravity");
 
   const codexReasoningEffort =
     readCodexReasoningEffort(codexCandidate?.reasoningEffort) ??
@@ -157,7 +159,12 @@ export function normalizeProviderModelOptions(
 
   const thinking = PI_THINKING_LEVELS.find((level) => level === piCandidate?.thinking);
   const pi: PiModelOptions | undefined = thinking ? { thinking } : undefined;
-  if (!codex && !claude && !cursor && !opencode && !grok && !muse && !pi) {
+  // Levels are model-specific and open-ended; the server validates them against the model.
+  const antigravityThinking = readTrimmedString(antigravityCandidate?.thinking);
+  const antigravity: AntigravityModelOptions | undefined = antigravityThinking
+    ? { thinking: antigravityThinking }
+    : undefined;
+  if (!codex && !claude && !cursor && !opencode && !grok && !muse && !pi && !antigravity) {
     return null;
   }
   return {
@@ -168,6 +175,7 @@ export function normalizeProviderModelOptions(
     ...(grok ? { grok } : {}),
     ...(muse ? { muse } : {}),
     ...(pi ? { pi } : {}),
+    ...(antigravity ? { antigravity } : {}),
   };
 }
 
@@ -238,8 +246,9 @@ export function providerSelectionsToModelOptions(
       });
     case "pi":
       return normalizeProviderModelOptions({ pi: { thinking: stringValue("thinking") } });
-    case "acp":
     case "antigravity":
+      return normalizeProviderModelOptions({ antigravity: { thinking: stringValue("thinking") } });
+    case "acp":
     case "grok":
       return null;
   }
@@ -307,8 +316,10 @@ export function providerModelOptionsToSelections(
     case "pi":
       pushString("thinking", (providerOptions as PiModelOptions).thinking);
       break;
-    case "acp":
     case "antigravity":
+      pushString("thinking", (providerOptions as AntigravityModelOptions).thinking);
+      break;
+    case "acp":
     case "grok":
       break;
   }

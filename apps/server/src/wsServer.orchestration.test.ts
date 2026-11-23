@@ -15,6 +15,7 @@ import {
   type WorktreeSetupSnapshot,
 } from "@t3tools/contracts";
 import { Effect, Layer, PubSub, Stream } from "effect";
+import { ORCHESTRATION_STARTUP_SNAPSHOT_PATH } from "@t3tools/shared/backendPaths";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -57,6 +58,104 @@ describe("WebSocket Server", () => {
     createTestServer,
     closeTestServer,
   } = h;
+
+  it("replays a short orchestration gap only for the current backend", async () => {
+    h.server = await createTestServer({ cwd: "/test" });
+    const addr = h.server.address();
+    const [ws, welcome] = await connectAndAwaitWelcome(
+      typeof addr === "object" && addr !== null ? addr.port : 0,
+    );
+    connections.push(ws);
+    const backendIncarnation = welcome.data.backendIncarnation;
+    const initial = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getLatestSequence, {});
+    const afterSequence = (initial.result as { latestSequence: number }).latestSequence;
+    const created = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+      type: "project.create",
+      commandId: "cmd-ws-replay-project-create",
+      projectId: "replay-project",
+      title: "Replay project",
+      workspaceRoot: makeTempDir("t3code-ws-replay-project-"),
+      defaultModel: "gpt-5-codex",
+      createdAt: new Date().toISOString(),
+    });
+    expect(created.error).toBeUndefined();
+
+    const replay = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getLatestSequence, {
+      resume: { afterSequence, backendIncarnation },
+    });
+    expect(replay.result).toMatchObject({
+      backendIncarnation,
+      latestSequence: afterSequence + 1,
+      events: [{ sequence: afterSequence + 1, type: "project.created" }],
+    });
+    const current = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getLatestSequence, {
+      resume: { afterSequence: afterSequence + 1, backendIncarnation },
+    });
+    expect(current.result).toEqual({
+      backendIncarnation,
+      latestSequence: afterSequence + 1,
+      events: [],
+    });
+    const stale = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getLatestSequence, {
+      resume: { afterSequence, backendIncarnation: "previous-backend" },
+    });
+    expect(stale.result).toEqual({ backendIncarnation, latestSequence: afterSequence + 1 });
+  });
+
+  it("offers gzip startup snapshots when the replay window cannot satisfy a cursor", async () => {
+    h.server = await createTestServer({ cwd: "/test" });
+    const addr = h.server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const [ws, welcome] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+    const incarnation = welcome.data.backendIncarnation!;
+    const replay = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getLatestSequence, {
+      resume: { afterSequence: Number.MAX_SAFE_INTEGER, backendIncarnation: incarnation },
+    });
+    expect(replay.result).toMatchObject({
+      backendIncarnation: incarnation,
+      snapshotRequired: true,
+    });
+    const url = new URL(ORCHESTRATION_STARTUP_SNAPSHOT_PATH, "http://127.0.0.1:" + port);
+    url.searchParams.set("incarnation", incarnation);
+    const createdAt = new Date().toISOString();
+    const project = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+      type: "project.create",
+      commandId: "cmd-gzip-project",
+      projectId: "gzip-project",
+      title: "Gzip project",
+      workspaceRoot: makeTempDir("f5-ws-gzip-project-"),
+      defaultModel: "gpt-5-codex",
+      createdAt,
+    });
+    expect(project.error).toBeUndefined();
+    const thread = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+      type: "thread.create",
+      commandId: "cmd-gzip-thread",
+      threadId: "gzip-thread",
+      projectId: "gzip-project",
+      title: "Gzip thread",
+      model: "gpt-5-codex",
+      runtimeMode: "approval-required",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdAt,
+    });
+    expect(thread.error).toBeUndefined();
+    url.searchParams.set("detailThreadId", "gzip-thread");
+    const response = await fetch(url, { headers: { "Accept-Encoding": "gzip" } });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-encoding")).toBe("gzip");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    const startup = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getStartupSnapshot, {
+      detailThreadId: "gzip-thread",
+    });
+    expect(startup.result).toMatchObject({ threadTailDetails: { threadId: "gzip-thread" } });
+    expect(await response.json()).toEqual(startup.result);
+    url.searchParams.set("incarnation", "previous-backend");
+    expect((await fetch(url)).status).toBe(409);
+  });
 
   it("returns error when requesting turn diff for unknown thread", async () => {
     h.server = await createTestServer({ cwd: "/test" });
@@ -1223,16 +1322,21 @@ describe("WebSocket Server", () => {
             : never
           : never;
         readonly sentTurns: Array<Parameters<ProviderServiceShape["sendTurn"]>[0]>;
+        readonly startedCwds?: Array<string | undefined>;
         readonly generateBranchName?: ProviderInstance["textGeneration"]["generateBranchName"];
       }) {
+        const provider = makeTurnCapturingProviderService(options.sentTurns);
         h.server = await createTestServer({
           cwd: options.repo,
           ...(options.stateDir ? { stateDir: options.stateDir } : {}),
           ...(options.persistenceLayer ? { persistenceLayer: options.persistenceLayer } : {}),
-          providerLayer: Layer.succeed(
-            ProviderService,
-            makeTurnCapturingProviderService(options.sentTurns),
-          ),
+          providerLayer: Layer.succeed(ProviderService, {
+            ...provider,
+            startSession: (threadId, input) =>
+              Effect.sync(() => {
+                options.startedCwds?.push(input.cwd);
+              }).pipe(Effect.andThen(provider.startSession(threadId, input))),
+          }),
           ...(options.generateBranchName
             ? {
                 providerInstanceRegistryLayer: Layer.succeed(ProviderInstanceRegistry, {
@@ -1371,6 +1475,64 @@ describe("WebSocket Server", () => {
           return false;
         }
       };
+
+      it("delivers the first turn in a plain project worktree group", async () => {
+        const repo = makeTempDir("f5-ws-plain-worktree-");
+        for (const name of ["api", "web"]) {
+          const member = path.join(repo, name);
+          fs.mkdirSync(member);
+          execFileSync("git", ["init", "--initial-branch=main"], { cwd: member, stdio: "pipe" });
+          execFileSync(
+            "git",
+            [
+              "-c",
+              "user.email=test@example.com",
+              "-c",
+              "user.name=Test",
+              "commit",
+              "--allow-empty",
+              "-m",
+              "Initial",
+            ],
+            { cwd: member, stdio: "pipe" },
+          );
+        }
+        const sentTurns: Array<Parameters<ProviderServiceShape["sendTurn"]>[0]> = [];
+        const startedCwds: Array<string | undefined> = [];
+        const ws = await startServer({ repo, sentTurns, startedCwds });
+        await createProject(ws, repo);
+        const response = await sendRequest(
+          ws,
+          WS_METHODS.nextTurnQueueSubmit,
+          firstSend({ repo, threadId: "plain-worktree", requireWorktree: true }),
+        );
+        expect(response.error).toBeUndefined();
+        const done = await waitForSetup(
+          ws,
+          "plain-worktree",
+          (snapshot) => snapshot?.phase === "done" || snapshot?.phase === "failed",
+        );
+        expect(done?.phase, JSON.stringify(done)).toBe("done");
+        const workspace = done!.worktreePath!;
+        expect(workspace).not.toBe(repo);
+        for (const name of ["api", "web"]) {
+          expect(
+            execFileSync("git", ["branch", "--show-current"], {
+              cwd: path.join(workspace, name),
+              encoding: "utf8",
+            }).trim(),
+          ).toBe("f5/plain-worktree");
+        }
+        await vi.waitFor(() => expect(sentTurns).toHaveLength(1), SLOW_WAIT);
+        expect(startedCwds).toContain(workspace);
+        const switched = await sendRequest(ws, WS_METHODS.gitCheckout, {
+          cwd: workspace,
+          branch: "other",
+          threadId: "plain-worktree",
+          create: true,
+        });
+        expect(switched.error).toMatchObject({ code: "WorkspaceRequiresNewWorktree" });
+      });
 
       it("rejects a required worktree before creating the thread", async () => {
         const repo = makeTempDir("t3code-ws-setup-required-");

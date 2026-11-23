@@ -9,12 +9,15 @@ import { describe, it, expect } from "vitest";
 import { Schema } from "effect";
 import { ServerSettings, ProviderInstanceId, CodexSettings, ProfileId } from "@t3tools/contracts";
 import { profileStateDir } from "@t3tools/shared/profilePaths";
-import { ProfileRegistryStore } from "./ProfileRegistryStore";
+import { linuxVmProfilesEnabled, ProfileRegistryStore } from "./ProfileRegistryStore";
 import { acquireInstanceLock } from "./InstanceLock";
 
-async function fixture() {
+async function fixture(linuxVmEnabled = false) {
   const root = await FS.mkdtemp(Path.join(OS.tmpdir(), "f5-profiles-"));
-  return { root, store: new ProfileRegistryStore(Path.join(root, "state"), 4773) };
+  return {
+    root,
+    store: new ProfileRegistryStore(Path.join(root, "state"), 4773, linuxVmEnabled),
+  };
 }
 
 it("waits for a live writer and recovers its marker only after process death", async () => {
@@ -350,6 +353,32 @@ describe("execution environments", () => {
     } finally {
       await FS.rm(root, { recursive: true, force: true });
     }
+  });
+
+  it("creates a Linux VM profile behind the experiment, with no host provider state", async () => {
+    const { root, store } = await fixture(true);
+    try {
+      await store.init();
+      const vm = await store.create({ name: "Guest", executionEnvironment: "linux-vm" });
+      expect(vm).toMatchObject({ status: "ready", executionEnvironment: "linux-vm" });
+      expect(await fileVersion(store)).toBe(2);
+      const directory = profileStateDir(store.defaultStateDir, vm);
+      expect(await FS.readdir(directory)).toEqual([]);
+      // Windows has no POSIX permission bits.
+      if (process.platform !== "win32") expect((await FS.stat(directory)).mode & 0o777).toBe(0o700);
+      await store.remove(vm.id);
+      expect(await fileVersion(store)).toBe(1);
+    } finally {
+      await FS.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("enables VM profiles only with the flag on Apple silicon", () => {
+    const flag = { F5_EXPERIMENTAL_LINUX_VM: "1" };
+    expect(linuxVmProfilesEnabled(flag, "darwin", "arm64")).toBe(true);
+    expect(linuxVmProfilesEnabled({}, "darwin", "arm64")).toBe(false);
+    expect(linuxVmProfilesEnabled(flag, "darwin", "x64")).toBe(false);
+    expect(linuxVmProfilesEnabled(flag, "linux", "arm64")).toBe(false);
   });
 
   it("writes version 2 only while a Linux VM profile exists", async () => {

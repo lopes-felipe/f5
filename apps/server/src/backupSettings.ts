@@ -15,6 +15,7 @@ export function redactBackupSettings(input: unknown): Record<string, unknown> {
     if (!instance) continue;
     const config = record(instance.config);
     if (config && "serverPassword" in config) config.serverPassword = "";
+    if (config && "apiKey" in config) config.apiKey = "";
     if (!Array.isArray(instance.environment)) continue;
     for (const entry of instance.environment) {
       const variable = record(entry);

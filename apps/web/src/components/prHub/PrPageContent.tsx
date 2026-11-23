@@ -20,6 +20,7 @@ import { PrPageActions } from "./PrPageActions";
 import { prPageActionAvailability, prRowPrimaryAction } from "./prQueueModel";
 import { usePrActions } from "./usePrActions";
 import { usePrMarkSeen } from "./usePrMarkSeen";
+import { PrChangeStat } from "./PrChangeStat";
 
 export interface PrPageContentProps {
   pr: TrackedPullRequest;
@@ -200,8 +201,7 @@ export function PrPageContent({
             </button>
           ) : null}
           <span className="tabular-nums">
-            <span className="text-success-foreground">+{pr.additions}</span>{" "}
-            <span className="text-destructive-foreground">−{pr.deletions}</span>
+            <PrChangeStat pr={pr} eager />
             {" · "}
             {pr.changedFiles} {pr.changedFiles === 1 ? "file" : "files"}
           </span>

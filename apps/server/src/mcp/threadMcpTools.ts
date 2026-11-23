@@ -24,6 +24,11 @@ import {
   HTML_RENDER_DESCRIPTION,
 } from "../htmlRender/htmlRenderGuide.ts";
 import { previewToolResult, type McpToolResult } from "./previewMcpTools.ts";
+import {
+  decodePullRequestMcpRequest,
+  PULL_REQUEST_MCP_TOOLS,
+  type PullRequestMcpRequest,
+} from "./pullRequestMcpTools";
 
 /**
  * The failure an agent reads word for word. Messages hold only authored text
@@ -73,6 +78,7 @@ export type ThreadReadInput = typeof ThreadReadInput.Type;
 export const THREAD_READ_RESULT_MAX_BYTES = 24_000;
 
 export type ThreadToolRequest =
+  | { readonly name: "forge_pull_request"; readonly request: PullRequestMcpRequest }
   | { readonly name: "image_publish"; readonly path: string }
   | { readonly name: "thread_status" }
   | { readonly name: "thread_read"; readonly input: ThreadReadInput }
@@ -159,6 +165,7 @@ const annotations = (readOnlyHint: boolean) => ({
   openWorldHint: !readOnlyHint,
 });
 export const THREAD_TOOL_DEFINITIONS = [
+  ...PULL_REQUEST_MCP_TOOLS,
   {
     name: "image_publish",
     title: "Publish image to conversation",
@@ -354,6 +361,8 @@ export async function callThreadTool(
     try: (): ThreadToolRequest => {
       if ((context.access ?? "full") === "read-only" && !READ_ONLY_THREAD_TOOL_NAMES.has(name))
         throw new Error("Unknown tool");
+      const pullRequest = decodePullRequestMcpRequest(name, arguments_ ?? {});
+      if (pullRequest) return { name: "forge_pull_request", request: pullRequest };
       if (name === "thread_read") {
         const input = Schema.decodeUnknownSync(ThreadReadInput)(arguments_ ?? {});
         if (input.item && (input.before !== undefined || input.limit !== undefined))

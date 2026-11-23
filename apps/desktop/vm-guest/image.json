@@ -1,0 +1,20 @@
+{
+  "imageVersion": 1,
+  "base": {
+    "url": "https://cloud.debian.org/images/cloud/trixie/20261103-2651/debian-13-genericcloud-arm64-20261103-2651.qcow2",
+    "sha512": "5d3ecec46fd29605db4084388a1e2eb82fd19a80202898f962840ea73793261de721e505e3877c829ae86c37fdd2f6c205b0b3b1337a89d0d4b98d9081adc0c2"
+  },
+  "aptSnapshot": "20261120T000000Z",
+  "packages": [
+    "bubblewrap",
+    "ca-certificates",
+    "curl",
+    "git",
+    "nftables",
+    "python3",
+    "ripgrep",
+    "socat",
+    "sudo"
+  ],
+  "guestUid": 1500
+}

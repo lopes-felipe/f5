@@ -843,6 +843,8 @@ export const PrHubDetailInput = Schema.Struct({
   accountGeneration: Schema.optional(Schema.String),
   key: PullRequestKey,
   mode: Schema.optional(PrHubReadMode),
+  /** A speculative read may use fresh local detail only. */
+  cacheOnly: Schema.optional(Schema.Boolean),
 });
 export type PrHubDetailInput = typeof PrHubDetailInput.Type;
 
@@ -983,6 +985,21 @@ export const PrHubChangedFile = Schema.Struct({
   patchStatus: Schema.optional(Schema.Literals(["available", "unavailable", "truncated"])),
 });
 export type PrHubChangedFile = typeof PrHubChangedFile.Type;
+const PrHubDiffTotals = Schema.Struct({ additions: NonNegativeInt, deletions: NonNegativeInt });
+export const PrHubChangeBreakdown = Schema.Struct({
+  code: PrHubDiffTotals,
+  tests: PrHubDiffTotals,
+  mocks: PrHubDiffTotals,
+  generated: PrHubDiffTotals,
+  docs: PrHubDiffTotals,
+});
+export type PrHubChangeBreakdown = typeof PrHubChangeBreakdown.Type;
+export const PrHubChangeBreakdownResult = Schema.Struct({
+  breakdown: PrHubChangeBreakdown,
+  headOid: Schema.String,
+  baseOid: Schema.String,
+});
+export type PrHubChangeBreakdownResult = typeof PrHubChangeBreakdownResult.Type;
 
 export const PrHubReviewComment = Schema.Struct({
   /** Explicit host permission; absent retains the host-specific fallback. */
@@ -1338,6 +1355,7 @@ export const PR_HUB_WS_METHODS = {
   getDetail: "prHub.getDetail",
   getTimeline: "prHub.getTimeline",
   getFiles: "prHub.getFiles",
+  getChangeBreakdown: "prHub.getChangeBreakdown",
   getReviewDraft: "prHub.getReviewDraft",
   saveReviewDraft: "prHub.saveReviewDraft",
   prepareReview: "prHub.prepareReview",

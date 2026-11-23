@@ -11,7 +11,10 @@ import { F5_THREAD_REFERENCE_MIME, writeThreadReferenceDrag } from "../lib/threa
 import { promptLinkScheme } from "./promptLinks/copyPromptLink";
 import { waitForTimelineLayout } from "../test/timeline";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
 import { resetProtocolStateForTests, setServerBootstrap } from "../protocolState";
+import { resetNativeApiForTests } from "../nativeApi";
+import { resetWsConnectionStateForTests } from "../wsConnectionState";
 import { serverBootstrapFixture as baseServerBootstrapFixture } from "../test/serverBootstrap";
 // Production CSS is part of the behavior under test because row height depends on it.
 import "../index.css";
@@ -322,6 +325,20 @@ function createModKeybinding(
     },
     ...(options?.whenAst ? { whenAst: options.whenAst } : {}),
   };
+}
+
+function dispatchAgentsShortcut(target: HTMLElement) {
+  const useMetaForMod = isMacPlatform(navigator.platform);
+  target.dispatchEvent(
+    new KeyboardEvent("keydown", {
+      key: "B",
+      metaKey: useMetaForMod,
+      ctrlKey: !useMetaForMod,
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    }),
+  );
 }
 
 function createUserMessage(options: {
@@ -2224,6 +2241,158 @@ describe("ChatView timeline (full app)", () => {
       await mounted.cleanup();
     }
   });
+
+  it.each([
+    { refused: false, pending: false },
+    { refused: true, pending: false },
+    { refused: false, pending: true },
+  ])(
+    "sends /btw to the child (refused=$refused, pending answer=$pending)",
+    async ({ refused, pending }) => {
+      const snapshot = createSnapshotForTargetUser({
+        targetMessageId: MessageId.makeUnsafe("side-chat-context"),
+        targetText: "Main conversation",
+      });
+      const parent = snapshot.threads[0]!;
+      const prompt = "/btw Review this file";
+      const filePath = "/repo/project/src/example.ts";
+      const image = createComposerImageAttachment({ id: "side-chat-image", name: "example.svg" });
+      const original = pending ? "Main draft before the question" : prompt;
+      useComposerDraftStore.getState().setPrompt(THREAD_ID, original);
+      useComposerDraftStore.getState().addFilePaths(THREAD_ID, [filePath]);
+      useComposerDraftStore.getState().addImage(THREAD_ID, image);
+      let childId: ThreadId | undefined;
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: {
+          ...snapshot,
+          threads: [
+            {
+              ...parent,
+              ...(pending
+                ? {
+                    activities: [
+                      createThreadActivity({
+                        id: "side-pending-question",
+                        createdAt: isoAt(201),
+                        kind: "user-input.requested",
+                        summary: "Answer",
+                        payload: {
+                          requestId: "side-pending-request",
+                          questions: [
+                            {
+                              id: "answer",
+                              header: "Answer",
+                              question: "Respond",
+                              options: [],
+                              initialAnswer: prompt,
+                              optional: true,
+                            },
+                          ],
+                        },
+                      }),
+                    ],
+                  }
+                : {}),
+              session: {
+                ...parent.session!,
+                capabilities: {
+                  generation: 1,
+                  discovery: "discovered",
+                  checkedAt: NOW_ISO,
+                  actions: [],
+                },
+              },
+            },
+          ],
+        },
+        configureFixture: (next) => {
+          next.resolveWsRequest = (body) => {
+            if (body._tag === NATIVE_OPERATION_WS_METHODS.fork) {
+              const operationId = String(body.operationId);
+              const target = ThreadId.makeUnsafe("fork-" + operationId);
+              childId = target;
+              useStore.setState((state) => {
+                const main = state.threads.find((thread) => thread.id === THREAD_ID)!;
+                return {
+                  threads: [
+                    ...state.threads,
+                    {
+                      ...main,
+                      id: target,
+                      sideChatOf: THREAD_ID,
+                      session: null,
+                      messages: [],
+                      activities: [],
+                      latestTurn: null,
+                    },
+                  ],
+                };
+              });
+              return {
+                type: "result",
+                result: {
+                  threadId: THREAD_ID,
+                  operationId,
+                  generation: 1,
+                  command: { kind: "fork" },
+                  state: "completed",
+                  createdAt: NOW_ISO,
+                  updatedAt: NOW_ISO,
+                },
+              };
+            }
+            if (refused && body._tag === WS_METHODS.nextTurnQueueSubmit)
+              return { type: "result", result: { disposition: "rejected", detail: "Try again" } };
+            return null;
+          };
+        },
+      });
+      try {
+        if (pending) {
+          const editor = await waitForComposerEditor();
+          await vi.waitFor(() => expect(editor.textContent).toBe(prompt));
+          await page.getByRole("button", { name: "Submit answers", exact: true }).click();
+        } else {
+          (await waitForSendButton()).click();
+        }
+        await vi.waitFor(() =>
+          expect(getDispatchCommandRequests("thread.turn.start")).toEqual([
+            expect.objectContaining({
+              command: expect.objectContaining({
+                threadId: childId,
+                message: expect.objectContaining({
+                  text: pending
+                    ? "Review this file"
+                    : appendAttachedFilesToPrompt("Review this file", ["src/example.ts"]),
+                  attachments: pending ? [] : [expect.objectContaining({ type: "upload" })],
+                }),
+              }),
+            }),
+          ]),
+        );
+        const readDraft = () => useComposerDraftStore.getState().draftsByThreadId[THREAD_ID];
+        await vi.waitFor(() => {
+          expect(readDraft()?.prompt ?? "").toBe(refused || pending ? original : "");
+          expect(readDraft()?.filePaths ?? []).toEqual(refused || pending ? [filePath] : []);
+          expect(readDraft()?.images.map(({ id }) => id) ?? []).toEqual(
+            refused || pending ? [image.id] : [],
+          );
+        });
+        const submission = getDispatchCommandRequests("thread.turn.start")[0]?.command as {
+          message: { attachments: Array<{ uploadId: string }> };
+        };
+        if (!pending)
+          expect(
+            uploadedFiles.get(submission.message.attachments[0]!.uploadId)?.draftThreadId,
+          ).toBe(childId);
+        expect(getDispatchCommandRequests("thread.user-input.respond")).toHaveLength(0);
+      } finally {
+        useRightPanelStore.setState({ byThreadId: {} });
+        await mounted.cleanup();
+      }
+    },
+  );
   it("focuses search when the add-project intent opens the real palette submenu", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
@@ -2410,6 +2579,115 @@ describe("ChatView timeline (full app)", () => {
       }
     },
   );
+  it("keeps the full find count while painting only the nearby matches of a long message", async () => {
+    const targetMessageId = "find-long-message" as MessageId;
+    const nearbyMessageId = "msg-user-2";
+    const targetText =
+      "alternate " + Array.from({ length: 3_000 }, () => "needle ".repeat(10)).join("\n");
+    const snapshot = createSnapshotForTargetUser({ targetMessageId, targetText });
+    const thread = snapshot.threads[0]!;
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: [
+          {
+            ...thread,
+            messages: thread.messages.map((message) =>
+              message.id === nearbyMessageId ? { ...message, text: "A nearby needle" } : message,
+            ),
+          },
+        ],
+      },
+      configureFixture: (next) => {
+        next.serverConfig = {
+          ...next.serverConfig,
+          keybindings: [createModKeybinding("chat.find", "f")],
+        };
+        next.resolveWsRequest = (body) =>
+          body._tag === ORCHESTRATION_WS_METHODS.searchThread
+            ? {
+                type: "result",
+                result: {
+                  totalMatches: body.query === "needle" ? 30_001 : 1,
+                  activeIndex: 0,
+                  match: {
+                    entryId: targetMessageId,
+                    kind: "message",
+                    occurrence: 0,
+                    snippet: body.query,
+                  },
+                },
+              }
+            : null;
+      },
+    });
+    try {
+      const editor = await waitForComposerEditor();
+      editor.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "f",
+          metaKey: /Mac/.test(navigator.platform),
+          ctrlKey: !/Mac/.test(navigator.platform),
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      const search = page.getByRole("textbox", { name: "Find in thread" });
+      await search.fill("needle");
+      await expect
+        .element(page.getByRole("status").filter({ hasText: "1 of 30001" }))
+        .toBeVisible();
+      const highlights = () => [...(CSS.highlights.get("f5-thread-find") ?? [])] as Range[];
+      const active = () => [...(CSS.highlights.get("f5-thread-find-active") ?? [])][0] as Range;
+      const rowId = (range: Range) =>
+        range.startContainer.parentElement?.closest<HTMLElement>("[data-timeline-row-id]")?.dataset
+          .timelineRowId;
+      const scroller = document.querySelector<HTMLElement>(
+        '[data-slot="messages-scroll-container"]',
+      )!;
+      await vi.waitFor(
+        () => {
+          expect(active()?.toString()).toBe("needle");
+          const firstRect = active().getBoundingClientRect();
+          const viewport = scroller.getBoundingClientRect();
+          expect(firstRect.top).toBeGreaterThanOrEqual(viewport.top);
+          expect(firstRect.bottom).toBeLessThanOrEqual(viewport.bottom);
+          expect(highlights().some((range) => rowId(range) === nearbyMessageId)).toBe(true);
+        },
+        { timeout: 5_000 },
+      );
+      const first = active();
+      const nearby = highlights().find((range) => rowId(range) === nearbyMessageId)!;
+      const initial = highlights().find((range) => rowId(range) === targetMessageId)!;
+      const viewport = scroller.getBoundingClientRect();
+      expect(highlights().length).toBeLessThan(5_000);
+
+      scroller.scrollTop += viewport.height * 5;
+      await vi.waitFor(() => {
+        expect(highlights().length).toBeGreaterThan(0);
+        expect(highlights()).not.toContain(initial);
+        expect(highlights()).not.toContain(nearby);
+        expect(initial.getBoundingClientRect().bottom).toBeLessThan(viewport.top - viewport.height);
+      });
+      expect(highlights().length).toBeLessThan(5_000);
+      expect(active()).toBe(first);
+
+      await search.fill("alternate");
+      await vi.waitFor(() => {
+        expect(active()?.toString()).toBe("alternate");
+        expect(highlights()).toHaveLength(0);
+      });
+      await page.getByRole("button", { name: "Close find" }).click();
+      await vi.waitFor(() => {
+        expect(CSS.highlights.has("f5-thread-find")).toBe(false);
+        expect(CSS.highlights.has("f5-thread-find-active")).toBe(false);
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   beforeAll(async () => {
     fixture = buildFixture(
       createSnapshotForTargetUser({
@@ -2494,6 +2772,8 @@ describe("ChatView timeline (full app)", () => {
   });
 
   afterEach(() => {
+    resetNativeApiForTests();
+    resetWsConnectionStateForTests();
     useRightPanelStore.setState({ byThreadId: {} });
     document.body.innerHTML = "";
   });
@@ -6882,6 +7162,18 @@ describe("ChatView timeline (full app)", () => {
           useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.modelOptions?.codex,
         ).toMatchObject({ reasoningEffort: "medium", fastMode: true }),
       );
+      await vi.waitFor(() =>
+        expect(getDispatchCommandRequests("thread.meta.update")).toContainEqual(
+          expect.objectContaining({
+            command: expect.objectContaining({
+              threadId: THREAD_ID,
+              modelSelection: expect.objectContaining({
+                options: expect.arrayContaining([{ id: "reasoningEffort", value: "medium" }]),
+              }),
+            }),
+          }),
+        ),
+      );
       editor.dispatchEvent(
         new KeyboardEvent("keydown", {
           key: "ArrowUp",
@@ -8277,6 +8569,127 @@ describe("ChatView timeline (full app)", () => {
       });
     } finally {
       useCommandPaletteStore.getState().setOpen(false);
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens and closes the Agents panel with the default shortcut", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-agents-shortcut" as MessageId,
+        targetText: "agents shortcut test",
+      }),
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          keybindings: DEFAULT_RESOLVED_KEYBINDINGS,
+        };
+      },
+    });
+
+    try {
+      const composerEditor = await waitForComposerEditor();
+      composerEditor.focus();
+      const panel = () =>
+        selectThreadRightPanelState(useRightPanelStore.getState().byThreadId, THREAD_ID);
+
+      dispatchAgentsShortcut(composerEditor);
+      await vi.waitFor(() => {
+        expect(panel()).toMatchObject({ isOpen: true, activeSurfaceId: "agents" });
+      });
+
+      dispatchAgentsShortcut(composerEditor);
+      await vi.waitFor(() => {
+        expect(panel().surfaces.some((surface) => surface.id === "agents")).toBe(false);
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("records the Agents shortcut in the Add action dialog", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-record-agents-shortcut" as MessageId,
+      targetText: "record shortcut test",
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        projects: snapshot.projects.map((project) => ({
+          ...project,
+          scripts: [
+            { id: "test", name: "Test", command: "ls", icon: "test", runOnWorktreeCreate: false },
+          ],
+        })),
+      },
+      configureFixture: (fixture) => {
+        fixture.serverConfig = {
+          ...fixture.serverConfig,
+          keybindings: DEFAULT_RESOLVED_KEYBINDINGS,
+        };
+      },
+    });
+
+    try {
+      await page.getByRole("button", { name: "Script actions" }).click();
+      await page.getByRole("menuitem", { name: "Add action" }).click();
+      const recorder = await waitForElement(
+        () => document.querySelector<HTMLInputElement>("#script-keybinding"),
+        "The shortcut recorder should be visible.",
+      );
+      recorder.focus();
+      dispatchAgentsShortcut(recorder);
+      await expect.element(page.getByLabelText("Keybinding")).toHaveValue("mod+shift+b");
+      await expect.element(page.getByText(/conflicts with Toggle Agents panel/)).toBeVisible();
+      expect(useRightPanelStore.getState().byThreadId[THREAD_ID]?.activeSurfaceId).not.toBe(
+        "agents",
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("gives a saved model-picker binding priority over the Agents shortcut", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-model-picker-agents-shortcut" as MessageId,
+        targetText: "model picker shortcut test",
+      }),
+      configureFixture: (fixture) => {
+        fixture.serverConfig = {
+          ...fixture.serverConfig,
+          keybindings: [
+            ...DEFAULT_RESOLVED_KEYBINDINGS,
+            createModKeybinding("modelPicker.toggle", "b", {
+              shiftKey: true,
+              whenAst: { type: "identifier", name: "modelPickerOpen" },
+            }),
+          ],
+        };
+      },
+    });
+
+    try {
+      const trigger = await waitForElement(
+        () => document.querySelector<HTMLElement>("[data-chat-provider-model-picker]"),
+        "The model picker should be visible.",
+      );
+      await page.elementLocator(trigger).click();
+      const search = await waitForElement(
+        () => document.querySelector<HTMLInputElement>('input[placeholder="Search models..."]'),
+        "The open model picker should show its search field.",
+      );
+      // The search input owns its keystrokes. Dispatch from the trigger to exercise
+      // the thread's bubbling shortcut handler while the picker is open.
+      dispatchAgentsShortcut(trigger);
+      await vi.waitFor(() => expect(search.isConnected).toBe(false));
+      expect(useRightPanelStore.getState().byThreadId[THREAD_ID]?.activeSurfaceId).not.toBe(
+        "agents",
+      );
+    } finally {
       await mounted.cleanup();
     }
   });

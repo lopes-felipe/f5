@@ -5,7 +5,11 @@ import { antigravityProfileDirectory } from "../acp/AntigravityAcpSupport.ts";
 import { Effect, Schema } from "effect";
 import { AntigravitySettings } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vitest";
-import { buildAntigravityModels, checkAntigravityProviderStatus } from "./AntigravityProvider.ts";
+import {
+  antigravityThinkingFromModel,
+  buildAntigravityModels,
+  checkAntigravityProviderStatus,
+} from "./AntigravityProvider.ts";
 import {
   AntigravityInstallation,
   AntigravityUpdateRequiredError,
@@ -26,6 +30,48 @@ describe("Antigravity status", () => {
       { slug: "flash-preview", name: "Gemini Flash (flash-preview)" },
       { slug: "custom", name: "custom" },
     ]);
+  });
+  it("orders Gemini models and attaches each model's own thinking levels", () => {
+    const models = buildAntigravityModels(
+      [
+        { value: "gemini-hydrogen", name: "Hydrogen" },
+        { value: "gemini-neon", name: "Neon" },
+        { value: "gemini-carbon", name: "Carbon" },
+        { value: "gemini-orchestrator", name: "Orchestrator" },
+      ],
+      new Map([
+        [
+          "gemini-neon",
+          {
+            levels: [
+              { value: "low", name: "Low" },
+              { value: "high", name: "High" },
+            ],
+            defaultLevel: "high",
+          },
+        ],
+        ["gemini-orchestrator", null],
+      ]),
+    );
+    expect(models.map((model) => model.slug)).toEqual([
+      "gemini-orchestrator",
+      "gemini-carbon",
+      "gemini-neon",
+      "gemini-hydrogen",
+    ]);
+    const neon = models.find((model) => model.slug === "gemini-neon")!;
+    expect(neon.capabilities?.optionDescriptors).toEqual([
+      expect.objectContaining({ id: "thinking", label: "Thinking", type: "select" }),
+    ]);
+    expect(antigravityThinkingFromModel(neon)).toEqual({
+      levels: [
+        { value: "low", name: "Low" },
+        { value: "high", name: "High" },
+      ],
+      defaultLevel: "high",
+    });
+    const orchestrator = models.find((model) => model.slug === "gemini-orchestrator")!;
+    expect(orchestrator.capabilities?.optionDescriptors ?? []).toEqual([]);
   });
   it("explains the required update without downloading or misreporting an existing version", async () => {
     const resolve = vi
@@ -49,11 +95,11 @@ describe("Antigravity status", () => {
       install.mockRestore();
     }
   });
-  it("defaults off and never probes or installs a disabled instance", async () => {
+  it("never probes or installs a disabled instance", async () => {
     const resolve = vi.spyOn(AntigravityInstallation.prototype, "resolve");
     const install = vi.spyOn(AntigravityInstallation.prototype, "install");
     try {
-      const settings = Schema.decodeSync(AntigravitySettings)({});
+      const settings = Schema.decodeSync(AntigravitySettings)({ enabled: false });
       const snapshot = await Effect.runPromise(
         checkAntigravityProviderStatus(settings, "/not-created", "a"),
       );
@@ -62,6 +108,22 @@ describe("Antigravity status", () => {
       expect(install).not.toHaveBeenCalled();
     } finally {
       resolve.mockRestore();
+      install.mockRestore();
+    }
+  });
+  it("defaults on, and a status check of an uninstalled instance never installs it", async () => {
+    const install = vi.spyOn(AntigravityInstallation.prototype, "install");
+    try {
+      const settings = Schema.decodeSync(AntigravitySettings)({});
+      expect(settings.enabled).toBe(true);
+      const snapshot = await Effect.runPromise(
+        checkAntigravityProviderStatus(settings, "/not-created", "a"),
+      );
+      expect(snapshot.enabled).toBe(true);
+      expect(snapshot.installed).toBe(false);
+      expect(snapshot.message).toBe("Install Antigravity in Settings to get started.");
+      expect(install).not.toHaveBeenCalled();
+    } finally {
       install.mockRestore();
     }
   });
@@ -95,7 +157,10 @@ it("checks the custom instance's account instead of the default instance", async
   try {
     const account = join(antigravityProfileDirectory(root, "custom-account"), "antigravity-acp");
     await mkdir(account, { recursive: true });
-    await writeFile(join(account, "acp_token.json"), '{"token":"synthetic"}');
+    await writeFile(
+      join(account, "acp_token.json"),
+      '{"client_id":"synthetic","refresh_token":"synthetic"}',
+    );
     const settings = Schema.decodeSync(AntigravitySettings)({ enabled: true });
     const custom = await Effect.runPromise(
       checkAntigravityProviderStatus(settings, root, "custom-account"),

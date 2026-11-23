@@ -153,10 +153,50 @@ export const prepareAcpAutomationCatalogs = (input: {
   computerCapableLineage?: boolean;
   /** Certification/test seam; production drivers never supply overrides. */
   verification?: { preview?: boolean; computer?: boolean };
+  /** Launch credentials (an Antigravity Gemini API key) scrubbed from logs, errors and events. */
+  credentials?: ReadonlyArray<string>;
 }) =>
   Effect.gen(function* () {
     const configs: PreviewMcpSessionConfig[] = [];
     const scrubber = new AcpCredentialScrubber();
+    const launchCredentials = (input.credentials ?? []).filter((value) => value.length >= 8);
+    for (const credential of launchCredentials) scrubber.register(credential);
+    // Exact-value replacement in every decoded string, so JSON escaping (quotes, backslashes)
+    // cannot hide an echoed key. Property names are scrubbed too: an agent can echo the key as a
+    // name in unstructured data. Schema field names never contain a credential, so they and the
+    // routing fields are left as they are.
+    const scrubString = (value: string): string => {
+      let scrubbed = value;
+      for (const credential of launchCredentials)
+        scrubbed = scrubbed.replaceAll(credential, "[redacted]");
+      return scrubbed;
+    };
+    const scrubValue = (value: unknown): unknown => {
+      if (typeof value === "string") return scrubString(value);
+      if (Array.isArray(value)) {
+        let changed = false;
+        const next = value.map((entry) => {
+          const scrubbed = scrubValue(entry);
+          changed ||= scrubbed !== entry;
+          return scrubbed;
+        });
+        return changed ? next : value;
+      }
+      if (value !== null && typeof value === "object") {
+        let changed = false;
+        const next: Record<string, unknown> = {};
+        for (const [key, entry] of Object.entries(value)) {
+          const scrubbed = scrubValue(entry);
+          const scrubbedKey = scrubString(key);
+          changed ||= scrubbed !== entry || scrubbedKey !== key;
+          next[scrubbedKey] = scrubbed;
+        }
+        return changed ? next : value;
+      }
+      return value;
+    };
+    const scrubLaunchCredentials = (event: ProviderRuntimeEvent): ProviderRuntimeEvent =>
+      launchCredentials.length === 0 ? event : (scrubValue(event) as ProviderRuntimeEvent);
     const serverName = `f5_computer_${randomBytes(4).toString("hex")}`;
     let computerCapable = input.computerCapableLineage === true;
     let disposed = false;
@@ -282,13 +322,18 @@ export const prepareAcpAutomationCatalogs = (input: {
       classify,
       redactForLog,
       scrubDiagnostic: (value: string) => scrubber.scrub(value),
-      sanitizeEvent(event: ProviderRuntimeEvent): ProviderRuntimeEvent {
+      sanitizeEvent(unscrubbed: ProviderRuntimeEvent): ProviderRuntimeEvent {
+        const event = scrubLaunchCredentials(unscrubbed);
         if (!computerCapable) return event;
         if (
           (event.type === "item.started" ||
             event.type === "item.updated" ||
             event.type === "item.completed") &&
-          automationEventSanitizer.isComputerItem(event.threadId, event.itemId ?? event.eventId)
+          // Items are registered under their provider IDs, before any credential was scrubbed.
+          automationEventSanitizer.isComputerItem(
+            unscrubbed.threadId,
+            unscrubbed.itemId ?? unscrubbed.eventId,
+          )
         ) {
           return {
             ...event,

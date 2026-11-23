@@ -1,6 +1,7 @@
 "use client";
 
-import { decodeDriverConfigField } from "./providerConfigFields";
+import { decodeDriverConfigField, isDriverConfigFieldVisible } from "./providerConfigFields";
+import { NativeSelect } from "../ui/select";
 import { CheckIcon } from "lucide-react";
 import { Radio as RadioPrimitive } from "@base-ui/react/radio";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -15,7 +16,7 @@ import { cn } from "../../lib/utils";
 import { normalizeProviderAccentColor } from "../../providerInstances";
 import { AccentColorPicker } from "./AccentColorPicker";
 import { Button } from "../ui/button";
-import { ACPRegistryIcon, Gemini, GithubCopilotIcon, PiAgentIcon } from "../Icons";
+import { ACPRegistryIcon, GithubCopilotIcon, PiAgentIcon } from "../Icons";
 import {
   Dialog,
   DialogDescription,
@@ -59,12 +60,6 @@ const COMING_SOON_DRIVER_OPTIONS: readonly DriverOption[] = [
     value: ProviderDriverKind.make("githubCopilot"),
     label: "Github Copilot",
     icon: GithubCopilotIcon,
-    fields: [],
-  },
-  {
-    value: ProviderDriverKind.make("gemini"),
-    label: "Gemini",
-    icon: Gemini,
     fields: [],
   },
   {
@@ -157,6 +152,20 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
     [driver, fieldValues],
   );
 
+  // `visibleWhen` reads the draft values, with a select's default counting as chosen.
+  const visibleFields = useMemo(() => {
+    const draft = Object.fromEntries(
+      driverOption.fields.map((field) => [
+        field.key,
+        fieldValues[`${driver}:${field.key}`] ||
+          (field.type === "select" ? field.defaultValue : undefined),
+      ]),
+    );
+    return driverOption.fields.filter((field) =>
+      isDriverConfigFieldVisible(draft, field, driverOption.fields),
+    );
+  }, [driver, driverOption.fields, fieldValues]);
+
   const setFieldValue = useCallback(
     (fieldKey: string, value: string) => {
       setFieldValues((existing) => ({
@@ -175,8 +184,14 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
     // Empty strings are dropped so defaults remain in effect on the server.
     const config: Record<string, unknown> = {};
     try {
-      for (const field of driverOption.fields) {
-        const value = decodeDriverConfigField(field, fieldValues[`${driver}:${field.key}`] ?? "");
+      // Hidden fields (such as the key for the Google account method) are not saved; a select
+      // left untouched saves the value it shows.
+      for (const field of visibleFields) {
+        const raw = fieldValues[`${driver}:${field.key}`] ?? "";
+        const value = decodeDriverConfigField(
+          field,
+          field.type === "select" ? raw || field.defaultValue || "" : raw,
+        );
         if (value !== undefined) config[field.key] = value;
       }
     } catch (error) {
@@ -225,6 +240,7 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
     driver,
     driverOption,
     fieldValues,
+    visibleFields,
     instanceId,
     instanceIdError,
     label,
@@ -316,8 +332,15 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
                       )}
                     >
                       <IconComponent className="size-5 shrink-0" aria-hidden />
-                      <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
-                        {option.label}
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-medium text-foreground">
+                          {option.label}
+                        </span>
+                        {option.subtitle ? (
+                          <span className="block truncate text-xs text-muted-foreground">
+                            {option.subtitle}
+                          </span>
+                        ) : null}
                       </span>
                       {option.badgeLabel ? (
                         <Badge variant="warning" size="sm">
@@ -398,18 +421,32 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
 
             {driverOption.fields.length > 0 ? (
               <div className={cn("grid gap-4", wizardStep !== 2 && "hidden")}>
-                {driverOption.fields.map((field) => (
+                {visibleFields.map((field) => (
                   <label key={field.key} className="grid gap-1.5">
                     <span className="text-xs font-medium text-foreground">{field.label}</span>
-                    <Input
-                      className="bg-background"
-                      type={field.type === "password" ? "password" : undefined}
-                      autoComplete={field.type === "password" ? "off" : undefined}
-                      placeholder={field.placeholder}
-                      value={getFieldValue(field.key)}
-                      onChange={(event) => setFieldValue(field.key, event.target.value)}
-                      spellCheck={false}
-                    />
+                    {field.type === "select" ? (
+                      <NativeSelect
+                        className="w-full"
+                        value={getFieldValue(field.key) || field.defaultValue || ""}
+                        onChange={(event) => setFieldValue(field.key, event.currentTarget.value)}
+                      >
+                        {(field.options ?? []).map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </NativeSelect>
+                    ) : (
+                      <Input
+                        className="bg-background"
+                        type={field.type === "password" ? "password" : undefined}
+                        autoComplete={field.type === "password" ? "off" : undefined}
+                        placeholder={field.placeholder}
+                        value={getFieldValue(field.key)}
+                        onChange={(event) => setFieldValue(field.key, event.target.value)}
+                        spellCheck={false}
+                      />
+                    )}
                     {field.description ? (
                       <span className="text-2xs text-muted-foreground">{field.description}</span>
                     ) : null}

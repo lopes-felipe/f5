@@ -123,13 +123,14 @@ export function nextProviderUpdateCheckDelay(
 function installerEnvironment(
   executable: string,
   environment: NodeJS.ProcessEnv,
-  channel: "npm" | "homebrew" | "self-update",
+  channel: "npm" | "homebrew" | "mise" | "self-update",
   platform: NodeJS.Platform,
 ): NodeJS.ProcessEnv {
   const path = platform === "win32" ? Path.win32 : Path.posix;
   const env = filterProviderUpdateEnvironment(environment, channel);
   const pathKey = Object.keys(env).find((key) => key.toUpperCase() === "PATH") ?? "PATH";
-  env[pathKey] = path.dirname(executable) + path.delimiter + (env[pathKey] ?? "");
+  if (channel !== "mise")
+    env[pathKey] = path.dirname(executable) + path.delimiter + (env[pathKey] ?? "");
   for (const key of Object.keys(env))
     if (key.toUpperCase() === "F5_PROFILE_ISOLATED") delete env[key];
   return env;
@@ -195,8 +196,8 @@ export const makeProviderUpdateAdvisor = (
         const next = new Map<ProviderInstanceId, ProviderInstallTarget | null>();
         const passRegistries = new Map<string, boolean | null>();
         for (const instance of instances) {
-          const detected = yield* Effect.try({
-            try: () => instance.resolveInstallTarget?.() ?? null,
+          const detected = yield* Effect.tryPromise({
+            try: async () => instance.resolveInstallTarget?.() ?? null,
             catch: () => null,
           }).pipe(Effect.orElseSucceed(() => null));
           let target = detected;
@@ -440,10 +441,14 @@ export const makeProviderUpdateAdvisor = (
               return;
           } else if (previous.nextEligibleAt > now) return;
         }
+        const mise = target.latestSource.kind === "mise";
         const result = yield* lookupLatestVersion(target.latestSource, {
           runProcess: runner,
-          environment: filterProviderUpdateEnvironment(target.updateEnvironment, "homebrew"),
-          cwd: workDir,
+          environment: filterProviderUpdateEnvironment(
+            target.updateEnvironment,
+            mise ? "mise" : "homebrew",
+          ),
+          cwd: mise ? tmpdir() : workDir,
         }).pipe(Effect.provideService(HttpClient.HttpClient, httpClient));
         const checkedAt = Date.now();
         let entry: SourceCacheEntry;
@@ -632,7 +637,7 @@ export const makeProviderUpdateAdvisor = (
           const settled = Promise.resolve().then(() =>
             runner(command.executable, command.args, {
               env: installerEnvironment(command.executable, environment, command.channel, platform),
-              cwd: workDir,
+              cwd: command.channel === "mise" ? tmpdir() : workDir,
               stdin: "",
               timeoutMs: PROVIDER_UPDATE_TIMEOUT_MS,
               allowNonZeroExit: true,
@@ -810,8 +815,8 @@ export const makeProviderUpdateAdvisor = (
           const active = yield* Ref.get(inFlightRef);
           if (active) {
             const activeInstance = instance;
-            const target = yield* Effect.try({
-              try: () => activeInstance.resolveInstallTarget?.() ?? null,
+            const target = yield* Effect.tryPromise({
+              try: async () => activeInstance.resolveInstallTarget?.() ?? null,
               catch: () => null,
             }).pipe(Effect.orElseSucceed(() => null));
             if (active.affectedIds.includes(instanceId) || target?.installKey === active.installKey)

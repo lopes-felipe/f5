@@ -68,7 +68,7 @@ export async function inspectCodexBinary(input: {
   readonly homePath?: string;
   readonly probeVersion?: boolean;
 }): Promise<CodexBinaryFacts> {
-  const resolved = resolveExecutable(input.binaryPath, input.processEnvironment, {
+  const resolved = await resolveExecutable(input.binaryPath, input.processEnvironment, {
     cwd: input.cwd,
   });
   const [path, version] = await Promise.all([

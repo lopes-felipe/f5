@@ -10046,7 +10046,9 @@ describe("ClaudeAdapterLive", () => {
   });
 
   it.effect("emits thread token usage snapshots from Claude message usage events", () => {
-    const harness = makeHarness();
+    const harness = makeHarness({
+      processEnvironment: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: "180000" },
+    });
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
 
@@ -10062,6 +10064,10 @@ describe("ClaudeAdapterLive", () => {
         providerOptions: { claudeAgent: { autoCompactWindow: 150_000 } },
       });
       assert.equal(session.threadId, THREAD_ID);
+      assert.deepInclude(harness.getLastCreateQueryInput()?.options.settings, {
+        autoCompactWindow: 150_000,
+        env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: "150000" },
+      });
 
       const turn = yield* adapter.sendTurn({
         threadId: session.threadId,
@@ -10361,6 +10367,144 @@ describe("ClaudeAdapterLive", () => {
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
     );
+  });
+
+  it.effect("uses Claude settings and result usage for a custom model's context meter", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const cwd = yield* Effect.acquireRelease(
+        Effect.sync(() => mkdtempSync(path.join(os.tmpdir(), "f5-claude-context-"))),
+        (cwd) => Effect.sync(() => rmSync(cwd, { recursive: true, force: true })),
+      );
+      mkdirSync(path.join(cwd, ".claude"));
+      writeFileSync(
+        path.join(cwd, ".claude", "settings.json"),
+        JSON.stringify({
+          autoCompactWindow: 160_000,
+          modelSettings: {
+            "gateway-model": { autoCompactWindow: 150_000 },
+            "other-gateway": { autoCompactWindow: 180_000 },
+          },
+        }),
+      );
+      const adapter = yield* ClaudeAdapter;
+      const model = "gateway-model";
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+        model,
+        cwd,
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "hello",
+        attachments: [],
+      });
+      const sessionId = "sdk-thread-custom-context";
+      harness.query.emit({
+        type: "system",
+        subtype: "init",
+        session_id: sessionId,
+        uuid: "custom-init",
+        model: model + "[1m]",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "stream_event",
+        session_id: sessionId,
+        uuid: "custom-stream",
+        parent_tool_use_id: null,
+        event: { type: "message_delta", delta: {}, usage: { input_tokens: 500, output_tokens: 4 } },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        session_id: sessionId,
+        uuid: "custom-result",
+        total_cost_usd: 0,
+        modelUsage: {
+          [model]: { contextWindow: 500_000 },
+          "child-model": { contextWindow: 800_000 },
+        },
+      } as unknown as SDKMessage);
+      const events = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+      );
+      const usage = events.filter((event) => event.type === "thread.token-usage.updated");
+      assert.deepEqual(
+        usage.map((event) => [event.turnId, event.payload]),
+        [200_000, 500_000].map((modelContextWindowTokens) => [
+          turn.turnId,
+          {
+            usage: { input_tokens: 500, output_tokens: 4 },
+            autoCompactThreshold: 117_000,
+            modelContextWindowTokens,
+          },
+        ]),
+      );
+
+      const nextTurn = yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        model: "other-gateway",
+        input: "switch models",
+        attachments: [],
+      });
+      harness.query.emit({
+        type: "stream_event",
+        session_id: sessionId,
+        uuid: "other-stream",
+        parent_tool_use_id: null,
+        event: { type: "message_delta", delta: {}, usage: { input_tokens: 600, output_tokens: 5 } },
+      } as unknown as SDKMessage);
+      const nextUsage = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "thread.token-usage.updated"),
+        Stream.runHead,
+      );
+      assert.deepEqual(Option.getOrUndefined(nextUsage)?.payload, {
+        usage: { input_tokens: 600, output_tokens: 5 },
+        autoCompactThreshold: 147_000,
+        modelContextWindowTokens: 200_000,
+      });
+      assert.equal(Option.getOrUndefined(nextUsage)?.turnId, nextTurn.turnId);
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        session_id: sessionId,
+        uuid: "other-result",
+        total_cost_usd: 0,
+        modelUsage: {},
+      } as unknown as SDKMessage);
+      yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runDrain,
+      );
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        model,
+        input: "switch back",
+        attachments: [],
+      });
+      harness.query.emit({
+        type: "stream_event",
+        session_id: sessionId,
+        uuid: "return-stream",
+        parent_tool_use_id: null,
+        event: { type: "message_delta", delta: {}, usage: { input_tokens: 700, output_tokens: 6 } },
+      } as unknown as SDKMessage);
+      const returnedUsage = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "thread.token-usage.updated"),
+        Stream.runHead,
+      );
+      assert.deepEqual(Option.getOrUndefined(returnedUsage)?.payload, {
+        usage: { input_tokens: 700, output_tokens: 6 },
+        autoCompactThreshold: 117_000,
+        modelContextWindowTokens: 500_000,
+      });
+    }).pipe(Effect.provide(harness.layer));
   });
 
   it.effect("includes refreshed Claude context-window metadata on token usage snapshots", () => {
@@ -16753,6 +16897,43 @@ it.effect("returns bypass removal warnings directly without opening an approval"
     assert.equal(result?.behavior, "deny");
     if (result?.behavior === "deny") assert.include(result.message, "safe rewrite");
     assert.equal(events.filter((event) => event.type === "request.opened").length, 0);
+  }).pipe(Effect.provide(h.layer));
+});
+
+it.effect("passes bypass permission mode and managed rule source to approval presentation", () => {
+  const h = makeHarness();
+  return Effect.gen(function* () {
+    const adapter = yield* ClaudeAdapter;
+    yield* adapter.startSession({
+      threadId: THREAD_ID,
+      provider: "claudeAgent",
+      runtimeMode: "full-access",
+    });
+    const pending = h.getLastCreateQueryInput()!.options.canUseTool!(
+      "Bash",
+      { command: "pwd" },
+      {
+        signal: new AbortController().signal,
+        toolUseID: "managed-ask",
+        requestId: "managed-ask",
+        decisionReason: "Managed policy",
+        matchedAskRule: { source: "policySettings", toolName: "Bash", ruleContent: "*" },
+      },
+    );
+    const requested = yield* Stream.runHead(
+      adapter.streamEvents.pipe(Stream.filter((event) => event.type === "request.opened")),
+    );
+    assert.equal(requested._tag, "Some");
+    if (requested._tag !== "Some") return;
+    const payload = JSON.stringify(requested.value.payload);
+    assert.include(payload, '"fullAccessOverride":"ask_rule"');
+    assert.include(payload, '"askRuleSource":"policySettings"');
+    yield* adapter.respondToRequest(
+      THREAD_ID,
+      ApprovalRequestId.makeUnsafe(requested.value.requestId!),
+      "accept",
+    );
+    assert.equal((yield* Effect.promise(() => Promise.resolve(pending)))?.behavior, "allow");
   }).pipe(Effect.provide(h.layer));
 });
 

@@ -410,7 +410,10 @@ const makeCheckpointStore = Effect.fn("makeCheckpointStore")(function* (platform
                 // weakening fsync or changing deadlines for other Git commands.
                 timeoutMs: platform === "win32" ? 120_000 : 30_000,
               });
-            yield* stageFiles([]).pipe(
+            const excluded = (input.excludePaths ?? []).map(
+              (entry) => ":(exclude,literal)" + entry,
+            );
+            yield* stageFiles(excluded).pipe(
               Effect.catch((error) => {
                 if (!/does not have a commit checked out/i.test(error.detail))
                   return Effect.fail(error);
@@ -450,7 +453,7 @@ const makeCheckpointStore = Effect.fn("makeCheckpointStore")(function* (platform
                     else if (head.code !== 0) return yield* error;
                   }
                   if (exclusions.length === 0) return yield* error;
-                  return exclusions;
+                  return [...excluded, ...exclusions];
                 }).pipe(
                   Effect.timeoutOrElse({
                     duration: "5 seconds",
@@ -596,6 +599,10 @@ const makeCheckpointStore = Effect.fn("makeCheckpointStore")(function* (platform
         return false;
       }
 
+      const pathspecs = [
+        ".",
+        ...(input.excludePaths ?? []).map((entry) => ":(exclude,literal)" + entry),
+      ];
       // Restoring away the last tracked file removes a nested workspace directory, and on
       // Windows the clean can remove './' and still exit 0. Recreate it after each step.
       const recreateWorkspace = fs.makeDirectory(input.cwd, { recursive: true }).pipe(
@@ -611,13 +618,13 @@ const makeCheckpointStore = Effect.fn("makeCheckpointStore")(function* (platform
       yield* git.execute({
         operation,
         cwd: input.cwd,
-        args: ["restore", "--source", commitOid, "--worktree", "--staged", "--", "."],
+        args: ["restore", "--source", commitOid, "--worktree", "--staged", "--", ...pathspecs],
       });
       yield* recreateWorkspace;
       yield* git.execute({
         operation,
         cwd: input.cwd,
-        args: ["clean", "-fd", "--", "."],
+        args: ["clean", "-fd", "--", ...pathspecs],
       });
       yield* recreateWorkspace;
 
@@ -626,7 +633,7 @@ const makeCheckpointStore = Effect.fn("makeCheckpointStore")(function* (platform
         yield* git.execute({
           operation,
           cwd: input.cwd,
-          args: ["reset", "--quiet", "--", "."],
+          args: ["reset", "--quiet", "--", ...pathspecs],
         });
       }
 
@@ -657,6 +664,7 @@ const makeCheckpointStore = Effect.fn("makeCheckpointStore")(function* (platform
       }
 
       const whitespace = input.options?.ignoreWhitespace === true ? ["--ignore-all-space"] : [];
+      const prefix = input.options?.repositoryPath ? input.options.repositoryPath + "/" : "";
       const patch = (pathspecs: ReadonlyArray<string>) =>
         git
           .execute({
@@ -667,8 +675,8 @@ const makeCheckpointStore = Effect.fn("makeCheckpointStore")(function* (platform
               "--patch",
               "--find-renames",
               "--relative",
-              "--src-prefix=a/",
-              "--dst-prefix=b/",
+              "--src-prefix=a/" + prefix,
+              "--dst-prefix=b/" + prefix,
               ...(input.options?.minimal === false ? [] : ["--minimal"]),
               "--no-color",
               ...whitespace,

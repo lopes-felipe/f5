@@ -40,7 +40,7 @@ it("rejects explicit Claude executable overrides in isolated profiles", async ()
     validateProviderCompatibility(
       config,
       "claudeAgent",
-      resolveClaudeSdkExecutableOptions("claude").pathToClaudeCodeExecutable!,
+      (await resolveClaudeSdkExecutableOptions("claude")).pathToClaudeCodeExecutable!,
       {},
     ),
   ).rejects.toThrow("unsupported-isolation: Claude requires the bundled certified Agent SDK");

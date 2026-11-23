@@ -73,6 +73,43 @@ it.effect("never sends raw provider defects through the catalog", () =>
   ),
 );
 
+it.effect("validates PR and CI tool arguments and keeps writes out of read-only turns", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeThreadMcpBroker;
+      const seen: unknown[] = [];
+      yield* broker.register((id, request) =>
+        Effect.sync(() => {
+          seen.push([id, request]);
+          return { ok: true };
+        }),
+      );
+      const threadId = ThreadId.makeUnsafe("pr-tools");
+      const context = { broker, threadId };
+      const read = yield* Effect.promise(() => callThreadTool(context, "ci_logs", { number: 42 }));
+      assert.isUndefined(read.isError);
+      assert.deepStrictEqual(seen, [
+        [
+          threadId,
+          {
+            name: "forge_pull_request",
+            request: { name: "ci_logs", input: { number: 42 } },
+          },
+        ],
+      ]);
+      const invalid = yield* Effect.promise(() =>
+        callThreadTool(context, "pull_request_merge", { number: 42 }),
+      );
+      assert.isTrue(invalid.isError);
+      const refused = yield* Effect.promise(() =>
+        callThreadTool({ ...context, access: "read-only" }, "ci_rerun", { number: 42 }),
+      );
+      assert.isTrue(refused.isError);
+      assert.lengthOf(seen, 1);
+    }),
+  ),
+);
+
 it.effect(
   "keeps HTTP thread credentials separate from preview credentials and revokes them on disposal",
   () =>
@@ -124,6 +161,15 @@ it.effect(
         assert.deepStrictEqual(
           tools.body.result?.tools?.map((tool) => tool.name),
           [
+            "pull_request_read",
+            "pull_request_list",
+            "pull_request_create",
+            "pull_request_update",
+            "pull_request_respond",
+            "pull_request_review",
+            "pull_request_merge",
+            "ci_logs",
+            "ci_rerun",
             "image_publish",
             "thread_read",
             "thread_settle",
@@ -151,11 +197,11 @@ it("guides agents to chart data, follow the theme and leave the page unannounced
   assert.isTrue(render.alwaysLoad);
   assert.include(
     render.description,
-    "When an answer shows a trend or comparison in data, prefer showing it as a chart with this tool, unless the user asked for text only or for an exportable image.",
+    "Show data trends and comparisons with html_render unless text only or an exportable image was requested.",
   );
-  assert.include(render.description, "Do not announce or restate the page.");
-  assert.include(render.description, "up to 20000px");
-  for (const token of THEME_TOKEN_NAMES) assert.include(render.description, `--${token}`);
+  assert.include(render.description, "Do not restate the page.");
+  assert.include(render.description, "height cap 20000px");
+  for (const token of THEME_TOKEN_NAMES) assert.include(render.description, "--" + token);
   for (const variable of ["--chart-1", "--chart-6", "--radius", "--font-sans", "--font-mono"])
     assert.include(render.description, variable);
   assert.deepStrictEqual(preview.annotations, {

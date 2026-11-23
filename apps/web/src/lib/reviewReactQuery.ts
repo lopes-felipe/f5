@@ -9,6 +9,7 @@ export const reviewQueryKeys = {
     threadId: ThreadId | null;
     scope: ReviewDiffScope | null;
     baseRef: string | null;
+    repositoryPath?: string;
     ignoreWhitespace: boolean;
   }) => ["review", "preview", input] as const,
 };
@@ -21,6 +22,7 @@ export function reviewPreviewDiffQueryOptions(input: {
   threadId: ThreadId | null;
   scope: ReviewDiffScope | null;
   baseRef: string | null;
+  repositoryPath?: string;
   ignoreWhitespace: boolean;
   autoRefresh?: boolean;
   refetchIntervalMs?: number;
@@ -30,6 +32,7 @@ export function reviewPreviewDiffQueryOptions(input: {
       threadId: input.threadId,
       scope: input.scope,
       baseRef: input.baseRef,
+      ...(input.repositoryPath ? { repositoryPath: input.repositoryPath } : {}),
       ignoreWhitespace: input.ignoreWhitespace,
     }),
     meta: rpcQueryMeta("refresh-background"),
@@ -40,6 +43,7 @@ export function reviewPreviewDiffQueryOptions(input: {
           threadId: input.threadId,
           scope: input.scope,
           ...(input.baseRef ? { baseRef: input.baseRef } : {}),
+          ...(input.repositoryPath ? { repositoryPath: input.repositoryPath } : {}),
           ignoreWhitespace: input.ignoreWhitespace,
         },
         rpcQueryContext(context),

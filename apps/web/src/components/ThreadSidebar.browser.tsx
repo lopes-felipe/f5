@@ -3461,6 +3461,7 @@ describe("Thread sidebar", () => {
         () => document.querySelector('[aria-label="Regenerating thread title"]'),
         "Pending title regeneration indicator should render.",
       );
+      expect(document.querySelector(".sidebar-title-regenerating")).not.toBeNull();
     } finally {
       await pendingMounted.cleanup();
     }
@@ -6002,6 +6003,36 @@ describe("Thread sidebar", () => {
       await mounted.cleanup();
     }
   });
+  it("keeps unrelated sidebar rows rendered when switching threads", async () => {
+    const nextId = ThreadId.makeUnsafe("route-next");
+    const otherId = ThreadId.makeUnsafe("route-other");
+    const mounted = await mountApp({
+      width: 1400,
+      initialEntries: ["/" + THREAD_ID],
+      configureFixture: (next) => {
+        next.snapshot = createSnapshot([
+          createSnapshotThread({ id: THREAD_ID, title: "Initial thread" }),
+          createSnapshotThread({ id: nextId, title: "Next thread" }),
+          createSnapshotThread({ id: otherId, title: "Unrelated thread" }),
+        ]);
+      },
+    });
+    try {
+      await waitForSidebarThreadRow("Initial thread");
+      const row = await waitForSidebarThreadRow("Unrelated thread");
+      await waitForLayout();
+      const before = row.getAttribute("data-render-count");
+      expect(before).toBeTruthy();
+      await mounted.router.navigate({ to: "/$threadId", params: { threadId: nextId } });
+      await waitForLayout();
+      expect(
+        querySidebarThreadRowByTitle("Unrelated thread")?.getAttribute("data-render-count"),
+      ).toBe(before);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("isolates terminal updates from the sidebar and another thread's chat", async () => {
     const otherId = ThreadId.makeUnsafe("background-terminal");
     const mounted = await mountApp({

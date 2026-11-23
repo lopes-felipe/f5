@@ -8,8 +8,50 @@
     <title>F5</title>
   </head>
   <body>
+    <style>
+      #boot-shell {
+        color-scheme: light;
+        position: fixed;
+        inset: 0;
+        overflow: auto;
+        background: var(--background, Canvas);
+        color: var(--foreground, CanvasText);
+        z-index: 9999;
+        font: 14px system-ui;
+      }
+      html.dark #boot-shell {
+        color-scheme: dark;
+      }
+      #boot-error {
+        max-width: 540px;
+        margin: 12vh auto;
+        padding: 24px;
+      }
+      #boot-error h1 {
+        font-size: 20px;
+      }
+      #boot-error button,
+      #boot-error a {
+        margin: 8px 8px 8px 0;
+      }
+      #boot-error button {
+        padding: 8px 12px;
+        cursor: pointer;
+      }
+      #boot-error pre {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        max-height: 40vh;
+        overflow: auto;
+      }
+      #boot-error summary {
+        cursor: pointer;
+        margin-top: 24px;
+      }
+    </style>
+    <div id="boot-shell" aria-live="polite" hidden></div>
     <div id="root"></div>
     <script type="module" src="/src/themeBoot.ts"></script>
-    <script type="module" src="/src/main.tsx"></script>
+    <script type="module" src="/src/boot.ts"></script>
   </body>
 </html>

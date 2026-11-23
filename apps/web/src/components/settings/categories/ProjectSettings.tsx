@@ -5,7 +5,7 @@ import {
   type ProjectIconGlyph,
   type ProjectId,
 } from "@t3tools/contracts";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 
 import { useSettingsRouteContext } from "../SettingsRouteContext";
@@ -23,6 +23,8 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../
 import { Textarea } from "../../ui/textarea";
 import { ProjectIcon } from "../../ProjectIcon";
 import { DraftInput } from "../../ui/draft-input";
+import { projectRepositoriesQueryOptions } from "../../RepositoryPicker";
+import { ensureNativeApi } from "../../../nativeApi";
 
 export { PROJECT_SETTINGS_DESCRIPTORS } from "./ProjectSettings.descriptors";
 
@@ -84,6 +86,82 @@ function CheckedInProjectConfigSummary({ projectId }: { readonly projectId: Proj
           ))}
         </ul>
       ) : null}
+    </div>
+  );
+}
+
+function ProjectRepositoriesSummary({ projectId }: { readonly projectId: ProjectId }) {
+  const repositories = useQuery(projectRepositoriesQueryOptions(projectId));
+  const queryClient = useQueryClient();
+  const [path, setPath] = useState("");
+  const update = useMutation({
+    mutationFn: ({ path, tracked }: { path: string; tracked: boolean }) =>
+      ensureNativeApi().projects.setRepository({ projectId, path, tracked }),
+    onSuccess: (_, { tracked }) => {
+      if (tracked) setPath("");
+      return queryClient.invalidateQueries({ queryKey: ["projects", projectId, "repositories"] });
+    },
+  });
+  if (repositories.isPending)
+    return <p className="text-xs text-muted-foreground">Looking for repositories…</p>;
+  if (repositories.isError)
+    return <p className="text-xs text-destructive">Could not list repositories.</p>;
+  return (
+    <div className="space-y-2">
+      {repositories.data.length === 0 && (
+        <p className="text-xs text-muted-foreground">No repositories found.</p>
+      )}
+      <ul className="space-y-1 text-xs text-muted-foreground">
+        {repositories.data.map((repository) => (
+          <li
+            key={repository.path}
+            title={repository.path}
+            className="flex items-center justify-between gap-2"
+          >
+            <span className="truncate">
+              {repository.externalSource ??
+                (repository.relativePath === "." ? "Project root" : repository.relativePath)}
+            </span>
+            {repository.externalSource && (
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={update.isPending}
+                onClick={() => update.mutate({ path: repository.externalSource!, tracked: false })}
+              >
+                Remove
+              </Button>
+            )}
+          </li>
+        ))}
+      </ul>
+      <form
+        className="flex items-center gap-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (path.trim()) update.mutate({ path: path.trim(), tracked: true });
+        }}
+      >
+        <Input
+          aria-label="External repository folder"
+          placeholder="Absolute repository path"
+          value={path}
+          onChange={(event) => setPath(event.target.value)}
+        />
+        <Button
+          type="submit"
+          size="sm"
+          variant="outline"
+          disabled={!path.trim() || update.isPending}
+        >
+          Add repository
+        </Button>
+      </form>
+      {update.error && (
+        <p role="alert" className="text-xs text-destructive">
+          {update.error.message}
+        </p>
+      )}
     </div>
   );
 }
@@ -398,6 +476,10 @@ export function ProjectSettings() {
             >
               <p className="mb-2 text-xs font-medium text-foreground">Checked-in configuration</p>
               <CheckedInProjectConfigSummary projectId={selectedProject.id} />
+              <div className="space-y-1">
+                <h4 className="text-sm font-medium">Repositories</h4>
+                <ProjectRepositoriesSummary projectId={selectedProject.id} />
+              </div>
             </div>
           </div>
         ) : (
