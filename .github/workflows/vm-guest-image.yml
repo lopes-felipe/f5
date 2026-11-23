@@ -2,8 +2,11 @@ name: VM guest image
 
 # Builds the Linux VM profile guest image (apps/desktop/vm-guest). Pull requests build it
 # as a check. A manual run on main with `publish` attaches it to a
-# `vm-guest-image-<source>` prerelease; a release pins it by copying the printed digest into
-# image.lock.json.
+# `0.0.0-guest-image-<source>` prerelease; a release pins it by copying the printed digest into
+# image.lock.json. The tag must stay a semver prerelease whose channel isn't alpha or beta: the
+# desktop beta updater takes the newest release in the feed whose tag has no custom channel, so
+# any other tag makes every beta update check fail. It also must not start with `v`, which the
+# release-tag ruleset reserves.
 
 on:
   pull_request:
@@ -13,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: Attach the image to a vm-guest-image prerelease
+        description: Attach the image to a guest image prerelease
         type: boolean
         default: false
 
@@ -121,8 +124,8 @@ jobs:
           set -euo pipefail
           meta=$(ls vm-guest/*.json)
           source=$(jq -r .source "$meta")
-          tag="vm-guest-image-$source"
-          gh release create "$tag" --prerelease --target "$GITHUB_SHA" \
+          tag="0.0.0-guest-image-$source"
+          gh release create "$tag" --prerelease --latest=false --target "$GITHUB_SHA" \
             --title "VM guest image $source" \
             --notes "Linux VM profile guest image built from $GITHUB_SHA. Pin it in apps/desktop/vm-guest/image.lock.json." \
             vm-guest/*

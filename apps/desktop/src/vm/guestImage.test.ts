@@ -16,7 +16,7 @@ import { inProcessLocks } from "./testing/inProcessLocks";
 const content = Buffer.from("guest image bytes ".repeat(1000));
 const sha256 = Crypto.createHash("sha256").update(content).digest("hex");
 const pin: GuestImagePin = {
-  url: "https://github.com/lopes-felipe/f5/releases/download/vm-guest-image-x/f5-guest.qcow2",
+  url: "https://github.com/lopes-felipe/f5/releases/download/0.0.0-guest-image-x/f5-guest.qcow2",
   sha256,
   size: content.byteLength,
 };

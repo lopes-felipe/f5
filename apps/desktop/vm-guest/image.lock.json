@@ -1,3 +1,9 @@
 {
-  "image": null
+  "image": {
+    "url": "https://github.com/lopes-felipe/f5/releases/download/0.0.0-guest-image-bfde204f134b/f5-guest-1-bfde204f134b-arm64.qcow2",
+    "sha256": "80e0b8b451c160fc66095af03177c066860fa3808e9aadc3d4791c69ab336803",
+    "size": 400031744,
+    "imageVersion": 1,
+    "source": "bfde204f134b"
+  }
 }
