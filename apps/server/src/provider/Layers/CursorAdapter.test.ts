@@ -1,7 +1,7 @@
 import { writeAcpWrapper, waitForAgentExit } from "../../testUtils/cli.ts";
 import * as path from "node:path";
 import * as os from "node:os";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -30,6 +30,13 @@ class CursorAdapter extends ServiceMap.Service<CursorAdapter, CursorAdapterShape
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const mockAgentPath = path.join(__dirname, "../../../scripts/acp-mock-agent.ts");
+
+/** A temp directory removed when the test's scope closes, including after a failure. */
+const scopedTempDir = (prefix: string) =>
+  Effect.acquireRelease(
+    Effect.promise(() => mkdtemp(path.join(os.tmpdir(), prefix))),
+    (dir) => Effect.promise(() => rm(dir, { recursive: true, force: true })),
+  );
 
 async function makeMockAgentWrapper(
   extraEnv?: Record<string, string>,
@@ -1715,9 +1722,7 @@ cursorAdapterHardeningTestLayer("CursorAdapterLive ACP hardening", (it) => {
       const adapter = yield* CursorAdapter;
       const settings = yield* ServerSettingsService;
       const threadId = ThreadId.make("cursor-ask-question-outcome");
-      const tempDir = yield* Effect.promise(() =>
-        mkdtemp(path.join(os.tmpdir(), "cursor-ask-outcome-")),
-      );
+      const tempDir = yield* scopedTempDir("cursor-ask-outcome-");
       const requestLogPath = path.join(tempDir, "requests.ndjson");
       const wrapperPath = yield* Effect.promise(() =>
         makeMockAgentWrapper({
@@ -1777,9 +1782,7 @@ cursorAdapterHardeningTestLayer("CursorAdapterLive ACP hardening", (it) => {
         const adapter = yield* CursorAdapter;
         const settings = yield* ServerSettingsService;
         const threadId = ThreadId.make("cursor-question-fallback");
-        const tempDir = yield* Effect.promise(() =>
-          mkdtemp(path.join(os.tmpdir(), "cursor-question-fallback-")),
-        );
+        const tempDir = yield* scopedTempDir("cursor-question-fallback-");
         const requestLogPath = path.join(tempDir, "requests.ndjson");
         const wrapperPath = yield* Effect.promise(() =>
           makeMockAgentWrapper({
@@ -1837,9 +1840,7 @@ cursorAdapterHardeningTestLayer("CursorAdapterLive ACP hardening", (it) => {
       const adapter = yield* CursorAdapter;
       const settings = yield* ServerSettingsService;
       const threadId = ThreadId.make("cursor-question-cancelled");
-      const tempDir = yield* Effect.promise(() =>
-        mkdtemp(path.join(os.tmpdir(), "cursor-question-cancel-")),
-      );
+      const tempDir = yield* scopedTempDir("cursor-question-cancel-");
       const requestLogPath = path.join(tempDir, "requests.ndjson");
       const wrapperPath = yield* Effect.promise(() =>
         makeMockAgentWrapper({
@@ -1880,9 +1881,7 @@ cursorAdapterHardeningTestLayer("CursorAdapterLive ACP hardening", (it) => {
       const adapter = yield* CursorAdapter;
       const settings = yield* ServerSettingsService;
       const threadId = ThreadId.make("cursor-extension-requests");
-      const tempDir = yield* Effect.promise(() =>
-        mkdtemp(path.join(os.tmpdir(), "cursor-extension-requests-")),
-      );
+      const tempDir = yield* scopedTempDir("cursor-extension-requests-");
       // Only an image that exists inside the workspace is embedded.
       yield* Effect.promise(() => writeFile(path.join(tempDir, "diagram.png"), ""));
       const requestLogPath = path.join(tempDir, "requests.ndjson");
@@ -1987,6 +1986,42 @@ cursorAdapterHardeningTestLayer("CursorAdapterLive ACP hardening", (it) => {
     }),
   );
 
+  it.effect("closes a failed prompt's tools and releases the turn", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("cursor-prompt-error-tools");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockAgentWrapper({ T3_ACP_FAIL_PROMPT_WITH_OPEN_TOOL: "1" }),
+      );
+      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      const { events, fiber } = yield* collectThreadEvents(threadId);
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      const result = yield* adapter
+        .sendTurn({ threadId, input: "fail", attachments: [] })
+        .pipe(Effect.exit);
+      assert.equal(result._tag, "Failure");
+      const statuses = events
+        .filter(
+          (event) =>
+            (event.type === "item.updated" || event.type === "item.completed") &&
+            String(event.itemId) === "failing-turn-tool",
+        )
+        .map((event) => (event.payload as { status?: string }).status);
+      assert.deepEqual(statuses, ["inProgress", "failed"]);
+      // The session stays usable: the next turn is not refused as overlapping.
+      const sessions = yield* adapter.listSessions();
+      assert.isUndefined(sessions.find((session) => session.threadId === threadId)?.activeTurnId);
+      yield* Fiber.interrupt(fiber);
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
   it.effect("merges to-dos across turns and ignores a late update for a closed subagent", () =>
     Effect.gen(function* () {
       const adapter = yield* CursorAdapter;
@@ -2030,6 +2065,14 @@ cursorAdapterHardeningTestLayer("CursorAdapterLive ACP hardening", (it) => {
   it.effect("refuses runtime modes Cursor cannot enforce before spawning", () =>
     Effect.gen(function* () {
       const adapter = yield* CursorAdapter;
+      const settings = yield* ServerSettingsService;
+      // The mock logs every request it receives, so a launch would leave this file behind.
+      const tempDir = yield* scopedTempDir("cursor-unsupported-mode-");
+      const requestLogPath = path.join(tempDir, "requests.ndjson");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockAgentWrapper({ T3_ACP_REQUEST_LOG_PATH: requestLogPath }),
+      );
+      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
       const result = yield* adapter
         .startSession({
           threadId: ThreadId.make("cursor-auto-accept-edits"),
@@ -2040,6 +2083,13 @@ cursorAdapterHardeningTestLayer("CursorAdapterLive ACP hardening", (it) => {
         .pipe(Effect.exit);
       assert.equal(result._tag, "Failure");
       assert.isFalse(yield* adapter.hasSession(ThreadId.make("cursor-auto-accept-edits")));
+      const launched = yield* Effect.promise(() =>
+        readFile(requestLogPath, "utf8").then(
+          () => true,
+          () => false,
+        ),
+      );
+      assert.isFalse(launched);
       assert.isTrue(adapter.capabilities.enforcesReadOnlyWorkflow === true);
     }),
   );

@@ -164,6 +164,30 @@ describe("CursorAcpExtension", () => {
     });
   });
 
+  it("keeps option ids that differ only in whitespace distinct", () => {
+    const spaced = {
+      toolCallId: "ask-2",
+      questions: [
+        {
+          id: "pick",
+          prompt: "Pick",
+          options: [
+            { id: " a ", label: "Padded" },
+            { id: "a", label: "Plain" },
+          ],
+        },
+      ],
+    };
+    expect(extractAskQuestions(spaced)[0]?.options.map((option) => option.value)).toEqual([
+      " a ",
+      "a",
+    ]);
+    expect(cursorAskQuestionOutcome(spaced, { pick: " a " })).toEqual({
+      outcome: "answered",
+      answers: [{ questionId: "pick", selectedOptionIds: [" a "] }],
+    });
+  });
+
   it("keeps single-select questions to one option and accepts legacy label answers", () => {
     expect(cursorAskQuestionOutcome(question, { scope: ["Same", "b"] })).toEqual({
       outcome: "answered",
@@ -199,13 +223,27 @@ describe("CursorAcpExtension", () => {
         { optionId: "reject-once", name: "Skip", kind: "reject_once" },
       ],
     } satisfies RequestPermissionRequest;
+    // A single-question request, with the outcome derived the way the adapter derives it.
+    const single = { toolCallId: "ask-1", questions: [question.questions[1]!] };
     expect(
       cursorQuestionFallbackReply(
         allowRust,
-        { outcome: "answered", answers: [{ questionId: "langs", selectedOptionIds: ["rs"] }] },
-        question,
+        cursorAskQuestionOutcome(single, { langs: "rs" }),
+        single,
       ),
     ).toEqual({ outcome: { outcome: "selected", optionId: "allow-once" } });
+    // Two native choices share the permission's name: it cannot identify the pick.
+    const twins = {
+      toolCallId: "ask-1",
+      questions: [question.questions[0]!],
+    };
+    expect(
+      cursorQuestionFallbackReply(
+        { ...allowRust, options: [{ optionId: "allow-once", name: "Same", kind: "allow_once" }] },
+        cursorAskQuestionOutcome(twins, { scope: "a" }),
+        twins,
+      ),
+    ).toBeUndefined();
     expect(cursorQuestionFallbackReply(fallback(), { outcome: "skipped" }, question)).toEqual({
       outcome: { outcome: "selected", optionId: "reject-once" },
     });
@@ -312,9 +350,13 @@ describe("CursorAcpExtension", () => {
     ).toBeUndefined();
     expect(cursorGeneratedImagePath("/etc/passwd", "/work", "/state/attachments")).toBeUndefined();
     expect(cursorGeneratedImagePath("notes.txt", "/work", "/state/attachments")).toBeUndefined();
+    // A name that merely starts with `..` is not a parent segment.
+    expect(cursorGeneratedImagePath("..diagram.png", "/work", "/state/attachments")).toBe(
+      resolve("/work/..diagram.png"),
+    );
   });
 
-  it("rejects a workspace image symlink that points outside", async () => {
+  it("rejects a workspace image reached through a link that points outside", async () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "cursor-image-")));
     try {
       const workspace = join(root, "workspace");
@@ -323,13 +365,14 @@ describe("CursorAcpExtension", () => {
       await mkdir(outside);
       await writeFile(join(workspace, "real.png"), "");
       await writeFile(join(outside, "secret.png"), "");
-      await symlink(join(outside, "secret.png"), join(workspace, "linked.png"));
+      // A directory junction on Windows needs no symlink privilege; elsewhere it is a symlink.
+      await symlink(outside, join(workspace, "linked"), "junction");
       const attachments = join(root, "attachments");
       expect(await resolveCursorGeneratedImage("real.png", workspace, attachments)).toBe(
         join(workspace, "real.png"),
       );
       expect(
-        await resolveCursorGeneratedImage("linked.png", workspace, attachments),
+        await resolveCursorGeneratedImage(join("linked", "secret.png"), workspace, attachments),
       ).toBeUndefined();
       expect(
         await resolveCursorGeneratedImage("missing.png", workspace, attachments),

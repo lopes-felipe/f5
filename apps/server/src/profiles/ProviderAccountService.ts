@@ -407,9 +407,15 @@ export class ProviderAccountService {
         // Peers were resolved before the OAuth lease; settings may have moved an instance into
         // or out of this credential store while it waited, leaving a live peer unguarded.
         const guardedPeers = await this.accountPeers(instanceId);
+        // The child runs with the environment resolved before the lease, so that environment
+        // must still select the store the guarded peers were computed from.
+        const storeOf = (account: NonNullable<typeof resolved>) =>
+          cursorCredentialStoreKey(account.instance, () => account.environment);
+        const fresh = await this.resolveCliAccount(instanceId);
         if (
           guardedPeers.length !== sharedPeers.length ||
-          guardedPeers.some((peer) => !sharedPeers.includes(peer))
+          guardedPeers.some((peer) => !sharedPeers.includes(peer)) ||
+          storeOf(resolved!) !== storeOf(fresh)
         )
           throw new Error(
             "The providers using this account changed while it was waiting. Try again.",

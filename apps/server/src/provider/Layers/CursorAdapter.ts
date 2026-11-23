@@ -195,9 +195,13 @@ interface CursorTurnExtensionState {
    * patches the existing list, and only a `merge: false` update replaces it.
    */
   todos: ReadonlyArray<(typeof CursorUpdateTodosRequest.Type)["todos"][number]>;
-  /** Subagent task cards still open. */
-  readonly tasks: Set<string>;
-  /** Subagent task cards F5 already closed; session-scoped, so late updates are ignored. */
+  /**
+   * Subagent task cards still open, with the turn that opened each.
+   * Session-scoped: a turn closes only its own cards, so a turn that ends
+   * while the next one starts cannot close or drop the other's.
+   */
+  readonly tasks: Map<string, TurnId | undefined>;
+  /** Subagent task cards already closed; session-scoped, so late updates are ignored. */
   readonly closedTasks: Set<string>;
   /**
    * Tools Cursor has not reported finished. Kept across turns: a backgrounded
@@ -209,7 +213,6 @@ interface CursorTurnExtensionState {
 function resetTurnExtensionState(state: CursorTurnExtensionState): void {
   state.questionOutcomes.clear();
   state.questionRequests.clear();
-  state.tasks.clear();
 }
 
 /** `merge: true` updates todos by id and appends new ones; otherwise the list is replaced. */
@@ -716,16 +719,22 @@ export function makeCursorAdapter(
             }),
           );
         }
-        const open = [...ctx.turnState.tasks];
-        ctx.turnState.tasks.clear();
-        for (const taskId of open) ctx.turnState.closedTasks.add(taskId);
-        for (const taskId of open) {
+        // Only this turn's cards (and any opened while idle); every card when the session ends.
+        const open = [...ctx.turnState.tasks].filter(
+          ([, owner]) => sessionEnded || owner === undefined || owner === turnId,
+        );
+        for (const [taskId] of open) {
+          ctx.turnState.tasks.delete(taskId);
+          ctx.turnState.closedTasks.add(taskId);
+        }
+        for (const [taskId, owner] of open) {
+          const taskTurnId = owner ?? turnId;
           yield* offerRuntimeEvent({
             type: "task.completed",
             ...(yield* makeEventStamp(ctx)),
             provider: PROVIDER,
             threadId: ctx.threadId,
-            ...(turnId ? { turnId } : {}),
+            ...(taskTurnId ? { turnId: taskTurnId } : {}),
             payload: {
               taskId: RuntimeTaskId.make(taskId),
               status,
@@ -854,7 +863,7 @@ export function makeCursorAdapter(
             questionOutcomes: new Map(),
             questionRequests: new Map(),
             todos: [],
-            tasks: new Set(),
+            tasks: new Map(),
             closedTasks: new Set(),
             openTools: new CursorOpenToolCalls<TurnId>(),
           };
@@ -1055,6 +1064,7 @@ export function makeCursorAdapter(
             >,
             raw: unknown,
             method: string,
+            turnId: TurnId | undefined = ctx?.activeTurnId,
           ) =>
             Effect.gen(function* () {
               yield* offerRuntimeEvent({
@@ -1062,7 +1072,7 @@ export function makeCursorAdapter(
                 ...(yield* makeEventStamp(ctx)),
                 provider: PROVIDER,
                 threadId: input.threadId,
-                ...(ctx?.activeTurnId ? { turnId: ctx.activeTurnId } : {}),
+                ...(turnId ? { turnId } : {}),
                 raw: { source: "acp.cursor.extension", method, payload: raw },
               } as ProviderRuntimeEvent);
             });
@@ -1094,7 +1104,7 @@ export function makeCursorAdapter(
               // A card F5 already closed with its turn stays closed.
               if (turnState.closedTasks.has(params.toolCallId)) return;
               if (!turnState.tasks.has(params.toolCallId)) {
-                turnState.tasks.add(params.toolCallId);
+                turnState.tasks.set(params.toolCallId, ctx?.activeTurnId);
                 const description = params.description?.trim();
                 const subagentType = cursorSubagentTypeLabel(params.subagentType);
                 yield* emitTaskEvent(
@@ -1116,7 +1126,10 @@ export function makeCursorAdapter(
                 );
               }
               if (params.durationMs !== undefined) {
+                const owner = turnState.tasks.get(params.toolCallId);
                 turnState.tasks.delete(params.toolCallId);
+                // A repeated completion must not reopen the card.
+                turnState.closedTasks.add(params.toolCallId);
                 yield* emitTaskEvent(
                   {
                     type: "task.completed",
@@ -1124,6 +1137,7 @@ export function makeCursorAdapter(
                   },
                   params,
                   "cursor/task",
+                  owner ?? ctx?.activeTurnId,
                 );
               }
             });
@@ -1901,6 +1915,18 @@ export function makeCursorAdapter(
             Effect.ensuring(
               Effect.sync(() => {
                 ctx.promptsInFlight = Math.max(0, ctx.promptsInFlight - 1);
+              }),
+            ),
+            // A failed `session/prompt` leaves the session alive: the turn's own tools and
+            // subagent cards close as failed, and the turn is released. The error itself still
+            // reaches the caller, which reports the failed turn.
+            Effect.tapError(() =>
+              Effect.gen(function* () {
+                if (sessions.get(input.threadId) !== ctx || ctx.stopped) return;
+                if (ctx.promptsInFlight > 0 || ctx.activeTurnId !== turnId) return;
+                ctx.activeTurnId = undefined;
+                ctx.session = { ...ctx.session, activeTurnId: undefined, status: "ready" };
+                yield* closeOpenTasks(ctx, turnId, "failed");
               }),
             ),
           );

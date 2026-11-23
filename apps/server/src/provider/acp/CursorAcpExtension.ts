@@ -104,10 +104,11 @@ export function extractAskQuestions(
       question.options.length > 0
         ? question.options.map((option) => {
             const label = optionLabel(option);
+            // The exact id, so ids that differ only in whitespace stay distinct.
             return {
               label,
               description: label,
-              ...(option.id.trim() ? { value: option.id.trim() } : {}),
+              ...(option.id.trim() ? { value: option.id } : {}),
             };
           })
         : [{ label: "OK", description: "Continue" }],
@@ -126,12 +127,11 @@ export type CursorQuestionOutcome =
   | { readonly outcome: "skipped"; readonly reason?: string }
   | { readonly outcome: "cancelled" };
 
+/** Submitted values as given (not trimmed), so an exact option id can match first. */
 function answerValues(raw: unknown): ReadonlyArray<string> {
-  if (typeof raw === "string") return raw.trim() ? [raw.trim()] : [];
+  if (typeof raw === "string") return raw.trim() ? [raw] : [];
   if (Array.isArray(raw))
-    return raw.flatMap((entry) =>
-      typeof entry === "string" && entry.trim() ? [entry.trim()] : [],
-    );
+    return raw.flatMap((entry) => (typeof entry === "string" && entry.trim() ? [entry] : []));
   return [];
 }
 
@@ -153,9 +153,11 @@ export function cursorAskQuestionOutcome(
       if (values.length > 0) answeredAny = true;
     } else {
       for (const value of values) {
+        const trimmed = value.trim();
         const option =
           question.options.find((candidate) => candidate.id === value) ??
-          question.options.find((candidate) => optionLabel(candidate) === value);
+          question.options.find((candidate) => candidate.id.trim() === trimmed) ??
+          question.options.find((candidate) => optionLabel(candidate) === trimmed);
         if (option && !selected.includes(option.id)) selected.push(option.id);
       }
     }
@@ -218,13 +220,16 @@ export function cursorQuestionFallbackReply(
   if (outcome.outcome === "skipped") return selected(single("reject_once"));
   const [only, ...rest] = outcome.answers;
   if (!only || rest.length > 0 || only.selectedOptionIds.length !== 1) return undefined;
-  const choice = question?.questions
-    .find((entry) => entry.id === only.questionId)
-    ?.options.find((option) => option.id === only.selectedOptionIds[0]);
   const allow = single("allow_once");
-  if (!choice || !allow) return undefined;
+  const options = question?.questions.find((entry) => entry.id === only.questionId)?.options;
+  if (!allow || !options) return undefined;
+  // The permission names one choice only if exactly one native choice carries that full
+  // (untruncated) label, and it must be the choice the user selected.
   const normalize = (value: string) => value.trim().toLowerCase();
-  return normalize(optionLabel(choice)) === normalize(allow.name) ? selected(allow) : undefined;
+  const named = options.filter((option) => normalize(option.label) === normalize(allow.name));
+  return named.length === 1 && named[0]!.id === only.selectedOptionIds[0]
+    ? selected(allow)
+    : undefined;
 }
 
 /** A fallback for a question F5 never saw is shown as a question card. */
@@ -250,7 +255,7 @@ export function cursorFallbackQuestionReply(
   const [value] = answerValues(answers[request.toolCall.toolCallId]);
   const option =
     request.options.find((candidate) => candidate.optionId === value) ??
-    request.options.find((candidate) => candidate.name.trim() === value) ??
+    request.options.find((candidate) => candidate.name.trim() === value?.trim()) ??
     request.options.find((candidate) => candidate.kind === "reject_once");
   return option
     ? { outcome: { outcome: "selected", optionId: option.optionId } }
@@ -300,7 +305,9 @@ export function cursorGenerateImageReply(params: typeof CursorGenerateImageReque
 
 function isInside(root: string, candidate: string): boolean {
   const relative = nodePath.relative(root, candidate);
-  return relative === "" || (!relative.startsWith("..") && !nodePath.isAbsolute(relative));
+  // A parent segment, not any name starting with `..` (`..diagram.png` is inside).
+  const parent = relative === ".." || relative.startsWith(`..${nodePath.sep}`);
+  return relative === "" || (!parent && !nodePath.isAbsolute(relative));
 }
 
 /**

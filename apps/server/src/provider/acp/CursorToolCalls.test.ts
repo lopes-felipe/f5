@@ -33,6 +33,20 @@ describe("CursorOpenToolCalls", () => {
     ]);
     expect(open.drainInterrupted()).toEqual([]);
   });
+
+  it("keeps an idle-opened tool unowned and a drained tool's late update in its turn", () => {
+    const open = new CursorOpenToolCalls();
+    expect(open.observe(tool("idle", "inProgress"), undefined)).toBeUndefined();
+    // Seen first while idle: a later turn does not adopt it.
+    expect(open.observe(tool("idle", "inProgress"), "turn-2")).toBeUndefined();
+
+    open.observe(tool("build", "inProgress"), "turn-3");
+    open.drainInterrupted("turn-3");
+    // Cursor reports after the stop: still turn 3, not the turn now active, and not reopened.
+    expect(open.observe(tool("build", "inProgress"), "turn-4")).toBe("turn-3");
+    expect(open.drainInterrupted("turn-4")).toEqual([]);
+    expect(open.observe(tool("build", "completed"), "turn-4")).toBe("turn-3");
+  });
 });
 
 describe("cursorToolCallWithExitStatus", () => {

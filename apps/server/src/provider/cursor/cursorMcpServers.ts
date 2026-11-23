@@ -105,10 +105,13 @@ export function cursorMcpServerSecrets(
     // Only remote (http/sse) servers are forwarded; stdio entries have no URL.
     if (!owned.has(server.name) || !("url" in server)) continue;
     for (const header of server.headers) {
-      add(header.value);
+      // An authentication header is an explicit credential however short; other header
+      // values keep the length threshold.
+      const minimum = /^(proxy-)?authorization$/i.test(header.name) ? 1 : 8;
+      add(header.value, minimum);
       // An agent can echo just the token of `<scheme> <token>` (`Bearer abc…`).
       const token = /^[A-Za-z][\w.-]*\s+(\S.*)$/.exec(header.value)?.[1];
-      if (token) add(token);
+      if (token) add(token, minimum);
     }
     try {
       const url = new URL(server.url);

@@ -192,7 +192,8 @@ describe("profile account terminals", () => {
     const home = Path.join(root, "home");
     const other = Path.join(root, "other");
     await FS.mkdir(Path.join(home, ".cursor"), { recursive: true });
-    await FS.symlink(home, Path.join(root, "home-link"));
+    // A junction on Windows needs no symlink privilege; elsewhere the type is ignored.
+    await FS.symlink(home, Path.join(root, "home-link"), "junction");
     const cursor = (homePath: string, harness = "acp", extra: Array<[string, string]> = []) => ({
       driver: "cursor",
       config: { harness },
@@ -260,6 +261,25 @@ describe("profile account terminals", () => {
       );
       expect(stopped).toEqual([]);
       peers.mockRestore();
+
+      // The peer set is unchanged, but settings moved this instance to another HOME after its
+      // environment was resolved: the child would sign in to the old store, so it is refused.
+      const account = (homePath: string) => ({
+        instance: { driver: "cursor", config: { harness: "acp" } },
+        driver: "cursor",
+        environment: { HOME: homePath },
+        invocation: (args: string[]) => ({ file: "agent", args }),
+      });
+      vi.spyOn(
+        service as unknown as { resolveCliAccount: () => Promise<unknown> },
+        "resolveCliAccount",
+      )
+        .mockResolvedValueOnce(account(home))
+        .mockResolvedValueOnce(account(other));
+      await expect(service.start(ProviderInstanceId.make("cursor_a"))).rejects.toThrow(
+        /changed while it was waiting/,
+      );
+      expect(stopped).toEqual([]);
     } finally {
       await FS.rm(root, { recursive: true, force: true });
     }

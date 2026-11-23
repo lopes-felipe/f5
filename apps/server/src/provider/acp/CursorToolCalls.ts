@@ -33,16 +33,28 @@ export interface CursorInterruptedToolCall<TurnId> {
  */
 export class CursorOpenToolCalls<TurnId = string> {
   readonly #open = new Map<string, { toolCall: AcpToolCallState; turnId: TurnId | undefined }>();
+  /** Tools closed as interrupted, with their turn, so a late update stays with that turn. */
+  readonly #drained = new Map<string, TurnId | undefined>();
 
   /**
    * Records the update and returns the turn it belongs to: the turn that
-   * opened the tool, or `activeTurnId` for a tool not seen before.
+   * opened the tool (even when that was no turn, while idle), or
+   * `activeTurnId` for a tool not seen before. A late update for a tool
+   * already closed as interrupted keeps its stopped turn and does not reopen
+   * it, so it never moves into a later turn.
    */
   observe(toolCall: AcpToolCallState, activeTurnId: TurnId | undefined): TurnId | undefined {
-    const turnId = this.#open.get(toolCall.toolCallId)?.turnId ?? activeTurnId;
-    if (toolCall.status === "completed" || toolCall.status === "failed")
-      this.#open.delete(toolCall.toolCallId);
-    else this.#open.set(toolCall.toolCallId, { toolCall, turnId });
+    const id = toolCall.toolCallId;
+    const finished = toolCall.status === "completed" || toolCall.status === "failed";
+    if (this.#drained.has(id)) {
+      const turnId = this.#drained.get(id);
+      if (finished) this.#drained.delete(id);
+      return turnId;
+    }
+    const open = this.#open.get(id);
+    const turnId = open ? open.turnId : activeTurnId;
+    if (finished) this.#open.delete(id);
+    else this.#open.set(id, { toolCall, turnId });
     return turnId;
   }
 
@@ -56,6 +68,7 @@ export class CursorOpenToolCalls<TurnId = string> {
     for (const [id, entry] of this.#open) {
       if (turnId !== undefined && entry.turnId !== turnId) continue;
       this.#open.delete(id);
+      this.#drained.set(id, entry.turnId);
       closed.push({
         turnId: entry.turnId,
         toolCall: {

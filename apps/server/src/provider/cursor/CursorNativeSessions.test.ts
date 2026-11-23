@@ -31,6 +31,9 @@ async function seedSession(configDir: string, sessionId: string, cwd: string) {
   return { meta, chats };
 }
 
+/** A directory link: a junction on Windows (no symlink privilege needed), a symlink elsewhere. */
+const linkDirectory = (target: string, path: string) => nodeFs.symlink(target, path, "junction");
+
 const exists = (target: string) =>
   nodeFs.lstat(target).then(
     () => true,
@@ -73,7 +76,7 @@ describe("CursorNativeSessions", () => {
     const victim = nodePath.join(outside, "keep.txt");
     await nodeFs.writeFile(victim, "keep");
     await nodeFs.mkdir(nodePath.join(configDir, "acp-sessions"), { recursive: true });
-    await nodeFs.symlink(outside, nodePath.join(configDir, "acp-sessions", "linked-1"));
+    await linkDirectory(outside, nodePath.join(configDir, "acp-sessions", "linked-1"));
 
     const removed = await Effect.runPromise(
       deleteCursorAcpSession({ configDir, sessionId: "linked-1", cwd: "/work" }),
@@ -89,7 +92,7 @@ describe("CursorNativeSessions", () => {
     const victim = nodePath.join(outside, "linked-1");
     await nodeFs.mkdir(victim);
     await nodeFs.writeFile(nodePath.join(victim, "keep.txt"), "keep");
-    await nodeFs.symlink(outside, nodePath.join(configDir, "acp-sessions"));
+    await linkDirectory(outside, nodePath.join(configDir, "acp-sessions"));
 
     const removed = await Effect.runPromise(
       deleteCursorAcpSession({ configDir, sessionId: "linked-1", cwd: "/work" }),
@@ -103,7 +106,7 @@ describe("CursorNativeSessions", () => {
     const realStore = await makeStore();
     const linkParent = await makeStore();
     const configDir = nodePath.join(linkParent, ".cursor");
-    await nodeFs.symlink(realStore, configDir);
+    await linkDirectory(realStore, configDir);
     const cwd = nodePath.resolve("/work/project");
     const owned = await seedSession(realStore, "owned-1", cwd);
 
@@ -122,7 +125,7 @@ describe("CursorNativeSessions", () => {
     const realWorkspace = await makeStore();
     const linkParent = await makeStore();
     const linkedWorkspace = nodePath.join(linkParent, "workspace");
-    await nodeFs.symlink(realWorkspace, linkedWorkspace);
+    await linkDirectory(realWorkspace, linkedWorkspace);
     const owned = await seedSession(configDir, "owned-1", realWorkspace);
 
     const removed = await Effect.runPromise(

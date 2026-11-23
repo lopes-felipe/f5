@@ -578,6 +578,21 @@ const program = Effect.gen(function* () {
         });
       }
       if (process.env.T3_ACP_FAIL_PROMPT_TRANSPORT === "exit") process.exit(7);
+      if (process.env.T3_ACP_FAIL_PROMPT_WITH_OPEN_TOOL === "1") {
+        // The prompt fails as a request error while a tool it started is still running.
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "failing-turn-tool",
+            title: "Terminal",
+            kind: "execute",
+            status: "in_progress",
+            rawInput: { command: "sleep 60" },
+          },
+        });
+        return yield* AcpError.AcpRequestError.internalError("Mock prompt failure");
+      }
       if (process.env.T3_ACP_FAIL_PROMPT_TRANSPORT === "malformed") {
         process.stdout.write("{malformed-json\n");
         return yield* Effect.never;

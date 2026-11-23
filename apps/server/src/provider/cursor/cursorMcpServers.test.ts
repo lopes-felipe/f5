@@ -95,6 +95,21 @@ describe("resolveCursorMcpServers", () => {
     expect(secrets.some((secret) => secret.includes("127.0.0.1"))).toBe(false);
   });
 
+  it("registers a short bearer token, since it is an explicit credential", () => {
+    const resolved = resolveCursorMcpServers({
+      automationServers: [],
+      projectServers: {
+        token: { type: "http", url: "https://token.example", bearerTokenEnvVar: "TOKEN_VAR" },
+      } as unknown as McpProjectServersConfig,
+      cursorConfigNames: new Set(),
+      capabilities: { http: true, sse: true },
+      environment: { TOKEN_VAR: "secret" },
+    });
+    expect(cursorMcpServerSecrets(resolved.servers, resolved.ownedNames)).toEqual(
+      expect.arrayContaining(["Bearer secret", "secret"]),
+    );
+  });
+
   it("reads Cursor's mcp.json only from bounded files", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "cursor-mcp-names-"));
     try {
