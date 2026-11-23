@@ -1,4 +1,6 @@
 import type { ProjectId, ProjectRepository, ThreadId } from "@t3tools/contracts";
+import { Radio as RadioPrimitive } from "@base-ui/react/radio";
+import { RadioGroup as RadioGroupPrimitive } from "@base-ui/react/radio-group";
 import { queryOptions, useQuery } from "@tanstack/react-query";
 import { CheckIcon, ChevronDownIcon, FolderGit2Icon, FolderIcon, GitForkIcon } from "lucide-react";
 import { type ReactNode, useMemo, useState } from "react";
@@ -276,23 +278,23 @@ export function WorktreeRepositoryPicker(props: {
   );
 }
 
+type WorkspaceMode = "local" | "worktree";
+
 function ModeRow(props: {
+  value: WorkspaceMode;
   icon: ReactNode;
   title: string;
   description: string;
   selected: boolean;
-  onPick: () => void;
 }) {
   return (
-    <button
-      type="button"
-      role="menuitemradio"
-      aria-checked={props.selected}
+    <RadioPrimitive.Root
+      value={props.value}
+      aria-label={props.title}
       className={cn(
         "flex w-full items-start gap-2 rounded-sm px-2 py-1.5 text-left text-xs outline-none hover:bg-accent focus-visible:bg-accent",
         props.selected && "bg-accent text-foreground",
       )}
-      onClick={props.onPick}
     >
       <span className="mt-0.5">{props.icon}</span>
       <span className="flex min-w-0 flex-1 flex-col">
@@ -300,7 +302,7 @@ function ModeRow(props: {
         <span className="text-2xs text-muted-foreground">{props.description}</span>
       </span>
       {props.selected && <CheckIcon className="mt-0.5 size-3 shrink-0" />}
-    </button>
+    </RadioPrimitive.Root>
   );
 }
 
@@ -318,15 +320,22 @@ export function PlainGroupWorkspacePicker(props: {
   onSelectedChange: (paths: ReadonlyArray<string>) => void;
   baseBranch: string;
   onBaseBranchChange: (branch: string) => void;
+  /** The folder's repositories are still being listed, or could not be listed. */
+  repositoriesStatus?: "ready" | "loading" | "error";
   disabled?: boolean;
 }) {
   const { repositories, worktree } = props;
+  const status = props.repositoriesStatus ?? "ready";
   const selection = resolveWorktreeRepositorySelection(repositories, props.selected, true);
-  const label = worktree
-    ? selection.length === 0
-      ? "New worktree · pick repositories"
-      : `New worktree · ${pluralRepos(selection.length)}`
-    : "Local";
+  const label = !worktree
+    ? "Local"
+    : status === "loading"
+      ? "New worktree · finding repositories"
+      : status === "error"
+        ? "New worktree · repositories unavailable"
+        : selection.length === 0
+          ? "New worktree · pick repositories"
+          : `New worktree · ${pluralRepos(selection.length)}`;
   const TriggerIcon = worktree ? GitForkIcon : FolderIcon;
   return (
     <Popover>
@@ -334,7 +343,9 @@ export function PlainGroupWorkspacePicker(props: {
         render={<Button data-composer-control="branch" variant="ghost" size="xs" />}
         className={cn(
           toolbarTriggerClassName,
-          worktree && selection.length === 0 && "text-warning-foreground",
+          worktree &&
+            (status === "error" || (status === "ready" && selection.length === 0)) &&
+            "text-warning-foreground",
         )}
         title={props.projectCwd}
         aria-label={`Workspace: ${label}`}
@@ -346,23 +357,35 @@ export function PlainGroupWorkspacePicker(props: {
       </PopoverTrigger>
       <PopoverPopup side="top" align="start" className="w-96 max-w-[calc(100vw-2rem)]">
         <div className="flex flex-col gap-2">
-          <div role="menu" aria-label="Workspace" className="flex flex-col gap-0.5">
+          <RadioGroupPrimitive
+            aria-label="Workspace"
+            className="flex flex-col gap-0.5"
+            value={worktree ? "worktree" : "local"}
+            onValueChange={(value) => props.onWorktreeChange(value === "worktree")}
+          >
             <ModeRow
+              value="local"
               icon={<FolderIcon className="size-3" />}
               title="Project folder"
               description="Work directly in this folder."
               selected={!worktree}
-              onPick={() => props.onWorktreeChange(false)}
             />
             <ModeRow
+              value="worktree"
               icon={<GitForkIcon className="size-3" />}
               title="New worktree"
               description="Check out the selected repositories on a new branch when you send."
               selected={worktree}
-              onPick={() => props.onWorktreeChange(true)}
             />
-          </div>
-          {worktree && (
+          </RadioGroupPrimitive>
+          {worktree && status !== "ready" && (
+            <p role="status" className="px-1 text-xs text-muted-foreground">
+              {status === "loading"
+                ? "Finding this folder's repositories…"
+                : "This folder's repositories could not be listed. Pick Project folder, or try again later."}
+            </p>
+          )}
+          {worktree && status === "ready" && (
             <>
               <RepositoryChecklist
                 repositories={repositories}
@@ -372,12 +395,13 @@ export function PlainGroupWorkspacePicker(props: {
               <Input
                 size="sm"
                 aria-label="Base branch"
-                placeholder="Base branch: each repo's current branch"
+                placeholder="Base branch: each repo's default branch"
                 value={props.baseBranch}
                 onChange={(event) => props.onBaseBranchChange(event.target.value)}
               />
               <p className="px-1 text-2xs text-muted-foreground">
-                Files outside the selected repositories link to the original project folder.
+                Unchecked repositories are left out. Other files link to the original project
+                folder.
               </p>
             </>
           )}

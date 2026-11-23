@@ -2,7 +2,7 @@ import "../index.css";
 
 import type { ProjectRepository } from "@t3tools/contracts";
 import { useState } from "react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
 import { render } from "vitest-browser-react";
 
@@ -22,9 +22,11 @@ function repositories(count: number): ProjectRepository[] {
 function PlainHarness(props: {
   repositories: ReadonlyArray<ProjectRepository>;
   initialSelected?: ReadonlyArray<string>;
+  initialWorktree?: boolean;
+  repositoriesStatus?: "ready" | "loading" | "error";
   onState?: (state: { worktree: boolean; selected: ReadonlyArray<string> | undefined }) => void;
 }) {
-  const [worktree, setWorktree] = useState(false);
+  const [worktree, setWorktree] = useState(props.initialWorktree ?? false);
   const [selected, setSelected] = useState(props.initialSelected);
   const [base, setBase] = useState("");
   props.onState?.({ worktree, selected });
@@ -38,6 +40,7 @@ function PlainHarness(props: {
       onSelectedChange={setSelected}
       baseBranch={base}
       onBaseBranchChange={setBase}
+      {...(props.repositoriesStatus ? { repositoriesStatus: props.repositoriesStatus } : {})}
     />
   );
 }
@@ -67,7 +70,7 @@ describe("PlainGroupWorkspacePicker", () => {
       await expect.element(page.getByText("Project folder")).toBeVisible();
       await expect.element(page.getByLabelText("Search repositories")).not.toBeInTheDocument();
 
-      await page.getByRole("menuitemradio", { name: /New worktree/ }).click();
+      await page.getByRole("radio", { name: "New worktree" }).click();
       expect(latest?.worktree).toBe(true);
       await expect.element(page.getByText("Repositories · 0 of 109")).toBeVisible();
       await expect
@@ -89,7 +92,7 @@ describe("PlainGroupWorkspacePicker", () => {
       await page.getByRole("button", { name: "Clear" }).click();
       expect(latest?.selected).toEqual([]);
 
-      await page.getByRole("menuitemradio", { name: /Project folder/ }).click();
+      await page.getByRole("radio", { name: "Project folder" }).click();
       expect(latest?.worktree).toBe(false);
       await expect
         .element(page.getByRole("button", { name: "Workspace: Local" }))
@@ -105,7 +108,7 @@ describe("PlainGroupWorkspacePicker", () => {
     );
     try {
       await page.getByRole("button", { name: "Workspace: Local" }).click();
-      await page.getByRole("menuitemradio", { name: /New worktree/ }).click();
+      await page.getByRole("radio", { name: "New worktree" }).click();
       await expect
         .element(page.getByRole("button", { name: "Workspace: New worktree · 2 repos" }))
         .toBeInTheDocument();
@@ -116,11 +119,50 @@ describe("PlainGroupWorkspacePicker", () => {
     const small = await render(<PlainHarness repositories={repositories(3)} />);
     try {
       await page.getByRole("button", { name: "Workspace: Local" }).click();
-      await page.getByRole("menuitemradio", { name: /New worktree/ }).click();
+      await page.getByRole("radio", { name: "New worktree" }).click();
       await expect.element(page.getByText("Repositories · 3 of 3")).toBeVisible();
       await expect.element(page.getByLabelText("Search repositories")).not.toBeInTheDocument();
     } finally {
       await small.unmount();
+    }
+  });
+});
+
+describe("PlainGroupWorkspacePicker modes", () => {
+  it("moves between the workspace modes with the arrow keys", async () => {
+    let latest: { worktree: boolean } | undefined;
+    const screen = await render(
+      <PlainHarness repositories={repositories(3)} onState={(state) => (latest = state)} />,
+    );
+    try {
+      await page.getByRole("button", { name: "Workspace: Local" }).click();
+      const local = page.getByRole("radio", { name: "Project folder" });
+      await expect.element(local).toHaveAttribute("aria-checked", "true");
+      (local.element() as HTMLElement).focus();
+      await userEvent.keyboard("{ArrowDown}");
+      await vi.waitFor(() => expect(latest?.worktree).toBe(true));
+      await expect
+        .element(page.getByRole("radio", { name: "New worktree" }))
+        .toHaveAttribute("aria-checked", "true");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("says the repositories are still loading instead of offering an empty list", async () => {
+    const screen = await render(
+      <PlainHarness repositories={[]} initialWorktree repositoriesStatus="loading" />,
+    );
+    try {
+      const trigger = page.getByRole("button", {
+        name: "Workspace: New worktree · finding repositories",
+      });
+      await trigger.click();
+      await expect.element(page.getByText("Finding this folder's repositories…")).toBeVisible();
+      expect(page.getByRole("group", { name: "Repositories" }).elements()).toHaveLength(0);
+      await expect.element(page.getByRole("radio", { name: "Project folder" })).toBeVisible();
+    } finally {
+      await screen.unmount();
     }
   });
 });

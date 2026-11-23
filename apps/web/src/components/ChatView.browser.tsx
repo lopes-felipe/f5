@@ -6318,7 +6318,13 @@ describe("ChatView timeline (full app)", () => {
         return { path: `/repo/project/${relativePath}`, relativePath };
       });
 
-    const mountNonGitDraft = (repositoryCount: number) => {
+    const mountNonGitDraft = (
+      repositoryCount: number,
+      options: {
+        optedIn?: boolean;
+        repositories?: () => MaybePromise<WsRequestResolution>;
+      } = {},
+    ) => {
       // The thread-mode default is a worktree; it must not apply here.
       useComposerDraftStore.setState({
         draftThreadsByThreadId: {
@@ -6330,6 +6336,7 @@ describe("ChatView timeline (full app)", () => {
             branch: null,
             worktreePath: null,
             envMode: "worktree",
+            ...(options.optedIn ? { plainWorktreeOptIn: true as const } : {}),
           },
         },
         projectDraftThreadIdByProjectId: { [PROJECT_ID]: THREAD_ID },
@@ -6345,7 +6352,12 @@ describe("ChatView timeline (full app)", () => {
                 result: { isRepo: false, hasOriginRemote: false, branches: [] },
               };
             if (body._tag === WS_METHODS.projectsListRepositories)
-              return { type: "result", result: nestedRepositories(repositoryCount) };
+              return (
+                options.repositories?.() ?? {
+                  type: "result",
+                  result: nestedRepositories(repositoryCount),
+                }
+              );
             return null;
           };
         },
@@ -6396,7 +6408,7 @@ describe("ChatView timeline (full app)", () => {
       try {
         await waitForComposerEditor();
         await page.getByLabelText("Workspace: Local", { exact: true }).click();
-        await page.getByRole("menuitemradio", { name: /New worktree/ }).click();
+        await page.getByRole("radio", { name: "New worktree" }).click();
         await expect
           .element(
             page.getByLabelText("Workspace: New worktree · pick repositories", { exact: true }),
@@ -6434,6 +6446,55 @@ describe("ChatView timeline (full app)", () => {
           { timeout: 8_000, interval: 16 },
         );
       } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("keeps a restored worktree choice while the folder's repositories are still listed", async () => {
+      let release: (() => void) | undefined;
+      const listed = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const mounted = await mountNonGitDraft(3, {
+        optedIn: true,
+        repositories: async () => {
+          await listed;
+          return { type: "result", result: nestedRepositories(3) };
+        },
+      });
+      try {
+        await waitForComposerEditor();
+        await expect
+          .element(
+            page.getByLabelText("Workspace: New worktree · finding repositories", {
+              exact: true,
+            }),
+          )
+          .toBeVisible();
+
+        await sendPrompt("Isolated run");
+        await expect
+          .element(
+            page.getByText("Still finding this folder's repositories. Try again in a moment."),
+          )
+          .toBeVisible();
+        expect(getDispatchCommandRequests()).toHaveLength(0);
+
+        release?.();
+        await expect
+          .element(page.getByLabelText("Workspace: New worktree · 3 repos", { exact: true }))
+          .toBeVisible();
+        await sendPrompt("Isolated run");
+        await vi.waitFor(
+          () => {
+            expect(getDispatchCommandRequests()).toHaveLength(1);
+            // No saved choice and three repositories: the server includes all of them.
+            expect(firstBootstrap()?.prepareWorktree).toMatchObject({ baseBranch: "HEAD" });
+          },
+          { timeout: 8_000, interval: 16 },
+        );
+      } finally {
+        release?.();
         await mounted.cleanup();
       }
     });
