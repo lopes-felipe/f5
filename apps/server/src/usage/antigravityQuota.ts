@@ -64,7 +64,7 @@ export function makeAntigravityQuotaReader(input: {
     const token = asRecord(JSON.parse(text));
     const cliToken = asRecord(token?.token);
     let fingerprint: string;
-    let project: string | undefined;
+    let project: string | null | undefined;
     let refresh: { clientId: string; clientSecret: string; refreshToken: string } | undefined;
     if (cliToken) {
       // The 1.5.x CLI stores no OAuth client, so F5 can't refresh its token. It uses the
