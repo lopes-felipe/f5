@@ -11907,7 +11907,9 @@ describe("ChatView timeline (full app)", () => {
       );
     }
 
-    async function mountIsolatedChatView(options: { projectScripts?: ProjectScript[] } = {}) {
+    async function mountIsolatedChatView(
+      options: { projectScripts?: ProjectScript[]; viewport?: ViewportSpec } = {},
+    ) {
       let connectedClient: TestWsClient | null = null;
       const baseSnapshot = addThreadToSnapshot(
         createSnapshotForTargetUser({
@@ -11929,7 +11931,7 @@ describe("ChatView timeline (full app)", () => {
           })
         : baseSnapshot;
       const mounted = await mountChatView({
-        viewport: DEFAULT_VIEWPORT,
+        viewport: options.viewport ?? DEFAULT_VIEWPORT,
         snapshot,
         configureFixture: (next) => {
           next.resolveWsRequest = (_body, client) => {
@@ -12143,7 +12145,11 @@ describe("ChatView timeline (full app)", () => {
     });
 
     it("does not commit the timeline or composer when the right panel toggles", async () => {
-      const { mounted } = await mountIsolatedChatView();
+      // Keep the composer above its compact-footer breakpoint with the files
+      // panel open. Crossing that breakpoint legitimately commits a new layout.
+      const { mounted } = await mountIsolatedChatView({
+        viewport: { ...DEFAULT_VIEWPORT, width: 2560 },
+      });
       try {
         resetRenderCommits();
         // Not the plan panel: the composer shows whether that one is open.
