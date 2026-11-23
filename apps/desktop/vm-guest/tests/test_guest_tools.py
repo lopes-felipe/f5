@@ -170,6 +170,18 @@ class BackendDigestTest(unittest.TestCase):
             guest.check_backend("1.2.3", "D" * 64)
 
 
+class GuestDirsTest(unittest.TestCase):
+    """f5 can't create entries in the root-owned data root, so the launcher makes them all."""
+
+    def test_includes_the_servers_profiles_root(self):
+        # packages/shared/src/profilePaths.ts: profilesRootDir(stateDir) = `${stateDir}-profiles`.
+        self.assertIn(guest.STATE_DIR + "-profiles", guest.GUEST_DIRS)
+        self.assertIn(guest.STATE_DIR, guest.GUEST_DIRS)
+        self.assertIn(guest.HOME, guest.GUEST_DIRS)
+        for path in guest.GUEST_DIRS:
+            self.assertEqual(os.path.dirname(path), guest.DATA)
+
+
 @unittest.skipUnless(sys.platform.startswith("linux") and os.geteuid() == 0, "needs root on Linux")
 class ChannelPipeTest(unittest.TestCase):
     """The launcher runs as root and the backend as an unprivileged user, so the backend's
