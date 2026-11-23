@@ -6311,6 +6311,155 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
+  describe("project folders that are not git repositories", () => {
+    const nestedRepositories = (count: number) =>
+      Array.from({ length: count }, (_, index) => {
+        const relativePath = `repo-${String(index).padStart(3, "0")}`;
+        return { path: `/repo/project/${relativePath}`, relativePath };
+      });
+
+    const mountNonGitDraft = (repositoryCount: number) => {
+      // The thread-mode default is a worktree; it must not apply here.
+      useComposerDraftStore.setState({
+        draftThreadsByThreadId: {
+          [THREAD_ID]: {
+            projectId: PROJECT_ID,
+            createdAt: NOW_ISO,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            envMode: "worktree",
+          },
+        },
+        projectDraftThreadIdByProjectId: { [PROJECT_ID]: THREAD_ID },
+      });
+      return mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: createDraftOnlySnapshot(),
+        configureFixture: (next) => {
+          next.resolveWsRequest = (body) => {
+            if (body._tag === WS_METHODS.gitListBranches)
+              return {
+                type: "result",
+                result: { isRepo: false, hasOriginRemote: false, branches: [] },
+              };
+            if (body._tag === WS_METHODS.projectsListRepositories)
+              return { type: "result", result: nestedRepositories(repositoryCount) };
+            return null;
+          };
+        },
+      });
+    };
+
+    const sendPrompt = async (text: string) => {
+      useComposerDraftStore.getState().setPrompt(THREAD_ID, text);
+      const sendButton = await waitForSendButton();
+      await vi.waitFor(() => expect(sendButton.disabled).toBe(false), {
+        timeout: 8_000,
+        interval: 16,
+      });
+      sendButton.click();
+    };
+
+    const firstBootstrap = () =>
+      (
+        getDispatchCommandRequests()[0]?.command as
+          | { bootstrap?: { prepareWorktree?: Record<string, unknown> } }
+          | undefined
+      )?.bootstrap;
+
+    it("starts a folder of repositories in the project folder despite a worktree default", async () => {
+      const mounted = await mountNonGitDraft(109);
+      try {
+        await waitForComposerEditor();
+        await expect
+          .element(page.getByLabelText("Workspace: Local", { exact: true }))
+          .toBeVisible();
+        expect(page.getByRole("button", { name: "Use project folder" }).elements()).toHaveLength(0);
+
+        await sendPrompt("Run in place");
+        await vi.waitFor(
+          () => {
+            expect(getDispatchCommandRequests()).toHaveLength(1);
+            expect(firstBootstrap()?.prepareWorktree).toBeUndefined();
+          },
+          { timeout: 8_000, interval: 16 },
+        );
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("blocks a worktree with no repositories, then sends the picked ones", async () => {
+      const mounted = await mountNonGitDraft(109);
+      try {
+        await waitForComposerEditor();
+        await page.getByLabelText("Workspace: Local", { exact: true }).click();
+        await page.getByRole("menuitemradio", { name: /New worktree/ }).click();
+        await expect
+          .element(
+            page.getByLabelText("Workspace: New worktree · pick repositories", { exact: true }),
+          )
+          .toBeVisible();
+        await userEvent.keyboard("{Escape}");
+
+        await sendPrompt("Needs repositories");
+        await expect
+          .element(page.getByText("Select at least one repository for the new worktree."))
+          .toBeVisible();
+        expect(getDispatchCommandRequests()).toHaveLength(0);
+
+        await page
+          .getByLabelText("Workspace: New worktree · pick repositories", { exact: true })
+          .click();
+        const repositories = page.getByRole("group", { name: "Repositories" });
+        await repositories.getByText("repo-003").click();
+        await repositories.getByText("repo-042").click();
+        await expect
+          .element(page.getByLabelText("Workspace: New worktree · 2 repos", { exact: true }))
+          .toBeVisible();
+        await userEvent.keyboard("{Escape}");
+
+        await sendPrompt("Now with repositories");
+        await vi.waitFor(
+          () => {
+            expect(getDispatchCommandRequests()).toHaveLength(1);
+            expect(firstBootstrap()?.prepareWorktree).toMatchObject({
+              projectCwd: "/repo/project",
+              baseBranch: "HEAD",
+              repositoryPaths: ["repo-003", "repo-042"],
+            });
+          },
+          { timeout: 8_000, interval: 16 },
+        );
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("runs a plain folder without repositories in place with no workspace control", async () => {
+      const mounted = await mountNonGitDraft(0);
+      try {
+        await waitForComposerEditor();
+        await sendPrompt("Plain folder");
+        await vi.waitFor(
+          () => {
+            expect(getDispatchCommandRequests()).toHaveLength(1);
+            expect(firstBootstrap()?.prepareWorktree).toBeUndefined();
+          },
+          { timeout: 8_000, interval: 16 },
+        );
+        expect(page.getByLabelText(/^Workspace:/).elements()).toHaveLength(0);
+        expect(
+          page.getByText("Select a base branch before sending in New worktree mode.").elements(),
+        ).toHaveLength(0);
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+  });
+
   it.each([
     {
       alias: "opus-5[1m]",
