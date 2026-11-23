@@ -540,8 +540,9 @@ function parseSedFileReadCommand(command: string): FileReadCommandMatch | null {
 
 function parseSedPrintCommandArgs(
   args: ReadonlyArray<string>,
-): { script: string; trailingArgs: string[] } | null {
+): { script: string; trailingArgs: string[]; quiet: boolean } | null {
   let script: string | null = null;
+  let quiet = false;
   let index = 0;
 
   while (index < args.length) {
@@ -557,6 +558,7 @@ function parseSedPrintCommandArgs(
     }
 
     if (rawArg === "-n" || rawArg === "--quiet" || rawArg === "--silent") {
+      quiet = true;
       index += 1;
       continue;
     }
@@ -616,6 +618,7 @@ function parseSedPrintCommandArgs(
   return {
     script: normalizedScript,
     trailingArgs: args.slice(index).map(maybeUnquoteShellToken),
+    quiet,
   };
 }
 
@@ -2128,4 +2131,427 @@ export function deriveCommandExecutionLabel(command: string): string | null {
     if (labels.length === MAX_COMMAND_LABELS) break;
   }
   return labels.length > 0 ? labels.join(", ") : null;
+}
+
+// ---------------------------------------------------------------------------
+// Output presentation hints
+//
+// What a command's output is made of, read from the command alone, so the
+// transcript card can render file content, search results and diffs. Each
+// parser returns null for anything it does not fully understand.
+
+interface CommandStatement {
+  /** The pipeline's stages, each a list of words. */
+  readonly stages: ReadonlyArray<ReadonlyArray<string>>;
+  /** Joined to the previous statement by `&&`, so it runs only if that succeeded. */
+  readonly afterAnd: boolean;
+}
+
+/** Pipelines joined by `&&`, `;` or newlines. */
+type CommandStatements = ReadonlyArray<CommandStatement>;
+
+function splitCommandStatements(command: string): CommandStatements | null {
+  const displayCommand = displayCommandExecutionCommand(command).trim();
+  if (displayCommand.length === 0) return null;
+  const tokens = lexShellCommand(displayCommand);
+  const statements: CommandStatement[] = [];
+  let stages: Array<ReadonlyArray<string>> = [];
+  let words: string[] = [];
+  let afterAnd = false;
+  const endStage = (): boolean => {
+    if (words.length === 0) return false;
+    stages.push(words);
+    words = [];
+    return true;
+  };
+  const endStatement = (nextAfterAnd: boolean): boolean => {
+    const ended = endStage();
+    if (!ended && stages.length > 0) return false;
+    if (stages.length > 0) statements.push({ stages, afterAnd });
+    else if (nextAfterAnd) return false;
+    stages = [];
+    afterAnd = nextAfterAnd;
+    return true;
+  };
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index] ?? "";
+    if (token.trim().length === 0) {
+      if (token.includes("\n") && !endStatement(false)) return null;
+      continue;
+    }
+    if (token === "&&" || token === ";") {
+      if (!endStatement(token === "&&")) return null;
+      continue;
+    }
+    if (token === "|") {
+      if (!endStage()) return null;
+      continue;
+    }
+    if (token === "2>&1") continue;
+    if (token === "2>") {
+      let next = index + 1;
+      while ((tokens[next] ?? "x").trim().length === 0 && next < tokens.length) next += 1;
+      if (tokens[next] !== "/dev/null") return null;
+      index = next;
+      continue;
+    }
+    if (isShellOperatorToken(token) || isCommandSubstitutionToken(token)) return null;
+    words.push(token);
+  }
+  if (!endStatement(false)) return null;
+  return statements.length > 0 ? statements : null;
+}
+
+/**
+ * Follows `cd` statements to know where later statements ran. A statement
+ * joined by `;` or a newline runs even when an earlier `cd` failed, so after a
+ * `cd` the directory is only known along an unbroken `&&` chain.
+ */
+function createCwdTracker() {
+  let offset: string | null = null;
+  let changed = false;
+  let known = true;
+  return {
+    advance(stages: CommandStatement["stages"], afterAnd: boolean): void {
+      if (changed && !afterAnd) known = false;
+      const target = cdStatementTarget(stages);
+      if (target !== null) {
+        offset = joinCwdOffset(offset, target);
+        changed = true;
+      }
+    },
+    offset: () => offset,
+    /** Whether the statement just recorded surely ran in `offset`. */
+    known: () => known,
+  };
+}
+
+function isAbsoluteShellPath(path: string): boolean {
+  return path.startsWith("/") || path.startsWith("~") || /^[A-Za-z]:[\\/]/.test(path);
+}
+
+function joinCwdOffset(current: string | null, next: string): string {
+  if (current === null || isAbsoluteShellPath(next)) return next;
+  return `${current.replace(/[\\/]+$/, "")}/${next}`;
+}
+
+/** The directory a lone `cd <dir>` statement moves to, or null when it is not one. */
+function cdStatementTarget(statement: ReadonlyArray<ReadonlyArray<string>>): string | null {
+  const [stage] = statement;
+  if (statement.length !== 1 || !stage || stage.length !== 2) return null;
+  if (maybeUnquoteShellToken(stage[0] ?? "") !== "cd") return null;
+  const target = maybeUnquoteShellToken(stage[1] ?? "").trim();
+  return target.length > 0 && target !== "-" ? target : null;
+}
+
+function stageProgram(stage: ReadonlyArray<string>): string {
+  return shellBasename(maybeUnquoteShellToken(stage[0] ?? ""));
+}
+
+export interface FileReadSegment {
+  readonly filePath: string;
+  /** Directory the read ran in, from earlier `cd` statements; null when none. */
+  readonly cwdOffset: string | null;
+  /** False when a `cd` before the read may have failed (`cd x; cat a.ts`). */
+  readonly cwdKnown: boolean;
+  /** File line of the first output line; null when it cannot be known (`tail -n 5`). */
+  readonly startLine: number | null;
+  /** Output lines carry an `nl -ba` / `cat -n` number prefix. */
+  readonly numberedOutput: boolean;
+}
+
+export interface FileReadSegments {
+  readonly segments: ReadonlyArray<FileReadSegment>;
+}
+
+function sedPrintStartLine(script: string): number | null {
+  const match = /^(\d+|\$)(?:,(?:\d+|\$))?p$/i.exec(script.trim());
+  if (!match?.[1] || match[1] === "$") return null;
+  const start = Number.parseInt(match[1], 10);
+  return start > 0 ? start : null;
+}
+
+function singleFileArgument(args: ReadonlyArray<string>): string | null {
+  if (args.length !== 1) return null;
+  const path = maybeUnquoteShellToken(args[0] ?? "").trim();
+  return path.length > 0 && !path.startsWith("-") ? path : null;
+}
+
+/** Strips one recognized `head`/`tail` line-count option; null when the args hold others. */
+function parseLineCountArgs(
+  args: ReadonlyArray<string>,
+): { count: string | null; rest: ReadonlyArray<string> } | null {
+  const [first, second, ...rest] = args;
+  if (first === "-n" && second !== undefined) return { count: second, rest };
+  if (first?.startsWith("--lines=")) {
+    return { count: first.slice("--lines=".length), rest: args.slice(1) };
+  }
+  if (first !== undefined && /^-(?:n)?\+?\d+$/.test(first)) {
+    return { count: first.replace(/^-n?/, ""), rest: args.slice(1) };
+  }
+  return { count: null, rest: args };
+}
+
+function parseSingleStageFileRead(
+  stage: ReadonlyArray<string>,
+): Omit<FileReadSegment, "cwdOffset" | "cwdKnown"> | null {
+  const program = stageProgram(stage);
+  const args = stage.slice(1);
+  if (program === "sed") {
+    // Without quiet mode sed prints the whole file plus the range again, so
+    // the output is not the range and its lines cannot be numbered.
+    const sed = parseSedPrintCommandArgs(args);
+    if (!sed?.quiet || sed.trailingArgs.length !== 1) return null;
+    const filePath = sed.trailingArgs[0]?.trim() ?? "";
+    if (filePath.length === 0) return null;
+    return { filePath, startLine: sedPrintStartLine(sed.script), numberedOutput: false };
+  }
+  if (program === "cat") {
+    const numbered = args[0] === "-n";
+    const filePath = singleFileArgument(numbered ? args.slice(1) : args);
+    return filePath ? { filePath, startLine: 1, numberedOutput: numbered } : null;
+  }
+  if (program === "head" || program === "tail") {
+    const parsed = parseLineCountArgs(args);
+    const filePath = parsed ? singleFileArgument(parsed.rest) : null;
+    if (!parsed || !filePath) return null;
+    if (parsed.count !== null && !/^\+?\d+$/.test(parsed.count)) return null;
+    if (program === "head") return { filePath, startLine: 1, numberedOutput: false };
+    const fromLine = parsed.count?.startsWith("+")
+      ? Number.parseInt(parsed.count.slice(1), 10)
+      : null;
+    return {
+      filePath,
+      startLine: fromLine !== null && fromLine > 0 ? fromLine : null,
+      numberedOutput: false,
+    };
+  }
+  if (program === "nl") {
+    const filePath = parseNlBodyNumberingAllFilePath(stage);
+    return filePath ? { filePath, startLine: 1, numberedOutput: true } : null;
+  }
+  return null;
+}
+
+function parseFileReadPipeline(
+  stages: ReadonlyArray<ReadonlyArray<string>>,
+): Omit<FileReadSegment, "cwdOffset" | "cwdKnown"> | null {
+  const [first, second] = stages;
+  if (!first) return null;
+  if (stages.length === 1) return parseSingleStageFileRead(first);
+  if (stages.length !== 2 || !second) return null;
+  // `nl -ba file | sed -n 10,20p` and `cat -n file | sed -n 10,20p`
+  const source = parseSingleStageFileRead(first);
+  if (!source?.numberedOutput || stageProgram(second) !== "sed") return null;
+  const sed = parseSedPrintCommandArgs(second.slice(1));
+  if (!sed?.quiet || sed.trailingArgs.length > 0) return null;
+  return { ...source, startLine: sedPrintStartLine(sed.script) };
+}
+
+/**
+ * The file reads a command is made of, such as `sed -n 10,20p a.ts` or
+ * `cd src && cat a.ts; head -n 5 b.ts`, in output order. Null when any
+ * statement is something other than a read or a `cd`.
+ */
+export function parseFileReadSegments(command: string): FileReadSegments | null {
+  const statements = splitCommandStatements(command);
+  if (!statements) return null;
+  const segments: FileReadSegment[] = [];
+  const cwd = createCwdTracker();
+  for (const { stages, afterAnd } of statements) {
+    cwd.advance(stages, afterAnd);
+    if (cdStatementTarget(stages) !== null) continue;
+    const read = parseFileReadPipeline(stages);
+    if (!read) return null;
+    segments.push({ ...read, cwdOffset: cwd.offset(), cwdKnown: cwd.known() });
+  }
+  return segments.length > 0 ? { segments } : null;
+}
+
+export interface SearchOutputCommand {
+  readonly tool: "grep" | "rg";
+  readonly patterns: ReadonlyArray<string>;
+  /** Paths given on the command line; empty when it searched the cwd. */
+  readonly targets: ReadonlyArray<string>;
+  readonly cwdOffset: string | null;
+  /** False when a `cd` before the search may have failed (`cd x; rg …`). */
+  readonly cwdKnown: boolean;
+  /** Statements after the search print output of their own after its matches. */
+  readonly followedByOtherStatements: boolean;
+  readonly fixedStrings: boolean;
+  readonly ignoreCase: boolean;
+  /** Patterns use extended (ERE/PCRE/Rust) syntax rather than POSIX basic. */
+  readonly extendedRegex: boolean;
+  /** PCRE patterns (`grep -P`, `rg -P`), which JS cannot match safely. */
+  readonly perlRegex: boolean;
+  /** Output lines carry no file name even with several matches (`grep -h`). */
+  readonly noFileName: boolean;
+  readonly recursive: boolean;
+  /** Output lines carry line numbers (`-n`, `--vimgrep`). */
+  readonly lineNumbers: boolean;
+}
+
+const GREP_VALUE_FLAG_LETTERS = new Set(["A", "B", "C", "e", "f", "m", "d", "D"]);
+const RG_VALUE_FLAG_LETTERS = new Set([
+  "A",
+  "B",
+  "C",
+  "e",
+  "f",
+  "g",
+  "m",
+  "t",
+  "T",
+  "j",
+  "M",
+  "E",
+  "r",
+]);
+
+function collectSearchFlags(
+  args: ReadonlyArray<string>,
+  tool: "grep" | "rg",
+): { letters: Set<string>; longFlags: Set<string> } {
+  const letters = new Set<string>();
+  const longFlags = new Set<string>();
+  const valueLetters = tool === "rg" ? RG_VALUE_FLAG_LETTERS : GREP_VALUE_FLAG_LETTERS;
+  const longValueFlags = tool === "rg" ? RG_FLAGS_WITH_VALUE : GREP_FLAGS_WITH_VALUE;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index] ?? "";
+    if (arg === "--") break;
+    if (arg.startsWith("--")) {
+      const flag = arg.includes("=") ? arg.slice(0, arg.indexOf("=")) : arg;
+      longFlags.add(flag);
+      if (!arg.includes("=") && longValueFlags.has(arg)) index += 1;
+      continue;
+    }
+    if (!arg.startsWith("-") || arg === "-") continue;
+    for (let offset = 1; offset < arg.length; offset += 1) {
+      const letter = arg[offset] ?? "";
+      if (valueLetters.has(letter)) {
+        if (offset === arg.length - 1) index += 1;
+        break;
+      }
+      letters.add(letter);
+    }
+  }
+  return { letters, longFlags };
+}
+
+/**
+ * A grep or ripgrep search whose output can be read as `path:line:text`
+ * lines. Leading `cd` statements are followed. Statements after the search
+ * are allowed and reported, so the caller can keep their output (which comes
+ * after the matches, and can look like a match) out of the results.
+ */
+export function parseSearchOutputCommand(command: string): SearchOutputCommand | null {
+  const statements = splitCommandStatements(command);
+  if (!statements) return null;
+  const cwd = createCwdTracker();
+  let index = 0;
+  for (; index < statements.length; index += 1) {
+    const statement = statements[index]!;
+    cwd.advance(statement.stages, statement.afterAnd);
+    if (cdStatementTarget(statement.stages) === null) break;
+  }
+  const statement = statements[index];
+  if (!statement) return null;
+  const [stage, ...rest] = statement.stages;
+  if (!stage || rest.length > 1 || (rest[0] && !parseHeadStage(rest[0]))) return null;
+  const program = stageProgram(stage);
+  if (!isSearchToolName(program)) return null;
+  const tool = program === "rg" || program === "ripgrep" ? "rg" : "grep";
+  const args = stage.slice(1);
+  const parsed = parseSearchCommandArgs(
+    args,
+    tool === "rg"
+      ? {
+          flagsWithValue: RG_FLAGS_WITH_VALUE,
+          patternFlags: RG_PATTERN_FLAGS,
+          rejectFlags: RG_REJECT_FLAGS,
+        }
+      : {
+          flagsWithValue: GREP_FLAGS_WITH_VALUE,
+          patternFlags: GREP_PATTERN_FLAGS,
+          rejectFlags: GREP_REJECT_FLAGS,
+        },
+  );
+  if (!parsed) return null;
+  const { letters, longFlags } = collectSearchFlags(args, tool);
+  const has = (letter: string, ...flags: string[]) =>
+    letters.has(letter) || flags.some((flag) => longFlags.has(flag));
+  const smartCase =
+    tool === "rg" &&
+    has("S", "--smart-case") &&
+    parsed.patterns.every((pattern) => pattern === pattern.toLowerCase());
+  return {
+    tool,
+    patterns: parsed.patterns,
+    // parseSearchCommandArgs reports a search without paths as "workspace".
+    targets:
+      parsed.targets.length === 1 &&
+      parsed.targets[0] === "workspace" &&
+      !args.some((arg) => maybeUnquoteShellToken(arg) === "workspace")
+        ? []
+        : parsed.targets,
+    cwdOffset: cwd.offset(),
+    cwdKnown: cwd.known(),
+    followedByOtherStatements: index < statements.length - 1,
+    fixedStrings: has("F", "--fixed-strings"),
+    ignoreCase: has("i", "--ignore-case") || smartCase,
+    extendedRegex: tool === "rg" || has("E", "--extended-regexp") || has("P", "--perl-regexp"),
+    perlRegex: has("P", tool === "rg" ? "--pcre2" : "--perl-regexp"),
+    noFileName: has("h", "--no-filename"),
+    recursive: tool === "rg" || has("r", "--recursive") || has("R", "--dereference-recursive"),
+    // Without a TTY neither tool numbers lines unless asked to. `--vimgrep`
+    // and `--column` add a column (`path:3:7:text`), a format not parsed here.
+    lineNumbers:
+      has("n", "--line-number") &&
+      !(tool === "rg" && has("N", "--no-line-number")) &&
+      !longFlags.has("--vimgrep") &&
+      !longFlags.has("--column"),
+  };
+}
+
+const GIT_OPTIONS_WITH_VALUE = new Set(["-C", "-c", "--git-dir", "--work-tree"]);
+
+function isDiffStage(stage: ReadonlyArray<string>): boolean {
+  const program = stageProgram(stage);
+  const words = stage.slice(1).map(maybeUnquoteShellToken);
+  if (program === "diff") {
+    return words.some(
+      (word) => word === "-u" || word.startsWith("-U") || word.startsWith("--unified"),
+    );
+  }
+  if (program !== "git") return false;
+  let index = 0;
+  while (index < words.length && (words[index] ?? "").startsWith("-")) {
+    index += GIT_OPTIONS_WITH_VALUE.has(words[index] ?? "") ? 2 : 1;
+  }
+  const subcommand = words[index];
+  const rest = words.slice(index + 1);
+  const patch = rest.some((word) => word === "-p" || word === "--patch" || word === "-u");
+  if (subcommand === "diff" || subcommand === "show") {
+    return !rest.some((word) =>
+      ["--stat", "--name-only", "--name-status", "--shortstat", "--numstat"].includes(word),
+    );
+  }
+  if (subcommand === "log") return patch;
+  if (subcommand === "stash") return rest[0] === "show" && patch;
+  return false;
+}
+
+/** Whether a command prints a unified diff: `git diff`, `git show`, `diff -u`, ... */
+export function isDiffCommand(command: string): boolean {
+  const statements = splitCommandStatements(command);
+  if (!statements) return false;
+  let index = 0;
+  while (index < statements.length && cdStatementTarget(statements[index]!.stages) !== null) {
+    index += 1;
+  }
+  const statement = statements[index];
+  if (!statement || index !== statements.length - 1) return false;
+  const [stage, ...rest] = statement.stages;
+  if (!stage || rest.length > 1 || (rest[0] && !parseHeadStage(rest[0]))) return false;
+  return isDiffStage(stage);
 }

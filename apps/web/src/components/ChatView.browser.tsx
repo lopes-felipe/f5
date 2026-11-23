@@ -25,6 +25,7 @@ import "../index.css";
 import {
   AGENTS_WS_METHODS,
   BOOTSTRAP_THREAD_DELETED_ERROR_CODE,
+  BOOTSTRAP_THREAD_NOT_CREATED_ERROR_CODE,
   NATIVE_OPERATION_WS_METHODS,
   USAGE_WS_METHODS,
   CommandId,
@@ -101,6 +102,7 @@ import {
 import { createComposerMention } from "../composer-editor-mentions";
 import { useComposerMentionHistoryStore } from "../composerMentionHistoryStore";
 import { usePendingUserInputDraftStore } from "../pendingUserInputDraftStore";
+import { useLocalDraftErrorStore } from "../localDraftErrorStore";
 import { requestComposerFocus, useComposerFocusRequestStore } from "../composerFocusRequestStore";
 
 vi.mock("./DiffWorkerPoolProvider", () => ({
@@ -2716,6 +2718,7 @@ describe("ChatView timeline (full app)", () => {
     setServerBootstrap(serverBootstrapFixture);
     await setViewport(DEFAULT_VIEWPORT);
     localStorage.clear();
+    useLocalDraftErrorStore.getState().reset();
     useComposerMentionHistoryStore.setState({ entries: [] });
     usePendingUserInputDraftStore.setState({
       answersByThreadId: {},
@@ -6316,6 +6319,260 @@ describe("ChatView timeline (full app)", () => {
     } finally {
       await mounted.cleanup();
     }
+  });
+
+  describe("project folders that are not git repositories", () => {
+    const nestedRepositories = (count: number) =>
+      Array.from({ length: count }, (_, index) => {
+        const relativePath = `repo-${String(index).padStart(3, "0")}`;
+        return { path: `/repo/project/${relativePath}`, relativePath };
+      });
+
+    const mountNonGitDraft = (
+      repositoryCount: number,
+      options: {
+        optedIn?: boolean;
+        repositories?: () => MaybePromise<WsRequestResolution>;
+        dispatch?: () => WsRequestResolution | null;
+      } = {},
+    ) => {
+      // The thread-mode default is a worktree; it must not apply here.
+      useComposerDraftStore.setState({
+        draftThreadsByThreadId: {
+          [THREAD_ID]: {
+            projectId: PROJECT_ID,
+            createdAt: NOW_ISO,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            envMode: "worktree",
+            ...(options.optedIn ? { plainWorktreeOptIn: true as const } : {}),
+          },
+        },
+        projectDraftThreadIdByProjectId: { [PROJECT_ID]: THREAD_ID },
+      });
+      return mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: createDraftOnlySnapshot(),
+        configureFixture: (next) => {
+          next.resolveWsRequest = (body) => {
+            if (body._tag === WS_METHODS.gitListBranches)
+              return {
+                type: "result",
+                result: { isRepo: false, hasOriginRemote: false, branches: [] },
+              };
+            if (body._tag === WS_METHODS.projectsListRepositories)
+              return (
+                options.repositories?.() ?? {
+                  type: "result",
+                  result: nestedRepositories(repositoryCount),
+                }
+              );
+            if (
+              body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand ||
+              body._tag === WS_METHODS.nextTurnQueueSubmit
+            )
+              return options.dispatch?.() ?? null;
+            return null;
+          };
+        },
+      });
+    };
+
+    const sendPrompt = async (text: string) => {
+      useComposerDraftStore.getState().setPrompt(THREAD_ID, text);
+      const sendButton = await waitForSendButton();
+      await vi.waitFor(() => expect(sendButton.disabled).toBe(false), {
+        timeout: 8_000,
+        interval: 16,
+      });
+      sendButton.click();
+    };
+
+    const firstBootstrap = () =>
+      (
+        getDispatchCommandRequests()[0]?.command as
+          | { bootstrap?: { prepareWorktree?: Record<string, unknown> } }
+          | undefined
+      )?.bootstrap;
+
+    it("starts a folder of repositories in the project folder despite a worktree default", async () => {
+      const mounted = await mountNonGitDraft(109);
+      try {
+        await waitForComposerEditor();
+        await expect
+          .element(page.getByLabelText("Workspace: Local", { exact: true }))
+          .toBeVisible();
+        expect(page.getByRole("button", { name: "Use project folder" }).elements()).toHaveLength(0);
+
+        await sendPrompt("Run in place");
+        await vi.waitFor(
+          () => {
+            expect(getDispatchCommandRequests()).toHaveLength(1);
+            expect(firstBootstrap()?.prepareWorktree).toBeUndefined();
+          },
+          { timeout: 8_000, interval: 16 },
+        );
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("blocks a worktree with no repositories, then sends the picked ones", async () => {
+      const mounted = await mountNonGitDraft(109);
+      try {
+        await waitForComposerEditor();
+        await page.getByLabelText("Workspace: Local", { exact: true }).click();
+        await page.getByRole("radio", { name: "New worktree" }).click();
+        await expect
+          .element(
+            page.getByLabelText("Workspace: New worktree · pick repositories", { exact: true }),
+          )
+          .toBeVisible();
+        await userEvent.keyboard("{Escape}");
+
+        await sendPrompt("Needs repositories");
+        await expect
+          .element(page.getByText("Select at least one repository for the new worktree."))
+          .toBeVisible();
+        expect(getDispatchCommandRequests()).toHaveLength(0);
+
+        await page
+          .getByLabelText("Workspace: New worktree · pick repositories", { exact: true })
+          .click();
+        const repositories = page.getByRole("group", { name: "Repositories" });
+        await repositories.getByText("repo-003").click();
+        await repositories.getByText("repo-042").click();
+        await expect
+          .element(page.getByLabelText("Workspace: New worktree · 2 repos", { exact: true }))
+          .toBeVisible();
+        await userEvent.keyboard("{Escape}");
+
+        await sendPrompt("Now with repositories");
+        await vi.waitFor(
+          () => {
+            expect(getDispatchCommandRequests()).toHaveLength(1);
+            expect(firstBootstrap()?.prepareWorktree).toMatchObject({
+              projectCwd: "/repo/project",
+              baseBranch: "HEAD",
+              repositoryPaths: ["repo-003", "repo-042"],
+            });
+          },
+          { timeout: 8_000, interval: 16 },
+        );
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("keeps a restored worktree choice while the folder's repositories are still listed", async () => {
+      let release: (() => void) | undefined;
+      const listed = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const mounted = await mountNonGitDraft(3, {
+        optedIn: true,
+        repositories: async () => {
+          await listed;
+          return { type: "result", result: nestedRepositories(3) };
+        },
+      });
+      try {
+        await waitForComposerEditor();
+        await expect
+          .element(
+            page.getByLabelText("Workspace: New worktree · finding repositories", {
+              exact: true,
+            }),
+          )
+          .toBeVisible();
+
+        await sendPrompt("Isolated run");
+        await expect
+          .element(
+            page.getByText("Still finding this folder's repositories. Try again in a moment."),
+          )
+          .toBeVisible();
+        expect(getDispatchCommandRequests()).toHaveLength(0);
+
+        release?.();
+        await expect
+          .element(page.getByLabelText("Workspace: New worktree · 3 repos", { exact: true }))
+          .toBeVisible();
+        await sendPrompt("Isolated run");
+        await vi.waitFor(
+          () => {
+            expect(getDispatchCommandRequests()).toHaveLength(1);
+            // No saved choice and three repositories: the server includes all of them.
+            expect(firstBootstrap()?.prepareWorktree).toMatchObject({ baseBranch: "HEAD" });
+          },
+          { timeout: 8_000, interval: 16 },
+        );
+      } finally {
+        release?.();
+        await mounted.cleanup();
+      }
+    });
+
+    it("offers Send in Local when worktree isolation is unavailable, and sends in the folder", async () => {
+      let attempts = 0;
+      const mounted = await mountNonGitDraft(2, {
+        optedIn: true,
+        dispatch: () =>
+          ++attempts === 1
+            ? {
+                type: "error",
+                message: "Worktree isolation unavailable: unsupported",
+                code: BOOTSTRAP_THREAD_NOT_CREATED_ERROR_CODE,
+              }
+            : null,
+      });
+      try {
+        await waitForComposerEditor();
+        await expect
+          .element(page.getByLabelText("Workspace: New worktree · 2 repos", { exact: true }))
+          .toBeVisible();
+        await sendPrompt("Try a worktree");
+        const fallback = page.getByRole("button", { name: "Send in Local" });
+        await expect.element(fallback).toBeVisible();
+        await fallback.click();
+        await vi.waitFor(
+          () => {
+            const requests = getDispatchCommandRequests();
+            expect(requests).toHaveLength(2);
+            const retried = requests[1]?.command as
+              | { bootstrap?: { prepareWorktree?: unknown } }
+              | undefined;
+            expect(retried?.bootstrap?.prepareWorktree).toBeUndefined();
+          },
+          { timeout: 8_000, interval: 16 },
+        );
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("runs a plain folder without repositories in place with no workspace control", async () => {
+      const mounted = await mountNonGitDraft(0);
+      try {
+        await waitForComposerEditor();
+        await sendPrompt("Plain folder");
+        await vi.waitFor(
+          () => {
+            expect(getDispatchCommandRequests()).toHaveLength(1);
+            expect(firstBootstrap()?.prepareWorktree).toBeUndefined();
+          },
+          { timeout: 8_000, interval: 16 },
+        );
+        expect(page.getByLabelText(/^Workspace:/).elements()).toHaveLength(0);
+        expect(
+          page.getByText("Select a base branch before sending in New worktree mode.").elements(),
+        ).toHaveLength(0);
+      } finally {
+        await mounted.cleanup();
+      }
+    });
   });
 
   it.each([
