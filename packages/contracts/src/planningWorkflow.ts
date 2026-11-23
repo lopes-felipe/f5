@@ -17,11 +17,12 @@ import { ProviderKind } from "./providerKind";
 import { ProviderStartOptions } from "./providerStartOptions";
 import { WorkflowArchiveRestorations } from "./workflowArchive";
 import { WorkflowStageDispatchCommandId } from "./workflowStageDispatch";
+import { WORKFLOW_MAX_ADDITIONAL_PARTICIPANTS, WorkflowParticipantId } from "./workflowParticipants";
 
 export const PlanningWorkflowId = makeEntityId("PlanningWorkflowId");
 export type PlanningWorkflowId = typeof PlanningWorkflowId.Type;
 
-export const WorkflowBranchId = Schema.Literals(["a", "b"]);
+export const WorkflowBranchId = WorkflowParticipantId;
 export type WorkflowBranchId = typeof WorkflowBranchId.Type;
 
 export const WorkflowReviewSlot = Schema.Literals(["cross", "self"]);
@@ -74,8 +75,16 @@ export const WorkflowModelSlot = Schema.Struct({
 });
 export type WorkflowModelSlot = typeof WorkflowModelSlot.Type;
 
+/** Actors beyond A and B, in roster order (C, D, ...). */
+export const AdditionalWorkflowModelSlots = Schema.Array(WorkflowModelSlot).check(
+  Schema.isMaxLength(WORKFLOW_MAX_ADDITIONAL_PARTICIPANTS),
+);
+export type AdditionalWorkflowModelSlots = typeof AdditionalWorkflowModelSlots.Type;
+
 export const WorkflowReview = Schema.Struct({
   slot: WorkflowReviewSlot,
+  /** Reviewing branch. Persisted only on runs with more than two authors. */
+  reviewerBranchId: Schema.optional(WorkflowBranchId),
   threadId: ThreadId,
   outputFilePath: Schema.NullOr(TrimmedNonEmptyString),
   status: WorkflowStepStatus,
@@ -294,6 +303,8 @@ export const PlanningWorkflow = Schema.Struct({
   selfReviewEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   branchA: WorkflowBranch,
   branchB: WorkflowBranch,
+  /** Authors beyond A and B (C, D), in roster order. Omitted on two-author runs. */
+  additionalBranches: Schema.optional(Schema.Array(WorkflowBranch).check(Schema.isMaxLength(2))),
   merge: WorkflowMerge,
   implementation: Schema.NullOr(WorkflowImplementation).pipe(
     Schema.withDecodingDefault(() => null),

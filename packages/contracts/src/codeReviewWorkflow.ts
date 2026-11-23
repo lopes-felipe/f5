@@ -101,6 +101,8 @@ export const CodeReviewWorkflow = Schema.Struct({
   post: Schema.optional(Schema.NullOr(CodeReviewPost)).pipe(Schema.withDecodingDefault(() => null)),
   reviewerA: CodeReviewReviewer,
   reviewerB: CodeReviewReviewer,
+  /** Reviewers beyond A and B (C to F), in roster order. Omitted on two-reviewer runs. */
+  additionalReviewers: Schema.optional(Schema.Array(CodeReviewReviewer).check(Schema.isMaxLength(4))),
   consolidation: CodeReviewConsolidation,
   totalCostUsd: Schema.optional(Schema.Number).pipe(Schema.withDecodingDefault(() => 0)),
   maxCostUsd: Schema.optional(Schema.NullOr(Schema.Number)).pipe(
@@ -113,40 +115,3 @@ export const CodeReviewWorkflow = Schema.Struct({
   deletedAt: Schema.NullOr(IsoDateTime),
 });
 export type CodeReviewWorkflow = typeof CodeReviewWorkflow.Type;
-
-export type DerivedCodeReviewWorkflowStatus =
-  | "pending"
-  | "reviewing"
-  | "reviews_complete"
-  | "pending_consolidation"
-  | "consolidating"
-  | "completed"
-  | "error";
-
-export function deriveCodeReviewWorkflowStatus(
-  workflow: Pick<CodeReviewWorkflow, "reviewerA" | "reviewerB" | "consolidation">,
-): DerivedCodeReviewWorkflowStatus {
-  if (
-    workflow.reviewerA.status === "error" ||
-    workflow.reviewerB.status === "error" ||
-    workflow.consolidation.status === "error"
-  ) {
-    return "error";
-  }
-  if (workflow.consolidation.status === "completed") {
-    return "completed";
-  }
-  if (workflow.consolidation.status === "running") {
-    return "consolidating";
-  }
-  if (workflow.consolidation.status === "pending_start") {
-    return "pending_consolidation";
-  }
-  if (workflow.reviewerA.status === "completed" && workflow.reviewerB.status === "completed") {
-    return "reviews_complete";
-  }
-  if (workflow.reviewerA.status === "running" || workflow.reviewerB.status === "running") {
-    return "reviewing";
-  }
-  return "pending";
-}
