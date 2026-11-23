@@ -42,6 +42,7 @@ const BUILT_IN_PROVIDER_DRIVERS = [
   ProviderDriverKind.make("cursor"),
   ProviderDriverKind.make("opencode"),
   ProviderDriverKind.make("grok"),
+  ProviderDriverKind.make("antigravity"),
   ProviderDriverKind.make("muse"),
 ] as const;
 

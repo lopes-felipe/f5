@@ -95,11 +95,11 @@ describe("Antigravity status", () => {
       install.mockRestore();
     }
   });
-  it("defaults off and never probes or installs a disabled instance", async () => {
+  it("never probes or installs a disabled instance", async () => {
     const resolve = vi.spyOn(AntigravityInstallation.prototype, "resolve");
     const install = vi.spyOn(AntigravityInstallation.prototype, "install");
     try {
-      const settings = Schema.decodeSync(AntigravitySettings)({});
+      const settings = Schema.decodeSync(AntigravitySettings)({ enabled: false });
       const snapshot = await Effect.runPromise(
         checkAntigravityProviderStatus(settings, "/not-created", "a"),
       );
@@ -108,6 +108,22 @@ describe("Antigravity status", () => {
       expect(install).not.toHaveBeenCalled();
     } finally {
       resolve.mockRestore();
+      install.mockRestore();
+    }
+  });
+  it("defaults on, and a status check of an uninstalled instance never installs it", async () => {
+    const install = vi.spyOn(AntigravityInstallation.prototype, "install");
+    try {
+      const settings = Schema.decodeSync(AntigravitySettings)({});
+      expect(settings.enabled).toBe(true);
+      const snapshot = await Effect.runPromise(
+        checkAntigravityProviderStatus(settings, "/not-created", "a"),
+      );
+      expect(snapshot.enabled).toBe(true);
+      expect(snapshot.installed).toBe(false);
+      expect(snapshot.message).toBe("Install Antigravity in Settings to get started.");
+      expect(install).not.toHaveBeenCalled();
+    } finally {
       install.mockRestore();
     }
   });
