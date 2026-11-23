@@ -41,6 +41,8 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   triggerVariant?: VariantProps<typeof buttonVariants>["variant"] | undefined;
   triggerClassName?: string | undefined;
   onOpenChange?: ((open: boolean) => void) | undefined;
+  /** Extra reason a provider cannot be picked here (for example a workflow restriction). */
+  providerUnavailableReason?: ((provider: ProviderKind) => string | null) | undefined;
   onProviderModelChange: (provider: ProviderKind, model: ModelSlug) => void;
 }) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
@@ -174,6 +176,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
           keybindings={props.keybindings}
           modelOptionsByProvider={props.modelOptionsByProvider}
           terminalOpen={props.terminalOpen ?? false}
+          providerUnavailableReason={props.providerUnavailableReason}
           onRequestClose={() => setOpen(false)}
           onProviderModelChange={handleProviderModelChange}
         />

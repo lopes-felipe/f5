@@ -17,7 +17,10 @@ import { ProviderKind } from "./providerKind";
 import { ProviderStartOptions } from "./providerStartOptions";
 import { WorkflowArchiveRestorations } from "./workflowArchive";
 import { WorkflowStageDispatchCommandId } from "./workflowStageDispatch";
-import { WORKFLOW_MAX_ADDITIONAL_PARTICIPANTS, WorkflowParticipantId } from "./workflowParticipants";
+import {
+  WORKFLOW_MAX_ADDITIONAL_PARTICIPANTS,
+  WorkflowParticipantId,
+} from "./workflowParticipants";
 
 export const PlanningWorkflowId = makeEntityId("PlanningWorkflowId");
 export type PlanningWorkflowId = typeof PlanningWorkflowId.Type;

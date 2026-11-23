@@ -820,6 +820,121 @@ describe("InvestigationWorkflowService", () => {
     });
   });
 
+  it("creates three investigators whose cross-reviews are stored as mesh edges", async () => {
+    harness = await createHarness(makeReadModel({}));
+
+    const workflowId = await Effect.runPromise(
+      harness.service.createWorkflow({
+        projectId: PROJECT_ID,
+        problemPrompt: "Investigate failed deploys",
+        investigatorA: { provider: "codex", model: "gpt-5-codex" },
+        investigatorB: { provider: "claudeAgent", model: "claude-sonnet-4-6" },
+        additionalInvestigators: [{ provider: "codex", model: "gpt-5.5" }],
+        synthesis: { provider: "codex", model: "gpt-5-codex" },
+      }),
+    );
+
+    const workflow = harness
+      .getSnapshot()
+      .investigationWorkflows.find((entry) => entry.id === workflowId)!;
+    const investigators = [
+      workflow.investigatorA,
+      workflow.investigatorB,
+      ...(workflow.additionalInvestigators ?? []),
+    ];
+    expect(investigators.map((entry) => entry.investigationStatus)).toEqual([
+      "running",
+      "running",
+      "running",
+    ]);
+    expect(
+      investigators.map((entry) => entry.crossReviews?.map((review) => review.revieweeId)),
+    ).toEqual([
+      ["b", "c"],
+      ["a", "c"],
+      ["a", "b"],
+    ]);
+    expect(investigators.every((entry) => entry.crossReviewStatus === "not_started")).toBe(true);
+    expect(threadCreateCommands(harness.dispatched).map((command) => command.title)).toEqual([
+      expect.stringContaining("Investigator A"),
+      expect.stringContaining("Investigator B"),
+      expect.stringContaining("Investigator C"),
+    ]);
+    expect(threadTurnStartCommands(harness.dispatched)).toHaveLength(3);
+  });
+
+  it("requeues a running review whose dispatch never happened before a restart", async () => {
+    const completed = makeCompletedInvestigationWorkflow();
+    const neverSent = CommandId.makeUnsafe("cross-review-a-never-sent");
+    const workflow: InvestigationWorkflow = {
+      ...completed,
+      investigatorA: {
+        ...completed.investigatorA,
+        crossReviewThreadId: ThreadId.makeUnsafe("cross-review-a"),
+        crossReviewStatus: "running",
+        crossReviewDispatchCommandId: neverSent,
+      },
+    };
+    const threads = makeFullyReviewedThreads(workflow)
+      .slice(0, 2)
+      .concat(makeThread({ id: ThreadId.makeUnsafe("cross-review-a") }));
+    harness = await createHarness(makeReadModel({ workflow, threads }), {
+      getDeliveryByCommandId: () => Effect.succeed(null),
+    });
+
+    await harness.start();
+    await vi.waitFor(() => {
+      expect(
+        threadTurnStartCommands(harness!.dispatched).some(
+          (command) => command.threadId === "cross-review-a",
+        ),
+      ).toBe(true);
+    });
+    const current = harness.getSnapshot().investigationWorkflows[0]!;
+    expect(current.investigatorA.crossReviewStatus).toBe("running");
+    expect(current.investigatorA.crossReviewDispatchCommandId).not.toBe(neverSent);
+  });
+
+  it("rejects a repeated model among three investigators", async () => {
+    harness = await createHarness(makeReadModel({}));
+    await expect(
+      Effect.runPromise(
+        harness.service.createWorkflow({
+          projectId: PROJECT_ID,
+          problemPrompt: "Investigate failed deploys",
+          investigatorA: { provider: "codex", model: "gpt-5-codex" },
+          investigatorB: { provider: "claudeAgent", model: "claude-sonnet-4-6" },
+          additionalInvestigators: [{ provider: "codex", model: "gpt-5-codex" }],
+          synthesis: { provider: "codex", model: "gpt-5-codex" },
+        }),
+      ),
+    ).rejects.toThrow("Investigation workflows need a different model for every investigator.");
+    expect(threadCreateCommands(harness.dispatched)).toHaveLength(0);
+  });
+
+  it("rejects a problem statement that leaves too little room for every report", async () => {
+    harness = await createHarness(makeReadModel({}));
+    await expect(
+      Effect.runPromise(
+        harness.service.createWorkflow({
+          projectId: PROJECT_ID,
+          problemPrompt: `Investigate failed deploys. ${"Context. ".repeat(5_000)}`,
+          investigatorA: { provider: "codex", model: "gpt-5-codex" },
+          investigatorB: { provider: "claudeAgent", model: "claude-sonnet-4-6" },
+          additionalInvestigators: [
+            { provider: "codex", model: "gpt-5.5" },
+            { provider: "claudeAgent", model: "claude-opus-4-6" },
+          ],
+          selfReviewEnabled: true,
+          synthesis: { provider: "codex", model: "gpt-5-codex" },
+        }),
+      ),
+    ).rejects.toThrow(
+      /^4 investigators leave \d+ characters per report; start a new investigation with fewer investigators or a shorter problem statement\.$/,
+    );
+    expect(threadCreateCommands(harness.dispatched)).toHaveLength(0);
+  });
+
   it("rejects identical investigator provider and model", async () => {
     harness = await createHarness(makeReadModel({}));
 

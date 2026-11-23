@@ -6,20 +6,25 @@ import type {
 } from "@t3tools/contracts";
 
 import { isArchivedWorkflow } from "./workflowArchive";
+import {
+  codeReviewReviewers,
+  investigationCrossReviews,
+  investigationInvestigators,
+  planningBranches,
+} from "./workflowParticipants";
 
 function compactThreadIds(threadIds: ReadonlyArray<ThreadId | null>): ThreadId[] {
   return threadIds.filter((threadId): threadId is ThreadId => threadId !== null);
 }
 
 export function threadIdsForPlanningWorkflow(workflow: PlanningWorkflow): ThreadId[] {
+  const branches = planningBranches(workflow);
   return compactThreadIds([
-    workflow.branchA.authorThreadId,
-    workflow.branchB.authorThreadId,
+    ...branches.map((branch) => branch.authorThreadId),
     workflow.merge.threadId,
     workflow.readerPass?.readerThreadId ?? null,
     ...(workflow.readerPass?.previousReaderThreadIds ?? []),
-    ...workflow.branchA.reviews.map((review) => review.threadId),
-    ...workflow.branchB.reviews.map((review) => review.threadId),
+    ...branches.flatMap((branch) => branch.reviews.map((review) => review.threadId)),
     workflow.implementation?.threadId ?? null,
     ...(workflow.implementation?.codeReviews.map((review) => review.threadId) ?? []),
   ]);
@@ -27,20 +32,17 @@ export function threadIdsForPlanningWorkflow(workflow: PlanningWorkflow): Thread
 
 export function threadIdsForCodeReviewWorkflow(workflow: CodeReviewWorkflow): ThreadId[] {
   return compactThreadIds([
-    workflow.reviewerA.threadId,
-    workflow.reviewerB.threadId,
+    ...codeReviewReviewers(workflow).map((entry) => entry.reviewer.threadId),
     workflow.consolidation.threadId,
   ]);
 }
 
 export function threadIdsForInvestigationWorkflow(workflow: InvestigationWorkflow): ThreadId[] {
+  const investigators = investigationInvestigators(workflow).map((entry) => entry.investigator);
   return compactThreadIds([
-    workflow.investigatorA.investigationThreadId,
-    workflow.investigatorB.investigationThreadId,
-    workflow.investigatorA.crossReviewThreadId,
-    workflow.investigatorB.crossReviewThreadId,
-    workflow.investigatorA.selfReviewThreadId,
-    workflow.investigatorB.selfReviewThreadId,
+    ...investigators.map((investigator) => investigator.investigationThreadId),
+    ...investigationCrossReviews(workflow).map((review) => review.threadId),
+    ...investigators.map((investigator) => investigator.selfReviewThreadId),
     workflow.synthesis.threadId,
   ]);
 }

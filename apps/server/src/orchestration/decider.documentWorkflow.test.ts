@@ -77,6 +77,35 @@ describe("document workflow decider", () => {
       expect(h.get().threads).toHaveLength(0);
     }
   });
+  it("accepts up to four distinct document authors and rejects more or a repeat", async () => {
+    const extra = (model: string, thread: string) => ({
+      authorSlot: { provider: "codex" as const, model },
+      authorThreadId: ThreadId.makeUnsafe(thread),
+    });
+    const accepted = await setup();
+    await accepted.apply({
+      ...create,
+      additionalBranches: [extra("gpt-5.5", "c"), extra("gpt-5.4", "d")],
+    });
+    const stored = accepted.get().planningWorkflows[0]!;
+    expect(stored.additionalBranches?.map((branch) => branch.branchId)).toEqual(["c", "d"]);
+    expect(stored.additionalBranches?.map((branch) => branch.authorThreadId)).toEqual(["c", "d"]);
+
+    const tooMany = await setup();
+    await expect(
+      tooMany.apply({
+        ...create,
+        additionalBranches: [extra("gpt-5.5", "c"), extra("gpt-5.4", "d"), extra("o3", "e")],
+      }),
+    ).rejects.toThrow("Document workflows support up to 4 authors.");
+    expect(tooMany.get().threads).toHaveLength(0);
+
+    const repeated = await setup();
+    await expect(
+      repeated.apply({ ...create, additionalBranches: [extra(slot.model, "c")] }),
+    ).rejects.toThrow("Document workflows need a different model for every author.");
+    expect(repeated.get().threads).toHaveLength(0);
+  });
   it("persists document fields and enforces read-only follow-ups in every document thread", async () => {
     const h = await setup();
     await h.apply(create);

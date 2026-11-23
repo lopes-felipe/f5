@@ -5,6 +5,11 @@ import {
   type ProviderKind,
   type WorkflowTurnExecutionProfile,
 } from "@t3tools/contracts";
+import {
+  providerSupportsReadOnlyWorkflow,
+  READ_ONLY_WORKFLOW_UNCERTIFIED_ANTIGRAVITY_MESSAGE,
+  type WorkflowProviderSnapshot,
+} from "@t3tools/shared/workflowProviders";
 
 export type WorkflowRunKind = "planning" | "codeReview" | "investigation";
 export type WorkflowBehaviorStage =
@@ -48,7 +53,11 @@ export class UnsupportedWorkflowProviderError extends Error {
     readonly provider: ProviderKind,
     readonly stage: WorkflowBehaviorStage,
   ) {
-    super(`Provider '${provider}' cannot enforce the read-only workflow profile for '${stage}'.`);
+    super(
+      provider === "antigravity"
+        ? READ_ONLY_WORKFLOW_UNCERTIFIED_ANTIGRAVITY_MESSAGE
+        : `Provider '${provider}' cannot enforce the read-only workflow profile for '${stage}'.`,
+    );
   }
 }
 
@@ -186,10 +195,12 @@ export function assertWorkflowStageProviderSupported(input: {
   readonly behavior: WorkflowBehavior;
   readonly stage: WorkflowBehaviorStage;
   readonly provider: ProviderKind;
+  /** Live provider snapshots; Antigravity is allowed only when its runtime is certified. */
+  readonly providers: ReadonlyArray<WorkflowProviderSnapshot>;
 }): void {
   if (
     input.behavior.executionProfileForStage(input.stage) !== undefined &&
-    input.provider === "grok"
+    !providerSupportsReadOnlyWorkflow(input.provider, input.providers)
   ) {
     throw new UnsupportedWorkflowProviderError(input.provider, input.stage);
   }

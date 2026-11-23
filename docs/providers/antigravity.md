@@ -58,6 +58,54 @@ the rest. Each model shows only the thinking levels it supports. Orchestrator ha
 - Questions, forms and computer-use consent always wait for your answer.
 - The composer's context meter shows how much of the model's context window the thread uses.
 
+## Read-only workflow turns
+
+[Workflow](../user/workflows.md) reviews, investigations and document stages must not change
+your project. Antigravity can run them only on a version F5 has certified; until then its rows
+in the workflow dialog and in upstream port review are disabled with "Read-only workflow turns
+are not certified for this Antigravity version." No version is certified yet.
+
+On a certified version, F5 keeps every workflow turn read-only:
+
+- The session runs as **Supervised**, whatever the thread's access mode is.
+- Before each workflow prompt F5 switches the session to Plan and checks that Antigravity
+  reports Plan. If it doesn't, the turn stops before anything is sent. Workflow turns never fall
+  back to Auto.
+- Read, search, think and fetch tools run. Everything else is denied without asking you: edits,
+  deletes, moves, commands, computer use, MCP tools, and any request without a recognised kind.
+  Each denial appears in the thread.
+- Unattended stages decline Antigravity's questions; attended stages ask you as usual.
+
+### Certifying a version
+
+1. Add an inert MCP server to the instance's Antigravity profile whose tool writes a marker file
+   when it runs.
+2. In a scratch repository, start one workflow turn on the candidate version and tell it to read
+   a file holding a fresh token, edit a file, run a shell command and call that MCP tool.
+3. Resume the session and repeat with a new token.
+4. The version passes when the read succeeds in both rounds, the edit and the command each reach
+   F5 as a permission request that F5 refuses, nothing changes on disk, and the marker file never
+   appears. If the run shows a tool kind
+   that is labelled wrongly, remove that kind from `ANTIGRAVITY_READ_ONLY_WORKFLOW_TOOL_KINDS` in
+   `apps/server/src/provider/acp/AntigravityAcpSupport.ts`.
+5. Add `{ version, platform }` to `ANTIGRAVITY_READ_ONLY_WORKFLOW_CERTIFIED_RUNTIMES` in
+   `packages/shared/src/workflowProviders.ts`.
+
+The opt-in live test runs steps 2 to 4 against a signed-in instance. It spends account quota, and
+checks the MCP step only when you name the tool and its marker file:
+
+```sh
+cd apps/server
+F5_ANTIGRAVITY_READ_ONLY_LIVE=1 F5_ANTIGRAVITY_LIVE_STATE_DIR=<F5 state dir> \
+  F5_ANTIGRAVITY_LIVE_MCP_TOOL=<tool> F5_ANTIGRAVITY_LIVE_MCP_MARKER=<marker file> \
+  node node_modules/vitest/vitest.mjs run integration/antigravityReadOnlyWorkflow.live.test.ts
+```
+
+A version that writes or runs anything without asking can't be certified: leave the list
+unchanged and keep Antigravity rows disabled. Gemini counts as a supported workflow actor once a
+certified version completes one three-actor run of each workflow type with Codex, Claude and
+Gemini 4 Neon.
+
 ## Accounts
 
 - Sign-ins and keys belong to one F5 instance. They survive restarts and are never copied from your

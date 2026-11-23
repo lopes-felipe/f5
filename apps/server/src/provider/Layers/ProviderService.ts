@@ -1,3 +1,4 @@
+import { driverSupportsReadOnlyWorkflowTurns } from "@t3tools/shared/workflowProviders";
 import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { MCP_APP_PROVIDERS } from "@t3tools/shared/mcpApp";
@@ -740,6 +741,26 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                 undefined,
             ),
           ),
+      });
+
+    /**
+     * Read-only workflow turns run only on providers that can confine the turn. Grok and Muse
+     * never can; Antigravity can only when this instance's runtime is certified.
+     */
+    const readOnlyWorkflowRejection = (
+      operation: string,
+      provider: ProviderKind,
+      instanceId: ProviderInstanceId,
+      profile: string | undefined,
+    ) =>
+      Effect.gen(function* () {
+        if (!profile?.endsWith("readonly")) return;
+        const version = yield* readExecutableVersion(instanceId);
+        if (driverSupportsReadOnlyWorkflowTurns(provider, version, process.platform)) return;
+        return yield* toValidationError(
+          operation,
+          `${PROVIDER_DISPLAY_NAMES[provider]} cannot enforce read-only workflow turns.`,
+        );
       });
 
     /** Per-instance runtime-mode support from the status snapshot, when it narrows the default. */
@@ -1750,17 +1771,12 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           const instanceInfo = yield* registry.getInstanceInfo(requestedInstanceId);
           const resolvedProvider = instanceInfo.driverKind as ProviderKind;
           metricProvider = resolvedProvider;
-          if (
-            (resolvedProvider === "grok" ||
-              resolvedProvider === "antigravity" ||
-              resolvedProvider === "muse") &&
-            parsed.workflowExecutionProfile?.endsWith("readonly")
-          ) {
-            return yield* toValidationError(
-              "ProviderService.startSession",
-              `${PROVIDER_DISPLAY_NAMES[resolvedProvider]} cannot enforce read-only workflow turns.`,
-            );
-          }
+          yield* readOnlyWorkflowRejection(
+            "ProviderService.startSession",
+            resolvedProvider,
+            requestedInstanceId,
+            parsed.workflowExecutionProfile,
+          );
           if (parsed.provider !== undefined && parsed.provider !== resolvedProvider) {
             return yield* toValidationError(
               "ProviderService.startSession",
@@ -2380,17 +2396,12 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                   ),
                 );
                 metricProvider = routed.adapter.provider;
-                if (
-                  (routed.adapter.provider === "grok" ||
-                    routed.adapter.provider === "antigravity" ||
-                    routed.adapter.provider === "muse") &&
-                  input.workflowExecutionProfile?.endsWith("readonly")
-                ) {
-                  return yield* toValidationError(
-                    "ProviderService.sendTurn",
-                    `${PROVIDER_DISPLAY_NAMES[routed.adapter.provider]} cannot enforce read-only workflow turns.`,
-                  );
-                }
+                yield* readOnlyWorkflowRejection(
+                  "ProviderService.sendTurn",
+                  routed.adapter.provider,
+                  routed.instanceId,
+                  input.workflowExecutionProfile,
+                );
                 metricModel = input.model;
                 yield* Effect.annotateCurrentSpan({
                   "provider.kind": routed.adapter.provider,

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildBudgetedCodeReviewConsolidationPrompt,
   buildCodeReviewConsolidationPrompt,
   buildCodeReviewReviewerPrompt,
   buildCodeReviewReviewerPromptSections,
@@ -53,6 +54,59 @@ describe("codeReviewWorkflowPrompts pull request target", () => {
     const withoutPullRequest = buildCodeReviewConsolidationPrompt(input);
     expect(withoutPullRequest).toContain("Start with a `#` title that names what was reviewed.");
     expect(withoutPullRequest).not.toContain("acme/widgets#123");
+  });
+});
+
+describe("codeReviewWorkflowPrompts with more than two reviewers", () => {
+  const sixReviews = ["A", "B", "C", "D", "E", "F"].map((label) => ({
+    label: `Reviewer ${label}`,
+    text: `${label} findings`,
+  }));
+  const input = {
+    workflowId: "review-1",
+    reviewPrompt: "Review the branch",
+    consolidationSlot: CODEX_SLOT,
+  };
+
+  it("counts the reviews and keeps them in roster order", () => {
+    const prompt = buildCodeReviewConsolidationPrompt({ ...input, reviews: sixReviews });
+    expect(prompt).toContain("You are consolidating six independent code reviews");
+    const positions = sixReviews.map((review) => prompt.indexOf(`## ${review.label}`));
+    expect(positions.every((position) => position > 0)).toBe(true);
+    expect(positions).toEqual(positions.toSorted((left, right) => left - right));
+    expect(buildCodeReviewConsolidationPrompt({ ...input, reviews: REVIEWS })).toContain(
+      "You are consolidating two independent code reviews",
+    );
+  });
+
+  it("keeps every report whole when they fit", () => {
+    const result = buildBudgetedCodeReviewConsolidationPrompt({
+      ...input,
+      reviews: sixReviews,
+      maxRenderedChars: 50_000,
+    });
+    expect(result.smallestExcerpt).toBeNull();
+    expect(result.prompt).not.toContain("[Excerpt:");
+    expect(result.prompt).not.toContain("Some reports were too long");
+    expect(result.reviewTexts).toEqual(sixReviews.map((review) => review.text));
+  });
+
+  it("excerpts only the oversized report, marks it and stays within the limit", () => {
+    const reviews = sixReviews.map((review, index) =>
+      index === 2 ? { ...review, text: "x".repeat(40_000) } : review,
+    );
+    const result = buildBudgetedCodeReviewConsolidationPrompt({
+      ...input,
+      reviews,
+      maxRenderedChars: 20_000,
+    });
+    expect(result.prompt.length).toBeLessThanOrEqual(20_000);
+    expect(result.smallestExcerpt).toBeGreaterThan(10_000);
+    expect(result.prompt).toContain("Some reports were too long to include whole.");
+    expect(result.reviewTexts[2]).toContain(
+      `[Excerpt: the first ${result.smallestExcerpt} of 40000 characters of this report. The full report is in the Reviewer C thread.]`,
+    );
+    expect(result.reviewTexts.filter((text) => text.includes("[Excerpt:"))).toHaveLength(1);
   });
 });
 

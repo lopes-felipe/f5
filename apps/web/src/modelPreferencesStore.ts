@@ -1,10 +1,11 @@
-import type {
-  ClaudeModelOptions,
-  CodexModelOptions,
-  CursorModelOptions,
-  OpenCodeModelOptions,
-  ProviderKind,
-  ProviderModelOptions,
+import {
+  type ClaudeModelOptions,
+  type CodexModelOptions,
+  type CursorModelOptions,
+  isKnownProviderKind,
+  type OpenCodeModelOptions,
+  type ProviderKind,
+  type ProviderModelOptions,
 } from "@t3tools/contracts";
 import { areProviderModelOptionsEqual } from "@t3tools/shared/providerOptions";
 import { create } from "zustand";
@@ -96,13 +97,7 @@ function getModelPreferencesStorage() {
 }
 
 function normalizeProviderKind(value: unknown): ProviderKind | null {
-  return value === "codex" ||
-    value === "claudeAgent" ||
-    value === "cursor" ||
-    value === "opencode" ||
-    value === "grok"
-    ? value
-    : null;
+  return isKnownProviderKind(value) ? value : null;
 }
 
 function normalizePersistedModel(value: unknown): string | null {

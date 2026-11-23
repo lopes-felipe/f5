@@ -198,6 +198,8 @@ export const ProviderRuntimeCapabilities = Schema.Struct({
   instanceInventory: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   /** Deleting an F5 thread also removes the native transcript from the instance store. */
   nativeSessionCleanup: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  /** The runtime can be confined to read-only tools for workflow review turns. */
+  readOnlyWorkflowTurns: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
 });
 export type ProviderRuntimeCapabilities = typeof ProviderRuntimeCapabilities.Type;
 

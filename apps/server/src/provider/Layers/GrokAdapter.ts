@@ -1,4 +1,8 @@
 import { acpPdfDocuments } from "../pdfDocuments.ts";
+import {
+  driverSupportsReadOnlyWorkflowTurns,
+  READ_ONLY_WORKFLOW_UNCERTIFIED_ANTIGRAVITY_MESSAGE,
+} from "@t3tools/shared/workflowProviders";
 import type { ProviderAdapterSessionStartInput } from "../Services/ProviderAdapter.ts";
 import {
   applyAcpPlanMode,
@@ -52,6 +56,7 @@ import {
   type ProviderUserInputAnswers,
   ProviderInstanceId,
   type RuntimeMode,
+  type WorkflowTurnExecutionProfile,
   RuntimeRequestId,
   type ThreadId,
   TurnId,
@@ -108,6 +113,9 @@ import {
   AntigravityModeUnavailableError,
   antigravityAdvertisedModes,
   antigravityApprovalDecision,
+  antigravityReadOnlyWorkflowDecision,
+  antigravityWorkflowRuntimeMode,
+  enterAntigravityWorkflowPlanMode,
   antigravityLaunchedVersion,
   antigravityTargetMode,
   antigravityThinkingLevels,
@@ -257,6 +265,13 @@ interface GrokSessionContext {
   antigravityAutoUnavailable: boolean;
   /** Antigravity: the latest turn asked for Plan; its requests keep Plan's rules. */
   antigravityPlanRequested: boolean;
+  /**
+   * Antigravity: the read-only workflow profile of the latest turn (or the session start). While
+   * set, permission requests follow the read-only workflow policy and never prompt.
+   */
+  antigravityWorkflowProfile: WorkflowTurnExecutionProfile | undefined;
+  /** Antigravity: the session started for a read-only workflow (approval-required, no catalogs). */
+  readonly antigravityWorkflowSession: boolean;
   /** Antigravity: a mode warning not yet published, kept until a turn starts. */
   antigravityPendingWarning: string | undefined;
   /** Antigravity: private-format readers are certified for the runtime this session launched. */
@@ -791,6 +806,11 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             });
 
           const cwd = nodePath.resolve(input.cwd);
+          // Read-only workflow sessions never start with native auto-approval.
+          const startRuntimeMode: RuntimeMode =
+            PROVIDER === "antigravity"
+              ? antigravityWorkflowRuntimeMode(input.runtimeMode, input.workflowExecutionProfile)
+              : input.runtimeMode;
           const grokModelSelection =
             input.modelSelection?.instanceId === boundInstanceId ? input.modelSelection : undefined;
           const existing = sessions.get(input.threadId);
@@ -872,7 +892,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
 
           const acp = yield* (options?.makeRuntime ?? makeGrokAcpRuntime)({
             grokSettings,
-            runtimeMode: input.runtimeMode,
+            runtimeMode: startRuntimeMode,
             ...(options?.environment ? { environment: options.environment } : {}),
             childProcessSpawner,
             cwd,
@@ -898,6 +918,21 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 }),
             ),
           );
+          // Certification belongs to the executable this session actually launched, not to the
+          // version a status snapshot reported earlier. Later workflow sends need a session
+          // started this way, so they stay bound to the same executable.
+          if (PROVIDER === "antigravity" && input.workflowExecutionProfile !== undefined) {
+            const launchedVersion = antigravityLaunchedVersion(acp);
+            if (
+              launchedVersion !== undefined &&
+              !driverSupportsReadOnlyWorkflowTurns("antigravity", launchedVersion, process.platform)
+            )
+              return yield* new ProviderAdapterValidationError({
+                provider: PROVIDER,
+                operation: "startSession",
+                issue: READ_ONLY_WORKFLOW_UNCERTIFIED_ANTIGRAVITY_MESSAGE,
+              });
+          }
           const started = yield* Effect.gen(function* () {
             yield* Effect.forEach(
               ["x.ai/ask_user_question", "_x.ai/ask_user_question"] as const,
@@ -963,6 +998,23 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     )
                       return { action: { action: "cancel" as const } };
                     const cancelled = { action: { action: "cancel" as const } };
+                    const workflowProfile = live
+                      ? live.antigravityWorkflowProfile
+                      : input.workflowExecutionProfile;
+                    if (workflowProfile === "unattended-readonly") {
+                      // Nobody can answer an unattended workflow turn, so no form opens.
+                      yield* offerRuntimeEvent({
+                        type: "runtime.warning",
+                        ...(yield* makeEventStamp(ctx)),
+                        provider: PROVIDER,
+                        threadId: input.threadId,
+                        turnId: sessions.get(input.threadId)?.activeTurnId,
+                        payload: {
+                          message: `${providerLabel} asked for input during an unattended workflow turn; it was declined without submitting data.`,
+                        },
+                      });
+                      return cancelled;
+                    }
                     const descriptor = acpElicitationDescriptor(params);
                     if (!descriptor.ok) {
                       yield* offerRuntimeEvent({
@@ -1042,6 +1094,33 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   ) {
                     const question = antigravityQuestion(params);
                     if (!question) return { outcome: { outcome: "cancelled" as const } };
+                    const workflowProfile = live
+                      ? live.antigravityWorkflowProfile
+                      : input.workflowExecutionProfile;
+                    if (workflowProfile === "unattended-readonly") {
+                      // Nobody can answer an unattended workflow turn: decline, and record both
+                      // the question and its resolution so no unanswerable card stays open.
+                      const declinedId = RuntimeRequestId.make(yield* Random.nextUUIDv4);
+                      yield* offerRuntimeEvent({
+                        type: "user-input.requested",
+                        ...(yield* makeEventStamp(ctx)),
+                        provider: PROVIDER,
+                        threadId: input.threadId,
+                        turnId: sessions.get(input.threadId)?.activeTurnId,
+                        requestId: declinedId,
+                        payload: { questions: [question] },
+                      });
+                      yield* offerRuntimeEvent({
+                        type: "user-input.resolved",
+                        ...(yield* makeEventStamp(ctx)),
+                        provider: PROVIDER,
+                        threadId: input.threadId,
+                        turnId: sessions.get(input.threadId)?.activeTurnId,
+                        requestId: declinedId,
+                        payload: { answers: {} },
+                      });
+                      return { outcome: { outcome: "cancelled" as const } };
+                    }
                     const requestId = ApprovalRequestId.make(yield* Random.nextUUIDv4);
                     const resolution = yield* Deferred.make<PendingUserInputResolution>();
                     pendingUserInputs.set(requestId, {
@@ -1077,6 +1156,58 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                       }
                     );
                   }
+                  const readOnlyWorkflowProfile =
+                    PROVIDER === "antigravity"
+                      ? live
+                        ? live.antigravityWorkflowProfile
+                        : input.workflowExecutionProfile
+                      : undefined;
+                  if (readOnlyWorkflowProfile) {
+                    // Runs before the access-mode policy, saved grants and Full access, and
+                    // never prompts: a workflow turn either reads or is refused.
+                    const allowOnce =
+                      antigravityReadOnlyWorkflowDecision({
+                        toolCall: params.toolCall,
+                        computerRequest: Boolean(computerRequest),
+                      }) === "allow"
+                        ? selectPermissionOptionId(params, "accept")
+                        : undefined;
+                    if (allowOnce !== undefined)
+                      return { outcome: { outcome: "selected" as const, optionId: allowOnce } };
+                    const deniedRequest = parsePermissionRequest(params);
+                    const deniedRequestId = RuntimeRequestId.make(yield* Random.nextUUIDv4);
+                    yield* offerRuntimeEvent(
+                      makeAcpRequestOpenedEvent({
+                        stamp: yield* makeEventStamp(ctx),
+                        provider: PROVIDER,
+                        threadId: input.threadId,
+                        turnId: sessions.get(input.threadId)?.activeTurnId,
+                        requestId: deniedRequestId,
+                        permissionRequest: deniedRequest,
+                        detail: computerRequest
+                          ? "Tool inputs hidden while computer control is enabled"
+                          : (deniedRequest.detail ??
+                            encodeJsonStringForDiagnostics(params)?.slice(0, 2000) ??
+                            "[unserializable params]"),
+                        args: params,
+                        source: "acp.jsonrpc",
+                        method: "session/request_permission",
+                        rawPayload: params,
+                      }),
+                    );
+                    yield* offerRuntimeEvent(
+                      makeAcpRequestResolvedEvent({
+                        stamp: yield* makeEventStamp(ctx),
+                        provider: PROVIDER,
+                        threadId: input.threadId,
+                        turnId: sessions.get(input.threadId)?.activeTurnId,
+                        requestId: deniedRequestId,
+                        permissionRequest: deniedRequest,
+                        decision: "cancel",
+                      }),
+                    );
+                    return { outcome: { outcome: "cancelled" as const } };
+                  }
                   // The runtime applies mode notifications and `set_mode` responses in transport
                   // order, so its state cannot be overwritten by a stale queued `ModeChanged`.
                   const nativeMode =
@@ -1089,7 +1220,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   const antigravityDecision =
                     PROVIDER === "antigravity"
                       ? antigravityApprovalDecision({
-                          runtimeMode: input.runtimeMode,
+                          runtimeMode: startRuntimeMode,
                           sessionMode: nativeMode ?? live?.antigravityMode,
                           planRequested: live?.antigravityPlanRequested === true,
                           computerRequest: Boolean(computerRequest),
@@ -1114,7 +1245,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     if (allowOnce !== undefined)
                       return { outcome: { outcome: "selected" as const, optionId: allowOnce } };
                   }
-                  const runtimeMode: RuntimeMode = input.runtimeMode;
+                  const runtimeMode: RuntimeMode = startRuntimeMode;
                   if (PROVIDER !== "antigravity")
                     switch (runtimeMode) {
                       case "full-access": {
@@ -1230,7 +1361,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
 
           if (options?.configureRuntime)
             yield* options
-              .configureRuntime(acp, input.runtimeMode)
+              .configureRuntime(acp, startRuntimeMode)
               .pipe(
                 Effect.mapError((cause) =>
                   mapAcpToAdapterError(
@@ -1273,7 +1404,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               yield* acp.getModeState,
               yield* acp.getConfigOptions,
             );
-            if (input.runtimeMode === "auto" && !advertised.modes.includes("auto")) {
+            if (startRuntimeMode === "auto" && !advertised.modes.includes("auto")) {
               antigravityAutoUnavailable = true;
               antigravityStartWarnings.push(
                 "This Antigravity session does not offer native Auto, so it runs as Supervised and asks before acting.",
@@ -1282,7 +1413,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             antigravityStartMode = yield* applyAntigravitySessionMode({
               runtime: acp,
               target: antigravityTargetMode({
-                runtimeMode: input.runtimeMode,
+                runtimeMode: startRuntimeMode,
                 plan: false,
                 advertised: advertised.modes,
               }),
@@ -1392,6 +1523,10 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             antigravityMode: antigravityStartMode,
             antigravityAutoUnavailable,
             antigravityPlanRequested: false,
+            antigravityWorkflowProfile:
+              PROVIDER === "antigravity" ? input.workflowExecutionProfile : undefined,
+            antigravityWorkflowSession:
+              PROVIDER === "antigravity" && input.workflowExecutionProfile !== undefined,
             antigravityPendingWarning: undefined,
             antigravityNativeReaders,
             antigravityStepLayoutVerified:
@@ -1740,31 +1875,46 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               if (PROVIDER === "antigravity" && steeringTurnId === undefined) {
                 // Steers stay inside the running turn: no mode, model or level writes.
                 const mapTurnError = antigravityErrorMapper(input.threadId, "sendTurn");
+                if (input.workflowExecutionProfile && !ctx.antigravityWorkflowSession)
+                  return yield* new ProviderAdapterValidationError({
+                    provider: PROVIDER,
+                    operation: "sendTurn",
+                    issue:
+                      "This Antigravity session was not started for read-only workflow turns. Start a new session to continue.",
+                  });
                 // Set before the mode write, so a request that arrives while the native mode
-                // lags behind is still held to Plan's rules.
-                ctx.antigravityPlanRequested = input.interactionMode === "plan";
+                // lags behind is still held to Plan's and the workflow's rules.
+                ctx.antigravityWorkflowProfile = input.workflowExecutionProfile;
+                ctx.antigravityPlanRequested =
+                  input.interactionMode === "plan" || input.workflowExecutionProfile !== undefined;
                 const advertised = antigravityAdvertisedModes(
                   yield* ctx.acp.getModeState,
                   yield* ctx.acp.getConfigOptions,
                 );
-                ctx.antigravityMode = yield* applyAntigravitySessionMode({
-                  runtime: ctx.acp,
-                  target: antigravityTargetMode({
-                    // Once Auto fell back for this session, later turns stay Supervised.
-                    runtimeMode: ctx.antigravityAutoUnavailable
-                      ? "approval-required"
-                      : ctx.session.runtimeMode,
-                    plan: input.interactionMode === "plan",
-                    advertised: advertised.modes,
-                  }),
-                  mapError: mapTurnError,
-                  onAutoFallback: (warning) => {
-                    ctx.antigravityAutoUnavailable = true;
-                    // Kept on the session until a turn publishes it: a turn that fails later
-                    // (an attachment, an empty prompt) must not swallow the only warning.
-                    ctx.antigravityPendingWarning = warning;
-                  },
-                });
+                ctx.antigravityMode = input.workflowExecutionProfile
+                  ? // Workflow turns run in a confirmed Plan mode; Auto's fallback never applies.
+                    yield* enterAntigravityWorkflowPlanMode({
+                      runtime: ctx.acp,
+                      mapError: mapTurnError,
+                    })
+                  : yield* applyAntigravitySessionMode({
+                      runtime: ctx.acp,
+                      target: antigravityTargetMode({
+                        // Once Auto fell back for this session, later turns stay Supervised.
+                        runtimeMode: ctx.antigravityAutoUnavailable
+                          ? "approval-required"
+                          : ctx.session.runtimeMode,
+                        plan: input.interactionMode === "plan",
+                        advertised: advertised.modes,
+                      }),
+                      mapError: mapTurnError,
+                      onAutoFallback: (warning) => {
+                        ctx.antigravityAutoUnavailable = true;
+                        // Kept on the session until a turn publishes it: a turn that fails later
+                        // (an attachment, an empty prompt) must not swallow the only warning.
+                        ctx.antigravityPendingWarning = warning;
+                      },
+                    });
                 antigravityModeWarning = ctx.antigravityPendingWarning;
               }
               const currentModelId =

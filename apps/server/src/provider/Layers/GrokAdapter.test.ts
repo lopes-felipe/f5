@@ -393,6 +393,64 @@ it.layer(AntigravityAdapterTestLayer)("Antigravity native questions", (it) => {
       assert.equal(live, 0);
     }).pipe(Effect.provide(AntigravityAdapterTestLayer), Effect.scoped),
   );
+  rootIt.live(
+    "declines questions and forms on an unattended workflow turn instead of waiting",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* Effect.promise(() =>
+          mkdtemp(path.join(os.tmpdir(), "antigravity-unattended-")),
+        );
+        const wrapperPath = writeAcpWrapper(path.join(dir, "agent"), mockAgentPath, {
+          env: {
+            F5_ACP_ANTIGRAVITY_PROFILE: "1",
+            F5_ACP_ANTIGRAVITY_ELICIT: "1",
+            F5_ACP_ANTIGRAVITY_QUESTION: "1",
+          },
+        });
+        const adapter = yield* makeGrokAdapter(
+          Schema.decodeSync(GrokSettings)({ binaryPath: wrapperPath }),
+          { provider: "antigravity", instanceId: ProviderInstanceId.make("antigravity") },
+        );
+        const events: ProviderRuntimeEvent[] = [];
+        yield* adapter.streamEvents.pipe(
+          Stream.runForEach((event) =>
+            Effect.sync(() => {
+              events.push(event);
+            }),
+          ),
+          Effect.forkChild,
+        );
+        const threadId = ThreadId.make("antigravity-unattended");
+        yield* adapter.startSession({
+          threadId,
+          provider: "antigravity",
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          workflowExecutionProfile: "unattended-readonly",
+        });
+        // Completes without anyone answering: both requests are declined at once.
+        yield* adapter
+          .sendTurn({
+            threadId,
+            input: "Ask first",
+            attachments: [],
+            workflowExecutionProfile: "unattended-readonly",
+          })
+          .pipe(Effect.timeout("20 seconds"));
+        assert.ok(
+          events.some(
+            (event) =>
+              event.type === "runtime.warning" &&
+              event.payload.message.includes("unattended workflow turn"),
+          ),
+        );
+        const requested = events.filter((event) => event.type === "user-input.requested");
+        const resolved = events.filter((event) => event.type === "user-input.resolved");
+        assert.equal(requested.length, 1);
+        assert.equal(resolved.length, 1);
+        yield* adapter.stopSession(threadId);
+      }).pipe(Effect.provide(AntigravityAdapterTestLayer), Effect.scoped),
+  );
   it.effect("waits for the user's answer even in full-access mode", () =>
     Effect.gen(function* () {
       const adapter = yield* GrokAdapter;

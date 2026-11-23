@@ -794,6 +794,17 @@ const program = Effect.gen(function* () {
         return { stopReason: "end_turn" };
       }
 
+      if (process.env.F5_ACP_ANTIGRAVITY_ELICIT === "1") {
+        yield* agent.client.elicit({
+          mode: "form",
+          sessionId: requestedSessionId,
+          message: "Confirm the environment",
+          requestedSchema: {
+            type: "object",
+            properties: { environment: { type: "string" } },
+          },
+        });
+      }
       if (process.env.F5_ACP_ANTIGRAVITY_QUESTION === "1") {
         yield* agent.client.requestPermission({
           sessionId: requestedSessionId,

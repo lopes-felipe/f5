@@ -873,7 +873,9 @@ export const UpstreamPortReviewRequest = Schema.Struct({
   reviewerA: WorkflowModelSlot,
   reviewerB: WorkflowModelSlot,
   /** Reviewers beyond A and B (C to F), in roster order. */
-  additionalReviewers: Schema.optional(Schema.Array(WorkflowModelSlot).check(Schema.isMaxLength(4))),
+  additionalReviewers: Schema.optional(
+    Schema.Array(WorkflowModelSlot).check(Schema.isMaxLength(4)),
+  ),
   consolidation: WorkflowModelSlot,
 });
 export type UpstreamPortReviewRequest = typeof UpstreamPortReviewRequest.Type;

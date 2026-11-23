@@ -755,6 +755,86 @@ describe("CodeReviewWorkflowService", () => {
     expect(reviewerTurns[0]?.message.text).toContain("file_path:line_number");
   });
 
+  it("creates six reviewers and runs at most four of them at once", async () => {
+    harness = await createHarness(makeReadModel({}));
+    const reviewer = (model: string) => ({ provider: "codex" as const, model });
+    await Effect.runPromise(
+      harness.service.createWorkflow({
+        projectId: ProjectId.makeUnsafe("project-1"),
+        title: "Six reviewers",
+        reviewPrompt: "Review the implementation",
+        reviewerA: reviewer("model-a"),
+        reviewerB: reviewer("model-b"),
+        additionalReviewers: ["c", "d", "e", "f"].map((id) => reviewer(`model-${id}`)),
+        consolidation: reviewer("model-a"),
+      }),
+    );
+    const threadCreates = harness.dispatched.filter(
+      (command): command is Extract<OrchestrationCommand, { type: "thread.create" }> =>
+        command.type === "thread.create",
+    );
+    expect(threadCreates.map((command) => command.title)).toEqual(
+      ["A", "B", "C", "D", "E", "F"].map((label) => expect.stringContaining(`Reviewer ${label}`)),
+    );
+    const turns = harness.dispatched.filter(
+      (command): command is Extract<OrchestrationCommand, { type: "thread.turn.start" }> =>
+        command.type === "thread.turn.start",
+    );
+    expect(turns.map((command) => command.model)).toEqual([
+      "model-a",
+      "model-b",
+      "model-c",
+      "model-d",
+    ]);
+    const stored = lastWorkflowUpsert(harness.dispatched)?.workflow;
+    expect(stored?.additionalReviewers?.map((entry) => entry.status)).toEqual([
+      "running",
+      "running",
+      "pending",
+      "pending",
+    ]);
+    // Each attempt is recorded, with its command id, before that command is dispatched.
+    for (const turn of turns) {
+      const turnIndex = harness.dispatched.indexOf(turn);
+      const recordedBefore = harness.dispatched
+        .slice(0, turnIndex)
+        .some(
+          (command) =>
+            command.type === "project.code-review-workflow.upsert" &&
+            [
+              command.workflow.reviewerA,
+              command.workflow.reviewerB,
+              ...(command.workflow.additionalReviewers ?? []),
+            ].some(
+              (reviewer) =>
+                reviewer.threadId === turn.threadId &&
+                reviewer.status === "running" &&
+                reviewer.dispatchCommandId === turn.commandId,
+            ),
+        );
+      expect(recordedBefore, turn.threadId).toBe(true);
+    }
+  });
+
+  it("rejects a seventh reviewer before creating anything", async () => {
+    harness = await createHarness(makeReadModel({}));
+    const reviewer = (model: string) => ({ provider: "codex" as const, model });
+    await expect(
+      Effect.runPromise(
+        harness.service.createWorkflow({
+          projectId: ProjectId.makeUnsafe("project-1"),
+          title: "Too many reviewers",
+          reviewPrompt: "Review the implementation",
+          reviewerA: reviewer("model-a"),
+          reviewerB: reviewer("model-b"),
+          additionalReviewers: ["c", "d", "e", "f", "g"].map((id) => reviewer(`model-${id}`)),
+          consolidation: reviewer("model-a"),
+        }),
+      ),
+    ).rejects.toThrow("Code review workflows support up to 6 reviewers.");
+    expect(harness.dispatched).toEqual([]);
+  });
+
   it("deletes the persisted workflow if reviewer thread creation fails", async () => {
     harness = await createHarness(makeReadModel({}), {
       failDispatch: (command) =>

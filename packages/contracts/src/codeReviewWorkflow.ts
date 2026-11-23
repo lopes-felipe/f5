@@ -102,7 +102,9 @@ export const CodeReviewWorkflow = Schema.Struct({
   reviewerA: CodeReviewReviewer,
   reviewerB: CodeReviewReviewer,
   /** Reviewers beyond A and B (C to F), in roster order. Omitted on two-reviewer runs. */
-  additionalReviewers: Schema.optional(Schema.Array(CodeReviewReviewer).check(Schema.isMaxLength(4))),
+  additionalReviewers: Schema.optional(
+    Schema.Array(CodeReviewReviewer).check(Schema.isMaxLength(4)),
+  ),
   consolidation: CodeReviewConsolidation,
   totalCostUsd: Schema.optional(Schema.Number).pipe(Schema.withDecodingDefault(() => 0)),
   maxCostUsd: Schema.optional(Schema.NullOr(Schema.Number)).pipe(

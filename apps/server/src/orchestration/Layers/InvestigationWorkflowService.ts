@@ -1,5 +1,6 @@
 import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { makeShutdownSourceScope, registerShutdown } from "../../shutdown.ts";
+import { userFacingCauseMessage } from "../../causeMessage.ts";
 import {
   CommandId,
   InvestigationWorkflowId,
@@ -8,10 +9,30 @@ import {
   MessageId,
   ThreadId,
   type InvestigationInvestigator,
+  type InvestigationPhaseStatus,
   type InvestigationWorkflow,
   type OrchestrationEvent,
   type OrchestrationReadModel,
+  WORKFLOW_MESH_MAX_PARTICIPANTS,
+  type WorkflowParticipantId,
 } from "@t3tools/contracts";
+import {
+  clearInvestigatorErrorForPhase,
+  findInvestigationCrossReview,
+  type InvestigationCrossReviewEdge,
+  type InvestigationCrossReviewPatch,
+  type InvestigationCrossReviewView,
+  investigationCrossReviews,
+  investigationCrossReviewsOf,
+  investigationInvestigators,
+  requireInvestigator,
+  sameInvestigationCrossReviewEdge,
+  updateInvestigationCrossReview,
+  updateInvestigator,
+  workflowModelSlotsHaveDuplicate,
+  workflowParticipantLabel,
+  workflowUsesMesh,
+} from "@t3tools/shared/workflowParticipants";
 import { makeBackgroundWorker } from "../../backgroundWorker.ts";
 import { isArchivedWorkflow, isDeletedWorkflow } from "@t3tools/shared/workflowArchive";
 import { makeWorkflowArchiveLifecycle } from "../workflowArchiveLifecycle.ts";
@@ -23,7 +44,10 @@ import {
   buildInvestigationCrossReviewPrompt,
   buildInvestigationPrompt,
   buildInvestigationSelfReviewPrompt,
+  buildBudgetedInvestigationSynthesisPrompt,
   buildInvestigationSynthesisPrompt,
+  type InvestigationSynthesisContributionInput,
+  investigationSynthesisShareAtCreation,
 } from "../investigationWorkflowPrompts.ts";
 import {
   InvestigationWorkflowService,
@@ -39,6 +63,8 @@ import {
   isLatestTurnFinishedAndConsumable,
   latestAssistantFeedback,
   nextWorkflowSlug,
+  WORKFLOW_FAN_IN_MIN_ARTIFACT_CHARS,
+  WORKFLOW_MAX_ACTIVE_REVIEW_TURNS,
   WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT,
 } from "../workflowSharedUtils.ts";
 import type { WorkflowRetryContext } from "../workflowPromptFragments.ts";
@@ -58,18 +84,23 @@ import {
   UnsupportedWorkflowTemplateError,
   workflowTurnBehaviorFields,
 } from "../workflowBehavior.ts";
-import { buildInvestigationWorkflowRecord } from "../workflowRecordBuilders.ts";
+import {
+  buildInvestigationWorkflowRecord,
+  investigationCommandInvestigatorFields,
+  investigationInputInvestigatorFields,
+  investigationInputInvestigatorSlots,
+} from "../workflowRecordBuilders.ts";
 import {
   ProviderTurnDeliveryWorker,
   type ProviderTurnDeliveryOutcome,
 } from "../Services/ProviderTurnDeliveryWorker.ts";
+import { ProviderTurnDeliveryRepository } from "../Services/ProviderTurnDeliveryRepository.ts";
 import {
   makeWorkflowStageDispatchResolver,
   STARTUP_DISPATCH_RECHECK_TIMEOUT,
   stageDispatchAllowsTurn,
 } from "../workflowStageDispatch.ts";
 
-type InvestigatorKey = "investigatorA" | "investigatorB";
 type InvestigationWorkflowTitleGenerationWorkItem = {
   readonly workflowId: InvestigationWorkflowId;
   readonly titleSourceText: string;
@@ -85,32 +116,41 @@ const SELF_REVIEW_OUTPUT_NOT_FOUND =
 const SYNTHESIS_OUTPUT_NOT_FOUND = "Investigation upstream output not found for synthesis.";
 const MAX_PROFILE_TIMEOUT_RETRIES = 1;
 
-function peerKey(key: InvestigatorKey): InvestigatorKey {
-  return key === "investigatorA" ? "investigatorB" : "investigatorA";
+/** One review turn of the review phase: a directed cross-review edge or an own-model review. */
+type InvestigationReviewTask =
+  | ({ readonly kind: "cross" } & InvestigationCrossReviewEdge)
+  | { readonly kind: "self"; readonly investigatorId: WorkflowParticipantId };
+
+interface InvestigationReviewTaskState {
+  readonly status: InvestigationPhaseStatus;
+  readonly threadId: ThreadId | null;
+  readonly turnId: string | null;
+  readonly messageId: string | null;
+  readonly error: string | null;
+  readonly retryCount: number;
+  readonly dispatchCommandId: CommandId | null;
 }
 
-function updateInvestigator(
+function setInvestigator(
   workflow: InvestigationWorkflow,
-  investigatorKey: InvestigatorKey,
+  investigatorId: WorkflowParticipantId,
   investigator: InvestigationInvestigator,
   updatedAt: string,
 ): InvestigationWorkflow {
   return {
-    ...workflow,
-    [investigatorKey]: investigator,
+    ...updateInvestigator(workflow, investigatorId, () => investigator),
     updatedAt,
   };
 }
 
-function clearInvestigatorErrorForPhase(
-  investigator: InvestigationInvestigator,
-  phase: "investigation" | "crossReview" | "selfReview",
-): string | null {
-  const hasOtherPhaseError =
-    (phase !== "investigation" && investigator.investigationStatus === "error") ||
-    (phase !== "crossReview" && investigator.crossReviewStatus === "error") ||
-    (phase !== "selfReview" && investigator.selfReviewStatus === "error");
-  return hasOtherPhaseError ? investigator.error : null;
+function allInvestigationsCompleted(workflow: InvestigationWorkflow): boolean {
+  return investigationInvestigators(workflow).every(
+    ({ investigator }) => investigator.investigationStatus === "completed",
+  );
+}
+
+function investigatorLabel(workflow: InvestigationWorkflow, id: WorkflowParticipantId): string {
+  return requireInvestigator(workflow, id).label;
 }
 
 function readInvestigationWorkflow(
@@ -132,63 +172,61 @@ function readInvestigationWorkflow(
 function investigationMatch(
   workflow: InvestigationWorkflow,
   threadId: ThreadId,
-): { investigatorKey: InvestigatorKey; investigator: InvestigationInvestigator } | null {
-  if (workflow.investigatorA.investigationThreadId === threadId) {
-    return { investigatorKey: "investigatorA", investigator: workflow.investigatorA };
-  }
-  if (workflow.investigatorB.investigationThreadId === threadId) {
-    return { investigatorKey: "investigatorB", investigator: workflow.investigatorB };
-  }
-  return null;
+): { investigatorId: WorkflowParticipantId; investigator: InvestigationInvestigator } | null {
+  const match = investigationInvestigators(workflow).find(
+    ({ investigator }) => investigator.investigationThreadId === threadId,
+  );
+  return match ? { investigatorId: match.id, investigator: match.investigator } : null;
 }
 
 function crossReviewMatch(
   workflow: InvestigationWorkflow,
   threadId: ThreadId,
-): { investigatorKey: InvestigatorKey; investigator: InvestigationInvestigator } | null {
-  if (workflow.investigatorA.crossReviewThreadId === threadId) {
-    return { investigatorKey: "investigatorA", investigator: workflow.investigatorA };
-  }
-  if (workflow.investigatorB.crossReviewThreadId === threadId) {
-    return { investigatorKey: "investigatorB", investigator: workflow.investigatorB };
-  }
-  return null;
+): InvestigationCrossReviewView | null {
+  return investigationCrossReviews(workflow).find((view) => view.threadId === threadId) ?? null;
 }
 
 function selfReviewMatch(
   workflow: InvestigationWorkflow,
   threadId: ThreadId,
-): { investigatorKey: InvestigatorKey; investigator: InvestigationInvestigator } | null {
-  if (workflow.investigatorA.selfReviewThreadId === threadId) {
-    return { investigatorKey: "investigatorA", investigator: workflow.investigatorA };
-  }
-  if (workflow.investigatorB.selfReviewThreadId === threadId) {
-    return { investigatorKey: "investigatorB", investigator: workflow.investigatorB };
-  }
-  return null;
+): { investigatorId: WorkflowParticipantId; investigator: InvestigationInvestigator } | null {
+  const match = investigationInvestigators(workflow).find(
+    ({ investigator }) => investigator.selfReviewThreadId === threadId,
+  );
+  return match ? { investigatorId: match.id, investigator: match.investigator } : null;
+}
+
+function crossReviewTitle(
+  workflow: InvestigationWorkflow,
+  edge: InvestigationCrossReviewEdge,
+): string {
+  const reviewer = workflowParticipantLabel(edge.reviewerId);
+  return workflowUsesMesh(investigationInvestigators(workflow).length)
+    ? `Cross-review ${reviewer} on ${workflowParticipantLabel(edge.revieweeId)}`
+    : `Cross-review ${reviewer}`;
 }
 
 function labelForThread(
   workflow: InvestigationWorkflow,
   threadId: ThreadId,
 ): { workflow: InvestigationWorkflow; label: string } | null {
-  if (workflow.investigatorA.investigationThreadId === threadId) {
-    return { workflow, label: "Investigator A" };
+  const investigation = investigationMatch(workflow, threadId);
+  if (investigation) {
+    return {
+      workflow,
+      label: `Investigator ${workflowParticipantLabel(investigation.investigatorId)}`,
+    };
   }
-  if (workflow.investigatorB.investigationThreadId === threadId) {
-    return { workflow, label: "Investigator B" };
+  const crossReview = crossReviewMatch(workflow, threadId);
+  if (crossReview) {
+    return { workflow, label: crossReviewTitle(workflow, crossReview) };
   }
-  if (workflow.investigatorA.crossReviewThreadId === threadId) {
-    return { workflow, label: "Cross-review A" };
-  }
-  if (workflow.investigatorB.crossReviewThreadId === threadId) {
-    return { workflow, label: "Cross-review B" };
-  }
-  if (workflow.investigatorA.selfReviewThreadId === threadId) {
-    return { workflow, label: "Own-model review A" };
-  }
-  if (workflow.investigatorB.selfReviewThreadId === threadId) {
-    return { workflow, label: "Own-model review B" };
+  const selfReview = selfReviewMatch(workflow, threadId);
+  if (selfReview) {
+    return {
+      workflow,
+      label: `Own-model review ${workflowParticipantLabel(selfReview.investigatorId)}`,
+    };
   }
   if (workflow.synthesis.threadId === threadId) {
     return { workflow, label: "Synthesis" };
@@ -205,24 +243,20 @@ function runningStageDispatches(
     readonly threadId: ThreadId | null;
     readonly dispatchCommandId: CommandId | null | undefined;
   }> = [];
-  for (const investigator of [workflow.investigatorA, workflow.investigatorB]) {
-    stages.push(
-      {
-        status: investigator.investigationStatus,
-        threadId: investigator.investigationThreadId,
-        dispatchCommandId: investigator.investigationDispatchCommandId,
-      },
-      {
-        status: investigator.crossReviewStatus,
-        threadId: investigator.crossReviewThreadId,
-        dispatchCommandId: investigator.crossReviewDispatchCommandId,
-      },
-      {
-        status: investigator.selfReviewStatus,
-        threadId: investigator.selfReviewThreadId,
-        dispatchCommandId: investigator.selfReviewDispatchCommandId,
-      },
-    );
+  for (const { investigator } of investigationInvestigators(workflow)) {
+    stages.push({
+      status: investigator.investigationStatus,
+      threadId: investigator.investigationThreadId,
+      dispatchCommandId: investigator.investigationDispatchCommandId,
+    });
+  }
+  stages.push(...investigationCrossReviews(workflow));
+  for (const { investigator } of investigationInvestigators(workflow)) {
+    stages.push({
+      status: investigator.selfReviewStatus,
+      threadId: investigator.selfReviewThreadId,
+      dispatchCommandId: investigator.selfReviewDispatchCommandId,
+    });
   }
   stages.push({
     status: workflow.synthesis.status,
@@ -238,14 +272,14 @@ function runningStageDispatches(
 
 function withInvestigationRunning(
   workflow: InvestigationWorkflow,
-  investigatorKey: InvestigatorKey,
+  investigatorId: WorkflowParticipantId,
   updatedAt: string,
   dispatchCommandId: CommandId,
 ): InvestigationWorkflow {
-  const investigator = workflow[investigatorKey];
-  return updateInvestigator(
+  const investigator = requireInvestigator(workflow, investigatorId);
+  return setInvestigator(
     workflow,
-    investigatorKey,
+    investigatorId,
     {
       ...investigator,
       investigationStatus: "running",
@@ -259,12 +293,12 @@ function withInvestigationRunning(
 
 function withInvestigationCompleted(input: {
   readonly workflow: InvestigationWorkflow;
-  readonly investigatorKey: InvestigatorKey;
+  readonly investigatorId: WorkflowParticipantId;
   readonly turnId: string | null;
   readonly assistantMessageId: string | null;
   readonly updatedAt: string;
 }): InvestigationWorkflow {
-  const current = input.workflow[input.investigatorKey];
+  const current = requireInvestigator(input.workflow, input.investigatorId);
   if (
     current.investigationStatus === "completed" &&
     current.investigationTurnId === input.turnId &&
@@ -272,9 +306,9 @@ function withInvestigationCompleted(input: {
   ) {
     return input.workflow;
   }
-  return updateInvestigator(
+  return setInvestigator(
     input.workflow,
-    input.investigatorKey,
+    input.investigatorId,
     {
       ...current,
       investigationStatus: "completed",
@@ -289,14 +323,14 @@ function withInvestigationCompleted(input: {
 
 function withInvestigationError(input: {
   readonly workflow: InvestigationWorkflow;
-  readonly investigatorKey: InvestigatorKey;
+  readonly investigatorId: WorkflowParticipantId;
   readonly error: string;
   readonly updatedAt: string;
 }): InvestigationWorkflow {
-  const current = input.workflow[input.investigatorKey];
-  return updateInvestigator(
+  const current = requireInvestigator(input.workflow, input.investigatorId);
+  return setInvestigator(
     input.workflow,
-    input.investigatorKey,
+    input.investigatorId,
     {
       ...current,
       investigationStatus: "error",
@@ -307,237 +341,118 @@ function withInvestigationError(input: {
   );
 }
 
-function withCrossReviewPendingStart(
-  workflow: InvestigationWorkflow,
-  investigatorKey: InvestigatorKey,
-  updatedAt: string,
-): InvestigationWorkflow {
-  const current = workflow[investigatorKey];
-  if (current.crossReviewStatus === "pending_start") {
-    return workflow;
+/** Review tasks in launch order: cross-reviews by reviewer then reviewee, then own-model reviews. */
+function investigationReviewTasks(workflow: InvestigationWorkflow): InvestigationReviewTask[] {
+  const tasks: InvestigationReviewTask[] = investigationCrossReviews(workflow).map((view) => ({
+    kind: "cross",
+    reviewerId: view.reviewerId,
+    revieweeId: view.revieweeId,
+  }));
+  if (workflow.selfReviewEnabled) {
+    for (const { id } of investigationInvestigators(workflow)) {
+      tasks.push({ kind: "self", investigatorId: id });
+    }
   }
-  return updateInvestigator(
-    workflow,
-    investigatorKey,
-    {
-      ...current,
-      crossReviewStatus: "pending_start",
-      error: clearInvestigatorErrorForPhase(current, "crossReview"),
-      updatedAt,
-    },
-    updatedAt,
-  );
+  return tasks;
 }
 
-function withCrossReviewRunning(
+function reviewTaskState(
   workflow: InvestigationWorkflow,
-  investigatorKey: InvestigatorKey,
-  threadId: ThreadId,
-  updatedAt: string,
-  dispatchCommandId: CommandId,
-): InvestigationWorkflow {
-  const current = workflow[investigatorKey];
-  return updateInvestigator(
-    workflow,
-    investigatorKey,
-    {
-      ...current,
-      crossReviewThreadId: threadId,
-      crossReviewStatus: "running",
-      crossReviewDispatchCommandId: dispatchCommandId,
-      error: clearInvestigatorErrorForPhase(current, "crossReview"),
-      updatedAt,
-    },
-    updatedAt,
-  );
+  task: InvestigationReviewTask,
+): InvestigationReviewTaskState {
+  if (task.kind === "cross") {
+    const view = findInvestigationCrossReview(workflow, task);
+    if (!view) {
+      throw new OrchestrationCommandInvariantError({
+        commandType: "workflow.turn.start",
+        detail: `Investigation has no cross-review of ${workflowParticipantLabel(task.revieweeId)} by ${workflowParticipantLabel(task.reviewerId)}.`,
+      });
+    }
+    return view;
+  }
+  const investigator = requireInvestigator(workflow, task.investigatorId);
+  return {
+    status: investigator.selfReviewStatus,
+    threadId: investigator.selfReviewThreadId,
+    turnId: investigator.selfReviewTurnId,
+    messageId: investigator.selfReviewMessageId,
+    error: investigator.selfReviewStatus === "error" ? investigator.error : null,
+    retryCount: investigator.selfReviewRetryCount ?? 0,
+    dispatchCommandId: investigator.selfReviewDispatchCommandId ?? null,
+  };
 }
 
-function withCrossReviewThreadPrepared(
+/**
+ * The one writer for review state. `error: null` clears the review's error (on an
+ * investigator's shared field, only when no other phase of it is in error).
+ */
+function withReviewTask(
   workflow: InvestigationWorkflow,
-  investigatorKey: InvestigatorKey,
-  threadId: ThreadId,
+  task: InvestigationReviewTask,
+  patch: InvestigationCrossReviewPatch,
   updatedAt: string,
 ): InvestigationWorkflow {
-  const current = workflow[investigatorKey];
-  return updateInvestigator(
+  if (task.kind === "cross") {
+    return { ...updateInvestigationCrossReview(workflow, task, patch, updatedAt), updatedAt };
+  }
+  const investigator = requireInvestigator(workflow, task.investigatorId);
+  const error =
+    patch.error === undefined
+      ? investigator.error
+      : patch.error === null
+        ? clearInvestigatorErrorForPhase(investigator, "selfReview")
+        : patch.error;
+  return setInvestigator(
     workflow,
-    investigatorKey,
+    task.investigatorId,
     {
-      ...current,
-      crossReviewThreadId: threadId,
-      crossReviewStatus:
-        current.crossReviewStatus === "not_started" ? "pending_start" : current.crossReviewStatus,
-      error: clearInvestigatorErrorForPhase(current, "crossReview"),
+      ...investigator,
+      ...(patch.threadId !== undefined ? { selfReviewThreadId: patch.threadId } : {}),
+      ...(patch.status !== undefined ? { selfReviewStatus: patch.status } : {}),
+      ...(patch.turnId !== undefined ? { selfReviewTurnId: patch.turnId } : {}),
+      ...(patch.messageId !== undefined ? { selfReviewMessageId: patch.messageId } : {}),
+      ...(patch.retryCount !== undefined ? { selfReviewRetryCount: patch.retryCount } : {}),
+      ...(patch.dispatchCommandId !== undefined
+        ? { selfReviewDispatchCommandId: patch.dispatchCommandId }
+        : {}),
+      error,
       updatedAt,
     },
     updatedAt,
   );
 }
 
-function withCrossReviewCompleted(input: {
+function withReviewTaskCompleted(input: {
   readonly workflow: InvestigationWorkflow;
-  readonly investigatorKey: InvestigatorKey;
+  readonly task: InvestigationReviewTask;
   readonly turnId: string | null;
   readonly assistantMessageId: string | null;
   readonly updatedAt: string;
 }): InvestigationWorkflow {
-  const current = input.workflow[input.investigatorKey];
+  const current = reviewTaskState(input.workflow, input.task);
   if (
-    current.crossReviewStatus === "completed" &&
-    current.crossReviewTurnId === input.turnId &&
-    current.crossReviewMessageId === input.assistantMessageId
+    current.status === "completed" &&
+    current.turnId === input.turnId &&
+    current.messageId === input.assistantMessageId
   ) {
     return input.workflow;
   }
-  return updateInvestigator(
+  return withReviewTask(
     input.workflow,
-    input.investigatorKey,
+    input.task,
     {
-      ...current,
-      crossReviewStatus: "completed",
-      crossReviewTurnId: input.turnId,
-      crossReviewMessageId: input.assistantMessageId,
-      error: clearInvestigatorErrorForPhase(current, "crossReview"),
-      updatedAt: input.updatedAt,
+      status: "completed",
+      turnId: input.turnId,
+      messageId: input.assistantMessageId,
+      error: null,
     },
     input.updatedAt,
   );
 }
 
-function withCrossReviewError(input: {
-  readonly workflow: InvestigationWorkflow;
-  readonly investigatorKey: InvestigatorKey;
-  readonly error: string;
-  readonly updatedAt: string;
-}): InvestigationWorkflow {
-  const current = input.workflow[input.investigatorKey];
-  return updateInvestigator(
-    input.workflow,
-    input.investigatorKey,
-    {
-      ...current,
-      crossReviewStatus: "error",
-      error: input.error,
-      updatedAt: input.updatedAt,
-    },
-    input.updatedAt,
-  );
-}
-
-function withSelfReviewPendingStart(
-  workflow: InvestigationWorkflow,
-  investigatorKey: InvestigatorKey,
-  updatedAt: string,
-): InvestigationWorkflow {
-  const current = workflow[investigatorKey];
-  if (current.selfReviewStatus === "pending_start") {
-    return workflow;
-  }
-  return updateInvestigator(
-    workflow,
-    investigatorKey,
-    {
-      ...current,
-      selfReviewStatus: "pending_start",
-      error: clearInvestigatorErrorForPhase(current, "selfReview"),
-      updatedAt,
-    },
-    updatedAt,
-  );
-}
-
-function withSelfReviewRunning(
-  workflow: InvestigationWorkflow,
-  investigatorKey: InvestigatorKey,
-  threadId: ThreadId,
-  updatedAt: string,
-  dispatchCommandId: CommandId,
-): InvestigationWorkflow {
-  const current = workflow[investigatorKey];
-  return updateInvestigator(
-    workflow,
-    investigatorKey,
-    {
-      ...current,
-      selfReviewThreadId: threadId,
-      selfReviewStatus: "running",
-      selfReviewDispatchCommandId: dispatchCommandId,
-      error: clearInvestigatorErrorForPhase(current, "selfReview"),
-      updatedAt,
-    },
-    updatedAt,
-  );
-}
-
-function withSelfReviewThreadPrepared(
-  workflow: InvestigationWorkflow,
-  investigatorKey: InvestigatorKey,
-  threadId: ThreadId,
-  updatedAt: string,
-): InvestigationWorkflow {
-  const current = workflow[investigatorKey];
-  return updateInvestigator(
-    workflow,
-    investigatorKey,
-    {
-      ...current,
-      selfReviewThreadId: threadId,
-      selfReviewStatus:
-        current.selfReviewStatus === "not_started" ? "pending_start" : current.selfReviewStatus,
-      error: clearInvestigatorErrorForPhase(current, "selfReview"),
-      updatedAt,
-    },
-    updatedAt,
-  );
-}
-
-function withSelfReviewCompleted(input: {
-  readonly workflow: InvestigationWorkflow;
-  readonly investigatorKey: InvestigatorKey;
-  readonly turnId: string | null;
-  readonly assistantMessageId: string | null;
-  readonly updatedAt: string;
-}): InvestigationWorkflow {
-  const current = input.workflow[input.investigatorKey];
-  if (
-    current.selfReviewStatus === "completed" &&
-    current.selfReviewTurnId === input.turnId &&
-    current.selfReviewMessageId === input.assistantMessageId
-  ) {
-    return input.workflow;
-  }
-  return updateInvestigator(
-    input.workflow,
-    input.investigatorKey,
-    {
-      ...current,
-      selfReviewStatus: "completed",
-      selfReviewTurnId: input.turnId,
-      selfReviewMessageId: input.assistantMessageId,
-      error: clearInvestigatorErrorForPhase(current, "selfReview"),
-      updatedAt: input.updatedAt,
-    },
-    input.updatedAt,
-  );
-}
-
-function withSelfReviewError(input: {
-  readonly workflow: InvestigationWorkflow;
-  readonly investigatorKey: InvestigatorKey;
-  readonly error: string;
-  readonly updatedAt: string;
-}): InvestigationWorkflow {
-  const current = input.workflow[input.investigatorKey];
-  return updateInvestigator(
-    input.workflow,
-    input.investigatorKey,
-    {
-      ...current,
-      selfReviewStatus: "error",
-      error: input.error,
-      updatedAt: input.updatedAt,
-    },
-    input.updatedAt,
+function allReviewsCompleted(workflow: InvestigationWorkflow): boolean {
+  return investigationReviewTasks(workflow).every(
+    (task) => reviewTaskState(workflow, task).status === "completed",
   );
 }
 
@@ -644,71 +559,66 @@ function withSynthesisError(
   };
 }
 
+const RESET_REVIEW_PATCH: InvestigationCrossReviewPatch = {
+  status: "not_started",
+  turnId: null,
+  messageId: null,
+  error: null,
+};
+
+function resetCrossReviews(
+  workflow: InvestigationWorkflow,
+  updatedAt: string,
+  only?: (view: InvestigationCrossReviewView) => boolean,
+): InvestigationWorkflow {
+  let next = workflow;
+  for (const view of investigationCrossReviews(workflow)) {
+    if (only && !only(view)) continue;
+    next = withReviewTask(next, { kind: "cross", ...view }, RESET_REVIEW_PATCH, updatedAt);
+  }
+  return next;
+}
+
+function resetSelfReviews(
+  workflow: InvestigationWorkflow,
+  updatedAt: string,
+  only?: (investigator: InvestigationInvestigator) => boolean,
+): InvestigationWorkflow {
+  let next = workflow;
+  for (const { id, investigator } of investigationInvestigators(workflow)) {
+    if (only && !only(investigator)) continue;
+    next = withReviewTask(
+      next,
+      { kind: "self", investigatorId: id },
+      RESET_REVIEW_PATCH,
+      updatedAt,
+    );
+  }
+  return next;
+}
+
 function resetCrossReviewsAndSynthesis(
   workflow: InvestigationWorkflow,
   updatedAt: string,
 ): InvestigationWorkflow {
-  return {
-    ...workflow,
-    investigatorA: resetCrossReview(workflow.investigatorA, updatedAt),
-    investigatorB: resetCrossReview(workflow.investigatorB, updatedAt),
-    synthesis: resetSynthesis(workflow.synthesis, updatedAt),
-    updatedAt,
-  };
+  const next = resetCrossReviews(workflow, updatedAt);
+  return { ...next, synthesis: resetSynthesis(next.synthesis, updatedAt), updatedAt };
 }
 
 function resetSelfReviewsAndSynthesis(
   workflow: InvestigationWorkflow,
   updatedAt: string,
 ): InvestigationWorkflow {
-  return {
-    ...workflow,
-    investigatorA: resetSelfReview(workflow.investigatorA, updatedAt),
-    investigatorB: resetSelfReview(workflow.investigatorB, updatedAt),
-    synthesis: resetSynthesis(workflow.synthesis, updatedAt),
-    updatedAt,
-  };
+  const next = resetSelfReviews(workflow, updatedAt);
+  return { ...next, synthesis: resetSynthesis(next.synthesis, updatedAt), updatedAt };
 }
 
 function resetAllReviewsAndSynthesis(
   workflow: InvestigationWorkflow,
   updatedAt: string,
 ): InvestigationWorkflow {
-  return {
-    ...workflow,
-    investigatorA: resetSelfReview(resetCrossReview(workflow.investigatorA, updatedAt), updatedAt),
-    investigatorB: resetSelfReview(resetCrossReview(workflow.investigatorB, updatedAt), updatedAt),
-    synthesis: resetSynthesis(workflow.synthesis, updatedAt),
-    updatedAt,
-  };
-}
-
-function resetCrossReview(
-  investigator: InvestigationInvestigator,
-  updatedAt: string,
-): InvestigationInvestigator {
-  return {
-    ...investigator,
-    crossReviewStatus: "not_started",
-    crossReviewTurnId: null,
-    crossReviewMessageId: null,
-    error: clearInvestigatorErrorForPhase(investigator, "crossReview"),
-    updatedAt,
-  };
-}
-
-function resetSelfReview(
-  investigator: InvestigationInvestigator,
-  updatedAt: string,
-): InvestigationInvestigator {
-  return {
-    ...investigator,
-    selfReviewStatus: "not_started",
-    selfReviewTurnId: null,
-    selfReviewMessageId: null,
-    error: clearInvestigatorErrorForPhase(investigator, "selfReview"),
-    updatedAt,
-  };
+  const next = resetSelfReviews(resetCrossReviews(workflow, updatedAt), updatedAt);
+  return { ...next, synthesis: resetSynthesis(next.synthesis, updatedAt), updatedAt };
 }
 
 function resetSynthesis(
@@ -754,7 +664,8 @@ function dispatchWorkflowDeleteCompensation(input: {
   });
 }
 
-function createInvestigationThread(input: {
+/** Creates a phase thread on the investigator's model (investigation and both review kinds). */
+function createInvestigatorThread(input: {
   readonly orchestrationEngine: OrchestrationEngineShape;
   readonly workflow: InvestigationWorkflow;
   readonly threadId: ThreadId;
@@ -789,6 +700,10 @@ function investigationPromptInvariant(
       });
 }
 
+function synthesisShareMessage(investigatorCount: number, share: number): string {
+  return `${investigatorCount} investigators leave ${Math.max(0, share)} characters per report; start a new investigation with fewer investigators or a shorter problem statement.`;
+}
+
 function startInvestigationTurn(input: {
   readonly orchestrationEngine: OrchestrationEngineShape;
   readonly commandId: CommandId;
@@ -814,6 +729,7 @@ function startInvestigationTurn(input: {
       }).executionProfileForStage("investigation") === "attended-readonly",
     targetSlot: input.investigator.slot,
     retry: input.retry,
+    investigatorCount: investigationInvestigators(input.workflow).length,
   });
   const promptError = investigationPromptInvariant(prompt, "Investigation");
   if (promptError) return Effect.fail(promptError);
@@ -840,34 +756,13 @@ function startInvestigationTurn(input: {
   });
 }
 
-function createCrossReviewThread(input: {
-  readonly orchestrationEngine: OrchestrationEngineShape;
-  readonly workflow: InvestigationWorkflow;
-  readonly threadId: ThreadId;
-  readonly investigator: InvestigationInvestigator;
-  readonly title: string;
-  readonly createdAt: string;
-}) {
-  return input.orchestrationEngine.dispatch({
-    type: "thread.create",
-    commandId: CommandId.makeUnsafe(timeOrderedUuid()),
-    threadId: input.threadId,
-    projectId: input.workflow.projectId,
-    title: input.title,
-    model: input.investigator.slot.model,
-    runtimeMode: DEFAULT_RUNTIME_MODE,
-    interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-    branch: input.workflow.branch,
-    worktreePath: null,
-    createdAt: input.createdAt,
-  });
-}
-
 function startCrossReviewTurn(input: {
   readonly orchestrationEngine: OrchestrationEngineShape;
   readonly commandId: CommandId;
   readonly workflow: InvestigationWorkflow;
+  /** The reviewing investigator, whose model runs the cross-review. */
   readonly investigator: InvestigationInvestigator;
+  readonly threadId: ThreadId;
   readonly peerLabel: string;
   readonly peerReport: string;
   readonly retry: WorkflowRetryContext;
@@ -888,7 +783,7 @@ function startCrossReviewTurn(input: {
   return input.orchestrationEngine.dispatch({
     type: "thread.turn.start",
     commandId: input.commandId,
-    threadId: input.investigator.crossReviewThreadId!,
+    threadId: input.threadId,
     message: {
       messageId: MessageId.makeUnsafe(crypto.randomUUID()),
       role: "user",
@@ -904,29 +799,6 @@ function startCrossReviewTurn(input: {
       templateVersion: input.workflow.templateVersion,
       stage: "investigation-review",
     }),
-    createdAt: input.createdAt,
-  });
-}
-
-function createSelfReviewThread(input: {
-  readonly orchestrationEngine: OrchestrationEngineShape;
-  readonly workflow: InvestigationWorkflow;
-  readonly threadId: ThreadId;
-  readonly investigator: InvestigationInvestigator;
-  readonly title: string;
-  readonly createdAt: string;
-}) {
-  return input.orchestrationEngine.dispatch({
-    type: "thread.create",
-    commandId: CommandId.makeUnsafe(timeOrderedUuid()),
-    threadId: input.threadId,
-    projectId: input.workflow.projectId,
-    title: input.title,
-    model: input.investigator.slot.model,
-    runtimeMode: DEFAULT_RUNTIME_MODE,
-    interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-    branch: input.workflow.branch,
-    worktreePath: null,
     createdAt: input.createdAt,
   });
 }
@@ -1002,24 +874,40 @@ function startSynthesisTurn(input: {
   readonly orchestrationEngine: OrchestrationEngineShape;
   readonly commandId: CommandId;
   readonly workflow: InvestigationWorkflow;
-  readonly contributions: ReadonlyArray<{
-    readonly label: string;
-    readonly investigation: string;
-    readonly crossReviewOfThis: string;
-    readonly selfReview?: string | null;
-  }>;
+  readonly contributions: ReadonlyArray<InvestigationSynthesisContributionInput>;
   readonly retry: WorkflowRetryContext;
   readonly createdAt: string;
 }) {
   const budgetError = workflowBudgetError(input.workflow);
   if (budgetError) return Effect.fail(budgetError);
-  const prompt = buildInvestigationSynthesisPrompt({
+  const promptInput = {
     workflowId: input.workflow.id,
     problemPrompt: input.workflow.problemPrompt,
     targetSlot: input.workflow.synthesis.slot,
     retry: input.retry,
     contributions: input.contributions,
-  });
+  };
+  let prompt: string;
+  if (workflowUsesMesh(input.contributions.length)) {
+    const budgeted = buildBudgetedInvestigationSynthesisPrompt({
+      ...promptInput,
+      maxRenderedChars: WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT,
+    });
+    if (
+      budgeted.smallestExcerpt !== null &&
+      budgeted.smallestExcerpt < WORKFLOW_FAN_IN_MIN_ARTIFACT_CHARS
+    ) {
+      return Effect.fail(
+        new OrchestrationCommandInvariantError({
+          commandType: "workflow.turn.start",
+          detail: synthesisShareMessage(input.contributions.length, budgeted.smallestExcerpt),
+        }),
+      );
+    }
+    prompt = budgeted.prompt;
+  } else {
+    prompt = buildInvestigationSynthesisPrompt(promptInput);
+  }
   const promptError = investigationPromptInvariant(prompt, "Investigation synthesis");
   if (promptError) return Effect.fail(promptError);
   return input.orchestrationEngine.dispatch({
@@ -1059,14 +947,14 @@ function investigationReport(
 
 function crossReviewReport(
   snapshot: OrchestrationReadModel,
-  investigator: InvestigationInvestigator,
+  view: InvestigationCrossReviewView,
 ): string | null {
-  if (investigator.crossReviewThreadId === null) {
+  if (view.threadId === null) {
     return null;
   }
-  const thread = snapshot.threads.find((entry) => entry.id === investigator.crossReviewThreadId);
+  const thread = snapshot.threads.find((entry) => entry.id === view.threadId);
   return thread
-    ? (latestAssistantFeedback(thread, investigator.crossReviewMessageId, {
+    ? (latestAssistantFeedback(thread, view.messageId, {
         combinedReasoningHeading: "Cross-review reasoning",
       })?.text ?? null)
     : null;
@@ -1087,33 +975,47 @@ function selfReviewReport(
     : null;
 }
 
+interface CollectedSynthesisContribution {
+  readonly label: string;
+  readonly investigation: string | null;
+  readonly crossReviews: ReadonlyArray<{
+    readonly reviewerLabel: string;
+    readonly text: string | null;
+  }>;
+  readonly selfReview: string | null;
+}
+
+/** Each investigation with every cross-review of it (reviewer order) and its own-model review. */
 function collectSynthesisContributions(
   workflow: InvestigationWorkflow,
   snapshot: OrchestrationReadModel,
-): ReadonlyArray<{
-  readonly label: string;
-  readonly investigation: string | null;
-  readonly crossReviewOfThis: string | null;
-  readonly selfReview: string | null;
-}> {
-  return [
-    {
-      label: workflow.investigatorA.label,
-      investigation: investigationReport(snapshot, workflow.investigatorA),
-      crossReviewOfThis: crossReviewReport(snapshot, workflow.investigatorB),
-      selfReview: workflow.selfReviewEnabled
-        ? selfReviewReport(snapshot, workflow.investigatorA)
-        : null,
-    },
-    {
-      label: workflow.investigatorB.label,
-      investigation: investigationReport(snapshot, workflow.investigatorB),
-      crossReviewOfThis: crossReviewReport(snapshot, workflow.investigatorA),
-      selfReview: workflow.selfReviewEnabled
-        ? selfReviewReport(snapshot, workflow.investigatorB)
-        : null,
-    },
-  ];
+): ReadonlyArray<CollectedSynthesisContribution> {
+  return investigationInvestigators(workflow).map(({ id, investigator }) => ({
+    label: investigator.label,
+    investigation: investigationReport(snapshot, investigator),
+    crossReviews: investigationCrossReviewsOf(workflow, id).map((view) => ({
+      reviewerLabel: investigatorLabel(workflow, view.reviewerId),
+      text: crossReviewReport(snapshot, view),
+    })),
+    selfReview: workflow.selfReviewEnabled ? selfReviewReport(snapshot, investigator) : null,
+  }));
+}
+
+function isBlank(text: string | null | undefined): boolean {
+  return !text || text.trim().length === 0;
+}
+
+function synthesisContributionsMissing(
+  workflow: InvestigationWorkflow,
+  contributions: ReadonlyArray<CollectedSynthesisContribution>,
+): boolean {
+  return contributions.some(
+    (contribution) =>
+      isBlank(contribution.investigation) ||
+      contribution.crossReviews.length === 0 ||
+      contribution.crossReviews.some((review) => isBlank(review.text)) ||
+      (workflow.selfReviewEnabled && isBlank(contribution.selfReview)),
+  );
 }
 
 function liveThreadById(snapshot: OrchestrationReadModel, threadId: ThreadId) {
@@ -1134,6 +1036,7 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
     getWorkflowProviders,
   );
   const providerTurnDeliveryWorker = yield* Effect.serviceOption(ProviderTurnDeliveryWorker);
+  const deliveryRepository = yield* Effect.serviceOption(ProviderTurnDeliveryRepository);
   const resolveStageDispatch = yield* makeWorkflowStageDispatchResolver;
 
   const titleGenerationWorker = yield* makeBackgroundWorker(
@@ -1202,8 +1105,10 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
     Effect.gen(function* () {
       if (isArchivedWorkflow(workflow)) return workflow;
       let nextWorkflow = workflow;
-      for (const investigatorKey of ["investigatorA", "investigatorB"] as const) {
-        const investigator = nextWorkflow[investigatorKey];
+      for (const [index, { id: investigatorId }] of investigationInvestigators(
+        workflow,
+      ).entries()) {
+        const investigator = requireInvestigator(nextWorkflow, investigatorId);
         if (investigator.investigationStatus !== "pending") {
           continue;
         }
@@ -1211,12 +1116,12 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
         let investigationThread = liveThreadById(snapshot, investigator.investigationThreadId);
         if (!investigationThread) {
           const createOutcome = yield* Effect.exit(
-            createInvestigationThread({
+            createInvestigatorThread({
               orchestrationEngine,
               workflow: nextWorkflow,
               threadId: investigator.investigationThreadId,
               investigator,
-              title: investigatorKey === "investigatorA" ? "Investigator A" : "Investigator B",
+              title: `Investigator ${workflowParticipantLabel(investigatorId)}`,
               createdAt: updatedAt,
             }),
           );
@@ -1226,7 +1131,7 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
             if (!investigationThread) {
               nextWorkflow = withInvestigationError({
                 workflow: nextWorkflow,
-                investigatorKey,
+                investigatorId,
                 error: String(createOutcome.cause),
                 updatedAt,
               });
@@ -1242,7 +1147,7 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
             commandId: dispatchCommandId,
             workflow: nextWorkflow,
             investigator,
-            lensBranch: investigatorKey === "investigatorA" ? "a" : "b",
+            lensBranch: index % 2 === 0 ? "a" : "b",
             retry: hasPriorThreadWork(investigationThread)
               ? { kind: "retry", reusedThread: true }
               : { kind: "none" },
@@ -1252,14 +1157,14 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
         if (outcome._tag === "Failure") {
           nextWorkflow = withInvestigationError({
             workflow: nextWorkflow,
-            investigatorKey,
+            investigatorId,
             error: String(outcome.cause),
             updatedAt,
           });
         } else {
           nextWorkflow = withInvestigationRunning(
             nextWorkflow,
-            investigatorKey,
+            investigatorId,
             updatedAt,
             dispatchCommandId,
           );
@@ -1306,7 +1211,7 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
       ) {
         const nextWorkflow = withInvestigationCompleted({
           workflow,
-          investigatorKey: investigation.investigatorKey,
+          investigatorId: investigation.investigatorId,
           turnId: completedTurn.turnId,
           assistantMessageId: completedTurn.assistantMessageId,
           updatedAt,
@@ -1320,14 +1225,11 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
       const crossReview = crossReviewMatch(workflow, threadId);
       if (
         crossReview &&
-        (yield* runningDispatchAllows(
-          crossReview.investigator.crossReviewStatus,
-          crossReview.investigator.crossReviewDispatchCommandId,
-        ))
+        (yield* runningDispatchAllows(crossReview.status, crossReview.dispatchCommandId))
       ) {
-        const nextWorkflow = withCrossReviewCompleted({
+        const nextWorkflow = withReviewTaskCompleted({
           workflow,
-          investigatorKey: crossReview.investigatorKey,
+          task: { kind: "cross", ...crossReview },
           turnId: completedTurn.turnId,
           assistantMessageId: completedTurn.assistantMessageId,
           updatedAt,
@@ -1346,9 +1248,9 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
           selfReview.investigator.selfReviewDispatchCommandId,
         ))
       ) {
-        const nextWorkflow = withSelfReviewCompleted({
+        const nextWorkflow = withReviewTaskCompleted({
           workflow,
-          investigatorKey: selfReview.investigatorKey,
+          task: { kind: "self", investigatorId: selfReview.investigatorId },
           turnId: completedTurn.turnId,
           assistantMessageId: completedTurn.assistantMessageId,
           updatedAt,
@@ -1381,7 +1283,15 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
       return workflow;
     });
 
-  const maybeStartCrossReviews = (
+  /**
+   * Launches the review phase once every investigation is completed: cross-reviews, then
+   * own-model reviews, admitted in id order while fewer than `WORKFLOW_MAX_ACTIVE_REVIEW_TURNS`
+   * reviews are running. One upsert moves the admitted reviews to `pending_start` with their
+   * thread ids; each then gets its own upsert to `running` immediately before its dispatch.
+   * Later passes pick up `not_started` and `pending_start` reviews, so queued reviews survive
+   * a restart. A review that fails to start frees its slot for the next one in the same call.
+   */
+  const maybeStartReviews = (
     workflow: InvestigationWorkflow,
     snapshotAtCall: OrchestrationReadModel | null,
     updatedAt: string,
@@ -1390,247 +1300,171 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
       if (
         isDeletedWorkflow(workflow) ||
         isArchivedWorkflow(workflow) ||
-        workflow.investigatorA.investigationStatus !== "completed" ||
-        workflow.investigatorB.investigationStatus !== "completed"
+        !allInvestigationsCompleted(workflow)
       ) {
         return workflow;
       }
 
-      let nextWorkflow = workflow;
-      for (const investigatorKey of ["investigatorA", "investigatorB"] as const) {
-        const investigator = nextWorkflow[investigatorKey];
-        if (
-          investigator.crossReviewStatus === "running" ||
-          investigator.crossReviewStatus === "completed" ||
-          investigator.crossReviewStatus === "error"
-        ) {
-          continue;
+      let current = workflow;
+      let snapshotForPass = snapshotAtCall;
+      while (true) {
+        const states = investigationReviewTasks(current).map((task) => ({
+          task,
+          state: reviewTaskState(current, task),
+        }));
+        const running = states.filter(({ state }) => state.status === "running").length;
+        const admitted = states
+          .filter(({ state }) => state.status === "not_started" || state.status === "pending_start")
+          .slice(0, Math.max(0, WORKFLOW_MAX_ACTIVE_REVIEW_TURNS - running));
+        if (admitted.length === 0) {
+          return current;
         }
 
-        let pendingWorkflow = nextWorkflow;
-        if (investigator.crossReviewStatus === "not_started") {
-          pendingWorkflow = withCrossReviewPendingStart(nextWorkflow, investigatorKey, updatedAt);
-          yield* upsertWorkflow(orchestrationEngine, pendingWorkflow, updatedAt);
-        }
+        const snapshot = snapshotForPass ?? (yield* orchestrationEngine.getReadModel());
+        snapshotForPass = null;
+        const reports = new Map<WorkflowParticipantId, string | null>();
+        const reportOf = (id: WorkflowParticipantId) => {
+          if (!reports.has(id)) {
+            reports.set(id, investigationReport(snapshot, requireInvestigator(current, id)));
+          }
+          return reports.get(id) ?? null;
+        };
 
-        let pendingInvestigator = pendingWorkflow[investigatorKey];
-        const peer = pendingWorkflow[peerKey(investigatorKey)];
-        const snapshot = snapshotAtCall ?? (yield* orchestrationEngine.getReadModel());
-        const peerReport = investigationReport(snapshot, peer);
-        if (!peerReport || peerReport.trim().length === 0) {
-          nextWorkflow = withCrossReviewError({
-            workflow: pendingWorkflow,
-            investigatorKey,
-            error: CROSS_REVIEW_OUTPUT_NOT_FOUND,
-            updatedAt,
-          });
-          yield* upsertWorkflow(orchestrationEngine, nextWorkflow, updatedAt);
-          continue;
-        }
-
-        const crossReviewThreadId =
-          pendingInvestigator.crossReviewThreadId ?? ThreadId.makeUnsafe(crypto.randomUUID());
-        if (pendingInvestigator.crossReviewThreadId === null) {
-          pendingWorkflow = withCrossReviewThreadPrepared(
+        let failures = 0;
+        const ready: Array<{
+          readonly task: InvestigationReviewTask;
+          readonly threadId: ThreadId;
+          readonly report: string;
+        }> = [];
+        let pendingWorkflow = current;
+        for (const { task, state } of admitted) {
+          const report = reportOf(task.kind === "cross" ? task.revieweeId : task.investigatorId);
+          if (!report || report.trim().length === 0) {
+            pendingWorkflow = withReviewTask(
+              pendingWorkflow,
+              task,
+              {
+                status: "error",
+                error:
+                  task.kind === "cross"
+                    ? CROSS_REVIEW_OUTPUT_NOT_FOUND
+                    : SELF_REVIEW_OUTPUT_NOT_FOUND,
+              },
+              updatedAt,
+            );
+            failures += 1;
+            continue;
+          }
+          const threadId = state.threadId ?? ThreadId.makeUnsafe(crypto.randomUUID());
+          pendingWorkflow = withReviewTask(
             pendingWorkflow,
-            investigatorKey,
-            crossReviewThreadId,
+            task,
+            { status: "pending_start", threadId, error: null },
             updatedAt,
           );
-          pendingInvestigator = pendingWorkflow[investigatorKey];
-          yield* upsertWorkflow(orchestrationEngine, pendingWorkflow, updatedAt);
+          ready.push({ task, threadId, report });
         }
+        yield* upsertWorkflow(orchestrationEngine, pendingWorkflow, updatedAt);
+        current = pendingWorkflow;
 
-        let crossReviewThread = liveThreadById(snapshot, crossReviewThreadId);
-        if (!crossReviewThread) {
-          const createOutcome = yield* Effect.exit(
-            createCrossReviewThread({
-              orchestrationEngine,
-              workflow: pendingWorkflow,
-              threadId: crossReviewThreadId,
-              investigator: pendingInvestigator,
-              title: investigatorKey === "investigatorA" ? "Cross-review A" : "Cross-review B",
-              createdAt: updatedAt,
-            }),
+        for (const { task, threadId, report } of ready) {
+          const owner = requireInvestigator(
+            current,
+            task.kind === "cross" ? task.reviewerId : task.investigatorId,
           );
-          if (createOutcome._tag === "Failure") {
-            const latestSnapshot = yield* orchestrationEngine.getReadModel();
-            crossReviewThread = liveThreadById(latestSnapshot, crossReviewThreadId);
-            if (!crossReviewThread) {
-              nextWorkflow = withCrossReviewError({
-                workflow: pendingWorkflow,
-                investigatorKey,
-                error: String(createOutcome.cause),
-                updatedAt,
-              });
-              yield* upsertWorkflow(orchestrationEngine, nextWorkflow, updatedAt);
-              continue;
+          let thread = liveThreadById(snapshot, threadId);
+          if (!thread) {
+            const createOutcome = yield* Effect.exit(
+              createInvestigatorThread({
+                orchestrationEngine,
+                workflow: current,
+                threadId,
+                investigator: owner,
+                title:
+                  task.kind === "cross"
+                    ? crossReviewTitle(current, task)
+                    : `Own-model review ${workflowParticipantLabel(task.investigatorId)}`,
+                createdAt: updatedAt,
+              }),
+            );
+            if (createOutcome._tag === "Failure") {
+              const latestSnapshot = yield* orchestrationEngine.getReadModel();
+              thread = liveThreadById(latestSnapshot, threadId);
+              if (!thread) {
+                current = withReviewTask(
+                  current,
+                  task,
+                  {
+                    status: "error",
+                    error: userFacingCauseMessage(
+                      createOutcome.cause,
+                      "Could not create the review thread.",
+                    ),
+                  },
+                  updatedAt,
+                );
+                yield* upsertWorkflow(orchestrationEngine, current, updatedAt);
+                failures += 1;
+                continue;
+              }
             }
           }
-        }
 
-        const dispatchCommandId = CommandId.makeUnsafe(timeOrderedUuid());
-        const runningWorkflow = withCrossReviewRunning(
-          pendingWorkflow,
-          investigatorKey,
-          crossReviewThreadId,
-          updatedAt,
-          dispatchCommandId,
-        );
-        yield* upsertWorkflow(orchestrationEngine, runningWorkflow, updatedAt);
-        const turnOutcome = yield* Effect.exit(
-          startCrossReviewTurn({
-            orchestrationEngine,
-            commandId: dispatchCommandId,
-            workflow: runningWorkflow,
-            investigator: runningWorkflow[investigatorKey],
-            peerLabel: peer.label,
-            peerReport,
-            retry: hasPriorThreadWork(crossReviewThread)
-              ? { kind: "retry", reusedThread: true }
-              : { kind: "none" },
-            createdAt: updatedAt,
-          }),
-        );
-        if (turnOutcome._tag === "Failure") {
-          nextWorkflow = withCrossReviewError({
-            workflow: runningWorkflow,
-            investigatorKey,
-            error: String(turnOutcome.cause),
-            updatedAt,
-          });
-          yield* upsertWorkflow(orchestrationEngine, nextWorkflow, updatedAt);
-          continue;
-        }
-        nextWorkflow = runningWorkflow;
-      }
-      return nextWorkflow;
-    });
-
-  const maybeStartSelfReviews = (
-    workflow: InvestigationWorkflow,
-    snapshotAtCall: OrchestrationReadModel | null,
-    updatedAt: string,
-  ) =>
-    Effect.gen(function* () {
-      if (
-        isDeletedWorkflow(workflow) ||
-        isArchivedWorkflow(workflow) ||
-        !workflow.selfReviewEnabled ||
-        workflow.investigatorA.investigationStatus !== "completed" ||
-        workflow.investigatorB.investigationStatus !== "completed"
-      ) {
-        return workflow;
-      }
-
-      let nextWorkflow = workflow;
-      for (const investigatorKey of ["investigatorA", "investigatorB"] as const) {
-        const investigator = nextWorkflow[investigatorKey];
-        if (
-          investigator.selfReviewStatus === "running" ||
-          investigator.selfReviewStatus === "completed" ||
-          investigator.selfReviewStatus === "error"
-        ) {
-          continue;
-        }
-
-        let pendingWorkflow = nextWorkflow;
-        if (investigator.selfReviewStatus === "not_started") {
-          pendingWorkflow = withSelfReviewPendingStart(nextWorkflow, investigatorKey, updatedAt);
-          yield* upsertWorkflow(orchestrationEngine, pendingWorkflow, updatedAt);
-        }
-
-        let pendingInvestigator = pendingWorkflow[investigatorKey];
-        const snapshot = snapshotAtCall ?? (yield* orchestrationEngine.getReadModel());
-        const ownReport = investigationReport(snapshot, pendingInvestigator);
-        if (!ownReport || ownReport.trim().length === 0) {
-          nextWorkflow = withSelfReviewError({
-            workflow: pendingWorkflow,
-            investigatorKey,
-            error: SELF_REVIEW_OUTPUT_NOT_FOUND,
-            updatedAt,
-          });
-          yield* upsertWorkflow(orchestrationEngine, nextWorkflow, updatedAt);
-          continue;
-        }
-
-        const selfReviewThreadId =
-          pendingInvestigator.selfReviewThreadId ?? ThreadId.makeUnsafe(crypto.randomUUID());
-        if (pendingInvestigator.selfReviewThreadId === null) {
-          pendingWorkflow = withSelfReviewThreadPrepared(
-            pendingWorkflow,
-            investigatorKey,
-            selfReviewThreadId,
+          const dispatchCommandId = CommandId.makeUnsafe(timeOrderedUuid());
+          const runningWorkflow = withReviewTask(
+            current,
+            task,
+            { status: "running", threadId, dispatchCommandId, error: null },
             updatedAt,
           );
-          pendingInvestigator = pendingWorkflow[investigatorKey];
-          yield* upsertWorkflow(orchestrationEngine, pendingWorkflow, updatedAt);
-        }
-
-        let selfReviewThread = liveThreadById(snapshot, selfReviewThreadId);
-        if (!selfReviewThread) {
-          const createOutcome = yield* Effect.exit(
-            createSelfReviewThread({
-              orchestrationEngine,
-              workflow: pendingWorkflow,
-              threadId: selfReviewThreadId,
-              investigator: pendingInvestigator,
-              title:
-                investigatorKey === "investigatorA" ? "Own-model review A" : "Own-model review B",
-              createdAt: updatedAt,
-            }),
+          yield* upsertWorkflow(orchestrationEngine, runningWorkflow, updatedAt);
+          const retry: WorkflowRetryContext = hasPriorThreadWork(thread)
+            ? { kind: "retry", reusedThread: true }
+            : { kind: "none" };
+          const turnOutcome = yield* Effect.exit(
+            task.kind === "cross"
+              ? startCrossReviewTurn({
+                  orchestrationEngine,
+                  commandId: dispatchCommandId,
+                  workflow: runningWorkflow,
+                  investigator: requireInvestigator(runningWorkflow, task.reviewerId),
+                  threadId,
+                  peerLabel: investigatorLabel(runningWorkflow, task.revieweeId),
+                  peerReport: report,
+                  retry,
+                  createdAt: updatedAt,
+                })
+              : startSelfReviewTurn({
+                  orchestrationEngine,
+                  commandId: dispatchCommandId,
+                  workflow: runningWorkflow,
+                  investigator: requireInvestigator(runningWorkflow, task.investigatorId),
+                  investigationReport: report,
+                  retry,
+                  createdAt: updatedAt,
+                }),
           );
-          if (createOutcome._tag === "Failure") {
-            const latestSnapshot = yield* orchestrationEngine.getReadModel();
-            selfReviewThread = liveThreadById(latestSnapshot, selfReviewThreadId);
-            if (!selfReviewThread) {
-              nextWorkflow = withSelfReviewError({
-                workflow: pendingWorkflow,
-                investigatorKey,
-                error: String(createOutcome.cause),
-                updatedAt,
-              });
-              yield* upsertWorkflow(orchestrationEngine, nextWorkflow, updatedAt);
-              continue;
-            }
+          if (turnOutcome._tag === "Failure") {
+            current = withReviewTask(
+              runningWorkflow,
+              task,
+              {
+                status: "error",
+                error: userFacingCauseMessage(turnOutcome.cause, "Could not start the review."),
+              },
+              updatedAt,
+            );
+            yield* upsertWorkflow(orchestrationEngine, current, updatedAt);
+            failures += 1;
+            continue;
           }
+          current = runningWorkflow;
         }
 
-        const dispatchCommandId = CommandId.makeUnsafe(timeOrderedUuid());
-        const runningWorkflow = withSelfReviewRunning(
-          pendingWorkflow,
-          investigatorKey,
-          selfReviewThreadId,
-          updatedAt,
-          dispatchCommandId,
-        );
-        yield* upsertWorkflow(orchestrationEngine, runningWorkflow, updatedAt);
-        const turnOutcome = yield* Effect.exit(
-          startSelfReviewTurn({
-            orchestrationEngine,
-            commandId: dispatchCommandId,
-            workflow: runningWorkflow,
-            investigator: runningWorkflow[investigatorKey],
-            investigationReport: ownReport,
-            retry: hasPriorThreadWork(selfReviewThread)
-              ? { kind: "retry", reusedThread: true }
-              : { kind: "none" },
-            createdAt: updatedAt,
-          }),
-        );
-        if (turnOutcome._tag === "Failure") {
-          nextWorkflow = withSelfReviewError({
-            workflow: runningWorkflow,
-            investigatorKey,
-            error: String(turnOutcome.cause),
-            updatedAt,
-          });
-          yield* upsertWorkflow(orchestrationEngine, nextWorkflow, updatedAt);
-          continue;
+        if (failures === 0) {
+          return current;
         }
-        nextWorkflow = runningWorkflow;
       }
-      return nextWorkflow;
     });
 
   const maybeStartSynthesis = (
@@ -1642,11 +1476,7 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
       if (
         isDeletedWorkflow(workflow) ||
         isArchivedWorkflow(workflow) ||
-        workflow.investigatorA.crossReviewStatus !== "completed" ||
-        workflow.investigatorB.crossReviewStatus !== "completed" ||
-        (workflow.selfReviewEnabled &&
-          (workflow.investigatorA.selfReviewStatus !== "completed" ||
-            workflow.investigatorB.selfReviewStatus !== "completed")) ||
+        !allReviewsCompleted(workflow) ||
         workflow.synthesis.status === "running" ||
         workflow.synthesis.status === "completed" ||
         workflow.synthesis.status === "error"
@@ -1662,17 +1492,7 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
 
       const snapshot = snapshotAtCall ?? (yield* orchestrationEngine.getReadModel());
       const contributions = collectSynthesisContributions(pendingWorkflow, snapshot);
-      if (
-        contributions.some(
-          (contribution) =>
-            !contribution.investigation ||
-            contribution.investigation.trim().length === 0 ||
-            !contribution.crossReviewOfThis ||
-            contribution.crossReviewOfThis.trim().length === 0 ||
-            (pendingWorkflow.selfReviewEnabled &&
-              (!contribution.selfReview || contribution.selfReview.trim().length === 0)),
-        )
-      ) {
+      if (synthesisContributionsMissing(pendingWorkflow, contributions)) {
         const errorWorkflow = withSynthesisError(
           pendingWorkflow,
           SYNTHESIS_OUTPUT_NOT_FOUND,
@@ -1734,7 +1554,10 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
           contributions: contributions.map((contribution) => ({
             label: contribution.label,
             investigation: contribution.investigation!,
-            crossReviewOfThis: contribution.crossReviewOfThis!,
+            crossReviews: contribution.crossReviews.map((review) => ({
+              reviewerLabel: review.reviewerLabel,
+              text: review.text!,
+            })),
             selfReview: contribution.selfReview,
           })),
           retry: hasPriorThreadWork(synthesisThread)
@@ -1755,75 +1578,38 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
       return runningWorkflow;
     });
 
-  const maybeSelfHealCrossReviewSentinels = (
+  /**
+   * A review that failed only because its source report was missing goes back to
+   * `not_started` once that report exists.
+   */
+  const maybeSelfHealReviewSentinels = (
     workflow: InvestigationWorkflow,
     snapshot: OrchestrationReadModel,
     updatedAt: string,
   ) =>
     Effect.gen(function* () {
       let nextWorkflow = workflow;
-      for (const investigatorKey of ["investigatorA", "investigatorB"] as const) {
-        const investigator = nextWorkflow[investigatorKey];
-        if (
-          investigator.crossReviewStatus !== "error" ||
-          investigator.error !== CROSS_REVIEW_OUTPUT_NOT_FOUND
-        ) {
+      for (const task of investigationReviewTasks(workflow)) {
+        const state = reviewTaskState(nextWorkflow, task);
+        const sentinel =
+          task.kind === "cross" ? CROSS_REVIEW_OUTPUT_NOT_FOUND : SELF_REVIEW_OUTPUT_NOT_FOUND;
+        if (state.status !== "error" || state.error !== sentinel) {
           continue;
         }
-        const peer = nextWorkflow[peerKey(investigatorKey)];
-        const peerReport = investigationReport(snapshot, peer);
-        if (!peerReport || peerReport.trim().length === 0) {
-          continue;
-        }
-        nextWorkflow = updateInvestigator(
-          nextWorkflow,
-          investigatorKey,
-          {
-            ...investigator,
-            crossReviewStatus: "not_started",
-            error: null,
-            updatedAt,
-          },
-          updatedAt,
+        const sourceReport = investigationReport(
+          snapshot,
+          requireInvestigator(
+            nextWorkflow,
+            task.kind === "cross" ? task.revieweeId : task.investigatorId,
+          ),
         );
-      }
-      if (nextWorkflow !== workflow) {
-        yield* upsertWorkflow(orchestrationEngine, nextWorkflow, updatedAt);
-      }
-      return nextWorkflow;
-    });
-
-  const maybeSelfHealSelfReviewSentinels = (
-    workflow: InvestigationWorkflow,
-    snapshot: OrchestrationReadModel,
-    updatedAt: string,
-  ) =>
-    Effect.gen(function* () {
-      if (!workflow.selfReviewEnabled) {
-        return workflow;
-      }
-      let nextWorkflow = workflow;
-      for (const investigatorKey of ["investigatorA", "investigatorB"] as const) {
-        const investigator = nextWorkflow[investigatorKey];
-        if (
-          investigator.selfReviewStatus !== "error" ||
-          investigator.error !== SELF_REVIEW_OUTPUT_NOT_FOUND
-        ) {
+        if (isBlank(sourceReport)) {
           continue;
         }
-        const ownReport = investigationReport(snapshot, investigator);
-        if (!ownReport || ownReport.trim().length === 0) {
-          continue;
-        }
-        nextWorkflow = updateInvestigator(
+        nextWorkflow = withReviewTask(
           nextWorkflow,
-          investigatorKey,
-          {
-            ...investigator,
-            selfReviewStatus: "not_started",
-            error: null,
-            updatedAt,
-          },
+          task,
+          { status: "not_started", error: null },
           updatedAt,
         );
       }
@@ -1845,17 +1631,8 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
       ) {
         return workflow;
       }
-      const contributions = collectSynthesisContributions(workflow, snapshot);
       if (
-        contributions.some(
-          (contribution) =>
-            !contribution.investigation ||
-            contribution.investigation.trim().length === 0 ||
-            !contribution.crossReviewOfThis ||
-            contribution.crossReviewOfThis.trim().length === 0 ||
-            (workflow.selfReviewEnabled &&
-              (!contribution.selfReview || contribution.selfReview.trim().length === 0)),
-        )
+        synthesisContributionsMissing(workflow, collectSynthesisContributions(workflow, snapshot))
       ) {
         return workflow;
       }
@@ -1909,75 +1686,104 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
         );
       }
 
-      for (const investigatorKey of ["investigatorA", "investigatorB"] as const) {
-        const investigator = reconciledWorkflow[investigatorKey];
-        const advancedWorkflow = yield* maybeAdvanceWorkflowFromCompletedThread(
+      const sessionStillRunning = (
+        currentSnapshot: OrchestrationReadModel,
+        threadId: ThreadId | null,
+      ): boolean => {
+        const thread =
+          threadId === null ? null : currentSnapshot.threads.find((entry) => entry.id === threadId);
+        const sessionStatus = thread?.session?.status ?? null;
+        return !!thread && sessionStatus !== "error" && sessionStatus !== "stopped";
+      };
+
+      const failLostReviewTurns = (
+        current: InvestigationWorkflow,
+        currentSnapshot: OrchestrationReadModel,
+      ) =>
+        Effect.gen(function* () {
+          let next = current;
+          for (const task of investigationReviewTasks(current)) {
+            const state = reviewTaskState(next, task);
+            if (state.status !== "running") {
+              continue;
+            }
+            // The launcher saves `running` and the command id before dispatching. With no
+            // delivery row for that command, the dispatch never happened: queue it again.
+            if (state.dispatchCommandId && deliveryRepository._tag === "Some") {
+              const delivery = yield* deliveryRepository.value
+                .getByCommandId(state.dispatchCommandId)
+                .pipe(Effect.orElseSucceed(() => undefined));
+              if (delivery === null) {
+                next = withReviewTask(
+                  next,
+                  task,
+                  { status: "pending_start", dispatchCommandId: null, error: null },
+                  updatedAt,
+                );
+                yield* upsertWorkflow(orchestrationEngine, next, next.updatedAt);
+                continue;
+              }
+            }
+            if (sessionStillRunning(currentSnapshot, state.threadId)) {
+              continue;
+            }
+            next = withReviewTask(
+              next,
+              task,
+              {
+                status: "error",
+                error:
+                  task.kind === "cross"
+                    ? "Cross-review session was not running during reconciliation."
+                    : "Own-model review session was not running during reconciliation.",
+              },
+              updatedAt,
+            );
+            yield* upsertWorkflow(orchestrationEngine, next, next.updatedAt);
+          }
+          return next;
+        });
+
+      for (const { investigator } of investigationInvestigators(workflow)) {
+        reconciledWorkflow = yield* maybeAdvanceWorkflowFromCompletedThread(
           reconciledWorkflow,
           reconciliationSnapshot,
           investigator.investigationThreadId,
           updatedAt,
         );
-        if (advancedWorkflow !== reconciledWorkflow) {
-          reconciledWorkflow = advancedWorkflow;
-        }
       }
 
       reconciledWorkflow = yield* startPendingInvestigations(reconciledWorkflow, updatedAt);
       reconciliationSnapshot = yield* orchestrationEngine.getReadModel();
-      reconciledWorkflow = yield* maybeSelfHealCrossReviewSentinels(
+
+      // Review turns that finished across the restart complete first, so their slots are free.
+      for (const task of investigationReviewTasks(reconciledWorkflow)) {
+        const threadId = reviewTaskState(reconciledWorkflow, task).threadId;
+        if (threadId === null) {
+          continue;
+        }
+        reconciledWorkflow = yield* maybeAdvanceWorkflowFromCompletedThread(
+          reconciledWorkflow,
+          reconciliationSnapshot,
+          threadId,
+          updatedAt,
+        );
+      }
+
+      // Reviews whose session died across the restart fail before queued reviews launch.
+      reconciledWorkflow = yield* failLostReviewTurns(reconciledWorkflow, reconciliationSnapshot);
+
+      reconciledWorkflow = yield* maybeSelfHealReviewSentinels(
         reconciledWorkflow,
         reconciliationSnapshot,
         updatedAt,
       );
-      reconciledWorkflow = yield* maybeStartCrossReviews(
+      reconciledWorkflow = yield* maybeStartReviews(
         reconciledWorkflow,
         reconciliationSnapshot,
         updatedAt,
       );
       reconciliationSnapshot = yield* orchestrationEngine.getReadModel();
-      reconciledWorkflow = yield* maybeSelfHealSelfReviewSentinels(
-        reconciledWorkflow,
-        reconciliationSnapshot,
-        updatedAt,
-      );
-      reconciledWorkflow = yield* maybeStartSelfReviews(
-        reconciledWorkflow,
-        reconciliationSnapshot,
-        updatedAt,
-      );
-      reconciliationSnapshot = yield* orchestrationEngine.getReadModel();
-
-      for (const investigatorKey of ["investigatorA", "investigatorB"] as const) {
-        const investigator = reconciledWorkflow[investigatorKey];
-        if (investigator.crossReviewThreadId === null) {
-          continue;
-        }
-        const advancedWorkflow = yield* maybeAdvanceWorkflowFromCompletedThread(
-          reconciledWorkflow,
-          reconciliationSnapshot,
-          investigator.crossReviewThreadId,
-          updatedAt,
-        );
-        if (advancedWorkflow !== reconciledWorkflow) {
-          reconciledWorkflow = advancedWorkflow;
-        }
-      }
-
-      for (const investigatorKey of ["investigatorA", "investigatorB"] as const) {
-        const investigator = reconciledWorkflow[investigatorKey];
-        if (investigator.selfReviewThreadId === null) {
-          continue;
-        }
-        const advancedWorkflow = yield* maybeAdvanceWorkflowFromCompletedThread(
-          reconciledWorkflow,
-          reconciliationSnapshot,
-          investigator.selfReviewThreadId,
-          updatedAt,
-        );
-        if (advancedWorkflow !== reconciledWorkflow) {
-          reconciledWorkflow = advancedWorkflow;
-        }
-      }
 
       reconciledWorkflow = yield* maybeSelfHealSynthesisSentinel(
         reconciledWorkflow,
@@ -1992,93 +1798,35 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
       reconciliationSnapshot = yield* orchestrationEngine.getReadModel();
 
       if (reconciledWorkflow.synthesis.threadId !== null) {
-        const advancedWorkflow = yield* maybeAdvanceWorkflowFromCompletedThread(
+        reconciledWorkflow = yield* maybeAdvanceWorkflowFromCompletedThread(
           reconciledWorkflow,
           reconciliationSnapshot,
           reconciledWorkflow.synthesis.threadId,
           updatedAt,
         );
-        if (advancedWorkflow !== reconciledWorkflow) {
-          reconciledWorkflow = advancedWorkflow;
-        }
       }
 
-      for (const investigatorKey of ["investigatorA", "investigatorB"] as const) {
-        const investigator = reconciledWorkflow[investigatorKey];
-        if (investigator.investigationStatus === "running") {
-          const thread = reconciliationSnapshot.threads.find(
-            (entry) => entry.id === investigator.investigationThreadId,
+      for (const { id: investigatorId } of investigationInvestigators(reconciledWorkflow)) {
+        const investigator = requireInvestigator(reconciledWorkflow, investigatorId);
+        if (investigator.investigationStatus !== "running") {
+          continue;
+        }
+        if (!sessionStillRunning(reconciliationSnapshot, investigator.investigationThreadId)) {
+          reconciledWorkflow = withInvestigationError({
+            workflow: reconciledWorkflow,
+            investigatorId,
+            error: "Investigation session was not running during reconciliation.",
+            updatedAt,
+          });
+          yield* upsertWorkflow(
+            orchestrationEngine,
+            reconciledWorkflow,
+            reconciledWorkflow.updatedAt,
           );
-          const sessionStatus = thread?.session?.status ?? null;
-          if (!thread || sessionStatus === "error" || sessionStatus === "stopped") {
-            reconciledWorkflow = withInvestigationError({
-              workflow: reconciledWorkflow,
-              investigatorKey,
-              error: "Investigation session was not running during reconciliation.",
-              updatedAt,
-            });
-            yield* upsertWorkflow(
-              orchestrationEngine,
-              reconciledWorkflow,
-              reconciledWorkflow.updatedAt,
-            );
-          }
-        }
-        if (investigator.crossReviewStatus === "running") {
-          const thread =
-            investigator.crossReviewThreadId === null
-              ? null
-              : reconciliationSnapshot.threads.find(
-                  (entry) => entry.id === investigator.crossReviewThreadId,
-                );
-          const sessionStatus = thread?.session?.status ?? null;
-          if (!thread || sessionStatus === "error" || sessionStatus === "stopped") {
-            reconciledWorkflow = withCrossReviewError({
-              workflow: reconciledWorkflow,
-              investigatorKey,
-              error: "Cross-review session was not running during reconciliation.",
-              updatedAt,
-            });
-            yield* upsertWorkflow(
-              orchestrationEngine,
-              reconciledWorkflow,
-              reconciledWorkflow.updatedAt,
-            );
-          }
-        }
-        if (investigator.selfReviewStatus === "running") {
-          const thread =
-            investigator.selfReviewThreadId === null
-              ? null
-              : reconciliationSnapshot.threads.find(
-                  (entry) => entry.id === investigator.selfReviewThreadId,
-                );
-          const sessionStatus = thread?.session?.status ?? null;
-          if (!thread || sessionStatus === "error" || sessionStatus === "stopped") {
-            reconciledWorkflow = withSelfReviewError({
-              workflow: reconciledWorkflow,
-              investigatorKey,
-              error: "Own-model review session was not running during reconciliation.",
-              updatedAt,
-            });
-            yield* upsertWorkflow(
-              orchestrationEngine,
-              reconciledWorkflow,
-              reconciledWorkflow.updatedAt,
-            );
-          }
         }
       }
-
       if (reconciledWorkflow.synthesis.status === "running") {
-        const thread =
-          reconciledWorkflow.synthesis.threadId === null
-            ? null
-            : reconciliationSnapshot.threads.find(
-                (entry) => entry.id === reconciledWorkflow.synthesis.threadId,
-              );
-        const sessionStatus = thread?.session?.status ?? null;
-        if (!thread || sessionStatus === "error" || sessionStatus === "stopped") {
+        if (!sessionStillRunning(reconciliationSnapshot, reconciledWorkflow.synthesis.threadId)) {
           reconciledWorkflow = withSynthesisError(
             reconciledWorkflow,
             "Synthesis session was not running during reconciliation.",
@@ -2133,8 +1881,7 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
             event.payload.threadId,
             event.occurredAt,
           );
-          nextWorkflow = yield* maybeStartCrossReviews(nextWorkflow, readModel, event.occurredAt);
-          nextWorkflow = yield* maybeStartSelfReviews(nextWorkflow, readModel, event.occurredAt);
+          nextWorkflow = yield* maybeStartReviews(nextWorkflow, readModel, event.occurredAt);
           yield* maybeStartSynthesis(nextWorkflow, readModel, event.occurredAt);
           return;
         }
@@ -2168,9 +1915,9 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
                   MAX_PROFILE_TIMEOUT_RETRIES &&
                 workflowBudgetError(workflow) === null
               ) {
-                const retryWorkflow = updateInvestigator(
+                const retryWorkflow = setInvestigator(
                   workflow,
-                  investigation.investigatorKey,
+                  investigation.investigatorId,
                   {
                     ...investigation.investigator,
                     investigationStatus: "pending",
@@ -2189,7 +1936,7 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
                 orchestrationEngine,
                 withInvestigationError({
                   workflow,
-                  investigatorKey: investigation.investigatorKey,
+                  investigatorId: investigation.investigatorId,
                   error: event.payload.session.lastError ?? "Investigation failed.",
                   updatedAt: event.occurredAt,
                 }),
@@ -2210,127 +1957,76 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
                 event.payload.threadId,
                 event.occurredAt,
               );
-              const crossReviewWorkflow = yield* maybeStartCrossReviews(
-                nextWorkflow,
-                readModel,
-                event.occurredAt,
-              );
-              yield* maybeStartSelfReviews(crossReviewWorkflow, readModel, event.occurredAt);
+              yield* maybeStartReviews(nextWorkflow, readModel, event.occurredAt);
             }
             return;
           }
 
           const crossReview = crossReviewMatch(workflow, event.payload.threadId);
-          if (crossReview) {
-            if (
-              event.payload.session.status === "error" &&
-              crossReview.investigator.crossReviewStatus === "running"
-            ) {
+          const selfReview = crossReview ? null : selfReviewMatch(workflow, event.payload.threadId);
+          const reviewTask: InvestigationReviewTask | null = crossReview
+            ? {
+                kind: "cross",
+                reviewerId: crossReview.reviewerId,
+                revieweeId: crossReview.revieweeId,
+              }
+            : selfReview
+              ? { kind: "self", investigatorId: selfReview.investigatorId }
+              : null;
+          if (reviewTask) {
+            const reviewState = reviewTaskState(workflow, reviewTask);
+            if (event.payload.session.status === "error" && reviewState.status === "running") {
               if (
                 event.payload.session.lastErrorRetryability === "retryable" &&
-                (crossReview.investigator.crossReviewRetryCount ?? 0) <
-                  MAX_PROFILE_TIMEOUT_RETRIES &&
+                reviewState.retryCount < MAX_PROFILE_TIMEOUT_RETRIES &&
                 workflowBudgetError(workflow) === null
               ) {
-                const retryWorkflow = updateInvestigator(
+                const retryWorkflow = withReviewTask(
                   workflow,
-                  crossReview.investigatorKey,
+                  reviewTask,
                   {
-                    ...crossReview.investigator,
-                    crossReviewStatus: "pending_start",
+                    status: "pending_start",
                     error: null,
-                    crossReviewRetryCount:
-                      (crossReview.investigator.crossReviewRetryCount ?? 0) + 1,
-                    updatedAt: event.occurredAt,
+                    retryCount: reviewState.retryCount + 1,
                   },
                   event.occurredAt,
                 );
                 yield* upsertWorkflow(orchestrationEngine, retryWorkflow, event.occurredAt);
-                yield* maybeStartCrossReviews(retryWorkflow, readModel, event.occurredAt);
+                yield* maybeStartReviews(retryWorkflow, readModel, event.occurredAt);
                 return;
               }
-              yield* upsertWorkflow(
-                orchestrationEngine,
-                withCrossReviewError({
-                  workflow,
-                  investigatorKey: crossReview.investigatorKey,
-                  error: event.payload.session.lastError ?? "Cross-review failed.",
-                  updatedAt: event.occurredAt,
-                }),
+              const failedWorkflow = withReviewTask(
+                workflow,
+                reviewTask,
+                {
+                  status: "error",
+                  error:
+                    event.payload.session.lastError ??
+                    (reviewTask.kind === "cross"
+                      ? "Cross-review failed."
+                      : "Own-model review failed."),
+                },
                 event.occurredAt,
               );
+              yield* upsertWorkflow(orchestrationEngine, failedWorkflow, event.occurredAt);
+              // The failed review frees its slot for the next queued one.
+              yield* maybeStartReviews(failedWorkflow, readModel, event.occurredAt);
               return;
             }
             if (
               event.payload.session.status === "ready" &&
-              crossReview.investigator.crossReviewStatus === "running" &&
+              reviewState.status === "running" &&
               isLatestTurnFinishedAndConsumable(
                 readModel.threads.find((entry) => entry.id === event.payload.threadId),
               )
             ) {
-              const nextWorkflow = yield* maybeAdvanceWorkflowFromCompletedThread(
+              let nextWorkflow = yield* maybeAdvanceWorkflowFromCompletedThread(
                 workflow,
                 readModel,
                 event.payload.threadId,
                 event.occurredAt,
               );
-              yield* maybeStartSynthesis(nextWorkflow, readModel, event.occurredAt);
-            }
-            return;
-          }
-
-          const selfReview = selfReviewMatch(workflow, event.payload.threadId);
-          if (selfReview) {
-            if (
-              event.payload.session.status === "error" &&
-              selfReview.investigator.selfReviewStatus === "running"
-            ) {
-              if (
-                event.payload.session.lastErrorRetryability === "retryable" &&
-                (selfReview.investigator.selfReviewRetryCount ?? 0) < MAX_PROFILE_TIMEOUT_RETRIES &&
-                workflowBudgetError(workflow) === null
-              ) {
-                const retryWorkflow = updateInvestigator(
-                  workflow,
-                  selfReview.investigatorKey,
-                  {
-                    ...selfReview.investigator,
-                    selfReviewStatus: "pending_start",
-                    error: null,
-                    selfReviewRetryCount: (selfReview.investigator.selfReviewRetryCount ?? 0) + 1,
-                    updatedAt: event.occurredAt,
-                  },
-                  event.occurredAt,
-                );
-                yield* upsertWorkflow(orchestrationEngine, retryWorkflow, event.occurredAt);
-                yield* maybeStartSelfReviews(retryWorkflow, readModel, event.occurredAt);
-                return;
-              }
-              yield* upsertWorkflow(
-                orchestrationEngine,
-                withSelfReviewError({
-                  workflow,
-                  investigatorKey: selfReview.investigatorKey,
-                  error: event.payload.session.lastError ?? "Own-model review failed.",
-                  updatedAt: event.occurredAt,
-                }),
-                event.occurredAt,
-              );
-              return;
-            }
-            if (
-              event.payload.session.status === "ready" &&
-              selfReview.investigator.selfReviewStatus === "running" &&
-              isLatestTurnFinishedAndConsumable(
-                readModel.threads.find((entry) => entry.id === event.payload.threadId),
-              )
-            ) {
-              const nextWorkflow = yield* maybeAdvanceWorkflowFromCompletedThread(
-                workflow,
-                readModel,
-                event.payload.threadId,
-                event.occurredAt,
-              );
+              nextWorkflow = yield* maybeStartReviews(nextWorkflow, readModel, event.occurredAt);
               yield* maybeStartSynthesis(nextWorkflow, readModel, event.occurredAt);
             }
             return;
@@ -2426,8 +2122,7 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
         outcome.threadId,
         updatedAt,
       );
-      nextWorkflow = yield* maybeStartCrossReviews(nextWorkflow, readModel, updatedAt);
-      nextWorkflow = yield* maybeStartSelfReviews(nextWorkflow, readModel, updatedAt);
+      nextWorkflow = yield* maybeStartReviews(nextWorkflow, readModel, updatedAt);
       yield* maybeStartSynthesis(nextWorkflow, readModel, updatedAt);
     }).pipe(
       Effect.catchCause((cause) =>
@@ -2481,10 +2176,20 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
   const createWorkflow: InvestigationWorkflowServiceShape["createWorkflow"] = (rawInput) =>
     Effect.gen(function* () {
       const providers = yield* getWorkflowProviders;
+      const requestedInvestigatorSlots = investigationInputInvestigatorSlots(rawInput);
+      if (requestedInvestigatorSlots.length > WORKFLOW_MESH_MAX_PARTICIPANTS) {
+        return yield* Effect.fail(
+          new Error(
+            `Investigation workflows support up to ${WORKFLOW_MESH_MAX_PARTICIPANTS} investigators.`,
+          ),
+        );
+      }
+      const investigatorSlots = requestedInvestigatorSlots.map((slot) =>
+        resolveAvailableWorkflowModelSlot(slot, providers),
+      );
       const input = {
         ...rawInput,
-        investigatorA: resolveAvailableWorkflowModelSlot(rawInput.investigatorA, providers),
-        investigatorB: resolveAvailableWorkflowModelSlot(rawInput.investigatorB, providers),
+        ...investigationInputInvestigatorFields(investigatorSlots),
         synthesis: resolveAvailableWorkflowModelSlot(rawInput.synthesis, providers),
       };
       const behavior = yield* Effect.try({
@@ -2503,30 +2208,42 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
       });
       yield* Effect.try({
         try: () => {
-          assertWorkflowStageProviderSupported({
-            behavior,
-            stage: "investigation",
-            provider: input.investigatorA.provider,
-          });
-          assertWorkflowStageProviderSupported({
-            behavior,
-            stage: "investigation",
-            provider: input.investigatorB.provider,
-          });
+          for (const slot of investigatorSlots) {
+            assertWorkflowStageProviderSupported({
+              behavior,
+              stage: "investigation",
+              provider: slot.provider,
+              providers,
+            });
+          }
           assertWorkflowStageProviderSupported({
             behavior,
             stage: "synthesis",
             provider: input.synthesis.provider,
+            providers,
           });
         },
         catch: (error) => error as UnsupportedWorkflowProviderError,
       });
-      if (
-        input.investigatorA.provider === input.investigatorB.provider &&
-        input.investigatorA.model === input.investigatorB.model
-      ) {
+      if (workflowModelSlotsHaveDuplicate(investigatorSlots)) {
         return yield* Effect.fail(
-          new Error("Investigation investigator models must be different."),
+          new Error(
+            investigatorSlots.length === 2
+              ? "Investigation investigator models must be different."
+              : "Investigation workflows need a different model for every investigator.",
+          ),
+        );
+      }
+      const selfReviewEnabled = input.selfReviewEnabled ?? false;
+      const synthesisShare = investigationSynthesisShareAtCreation({
+        problemPrompt: input.problemPrompt,
+        investigatorCount: investigatorSlots.length,
+        selfReviewEnabled,
+        renderedMessageCharLimit: WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT,
+      });
+      if (synthesisShare !== null && synthesisShare < WORKFLOW_FAN_IN_MIN_ARTIFACT_CHARS) {
+        return yield* Effect.fail(
+          new Error(synthesisShareMessage(investigatorSlots.length, synthesisShare)),
         );
       }
 
@@ -2540,8 +2257,10 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
       );
       const now = new Date().toISOString();
       const workflowId = InvestigationWorkflowId.makeUnsafe(crypto.randomUUID());
-      const investigationThreadIdA = ThreadId.makeUnsafe(crypto.randomUUID());
-      const investigationThreadIdB = ThreadId.makeUnsafe(crypto.randomUUID());
+      const investigators = investigatorSlots.map((slot) => ({
+        slot,
+        threadId: ThreadId.makeUnsafe(crypto.randomUUID()),
+      }));
       const titleSourceText = input.branch
         ? `Branch: ${input.branch}\n\n${input.problemPrompt}`
         : input.problemPrompt;
@@ -2562,12 +2281,9 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
         templateVersion: behavior.templateVersion,
         problemPrompt: input.problemPrompt,
         branch: input.branch ?? null,
-        selfReviewEnabled: input.selfReviewEnabled ?? false,
+        selfReviewEnabled,
         createdAt: now,
-        investigationThreadIdA,
-        investigationThreadIdB,
-        investigatorA: input.investigatorA,
-        investigatorB: input.investigatorB,
+        investigators,
         synthesis: input.synthesis,
         maxCostUsd: input.maxCostUsd,
       });
@@ -2583,34 +2299,25 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
         templateVersion: behavior.templateVersion,
         problemPrompt: input.problemPrompt,
         branch: input.branch ?? null,
-        selfReviewEnabled: input.selfReviewEnabled ?? false,
-        investigatorA: input.investigatorA,
-        investigatorB: input.investigatorB,
+        selfReviewEnabled,
+        ...investigationCommandInvestigatorFields(investigators),
         synthesis: input.synthesis,
         maxCostUsd: input.maxCostUsd ?? null,
-        investigationThreadIdA,
-        investigationThreadIdB,
         createdAt: now,
       });
 
-      yield* Effect.all([
-        createInvestigationThread({
-          orchestrationEngine,
-          workflow,
-          threadId: investigationThreadIdA,
-          investigator: workflow.investigatorA,
-          title: "Investigator A",
-          createdAt: now,
-        }),
-        createInvestigationThread({
-          orchestrationEngine,
-          workflow,
-          threadId: investigationThreadIdB,
-          investigator: workflow.investigatorB,
-          title: "Investigator B",
-          createdAt: now,
-        }),
-      ]).pipe(
+      yield* Effect.all(
+        investigationInvestigators(workflow).map(({ id, investigator }) =>
+          createInvestigatorThread({
+            orchestrationEngine,
+            workflow,
+            threadId: investigator.investigationThreadId,
+            investigator,
+            title: `Investigator ${workflowParticipantLabel(id)}`,
+            createdAt: now,
+          }),
+        ),
+      ).pipe(
         Effect.catchCause((cause) =>
           dispatchWorkflowDeleteCompensation({
             orchestrationEngine,
@@ -2697,35 +2404,28 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
       const updatedAt = new Date().toISOString();
       let nextWorkflow = workflow;
       const scope = input.scope ?? "failed";
+      const investigators = investigationInvestigators(workflow);
+      const allInvestigationsNoun = investigators.length === 2 ? "Both" : "All";
       if (scope === "crossReview") {
-        if (
-          workflow.investigatorA.investigationStatus !== "completed" ||
-          workflow.investigatorB.investigationStatus !== "completed"
-        ) {
+        if (!allInvestigationsCompleted(workflow)) {
           return yield* Effect.fail(
-            new Error("Both investigations must be completed before retrying cross-review."),
+            new Error(
+              `${allInvestigationsNoun} investigations must be completed before retrying cross-review.`,
+            ),
           );
         }
         nextWorkflow = resetCrossReviewsAndSynthesis(workflow, updatedAt);
       } else if (scope === "selfReview") {
-        if (
-          !workflow.selfReviewEnabled ||
-          workflow.investigatorA.investigationStatus !== "completed" ||
-          workflow.investigatorB.investigationStatus !== "completed"
-        ) {
+        if (!workflow.selfReviewEnabled || !allInvestigationsCompleted(workflow)) {
           return yield* Effect.fail(
-            new Error("Both investigations must be completed before retrying own-model review."),
+            new Error(
+              `${allInvestigationsNoun} investigations must be completed before retrying own-model review.`,
+            ),
           );
         }
         nextWorkflow = resetSelfReviewsAndSynthesis(workflow, updatedAt);
       } else if (scope === "synthesis") {
-        if (
-          workflow.investigatorA.crossReviewStatus !== "completed" ||
-          workflow.investigatorB.crossReviewStatus !== "completed" ||
-          (workflow.selfReviewEnabled &&
-            (workflow.investigatorA.selfReviewStatus !== "completed" ||
-              workflow.investigatorB.selfReviewStatus !== "completed"))
-        ) {
+        if (!allReviewsCompleted(workflow)) {
           return yield* Effect.fail(
             new Error("All required reviews must be completed before retrying synthesis."),
           );
@@ -2736,66 +2436,52 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
           updatedAt,
         };
       } else {
-        let resetInvestigation = false;
-        nextWorkflow = {
-          ...workflow,
-          investigatorA:
-            workflow.investigatorA.investigationStatus === "error"
-              ? {
-                  ...workflow.investigatorA,
-                  investigationStatus: "pending",
-                  investigationTurnId: null,
-                  investigationMessageId: null,
-                  error: null,
-                  updatedAt,
-                }
-              : workflow.investigatorA,
-          investigatorB:
-            workflow.investigatorB.investigationStatus === "error"
-              ? {
-                  ...workflow.investigatorB,
-                  investigationStatus: "pending",
-                  investigationTurnId: null,
-                  investigationMessageId: null,
-                  error: null,
-                  updatedAt,
-                }
-              : workflow.investigatorB,
-          updatedAt,
-        };
-        resetInvestigation =
-          workflow.investigatorA.investigationStatus === "error" ||
-          workflow.investigatorB.investigationStatus === "error";
+        // `failed` reruns only what errored. An errored investigation still resets every
+        // review, since each review reads investigation reports.
+        for (const { id, investigator } of investigators) {
+          if (investigator.investigationStatus !== "error") continue;
+          nextWorkflow = setInvestigator(
+            nextWorkflow,
+            id,
+            {
+              ...requireInvestigator(nextWorkflow, id),
+              investigationStatus: "pending",
+              investigationTurnId: null,
+              investigationMessageId: null,
+              error: null,
+              updatedAt,
+            },
+            updatedAt,
+          );
+        }
+        const resetInvestigation = investigators.some(
+          ({ investigator }) => investigator.investigationStatus === "error",
+        );
         if (resetInvestigation) {
           nextWorkflow = resetAllReviewsAndSynthesis(nextWorkflow, updatedAt);
         } else {
-          const shouldResetCrossReview =
-            workflow.investigatorA.crossReviewStatus === "error" ||
-            workflow.investigatorB.crossReviewStatus === "error";
-          const shouldResetSelfReview =
-            workflow.investigatorA.selfReviewStatus === "error" ||
-            workflow.investigatorB.selfReviewStatus === "error";
-          let investigatorA = nextWorkflow.investigatorA;
-          let investigatorB = nextWorkflow.investigatorB;
-          if (workflow.investigatorA.crossReviewStatus === "error") {
-            investigatorA = resetCrossReview(investigatorA, updatedAt);
-          }
-          if (workflow.investigatorB.crossReviewStatus === "error") {
-            investigatorB = resetCrossReview(investigatorB, updatedAt);
-          }
-          if (workflow.investigatorA.selfReviewStatus === "error") {
-            investigatorA = resetSelfReview(investigatorA, updatedAt);
-          }
-          if (workflow.investigatorB.selfReviewStatus === "error") {
-            investigatorB = resetSelfReview(investigatorB, updatedAt);
+          const erroredCrossReviews = investigationCrossReviews(workflow).filter(
+            (view) => view.status === "error",
+          );
+          const erroredSelfReviews = investigators.filter(
+            ({ investigator }) => investigator.selfReviewStatus === "error",
+          );
+          nextWorkflow = resetCrossReviews(nextWorkflow, updatedAt, (view) =>
+            erroredCrossReviews.some((errored) => sameInvestigationCrossReviewEdge(errored, view)),
+          );
+          for (const { id } of erroredSelfReviews) {
+            nextWorkflow = withReviewTask(
+              nextWorkflow,
+              { kind: "self", investigatorId: id },
+              RESET_REVIEW_PATCH,
+              updatedAt,
+            );
           }
           nextWorkflow = {
             ...nextWorkflow,
-            investigatorA,
-            investigatorB,
             synthesis:
-              shouldResetCrossReview ||
-              shouldResetSelfReview ||
+              erroredCrossReviews.length > 0 ||
+              erroredSelfReviews.length > 0 ||
               workflow.synthesis.status === "error"
                 ? resetSynthesis(nextWorkflow.synthesis, updatedAt)
                 : nextWorkflow.synthesis,
@@ -2807,8 +2493,7 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
       yield* upsertWorkflow(orchestrationEngine, nextWorkflow, updatedAt);
       nextWorkflow = yield* startPendingInvestigations(nextWorkflow, updatedAt);
       const snapshot = yield* orchestrationEngine.getReadModel();
-      nextWorkflow = yield* maybeStartCrossReviews(nextWorkflow, snapshot, updatedAt);
-      nextWorkflow = yield* maybeStartSelfReviews(nextWorkflow, snapshot, updatedAt);
+      nextWorkflow = yield* maybeStartReviews(nextWorkflow, snapshot, updatedAt);
       yield* maybeStartSynthesis(nextWorkflow, snapshot, updatedAt);
     });
 

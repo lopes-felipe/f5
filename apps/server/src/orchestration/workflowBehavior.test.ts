@@ -98,7 +98,35 @@ describe("workflowBehavior", () => {
     });
     const behavior = resolveWorkflowBehavior({ runKind: "planning", templateVersion: 2 });
     expect(() =>
-      assertWorkflowStageProviderSupported({ behavior, stage: "author", provider: "grok" }),
+      assertWorkflowStageProviderSupported({
+        behavior,
+        stage: "author",
+        provider: "grok",
+        providers: [],
+      }),
     ).toThrow(UnsupportedWorkflowProviderError);
+    // Antigravity needs a runtime certified for read-only workflow turns.
+    expect(() =>
+      assertWorkflowStageProviderSupported({
+        behavior,
+        stage: "author",
+        provider: "antigravity",
+        providers: [],
+      }),
+    ).toThrow("Read-only workflow turns are not certified for this Antigravity version.");
+    expect(() =>
+      assertWorkflowStageProviderSupported({
+        behavior,
+        stage: "author",
+        provider: "antigravity",
+        providers: [
+          {
+            instanceId: "antigravity" as never,
+            driver: "antigravity" as never,
+            runtimeCapabilities: { readOnlyWorkflowTurns: true } as never,
+          },
+        ],
+      }),
+    ).not.toThrow();
   });
 });

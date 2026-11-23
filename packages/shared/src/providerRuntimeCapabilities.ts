@@ -6,6 +6,7 @@ import {
   type ProviderSessionCapabilities,
 } from "@t3tools/contracts";
 import { providerMaxImages } from "./attachmentLimits";
+import { driverSupportsReadOnlyWorkflowTurns } from "./workflowProviders";
 
 export function supportsCodexAsyncQuestions(version: string | null | undefined): boolean {
   const match = version?.match(/(?:^|\s)v?(\d+)\.(\d+)\.(\d+)/);
@@ -38,6 +39,7 @@ export function supportsCodexRelease6(version: string | null | undefined): boole
 export function providerRuntimeCapabilities(
   driver: string,
   version?: string | null,
+  platform: string | undefined = globalThis.process?.platform,
 ): ProviderRuntimeCapabilities {
   const rollback =
     driver === "codex" || driver === "claudeAgent" || driver === "opencode" || driver === "pi";
@@ -78,6 +80,7 @@ export function providerRuntimeCapabilities(
       driver === "antigravity",
     instanceInventory: driver === "claudeAgent" || driver === "codex",
     nativeSessionCleanup: driver === "claudeAgent",
+    readOnlyWorkflowTurns: driverSupportsReadOnlyWorkflowTurns(driver, version, platform),
   };
 }
 

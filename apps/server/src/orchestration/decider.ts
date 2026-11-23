@@ -3,8 +3,11 @@ import { CommandId, EventId, MessageId } from "@t3tools/contracts";
 import { answerMessageIdFor } from "@t3tools/shared/answerDelivery";
 import {
   MAX_PINNED_THREADS,
+  PROVIDER_DISPLAY_NAMES,
   SCRIPT_RUN_COMMAND_PATTERN,
   ProjectId,
+  type ProviderKind,
+  type WorkflowModelSlot,
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
@@ -47,12 +50,34 @@ import {
   requireThreadNotArchived,
 } from "./commandInvariants.ts";
 import { validateThreadTaskTracking, validateThreadTasks } from "./threadTasks.ts";
-import { resolveWorkflowBehavior, documentWorkflowCreateInvariant } from "./workflowBehavior.ts";
+import {
+  resolveWorkflowBehavior,
+  documentWorkflowCreateInvariant,
+  type WorkflowBehaviorStage,
+  type WorkflowRunKind,
+} from "./workflowBehavior.ts";
 import {
   buildCodeReviewWorkflowRecord,
   buildInvestigationWorkflowRecord,
   buildPlanningWorkflowRecord,
+  codeReviewCommandReviewers,
+  investigationCommandInvestigators,
+  planningCommandAuthors,
 } from "./workflowRecordBuilders.ts";
+import {
+  codeReviewReviewers,
+  investigationCrossReviewsError,
+  investigationInvestigators,
+  planningBranches,
+  planReviewEdgesError,
+  workflowMaxParticipants,
+  workflowModelSlotsHaveDuplicate,
+  type WorkflowActorKind,
+} from "@t3tools/shared/workflowParticipants";
+import {
+  providerSupportsReadOnlyWorkflow,
+  type WorkflowProviderSnapshot,
+} from "@t3tools/shared/workflowProviders";
 
 const nowIso = () => new Date().toISOString();
 const DEFAULT_ASSISTANT_DELIVERY_MODE = "buffered" as const;
@@ -116,6 +141,85 @@ function unsupportedWorkflowBehaviorMessage(input: {
   }
 }
 
+const WORKFLOW_ACTOR_NOUNS: Record<WorkflowActorKind, string> = {
+  planning: "authors",
+  document: "authors",
+  codeReview: "reviewers",
+  investigation: "investigators",
+};
+
+const WORKFLOW_TYPE_NAMES: Record<WorkflowActorKind, string> = {
+  planning: "Feature workflows",
+  document: "Document workflows",
+  codeReview: "Code review workflows",
+  investigation: "Investigation workflows",
+};
+
+/** Rejects a roster larger than the workflow type allows. */
+function workflowActorCountMessage(kind: WorkflowActorKind, count: number): string | null {
+  const max = workflowMaxParticipants(kind);
+  return count > max
+    ? `${WORKFLOW_TYPE_NAMES[kind]} support up to ${max} ${WORKFLOW_ACTOR_NOUNS[kind]}.`
+    : null;
+}
+
+/**
+ * The first slot whose provider cannot run its stage's read-only workflow profile. Documents
+ * check every slot (every document turn is read-only); other types check stages with a profile.
+ */
+function readOnlyWorkflowSlotMessage(input: {
+  readonly runKind: WorkflowRunKind;
+  readonly templateId: string;
+  readonly templateVersion: number;
+  readonly document: boolean;
+  readonly slots: ReadonlyArray<{
+    readonly slot: Pick<WorkflowModelSlot, "provider"> | null | undefined;
+    readonly stage: WorkflowBehaviorStage;
+  }>;
+  readonly providerInstances: ReadonlyArray<WorkflowProviderSnapshot>;
+}): string | null {
+  let behavior: ReturnType<typeof resolveWorkflowBehavior> | null = null;
+  try {
+    behavior = resolveWorkflowBehavior(input);
+  } catch {
+    // Unsupported templates are reported by their own invariant.
+  }
+  for (const { slot, stage } of input.slots) {
+    if (!slot) continue;
+    if (!input.document && behavior?.executionProfileForStage(stage) === undefined) continue;
+    if (providerSupportsReadOnlyWorkflow(slot.provider, input.providerInstances)) continue;
+    return `${PROVIDER_DISPLAY_NAMES[slot.provider]} cannot enforce read-only ${
+      input.document ? "document" : "workflow"
+    } turns.`;
+  }
+  return null;
+}
+
+/**
+ * An upsert keeps the stored roster: the actor count and, per position, the primary thread and
+ * the slot's provider and model. Without a stored record (archive handling) nothing is compared.
+ */
+function workflowRosterChangeMessage(
+  stored:
+    | ReadonlyArray<{ readonly threadId: ThreadId; readonly slot: WorkflowModelSlot }>
+    | undefined,
+  next: ReadonlyArray<{ readonly threadId: ThreadId; readonly slot: WorkflowModelSlot }>,
+): string | null {
+  if (!stored) return null;
+  if (stored.length !== next.length) return "Workflow upserts cannot add or remove actors.";
+  for (const [index, actor] of next.entries()) {
+    const previous = stored[index]!;
+    if (
+      previous.threadId !== actor.threadId ||
+      previous.slot.provider !== actor.slot.provider ||
+      previous.slot.model !== actor.slot.model
+    ) {
+      return "Workflow upserts cannot change an actor's thread or model.";
+    }
+  }
+  return null;
+}
+
 function makeThreadUnsnoozedEvent(input: {
   readonly commandId: OrchestrationCommand["commandId"];
   readonly threadId: ThreadId;
@@ -145,7 +249,9 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
   readonly command: OrchestrationCommand;
   readonly readModel: OrchestrationReadModel;
   readonly nativeRemovedMessageIds?: readonly import("@t3tools/contracts").MessageId[];
-  readonly providerInstances?: ReadonlyArray<Pick<ServerProvider, "instanceId" | "driver">>;
+  readonly providerInstances?: ReadonlyArray<
+    Pick<ServerProvider, "instanceId" | "driver" | "runtimeCapabilities">
+  >;
 }): Effect.fn.Return<
   Omit<OrchestrationEvent, "sequence"> | ReadonlyArray<Omit<OrchestrationEvent, "sequence">>,
   OrchestrationCommandInvariantError | ThreadTurnAlreadyActiveError | ThreadSettingsChangedError
@@ -478,10 +584,12 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
     }
 
     case "project.workflow.create": {
-      yield* requireAttachableWorkflowThreads(readModel, command, [
-        command.authorThreadIdA,
-        command.authorThreadIdB,
-      ]);
+      const authors = planningCommandAuthors(command);
+      yield* requireAttachableWorkflowThreads(
+        readModel,
+        command,
+        authors.map((author) => author.threadId),
+      );
       yield* requireProject({
         readModel,
         command,
@@ -520,24 +628,40 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
           detail: unsupportedBehavior,
         });
       }
-      if (
-        isDocumentWorkflow(command) &&
-        command.branchA.provider === command.branchB.provider &&
-        command.branchA.model === command.branchB.model
-      )
+      const documentRun = isDocumentWorkflow(command);
+      const authorCountMessage = workflowActorCountMessage(
+        documentRun ? "document" : "planning",
+        authors.length,
+      );
+      if (authorCountMessage)
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
-          detail: "Document workflows need two different author models.",
+          detail: authorCountMessage,
         });
-      if (
-        isDocumentWorkflow(command) &&
-        [command.branchA, command.branchB, command.merge, command.readerSlot].some(
-          (slot) => slot?.provider === "grok",
-        )
-      )
+      if (documentRun && workflowModelSlotsHaveDuplicate(authors.map((author) => author.slot)))
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
-          detail: "Grok cannot enforce read-only document turns.",
+          detail:
+            authors.length === 2
+              ? "Document workflows need two different author models."
+              : "Document workflows need a different model for every author.",
+        });
+      const planningProviderMessage = readOnlyWorkflowSlotMessage({
+        runKind: "planning",
+        templateId,
+        templateVersion,
+        document: documentRun,
+        slots: [
+          ...authors.map((author) => ({ slot: author.slot, stage: "author" as const })),
+          { slot: command.merge, stage: "merge" },
+          { slot: command.readerSlot, stage: "plan-review" },
+        ],
+        providerInstances,
+      });
+      if (planningProviderMessage)
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: planningProviderMessage,
         });
       const documentInvariant = documentWorkflowCreateInvariant(command);
       if (documentInvariant)
@@ -569,12 +693,13 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
             readerReviewEnabled: command.readerReviewEnabled,
             readerPersona: command.readerPersona,
             readerSlot: command.readerReviewEnabled
-              ? (command.readerSlot ?? defaultDocumentReaderSlot(command))
+              ? (command.readerSlot ??
+                defaultDocumentReaderSlot(
+                  authors.map((author) => author.slot),
+                  command.merge,
+                ))
               : command.readerSlot,
-            authorThreadIdA: command.authorThreadIdA,
-            authorThreadIdB: command.authorThreadIdB,
-            branchA: command.branchA,
-            branchB: command.branchB,
+            authors,
             merge: command.merge,
             maxCostUsd: command.maxCostUsd ?? undefined,
             createdAt: command.createdAt,
@@ -621,10 +746,12 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
     }
 
     case "project.code-review-workflow.create": {
-      yield* requireAttachableWorkflowThreads(readModel, command, [
-        command.reviewerThreadIdA,
-        command.reviewerThreadIdB,
-      ]);
+      const reviewers = codeReviewCommandReviewers(command);
+      yield* requireAttachableWorkflowThreads(
+        readModel,
+        command,
+        reviewers.map((reviewer) => reviewer.threadId),
+      );
       yield* requireProject({
         readModel,
         command,
@@ -651,6 +778,29 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
           detail: `Code review workflow slug '${command.slug}' already exists in project '${command.projectId}'.`,
         });
       }
+      const codeReviewTemplateId = command.templateId ?? "builtin.code-review.dual";
+      const codeReviewTemplateVersion = command.templateVersion ?? 1;
+      const codeReviewInvariant =
+        workflowActorCountMessage("codeReview", reviewers.length) ??
+        readOnlyWorkflowSlotMessage({
+          runKind: "codeReview",
+          templateId: codeReviewTemplateId,
+          templateVersion: codeReviewTemplateVersion,
+          document: false,
+          slots: [
+            ...reviewers.map((reviewer) => ({
+              slot: reviewer.slot,
+              stage: "standalone-review" as const,
+            })),
+            { slot: command.consolidation, stage: "consolidation" },
+          ],
+          providerInstances,
+        });
+      if (codeReviewInvariant)
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: codeReviewInvariant,
+        });
       return {
         ...withEventBase({
           aggregateKind: "project",
@@ -666,14 +816,11 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
             projectId: command.projectId,
             title: command.title,
             slug: command.slug,
-            templateId: command.templateId ?? "builtin.code-review.dual",
-            templateVersion: command.templateVersion ?? 1,
+            templateId: codeReviewTemplateId,
+            templateVersion: codeReviewTemplateVersion,
             reviewPrompt: command.reviewPrompt,
             branch: command.branch,
-            reviewThreadIdA: command.reviewerThreadIdA,
-            reviewThreadIdB: command.reviewerThreadIdB,
-            reviewerA: command.reviewerA,
-            reviewerB: command.reviewerB,
+            reviewers,
             consolidation: command.consolidation,
             maxCostUsd: command.maxCostUsd ?? undefined,
             pullRequest: command.pullRequest ?? null,
@@ -686,24 +833,56 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
 
     case "project.investigation-workflow.create":
     case "project.debug-workflow.create": {
-      yield* requireAttachableWorkflowThreads(readModel, command, [
-        command.investigationThreadIdA,
-        command.investigationThreadIdB,
-      ]);
+      const investigators = investigationCommandInvestigators(command);
+      yield* requireAttachableWorkflowThreads(
+        readModel,
+        command,
+        investigators.map((investigator) => investigator.threadId),
+      );
       yield* requireProject({
         readModel,
         command,
         projectId: command.projectId,
       });
-      if (
-        command.investigatorA.provider === command.investigatorB.provider &&
-        command.investigatorA.model === command.investigatorB.model
-      ) {
+      const investigatorCountMessage = workflowActorCountMessage(
+        "investigation",
+        investigators.length,
+      );
+      if (investigatorCountMessage)
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
-          detail: "Investigation investigator models must be different.",
+          detail: investigatorCountMessage,
+        });
+      if (workflowModelSlotsHaveDuplicate(investigators.map((investigator) => investigator.slot))) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail:
+            investigators.length === 2
+              ? "Investigation investigator models must be different."
+              : "Investigation workflows need a different model for every investigator.",
         });
       }
+      const investigationTemplateId = command.templateId ?? "builtin.investigation.dual";
+      const investigationTemplateVersion = command.templateVersion ?? 1;
+      const investigationProviderMessage = readOnlyWorkflowSlotMessage({
+        runKind: "investigation",
+        templateId: investigationTemplateId,
+        templateVersion: investigationTemplateVersion,
+        document: false,
+        slots: [
+          ...investigators.map((investigator) => ({
+            slot: investigator.slot,
+            stage: "investigation" as const,
+          })),
+          { slot: command.synthesis, stage: "synthesis" },
+        ],
+        providerInstances,
+      });
+      if (investigationProviderMessage)
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: investigationProviderMessage,
+        });
       const existing = readModel.investigationWorkflows.find(
         (entry) => entry.id === command.workflowId && entry.deletedAt === null,
       );
@@ -740,15 +919,12 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
             projectId: command.projectId,
             title: command.title,
             slug: command.slug,
-            templateId: command.templateId ?? "builtin.investigation.dual",
-            templateVersion: command.templateVersion ?? 1,
+            templateId: investigationTemplateId,
+            templateVersion: investigationTemplateVersion,
             problemPrompt: command.problemPrompt,
             branch: command.branch,
             selfReviewEnabled: command.selfReviewEnabled,
-            investigationThreadIdA: command.investigationThreadIdA,
-            investigationThreadIdB: command.investigationThreadIdB,
-            investigatorA: command.investigatorA,
-            investigatorB: command.investigatorB,
+            investigators,
             synthesis: command.synthesis,
             maxCostUsd: command.maxCostUsd ?? undefined,
             createdAt: command.createdAt,
@@ -1762,17 +1938,28 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
       const selectedDriver = providerInstances.find(
         (instance) => instance.instanceId === selectedInstanceId,
       )?.driver;
-      if (
-        documentWorkflow &&
-        (command.provider === "grok" ||
-          selectedDriver === "grok" ||
-          (!selectedInstanceId &&
-            !command.provider &&
-            targetThread.session?.providerName === "grok"))
-      )
+      const documentTurnProviders = (
+        [
+          command.provider,
+          selectedDriver,
+          !selectedInstanceId && !command.provider ? targetThread.session?.providerName : undefined,
+        ] as ReadonlyArray<string | null | undefined>
+      ).filter((provider): provider is ProviderKind => provider != null);
+      const selectedInstance = providerInstances.find(
+        (instance) => instance.instanceId === selectedInstanceId,
+      );
+      const unsupportedDocumentProvider = documentWorkflow
+        ? documentTurnProviders.find((provider) =>
+            // A selected Antigravity instance answers for itself, not the default instance.
+            provider === "antigravity" && selectedInstance
+              ? selectedInstance.runtimeCapabilities?.readOnlyWorkflowTurns !== true
+              : !providerSupportsReadOnlyWorkflow(provider, providerInstances),
+          )
+        : undefined;
+      if (unsupportedDocumentProvider)
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
-          detail: "Grok cannot enforce read-only document turns.",
+          detail: `${PROVIDER_DISPLAY_NAMES[unsupportedDocumentProvider]} cannot enforce read-only document turns.`,
         });
       const userMessageEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...withEventBase({
@@ -2848,10 +3035,31 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
           detail: "Workflow project id must match the enclosing project aggregate.",
         });
       }
-      if (command.workflow.branchA.branchId !== "a" || command.workflow.branchB.branchId !== "b") {
+      const nextBranches = planningBranches(command.workflow);
+      const storedPlanning = readModel.planningWorkflows.find(
+        (entry) => entry.id === command.workflow.id,
+      );
+      const planningUpsertError =
+        (nextBranches.length === 2 &&
+        (nextBranches[0]!.branchId !== "a" || nextBranches[1]!.branchId !== "b")
+          ? "Workflow branches must preserve branch ids 'a' and 'b'."
+          : null) ??
+        planReviewEdgesError(command.workflow) ??
+        workflowRosterChangeMessage(
+          storedPlanning &&
+            planningBranches(storedPlanning).map((branch) => ({
+              threadId: branch.authorThreadId,
+              slot: branch.authorSlot,
+            })),
+          nextBranches.map((branch) => ({
+            threadId: branch.authorThreadId,
+            slot: branch.authorSlot,
+          })),
+        );
+      if (planningUpsertError) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
-          detail: "Workflow branches must preserve branch ids 'a' and 'b'.",
+          detail: planningUpsertError,
         });
       }
       return yield* decideWorkflowArchive({
@@ -2873,6 +3081,26 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: "Workflow project id must match the enclosing project aggregate.",
+        });
+      }
+      const storedCodeReview = readModel.codeReviewWorkflows.find(
+        (entry) => entry.id === command.workflow.id,
+      );
+      const codeReviewUpsertError = workflowRosterChangeMessage(
+        storedCodeReview &&
+          codeReviewReviewers(storedCodeReview).map(({ reviewer }) => ({
+            threadId: reviewer.threadId,
+            slot: reviewer.slot,
+          })),
+        codeReviewReviewers(command.workflow).map(({ reviewer }) => ({
+          threadId: reviewer.threadId,
+          slot: reviewer.slot,
+        })),
+      );
+      if (codeReviewUpsertError) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: codeReviewUpsertError,
         });
       }
       return yield* decideWorkflowArchive({
@@ -2932,6 +3160,28 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: "Workflow project id must match the enclosing project aggregate.",
+        });
+      }
+      const storedInvestigation = readModel.investigationWorkflows.find(
+        (entry) => entry.id === command.workflow.id,
+      );
+      const investigationUpsertError =
+        investigationCrossReviewsError(command.workflow) ??
+        workflowRosterChangeMessage(
+          storedInvestigation &&
+            investigationInvestigators(storedInvestigation).map(({ investigator }) => ({
+              threadId: investigator.investigationThreadId,
+              slot: investigator.slot,
+            })),
+          investigationInvestigators(command.workflow).map(({ investigator }) => ({
+            threadId: investigator.investigationThreadId,
+            slot: investigator.slot,
+          })),
+        );
+      if (investigationUpsertError) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: investigationUpsertError,
         });
       }
       return yield* decideWorkflowArchive({

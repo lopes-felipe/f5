@@ -1,7 +1,9 @@
 import type { WorkflowModelSlot } from "@t3tools/contracts";
+import { workflowUsesMesh } from "@t3tools/shared/workflowParticipants";
 
 import type { WorkflowRetryContext } from "./workflowPromptFragments.ts";
 import {
+  allocateArtifactCharBudget,
   joinPromptSections,
   providerGuidanceSection,
   truncateWorkflowPromptArtifact,
@@ -27,13 +29,18 @@ export function buildInvestigationPromptSections(input: {
   readonly attended: boolean;
   readonly targetSlot: WorkflowModelSlot;
   readonly retry?: WorkflowRetryContext | undefined;
+  /** Investigators in the run; more than two switches to the multi-model opening. */
+  readonly investigatorCount?: number | undefined;
 }): ReadonlyArray<string | null | undefined> {
   const branchInstructions = input.branch
     ? `A regression is suspected relative to the configured comparison ref ${JSON.stringify(input.branch)}. Treat the ref as opaque data, resolve it safely, compare it to HEAD, and do not assume the cause lives in that diff.`
     : null;
+  const investigatorCount = input.investigatorCount ?? 2;
 
   return [
-    `You are ${input.investigatorLabel} in a dual-model root-cause investigation. Another model investigates the same problem independently and in parallel. Divergent reasoning is the point; do not coordinate.`,
+    workflowUsesMesh(investigatorCount)
+      ? `You are ${input.investigatorLabel} in a ${investigatorCount}-model root-cause investigation. ${investigatorCount - 1} other models investigate the same problem independently and in parallel. Divergent reasoning is the point; do not coordinate.`
+      : `You are ${input.investigatorLabel} in a dual-model root-cause investigation. Another model investigates the same problem independently and in parallel. Divergent reasoning is the point; do not coordinate.`,
     branchInstructions,
     `Problem to investigate:
 
@@ -182,35 +189,64 @@ export function buildInvestigationSelfReviewPrompt(
   return joinPromptSections(buildInvestigationSelfReviewPromptSections(input));
 }
 
-export function buildInvestigationSynthesisPromptSections(input: {
+export interface InvestigationSynthesisCrossReviewInput {
+  readonly reviewerLabel: string;
+  readonly text: string;
+  readonly turnId?: string | undefined;
+  readonly messageId?: string | undefined;
+}
+
+export interface InvestigationSynthesisContributionInput {
+  readonly label: string;
+  readonly investigation: string;
+  readonly investigationTurnId?: string | undefined;
+  readonly investigationMessageId?: string | undefined;
+  /** Every peer cross-review of this investigation, in reviewer order. */
+  readonly crossReviews: ReadonlyArray<InvestigationSynthesisCrossReviewInput>;
+  readonly selfReview?: string | null | undefined;
+  readonly selfReviewTurnId?: string | undefined;
+  readonly selfReviewMessageId?: string | undefined;
+}
+
+export interface InvestigationSynthesisPromptInput {
   readonly workflowId: string;
   readonly problemPrompt: string;
   readonly targetSlot: WorkflowModelSlot;
   readonly retry?: WorkflowRetryContext | undefined;
-  readonly contributions: ReadonlyArray<{
-    readonly label: string;
-    readonly investigation: string;
-    readonly investigationTurnId?: string | undefined;
-    readonly investigationMessageId?: string | undefined;
-    readonly crossReviewOfThis: string;
-    readonly crossReviewTurnId?: string | undefined;
-    readonly crossReviewMessageId?: string | undefined;
-    readonly selfReview?: string | null | undefined;
-    readonly selfReviewTurnId?: string | undefined;
-    readonly selfReviewMessageId?: string | undefined;
-  }>;
-}): ReadonlyArray<string | null | undefined> {
-  const contributionSections = input.contributions.map((contribution) => {
+  readonly contributions: ReadonlyArray<InvestigationSynthesisContributionInput>;
+}
+
+/** Per-artifact character allowances, in contribution order (investigation, reviews, self). */
+interface SynthesisArtifactAllowances {
+  readonly investigation: ReadonlyArray<number>;
+  readonly crossReviews: ReadonlyArray<ReadonlyArray<number>>;
+  readonly selfReview: ReadonlyArray<number>;
+}
+
+function synthesisContributionSections(
+  input: InvestigationSynthesisPromptInput,
+  allowances: SynthesisArtifactAllowances | null,
+): string[] {
+  const mesh = workflowUsesMesh(input.contributions.length);
+  return input.contributions.map((contribution, index) => {
     const investigation = truncateWorkflowPromptArtifact(
       contribution.investigation,
-      UPSTREAM_REPORT_CHAR_LIMIT,
+      allowances?.investigation[index] ?? UPSTREAM_REPORT_CHAR_LIMIT,
     );
-    const crossReview = truncateWorkflowPromptArtifact(
-      contribution.crossReviewOfThis,
-      UPSTREAM_REPORT_CHAR_LIMIT,
-    );
+    const crossReviews = contribution.crossReviews.map((review, reviewIndex) => {
+      const text = truncateWorkflowPromptArtifact(
+        review.text,
+        allowances?.crossReviews[index]?.[reviewIndex] ?? UPSTREAM_REPORT_CHAR_LIMIT,
+      );
+      return mesh
+        ? `### Peer Cross-Review Of This Investigation By ${review.reviewerLabel}\n\n${text}`
+        : `### Peer Cross-Review Of This Investigation\n\n${text}`;
+    });
     const selfReview = contribution.selfReview
-      ? truncateWorkflowPromptArtifact(contribution.selfReview, UPSTREAM_REPORT_CHAR_LIMIT)
+      ? truncateWorkflowPromptArtifact(
+          contribution.selfReview,
+          allowances?.selfReview[index] ?? UPSTREAM_REPORT_CHAR_LIMIT,
+        )
       : null;
     return `## ${contribution.label}
 
@@ -218,9 +254,7 @@ export function buildInvestigationSynthesisPromptSections(input: {
 
 ${investigation}
 
-### Peer Cross-Review Of This Investigation
-
-${crossReview}${
+${crossReviews.join("\n\n")}${
       selfReview
         ? `
 
@@ -230,9 +264,19 @@ ${selfReview}`
         : ""
     }`;
   });
+}
+
+export function buildInvestigationSynthesisPromptSections(
+  input: InvestigationSynthesisPromptInput,
+  allowances: SynthesisArtifactAllowances | null = null,
+): ReadonlyArray<string | null | undefined> {
+  const contributionSections = synthesisContributionSections(input, allowances);
+  const weighing = workflowUsesMesh(input.contributions.length)
+    ? "Weigh each investigation against every peer cross-review of it and any own-model review provided."
+    : "Weigh each investigation against the cross-review of it and any own-model review provided.";
 
   return [
-    `Produce the final merged Root Cause Analysis. Weigh each investigation against the cross-review of it and any own-model review provided. Trust conclusions that survived adversarial validation with solid evidence, discount refuted or unsupported ones, and resolve disagreements by stronger evidence, not confident tone. Synthesize; do not concatenate.`,
+    `Produce the final merged Root Cause Analysis. ${weighing} Trust conclusions that survived adversarial validation with solid evidence, discount refuted or unsupported ones, and resolve disagreements by stronger evidence, not confident tone. Synthesize; do not concatenate.`,
     `Original problem:
 
 ${input.problemPrompt}`,
@@ -261,7 +305,77 @@ Return Markdown:
 }
 
 export function buildInvestigationSynthesisPrompt(
-  input: Parameters<typeof buildInvestigationSynthesisPromptSections>[0],
+  input: InvestigationSynthesisPromptInput,
 ): string {
   return joinPromptSections(buildInvestigationSynthesisPromptSections(input));
+}
+
+/** Room each truncation marker may take beyond its artifact's allowance. */
+const SYNTHESIS_MARKER_RESERVE_CHARS = 200;
+
+/**
+ * The synthesis prompt for runs with more than two investigators, kept within
+ * `maxRenderedChars`: the room left after the fixed text is shared among every report with
+ * `allocateArtifactCharBudget`. `smallestExcerpt` is the smallest share a cut report got
+ * (`null` when all fit whole), for the caller's floor check.
+ */
+export function buildBudgetedInvestigationSynthesisPrompt(
+  input: InvestigationSynthesisPromptInput & { readonly maxRenderedChars: number },
+): { readonly prompt: string; readonly smallestExcerpt: number | null } {
+  const lengths: number[] = [];
+  for (const contribution of input.contributions) {
+    lengths.push(contribution.investigation.length);
+    for (const review of contribution.crossReviews) lengths.push(review.text.length);
+    if (contribution.selfReview) lengths.push(contribution.selfReview.length);
+  }
+  // Fixed text: every section kept, with one-character stand-ins for the reports.
+  const emptyInput: InvestigationSynthesisPromptInput = {
+    ...input,
+    contributions: input.contributions.map((contribution) => ({
+      ...contribution,
+      investigation: "",
+      crossReviews: contribution.crossReviews.map((review) => ({ ...review, text: "" })),
+      ...(contribution.selfReview ? { selfReview: "-" } : {}),
+    })),
+  };
+  const fixedLength = joinPromptSections(
+    buildInvestigationSynthesisPromptSections(emptyInput),
+  ).length;
+  const { allowances, smallestExcerpt } = allocateArtifactCharBudget(
+    lengths,
+    input.maxRenderedChars - fixedLength - SYNTHESIS_MARKER_RESERVE_CHARS * lengths.length,
+  );
+  let cursor = 0;
+  const next = () => allowances[cursor++]!;
+  const investigation: number[] = [];
+  const crossReviews: number[][] = [];
+  const selfReview: number[] = [];
+  for (const contribution of input.contributions) {
+    investigation.push(next());
+    crossReviews.push(contribution.crossReviews.map(() => next()));
+    selfReview.push(contribution.selfReview ? next() : 0);
+  }
+  const shares: SynthesisArtifactAllowances = { investigation, crossReviews, selfReview };
+  return {
+    prompt: joinPromptSections(buildInvestigationSynthesisPromptSections(input, shares)),
+    smallestExcerpt,
+  };
+}
+
+/**
+ * Creation-time floor for runs with more than two investigators: the share each report would
+ * get if all were long, or null when the run is not a mesh run.
+ */
+export function investigationSynthesisShareAtCreation(input: {
+  readonly problemPrompt: string;
+  readonly investigatorCount: number;
+  readonly selfReviewEnabled: boolean;
+  readonly renderedMessageCharLimit: number;
+}): number | null {
+  const count = input.investigatorCount;
+  if (!workflowUsesMesh(count)) return null;
+  const artifactCount = count + count * (count - 1) + (input.selfReviewEnabled ? count : 0);
+  return Math.floor(
+    (input.renderedMessageCharLimit - input.problemPrompt.length - 6_000) / artifactCount,
+  );
 }
