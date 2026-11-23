@@ -230,11 +230,14 @@ const generateSchemas = Effect.fn("generateSchemas")(function* (skipDownload: bo
     "",
   ];
 
+  // `toCodecJson` (used by the RPC layer) turns a bare `Schema.Unknown` into `null`, which drops
+  // values such as `toolCall.rawInput` on encode and rejects them on decode.
   const schemaOutput = [
     ...prelude,
     'import * as Schema from "effect/Schema";',
+    'import { JsonUnknown } from "../_internal/jsonUnknown";',
     "",
-    [...generatedEntries.values()].join("\n\n"),
+    [...generatedEntries.values()].join("\n\n").replace(/\bSchema\.Unknown\b/g, "JsonUnknown"),
     "",
   ].join("\n");
 
