@@ -74,6 +74,7 @@ import { partitionDroppedAttachments } from "../lib/droppedAttachments";
 import { composerAttachmentStatus } from "../lib/attachmentValidation";
 import { foldedPasteFile } from "../lib/textPaste";
 import { ensureComposerUpload, persistComposerAttachment } from "../composerDraftStore";
+import { useLocalDraftErrorStore } from "../localDraftErrorStore";
 import { defaultDraftRuntimeMode } from "../lib/draftSettingsDefaults";
 import { RepositoryLinks, repositoryLinksForThread } from "../repositoryLinkContext";
 import { AssistantQuoteToolbar } from "./chat/AssistantQuoteToolbar";
@@ -334,9 +335,11 @@ import {
   useFavoritePresetShortcuts,
 } from "./chat/useFavoritePresetShortcuts";
 import { useWsConnectionState } from "../wsConnectionState";
-import BranchToolbar from "./BranchToolbar";
+import BranchToolbar, { BranchToolbarRow } from "./BranchToolbar";
 import {
+  PlainGroupWorkspacePicker,
   projectRepositoriesQueryOptions,
+  resolveWorktreeRepositorySelection,
   useWorktreeRepositoryChoices,
   WorktreeRepositoryPicker,
 } from "./RepositoryPicker";
@@ -983,9 +986,8 @@ export default memo(function ChatView({
   optimisticUserMessagesRef.current = optimisticUserMessages;
   const composerFilePathsRef = useRef<string[]>(composerFilePaths);
   const composerTerminalContextsRef = useRef<TerminalContextDraft[]>(composerTerminalContexts);
-  const [localDraftErrorsByThreadId, setLocalDraftErrorsByThreadId] = useState<
-    Record<ThreadId, string | null>
-  >({});
+  const localDraftErrorsByThreadId = useLocalDraftErrorStore((store) => store.errorsByThreadId);
+  const setLocalDraftError = useLocalDraftErrorStore((store) => store.setError);
   const pendingTurnDispatch = usePendingTurnDispatchStore(
     (store) => store.pendingByThreadId[threadId] ?? null,
   );
@@ -3209,17 +3211,9 @@ export default memo(function ChatView({
         setStoreThreadError(targetThreadId, nextError);
         return;
       }
-      setLocalDraftErrorsByThreadId((existing) => {
-        if ((existing[targetThreadId] ?? null) === nextError) {
-          return existing;
-        }
-        return {
-          ...existing,
-          [targetThreadId]: nextError,
-        };
-      });
+      setLocalDraftError(targetThreadId, nextError);
     },
-    [setStoreThreadError],
+    [setLocalDraftError, setStoreThreadError],
   );
 
   const focusComposer = useCallback(() => {
@@ -3945,11 +3939,6 @@ export default memo(function ChatView({
   }, []);
 
   const activeWorktreePath = activeThread?.worktreePath;
-  const envMode: DraftThreadEnvMode = activeWorktreePath
-    ? "worktree"
-    : isLocalDraftThread
-      ? (draftThread?.envMode ?? "local")
-      : "local";
   const worktreeRepositoriesQuery = useQuery(
     projectRepositoriesQueryOptions(isLocalDraftThread ? (activeProject?.id ?? null) : null),
   );
@@ -3966,6 +3955,39 @@ export default memo(function ChatView({
     isLocalDraftThread &&
     worktreeRepositories.length > 0 &&
     !worktreeRepositoriesQuery.data?.some((repository) => repository.relativePath === ".");
+  // A project folder that is not a git repository runs in place unless the
+  // user explicitly picks a worktree of its repositories; the thread-mode
+  // default only applies to git projects.
+  const isNonGitProject =
+    !isScratchProject(activeProject) &&
+    branchesQuery.data?.isRepo === false &&
+    !branchesQuery.data.worktreeMissing;
+  // The opt-in is only ever set on such a folder; a git project ignores it.
+  const plainWorktreeOptIn =
+    isLocalDraftThread &&
+    draftThread?.plainWorktreeOptIn === true &&
+    !isScratchProject(activeProject) &&
+    branchesQuery.data?.isRepo !== true;
+  // A restored worktree choice whose repositories are still being listed (or
+  // could not be listed) stays a worktree: falling back to the project folder
+  // would run an isolated thread in the real checkout.
+  const plainWorktreePending = plainWorktreeOptIn && !worktreeRepositoriesQuery.isSuccess;
+  const envMode: DraftThreadEnvMode = activeWorktreePath
+    ? "worktree"
+    : isLocalDraftThread
+      ? plainWorktreePending
+        ? "worktree"
+        : isNonGitProject || plainWorktreeDraft
+          ? plainWorktreeDraft && plainWorktreeOptIn
+            ? "worktree"
+            : "local"
+          : (draftThread?.envMode ?? "local")
+      : "local";
+  const plainWorktreeSelection = resolveWorktreeRepositorySelection(
+    worktreeRepositories,
+    worktreeRepositoryPaths,
+    true,
+  );
   const [plainWorktreeBase, setPlainWorktreeBase] = useState("");
   const activeProjectName = activeProject?.name ?? null;
   const activeThreadBranch = activeThread?.branch ?? null;
@@ -5777,11 +5799,32 @@ export default memo(function ChatView({
     // In worktree mode, require an explicit base branch so we don't silently
     // fall back to local execution when branch selection is missing.
     const shouldCreateWorktree = !sideChatCommand && isFirstMessage && envMode === "worktree";
-    if (shouldCreateWorktree && !baseBranchForWorktree) {
-      setStoreThreadError(
+    // setThreadError, not the store setter: these fire before a draft has a
+    // server thread, and the store drops errors for threads it does not know.
+    if (shouldCreateWorktree && plainWorktreePending) {
+      setThreadError(
         threadIdForSend,
-        "Select a base branch before sending in New worktree mode.",
+        worktreeRepositoriesQuery.isError
+          ? "This folder's repositories could not be listed. Pick Project folder in the workspace picker, or try again later."
+          : "Still finding this folder's repositories. Try again in a moment.",
       );
+      sendInFlightRef.current = false;
+      return;
+    }
+    if (shouldCreateWorktree && !baseBranchForWorktree) {
+      setThreadError(
+        threadIdForSend,
+        // Until branches load, a non-git folder still shows the thread default.
+        branchesQuery.isLoading
+          ? "Still loading this project's workspace. Try again in a moment."
+          : "Select a base branch before sending in New worktree mode.",
+      );
+      sendInFlightRef.current = false;
+      return;
+    }
+    // The server rejects an empty group; say so before anything is dispatched.
+    if (shouldCreateWorktree && plainWorktreeDraft && plainWorktreeSelection.length === 0) {
+      setThreadError(threadIdForSend, "Select at least one repository for the new worktree.");
       sendInFlightRef.current = false;
       return;
     }
@@ -6033,8 +6076,12 @@ export default memo(function ChatView({
       ) {
         restoreComposerRollback(failureRollback);
       }
-      if (isLocalDraftThread) restoreFailedBootstrapDraft(threadIdForSend, message, error);
-      else toastManager.add({ type: "error", title: message });
+      if (isLocalDraftThread) {
+        // The draft (possibly rekeyed) keeps the error, so recovery notices such as
+        // "Send in Local" can offer a fix; the toast alone leaves nothing to act on.
+        const retryThreadId = restoreFailedBootstrapDraft(threadIdForSend, message, error);
+        setThreadError(retryThreadId, message);
+      } else toastManager.add({ type: "error", title: message });
     };
 
     try {
@@ -7088,10 +7135,8 @@ export default memo(function ChatView({
   }) => {
     if (!input.baseBranch) {
       if (composerMatchesClearedState()) restoreComposerRollback(input.rollback);
-      setStoreThreadError(
-        input.draftThreadId,
-        "Select a base branch before sending to several models.",
-      );
+      // The store drops errors for drafts the server does not know yet.
+      setThreadError(input.draftThreadId, "Select a base branch before sending to several models.");
       return;
     }
     const baseBranch = input.baseBranch;
@@ -7212,12 +7257,19 @@ export default memo(function ChatView({
         return;
       }
       if (isLocalDraftThread) {
-        setDraftThreadContext(threadId, { envMode: mode });
+        // A non-git folder reads its mode from the opt-in, not `envMode`
+        // (the "Send in Local" recovery goes through here).
+        setDraftThreadContext(threadId, {
+          envMode: mode,
+          plainWorktreeOptIn: mode === "worktree" && (isNonGitProject || plainWorktreeDraft),
+        });
       }
       scheduleComposerFocus();
     },
     [
       isLocalDraftThread,
+      isNonGitProject,
+      plainWorktreeDraft,
       isPendingTurnDispatchBlocked,
       scheduleComposerFocus,
       setDraftThreadContext,
@@ -9041,43 +9093,45 @@ export default memo(function ChatView({
                         {...(canCheckoutPullRequestIntoThread
                           ? { onCheckoutPullRequestRequest: openPullRequestDialog }
                           : {})}
+                        {...(isLocalDraftThread && envMode === "worktree"
+                          ? {
+                              trailing: (
+                                <WorktreeRepositoryPicker
+                                  repositories={worktreeRepositories}
+                                  selected={worktreeRepositoryPaths}
+                                  onChange={repositoryChoices.select}
+                                  disabled={isPendingTurnDispatchBlocked}
+                                />
+                              ),
+                            }
+                          : {})}
                       />
                     )}
-                    {plainWorktreeDraft && (
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          className="rounded border px-2 py-1 text-xs"
-                          onClick={() =>
-                            onEnvModeChange(envMode === "worktree" ? "local" : "worktree")
-                          }
-                        >
-                          {envMode === "worktree" ? "Use project folder" : "New worktree"}
-                        </button>
-                        {envMode === "worktree" && (
-                          <>
-                            <input
-                              aria-label="Base branch"
-                              placeholder="Default branch"
-                              value={plainWorktreeBase}
-                              onChange={(event) => setPlainWorktreeBase(event.target.value)}
-                              className="rounded border bg-transparent px-2 py-1 text-xs"
-                            />
-                            <span className="text-xs text-muted-foreground">
-                              Files outside repositories link to the original project folder.
-                            </span>
-                          </>
-                        )}
-                      </div>
-                    )}
-                    {isLocalDraftThread && envMode === "worktree" && (
-                      <WorktreeRepositoryPicker
-                        plain={plainWorktreeDraft}
-                        repositories={worktreeRepositories}
-                        selected={worktreeRepositoryPaths}
-                        onChange={repositoryChoices.select}
-                      />
-                    )}
+                    {(plainWorktreeDraft || (plainWorktreePending && isNonGitProject)) &&
+                      activeProject && (
+                        <BranchToolbarRow>
+                          <PlainGroupWorkspacePicker
+                            projectCwd={activeProject.cwd}
+                            repositoriesStatus={
+                              plainWorktreePending
+                                ? worktreeRepositoriesQuery.isError
+                                  ? "error"
+                                  : "loading"
+                                : "ready"
+                            }
+                            worktree={envMode === "worktree"}
+                            onWorktreeChange={(worktree) =>
+                              setDraftThreadContext(threadId, { plainWorktreeOptIn: worktree })
+                            }
+                            repositories={worktreeRepositories}
+                            selected={worktreeRepositoryPaths}
+                            onSelectedChange={repositoryChoices.select}
+                            baseBranch={plainWorktreeBase}
+                            onBaseBranchChange={setPlainWorktreeBase}
+                            disabled={isPendingTurnDispatchBlocked}
+                          />
+                        </BranchToolbarRow>
+                      )}
                   </ComposerDockColumn>
                 </ComposerDock>
               </div>
