@@ -1,5 +1,20 @@
 import type { ShortcutEventLike } from "../keybindings";
 
+/** Popups own initial focus even before their input has received it. */
+export function hasVisibleFocusPopup(): boolean {
+  return [
+    ...document.querySelectorAll<HTMLElement>(
+      '[role="dialog"],[role="alertdialog"],[data-popup-open]',
+    ),
+  ].some(
+    (element) =>
+      element.getAttribute("aria-hidden") !== "true" &&
+      element.getAttribute("data-state") !== "closed" &&
+      element.getClientRects().length > 0 &&
+      getComputedStyle(element).visibility !== "hidden",
+  );
+}
+
 export function isEventInFindScope(event: ShortcutEventLike, scope: "diff" | "preview"): boolean {
   if (typeof document === "undefined" || typeof Element === "undefined") return false;
   const selector = '[data-find-scope="' + scope + '"]';
