@@ -1,6 +1,6 @@
 import { ProviderNativeHistory } from "../ProviderNativeHistory.ts";
 import { PiSettings, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
-import { Duration, Effect, FileSystem, Option, Path, Schema, Stream } from "effect";
+import { Duration, Effect, FileSystem, Option, Path, PubSub, Schema, Stream } from "effect";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { ServerConfig } from "../../config.ts";
 import { makePiTextGeneration } from "../../git/Layers/PiTextGeneration.ts";
@@ -11,8 +11,8 @@ import { ProviderDriverError } from "../Errors.ts";
 import { makePiAdapter } from "../Layers/PiAdapter.ts";
 import {
   buildInitialPiProviderSnapshot,
-  buildPiCatalogSnapshot,
   checkPiProviderStatus,
+  piModelsFromSettings,
 } from "../Layers/PiProvider.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import { ProviderContinuationRequests } from "../ProviderContinuationRequests.ts";
@@ -83,9 +83,25 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
         yield* Effect.serviceOption(ProviderNativeHistory),
       );
       const preview = Option.getOrUndefined(yield* Effect.serviceOption(PreviewMcpHttpServer));
+      // Workspace commands can be published while the instance's status probe is still running.
       let liveCatalog: PiCatalog | undefined;
-      let baseSnapshot = buildInitialPiProviderSnapshot(settings);
-      let refreshSnapshot: Effect.Effect<void> = Effect.void;
+      const workspaceChanges = yield* Effect.acquireRelease(
+        PubSub.sliding<void>(1),
+        PubSub.shutdown,
+      );
+      const withWorkspaceCatalog = (snapshot: ServerProvider): ServerProvider => {
+        const catalog = liveCatalog;
+        return catalog
+          ? {
+              ...snapshot,
+              models: catalog.models.length
+                ? piModelsFromSettings(settings, catalog.models)
+                : snapshot.models,
+              slashCommands: catalog.slashCommands,
+              skills: catalog.skills,
+            }
+          : snapshot;
+      };
       const adapter = yield* makePiAdapter(settings, {
         instanceId,
         environment: processEnv,
@@ -96,7 +112,7 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
         onCatalog: (catalog) =>
           Effect.gen(function* () {
             liveCatalog = catalog;
-            yield* refreshSnapshot;
+            yield* PubSub.publish(workspaceChanges, undefined);
           }),
         ...(preview?.supportsThreadCatalog
           ? {
@@ -140,28 +156,13 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
           : {}),
       });
       const textGeneration = yield* makePiTextGeneration(settings, processEnv, beforeLaunch, own);
-      const snapshot = yield* makeManagedServerProvider<PiSettings>({
+      const status = yield* makeManagedServerProvider<PiSettings>({
         getSettings: Effect.succeed(settings),
         streamSettings: Stream.never,
         haveSettingsChanged: () => false,
         initialSnapshot: (initial) => stamp(buildInitialPiProviderSnapshot(initial)),
-        checkProvider: Effect.gen(function* () {
-          const catalog = liveCatalog;
-          if (catalog)
-            return yield* own(
-              buildPiCatalogSnapshot(
-                catalog,
-                settings,
-                processEnv,
-                baseSnapshot.version,
-                "Pi's workspace catalog is available; credentials remain managed by Pi.",
-              ),
-            ).pipe(Effect.orElseSucceed(() => baseSnapshot));
-          baseSnapshot = yield* own(checkPiProviderStatus(settings, processEnv, beforeLaunch)).pipe(
-            Effect.orElseSucceed(() => buildInitialPiProviderSnapshot(settings)),
-          );
-          return baseSnapshot;
-        }).pipe(
+        checkProvider: own(checkPiProviderStatus(settings, processEnv, beforeLaunch)).pipe(
+          Effect.orElseSucceed(() => buildInitialPiProviderSnapshot(settings)),
           Effect.map(stamp),
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
           Effect.provideService(FileSystem.FileSystem, fs),
@@ -177,7 +178,18 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
             }),
         ),
       );
-      refreshSnapshot = snapshot.refresh.pipe(Effect.asVoid);
+      const getSnapshot = status.getSnapshot.pipe(Effect.map(withWorkspaceCatalog));
+      const snapshot = {
+        getSnapshot,
+        refresh: status.refresh.pipe(Effect.map(withWorkspaceCatalog)),
+        get streamChanges() {
+          return status.streamChanges.pipe(
+            Stream.map(() => undefined),
+            Stream.merge(Stream.fromPubSub(workspaceChanges)),
+            Stream.mapEffect(() => getSnapshot),
+          );
+        },
+      };
       return {
         instanceId,
         driverKind,

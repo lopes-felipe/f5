@@ -158,9 +158,15 @@ it("keeps idle compaction alive on Stop and holds a new prompt until compaction 
     );
   }));
 
-it.each(["stop-queue", "stop-legacy"])(
-  "clears Pi's native queue before aborting: %s",
-  async (mode) =>
+it.each([
+  { mode: "stop-queue", abort: true, state: "cancelled" },
+  { mode: "stop-legacy", abort: true, state: "cancelled" },
+  { mode: "stop-timeout", abort: true, state: "cancelled" },
+  { mode: "stop-settled", abort: false, state: "completed" },
+  { mode: "stop-compacting", abort: false, state: "cancelled" },
+])(
+  "stops safely after requesting that Pi clear its native queue: $mode",
+  async ({ mode, abort, state }) =>
     fixture(async ({ settings, options, trace }) => {
       options.environment.F5_PI_CASE = mode;
       await run(
@@ -188,14 +194,14 @@ it.each(["stop-queue", "stop-legacy"])(
             expect(yield* Deferred.await(terminal).pipe(Effect.timeout("5 seconds"))).toMatchObject(
               {
                 turnId: turn.turnId,
-                payload: { state: "cancelled" },
+                payload: { state },
               },
             );
             const commands = (yield* Effect.promise(trace)).map((record) => record.type);
             expect(
               commands.filter((command) => command === "clear_queue" || command === "abort"),
-            ).toEqual(["clear_queue", "abort"]);
-            if (mode === "stop-legacy") expect(notices).toEqual([]);
+            ).toEqual(abort ? ["clear_queue", "abort"] : ["clear_queue"]);
+            if (mode !== "stop-queue") expect(notices).toEqual([]);
             else
               expect(notices).toMatchObject([
                 {

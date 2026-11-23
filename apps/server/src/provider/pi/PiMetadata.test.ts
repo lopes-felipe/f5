@@ -24,6 +24,32 @@ it("probes in a disposable workspace with extensions, tools and inherited MCP cr
     expect(spawn.privateEnvironment).toBe(false);
     await expect(stat(String(spawn.cwd))).rejects.toThrow();
   }));
+it.skipIf(process.platform !== "win32")("reports a broken Pi command shim as missing", async () =>
+  fixture(async (settings, environment) => {
+    const snapshot = await run(
+      checkPiProviderStatus(
+        { ...settings, enabled: true, customModels: [] },
+        { ...environment, F5_PI_CASE: "version-command-missing" },
+      ),
+    );
+    expect(snapshot.installed).toBe(false);
+  }),
+);
+it.each([
+  { mode: "empty-model-list", message: "Pi has no usable models" },
+  { mode: "missing-model-list", message: "Pi RPC discovery failed" },
+])("shows the right warning for $mode", async ({ mode, message }) =>
+  fixture(async (settings, environment) => {
+    const snapshot = await run(
+      checkPiProviderStatus(
+        { ...settings, enabled: true, customModels: [] },
+        { ...environment, F5_PI_CASE: mode },
+      ),
+    );
+    expect(snapshot.status).toBe("warning");
+    expect(snapshot.message).toContain(message);
+  }),
+);
 it.each([
   { version: "0.84.0", provider: "missing", launchArgs: "", check: false },
   { version: "0.84.1", provider: "missing", launchArgs: "", check: true },

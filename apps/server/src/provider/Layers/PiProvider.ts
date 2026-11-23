@@ -11,6 +11,7 @@ import {
 } from "../providerSnapshot.ts";
 import { PI_CATALOG_PROBE_TIMEOUT_MS, probePiCatalog, type PiCatalog } from "../pi/PiMetadata.ts";
 import { PiRpcError } from "../pi/PiRpc.ts";
+import { piRecordField, piRecordString } from "../pi/PiProtocol.ts";
 import { EMPTY_PI_MODEL_CAPABILITIES } from "../pi/thinkingCapabilities.ts";
 import { buildPiRpcLaunch, resolvePiLaunchArgs } from "../pi/launch.ts";
 
@@ -60,6 +61,7 @@ const runPiStatusCommand = (
   args: readonly string[],
   environment: NodeJS.ProcessEnv,
   signal: AbortSignal,
+  allowNonZeroExit = false,
 ) =>
   runProcess(binaryPath || "pi", args, {
     cwd: tmpdir(),
@@ -71,8 +73,7 @@ const runPiStatusCommand = (
     }).env,
     timeoutMs: 10_000,
     maxBufferBytes: 4096,
-    // Pi reports missing credentials as JSON with a nonzero exit code.
-    allowNonZeroExit: true,
+    allowNonZeroExit,
     signal,
   });
 
@@ -84,21 +85,23 @@ const describePiCatalogCredentials = (
   catalog: PiCatalog,
   settings: PiSettings,
   environment: NodeJS.ProcessEnv,
-  version: string | null,
+  version: string,
 ) =>
   Effect.gen(function* () {
-    const model = catalog.unavailableActiveModel;
-    if (!model) {
-      return catalog.models.length === 0
-        ? "Pi has no usable models. Run Pi in a terminal and use /login or configure an API key."
-        : undefined;
-    }
+    if (catalog.models.length === 0)
+      return "Pi has no usable models. Run Pi in a terminal and use /login or configure an API key.";
+    const active = piRecordField(catalog.state, "model");
+    const provider = piRecordString(active, "provider");
+    const id = piRecordString(active, "id");
+    // An uncatalogued model can still work when its provider has credentials.
+    if (!provider || !id || catalog.models.some((model) => model.subProvider === provider))
+      return undefined;
+    const model = { provider, id };
     const label = `Pi default (${model.provider}/${model.id})`;
     const unavailable = `${label} uses ${model.provider}, which has no available models in Pi. Choose another model or check that provider's setup and the Pi launch arguments.`;
     const launch = resolvePiLaunchArgs(settings.launchArgs);
     // This check cannot see extension providers or keys supplied at launch.
     if (
-      version === null ||
       compareCliVersions(version, "0.84.1") < 0 ||
       !launch.ok ||
       launch.args.includes("--api-key")
@@ -110,6 +113,8 @@ const describePiCatalogCredentials = (
         ["auth", "check", "--provider", model.provider, "--json", "--no-refresh"],
         environment,
         signal,
+        // Pi reports missing credentials in JSON even when it exits nonzero.
+        true,
       ),
     ).pipe(Effect.option);
     const missingCredentials = Option.exists(
@@ -123,12 +128,11 @@ const describePiCatalogCredentials = (
       : unavailable;
   });
 
-export const buildPiCatalogSnapshot = (
+const buildPiCatalogSnapshot = (
   catalog: PiCatalog,
   settings: PiSettings,
   environment: NodeJS.ProcessEnv,
-  version: string | null,
-  fallbackMessage: string,
+  version: string,
 ) =>
   Effect.gen(function* () {
     const message = yield* describePiCatalogCredentials(catalog, settings, environment, version);
@@ -144,7 +148,9 @@ export const buildPiCatalogSnapshot = (
         version,
         status: catalog.models.length > 0 ? "ready" : "warning",
         auth: { status: "unknown" },
-        message: message ?? fallbackMessage,
+        message:
+          message ??
+          "Pi is available. Authentication is managed by Pi; a model catalog does not prove credentials are valid.",
       },
     });
   });
@@ -212,13 +218,7 @@ export const checkPiProviderStatus = (
         });
       const result = yield* probePiCatalog(settings, environment).pipe(Effect.result);
       if (result._tag === "Success")
-        return yield* buildPiCatalogSnapshot(
-          result.success,
-          settings,
-          environment,
-          version,
-          "Pi is available. Authentication is managed by Pi; a model catalog does not prove credentials are valid.",
-        );
+        return yield* buildPiCatalogSnapshot(result.success, settings, environment, version);
       return buildServerProvider({
         presentation,
         enabled: true,
