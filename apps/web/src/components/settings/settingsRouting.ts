@@ -545,6 +545,9 @@ export const SETTINGS_ITEM_ROUTES = defineItemRoutes({
   "providers.legacy-overrides": {
     category: "providers",
   },
+  "providers.text-generators": {
+    category: "providers",
+  },
   "storage.attachments": {
     category: "storage",
   },

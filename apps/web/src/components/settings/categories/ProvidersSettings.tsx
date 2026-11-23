@@ -323,7 +323,6 @@ export function ProvidersSettings() {
 
   return (
     <>
-      <TextGeneratorsSettings />
       <section
         className="rounded-2xl border border-border bg-card"
         data-settings-search-target="providers.instances"
@@ -514,6 +513,8 @@ export function ProvidersSettings() {
           })}
         </div>
       </section>
+
+      <TextGeneratorsSettings />
 
       <LegacyProviderOverridesCard rows={providerInstanceRows} onMove={updateProviderInstance} />
 
