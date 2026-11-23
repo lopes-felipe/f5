@@ -1122,6 +1122,19 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
       }
     });
 
+  /**
+   * Creation-time admission. Completions and failures admit reviewers under the write lock from
+   * the persisted roster, so creation takes the same lock and re-reads the roster: otherwise a
+   * fast completion and creation could both admit the same pending reviewer.
+   */
+  const startPendingReviewersLocked = (workflowId: CodeReviewWorkflowId) =>
+    withWorkflowWriteLock(
+      Effect.gen(function* () {
+        const current = yield* readCodeReviewWorkflow(orchestrationEngine, workflowId);
+        if (current) yield* startPendingReviewers(current, new Date().toISOString());
+      }),
+    );
+
   /** After a stage completes: start queued reviewers, or consolidate once all are done. */
   const continueAfterStageAdvance = (
     workflow: CodeReviewWorkflow,
@@ -1692,7 +1705,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
             return yield* Effect.fail(new Error("Code review workflow " + id + " was deleted."));
           if (!isArchivedWorkflow(existing)) {
             yield* ensureReviewerThreads(existing, snapshot);
-            yield* startPendingReviewers(existing, new Date().toISOString());
+            yield* startPendingReviewersLocked(existing.id);
           }
           return id;
         }
@@ -1892,7 +1905,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
         ),
       );
 
-      yield* startPendingReviewers(workflow, new Date().toISOString());
+      yield* startPendingReviewersLocked(workflowId);
       if (input.title === undefined) {
         yield* titleGenerationWorker.enqueue({
           workflowId,

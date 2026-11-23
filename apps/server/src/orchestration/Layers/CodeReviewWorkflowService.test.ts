@@ -315,6 +315,10 @@ function applyCodeReviewWorkflowCommandToSnapshot(
         projectId: command.projectId,
         title: command.title,
         slug: command.slug,
+        ...(command.templateId !== undefined ? { templateId: command.templateId } : {}),
+        ...(command.templateVersion !== undefined
+          ? { templateVersion: command.templateVersion }
+          : {}),
         reviewPrompt: command.reviewPrompt,
         branch: command.branch,
         pullRequest: command.pullRequest ?? null,
@@ -340,6 +344,20 @@ function applyCodeReviewWorkflowCommandToSnapshot(
           error: null,
           updatedAt: command.createdAt,
         },
+        ...(command.additionalReviewers
+          ? {
+              additionalReviewers: command.additionalReviewers.map((entry, index) => ({
+                label: `Reviewer ${"CDEF"[index]} (${entry.slot.provider}:${entry.slot.model})`,
+                slot: entry.slot,
+                threadId: entry.threadId,
+                status: "pending" as const,
+                pinnedTurnId: null,
+                pinnedAssistantMessageId: null,
+                error: null,
+                updatedAt: command.createdAt,
+              })),
+            }
+          : {}),
         consolidation: {
           slot: command.consolidation,
           threadId: null,

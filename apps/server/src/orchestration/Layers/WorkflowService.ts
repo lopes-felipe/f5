@@ -2405,6 +2405,12 @@ export const makeWorkflowService = Effect.gen(function* () {
   ) =>
     Effect.gen(function* () {
       const branches = planningBranches(workflow);
+      // Only running reviews need the mark; the rest of this run's entries are dropped here.
+      for (const branch of branches) {
+        for (const review of branch.reviews) {
+          if (review.status !== "running") dispatchedPlanReviewThreads.delete(review.threadId);
+        }
+      }
       const startsFresh = branches.every(
         (branch) => branch.status === "plan_saved" && branch.reviews.length === 0,
       );
@@ -2550,11 +2556,35 @@ export const makeWorkflowService = Effect.gen(function* () {
               attempt: review.retryCount,
               ...(retry ? { retry } : {}),
             });
-            dispatchedPlanReviewThreads.add(review.threadId);
           }
         });
 
-      const outcomes = new Map<ThreadId, { readonly ok: true } | { readonly error: string }>();
+      /** Applies one review's transition onto a fresh read, unless it already moved on. */
+      const writeReview = (
+        threadId: ThreadId,
+        from: ReadonlyArray<string>,
+        patch: { readonly status: "running" } | { readonly status: "error"; readonly error: string },
+      ) =>
+        Effect.gen(function* () {
+          const current = yield* readWorkflow(orchestrationEngine, workflow.id);
+          if (!current || isArchivedWorkflow(current)) return false;
+          let changed = false;
+          let next = current;
+          for (const branch of planningBranches(current)) {
+            next = updatePlanningBranch(next, branch.branchId, (entry) => ({
+              ...entry,
+              reviews: entry.reviews.map((review) => {
+                if (review.threadId !== threadId || !from.includes(review.status)) return review;
+                changed = true;
+                return { ...review, ...patch, updatedAt };
+              }),
+            }));
+          }
+          if (changed) yield* upsertWorkflow({ ...next, updatedAt });
+          return changed;
+        });
+
+      const launched = new Set<ThreadId>();
       let costLimitError: string | null = null;
       // Backfilling: a review that fails to launch frees its slot for the next one in order, so
       // a pass that admits reviews which all fail still starts the rest of the queue.
@@ -2567,45 +2597,37 @@ export const makeWorkflowService = Effect.gen(function* () {
           costLimitError = budgetError.message;
           break;
         }
+        // Each admission is saved before its dispatch, so a turn that finishes (even across a
+        // restart) always finds its review running and completes it.
+        if (
+          record.review.status === "pending" &&
+          !(yield* writeReview(record.review.threadId, ["pending"], { status: "running" }))
+        ) {
+          continue;
+        }
+        launched.add(record.review.threadId);
+        // Marked before dispatching, so a concurrent pass never resends this review.
+        dispatchedPlanReviewThreads.add(record.review.threadId);
         const exit = yield* Effect.exit(launch(record));
-        outcomes.set(
-          record.review.threadId,
-          Exit.isSuccess(exit) ? { ok: true } : { error: errorMessage(Cause.squash(exit.cause)) },
-        );
-        if (Exit.isSuccess(exit)) active += 1;
+        if (Exit.isSuccess(exit)) {
+          active += 1;
+          continue;
+        }
+        dispatchedPlanReviewThreads.delete(record.review.threadId);
+        yield* writeReview(record.review.threadId, ["pending", "running"], {
+          status: "error",
+          error: errorMessage(Cause.squash(exit.cause)),
+        });
       }
       if (costLimitError) {
         for (const record of pending) {
-          if (!outcomes.has(record.review.threadId)) {
-            outcomes.set(record.review.threadId, { error: costLimitError });
-          }
+          if (launched.has(record.review.threadId)) continue;
+          yield* writeReview(record.review.threadId, ["pending"], {
+            status: "error",
+            error: costLimitError,
+          });
         }
       }
-      if (outcomes.size === 0) return;
-
-      const current = yield* readWorkflow(orchestrationEngine, workflow.id);
-      if (!current || isArchivedWorkflow(current)) return;
-      let next = current;
-      let changed = false;
-      for (const branch of planningBranches(current)) {
-        next = updatePlanningBranch(next, branch.branchId, (entry) => ({
-          ...entry,
-          reviews: entry.reviews.map((review) => {
-            const outcome = outcomes.get(review.threadId);
-            if (!outcome || (review.status !== "pending" && review.status !== "running")) {
-              return review;
-            }
-            if ("ok" in outcome) {
-              if (review.status !== "pending") return review;
-              changed = true;
-              return { ...review, status: "running" as const, updatedAt };
-            }
-            changed = true;
-            return { ...review, status: "error" as const, error: outcome.error, updatedAt };
-          }),
-        }));
-      }
-      if (changed) yield* upsertWorkflow({ ...next, updatedAt });
     });
 
   const maybeStartRevisions = (
