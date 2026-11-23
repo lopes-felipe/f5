@@ -5,6 +5,7 @@ import { ProviderSessionDirectoryPersistenceError } from "../Errors.ts";
 import { PersistenceSqlError } from "../../persistence/Errors.ts";
 import { ServerShutdown, ShutdownRegistry } from "../../shutdown.ts";
 import { ProviderControlTarget } from "../controlTarget.ts";
+import { DeliveryAttemptContext, TurnAcceptanceSignal } from "../deliveryAttemptContext.ts";
 import { PreviewAutomationBroker } from "../../mcp/PreviewAutomationBroker.ts";
 import { ComputerAutomationBroker } from "../../computer/ComputerAutomationBroker.ts";
 import { readPersistedSessionGeneration } from "../sessionCapabilities.ts";
@@ -459,6 +460,77 @@ it.effect("discards a same-instance cursor when a fresh adapter start does not r
     const binding = yield* directory.getBinding(threadId);
     assert.equal(binding._tag, "Some");
     if (binding._tag === "Some") assert.equal(binding.value.resumeCursor, null);
+  }).pipe(Effect.provide(layer), Effect.scoped);
+});
+
+it.effect("accepts a delivery when the adapter signals it, before the send returns", () => {
+  const codex = makeFakeCodexAdapter();
+  const layer = makeProviderServiceLayerForAdapters(new Map([["codex", codex.adapter]]));
+  return Effect.gen(function* () {
+    const provider = yield* ProviderService;
+    const threadId = asThreadId("early-acceptance");
+    yield* provider.startSession(threadId, {
+      provider: "codex",
+      threadId,
+      runtimeMode: "full-access",
+    });
+    const release = yield* Deferred.make<void>();
+    const turnId = TurnId.make("turn-early");
+    codex.sendTurn.mockImplementationOnce((input) =>
+      Effect.gen(function* () {
+        const signal = yield* TurnAcceptanceSignal;
+        const receipt = { threadId: input.threadId, turnId };
+        // A second signal is ignored.
+        yield* signal!.accept(receipt);
+        yield* signal!.accept(receipt);
+        yield* Deferred.await(release);
+        return receipt;
+      }),
+    );
+    const accepted: Array<string> = [];
+    const sending = yield* provider
+      .sendTurn({ threadId, input: "Long turn", attachments: [] })
+      .pipe(
+        Effect.provideService(DeliveryAttemptContext, {
+          attemptId: "attempt-1",
+          accepted: (receipt) => Effect.sync(() => accepted.push(String(receipt.turnId))),
+          prepared: () => Effect.void,
+        }),
+        Effect.forkChild,
+      );
+    yield* Effect.promise(() =>
+      vi.waitFor(() => {
+        if (accepted.length === 0) throw new Error("not accepted yet");
+      }),
+    );
+    assert.isUndefined(sending.pollUnsafe());
+    yield* Deferred.succeed(release, undefined);
+    yield* Fiber.join(sending);
+    // The fallback after the send returns does not write a second receipt.
+    assert.deepEqual(accepted, ["turn-early"]);
+  }).pipe(Effect.provide(layer), Effect.scoped);
+});
+
+it.effect("still accepts after the send when the adapter never signals", () => {
+  const codex = makeFakeCodexAdapter();
+  const layer = makeProviderServiceLayerForAdapters(new Map([["codex", codex.adapter]]));
+  return Effect.gen(function* () {
+    const provider = yield* ProviderService;
+    const threadId = asThreadId("fallback-acceptance");
+    yield* provider.startSession(threadId, {
+      provider: "codex",
+      threadId,
+      runtimeMode: "full-access",
+    });
+    const accepted: Array<string> = [];
+    const turn = yield* provider.sendTurn({ threadId, input: "Short", attachments: [] }).pipe(
+      Effect.provideService(DeliveryAttemptContext, {
+        attemptId: "attempt-1",
+        accepted: (receipt) => Effect.sync(() => accepted.push(String(receipt.turnId))),
+        prepared: () => Effect.void,
+      }),
+    );
+    assert.deepEqual(accepted, [String(turn.turnId)]);
   }).pipe(Effect.provide(layer), Effect.scoped);
 });
 

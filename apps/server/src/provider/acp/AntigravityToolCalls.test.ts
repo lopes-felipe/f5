@@ -29,4 +29,27 @@ describe("Antigravity native tools", () => {
     });
     expect(acpFileChanges(unknown.data.content)).toEqual([]);
   });
+
+  it("uses Antigravity's tool summary as the command description", () => {
+    const normalize = makeAntigravityToolNormalizer(() => undefined);
+    const tool = normalize({
+      toolCallId: "cmd-1",
+      title: "ls -la",
+      kind: "execute",
+      status: "in_progress" as never,
+      data: { rawInput: { CommandLine: "ls -la", toolSummary: "  Inspect top-level layout " } },
+    });
+    expect(tool.data.command).toBe("ls -la");
+    expect(tool.data.input).toEqual({ description: "Inspect top-level layout" });
+
+    const kept = normalize({
+      toolCallId: "cmd-2",
+      kind: "execute",
+      data: {
+        input: { description: "Existing" },
+        rawInput: { CommandLine: "pwd", toolSummary: "Print directory" },
+      },
+    });
+    expect(kept.data.input).toEqual({ description: "Existing" });
+  });
 });

@@ -18,7 +18,7 @@ import { GitCore } from "../../git/Services/GitCore.ts";
 import { assertMcpRuntimeConfig, mcpConfigErrorMessage } from "@t3tools/shared/mcpValidation";
 import { readCodexMcpOAuthCallbackConfig } from "@t3tools/shared/mcpTranslation";
 import { resolveClaudeLaunchAppendSystemPrompt } from "../claudeAppendSystemPrompt.ts";
-import { DeliveryAttemptContext } from "../deliveryAttemptContext";
+import { DeliveryAttemptContext, TurnAcceptanceSignal } from "../deliveryAttemptContext";
 import { automationEventSanitizer } from "@t3tools/shared/automationActivitySanitizer";
 import { ComputerAutomationBroker } from "../../computer/ComputerAutomationBroker";
 import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts";
@@ -79,6 +79,7 @@ import {
   type ProviderSession,
   type ProviderSessionAction,
   type ServerProvider,
+  type ProviderTurnStartResult,
   type McpReloadResult,
   type McpSessionReloadOutcome,
   type McpSessionSummary,
@@ -2579,6 +2580,30 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                 ),
               )
             : admit;
+          // Adapters whose send lasts the whole turn report acceptance early through this;
+          // the call after the send returns is the fallback when they never do.
+          let acceptanceStarted = false;
+          const acceptanceSignal = deliveryAttempt
+            ? {
+                accept: (receipt: ProviderTurnStartResult) =>
+                  Effect.suspend(() => {
+                    if (acceptanceStarted) return Effect.void;
+                    acceptanceStarted = true;
+                    return deliveryAttempt
+                      .accepted(receipt, { runtimeGeneration: generation, nativeHistoryIdentity })
+                      .pipe(
+                        Effect.catchCause((cause) => {
+                          if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt;
+                          acceptanceStarted = false;
+                          return Effect.logWarning("early turn acceptance failed", {
+                            threadId: input.threadId,
+                            cause: Cause.pretty(cause),
+                          });
+                        }),
+                      );
+                  }),
+              }
+            : null;
           const send = Effect.gen(function* () {
             yield* requireProjectProvider(deliveryBinding.value);
             yield* ensureAccepting;
@@ -2607,8 +2632,9 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                     })
                   : error,
               ),
+              Effect.provideService(TurnAcceptanceSignal, acceptanceSignal),
             );
-            if (deliveryAttempt)
+            if (deliveryAttempt && !acceptanceStarted)
               yield* deliveryAttempt.accepted(turn, {
                 runtimeGeneration: generation,
                 nativeHistoryIdentity,

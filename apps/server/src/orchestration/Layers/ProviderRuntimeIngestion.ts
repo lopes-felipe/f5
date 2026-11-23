@@ -877,6 +877,12 @@ function extractCommandExecutionExitCode(
   if (typeof direct === "number" && Number.isInteger(direct)) {
     return direct;
   }
+  // ACP agents report it in `rawOutput`: Grok as `exitCode`, Antigravity as `exit_code`.
+  const rawOutput = asRecord(data?.rawOutput);
+  const acp = rawOutput?.exitCode ?? rawOutput?.exit_code;
+  if (typeof acp === "number" && Number.isInteger(acp)) {
+    return acp;
+  }
   return parseExitCodeFromDetail(event.payload.detail);
 }
 

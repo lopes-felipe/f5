@@ -123,12 +123,17 @@ function LoadedShellCommand({ command }: { command: string }) {
   return <ShellCommandBlock command={command} />;
 }
 
-function ExpandedCommandText({ command }: { command: string }) {
-  const fallback = <HighlightedCommandText command={command} />;
-  if (classifyCodeHighlight(command) !== "inline") return fallback;
+/**
+ * The command, colored the same way collapsed and expanded. Small commands use
+ * the Shiki grammar (plain text while it loads); oversized ones, and a failed
+ * highlighter, use the lightweight colors in both states.
+ */
+function CommandText({ command }: { command: string }) {
+  const lightweight = <HighlightedCommandText command={command} />;
+  if (classifyCodeHighlight(command) !== "inline") return lightweight;
   return (
-    <SurfaceErrorBoundary name="Command highlighting" fallback={fallback} resetKeys={[command]}>
-      <Suspense fallback={fallback}>
+    <SurfaceErrorBoundary name="Command highlighting" fallback={lightweight} resetKeys={[command]}>
+      <Suspense fallback={command}>
         <LoadedShellCommand command={command} />
       </Suspense>
     </SurfaceErrorBoundary>
@@ -543,11 +548,8 @@ export const CommandTranscriptCard = memo(function CommandTranscriptCard({
               title={expanded ? undefined : displayCommand}
             >
               {summaryText === displayCommand ? (
-                expanded ? (
-                  <ExpandedCommandText command={displayCommand} />
-                ) : (
-                  <HighlightedCommandText command={displayCommand} />
-                )
+                // Same element in both states, so expanding keeps the loaded colors.
+                <CommandText command={displayCommand} />
               ) : (
                 summaryText
               )}
@@ -595,7 +597,7 @@ export const CommandTranscriptCard = memo(function CommandTranscriptCard({
               <div>
                 <p className={SECTION_LABEL_CLASS_NAME}>Command</p>
                 <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all rounded-md bg-background/70 p-2 font-mono text-[length:var(--f5-chat-font-size)] text-foreground">
-                  <ExpandedCommandText command={displayCommand} />
+                  <CommandText command={displayCommand} />
                 </pre>
               </div>
             )}

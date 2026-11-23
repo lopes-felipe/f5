@@ -770,6 +770,47 @@ describe("CommandTranscriptCard", () => {
     }
   });
 
+  it("colors a command the same way collapsed and expanded", async () => {
+    const command = 'node --version && echo "done" 2>/dev/null || true';
+    const tokenColors = async (expanded: boolean, oversized = false) => {
+      const host = document.createElement("div");
+      document.body.append(host);
+      const text = oversized ? `${command}\n${"# pad\n".repeat(500)}` : command;
+      const screen = await renderWithQueryClient(
+        <CommandTranscriptCard
+          execution={makeExecution({ command: text, output: "" })}
+          expanded={expanded}
+          timestampFormat="locale"
+          onToggle={() => {}}
+          onExpandedBodyResize={() => {}}
+        />,
+        host,
+      );
+      try {
+        const code = () => host.querySelector("button[aria-expanded] code");
+        if (!oversized)
+          await vi.waitFor(() => expect(code()?.querySelector("span[style]")).not.toBeNull(), {
+            timeout: 10_000,
+          });
+        return [...(code()?.querySelectorAll("span[style], span[class]") ?? [])]
+          .filter((span) => span.childElementCount === 0 && span.textContent?.trim())
+          .slice(0, 20)
+          .map((span) => `${span.textContent}|${getComputedStyle(span).color}`);
+      } finally {
+        await screen.unmount();
+        host.remove();
+      }
+    };
+
+    const collapsed = await tokenColors(false);
+    expect(collapsed.length).toBeGreaterThan(0);
+    expect(await tokenColors(true)).toEqual(collapsed);
+    // Too big for inline highlighting: the lightweight palette, again in both states.
+    const collapsedLarge = await tokenColors(false, true);
+    expect(collapsedLarge.length).toBeGreaterThan(0);
+    expect(await tokenColors(true, true)).toEqual(collapsedLarge);
+  });
+
   it("copies the command instead of a distinct summary title", async () => {
     const host = document.createElement("div");
     document.body.append(host);

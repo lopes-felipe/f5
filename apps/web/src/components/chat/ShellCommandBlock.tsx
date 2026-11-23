@@ -42,17 +42,20 @@ export function ShellCommandBlock({ command }: { command: string }) {
   const { resolvedTheme } = useTheme();
   const code = command;
   if (!code) return null;
-  const plain = <HighlightedCommandText command={code} />;
-  if (classifyCodeHighlight(code) !== "inline") return plain;
+  // Commands too big for inline highlighting, and a failed highlighter, use the
+  // lightweight colors; they then match wherever the same command is shown.
+  const lightweight = <HighlightedCommandText command={code} />;
+  if (classifyCodeHighlight(code) !== "inline") return lightweight;
   return (
     // The tool body sets the monospace, pre-wrapped text this sits in.
     <span className="text-foreground">
       <SurfaceErrorBoundary
         name="Command highlighting"
-        fallback={plain}
+        fallback={lightweight}
         resetKeys={[code, resolvedTheme]}
       >
-        <Suspense fallback={plain}>
+        {/* Plain while loading, so text gains color once instead of changing palette. */}
+        <Suspense fallback={code}>
           <HighlightedCommand code={code} theme={resolvedTheme} />
         </Suspense>
       </SurfaceErrorBoundary>

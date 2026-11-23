@@ -102,6 +102,9 @@ import {
   makeAcpRequestResolvedEvent,
   makeAcpToolCallEvent,
 } from "../acp/AcpCoreRuntimeEvents.ts";
+import { AcpCommandOutputTracker, makeAcpCommandOutputEvent } from "../acp/AcpCommandOutput.ts";
+import { firePendingAcceptance, isAcpPromptProgress } from "../acp/AcpPromptAcceptance.ts";
+import { TurnAcceptanceSignal } from "../deliveryAttemptContext.ts";
 import {
   boundPermissionRequestPayload,
   findModelConfigOption,
@@ -272,6 +275,10 @@ interface GrokSessionContext {
   readonly antigravitySelection: AntigravitySelectionState;
   /** Antigravity: last context sample emitted, for coalescing. */
   lastContextUsage: string | undefined;
+  /** Output already appended to each running `execute` tool's transcript. */
+  readonly commandOutput: AcpCommandOutputTracker;
+  /** Reports the running prompt's delivery accepted; fired on the agent's first progress. */
+  pendingAcceptance: Effect.Effect<void> | undefined;
 }
 
 function settlePendingApprovalsAsCancelled(
@@ -1030,6 +1037,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     (!live || live.stopped || live.pendingApprovals !== pendingApprovals)
                   )
                     return { outcome: { outcome: "cancelled" as const } };
+                  // Asking to run something proves the agent is working on the prompt.
+                  if (live) yield* firePendingAcceptance(live);
                   yield* logNative(
                     input.threadId,
                     "session/request_permission",
@@ -1410,6 +1419,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             antigravityAccountRevision: PROVIDER === "antigravity" ? accountRevision : undefined,
             antigravitySelection,
             lastContextUsage: undefined,
+            commandOutput: new AcpCommandOutputTracker(),
+            pendingAcceptance: undefined,
           };
 
           let nativeSkillCommands: typeof discoveredSkillCommands = [];
@@ -1438,6 +1449,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   event._tag === "AssistantItemStarted"
                 )
                   ctx.antigravityTasks.noteParentProgress();
+                if (isAcpPromptProgress(event)) yield* firePendingAcceptance(ctx);
                 const computerCall =
                   event._tag === "ToolCallUpdated" && classifyAcpToolEvent(catalogs, event);
                 switch (event._tag) {
@@ -1555,16 +1567,31 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                       });
                     }
                     yield* logNative(ctx.threadId, "session/update", event.rawPayload);
+                    const toolCall =
+                      PROVIDER === "antigravity"
+                        ? ctx.normalizeAntigravityTool(event.toolCall)
+                        : event.toolCall;
+                    // Before the lifecycle event, so a completion flushes this output too.
+                    const commandOutput = ctx.commandOutput.next(toolCall);
+                    if (commandOutput !== undefined)
+                      yield* offerRuntimeEvent(
+                        makeAcpCommandOutputEvent({
+                          stamp: yield* makeEventStamp(ctx),
+                          provider: PROVIDER,
+                          threadId: ctx.threadId,
+                          turnId: ctx.activeTurnId,
+                          toolCallId: toolCall.toolCallId,
+                          text: commandOutput,
+                          rawPayload: event.rawPayload,
+                        }),
+                      );
                     yield* offerRuntimeEvent(
                       makeAcpToolCallEvent({
                         stamp: yield* makeEventStamp(ctx),
                         provider: PROVIDER,
                         threadId: ctx.threadId,
                         turnId: ctx.activeTurnId,
-                        toolCall:
-                          PROVIDER === "antigravity"
-                            ? ctx.normalizeAntigravityTool(event.toolCall)
-                            : event.toolCall,
+                        toolCall,
                         rawPayload: event.rawPayload,
                       }),
                     );
@@ -1977,6 +2004,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 displayModel,
                 promptParts,
                 turnId,
+                steering: steeringTurnId !== undefined,
               };
             }).pipe(
               Effect.tapCause(() =>
@@ -2054,9 +2082,27 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 ),
               ),
             );
+          // The prompt request resolves only when the turn ends. Report the delivery accepted
+          // once the agent shows progress on it; a steer joins a turn already accepted.
+          const acceptance = yield* TurnAcceptanceSignal;
+          const pendingAcceptance =
+            acceptance && !prepared.steering
+              ? acceptance.accept({
+                  threadId: input.threadId,
+                  turnId: prepared.turnId,
+                  resumeCursor: prepared.context.session.resumeCursor,
+                })
+              : undefined;
+          prepared.context.pendingAcceptance = pendingAcceptance;
           const result = yield* (
             deadline === undefined ? prompt : Effect.raceFirst(prompt, watchdog)
           ).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                if (prepared.context.pendingAcceptance === pendingAcceptance)
+                  prepared.context.pendingAcceptance = undefined;
+              }),
+            ),
             Effect.onError(() =>
               timedOut
                 ? withThreadLock(

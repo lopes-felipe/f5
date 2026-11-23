@@ -8766,6 +8766,94 @@ describe("ProviderRuntimeIngestion", () => {
     expect(detail.commandExecution?.output).toContain("line 9\n");
   });
 
+  it("records ACP command output, rawOutput exit codes and tool summaries", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    const turnId = asTurnId("turn-acp-command");
+    const itemId = asItemId("call-acp-command");
+    const data = {
+      command: "false",
+      input: { description: "Check the failing script" },
+      rawInput: { CommandLine: "false", toolSummary: "Check the failing script" },
+    };
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-acp-command-turn-started"),
+      provider: "antigravity",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      payload: {},
+    });
+    harness.emit({
+      type: "item.updated",
+      eventId: asEventId("evt-acp-command-updated"),
+      provider: "antigravity",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: { itemType: "command_execution", status: "inProgress", title: "false", data },
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-acp-command-output"),
+      provider: "antigravity",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: { streamKind: "command_output", delta: "boom\n" },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-acp-command-completed"),
+      provider: "antigravity",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: {
+        itemType: "command_execution",
+        status: "completed",
+        title: "false",
+        data: { ...data, rawOutput: { output: "boom\n", exit_code: 2 } },
+      },
+    });
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-acp-command-turn-completed"),
+      provider: "antigravity",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      payload: { state: "completed" },
+    });
+
+    await harness.drain();
+
+    const result = await Effect.runPromise(
+      harness.threadCommandExecutionQuery.getThreadCommandExecutions({
+        threadId: asThreadId("thread-1"),
+      }),
+    );
+    expect(result.executions).toHaveLength(1);
+    expect(result.executions[0]).toMatchObject({
+      command: "false",
+      status: "failed",
+      exitCode: 2,
+      description: "Check the failing script",
+    });
+    const detail = await Effect.runPromise(
+      harness.threadCommandExecutionQuery.getThreadCommandExecution({
+        threadId: asThreadId("thread-1"),
+        commandExecutionId: result.executions[0]!.id,
+      }),
+    );
+    expect(detail.commandExecution?.output).toBe("boom\n");
+  });
+
   it("records exact file-change transcripts with compact activity fileChangeIds", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();
