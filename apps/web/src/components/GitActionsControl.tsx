@@ -98,6 +98,7 @@ import {
 import { randomUUID } from "~/lib/utils";
 import { resolvePathLinkTarget } from "~/terminal-links";
 import { readNativeApi } from "~/nativeApi";
+import { HEADER_ACTION_LABEL_CLASS_NAME } from "./headerActionLabel";
 
 interface GitActionsControlProps {
   gitCwd: string | null;
@@ -1075,9 +1076,7 @@ function RepositoryGitActionsControl({
                 }
               >
                 <GitQuickActionIcon quickAction={quickAction} />
-                <span className="sr-only @xl/header-actions:not-sr-only @xl/header-actions:ml-0.5">
-                  {quickAction.label}
-                </span>
+                <span className={HEADER_ACTION_LABEL_CLASS_NAME}>{quickAction.label}</span>
               </PopoverTrigger>
               <PopoverPopup tooltipStyle side="bottom" align="start">
                 {quickActionDisabledReason}
@@ -1096,9 +1095,7 @@ function RepositoryGitActionsControl({
                 }
               >
                 <GitQuickActionIcon quickAction={quickAction} />
-                <span className="sr-only @xl/header-actions:not-sr-only @xl/header-actions:ml-0.5">
-                  {quickAction.label}
-                </span>
+                <span className={HEADER_ACTION_LABEL_CLASS_NAME}>{quickAction.label}</span>
                 <span className="rounded-sm bg-muted px-1 text-2xs tabular-nums text-muted-foreground">
                   {quickAction.pullRequestCount}
                 </span>
@@ -1118,9 +1115,7 @@ function RepositoryGitActionsControl({
               onClick={runQuickAction}
             >
               <GitQuickActionIcon quickAction={quickAction} />
-              <span className="sr-only @xl/header-actions:not-sr-only @xl/header-actions:ml-0.5">
-                {quickAction.label}
-              </span>
+              <span className={HEADER_ACTION_LABEL_CLASS_NAME}>{quickAction.label}</span>
             </Button>
           )}
           <GroupSeparator className="hidden @xl/header-actions:block" />
