@@ -209,11 +209,23 @@ export class VmSupervisor {
 
   private async limactlOk(args: ReadonlyArray<string>, timeoutMs: number, what: string) {
     const result = await this.limactl(args, timeoutMs);
-    if (result.code !== 0)
+    if (result.code !== 0) {
+      this.logFailedOutput(what, result);
       throw new VmSupervisorRefusal(
         `${what} failed: ${lastLine(result.stderr) || `exit ${result.code}`}. Lima logs: ${Path.join(this.config.limaHome, LIMA_INSTANCE_NAME)}`,
       );
+    }
     return result;
+  }
+
+  /**
+   * The refusal carries one line; the backend log gets the rest of the failed command's output.
+   * Lima overwrites its hostagent log on the next boot, so this can be the only copy.
+   */
+  private logFailedOutput(what: string, result: RunResult): void {
+    const output = result.stderr.trim().slice(-FAILED_OUTPUT_LOG_CHARS);
+    if (output)
+      this.deps.writeStderr(Buffer.from(`[vm] ${what} (exit ${result.code}) output:\n${output}\n`));
   }
 
   private guest(args: ReadonlyArray<string>, timeoutMs: number) {
@@ -408,10 +420,12 @@ export class VmSupervisor {
       ["install", backend.version, backend.sha256, remote],
       10 * MINUTE,
     );
-    if (result.code !== 0)
+    if (result.code !== 0) {
+      this.logFailedOutput("Installing the backend in the VM", result);
       throw new VmSupervisorRefusal(
         `Installing the backend in the VM failed: ${lastLine(result.stderr) || `exit ${result.code}`}`,
       );
+    }
   }
 
   private ssh() {
@@ -461,7 +475,7 @@ export class VmSupervisor {
       for (;;) {
         if (exited)
           throw new VmSupervisorRefusal(
-            `Port ${port} could not be forwarded to the VM: ${forwards.lastStderrLine() || "ssh exited"}. Another process may be using it.`,
+            `Port ${port} could not be forwarded to the VM: ${forwards.lastStderrLine().replace(/\.+$/, "") || "ssh exited"}. Another process may be using it.`,
           );
         const check = await this.deps.run(
           "ssh",
@@ -535,6 +549,8 @@ export class VmSupervisor {
 }
 
 const lastLine = (text: string) => text.trim().split("\n").at(-1)?.trim() ?? "";
+/** How much of a failed Lima command's output goes into the backend log. */
+const FAILED_OUTPUT_LOG_CHARS = 8 * 1024;
 
 /** A guest-supplied reason, made safe to show: one line, no control characters, bounded. */
 function guestReason(line: string): string {

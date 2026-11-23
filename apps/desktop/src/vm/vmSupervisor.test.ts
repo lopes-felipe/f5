@@ -448,11 +448,13 @@ describe("runVmSupervisor", () => {
       new AbortController().signal,
     );
     await vi.waitFor(() => expect(spawned).toHaveLength(1));
-    spawned[0]!.child.finish(255, "bind [127.0.0.1]:41000: Address already in use\n");
+    spawned[0]!.child.finish(255, "bind [127.0.0.1]:41000: Address already in use.\n");
     await expect(result).resolves.toBe(VM_REFUSED_EXIT_CODE);
     expect(startupError().message).toMatch(
       /Port 41000 could not be forwarded.*Address already in use/,
     );
+    // ssh's own trailing period isn't doubled.
+    expect(startupError().message).not.toMatch(/\.\./);
     expect(signalForwardReady).not.toHaveBeenCalled();
     expect(spawned).toHaveLength(1);
     expect(lima.status()).toBe("Stopped");
@@ -467,6 +469,23 @@ describe("runVmSupervisor", () => {
     // Nothing would own a booted VM after a refusal.
     expect(lima.verbs().slice(-2)).toEqual(["stop", "list"]);
     expect(locks.held.size).toBe(0);
+  });
+
+  it("logs a failed Lima command's whole output, not just the refusal's last line", async () => {
+    const lima = fakeLima({ installCode: 1 });
+    const logged: string[] = [];
+    const writeStderr = (chunk: Uint8Array) => logged.push(Buffer.from(chunk).toString());
+    await expect(
+      runVmSupervisor(
+        config,
+        deps(lima.run, undefined, { writeStderr }),
+        new AbortController().signal,
+      ),
+    ).resolves.toBe(VM_REFUSED_EXIT_CODE);
+    expect(startupError()).toEqual({ message: expect.stringMatching(/bad archive/) });
+    expect(logged.join("")).toContain(
+      "[vm] Installing the backend in the VM (exit 1) output:\nf5-guest: bad archive\n",
+    );
   });
 
   it("tells main when a refusal leaves a VM Lima can't stop", async () => {
