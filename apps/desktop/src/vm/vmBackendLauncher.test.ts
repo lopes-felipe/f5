@@ -6,13 +6,14 @@ import { encodeBackendFrame } from "@t3tools/shared/backendFrames";
 import { MAC_BACKEND_COMPUTER_SANDBOX } from "../backendComputerIsolation";
 import {
   resolveVmLaunchAssets,
+  VM_BACKEND_MANIFEST_NAME,
   VM_READINESS_TIMEOUT_MS,
   VM_STOP_GRACE_MS,
   vmBackendLauncher,
   VmSlotReservations,
   type VmLaunchAssets,
 } from "./vmBackendLauncher";
-import { VM_FORWARD_READY, VM_SHUTDOWN_BUDGET_MS } from "./vmSupervisor";
+import { VM_FORWARD_READY, VM_SHUTDOWN_BUDGET_MS, VM_STARTUP_PROGRESS } from "./vmSupervisor";
 
 const archive = "/res/vm/f5-1.2.3-linux-arm64.tar.gz";
 const manifest = {
@@ -46,6 +47,7 @@ function resolve(overrides: Partial<Parameters<typeof resolveVmLaunchAssets>[0]>
     arch: "arm64",
     resourcesPath: "/res",
     packaged: false,
+    appVersion: "1.2.3",
     lock,
     exists: () => true,
     readFile: (path) => {
@@ -102,65 +104,80 @@ describe("resolveVmLaunchAssets", () => {
     });
   });
 
-  it("ignores every development override in packaged builds", () => {
-    const readFile = vi.fn(() => JSON.stringify(manifest));
-    const resolved = resolve({
+  const evilEnv = {
+    F5_EXPERIMENTAL_LINUX_VM: "1",
+    F5_VM_LIMACTL: "/evil/limactl",
+    F5_VM_BACKEND_ARCHIVE: "/evil/f5-1.2.3-linux-arm64.tar.gz",
+    F5_VM_IMAGE_URL: "https://evil.test/image.qcow2",
+    F5_VM_IMAGE_SHA256: "a".repeat(64),
+    F5_VM_IMAGE_SIZE: "5",
+  };
+  const bundledManifest = `/res/vm/${VM_BACKEND_MANIFEST_NAME}`;
+  const packaged = (
+    pin: unknown = manifest,
+    overrides: Partial<Parameters<typeof resolveVmLaunchAssets>[0]> = {},
+  ) =>
+    resolve({
       packaged: true,
-      env: {
-        F5_EXPERIMENTAL_LINUX_VM: "1",
-        F5_VM_LIMACTL: "/evil/limactl",
-        F5_VM_BACKEND_ARCHIVE: "/evil/f5-1.2.3-linux-arm64.tar.gz",
-        F5_VM_IMAGE_URL: "https://evil.test/image.qcow2",
-        F5_VM_IMAGE_SHA256: "a".repeat(64),
-        F5_VM_IMAGE_SIZE: "5",
-      },
-      exists: (path) => path === "/res/native/lima/bin/limactl",
-      readFile,
-    });
-    // The bundled archive is absent here, so resolution stops there, never at /evil.
-    expect(resolved).toMatchObject({
-      ok: false,
-      reason: expect.stringMatching(/archive is missing/),
-    });
-    expect(readFile).not.toHaveBeenCalled();
-  });
-
-  it("resolves the bundled assets in packaged builds whatever the overrides say", () => {
-    const resolved = resolve({
-      packaged: true,
-      env: {
-        F5_EXPERIMENTAL_LINUX_VM: "1",
-        F5_VM_LIMACTL: "/evil/limactl",
-        F5_VM_BACKEND_ARCHIVE: "/evil/f5-1.2.3-linux-arm64.tar.gz",
-        F5_VM_IMAGE_URL: "https://evil.test/image.qcow2",
-        F5_VM_IMAGE_SHA256: "a".repeat(64),
-        F5_VM_IMAGE_SIZE: "5",
-      },
+      env: evilEnv,
       exists: (path) => !path.startsWith("/evil"),
-      readDir: (path) => {
-        expect(path).toBe("/res/vm");
-        return ["f5-1.2.3-linux-arm64.tar.gz", "f5-1.2.3-linux-arm64.json"];
+      readFile: (path) => {
+        expect(path).toBe(bundledManifest);
+        return JSON.stringify(pin);
       },
+      ...overrides,
     });
-    expect(resolved).toEqual({
+
+  it("resolves a packaged build's bundled pin as a download, whatever the overrides say", () => {
+    expect(packaged()).toEqual({
       ok: true,
       assets: {
         limactl: "/res/native/lima/bin/limactl",
-        backend: { archive, sha256: "d".repeat(64), version: "1.2.3" },
+        backend: {
+          version: "1.2.3",
+          sha256: "d".repeat(64),
+          download: { url: manifest.artifacts[0]!.url, size: 100 },
+        },
         imagePin: lock.image,
       },
     });
   });
 
-  it("refuses, rather than throwing, when the bundled VM directory can't be read", () => {
+  it("refuses a packaged build without a bundled backend pin, never reading /evil", () => {
+    const readFile = vi.fn(() => JSON.stringify(manifest));
     expect(
-      resolve({
-        packaged: true,
-        readDir: () => {
+      packaged(manifest, { exists: (path) => path === "/res/native/lima/bin/limactl", readFile }),
+    ).toMatchObject({ ok: false, reason: expect.stringMatching(/no pinned linux-arm64 backend/) });
+    expect(readFile).not.toHaveBeenCalled();
+  });
+
+  it("refuses a bundled pin for another version or outside this version's release", () => {
+    expect(packaged(manifest, { appVersion: "1.2.4" })).toMatchObject({
+      ok: false,
+      reason: expect.stringMatching(/pins 1\.2\.3, not this app's 1\.2\.4/),
+    });
+    for (const url of [
+      "https://github.com/lopes-felipe/f5/releases/download/v1.2.2/f5-1.2.3-linux-arm64.tar.gz",
+      "https://github.com/someone/f5/releases/download/v1.2.3/f5-1.2.3-linux-arm64.tar.gz",
+      "https://evil.test/f5-1.2.3-linux-arm64.tar.gz",
+    ])
+      expect(
+        packaged({ ...manifest, artifacts: [{ ...manifest.artifacts[0], url }] }),
+      ).toMatchObject({ ok: false, reason: expect.stringMatching(/outside this version/) });
+  });
+
+  it("refuses, rather than throwing, when the bundled pin is unreadable or malformed", () => {
+    expect(
+      packaged(manifest, {
+        readFile: () => {
           throw new Error("EACCES: permission denied");
         },
       }),
-    ).toMatchObject({ ok: false, reason: expect.stringMatching(/could not be read: EACCES/) });
+    ).toMatchObject({ ok: false, reason: expect.stringMatching(/pin is invalid: EACCES/) });
+    expect(packaged({ schemaVersion: 2 })).toMatchObject({
+      ok: false,
+      reason: expect.stringMatching(/pin is invalid/),
+    });
   });
 
   it("lets development builds override the image", () => {
@@ -285,6 +302,7 @@ describe("vmBackendLauncher", () => {
       limaHome: "/Users/me/.f5/userdata/vm/0123456789abcdef",
       vmDir: `${request.profileStateDir}/vm`,
       imageCacheDir: "/Users/me/.f5/userdata/vm/images",
+      backendCacheDir: "/Users/me/.f5/userdata/vm/backends",
       startupErrorPath: `/errors/${request.profileId}.json`,
     });
     expect(JSON.stringify(config)).not.toContain(request.authToken);
@@ -308,9 +326,34 @@ describe("vmBackendLauncher", () => {
     expect(reachable).toBe(true);
   });
 
+  it("reports the supervisor's startup progress before the forward is ready", async () => {
+    const { child, stdout } = fakeSupervisor();
+    const onStartupProgress = vi.fn();
+    const launch = vmBackendLauncher({
+      platform: "darwin",
+      executable: "/F5",
+      supervisorEntry: "/app/vmSupervisorEntry.js",
+      stateDir: "/Users/me/.f5/userdata",
+      assets,
+      startupErrorPath: (id) => `/errors/${id}.json`,
+      spawn: () => child,
+    }).launch({ ...request, onStartupProgress });
+    const received: unknown[] = [];
+    launch.channel.onMessage((message) => received.push(message));
+    const progress = { type: VM_STARTUP_PROGRESS, incarnation: request.incarnation };
+    stdout.write(encodeBackendFrame(progress));
+    stdout.write(encodeBackendFrame(progress));
+    stdout.write(encodeBackendFrame({ type: VM_FORWARD_READY, incarnation: request.incarnation }));
+    await launch.reachable;
+    expect(onStartupProgress).toHaveBeenCalledTimes(2);
+    expect(launch.channel.connected).toBe(true);
+    expect(received).toEqual([]);
+  });
+
   it.each([
     ["a backend frame", { type: "hello" }],
     ["another incarnation's signal", { type: VM_FORWARD_READY, incarnation: "other" }],
+    ["another incarnation's progress", { type: VM_STARTUP_PROGRESS, incarnation: "other" }],
   ])("closes the channel, never reachable, when %s comes first", async (_name, first) => {
     const { child, stdout } = fakeSupervisor();
     const launch = vmBackendLauncher({

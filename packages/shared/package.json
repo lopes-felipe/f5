@@ -420,6 +420,10 @@
       "types": "./src/cliRelease.ts",
       "import": "./src/cliRelease.ts"
     },
+    "./vmBackendPin": {
+      "types": "./src/vmBackendPin.ts",
+      "import": "./src/vmBackendPin.ts"
+    },
     "./hostRuntime": {
       "types": "./src/hostRuntime.ts",
       "import": "./src/hostRuntime.ts"
