@@ -2440,7 +2440,7 @@ function collectSearchFlags(
 
 const FILTER_GREP_LETTERS = new Set(["v", "i", "E", "F", "G", "w", "x", "s"]);
 const FILTER_RG_LETTERS = new Set(["v", "i", "F", "w", "x", "s", "S"]);
-const FILTER_LONG_FLAGS = new Set([
+const FILTER_GREP_LONG_FLAGS = new Set([
   "--invert-match",
   "--ignore-case",
   "--extended-regexp",
@@ -2449,29 +2449,60 @@ const FILTER_LONG_FLAGS = new Set([
   "--word-regexp",
   "--line-regexp",
   "--no-messages",
+]);
+const FILTER_RG_LONG_FLAGS = new Set([
+  "--invert-match",
+  "--ignore-case",
+  "--fixed-strings",
+  "--word-regexp",
+  "--line-regexp",
+  "--no-messages",
   "--smart-case",
   "--case-sensitive",
 ]);
+
+/**
+ * Whether the shell may turn a word into something else: parameter or command
+ * substitution (outside single quotes), or a glob, tilde or brace expansion
+ * (unquoted). `grep $FILTER` could expand to `-n foo`, and `grep a*` to file
+ * names, so the stage's real arguments are unknown.
+ */
+function isExpandableShellWord(token: string): boolean {
+  if (/^'[^']*'$/.test(token)) return false;
+  // A `$` before a quote or at the end stays literal (`"test$"` anchors).
+  if (/`|\$[\w{(@*#?$!-]/.test(token)) return true;
+  if (/^"[^"]*"$/.test(token)) return false;
+  return /[*?[{~\\'"]/.test(token);
+}
 
 /**
  * A pipeline stage that only keeps or drops whole lines of its input, so
  * search results that pass through it still read as `path:line:text`:
  * `head`/`tail` with a count, or a grep/rg filter over stdin
  * (`grep -v test`, `grep -iE 'a|b'`). Flags that rewrite lines (`-n`, `-o`,
- * `-c`, `-H`, context) and file arguments (which stop it reading stdin) are
- * rejected.
+ * `-c`, `-H`, context), file arguments (which stop it reading stdin) and
+ * words the shell would expand are rejected.
+ *
+ * Like the search stage, an rg filter is assumed to run without a TTY and
+ * without a `RIPGREP_CONFIG_PATH` that turns on line numbers; either would
+ * prefix its own numbers (`1:72:foo`).
  */
 function isLineFilterStage(stage: ReadonlyArray<string>): boolean {
+  if (stage.slice(1).some(isExpandableShellWord)) return false;
   const program = stageProgram(stage);
   const args = stage.slice(1).map(maybeUnquoteShellToken);
   if (program === "head" || program === "tail") {
-    if (args.length === 0) return true;
-    if (args.length === 1) return /^(?:-\d+|--lines=\d+)$/.test(args[0]!);
-    return args.length === 2 && args[0] === "-n" && /^\+?\d+$/.test(args[1]!);
+    const parsed = parseLineCountArgs(args);
+    return (
+      parsed !== null &&
+      parsed.rest.length === 0 &&
+      (parsed.count === null || /^\+?\d+$/.test(parsed.count))
+    );
   }
   const isRg = program === "rg" || program === "ripgrep";
   if (!isRg && !["grep", "ggrep", "egrep", "fgrep"].includes(program)) return false;
   const letters = isRg ? FILTER_RG_LETTERS : FILTER_GREP_LETTERS;
+  const longFlags = isRg ? FILTER_RG_LONG_FLAGS : FILTER_GREP_LONG_FLAGS;
   let patterns = 0;
   let positionals = 0;
   for (let index = 0; index < args.length; index += 1) {
@@ -2491,7 +2522,7 @@ function isLineFilterStage(stage: ReadonlyArray<string>): boolean {
       continue;
     }
     if (arg.startsWith("--")) {
-      if (!FILTER_LONG_FLAGS.has(arg)) return false;
+      if (!longFlags.has(arg)) return false;
       continue;
     }
     if (arg.startsWith("-") && arg !== "-") {
