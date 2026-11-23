@@ -63,7 +63,10 @@ const staged = () =>
     .map((file) => Path.relative(Path.join(dir, "out"), file))
     .sort();
 
-it("stages only limactl, the Linux guest agent, the templates and the license", async () => {
+// Lima is staged only for macOS builds; Windows runners' tar takes `C:` for a remote host.
+const posixTar = it.skipIf(process.platform === "win32");
+
+posixTar("stages only limactl, the Linux guest agent, the templates and the license", async () => {
   const source = tarball();
   await stage(source);
   expect(staged()).toEqual([
@@ -78,7 +81,7 @@ it("stages only limactl, the Linux guest agent, the templates and the license", 
   expect(source.requests).toHaveLength(1);
 });
 
-it("refuses a download that doesn't match the pin, caching nothing", async () => {
+posixTar("refuses a download that doesn't match the pin, caching nothing", async () => {
   const source = tarball();
   await expect(stage(source, { ...source.lock, sha256: "0".repeat(64) })).rejects.toThrow(
     /digest verification/,
@@ -89,14 +92,19 @@ it("refuses a download that doesn't match the pin, caching nothing", async () =>
   expect(FS.readdirSync(Path.join(dir, "cache"))).toEqual([]);
 });
 
-it("refuses a tarball missing a file F5 needs", async () => {
+posixTar("refuses a tarball missing a file F5 needs", async () => {
   await expect(stage(tarball({ omit: "share/lima/templates/default.yaml" }))).rejects.toThrow(
     /no share\/lima\/templates/,
   );
 });
 
 it("accepts only a Darwin arm64 release asset of lima-vm/lima", () => {
-  const good = tarball().lock;
+  const good = {
+    version: "2.3.0",
+    url: "https://github.com/lima-vm/lima/releases/download/v2.3.0/lima-2.3.0-Darwin-arm64.tar.gz",
+    sha256: "a".repeat(64),
+    size: 10,
+  };
   expect(parseLimaPin(good)).toEqual(good);
   for (const patch of [
     {

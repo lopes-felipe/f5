@@ -57,6 +57,8 @@ jobs:
       - name: Select the Linux VM backend manifest
         if: inputs.platform == 'mac' && inputs.arch == 'arm64'
         run: |
+          # The template literals below are JavaScript, expanded by node, not by the shell.
+          # shellcheck disable=SC2016
           manifest=$(node -e '
             const fs = require("node:fs");
             const current = Number(process.env.GITHUB_RUN_ATTEMPT);

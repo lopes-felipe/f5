@@ -1,4 +1,4 @@
-import { parseRelease, selectArtifact } from "./cliRelease";
+import { parseRelease, selectArtifact } from "@t3tools/shared/cliRelease";
 
 /**
  * The linux-arm64 backend that Linux VM profiles run, pinned into a macOS arm64 release at
