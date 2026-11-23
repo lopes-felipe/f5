@@ -2,6 +2,7 @@
 // Current ACP schema release: v0.11.3
 
 import * as Schema from "effect/Schema";
+import { JsonUnknown } from "../_internal/jsonUnknown";
 
 export type AuthEnvVar = {
   readonly _meta?: { readonly [x: string]: unknown } | null;
@@ -276,7 +277,7 @@ export const Error = Schema.Struct({
       "Predefined error codes for common JSON-RPC and ACP-specific errors.\n\nThese codes follow the JSON-RPC 2.0 specification for standard errors\nand use the reserved range (-32000 to -32099) for protocol-specific errors.",
   }),
   data: Schema.optionalKey(
-    Schema.Unknown.annotate({
+    JsonUnknown.annotate({
       description:
         "Optional primitive or structured value that contains additional information about the error.\nThis may include debugging information or context-specific details.",
     }),
@@ -2752,12 +2753,12 @@ export const AgentNotification = Schema.Struct({
                   }),
                 ),
                 rawInput: Schema.optionalKey(
-                  Schema.Unknown.annotate({
+                  JsonUnknown.annotate({
                     description: "Raw input parameters sent to the tool.",
                   }),
                 ),
                 rawOutput: Schema.optionalKey(
-                  Schema.Unknown.annotate({ description: "Raw output returned by the tool." }),
+                  JsonUnknown.annotate({ description: "Raw output returned by the tool." }),
                 ),
                 status: Schema.optionalKey(
                   Schema.Literals(["pending", "in_progress", "completed", "failed"]).annotate({
@@ -2808,10 +2809,10 @@ export const AgentNotification = Schema.Struct({
                   ]),
                 ),
                 rawInput: Schema.optionalKey(
-                  Schema.Unknown.annotate({ description: "Update the raw input." }),
+                  JsonUnknown.annotate({ description: "Update the raw input." }),
                 ),
                 rawOutput: Schema.optionalKey(
-                  Schema.Unknown.annotate({ description: "Update the raw output." }),
+                  JsonUnknown.annotate({ description: "Update the raw output." }),
                 ),
                 status: Schema.optionalKey(
                   Schema.Union([ToolCallStatus, Schema.Null]).annotate({
@@ -2991,7 +2992,7 @@ export const AgentNotification = Schema.Struct({
           description:
             "**UNSTABLE**\n\nThis capability is not part of the spec yet, and may be removed or changed at any point.\n\nNotification sent by the agent when a URL-based elicitation is complete.",
         }),
-        Schema.Unknown.annotate({
+        JsonUnknown.annotate({
           title: "ExtNotification",
           description:
             "Allows the Agent to send an arbitrary notification that is not part of the ACP spec.\nExtension notifications provide a way to send one-way messages for custom functionality\nwhile maintaining protocol compatibility.\n\nSee protocol docs: [Extensibility](https://agentclientprotocol.com/protocol/extensibility)",
@@ -3211,10 +3212,10 @@ export const AgentRequest = Schema.Struct({
               ]),
             ),
             rawInput: Schema.optionalKey(
-              Schema.Unknown.annotate({ description: "Update the raw input." }),
+              JsonUnknown.annotate({ description: "Update the raw input." }),
             ),
             rawOutput: Schema.optionalKey(
-              Schema.Unknown.annotate({ description: "Update the raw output." }),
+              JsonUnknown.annotate({ description: "Update the raw output." }),
             ),
             status: Schema.optionalKey(
               Schema.Union([ToolCallStatus, Schema.Null]).annotate({
@@ -3463,7 +3464,7 @@ export const AgentRequest = Schema.Struct({
           description:
             "**UNSTABLE**\n\nThis capability is not part of the spec yet, and may be removed or changed at any point.\n\nRequests structured user input via a form or URL.",
         }),
-        Schema.Unknown.annotate({
+        JsonUnknown.annotate({
           title: "ExtMethodRequest",
           description:
             "Allows for sending an arbitrary request that is not part of the ACP spec.\nExtension methods provide a way to add custom functionality while maintaining\nprotocol compatibility.\n\nSee protocol docs: [Extensibility](https://agentclientprotocol.com/protocol/extensibility)",
@@ -4065,7 +4066,7 @@ export const AgentResponse = Schema.Union([
         description:
           "**UNSTABLE**\n\nThis capability is not part of the spec yet, and may be removed or changed at any point.\n\nResponse to `session/set_model` method.",
       }),
-      Schema.Unknown.annotate({
+      JsonUnknown.annotate({
         title: "ExtMethodResponse",
         description:
           "Allows for sending an arbitrary response to an [`ExtRequest`] that is not part of the ACP spec.\nExtension methods provide a way to add custom functionality while maintaining\nprotocol compatibility.\n\nSee protocol docs: [Extensibility](https://agentclientprotocol.com/protocol/extensibility)",
@@ -4527,7 +4528,7 @@ export const ClientNotification = Schema.Struct({
           description:
             "Notification to cancel ongoing operations for a session.\n\nSee protocol docs: [Cancellation](https://agentclientprotocol.com/protocol/prompt-turn#cancellation)",
         }),
-        Schema.Unknown.annotate({
+        JsonUnknown.annotate({
           title: "ExtNotification",
           description:
             "Allows the Agent to send an arbitrary notification that is not part of the ACP spec.\nExtension notifications provide a way to send one-way messages for custom functionality\nwhile maintaining protocol compatibility.\n\nSee protocol docs: [Extensibility](https://agentclientprotocol.com/protocol/extensibility)",
@@ -5053,7 +5054,7 @@ export const ClientRequest = Schema.Struct({
           description:
             "**UNSTABLE**\n\nThis capability is not part of the spec yet, and may be removed or changed at any point.\n\nRequest parameters for setting a session model.",
         }),
-        Schema.Unknown.annotate({
+        JsonUnknown.annotate({
           title: "ExtMethodRequest",
           description:
             "Allows for sending an arbitrary request that is not part of the ACP spec.\nExtension methods provide a way to add custom functionality while maintaining\nprotocol compatibility.\n\nSee protocol docs: [Extensibility](https://agentclientprotocol.com/protocol/extensibility)",
@@ -5327,7 +5328,7 @@ export const ClientResponse = Schema.Union([
         description:
           "**UNSTABLE**\n\nThis capability is not part of the spec yet, and may be removed or changed at any point.\n\nResponse from the client to an elicitation request.",
       }),
-      Schema.Unknown.annotate({
+      JsonUnknown.annotate({
         title: "ExtMethodResponse",
         description:
           "Allows for sending an arbitrary response to an [`ExtRequest`] that is not part of the ACP spec.\nExtension methods provide a way to add custom functionality while maintaining\nprotocol compatibility.\n\nSee protocol docs: [Extensibility](https://agentclientprotocol.com/protocol/extensibility)",
@@ -6288,19 +6289,19 @@ export const ErrorCode = Schema.Union([
 });
 
 export type ExtNotification = unknown;
-export const ExtNotification = Schema.Unknown.annotate({
+export const ExtNotification = JsonUnknown.annotate({
   description:
     "Allows the Agent to send an arbitrary notification that is not part of the ACP spec.\nExtension notifications provide a way to send one-way messages for custom functionality\nwhile maintaining protocol compatibility.\n\nSee protocol docs: [Extensibility](https://agentclientprotocol.com/protocol/extensibility)",
 });
 
 export type ExtRequest = unknown;
-export const ExtRequest = Schema.Unknown.annotate({
+export const ExtRequest = JsonUnknown.annotate({
   description:
     "Allows for sending an arbitrary request that is not part of the ACP spec.\nExtension methods provide a way to add custom functionality while maintaining\nprotocol compatibility.\n\nSee protocol docs: [Extensibility](https://agentclientprotocol.com/protocol/extensibility)",
 });
 
 export type ExtResponse = unknown;
-export const ExtResponse = Schema.Unknown.annotate({
+export const ExtResponse = JsonUnknown.annotate({
   description:
     "Allows for sending an arbitrary response to an [`ExtRequest`] that is not part of the ACP spec.\nExtension methods provide a way to add custom functionality while maintaining\nprotocol compatibility.\n\nSee protocol docs: [Extensibility](https://agentclientprotocol.com/protocol/extensibility)",
 });
@@ -7728,10 +7729,8 @@ export const RequestPermissionRequest = Schema.Struct({
         Schema.Null,
       ]),
     ),
-    rawInput: Schema.optionalKey(Schema.Unknown.annotate({ description: "Update the raw input." })),
-    rawOutput: Schema.optionalKey(
-      Schema.Unknown.annotate({ description: "Update the raw output." }),
-    ),
+    rawInput: Schema.optionalKey(JsonUnknown.annotate({ description: "Update the raw input." })),
+    rawOutput: Schema.optionalKey(JsonUnknown.annotate({ description: "Update the raw output." })),
     status: Schema.optionalKey(
       Schema.Union([ToolCallStatus, Schema.Null]).annotate({
         description: "Update the execution status.",
@@ -8688,10 +8687,10 @@ export const SessionNotification = Schema.Struct({
           }),
         ),
         rawInput: Schema.optionalKey(
-          Schema.Unknown.annotate({ description: "Raw input parameters sent to the tool." }),
+          JsonUnknown.annotate({ description: "Raw input parameters sent to the tool." }),
         ),
         rawOutput: Schema.optionalKey(
-          Schema.Unknown.annotate({ description: "Raw output returned by the tool." }),
+          JsonUnknown.annotate({ description: "Raw output returned by the tool." }),
         ),
         status: Schema.optionalKey(
           Schema.Literals(["pending", "in_progress", "completed", "failed"]).annotate({
@@ -8740,10 +8739,10 @@ export const SessionNotification = Schema.Struct({
           ]),
         ),
         rawInput: Schema.optionalKey(
-          Schema.Unknown.annotate({ description: "Update the raw input." }),
+          JsonUnknown.annotate({ description: "Update the raw input." }),
         ),
         rawOutput: Schema.optionalKey(
-          Schema.Unknown.annotate({ description: "Update the raw output." }),
+          JsonUnknown.annotate({ description: "Update the raw output." }),
         ),
         status: Schema.optionalKey(
           Schema.Union([ToolCallStatus, Schema.Null]).annotate({
@@ -9497,10 +9496,10 @@ export const SessionUpdate = Schema.Union(
         }),
       ),
       rawInput: Schema.optionalKey(
-        Schema.Unknown.annotate({ description: "Raw input parameters sent to the tool." }),
+        JsonUnknown.annotate({ description: "Raw input parameters sent to the tool." }),
       ),
       rawOutput: Schema.optionalKey(
-        Schema.Unknown.annotate({ description: "Raw output returned by the tool." }),
+        JsonUnknown.annotate({ description: "Raw output returned by the tool." }),
       ),
       status: Schema.optionalKey(
         Schema.Literals(["pending", "in_progress", "completed", "failed"]).annotate({
@@ -9548,11 +9547,9 @@ export const SessionUpdate = Schema.Union(
           Schema.Null,
         ]),
       ),
-      rawInput: Schema.optionalKey(
-        Schema.Unknown.annotate({ description: "Update the raw input." }),
-      ),
+      rawInput: Schema.optionalKey(JsonUnknown.annotate({ description: "Update the raw input." })),
       rawOutput: Schema.optionalKey(
-        Schema.Unknown.annotate({ description: "Update the raw output." }),
+        JsonUnknown.annotate({ description: "Update the raw output." }),
       ),
       status: Schema.optionalKey(
         Schema.Union([ToolCallStatus, Schema.Null]).annotate({
@@ -10125,10 +10122,10 @@ export const ToolCall = Schema.Struct({
     }),
   ),
   rawInput: Schema.optionalKey(
-    Schema.Unknown.annotate({ description: "Raw input parameters sent to the tool." }),
+    JsonUnknown.annotate({ description: "Raw input parameters sent to the tool." }),
   ),
   rawOutput: Schema.optionalKey(
-    Schema.Unknown.annotate({ description: "Raw output returned by the tool." }),
+    JsonUnknown.annotate({ description: "Raw output returned by the tool." }),
   ),
   status: Schema.optionalKey(
     Schema.Literals(["pending", "in_progress", "completed", "failed"]).annotate({
@@ -10188,8 +10185,8 @@ export const ToolCallUpdate = Schema.Struct({
       Schema.Null,
     ]),
   ),
-  rawInput: Schema.optionalKey(Schema.Unknown.annotate({ description: "Update the raw input." })),
-  rawOutput: Schema.optionalKey(Schema.Unknown.annotate({ description: "Update the raw output." })),
+  rawInput: Schema.optionalKey(JsonUnknown.annotate({ description: "Update the raw input." })),
+  rawOutput: Schema.optionalKey(JsonUnknown.annotate({ description: "Update the raw output." })),
   status: Schema.optionalKey(
     Schema.Union([ToolCallStatus, Schema.Null]).annotate({
       description: "Update the execution status.",

@@ -751,6 +751,9 @@ const writeAntigravitySessionMode = <E>(input: {
     return input.target;
   });
 
+/** ACP tool kinds that change files. */
+const ANTIGRAVITY_FILE_CHANGE_KINDS: ReadonlySet<string> = new Set(["edit", "delete", "move"]);
+
 export type AntigravityApprovalDecision =
   | { readonly kind: "ask"; readonly applyThreadGrants: boolean }
   | { readonly kind: "allow" };
@@ -769,9 +772,14 @@ export function antigravityApprovalDecision(input: {
   readonly workspaceRoot: string;
 }): AntigravityApprovalDecision {
   if (input.computerRequest) return { kind: "ask", applyThreadGrants: false };
-  // Plan always asks; thread grants never apply there, even under Full access. The turn's own
-  // request counts as well as the native mode, so a lagging mode can't widen a Plan turn.
-  if (input.sessionMode === "plan" || input.planRequested === true)
+  // Plan can't change files: Antigravity refuses its edit tools there, and a file change that
+  // still reaches F5 always asks, without thread grants, even under Full access. Commands and
+  // other tools follow the thread's access mode as outside Plan. The turn's own request counts
+  // as well as the native mode, so a lagging mode can't widen a Plan turn.
+  if (
+    (input.sessionMode === "plan" || input.planRequested === true) &&
+    ANTIGRAVITY_FILE_CHANGE_KINDS.has(input.toolCall.kind ?? "")
+  )
     return { kind: "ask", applyThreadGrants: false };
   switch (input.runtimeMode) {
     case "full-access":

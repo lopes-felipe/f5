@@ -182,6 +182,8 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
   const extPending = yield* Ref.make(
     new Map<string, Deferred.Deferred<unknown, AcpError.AcpError>>(),
   );
+  // Method of each inbound core request awaiting its response, for diagnostics only.
+  const serverRequestMethodsById = new Map<string, string>();
 
   const logProtocol = (event: AcpProtocolLogEvent) => {
     if (event.direction === "incoming" && !options.logIncoming) {
@@ -424,7 +426,29 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
       );
     }
 
+    serverRequestMethodsById.set(message.id, message.tag);
     return Queue.offer(serverQueue, message).pipe(Effect.asVoid);
+  };
+
+  // Handlers turn their own defects into a typed `Fail` (see `runHandler`), so a response whose
+  // cause has a `Die` and no `Fail` failed before its handler ran, usually on payload decode. The
+  // agent sees that as an error and may stop the turn, so leave a trace here. The defect text and
+  // payload are never logged: they can hold command lines and file contents.
+  const warnOnPreHandlerFailure = (response: RpcMessage.FromServerEncoded) => {
+    if (response._tag !== "Exit") return Effect.void;
+    const method = serverRequestMethodsById.get(response.requestId);
+    serverRequestMethodsById.delete(response.requestId);
+    const exit = response.exit;
+    if (
+      exit._tag !== "Failure" ||
+      !exit.cause.some((reason) => reason._tag === "Die") ||
+      exit.cause.some((reason) => reason._tag === "Fail")
+    )
+      return Effect.void;
+    return Effect.logWarning("ACP request failed before its handler ran", {
+      method: method ?? "unknown",
+      requestId: response.requestId,
+    });
   };
 
   const handleExitEncoded = (message: RpcMessage.ResponseExitEncoded) =>
@@ -607,7 +631,11 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
       Effect.forkScoped,
       Effect.as({
         disconnects,
-        send: (_clientId, response) => offerOutgoing(response).pipe(Effect.orDie),
+        send: (_clientId, response) =>
+          warnOnPreHandlerFailure(response).pipe(
+            Effect.andThen(offerOutgoing(response)),
+            Effect.orDie,
+          ),
         end: (_clientId) => Queue.end(outgoing),
         clientIds: Effect.succeed(new Set([0])),
         initialMessage: Effect.succeedNone,
