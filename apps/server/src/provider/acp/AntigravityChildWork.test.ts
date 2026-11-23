@@ -18,6 +18,7 @@ import { sanitizeAntigravityToolPayload } from "./AntigravityToolCalls.ts";
 import {
   autoApproved,
   CHILD,
+  genericInvokeStep,
   invokeStep,
   LAUNCH,
   makeProfile,
@@ -66,6 +67,77 @@ it.layer(NodeServices.layer)("readAntigravityChildWork", (it) => {
         "marker 4242 found",
       ]);
       expect(child?.steps?.[0]?.toolCalls[0]?.input).toBe('{"AbsolutePath":"/project/README.md"}');
+    }),
+  );
+
+  it.effect("reads a 1.5.15 launch recorded as a generic invoke_subagent step", () =>
+    Effect.gen(function* () {
+      const { profile } = yield* makeProfile({
+        steps: (logUri) => [
+          [1, 15, plannerStep(["call-a"])],
+          // Another tool's generic step between the planner call and the launch.
+          [
+            2,
+            132,
+            genericInvokeStep({
+              callId: "call-other",
+              toolName: "run_command",
+              launches: [],
+              children: [],
+            }),
+          ],
+          [
+            3,
+            132,
+            genericInvokeStep({
+              callId: "call-a",
+              launches: [LAUNCH],
+              children: [{ id: CHILD, logUri }],
+            }),
+          ],
+        ],
+      });
+      const [child, ...rest] = yield* read(profile, `${ROOT}:1`);
+      expect(rest).toEqual([]);
+      expect(child).toMatchObject({
+        conversationId: CHILD,
+        role: LAUNCH.role,
+        prompt: LAUNCH.prompt,
+        truncated: false,
+      });
+      expect(child?.steps?.map((step) => step.text ?? step.toolCalls[0]?.name)).toEqual([
+        "view_file",
+        "2: child read marker 4242",
+        "marker 4242 found",
+      ]);
+      // A permission-prompt call matches by launch text; other tools' generic steps don't count.
+      const opaque = "35bea692fa95447fbdae6333fec5515f";
+      const matched = yield* read(profile, opaque, describeAntigravitySubagentLaunches([LAUNCH]));
+      expect(matched.map((entry) => entry.conversationId)).toEqual([CHILD]);
+    }),
+  );
+
+  it.effect("refuses a generic invoke_subagent step whose child id is not a native id", () =>
+    Effect.gen(function* () {
+      const { profile } = yield* makeProfile({
+        steps: (logUri) => [
+          [1, 15, plannerStep(["call-a"])],
+          [
+            2,
+            132,
+            genericInvokeStep({
+              callId: "call-a",
+              launches: [LAUNCH],
+              children: [{ id: "../escape", logUri }],
+            }),
+          ],
+        ],
+      });
+      expect(yield* read(profile, `${ROOT}:1`)).toEqual([]);
+      const opaque = "35bea692fa95447fbdae6333fec5515f";
+      expect(yield* read(profile, opaque, describeAntigravitySubagentLaunches([LAUNCH]))).toEqual(
+        [],
+      );
     }),
   );
 

@@ -47,6 +47,53 @@ export const invokeStep = (input: {
       ),
     ),
   );
+// Mirrors the 1.5.15 runtime, which records the launch as a generic tool step: Step{5: metadata
+// {4: tool call{1 id, 2 name}}, 140: generic{1: args{1 key, 2 value}, 2: result{6: invoke{
+// 2: entry{1: spec{1 type, 2 role, 3 prompt}, 2: result{1 conversation, 2 log uri}}}}}}.
+export const genericInvokeStep = (input: {
+  readonly callId: string;
+  readonly toolName?: string;
+  readonly launches: ReadonlyArray<typeof LAUNCH>;
+  readonly children: ReadonlyArray<{ readonly id: string; readonly logUri: string }>;
+}) =>
+  proto(
+    [...varint(1 * 8), ...varint(132)],
+    field(
+      5,
+      proto(field(4, proto(field(1, input.callId), field(2, input.toolName ?? "invoke_subagent")))),
+    ),
+    field(
+      140,
+      proto(
+        ...input.launches.map((launch) => field(1, proto(field(1, "Role"), field(2, launch.role)))),
+        field(
+          2,
+          proto(
+            field(
+              6,
+              proto(
+                ...input.launches.map((launch, index) => {
+                  const child = input.children[index];
+                  return field(
+                    2,
+                    proto(
+                      field(
+                        1,
+                        proto(field(1, "research"), field(2, launch.role), field(3, launch.prompt)),
+                      ),
+                      ...(child
+                        ? [field(2, proto(field(1, child.id), field(2, child.logUri)))]
+                        : []),
+                    ),
+                  );
+                }),
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
 export const plannerStep = (callIds: ReadonlyArray<string>) =>
   proto(field(20, proto(...callIds.map((id) => field(7, toolCall(id))))));
 

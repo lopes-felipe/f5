@@ -6,6 +6,9 @@
  */
 export const ANTIGRAVITY_CERTIFIED_PRIVATE_FORMAT_VERSIONS: ReadonlySet<string> = new Set([
   "1.5.13",
+  // Checked against a live 1.5.15 session: the token file, the `steps` table and transcript
+  // lines are unchanged apart from added fields, and launches are recorded as generic steps.
+  "1.5.15",
 ]);
 
 export type AntigravityPrivateFormatGate =

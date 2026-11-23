@@ -9,6 +9,7 @@ import { antigravityPrivateFormatGate } from "./antigravityPrivateFormats.ts";
 describe("Antigravity private-format gate", () => {
   it("enables the readers only for certified versions", () => {
     expect(antigravityPrivateFormatGate("1.5.13")).toEqual({ enabled: true, version: "1.5.13" });
+    expect(antigravityPrivateFormatGate("1.5.15")).toEqual({ enabled: true, version: "1.5.15" });
     const newer = antigravityPrivateFormatGate("1.5.14");
     expect(newer.enabled).toBe(false);
     if (!newer.enabled) expect(newer.reason).toContain("1.5.14 is not yet certified");
