@@ -830,6 +830,17 @@ export const enterAntigravityWorkflowPlanMode = <E>(input: {
     return effective;
   });
 
+/**
+ * ACP tool kinds that follow the thread's access mode in Plan. `kind` comes from the agent and
+ * may be missing, `other` or new, so this is an allowlist: anything else asks.
+ */
+const ANTIGRAVITY_PLAN_ACCESS_MODE_KINDS: ReadonlySet<string> = new Set([
+  "execute",
+  "read",
+  "search",
+  "think",
+]);
+
 export type AntigravityApprovalDecision =
   | { readonly kind: "ask"; readonly applyThreadGrants: boolean }
   | { readonly kind: "allow" };
@@ -848,9 +859,15 @@ export function antigravityApprovalDecision(input: {
   readonly workspaceRoot: string;
 }): AntigravityApprovalDecision {
   if (input.computerRequest) return { kind: "ask", applyThreadGrants: false };
-  // Plan always asks; thread grants never apply there, even under Full access. The turn's own
-  // request counts as well as the native mode, so a lagging mode can't widen a Plan turn.
-  if (input.sessionMode === "plan" || input.planRequested === true)
+  // In Plan, commands and read-only tools follow the thread's access mode as outside Plan, so
+  // thread grants apply there too. Everything else (edits, deletes, moves, `other`, a missing or
+  // unknown kind) always asks, without thread grants, even under Full access. Commands can still
+  // change files; that is the access mode's call. The turn's own request counts as well as the
+  // native mode, so a lagging mode can't widen a Plan turn.
+  if (
+    (input.sessionMode === "plan" || input.planRequested === true) &&
+    !ANTIGRAVITY_PLAN_ACCESS_MODE_KINDS.has(input.toolCall.kind ?? "")
+  )
     return { kind: "ask", applyThreadGrants: false };
   switch (input.runtimeMode) {
     case "full-access":

@@ -787,7 +787,7 @@ rootIt.layer(
     }).pipe(Effect.scoped),
   );
 
-  it.effect("never sends a persistent grant from Plan mode", () =>
+  it.effect("runs Plan commands under Full access once, without asking or a persistent grant", () =>
     Effect.gen(function* () {
       const { adapter, events, requests } = yield* antigravityProfileAdapter({
         env: { T3_ACP_EMIT_TOOL_CALLS: "1" },
@@ -799,6 +799,142 @@ rootIt.layer(
         cwd: process.cwd(),
         runtimeMode: "full-access",
       });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "Plan it",
+        attachments: [],
+        interactionMode: "plan",
+      });
+      assert.notOk(events.some((event) => event.type === "request.opened"));
+      const selected = (yield* requests()).flatMap((frame) => {
+        const result = (frame as { result?: { outcome?: { optionId?: string } } }).result;
+        return result?.outcome?.optionId ? [result.outcome.optionId] : [];
+      });
+      assert.include(selected, "allow-once");
+      assert.notInclude(selected, "allow-always");
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped),
+  );
+
+  for (const kind of ["other", "null"])
+    it.effect(`asks in Plan under Full access when the tool kind is ${kind}`, () =>
+      Effect.gen(function* () {
+        const { adapter, events, requests } = yield* antigravityProfileAdapter({
+          env: { T3_ACP_EMIT_TOOL_CALLS: "1", T3_ACP_PERMISSION_KIND: kind },
+        });
+        const threadId = ThreadId.make(`agy-plan-kind-${kind}`);
+        yield* adapter.startSession({
+          threadId,
+          provider: "antigravity",
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+        const turn = yield* adapter
+          .sendTurn({ threadId, input: "Plan it", attachments: [], interactionMode: "plan" })
+          .pipe(Effect.forkChild);
+        yield* Effect.promise(() =>
+          vi.waitFor(() => assert.ok(events.some((event) => event.type === "request.opened"))),
+        );
+        const opened = events.find((event) => event.type === "request.opened");
+        assert.ok(opened?.type === "request.opened" && opened.requestId);
+        assert.notInclude(
+          (opened.payload.approvalOptions ?? []).map((option) => option.decision),
+          "acceptForSession",
+        );
+        // Even a thread-wide answer is delivered to the CLI as single-use.
+        yield* adapter.respondToRequest(
+          threadId,
+          ApprovalRequestId.make(opened.requestId),
+          "acceptForSession",
+        );
+        yield* Fiber.join(turn);
+        const selected = (yield* requests()).flatMap((frame) => {
+          const result = (frame as { result?: { outcome?: { optionId?: string } } }).result;
+          return result?.outcome?.optionId ? [result.outcome.optionId] : [];
+        });
+        assert.include(selected, "allow-once");
+        assert.notInclude(selected, "allow-always");
+        yield* adapter.stopSession(threadId);
+      }).pipe(Effect.scoped),
+    );
+
+  it.effect("honors a thread grant from a Default turn for the same command in Plan", () =>
+    Effect.gen(function* () {
+      const { adapter, events } = yield* antigravityProfileAdapter({
+        env: { T3_ACP_EMIT_TOOL_CALLS: "1" },
+      });
+      const threadId = ThreadId.make("agy-plan-grant-carryover");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      const first = yield* adapter
+        .sendTurn({ threadId, input: "Do it", attachments: [] })
+        .pipe(Effect.forkChild);
+      yield* Effect.promise(() =>
+        vi.waitFor(() => assert.ok(events.some((event) => event.type === "request.opened"))),
+      );
+      const opened = events.find((event) => event.type === "request.opened");
+      assert.ok(opened?.type === "request.opened" && opened.requestId);
+      yield* adapter.respondToRequest(
+        threadId,
+        ApprovalRequestId.make(opened.requestId),
+        "acceptForSession",
+      );
+      yield* Fiber.join(first);
+
+      yield* adapter.sendTurn({
+        threadId,
+        input: "Plan it",
+        attachments: [],
+        interactionMode: "plan",
+      });
+      assert.equal(events.filter((event) => event.type === "request.opened").length, 1);
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("shows Antigravity's CommandLine on the approval card, not the tool name", () =>
+    Effect.gen(function* () {
+      const { adapter, events } = yield* antigravityProfileAdapter({
+        env: { T3_ACP_EMIT_TOOL_CALLS: "1", T3_ACP_PERMISSION_ANTIGRAVITY_SHAPE: "1" },
+      });
+      const threadId = ThreadId.make("agy-command-line-detail");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      const turn = yield* adapter
+        .sendTurn({ threadId, input: "Do it", attachments: [] })
+        .pipe(Effect.forkChild);
+      yield* Effect.promise(() =>
+        vi.waitFor(() => assert.ok(events.some((event) => event.type === "request.opened"))),
+      );
+      const opened = events.find((event) => event.type === "request.opened");
+      assert.ok(opened?.type === "request.opened" && opened.requestId);
+      assert.equal(opened.payload.detail, "cat server/package.json");
+      yield* adapter.respondToRequest(threadId, ApprovalRequestId.make(opened.requestId), "accept");
+      yield* Fiber.join(turn);
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("asks for Plan commands under Supervised and offers a thread grant", () =>
+    Effect.gen(function* () {
+      const { adapter, events } = yield* antigravityProfileAdapter({
+        env: { T3_ACP_EMIT_TOOL_CALLS: "1" },
+      });
+      const threadId = ThreadId.make("agy-plan-supervised");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
       const turn = yield* adapter
         .sendTurn({ threadId, input: "Plan it", attachments: [], interactionMode: "plan" })
         .pipe(Effect.forkChild);
@@ -807,23 +943,12 @@ rootIt.layer(
       );
       const opened = events.find((event) => event.type === "request.opened");
       assert.ok(opened?.type === "request.opened" && opened.requestId);
-      assert.notInclude(
+      assert.include(
         (opened.payload.approvalOptions ?? []).map((option) => option.decision),
         "acceptForSession",
       );
-      // Even a thread-wide answer is delivered to the CLI as single-use.
-      yield* adapter.respondToRequest(
-        threadId,
-        ApprovalRequestId.make(opened.requestId),
-        "acceptForSession",
-      );
+      yield* adapter.respondToRequest(threadId, ApprovalRequestId.make(opened.requestId), "accept");
       yield* Fiber.join(turn);
-      const selected = (yield* requests()).flatMap((frame) => {
-        const result = (frame as { result?: { outcome?: { optionId?: string } } }).result;
-        return result?.outcome?.optionId ? [result.outcome.optionId] : [];
-      });
-      assert.include(selected, "allow-once");
-      assert.notInclude(selected, "allow-always");
       yield* adapter.stopSession(threadId);
     }).pipe(Effect.scoped),
   );

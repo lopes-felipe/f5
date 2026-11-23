@@ -107,7 +107,11 @@ import {
   makeAcpRequestResolvedEvent,
   makeAcpToolCallEvent,
 } from "../acp/AcpCoreRuntimeEvents.ts";
-import { findModelConfigOption, parsePermissionRequest } from "../acp/AcpRuntimeModel.ts";
+import {
+  boundPermissionRequestPayload,
+  findModelConfigOption,
+  parsePermissionRequest,
+} from "../acp/AcpRuntimeModel.ts";
 import {
   AntigravityModelUnavailableError,
   AntigravityModeUnavailableError,
@@ -1078,7 +1082,11 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     (!live || live.stopped || live.pendingApprovals !== pendingApprovals)
                   )
                     return { outcome: { outcome: "cancelled" as const } };
-                  yield* logNative(input.threadId, "session/request_permission", params);
+                  yield* logNative(
+                    input.threadId,
+                    "session/request_permission",
+                    boundPermissionRequestPayload(params),
+                  );
                   const computerRequest = catalogs.classify(params.toolCall);
                   const approvalKey = computerRequest ? undefined : sessionApprovalKey(params);
                   if (computerRequest)
@@ -1271,6 +1279,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                         return assertNever(runtimeMode, `${providerLabel} approval mode`);
                     }
                   const permissionRequest = parsePermissionRequest(params);
+                  // Persisted on the runtime event; a large `rawOutput` or `content` is bounded.
+                  const publishedParams = boundPermissionRequestPayload(params);
                   const requestId = ApprovalRequestId.make(yield* Random.nextUUIDv4);
                   const runtimeRequestId = RuntimeRequestId.make(requestId);
                   const decision = yield* Deferred.make<ProviderApprovalDecision>();
@@ -1286,7 +1296,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                       detail: computerRequest
                         ? "Tool inputs hidden while computer control is enabled"
                         : (permissionRequest.detail ??
-                          encodeJsonStringForDiagnostics(params)?.slice(0, 2000) ??
+                          encodeJsonStringForDiagnostics(publishedParams)?.slice(0, 2000) ??
                           "[unserializable params]"),
                       ...(PROVIDER === "antigravity"
                         ? {
@@ -1297,10 +1307,10 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                             }),
                           }
                         : {}),
-                      args: params,
+                      args: publishedParams,
                       source: "acp.jsonrpc",
                       method: "session/request_permission",
-                      rawPayload: params,
+                      rawPayload: publishedParams,
                     }),
                   );
                   const answered = yield* Deferred.await(decision);

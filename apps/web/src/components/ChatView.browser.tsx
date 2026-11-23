@@ -1,5 +1,8 @@
 import { writePullRequestReferenceDrag } from "../lib/pullRequestReference";
-import { assistantResponseContextMatches } from "@t3tools/shared/assistantResponseContext";
+import {
+  assistantResponseContextMatches,
+  serializeAssistantResponseContext,
+} from "@t3tools/shared/assistantResponseContext";
 
 function quotedAssistantText(prompt: string) {
   return assistantResponseContextMatches(prompt)
@@ -2746,6 +2749,10 @@ describe("ChatView timeline (full app)", () => {
       openIntent: null,
     });
     useRightPanelStore.setState({ byThreadId: {} });
+    // Clearing localStorage does not reset the persisted store's in-memory
+    // state. A terminal opened by an earlier fixture can otherwise mount and
+    // take focus in an unrelated test using the same thread ID.
+    useTerminalStateStore.setState({ terminalStateByThreadId: {} });
     useNextTurnQueueStore.setState({ byThreadId: {}, summary: { threads: [] } });
     clearAllPendingTurnDispatchArtifacts();
     useStore.setState({
@@ -11281,6 +11288,52 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
+  it.each([true, false])(
+    "keeps only the card margin around a sent quote card (rich text %s)",
+    async (composerRichTextEnabled) => {
+      persistAppSettings({ composerRichTextEnabled });
+      const card = serializeAssistantResponseContext({
+        version: 1,
+        kind: "quote",
+        threadId: THREAD_ID,
+        messageId: "msg-assistant-0" as MessageId,
+        text: "assistant filler 0",
+      });
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: createSnapshotForTargetUser({
+          targetMessageId: "msg-user-quote-card" as MessageId,
+          targetText: `Intro\n\n${card}\n\nPlease explain.`,
+          fillerPairCount: 2,
+          targetPairIndex: 1,
+        }),
+      });
+      try {
+        const textRect = (node: Node) => {
+          const range = document.createRange();
+          range.selectNodeContents(node);
+          return range.getClientRects()[0]!;
+        };
+        await vi.waitFor(() => {
+          const link = document.querySelector(
+            '[data-message-id="msg-user-quote-card"] [aria-label="Go to quoted response"]',
+          );
+          expect(link).not.toBeNull();
+          const before = link!.previousSibling!;
+          const after = link!.nextSibling!;
+          expect(before.textContent).toBe("Intro");
+          expect(after.textContent).toBe("Please explain.");
+          const lineHeight = Number.parseFloat(getComputedStyle(link!.parentElement!).lineHeight);
+          const cardRect = link!.getBoundingClientRect();
+          expect(cardRect.top - textRect(before).bottom).toBeLessThan(lineHeight);
+          expect(textRect(after).top - cardRect.bottom).toBeLessThan(lineHeight);
+        });
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
+
   it("does not submit a selected pending answer when sending a quote", async () => {
     const snapshot = createSnapshotWithRichAssistantTarget();
     const question = createThreadActivity({
@@ -11432,6 +11485,11 @@ describe("ChatView timeline (full app)", () => {
             expect(quotedAssistantText(prompt)).toBe(text);
             expect(prompt).toContain("Please explain.");
           });
+          // The composer keeps the caret it placed after the quote.
+          const composer = await waitForComposerEditor();
+          await vi.waitFor(() =>
+            expect(composer.contains(document.getSelection()?.anchorNode ?? null)).toBe(true),
+          );
           const send = await waitForSendButton();
           await vi.waitFor(() => expect(send.disabled).toBe(false));
           send.click();
@@ -11446,6 +11504,20 @@ describe("ChatView timeline (full app)", () => {
                 quotedAssistantText(prompt) === text && prompt.includes("Please explain."),
             ),
           ).toBe(true);
+        });
+        // The sent bubble's card margin is the only gap before the comment.
+        await vi.waitFor(() => {
+          const card = [
+            ...document.querySelectorAll<HTMLElement>('[aria-label="Go to quoted response"]'),
+          ].at(-1);
+          expect(card).toBeTruthy();
+          const comment = card!.nextSibling;
+          expect(comment?.textContent?.startsWith("Please explain.")).toBe(true);
+          const range = document.createRange();
+          range.selectNodeContents(comment!);
+          const gap = range.getClientRects()[0]!.top - card!.getBoundingClientRect().bottom;
+          const lineHeight = Number.parseFloat(getComputedStyle(card!.parentElement!).lineHeight);
+          expect(gap).toBeLessThan(lineHeight);
         });
         await expect
           .element(page.getByRole("textbox", { name: "Quote comment" }))
@@ -11564,45 +11636,55 @@ describe("ChatView timeline (full app)", () => {
       }
     });
 
-    it("keeps a backward selection and the editor scroll across click and keyboard toggles", async () => {
-      const lines = Array.from({ length: 60 }, (_, index) => `Draft line ${index}`).join("\n");
-      const { mounted, editor, form } = await mountComposer({ prompt: lines });
-      try {
-        await vi.waitFor(() => expect(toggle()).not.toBeNull());
-        editor.focus();
-        const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
-        walker.nextNode();
-        const text = walker.nextNode() ?? walker.currentNode;
-        const selection = window.getSelection()!;
-        selection.setBaseAndExtent(text, 8, text, 2);
-        editor.scrollTop = 120;
-        await waitForLayout();
-        const before = {
-          anchor: selection.anchorOffset,
-          focus: selection.focusOffset,
-          text: selection.toString(),
-        };
+    it.each([false, true])(
+      "keeps a backward selection and the editor scroll across click and keyboard toggles (terminal open=%s)",
+      async (terminalOpen) => {
+        useTerminalStateStore.getState().setTerminalOpen(THREAD_ID, terminalOpen);
+        const lines = Array.from({ length: 60 }, (_, index) => `Draft line ${index}`).join("\n");
+        const { mounted, editor, form } = await mountComposer({ prompt: lines });
+        try {
+          if (terminalOpen) {
+            await expect
+              .element(page.getByRole("textbox", { name: "Terminal input" }))
+              .toBeInTheDocument();
+            await waitForLayout();
+          }
+          await vi.waitFor(() => expect(toggle()).not.toBeNull());
+          editor.focus();
+          const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+          walker.nextNode();
+          const text = walker.nextNode() ?? walker.currentNode;
+          const selection = window.getSelection()!;
+          selection.setBaseAndExtent(text, 8, text, 2);
+          editor.scrollTop = 120;
+          await waitForLayout();
+          const before = {
+            anchor: selection.anchorOffset,
+            focus: selection.focusOffset,
+            text: selection.toString(),
+          };
 
-        await page.elementLocator(toggle()!).click();
-        await vi.waitFor(() => expect(form.getAttribute("data-composer-expanded")).toBe("true"));
-        await waitForLayout();
-        expect(document.activeElement).toBe(editor);
-        expect(selection.anchorOffset).toBe(before.anchor);
-        expect(selection.focusOffset).toBe(before.focus);
-        expect(selection.toString()).toBe(before.text);
-        expect(editor.scrollTop).toBe(120);
+          await page.elementLocator(toggle()!).click();
+          await vi.waitFor(() => expect(form.getAttribute("data-composer-expanded")).toBe("true"));
+          await waitForLayout();
+          expect(document.activeElement).toBe(editor);
+          expect(selection.anchorOffset).toBe(before.anchor);
+          expect(selection.focusOffset).toBe(before.focus);
+          expect(selection.toString()).toBe(before.text);
+          expect(editor.scrollTop).toBe(120);
 
-        toggle()!.focus();
-        await userEvent.keyboard("{Enter}");
-        await vi.waitFor(() => expect(form.hasAttribute("data-composer-expanded")).toBe(false));
-        await waitForLayout();
-        expect(document.activeElement).toBe(editor);
-        expect(selection.toString()).toBe(before.text);
-        expect(selection.anchorOffset).toBe(before.anchor);
-      } finally {
-        await mounted.cleanup();
-      }
-    });
+          toggle()!.focus();
+          await userEvent.keyboard("{Enter}");
+          await vi.waitFor(() => expect(form.hasAttribute("data-composer-expanded")).toBe(false));
+          await waitForLayout();
+          expect(document.activeElement).toBe(editor);
+          expect(selection.toString()).toBe(before.text);
+          expect(selection.anchorOffset).toBe(before.anchor);
+        } finally {
+          await mounted.cleanup();
+        }
+      },
+    );
 
     it("keeps the historical reading position when expanding", async () => {
       const { mounted, form } = await mountComposer({
@@ -11893,7 +11975,9 @@ describe("ChatView timeline (full app)", () => {
       );
     }
 
-    async function mountIsolatedChatView(options: { projectScripts?: ProjectScript[] } = {}) {
+    async function mountIsolatedChatView(
+      options: { projectScripts?: ProjectScript[]; viewport?: ViewportSpec } = {},
+    ) {
       let connectedClient: TestWsClient | null = null;
       const baseSnapshot = addThreadToSnapshot(
         createSnapshotForTargetUser({
@@ -11915,7 +11999,7 @@ describe("ChatView timeline (full app)", () => {
           })
         : baseSnapshot;
       const mounted = await mountChatView({
-        viewport: DEFAULT_VIEWPORT,
+        viewport: options.viewport ?? DEFAULT_VIEWPORT,
         snapshot,
         configureFixture: (next) => {
           next.resolveWsRequest = (_body, client) => {
@@ -12129,7 +12213,11 @@ describe("ChatView timeline (full app)", () => {
     });
 
     it("does not commit the timeline or composer when the right panel toggles", async () => {
-      const { mounted } = await mountIsolatedChatView();
+      // Keep the composer above its compact-footer breakpoint with the files
+      // panel open. Crossing that breakpoint legitimately commits a new layout.
+      const { mounted } = await mountIsolatedChatView({
+        viewport: { ...DEFAULT_VIEWPORT, width: 2560 },
+      });
       try {
         resetRenderCommits();
         // Not the plan panel: the composer shows whether that one is open.

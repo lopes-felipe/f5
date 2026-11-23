@@ -85,4 +85,32 @@ describe("ProjectScriptsControl", () => {
       .poll(() => document.querySelectorAll('[role="dialog"], [role="alertdialog"]').length)
       .toBe(0);
   });
+
+  it("keeps a multi-word label on one line so the chevron stays inside its track", async () => {
+    // Force the track to its min-content width (the suspected Electron sizing), where a label
+    // that can wrap would push the chevron out.
+    await render(
+      <div style={{ containerType: "inline-size", containerName: "header-actions", width: 768 }}>
+        <div style={{ width: "min-content" }}>
+          <ProjectScriptsControl
+            scripts={[{ ...TEST_SCRIPT, name: "Run unit tests" }]}
+            keybindings={[]}
+            onRunScript={() => {}}
+            onAddScript={() => {}}
+            onUpdateScript={() => {}}
+            onDeleteScript={() => {}}
+          />
+        </div>
+      </div>,
+    );
+
+    await expect.element(page.getByText("Run unit tests")).toBeVisible();
+    const track = page.getByRole("group", { name: "Project scripts" }).element();
+    const chevron = page.getByRole("button", { name: "Script actions" }).element();
+    const label = page.getByText("Run unit tests").element();
+    expect(label.getClientRects()).toHaveLength(1);
+    expect(track.getBoundingClientRect().right).toBeGreaterThanOrEqual(
+      chevron.getBoundingClientRect().right - 0.5,
+    );
+  });
 });

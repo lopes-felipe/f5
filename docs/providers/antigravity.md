@@ -47,9 +47,12 @@ the rest. Each model shows only the thinking levels it supports. Orchestrator ha
 | **Auto**              | Offered once your Antigravity version has advertised its own reviewer       |
 | **Full access**       | F5 approves each action once, without asking                                |
 
-- Turn on **Plan** in the composer to make Antigravity plan first. In plan mode F5 asks before
-  every action, even in Full access. "Allow for this thread" isn't offered there, and earlier
-  thread grants don't apply.
+- Turn on **Plan** in the composer to make Antigravity plan first. In plan mode, commands and
+  read-only tools follow the thread's access mode: Full access runs them without asking, and
+  Supervised asks and offers "Allow for this thread". An earlier thread grant also covers the
+  same command in plan mode. Commands can still change files, so use Supervised if plan mode
+  should never change anything. Every other request in plan mode, such as a file edit or a tool
+  F5 doesn't recognize, asks even in Full access, and thread grants don't apply to it.
 - If your Antigravity version has no plan mode, or a session can't leave it, the turn stops
   before anything is sent.
 - If Antigravity rejects Auto when a session starts or a turn begins, that session runs as
