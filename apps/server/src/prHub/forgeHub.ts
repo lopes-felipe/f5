@@ -318,7 +318,9 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
                       Effect.flatMap((fresh) =>
                         saveDetail(discoveredRef, {
                           ...fresh,
-                          ...(detail.reviewDecision === undefined
+                          ...(detail.reviewDecision === undefined ||
+                          !fresh.headRefOid ||
+                          detail.headRefOid !== fresh.headRefOid
                             ? {}
                             : { reviewDecision: detail.reviewDecision }),
                           ...(account.provider === "gitlab" &&
@@ -395,10 +397,17 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
             Effect.gen(function* () {
               const ref = yield* refFor(input.key, input.accountGeneration),
                 cached = state.get(input.key);
+              const hasRequiredPermission =
+                input.omitBranchPermission ||
+                ref.provider !== "gitlab" ||
+                cached?.pr.state === "open" ||
+                (cached !== undefined &&
+                  "viewerCanDeleteBranch" in cached.detail.detail.providerDetails);
 
               if (
                 input.mode !== "force" &&
                 cached &&
+                hasRequiredPermission &&
                 Date.now() - (detailAttempts.get(input.key) ?? 0) < CACHE_MS
               )
                 return { ...cached.detail, stale: detailErrors.has(input.key) };

@@ -618,6 +618,7 @@ export function makeForgeSourceControlProvider(options: {
         for (const note of rows(notes.nodes)) {
           const id = text(note.id).trim().split("/").at(-1);
           const edited = text(note.lastEditedAt);
+          // Resolution can advance the stamp while retaining the previous text editor.
           if (
             id &&
             /^\d+$/.test(id) &&
@@ -675,7 +676,7 @@ export function makeForgeSourceControlProvider(options: {
   ) =>
     Effect.gen(function* () {
       if (!details.length) return details;
-      const data = yield* gitLabOptional(
+      const readListFacts = (reviewFields: string) =>
         gitLabGraphql(
           ref,
           `query($fullPath: ID!, $iids: [String!]) {
@@ -684,54 +685,109 @@ export function makeForgeSourceControlProvider(options: {
               mergeRequests(iids: $iids, first: 100) {
                 nodes {
                   iid approved approvedBy(first: 1) { nodes { username } }
-                  reviewers(first: 20) { nodes { mergeRequestInteraction { reviewState } } }
+                  ${reviewFields}
                   ${includePipeline ? "headPipeline { status }" : ""}
                 }
               }
             }
           }`,
           { iids: details.map((detail) => String(detail.number)) },
+        );
+      const data = yield* gitLabOptional(
+        readListFacts("changeRequesters(first: 1) { nodes { username } }").pipe(
+          Effect.catchIf(
+            (cause) => cause.kind === "invalid_response",
+            () =>
+              readListFacts(
+                "reviewers(first: 20) { pageInfo { hasNextPage endCursor } nodes { mergeRequestInteraction { reviewState } } }",
+              ),
+          ),
         ),
         {},
       );
       const facts = new Map(
         rows(object(object(data.project).mergeRequests).nodes).map((row) => [Number(row.iid), row]),
       );
-      return details.map((detail): ForgeDetail => {
-        const row = facts.get(detail.number);
-        if (!row) return detail;
-        const approvals = object(row.approvedBy).nodes;
-        const hasApprovals = Array.isArray(approvals) && approvals.length > 0;
-        const enterprise = object(data.metadata).enterprise;
-        const changesRequested = rows(object(row.reviewers).nodes).some(
-          (reviewer) =>
-            object(reviewer.mergeRequestInteraction).reviewState === "REQUESTED_CHANGES",
-        );
-        const reviewDecision = changesRequested
-          ? "changes_requested"
-          : typeof row.approved !== "boolean" || !Array.isArray(approvals)
-            ? undefined
-            : row.approved
-              ? hasApprovals
-                ? "approved"
-                : "none"
-              : hasApprovals || enterprise === true
-                ? "review_required"
-                : enterprise === false
-                  ? "none"
-                  : undefined;
-        return {
-          ...detail,
-          ...(reviewDecision === undefined ? {} : { reviewDecision }),
-          ...(Object.hasOwn(row, "headPipeline")
-            ? {
-                raw: { ...detail.raw, head_pipeline: row.headPipeline },
-                checks: gitLabHeadPipelineChecks(row.headPipeline),
-                checksComplete: true,
+      return yield* Effect.forEach(
+        details,
+        (detail) =>
+          Effect.gen(function* (): Effect.fn.Return<ForgeDetail, SourceControlProviderError> {
+            const row = facts.get(detail.number);
+            if (!row) return detail;
+            const approvals = object(row.approvedBy).nodes;
+            const hasApprovals = Array.isArray(approvals) && approvals.length > 0;
+            const enterprise = object(data.metadata).enterprise;
+            const changeRequesters = object(row.changeRequesters).nodes;
+            const requested = (reviewers: Json) =>
+              rows(reviewers.nodes).some(
+                (reviewer) =>
+                  object(reviewer.mergeRequestInteraction).reviewState === "REQUESTED_CHANGES",
+              );
+            let reviewers = object(row.reviewers);
+            let changesRequested = Array.isArray(changeRequesters)
+              ? changeRequesters.length > 0
+              : requested(reviewers);
+            const cursors = new Set<string>();
+            while (
+              !Array.isArray(changeRequesters) &&
+              !changesRequested &&
+              object(reviewers.pageInfo).hasNextPage === true &&
+              cursors.size < 10
+            ) {
+              const after = text(object(reviewers.pageInfo).endCursor);
+              if (!after || cursors.has(after)) break;
+              cursors.add(after);
+              const next = yield* gitLabOptional(
+                gitLabGraphql(
+                  ref,
+                  `query($fullPath: ID!, $iid: String!, $after: String!) {
+              project(fullPath: $fullPath) {
+                mergeRequest(iid: $iid) {
+                  reviewers(first: 100, after: $after) {
+                    pageInfo { hasNextPage endCursor }
+                    nodes { mergeRequestInteraction { reviewState } }
+                  }
+                }
               }
-            : {}),
-        };
-      });
+            }`,
+                  { iid: String(detail.number), after },
+                ),
+                {},
+              );
+              const page = object(object(object(next.project).mergeRequest).reviewers);
+              if (!Array.isArray(page.nodes)) break;
+              reviewers = page;
+              changesRequested = requested(reviewers);
+            }
+            const reviewIncomplete =
+              !Array.isArray(changeRequesters) && object(reviewers.pageInfo).hasNextPage === true;
+            const reviewDecision = changesRequested
+              ? "changes_requested"
+              : reviewIncomplete || typeof row.approved !== "boolean" || !Array.isArray(approvals)
+                ? undefined
+                : row.approved
+                  ? hasApprovals
+                    ? "approved"
+                    : "none"
+                  : hasApprovals || enterprise === true
+                    ? "review_required"
+                    : enterprise === false
+                      ? "none"
+                      : undefined;
+            return {
+              ...detail,
+              ...(reviewDecision === undefined ? {} : { reviewDecision }),
+              ...(Object.hasOwn(row, "headPipeline")
+                ? {
+                    raw: { ...detail.raw, head_pipeline: row.headPipeline },
+                    checks: gitLabHeadPipelineChecks(row.headPipeline),
+                    checksComplete: true,
+                  }
+                : {}),
+            };
+          }),
+        { concurrency: 4 },
+      );
     });
   const getDetail = (
     ref: SourceControlPullRequestRef,
@@ -1432,10 +1488,23 @@ export function makeForgeSourceControlProvider(options: {
                 false,
                 repository,
               ).pipe(
-                Effect.catch((cause) =>
-                  input.inspectOnly && cause.kind === "not_found"
-                    ? Effect.succeed(null)
-                    : Effect.fail(cause),
+                Effect.catchIf(
+                  (cause) => input.inspectOnly === true && cause.kind === "not_found",
+                  (cause) =>
+                    Effect.gen(function* () {
+                      const pattern = "^" + branch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "$";
+                      const branches = yield* request(
+                        ref,
+                        undefined,
+                        "/repository/branches?per_page=1&regex=" + enc(pattern),
+                        "GET",
+                        undefined,
+                        false,
+                        repository,
+                      );
+                      if (!Array.isArray(branches) || branches.length !== 0) return yield* cause;
+                      return null;
+                    }),
                 ),
               );
               const result = { host: ref.host, repository, branch, headOid };

@@ -1881,6 +1881,21 @@ const makeGitCore = Effect.gen(function* () {
           !(yield* inspectWorktreeGroup(input, { ...group, branch: input.branch }))?.ready
         )
           return yield* groupError(path, "The worktree group does not match the observed branch.");
+        for (const member of group.members) {
+          const receipt = yield* preparations.latest(member.path);
+          if (!receipt && group.root) continue;
+          if (
+            receipt?.owner !== nestedWorktreeOwner(path) ||
+            receipt.repositoryIdentity !== member.identity ||
+            !receipt.createdCheckout ||
+            (receipt.phase !== "completed" &&
+              receipt.phase !== "skipped" &&
+              !(receipt.phase === "checkout_created" && !receipt.runSetupScript))
+          )
+            return yield* groupError(member.path, "The worktree preparation changed.");
+          if (receipt.branch !== input.branch)
+            yield* preparations.update(receipt, { branch: input.branch });
+        }
         yield* preparations.updateGroupBranch(group, input.branch);
       } else {
         const checkout = yield* inspectCheckoutIdentity(path);

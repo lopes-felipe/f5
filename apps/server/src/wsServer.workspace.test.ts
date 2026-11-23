@@ -216,8 +216,10 @@ describe("WebSocket Server", () => {
               ).error,
             ).toBeUndefined();
           run("-C", worktree, "switch", "-qc", "next-topic");
+          const statusPath = path.join(baseDir, "checkout-alias");
+          fs.symlinkSync(worktree, statusPath, "junction");
           const status = await sendRequest(ws, WS_METHODS.gitStatus, {
-            cwd: worktree,
+            cwd: statusPath,
             includeRemote: false,
             includePullRequest: false,
           });

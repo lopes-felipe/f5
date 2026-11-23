@@ -2942,15 +2942,26 @@ export const createServer = Effect.fn(function* (
       if (!adopt || !branch || isTemporaryWorktreeBranch(branch)) return;
       const target = NodePath.resolve(cwd);
       const { projects, threads } = yield* engine.getReadModel();
-      const thread = threads.find(
-        (thread) =>
-          thread.deletedAt === null &&
-          thread.worktreePath &&
-          NodePath.resolve(thread.worktreePath) === target,
+      const candidates = threads.filter(
+        (thread) => thread.deletedAt === null && thread.worktreePath !== null,
       );
+      let thread = candidates.find((thread) => NodePath.resolve(thread.worktreePath!) === target);
+      if (!candidates.length || thread?.branch === branch) return;
+      if (!(yield* serverSettings.getSettings).followWorktreeBranchChanges) return;
+      if (!thread) {
+        const canonical = yield* Effect.tryPromise(() => canonicalWorktreePath(target));
+        for (const candidate of candidates) {
+          const candidatePath = yield* Effect.tryPromise(() =>
+            canonicalWorktreePath(candidate.worktreePath!),
+          ).pipe(Effect.orElseSucceed(() => null));
+          if (candidatePath === canonical) {
+            thread = candidate;
+            break;
+          }
+        }
+      }
       const worktreePath = thread?.worktreePath;
       if (!thread || !worktreePath || thread.branch === branch) return;
-      if (!(yield* serverSettings.getSettings).followWorktreeBranchChanges) return;
       const project = projects.find(
         (project) => project.id === thread.projectId && project.deletedAt === null,
       );

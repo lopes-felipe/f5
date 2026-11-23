@@ -79,6 +79,7 @@ it.layer(SqliteClient.layerMemory())("native forge hub", (it) => {
     Effect.scoped(
       Effect.gen(function* () {
         yield* Migration102;
+        let head = detail.sha;
         const graphql = vi.fn(() =>
           Response.json({
             data: {
@@ -103,7 +104,7 @@ it.layer(SqliteClient.layerMemory())("native forge hub", (it) => {
           fetch: (async (url: string | URL | Request) =>
             new URL(String(url)).pathname === "/api/graphql"
               ? graphql()
-              : Response.json({ ...detail, state: "merged" })) as typeof fetch,
+              : Response.json({ ...detail, sha: head, state: "merged" })) as typeof fetch,
         });
         const hub = yield* makeForgePrHubService(
           { ...account, id: "gitlab-delete-permission" },
@@ -116,6 +117,12 @@ it.layer(SqliteClient.layerMemory())("native forge hub", (it) => {
         const result = yield* hub.getDetail({ key });
         assert.propertyVal(result.detail.providerDetails, "viewerCanDeleteBranch", true);
         assert.equal(graphql.mock.calls.length, 1);
+        head = "new-head";
+        yield* hub.getDetail({ key, mode: "force", omitBranchPermission: true });
+        assert.equal(graphql.mock.calls.length, 1);
+        const refreshed = yield* hub.getDetail({ key });
+        assert.propertyVal(refreshed.detail.providerDetails, "viewerCanDeleteBranch", true);
+        assert.equal(graphql.mock.calls.length, 2);
       }),
     ).pipe(Effect.provide(SqliteClient.layerMemory())),
   );

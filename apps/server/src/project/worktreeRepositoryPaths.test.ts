@@ -48,6 +48,9 @@ it("reconciles an F5-prepared group only when its live branch matches the observ
   const project = await mkdtemp(path.join(tmpdir(), "f5-observed-group-"));
   try {
     await init(project, "README.md", "project");
+    const source = path.join(project, "service");
+    await mkdir(source);
+    await init(source, "app.txt", "nested");
     await Effect.runPromise(
       Effect.gen(function* () {
         const git = yield* GitCore;
@@ -65,10 +68,12 @@ it("reconciles an F5-prepared group only when its live branch matches the observ
           rooted: true,
           branch: "feature",
           baseBranch: "main",
-          repositories: [],
-          selected: [],
+          repositories: [source],
+          selected: [source],
         });
         run(worktree.path, "switch", "-qc", "new-topic");
+        const member = path.join(worktree.path, "service");
+        run(member, "switch", "-qc", "new-topic");
         const observe = (branch: string) =>
           git.adoptObservedWorktreeBranch!({ ...input, previousBranch: "feature", branch });
         expect((yield* observe("stale-topic").pipe(Effect.result))._tag).toBe("Failure");
@@ -80,6 +85,16 @@ it("reconciles an F5-prepared group only when its live branch matches the observ
           worktreePath: worktree.path,
           branch: "new-topic",
         });
+        yield* git.removeWorktree({ cwd: source, path: member });
+        expect(
+          yield* git.ensureWorktree({
+            cwd: project,
+            path: worktree.path,
+            branch: "new-topic",
+            owner: "thread:thread",
+          }),
+        ).toEqual({ recreated: true });
+        expect(run(member, "branch", "--show-current")).toBe("new-topic");
       }).pipe(
         Effect.provide(
           GitCoreTestLive.pipe(

@@ -142,9 +142,7 @@ describe("forge adapters", () => {
                   iid: "7",
                   approved: true,
                   approvedBy: { nodes: [{ username: "reviewer" }] },
-                  reviewers: {
-                    nodes: [{ mergeRequestInteraction: { reviewState: "REQUESTED_CHANGES" } }],
-                  },
+                  changeRequesters: { nodes: [{ username: "reviewer" }] },
                   headPipeline: { status: "FAILED" },
                 },
                 {
@@ -165,6 +163,86 @@ describe("forge adapters", () => {
     ]);
     expect(JSON.parse(String(calls[1]?.init.body)).variables.iids).toEqual(["7", "8"]);
   });
+
+  it("checks later reviewer pages on GitLab versions without changeRequesters", async () => {
+    const { provider, ref, calls } = fixture("gitlab", [
+      [{ iid: 7 }],
+      { errors: [{ message: "Unknown field changeRequesters" }] },
+      {
+        data: {
+          project: {
+            mergeRequests: {
+              nodes: [
+                {
+                  iid: "7",
+                  approved: true,
+                  approvedBy: { nodes: [{ username: "reviewer" }] },
+                  reviewers: { nodes: [], pageInfo: { hasNextPage: true, endCursor: "page-1" } },
+                },
+              ],
+            },
+          },
+        },
+      },
+      {
+        data: {
+          project: {
+            mergeRequest: {
+              reviewers: {
+                nodes: [
+                  {
+                    mergeRequestInteraction: { reviewState: "REQUESTED_CHANGES" },
+                  },
+                ],
+              },
+            },
+          },
+        },
+      },
+    ]);
+    expect(await Effect.runPromise(provider.listPullRequests(ref))).toMatchObject([
+      { number: 7, reviewDecision: "changes_requested" },
+    ]);
+    expect(JSON.parse(String(calls[3]?.init.body)).variables.after).toBe("page-1");
+  });
+
+  it.each([true, false])(
+    "verifies branch absence only when the source branch list is readable (%s)",
+    async (readable) => {
+      const { provider, calls } = fixture("gitlab", [
+        {
+          data: {
+            project: {
+              mergeRequest: {
+                state: "merged",
+                sourceBranch: "feature/a.b",
+                diffHeadSha: "head",
+                sourceProject: { fullPath: "fork/repo" },
+              },
+            },
+          },
+        },
+        new Response(null, { status: 404 }),
+        readable ? [] : new Response(null, { status: 404 }),
+      ]);
+      const result = await Effect.runPromise(
+        Effect.result(
+          provider.deletePullRequestBranch!({
+            cwd: "/project",
+            url: "https://gitlab.com/team/repo/-/merge_requests/7",
+            expectedHeadOid: "head",
+            inspectOnly: true,
+          }),
+        ),
+      );
+      expect(result).toMatchObject(
+        readable
+          ? { _tag: "Success", success: { absent: true } }
+          : { _tag: "Failure", failure: { kind: "not_found" } },
+      );
+      expect(new URL(calls[2]!.url).searchParams.get("regex")).toBe("^feature/a\\.b$");
+    },
+  );
 
   it.each([
     { state: "merged", canDelete: true, defaultBranch: false, currentHead: "head", deleted: true },
