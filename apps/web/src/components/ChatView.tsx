@@ -74,6 +74,7 @@ import { partitionDroppedAttachments } from "../lib/droppedAttachments";
 import { composerAttachmentStatus } from "../lib/attachmentValidation";
 import { foldedPasteFile } from "../lib/textPaste";
 import { ensureComposerUpload, persistComposerAttachment } from "../composerDraftStore";
+import { useLocalDraftErrorStore } from "../localDraftErrorStore";
 import { defaultDraftRuntimeMode } from "../lib/draftSettingsDefaults";
 import { RepositoryLinks, repositoryLinksForThread } from "../repositoryLinkContext";
 import { AssistantQuoteToolbar } from "./chat/AssistantQuoteToolbar";
@@ -983,9 +984,8 @@ export default memo(function ChatView({
   optimisticUserMessagesRef.current = optimisticUserMessages;
   const composerFilePathsRef = useRef<string[]>(composerFilePaths);
   const composerTerminalContextsRef = useRef<TerminalContextDraft[]>(composerTerminalContexts);
-  const [localDraftErrorsByThreadId, setLocalDraftErrorsByThreadId] = useState<
-    Record<ThreadId, string | null>
-  >({});
+  const localDraftErrorsByThreadId = useLocalDraftErrorStore((store) => store.errorsByThreadId);
+  const setLocalDraftError = useLocalDraftErrorStore((store) => store.setError);
   const pendingTurnDispatch = usePendingTurnDispatchStore(
     (store) => store.pendingByThreadId[threadId] ?? null,
   );
@@ -3209,17 +3209,9 @@ export default memo(function ChatView({
         setStoreThreadError(targetThreadId, nextError);
         return;
       }
-      setLocalDraftErrorsByThreadId((existing) => {
-        if ((existing[targetThreadId] ?? null) === nextError) {
-          return existing;
-        }
-        return {
-          ...existing,
-          [targetThreadId]: nextError,
-        };
-      });
+      setLocalDraftError(targetThreadId, nextError);
     },
-    [setStoreThreadError],
+    [setLocalDraftError, setStoreThreadError],
   );
 
   const focusComposer = useCallback(() => {
@@ -6082,8 +6074,12 @@ export default memo(function ChatView({
       ) {
         restoreComposerRollback(failureRollback);
       }
-      if (isLocalDraftThread) restoreFailedBootstrapDraft(threadIdForSend, message, error);
-      else toastManager.add({ type: "error", title: message });
+      if (isLocalDraftThread) {
+        // The draft (possibly rekeyed) keeps the error, so recovery notices such as
+        // "Send in Local" can offer a fix; the toast alone leaves nothing to act on.
+        const retryThreadId = restoreFailedBootstrapDraft(threadIdForSend, message, error);
+        setThreadError(retryThreadId, message);
+      } else toastManager.add({ type: "error", title: message });
     };
 
     try {

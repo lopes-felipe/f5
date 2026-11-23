@@ -22,6 +22,7 @@ import "../index.css";
 import {
   AGENTS_WS_METHODS,
   BOOTSTRAP_THREAD_DELETED_ERROR_CODE,
+  BOOTSTRAP_THREAD_NOT_CREATED_ERROR_CODE,
   NATIVE_OPERATION_WS_METHODS,
   USAGE_WS_METHODS,
   CommandId,
@@ -98,6 +99,7 @@ import {
 import { createComposerMention } from "../composer-editor-mentions";
 import { useComposerMentionHistoryStore } from "../composerMentionHistoryStore";
 import { usePendingUserInputDraftStore } from "../pendingUserInputDraftStore";
+import { useLocalDraftErrorStore } from "../localDraftErrorStore";
 import { requestComposerFocus, useComposerFocusRequestStore } from "../composerFocusRequestStore";
 
 vi.mock("./DiffWorkerPoolProvider", () => ({
@@ -2713,6 +2715,7 @@ describe("ChatView timeline (full app)", () => {
     setServerBootstrap(serverBootstrapFixture);
     await setViewport(DEFAULT_VIEWPORT);
     localStorage.clear();
+    useLocalDraftErrorStore.getState().reset();
     useComposerMentionHistoryStore.setState({ entries: [] });
     usePendingUserInputDraftStore.setState({
       answersByThreadId: {},
@@ -6323,6 +6326,7 @@ describe("ChatView timeline (full app)", () => {
       options: {
         optedIn?: boolean;
         repositories?: () => MaybePromise<WsRequestResolution>;
+        dispatch?: () => WsRequestResolution | null;
       } = {},
     ) => {
       // The thread-mode default is a worktree; it must not apply here.
@@ -6358,6 +6362,11 @@ describe("ChatView timeline (full app)", () => {
                   result: nestedRepositories(repositoryCount),
                 }
               );
+            if (
+              body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand ||
+              body._tag === WS_METHODS.nextTurnQueueSubmit
+            )
+              return options.dispatch?.() ?? null;
             return null;
           };
         },
@@ -6495,6 +6504,44 @@ describe("ChatView timeline (full app)", () => {
         );
       } finally {
         release?.();
+        await mounted.cleanup();
+      }
+    });
+
+    it("offers Send in Local when worktree isolation is unavailable, and sends in the folder", async () => {
+      let attempts = 0;
+      const mounted = await mountNonGitDraft(2, {
+        optedIn: true,
+        dispatch: () =>
+          ++attempts === 1
+            ? {
+                type: "error",
+                message: "Worktree isolation unavailable: unsupported",
+                code: BOOTSTRAP_THREAD_NOT_CREATED_ERROR_CODE,
+              }
+            : null,
+      });
+      try {
+        await waitForComposerEditor();
+        await expect
+          .element(page.getByLabelText("Workspace: New worktree · 2 repos", { exact: true }))
+          .toBeVisible();
+        await sendPrompt("Try a worktree");
+        const fallback = page.getByRole("button", { name: "Send in Local" });
+        await expect.element(fallback).toBeVisible();
+        await fallback.click();
+        await vi.waitFor(
+          () => {
+            const requests = getDispatchCommandRequests();
+            expect(requests).toHaveLength(2);
+            const retried = requests[1]?.command as
+              | { bootstrap?: { prepareWorktree?: unknown } }
+              | undefined;
+            expect(retried?.bootstrap?.prepareWorktree).toBeUndefined();
+          },
+          { timeout: 8_000, interval: 16 },
+        );
+      } finally {
         await mounted.cleanup();
       }
     });
