@@ -29,7 +29,7 @@ const manifest = {
 };
 const lock = {
   image: {
-    url: "https://github.com/lopes-felipe/f5/releases/download/vm-guest-image-abc/f5-guest.qcow2",
+    url: "https://github.com/lopes-felipe/f5/releases/download/0.0.0-guest-image-abc/f5-guest.qcow2",
     sha256: "c".repeat(64),
     size: 10,
   },
