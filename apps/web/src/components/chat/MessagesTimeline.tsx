@@ -203,6 +203,7 @@ import {
   clipUserMessageSegments,
   hasUserMessageMarkup,
   parseUserMessageMarkup,
+  userMessageSegmentDisplayText,
 } from "../../lib/userMessageMarkup";
 import { ReasoningSection } from "./ReasoningSection";
 import { MessageTokenUsage } from "./MessageTokenUsage";
@@ -2422,12 +2423,14 @@ function UserMessageMarkupText(props: {
       data-user-message-markup=""
       {...(props.testRenderCountProps ?? {})}
     >
-      {segments.map((segment) => {
+      {segments.map((segment, index) => {
         switch (segment.kind) {
           case "response-context":
             return <AssistantResponseCard key={segment.start} record={segment.record} />;
-          case "text":
-            return <Fragment key={segment.start}>{segment.raw}</Fragment>;
+          case "text": {
+            const text = userMessageSegmentDisplayText(segments, index);
+            return text ? <Fragment key={segment.start}>{text}</Fragment> : null;
+          }
           case "code":
             return (
               <code key={segment.start} className="user-message-inline-code">

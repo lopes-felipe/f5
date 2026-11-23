@@ -400,6 +400,21 @@ export function clipUserMessageSegments(
   return clipped;
 }
 
+/**
+ * The displayed text of the text segment at `index`. A response card renders as a block, so
+ * the blank-line separator beside it would add empty lines beyond the card's margin; one
+ * separator is dropped on each side that touches a card. The source is unchanged.
+ */
+export function userMessageSegmentDisplayText(
+  segments: readonly UserMessageSegment[],
+  index: number,
+): string {
+  let text = segments[index]!.raw;
+  if (segments[index - 1]?.kind === "response-context") text = text.replace(/^\r?\n(?:\r?\n)?/, "");
+  if (segments[index + 1]?.kind === "response-context") text = text.replace(/(?:\r?\n)?\r?\n$/, "");
+  return text;
+}
+
 export function hasUserMessageMarkup(segments: readonly UserMessageSegment[]): boolean {
   return segments.some((segment) => segment.kind !== "text");
 }

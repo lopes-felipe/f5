@@ -1,7 +1,144 @@
 import { expect, it, vi } from "vitest";
-import { page } from "vitest/browser";
+import { page, userEvent } from "vitest/browser";
 import { render } from "vitest-browser-react";
 import { AssistantQuoteToolbar } from "./AssistantQuoteToolbar";
+
+const nextFrames = () =>
+  new Promise<void>((resolve) =>
+    requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 50))),
+  );
+
+async function renderAnswer() {
+  const screen = await render(
+    <>
+      <p data-message-role="assistant" data-message-id="answer">
+        Selected answer
+      </p>
+      <p data-testid="elsewhere">Unrelated text</p>
+      <AssistantQuoteToolbar
+        onInsert={() => ({ inserted: true })}
+        currentLength={0}
+        maxLength={120000}
+      />
+    </>,
+  );
+  const paragraph = document.querySelector('[data-message-id="answer"]')!;
+  return { screen, paragraph };
+}
+
+it("keeps quote actions open after a real triple-click selection", async () => {
+  const { screen, paragraph } = await renderAnswer();
+  try {
+    await userEvent.tripleClick(paragraph);
+    const quote = page.getByRole("button", { name: "Quote reply" });
+    await expect.element(quote).toBeVisible();
+    // The click that ends the gesture must not dismiss the actions.
+    await nextFrames();
+    await expect.element(quote).toBeVisible();
+  } finally {
+    window.getSelection()?.removeAllRanges();
+    await screen.unmount();
+  }
+});
+
+it("keeps quote actions open through the click that ends a drag selection", async () => {
+  const { screen, paragraph } = await renderAnswer();
+  try {
+    paragraph.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    window.getSelection()!.setBaseAndExtent(paragraph.firstChild!, 0, paragraph.firstChild!, 8);
+    paragraph.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+    const quote = page.getByRole("button", { name: "Quote reply" });
+    await expect.element(quote).toBeVisible();
+    paragraph.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await nextFrames();
+    await expect.element(quote).toBeVisible();
+    // A new press elsewhere clears the actions; a press inside them does not.
+    page
+      .getByRole("toolbar", { name: "Quote assistant response" })
+      .element()
+      .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    await nextFrames();
+    await expect.element(quote).toBeVisible();
+    document
+      .querySelector('[data-testid="elsewhere"]')!
+      .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    await expect.element(quote).not.toBeInTheDocument();
+  } finally {
+    window.getSelection()?.removeAllRanges();
+    await screen.unmount();
+  }
+});
+
+it("offers a quote for a keyboard selection and lets Escape dismiss it", async () => {
+  const { screen, paragraph } = await renderAnswer();
+  try {
+    // No pointer events: keyboard selections only report through selectionchange.
+    window.getSelection()!.setBaseAndExtent(paragraph.firstChild!, 0, paragraph.firstChild!, 8);
+    const quote = page.getByRole("button", { name: "Quote reply" });
+    await expect.element(quote).toBeVisible();
+    await userEvent.keyboard("{Escape}");
+    await expect.element(quote).not.toBeInTheDocument();
+    await nextFrames();
+    await expect.element(quote).not.toBeInTheDocument();
+    expect(window.getSelection()!.toString()).toBe("Selected");
+  } finally {
+    window.getSelection()?.removeAllRanges();
+    await screen.unmount();
+  }
+});
+
+it("restores the quoted selection when stepping back from the comment", async () => {
+  const { screen, paragraph } = await renderAnswer();
+  try {
+    window.getSelection()!.setBaseAndExtent(paragraph.firstChild!, 0, paragraph.firstChild!, 8);
+    paragraph.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+    await page.getByRole("button", { name: "Quote reply" }).click();
+    await page.getByRole("textbox", { name: "Quote comment" }).fill("A comment");
+    await page.getByRole("button", { name: "Back", exact: true }).click();
+    const quote = page.getByRole("button", { name: "Quote reply" });
+    await expect.element(quote).toBeVisible();
+    await expect.poll(() => window.getSelection()!.toString()).toBe("Selected");
+    await expect.poll(() => document.activeElement).toBe(quote.element());
+    await nextFrames();
+    await expect.element(quote).toBeVisible();
+    await userEvent.keyboard("{Escape}");
+    await expect.element(quote).not.toBeInTheDocument();
+  } finally {
+    window.getSelection()?.removeAllRanges();
+    await screen.unmount();
+  }
+});
+
+it("keeps stepped-back actions when the quoted text re-rendered, until focus moves on", async () => {
+  const { screen, paragraph } = await renderAnswer();
+  const outside = document.createElement("button");
+  outside.textContent = "Outside";
+  document.body.append(outside);
+  try {
+    window.getSelection()!.setBaseAndExtent(paragraph.firstChild!, 0, paragraph.firstChild!, 8);
+    paragraph.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+    await page.getByRole("button", { name: "Quote reply" }).click();
+    await page.getByRole("textbox", { name: "Quote comment" }).fill("A comment");
+    // A re-render replaces the quoted text node, collapsing the saved range.
+    paragraph.replaceChildren(document.createTextNode("Selected answer"));
+    await page.getByRole("button", { name: "Back", exact: true }).click();
+    const quote = page.getByRole("button", { name: "Quote reply" });
+    await nextFrames();
+    await expect.element(quote).toBeVisible();
+    await quote.click();
+    await expect
+      .element(page.getByRole("textbox", { name: "Quote comment" }))
+      .toHaveValue("A comment");
+    await page.getByRole("button", { name: "Back", exact: true }).click();
+    await nextFrames();
+    outside.focus();
+    await expect.element(quote).not.toBeInTheDocument();
+  } finally {
+    outside.remove();
+    window.getSelection()?.removeAllRanges();
+    await screen.unmount();
+  }
+});
 
 it("offers a quote when paragraph selection ends beyond an unselectable tool row", async () => {
   const insert = vi.fn(() => ({ inserted: true }));

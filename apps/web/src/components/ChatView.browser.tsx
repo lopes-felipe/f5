@@ -11432,6 +11432,11 @@ describe("ChatView timeline (full app)", () => {
             expect(quotedAssistantText(prompt)).toBe(text);
             expect(prompt).toContain("Please explain.");
           });
+          // The composer keeps the caret it placed after the quote.
+          const composer = await waitForComposerEditor();
+          await vi.waitFor(() =>
+            expect(composer.contains(document.getSelection()?.anchorNode ?? null)).toBe(true),
+          );
           const send = await waitForSendButton();
           await vi.waitFor(() => expect(send.disabled).toBe(false));
           send.click();
@@ -11446,6 +11451,20 @@ describe("ChatView timeline (full app)", () => {
                 quotedAssistantText(prompt) === text && prompt.includes("Please explain."),
             ),
           ).toBe(true);
+        });
+        // The sent bubble's card margin is the only gap before the comment.
+        await vi.waitFor(() => {
+          const card = [
+            ...document.querySelectorAll<HTMLElement>('[aria-label="Go to quoted response"]'),
+          ].at(-1);
+          expect(card).toBeTruthy();
+          const comment = card!.nextSibling;
+          expect(comment?.textContent?.startsWith("Please explain.")).toBe(true);
+          const range = document.createRange();
+          range.selectNodeContents(comment!);
+          const gap = range.getClientRects()[0]!.top - card!.getBoundingClientRect().bottom;
+          const lineHeight = Number.parseFloat(getComputedStyle(card!.parentElement!).lineHeight);
+          expect(gap).toBeLessThan(lineHeight);
         });
         await expect
           .element(page.getByRole("textbox", { name: "Quote comment" }))
