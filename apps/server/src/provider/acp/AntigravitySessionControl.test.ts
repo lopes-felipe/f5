@@ -490,20 +490,54 @@ describe("Antigravity approval policy", () => {
       });
   });
 
-  it("allows everything under Full access except Plan and computer use", () => {
+  it("allows everything under Full access except computer use", () => {
     expect(decide("full-access", command)).toEqual({ kind: "allow" });
-    expect(decide("full-access", command, { sessionMode: "plan" })).toEqual({
-      kind: "ask",
-      applyThreadGrants: false,
-    });
+    expect(decide("full-access", edit(NodePath.join(root, "a.ts")))).toEqual({ kind: "allow" });
     expect(decide("full-access", command, { computerRequest: true })).toEqual({
       kind: "ask",
       applyThreadGrants: false,
     });
-    // A Plan turn whose native mode still reports `default` keeps Plan's rules.
-    expect(decide("full-access", command, { sessionMode: "default", planRequested: true })).toEqual(
-      { kind: "ask", applyThreadGrants: false },
-    );
+  });
+
+  it("lets Plan commands follow the access mode but asks for every other kind", () => {
+    // A Plan turn whose native mode still reports `default` gets Plan's rules too.
+    for (const plan of [{ sessionMode: "plan" }, { sessionMode: "default", planRequested: true }]) {
+      for (const kind of ["execute", "read", "search", "think"]) {
+        expect(decide("full-access", { ...command, kind }, plan), kind).toEqual({
+          kind: "allow",
+        });
+        expect(decide("approval-required", { ...command, kind }, plan), kind).toEqual({
+          kind: "ask",
+          applyThreadGrants: true,
+        });
+      }
+      // `kind` comes from the agent: a write tool reported as `other`, with no kind or with a
+      // kind F5 doesn't know still asks.
+      const writeTool = {
+        title: "write_to_file",
+        rawInput: { TargetFile: NodePath.join(root, "a.ts") },
+      };
+      for (const toolCall of [
+        ...["edit", "delete", "move", "other", "fetch", "switch_mode", "future_kind"].map(
+          (kind) => ({ ...writeTool, kind }),
+        ),
+        writeTool,
+        { ...writeTool, kind: null },
+      ])
+        expect(decide("full-access", toolCall, plan), JSON.stringify(toolCall)).toEqual({
+          kind: "ask",
+          applyThreadGrants: false,
+        });
+      // Auto-accept edits doesn't approve workspace edits in Plan either.
+      expect(decide("auto-accept-edits", edit(NodePath.join(root, "a.ts")), plan)).toEqual({
+        kind: "ask",
+        applyThreadGrants: false,
+      });
+      expect(decide("full-access", command, { ...plan, computerRequest: true })).toEqual({
+        kind: "ask",
+        applyThreadGrants: false,
+      });
+    }
   });
 
   it("requires every edit target to be inside the canonical workspace", () => {

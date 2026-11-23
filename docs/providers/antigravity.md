@@ -47,9 +47,12 @@ the rest. Each model shows only the thinking levels it supports. Orchestrator ha
 | **Auto**              | Offered once your Antigravity version has advertised its own reviewer       |
 | **Full access**       | F5 approves each action once, without asking                                |
 
-- Turn on **Plan** in the composer to make Antigravity plan first. In plan mode F5 asks before
-  every action, even in Full access. "Allow for this thread" isn't offered there, and earlier
-  thread grants don't apply.
+- Turn on **Plan** in the composer to make Antigravity plan first. In plan mode, commands and
+  read-only tools follow the thread's access mode: Full access runs them without asking, and
+  Supervised asks and offers "Allow for this thread". An earlier thread grant also covers the
+  same command in plan mode. Commands can still change files, so use Supervised if plan mode
+  should never change anything. Every other request in plan mode, such as a file edit or a tool
+  F5 doesn't recognize, asks even in Full access, and thread grants don't apply to it.
 - If your Antigravity version has no plan mode, or a session can't leave it, the turn stops
   before anything is sent.
 - If Antigravity rejects Auto when a session starts or a turn begins, that session runs as
@@ -91,8 +94,11 @@ the rest. Each model shows only the thinking levels it supports. Orchestrator ha
   update, when models were last discovered, and the kind of the last discovery failure (never its
   message).
 - Subscription quota, turn-failure details and native child work read Antigravity's private files.
-  F5 reads them only on versions it has certified (1.5.13 today); on other versions the card shows
-  "Native readers: Off" and threads run on standard ACP only.
+  F5 reads them on Antigravity 1.5.13 or newer. On an older or unrecognised version the card shows
+  "Native readers: Off" and threads run on standard ACP only. On a release F5 hasn't checked,
+  each reader acts only on data it recognises (a known API or quota error, a sub-agent launch
+  with native ids) and otherwise shows nothing; a generic "stopped because of an error" is
+  reported only on releases whose files were checked (1.5.13 and 1.5.15).
 - F5 preview tools remain gated pending startup verification and negotiated HTTP MCP support; F5
   computer tools await Antigravity live privacy verification.
 
@@ -111,7 +117,7 @@ the rest. Each model shows only the thinking levels it supports. Orchestrator ha
 | Auto-accept edits | Approves only a request whose kind is `edit` and that is shaped like one of Antigravity's file-edit tools, carries no command field, and whose every target is an absolute path inside the workspace after resolving links, with no `..` segment and no dangling link. Edits under any `.git` folder, including nested repositories, are always asked. Anything ambiguous is asked                                                                                                                                                                                                                                                                    |
 | Context meter     | Read from Antigravity's `usage_update` samples. These measure context, not billing; repeated values are ignored                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | Forms             | Optional fields can be skipped. Unsupported forms are cancelled, never auto-approved                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| Subagents         | A launched subagent counts as running work until the parent turn finishes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Subagents         | A launched subagent counts as running work until the parent turn finishes. In 1.5.15 a subagent's own permission requests never reach F5, so a command it needs approved times out after 60 seconds, even in Full access                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | Skills            | `~/.gemini/config/skills`, `~/.gemini/antigravity-cli/skills`, `~/.gemini/AGENTS.md`, `~/.gemini/GEMINI.md` and `~/.gemini/config/skills.json` are linked in (copied on Windows) and never overwrite profile files or links you made. Credentials, hooks and MCP config are not. A key written into the legacy `providers.antigravity` settings block is ignored; keys belong to instances                                                                                                                                                                                                                                                            |
 | Skill catalog     | User and project skill folders, `skills.json` entries (`inherits`, `include_only`, `exclude`) and enabled plugins. Every folder and `SKILL.md` read, after following links, must stay under your home, the instance profile or the project. The home catalog is rescanned when its folders change, every 5 minutes, and on **Refresh**                                                                                                                                                                                                                                                                                                                |
 | Process isolation | Each process gets its own temp folder, removed at shutdown. Inherited Gemini and Google credentials, ADC files and Google Cloud project settings are removed; only the selected method's own credential is added back                                                                                                                                                                                                                                                                                                                                                                                                                                 |

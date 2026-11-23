@@ -59,9 +59,10 @@ describe("watchAntigravityPromptOutcome", () => {
       const turn = (
         steps: ReadonlyArray<readonly [number, Uint8Array]>,
         result: EffectAcpSchema.PromptResponse = { stopReason: "end_turn" },
+        options: { readonly unrecognizedErrors?: boolean } = {},
       ) =>
         Effect.gen(function* () {
-          const check = yield* watchAntigravityPromptOutcome(profileDirectory, sessionId);
+          const check = yield* watchAntigravityPromptOutcome(profileDirectory, sessionId, options);
           appendSteps(steps);
           return yield* check(result);
         });
@@ -134,6 +135,37 @@ describe("watchAntigravityPromptOutcome", () => {
           [USER_INPUT, input],
           [PLANNER_RESPONSE, reply],
         ]),
+      );
+      // An error-typed step whose text is no recognised error: on a runtime whose step numbering
+      // wasn't checked the type alone could mean something else, so the turn stands.
+      const unrecognized = Buffer.from("something the harness has never written before");
+      assert.isUndefined(
+        yield* turn([
+          [USER_INPUT, input],
+          [ERROR_MESSAGE, unrecognized],
+        ]),
+      );
+      assert.deepEqual(
+        yield* turn(
+          [
+            [USER_INPUT, input],
+            [ERROR_MESSAGE, unrecognized],
+          ],
+          { stopReason: "end_turn" },
+          { unrecognizedErrors: true },
+        ),
+        {
+          class: "provider_error",
+          message: "Antigravity stopped this turn because of an error.",
+        },
+      );
+      // Recognised API errors fail the turn either way.
+      assert.equal(
+        (yield* turn([
+          [USER_INPUT, input],
+          [ERROR_MESSAGE, INVALID_ARGUMENT_ERROR],
+        ]))?.code,
+        "INVALID_ARGUMENT",
       );
       // The agent maps the SDK's QUOTA_EXHAUSTED stop reason to `refusal`.
       assert.deepEqual(yield* turn([], { stopReason: "refusal" }), {
