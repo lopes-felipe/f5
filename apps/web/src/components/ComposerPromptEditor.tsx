@@ -1334,32 +1334,35 @@ function ComposerPromptEditorInner({
       },
       readSnapshot,
       readSelectionRange: () =>
-        editor.getEditorState().read(() => {
-          const root = editor.getRootElement();
-          const domSelection = root?.ownerDocument.getSelection();
-          // Paste can arrive before Lexical has committed the browser's selectionchange.
-          const selection =
-            (root &&
-            domSelection?.anchorNode &&
-            domSelection.focusNode &&
-            root.contains(domSelection.anchorNode) &&
-            root.contains(domSelection.focusNode)
-              ? $createRangeSelectionFromDom(domSelection, editor)
-              : null) ?? $getSelection();
-          if (!$isRangeSelection(selection)) {
-            const cursor = readSnapshot().expandedCursor;
-            return { start: cursor, end: cursor };
-          }
-          const anchor = getExpandedAbsoluteOffsetForPoint(
-            selection.anchor.getNode(),
-            selection.anchor.offset,
-          );
-          const focus = getExpandedAbsoluteOffsetForPoint(
-            selection.focus.getNode(),
-            selection.focus.offset,
-          );
-          return { start: Math.min(anchor, focus), end: Math.max(anchor, focus) };
-        }),
+        editor.getEditorState().read(
+          () => {
+            const root = editor.getRootElement();
+            const domSelection = root?.ownerDocument.getSelection();
+            // Paste can arrive before Lexical has committed the browser's selectionchange.
+            const selection =
+              (root &&
+              domSelection?.anchorNode &&
+              domSelection.focusNode &&
+              root.contains(domSelection.anchorNode) &&
+              root.contains(domSelection.focusNode)
+                ? $createRangeSelectionFromDom(domSelection, editor)
+                : null) ?? $getSelection();
+            if (!$isRangeSelection(selection)) {
+              const cursor = readSnapshot().expandedCursor;
+              return { start: cursor, end: cursor };
+            }
+            const anchor = getExpandedAbsoluteOffsetForPoint(
+              selection.anchor.getNode(),
+              selection.anchor.offset,
+            );
+            const focus = getExpandedAbsoluteOffsetForPoint(
+              selection.focus.getNode(),
+              selection.focus.offset,
+            );
+            return { start: Math.min(anchor, focus), end: Math.max(anchor, focus) };
+          },
+          { editor },
+        ),
     }),
     [editor, focusAt, readSnapshot],
   );
