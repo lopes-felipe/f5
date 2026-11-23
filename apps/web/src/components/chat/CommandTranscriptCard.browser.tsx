@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
 import { render } from "vitest-browser-react";
 
+import { FileNavigationProvider } from "../../fileNavigationContext";
 import { setNowTickerClockForTests } from "../../lib/nowTicker";
 import { toastManager } from "../ui/toast";
 import { CommandTranscriptCard } from "./CommandTranscriptCard";
@@ -408,6 +409,196 @@ describe("CommandTranscriptCard", () => {
       });
       expect(host.textContent).toContain("MIDDLE-SENTINEL");
       expect(host.textContent).not.toContain("Shortened preview");
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("numbers a sed read from its start line and keeps the numbers out of selections", async () => {
+    const lines = Array.from({ length: 21 }, (_, index) => `const line${750 + index} = ${index};`);
+    const host = document.createElement("div");
+    document.body.append(host);
+    const navigate = vi.fn(() => true);
+    const screen = await renderWithQueryClient(
+      <FileNavigationProvider value={navigate}>
+        <CommandTranscriptCard
+          execution={makeExecution({
+            command: "/bin/zsh -lc 'sed -n 750,770p src/GitActionsControl.tsx'",
+            output: `${lines.join("\n")}\n`,
+          })}
+          expanded
+          timestampFormat="locale"
+          workspaceRoot="/repo"
+          onToggle={() => {}}
+          onExpandedBodyResize={() => {}}
+        />
+      </FileNavigationProvider>,
+      host,
+    );
+
+    try {
+      const body = await vi.waitFor(() => {
+        const element = host.querySelector<HTMLElement>("[data-output-kind='file']");
+        expect(element).not.toBeNull();
+        return element!.querySelector<HTMLElement>("[data-testid='command-output-body']")!;
+      });
+      const numbers = [...body.querySelectorAll("[data-line-number]")].map((row) =>
+        Number(row.getAttribute("data-line-number")),
+      );
+      expect(numbers).toEqual(Array.from({ length: 21 }, (_, index) => 750 + index));
+      expect(host.querySelector("[data-testid='command-output-chip']")?.textContent).toContain(
+        "lines 750–770",
+      );
+
+      const selection = window.getSelection()!;
+      selection.selectAllChildren(body);
+      expect(selection.toString().trimEnd()).toBe(lines.join("\n"));
+      selection.removeAllRanges();
+
+      await page.getByRole("button", { name: "Open GitActionsControl.tsx at line 752" }).click();
+      expect(navigate).toHaveBeenCalledWith("/repo/src/GitActionsControl.tsx:752", undefined);
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("groups search results and opens files at the matched line", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const navigate = vi.fn(() => true);
+    const screen = await renderWithQueryClient(
+      <FileNavigationProvider value={navigate}>
+        <CommandTranscriptCard
+          execution={makeExecution({
+            command: "rg -n useTheme src",
+            output: "src/a.ts:3:const t = useTheme();\nsrc/b.tsx:12:useTheme()\n",
+          })}
+          expanded
+          timestampFormat="locale"
+          workspaceRoot="/repo"
+          onToggle={() => {}}
+          onExpandedBodyResize={() => {}}
+        />
+      </FileNavigationProvider>,
+      host,
+    );
+
+    try {
+      await vi.waitFor(() => {
+        expect(host.querySelectorAll("[data-testid='command-output-search-group']")).toHaveLength(
+          2,
+        );
+      });
+      expect(host.querySelector("[data-testid='command-output-chip']")?.textContent).toBe(
+        "2 matchesin 2 files",
+      );
+      expect(host.querySelectorAll("mark")).toHaveLength(2);
+
+      await page.getByRole("button", { name: "src/b.tsx" }).click();
+      expect(navigate).toHaveBeenLastCalledWith("/repo/src/b.tsx:12", undefined);
+      await page.getByRole("button", { name: "Open a.ts at line 3" }).click();
+      expect(navigate).toHaveBeenLastCalledWith("/repo/src/a.ts:3", undefined);
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("renders ANSI colors without escape characters and copies the stripped text", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <CommandTranscriptCard
+        execution={makeExecution({
+          command: "bun run test",
+          output: "\x1b[1;31mFAIL\x1b[0m src/a.test.ts\n\x1b[32mpassed\x1b[39m 3\n",
+        })}
+        expanded
+        timestampFormat="locale"
+        onToggle={() => {}}
+        onExpandedBodyResize={() => {}}
+      />,
+      host,
+    );
+
+    try {
+      const body = await vi.waitFor(() => {
+        const element = host.querySelector<HTMLElement>("[data-output-kind='ansi']");
+        expect(element).not.toBeNull();
+        return element!;
+      });
+      expect(body.textContent).not.toContain("\x1b");
+      expect(body.textContent).toContain("FAIL src/a.test.ts");
+      const fail = [...body.querySelectorAll("span")].find((span) => span.textContent === "FAIL");
+      expect(fail?.className).toContain("text-destructive-foreground");
+      expect(fail?.className).toContain("font-semibold");
+
+      await page.getByRole("button", { name: "Copy output" }).click();
+      await vi.waitFor(() => {
+        expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+          "FAIL src/a.test.ts\npassed 3\n",
+        );
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("keeps large file output structured without syntax colors", async () => {
+    const lines = Array.from({ length: 500 }, (_, index) => `const value${index} = "${index}";`);
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <CommandTranscriptCard
+        execution={makeExecution({ command: "cat src/big.ts", output: lines.join("\n") })}
+        expanded
+        timestampFormat="locale"
+        onToggle={() => {}}
+        onExpandedBodyResize={() => {}}
+      />,
+      host,
+    );
+
+    try {
+      const body = await vi.waitFor(() => {
+        const element = host.querySelector<HTMLElement>("[data-output-kind='file']");
+        expect(element).not.toBeNull();
+        return element!;
+      });
+      expect(body.querySelectorAll("[data-line-number]")).toHaveLength(500);
+      expect(body.querySelector("span[style*='color']")).toBeNull();
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("highlights small file output once the grammar loads", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <CommandTranscriptCard
+        execution={makeExecution({ command: "cat src/a.ts", output: 'const a = "x";\n' })}
+        expanded
+        timestampFormat="locale"
+        onToggle={() => {}}
+        onExpandedBodyResize={() => {}}
+      />,
+      host,
+    );
+
+    try {
+      await vi.waitFor(
+        () => {
+          expect(
+            host.querySelector("[data-output-kind='file'] span[style*='color']"),
+          ).not.toBeNull();
+        },
+        { timeout: 10_000 },
+      );
     } finally {
       await screen.unmount();
       host.remove();

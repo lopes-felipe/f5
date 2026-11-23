@@ -20,13 +20,15 @@ import {
   XIcon,
   type LucideIcon,
 } from "lucide-react";
-import { memo, Suspense, use, useEffect, useMemo, useRef, useState } from "react";
+import { memo, Suspense, use, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import type { TimestampFormat } from "../../appSettings";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
 import { HighlightedCommandText } from "./HighlightedCommandText";
 import { retryableImport } from "../../lib/retryableImport";
+import { stripAnsi } from "../../lib/ansiOutput";
+import type { CommandOutputBlockProps } from "./CommandOutputView";
 import { classifyCodeHighlight } from "../../lib/codeHighlightPolicy";
 import {
   scheduleThreadCommandExecutionRefreshIfMissing,
@@ -42,6 +44,9 @@ import { SurfaceErrorBoundary } from "../ui/SurfaceErrorBoundary";
 import { CopyIconButton } from "./CopyIconButton";
 
 const loadShellCommandBlock = retryableImport(() => import("./ShellCommandBlock"));
+// Output presentation (and the grammar lookup it needs) loads with the first
+// expanded card, not with the timeline.
+const loadCommandOutputView = retryableImport(() => import("./CommandOutputView"));
 
 interface CommandTranscriptCardProps {
   threadId?: ThreadId | null;
@@ -175,8 +180,7 @@ function buildInlineOutputPreview(output: string): {
  * budget from the end so minified or single-line output stays cheap to render.
  */
 function buildOutputTail(output: string): string {
-  const tail = output
-    .slice(-FAILED_OUTPUT_TAIL_SCAN_CHARS)
+  const tail = stripAnsi(output.slice(-FAILED_OUTPUT_TAIL_SCAN_CHARS))
     .split("\n")
     .filter((line) => line.trim().length > 0)
     .slice(-FAILED_OUTPUT_TAIL_LINES)
@@ -211,8 +215,17 @@ function CommandStatusIcon(props: { status: OrchestrationCommandExecutionSummary
   );
 }
 
+function LoadedCommandOutputBlock(props: CommandOutputBlockProps) {
+  const { CommandOutputBlock } = use(loadCommandOutputView());
+  return <CommandOutputBlock {...props} />;
+}
+
 const CommandTranscriptOutput = memo(function CommandTranscriptOutput(props: {
   executionId: OrchestrationCommandExecutionSummary["id"];
+  command: string;
+  status: OrchestrationCommandExecutionSummary["status"];
+  cwd: string | undefined;
+  workspaceRoot: string | undefined;
   outputText: string;
   outputTruncated: boolean;
   isLoadingOutput: boolean;
@@ -245,20 +258,27 @@ const CommandTranscriptOutput = memo(function CommandTranscriptOutput(props: {
   const canCopyOutput =
     !props.isLoadingOutput && props.outputError === null && props.outputText.length > 0;
 
-  return (
-    <div>
-      <div className="flex min-h-5 items-center justify-between gap-2">
+  const renderHeader = (chip: ReactNode) => (
+    <div className="flex min-h-5 items-center justify-between gap-2">
+      <div className="flex min-w-0 items-center gap-2">
         <p className={SECTION_LABEL_CLASS_NAME}>Output</p>
-        {canCopyOutput && (
-          <CopyIconButton
-            label={isCopied ? "Output copied" : "Copy output"}
-            copied={isCopied}
-            onClick={() => {
-              copyToClipboard(props.outputText);
-            }}
-          />
-        )}
+        {chip}
       </div>
+      {canCopyOutput && (
+        <CopyIconButton
+          label={isCopied ? "Output copied" : "Copy output"}
+          copied={isCopied}
+          onClick={() => {
+            // Escape codes are invisible in the card; copy what it shows.
+            copyToClipboard(stripAnsi(props.outputText));
+          }}
+        />
+      )}
+    </div>
+  );
+  const plainBlock = (
+    <div>
+      {renderHeader(null)}
       <div className="mt-1 max-h-80 overflow-auto rounded-md bg-background/70 p-2">
         <pre className="whitespace-pre-wrap break-words font-mono text-[length:var(--f5-chat-font-size)] text-foreground">
           {props.isLoadingOutput
@@ -266,10 +286,38 @@ const CommandTranscriptOutput = memo(function CommandTranscriptOutput(props: {
             : props.outputError
               ? props.outputError
               : displayOutput.length > 0
-                ? displayOutput
+                ? stripAnsi(displayOutput)
                 : "(no output)"}
         </pre>
       </div>
+    </div>
+  );
+  const showPresentedOutput =
+    !props.isLoadingOutput && props.outputError === null && displayOutput.trim().length > 0;
+
+  return (
+    <div>
+      {showPresentedOutput ? (
+        <SurfaceErrorBoundary
+          name="Command output"
+          fallback={plainBlock}
+          resetKeys={[displayOutput, props.command]}
+        >
+          <Suspense fallback={plainBlock}>
+            <LoadedCommandOutputBlock
+              command={props.command}
+              output={displayOutput}
+              status={props.status}
+              cwd={props.cwd ?? props.workspaceRoot}
+              shortened={preview.shortened && !showFullOutput}
+              workspaceRoot={props.workspaceRoot}
+              renderHeader={renderHeader}
+            />
+          </Suspense>
+        </SurfaceErrorBoundary>
+      ) : (
+        plainBlock
+      )}
       {showPreviewToggle && (
         <div className="mt-1 flex flex-wrap items-center gap-x-1.5 text-xs">
           {!showFullOutput && (
@@ -545,6 +593,10 @@ export const CommandTranscriptCard = memo(function CommandTranscriptCard({
 
             <CommandTranscriptOutput
               executionId={execution.id}
+              command={displayCommand}
+              status={detailSource.status}
+              cwd={detailSource.cwd ?? execution.cwd}
+              workspaceRoot={workspaceRoot}
               outputText={waitingForDetail ? "" : outputText}
               outputTruncated={outputTruncated}
               isLoadingOutput={isLoadingOutput || waitingForDetail}
