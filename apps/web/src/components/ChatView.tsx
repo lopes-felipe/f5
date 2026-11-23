@@ -4,7 +4,7 @@ import { composerModelMentionItems } from "./chat/composerModelMentions";
 import { formatComposerModelMention } from "@t3tools/shared/composerModelMentions";
 import { useFreshSessionStore } from "../freshSessionStore";
 import {
-  hasVisibleFocusPopup,
+  shouldOfferComposerFocus,
   isDiffSearchEditingKey,
   isEventInFindScope,
 } from "../lib/keyboardFocus";
@@ -3250,15 +3250,7 @@ export default memo(function ChatView({
     )
       return;
     const frame = requestAnimationFrame(() => {
-      const active = document.activeElement;
-      if (
-        document.hidden ||
-        hasVisibleFocusPopup() ||
-        window.getSelection()?.toString() ||
-        (active instanceof HTMLElement &&
-          (active.isContentEditable || active.matches("input,textarea,select,iframe")))
-      )
-        return;
+      if (!shouldOfferComposerFocus()) return;
       focusComposer();
     });
     return () => cancelAnimationFrame(frame);

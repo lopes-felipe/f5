@@ -2398,6 +2398,65 @@ describe("ChatView timeline (full app)", () => {
       }
     },
   );
+  it.each(["sidebar row", "New thread", "palette"] as const)(
+    "focuses the composer after navigating with $0 and accepts typing",
+    async (source) => {
+      const destination = ThreadId.makeUnsafe("focus-destination");
+      const snapshot = addThreadToSnapshot(
+        createSnapshotForTargetUser({
+          targetMessageId: MessageId.makeUnsafe("focus-navigation"),
+          targetText: "Navigation focus",
+        }),
+        destination,
+      );
+      const mounted = await mountChatView({
+        viewport: { ...DEFAULT_VIEWPORT, width: 1600 },
+        snapshot: {
+          ...snapshot,
+          threads: snapshot.threads.map((thread) =>
+            thread.id === destination
+              ? {
+                  ...thread,
+                  title: "Focus destination",
+                  lastInteractionAt: new Date().toISOString(),
+                }
+              : thread,
+          ),
+        },
+      });
+      try {
+        await waitForComposerEditor();
+        if (source === "sidebar row") {
+          await page.getByText("Focus destination", { exact: true }).click();
+        } else if (source === "New thread") {
+          await page.getByTestId("sidebar-new-thread").click();
+        } else {
+          useCommandPaletteStore.getState().setOpen(true);
+          await page.getByRole("option", { name: /Focus destination/ }).click();
+        }
+        await waitForURL(
+          mounted.router,
+          source === "New thread"
+            ? (path) => UUID_ROUTE_RE.test(path)
+            : (path) => path === "/focus-destination",
+          "Thread navigation should finish.",
+        );
+        const editor = await waitForComposerEditor();
+        await expect.element(page.elementLocator(editor)).toHaveFocus();
+        await userEvent.keyboard("Typed after navigation");
+        await vi.waitFor(() =>
+          expect(
+            useComposerDraftStore.getState().draftsByThreadId[
+              mounted.router.state.location.pathname.slice(1) as ThreadId
+            ]?.prompt,
+          ).toBe("Typed after navigation"),
+        );
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
+
   it("focuses search when the add-project intent opens the real palette submenu", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,

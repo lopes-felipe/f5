@@ -81,43 +81,103 @@ describe("initial composer focus", () => {
     const focus = vi.fn();
     const screen = await render(<Harness focus={focus} />);
     useCommandPaletteStore.getState().openAddProject();
+    expect(document.activeElement).toBe(document.body);
+    expect(document.querySelector("input")).toBeNull();
     await screen.rerender(<Harness threadId="thread" focus={focus} />);
     await nextFrame();
     expect(focus).not.toHaveBeenCalled();
   });
 
-  it("does not take focus while a visible dialog is waiting for its initial focus", async () => {
-    const focus = vi.fn();
-    const screen = await render(<Harness focus={focus} />);
-    const dialog = document.createElement("div");
-    dialog.setAttribute("role", "dialog");
-    dialog.textContent = "Dialog";
-    document.body.append(dialog);
-    try {
-      await screen.rerender(<Harness threadId="thread" focus={focus} />);
-      await nextFrame();
-      expect(focus).not.toHaveBeenCalled();
-    } finally {
-      dialog.remove();
-    }
-  });
+  it.each(["true", "false"])(
+    "does not take focus while a visible dialog is waiting for its initial focus (modal=%s)",
+    async (modal) => {
+      const focus = vi.fn();
+      const screen = await render(<Harness focus={focus} />);
+      const dialog = document.createElement("div");
+      dialog.setAttribute("role", "dialog");
+      dialog.setAttribute("aria-modal", modal);
+      dialog.textContent = "Dialog";
+      document.body.append(dialog);
+      try {
+        await screen.rerender(<Harness threadId="thread" focus={focus} />);
+        await nextFrame();
+        expect(focus).not.toHaveBeenCalled();
+      } finally {
+        dialog.remove();
+      }
+    },
+  );
 
-  it("ignores a closed dialog when offering initial focus", async () => {
-    const focus = vi.fn();
-    const screen = await render(<Harness focus={focus} />);
-    const dialog = document.createElement("div");
-    dialog.setAttribute("role", "dialog");
-    dialog.setAttribute("data-state", "closed");
-    dialog.textContent = "Closed dialog";
-    document.body.append(dialog);
-    try {
-      await screen.rerender(<Harness threadId="thread" focus={focus} />);
-      await nextFrame();
-      expect(focus).toHaveBeenCalledOnce();
-    } finally {
-      dialog.remove();
-    }
-  });
+  it.each(["data-state", "data-closed", "data-ending-style"])(
+    "ignores a closing dialog and its focused input (%s)",
+    async (attribute) => {
+      const focus = vi.fn();
+      const screen = await render(<Harness focus={focus} />);
+      const dialog = document.createElement("div");
+      dialog.setAttribute("role", "dialog");
+      dialog.setAttribute(attribute, attribute === "data-state" ? "closed" : "");
+      const input = document.createElement("input");
+      dialog.append(input);
+      document.body.append(dialog);
+      try {
+        input.focus();
+        await screen.rerender(<Harness threadId="thread" focus={focus} />);
+        await nextFrame();
+        expect(focus).toHaveBeenCalledOnce();
+      } finally {
+        dialog.remove();
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "does not treat a hovered tooltip as a focus-owning popup (menu trigger=%s)",
+    async (menuTrigger) => {
+      const focus = vi.fn();
+      const screen = await render(<Harness focus={focus} />);
+      const trigger = document.createElement("button");
+      trigger.setAttribute("data-popup-open", "");
+      trigger.setAttribute("data-slot", "tooltip-trigger");
+      trigger.setAttribute("aria-describedby", "initial-focus-tooltip");
+      if (menuTrigger) {
+        trigger.setAttribute("aria-haspopup", "menu");
+        trigger.setAttribute("aria-expanded", "false");
+      }
+      const tooltip = document.createElement("div");
+      tooltip.id = "initial-focus-tooltip";
+      tooltip.setAttribute("role", "tooltip");
+      tooltip.textContent = "Tooltip";
+      document.body.append(trigger, tooltip);
+      try {
+        await screen.rerender(<Harness threadId="thread" focus={focus} />);
+        await nextFrame();
+        expect(focus).toHaveBeenCalledOnce();
+      } finally {
+        trigger.remove();
+        tooltip.remove();
+      }
+    },
+  );
+
+  it.each(["menu", "listbox", "dialog"])(
+    "waits for an open %s trigger to release focus",
+    async (role) => {
+      const focus = vi.fn();
+      const screen = await render(<Harness focus={focus} />);
+      const trigger = document.createElement("button");
+      trigger.setAttribute("data-popup-open", "");
+      trigger.setAttribute("aria-haspopup", role);
+      trigger.setAttribute("aria-expanded", "true");
+      document.body.append(trigger);
+      try {
+        await screen.rerender(<Harness threadId="thread" focus={focus} />);
+        await nextFrame();
+        expect(focus).not.toHaveBeenCalled();
+      } finally {
+        trigger.remove();
+      }
+    },
+  );
 
   it("does not disturb text selected outside an input", async () => {
     const focus = vi.fn();

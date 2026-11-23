@@ -1,17 +1,37 @@
 import type { ShortcutEventLike } from "../keybindings";
+import { useCommandPaletteStore } from "../commandPaletteStore";
+
+const CLOSED_FOCUS_SURFACE =
+  '[data-closed],[data-ending-style],[data-state="closed"],[aria-hidden="true"],[hidden],[inert]';
 
 /** Popups own initial focus even before their input has received it. */
 export function hasVisibleFocusPopup(): boolean {
   return [
     ...document.querySelectorAll<HTMLElement>(
-      '[role="dialog"],[role="alertdialog"],[data-popup-open]',
+      '[role="dialog"],[role="alertdialog"],[role="menu"],[role="listbox"],[data-slot="popover-popup"],[aria-haspopup]:not([aria-haspopup="false"])[aria-expanded="true"]',
     ),
   ].some(
     (element) =>
-      element.getAttribute("aria-hidden") !== "true" &&
-      element.getAttribute("data-state") !== "closed" &&
+      !element.closest(CLOSED_FOCUS_SURFACE) &&
       element.getClientRects().length > 0 &&
       getComputedStyle(element).visibility !== "hidden",
+  );
+}
+
+/** Passive focus may leave navigation controls, but never interrupt editing. */
+export function shouldOfferComposerFocus(): boolean {
+  let active = document.activeElement;
+  while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+  const editing =
+    active instanceof HTMLElement &&
+    (active.isContentEditable || active.matches("input,textarea,select,iframe")) &&
+    !active.closest(CLOSED_FOCUS_SURFACE);
+  return (
+    !document.hidden &&
+    !editing &&
+    !useCommandPaletteStore.getState().open &&
+    !hasVisibleFocusPopup() &&
+    !window.getSelection()?.toString()
   );
 }
 
