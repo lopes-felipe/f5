@@ -117,6 +117,40 @@ describe("workflow upsert roster rules", () => {
   });
 });
 
+describe("investigation upsert roster rules", () => {
+  const investigation = () => {
+    const fixture = workflowArchiveFixture("investigation");
+    const workflow = fixture.model.investigationWorkflows[0]!;
+    const upsert = (next: typeof workflow) =>
+      applyArchiveTestCommand(fixture.model, {
+        type: "project.investigation-workflow.upsert",
+        commandId: CommandId.makeUnsafe("investigation-upsert"),
+        projectId: workflow.projectId,
+        workflow: next,
+        updatedAt: "2026-10-19T11:00:00.000Z",
+      });
+    return { workflow, upsert };
+  };
+
+  it("accepts an upsert that keeps the roster", () => {
+    const { workflow, upsert } = investigation();
+    expect(() => upsert({ ...workflow, title: "Renamed" })).not.toThrow();
+  });
+
+  it("rejects an upsert that changes an investigator's model", () => {
+    const { workflow, upsert } = investigation();
+    expect(() =>
+      upsert({
+        ...workflow,
+        investigatorB: {
+          ...workflow.investigatorB,
+          slot: { provider: "codex", model: "gpt-5.5" },
+        },
+      }),
+    ).toThrow("Workflow upserts cannot change an actor's thread or model.");
+  });
+});
+
 describe("workflow creation provider rules", () => {
   const createCodeReview = (
     provider: "antigravity" | "muse" | "codex",

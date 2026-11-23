@@ -1,3 +1,4 @@
+import type { WorkflowProviderSnapshot } from "@t3tools/shared/workflowProviders";
 import {
   CommandId,
   MessageId,
@@ -195,15 +196,26 @@ describe("document workflow decider", () => {
           )?.payload,
         ).toMatchObject({ workflowExecutionProfile: profile ?? "attended-readonly" });
       }
-      for (const [instanceName, driver, reject] of [
-        ["custom-research", "grok", true],
-        ["grok-named-codex", "codex", false],
+      for (const [instanceName, driver, reject, readOnlyWorkflowTurns] of [
+        ["custom-research", "grok", true, undefined],
+        ["grok-named-codex", "codex", false, undefined],
+        // A selected Antigravity instance is judged by its own reported certification.
+        ["antigravity-uncertified", "antigravity", true, false],
+        ["antigravity-certified", "antigravity", false, true],
       ] as const) {
         const instanceId = ProviderInstanceId.makeUnsafe(instanceName);
         const decision = Effect.runPromise(
           decideOrchestrationCommand({
             readModel: h.get(),
-            providerInstances: [{ instanceId, driver: ProviderDriverKind.make(driver) }],
+            providerInstances: [
+              {
+                instanceId,
+                driver: ProviderDriverKind.make(driver),
+                ...(readOnlyWorkflowTurns === undefined
+                  ? {}
+                  : { runtimeCapabilities: { readOnlyWorkflowTurns } }),
+              } as WorkflowProviderSnapshot,
+            ],
             command: {
               type: "thread.turn.start",
               commandId: CommandId.makeUnsafe(`instance-${id}-${driver}`),
