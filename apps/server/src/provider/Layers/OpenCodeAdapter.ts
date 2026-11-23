@@ -2116,6 +2116,7 @@ export function makeOpenCodeAdapter(
       capabilities: {
         sessionModelSwitch: "in-session",
         runtimeCapabilities: providerRuntimeCapabilities(PROVIDER),
+        enforcesReadOnlyWorkflow: true,
       },
       // Mirrors sendTurn: a registered command runs natively. Before the session
       // has listed its commands, any leading `/name` command may be one.

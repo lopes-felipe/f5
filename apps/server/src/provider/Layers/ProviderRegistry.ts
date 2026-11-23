@@ -455,6 +455,7 @@ export const ProviderRegistryLive = Layer.effect(
               runtimeCapabilities: providerRuntimeCapabilities(
                 rawProvider.driver,
                 rawProvider.version,
+                rawProvider.harnessVariant,
               ),
             };
             const key = snapshotInstanceKey(provider);

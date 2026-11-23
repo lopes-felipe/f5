@@ -79,6 +79,7 @@ import {
   type ProviderRuntimeEvent,
   type ProviderSession,
   type ProviderSessionAction,
+  type ServerProvider,
   type McpReloadResult,
   type McpSessionReloadOutcome,
   type McpSessionSummary,
@@ -730,15 +731,13 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           ),
         );
 
-    const readExecutableVersion = (instanceId: ProviderInstanceId) =>
+    const readProviderSnapshot = (instanceId: ProviderInstanceId) =>
       Option.match(providerRegistry, {
-        onNone: () => Effect.succeed<string | undefined>(undefined),
+        onNone: () => Effect.succeed<ServerProvider | undefined>(undefined),
         onSome: (service) =>
           service.getProviders.pipe(
-            Effect.map(
-              (providers) =>
-                providers.find((provider) => provider.instanceId === instanceId)?.version ??
-                undefined,
+            Effect.map((providers) =>
+              providers.find((provider) => provider.instanceId === instanceId),
             ),
           ),
       });
@@ -755,7 +754,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
     ) =>
       Effect.gen(function* () {
         if (!profile?.endsWith("readonly")) return;
-        const version = yield* readExecutableVersion(instanceId);
+        const version = (yield* readProviderSnapshot(instanceId))?.version ?? undefined;
         if (driverSupportsReadOnlyWorkflowTurns(provider, version, process.platform)) return;
         return yield* toValidationError(
           operation,
@@ -792,11 +791,13 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         const instanceInfo = yield* registry
           .getInstanceInfo(input.instanceId)
           .pipe(Effect.option, Effect.map(Option.getOrUndefined));
+        const providerSnapshot = yield* readProviderSnapshot(input.instanceId);
         return buildProviderSessionCapabilities({
           generation: input.generation,
           driver: instanceInfo?.driverKind ?? input.adapter.provider,
           providerInstanceId: input.instanceId,
-          executableVersion: yield* readExecutableVersion(input.instanceId),
+          executableVersion: providerSnapshot?.version ?? undefined,
+          harnessVariant: providerSnapshot?.harnessVariant,
           adapterCapabilities: input.adapter.capabilities,
           hasSteer: input.adapter.steerTurn !== undefined,
           hasMcpReload: input.adapter.reloadMcpConfig !== undefined,
@@ -1818,6 +1819,15 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             providerInstanceId: requestedInstanceId,
           };
           const adapter = yield* registry.getByInstance(requestedInstanceId);
+          if (
+            parsed.workflowExecutionProfile?.endsWith("readonly") &&
+            adapter.capabilities.enforcesReadOnlyWorkflow !== true
+          ) {
+            return yield* toValidationError(
+              "ProviderService.startSession",
+              `${PROVIDER_DISPLAY_NAMES[resolvedProvider]} cannot enforce read-only workflow turns.`,
+            );
+          }
           const previousBinding = yield* directory
             .getBinding(threadId)
             .pipe(Effect.map(Option.getOrUndefined));
@@ -2402,6 +2412,15 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                   routed.instanceId,
                   input.workflowExecutionProfile,
                 );
+                if (
+                  input.workflowExecutionProfile?.endsWith("readonly") &&
+                  routed.adapter.capabilities.enforcesReadOnlyWorkflow !== true
+                ) {
+                  return yield* toValidationError(
+                    "ProviderService.sendTurn",
+                    `${PROVIDER_DISPLAY_NAMES[routed.adapter.provider]} cannot enforce read-only workflow turns.`,
+                  );
+                }
                 metricModel = input.model;
                 yield* Effect.annotateCurrentSpan({
                   "provider.kind": routed.adapter.provider,

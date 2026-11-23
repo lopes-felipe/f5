@@ -352,6 +352,10 @@
       "types": "./src/runtimeMode.ts",
       "import": "./src/runtimeMode.ts"
     },
+    "./cursorHarness": {
+      "types": "./src/cursorHarness.ts",
+      "import": "./src/cursorHarness.ts"
+    },
     "./threadEnvMode": {
       "types": "./src/threadEnvMode.ts",
       "import": "./src/threadEnvMode.ts"
@@ -431,6 +435,10 @@
     "./cliRelease": {
       "types": "./src/cliRelease.ts",
       "import": "./src/cliRelease.ts"
+    },
+    "./vmBackendPin": {
+      "types": "./src/vmBackendPin.ts",
+      "import": "./src/vmBackendPin.ts"
     },
     "./hostRuntime": {
       "types": "./src/hostRuntime.ts",

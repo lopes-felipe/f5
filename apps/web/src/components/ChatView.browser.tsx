@@ -2398,6 +2398,65 @@ describe("ChatView timeline (full app)", () => {
       }
     },
   );
+  it.each(["sidebar row", "New thread", "palette"] as const)(
+    "focuses the composer after navigating with $0 and accepts typing",
+    async (source) => {
+      const destination = ThreadId.makeUnsafe("focus-destination");
+      const snapshot = addThreadToSnapshot(
+        createSnapshotForTargetUser({
+          targetMessageId: MessageId.makeUnsafe("focus-navigation"),
+          targetText: "Navigation focus",
+        }),
+        destination,
+      );
+      const mounted = await mountChatView({
+        viewport: { ...DEFAULT_VIEWPORT, width: 1600 },
+        snapshot: {
+          ...snapshot,
+          threads: snapshot.threads.map((thread) =>
+            thread.id === destination
+              ? {
+                  ...thread,
+                  title: "Focus destination",
+                  lastInteractionAt: new Date().toISOString(),
+                }
+              : thread,
+          ),
+        },
+      });
+      try {
+        await waitForComposerEditor();
+        if (source === "sidebar row") {
+          await page.getByText("Focus destination", { exact: true }).click();
+        } else if (source === "New thread") {
+          await page.getByTestId("sidebar-new-thread").click();
+        } else {
+          useCommandPaletteStore.getState().setOpen(true);
+          await page.getByRole("option", { name: /Focus destination/ }).click();
+        }
+        await waitForURL(
+          mounted.router,
+          source === "New thread"
+            ? (path) => UUID_ROUTE_RE.test(path)
+            : (path) => path === "/focus-destination",
+          "Thread navigation should finish.",
+        );
+        const editor = await waitForComposerEditor();
+        await expect.element(page.elementLocator(editor)).toHaveFocus();
+        await userEvent.keyboard("Typed after navigation");
+        await vi.waitFor(() =>
+          expect(
+            useComposerDraftStore.getState().draftsByThreadId[
+              mounted.router.state.location.pathname.slice(1) as ThreadId
+            ]?.prompt,
+          ).toBe("Typed after navigation"),
+        );
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
+
   it("focuses search when the add-project intent opens the real palette submenu", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
@@ -7965,51 +8024,60 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
-  it.each([
-    { name: "in the middle", start: 6, end: 6, expected: "Before [Thread](LINK) selected After" },
-    {
-      name: "over a forward selection",
-      start: 7,
-      end: 15,
-      expected: "Before [Thread](LINK) After",
-    },
-    {
-      name: "over a backward selection",
-      start: 15,
-      end: 7,
-      expected: "Before [Thread](LINK) After",
-    },
-  ])("pastes a thread link $name", async ({ start, end, expected }) => {
-    useComposerDraftStore.getState().setPrompt(THREAD_ID, "Before selected After");
-    const mounted = await mountChatView({
-      viewport: DEFAULT_VIEWPORT,
-      snapshot: createSnapshotForTargetUser({
-        targetMessageId: "msg-link-selection" as MessageId,
-        targetText: "Target",
-      }),
-    });
-    try {
-      const editor = await waitForComposerEditor();
-      editor.focus();
-      const text = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT).nextNode()!;
-      window.getSelection()!.setBaseAndExtent(text, start, text, end);
-      await waitForLayout();
-      const transfer = new DataTransfer();
-      const link = `${promptLinkScheme}://thread/source-a`;
-      transfer.setData("text/plain", link);
-      editor.dispatchEvent(
-        new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: transfer }),
-      );
-      await vi.waitFor(() => {
-        expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
-          expected.replace("LINK", link),
-        );
-        expect(document.querySelectorAll("[data-composer-thread-reference]")).toHaveLength(1);
+  it.each(
+    [
+      { name: "in the middle", start: 6, end: 6, expected: "Before [Thread](LINK) selected After" },
+      {
+        name: "over a forward selection",
+        start: 7,
+        end: 15,
+        expected: "Before [Thread](LINK) After",
+      },
+      {
+        name: "over a backward selection",
+        start: 15,
+        end: 7,
+        expected: "Before [Thread](LINK) After",
+      },
+    ].flatMap((testCase) => [false, true].map((windowFocus) => ({ ...testCase, windowFocus }))),
+  )(
+    "pastes a thread link $name (window focus=$windowFocus)",
+    async ({ start, end, expected, windowFocus }) => {
+      useComposerDraftStore.getState().setPrompt(THREAD_ID, "Before selected After");
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: createSnapshotForTargetUser({
+          targetMessageId: "msg-link-selection" as MessageId,
+          targetText: "Target",
+        }),
       });
-    } finally {
-      await mounted.cleanup();
-    }
-  });
+      try {
+        const editor = await waitForComposerEditor();
+        editor.focus();
+        const text = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT).nextNode()!;
+        window.getSelection()!.setBaseAndExtent(text, start, text, end);
+        await waitForLayout();
+        if (windowFocus) {
+          window.dispatchEvent(new Event("focus"));
+          await waitForLayout();
+        }
+        const transfer = new DataTransfer();
+        const link = `${promptLinkScheme}://thread/source-a`;
+        transfer.setData("text/plain", link);
+        editor.dispatchEvent(
+          new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: transfer }),
+        );
+        await vi.waitFor(() => {
+          expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
+            expected.replace("LINK", link),
+          );
+          expect(document.querySelectorAll("[data-composer-thread-reference]")).toHaveLength(1);
+        });
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
 
   it("counts thread references after replacing the selected draft", async () => {
     const links = Array.from(

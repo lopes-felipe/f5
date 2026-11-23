@@ -12,7 +12,11 @@ import { attachmentSources } from "../lib/attachmentUploadQueue";
 import { composerModelMentionItems } from "./chat/composerModelMentions";
 import { formatComposerModelMention } from "@t3tools/shared/composerModelMentions";
 import { useFreshSessionStore } from "../freshSessionStore";
-import { isDiffSearchEditingKey, isEventInFindScope } from "../lib/keyboardFocus";
+import {
+  shouldOfferComposerFocus,
+  isDiffSearchEditingKey,
+  isEventInFindScope,
+} from "../lib/keyboardFocus";
 import { ThreadTokenUsageProvider } from "./chat/MessageTokenUsage";
 import { withTimelineApprovals, createTimelineApprovalCache } from "./chat/timelineApprovals";
 import { usePublishComposerSelection } from "../activeComposerSelection";
@@ -98,6 +102,7 @@ import { isMacPlatform } from "../lib/utils";
 import { shouldSubmitComposer } from "./chat/composer/sendShortcut";
 import { useComposerState } from "./chat/composer/useComposerState";
 import { useComposerDraft } from "./chat/composer/useComposerDraft";
+import { useInitialComposerFocus } from "../hooks/useInitialComposerFocus";
 import {
   selectModelCatalogSettings,
   useComposerDispatchSettings,
@@ -3244,26 +3249,7 @@ export default memo(function ChatView({
     )
       return;
     const frame = requestAnimationFrame(() => {
-      const active = document.activeElement;
-      const popupOpen = [
-        ...document.querySelectorAll<HTMLElement>(
-          '[role="dialog"],[role="alertdialog"],[data-popup-open]',
-        ),
-      ].some(
-        (element) =>
-          element.getAttribute("aria-hidden") !== "true" &&
-          element.getAttribute("data-state") !== "closed" &&
-          element.getClientRects().length > 0 &&
-          getComputedStyle(element).visibility !== "hidden",
-      );
-      if (
-        document.hidden ||
-        popupOpen ||
-        window.getSelection()?.toString() ||
-        (active instanceof HTMLElement &&
-          (active.isContentEditable || active.matches("input,textarea,select,iframe")))
-      )
-        return;
+      if (!shouldOfferComposerFocus()) return;
       focusComposer();
     });
     return () => cancelAnimationFrame(frame);
@@ -3782,15 +3768,7 @@ export default memo(function ChatView({
     if (api) ensureRewindUiSubscription(api);
   }, []);
 
-  useEffect(() => {
-    if (!activeThread?.id || terminalState.terminalOpen) return;
-    const frame = window.requestAnimationFrame(() => {
-      focusComposer();
-    });
-    return () => {
-      window.cancelAnimationFrame(frame);
-    };
-  }, [activeThread?.id, focusComposer, terminalState.terminalOpen]);
+  useInitialComposerFocus(activeThread?.id, terminalState.terminalOpen, focusComposer);
 
   useEffect(() => {
     composerImagesRef.current = composerImages;

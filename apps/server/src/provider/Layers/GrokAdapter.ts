@@ -2541,6 +2541,10 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         turnCompletionOnReturn: true,
         sessionModelSwitch: "in-session",
         runtimeCapabilities: providerRuntimeCapabilities(PROVIDER),
+        // Grok cannot hold a turn to read-only tools; a custom ACP agent is trusted
+        // with the plan-mode request. Antigravity enforces read-only workflow turns
+        // itself, and only on a certified launched version (checked at session start).
+        enforcesReadOnlyWorkflow: PROVIDER === "acp" || PROVIDER === "antigravity",
       },
       // ACP agents read a slash command only as the leading prompt text, and learn
       // their commands after the session starts, so any leading `/name` may be one.

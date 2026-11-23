@@ -34,11 +34,17 @@ export function fingerprintableProviderConfig(
   config: unknown,
   key?: Uint8Array,
 ): unknown {
-  const secret = providerInstanceSecretField(driver);
-  if (!secret || !config || typeof config !== "object" || Array.isArray(config)) {
-    return config;
+  if (!config || typeof config !== "object" || Array.isArray(config)) return config;
+  let record = config as Record<string, unknown>;
+  // The Cursor harness pin writes `harness: "acp"`, the behavior every Cursor
+  // instance had before the field existed. Leaving it out keeps fingerprints
+  // stored before the pin (queued resumes, MCP account identities) matching.
+  if (driver === "cursor" && record.harness === "acp") {
+    const { harness: _pinned, ...rest } = record;
+    record = rest;
   }
-  const record = config as Record<string, unknown>;
+  const secret = providerInstanceSecretField(driver);
+  if (!secret) return record === config ? config : record;
   const value = record[secret.field];
   return {
     ...record,

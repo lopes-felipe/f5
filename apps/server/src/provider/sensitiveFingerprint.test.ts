@@ -41,4 +41,12 @@ describe("fingerprintableProviderConfig", () => {
       token: "public-shape",
     });
   });
+
+  it("leaves the pinned Cursor ACP harness out, so pre-pin fingerprints still match", () => {
+    const cursor = ProviderDriverKind.makeUnsafe("cursor");
+    expect(fingerprintableProviderConfig(cursor, { binaryPath: "agent", harness: "acp" })).toEqual(
+      fingerprintableProviderConfig(cursor, { binaryPath: "agent" }),
+    );
+    expect(fingerprintableProviderConfig(cursor, { harness: "sdk" })).toEqual({ harness: "sdk" });
+  });
 });

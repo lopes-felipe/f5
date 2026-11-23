@@ -36,11 +36,19 @@ export function supportsCodexRelease6(version: string | null | undefined): boole
   return codexVersionAtLeast(version, "0.170.0");
 }
 
+/**
+ * The single source of runtime capabilities. `variant` names the harness of a
+ * driver with more than one (Cursor `acp` or `sdk`); absent means the
+ * driver's legacy harness. A capability of a gated harness stays false until
+ * its live gate passes.
+ */
 export function providerRuntimeCapabilities(
   driver: string,
   version?: string | null,
+  variant?: string | null,
   platform: string | undefined = globalThis.process?.platform,
 ): ProviderRuntimeCapabilities {
+  if (driver === "cursor" && variant === "sdk") return cursorSdkRuntimeCapabilities();
   const rollback =
     driver === "codex" || driver === "claudeAgent" || driver === "opencode" || driver === "pi";
   const codexNative = driver === "codex" && supportsCodexNativeOperations(version);
@@ -81,6 +89,35 @@ export function providerRuntimeCapabilities(
     instanceInventory: driver === "claudeAgent" || driver === "codex",
     nativeSessionCleanup: driver === "claudeAgent",
     readOnlyWorkflowTurns: driverSupportsReadOnlyWorkflowTurns(driver, version, platform),
+  };
+}
+
+/**
+ * Cursor SDK harness. Steering, compaction, rewind and subagent inspection
+ * each wait on their own live gate, so none is claimed yet.
+ */
+function cursorSdkRuntimeCapabilities(): ProviderRuntimeCapabilities {
+  return {
+    nativeReview: false,
+    nativeCompaction: false,
+    nativeFork: false,
+    nativeGoals: false,
+    nativeAttachments: false,
+    childTaskInspection: false,
+    childTaskStop: false,
+    fileCheckpointing: false,
+    turnSteering: false,
+    conversationRollback: false,
+    rollbackReadback: false,
+    rollbackAffectsFiles: false,
+    asyncQuestions: false,
+    maxImagesPerTurn: providerMaxImages("cursor"),
+    reportedModels: true,
+    sessionCommandCatalog: false,
+    instanceInventory: false,
+    nativeSessionCleanup: false,
+    // Not certified until the SDK harness passes its gates.
+    readOnlyWorkflowTurns: false,
   };
 }
 
