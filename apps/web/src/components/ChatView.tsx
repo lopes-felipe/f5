@@ -7709,14 +7709,17 @@ export default memo(function ChatView({
         );
         if (target) {
           const { identity } = target;
+          const thread =
+            identity.kind === "thread"
+              ? roots.threads.find((entry) => entry.id === identity.threadId)
+              : undefined;
+          const projectId = identity.kind === "project" ? identity.projectId : thread?.projectId;
+          const project = roots.projects.find((entry) => entry.id === projectId);
           const cwd =
             identity.kind === "thread"
-              ? threadWorkspaceCwd(
-                  roots.threads.find((thread) => thread.id === identity.threadId),
-                  undefined,
-                )
+              ? threadWorkspaceCwd(thread, project)
               : identity.kind === "project"
-                ? roots.projects.find((project) => project.id === identity.projectId)?.cwd
+                ? project?.cwd
                 : undefined;
           setReferencedAsset({ ...target, name: target.path, cwd });
           return true;

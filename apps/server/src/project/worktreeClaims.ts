@@ -1213,11 +1213,13 @@ export const removeWorktreeSafely = Effect.fn("removeWorktreeSafely")(function* 
               return checked;
             }
           }
-          // Git inspection can be slow. Only freeze orchestration writes for the
-          // final state/claim check and removal, inside the lifecycle locks.
-          const maintenanceGate = isStorageCleanupPolicy(input.policy)
-            ? yield* engine.acquireMaintenanceLock()
-            : null;
+          // Session usage limits and thread snoozes are committed through the
+          // orchestration worker, which takes the shared side of this lock.
+          // Freeze those writes only for the final check and removal.
+          const maintenanceGate =
+            input.policy.kind === "autoCleanup" || isStorageCleanupPolicy(input.policy)
+              ? yield* engine.acquireMaintenanceLock()
+              : null;
           if (maintenanceGate)
             yield* Effect.addFinalizer(() => Scope.close(maintenanceGate, Exit.void));
           const finalModel = yield* engine.getReadModel();
