@@ -1,5 +1,8 @@
 import { writePullRequestReferenceDrag } from "../lib/pullRequestReference";
-import { assistantResponseContextMatches } from "@t3tools/shared/assistantResponseContext";
+import {
+  assistantResponseContextMatches,
+  serializeAssistantResponseContext,
+} from "@t3tools/shared/assistantResponseContext";
 
 function quotedAssistantText(prompt: string) {
   return assistantResponseContextMatches(prompt)
@@ -11285,6 +11288,52 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
+  it.each([true, false])(
+    "keeps only the card margin around a sent quote card (rich text %s)",
+    async (composerRichTextEnabled) => {
+      persistAppSettings({ composerRichTextEnabled });
+      const card = serializeAssistantResponseContext({
+        version: 1,
+        kind: "quote",
+        threadId: THREAD_ID,
+        messageId: "msg-assistant-0" as MessageId,
+        text: "assistant filler 0",
+      });
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: createSnapshotForTargetUser({
+          targetMessageId: "msg-user-quote-card" as MessageId,
+          targetText: `Intro\n\n${card}\n\nPlease explain.`,
+          fillerPairCount: 2,
+          targetPairIndex: 1,
+        }),
+      });
+      try {
+        const textRect = (node: Node) => {
+          const range = document.createRange();
+          range.selectNodeContents(node);
+          return range.getClientRects()[0]!;
+        };
+        await vi.waitFor(() => {
+          const link = document.querySelector(
+            '[data-message-id="msg-user-quote-card"] [aria-label="Go to quoted response"]',
+          );
+          expect(link).not.toBeNull();
+          const before = link!.previousSibling!;
+          const after = link!.nextSibling!;
+          expect(before.textContent).toBe("Intro");
+          expect(after.textContent).toBe("Please explain.");
+          const lineHeight = Number.parseFloat(getComputedStyle(link!.parentElement!).lineHeight);
+          const cardRect = link!.getBoundingClientRect();
+          expect(cardRect.top - textRect(before).bottom).toBeLessThan(lineHeight);
+          expect(textRect(after).top - cardRect.bottom).toBeLessThan(lineHeight);
+        });
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
+
   it("does not submit a selected pending answer when sending a quote", async () => {
     const snapshot = createSnapshotWithRichAssistantTarget();
     const question = createThreadActivity({
@@ -11436,6 +11485,11 @@ describe("ChatView timeline (full app)", () => {
             expect(quotedAssistantText(prompt)).toBe(text);
             expect(prompt).toContain("Please explain.");
           });
+          // The composer keeps the caret it placed after the quote.
+          const composer = await waitForComposerEditor();
+          await vi.waitFor(() =>
+            expect(composer.contains(document.getSelection()?.anchorNode ?? null)).toBe(true),
+          );
           const send = await waitForSendButton();
           await vi.waitFor(() => expect(send.disabled).toBe(false));
           send.click();
@@ -11450,6 +11504,20 @@ describe("ChatView timeline (full app)", () => {
                 quotedAssistantText(prompt) === text && prompt.includes("Please explain."),
             ),
           ).toBe(true);
+        });
+        // The sent bubble's card margin is the only gap before the comment.
+        await vi.waitFor(() => {
+          const card = [
+            ...document.querySelectorAll<HTMLElement>('[aria-label="Go to quoted response"]'),
+          ].at(-1);
+          expect(card).toBeTruthy();
+          const comment = card!.nextSibling;
+          expect(comment?.textContent?.startsWith("Please explain.")).toBe(true);
+          const range = document.createRange();
+          range.selectNodeContents(comment!);
+          const gap = range.getClientRects()[0]!.top - card!.getBoundingClientRect().bottom;
+          const lineHeight = Number.parseFloat(getComputedStyle(card!.parentElement!).lineHeight);
+          expect(gap).toBeLessThan(lineHeight);
         });
         await expect
           .element(page.getByRole("textbox", { name: "Quote comment" }))
