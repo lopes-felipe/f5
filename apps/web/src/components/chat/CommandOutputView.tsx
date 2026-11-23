@@ -18,8 +18,7 @@ import { syntaxTokenStyle, useSyntaxTokenLines, type SyntaxToken } from "./Highl
 
 const OUTPUT_TEXT_CLASS_NAME = "font-mono text-[length:var(--f5-chat-font-size)] text-foreground";
 const LINE_TEXT_CLASS_NAME = "min-h-[1lh] min-w-0 flex-1 whitespace-pre-wrap break-words";
-const GUTTER_CLASS_NAME =
-  "shrink-0 select-none pr-3 text-right tabular-nums text-faint-foreground";
+const GUTTER_CLASS_NAME = "shrink-0 select-none pr-3 text-right tabular-nums text-faint-foreground";
 const CHIP_CLASS_NAME =
   "inline-flex min-w-0 items-center gap-1 rounded-full border border-border/70 px-1.5 font-mono text-2xs leading-4 text-foreground";
 const MARK_CLASS_NAME = "rounded-xs bg-warning/30 text-inherit";
