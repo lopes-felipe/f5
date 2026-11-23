@@ -224,6 +224,7 @@ const CommandTranscriptOutput = memo(function CommandTranscriptOutput(props: {
   executionId: OrchestrationCommandExecutionSummary["id"];
   command: string;
   status: OrchestrationCommandExecutionSummary["status"];
+  exitCode: number | null;
   cwd: string | undefined;
   workspaceRoot: string | undefined;
   outputText: string;
@@ -309,7 +310,10 @@ const CommandTranscriptOutput = memo(function CommandTranscriptOutput(props: {
               output={displayOutput}
               status={props.status}
               cwd={props.cwd ?? props.workspaceRoot}
-              shortened={preview.shortened && !showFullOutput}
+              exitCode={props.exitCode}
+              // The server compacts long output around a marker, which leaves
+              // a gap even in the "full" output.
+              shortened={(preview.shortened && !showFullOutput) || props.outputTruncated}
               workspaceRoot={props.workspaceRoot}
               renderHeader={renderHeader}
             />
@@ -595,6 +599,7 @@ export const CommandTranscriptCard = memo(function CommandTranscriptCard({
               executionId={execution.id}
               command={displayCommand}
               status={detailSource.status}
+              exitCode={detailSource.exitCode}
               cwd={detailSource.cwd ?? execution.cwd}
               workspaceRoot={workspaceRoot}
               outputText={waitingForDetail ? "" : outputText}

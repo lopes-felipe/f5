@@ -5,6 +5,7 @@ import {
   classifyCommandOutput,
   findMatchRanges,
   languageForPath,
+  MAX_PRESENTED_LINES,
   resolveCommandPath,
   type ClassifyCommandOutputInput,
 } from "./commandOutputPresentation";
@@ -151,6 +152,23 @@ describe("classifyCommandOutput: search results", () => {
       "plain",
     );
   });
+
+  it("keeps unnumbered output plain so dates are not read as line numbers", () => {
+    expect(
+      classify({ command: "grep ERROR app.log", output: "2026-11-23 10:00 ERROR boom\n" }).kind,
+    ).toBe("plain");
+    expect(classify({ command: "rg 2026 docs", output: "docs/x.md:2026-11-01 notes\n" }).kind).toBe(
+      "plain",
+    );
+  });
+
+  it("gives grep -h groups no path to open", () => {
+    const result = classify({ command: "grep -rnh foo src", output: "3:foo\n9:foo\n" });
+    expect(result).toMatchObject({
+      kind: "search",
+      segments: [{ type: "group", displayPath: "", lines: [{ lineNumber: 3 }, { lineNumber: 9 }] }],
+    });
+  });
 });
 
 describe("buildSearchMatcher", () => {
@@ -164,9 +182,46 @@ describe("buildSearchMatcher", () => {
         fixedStrings: false,
         ignoreCase: false,
         extendedRegex: false,
+        perlRegex: false,
         ...options,
       }),
     );
+  const matcher = (pattern: string, extendedRegex = true) =>
+    buildSearchMatcher({
+      patterns: [pattern],
+      fixedStrings: false,
+      ignoreCase: false,
+      extendedRegex,
+      perlRegex: false,
+    });
+
+  it("refuses patterns that could backtrack catastrophically", () => {
+    expect(matcher("(\\w+\\s?)*=")).toBeNull();
+    expect(matcher("(a|ab)+c")).toBeNull();
+    expect(matcher("(x+){2,}")).toBeNull();
+    expect(matcher(".*.*.*=")).toBeNull();
+    expect(matcher("(a)\\1")).toBeNull();
+    expect(matcher("\\(a*\\)*", false)).toBeNull();
+    expect(
+      buildSearchMatcher({
+        patterns: ["\\d+"],
+        fixedStrings: false,
+        ignoreCase: false,
+        extendedRegex: true,
+        perlRegex: true,
+      }),
+    ).toBeNull();
+    // Ordinary patterns, including quantifiers and optional groups, still mark.
+    expect(matcher("use(Theme|Memo)\\(")).not.toBeNull();
+    expect(matcher("\\w+Draft(Thread)?")).not.toBeNull();
+    expect(matcher("[(+*)]+x")).not.toBeNull();
+  });
+
+  it("matches only the start of very long lines", () => {
+    const line = `${"a".repeat(2_000)}needle`;
+    expect(findMatchRanges(line, matcher("needle"))).toEqual([]);
+    expect(findMatchRanges(`needle${line}`, matcher("needle"))).toEqual([[0, 6]]);
+  });
 
   it("translates basic regex operators and literals", () => {
     expect(ranges("foo bar (x)", { patterns: ["foo\\|bar"] })).toEqual([
@@ -193,16 +248,10 @@ describe("buildSearchMatcher", () => {
         fixedStrings: false,
         ignoreCase: false,
         extendedRegex: true,
+        perlRegex: false,
       }),
     ).toBeNull();
-    expect(
-      buildSearchMatcher({
-        patterns: ["x*"],
-        fixedStrings: false,
-        ignoreCase: false,
-        extendedRegex: true,
-      }),
-    ).toBeNull();
+    expect(matcher("x?")).toBeNull();
   });
 });
 
@@ -233,8 +282,8 @@ describe("classifyCommandOutput: diffs", () => {
     expect(result.additions).toBe(2);
     expect(result.deletions).toBe(1);
     expect(result.showLineNumbers).toBe(true);
+    expect(result.partial).toBe(false);
     expect(result.files.map((file) => file.displayPath)).toEqual(["src/a.ts", "b.py"]);
-    expect(result.files[0]?.filePath).toBe("/repo/src/a.ts");
     expect(result.files[0]?.rows.map((row) => [row.kind, row.lineNumber])).toEqual([
       ["meta", null],
       ["meta", null],
@@ -256,8 +305,55 @@ describe("classifyCommandOutput: diffs", () => {
     expect(classify({ command: "cat change.patch", output: diff, shortened: true })).toMatchObject({
       kind: "diff",
       showLineNumbers: false,
+      partial: true,
     });
     expect(classify({ command: "git diff", output: "nothing here" }).kind).toBe("plain");
+  });
+
+  it("renders diff -u, which exits 1 when the files differ", () => {
+    const unified = "--- a.txt\n+++ b.txt\n@@ -1 +1 @@\n-a\n+b\n";
+    expect(
+      classify({ command: "diff -u a.txt b.txt", output: unified, status: "failed", exitCode: 1 }),
+    ).toMatchObject({ kind: "diff", additions: 1, deletions: 1 });
+    // A real failure (exit 2) or a non-diff command stays plain.
+    expect(
+      classify({ command: "diff -u a.txt b.txt", output: unified, status: "failed", exitCode: 2 })
+        .kind,
+    ).toBe("plain");
+    expect(
+      classify({ command: "cat x.patch", output: unified, status: "failed", exitCode: 1 }).kind,
+    ).toBe("plain");
+  });
+});
+
+describe("classifyCommandOutput: shortened and large output", () => {
+  const marker = "\n\n[... output compacted; 99999 bytes in total ...]\n\n";
+
+  it("drops the gutter and marks counts partial for server-compacted output", () => {
+    const output = `a\nb${marker}y\nz\n`;
+    expect(classify({ command: "cat a.ts", output, shortened: true })).toMatchObject({
+      kind: "file",
+      lineNumbers: null,
+    });
+    expect(
+      classify({
+        command: "rg -n x src",
+        output: `src/a.ts:1:x${marker}src/b.ts:9:x\n`,
+        shortened: true,
+      }),
+    ).toMatchObject({ kind: "search", matchCount: 2, partial: true });
+    expect(classify({ command: "nl -ba a.ts", output: `     1\ta${marker}   900\tz` }).kind).toBe(
+      "plain",
+    );
+  });
+
+  it("renders very long output as one plain block", () => {
+    const lines = Array.from({ length: MAX_PRESENTED_LINES + 1 }, (_, index) => `line ${index}`);
+    expect(classify({ command: "cat a.ts", output: lines.join("\n") }).kind).toBe("plain");
+    expect(
+      classify({ command: "bun test", output: `\x1b[31mx\x1b[0m\n${lines.join("\n")}` }),
+    ).toMatchObject({ kind: "plain", text: `x\n${lines.join("\n")}` });
+    expect(classify({ command: "cat a.ts", output: lines.slice(1).join("\n") }).kind).toBe("file");
   });
 });
 

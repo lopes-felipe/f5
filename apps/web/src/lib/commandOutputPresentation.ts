@@ -13,7 +13,7 @@ import {
 } from "@t3tools/shared/commandSummary";
 import { getFiletypeFromFileName } from "@pierre/diffs";
 
-import { hasAnsiEscapes, parseAnsiOutput, type AnsiSpan } from "./ansiOutput";
+import { hasAnsiEscapes, parseAnsiOutput, stripAnsi, type AnsiSpan } from "./ansiOutput";
 import { resolvePathLinkTarget } from "../terminal-links";
 
 export type CommandOutputStatus = "running" | "completed" | "failed" | "interrupted" | "declined";
@@ -24,7 +24,11 @@ export interface ClassifyCommandOutputInput {
   readonly output: string;
   readonly status: CommandOutputStatus;
   readonly cwd?: string | null | undefined;
-  /** `output` is a head/tail preview with lines cut out of the middle. */
+  readonly exitCode?: number | null | undefined;
+  /**
+   * Lines are missing from `output`: a client head/tail preview, or output the
+   * server compacted around a marker. Line numbers and totals are unreliable.
+   */
   readonly shortened?: boolean | undefined;
 }
 
@@ -67,7 +71,6 @@ export interface DiffRow {
 export interface DiffFileSection {
   /** Null for leading text such as `git log -p` commit headers. */
   readonly displayPath: string | null;
-  readonly filePath: string | null;
   readonly language: string;
   readonly rows: ReadonlyArray<DiffRow>;
 }
@@ -95,6 +98,8 @@ export type CommandOutputPresentation =
       readonly segments: ReadonlyArray<SearchSegment>;
       readonly matchCount: number;
       readonly fileCount: number;
+      /** Counts cover only the lines shown, not the whole output. */
+      readonly partial: boolean;
     }
   | {
       readonly kind: "diff";
@@ -102,7 +107,27 @@ export type CommandOutputPresentation =
       readonly additions: number;
       readonly deletions: number;
       readonly showLineNumbers: boolean;
+      /** Counts cover only the lines shown, not the whole output. */
+      readonly partial: boolean;
     };
+
+/**
+ * Above this many lines the output renders as one plain block: a row per
+ * line would cost far more than the text, and nobody scans that much.
+ */
+export const MAX_PRESENTED_LINES = 4_000;
+
+function countLinesUpTo(text: string, limit: number): number {
+  let lines = 1;
+  for (
+    let index = text.indexOf("\n");
+    index !== -1 && lines <= limit;
+    index = text.indexOf("\n", index + 1)
+  ) {
+    lines += 1;
+  }
+  return lines;
+}
 
 /** Language id for syntax highlighting, or "text" when unknown. */
 export function languageForPath(path: string): string {
@@ -250,10 +275,58 @@ function posixClassesToJs(pattern: string): string {
   return pattern.replace(/\[:([a-z]+):\]/g, (whole, name: string) => POSIX_CLASSES[name] ?? whole);
 }
 
+const MAX_UNBOUNDED_QUANTIFIERS = 2;
+
+/**
+ * Whether a JS regex source could backtrack badly. grep and ripgrep match in
+ * linear time, but this runs in the UI thread's backtracking engine, so any
+ * pattern shaped like `(a+)*`, `(a|ab)+` or `.*.*.*x`, or with
+ * backreferences, gets no match marks rather than a chance to hang.
+ */
+export function isRiskyRegexSource(source: string): boolean {
+  if (/\\[1-9]|\\k</.test(source)) return true;
+  // Each open group records whether it contains a quantifier or alternation.
+  const groups: boolean[] = [];
+  let unbounded = 0;
+  let inClass = false;
+  const markOpenGroups = () => groups.fill(true);
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index]!;
+    if (char === "\\") {
+      index += 1;
+      continue;
+    }
+    if (inClass) {
+      if (char === "]") inClass = false;
+      continue;
+    }
+    if (char === "[") {
+      inClass = true;
+    } else if (char === "(") {
+      groups.push(false);
+    } else if (char === "|") {
+      markOpenGroups();
+    } else if (char === "*" || char === "+" || /^\{\d*,\}/.test(source.slice(index, index + 12))) {
+      unbounded += 1;
+      markOpenGroups();
+    } else if (char === ")") {
+      const repeatsInside = groups.pop() ?? false;
+      if (repeatsInside && /^(?:[*+]|\{\d*,?\d*\})/.test(source.slice(index + 1, index + 13))) {
+        return true;
+      }
+    }
+  }
+  return unbounded > MAX_UNBOUNDED_QUANTIFIERS;
+}
+
 /** A global matcher for the search's patterns, or null when they do not translate. */
 export function buildSearchMatcher(
-  search: Pick<SearchOutputCommand, "patterns" | "fixedStrings" | "ignoreCase" | "extendedRegex">,
+  search: Pick<
+    SearchOutputCommand,
+    "patterns" | "fixedStrings" | "ignoreCase" | "extendedRegex" | "perlRegex"
+  >,
 ): RegExp | null {
+  if (search.perlRegex && !search.fixedStrings) return null;
   const sources = search.patterns
     .filter((pattern) => pattern.length > 0)
     .map((pattern) => {
@@ -262,11 +335,10 @@ export function buildSearchMatcher(
       return posixClassesToJs(source);
     });
   if (sources.length === 0) return null;
+  const source = sources.map((part) => `(?:${part})`).join("|");
+  if (!search.fixedStrings && isRiskyRegexSource(source)) return null;
   try {
-    const matcher = new RegExp(
-      sources.map((source) => `(?:${source})`).join("|"),
-      search.ignoreCase ? "gi" : "g",
-    );
+    const matcher = new RegExp(source, search.ignoreCase ? "gi" : "g");
     // A pattern that matches the empty string would mark nothing useful.
     return matcher.test("") ? null : ((matcher.lastIndex = 0), matcher);
   } catch {
@@ -275,13 +347,18 @@ export function buildSearchMatcher(
 }
 
 const MAX_MATCHES_PER_LINE = 64;
+/** Matching stops here even for safe patterns, bounding work per line. */
+const MAX_MATCH_TEXT_CHARS = 1_000;
+/** Lines beyond this many get no marks, bounding work per output. */
+const MAX_MARKED_LINES = 200;
 
 export function findMatchRanges(text: string, matcher: RegExp | null): MatchRange[] {
   if (!matcher) return [];
   const ranges: MatchRange[] = [];
+  const searched = text.slice(0, MAX_MATCH_TEXT_CHARS);
   matcher.lastIndex = 0;
   let match: RegExpExecArray | null;
-  while ((match = matcher.exec(text)) !== null && ranges.length < MAX_MATCHES_PER_LINE) {
+  while ((match = matcher.exec(searched)) !== null && ranges.length < MAX_MATCHES_PER_LINE) {
     if (match[0].length === 0) {
       matcher.lastIndex += 1;
       continue;
@@ -351,7 +428,9 @@ function parseSearchLine(
 
 function classifySearch(input: ClassifyCommandOutputInput): CommandOutputPresentation | null {
   const search = parseSearchOutputCommand(input.command);
-  if (!search || input.output.length === 0) return null;
+  // Without line numbers a leading `2026-11-23` or `12:` in the matched text
+  // would be read as one, so unnumbered output stays plain.
+  if (!search?.lineNumbers || input.output.length === 0) return null;
   const singleFile = searchesSingleFile(search) ? search.targets[0]! : null;
   const matcher = buildSearchMatcher(search);
   const segments: SearchSegment[] = [];
@@ -413,13 +492,22 @@ function classifySearch(input: ClassifyCommandOutputInput): CommandOutputPresent
       lineNumber: parsed.lineNumber,
       text: parsed.text,
       isMatch: parsed.isMatch,
-      matches: parsed.isMatch ? findMatchRanges(parsed.text, matcher) : [],
+      matches:
+        parsed.isMatch && matchCount <= MAX_MARKED_LINES
+          ? findMatchRanges(parsed.text, matcher)
+          : [],
     });
   }
   flushGroup();
   flushPlain();
   if (!segments.some((segment) => segment.type === "group")) return null;
-  return { kind: "search", segments, matchCount, fileCount: paths.size };
+  return {
+    kind: "search",
+    segments,
+    matchCount,
+    fileCount: paths.size,
+    partial: input.shortened === true,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -537,13 +625,13 @@ function classifyDiff(input: ClassifyCommandOutputInput): CommandOutputPresentat
     kind: "diff",
     files: files.map((file) => ({
       displayPath: file.displayPath,
-      filePath: file.displayPath ? resolveCommandPath(file.displayPath, input.cwd, null) : null,
       language: file.displayPath ? languageForPath(file.displayPath) : "text",
       rows: file.rows,
     })),
     additions,
     deletions,
     showLineNumbers: !input.shortened,
+    partial: input.shortened === true,
   };
 }
 
@@ -572,12 +660,18 @@ export function classifyCommandOutput(
   input: ClassifyCommandOutputInput,
 ): CommandOutputPresentation {
   const { output } = input;
+  if (countLinesUpTo(output, MAX_PRESENTED_LINES) > MAX_PRESENTED_LINES) {
+    return { kind: "plain", text: stripAnsi(output) };
+  }
   if (hasAnsiEscapes(output)) {
     const parsed = parseAnsiOutput(output);
     return { kind: "ansi", text: parsed.text, lines: parsed.lines };
   }
-  if (input.status === "failed" || output.trim().length === 0) {
-    return { kind: "plain", text: output };
+  if (output.trim().length === 0) return { kind: "plain", text: output };
+  if (input.status === "failed") {
+    // `diff` and `git diff --exit-code` exit 1 when the inputs differ.
+    const differed = input.exitCode === 1 && isDiffCommand(input.command);
+    return (differed ? classifyDiff(input) : null) ?? { kind: "plain", text: output };
   }
   return (
     classifyDiff(input) ??

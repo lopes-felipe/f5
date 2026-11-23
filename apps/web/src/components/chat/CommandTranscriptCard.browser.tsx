@@ -506,6 +506,66 @@ describe("CommandTranscriptCard", () => {
     }
   });
 
+  it("drops line numbers and marks counts partial for server-compacted output", async () => {
+    const marker = "\n\n[... output compacted; 99999 bytes in total ...]\n\n";
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <>
+        <CommandTranscriptCard
+          execution={makeExecution({
+            id: "command-execution-file" as OrchestrationCommandExecution["id"],
+            command: "cat src/a.ts",
+            output: `const a = 1;${marker}const z = 2;\n`,
+            outputTruncated: true,
+          })}
+          expanded
+          timestampFormat="locale"
+          onToggle={() => {}}
+          onExpandedBodyResize={() => {}}
+        />
+        <CommandTranscriptCard
+          execution={makeExecution({
+            id: "command-execution-search" as OrchestrationCommandExecution["id"],
+            command: "grep -rnh foo src",
+            output: `3:foo${marker}9:foo\n`,
+            outputTruncated: true,
+          })}
+          expanded
+          timestampFormat="locale"
+          onToggle={() => {}}
+          onExpandedBodyResize={() => {}}
+        />
+      </>,
+      host,
+    );
+
+    try {
+      const file = await vi.waitFor(() => {
+        const element = host.querySelector<HTMLElement>("[data-output-kind='file']");
+        expect(element).not.toBeNull();
+        return element!;
+      });
+      expect(file.querySelectorAll("[data-line-number]")).toHaveLength(0);
+      expect(file.textContent).toContain("output compacted");
+
+      const search = await vi.waitFor(() => {
+        const element = host.querySelector<HTMLElement>("[data-output-kind='search']");
+        expect(element).not.toBeNull();
+        return element!;
+      });
+      expect(search.querySelector("[data-testid='command-output-chip']")?.textContent).toContain(
+        "partial",
+      );
+      // `grep -h` prints no path, so its line numbers are not buttons.
+      expect(search.querySelectorAll("[data-line-number]")).toHaveLength(2);
+      expect(search.querySelector("[data-testid='command-output-body'] button")).toBeNull();
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("renders ANSI colors without escape characters and copies the stripped text", async () => {
     const host = document.createElement("div");
     document.body.append(host);

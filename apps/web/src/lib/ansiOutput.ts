@@ -28,16 +28,15 @@ export interface ParsedAnsiOutput {
   readonly lines: ReadonlyArray<ReadonlyArray<AnsiSpan>>;
 }
 
-// CSI (`ESC [ … final`), OSC (`ESC ] … BEL` or `ESC ] … ESC \`), and the
-// remaining two-byte escapes.
+// CSI (`ESC [ … final`); OSC (`ESC ] … BEL` or `ESC ] … ESC \`), which ends
+// at a line break when its terminator was cut off; charset selection
+// (`ESC ( B`, from `tput sgr0`); and the remaining two-byte escapes.
 const ESCAPE_PATTERN =
   // oxlint-disable-next-line no-control-regex
-  /\x1b\[([0-?]*)[ -/]*([@-~])|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b[@-Z\\-_]/g;
-// oxlint-disable-next-line no-control-regex
-const ESCAPE_PRESENT_PATTERN = /\x1b[[\]]/;
+  /\x1b\[([0-?]*)[ -/]*([@-~])|\x1b\][^\x07\x1b\n]*(?:\x07|\x1b\\)?|\x1b[()*+][0-9A-Za-z]|\x1b[@-Z\\-_]/g;
 
 export function hasAnsiEscapes(output: string): boolean {
-  return ESCAPE_PRESENT_PATTERN.test(output);
+  return output.includes("\x1b");
 }
 
 export function stripAnsi(output: string): string {

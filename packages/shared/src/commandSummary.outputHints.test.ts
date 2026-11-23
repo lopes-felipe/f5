@@ -76,6 +76,13 @@ describe("parseFileReadSegments", () => {
     expect(parseFileReadSegments("cat $(ls)")).toBeNull();
     expect(parseFileReadSegments("cd src")).toBeNull();
   });
+
+  it("needs sed's quiet mode to read a range", () => {
+    // Without -n sed prints the whole file and the range again.
+    expect(parseFileReadSegments("sed '3p' a.ts")).toBeNull();
+    expect(parseFileReadSegments("sed -e 10,20p a.ts")).toBeNull();
+    expect(parseFileReadSegments("sed --quiet 10,20p a.ts")?.segments[0]?.startLine).toBe(10);
+  });
 });
 
 describe("parseSearchOutputCommand", () => {
@@ -92,9 +99,26 @@ describe("parseSearchOutputCommand", () => {
       fixedStrings: false,
       ignoreCase: false,
       extendedRegex: false,
+      perlRegex: false,
       noFileName: false,
       recursive: false,
+      lineNumbers: true,
     });
+  });
+
+  it("reports whether output lines are numbered", () => {
+    expect(parseSearchOutputCommand("grep ERROR app.log")?.lineNumbers).toBe(false);
+    expect(parseSearchOutputCommand("rg foo src")?.lineNumbers).toBe(false);
+    expect(parseSearchOutputCommand("grep -rn foo src")?.lineNumbers).toBe(true);
+    expect(parseSearchOutputCommand("grep --line-number foo a")?.lineNumbers).toBe(true);
+    expect(parseSearchOutputCommand("rg --vimgrep foo")?.lineNumbers).toBe(true);
+    expect(parseSearchOutputCommand("rg -n -N foo")?.lineNumbers).toBe(false);
+  });
+
+  it("flags PCRE patterns", () => {
+    expect(parseSearchOutputCommand("grep -nP '\\d+' a")?.perlRegex).toBe(true);
+    expect(parseSearchOutputCommand("rg -n --pcre2 'a(?=b)'")?.perlRegex).toBe(true);
+    expect(parseSearchOutputCommand("rg -n foo")?.perlRegex).toBe(false);
   });
 
   it("reads clustered and long flags", () => {

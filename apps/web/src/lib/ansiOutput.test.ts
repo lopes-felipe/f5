@@ -37,6 +37,12 @@ describe("parseAnsiOutput", () => {
     expect(stripAnsi(raw)).toBe("done link");
   });
 
+  it("drops charset selection and ends a cut-off OSC at the line break", () => {
+    expect(stripAnsi("\x1b[1mbold\x1b(B\x1b[m rest")).toBe("bold rest");
+    expect(parseAnsiOutput("a\x1b]8;;https://x.test\nnext line").text).toBe("a\nnext line");
+    expect(hasAnsiEscapes("\x1b(B")).toBe(true);
+  });
+
   it("toggles attributes off", () => {
     let style = applySgr({}, "1;2;3;4");
     expect(style).toEqual({ bold: true, dim: true, italic: true, underline: true });

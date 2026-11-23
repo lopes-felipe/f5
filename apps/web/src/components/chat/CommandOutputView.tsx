@@ -176,7 +176,8 @@ function FileOutput(props: {
   const { presentation } = props;
   const lineCount = useMemo(() => presentation.code.split(/\r?\n/).length, [presentation.code]);
   const numbers = presentation.lineNumbers;
-  const gutter = numbers ? gutterWidth(Math.max(...numbers)) : null;
+  // Numbers only increase, so the last one is the widest.
+  const gutter = numbers && numbers.length > 0 ? gutterWidth(numbers[numbers.length - 1]!) : null;
   const openLine = (line: number) => props.openFile(`${presentation.filePath}:${line}`);
   return (
     <CodeLines
@@ -211,7 +212,8 @@ function SearchGroup(props: {
 }) {
   const { segment } = props;
   const code = useMemo(() => segment.lines.map((line) => line.text).join("\n"), [segment.lines]);
-  const canOpen = segment.filePath.length > 0;
+  // `grep -h` prints no path, so there is no file to open.
+  const canOpen = segment.displayPath.length > 0;
   const openLine = canOpen ? (line: number) => props.openFile(`${segment.filePath}:${line}`) : null;
   return (
     <div data-testid="command-output-search-group">
@@ -441,6 +443,18 @@ function AnsiOutput(props: { presentation: Extract<CommandOutputPresentation, { 
   ));
 }
 
+/** Marks counts that cover only the shown part of shortened output. */
+function PartialLabel() {
+  return (
+    <span
+      className="text-muted-foreground"
+      title="Counts cover only the shown part of the output; lines in the middle were left out."
+    >
+      · partial
+    </span>
+  );
+}
+
 function OutputChip(props: {
   presentation: CommandOutputPresentation;
   openFile: (path: string) => void;
@@ -485,6 +499,7 @@ function OutputChip(props: {
             in {pluralize(presentation.fileCount, "file")}
           </span>
         )}
+        {presentation.partial && <PartialLabel />}
       </span>
     );
   }
@@ -495,6 +510,7 @@ function OutputChip(props: {
         {fileCount > 0 && <span>{pluralize(fileCount, "file")}</span>}
         <span className="text-success-foreground">+{presentation.additions}</span>
         <span className="text-destructive-foreground">−{presentation.deletions}</span>
+        {presentation.partial && <PartialLabel />}
       </span>
     );
   }

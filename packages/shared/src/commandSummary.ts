@@ -2253,12 +2253,17 @@ function parseLineCountArgs(
   return { count: null, rest: args };
 }
 
+const SED_QUIET_FLAGS = new Set(["-n", "--quiet", "--silent"]);
+
 function parseSingleStageFileRead(
   stage: ReadonlyArray<string>,
 ): Omit<FileReadSegment, "cwdOffset"> | null {
   const program = stageProgram(stage);
   const args = stage.slice(1);
   if (program === "sed") {
+    // Without quiet mode sed prints the whole file plus the range again, so
+    // the output is not the range and its lines cannot be numbered.
+    if (!args.some((arg) => SED_QUIET_FLAGS.has(arg))) return null;
     const sed = parseSedPrintCommandArgs(args);
     if (!sed || sed.trailingArgs.length !== 1) return null;
     const filePath = sed.trailingArgs[0]?.trim() ?? "";
@@ -2340,9 +2345,13 @@ export interface SearchOutputCommand {
   readonly ignoreCase: boolean;
   /** Patterns use extended (ERE/PCRE/Rust) syntax rather than POSIX basic. */
   readonly extendedRegex: boolean;
+  /** PCRE patterns (`grep -P`, `rg -P`), which JS cannot match safely. */
+  readonly perlRegex: boolean;
   /** Output lines carry no file name even with several matches (`grep -h`). */
   readonly noFileName: boolean;
   readonly recursive: boolean;
+  /** Output lines carry line numbers (`-n`, `--vimgrep`). */
+  readonly lineNumbers: boolean;
 }
 
 const GREP_VALUE_FLAG_LETTERS = new Set(["A", "B", "C", "e", "f", "m", "d", "D"]);
@@ -2451,8 +2460,13 @@ export function parseSearchOutputCommand(command: string): SearchOutputCommand |
     fixedStrings: has("F", "--fixed-strings"),
     ignoreCase: has("i", "--ignore-case") || smartCase,
     extendedRegex: tool === "rg" || has("E", "--extended-regexp") || has("P", "--perl-regexp"),
+    perlRegex: has("P", tool === "rg" ? "--pcre2" : "--perl-regexp"),
     noFileName: has("h", "--no-filename"),
     recursive: tool === "rg" || has("r", "--recursive") || has("R", "--dereference-recursive"),
+    // Without a TTY neither tool numbers lines unless asked to.
+    lineNumbers:
+      (has("n", "--line-number") || longFlags.has("--vimgrep")) &&
+      !(tool === "rg" && has("N", "--no-line-number")),
   };
 }
 
