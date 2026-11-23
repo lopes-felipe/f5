@@ -91,8 +91,9 @@ the rest. Each model shows only the thinking levels it supports. Orchestrator ha
   update, when models were last discovered, and the kind of the last discovery failure (never its
   message).
 - Subscription quota, turn-failure details and native child work read Antigravity's private files.
-  F5 reads them only on versions it has certified (1.5.13 and 1.5.15); on other versions the card shows
-  "Native readers: Off" and threads run on standard ACP only.
+  F5 reads them on Antigravity 1.5.13 or newer. On an older or unrecognised version the card shows
+  "Native readers: Off" and threads run on standard ACP only. If a newer release changes a file
+  F5 can't read, that feature shows nothing rather than something wrong.
 - F5 preview tools remain gated pending startup verification and negotiated HTTP MCP support; F5
   computer tools await Antigravity live privacy verification.
 
