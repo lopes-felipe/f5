@@ -1,0 +1,1 @@
+- When a Claude prompt invokes multiple skills, earlier user-only skills are identified as user requests and the final skill still runs through Claude’s native slash command.

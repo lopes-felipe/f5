@@ -121,6 +121,7 @@ import { isProviderResumeFailureText } from "../resumeFailure.ts";
 import { claudeApiErrorText } from "../claudeApiErrorText.ts";
 import { appendClaudeStderrTail, parseClaudeProcessExit } from "../claudeProcessExit.ts";
 import { makeClaudeProcessGroupSpawner } from "../claudeProcessGroup.ts";
+import { planClaudeSkillDispatch } from "../claudeSkillDispatch.ts";
 import { resolveClaudeToolSearchOverride } from "../claudeToolSearch.ts";
 import { resolveClaudeAutoCompactWindow } from "../claudeAutoCompactWindow.ts";
 import {
@@ -2073,17 +2074,28 @@ function buildUserMessageEffect(
     readonly allowsWorkspaceEdits: boolean;
     readonly hostContractUpdate?: string | undefined;
     readonly reportedCapabilities?: ModelCapabilities | undefined;
+    readonly skillDispatch?:
+      | {
+          readonly leadingText: string;
+          readonly commandText: string;
+        }
+      | undefined;
   },
 ): Effect.Effect<SDKUserMessage, ProviderAdapterRequestError> {
   return Effect.gen(function* () {
-    const promptText = buildPromptText(input, {
-      ...(dependencies.activeModel ? { activeModel: dependencies.activeModel } : {}),
-      ...(dependencies.sessionModel ? { sessionModel: dependencies.sessionModel } : {}),
-      allowsWorkspaceEdits: dependencies.allowsWorkspaceEdits,
-      ...(dependencies.reportedCapabilities
-        ? { reportedCapabilities: dependencies.reportedCapabilities }
-        : {}),
-    });
+    const promptText = buildPromptText(
+      dependencies.skillDispatch
+        ? { ...input, input: dependencies.skillDispatch.leadingText }
+        : input,
+      {
+        ...(dependencies.activeModel ? { activeModel: dependencies.activeModel } : {}),
+        ...(dependencies.sessionModel ? { sessionModel: dependencies.sessionModel } : {}),
+        allowsWorkspaceEdits: dependencies.allowsWorkspaceEdits,
+        ...(dependencies.reportedCapabilities
+          ? { reportedCapabilities: dependencies.reportedCapabilities }
+          : {}),
+      },
+    );
     const text = dependencies.hostContractUpdate
       ? `# F5 host contract (session update)
 This block supersedes earlier transcript copies of the F5 host contract. Its mode, workflow and project context apply only to this session launch; on subsequent launches the current F5 system instructions replace it.
@@ -2149,6 +2161,9 @@ ${promptText}`
 
     if (text.length > 0) {
       sdkContent.push({ type: "text", text });
+    }
+    if (dependencies.skillDispatch) {
+      sdkContent.push({ type: "text", text: dependencies.skillDispatch.commandText });
     }
     if (dependencies.stateDir && dependencies.documentBudgetKey) {
       const documents = yield* Effect.tryPromise({
@@ -2580,6 +2595,17 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
   return Effect.gen(function* () {
     const adapterScope = yield* Effect.scope;
     const fileSystem = yield* FileSystem.FileSystem;
+    const planSkillDispatch = (context: ClaudeSessionContext, text: string | undefined) =>
+      planClaudeSkillDispatch({
+        text: text?.trim() ?? "",
+        cwd: context.queryOptions.cwd,
+        additionalDirectories: context.queryOptions.additionalDirectories,
+        environment: context.processEnvironment,
+        fileSystem,
+        nativeCommands: context.slashCommandsLoaded
+          ? new Set(context.availableSlashCommands.map((command) => command.name))
+          : undefined,
+      });
     const resolveBypass = async (
       directory: string,
       cwd: string | undefined,
@@ -8861,6 +8887,15 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           );
         };
         const spawnClaudeCodeProcess = makeClaudeProcessGroupSpawner(recordStderr);
+        const additionalDirectories = [
+          ...(input.cwd ? [input.cwd] : []),
+          ...(providerOptions.confineWritesToWorkspace === true
+            ? []
+            : [
+                ...(options?.oneOffProviderOptions?.additionalDirectories ?? []),
+                ...(providerOptions.additionalDirectories ?? []),
+              ].map((directory) => NodePath.resolve(input.cwd ?? process.cwd(), directory))),
+        ];
         const queryOptions: ClaudeQueryOptions = {
           ...(pendingForks.has(threadId) ? { forkSession: true } : {}),
           enableFileCheckpointing: providerOptions?.enableFileCheckpointing !== false,
@@ -8954,7 +8989,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           onUserDialog,
           supportedDialogKinds: providerOptions?.resumeCompactionPrompt ? ["resume_return"] : [],
           env: queryEnvironment,
-          ...(input.cwd ? { additionalDirectories: [input.cwd] } : {}),
+          ...(additionalDirectories.length > 0 ? { additionalDirectories } : {}),
           systemPrompt,
           planModeInstructions,
         } satisfies ClaudeQueryOptions;
@@ -9835,6 +9870,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           documentBudgetKey: "claude:" + input.threadId,
           ...(activeModel ? { activeModel, sessionModel: activeModel } : {}),
           allowsWorkspaceEdits,
+          skillDispatch:
+            input.submissionSource !== "automation"
+              ? yield* planSkillDispatch(context, input.input)
+              : undefined,
           // A turn that names no model runs on the session model.
           reportedCapabilities: yield* reportedCapabilitiesFor(input.model ?? activeModel),
           hostContractUpdate:
@@ -9977,6 +10016,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             stateDir: serverConfig.stateDir,
             documentBudgetKey: "claude:" + input.threadId,
             allowsWorkspaceEdits: context.configuredBase.permissionMode !== "plan",
+            skillDispatch:
+              input.submissionSource !== "automation"
+                ? yield* planSkillDispatch(context, input.input)
+                : undefined,
             sessionModel: getClaudeSessionModel(context),
             reportedCapabilities: yield* reportedCapabilitiesFor(
               input.model ?? getClaudeSessionModel(context),

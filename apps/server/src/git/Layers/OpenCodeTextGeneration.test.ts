@@ -52,11 +52,12 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
         exitCode: Effect.never,
       };
     }),
-  connectToOpenCodeServer: ({ serverUrl }) =>
+  connectToOpenCodeServer: ({ serverUrl, serverPassword }) =>
     Effect.succeed({
       url: serverUrl ?? "http://127.0.0.1:4301",
       exitCode: null,
       external: Boolean(serverUrl),
+      ...(serverPassword ? { serverPassword } : {}),
     }),
   runOpenCodeCommand: () => Effect.succeed({ stdout: "", stderr: "", code: 0 }),
   createOpenCodeSdkClient: ({ baseUrl, serverPassword }) =>

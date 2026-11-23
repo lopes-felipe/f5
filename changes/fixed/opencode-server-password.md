@@ -1,0 +1,1 @@
+- OpenCode sessions and generated text now authenticate to password-protected OpenCode servers, including local servers that inherit a password from the environment.

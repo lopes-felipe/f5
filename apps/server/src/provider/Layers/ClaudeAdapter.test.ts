@@ -1295,6 +1295,66 @@ describe("ClaudeAdapter agent browser", () => {
     );
   });
 
+  for (const confined of [false, true]) {
+    it.effect("forwards and discovers Claude launch directories with confinement " + confined, () =>
+      Effect.gen(function* () {
+        const cwd = yield* Effect.acquireRelease(
+          Effect.sync(() => mkdtempSync(path.join(os.tmpdir(), "f5-claude-add-dir-"))),
+          (directory) => Effect.sync(() => rmSync(directory, { recursive: true, force: true })),
+        );
+        const configDir = path.join(cwd, "config");
+        const extraDirectory = path.join(cwd, "extra skills");
+        const userSkill = path.join(extraDirectory, ".claude", "skills", "audit", "SKILL.md");
+        const finalSkill = path.join(configDir, "skills", "report", "SKILL.md");
+        for (const [file, text] of [
+          [userSkill, "---\ndisable-model-invocation: true\n---\nAudit the changes."],
+          [finalSkill, "Write a report."],
+        ] as const) {
+          mkdirSync(path.dirname(file), { recursive: true });
+          writeFileSync(file, text);
+        }
+        const harness = makeHarness({
+          cwd,
+          processEnvironment: { ...process.env, CLAUDE_CONFIG_DIR: configDir },
+          oneOffProviderOptions: {
+            additionalDirectories: ["extra skills"],
+            confineWritesToWorkspace: confined,
+          },
+        });
+        yield* Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            provider: "claudeAgent",
+            runtimeMode: "full-access",
+            cwd,
+            providerOptions: { claudeAgent: { additionalDirectories: ["other"] } },
+          });
+          const launch = harness.getLastCreateQueryInput()!;
+          assert.deepEqual(
+            launch.options.additionalDirectories,
+            confined ? [cwd] : [cwd, extraDirectory, path.join(cwd, "other")],
+          );
+
+          const userText = "First /audit the changes, then /report the findings.";
+          yield* adapter.sendTurn({ threadId: THREAD_ID, input: userText });
+          const message = yield* Effect.promise(() => readFirstPromptMessage(launch));
+          const content = message?.message.content;
+          assert.ok(Array.isArray(content));
+          assert.lengthOf(content, confined ? 1 : 2);
+          if (!confined) {
+            const leading = content[0];
+            assert.ok(leading?.type === "text");
+            assert.include(leading.text, "The user invoked this skill");
+            assert.include(leading.text, JSON.stringify(userSkill));
+            assert.include(leading.text, "then /report the findings.");
+            assert.deepEqual(content[1], { type: "text", text: "/report the findings." });
+          }
+        }).pipe(Effect.provide(harness.layer));
+      }),
+    );
+  }
+
   const privateMcpServers = {
     privateHttp: {
       type: "http" as const,

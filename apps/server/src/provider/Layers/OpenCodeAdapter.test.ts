@@ -167,7 +167,7 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
         exitCode: Effect.never,
       };
     }),
-  connectToOpenCodeServer: ({ serverUrl }) =>
+  connectToOpenCodeServer: ({ serverUrl, serverPassword, environment }) =>
     Effect.gen(function* () {
       const url = serverUrl ?? "http://127.0.0.1:4301";
       // Unconditionally register a scope finalizer for test observability —
@@ -184,10 +184,13 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
       );
       const exit = yield* Deferred.make<number>();
       runtimeMock.state.exitServer = (code) => Effect.runSync(Deferred.succeed(exit, code));
+      const password =
+        serverPassword ?? (serverUrl ? undefined : environment?.OPENCODE_SERVER_PASSWORD);
       return {
         url,
         exitCode: serverUrl ? null : Deferred.await(exit),
         external: Boolean(serverUrl),
+        ...(password ? { serverPassword: password } : {}),
       };
     }),
   runOpenCodeCommand: () => Effect.succeed({ stdout: "", stderr: "", code: 0 }),
@@ -838,7 +841,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
     }),
   );
 
-  it.effect("retains Claude's reported reset in an OpenCode session error", () =>
+  it.effect.each([402, 429])("classifies OpenCode API errors for HTTP %s", (statusCode) =>
     Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;
       const threadId = asThreadId("claude-limit");
@@ -860,8 +863,10 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         properties: {
           sessionID: "http://127.0.0.1:9999/session",
           error: {
-            name: "UnknownError",
+            name: "APIError",
             data: {
+              statusCode,
+              isRetryable: false,
               message:
                 "You've hit your weekly limit · resets 9pm Resets at 2026-11-02T20:00:00.000Z.",
             },
@@ -872,7 +877,13 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       for (const event of captured) {
         if (event.type === "turn.completed" || event.type === "runtime.error") {
           assert.ok(event.turnId);
-          assert.equal(event.payload.usageLimit?.resetsAt, "2026-11-02T20:00:00.000Z");
+          assert.equal(
+            event.payload.usageLimit?.resetsAt,
+            statusCode === 402 ? undefined : "2026-11-02T20:00:00.000Z",
+          );
+          const message =
+            event.type === "turn.completed" ? event.payload.errorMessage : event.payload.message;
+          assert.match(message ?? "", /You've hit your weekly limit/);
         }
       }
       assert.ok(captured.some((event) => event.type === "turn.completed"));

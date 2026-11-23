@@ -80,9 +80,19 @@ import { parseClaudeLaunchArgs } from "@t3tools/shared/cliArgs";
 export const resolveClaudeOneOffLaunchArgs = Effect.fn("resolveClaudeOneOffLaunchArgs")(function* (
   raw: string,
   instanceId: string,
-) {
+): Effect.fn.Return<{
+  readonly launchArgs?: Record<string, string | null>;
+  readonly additionalDirectories?: ReadonlyArray<string>;
+}> {
   const parsed = parseClaudeLaunchArgs(raw);
-  if (parsed.ok) return parsed.args;
+  if (parsed.ok) {
+    return {
+      launchArgs: parsed.args,
+      ...(parsed.additionalDirectories
+        ? { additionalDirectories: parsed.additionalDirectories }
+        : {}),
+    };
+  }
   yield* Effect.logWarning("ignoring invalid Claude launch arguments for one-off prompts", {
     instanceId,
     detail: parsed.error,
@@ -179,7 +189,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         continuationGroupKey,
       });
 
-      const launchArgs = yield* resolveClaudeOneOffLaunchArgs(
+      const launchOptions = yield* resolveClaudeOneOffLaunchArgs(
         effectiveConfig.launchArgs,
         instanceId,
       );
@@ -222,7 +232,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
             ? { confineWritesToWorkspace: true }
             : {}),
           binaryPath: effectiveConfig.binaryPath,
-          launchArgs,
+          ...launchOptions,
         },
         processEnvironment: claudeProcessEnvironment,
       });
@@ -378,8 +388,14 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         },
         // Launch-only settings restart sessions at their next safe start. Set only when
         // enabled so existing launch fingerprints stay stable.
-        ...(effectiveConfig.confineWritesToWorkspace === true
-          ? { launchIdentity: "claude:confineWritesToWorkspace" }
+        ...(effectiveConfig.confineWritesToWorkspace === true || launchOptions.additionalDirectories
+          ? {
+              launchIdentity:
+                effectiveConfig.confineWritesToWorkspace === true
+                  ? "claude:confineWritesToWorkspace"
+                  : "claude:additionalDirectories:" +
+                    JSON.stringify(launchOptions.additionalDirectories),
+            }
           : {}),
         displayName,
         accentColor,

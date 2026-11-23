@@ -86,7 +86,17 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
       exitCode: null,
       external: Boolean(serverUrl),
     }),
-  runOpenCodeCommand: () => Effect.succeed({ stdout: "opencode 1.14.19\n", stderr: "", code: 0 }),
+  runOpenCodeCommand: ({ args }) =>
+    Effect.succeed({
+      stdout:
+        args[0] === "--version"
+          ? "opencode 1.14.19\n"
+          : args[0] === "models"
+            ? 'openai/gpt-5\n{"name":"GPT-5"}\n'
+            : "",
+      stderr: "",
+      code: 0,
+    }),
   createOpenCodeSdkClient: () =>
     ({}) as unknown as ReturnType<OpenCodeRuntimeShape["createOpenCodeSdkClient"]>,
   loadOpenCodeInventory: () => Effect.succeed(readyOpenCodeInventory),

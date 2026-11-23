@@ -241,6 +241,9 @@ export function normalizeProviderStartOptions(
       const subagentModel = normalizeOptionalString(providerOptions?.claudeAgent?.subagentModel);
       const subagentEffort = providerOptions?.claudeAgent?.subagentEffort;
       const launchArgs = canonicalizeClaudeLaunchArgs(providerOptions?.claudeAgent?.launchArgs);
+      const additionalDirectories = providerOptions?.claudeAgent?.additionalDirectories?.filter(
+        (directory) => directory.trim().length > 0 && !directory.includes("\0"),
+      );
 
       if (
         !binaryPath &&
@@ -254,6 +257,7 @@ export function normalizeProviderStartOptions(
         !subagentModel &&
         !subagentEffort &&
         !launchArgs &&
+        !additionalDirectories?.length &&
         !hasMcpServers
       ) {
         return undefined;
@@ -271,7 +275,8 @@ export function normalizeProviderStartOptions(
         subagentsEnabled !== undefined ||
         subagentModel ||
         subagentEffort ||
-        launchArgs
+        launchArgs ||
+        additionalDirectories?.length
           ? {
               claudeAgent: {
                 ...(promptSuggestions !== undefined ? { promptSuggestions } : {}),
@@ -285,6 +290,7 @@ export function normalizeProviderStartOptions(
                 ...(subagentModel ? { subagentModel } : {}),
                 ...(subagentEffort ? { subagentEffort } : {}),
                 ...(launchArgs ? { launchArgs } : {}),
+                ...(additionalDirectories?.length ? { additionalDirectories } : {}),
               },
             }
           : {}),
@@ -394,7 +400,8 @@ export function getProviderEnvironmentKey(
             })
             .join(",")
         : "";
-      return `claudeAgent|binary:${normalized?.claudeAgent?.binaryPath ?? ""}|permission:${normalized?.claudeAgent?.permissionMode ?? ""}|maxThinkingTokens:${normalized?.claudeAgent?.maxThinkingTokens ?? ""}|subagentsEnabled:${subagentsEnabled ?? ""}|subagentModel:${subagentModel ?? ""}|launchArgs:${launchArgsKey}${normalized?.claudeAgent?.subagentEffort ? `|subagentEffort:${normalized.claudeAgent.subagentEffort}` : ""}${claudeThinkingEnvironmentKeyComponent(normalized?.claudeAgent?.thinking)}${normalized?.claudeAgent?.promptSuggestions === true ? "|promptSuggestions:true" : ""}${normalized?.claudeAgent?.enableFileCheckpointing !== undefined ? `|fileCheckpointing:${normalized.claudeAgent.enableFileCheckpointing}` : ""}`;
+      const directoriesKey = normalized?.claudeAgent?.additionalDirectories;
+      return `claudeAgent|binary:${normalized?.claudeAgent?.binaryPath ?? ""}|permission:${normalized?.claudeAgent?.permissionMode ?? ""}|maxThinkingTokens:${normalized?.claudeAgent?.maxThinkingTokens ?? ""}|subagentsEnabled:${subagentsEnabled ?? ""}|subagentModel:${subagentModel ?? ""}|launchArgs:${launchArgsKey}${normalized?.claudeAgent?.subagentEffort ? `|subagentEffort:${normalized.claudeAgent.subagentEffort}` : ""}${claudeThinkingEnvironmentKeyComponent(normalized?.claudeAgent?.thinking)}${normalized?.claudeAgent?.promptSuggestions === true ? "|promptSuggestions:true" : ""}${normalized?.claudeAgent?.enableFileCheckpointing !== undefined ? `|fileCheckpointing:${normalized.claudeAgent.enableFileCheckpointing}` : ""}${directoriesKey ? `|additionalDirectories:${JSON.stringify(directoriesKey)}` : ""}`;
     }
     case "cursor":
       return `cursor|binary:${normalized?.cursor?.binaryPath ?? ""}|apiEndpoint:${normalized?.cursor?.apiEndpoint ?? ""}`;

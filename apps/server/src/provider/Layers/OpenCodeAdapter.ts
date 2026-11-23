@@ -7,7 +7,7 @@ import {
 import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
 import { loadOpenCodeCommands } from "../opencodeRuntime.ts";
 import { leadingSlashCommandName } from "../nativeCommandInput.ts";
-import { openCodeClaudeUsageLimit } from "../usageLimitMessages.ts";
+import { openCodeClaudeUsageLimit, usageLimitFromWindows } from "../usageLimitMessages.ts";
 import {
   EventId,
   type OpenCodeSettings,
@@ -1306,7 +1306,14 @@ export function makeOpenCodeAdapter(
 
         case "session.error": {
           const message = sessionErrorMessage(event.properties.error);
-          const usageLimit = openCodeClaudeUsageLimit(message);
+          const error = event.properties.error;
+          // OpenCode 1.x carries HTTP payment failures in APIError.data.statusCode.
+          const statusCode = error?.name === "APIError" ? error.data?.statusCode : undefined;
+          const usageLimit =
+            statusCode === 402
+              ? undefined
+              : (openCodeClaudeUsageLimit(message) ??
+                (statusCode === 429 ? usageLimitFromWindows([], "typed", null) : undefined));
           const activeTurnId = context.activeTurnId;
           context.activeTurnId = undefined;
           updateProviderSession(
@@ -1502,6 +1509,7 @@ export function makeOpenCodeAdapter(
               const server = yield* openCodeRuntime.connectToOpenCodeServer({
                 binaryPath,
                 serverUrl,
+                ...(serverPassword ? { serverPassword } : {}),
                 ...(options?.environment ? { environment: options.environment } : {}),
               });
               const requests = new AbortController();
@@ -1524,7 +1532,7 @@ export function makeOpenCodeAdapter(
                 signal: requests.signal,
                 baseUrl: server.url,
                 directory,
-                ...(server.external && serverPassword ? { serverPassword } : {}),
+                ...(server.serverPassword ? { serverPassword: server.serverPassword } : {}),
               });
               const permission = input.workflowExecutionProfile
                 ? buildOpenCodeWorkflowPermissionRules(input.workflowExecutionProfile)

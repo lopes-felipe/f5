@@ -187,6 +187,19 @@ export function parseClaudeSkillDocument(input: {
   };
 }
 
+export function readClaudeSkillInvocationFlags(documentText: string) {
+  try {
+    const { frontmatterText } = splitFrontmatter(documentText);
+    const frontmatter = frontmatterText ? parseYamlFrontmatter(frontmatterText) : {};
+    return {
+      userInvocable: readYamlValue(frontmatter, "user-invocable") !== false,
+      userInvocationOnly: readYamlValue(frontmatter, "disable-model-invocation") === true,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 function skillIdForProject(input: {
   readonly projectId: ProjectId;
   readonly commandName: string;

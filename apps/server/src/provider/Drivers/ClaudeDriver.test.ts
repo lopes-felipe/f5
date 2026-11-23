@@ -9,8 +9,11 @@ it.effect("invalid persisted launch arguments degrade only one-off arguments", (
       {},
     );
     assert.deepEqual(
-      yield* resolveClaudeOneOffLaunchArgs("--verbose --custom value", "claude-work"),
-      { verbose: null, custom: "value" },
+      yield* resolveClaudeOneOffLaunchArgs(
+        "--verbose --custom value --add-dir one two",
+        "claude-work",
+      ),
+      { launchArgs: { verbose: null, custom: "value" }, additionalDirectories: ["one", "two"] },
     );
   }),
 );

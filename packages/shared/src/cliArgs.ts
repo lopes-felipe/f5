@@ -10,7 +10,8 @@
  *  - Quoted values: `--key="some value"` or `--key "some value"`
  *
  * Positional tokens (anything not starting with `--`) are rejected.
- * Duplicate keys keep the last-wins value, consistent with argv merging.
+ * Duplicate keys keep the last-wins value. Repeatable --add-dir values are
+ * collected separately for the SDK's additionalDirectories option.
  *
  * The parser is intentionally conservative: it only understands the subset
  * the SDK's `extraArgs` surface handles. We don't try to reproduce full
@@ -23,6 +24,7 @@
 export interface ClaudeLaunchArgsParseSuccess {
   readonly ok: true;
   readonly args: Record<string, string | null>;
+  readonly additionalDirectories?: ReadonlyArray<string>;
 }
 
 export interface ClaudeLaunchArgsParseFailure {
@@ -266,6 +268,7 @@ export function parseClaudeLaunchArgs(
   }
   const tokens = parsedArgv.argv;
   const args: Record<string, string | null> = {};
+  const additionalDirectories: string[] = [];
 
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index]!;
@@ -282,6 +285,23 @@ export function parseClaudeLaunchArgs(
     }
 
     const equalsIndex = body.indexOf("=");
+    if (body === "add-dir" || body.startsWith("add-dir=")) {
+      const first = additionalDirectories.length;
+      if (equalsIndex >= 0) {
+        additionalDirectories.push(body.slice(equalsIndex + 1));
+      } else {
+        while (tokens[index + 1] !== undefined && !tokens[index + 1]!.startsWith("-")) {
+          additionalDirectories.push(tokens[++index]!);
+        }
+      }
+      if (
+        additionalDirectories.length === first ||
+        additionalDirectories.slice(first).some((dir) => !dir.trim())
+      ) {
+        return { ok: false, error: '"--add-dir" requires at least one non-empty directory.' };
+      }
+      continue;
+    }
     if (equalsIndex >= 0) {
       const name = body.slice(0, equalsIndex);
       const value = stripSurroundingQuotes(body.slice(equalsIndex + 1));
@@ -319,7 +339,11 @@ export function parseClaudeLaunchArgs(
     args[name] = null;
   }
 
-  return { ok: true, args };
+  return {
+    ok: true,
+    args,
+    ...(additionalDirectories.length > 0 ? { additionalDirectories } : {}),
+  };
 }
 
 /**
