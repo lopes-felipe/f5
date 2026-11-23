@@ -787,7 +787,7 @@ const program = Effect.gen(function* () {
           sessionId: requestedSessionId,
           update: {
             sessionUpdate: "agent_message_chunk",
-            content: { type: "text", text: "after tool" },
+            content: { type: "text", text: promptResponseText ?? "after tool" },
           },
         });
 
