@@ -199,6 +199,7 @@ export const prepareAcpAutomationCatalogs = (input: {
       launchCredentials.length === 0 ? event : (scrubValue(event) as ProviderRuntimeEvent);
     const serverName = `f5_computer_${randomBytes(4).toString("hex")}`;
     let computerCapable = input.computerCapableLineage === true;
+    let forwardedCredentials = false;
     let disposed = false;
     let memo: ReadonlyArray<McpServer> | undefined;
     const state: ClaudeAgentBrowserState = { mutatingPreviewGranted: false };
@@ -368,7 +369,18 @@ export const prepareAcpAutomationCatalogs = (input: {
         return event;
       },
       computerCapable: () => computerCapable,
-      hasSensitiveConfiguration: () => computerCapable || configs.length > 0,
+      hasSensitiveConfiguration: () =>
+        computerCapable || configs.length > 0 || forwardedCredentials,
+      /**
+       * Credentials the session passes outside F5's own catalogs (forwarded
+       * project MCP servers): scrubbed from diagnostics, and their presence
+       * makes setup errors use the fixed sensitive-configuration message.
+       */
+      registerForwardedCredentials(values: ReadonlyArray<string>) {
+        if (values.length === 0) return;
+        forwardedCredentials = true;
+        for (const value of values) scrubber.register(value);
+      },
       agentBrowser: () => agentBrowserConfigPayload(state),
       endTurn: (turnId: string) => {
         for (const config of configs) config.endTurn?.(turnId);

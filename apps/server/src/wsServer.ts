@@ -464,6 +464,7 @@ import { PreviewAutomationBroker } from "./mcp/PreviewAutomationBroker.ts";
 import { computerUseLease } from "./provider/computerUseLease.ts";
 import { PrHubAdvisoryService } from "./prHub/Services/PrHubAdvisoryService.ts";
 import { PrHubService } from "./prHub/Services/PrHubService.ts";
+import { cursorSdkHarnessHostAvailability } from "./provider/cursor/cursorHarnessDescriptor.ts";
 
 /**
  * ServerShape - Service API for server lifecycle control.
@@ -6918,6 +6919,7 @@ export const createServer = Effect.fn(function* (
           diagnostics: publicOtlpConfiguration(
             resolveOtlpConfiguration(settings.observability, process.env),
           ),
+          cursorSdkHarness: cursorSdkHarnessHostAvailability(serverConfig),
         };
 
       case WS_METHODS.serverGetProjectSettings: {

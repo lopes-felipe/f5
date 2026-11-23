@@ -40,6 +40,20 @@ describe("AcpRuntimeModel", () => {
       }).events,
     ).toEqual([]);
   });
+  it("parses session titles and ignores blank ones", () => {
+    expect(
+      parseSessionUpdateEvent({
+        sessionId: "s",
+        update: { sessionUpdate: "session_info_update", title: "  Fix the parser  " },
+      }).events,
+    ).toMatchObject([{ _tag: "SessionInfoUpdated", title: "Fix the parser" }]);
+    expect(
+      parseSessionUpdateEvent({
+        sessionId: "s",
+        update: { sessionUpdate: "session_info_update", title: " " },
+      }).events,
+    ).toEqual([]);
+  });
   it("recovers a title-only command from an actually parsed tracked call", () => {
     const parsed = parseSessionUpdateEvent({
       sessionId: "s",

@@ -88,6 +88,12 @@ export type AcpParsedSessionEvent =
       readonly rawPayload: unknown;
     }
   | {
+      /** `session_info_update`: the agent's own title for the session. */
+      readonly _tag: "SessionInfoUpdated";
+      readonly title: string;
+      readonly rawPayload: unknown;
+    }
+  | {
       readonly _tag: "ContentDelta";
       readonly streamKind?: "assistant_text" | "reasoning_text";
       readonly itemId?: string;
@@ -808,6 +814,11 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
           ...(command.input?.hint ? { argumentHint: command.input.hint } : {}),
         })),
       });
+      break;
+    }
+    case "session_info_update": {
+      const title = upd.title?.trim().slice(0, 256);
+      if (title) events.push({ _tag: "SessionInfoUpdated", title, rawPayload: params });
       break;
     }
     case "agent_thought_chunk":

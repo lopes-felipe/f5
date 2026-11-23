@@ -17,8 +17,12 @@ const emitInterleavedAssistantToolCalls =
   process.env.T3_ACP_EMIT_INTERLEAVED_ASSISTANT_TOOL_CALLS === "1";
 const emitBackgroundToolDuringAnswer =
   process.env.T3_ACP_EMIT_BACKGROUND_TOOL_DURING_ANSWER === "1";
+const emitToolSpanningTurns = process.env.T3_ACP_EMIT_TOOL_SPANNING_TURNS === "1";
+let spanningPromptCount = 0;
 const emitGenericToolPlaceholders = process.env.T3_ACP_EMIT_GENERIC_TOOL_PLACEHOLDERS === "1";
 const emitAskQuestion = process.env.T3_ACP_EMIT_ASK_QUESTION === "1";
+const emitQuestionFallback = process.env.T3_ACP_EMIT_QUESTION_FALLBACK === "1";
+const emitCursorExtensionRequests = process.env.T3_ACP_EMIT_CURSOR_EXTENSION_REQUESTS === "1";
 const secondModelOption = process.env.T3_ACP_SECOND_MODEL_OPTION === "1";
 const failSetConfigOption = process.env.T3_ACP_FAIL_SET_CONFIG_OPTION === "1";
 const exitOnSetConfigOption = process.env.T3_ACP_EXIT_ON_SET_CONFIG_OPTION === "1";
@@ -703,6 +707,31 @@ const program = Effect.gen(function* () {
         process.exit(1);
       }
 
+      if (emitToolSpanningTurns) {
+        // The first turn ends with a command still running; the second turn
+        // reports it finished.
+        spanningPromptCount += 1;
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update:
+            spanningPromptCount === 1
+              ? {
+                  sessionUpdate: "tool_call",
+                  toolCallId: "spanning-1",
+                  title: "Terminal",
+                  kind: "execute",
+                  status: "in_progress",
+                  rawInput: { command: "sleep 60" },
+                }
+              : {
+                  sessionUpdate: "tool_call_update",
+                  toolCallId: "spanning-1",
+                  status: "completed",
+                },
+        });
+        return { stopReason: "end_turn" };
+      }
+
       if (emitBackgroundToolDuringAnswer) {
         // A command backgrounded earlier reports progress and then finishes
         // while the next answer is still streaming.
@@ -1028,7 +1057,62 @@ const program = Effect.gen(function* () {
             },
           ],
         });
+        if (emitQuestionFallback) {
+          // Cursor re-asks an unreadable answer as a permission request.
+          yield* agent.client.requestPermission({
+            sessionId: requestedSessionId,
+            toolCall: {
+              toolCallId: "ask-question-tool-call-1_q0",
+              kind: "other",
+              title: "Which scope?",
+            },
+            options: [
+              { optionId: "allow-once", name: "Workspace", kind: "allow_once" },
+              { optionId: "reject-once", name: "Skip", kind: "reject_once" },
+            ],
+          });
+        }
 
+        return { stopReason: "end_turn" };
+      }
+
+      if (emitCursorExtensionRequests) {
+        yield* agent.client.extRequest("cursor/update_todos", {
+          toolCallId: "todos-1",
+          merge: false,
+          todos: [
+            { id: "a", content: "First step", status: "in_progress" },
+            { id: "b", content: "Second step", status: "pending" },
+          ],
+        });
+        yield* agent.client.extRequest("cursor/update_todos", {
+          toolCallId: "todos-2",
+          merge: true,
+          todos: [{ id: "a", status: "completed" }],
+        });
+        yield* agent.client.extRequest("cursor/task", {
+          toolCallId: "task-1",
+          description: "Explore the repository",
+          prompt: "Find the entry point",
+          subagentType: "explore",
+        });
+        yield* agent.client.extRequest("cursor/task", {
+          toolCallId: "task-2",
+          description: "Finished child",
+          prompt: "Done already",
+          subagentType: { custom: "reviewer" },
+          durationMs: 1200,
+        });
+        yield* agent.client.extRequest("cursor/generate_image", {
+          toolCallId: "image-1",
+          description: "A diagram",
+          filePath: "diagram.png",
+        });
+        yield* agent.client.extRequest("cursor/generate_image", {
+          toolCallId: "image-2",
+          description: "Outside the workspace",
+          filePath: "/etc/outside.png",
+        });
         return { stopReason: "end_turn" };
       }
 

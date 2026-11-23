@@ -38,6 +38,11 @@ export interface ProviderAdapterCapabilities {
   readonly nativeTurnIdempotency?: boolean;
   readonly turnCompletionOnReturn?: boolean;
   readonly runtimeCapabilities?: import("@t3tools/contracts").ProviderRuntimeCapabilities;
+  /**
+   * The adapter can hold a read-only workflow turn to read-only tools. Absent
+   * means it cannot, and `ProviderService` refuses such turns before dispatch.
+   */
+  readonly enforcesReadOnlyWorkflow?: boolean;
 }
 
 export interface ProviderThreadTurnSnapshot {

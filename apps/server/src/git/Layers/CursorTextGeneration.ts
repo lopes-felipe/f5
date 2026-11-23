@@ -1,3 +1,5 @@
+import * as nodeFs from "node:fs/promises";
+
 import { Effect, Option, Ref, Schema } from "effect";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
@@ -31,6 +33,11 @@ import {
   applyCursorAcpModelSelection,
   makeCursorAcpRuntime,
 } from "../../provider/acp/CursorAcpSupport.ts";
+import { CURSOR_ACP_CLIENT_INFO } from "../../provider/cursor/cursorAcpClientInfo.ts";
+import {
+  cursorConfigDir,
+  deleteCursorAcpSession,
+} from "../../provider/cursor/CursorNativeSessions.ts";
 
 const CURSOR_TIMEOUT_MS = 180_000;
 const DEFAULT_CURSOR_MODEL_SELECTION = createModelSelection(
@@ -76,11 +83,27 @@ function isTextGenerationError(error: unknown): error is TextGenerationError {
  * Build a Cursor text-generation closure bound to a specific `CursorSettings`
  * payload. See `makeCodexAdapter` for the overall per-instance rationale.
  */
+export interface CursorTextGenerationOptions {
+  /**
+   * Stable scratch workspace under F5 state. When set, every generation runs
+   * there instead of the caller's workspace, and its native session files are
+   * deleted after the agent exits, so text generation leaves no sessions behind.
+   */
+  readonly scratchDir?: string;
+}
+
 export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(function* (
   cursorSettings: CursorSettings,
   environment: NodeJS.ProcessEnv = process.env,
+  options: CursorTextGenerationOptions = {},
 ) {
   const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const configDir = cursorConfigDir(environment);
+  const scratchDir = options.scratchDir;
+  const ensureScratchDir =
+    scratchDir === undefined
+      ? Effect.void
+      : Effect.promise(() => nodeFs.mkdir(scratchDir, { recursive: true }).catch(() => undefined));
 
   const runCursorJson = <S extends Schema.Top>({
     operation,
@@ -102,13 +125,53 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
     modelSelection: ModelSelection;
   }): Effect.Effect<S["Type"], TextGenerationError, S["DecodingServices"]> =>
     Effect.gen(function* () {
+      yield* ensureScratchDir;
+      const sessionCwd = scratchDir ?? cwd;
+      const createdSessionId = yield* Ref.make<string | undefined>(undefined);
+      return yield* runCursorJsonInSession({
+        operation,
+        cwd: sessionCwd,
+        prompt,
+        outputSchemaJson,
+        modelSelection,
+        createdSessionId,
+      }).pipe(
+        Effect.ensuring(
+          // Runs after the scoped runtime closed, so the writer has exited.
+          Ref.get(createdSessionId).pipe(
+            Effect.flatMap((sessionId) =>
+              scratchDir !== undefined && sessionId !== undefined
+                ? deleteCursorAcpSession({ configDir, sessionId, cwd: sessionCwd })
+                : Effect.void,
+            ),
+          ),
+        ),
+      );
+    });
+
+  const runCursorJsonInSession = <S extends Schema.Top>({
+    operation,
+    cwd,
+    prompt,
+    outputSchemaJson,
+    modelSelection,
+    createdSessionId,
+  }: {
+    operation: string;
+    cwd: string;
+    prompt: string;
+    outputSchemaJson: S;
+    modelSelection: ModelSelection;
+    createdSessionId: Ref.Ref<string | undefined>;
+  }): Effect.Effect<S["Type"], TextGenerationError, S["DecodingServices"]> =>
+    Effect.gen(function* () {
       const outputRef = yield* Ref.make("");
       const runtime = yield* makeCursorAcpRuntime({
         cursorSettings,
         environment,
         childProcessSpawner: commandSpawner,
         cwd,
-        clientInfo: { name: "t3-code-git-text", version: "0.0.0" },
+        clientInfo: CURSOR_ACP_CLIENT_INFO,
       });
 
       yield* runtime.handleSessionUpdate((notification) => {
@@ -124,7 +187,8 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
       });
 
       const promptResult = yield* Effect.gen(function* () {
-        yield* runtime.start();
+        const started = yield* runtime.start();
+        yield* Ref.set(createdSessionId, started.sessionId);
         yield* Effect.ignore(runtime.setMode("ask"));
         yield* applyCursorAcpModelSelection({
           runtime,

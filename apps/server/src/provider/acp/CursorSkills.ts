@@ -4,16 +4,26 @@ import type { ServerProviderSkill } from "@t3tools/contracts";
 import { parseClaudeSkillDocument } from "../../orchestration/projectSkills.ts";
 import { normalizeSupportedSlashCommands } from "../supportedSlashCommands.ts";
 
-/** Follow linked packages, but never recursively scan a library outside the skill root. */
+/**
+ * Follow linked packages, but never recursively scan a library outside the skill root.
+ * `cwd: null` lists only user and Cursor-installed skills, for the provider snapshot.
+ */
 export const discoverCursorSkills = Effect.fn("discoverCursorSkills")(function* (
-  cwd: string,
+  cwd: string | null,
   environment: NodeJS.ProcessEnv,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const home = environment.HOME?.trim() || environment.USERPROFILE?.trim();
+  // Precedence follows the first root that defines a name: project, then the
+  // user's own skills, then the skills Cursor installs in `skills-cursor`.
   const roots = [
-    { directory: path.join(cwd, ".cursor", "skills"), scope: "project" },
-    ...(home ? [{ directory: path.join(home, ".cursor", "skills"), scope: "user" }] : []),
+    ...(cwd === null ? [] : [{ directory: path.join(cwd, ".cursor", "skills"), scope: "project" }]),
+    ...(home
+      ? [
+          { directory: path.join(home, ".cursor", "skills"), scope: "user" },
+          { directory: path.join(home, ".cursor", "skills-cursor"), scope: "cursor" },
+        ]
+      : []),
   ];
   const skills = new Map<string, ServerProviderSkill>();
   let entriesLeft = 10_000;

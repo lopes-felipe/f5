@@ -751,9 +751,13 @@ for (const driver of ["grok", "antigravity"] as const)
           .pipe(Effect.flip);
         assert.equal(failure._tag, "ProviderValidationError");
         assert.match(failure.message, /cannot enforce read-only/);
+        assert.equal(codex.startSession.mock.calls.length, 0);
       }).pipe(
         Effect.provide(
           makeProviderServiceLayerForAdapters(new Map([["codex", codex.adapter]]), {
+            // The custom instance resolves to an adapter that does not declare
+            // `enforcesReadOnlyWorkflow`, as Grok-native and Antigravity do not.
+            getByInstance: () => Effect.succeed(codex.adapter),
             getInstanceInfo: (instanceId) =>
               registry.getInstanceInfo(ProviderInstanceId.make("codex")).pipe(
                 Effect.map((info) => ({

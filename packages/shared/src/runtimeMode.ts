@@ -1,4 +1,5 @@
 import type { ProviderKind, RuntimeMode } from "@t3tools/contracts";
+import { cursorRuntimeModes } from "./cursorHarness";
 
 const BASIC_MODES = new Set<RuntimeMode>(["approval-required", "full-access"]);
 const EDIT_MODES = new Set<RuntimeMode>(["approval-required", "auto-accept-edits", "full-access"]);
@@ -44,7 +45,10 @@ function defaultRuntimeModes(provider: ProviderKind): ReadonlySet<RuntimeMode> {
     // offered per instance once a session advertises it.
     case "antigravity":
       return EDIT_MODES;
+    // Driver-level ceiling for the ACP harness; Auto appears only once its
+    // live gate passes. Instance policy narrows this further per harness.
     case "cursor":
+      return cursorRuntimeModes("acp");
     case "grok":
     case "acp":
       return BASIC_MODES;
