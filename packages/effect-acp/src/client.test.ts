@@ -455,60 +455,73 @@ it.layer(NodeServices.layer)("effect-acp client", (it) => {
     }),
   );
 
-  it.effect("warns, without the payload, when a core request fails before its handler", () => {
-    const messages: Array<unknown> = [];
-    return Effect.gen(function* () {
-      const { stdio, input, output } = yield* makeInMemoryStdio();
-      const acp = yield* AcpClient.make(stdio);
-      const handled = yield* Ref.make(0);
-      yield* acp.handleRequestPermission(() =>
-        Ref.update(handled, (count) => count + 1).pipe(
-          Effect.as({ outcome: { outcome: "cancelled" as const } }),
-        ),
-      );
-
+  for (const scenario of [
+    {
+      name: "its payload fails to decode",
       // `toolCall.toolCallId` is required, so the RPC layer rejects this before the handler.
-      yield* Queue.offer(
-        input,
-        new TextEncoder().encode(
-          `${JSON.stringify({
-            jsonrpc: "2.0",
-            id: 7,
-            method: "session/request_permission",
-            params: {
-              sessionId: "session-1",
-              options: [],
-              toolCall: { title: "secret-command --token abc" },
-            },
-          })}\n`,
-        ),
-      );
+      toolCall: { title: "secret-command --token abc" },
+      response: { outcome: { outcome: "cancelled" } },
+      handled: 0,
+    },
+    {
+      name: "its handler's response fails to encode",
+      toolCall: { toolCallId: "tool-1", title: "secret-command --token abc" },
+      response: { outcome: { outcome: "not-an-outcome" } },
+      handled: 1,
+    },
+  ])
+    it.effect(
+      `warns, without the payload, when a core request fails because ${scenario.name}`,
+      () => {
+        const messages: Array<unknown> = [];
+        return Effect.gen(function* () {
+          const { stdio, input, output } = yield* makeInMemoryStdio();
+          const acp = yield* AcpClient.make(stdio);
+          const handled = yield* Ref.make(0);
+          yield* acp.handleRequestPermission(() =>
+            Ref.update(handled, (count) => count + 1).pipe(
+              Effect.as(scenario.response as AcpSchema.RequestPermissionResponse),
+            ),
+          );
 
-      const outbound = yield* Queue.take(output);
-      const response = JSON.parse(
-        typeof outbound === "string" ? outbound : new TextDecoder().decode(outbound),
-      );
-      assert.equal(response.id, 7);
-      assert.property(response, "error");
-      assert.equal(yield* Ref.get(handled), 0);
+          yield* Queue.offer(
+            input,
+            new TextEncoder().encode(
+              `${JSON.stringify({
+                jsonrpc: "2.0",
+                id: 7,
+                method: "session/request_permission",
+                params: { sessionId: "session-1", options: [], toolCall: scenario.toolCall },
+              })}\n`,
+            ),
+          );
 
-      const warning = JSON.stringify(
-        messages.find((message) =>
-          JSON.stringify(message).includes("ACP request failed before its handler ran"),
-        ),
-      );
-      assert.include(warning, "session/request_permission");
-      assert.include(warning, '"requestId":"7"');
-      assert.notInclude(warning, "secret-command");
-    }).pipe(
-      Effect.scoped,
-      Effect.provide(
-        Logger.layer([Logger.make(({ message }) => messages.push(message))], {
-          mergeWithExisting: false,
-        }),
-      ),
+          const outbound = yield* Queue.take(output);
+          const response = JSON.parse(
+            typeof outbound === "string" ? outbound : new TextDecoder().decode(outbound),
+          );
+          assert.equal(response.id, 7);
+          assert.property(response, "error");
+          assert.equal(yield* Ref.get(handled), scenario.handled);
+
+          const warning = JSON.stringify(
+            messages.find((message) =>
+              JSON.stringify(message).includes("ACP request failed outside its handler"),
+            ),
+          );
+          assert.include(warning, "session/request_permission");
+          assert.include(warning, '"requestId":"7"');
+          assert.notInclude(warning, "secret-command");
+        }).pipe(
+          Effect.scoped,
+          Effect.provide(
+            Logger.layer([Logger.make(({ message }) => messages.push(message))], {
+              mergeWithExisting: false,
+            }),
+          ),
+        );
+      },
     );
-  });
 
   it.effect("keeps RPC ids within int32 and apart from extension ids", () =>
     Effect.gen(function* () {

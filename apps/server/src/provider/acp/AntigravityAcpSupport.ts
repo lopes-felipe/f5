@@ -751,8 +751,16 @@ const writeAntigravitySessionMode = <E>(input: {
     return input.target;
   });
 
-/** ACP tool kinds that change files. */
-const ANTIGRAVITY_FILE_CHANGE_KINDS: ReadonlySet<string> = new Set(["edit", "delete", "move"]);
+/**
+ * ACP tool kinds that follow the thread's access mode in Plan. `kind` comes from the agent and
+ * may be missing, `other` or new, so this is an allowlist: anything else asks.
+ */
+const ANTIGRAVITY_PLAN_ACCESS_MODE_KINDS: ReadonlySet<string> = new Set([
+  "execute",
+  "read",
+  "search",
+  "think",
+]);
 
 export type AntigravityApprovalDecision =
   | { readonly kind: "ask"; readonly applyThreadGrants: boolean }
@@ -772,13 +780,14 @@ export function antigravityApprovalDecision(input: {
   readonly workspaceRoot: string;
 }): AntigravityApprovalDecision {
   if (input.computerRequest) return { kind: "ask", applyThreadGrants: false };
-  // Plan can't change files: Antigravity refuses its edit tools there, and a file change that
-  // still reaches F5 always asks, without thread grants, even under Full access. Commands and
-  // other tools follow the thread's access mode as outside Plan. The turn's own request counts
-  // as well as the native mode, so a lagging mode can't widen a Plan turn.
+  // In Plan, commands and read-only tools follow the thread's access mode as outside Plan, so
+  // thread grants apply there too. Everything else (edits, deletes, moves, `other`, a missing or
+  // unknown kind) always asks, without thread grants, even under Full access. Commands can still
+  // change files; that is the access mode's call. The turn's own request counts as well as the
+  // native mode, so a lagging mode can't widen a Plan turn.
   if (
     (input.sessionMode === "plan" || input.planRequested === true) &&
-    ANTIGRAVITY_FILE_CHANGE_KINDS.has(input.toolCall.kind ?? "")
+    !ANTIGRAVITY_PLAN_ACCESS_MODE_KINDS.has(input.toolCall.kind ?? "")
   )
     return { kind: "ask", applyThreadGrants: false };
   switch (input.runtimeMode) {

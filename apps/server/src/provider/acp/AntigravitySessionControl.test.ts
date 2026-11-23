@@ -499,19 +499,35 @@ describe("Antigravity approval policy", () => {
     });
   });
 
-  it("lets Plan commands follow the access mode but always asks before file changes", () => {
+  it("lets Plan commands follow the access mode but asks for every other kind", () => {
     // A Plan turn whose native mode still reports `default` gets Plan's rules too.
     for (const plan of [{ sessionMode: "plan" }, { sessionMode: "default", planRequested: true }]) {
-      expect(decide("full-access", command, plan)).toEqual({ kind: "allow" });
-      expect(decide("approval-required", command, plan)).toEqual({
-        kind: "ask",
-        applyThreadGrants: true,
-      });
-      for (const kind of ["edit", "delete", "move"])
-        expect(
-          decide("full-access", { ...edit(NodePath.join(root, "a.ts")), kind }, plan),
-          kind,
-        ).toEqual({ kind: "ask", applyThreadGrants: false });
+      for (const kind of ["execute", "read", "search", "think"]) {
+        expect(decide("full-access", { ...command, kind }, plan), kind).toEqual({
+          kind: "allow",
+        });
+        expect(decide("approval-required", { ...command, kind }, plan), kind).toEqual({
+          kind: "ask",
+          applyThreadGrants: true,
+        });
+      }
+      // `kind` comes from the agent: a write tool reported as `other`, with no kind or with a
+      // kind F5 doesn't know still asks.
+      const writeTool = {
+        title: "write_to_file",
+        rawInput: { TargetFile: NodePath.join(root, "a.ts") },
+      };
+      for (const toolCall of [
+        ...["edit", "delete", "move", "other", "fetch", "switch_mode", "future_kind"].map(
+          (kind) => ({ ...writeTool, kind }),
+        ),
+        writeTool,
+        { ...writeTool, kind: null },
+      ])
+        expect(decide("full-access", toolCall, plan), JSON.stringify(toolCall)).toEqual({
+          kind: "ask",
+          applyThreadGrants: false,
+        });
       // Auto-accept edits doesn't approve workspace edits in Plan either.
       expect(decide("auto-accept-edits", edit(NodePath.join(root, "a.ts")), plan)).toEqual({
         kind: "ask",

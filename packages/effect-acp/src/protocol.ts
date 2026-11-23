@@ -431,10 +431,11 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
   };
 
   // Handlers turn their own defects into a typed `Fail` (see `runHandler`), so a response whose
-  // cause has a `Die` and no `Fail` failed before its handler ran, usually on payload decode. The
-  // agent sees that as an error and may stop the turn, so leave a trace here. The defect text and
-  // payload are never logged: they can hold command lines and file contents.
-  const warnOnPreHandlerFailure = (response: RpcMessage.FromServerEncoded) => {
+  // cause has a `Die` and no `Fail` failed in the RPC layer: decoding the payload, encoding the
+  // handler's response, or a defect alongside an interrupt. The agent sees that as an error and
+  // may stop the turn, so leave a trace here. The defect text and payload are never logged: they
+  // can hold command lines and file contents.
+  const warnOnRpcLayerFailure = (response: RpcMessage.FromServerEncoded) => {
     if (response._tag !== "Exit") return Effect.void;
     const method = serverRequestMethodsById.get(response.requestId);
     serverRequestMethodsById.delete(response.requestId);
@@ -445,10 +446,13 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
       exit.cause.some((reason) => reason._tag === "Fail")
     )
       return Effect.void;
-    return Effect.logWarning("ACP request failed before its handler ran", {
-      method: method ?? "unknown",
-      requestId: response.requestId,
-    });
+    return Effect.logWarning(
+      "ACP request failed outside its handler (payload decode or response encode)",
+      {
+        method: method ?? "unknown",
+        requestId: response.requestId,
+      },
+    );
   };
 
   const handleExitEncoded = (message: RpcMessage.ResponseExitEncoded) =>
@@ -499,10 +503,15 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
       case "ClientProtocolError":
       case "Pong":
         return Queue.offer(clientQueue, message).pipe(Effect.asVoid);
-      case "Ack":
       case "Interrupt":
-      case "Ping":
+        // An interrupted request may never get an `Exit` to clean up after.
+        serverRequestMethodsById.delete(message.requestId);
+        return Queue.offer(serverQueue, message).pipe(Effect.asVoid);
       case "Eof":
+        serverRequestMethodsById.clear();
+        return Queue.offer(serverQueue, message).pipe(Effect.asVoid);
+      case "Ack":
+      case "Ping":
         return Queue.offer(serverQueue, message).pipe(Effect.asVoid);
     }
   };
@@ -632,7 +641,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
       Effect.as({
         disconnects,
         send: (_clientId, response) =>
-          warnOnPreHandlerFailure(response).pipe(
+          warnOnRpcLayerFailure(response).pipe(
             Effect.andThen(offerOutgoing(response)),
             Effect.orDie,
           ),
