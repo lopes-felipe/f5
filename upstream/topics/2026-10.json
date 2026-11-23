@@ -45773,11 +45773,21 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-07T23:28:08.434Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-23T12:16:58.128Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/provider/Layers/OpenCodeAdapter.ts:394",
+          "apps/server/src/provider/Layers/OpenCodeAdapter.ts:822"
+        ],
+        "f5Refs": [
+          "1b43185bc4da346a05bfe536e2d334552971888f"
+        ]
+      },
       "id": "pr-23591",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
@@ -47179,11 +47189,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-07T23:28:08.434Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-23T12:16:58.129Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-23834",
-      "status": "port",
+      "reason": "F5 has no in-band MCP-over-ACP bridge.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -49080,11 +49092,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-07T23:28:08.434Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-23T12:16:58.129Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-24176",
-      "status": "port",
+      "reason": "F5 reads Claude Bash output from SDK results and has no temporary-file output tail.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -50620,11 +50634,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-23T12:16:58.129Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-24479",
-      "status": "port",
+      "reason": "F5 has no host-side ACP terminal output buffer.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -72089,11 +72105,21 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
-      "decidedAt": "2026-11-07T23:28:08.435Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-23T12:16:58.129Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/web/src/requestLatencyState.ts:23",
+          "apps/web/src/wsTransport.ts:537"
+        ],
+        "f5Refs": [
+          "1b43185bc4da346a05bfe536e2d334552971888f"
+        ]
+      },
       "id": "pr-5570",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
