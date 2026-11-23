@@ -340,6 +340,10 @@
       "types": "./src/runtimeMode.ts",
       "import": "./src/runtimeMode.ts"
     },
+    "./cursorHarness": {
+      "types": "./src/cursorHarness.ts",
+      "import": "./src/cursorHarness.ts"
+    },
     "./threadEnvMode": {
       "types": "./src/threadEnvMode.ts",
       "import": "./src/threadEnvMode.ts"

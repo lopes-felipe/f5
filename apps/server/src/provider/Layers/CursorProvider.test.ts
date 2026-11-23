@@ -5,11 +5,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Layer, Path } from "effect";
 import { describe, expect, it } from "vitest";
 import type * as EffectAcpSchema from "effect-acp/schema";
-import {
-  ProviderInstanceId,
-  type CursorSettings,
-  type ServerProviderModel,
-} from "@t3tools/contracts";
+import { ProviderInstanceId, type CursorSettings } from "@t3tools/contracts";
 import { createModelCapabilities } from "@t3tools/shared/model";
 
 import { ServerConfig } from "../../config.ts";
@@ -19,7 +15,6 @@ import {
   buildCursorCapabilitiesFromConfigOptions,
   buildCursorDiscoveredModelsFromConfigOptions,
   checkCursorProviderStatus,
-  discoverCursorModelCapabilitiesViaAcp,
   discoverCursorModelsViaAcp,
   getCursorFallbackModels,
   getCursorParameterizedModelPickerUnsupportedMessage,
@@ -309,6 +304,7 @@ const sessionNewCursorConfigOptions = [
 ] satisfies ReadonlyArray<EffectAcpSchema.SessionConfigOption>;
 
 const baseCursorSettings: CursorSettings = {
+  harness: "acp",
   enabled: true,
   binaryPath: "agent",
   apiEndpoint: "",
@@ -504,6 +500,7 @@ describe("checkCursorProviderStatus", () => {
     const provider = await Effect.runPromise(
       checkCursorProviderStatus(
         {
+          harness: "acp",
           enabled: true,
           binaryPath: "/definitely/missing/f5-cursor-agent",
           apiEndpoint: "",
@@ -523,6 +520,7 @@ describe("checkCursorProviderStatus", () => {
 
     const provider = await Effect.runPromise(
       checkCursorProviderStatus({
+        harness: "acp",
         enabled: true,
         binaryPath: wrapperPath,
         apiEndpoint: "",
@@ -556,6 +554,7 @@ describe("checkCursorProviderStatus", () => {
             environment: [],
             enabled: true,
             config: {
+              harness: "acp",
               enabled: true,
               binaryPath: wrapperPath,
               apiEndpoint: "",
@@ -579,6 +578,7 @@ describe("discoverCursorModelsViaAcp", () => {
 
     const models = await Effect.runPromise(
       discoverCursorModelsViaAcp({
+        harness: "acp",
         enabled: true,
         binaryPath: wrapperPath,
         apiEndpoint: "",
@@ -601,6 +601,7 @@ describe("discoverCursorModelsViaAcp", () => {
 
     await Effect.runPromise(
       discoverCursorModelsViaAcp({
+        harness: "acp",
         enabled: true,
         binaryPath: wrapperPath,
         apiEndpoint: "",
@@ -609,46 +610,6 @@ describe("discoverCursorModelsViaAcp", () => {
     );
 
     await waitForAgentExit(exitLogPath);
-  });
-});
-
-describe("discoverCursorModelCapabilitiesViaAcp", () => {
-  it("closes all ACP probe runtimes after capability enrichment completes", async () => {
-    const { exitLogPath, wrapperPath } = await runNode(
-      makeExitLogFixture("cursor-capabilities-exit-log-"),
-    );
-    const existingModels: ReadonlyArray<ServerProviderModel> = [
-      { slug: "default", name: "Auto", isCustom: false, capabilities: emptyCapabilities },
-      { slug: "composer-2", name: "Composer 2", isCustom: false, capabilities: emptyCapabilities },
-      { slug: "gpt-5.4", name: "GPT-5.4", isCustom: false, capabilities: emptyCapabilities },
-      {
-        slug: "claude-opus-4-6",
-        name: "Opus 4.6",
-        isCustom: false,
-        capabilities: emptyCapabilities,
-      },
-    ];
-
-    const models = await Effect.runPromise(
-      discoverCursorModelCapabilitiesViaAcp(
-        {
-          enabled: true,
-          binaryPath: wrapperPath,
-          apiEndpoint: "",
-          customModels: [],
-        },
-        existingModels,
-      ).pipe(Effect.provide(NodeServices.layer)),
-    );
-
-    expect(models.map((model) => model.slug)).toEqual([
-      "default",
-      "composer-2",
-      "gpt-5.4",
-      "claude-opus-4-6",
-    ]);
-
-    await waitForAgentExit(exitLogPath, 4);
   });
 });
 

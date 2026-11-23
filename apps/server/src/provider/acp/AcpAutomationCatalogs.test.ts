@@ -341,4 +341,44 @@ describe("launch credential scrubbing", () => {
       await Effect.runPromise(Scope.close(scope, Exit.void));
     }
   });
+
+  it("redacts forwarded MCP credentials echoed in content and raw payloads", async () => {
+    const scope = await Effect.runPromise(Scope.make());
+    try {
+      const catalogs = await Effect.runPromise(
+        prepareAcpAutomationCatalogs({
+          threadId,
+          provider: "cursor",
+          scope,
+          ordinarySession: true,
+          readOnlyWorkflow: false,
+        }),
+      );
+      catalogs.registerForwardedCredentials([
+        "Bearer forwarded-token-value",
+        "forwarded-token-value",
+        "https://mcp.example/x?key=query-secret-value",
+        "query-secret-value",
+      ]);
+      const event = {
+        type: "content.delta",
+        eventId: "evt-2",
+        provider: "cursor",
+        threadId,
+        createdAt: new Date(0).toISOString(),
+        payload: { streamKind: "assistant_text", delta: "token is forwarded-token-value" },
+        raw: {
+          source: "acp.jsonrpc",
+          payload: { url: "https://mcp.example/x?key=query-secret-value" },
+        },
+      } as unknown as Parameters<typeof catalogs.sanitizeEvent>[0];
+      const published = JSON.stringify(catalogs.sanitizeEvent(event));
+      expect(published).not.toContain("forwarded-token-value");
+      expect(published).not.toContain("query-secret-value");
+      expect(published).toContain("token is [redacted]");
+      expect(published).toContain('"url":"[redacted]"');
+    } finally {
+      await Effect.runPromise(Scope.close(scope, Exit.void));
+    }
+  });
 });

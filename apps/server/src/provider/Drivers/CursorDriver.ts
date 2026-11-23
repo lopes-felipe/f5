@@ -36,6 +36,9 @@ import {
 } from "../ProviderDriver.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
+import { cursorScratchDir } from "../cursor/CursorNativeSessions.ts";
+import { discoverCursorSkills } from "../acp/CursorSkills.ts";
+import { makeInstanceInstallTargetResolver } from "../providerInstallChannel.ts";
 
 const DRIVER_KIND = ProviderDriverKind.make("cursor");
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
@@ -58,6 +61,7 @@ const withInstanceIdentity =
     ...snapshot,
     instanceId: input.instanceId,
     driver: DRIVER_KIND,
+    harnessVariant: "acp",
     ...(input.displayName ? { displayName: input.displayName } : {}),
     ...(input.accentColor ? { accentColor: input.accentColor } : {}),
     continuation: { groupKey: input.continuationGroupKey },
@@ -73,6 +77,15 @@ export const CursorDriver: ProviderDriver<CursorSettings, CursorDriverEnv> = {
   defaultConfig: (): CursorSettings => Schema.decodeSync(CursorSettings)({}),
   create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
     Effect.gen(function* () {
+      // The registry reports SDK instances unavailable until the host passes
+      // the SDK gates. This build ships only the ACP harness, so an SDK
+      // config never falls back to ACP.
+      if (config.harness === "sdk")
+        return yield* new ProviderDriverError({
+          driver: DRIVER_KIND,
+          instanceId,
+          detail: "The Cursor SDK harness is not available in this build.",
+        });
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -109,9 +122,19 @@ export const CursorDriver: ProviderDriver<CursorSettings, CursorDriverEnv> = {
         environment: processEnv,
         apiEndpoint: effectiveConfig.apiEndpoint,
       });
-      const textGeneration = yield* makeCursorTextGeneration(effectiveConfig, processEnv);
+      const serverConfig = yield* ServerConfig;
+      const textGeneration = yield* makeCursorTextGeneration(effectiveConfig, processEnv, {
+        scratchDir: cursorScratchDir(serverConfig.stateDir),
+      });
 
       const checkProvider = checkCursorProviderStatus(effectiveConfig, processEnv).pipe(
+        // User and Cursor-installed skills are workspace-independent; project
+        // skills join per session.
+        Effect.flatMap((draft) =>
+          discoverCursorSkills(null, processEnv).pipe(
+            Effect.map((skills) => ({ ...draft, skills })),
+          ),
+        ),
         Effect.map(stampIdentity),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(FileSystem.FileSystem, fileSystem),
@@ -140,6 +163,13 @@ export const CursorDriver: ProviderDriver<CursorSettings, CursorDriverEnv> = {
       return {
         instanceId,
         driverKind: DRIVER_KIND,
+        resolveInstallTarget: makeInstanceInstallTargetResolver({
+          driver: DRIVER_KIND,
+          binaryPath: effectiveConfig.binaryPath,
+          resolutionEnvironment: processEnv,
+          instanceEnvironment: environment,
+          instanceId,
+        }),
         continuationIdentity,
         displayName,
         accentColor,

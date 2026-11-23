@@ -78,6 +78,7 @@ import {
   type ProviderRuntimeEvent,
   type ProviderSession,
   type ProviderSessionAction,
+  type ServerProvider,
   type McpReloadResult,
   type McpSessionReloadOutcome,
   type McpSessionSummary,
@@ -729,15 +730,13 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           ),
         );
 
-    const readExecutableVersion = (instanceId: ProviderInstanceId) =>
+    const readProviderSnapshot = (instanceId: ProviderInstanceId) =>
       Option.match(providerRegistry, {
-        onNone: () => Effect.succeed<string | undefined>(undefined),
+        onNone: () => Effect.succeed<ServerProvider | undefined>(undefined),
         onSome: (service) =>
           service.getProviders.pipe(
-            Effect.map(
-              (providers) =>
-                providers.find((provider) => provider.instanceId === instanceId)?.version ??
-                undefined,
+            Effect.map((providers) =>
+              providers.find((provider) => provider.instanceId === instanceId),
             ),
           ),
       });
@@ -771,11 +770,13 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         const instanceInfo = yield* registry
           .getInstanceInfo(input.instanceId)
           .pipe(Effect.option, Effect.map(Option.getOrUndefined));
+        const providerSnapshot = yield* readProviderSnapshot(input.instanceId);
         return buildProviderSessionCapabilities({
           generation: input.generation,
           driver: instanceInfo?.driverKind ?? input.adapter.provider,
           providerInstanceId: input.instanceId,
-          executableVersion: yield* readExecutableVersion(input.instanceId),
+          executableVersion: providerSnapshot?.version ?? undefined,
+          harnessVariant: providerSnapshot?.harnessVariant,
           adapterCapabilities: input.adapter.capabilities,
           hasSteer: input.adapter.steerTurn !== undefined,
           hasMcpReload: input.adapter.reloadMcpConfig !== undefined,
@@ -1750,17 +1751,6 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           const instanceInfo = yield* registry.getInstanceInfo(requestedInstanceId);
           const resolvedProvider = instanceInfo.driverKind as ProviderKind;
           metricProvider = resolvedProvider;
-          if (
-            (resolvedProvider === "grok" ||
-              resolvedProvider === "antigravity" ||
-              resolvedProvider === "muse") &&
-            parsed.workflowExecutionProfile?.endsWith("readonly")
-          ) {
-            return yield* toValidationError(
-              "ProviderService.startSession",
-              `${PROVIDER_DISPLAY_NAMES[resolvedProvider]} cannot enforce read-only workflow turns.`,
-            );
-          }
           if (parsed.provider !== undefined && parsed.provider !== resolvedProvider) {
             return yield* toValidationError(
               "ProviderService.startSession",
@@ -1802,6 +1792,15 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             providerInstanceId: requestedInstanceId,
           };
           const adapter = yield* registry.getByInstance(requestedInstanceId);
+          if (
+            parsed.workflowExecutionProfile?.endsWith("readonly") &&
+            adapter.capabilities.enforcesReadOnlyWorkflow !== true
+          ) {
+            return yield* toValidationError(
+              "ProviderService.startSession",
+              `${PROVIDER_DISPLAY_NAMES[resolvedProvider]} cannot enforce read-only workflow turns.`,
+            );
+          }
           const previousBinding = yield* directory
             .getBinding(threadId)
             .pipe(Effect.map(Option.getOrUndefined));
@@ -2381,10 +2380,8 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                 );
                 metricProvider = routed.adapter.provider;
                 if (
-                  (routed.adapter.provider === "grok" ||
-                    routed.adapter.provider === "antigravity" ||
-                    routed.adapter.provider === "muse") &&
-                  input.workflowExecutionProfile?.endsWith("readonly")
+                  input.workflowExecutionProfile?.endsWith("readonly") &&
+                  routed.adapter.capabilities.enforcesReadOnlyWorkflow !== true
                 ) {
                   return yield* toValidationError(
                     "ProviderService.sendTurn",

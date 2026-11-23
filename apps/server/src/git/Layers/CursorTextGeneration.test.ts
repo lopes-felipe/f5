@@ -2,7 +2,7 @@ import { writeAcpWrapper, waitForAgentExit } from "../../testUtils/cli.ts";
 import * as path from "node:path";
 import * as os from "node:os";
 import { fileURLToPath } from "node:url";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
@@ -15,6 +15,7 @@ import { CursorSettings, ProviderInstanceId } from "@t3tools/contracts";
 import { ServerConfig } from "../../config.ts";
 import { type TextGenerationShape } from "../Services/TextGeneration.ts";
 import { makeCursorTextGeneration } from "./CursorTextGeneration.ts";
+import { cursorChatsWorkspaceKey } from "../../provider/cursor/CursorNativeSessions.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const mockAgentPath = path.join(__dirname, "../../../scripts/acp-mock-agent.ts");
@@ -223,4 +224,54 @@ it.layer(CursorTextGenerationTestLayer)("CursorTextGenerationLive", (it) => {
         }),
     );
   });
+
+  it.effect("runs in the scratch workspace and deletes the session it created", () =>
+    Effect.gen(function* () {
+      const tempDir = mkdtempSync(path.join(os.tmpdir(), "t3code-cursor-text-scratch-"));
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => rmSync(tempDir, { recursive: true, force: true })),
+      );
+      const home = path.join(tempDir, "home");
+      const scratchDir = path.join(tempDir, "state", "provider-scratch", "cursor");
+      const requestLogPath = path.join(tempDir, "requests.ndjson");
+      // The mock agent always opens "mock-session-1"; seed the files Cursor would write.
+      const meta = path.join(home, ".cursor", "acp-sessions", "mock-session-1");
+      const chats = path.join(
+        home,
+        ".cursor",
+        "chats",
+        cursorChatsWorkspaceKey(scratchDir),
+        "mock-session-1",
+      );
+      const unrelated = path.join(home, ".cursor", "acp-sessions", "someone-else");
+      for (const directory of [meta, chats, unrelated]) mkdirSync(directory, { recursive: true });
+
+      const agentPath = makeAcpAgentWrapper(tempDir, {
+        T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+        T3_ACP_PROMPT_RESPONSE_TEXT: JSON.stringify({ branch: "scratch-branch" }),
+      });
+      const config = Schema.decodeSync(CursorSettings)({ binaryPath: agentPath });
+      const textGeneration = yield* makeCursorTextGeneration(
+        config,
+        { ...process.env, HOME: home },
+        { scratchDir },
+      );
+      const generated = yield* textGeneration.generateBranchName({
+        cwd: process.cwd(),
+        message: "Name a branch",
+        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "composer-2" },
+      });
+
+      expect(generated.branch).toBe("scratch-branch");
+      const sessionNew = readFileSync(requestLogPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { method?: string; params?: { cwd?: string } })
+        .find((request) => request.method === "session/new");
+      expect(sessionNew?.params?.cwd).toBe(scratchDir);
+      expect(existsSync(meta)).toBe(false);
+      expect(existsSync(chats)).toBe(false);
+      expect(existsSync(unrelated)).toBe(true);
+    }).pipe(Effect.scoped),
+  );
 });

@@ -476,6 +476,7 @@ describe("WebSocket Server", () => {
         metrics: { endpoint: null, source: "unset", protocol: "http/protobuf" },
       },
       availableEditors: expect.any(Array),
+      cursorSdkHarness: { available: false, reason: expect.any(String) },
     });
     expect(
       (response.result as { keybindings: ResolvedKeybindingsConfig }).keybindings.some(
@@ -774,6 +775,7 @@ describe("WebSocket Server", () => {
         metrics: { endpoint: null, source: "unset", protocol: "http/protobuf" },
       },
       availableEditors: expect.any(Array),
+      cursorSdkHarness: { available: false, reason: expect.any(String) },
     });
     expectAvailableEditors((response.result as { availableEditors: unknown }).availableEditors);
 
@@ -815,6 +817,7 @@ describe("WebSocket Server", () => {
         metrics: { endpoint: null, source: "unset", protocol: "http/protobuf" },
       },
       availableEditors: expect.any(Array),
+      cursorSdkHarness: { available: false, reason: expect.any(String) },
     });
     expectAvailableEditors((response.result as { availableEditors: unknown }).availableEditors);
     expect(fs.readFileSync(keybindingsPath, "utf8")).toBe("{ not-json");
@@ -1170,6 +1173,7 @@ describe("WebSocket Server", () => {
         metrics: { endpoint: null, source: "unset", protocol: "http/protobuf" },
       },
       availableEditors: expect.any(Array),
+      cursorSdkHarness: { available: false, reason: expect.any(String) },
     });
     expectAvailableEditors((response.result as { availableEditors: unknown }).availableEditors);
   });
@@ -1222,6 +1226,7 @@ describe("WebSocket Server", () => {
         metrics: { endpoint: null, source: "unset", protocol: "http/protobuf" },
       },
       availableEditors: expect.any(Array),
+      cursorSdkHarness: { available: false, reason: expect.any(String) },
     });
     expectAvailableEditors(
       (configResponse.result as { availableEditors: unknown }).availableEditors,

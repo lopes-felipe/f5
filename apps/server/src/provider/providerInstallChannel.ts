@@ -293,6 +293,29 @@ export async function detectProviderInstallTarget(
       "Update with Grok's built-in updater: grok update.",
       { selfUpdateArgs: ["update"] },
     );
+  // Cursor's CLI installer lays out `cursor-agent/versions/<version>/cursor-agent`
+  // and `agent update` installs the next version beside it. Any other layout
+  // (a wrapper script, a package manager) falls through to normal detection.
+  // There is no latest-version source, so the advisor shows this as manual
+  // guidance rather than an in-app update.
+  if (
+    input.driver === "cursor" &&
+    /\/cursor-agent\/versions\/[^/]+\/cursor-agent(?:\.exe)?$/i.test(resolved.replaceAll("\\", "/"))
+  )
+    return make(
+      "self-update",
+      executable,
+      resolved,
+      `cursor-self-update:${resolved}`,
+      npmSource,
+      "Update with Cursor's built-in updater: agent update.",
+      {
+        selfUpdateArgs: ["update"],
+        ...(!deps.canWrite(path.dirname(path.dirname(resolved)))
+          ? { blockedReason: "permissions" as const }
+          : {}),
+      },
+    );
   const unmanaged = (
     guidance = "Update this CLI using its original installer, then refresh and verify.",
     blockedReason: "unsupported_source" | "custom_registry" = "unsupported_source",
