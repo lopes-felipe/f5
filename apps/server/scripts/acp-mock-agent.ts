@@ -836,18 +836,30 @@ const program = Effect.gen(function* () {
             index > 0
               ? (process.env.T3_ACP_SECOND_PERMISSION_COMMAND ?? "cat server/package.json")
               : "cat server/package.json";
+          const permissionKind = process.env.T3_ACP_PERMISSION_KIND;
+          const antigravityShaped = process.env.T3_ACP_PERMISSION_ANTIGRAVITY_SHAPE === "1";
           const permission = yield* agent.client.requestPermission({
             sessionId: requestedSessionId,
             toolCall: {
               toolCallId: index === 0 ? toolCallId : `${toolCallId}-${index + 1}`,
-              title: `\`${command}\``,
-              kind: "execute",
+              // Antigravity names the tool and carries the command in `CommandLine`.
+              title: antigravityShaped ? "run_command" : `\`${command}\``,
+              ...(permissionKind === "omit"
+                ? {}
+                : {
+                    kind:
+                      permissionKind === "null"
+                        ? null
+                        : ((permissionKind ?? "execute") as AcpSchema.ToolKind),
+                  }),
               status: "pending",
-              rawInput: {
-                variant: "Bash",
-                command,
-                description: index === 0 ? "Read package metadata" : "Read it again",
-              },
+              rawInput: antigravityShaped
+                ? { CommandLine: command, WaitMsBeforeAsync: 5000 }
+                : {
+                    variant: "Bash",
+                    command,
+                    description: index === 0 ? "Read package metadata" : "Read it again",
+                  },
               content: [
                 {
                   type: "content",

@@ -246,7 +246,11 @@ function extractCommandFromTitle(title: string | undefined): string | undefined 
 /** The command a tool call's raw input carries, by the fields every ACP adapter recognises. */
 export function toolCallRawInputCommand(rawInput: unknown): string | undefined {
   if (!isRecord(rawInput)) return undefined;
-  const directCommand = normalizeCommandValue(rawInput.command);
+  // Antigravity sends `CommandLine` with a generic `run_command` title, so without it an
+  // approval card would show the tool name instead of the command being approved.
+  const directCommand = normalizeCommandValue(
+    rawInput.command ?? rawInput.CommandLine ?? rawInput.command_line ?? rawInput.commandLine,
+  );
   if (directCommand) {
     return directCommand;
   }
@@ -678,6 +682,32 @@ function boundToolCallRawPayload(
       ...update,
       ...(contentBounded ? { content: boundedContent } : {}),
       ...(rawOutputBounded ? { rawOutput: boundedRawOutput } : {}),
+    },
+  };
+}
+
+/**
+ * A permission request with its `rawOutput` and text `content` bounded like tool-call updates,
+ * for logging and publishing. Decide on the original request; persist this one.
+ */
+export function boundPermissionRequestPayload(
+  params: EffectAcpSchema.RequestPermissionRequest,
+): EffectAcpSchema.RequestPermissionRequest {
+  const toolCall = params.toolCall;
+  const rawOutput =
+    toolCall.rawOutput === undefined ? undefined : boundToolCallRawOutput(toolCall.rawOutput);
+  const content = Array.isArray(toolCall.content)
+    ? (extractTextContentFromToolCallContent(toolCall.content).content ?? toolCall.content)
+    : toolCall.content;
+  const rawOutputBounded = rawOutput !== toolCall.rawOutput;
+  const contentBounded = content !== toolCall.content;
+  if (!rawOutputBounded && !contentBounded) return params;
+  return {
+    ...params,
+    toolCall: {
+      ...toolCall,
+      ...(rawOutputBounded ? { rawOutput } : {}),
+      ...(contentBounded ? { content } : {}),
     },
   };
 }
