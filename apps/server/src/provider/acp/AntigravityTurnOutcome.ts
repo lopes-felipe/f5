@@ -108,6 +108,7 @@ function turnFailure(
   stopReason: EffectAcpSchema.StopReason,
   step: LastStep | undefined,
   now: DateTime.Utc,
+  unrecognizedErrors = false,
 ): AntigravityTurnFailure | undefined {
   const errorText =
     step?.type === ERROR_STEP_TYPE
@@ -127,6 +128,9 @@ function turnFailure(
     });
   }
   if (apiError === null) {
+    // Only the step type says this is an error. On a release whose step numbering hasn't been
+    // checked, that type could mean something else, so the turn is not failed on it alone.
+    if (!unrecognizedErrors) return undefined;
     return makeProviderFailure({
       class: "provider_error",
       message: "Antigravity stopped this turn because of an error.",
@@ -149,11 +153,16 @@ const conversationSegments = ["antigravity-acp", "conversations"];
  * session log ends that turn with an error step, so the check reads only steps the
  * current prompt added, read-only, from this session's own unlinked database. Without
  * that evidence a typed `refusal` still fails the turn.
+ *
+ * `unrecognizedErrors` also fails a turn on an error step whose text is not a recognised API or
+ * quota error. Pass it only for runtimes whose step numbering has been checked.
  */
 export const watchAntigravityPromptOutcome = Effect.fn("AntigravityTurnOutcome.watch")(function* (
   profileDirectory: string,
   sessionId: string,
+  options: { readonly unrecognizedErrors?: boolean } = {},
 ) {
+  const unrecognizedErrors = options.unrecognizedErrors === true;
   const typedOnly = (result: EffectAcpSchema.PromptResponse) =>
     DateTime.now.pipe(Effect.map((now) => turnFailure(result.stopReason, undefined, now)));
   if (!NATIVE_SESSION_ID.test(sessionId)) return typedOnly;
@@ -212,6 +221,6 @@ export const watchAntigravityPromptOutcome = Effect.fn("AntigravityTurnOutcome.w
           Effect.orElseSucceed(() => undefined),
         )
       : undefined;
-    return turnFailure(result.stopReason, step, yield* DateTime.now);
+    return turnFailure(result.stopReason, step, yield* DateTime.now, unrecognizedErrors);
   });
 });

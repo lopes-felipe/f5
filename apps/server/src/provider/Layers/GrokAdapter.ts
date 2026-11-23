@@ -108,6 +108,7 @@ import {
   AntigravityModeUnavailableError,
   antigravityAdvertisedModes,
   antigravityApprovalDecision,
+  antigravityLaunchedVersion,
   antigravityTargetMode,
   antigravityThinkingLevels,
   applyAntigravityModelSelection,
@@ -116,6 +117,7 @@ import {
   type AntigravitySelectionState,
   type AntigravityThinkingLevels,
 } from "../acp/AntigravityAcpSupport.ts";
+import { antigravityStepLayoutVerified } from "../antigravityPrivateFormats.ts";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { canonicalJson } from "../../canonicalJsonHash.ts";
 import { makeAcpNativeLoggers, redactAcpLogPayload } from "../acp/AcpNativeLogging.ts";
@@ -259,6 +261,8 @@ interface GrokSessionContext {
   antigravityPendingWarning: string | undefined;
   /** Antigravity: private-format readers are certified for the runtime this session launched. */
   readonly antigravityNativeReaders: boolean;
+  /** Antigravity: the launched runtime's step numbering was checked, so any error step fails. */
+  readonly antigravityStepLayoutVerified: boolean;
   /** Antigravity: the account revision this session started under. */
   readonly antigravityAccountRevision: number | undefined;
   readonly antigravitySelection: AntigravitySelectionState;
@@ -1390,6 +1394,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             antigravityPlanRequested: false,
             antigravityPendingWarning: undefined,
             antigravityNativeReaders,
+            antigravityStepLayoutVerified:
+              PROVIDER === "antigravity" &&
+              antigravityStepLayoutVerified(antigravityLaunchedVersion(acp)),
             antigravityAccountRevision: PROVIDER === "antigravity" ? accountRevision : undefined,
             antigravitySelection,
             lastContextUsage: undefined,
@@ -1983,6 +1990,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             ? yield* watchAntigravityPromptOutcome(
                 nativeProfileDirectory,
                 prepared.context.acpSessionId,
+                { unrecognizedErrors: prepared.context.antigravityStepLayoutVerified },
               )
             : undefined;
           const deadline =

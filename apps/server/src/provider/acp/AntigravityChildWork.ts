@@ -46,6 +46,21 @@ const GENERIC_INVOKE_ENTRIES = 2;
 const ENTRY_SPEC = 1;
 const ENTRY_RESULT = 2;
 const METADATA_TOOL_CALL_NAME = 2;
+/**
+ * Rows that may hold a launch. Every other tool's call is also a generic step, so SQLite keeps
+ * only generic rows whose bytes name the launch tool or carry a child transcript URI (every
+ * launch result does, even one whose tool name is missing). Unrelated calls and their output
+ * never count against the scan bounds. A candidate that turns out to name another tool is
+ * skipped; one that names no tool is undecodable and blocks a launch-text match.
+ */
+const LAUNCH_CANDIDATE =
+  "(step_type = ? OR (step_type = ? AND (instr(step_payload, CAST(? AS BLOB)) > 0 OR instr(step_payload, CAST(? AS BLOB)) > 0)))";
+const LAUNCH_CANDIDATE_ARGS = [
+  INVOKE_SUBAGENT_STEP_TYPE,
+  GENERIC_STEP_TYPE,
+  "invoke_subagent",
+  "transcript.jsonl",
+] as const;
 
 // One open reads at most this much; past any bound the batch view stays as it was.
 const MAX_STEP_BYTES = 1024 * 1024;
@@ -180,12 +195,23 @@ const decodeInvokeRecord = safely((payload): InvokeRecord | null | undefined => 
   } else {
     const generic = message(payload, STEP_GENERIC);
     if (generic === undefined) return undefined;
-    if (text(toolCall, METADATA_TOOL_CALL_NAME) !== "invoke_subagent") return null;
+    const toolName = text(toolCall, METADATA_TOOL_CALL_NAME);
+    // Only a step that names another tool is ruled out; a missing name could be a launch.
+    if (!toolName) return undefined;
+    if (toolName !== "invoke_subagent") return null;
     const entries = messages(generic, GENERIC_RESULT)
       .flatMap((result) => messages(result, GENERIC_RESULT_INVOKE))
       .flatMap((launch) => messages(launch, GENERIC_INVOKE_ENTRIES));
-    specs = entries.flatMap((entry) => messages(entry, ENTRY_SPEC));
-    results = entries.flatMap((entry) => messages(entry, ENTRY_RESULT));
+    // Each entry pairs its own spec with its own result, so a half entry can't borrow a
+    // neighbour's child.
+    const pairs = entries.map((entry) => [
+      messages(entry, ENTRY_SPEC),
+      messages(entry, ENTRY_RESULT),
+    ]);
+    if (pairs.some(([spec, result]) => spec!.length !== 1 || result!.length !== 1))
+      return undefined;
+    specs = pairs.map(([spec]) => spec![0]!);
+    results = pairs.map(([, result]) => result![0]!);
   }
   const children = results.map((result) => ({
     conversationId: text(result, 1) ?? "",
@@ -265,9 +291,9 @@ function findInvokeRecord(
     for (const row of database
       .prepare(
         // SQLite returns only in-bound payloads, so an oversized row never reaches this process.
-        "SELECT length(step_payload) AS size, CASE WHEN length(step_payload) <= ? THEN step_payload END AS step_payload FROM steps WHERE step_type IN (?, ?) AND step_format = 0 AND idx > ? ORDER BY idx",
+        `SELECT length(step_payload) AS size, CASE WHEN length(step_payload) <= ? THEN step_payload END AS step_payload FROM steps WHERE ${LAUNCH_CANDIDATE} AND step_format = 0 AND idx > ? ORDER BY idx`,
       )
-      .iterate(MAX_STEP_BYTES, INVOKE_SUBAGENT_STEP_TYPE, GENERIC_STEP_TYPE, plannerIdx)) {
+      .iterate(MAX_STEP_BYTES, ...LAUNCH_CANDIDATE_ARGS, plannerIdx)) {
       const size = row !== null && typeof row === "object" && "size" in row ? Number(row.size) : 0;
       rows += 1;
       bytes += size;
@@ -281,9 +307,9 @@ function findInvokeRecord(
   }
   const totals = database
     .prepare(
-      "SELECT count(*) AS rows, coalesce(sum(length(step_payload)), 0) AS bytes, coalesce(max(length(step_payload)), 0) AS largest, sum(step_format != 0) AS other FROM steps WHERE step_type IN (?, ?)",
+      `SELECT count(*) AS rows, coalesce(sum(length(step_payload)), 0) AS bytes, coalesce(max(length(step_payload)), 0) AS largest, sum(step_format != 0) AS other FROM steps WHERE ${LAUNCH_CANDIDATE}`,
     )
-    .get(INVOKE_SUBAGENT_STEP_TYPE, GENERIC_STEP_TYPE);
+    .get(...LAUNCH_CANDIDATE_ARGS);
   const total = (key: string) =>
     totals !== undefined && key in totals ? Number(totals[key as keyof typeof totals] ?? 0) : 0;
   const sameText = (launch: BatchLaunch) =>
@@ -319,8 +345,8 @@ function findInvokeRecord(
   }
   const matches: Array<InvokeRecord> = [];
   for (const row of database
-    .prepare("SELECT step_payload FROM steps WHERE step_type IN (?, ?) ORDER BY idx")
-    .iterate(INVOKE_SUBAGENT_STEP_TYPE, GENERIC_STEP_TYPE)) {
+    .prepare(`SELECT step_payload FROM steps WHERE ${LAUNCH_CANDIDATE} ORDER BY idx`)
+    .iterate(...LAUNCH_CANDIDATE_ARGS)) {
     const payload = payloadOf(row);
     const record = payload === undefined ? undefined : decodeInvokeRecord(payload);
     // An unreadable record could be an identical launch, so uniqueness is unproven.

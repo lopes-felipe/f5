@@ -5,12 +5,29 @@ import { compareVersions } from "@t3tools/shared/providerIntegrationCertificatio
  * subscription quota reader uses, the native session trajectory that explains failed turns, and
  * the child-work files behind the Agents panel. Older versions run standard ACP only.
  *
- * Newer versions are trusted without a per-release check because every reader fails closed: a
- * file, row or field it can't decode yields no quota, no failure detail or no child work, never
- * a wrong one. Checked releases: 1.5.13, and 1.5.15, which records subagent launches as generic
- * steps (handled in AntigravityChildWork). Raise the floor when a release drops a format.
+ * Newer versions are read without a per-release check. Each reader acts only on evidence that
+ * names itself: a token with the expected fields, an error step whose text is a recognised API
+ * or quota error, a launch step whose tool call is `invoke_subagent` with native child ids.
+ * Anything else yields nothing. The one judgement that rests on step numbering alone (an error
+ * step with unrecognised text) runs only on the releases in
+ * `ANTIGRAVITY_VERIFIED_STEP_LAYOUT_VERSIONS`. Raise the floor when a release drops a format.
  */
 export const ANTIGRAVITY_PRIVATE_FORMAT_MIN_VERSION = "1.5.13";
+
+/**
+ * Releases whose step-type numbering was read from the binary's own enum: 1.5.13, and 1.5.15,
+ * which also records subagent launches as generic steps (handled in AntigravityChildWork).
+ */
+export const ANTIGRAVITY_VERIFIED_STEP_LAYOUT_VERSIONS: ReadonlySet<string> = new Set([
+  "1.5.13",
+  "1.5.15",
+]);
+
+/** Whether an error step with unrecognised text may fail a turn on this runtime. */
+export const antigravityStepLayoutVerified = (version: string | null | undefined) =>
+  version !== null &&
+  version !== undefined &&
+  ANTIGRAVITY_VERIFIED_STEP_LAYOUT_VERSIONS.has(version.trim());
 
 export type AntigravityPrivateFormatGate =
   | { readonly enabled: true; readonly version: string }

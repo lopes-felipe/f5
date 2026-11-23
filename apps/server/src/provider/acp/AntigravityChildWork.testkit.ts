@@ -50,50 +50,84 @@ export const invokeStep = (input: {
 // Mirrors the 1.5.15 runtime, which records the launch as a generic tool step: Step{5: metadata
 // {4: tool call{1 id, 2 name}}, 140: generic{1: args{1 key, 2 value}, 2: result{6: invoke{
 // 2: entry{1: spec{1 type, 2 role, 3 prompt}, 2: result{1 conversation, 2 log uri}}}}}}.
+type GenericEntry = {
+  readonly launch?: typeof LAUNCH;
+  readonly child?: { readonly id: string; readonly logUri: string };
+};
 export const genericInvokeStep = (input: {
   readonly callId: string;
-  readonly toolName?: string;
+  /** `null` leaves the tool name out of the metadata. */
+  readonly toolName?: string | null;
   readonly launches: ReadonlyArray<typeof LAUNCH>;
   readonly children: ReadonlyArray<{ readonly id: string; readonly logUri: string }>;
-}) =>
-  proto(
+  /** Raw entries, in place of pairing `launches` with `children` by index. */
+  readonly entries?: ReadonlyArray<GenericEntry>;
+  /** Raw bytes for field 140, in place of a well-formed body. */
+  readonly body?: Uint8Array;
+}) => {
+  const entries: ReadonlyArray<GenericEntry> =
+    input.entries ??
+    input.launches.map((launch, index) => ({
+      launch,
+      ...(input.children[index] ? { child: input.children[index] } : {}),
+    }));
+  const toolName = input.toolName === undefined ? "invoke_subagent" : input.toolName;
+  return proto(
     [...varint(1 * 8), ...varint(132)],
     field(
       5,
-      proto(field(4, proto(field(1, input.callId), field(2, input.toolName ?? "invoke_subagent")))),
+      proto(
+        field(4, proto(field(1, input.callId), ...(toolName === null ? [] : [field(2, toolName)]))),
+      ),
     ),
     field(
       140,
-      proto(
-        ...input.launches.map((launch) => field(1, proto(field(1, "Role"), field(2, launch.role)))),
-        field(
-          2,
-          proto(
-            field(
-              6,
-              proto(
-                ...input.launches.map((launch, index) => {
-                  const child = input.children[index];
-                  return field(
-                    2,
-                    proto(
-                      field(
-                        1,
-                        proto(field(1, "research"), field(2, launch.role), field(3, launch.prompt)),
+      input.body ??
+        proto(
+          ...input.launches.map((launch) =>
+            field(1, proto(field(1, "Role"), field(2, launch.role))),
+          ),
+          field(
+            2,
+            proto(
+              field(
+                6,
+                proto(
+                  ...entries.map((entry) =>
+                    field(
+                      2,
+                      proto(
+                        ...(entry.launch
+                          ? [
+                              field(
+                                1,
+                                proto(
+                                  field(1, "research"),
+                                  field(2, entry.launch.role),
+                                  field(3, entry.launch.prompt),
+                                ),
+                              ),
+                            ]
+                          : []),
+                        ...(entry.child
+                          ? [
+                              field(
+                                2,
+                                proto(field(1, entry.child.id), field(2, entry.child.logUri)),
+                              ),
+                            ]
+                          : []),
                       ),
-                      ...(child
-                        ? [field(2, proto(field(1, child.id), field(2, child.logUri)))]
-                        : []),
                     ),
-                  );
-                }),
+                  ),
+                ),
               ),
             ),
           ),
         ),
-      ),
     ),
   );
+};
 export const plannerStep = (callIds: ReadonlyArray<string>) =>
   proto(field(20, proto(...callIds.map((id) => field(7, toolCall(id))))));
 
