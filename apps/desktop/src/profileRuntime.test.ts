@@ -183,6 +183,35 @@ describe("profile backend recovery", () => {
     }
   });
 
+  it("waits past its window while startup keeps making progress, then times out on a stall", async () => {
+    vi.useFakeTimers();
+    try {
+      let progressAt = 0;
+      const settled = vi.fn();
+      const waiting = expect(
+        waitForProfileBackend(
+          () => true,
+          async () => false,
+          1_000,
+          () => progressAt,
+        ).finally(settled),
+      ).rejects.toThrow("startup timed out");
+      // A download reporting every 600 ms runs for three windows without a timeout.
+      for (let i = 0; i < 5; i += 1) {
+        await vi.advanceTimersByTimeAsync(600);
+        progressAt = Date.now();
+      }
+      expect(settled).not.toHaveBeenCalled();
+      // Then it stalls: the window restarts from the last progress.
+      await vi.advanceTimersByTimeAsync(900);
+      expect(settled).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(200);
+      await waiting;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("allows a slow database to start after a minute and times out at three minutes", async () => {
     vi.useFakeTimers();
     try {
@@ -300,6 +329,31 @@ describe("backend restart budget", () => {
       ready = true;
       await vi.advanceTimersByTimeAsync(1_000);
       expect(onReady).toHaveBeenCalledOnce();
+    } finally {
+      cancel();
+      vi.useRealTimers();
+    }
+  });
+  it("measures the startup timeout from the latest progress, not from launch", async () => {
+    vi.useFakeTimers();
+    let progressAt = 0;
+    const onStartupTimeout = vi.fn();
+    const cancel = monitorBackendHealth({
+      isCurrent: () => true,
+      checkReady: async () => false,
+      onStartupTimeout,
+      onSustainedHealth: () => {},
+      startupTimeoutMs: 2_000,
+      lastStartupProgressAt: () => progressAt,
+    });
+    try {
+      for (let i = 0; i < 6; i += 1) {
+        await vi.advanceTimersByTimeAsync(1_000);
+        progressAt = Date.now();
+      }
+      expect(onStartupTimeout).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(onStartupTimeout).toHaveBeenCalledOnce();
     } finally {
       cancel();
       vi.useRealTimers();

@@ -1,0 +1,59 @@
+name: Build CLI archive
+on:
+  workflow_call:
+    inputs:
+      version: { type: string, required: true }
+      os: { type: string, required: true }
+      target: { type: string, required: true }
+permissions:
+  contents: read
+jobs:
+  archive:
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ inputs.version }}
+      TARGET: ${{ inputs.target }}
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - id: runtime
+        run: echo "version=$(node --input-type=module -e 'import { CLI_NODE_VERSION } from "./scripts/build-cli-archive.ts"; console.log(CLI_NODE_VERSION)')" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.runtime.outputs.version }}
+      - run: |
+          node scripts/update-release-package-versions.ts "$VERSION"
+          node scripts/build-cli-archive.ts --target "$TARGET" --output release-cli
+          node scripts/cli-archive-smoke.ts "release-cli/f5-$VERSION-$TARGET.tar.gz" "release-cli/f5-$VERSION-$TARGET.json"
+      - run: node scripts/record-release-component.ts release-cli "cli-$TARGET"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ inputs.target }}-attempt-${{ github.run_attempt }}
+          path: release-cli/*
+          retention-days: 30
+      # The macOS arm64 desktop pins this archive's digest; the app downloads it for VM profiles.
+      # Uploaded before the receipt: the candidate publishes the archive of the latest attempt
+      # with a receipt, and the desktop pins the manifest of the latest attempt, so a receipt
+      # never exists without its attempt's manifest.
+      - if: inputs.target == 'linux-arm64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: vm-backend-manifest-attempt-${{ github.run_attempt }}
+          path: release-cli/f5-${{ inputs.version }}-linux-arm64.json
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        with:
+          name: receipt-cli-${{ inputs.target }}-attempt-${{ github.run_attempt }}
+          path: component-receipt/receipt.json
+          retention-days: 30
+      - if: failure() || cancelled()
+        uses: ./.github/actions/release-diagnostics
+        with:
+          component: cli-${{ inputs.target }}

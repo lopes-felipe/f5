@@ -5,6 +5,7 @@ import * as OS from "node:os";
 import * as Path from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { BACKEND_ARCHIVE, GUEST_IMAGE, pinnedDownloadPath } from "./guestImage";
 import { inProcessLocks } from "./testing/inProcessLocks";
 import {
   acquireInstanceLock,
@@ -67,6 +68,7 @@ function fakeLima(options: {
   /** Successive `f5-guest status` answers; the last one repeats. */
   guestStatus?: GuestStatus | GuestStatus[];
   installCode?: number;
+  copyFails?: boolean;
   /** Lima's stop leaves the VM running, even when forced. */
   stopFails?: boolean;
   /** The graceful stop leaves it running; the forced one works. */
@@ -122,7 +124,8 @@ function fakeLima(options: {
         status = null;
         return ok();
       }
-      if (verb === "copy") return ok();
+      if (verb === "copy")
+        return options.copyFails ? { code: 1, stdout: "", stderr: "no space left" } : ok();
       if (verb === "shell") {
         const tool = args.slice(args.indexOf("/opt/f5/bin/f5-guest") + 1);
         if (tool[0] === "status") {
@@ -147,6 +150,22 @@ function fakeLima(options: {
 /** Lima's image paths are POSIX on every platform the tests run on. */
 const imagePath = `/cache/images/${imageSha256}.qcow2`;
 
+/** Every lease the default `leaseDownload` handed out, to check each was released. */
+let leases: Array<{ kind: string; path: string; release: ReturnType<typeof vi.fn> }> = [];
+beforeEach(() => {
+  leases = [];
+});
+
+const fakeLease: VmSupervisorDeps["leaseDownload"] = async (kind, pin, cacheDir) => {
+  const lease = {
+    kind: kind.label,
+    path: kind === GUEST_IMAGE ? imagePath : pinnedDownloadPath(cacheDir, pin.sha256, kind),
+    release: vi.fn(),
+  };
+  leases.push(lease);
+  return lease;
+};
+
 function deps(
   run: VmSupervisorDeps["run"],
   spawn?: VmSupervisorDeps["spawn"],
@@ -159,6 +178,7 @@ function deps(
     ensureBackendArchive: async () => {
       throw new Error("unexpected backend download");
     },
+    leaseDownload: fakeLease,
     signalForwardReady: vi.fn(),
     writeStderr: () => undefined,
     lock: locks.acquire,
@@ -267,8 +287,12 @@ describe("VmSupervisor.prepare", () => {
     expect(lima.verbs()).toEqual(["list", "disk", "create", "start", "shell", "copy", "shell"]);
     const yaml = JSON.parse(FS.readFileSync(Path.join(config.vmDir, "lima.yaml"), "utf8"));
     expect(yaml.images[0]).toMatchObject({ location: imagePath, digest: `sha256:${imageSha256}` });
+    // The image was held from create through the first boot, then released.
+    expect(leases.map((lease) => lease.kind)).toEqual(["guest image"]);
+    expect(leases[0]!.release).toHaveBeenCalledOnce();
     expect(JSON.parse(FS.readFileSync(Path.join(config.vmDir, "instance.json"), "utf8"))).toEqual({
       imageSha256,
+      backendSha256,
     });
     expect(lima.calls[5]).toEqual([
       "copy",
@@ -302,36 +326,76 @@ describe("VmSupervisor.prepare", () => {
     expect(lima.verbs()).toEqual(["list", "shell"]);
   });
 
-  it("downloads a pinned backend only when the guest lacks it, then prunes other archives", async () => {
+  it("downloads a pinned backend before booting, copies it under a lease, then prunes", async () => {
     const download = { url: "https://example.com/f5-1.2.3-linux-arm64.tar.gz", size: 100 };
     config = { ...config, backend: { version: "1.2.3", sha256: backendSha256, download } };
     FS.mkdirSync(config.backendCacheDir, { recursive: true });
     const stale = Path.join(config.backendCacheDir, `${"e".repeat(64)}.tar.gz`);
     FS.writeFileSync(stale, "old build");
-    const downloaded = Path.join(config.backendCacheDir, `${backendSha256}.tar.gz`);
-    const ensureBackendArchive = vi.fn(async () => downloaded);
+    const downloaded = pinnedDownloadPath(config.backendCacheDir, backendSha256, BACKEND_ARCHIVE);
     const lima = fakeLima({});
+    let verbsAtDownload: Array<string | undefined> = [];
+    const ensureBackendArchive = vi.fn(async () => {
+      verbsAtDownload = lima.verbs();
+      return downloaded;
+    });
     await new VmSupervisor(config, deps(lima.run, undefined, { ensureBackendArchive })).prepare();
     expect(ensureBackendArchive).toHaveBeenCalledWith(
       { ...download, sha256: backendSha256 },
       config.backendCacheDir,
       expect.any(AbortSignal),
     );
+    // The VM didn't hold its memory through the download.
+    expect(verbsAtDownload).not.toContain("start");
     expect(lima.calls[5]).toEqual([
       "copy",
       downloaded,
       `f5:/tmp/f5-backend-${config.incarnation}.tar.gz`,
     ]);
+    const backendLease = leases.find((lease) => lease.kind === BACKEND_ARCHIVE.label)!;
+    expect(backendLease.release).toHaveBeenCalledOnce();
     expect(FS.existsSync(stale)).toBe(false);
 
-    // A warm start of a guest that has this build downloads nothing.
+    // A warm start of a guest that has this build downloads and leases nothing.
     ensureBackendArchive.mockClear();
+    leases = [];
     const warm = fakeLima({
       status: "Running",
       guestStatus: { ready: true, backends: [installed] },
     });
     await new VmSupervisor(config, deps(warm.run, undefined, { ensureBackendArchive })).prepare();
     expect(ensureBackendArchive).not.toHaveBeenCalled();
+    expect(leases).toEqual([]);
+  });
+
+  it("installs from a lease after boot when the record wrongly says the guest has the build", async () => {
+    const download = { url: "https://example.com/f5-1.2.3-linux-arm64.tar.gz", size: 100 };
+    config = { ...config, backend: { version: "1.2.3", sha256: backendSha256, download } };
+    FS.mkdirSync(config.vmDir, { recursive: true });
+    FS.writeFileSync(
+      Path.join(config.vmDir, "instance.json"),
+      JSON.stringify({ imageSha256, backendSha256 }),
+    );
+    FS.mkdirSync(Path.join(config.limaHome, "_disks", "f5-data"), { recursive: true });
+    const lima = fakeLima({ status: "Stopped" });
+    await new VmSupervisor(config, deps(lima.run)).prepare();
+    expect(lima.verbs()).toEqual(["list", "start", "shell", "copy", "shell"]);
+    expect(leases.map((lease) => lease.kind)).toEqual([BACKEND_ARCHIVE.label]);
+    expect(leases[0]!.release).toHaveBeenCalledOnce();
+  });
+
+  it("releases the backend lease when the copy fails", async () => {
+    const download = { url: "https://example.com/f5-1.2.3-linux-arm64.tar.gz", size: 100 };
+    config = { ...config, backend: { version: "1.2.3", sha256: backendSha256, download } };
+    const lima = fakeLima({ copyFails: true });
+    await expect(
+      new VmSupervisor(
+        config,
+        deps(lima.run, undefined, { ensureBackendArchive: async () => "/cache/b.tar.gz" }),
+      ).prepare(),
+    ).rejects.toThrow(/Copying the backend/);
+    const backendLease = leases.find((lease) => lease.kind === BACKEND_ARCHIVE.label)!;
+    expect(backendLease.release).toHaveBeenCalledOnce();
   });
 
   it("refuses without installing when the backend download fails", async () => {

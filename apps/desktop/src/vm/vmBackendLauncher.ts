@@ -13,6 +13,7 @@ import { backendArchiveCacheDir, guestImageCacheDir, limaHomeFor } from "./limaI
 import {
   VM_FORWARD_READY,
   VM_SHUTDOWN_BUDGET_MS,
+  VM_STARTUP_PROGRESS,
   type VmBackendAsset,
   type VmSupervisorConfig,
 } from "./vmSupervisor";
@@ -23,7 +24,11 @@ import {
  */
 export const LINUX_VM_EXPERIMENT_ENV = "F5_EXPERIMENTAL_LINUX_VM";
 
-/** First start downloads the image, provisions the VM and installs the backend. */
+/**
+ * First start downloads the image, provisions the VM and installs the backend. Download
+ * progress restarts the window (`VM_STARTUP_PROGRESS`), so it bounds a stall, not a slow
+ * connection.
+ */
 export const VM_READINESS_TIMEOUT_MS = 15 * 60_000;
 
 /** Running VMs, within the overall backend cap. Each defaults to 4 GiB of guest memory. */
@@ -65,14 +70,16 @@ export class VmSlotReservations {
 export const VM_STOP_GRACE_MS = 10_000 + VM_SHUTDOWN_BUDGET_MS + 20_000;
 
 /**
- * Holds a supervisor channel's messages back until its `VM_FORWARD_READY` frame, the first
- * thing the supervisor writes. `reachable` resolves then: until it does, the profile's port
- * may belong to any local process, so main sends it no authenticated request. Anything else
- * before that frame breaks the protocol and closes the channel.
+ * Holds a supervisor channel's messages back until its `VM_FORWARD_READY` frame.
+ * `reachable` resolves then: until it does, the profile's port may belong to any local
+ * process, so main sends it no authenticated request. Before it, only the supervisor writes
+ * the channel, and only `VM_STARTUP_PROGRESS` frames, each reported to `onProgress`;
+ * anything else breaks the protocol and closes the channel.
  */
 export function awaitForwardReady(
   channel: BackendChannel,
   incarnation: string,
+  onProgress: () => void = () => undefined,
 ): { readonly channel: BackendChannel; readonly reachable: Promise<void> } {
   const listeners: Array<(raw: unknown) => void> = [];
   let ready = false;
@@ -87,6 +94,10 @@ export function awaitForwardReady(
       return;
     }
     const message = raw as { type?: unknown; incarnation?: unknown } | null;
+    if (message?.incarnation === incarnation && message.type === VM_STARTUP_PROGRESS) {
+      onProgress();
+      return;
+    }
     if (message?.type === VM_FORWARD_READY && message.incarnation === incarnation) {
       ready = true;
       settle.resolve();
@@ -316,6 +327,7 @@ export function vmBackendLauncher(options: {
       const { channel, reachable } = awaitForwardReady(
         streamBackendChannel({ input: child.stdout!, output: child.stdin! }),
         request.incarnation,
+        () => request.onStartupProgress?.(),
       );
       return { process: child, channel, reachable, stdoutIsLog: false };
     },

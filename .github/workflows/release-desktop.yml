@@ -56,21 +56,7 @@ jobs:
           path: vm-backend-manifest
       - name: Select the Linux VM backend manifest
         if: inputs.platform == 'mac' && inputs.arch == 'arm64'
-        run: |
-          # The template literals below are JavaScript, expanded by node, not by the shell.
-          # shellcheck disable=SC2016
-          manifest=$(node -e '
-            const fs = require("node:fs");
-            const current = Number(process.env.GITHUB_RUN_ATTEMPT);
-            const attempts = fs.readdirSync("vm-backend-manifest")
-              .map((name) => Number(/^vm-backend-manifest-attempt-(\d+)$/.exec(name)?.[1]))
-              .filter((n) => n > 0 && n <= current);
-            if (attempts.length === 0) throw new Error("No Linux VM backend manifest artifact");
-            const dir = `vm-backend-manifest/vm-backend-manifest-attempt-${Math.max(...attempts)}`;
-            console.log(`${dir}/f5-${process.env.VERSION}-linux-arm64.json`);
-          ')
-          test -s "$manifest"
-          echo "F5_VM_BACKEND_MANIFEST=$PWD/$manifest" >> "$GITHUB_ENV"
+        run: node scripts/select-vm-backend-manifest.ts vm-backend-manifest "$VERSION"
       - name: Compile application without signing credentials
         env:
           NODE_OPTIONS: --max-old-space-size=6144

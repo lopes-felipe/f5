@@ -57,10 +57,14 @@ const stage = (source: ReturnType<typeof tarball>, lock: unknown = source.lock) 
   });
 
 const staged = () =>
-  execFileSync("find", [Path.join(dir, "out"), "-type", "f"], { encoding: "utf8" })
-    .split("\n")
-    .filter(Boolean)
-    .map((file) => Path.relative(Path.join(dir, "out"), file))
+  FS.readdirSync(Path.join(dir, "out"), { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) =>
+      Path.relative(Path.join(dir, "out"), Path.join(entry.parentPath, entry.name)).replaceAll(
+        Path.sep,
+        "/",
+      ),
+    )
     .sort();
 
 // Lima is staged only for macOS builds; Windows runners' tar takes `C:` for a remote host.
@@ -75,7 +79,9 @@ posixTar("stages only limactl, the Linux guest agent, the templates and the lice
     "share/lima/lima-guestagent.Linux-aarch64.gz",
     "share/lima/templates/default.yaml",
   ]);
-  expect(FS.statSync(Path.join(dir, "out/bin/limactl")).mode & 0o111).not.toBe(0);
+  // Windows applies no POSIX execute bits (the tarball tests skip there anyway).
+  if (process.platform !== "win32")
+    expect(FS.statSync(Path.join(dir, "out/bin/limactl")).mode & 0o111).not.toBe(0);
   // The verified tarball is cached: a second build doesn't download it again.
   await stage(source);
   expect(source.requests).toHaveLength(1);

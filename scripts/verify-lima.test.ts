@@ -38,7 +38,8 @@ function codesign(options: { runtime?: boolean; virtualization?: boolean; valid?
       };
     return {
       status: 0,
-      output: `<?xml version="1.0"?><plist version="1.0"><dict>${options.virtualization ? "<key>com.apple.security.virtualization</key><true/>" : ""}</dict></plist>`,
+      // Pretty-printed, as a plist may be: whitespace between the key and its value.
+      output: `<?xml version="1.0"?>\n<plist version="1.0">\n<dict>\n${options.virtualization ? "\t<key>com.apple.security.virtualization</key>\n\t<true/>\n" : ""}</dict>\n</plist>\n`,
     };
   };
 }

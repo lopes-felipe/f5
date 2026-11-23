@@ -53,9 +53,11 @@ function verifyLima(app, run = defaultRun) {
   if (details.status !== 0 || !/flags=0x[0-9a-f]*\([^)]*\bruntime\b/.test(details.output))
     throw new Error("limactl is not signed with hardened runtime");
   const entitlements = run("codesign", ["-d", "--entitlements", "-", "--xml", limactl]);
+  // Compare tags alone: a pretty-printed plist puts whitespace between them.
+  const plist = entitlements.output.replace(/>\s+</g, "><");
   if (
     entitlements.status !== 0 ||
-    !entitlements.output.includes("<key>com.apple.security.virtualization</key><true/>")
+    !plist.includes("<key>com.apple.security.virtualization</key><true/>")
   )
     throw new Error("limactl lacks the com.apple.security.virtualization entitlement");
 }

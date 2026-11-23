@@ -71,6 +71,8 @@ export function monitorBackendHealth(input: {
   readonly onReady?: () => void;
   readonly onStartupTimeout?: () => void;
   readonly startupTimeoutMs?: number;
+  /** When startup last made progress (epoch ms, 0 for never); the timeout restarts from it. */
+  readonly lastStartupProgressAt?: () => number;
   readonly healthyForMs?: number;
   readonly pollMs?: number;
 }): () => void {
@@ -104,9 +106,10 @@ export function monitorBackendHealth(input: {
       input.onReady?.();
       schedule(healthyForMs, confirmSustainedHealth);
     } else {
+      const windowStart = Math.max(startedAt, input.lastStartupProgressAt?.() ?? 0);
       if (
         !timeoutReported &&
-        Date.now() - startedAt >= (input.startupTimeoutMs ?? BACKEND_READINESS_TIMEOUT_MS)
+        Date.now() - windowStart >= (input.startupTimeoutMs ?? BACKEND_READINESS_TIMEOUT_MS)
       ) {
         timeoutReported = true;
         input.onStartupTimeout?.();
@@ -131,14 +134,16 @@ export async function waitForProfileBackend(
   isRunning: () => boolean,
   checkReady: () => Promise<boolean>,
   timeoutMs = BACKEND_READINESS_TIMEOUT_MS,
+  /** When startup last made progress (epoch ms, 0 for never); the deadline restarts from it. */
+  lastStartupProgressAt: () => number = () => 0,
 ): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
+  const startedAt = Date.now();
   while (isRunning()) {
     if (await checkReady()) {
       if (isRunning()) return;
       break;
     }
-    if (Date.now() >= deadline)
+    if (Date.now() >= Math.max(startedAt, lastStartupProgressAt()) + timeoutMs)
       throw new Error("Backend startup timed out. Check server-child.log.");
     await new Promise<void>((resolve) => setTimeout(resolve, 100));
   }

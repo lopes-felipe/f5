@@ -46,8 +46,9 @@ jobs:
       arch: x64
       target: nsis
   mac-desktop:
-    # The arm64 app pins the linux-arm64 CLI archive for Linux VM profiles (see release-desktop.yml).
-    needs: [preflight, cli]
+    # The arm64 app pins the linux-arm64 CLI archive for Linux VM profiles (see
+    # release-desktop.yml), so macOS packaging waits for that one archive, not the CLI matrix.
+    needs: [preflight, cli-linux-arm64]
     if: needs.preflight.outputs.profile == 'all'
     strategy:
       fail-fast: false
@@ -81,54 +82,21 @@ jobs:
         include:
           - { os: macos-latest, target: darwin-arm64 }
           - { os: ubuntu-latest, target: linux-x64 }
-          - { os: ubuntu-24.04-arm, target: linux-arm64 }
           - { os: windows-latest, target: win32-x64 }
           - { os: windows-11-arm, target: win32-arm64 }
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
-    defaults:
-      run:
-        shell: bash
-    env:
-      VERSION: ${{ needs.preflight.outputs.version }}
-      TARGET: ${{ matrix.target }}
-    steps:
-      - run: git config --global core.autocrlf false
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup
-      - id: runtime
-        run: echo "version=$(node --input-type=module -e 'import { CLI_NODE_VERSION } from "./scripts/build-cli-archive.ts"; console.log(CLI_NODE_VERSION)')" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ steps.runtime.outputs.version }}
-      - run: |
-          node scripts/update-release-package-versions.ts "$VERSION"
-          node scripts/build-cli-archive.ts --target "$TARGET" --output release-cli
-          node scripts/cli-archive-smoke.ts "release-cli/f5-$VERSION-$TARGET.tar.gz" "release-cli/f5-$VERSION-$TARGET.json"
-      - run: node scripts/record-release-component.ts release-cli "cli-$TARGET"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: cli-${{ matrix.target }}-attempt-${{ github.run_attempt }}
-          path: release-cli/*
-          retention-days: 30
-      # The macOS arm64 desktop pins this archive's digest; the app downloads it for VM profiles.
-      - if: matrix.target == 'linux-arm64'
-        uses: actions/upload-artifact@v4
-        with:
-          name: vm-backend-manifest-attempt-${{ github.run_attempt }}
-          path: release-cli/f5-${{ needs.preflight.outputs.version }}-linux-arm64.json
-          retention-days: 30
-      - uses: actions/upload-artifact@v4
-        with:
-          name: receipt-cli-${{ matrix.target }}-attempt-${{ github.run_attempt }}
-          path: component-receipt/receipt.json
-          retention-days: 30
-      - if: failure() || cancelled()
-        uses: ./.github/actions/release-diagnostics
-        with:
-          component: cli-${{ matrix.target }}
+    uses: ./.github/workflows/release-cli.yml
+    with:
+      version: ${{ needs.preflight.outputs.version }}
+      os: ${{ matrix.os }}
+      target: ${{ matrix.target }}
+  # Its own job so macOS packaging depends only on the archive it pins.
+  cli-linux-arm64:
+    needs: preflight
+    uses: ./.github/workflows/release-cli.yml
+    with:
+      version: ${{ needs.preflight.outputs.version }}
+      os: ubuntu-24.04-arm
+      target: linux-arm64
   windows-fixtures:
     needs: [preflight, windows-desktop]
     uses: ./.github/workflows/windows-release-checks.yml
@@ -159,6 +127,7 @@ jobs:
         mac-desktop,
         linux-desktop,
         cli,
+        cli-linux-arm64,
         windows-fixtures,
         windows-published-upgrade,
       ]
@@ -167,7 +136,8 @@ jobs:
       needs.preflight.result == 'success' && needs.windows-desktop.result == 'success' &&
       (needs.mac-desktop.result == 'success' || needs.mac-desktop.result == 'skipped') &&
       (needs.linux-desktop.result == 'success' || needs.linux-desktop.result == 'skipped') &&
-      needs.cli.result == 'success' && needs.windows-fixtures.result == 'success' &&
+      needs.cli.result == 'success' && needs.cli-linux-arm64.result == 'success' &&
+      needs.windows-fixtures.result == 'success' &&
       needs.windows-published-upgrade.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15

@@ -157,6 +157,50 @@ export async function ensurePinnedDownload(options: EnsurePinnedDownloadOptions)
   }
 }
 
+/** A pinned file held under its digest's lock, so no pruner removes it while it is used. */
+export interface PinnedDownloadLease {
+  readonly path: string;
+  /** Idempotent. */
+  release(): void;
+}
+
+/** True when the cached file's SHA-256 matches the pin; size is checked first. */
+async function verifiedCache(finalPath: string, pin: GuestImagePin): Promise<boolean> {
+  if (!cachedImage(finalPath, pin)) return false;
+  const hash = Crypto.createHash("sha256");
+  await hashFile(finalPath, hash);
+  return hash.digest("hex") === pin.sha256;
+}
+
+/**
+ * The pinned file for a caller about to hand it to Lima, under its digest's lock until the
+ * caller releases it. `prunePinnedDownloads` skips a held digest, so another F5 build
+ * sharing the cache can't remove the file mid-use. A cached file is hashed again first: a
+ * file of the right size but wrong content (disk corruption, a foreign write) is replaced
+ * instead of failing every retry at the guest's own digest check.
+ */
+export async function leasePinnedDownload(
+  options: EnsurePinnedDownloadOptions,
+): Promise<PinnedDownloadLease> {
+  const { pin, cacheDir } = options;
+  const finalPath = pinnedDownloadPath(cacheDir, pin.sha256, options.kind);
+  await FSP.mkdir(cacheDir, { recursive: true, mode: 0o700 });
+  const release = await (options.lock ?? acquireFileLock)(
+    `${finalPath}.lock`,
+    options.signal ?? new AbortController().signal,
+  );
+  try {
+    if (!(await verifiedCache(finalPath, pin))) {
+      await FSP.rm(finalPath, { force: true });
+      await downloadLocked(options, finalPath);
+    }
+    return { path: finalPath, release };
+  } catch (error) {
+    release();
+    throw error;
+  }
+}
+
 /** Writes all of `chunk`: a single write may store only part of it. */
 async function writeFully(file: FSP.FileHandle, chunk: Uint8Array, label: string): Promise<void> {
   let offset = 0;
@@ -254,7 +298,8 @@ export const pruneGuestImages = (
 /**
  * Removes cached files of `kind` other than `keepSha256`, and abandoned partial downloads
  * of them. Each digest's files go only under its lock, taken without waiting: a digest
- * someone is downloading right now (another F5 build sharing the cache) is skipped.
+ * someone is downloading or leasing right now (another F5 build sharing the cache) is
+ * skipped.
  */
 export async function prunePinnedDownloads(
   cacheDir: string,

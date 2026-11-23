@@ -14,10 +14,14 @@ import {
   BACKEND_ARCHIVE,
   ensureGuestImage,
   ensurePinnedDownload,
+  GUEST_IMAGE,
+  leasePinnedDownload,
   MAX_GUEST_IMAGE_BYTES,
   pruneGuestImages,
   prunePinnedDownloads,
   type GuestImagePin,
+  type PinnedDownloadKind,
+  type PinnedDownloadLease,
 } from "./guestImage";
 import {
   buildLimaInstanceConfig,
@@ -33,8 +37,9 @@ import {
  * it starts inherits that sandbox.
  *
  * It prepares the VM (image, data disk, instance, boot, backend install) and forwards the
- * profile's port to the guest on 127.0.0.1. Once that forward is listening it writes one
- * frame of its own to stdout (`VM_FORWARD_READY`), so main sends no authenticated request
+ * profile's port to the guest on 127.0.0.1. While downloads make progress it writes
+ * `VM_STARTUP_PROGRESS` frames to stdout, so main's readiness deadline measures a stall.
+ * Once the forward is listening it writes `VM_FORWARD_READY`, so main sends no authenticated request
  * to the port before it belongs to this VM. Then it runs `limactl shell … f5-guest launch`
  * on this process's stdin and stdout, main's private pipes: main writes the boot line and
  * frames to them, and this process never reads them. It logs to stderr only. Every other
@@ -88,8 +93,14 @@ export const GUEST_REFUSED_EXIT_CODE = 77;
 /** This process exits while Lima still reports the VM running; main keeps counting it. */
 export const VM_STOP_FAILED_EXIT_CODE = 75;
 
-/** The one frame this process writes to main itself: the profile's port now reaches the VM. */
+/** The frame that ends startup: the profile's port now reaches the VM. */
 export const VM_FORWARD_READY = "f5-vm-forward-ready";
+
+/**
+ * Written before `VM_FORWARD_READY` while a download makes progress, so main's readiness
+ * deadline measures a stall rather than the time a slow connection needs.
+ */
+export const VM_STARTUP_PROGRESS = "f5-vm-startup-progress";
 
 export interface RunResult {
   readonly code: number | null;
@@ -113,6 +124,16 @@ export interface VmSupervisorDeps {
   ensureImage(pin: GuestImagePin, cacheDir: string, signal: AbortSignal): Promise<string>;
   /** The local path of the pinned backend archive, downloading it if needed. */
   ensureBackendArchive(pin: GuestImagePin, cacheDir: string, signal: AbortSignal): Promise<string>;
+  /**
+   * A pinned file verified and held under its digest's lock while Lima reads it, downloading
+   * it again if it went missing or doesn't match its digest.
+   */
+  leaseDownload(
+    kind: PinnedDownloadKind,
+    pin: GuestImagePin,
+    cacheDir: string,
+    signal: AbortSignal,
+  ): Promise<PinnedDownloadLease>;
   /** Tells main the port forward is listening (writes `VM_FORWARD_READY` to stdout). */
   signalForwardReady(): void;
   /** Children's stderr, passed through to this process's log. */
@@ -125,6 +146,11 @@ export interface VmSupervisorDeps {
 
 interface InstanceRecord {
   readonly imageSha256: string;
+  /**
+   * The backend archive last installed on the data disk. Only a hint for downloading before
+   * boot: the guest's own report decides whether to install.
+   */
+  readonly backendSha256?: string;
 }
 
 const GUEST_TOOL = "/opt/f5/bin/f5-guest";
@@ -319,6 +345,14 @@ export class VmSupervisor {
     }
   }
 
+  private async writeInstanceRecord(record: InstanceRecord): Promise<void> {
+    await FSP.writeFile(
+      Path.join(this.config.vmDir, "instance.json"),
+      JSON.stringify(record) + "\n",
+      { mode: 0o600 },
+    );
+  }
+
   private async ensureDataDisk(): Promise<void> {
     if (FS.existsSync(Path.join(this.config.limaHome, "_disks", LIMA_DATA_DISK_NAME))) return;
     this.deps.log("Creating the data disk");
@@ -345,15 +379,14 @@ export class VmSupervisor {
     this.refuseForeignLimaConfig();
 
     this.deps.log("Checking the guest image");
-    const imagePath = await this.deps.ensureImage(
-      config.imagePin,
-      config.imageCacheDir,
-      this.stopSignal,
-    );
+    await this.deps.ensureImage(config.imagePin, config.imageCacheDir, this.stopSignal);
     this.throwIfStopped();
 
     let status = await this.instanceStatus();
     const record = this.readInstanceRecord();
+    // Download the backend before booting when this build may be missing from the guest, so
+    // the VM doesn't hold its memory through the download. Only an override skips it.
+    if (record?.backendSha256 !== config.backend.sha256) await this.prefetchBackendArchive();
     if (status !== null && record?.imageSha256 !== config.imagePin.sha256) {
       // A new image replaces the root disk. The data disk lives outside the instance.
       this.deps.log("Replacing the guest root disk with the new image");
@@ -365,44 +398,58 @@ export class VmSupervisor {
     }
 
     await this.ensureDataDisk();
-    if (status === null) {
-      this.deps.log("Provisioning the VM");
-      const yamlPath = Path.join(config.vmDir, "lima.yaml");
-      await FSP.writeFile(
-        yamlPath,
-        serializeLimaInstanceConfig(
-          buildLimaInstanceConfig({
-            imagePath,
-            imageSha256: config.imagePin.sha256,
-            ...(config.cpus !== undefined ? { cpus: config.cpus } : {}),
-            ...(config.memoryGiB !== undefined ? { memoryGiB: config.memoryGiB } : {}),
-          }),
-        ),
-        { mode: 0o600 },
-      );
-      await this.limactlOk(
-        ["create", "--tty=false", "--name", LIMA_INSTANCE_NAME, yamlPath],
-        5 * MINUTE,
-        "Creating the VM",
-      );
-      await FSP.writeFile(
-        Path.join(config.vmDir, "instance.json"),
-        JSON.stringify({ imageSha256: config.imagePin.sha256 } satisfies InstanceRecord) + "\n",
-        { mode: 0o600 },
-      );
-      // Lima copied the image into the instance; other digests are no longer needed here.
-      await pruneGuestImages(config.imageCacheDir, config.imagePin.sha256, this.deps.lock).catch(
-        () => undefined,
-      );
-      status = "Stopped";
-    }
-    if (status !== "Running") {
-      this.deps.log("Booting the VM");
-      await this.limactlOk(
-        ["start", "--tty=false", "--timeout", "10m", LIMA_INSTANCE_NAME],
-        11 * MINUTE,
-        "Booting the VM",
-      );
+    // A new instance's image is held from create through its first boot, when Lima makes
+    // the root disk from it, so another F5 build sharing the cache can't prune it meanwhile.
+    let image: PinnedDownloadLease | null = null;
+    try {
+      if (status === null) {
+        this.deps.log("Provisioning the VM");
+        image = await this.deps.leaseDownload(
+          GUEST_IMAGE,
+          config.imagePin,
+          config.imageCacheDir,
+          this.stopSignal,
+        );
+        this.throwIfStopped();
+        const yamlPath = Path.join(config.vmDir, "lima.yaml");
+        await FSP.writeFile(
+          yamlPath,
+          serializeLimaInstanceConfig(
+            buildLimaInstanceConfig({
+              imagePath: image.path,
+              imageSha256: config.imagePin.sha256,
+              ...(config.cpus !== undefined ? { cpus: config.cpus } : {}),
+              ...(config.memoryGiB !== undefined ? { memoryGiB: config.memoryGiB } : {}),
+            }),
+          ),
+          { mode: 0o600 },
+        );
+        await this.limactlOk(
+          ["create", "--tty=false", "--name", LIMA_INSTANCE_NAME, yamlPath],
+          5 * MINUTE,
+          "Creating the VM",
+        );
+        // The data disk, and the backend installed on it, outlive the root disk.
+        await this.writeInstanceRecord({
+          imageSha256: config.imagePin.sha256,
+          ...(record?.backendSha256 !== undefined ? { backendSha256: record.backendSha256 } : {}),
+        });
+        // Other digests are no longer needed here.
+        await pruneGuestImages(config.imageCacheDir, config.imagePin.sha256, this.deps.lock).catch(
+          () => undefined,
+        );
+        status = "Stopped";
+      }
+      if (status !== "Running") {
+        this.deps.log("Booting the VM");
+        await this.limactlOk(
+          ["start", "--tty=false", "--timeout", "10m", LIMA_INSTANCE_NAME],
+          11 * MINUTE,
+          "Booting the VM",
+        );
+      }
+    } finally {
+      image?.release();
     }
 
     const ready = await this.guestStatus();
@@ -415,6 +462,11 @@ export class VmSupervisor {
       )
     )
       await this.installBackend();
+    if (this.readInstanceRecord()?.backendSha256 !== config.backend.sha256)
+      await this.writeInstanceRecord({
+        imageSha256: config.imagePin.sha256,
+        backendSha256: config.backend.sha256,
+      });
   }
 
   /**
@@ -454,34 +506,53 @@ export class VmSupervisor {
     }
   }
 
+  private backendPin(): GuestImagePin {
+    const { backend } = this.config;
+    return { url: backend.download!.url, sha256: backend.sha256, size: backend.download!.size };
+  }
+
   /**
-   * The archive to copy into the guest: the development override, or the release asset
-   * downloaded into the shared cache and verified against the digest pinned at build time.
-   * Only a guest missing this exact build gets here, so a warm start downloads nothing.
+   * Fetches the release asset into the shared cache before boot, verified against the
+   * digest pinned at build time. The development override needs nothing. Only a start that
+   * may have to install this build gets here, so a warm start downloads nothing.
    */
-  private async backendArchive(): Promise<string> {
+  private async prefetchBackendArchive(): Promise<void> {
     const { backend, backendCacheDir } = this.config;
-    if (backend.archive !== undefined) return backend.archive;
+    if (backend.archive !== undefined) return;
     this.deps.log(`Checking the F5 ${backend.version} backend archive`);
-    const archive = await this.deps.ensureBackendArchive(
-      { url: backend.download!.url, sha256: backend.sha256, size: backend.download!.size },
+    await this.deps.ensureBackendArchive(this.backendPin(), backendCacheDir, this.stopSignal);
+    this.throwIfStopped();
+  }
+
+  /** The archive to copy into the guest, held until the copy is done. */
+  private async leaseBackendArchive(): Promise<PinnedDownloadLease> {
+    const { backend, backendCacheDir } = this.config;
+    if (backend.archive !== undefined) return { path: backend.archive, release: () => undefined };
+    const lease = await this.deps.leaseDownload(
+      BACKEND_ARCHIVE,
+      this.backendPin(),
       backendCacheDir,
       this.stopSignal,
     );
+    if (this.stopSignal.aborted) lease.release();
     this.throwIfStopped();
-    return archive;
+    return lease;
   }
 
   private async installBackend(): Promise<void> {
     const { backend, incarnation } = this.config;
-    const archive = await this.backendArchive();
     this.deps.log(`Installing F5 ${backend.version} in the VM`);
     const remote = `/tmp/f5-backend-${incarnation}.tar.gz`;
-    await this.limactlOk(
-      ["copy", archive, `${LIMA_INSTANCE_NAME}:${remote}`],
-      10 * MINUTE,
-      "Copying the backend into the VM",
-    );
+    const archive = await this.leaseBackendArchive();
+    try {
+      await this.limactlOk(
+        ["copy", archive.path, `${LIMA_INSTANCE_NAME}:${remote}`],
+        10 * MINUTE,
+        "Copying the backend into the VM",
+      );
+    } finally {
+      archive.release();
+    }
     const result = await this.guest(
       ["install", backend.version, backend.sha256, remote],
       10 * MINUTE,
@@ -765,6 +836,20 @@ export function defaultVmSupervisorDeps(config: VmSupervisorConfig): VmSuperviso
     LANG: "C.UTF-8",
     LIMA_HOME: config.limaHome,
   };
+  // Synchronous: this process never opens process.stdout, so fd 1 is still a blocking pipe.
+  // Only this process writes it before VM_FORWARD_READY, and the backend starts after that,
+  // so these frames never interleave with the guest's.
+  const writeFrame = (type: string) => {
+    const frame = encodeBackendFrame({ type, incarnation: config.incarnation });
+    let offset = 0;
+    while (offset < frame.byteLength)
+      offset += FS.writeSync(1, frame, offset, frame.byteLength - offset);
+  };
+  const downloadProgress = (kind: PinnedDownloadKind) =>
+    throttleProgress((received, total) => {
+      console.error(`[vm] Downloading the ${kind.label}: ${Math.floor((received / total) * 100)}%`);
+      writeFrame(VM_STARTUP_PROGRESS);
+    });
   return {
     run: (command, args, timeoutMs, signal) =>
       new Promise((resolve) => {
@@ -787,36 +872,18 @@ export function defaultVmSupervisorDeps(config: VmSupervisorConfig): VmSuperviso
       }),
     spawn: (command, args, stdio) => ChildProcess.spawn(command, [...args], { env, stdio }),
     ensureImage: (pin, cacheDir, signal) =>
-      ensureGuestImage({
-        pin,
-        cacheDir,
-        signal,
-        onProgress: throttleProgress((received, total) =>
-          console.error(
-            `[vm] Downloading the guest image: ${Math.floor((received / total) * 100)}%`,
-          ),
-        ),
-      }),
+      ensureGuestImage({ pin, cacheDir, signal, onProgress: downloadProgress(GUEST_IMAGE) }),
     ensureBackendArchive: (pin, cacheDir, signal) =>
       ensurePinnedDownload({
         pin,
         cacheDir,
         signal,
         kind: BACKEND_ARCHIVE,
-        onProgress: throttleProgress((received, total) =>
-          console.error(
-            `[vm] Downloading the F5 backend: ${Math.floor((received / total) * 100)}%`,
-          ),
-        ),
+        onProgress: downloadProgress(BACKEND_ARCHIVE),
       }),
-    signalForwardReady: () => {
-      // Synchronous, before the backend starts, so it is the first frame main reads. This
-      // process never opens process.stdout, so fd 1 is still a blocking pipe.
-      const frame = encodeBackendFrame({ type: VM_FORWARD_READY, incarnation: config.incarnation });
-      let offset = 0;
-      while (offset < frame.byteLength)
-        offset += FS.writeSync(1, frame, offset, frame.byteLength - offset);
-    },
+    leaseDownload: (kind, pin, cacheDir, signal) =>
+      leasePinnedDownload({ pin, cacheDir, signal, kind, onProgress: downloadProgress(kind) }),
+    signalForwardReady: () => writeFrame(VM_FORWARD_READY),
     writeStderr: (chunk) => {
       process.stderr.write(chunk);
     },

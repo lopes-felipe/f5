@@ -13,7 +13,7 @@ import {
   VmSlotReservations,
   type VmLaunchAssets,
 } from "./vmBackendLauncher";
-import { VM_FORWARD_READY, VM_SHUTDOWN_BUDGET_MS } from "./vmSupervisor";
+import { VM_FORWARD_READY, VM_SHUTDOWN_BUDGET_MS, VM_STARTUP_PROGRESS } from "./vmSupervisor";
 
 const archive = "/res/vm/f5-1.2.3-linux-arm64.tar.gz";
 const manifest = {
@@ -326,9 +326,34 @@ describe("vmBackendLauncher", () => {
     expect(reachable).toBe(true);
   });
 
+  it("reports the supervisor's startup progress before the forward is ready", async () => {
+    const { child, stdout } = fakeSupervisor();
+    const onStartupProgress = vi.fn();
+    const launch = vmBackendLauncher({
+      platform: "darwin",
+      executable: "/F5",
+      supervisorEntry: "/app/vmSupervisorEntry.js",
+      stateDir: "/Users/me/.f5/userdata",
+      assets,
+      startupErrorPath: (id) => `/errors/${id}.json`,
+      spawn: () => child,
+    }).launch({ ...request, onStartupProgress });
+    const received: unknown[] = [];
+    launch.channel.onMessage((message) => received.push(message));
+    const progress = { type: VM_STARTUP_PROGRESS, incarnation: request.incarnation };
+    stdout.write(encodeBackendFrame(progress));
+    stdout.write(encodeBackendFrame(progress));
+    stdout.write(encodeBackendFrame({ type: VM_FORWARD_READY, incarnation: request.incarnation }));
+    await launch.reachable;
+    expect(onStartupProgress).toHaveBeenCalledTimes(2);
+    expect(launch.channel.connected).toBe(true);
+    expect(received).toEqual([]);
+  });
+
   it.each([
     ["a backend frame", { type: "hello" }],
     ["another incarnation's signal", { type: VM_FORWARD_READY, incarnation: "other" }],
+    ["another incarnation's progress", { type: VM_STARTUP_PROGRESS, incarnation: "other" }],
   ])("closes the channel, never reachable, when %s comes first", async (_name, first) => {
     const { child, stdout } = fakeSupervisor();
     const launch = vmBackendLauncher({

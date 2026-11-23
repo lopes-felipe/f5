@@ -9,6 +9,7 @@ import {
   ensurePinnedDownload,
   GuestImageError,
   guestImagePath,
+  leasePinnedDownload,
   parseGuestImagePin,
   pinnedDownloadPath,
   pruneGuestImages,
@@ -242,6 +243,65 @@ describe("ensureGuestImage", () => {
     expect(FS.existsSync(otherArchive)).toBe(false);
     expect(FS.existsSync(otherImage)).toBe(true);
     expect(FS.existsSync(path)).toBe(true);
+  });
+
+  it("keeps a leased file from a concurrent pruner of another build until it is released", async () => {
+    const lease = await leasePinnedDownload({
+      pin,
+      cacheDir: dir,
+      fetch: server(content).fetch,
+      lock: locks.acquire,
+      kind: BACKEND_ARCHIVE,
+    });
+    expect(lease.path).toBe(pinnedDownloadPath(dir, sha256, BACKEND_ARCHIVE));
+    // Another F5 build installed its own archive and prunes everything else.
+    const otherBuild = "b".repeat(64);
+    FS.writeFileSync(pinnedDownloadPath(dir, otherBuild, BACKEND_ARCHIVE), "");
+    await prunePinnedDownloads(dir, otherBuild, BACKEND_ARCHIVE, locks.acquire);
+    expect(FS.readFileSync(lease.path)).toEqual(content);
+    lease.release();
+    lease.release();
+    await prunePinnedDownloads(dir, otherBuild, BACKEND_ARCHIVE, locks.acquire);
+    expect(FS.existsSync(lease.path)).toBe(false);
+  });
+
+  it("replaces a cached file of the right size whose digest doesn't match", async () => {
+    const path = pinnedDownloadPath(dir, sha256, BACKEND_ARCHIVE);
+    FS.writeFileSync(path, Buffer.alloc(content.byteLength, 1));
+    const { fetch: fetchImpl, requests } = server(content);
+    const lease = await leasePinnedDownload({
+      pin,
+      cacheDir: dir,
+      fetch: fetchImpl,
+      lock: locks.acquire,
+      kind: BACKEND_ARCHIVE,
+    });
+    expect(requests).toEqual([null]);
+    expect(FS.readFileSync(lease.path)).toEqual(content);
+    lease.release();
+    // A verified cache needs no download.
+    const again = await leasePinnedDownload({
+      pin,
+      cacheDir: dir,
+      fetch: fetchImpl,
+      lock: locks.acquire,
+      kind: BACKEND_ARCHIVE,
+    });
+    again.release();
+    expect(requests).toHaveLength(1);
+  });
+
+  it("releases the digest's lock when a leased download fails", async () => {
+    await expect(
+      leasePinnedDownload({
+        pin: { ...pin, sha256: "0".repeat(64) },
+        cacheDir: dir,
+        fetch: server(content).fetch,
+        lock: locks.acquire,
+        kind: BACKEND_ARCHIVE,
+      }),
+    ).rejects.toThrow(/digest verification/);
+    expect(locks.held.size).toBe(0);
   });
 
   it("names the kind in its errors", async () => {

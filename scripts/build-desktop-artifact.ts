@@ -43,6 +43,16 @@ export const DESKTOP_ASAR_UNPACK = [
   "node_modules/@openai/codex-*/**/*",
 ] as const;
 
+/**
+ * Stage directories copied into Resources through `extraResources`. Without these, the
+ * default `**\/*` would also pack them into app.asar: a second, unsigned copy of the native
+ * helper and Lima that only grows the download and the asar integrity hash.
+ */
+export const EXTRA_RESOURCE_EXCLUSIONS = [
+  "!apps/desktop/native-bin/**/*",
+  "!apps/desktop/vm-bin/**/*",
+] as const;
+
 export function resolveMacFileExclusions(arch?: typeof BuildArch.Type): string[] {
   if (!arch || arch === "universal") return [];
   const unusedArch = arch === "arm64" ? "x64" : "arm64";
@@ -568,7 +578,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       });
     }
     buildConfig.mac = {
-      files: ["**/*", ...resolveMacFileExclusions(arch)],
+      files: ["**/*", ...EXTRA_RESOURCE_EXCLUSIONS, ...resolveMacFileExclusions(arch)],
       target: target === "dmg" ? [target, "zip"] : [target],
       icon: "icon.icns",
       category: "public.app-category.developer-tools",
@@ -624,6 +634,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
 
   if (platform === "win") {
     const winConfig: Record<string, unknown> = {
+      files: ["**/*", ...EXTRA_RESOURCE_EXCLUSIONS],
       target: [target],
       icon: "icon.ico",
     };
