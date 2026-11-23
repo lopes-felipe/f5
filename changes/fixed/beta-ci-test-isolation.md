@@ -1,0 +1,1 @@
+- Prevent unrelated terminal state and slow macOS test setup from blocking beta release checks.
