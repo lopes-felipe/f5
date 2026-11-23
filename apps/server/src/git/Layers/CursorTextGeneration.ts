@@ -100,10 +100,18 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
   const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const configDir = cursorConfigDir(environment);
   const scratchDir = options.scratchDir;
-  const ensureScratchDir =
+  const ensureScratchDir = (operation: string) =>
     scratchDir === undefined
       ? Effect.void
-      : Effect.promise(() => nodeFs.mkdir(scratchDir, { recursive: true }).catch(() => undefined));
+      : Effect.tryPromise({
+          try: () => nodeFs.mkdir(scratchDir, { recursive: true }),
+          catch: (cause) =>
+            new TextGenerationError({
+              operation,
+              detail: `Could not create Cursor's scratch folder: ${cause instanceof Error ? cause.message : String(cause)}`,
+              cause,
+            }),
+        }).pipe(Effect.asVoid);
 
   const runCursorJson = <S extends Schema.Top>({
     operation,
@@ -125,7 +133,7 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
     modelSelection: ModelSelection;
   }): Effect.Effect<S["Type"], TextGenerationError, S["DecodingServices"]> =>
     Effect.gen(function* () {
-      yield* ensureScratchDir;
+      yield* ensureScratchDir(operation);
       const sessionCwd = scratchDir ?? cwd;
       const createdSessionId = yield* Ref.make<string | undefined>(undefined);
       return yield* runCursorJsonInSession({

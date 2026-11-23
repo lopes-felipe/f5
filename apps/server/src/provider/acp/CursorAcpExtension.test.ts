@@ -192,16 +192,24 @@ describe("CursorAcpExtension", () => {
   });
 
   it("maps a settled question onto the fallback's options", () => {
+    const allowRust = {
+      ...fallback(),
+      options: [
+        { optionId: "allow-once", name: "Rust", kind: "allow_once" },
+        { optionId: "reject-once", name: "Skip", kind: "reject_once" },
+      ],
+    } satisfies RequestPermissionRequest;
     expect(
-      cursorQuestionFallbackReply(fallback(), {
-        outcome: "answered",
-        answers: [{ questionId: "scope", selectedOptionIds: ["a"] }],
-      }),
+      cursorQuestionFallbackReply(
+        allowRust,
+        { outcome: "answered", answers: [{ questionId: "langs", selectedOptionIds: ["rs"] }] },
+        question,
+      ),
     ).toEqual({ outcome: { outcome: "selected", optionId: "allow-once" } });
-    expect(cursorQuestionFallbackReply(fallback(), { outcome: "skipped" })).toEqual({
+    expect(cursorQuestionFallbackReply(fallback(), { outcome: "skipped" }, question)).toEqual({
       outcome: { outcome: "selected", optionId: "reject-once" },
     });
-    expect(cursorQuestionFallbackReply(fallback(), { outcome: "cancelled" })).toEqual({
+    expect(cursorQuestionFallbackReply(fallback(), { outcome: "cancelled" }, question)).toEqual({
       outcome: { outcome: "cancelled" },
     });
   });
@@ -210,13 +218,43 @@ describe("CursorAcpExtension", () => {
     // Several questions: which one `_q<n>` re-asks, and whether it was the
     // skipped one, is not recorded, so nothing is replayed.
     expect(
-      cursorQuestionFallbackReply(fallback(), {
-        outcome: "answered",
-        answers: [
-          { questionId: "scope", selectedOptionIds: [] },
-          { questionId: "langs", selectedOptionIds: ["rs"] },
-        ],
-      }),
+      cursorQuestionFallbackReply(
+        fallback(),
+        {
+          outcome: "answered",
+          answers: [
+            { questionId: "scope", selectedOptionIds: [] },
+            { questionId: "langs", selectedOptionIds: ["rs"] },
+          ],
+        },
+        question,
+      ),
+    ).toBeUndefined();
+    // The chosen label differs from the `allow_once` option's name: the
+    // option may stand for a choice the user rejected.
+    expect(
+      cursorQuestionFallbackReply(
+        fallback(),
+        { outcome: "answered", answers: [{ questionId: "langs", selectedOptionIds: ["rs"] }] },
+        question,
+      ),
+    ).toBeUndefined();
+    // A multi-select answer never maps onto one option.
+    expect(
+      cursorQuestionFallbackReply(
+        {
+          ...fallback(),
+          options: [
+            { optionId: "allow-once", name: "Rust", kind: "allow_once" },
+            { optionId: "reject-once", name: "Skip", kind: "reject_once" },
+          ],
+        },
+        {
+          outcome: "answered",
+          answers: [{ questionId: "langs", selectedOptionIds: ["ts", "rs"] }],
+        },
+        question,
+      ),
     ).toBeUndefined();
     // One `allow_once` option per choice: the pick cannot be mapped.
     expect(
@@ -229,7 +267,16 @@ describe("CursorAcpExtension", () => {
             { optionId: "reject-once", name: "Skip", kind: "reject_once" },
           ],
         },
-        { outcome: "answered", answers: [{ questionId: "lang", selectedOptionIds: ["rs"] }] },
+        { outcome: "answered", answers: [{ questionId: "langs", selectedOptionIds: ["rs"] }] },
+        question,
+      ),
+    ).toBeUndefined();
+    // Without the original question there is no label to match.
+    expect(
+      cursorQuestionFallbackReply(
+        fallback(),
+        { outcome: "answered", answers: [{ questionId: "scope", selectedOptionIds: ["a"] }] },
+        undefined,
       ),
     ).toBeUndefined();
   });

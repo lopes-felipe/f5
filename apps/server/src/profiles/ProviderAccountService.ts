@@ -404,6 +404,16 @@ export class ProviderAccountService {
         // Admission stays closed for every peer until the post-run refresh,
         // so no session starts on an account that is mid-change.
         releaseAccountChange = beginAccountChanges(this.config.stateDir, sharedPeers);
+        // Peers were resolved before the OAuth lease; settings may have moved an instance into
+        // or out of this credential store while it waited, leaving a live peer unguarded.
+        const guardedPeers = await this.accountPeers(instanceId);
+        if (
+          guardedPeers.length !== sharedPeers.length ||
+          guardedPeers.some((peer) => !sharedPeers.includes(peer))
+        )
+          throw new Error(
+            "The providers using this account changed while it was waiting. Try again.",
+          );
         if (await this.anyBusy(sharedPeers))
           throw new Error(
             "Stop the active turns of every provider using this account before changing it.",

@@ -147,11 +147,12 @@ export function cursorRuntimeModes(
   } = {},
 ): ReadonlySet<RuntimeMode> {
   if (harness === "acp") {
-    const acpGates = input.acpGates ?? CURSOR_ACP_GATES;
-    const autoCertified =
-      input.cliVersion === undefined
-        ? acpGates.autoReviewMinimumVersion !== undefined
-        : cursorAcpAutoReviewSupported(input.cliVersion, acpGates);
+    // Fails closed: without the installed CLI's version Auto is never offered,
+    // so a CLI older than the certified minimum cannot be admitted to it.
+    const autoCertified = cursorAcpAutoReviewSupported(
+      input.cliVersion,
+      input.acpGates ?? CURSOR_ACP_GATES,
+    );
     return new Set<RuntimeMode>(
       autoCertified
         ? ["approval-required", "auto", "full-access"]

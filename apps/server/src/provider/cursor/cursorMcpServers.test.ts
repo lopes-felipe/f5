@@ -82,6 +82,7 @@ describe("resolveCursorMcpServers", () => {
       expect.arrayContaining([
         "custom-header-value",
         "Bearer secret-token-value",
+        "secret-token-value",
         "?api_key=k1&session=long-session-value",
         "long-session-value",
         "pass1234",
@@ -94,7 +95,7 @@ describe("resolveCursorMcpServers", () => {
     expect(secrets.some((secret) => secret.includes("127.0.0.1"))).toBe(false);
   });
 
-  it("reads Cursor's mcp.json only from bounded regular files", async () => {
+  it("reads Cursor's mcp.json only from bounded files", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "cursor-mcp-names-"));
     try {
       await mkdir(path.join(root, "config"));
@@ -103,13 +104,18 @@ describe("resolveCursorMcpServers", () => {
         path.join(root, "config", "mcp.json"),
         JSON.stringify({ mcpServers: { user: {} } }),
       );
-      execFileSync("mkfifo", [path.join(root, "workspace", ".cursor", "mcp.json")]);
-      expect([
-        ...(await readCursorMcpConfigNames({
-          configDir: path.join(root, "config"),
-          cwd: path.join(root, "workspace"),
-        })),
-      ]).toEqual(["user"]);
+      await writeFile(
+        path.join(root, "workspace", ".cursor", "mcp.json"),
+        JSON.stringify({ mcpServers: { project: {} } }),
+      );
+      expect(
+        [
+          ...(await readCursorMcpConfigNames({
+            configDir: path.join(root, "config"),
+            cwd: path.join(root, "workspace"),
+          })),
+        ].toSorted(),
+      ).toEqual(["project", "user"]);
       await writeFile(
         path.join(root, "config", "mcp.json"),
         JSON.stringify({ mcpServers: { huge: {} }, padding: "x".repeat(1_100_000) }),
@@ -126,6 +132,31 @@ describe("resolveCursorMcpServers", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  // FIFOs are POSIX-only.
+  it.skipIf(process.platform === "win32")(
+    "skips an mcp.json that is not a regular file",
+    async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "cursor-mcp-fifo-"));
+      try {
+        await mkdir(path.join(root, "config"));
+        await mkdir(path.join(root, "workspace", ".cursor"), { recursive: true });
+        await writeFile(
+          path.join(root, "config", "mcp.json"),
+          JSON.stringify({ mcpServers: { user: {} } }),
+        );
+        execFileSync("mkfifo", [path.join(root, "workspace", ".cursor", "mcp.json")]);
+        expect([
+          ...(await readCursorMcpConfigNames({
+            configDir: path.join(root, "config"),
+            cwd: path.join(root, "workspace"),
+          })),
+        ]).toEqual(["user"]);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("reports nothing when every server is forwarded", () => {
     const resolved = resolveCursorMcpServers({

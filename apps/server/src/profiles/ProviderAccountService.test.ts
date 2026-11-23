@@ -246,6 +246,20 @@ describe("profile account terminals", () => {
         /every provider using this account/,
       );
       expect(stopped).toEqual([]);
+
+      // A peer joins the store while the change waits for the OAuth lease: the
+      // guarded set is stale, so the change is refused instead of missing it.
+      busy = new Set();
+      const ids = (...names: string[]) => names.map((name) => ProviderInstanceId.make(name));
+      const peers = vi
+        .spyOn(service, "accountPeers")
+        .mockResolvedValueOnce(ids("cursor_a", "cursor_link"))
+        .mockResolvedValueOnce(ids("cursor_a", "cursor_link", "cursor_other"));
+      await expect(service.start(ProviderInstanceId.make("cursor_a"))).rejects.toThrow(
+        /changed while it was waiting/,
+      );
+      expect(stopped).toEqual([]);
+      peers.mockRestore();
     } finally {
       await FS.rm(root, { recursive: true, force: true });
     }

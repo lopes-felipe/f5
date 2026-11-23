@@ -116,7 +116,7 @@ import {
   resolveCursorGeneratedImage,
 } from "../acp/CursorAcpExtension.ts";
 import { CURSOR_ACP_CLIENT_INFO } from "../cursor/cursorAcpClientInfo.ts";
-import { cursorConfigDir, deleteCursorAcpSession } from "../cursor/CursorNativeSessions.ts";
+import { cursorConfigDir } from "../cursor/CursorNativeSessions.ts";
 import {
   type ResolvedCursorMcpServers,
   cursorMcpServerSecrets,
@@ -184,23 +184,31 @@ interface PendingUserInput {
   readonly answers: Deferred.Deferred<UserInputResolution>;
 }
 
-/** Extension bookkeeping that lives for one F5 turn. */
+/** Extension bookkeeping; fields documented as session-scoped survive turn resets. */
 interface CursorTurnExtensionState {
   /** Question tool call id to its outcome; kept so a late fallback gets the same answer. */
   readonly questionOutcomes: Map<string, Deferred.Deferred<CursorQuestionOutcome>>;
+  /** Question tool call id to the question itself, so a fallback can match choice labels. */
+  readonly questionRequests: Map<string, typeof CursorAskQuestionRequest.Type>;
+  /**
+   * Cursor's to-do list. Session-scoped: a later turn's `merge: true` update
+   * patches the existing list, and only a `merge: false` update replaces it.
+   */
   todos: ReadonlyArray<(typeof CursorUpdateTodosRequest.Type)["todos"][number]>;
   /** Subagent task cards still open. */
   readonly tasks: Set<string>;
+  /** Subagent task cards F5 already closed; session-scoped, so late updates are ignored. */
+  readonly closedTasks: Set<string>;
   /**
    * Tools Cursor has not reported finished. Kept across turns: a backgrounded
    * command can outlive the turn that started it and finish later.
    */
-  readonly openTools: CursorOpenToolCalls;
+  readonly openTools: CursorOpenToolCalls<TurnId>;
 }
 
 function resetTurnExtensionState(state: CursorTurnExtensionState): void {
   state.questionOutcomes.clear();
-  state.todos = [];
+  state.questionRequests.clear();
   state.tasks.clear();
 }
 
@@ -272,11 +280,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function parseCursorResume(raw: unknown): { sessionId: string; createdByF5: boolean } | undefined {
+function parseCursorResume(raw: unknown): { sessionId: string } | undefined {
   if (!isRecord(raw)) return undefined;
   if (raw.schemaVersion !== CURSOR_RESUME_VERSION) return undefined;
   if (typeof raw.sessionId !== "string" || !raw.sessionId.trim()) return undefined;
-  return { sessionId: raw.sessionId.trim(), createdByF5: raw.createdByF5 === true };
+  return { sessionId: raw.sessionId.trim() };
 }
 
 function normalizeModeSearchText(mode: AcpSessionMode): string {
@@ -679,32 +687,38 @@ export function makeCursorAdapter(
 
     /**
      * Work Cursor never reported finished closes with its turn: subagent cards
-     * with the turn's outcome, and tools as interrupted when the turn was
-     * stopped or failed. After a normal completion open tools stay open, since
-     * a backgrounded command may still report.
+     * with the turn's outcome, and the turn's own tools as interrupted when it
+     * was stopped or failed. After a normal completion open tools stay open,
+     * since a backgrounded command may still report. When the session itself
+     * ends, every open tool is interrupted under the turn that started it.
      */
     const closeOpenTasks = (
       ctx: CursorSessionContext,
       turnId: TurnId | undefined,
       status: "completed" | "failed" | "stopped",
+      sessionEnded = false,
     ) =>
       Effect.gen(function* () {
-        const interrupted =
-          status === "completed" ? [] : ctx.turnState.openTools.drainInterrupted();
-        for (const toolCall of interrupted) {
+        const interrupted = sessionEnded
+          ? ctx.turnState.openTools.drainInterrupted()
+          : status === "completed" || turnId === undefined
+            ? []
+            : ctx.turnState.openTools.drainInterrupted(turnId);
+        for (const closed of interrupted) {
           yield* offerRuntimeEvent(
             makeAcpToolCallEvent({
               stamp: yield* makeEventStamp(ctx),
               provider: PROVIDER,
               threadId: ctx.threadId,
-              turnId,
-              toolCall,
-              rawPayload: { interrupted: true, toolCallId: toolCall.toolCallId },
+              turnId: closed.turnId,
+              toolCall: closed.toolCall,
+              rawPayload: { interrupted: true, toolCallId: closed.toolCall.toolCallId },
             }),
           );
         }
         const open = [...ctx.turnState.tasks];
         ctx.turnState.tasks.clear();
+        for (const taskId of open) ctx.turnState.closedTasks.add(taskId);
         for (const taskId of open) {
           yield* offerRuntimeEvent({
             type: "task.completed",
@@ -728,7 +742,7 @@ export function makeCursorAdapter(
       Effect.gen(function* () {
         if (ctx.stopped) return;
         ctx.stopped = true;
-        yield* closeOpenTasks(ctx, ctx.activeTurnId, failure ? "failed" : "stopped");
+        yield* closeOpenTasks(ctx, ctx.activeTurnId, failure ? "failed" : "stopped", true);
         if (failure)
           yield* offerRuntimeEvent({
             type: "runtime.error",
@@ -745,15 +759,6 @@ export function makeCursorAdapter(
         }
         yield* Effect.ignore(Scope.close(ctx.scope, Exit.void));
         if (sessions.get(ctx.threadId) === ctx) sessions.delete(ctx.threadId);
-        // A one-off prompt's native session is never resumed; once the agent
-        // exited, F5 removes the files of a session it created itself.
-        const resume = parseCursorResume(ctx.session.resumeCursor);
-        if (isSyntheticOneOffThreadId(ctx.threadId) && resume?.createdByF5 && ctx.session.cwd)
-          yield* deleteCursorAcpSession({
-            configDir: cursorConfigDir(options?.environment ?? process.env),
-            sessionId: resume.sessionId,
-            cwd: ctx.session.cwd,
-          });
         if (failure && ctx.activeTurnId)
           yield* offerRuntimeEvent({
             type: "turn.completed",
@@ -789,7 +794,7 @@ export function makeCursorAdapter(
           const turnId = ctx.activeTurnId;
           if (turnId) {
             ctx.activeTurnId = undefined;
-            yield* closeOpenTasks(ctx, turnId, "failed");
+            yield* closeOpenTasks(ctx, turnId, "failed", true);
             yield* offerRuntimeEvent({
               type: "turn.completed",
               ...(yield* makeEventStamp()),
@@ -847,9 +852,11 @@ export function makeCursorAdapter(
           const pendingUserInputs = new Map<ApprovalRequestId, PendingUserInput>();
           const turnState: CursorTurnExtensionState = {
             questionOutcomes: new Map(),
+            questionRequests: new Map(),
             todos: [],
             tasks: new Set(),
-            openTools: new CursorOpenToolCalls(),
+            closedTasks: new Set(),
+            openTools: new CursorOpenToolCalls<TurnId>(),
           };
           const sessionScope = yield* Scope.make("sequential");
           let sessionScopeTransferred = false;
@@ -858,8 +865,7 @@ export function makeCursorAdapter(
           );
           let ctx!: CursorSessionContext;
 
-          const resumeCursor = parseCursorResume(input.resumeCursor);
-          const resumeSessionId = resumeCursor?.sessionId;
+          const resumeSessionId = parseCursorResume(input.resumeCursor)?.sessionId;
           const catalogs = yield* prepareAcpAutomationCatalogs({
             threadId: input.threadId,
             provider: PROVIDER as "cursor" | "grok" | "antigravity",
@@ -1085,6 +1091,8 @@ export function makeCursorAdapter(
             Effect.gen(function* () {
               yield* logNative(input.threadId, "cursor/task", params, "acp.cursor.extension");
               const taskId = RuntimeTaskId.make(params.toolCallId);
+              // A card F5 already closed with its turn stays closed.
+              if (turnState.closedTasks.has(params.toolCallId)) return;
               if (!turnState.tasks.has(params.toolCallId)) {
                 turnState.tasks.add(params.toolCallId);
                 const description = params.description?.trim();
@@ -1184,6 +1192,7 @@ export function makeCursorAdapter(
                   turnState.questionOutcomes.get(params.toolCallId) ??
                   (yield* Deferred.make<CursorQuestionOutcome>());
                 turnState.questionOutcomes.set(params.toolCallId, outcomeDeferred);
+                turnState.questionRequests.set(params.toolCallId, params);
                 const resolution = yield* askUser(
                   extractAskQuestions(params),
                   params,
@@ -1259,7 +1268,11 @@ export function makeCursorAdapter(
                 if (fallbackBaseId !== undefined) {
                   const known = turnState.questionOutcomes.get(fallbackBaseId);
                   const replayed = known
-                    ? cursorQuestionFallbackReply(params, yield* Deferred.await(known))
+                    ? cursorQuestionFallbackReply(
+                        params,
+                        yield* Deferred.await(known),
+                        turnState.questionRequests.get(fallbackBaseId),
+                      )
                     : undefined;
                   if (replayed) return replayed;
                   const resolution = yield* askUser(
@@ -1412,11 +1425,6 @@ export function makeCursorAdapter(
             resumeCursor: {
               schemaVersion: CURSOR_RESUME_VERSION,
               sessionId: started.sessionId,
-              // Ownership: only a session F5 created is ever eligible for cleanup.
-              // A load that fell back to `session/new` also yields an F5-created session.
-              ...(started.sessionId !== resumeSessionId || resumeCursor?.createdByF5
-                ? { createdByF5: true }
-                : {}),
               ...(catalogs.computerCapable() ? { computerCapable: true } : {}),
             },
             createdAt: now,
@@ -1562,13 +1570,13 @@ export function makeCursorAdapter(
                     );
                     {
                       const toolCall = cursorToolCallWithExitStatus(event.toolCall);
-                      ctx.turnState.openTools.observe(toolCall);
+                      const turnId = ctx.turnState.openTools.observe(toolCall, ctx.activeTurnId);
                       yield* offerRuntimeEvent(
                         makeAcpToolCallEvent({
                           stamp: yield* makeEventStamp(ctx),
                           provider: PROVIDER,
                           threadId: ctx.threadId,
-                          turnId: ctx.activeTurnId,
+                          turnId,
                           toolCall,
                           rawPayload: event.rawPayload,
                         }),

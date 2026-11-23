@@ -199,24 +199,32 @@ export function cursorQuestionFallbackBaseId(
  * Reply to a fallback whose base question already settled in F5, or
  * `undefined` when the settled answer does not map to exactly one option. The
  * `_q<n>` numbering and per-choice option layout are unrecorded (an R0 row),
- * so an answer replays only for a single-question group facing a single
- * `allow_once` option; anything else is shown to the user again.
+ * so an answer replays only for a single-question group with exactly one
+ * selected choice whose label names the single `allow_once` option; anything
+ * else is shown to the user again.
  */
 export function cursorQuestionFallbackReply(
   request: RequestPermissionRequest,
   outcome: CursorQuestionOutcome,
+  question: typeof CursorAskQuestionRequest.Type | undefined,
 ): RequestPermissionResponse | undefined {
   if (outcome.outcome === "cancelled") return { outcome: { outcome: "cancelled" } };
-  const select = (kind: "allow_once" | "reject_once") => {
+  const single = (kind: "allow_once" | "reject_once") => {
     const matching = request.options.filter((candidate) => candidate.kind === kind);
-    return matching.length === 1
-      ? ({ outcome: { outcome: "selected", optionId: matching[0]!.optionId } } as const)
-      : undefined;
+    return matching.length === 1 ? matching[0] : undefined;
   };
-  if (outcome.outcome === "skipped") return select("reject_once");
+  const selected = (option: { readonly optionId: string } | undefined) =>
+    option ? ({ outcome: { outcome: "selected", optionId: option.optionId } } as const) : undefined;
+  if (outcome.outcome === "skipped") return selected(single("reject_once"));
   const [only, ...rest] = outcome.answers;
-  if (!only || rest.length > 0 || only.selectedOptionIds.length === 0) return undefined;
-  return select("allow_once");
+  if (!only || rest.length > 0 || only.selectedOptionIds.length !== 1) return undefined;
+  const choice = question?.questions
+    .find((entry) => entry.id === only.questionId)
+    ?.options.find((option) => option.id === only.selectedOptionIds[0]);
+  const allow = single("allow_once");
+  if (!choice || !allow) return undefined;
+  const normalize = (value: string) => value.trim().toLowerCase();
+  return normalize(optionLabel(choice)) === normalize(allow.name) ? selected(allow) : undefined;
 }
 
 /** A fallback for a question F5 never saw is shown as a question card. */

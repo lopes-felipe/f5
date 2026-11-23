@@ -104,7 +104,12 @@ export function cursorMcpServerSecrets(
   for (const server of servers) {
     // Only remote (http/sse) servers are forwarded; stdio entries have no URL.
     if (!owned.has(server.name) || !("url" in server)) continue;
-    for (const header of server.headers) add(header.value);
+    for (const header of server.headers) {
+      add(header.value);
+      // An agent can echo just the token of `<scheme> <token>` (`Bearer abc…`).
+      const token = /^[A-Za-z][\w.-]*\s+(\S.*)$/.exec(header.value)?.[1];
+      if (token) add(token);
+    }
     try {
       const url = new URL(server.url);
       const sensitive = Boolean(url.username || url.password || url.search || url.hash);

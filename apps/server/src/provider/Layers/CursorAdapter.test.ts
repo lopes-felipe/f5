@@ -213,7 +213,6 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       assert.deepStrictEqual(session.resumeCursor, {
         schemaVersion: 1,
         sessionId: "mock-session-1",
-        createdByF5: true,
       });
 
       yield* adapter.sendTurn({
@@ -1540,7 +1539,6 @@ cursorAdapterHardeningTestLayer("CursorAdapterLive ACP hardening", (it) => {
       assert.deepStrictEqual(session.resumeCursor, {
         schemaVersion: 1,
         sessionId: "mock-session-1",
-        createdByF5: true,
       });
       yield* adapter.stopSession(threadId);
     }),
@@ -1966,17 +1964,64 @@ cursorAdapterHardeningTestLayer("CursorAdapterLive ACP hardening", (it) => {
         cwd: process.cwd(),
         runtimeMode: "full-access",
       });
-      yield* adapter.sendTurn({ threadId, input: "start", attachments: [] });
+      const first = yield* adapter.sendTurn({ threadId, input: "start", attachments: [] });
       yield* adapter.sendTurn({ threadId, input: "continue", attachments: [] });
 
-      const toolStatuses = events
-        .filter(
-          (event) =>
-            (event.type === "item.updated" || event.type === "item.completed") &&
-            String(event.itemId) === "spanning-1",
-        )
-        .map((event) => (event.payload as { status?: string }).status);
-      assert.deepEqual(toolStatuses, ["inProgress", "completed"]);
+      const toolEvents = events.filter(
+        (event) =>
+          (event.type === "item.updated" || event.type === "item.completed") &&
+          String(event.itemId) === "spanning-1",
+      );
+      assert.deepEqual(
+        toolEvents.map((event) => (event.payload as { status?: string }).status),
+        ["inProgress", "completed"],
+      );
+      // The completion belongs to the turn that started the command, not the one active when it
+      // finished.
+      assert.deepEqual(
+        toolEvents.map((event) => String(event.turnId)),
+        [String(first.turnId), String(first.turnId)],
+      );
+      yield* Fiber.interrupt(fiber);
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("merges to-dos across turns and ignores a late update for a closed subagent", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("cursor-extensions-across-turns");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockAgentWrapper({ T3_ACP_EMIT_EXTENSIONS_ACROSS_TURNS: "1" }),
+      );
+      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      const { events, fiber } = yield* collectThreadEvents(threadId);
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId, input: "plan", attachments: [] });
+      yield* adapter.sendTurn({ threadId, input: "continue", attachments: [] });
+
+      const lastPlan = events.filter((event) => event.type === "turn.plan.updated").at(-1);
+      assert.isDefined(lastPlan);
+      if (lastPlan?.type === "turn.plan.updated")
+        assert.deepEqual(lastPlan.payload.plan, [
+          { step: "First step", status: "completed" },
+          { step: "Second step", status: "pending" },
+        ]);
+      assert.deepEqual(
+        events
+          .filter((event) => event.type.startsWith("task."))
+          .map((event) => [event.type, String((event.payload as { taskId: string }).taskId)]),
+        [
+          ["task.started", "late-task"],
+          ["task.completed", "late-task"],
+        ],
+      );
       yield* Fiber.interrupt(fiber);
       yield* adapter.stopSession(threadId);
     }),

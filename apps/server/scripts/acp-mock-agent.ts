@@ -19,6 +19,8 @@ const emitBackgroundToolDuringAnswer =
   process.env.T3_ACP_EMIT_BACKGROUND_TOOL_DURING_ANSWER === "1";
 const emitToolSpanningTurns = process.env.T3_ACP_EMIT_TOOL_SPANNING_TURNS === "1";
 let spanningPromptCount = 0;
+const emitExtensionsAcrossTurns = process.env.T3_ACP_EMIT_EXTENSIONS_ACROSS_TURNS === "1";
+let extensionsPromptCount = 0;
 const emitGenericToolPlaceholders = process.env.T3_ACP_EMIT_GENERIC_TOOL_PLACEHOLDERS === "1";
 const emitAskQuestion = process.env.T3_ACP_EMIT_ASK_QUESTION === "1";
 const emitQuestionFallback = process.env.T3_ACP_EMIT_QUESTION_FALLBACK === "1";
@@ -729,6 +731,40 @@ const program = Effect.gen(function* () {
                   status: "completed",
                 },
         });
+        return { stopReason: "end_turn" };
+      }
+
+      if (emitExtensionsAcrossTurns) {
+        // The first turn sets a to-do list and leaves a subagent open; the
+        // second patches one to-do and reports that subagent finished late.
+        extensionsPromptCount += 1;
+        if (extensionsPromptCount === 1) {
+          yield* agent.client.extRequest("cursor/update_todos", {
+            toolCallId: "todos-1",
+            merge: false,
+            todos: [
+              { id: "a", content: "First step", status: "in_progress" },
+              { id: "b", content: "Second step", status: "pending" },
+            ],
+          });
+          yield* agent.client.extRequest("cursor/task", {
+            toolCallId: "late-task",
+            description: "Long child",
+            prompt: "Keep going",
+          });
+        } else {
+          yield* agent.client.extRequest("cursor/update_todos", {
+            toolCallId: "todos-2",
+            merge: true,
+            todos: [{ id: "a", status: "completed" }],
+          });
+          yield* agent.client.extRequest("cursor/task", {
+            toolCallId: "late-task",
+            description: "Long child",
+            prompt: "Keep going",
+            durationMs: 5000,
+          });
+        }
         return { stopReason: "end_turn" };
       }
 

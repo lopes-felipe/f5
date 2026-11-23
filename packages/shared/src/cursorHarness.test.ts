@@ -66,6 +66,14 @@ describe("cursorHarness gates", () => {
     expect(cursorAcpAutoReviewSupported("2026.07.09", gates)).toBe(false);
     expect(cursorAcpAutoReviewSupported("2026.08.02", gates)).toBe(true);
     expect(cursorAcpAutoReviewSupported("2026.08.02")).toBe(false);
+    expect(
+      cursorRuntimeModes("acp", { acpGates: gates, cliVersion: "2026.08.02" }).has("auto"),
+    ).toBe(true);
+    expect(
+      cursorRuntimeModes("acp", { acpGates: gates, cliVersion: "2026.07.09" }).has("auto"),
+    ).toBe(false);
+    // An unknown CLI version fails closed even once the gate is set.
+    expect(cursorRuntimeModes("acp", { acpGates: gates }).has("auto")).toBe(false);
     expect([...runtimeModeCapabilities("cursor")].toSorted()).toEqual([
       "approval-required",
       "full-access",
