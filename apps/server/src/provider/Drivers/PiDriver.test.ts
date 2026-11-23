@@ -85,6 +85,7 @@ it("publishes an explicit Pi instance's workspace catalog and scopes F5 thread c
     const processes = records.filter((record) => record.type === "spawn");
     expect(processes.some((record) => record.hasMcp === true)).toBe(true);
     expect(processes.filter((record) => record.hasMcp === true)).toHaveLength(1);
+    expect(processes.find((record) => record.hasMcp === true)?.args).not.toContain("--offline");
     for (const record of processes) expect(() => process.kill(Number(record.pid), 0)).toThrow();
   }));
 

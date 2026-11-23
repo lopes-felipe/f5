@@ -10,6 +10,10 @@ const fs=require('node:fs');
 const trace=entry=>fs.appendFileSync(process.env.F5_PI_TRACE,JSON.stringify(entry)+'\n');
 trace({type:'spawn',args:process.argv.slice(2),cwd:process.cwd(),pid:process.pid,privateEnvironment:!!process.env.F5_PI_MCP_BEARER_TOKEN});
 if(process.argv.includes('--version')){setTimeout(()=>{process.stdout.write(process.env.F5_PI_VERSION||'0.80.5');process.exit(0);},Number(process.env.F5_PI_VERSION_DELAY||0));}
+if(process.argv[2]==='auth'){
+ fs.writeSync(1,JSON.stringify({reason:'credentials_not_configured'}));
+ process.exit(1);
+}
 const emit=record=>process.stdout.write(JSON.stringify(record)+'\n');
 const reply=(record,data)=>emit({type:'response',id:record.id,command:record.type,success:true,data});
 let pending='';
@@ -18,7 +22,7 @@ process.stdin.on('data',chunk=>{pending+=chunk.toString('utf8');for(;;){const en
   // Simulates a slow cold start: answers only once the test opens the gate.
   const timer=setInterval(()=>{if(fs.existsSync(process.env.F5_PI_GATE)){clearInterval(timer);reply(record,{model:{provider:'one',id:'shared'},thinkingLevel:'high'});}},10);
  }
- else if(record.type==='get_state')reply(record,{model:{provider:'one',id:'shared'},thinkingLevel:'high'});
+ else if(record.type==='get_state')reply(record,{model:{provider:process.env.F5_PI_ACTIVE_PROVIDER||'one',id:process.env.F5_PI_ACTIVE_MODEL||'shared'},thinkingLevel:'high'});
  else if(record.type==='get_available_models')reply(record,{models:[{provider:'one',id:'shared',reasoning:true},{provider:'two',id:'shared',reasoning:true}]});
  else if(record.type==='get_commands'){
   if(process.env.F5_PI_CASE==='catalog-failure')emit({type:'response',id:record.id,success:false,error:'PRIVATE_FAILURE'});

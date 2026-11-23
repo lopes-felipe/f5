@@ -1,0 +1,1 @@
+- Pi background discovery and text generation no longer risk losing a rotated OAuth token when their short-lived Pi process exits.

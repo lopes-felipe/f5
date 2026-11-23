@@ -1298,12 +1298,52 @@ export const makePiAdapter = (settings: PiSettings, options: PiAdapterOptions) =
             const ctx = yield* requireSession(threadId);
             if (ctx.wake)
               return yield* stop(ctx, "Pi native continuation interrupted by the user.");
-            if (ctx.turns.activeTurnId && ctx.prompts.compacting) {
+            const turnId = ctx.turns.activeTurnId;
+            if (!turnId) return;
+            const stopCompaction = Effect.suspend(() => {
               ctx.prompts.clear();
-              return yield* stop(ctx, "Pi compaction interrupted by the user.");
-            }
-            const abort = ctx.turns.interrupt();
-            if (abort) yield* ctx.rpc.send(abort);
+              return stop(ctx, "Pi compaction interrupted by the user.");
+            });
+            if (ctx.prompts.compacting) return yield* stopCompaction;
+
+            // Older Pi versions can replay queued prompts after abort. Versions without
+            // clear_queue still get the same abort after the rejection or timeout.
+            const result = yield* ctx.rpc
+              .request({ type: "clear_queue" }, 2_000)
+              .pipe(Effect.orElseSucceed(() => undefined));
+            const cleared = ["steering", "followUp"].flatMap((key) => {
+              const messages = piRecordField(result, key);
+              return Array.isArray(messages)
+                ? messages.filter((message): message is string => typeof message === "string")
+                : [];
+            });
+            yield* ctx.eventGate.withPermit(
+              Effect.gen(function* () {
+                if (ctx.closed) return;
+                if (cleared.length > 0) {
+                  const count = cleared.length;
+                  yield* emit(ctx, {
+                    type: "runtime.warning",
+                    turnId: TurnId.make(turnId),
+                    payload: {
+                      category: "provider",
+                      detail: { noticeTitle: "Pi queue cleared" },
+                      message: [
+                        `Stop cleared ${count} queued ${count === 1 ? "message" : "messages"} Pi had not read.`,
+                        ...cleared.filter((message) => message.length > 0),
+                      ]
+                        .join("\n\n")
+                        .slice(0, 2_000),
+                    },
+                  });
+                }
+                // The turn can settle while Pi answers clear_queue.
+                if (ctx.turns.activeTurnId !== turnId) return;
+                if (ctx.prompts.compacting) return yield* stopCompaction;
+                const abort = ctx.turns.interrupt();
+                if (abort) yield* ctx.rpc.send(abort);
+              }),
+            );
           }),
         ),
       respondToRequest: (threadId, requestId, decision) => respond(threadId, requestId, decision),

@@ -158,6 +158,60 @@ it("keeps idle compaction alive on Stop and holds a new prompt until compaction 
     );
   }));
 
+it.each(["stop-queue", "stop-legacy"])(
+  "clears Pi's native queue before aborting: %s",
+  async (mode) =>
+    fixture(async ({ settings, options, trace }) => {
+      options.environment.F5_PI_CASE = mode;
+      await run(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const adapter = yield* makePiAdapter(settings, options);
+            const terminal = yield* Deferred.make<ProviderRuntimeEvent>();
+            const notices: ProviderRuntimeEvent[] = [];
+            yield* adapter.streamEvents.pipe(
+              Stream.runForEach((event) =>
+                Effect.gen(function* () {
+                  if (event.type === "runtime.warning") notices.push(event);
+                  if (event.type === "turn.completed") yield* Deferred.succeed(terminal, event);
+                }),
+              ),
+              Effect.forkScoped({ startImmediately: true }),
+            );
+            yield* adapter.startSession({
+              threadId,
+              cwd: tmpdir(),
+              runtimeMode: "approval-required",
+            });
+            const turn = yield* adapter.sendTurn({ threadId, input: "Continue" });
+            yield* adapter.interruptTurn(threadId);
+            expect(yield* Deferred.await(terminal).pipe(Effect.timeout("5 seconds"))).toMatchObject(
+              {
+                turnId: turn.turnId,
+                payload: { state: "cancelled" },
+              },
+            );
+            const commands = (yield* Effect.promise(trace)).map((record) => record.type);
+            expect(
+              commands.filter((command) => command === "clear_queue" || command === "abort"),
+            ).toEqual(["clear_queue", "abort"]);
+            if (mode === "stop-legacy") expect(notices).toEqual([]);
+            else
+              expect(notices).toMatchObject([
+                {
+                  turnId: turn.turnId,
+                  payload: {
+                    message:
+                      "Stop cleared 3 queued messages Pi had not read.\n\nQueued steer\n\nQueued follow-up",
+                  },
+                },
+              ]);
+          }),
+        ),
+      );
+    }),
+);
+
 // "streaming": native work started before its wake reached F5, so Pi must queue the prompt.
 it.each([
   "normal",

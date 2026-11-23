@@ -1,6 +1,6 @@
 import { tmpdir } from "node:os";
 import type { PiSettings, ServerProviderModel } from "@t3tools/contracts";
-import { Effect } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { runProcess } from "../../processRunner.ts";
 import { compareCliVersions } from "../cliVersion.ts";
 import {
@@ -9,10 +9,10 @@ import {
   providerModelsFromSettings,
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
-import { PI_CATALOG_PROBE_TIMEOUT_MS, probePiCatalog } from "../pi/PiMetadata.ts";
+import { PI_CATALOG_PROBE_TIMEOUT_MS, probePiCatalog, type PiCatalog } from "../pi/PiMetadata.ts";
 import { PiRpcError } from "../pi/PiRpc.ts";
 import { EMPTY_PI_MODEL_CAPABILITIES } from "../pi/thinkingCapabilities.ts";
-import { buildPiRpcLaunch } from "../pi/launch.ts";
+import { buildPiRpcLaunch, resolvePiLaunchArgs } from "../pi/launch.ts";
 
 /** First published Pi package with both persisted tree reads and native settlement hooks. */
 export const MINIMUM_PI_VERSION = "0.80.5";
@@ -55,21 +55,103 @@ export function buildInitialPiProviderSnapshot(settings: PiSettings): ServerProv
   });
 }
 
+const runPiStatusCommand = (
+  binaryPath: string,
+  args: readonly string[],
+  environment: NodeJS.ProcessEnv,
+  signal: AbortSignal,
+) =>
+  runProcess(binaryPath || "pi", args, {
+    cwd: tmpdir(),
+    env: buildPiRpcLaunch({
+      launchArgs: [],
+      environment,
+      extensionPath: undefined,
+      mcpSession: undefined,
+    }).env,
+    timeoutMs: 10_000,
+    maxBufferBytes: 4096,
+    // Pi reports missing credentials as JSON with a nonzero exit code.
+    allowNonZeroExit: true,
+    signal,
+  });
+
+const decodeAuthCheck = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Struct({ reason: Schema.optional(Schema.String) })),
+);
+
+const describePiCatalogCredentials = (
+  catalog: PiCatalog,
+  settings: PiSettings,
+  environment: NodeJS.ProcessEnv,
+  version: string | null,
+) =>
+  Effect.gen(function* () {
+    const model = catalog.unavailableActiveModel;
+    if (!model) {
+      return catalog.models.length === 0
+        ? "Pi has no usable models. Run Pi in a terminal and use /login or configure an API key."
+        : undefined;
+    }
+    const label = `Pi default (${model.provider}/${model.id})`;
+    const unavailable = `${label} uses ${model.provider}, which has no available models in Pi. Choose another model or check that provider's setup and the Pi launch arguments.`;
+    const launch = resolvePiLaunchArgs(settings.launchArgs);
+    // This check cannot see extension providers or keys supplied at launch.
+    if (
+      version === null ||
+      compareCliVersions(version, "0.84.1") < 0 ||
+      !launch.ok ||
+      launch.args.includes("--api-key")
+    )
+      return unavailable;
+    const output = yield* Effect.tryPromise((signal) =>
+      runPiStatusCommand(
+        settings.binaryPath,
+        ["auth", "check", "--provider", model.provider, "--json", "--no-refresh"],
+        environment,
+        signal,
+      ),
+    ).pipe(Effect.option);
+    const missingCredentials = Option.exists(
+      Option.flatMap(output, (result) =>
+        result.timedOut || result.code === null ? Option.none() : decodeAuthCheck(result.stdout),
+      ),
+      (check) => check.reason === "credentials_not_configured",
+    );
+    return missingCredentials
+      ? `${label} has no credentials configured for ${model.provider}. Choose another model or run Pi in a terminal and use /login or configure its API key.`
+      : unavailable;
+  });
+
+export const buildPiCatalogSnapshot = (
+  catalog: PiCatalog,
+  settings: PiSettings,
+  environment: NodeJS.ProcessEnv,
+  version: string | null,
+  fallbackMessage: string,
+) =>
+  Effect.gen(function* () {
+    const message = yield* describePiCatalogCredentials(catalog, settings, environment, version);
+    return buildServerProvider({
+      presentation,
+      enabled: settings.enabled,
+      checkedAt: new Date().toISOString(),
+      models: piModelsFromSettings(settings, catalog.models),
+      slashCommands: catalog.slashCommands,
+      skills: catalog.skills,
+      probe: {
+        installed: true,
+        version,
+        status: catalog.models.length > 0 ? "ready" : "warning",
+        auth: { status: "unknown" },
+        message: message ?? fallbackMessage,
+      },
+    });
+  });
+
 export const readPiVersion = (binaryPath: string, environment: NodeJS.ProcessEnv) =>
   Effect.tryPromise({
-    try: (signal) =>
-      runProcess(binaryPath || "pi", ["--version"], {
-        cwd: tmpdir(),
-        env: buildPiRpcLaunch({
-          launchArgs: [],
-          environment,
-          extensionPath: undefined,
-          mcpSession: undefined,
-        }).env,
-        timeoutMs: 10_000,
-        maxBufferBytes: 4096,
-        signal,
-      }),
+    try: (signal) => runPiStatusCommand(binaryPath, ["--version"], environment, signal),
     catch: (cause) =>
       new PiRpcError({
         operation: isCommandMissingCause(cause) ? "version-missing" : "version",
@@ -129,26 +211,25 @@ export const checkPiProviderStatus = (
           },
         });
       const result = yield* probePiCatalog(settings, environment).pipe(Effect.result);
+      if (result._tag === "Success")
+        return yield* buildPiCatalogSnapshot(
+          result.success,
+          settings,
+          environment,
+          version,
+          "Pi is available. Authentication is managed by Pi; a model catalog does not prove credentials are valid.",
+        );
       return buildServerProvider({
         presentation,
         enabled: true,
         checkedAt: new Date().toISOString(),
-        models: piModelsFromSettings(
-          settings,
-          result._tag === "Success" ? result.success.models : [],
-        ),
-        ...(result._tag === "Success"
-          ? { slashCommands: result.success.slashCommands, skills: result.success.skills }
-          : {}),
+        models: piModelsFromSettings(settings),
         probe: {
           installed: true,
           version,
-          status: result._tag === "Success" ? "ready" : "warning",
+          status: "warning",
           auth: { status: "unknown" },
-          message:
-            result._tag === "Success"
-              ? "Pi is available. Authentication is managed by Pi; a model catalog does not prove credentials are valid."
-              : `Pi RPC discovery failed or exceeded ${PI_CATALOG_PROBE_TIMEOUT_MS / 1000} seconds. Check its installation and terminal sign-in.`,
+          message: `Pi RPC discovery failed or exceeded ${PI_CATALOG_PROBE_TIMEOUT_MS / 1000} seconds. Check its installation and terminal sign-in.`,
         },
       });
     }),

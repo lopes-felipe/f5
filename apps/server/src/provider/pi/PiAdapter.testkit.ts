@@ -49,9 +49,15 @@ case 'set_model':
  if(process.env.F5_PI_CASE==='start-dialog'&&!awaitingModel){awaitingModel=record;emit({type:'extension_ui_request',id:'configure-confirm',method:'confirm',title:'Allow configuration?',message:'Use this model?',timeout:2000});}
  else reply(record,{});break;
 case 'extension_ui_response':if(awaitingModel){reply(awaitingModel,{});awaitingModel=null;}break;
+case 'clear_queue':
+ if(process.env.F5_PI_CASE==='stop-legacy')emit({type:'response',id:record.id,command:record.type,success:false,error:'Unknown command'});
+ else reply(record,{steering:['Queued steer'],followUp:['Queued follow-up','']});
+ break;
+case 'abort':reply(record,{});emit({type:'agent_settled',aborted:true});break;
 case 'prompt':{
  if(record.message.startsWith('/f5-service-tier')){reply(record,{});break;}
  const mode=process.env.F5_PI_CASE;
+ if(mode==='stop-queue'||mode==='stop-legacy'){emit({type:'agent_start'});reply(record,{});break;}
  if(mode==='extension-status') emit({type:'extension_ui_request',method:'setStatus',statusKey:'branch'});
  if(mode==='compaction-race'&&!compactionRaced){
   compactionRaced=true;

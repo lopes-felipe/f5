@@ -11,8 +11,8 @@ import { ProviderDriverError } from "../Errors.ts";
 import { makePiAdapter } from "../Layers/PiAdapter.ts";
 import {
   buildInitialPiProviderSnapshot,
+  buildPiCatalogSnapshot,
   checkPiProviderStatus,
-  piModelsFromSettings,
 } from "../Layers/PiProvider.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import { ProviderContinuationRequests } from "../ProviderContinuationRequests.ts";
@@ -145,26 +145,23 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
         streamSettings: Stream.never,
         haveSettingsChanged: () => false,
         initialSnapshot: (initial) => stamp(buildInitialPiProviderSnapshot(initial)),
-        checkProvider: Effect.suspend(() =>
-          liveCatalog
-            ? Effect.succeed({
-                ...baseSnapshot,
-                installed: true,
-                status: "ready" as const,
-                models: piModelsFromSettings(settings, liveCatalog.models),
-                slashCommands: liveCatalog.slashCommands,
-                skills: liveCatalog.skills,
-                message: "Pi's workspace catalog is available; credentials remain managed by Pi.",
-              })
-            : own(checkPiProviderStatus(settings, processEnv, beforeLaunch)).pipe(
-                Effect.orElseSucceed(() => buildInitialPiProviderSnapshot(settings)),
-                Effect.tap((checked) =>
-                  Effect.sync(() => {
-                    baseSnapshot = checked;
-                  }),
-                ),
+        checkProvider: Effect.gen(function* () {
+          const catalog = liveCatalog;
+          if (catalog)
+            return yield* own(
+              buildPiCatalogSnapshot(
+                catalog,
+                settings,
+                processEnv,
+                baseSnapshot.version,
+                "Pi's workspace catalog is available; credentials remain managed by Pi.",
               ),
-        ).pipe(
+            ).pipe(Effect.orElseSucceed(() => baseSnapshot));
+          baseSnapshot = yield* own(checkPiProviderStatus(settings, processEnv, beforeLaunch)).pipe(
+            Effect.orElseSucceed(() => buildInitialPiProviderSnapshot(settings)),
+          );
+          return baseSnapshot;
+        }).pipe(
           Effect.map(stamp),
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
           Effect.provideService(FileSystem.FileSystem, fs),
