@@ -27,6 +27,18 @@ const writeToken = async (directory: string, contents: Record<string, string>) =
     JSON.stringify(contents),
   );
 };
+/** The shape the 1.5.x CLI writes with file storage (values are synthetic). */
+const writeCliToken = async (
+  directory: string,
+  token: Record<string, unknown>,
+  extra: Record<string, unknown> = {},
+) => {
+  await fs.mkdir(path.join(directory, "antigravity-acp"), { recursive: true });
+  await fs.writeFile(
+    path.join(directory, "antigravity-acp", "antigravity-oauth-token"),
+    JSON.stringify({ token, auth_method: "personal", ...extra }),
+  );
+};
 afterEach(async () => {
   await Promise.all(directories.splice(0).map((d) => fs.rm(d, { recursive: true, force: true })));
 });
@@ -281,6 +293,47 @@ describe("Antigravity account revision", () => {
     expect((await reconcileAntigravityAuthState(directory, oauth)).revision).toBe(0);
     await writeToken(directory, { client_id: "c", refresh_token: "r3", id_token: idToken("u2") });
     expect((await reconcileAntigravityAuthState(directory, oauth)).revision).toBe(1);
+  });
+  it("reads the 1.5.x CLI's antigravity-oauth-token, keyed by its id_token email", async () => {
+    const directory = await profile();
+    const oauth = { authMethod: "oauth-personal", apiKey: "" } as const;
+    expect((await antigravityReadiness({ profileDirectory: directory, auth: oauth })).ready).toBe(
+      false,
+    );
+    const token = (access: string, refresh: string) => ({
+      access_token: access,
+      token_type: "Bearer",
+      refresh_token: refresh,
+      expiry: "2026-11-23T12:59:17Z",
+      expires_in: 3599,
+    });
+    await writeCliToken(directory, token("a1", "r1"), { id_token_email: "one@example.com" });
+    expect((await antigravityReadiness({ profileDirectory: directory, auth: oauth })).ready).toBe(
+      true,
+    );
+    await reconcileAntigravityAuthState(directory, oauth);
+    // Token refreshes keep the account; a different email is a new account.
+    await writeCliToken(directory, token("a2", "r2"), { id_token_email: "one@example.com" });
+    expect((await reconcileAntigravityAuthState(directory, oauth)).revision).toBe(0);
+    await writeCliToken(directory, token("a3", "r3"), { id_token_email: "two@example.com" });
+    expect((await reconcileAntigravityAuthState(directory, oauth)).revision).toBe(1);
+  });
+  it("prefers the CLI token file and counts an access-only file as signed in", async () => {
+    const directory = await profile();
+    const oauth = { authMethod: "oauth-personal", apiKey: "" } as const;
+    await writeToken(directory, { client_id: "c", refresh_token: "old" });
+    await reconcileAntigravityAuthState(directory, oauth);
+    // An access token rotates hourly, so it is a sign-in but not an account identity.
+    await writeCliToken(directory, { access_token: "a1" });
+    expect((await antigravityReadiness({ profileDirectory: directory, auth: oauth })).ready).toBe(
+      true,
+    );
+    expect((await reconcileAntigravityAuthState(directory, oauth)).revision).toBe(0);
+    // The CLI file wins even when it is unusable, so a stale acp_token.json never signs in.
+    await writeCliToken(directory, {});
+    expect((await antigravityReadiness({ profileDirectory: directory, auth: oauth })).ready).toBe(
+      false,
+    );
   });
   it("keeps the last account while the token is unreadable, so a new account still advances", async () => {
     const directory = await profile();

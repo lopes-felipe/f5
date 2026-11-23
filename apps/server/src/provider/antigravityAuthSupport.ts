@@ -217,8 +217,32 @@ const EMPTY_STATE: AntigravityAuthState = { version: 1, revision: 0, verified: f
 export const ANTIGRAVITY_AUTH_STATE_FILE = "f5-auth-state.json";
 const statePath = (profileDirectory: string) =>
   path.join(profileDirectory, ANTIGRAVITY_AUTH_STATE_FILE);
-const tokenPath = (profileDirectory: string) =>
-  path.join(profileDirectory, "antigravity-acp", "acp_token.json");
+/**
+ * Where a Google sign-in is stored, newest format first. The 1.5.x CLI writes
+ * `antigravity-oauth-token` (F5 forces file storage, so it never uses the OS keyring); earlier
+ * agents wrote `acp_token.json`. The first file that exists is the sign-in.
+ */
+export const ANTIGRAVITY_OAUTH_TOKEN_FILES = ["antigravity-oauth-token", "acp_token.json"] as const;
+export const antigravityOAuthTokenPaths = (profileDirectory: string) =>
+  ANTIGRAVITY_OAUTH_TOKEN_FILES.map((file) => path.join(profileDirectory, "antigravity-acp", file));
+
+/** The stored sign-in's path and text, or undefined when no token file exists. */
+export async function readAntigravityOAuthToken(
+  profileDirectory: string,
+): Promise<{ readonly file: string; readonly text: string } | undefined> {
+  for (const file of antigravityOAuthTokenPaths(profileDirectory)) {
+    let stat;
+    try {
+      stat = await fs.lstat(file);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
+    }
+    if (!stat.isFile() || stat.size === 0 || stat.size > 1024 * 1024) return undefined;
+    return { file, text: await fs.readFile(file, "utf8") };
+  }
+  return undefined;
+}
 
 function decodeCatalog(value: unknown): Pick<AntigravityAuthState, "catalog"> {
   if (value === null || typeof value !== "object") return {};
@@ -381,36 +405,72 @@ function idTokenSubject(idToken: string | undefined): string | undefined {
   }
 }
 
+const identityHash = (clientId: string, subject: string) =>
+  ACCOUNT_IDENTITY_PREFIX + createHash("sha256").update(`${clientId}\0${subject}`).digest("hex");
+
+/** The client recorded for the 1.5.x CLI's token file, which stores no OAuth client of its own. */
+const CLI_TOKEN_CLIENT = "antigravity-cli";
+
+interface ParsedOAuthToken {
+  /** A stable account identity, when the file has a subject that survives token refreshes. */
+  readonly identity: string | undefined;
+}
+
 /**
- * The OAuth account for revision tracking. Unlike the usage identity it leaves out
- * `project_id`, which Antigravity can write after the first session, and prefers a stable
- * subject (`id_token` `sub`, then `email`) over the refresh token when the file has one.
+ * Parse either token format, or undefined when the text holds no usable sign-in.
+ *
+ * - 1.5.x CLI (`antigravity-oauth-token`):
+ *   `{ token: { access_token, refresh_token?, expiry? }, auth_method?, id_token_email? }`.
+ *   The account is the `id_token_email`, else the refresh token. A file with only an access
+ *   token is signed in but has no identity, since the access token rotates every hour.
+ * - Earlier agents (`acp_token.json`): `{ client_id, refresh_token, id_token?, email? }`.
  */
-export function antigravityOAuthAccountIdentity(tokenText: string): string | undefined {
+function parseAntigravityOAuthToken(tokenText: string): ParsedOAuthToken | undefined {
   try {
     const value: unknown = JSON.parse(tokenText);
-    if (value === null || typeof value !== "object") return undefined;
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
     const fields = value as Record<string, unknown>;
     const text = (entry: unknown) =>
       typeof entry === "string" && entry.trim() ? entry.trim() : undefined;
+    const nested = fields.token;
+    if (nested !== null && typeof nested === "object" && !Array.isArray(nested)) {
+      const token = nested as Record<string, unknown>;
+      const accessToken = text(token.access_token);
+      const refreshToken = text(token.refresh_token);
+      if (!accessToken && !refreshToken) return undefined;
+      const subject = text(fields.id_token_email) ?? refreshToken;
+      return { identity: subject ? identityHash(CLI_TOKEN_CLIENT, subject) : undefined };
+    }
     const clientId = text(fields.client_id);
     const refreshToken = text(fields.refresh_token);
     if (!clientId || !refreshToken) return undefined;
     const subject = idTokenSubject(text(fields.id_token)) ?? text(fields.email) ?? refreshToken;
-    return (
-      ACCOUNT_IDENTITY_PREFIX + createHash("sha256").update(`${clientId}\0${subject}`).digest("hex")
-    );
+    return { identity: identityHash(clientId, subject) };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The OAuth account for revision tracking. Unlike the usage identity it leaves out
+ * `project_id`, which Antigravity can write after the first session, and prefers a stable
+ * subject (`id_token` `sub` or `id_token_email`, then `email`) over the refresh token.
+ */
+export function antigravityOAuthAccountIdentity(tokenText: string): string | undefined {
+  return parseAntigravityOAuthToken(tokenText)?.identity;
+}
+
+async function readOAuthToken(profileDirectory: string) {
+  try {
+    const stored = await readAntigravityOAuthToken(profileDirectory);
+    return stored ? parseAntigravityOAuthToken(stored.text) : undefined;
   } catch {
     return undefined;
   }
 }
 
 async function readOAuthAccountFingerprint(profileDirectory: string) {
-  try {
-    return antigravityOAuthAccountIdentity(await fs.readFile(tokenPath(profileDirectory), "utf8"));
-  } catch {
-    return undefined;
-  }
+  return (await readOAuthToken(profileDirectory))?.identity;
 }
 
 /**
@@ -465,13 +525,7 @@ export function reconcileAntigravityAuthState(
 
 /** A token file only counts when it holds a readable OAuth credential, not merely bytes. */
 export async function hasAntigravityOAuthToken(profileDirectory: string): Promise<boolean> {
-  try {
-    const stat = await fs.lstat(tokenPath(profileDirectory));
-    if (!stat.isFile() || stat.size === 0 || stat.size > 1024 * 1024) return false;
-    return (await readOAuthAccountFingerprint(profileDirectory)) !== undefined;
-  } catch {
-    return false;
-  }
+  return (await readOAuthToken(profileDirectory)) !== undefined;
 }
 
 export interface AntigravityReadiness {

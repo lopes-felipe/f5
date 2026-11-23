@@ -224,7 +224,9 @@ export const ANTIGRAVITY_EXPOSED_AUTH_METHODS = [
 ] as const satisfies ReadonlyArray<AntigravityAuthMethod>;
 
 export const AntigravitySettings = Schema.Struct({
-  enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  // On by default like the other built-ins. Status checks only read local files, so nothing is
+  // installed or started until the user clicks Install and signs in.
+  enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   customModels: Schema.Array(CustomModelSetting).pipe(Schema.withDecodingDefault(() => [])),
   nativeCompaction: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   authMethod: AntigravityAuthMethod.pipe(

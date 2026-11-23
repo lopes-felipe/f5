@@ -1,11 +1,12 @@
 # Antigravity
 
-Use Google's Gemini models in F5 through the Antigravity agent. Antigravity is off by default, and
-F5 installs it only when you ask. In **Add provider**, searching for "Gemini" or "Google" finds it.
+Use Google's Gemini models in F5 through the Antigravity agent. Antigravity is listed and on by
+default, but F5 installs it only when you ask. In **Add provider**, searching for "Gemini" or
+"Google" finds it.
 
 ## How to
 
-1. Open **Settings → Providers** and add or enable the Antigravity provider.
+1. Open **Settings → Providers** and find the Antigravity provider (or add another one).
 2. Click **Install Antigravity**.
 3. Choose a **Sign-in method**:
    - **Google account** uses your Google subscription. Click **Sign in** and follow the Google
