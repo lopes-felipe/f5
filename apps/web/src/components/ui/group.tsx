@@ -13,7 +13,9 @@ import { Separator } from "./separator";
  * actions. `track` is the segmented shell used by the header's side-panel
  * toggle: a quiet rounded track holding 24px segments, no dividers; it
  * overrides its children's fill, so opt in explicitly and put ghost buttons
- * inside (`icon-xs` for icon-only segments).
+ * inside (`icon-xs` for icon-only segments). Segments never shrink, so the
+ * track is never narrower than them (`min-w-max`): sized at its min-content
+ * width, a segment with wrappable text would push the next one outside it.
  */
 const groupVariants = cva("flex w-fit *:focus-visible:z-1 *:has-focus-visible:z-1", {
   compoundVariants: [
@@ -46,7 +48,7 @@ const groupVariants = cva("flex w-fit *:focus-visible:z-1 *:has-focus-visible:z-
       track:
         // Segments are matched as any direct child: triggers (menu, popover)
         // rendering a Button replace its `data-slot`.
-        "items-center gap-px rounded-lg border border-border/70 bg-muted/40 p-0.5 [&>:not([data-slot=separator])]:h-6 [&>:not([data-slot=separator])]:rounded-md [&>:not([data-slot=separator])]:border-transparent [&>:not([data-slot=separator])]:bg-transparent [&>:not([data-slot=separator])]:shadow-none [&>:not([data-slot=separator]):not([aria-disabled=true]):hover]:bg-control-hover [&>[data-pressed]]:bg-control-hover [&>[data-popup-open]]:bg-control-hover [&>[data-slot=separator]]:hidden",
+        "min-w-max items-center gap-px rounded-lg border border-border/70 bg-muted/40 p-0.5 [&>:not([data-slot=separator])]:h-6 [&>:not([data-slot=separator])]:rounded-md [&>:not([data-slot=separator])]:border-transparent [&>:not([data-slot=separator])]:bg-transparent [&>:not([data-slot=separator])]:shadow-none [&>:not([data-slot=separator]):not([aria-disabled=true]):hover]:bg-control-hover [&>[data-pressed]]:bg-control-hover [&>[data-popup-open]]:bg-control-hover [&>[data-slot=separator]]:hidden",
     },
   },
 });
