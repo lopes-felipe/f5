@@ -148,6 +148,30 @@ describe("classifyCommandOutput: search results", () => {
     });
   });
 
+  it("reads results piped through line filters", () => {
+    const single = classify({
+      command: `grep -n "Output\\b\\|output" src/a.ts | grep -i -E "command|terminal" | head -40`,
+      output: "312:// command output here\n3758:  const terminalOutput = 1;\n",
+    });
+    expect(single.kind).toBe("search");
+    if (single.kind !== "search") return;
+    expect(single.segments[0]).toMatchObject({
+      filePath: "/repo/src/a.ts",
+      lines: [
+        { lineNumber: 312, matches: [[11, 17]] },
+        { lineNumber: 3758, matches: [[16, 22]] },
+      ],
+    });
+
+    const recursive = classify({
+      command: `grep -rn "stdout" src --include='*.ts' | grep -v test | head -20`,
+      output: "src/a.ts:72:  // stdout flag\nsrc/b.ts:9:  const stdout = 1;\n",
+    });
+    expect(recursive.kind).toBe("search");
+    if (recursive.kind !== "search") return;
+    expect(recursive.fileCount).toBe(2);
+  });
+
   it("reads context lines and -- separators", () => {
     const result = classify({
       command: "grep -rn -C1 foo src",

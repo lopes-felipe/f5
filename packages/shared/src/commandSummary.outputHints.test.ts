@@ -190,6 +190,44 @@ describe("parseSearchOutputCommand", () => {
     expect(parseSearchOutputCommand("rg -n x -g '*.ts'")).toMatchObject({ targets: [] });
   });
 
+  it("accepts pipes that only drop whole lines", () => {
+    expect(
+      parseSearchOutputCommand(
+        `grep -rn "rawOutput\\|stdout" apps/server/src --include='*.ts' | grep -v test | head -20`,
+      ),
+    ).toMatchObject({
+      patterns: ["rawOutput\\|stdout"],
+      targets: ["apps/server/src"],
+      lineNumbers: true,
+    });
+    expect(
+      parseSearchOutputCommand(
+        `grep -n "Output\\b\\|output" a.ts | grep -i -E "command|terminal|tool" | head -40`,
+      ),
+    ).toMatchObject({ patterns: ["Output\\b\\|output"], targets: ["a.ts"] });
+    expect(parseSearchOutputCommand("rg -n foo | rg -v -e bar -e baz | tail -n 5")).not.toBeNull();
+    expect(parseSearchOutputCommand("grep -n foo a | grep -vetest")).not.toBeNull();
+    expect(parseSearchOutputCommand("grep -n foo a | egrep -iw 'x|y' | head")).not.toBeNull();
+  });
+
+  it("rejects pipes that rewrite lines or stop reading the search output", () => {
+    for (const filter of [
+      "grep -n bar",
+      "grep -o bar",
+      "grep -c bar",
+      "grep -H bar",
+      "grep -A2 bar",
+      "grep bar other.ts",
+      "grep -e bar other.ts",
+      "grep -v",
+      "sort",
+      "cut -d: -f1",
+      "head -n",
+    ]) {
+      expect(parseSearchOutputCommand(`grep -n foo a.ts | ${filter}`), filter).toBeNull();
+    }
+  });
+
   it("rejects non-search commands", () => {
     expect(parseSearchOutputCommand("ls src")).toBeNull();
     expect(parseSearchOutputCommand("grep foo a | sort")).toBeNull();
