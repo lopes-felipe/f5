@@ -38,6 +38,7 @@ beforeEach(() => {
     limaHome: Path.join(root, "lima"),
     vmDir: Path.join(root, "profile", "vm"),
     imageCacheDir: Path.join(root, "images"),
+    backendCacheDir: Path.join(root, "backends"),
     imagePin: { url: "https://example.com/i.qcow2", sha256: imageSha256, size: 10 },
     backend: {
       archive: "/res/f5-1.2.3-linux-arm64.tar.gz",
@@ -155,6 +156,9 @@ function deps(
     run,
     spawn: spawn ?? (() => fakeProcess()),
     ensureImage: async () => imagePath,
+    ensureBackendArchive: async () => {
+      throw new Error("unexpected backend download");
+    },
     signalForwardReady: vi.fn(),
     writeStderr: () => undefined,
     lock: locks.acquire,
@@ -220,6 +224,31 @@ describe("parseVmSupervisorConfig", () => {
     { limaHome: "relative" },
     { backend: { archive: "/a", sha256: "x", version: "1" } },
     { backend: { archive: "/a", sha256: backendSha256, version: "../1" } },
+    { backend: { archive: "relative", sha256: backendSha256, version: "1" } },
+    { backend: { sha256: backendSha256, version: "1" } },
+    {
+      backend: {
+        archive: "/a",
+        download: { url: "https://example.com/b.tar.gz", size: 5 },
+        sha256: backendSha256,
+        version: "1",
+      },
+    },
+    {
+      backend: {
+        download: { url: "http://example.com/b.tar.gz", size: 5 },
+        sha256: backendSha256,
+        version: "1",
+      },
+    },
+    {
+      backend: {
+        download: { url: "https://example.com/b.tar.gz", size: 0 },
+        sha256: backendSha256,
+        version: "1",
+      },
+    },
+    { backendCacheDir: "relative" },
   ])("refuses %#", (patch) => {
     expect(() => parseVmSupervisorConfig(JSON.stringify({ ...config, ...patch }))).toThrow(
       VmSupervisorRefusal,
@@ -271,6 +300,62 @@ describe("VmSupervisor.prepare", () => {
     });
     await new VmSupervisor(config, deps(lima.run)).prepare();
     expect(lima.verbs()).toEqual(["list", "shell"]);
+  });
+
+  it("downloads a pinned backend only when the guest lacks it, then prunes other archives", async () => {
+    const download = { url: "https://example.com/f5-1.2.3-linux-arm64.tar.gz", size: 100 };
+    config = { ...config, backend: { version: "1.2.3", sha256: backendSha256, download } };
+    FS.mkdirSync(config.backendCacheDir, { recursive: true });
+    const stale = Path.join(config.backendCacheDir, `${"e".repeat(64)}.tar.gz`);
+    FS.writeFileSync(stale, "old build");
+    const downloaded = Path.join(config.backendCacheDir, `${backendSha256}.tar.gz`);
+    const ensureBackendArchive = vi.fn(async () => downloaded);
+    const lima = fakeLima({});
+    await new VmSupervisor(config, deps(lima.run, undefined, { ensureBackendArchive })).prepare();
+    expect(ensureBackendArchive).toHaveBeenCalledWith(
+      { ...download, sha256: backendSha256 },
+      config.backendCacheDir,
+      expect.any(AbortSignal),
+    );
+    expect(lima.calls[5]).toEqual([
+      "copy",
+      downloaded,
+      `f5:/tmp/f5-backend-${config.incarnation}.tar.gz`,
+    ]);
+    expect(FS.existsSync(stale)).toBe(false);
+
+    // A warm start of a guest that has this build downloads nothing.
+    ensureBackendArchive.mockClear();
+    const warm = fakeLima({
+      status: "Running",
+      guestStatus: { ready: true, backends: [installed] },
+    });
+    await new VmSupervisor(config, deps(warm.run, undefined, { ensureBackendArchive })).prepare();
+    expect(ensureBackendArchive).not.toHaveBeenCalled();
+  });
+
+  it("refuses without installing when the backend download fails", async () => {
+    config = {
+      ...config,
+      backend: {
+        version: "1.2.3",
+        sha256: backendSha256,
+        download: { url: "https://example.com/b.tar.gz", size: 100 },
+      },
+    };
+    const lima = fakeLima({});
+    const ensureBackendArchive = async () => {
+      throw new Error("The F5 backend archive failed digest verification and was discarded.");
+    };
+    await expect(
+      runVmSupervisor(
+        config,
+        deps(lima.run, undefined, { ensureBackendArchive }),
+        new AbortController().signal,
+      ),
+    ).resolves.toBe(VM_REFUSED_EXIT_CODE);
+    expect(startupError().message).toMatch(/digest verification/);
+    expect(lima.verbs()).not.toContain("copy");
   });
 
   it("reinstalls a backend whose version matches but whose archive digest doesn't", async () => {

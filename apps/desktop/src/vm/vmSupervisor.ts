@@ -10,7 +10,15 @@ import {
   type AcquireLock,
   type FileLockOptions,
 } from "./fileLock";
-import { ensureGuestImage, pruneGuestImages, type GuestImagePin } from "./guestImage";
+import {
+  BACKEND_ARCHIVE,
+  ensureGuestImage,
+  ensurePinnedDownload,
+  MAX_GUEST_IMAGE_BYTES,
+  pruneGuestImages,
+  prunePinnedDownloads,
+  type GuestImagePin,
+} from "./guestImage";
 import {
   buildLimaInstanceConfig,
   LIMA_DATA_DISK_NAME,
@@ -37,6 +45,18 @@ import {
  * that with Lima, so main can count the profile against the VM cap until this process
  * exits.
  */
+/**
+ * The linux-arm64 backend build the guest must run, identified by version and archive digest.
+ * Packaged builds name the release asset to download, pinned at build time; development
+ * builds may name a local archive instead. Exactly one of the two is set.
+ */
+export interface VmBackendAsset {
+  readonly version: string;
+  readonly sha256: string;
+  readonly archive?: string;
+  readonly download?: { readonly url: string; readonly size: number };
+}
+
 export interface VmSupervisorConfig {
   readonly profileId: string;
   readonly incarnation: string;
@@ -47,7 +67,9 @@ export interface VmSupervisorConfig {
   readonly vmDir: string;
   readonly imageCacheDir: string;
   readonly imagePin: GuestImagePin;
-  readonly backend: { readonly archive: string; readonly sha256: string; readonly version: string };
+  readonly backend: VmBackendAsset;
+  /** The installation-wide cache for downloaded backend archives. */
+  readonly backendCacheDir: string;
   readonly cpus?: number;
   readonly memoryGiB?: number;
   readonly dataDiskGiB?: number;
@@ -89,6 +111,8 @@ export interface VmSupervisorDeps {
     stdio: ChildProcess.StdioOptions,
   ): ChildProcess.ChildProcess;
   ensureImage(pin: GuestImagePin, cacheDir: string, signal: AbortSignal): Promise<string>;
+  /** The local path of the pinned backend archive, downloading it if needed. */
+  ensureBackendArchive(pin: GuestImagePin, cacheDir: string, signal: AbortSignal): Promise<string>;
   /** Tells main the port forward is listening (writes `VM_FORWARD_READY` to stdout). */
   signalForwardReady(): void;
   /** Children's stderr, passed through to this process's log. */
@@ -151,10 +175,33 @@ export async function acquireInstanceLock(
   }
 }
 
+/** A local archive or an HTTPS download, never both: main has already checked the source. */
+function validBackendSource(backend: VmBackendAsset | undefined): boolean {
+  if (!backend || (backend.archive === undefined) === (backend.download === undefined))
+    return false;
+  if (backend.archive !== undefined)
+    return typeof backend.archive === "string" && Path.isAbsolute(backend.archive);
+  const { url, size } = backend.download ?? {};
+  return (
+    typeof url === "string" &&
+    URL.canParse(url) &&
+    new URL(url).protocol === "https:" &&
+    Number.isSafeInteger(size) &&
+    size! > 0 &&
+    size! <= MAX_GUEST_IMAGE_BYTES
+  );
+}
+
 export function parseVmSupervisorConfig(raw: string | undefined): VmSupervisorConfig {
   if (!raw) throw new VmSupervisorRefusal("Missing VM supervisor configuration.");
   const config = JSON.parse(raw) as VmSupervisorConfig;
-  const absolute = [config.limactl, config.limaHome, config.vmDir, config.imageCacheDir];
+  const absolute = [
+    config.limactl,
+    config.limaHome,
+    config.vmDir,
+    config.imageCacheDir,
+    config.backendCacheDir,
+  ];
   if (
     !/^[0-9a-f]{32}$/.test(config.profileId) ||
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(config.incarnation) ||
@@ -162,7 +209,7 @@ export function parseVmSupervisorConfig(raw: string | undefined): VmSupervisorCo
     config.port < 1024 ||
     config.port > 65535 ||
     !absolute.every((path) => typeof path === "string" && Path.isAbsolute(path)) ||
-    !Path.isAbsolute(config.backend?.archive ?? "") ||
+    !validBackendSource(config.backend) ||
     !/^[0-9a-f]{64}$/.test(config.backend?.sha256 ?? "") ||
     !/^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/.test(config.backend?.version ?? "") ||
     !Path.isAbsolute(config.startupErrorPath ?? "")
@@ -407,12 +454,31 @@ export class VmSupervisor {
     }
   }
 
+  /**
+   * The archive to copy into the guest: the development override, or the release asset
+   * downloaded into the shared cache and verified against the digest pinned at build time.
+   * Only a guest missing this exact build gets here, so a warm start downloads nothing.
+   */
+  private async backendArchive(): Promise<string> {
+    const { backend, backendCacheDir } = this.config;
+    if (backend.archive !== undefined) return backend.archive;
+    this.deps.log(`Checking the F5 ${backend.version} backend archive`);
+    const archive = await this.deps.ensureBackendArchive(
+      { url: backend.download!.url, sha256: backend.sha256, size: backend.download!.size },
+      backendCacheDir,
+      this.stopSignal,
+    );
+    this.throwIfStopped();
+    return archive;
+  }
+
   private async installBackend(): Promise<void> {
     const { backend, incarnation } = this.config;
+    const archive = await this.backendArchive();
     this.deps.log(`Installing F5 ${backend.version} in the VM`);
     const remote = `/tmp/f5-backend-${incarnation}.tar.gz`;
     await this.limactlOk(
-      ["copy", backend.archive, `${LIMA_INSTANCE_NAME}:${remote}`],
+      ["copy", archive, `${LIMA_INSTANCE_NAME}:${remote}`],
       10 * MINUTE,
       "Copying the backend into the VM",
     );
@@ -426,6 +492,14 @@ export class VmSupervisor {
         `Installing the backend in the VM failed: ${lastLine(result.stderr) || `exit ${result.code}`}`,
       );
     }
+    // The guest holds this build now; archives of other builds are no longer needed here.
+    if (backend.download !== undefined)
+      await prunePinnedDownloads(
+        this.config.backendCacheDir,
+        backend.sha256,
+        BACKEND_ARCHIVE,
+        this.deps.lock,
+      ).catch(() => undefined);
   }
 
   private ssh() {
@@ -720,6 +794,18 @@ export function defaultVmSupervisorDeps(config: VmSupervisorConfig): VmSuperviso
         onProgress: throttleProgress((received, total) =>
           console.error(
             `[vm] Downloading the guest image: ${Math.floor((received / total) * 100)}%`,
+          ),
+        ),
+      }),
+    ensureBackendArchive: (pin, cacheDir, signal) =>
+      ensurePinnedDownload({
+        pin,
+        cacheDir,
+        signal,
+        kind: BACKEND_ARCHIVE,
+        onProgress: throttleProgress((received, total) =>
+          console.error(
+            `[vm] Downloading the F5 backend: ${Math.floor((received / total) * 100)}%`,
           ),
         ),
       }),

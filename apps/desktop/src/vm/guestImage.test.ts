@@ -4,11 +4,15 @@ import * as OS from "node:os";
 import * as Path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  BACKEND_ARCHIVE,
   ensureGuestImage,
+  ensurePinnedDownload,
   GuestImageError,
   guestImagePath,
   parseGuestImagePin,
+  pinnedDownloadPath,
   pruneGuestImages,
+  prunePinnedDownloads,
   type GuestImagePin,
 } from "./guestImage";
 import { inProcessLocks } from "./testing/inProcessLocks";
@@ -218,5 +222,37 @@ describe("ensureGuestImage", () => {
     expect(FS.readdirSync(dir).sort()).toEqual(
       [`${busy}.qcow2`, `${busy}.qcow2.part`, `${sha256}.qcow2`, "unrelated"].sort(),
     );
+  });
+
+  it("downloads and prunes backend archives as their own kind, apart from images", async () => {
+    const path = await ensurePinnedDownload({
+      pin,
+      cacheDir: dir,
+      fetch: server(content).fetch,
+      lock: locks.acquire,
+      kind: BACKEND_ARCHIVE,
+    });
+    expect(path).toBe(pinnedDownloadPath(dir, sha256, BACKEND_ARCHIVE));
+    expect(path.endsWith(`${sha256}.tar.gz`)).toBe(true);
+    const otherImage = guestImagePath(dir, "b".repeat(64));
+    FS.writeFileSync(otherImage, "");
+    const otherArchive = pinnedDownloadPath(dir, "b".repeat(64), BACKEND_ARCHIVE);
+    FS.writeFileSync(otherArchive, "");
+    await prunePinnedDownloads(dir, sha256, BACKEND_ARCHIVE, locks.acquire);
+    expect(FS.existsSync(otherArchive)).toBe(false);
+    expect(FS.existsSync(otherImage)).toBe(true);
+    expect(FS.existsSync(path)).toBe(true);
+  });
+
+  it("names the kind in its errors", async () => {
+    await expect(
+      ensurePinnedDownload({
+        pin: { ...pin, sha256: "0".repeat(64) },
+        cacheDir: dir,
+        fetch: server(content).fetch,
+        lock: locks.acquire,
+        kind: BACKEND_ARCHIVE,
+      }),
+    ).rejects.toThrow(/F5 backend archive failed digest verification/);
   });
 });

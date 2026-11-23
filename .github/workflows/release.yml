@@ -46,7 +46,8 @@ jobs:
       arch: x64
       target: nsis
   mac-desktop:
-    needs: preflight
+    # The arm64 app pins the linux-arm64 CLI archive for Linux VM profiles (see release-desktop.yml).
+    needs: [preflight, cli]
     if: needs.preflight.outputs.profile == 'all'
     strategy:
       fail-fast: false
@@ -111,6 +112,13 @@ jobs:
         with:
           name: cli-${{ matrix.target }}-attempt-${{ github.run_attempt }}
           path: release-cli/*
+          retention-days: 30
+      # The macOS arm64 desktop pins this archive's digest; the app downloads it for VM profiles.
+      - if: matrix.target == 'linux-arm64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: vm-backend-manifest-attempt-${{ github.run_attempt }}
+          path: release-cli/f5-${{ needs.preflight.outputs.version }}-linux-arm64.json
           retention-days: 30
       - uses: actions/upload-artifact@v4
         with:

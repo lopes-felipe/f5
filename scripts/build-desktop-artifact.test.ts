@@ -66,6 +66,29 @@ it("excludes unused Darwin natives across all packages, preserving universal bui
   }
 });
 
+it("signs limactl and carries the VM backend pin only in macOS arm64 builds", async () => {
+  const arm64 = (await Effect.runPromise(
+    createBuildConfig("mac", "dmg", "F5", false, false, "arm64", undefined, true),
+  )) as { mac: { binaries: string[] }; extraResources: Array<{ from: string; to: string }> };
+  expect(arm64.mac.binaries).toContain("Contents/Resources/native/lima/bin/limactl");
+  expect(arm64.extraResources).toContainEqual({ from: "apps/desktop/vm-bin", to: "vm" });
+
+  const withoutPin = (await Effect.runPromise(
+    createBuildConfig("mac", "dmg", "F5", false, false, "arm64"),
+  )) as { extraResources: Array<{ from: string }> };
+  expect(withoutPin.extraResources.map((entry) => entry.from)).toEqual(["apps/desktop/native-bin"]);
+
+  for (const arch of ["x64", "universal"] as const) {
+    const config = (await Effect.runPromise(
+      createBuildConfig("mac", "dmg", "F5", false, false, arch),
+    )) as { mac: { binaries: string[] } };
+    expect(config.mac.binaries).toEqual(["Contents/Resources/native/f5-computer-helper"]);
+    await expect(
+      Effect.runPromise(createBuildConfig("mac", "dmg", "F5", false, false, arch, undefined, true)),
+    ).rejects.toThrow(/Only macOS arm64/);
+  }
+});
+
 it("bundles the audited Codex version and unpacks its native platform packages", () => {
   expect(serverPackageJson.dependencies["@openai/codex"]).toBe(CODEX_PROTOCOL_BASELINE_VERSION);
   expect(DESKTOP_ASAR_UNPACK).toContain("node_modules/@openai/codex-*/**/*");

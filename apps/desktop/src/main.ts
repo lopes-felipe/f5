@@ -423,6 +423,7 @@ const vmLaunchAssets = resolveVmLaunchAssets({
   arch: process.arch,
   resourcesPath: process.resourcesPath ?? "",
   packaged: app.isPackaged,
+  appVersion: app.getVersion(),
 });
 if (!vmLaunchAssets.ok && process.env.F5_EXPERIMENTAL_LINUX_VM === "1")
   console.warn(`[desktop] Linux VM profiles unavailable: ${vmLaunchAssets.reason}`);

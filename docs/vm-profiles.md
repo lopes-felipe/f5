@@ -35,13 +35,17 @@ Behind `F5_EXPERIMENTAL_LINUX_VM=1`, on Apple silicon, desktop registers a VM la
 
 **Assets.** The launcher needs three things, and without any one of them VM profiles stay refused:
 
-| Asset                   | Packaged location (not bundled yet)                  | Development override                                         |
-| ----------------------- | ---------------------------------------------------- | ------------------------------------------------------------ |
-| Lima 2.3.0 `limactl`    | `Resources/native/lima/bin/limactl`                  | `F5_VM_LIMACTL`                                              |
-| linux-arm64 CLI archive | `Resources/vm/f5-<version>-linux-arm64.tar.gz`       | `F5_VM_BACKEND_ARCHIVE`, with its `.json` manifest beside it |
-| Guest image pin         | `apps/desktop/vm-guest/image.lock.json` (now `null`) | `F5_VM_IMAGE_URL`, `F5_VM_IMAGE_SHA256`, `F5_VM_IMAGE_SIZE`  |
+| Asset                   | Packaged location (macOS arm64)                   | Development override                                                     |
+| ----------------------- | ------------------------------------------------- | ------------------------------------------------------------------------ |
+| Lima `limactl`, pinned  | `Resources/native/lima/bin/limactl`               | `F5_VM_LIMACTL`                                                          |
+| linux-arm64 backend pin | `Resources/vm/linux-arm64-backend.json`           | `F5_VM_BACKEND_ARCHIVE`: a local archive, its `.json` manifest beside it |
+| Guest image pin         | `apps/desktop/vm-guest/image.lock.json`, built in | `F5_VM_IMAGE_URL`, `F5_VM_IMAGE_SHA256`, `F5_VM_IMAGE_SIZE`              |
 
-The archive is what `bun run dist:cli:archive` builds on a linux-arm64 machine. A pin accepts only release assets of this repository; the development override accepts any HTTPS URL. Packaged builds ignore all three overrides.
+Packaged builds ignore all three overrides.
+
+- **Lima** is pinned in `apps/desktop/vm-guest/lima.lock.json` (the `lima-vm/lima` Darwin arm64 release tarball and its SHA-256). `scripts/stage-lima.ts` verifies the tarball and stages only `limactl`, the Linux guest agent, the templates (`limactl` refuses to run without `default.yaml`, though F5 passes its own config) and the license: about 42 MB. The release signs `limactl` with Developer ID, hardened runtime and only `com.apple.security.virtualization` (`apps/desktop/resources/entitlements.lima.plist`), and the build fails unless the signed app passes that check.
+- **The backend** isn't in the app: the linux-arm64 CLI archive is about 625 MB, which would more than double the macOS download and every update for a hidden feature. The app instead carries the `dist:cli:archive` manifest of the archive its own release run built, and the supervisor downloads that archive the first time a guest lacks this build: from exactly `https://github.com/lopes-felipe/f5/releases/download/v<app version>/f5-<app version>-linux-arm64.tar.gz`, checked against the pinned size and SHA-256, with the same resumable, locked cache as the guest image (`<state>/vm/backends`, keeping only the current build). A pin for another version or another URL refuses the VM profile. `f5-guest install` checks the digest again inside the guest.
+- **The image pin** accepts only release assets of this repository; the development override accepts any HTTPS URL.
 
 **Guest image.** `apps/desktop/vm-guest/build-image.sh` customizes the digest-pinned Debian 13 genericcloud arm64 image offline with `virt-customize`. Packages come from a pinned `snapshot.debian.org` timestamp, and nothing runs apt at runtime. It adds:
 
@@ -85,11 +89,7 @@ The backend reads frames on fd 3 and writes them on fd 4, and its stdout is redi
 - Quitting F5 sends the same SIGTERM, but doesn't wait for VMs to shut down. A supervisor that outlives F5 finishes the shutdown. One that is killed leaves the VM running until the next start of that profile, and the stranded count lives only in memory, so it is lost when F5 quits.
 - **Egress.** The guest reaches the internet over IPv4 only. IPv6 carries only neighbor and router discovery and path MTU messages; everything else is rejected quickly, so clients fall back to IPv4. Through the host's NAT, a LAN peer with a global IPv6 address looks the same as the internet. DNS goes only to the discovered resolvers.
 - Lima's admin user keeps Lima's passwordless sudo. Only main holds its ssh key, and `f5` can't reach it.
-- Nothing has run end to end yet. That needs a published image, a linux-arm64 archive and a real boot, which goes in Terminal per the [gate's two-phase rule](#gate-result-2026-11-22). The first boot must also check:
-  - Killing `limactl shell` closes the guest session's stdin even through Lima's `ControlPersist` master. The scope stop depends on it.
-  - The loaded egress policy blocks local IPv6 (ULA, link-local) and private IPv4 destinations, and DNS to resolvers other than Lima's, while public HTTPS works.
-  - `ssh -v` under the supervisor's private `HOME` reads no file from the user's real home.
-  - A process the backend starts holds neither channel descriptor (`/proc/<pid>/fd`).
+- **End-to-end run (2026-11-23).** A throwaway harness playing main ran the real supervisor (built from main), the v0.1.11-beta.34 linux-arm64 archive and the guest image `0.0.0-guest-image-28548f885c3a`, in the gate's two phases. From scratch (new profile, image download, new data disk), Phase A in Terminal passed 17 checks and Phase B inside the backend sandbox passed 11. They covered the first-boot checklist: killing `limactl shell` stops the guest scope, the egress policy holds, the private `HOME` reads nothing from the real home, and only the backend holds the channel descriptors, close-on-exec. The first run found the `state-profiles` bug fixed in #827. One warm start failed once inside Lima (`[hostagent] vsock forward`) and didn't recur in about eight more; the backend log now keeps Lima's full output. Lima was its own ad hoc build there, not the release's signed copy.
 
 ## Phase 0 feasibility gate
 
@@ -134,8 +134,7 @@ Findings that change the remaining steps:
 
 The gate has passed, so these steps are unblocked:
 
-- **End-to-end run.** Publish the first image, pin it, then boot a VM profile with a linux-arm64 archive, outside F5 first and then inside it, as in the gate.
-- **Packaging and signing.** Bundle Lima and the linux-arm64 archive into the macOS build, re-sign `limactl` with Developer ID, hardened runtime and the virtualization entitlement, record the pins in `docs/dependency-pins.md` and the steps in `docs/release.md`, and recheck the gate's signing caveat.
+- **Packaged run.** Boot a VM profile from a released macOS arm64 build: the Developer ID copy of `limactl` under hardened runtime, and the backend downloaded from that release. This rechecks the gate's signing caveat with the shipped binary.
 - **Sharing and network.** Folders are exported only through the picker and only as separate clones, never a host repo's `.git`. Guest egress is internet-only. Main owns every port forward on `127.0.0.1`. The installation-wide login lease is held through the channel. VM-profile backends can't mutate installation state.
 - **UI.** Visible provisioning states (downloading, provisioning, booting, installing, ready, failed), a removal flow that stops the VM and trashes its LIMA_HOME, and stopping VMs on quit. "Linux VM (preview)" appears only on darwin-arm64, macOS 13+, in builds with guest assets.
 
