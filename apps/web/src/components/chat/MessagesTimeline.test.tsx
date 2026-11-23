@@ -148,7 +148,9 @@ beforeAll(async () => {
 
   const { preloadInlineDiffComponents } = await import("./MessagesTimeline");
   await preloadInlineDiffComponents();
-});
+  // This cold import includes the timeline and diff module graphs; hosted
+  // macOS runners can need longer than the default 10s while workers start.
+}, 30_000);
 
 function extractMessageRowMarkup(markup: string, messageId: string): string {
   const marker = `data-message-id="${messageId}"`;

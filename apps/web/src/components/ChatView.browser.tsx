@@ -2746,6 +2746,10 @@ describe("ChatView timeline (full app)", () => {
       openIntent: null,
     });
     useRightPanelStore.setState({ byThreadId: {} });
+    // Clearing localStorage does not reset the persisted store's in-memory
+    // state. A terminal opened by an earlier fixture can otherwise mount and
+    // take focus in an unrelated test using the same thread ID.
+    useTerminalStateStore.setState({ terminalStateByThreadId: {} });
     useNextTurnQueueStore.setState({ byThreadId: {}, summary: { threads: [] } });
     clearAllPendingTurnDispatchArtifacts();
     useStore.setState({
@@ -11564,45 +11568,55 @@ describe("ChatView timeline (full app)", () => {
       }
     });
 
-    it("keeps a backward selection and the editor scroll across click and keyboard toggles", async () => {
-      const lines = Array.from({ length: 60 }, (_, index) => `Draft line ${index}`).join("\n");
-      const { mounted, editor, form } = await mountComposer({ prompt: lines });
-      try {
-        await vi.waitFor(() => expect(toggle()).not.toBeNull());
-        editor.focus();
-        const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
-        walker.nextNode();
-        const text = walker.nextNode() ?? walker.currentNode;
-        const selection = window.getSelection()!;
-        selection.setBaseAndExtent(text, 8, text, 2);
-        editor.scrollTop = 120;
-        await waitForLayout();
-        const before = {
-          anchor: selection.anchorOffset,
-          focus: selection.focusOffset,
-          text: selection.toString(),
-        };
+    it.each([false, true])(
+      "keeps a backward selection and the editor scroll across click and keyboard toggles (terminal open=%s)",
+      async (terminalOpen) => {
+        useTerminalStateStore.getState().setTerminalOpen(THREAD_ID, terminalOpen);
+        const lines = Array.from({ length: 60 }, (_, index) => `Draft line ${index}`).join("\n");
+        const { mounted, editor, form } = await mountComposer({ prompt: lines });
+        try {
+          if (terminalOpen) {
+            await expect
+              .element(page.getByRole("textbox", { name: "Terminal input" }))
+              .toBeInTheDocument();
+            await waitForLayout();
+          }
+          await vi.waitFor(() => expect(toggle()).not.toBeNull());
+          editor.focus();
+          const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+          walker.nextNode();
+          const text = walker.nextNode() ?? walker.currentNode;
+          const selection = window.getSelection()!;
+          selection.setBaseAndExtent(text, 8, text, 2);
+          editor.scrollTop = 120;
+          await waitForLayout();
+          const before = {
+            anchor: selection.anchorOffset,
+            focus: selection.focusOffset,
+            text: selection.toString(),
+          };
 
-        await page.elementLocator(toggle()!).click();
-        await vi.waitFor(() => expect(form.getAttribute("data-composer-expanded")).toBe("true"));
-        await waitForLayout();
-        expect(document.activeElement).toBe(editor);
-        expect(selection.anchorOffset).toBe(before.anchor);
-        expect(selection.focusOffset).toBe(before.focus);
-        expect(selection.toString()).toBe(before.text);
-        expect(editor.scrollTop).toBe(120);
+          await page.elementLocator(toggle()!).click();
+          await vi.waitFor(() => expect(form.getAttribute("data-composer-expanded")).toBe("true"));
+          await waitForLayout();
+          expect(document.activeElement).toBe(editor);
+          expect(selection.anchorOffset).toBe(before.anchor);
+          expect(selection.focusOffset).toBe(before.focus);
+          expect(selection.toString()).toBe(before.text);
+          expect(editor.scrollTop).toBe(120);
 
-        toggle()!.focus();
-        await userEvent.keyboard("{Enter}");
-        await vi.waitFor(() => expect(form.hasAttribute("data-composer-expanded")).toBe(false));
-        await waitForLayout();
-        expect(document.activeElement).toBe(editor);
-        expect(selection.toString()).toBe(before.text);
-        expect(selection.anchorOffset).toBe(before.anchor);
-      } finally {
-        await mounted.cleanup();
-      }
-    });
+          toggle()!.focus();
+          await userEvent.keyboard("{Enter}");
+          await vi.waitFor(() => expect(form.hasAttribute("data-composer-expanded")).toBe(false));
+          await waitForLayout();
+          expect(document.activeElement).toBe(editor);
+          expect(selection.toString()).toBe(before.text);
+          expect(selection.anchorOffset).toBe(before.anchor);
+        } finally {
+          await mounted.cleanup();
+        }
+      },
+    );
 
     it("keeps the historical reading position when expanding", async () => {
       const { mounted, form } = await mountComposer({
