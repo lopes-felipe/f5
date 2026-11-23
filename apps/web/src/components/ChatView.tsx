@@ -161,7 +161,12 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useDebouncedValue } from "@tanstack/react-pacer";
 import { useNavigate, useRouter } from "@tanstack/react-router";
-import { gitBranchesQueryOptions, gitStatusQueryOptions } from "~/lib/gitReactQuery";
+import {
+  gitBranchesQueryOptions,
+  gitStatusQueryOptions,
+  selectChatRepositoryStatus,
+  selectGitWorkingTree,
+} from "~/lib/gitReactQuery";
 import { projectSearchEntriesQueryOptions } from "~/lib/projectReactQuery";
 import { providerQueryKeys } from "~/lib/providerReactQuery";
 import { serverConfigQueryOptions } from "~/lib/serverReactQuery";
@@ -220,7 +225,12 @@ import {
   formatElapsed,
   PROVIDER_OPTIONS,
 } from "../session-logic";
-import { areUnknownEqual } from "../orchestrationState";
+import {
+  notifyComposerModelPick,
+  pendingComposerModelPick,
+  queueComposerModelPick,
+  subscribeComposerModelPicks,
+} from "../composerModelPicks";
 import { type LegendListRef } from "@legendapp/list/react";
 import { Debouncer } from "@tanstack/react-pacer";
 import {
@@ -658,11 +668,17 @@ type ChatHeaderPanelStateProp = "diffState" | "filesState" | "agentsState" | "pr
 // Subscribes to the header's panel toggle states here, so opening or closing a panel re-renders
 // the header without re-rendering ChatView and the composer.
 function ChatHeaderWithPanelState(
-  props: Omit<ComponentProps<typeof ChatHeader>, ChatHeaderPanelStateProp> & {
+  props: Omit<ComponentProps<typeof ChatHeader>, ChatHeaderPanelStateProp | "workingTree"> & {
     panelThreadId: ThreadId;
+    repositoryQueryOptions: ReturnType<typeof gitStatusQueryOptions>;
   },
 ) {
-  const { panelThreadId, ...headerProps } = props;
+  const { panelThreadId, repositoryQueryOptions, ...headerProps } = props;
+  const { data: workingTree } = useQuery({
+    ...repositoryQueryOptions,
+    enabled: false,
+    select: selectGitWorkingTree,
+  });
   const panelState =
     (surfaceId: string) => (store: ReturnType<typeof useRightPanelStore.getState>) =>
       selectSurfaceHeaderState(
@@ -676,6 +692,7 @@ function ChatHeaderWithPanelState(
   return (
     <ChatHeader
       {...headerProps}
+      workingTree={workingTree}
       diffState={diffState}
       filesState={filesState}
       agentsState={agentsState}
@@ -2830,13 +2847,15 @@ export default memo(function ChatView({
   const effectivePathQuery = pathTriggerQuery.length > 0 ? debouncedPathQuery : "";
   const gitAutoRefreshIntervalMs = settings.gitStatusAutoRefreshIntervalSeconds * 1000;
   const gitAutoRefreshEnabled = settings.gitStatusAutoRefreshIntervalSeconds > 0;
-  const repositoryStatus = useQuery(
-    gitStatusQueryOptions({
-      cwd: gitCwd ?? null,
-      autoRefresh: gitAutoRefreshEnabled,
-      refetchIntervalMs: gitAutoRefreshIntervalMs,
-    }),
-  );
+  const repositoryQueryOptions = gitStatusQueryOptions({
+    cwd: gitCwd ?? null,
+    autoRefresh: gitAutoRefreshEnabled,
+    refetchIntervalMs: gitAutoRefreshIntervalMs,
+  });
+  const repositoryStatus = useQuery({
+    ...repositoryQueryOptions,
+    select: selectChatRepositoryStatus,
+  });
   const repositoryLinks = useMemo(
     () =>
       repositoryLinksForThread(
@@ -3641,59 +3660,47 @@ export default memo(function ChatView({
     planSidebarDismissedForTurnRef.current = null;
     useRightPanelStore.getState().open(threadId, "plan");
   }, [activePlan?.turnId, activeProposedPlan?.turnId, planSidebarOpen, threadId]);
-  const persistThreadSettingsForNextTurn = useCallback(
-    async (input: {
-      threadId: ThreadId;
-      createdAt: string;
-      model?: string;
-      modelSelection?: ModelSelection;
-      runtimeMode: RuntimeMode;
-      interactionMode: ProviderInteractionMode;
-    }) => {
-      if (!serverThread) {
-        return;
-      }
-      const api = readNativeApi();
-      if (!api) {
-        return;
-      }
-
-      const modelChanged = input.model !== undefined && input.model !== serverThread.model;
-      const modelSelectionChanged =
-        input.modelSelection !== undefined &&
-        !areUnknownEqual(input.modelSelection, serverThread.modelSelection ?? null);
-      if (modelChanged || modelSelectionChanged) {
-        await api.orchestration.dispatchCommand({
-          type: "thread.meta.update",
-          commandId: newCommandId(),
-          threadId: input.threadId,
-          ...(modelChanged ? { model: input.model } : {}),
-          ...(modelSelectionChanged ? { modelSelection: input.modelSelection } : {}),
-        });
-      }
-
-      if (input.runtimeMode !== serverThread.runtimeMode) {
-        await api.orchestration.dispatchCommand({
-          type: "thread.runtime-mode.set",
-          commandId: newCommandId(),
-          threadId: input.threadId,
-          runtimeMode: input.runtimeMode,
-          createdAt: input.createdAt,
-        });
-      }
-
-      if (input.interactionMode !== serverThread.interactionMode) {
-        await api.orchestration.dispatchCommand({
-          type: "thread.interaction-mode.set",
-          commandId: newCommandId(),
-          threadId: input.threadId,
-          interactionMode: input.interactionMode,
-          createdAt: input.createdAt,
-        });
-      }
-    },
-    [serverThread],
+  // Persist only explicit choices. Draft hydration, provider discovery and defaults also
+  // change the resolved selection, but must not overwrite the server thread's settings.
+  const [modelPick, setModelPick] = useState<{ threadId: ThreadId } | null>(null);
+  const savedModelPick = useRef<typeof modelPick>(null);
+  useLayoutEffect(
+    () =>
+      subscribeComposerModelPicks((pickedThreadId) => {
+        if (pickedThreadId === threadId && isServerThread) setModelPick({ threadId });
+      }),
+    [threadId, isServerThread],
   );
+  useLayoutEffect(() => {
+    if (modelPick?.threadId !== threadId || savedModelPick.current === modelPick || !serverThread)
+      return;
+    savedModelPick.current = modelPick;
+    const api = readNativeApi();
+    if (!api || noProviderAvailable) return;
+    void queueComposerModelPick(threadId, () =>
+      api.orchestration.dispatchCommand({
+        type: "thread.meta.update",
+        commandId: newCommandId(),
+        threadId,
+        model: selectedModel,
+        modelSelection: selectedModelSelectionForDispatch,
+        deferModelSwitch: true,
+      }),
+    ).catch((error: unknown) => {
+      toastManager.add({
+        type: "error",
+        title: "Could not save model selection",
+        description: error instanceof Error ? error.message : undefined,
+      });
+    });
+  }, [
+    modelPick,
+    noProviderAvailable,
+    selectedModel,
+    selectedModelSelectionForDispatch,
+    serverThread,
+    threadId,
+  ]);
 
   // LegendList owns scroll state now; we keep a footer-resize observer only
   // to drive the compact composer footer layout (no scroll side effects).
@@ -4157,6 +4164,7 @@ export default memo(function ChatView({
       }
 
       try {
+        await pendingComposerModelPick(input.command.threadId);
         if (!input.command.bootstrap) {
           useNextTurnQueueStore.getState().addOptimistic({
             submissionId: input.command.commandId,
@@ -6173,19 +6181,21 @@ export default memo(function ChatView({
       setRespondingUserInputRequestIds((existing) =>
         existing.includes(requestId) ? existing : [...existing, requestId],
       );
-      await api.orchestration
-        .dispatchCommand({
-          type: dismissed ? "thread.user-input.dismiss" : "thread.user-input.respond",
-          commandId: newCommandId(),
-          threadId: activeThreadId,
-          requestId,
-          answers,
-          attachments: (answerAttachments[requestId] ?? []).map((attachment) => ({
-            type: "upload" as const,
-            uploadId: attachment.uploadId,
-          })),
-          createdAt: new Date().toISOString(),
-        })
+      await Promise.resolve(pendingComposerModelPick(activeThreadId))
+        .then(() =>
+          api.orchestration.dispatchCommand({
+            type: dismissed ? "thread.user-input.dismiss" : "thread.user-input.respond",
+            commandId: newCommandId(),
+            threadId: activeThreadId,
+            requestId,
+            answers,
+            attachments: (answerAttachments[requestId] ?? []).map((attachment) => ({
+              type: "upload" as const,
+              uploadId: attachment.uploadId,
+            })),
+            createdAt: new Date().toISOString(),
+          }),
+        )
         .then(async () => {
           if (dismissed && answerAttachments[requestId]?.length)
             await api.attachments.releaseUploads({
@@ -6562,7 +6572,6 @@ export default memo(function ChatView({
       isConnecting,
       isServerThread,
       composerNativeSlashCommands,
-      persistThreadSettingsForNextTurn,
       removeOptimisticMessage,
       restoreComposerRollback,
       runtimeMode,
@@ -6867,6 +6876,7 @@ export default memo(function ChatView({
       setComposerDraftProviderInstance(activeThread.id, instanceId);
       setComposerDraftModel(activeThread.id, pickerResolvedModel);
       recordModelSelection(provider, pickerResolvedModel, composerDraft.modelOptions);
+      notifyComposerModelPick(activeThread.id);
       scheduleComposerFocus();
       return pickerResolvedModel;
     },
@@ -8494,7 +8504,7 @@ export default memo(function ChatView({
           <AppTitlebar className={isElectron ? undefined : "sm:px-4"}>
             <ChatHeaderWithPanelState
               panelThreadId={threadId}
-              workingTree={repositoryStatus.data?.workingTree}
+              repositoryQueryOptions={repositoryQueryOptions}
               navigationHostRef={setNavigationHost}
               isServerThread={isServerThread}
               activeThreadId={activeThread.id}

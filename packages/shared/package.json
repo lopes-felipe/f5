@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./editorLinks": {
+      "types": "./src/editorLinks.ts",
+      "import": "./src/editorLinks.ts"
+    },
     "./changedFileKind": {
       "types": "./src/changedFileKind.ts",
       "import": "./src/changedFileKind.ts"

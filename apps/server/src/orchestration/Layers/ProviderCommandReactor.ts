@@ -4146,9 +4146,9 @@ const make = Effect.gen(function* () {
           // Titles and observed checkout branches do not change the provider
           // launch context. Re-reading its stale session would erase turn errors.
           if (
-            event.payload.model === undefined &&
-            event.payload.modelSelection === undefined &&
-            event.payload.worktreePath === undefined
+            event.payload.worktreePath === undefined &&
+            (event.payload.deferModelSwitch ||
+              (event.payload.model === undefined && event.payload.modelSelection === undefined))
           )
             return;
           if (!thread?.session || thread.session.status === "stopped") {

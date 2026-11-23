@@ -6,7 +6,11 @@ import {
 } from "./project/AgentSessionImporter";
 import { desktopBusyThreadCount } from "./orchestration/sessionBusy.ts";
 import { startKeepAwake } from "./background/KeepAwake";
-import { DESKTOP_ACTIVITY_PATH, type DesktopBackendActivity } from "@t3tools/shared/backendPaths";
+import {
+  DESKTOP_ACTIVITY_PATH,
+  ORCHESTRATION_STARTUP_SNAPSHOT_PATH,
+  type DesktopBackendActivity,
+} from "@t3tools/shared/backendPaths";
 import { bindSubmissionTurnIds } from "./nextTurnQueue/submissionStatus.ts";
 import { cancelQueuedSubmission } from "./nextTurnQueue/cancelSubmission.ts";
 import { makeScheduledNotificationDelivery } from "./scheduledTasks/notificationDelivery.ts";
@@ -210,6 +214,8 @@ import { ProviderAccountService } from "./profiles/ProviderAccountService";
  */
 import http from "node:http";
 import { createHash, randomUUID } from "node:crypto";
+import { promisify } from "node:util";
+import { gzip } from "node:zlib";
 import fsPromises from "node:fs/promises";
 import type { Duplex } from "node:stream";
 
@@ -493,6 +499,7 @@ const clientDiagnosticsReporter = makeClientDiagnosticsReporter();
 const BACKEND_INCARNATION = process.env.F5_DESKTOP_BACKEND_INCARNATION || crypto.randomUUID();
 const MAX_RECONNECT_REPLAY_EVENTS = 128;
 const MAX_RECONNECT_REPLAY_BYTES = 512 * 1024;
+const gzipSnapshot = promisify(gzip);
 
 const DESKTOP_RENDERER_ORIGIN = "t3://app";
 const PRIVATE_CORS_METHODS = new Set(["GET", "POST"]);
@@ -2308,7 +2315,8 @@ export const createServer = Effect.fn(function* (
           return;
         }
         if (
-          (url.pathname.startsWith("/api/storage/") ||
+          (url.pathname === ORCHESTRATION_STARTUP_SNAPSHOT_PATH ||
+            url.pathname.startsWith("/api/storage/") ||
             url.pathname.startsWith("/api/attachments/")) &&
           !serverAuth.isWebSocketOriginAllowed(req)
         ) {
@@ -2401,6 +2409,36 @@ export const createServer = Effect.fn(function* (
             { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" },
             JSON.stringify(SERVER_BOOTSTRAP),
           );
+          return;
+        }
+        if (url.pathname === ORCHESTRATION_STARTUP_SNAPSHOT_PATH) {
+          const headers = {
+            "Cache-Control": "no-store",
+            "Content-Type": "application/json; charset=utf-8",
+            Vary: "Origin, Accept-Encoding",
+          };
+          if (req.method !== "GET") {
+            respond(405, { ...headers, Allow: "GET" });
+            return;
+          }
+          if (url.searchParams.get("incarnation") !== BACKEND_INCARNATION) {
+            respond(409, headers);
+            return;
+          }
+          yield* awaitOrchestrationRuntimeForRoute;
+          const snapshot = yield* projectionReadModelQuery.getStartupSnapshot();
+          const json = JSON.stringify(snapshot);
+          const acceptGzip = req.headers["accept-encoding"]
+            ?.split(",")
+            .some((encoding) =>
+              /^\s*gzip\s*(?:;\s*q=(?:1(?:\.0*)?|0\.\d*[1-9]\d*))?\s*$/i.test(encoding),
+            );
+          if (acceptGzip) {
+            const body = yield* Effect.tryPromise(() => gzipSnapshot(json));
+            respond(200, { ...headers, "Content-Encoding": "gzip" }, body);
+          } else {
+            respond(200, headers, json);
+          }
           return;
         }
 
@@ -4887,8 +4925,9 @@ export const createServer = Effect.fn(function* (
         };
         const resume = request.body.resume;
         if (resume?.backendIncarnation !== BACKEND_INCARNATION) return response;
+        const snapshotRequired = { ...response, snapshotRequired: true as const };
         const gap = response.latestSequence - resume.afterSequence;
-        if (gap < 0 || gap > MAX_RECONNECT_REPLAY_EVENTS) return response;
+        if (gap < 0 || gap > MAX_RECONNECT_REPLAY_EVENTS) return snapshotRequired;
         if (gap === 0) return { ...response, events: [] };
 
         const events = yield* orchestrationEngine
@@ -4897,12 +4936,12 @@ export const createServer = Effect.fn(function* (
             Stream.runCollect,
             Effect.orElseSucceed(() => []),
           );
-        if (events.length !== gap) return response;
+        if (events.length !== gap) return snapshotRequired;
         let bytes = 0;
         for (const [index, event] of events.entries()) {
-          if (event.sequence !== resume.afterSequence + index + 1) return response;
+          if (event.sequence !== resume.afterSequence + index + 1) return snapshotRequired;
           bytes += Buffer.byteLength(JSON.stringify(event));
-          if (bytes > MAX_RECONNECT_REPLAY_BYTES) return response;
+          if (bytes > MAX_RECONNECT_REPLAY_BYTES) return snapshotRequired;
         }
         return { ...response, events };
       }

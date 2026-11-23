@@ -135,7 +135,7 @@ import {
 } from "./browser/BrowserOpenPrompt";
 import { registerBrowserOpenIpc } from "./browser/registerBrowserOpenIpc";
 import { appMainFrameProfile } from "./appRendererCaller";
-import { getSafeExternalUrl } from "./browser/externalUrl";
+import { getSafeExternalUrl, getSafeShellExternalUrl } from "./browser/externalUrl";
 import { ChromeProcessSupervisor } from "./computer/ChromeProcessSupervisor";
 import { isIntegrationCertified } from "@t3tools/shared/providerIntegrationCertification";
 import { registerComputerIpc } from "./computer/registerComputerIpc";
@@ -4188,7 +4188,7 @@ function registerIpcHandlers(): void {
 
   ipcMain.removeHandler(OPEN_EXTERNAL_CHANNEL);
   ipcMain.handle(OPEN_EXTERNAL_CHANNEL, async (_event, rawUrl: unknown) => {
-    const externalUrl = getSafeExternalUrl(rawUrl);
+    const externalUrl = getSafeShellExternalUrl(rawUrl);
     if (!externalUrl) {
       return false;
     }

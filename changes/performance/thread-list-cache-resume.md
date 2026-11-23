@@ -1,0 +1,1 @@
+- The thread list reuses a recent saved snapshot on startup when it matches the current server. Larger sync gaps reload the list over compressed HTTP.

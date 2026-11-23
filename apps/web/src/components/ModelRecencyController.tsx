@@ -9,6 +9,7 @@ import { useParams } from "@tanstack/react-router";
 import { useEffect, useRef } from "react";
 
 import { useComposerDraftStore } from "../composerDraftStore";
+import { notifyComposerModelPick } from "../composerModelPicks";
 import { resolveShortcutBinding } from "../keybindings";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { hasServerCapability } from "../protocolState";
@@ -76,6 +77,7 @@ export function applyRecentModelSwap(threadId: ThreadId): boolean {
   // Re-record the previous selection as the most-recent entry so the next
   // press swaps back to what was active before this call.
   recordModelSelection(previous.provider, previous.model, wrappedOptions);
+  notifyComposerModelPick(threadId);
   return true;
 }
 

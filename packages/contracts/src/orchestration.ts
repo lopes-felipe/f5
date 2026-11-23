@@ -1454,6 +1454,8 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   regenerateTitle: Schema.optional(Schema.Literal(true)),
   model: Schema.optional(TrimmedNonEmptyString),
   modelSelection: Schema.optional(ModelSelection),
+  /** Save the composer's next-turn choice without refreshing the live session. */
+  deferModelSwitch: Schema.optional(Schema.Literal(true)),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(FilesystemPath)),
   expectedArchivedAt: Schema.optional(IsoDateTime),
@@ -2433,6 +2435,7 @@ export const ThreadMetaUpdatedPayload = Schema.Struct({
   titleRegeneration: Schema.optional(Schema.NullOr(ThreadTitleRegeneration)),
   model: Schema.optional(TrimmedNonEmptyString),
   modelSelection: Schema.optional(ModelSelection),
+  deferModelSwitch: Schema.optional(Schema.Literal(true)),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(FilesystemPath)),
   updatedAt: IsoDateTime,
@@ -3681,6 +3684,8 @@ export const OrchestrationGetLatestSequenceResult = Schema.Struct({
   backendIncarnation: Schema.String,
   /** Present when the entire requested range can be replayed, including an empty range. */
   events: Schema.optional(Schema.Array(OrchestrationEvent)),
+  /** A matched backend could not replay this gap. Read the shell snapshot over HTTP. */
+  snapshotRequired: Schema.optional(Schema.Literal(true)),
 });
 export type OrchestrationGetLatestSequenceResult = typeof OrchestrationGetLatestSequenceResult.Type;
 

@@ -7162,6 +7162,18 @@ describe("ChatView timeline (full app)", () => {
           useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.modelOptions?.codex,
         ).toMatchObject({ reasoningEffort: "medium", fastMode: true }),
       );
+      await vi.waitFor(() =>
+        expect(getDispatchCommandRequests("thread.meta.update")).toContainEqual(
+          expect.objectContaining({
+            command: expect.objectContaining({
+              threadId: THREAD_ID,
+              modelSelection: expect.objectContaining({
+                options: expect.arrayContaining([{ id: "reasoningEffort", value: "medium" }]),
+              }),
+            }),
+          }),
+        ),
+      );
       editor.dispatchEvent(
         new KeyboardEvent("keydown", {
           key: "ArrowUp",

@@ -54,6 +54,7 @@ import { type ThreadWarmProfile } from "../lib/threadPreload";
 import { startThreadDetailRetention } from "../lib/threadDetailRetention";
 
 import { startWorkspaceWatchSync } from "../lib/workspaceWatch";
+import { fetchStartupSnapshot, startupSnapshotCache } from "../orchestration/startupSnapshotCache";
 
 export const Route = createRootRouteWithContext<{
   queryClient: QueryClient;
@@ -232,6 +233,12 @@ function EventRouter() {
       navigate,
       updateSettings,
       queryClient,
+      ...(import.meta.env.MODE === "test"
+        ? {}
+        : {
+            startupCache: startupSnapshotCache,
+            readHttpStartupSnapshot: fetchStartupSnapshot,
+          }),
       pathnameRef,
       visibleRouteMatchRef,
       handledBootstrapThreadIdRef,

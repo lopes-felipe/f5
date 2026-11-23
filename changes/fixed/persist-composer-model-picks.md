@@ -1,0 +1,1 @@
+- Model and reasoning-option picks are saved to the conversation before its next message or question response.

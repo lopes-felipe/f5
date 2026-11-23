@@ -1,4 +1,5 @@
 import { defaultUrlTransform } from "react-markdown";
+import { parseLocalEditorFileUrl } from "@t3tools/shared/editorLinks";
 import { isNetworkPath, workspaceRelativeFilePath } from "@t3tools/shared/path";
 import { threadIdOfThreadReferenceUrl } from "@t3tools/shared/threadReferences";
 
@@ -319,7 +320,11 @@ export function rewriteMarkdownFileUriHref(href: string): string {
  * includes `C:` and `file:`. Local file links keep their destination so they still become
  * file chips; everything else gets the default sanitizing.
  */
-export function chatMarkdownUrlTransform(href: string): string {
+export function chatMarkdownUrlTransform(href: string, key = "href"): string {
+  if (key === "href") {
+    const editorUrl = parseLocalEditorFileUrl(href);
+    if (editorUrl) return editorUrl.href;
+  }
   if (/^f5:\/\/model\/[a-zA-Z][a-zA-Z0-9_-]*\/[^/?#\s]+$/u.test(href)) return href;
   // A bare thread reference opens the thread in the app; other `f5:` links stay stripped.
   if (threadIdOfThreadReferenceUrl(href)) return href;

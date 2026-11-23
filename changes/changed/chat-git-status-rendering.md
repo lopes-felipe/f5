@@ -1,0 +1,1 @@
+- Updating Git file counts refreshes the chat header without re-rendering the conversation and composer.

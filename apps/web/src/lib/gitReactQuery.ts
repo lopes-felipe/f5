@@ -48,6 +48,14 @@ interface GitAutoRefreshQueryOptionsInput {
   refetchIntervalMs?: number;
 }
 
+export function selectChatRepositoryStatus(status: GitStatusResult) {
+  return { pr: status.pr, sourceControl: status.sourceControl };
+}
+
+export function selectGitWorkingTree(status: GitStatusResult) {
+  return status.workingTree;
+}
+
 const pendingGitInvalidations = new WeakMap<
   QueryClient,
   Map<string | null, { dirty: boolean; done: Promise<void> }>

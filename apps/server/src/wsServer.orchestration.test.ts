@@ -15,6 +15,7 @@ import {
   type WorktreeSetupSnapshot,
 } from "@t3tools/contracts";
 import { Effect, Layer, PubSub, Stream } from "effect";
+import { ORCHESTRATION_STARTUP_SNAPSHOT_PATH } from "@t3tools/shared/backendPaths";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -99,6 +100,32 @@ describe("WebSocket Server", () => {
       resume: { afterSequence, backendIncarnation: "previous-backend" },
     });
     expect(stale.result).toEqual({ backendIncarnation, latestSequence: afterSequence + 1 });
+  });
+
+  it("offers gzip startup snapshots when the replay window cannot satisfy a cursor", async () => {
+    h.server = await createTestServer({ cwd: "/test" });
+    const addr = h.server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const [ws, welcome] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+    const incarnation = welcome.data.backendIncarnation!;
+    const replay = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getLatestSequence, {
+      resume: { afterSequence: Number.MAX_SAFE_INTEGER, backendIncarnation: incarnation },
+    });
+    expect(replay.result).toMatchObject({
+      backendIncarnation: incarnation,
+      snapshotRequired: true,
+    });
+    const url = new URL(ORCHESTRATION_STARTUP_SNAPSHOT_PATH, "http://127.0.0.1:" + port);
+    url.searchParams.set("incarnation", incarnation);
+    const response = await fetch(url, { headers: { "Accept-Encoding": "gzip" } });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-encoding")).toBe("gzip");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    const startup = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getStartupSnapshot, {});
+    expect(await response.json()).toEqual(startup.result);
+    url.searchParams.set("incarnation", "previous-backend");
+    expect((await fetch(url)).status).toBe(409);
   });
 
   it("returns error when requesting turn diff for unknown thread", async () => {

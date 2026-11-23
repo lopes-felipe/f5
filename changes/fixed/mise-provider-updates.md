@@ -1,0 +1,1 @@
+- F5 checks and updates mise-managed providers through mise. Version-pinned installs stay manual.

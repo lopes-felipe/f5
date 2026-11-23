@@ -91,6 +91,7 @@ import { affectsWorktreeInventory } from "../lib/worktreeInventoryInvalidation";
 
 import type { NativeApi } from "@t3tools/contracts";
 import type { EventRouterScheduler } from "./eventRouter";
+import { fetchStartupSnapshot, startupSnapshotCache } from "./startupSnapshotCache";
 
 export function applyProviderAdvisoriesToServerConfig(
   existing: ServerConfig | undefined,
@@ -265,6 +266,8 @@ export interface OrchestrationSyncControllerDeps extends StoreActions {
   readonly api: NativeApi;
   readonly environment: SyncControllerEnvironment;
   readonly queryClient: QueryClient;
+  readonly startupCache?: typeof startupSnapshotCache;
+  readonly readHttpStartupSnapshot?: typeof fetchStartupSnapshot;
   readonly applyTerminalEvent: ReturnType<
     typeof useTerminalStateStore.getState
   >["applyTerminalEvent"];
@@ -312,6 +315,7 @@ export function createOrchestrationSyncController(deps: OrchestrationSyncControl
   let pendingWelcomeRecovery: { id: number; payload: WsWelcomePayload } | null = null;
   let synchronizedIncarnation: string | undefined;
   let resumeIncarnation: string | undefined;
+  let triedColdCache = false;
   let authoritativeSnapshotAtMs = -Infinity;
   let pendingCommandExecutionDetailInvalidation = false;
   let latestWelcomeReceivedAtMs: number | null = null;
@@ -564,10 +568,25 @@ export function createOrchestrationSyncController(deps: OrchestrationSyncControl
   };
 
   const readSnapshot = async (): Promise<RouterSnapshot> => {
-    const incarnation = resumeIncarnation;
+    const welcome = pendingWelcomeRecovery?.payload;
+    const scope = welcome?.backendIncarnation
+      ? {
+          backendIncarnation: welcome.backendIncarnation,
+          profileId: welcome.profile?.id,
+        }
+      : undefined;
+    let cachedSnapshot: Awaited<ReturnType<typeof startupSnapshotCache.read>>;
+    if (!triedColdCache && scope && !useStore.getState().threadsHydrated) {
+      triedColdCache = true;
+      cachedSnapshot = await deps.startupCache?.read(scope).catch(() => undefined);
+    }
+    const incarnation =
+      resumeIncarnation ?? (cachedSnapshot ? scope?.backendIncarnation : undefined);
     resumeIncarnation = undefined;
+    let replay: ReadonlyArray<OrchestrationEvent> | undefined;
+    let httpIncarnation: string | undefined;
     if (incarnation !== undefined) {
-      const afterSequence = router.committedSequence;
+      const afterSequence = cachedSnapshot?.snapshotSequence ?? router.committedSequence;
       const resumed = await api.orchestration
         .getLatestSequence({
           resume: { afterSequence, backendIncarnation: incarnation },
@@ -579,19 +598,26 @@ export function createOrchestrationSyncController(deps: OrchestrationSyncControl
         resumed.events.length === resumed.latestSequence - afterSequence &&
         resumed.events.every((event, index) => event.sequence === afterSequence + index + 1)
       ) {
-        return {
-          sequence: resumed.latestSequence,
-          provisional: false,
-          replay: resumed.events,
-          merge: () => {
-            invalidateAllWorkspaceQueries(queryClient);
-            pendingCommandExecutionDetailInvalidation = false;
-            void invalidateThreadCommandExecutionDetailQueries(queryClient);
-          },
-          finish: async () => {
-            await completeWelcomeRecovery();
-          },
-        };
+        if (cachedSnapshot) replay = resumed.events;
+        else
+          return {
+            sequence: resumed.latestSequence,
+            provisional: false,
+            replay: resumed.events,
+            merge: () => {
+              invalidateAllWorkspaceQueries(queryClient);
+              pendingCommandExecutionDetailInvalidation = false;
+              void invalidateThreadCommandExecutionDetailQueries(queryClient);
+            },
+            finish: async () => {
+              await completeWelcomeRecovery();
+            },
+          };
+      } else {
+        cachedSnapshot = undefined;
+        if (resumed?.backendIncarnation === incarnation && resumed.snapshotRequired) {
+          httpIncarnation = incarnation;
+        }
       }
     }
     const pendingBootstrapThreadId =
@@ -607,9 +633,14 @@ export function createOrchestrationSyncController(deps: OrchestrationSyncControl
     // Taken before the request so a `getRewindDrafts` read that starts
     // later wins, even if this snapshot response lands after it.
     const rewindDraftReadTicket = nextRewindDraftReadTicket();
-    const startupResult = await api.orchestration.getStartupSnapshot(
-      startupDetailThreadId ? { detailThreadId: startupDetailThreadId } : undefined,
-    );
+    const startupResult = cachedSnapshot
+      ? { snapshot: cachedSnapshot, threadTailDetails: null }
+      : ((httpIncarnation !== undefined
+          ? await deps.readHttpStartupSnapshot?.(httpIncarnation).catch(() => undefined)
+          : undefined) ??
+        (await api.orchestration.getStartupSnapshot(
+          startupDetailThreadId ? { detailThreadId: startupDetailThreadId } : undefined,
+        )));
     const snapshot = startupResult.snapshot;
     const bundledThreadTailDetails = startupResult.threadTailDetails;
     const snapshotIsProvisional =
@@ -636,8 +667,9 @@ export function createOrchestrationSyncController(deps: OrchestrationSyncControl
     });
     const bufferedVisibleThreadId = visibleThreadIdForSnapshot;
     return {
-      sequence: snapshot.snapshotSequence,
+      sequence: replay?.at(-1)?.sequence ?? snapshot.snapshotSequence,
       provisional: snapshotIsProvisional,
+      ...(replay ? { replay } : {}),
       merge: () => {
         if (pendingWelcomeRecovery !== null) {
           // Turns may have finished while disconnected.
@@ -672,6 +704,12 @@ export function createOrchestrationSyncController(deps: OrchestrationSyncControl
         void invalidateWorkflowQueries(queryClient);
         if (!snapshotIsProvisional) {
           authoritativeSnapshotAtMs = environment.now();
+        }
+        // Replaying events on a cached basis will update or remove the old rows. Cleanup
+        // against that basis could prune a draft whose project was added during the gap.
+        if (cachedSnapshot) return;
+        if (!snapshotIsProvisional) {
+          if (scope) void deps.startupCache?.write(scope, snapshot).catch(() => undefined);
           void cleanupDeletedThreadsFromSnapshot(snapshot.threads);
           useComposerMentionHistoryStore
             .getState()

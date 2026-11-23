@@ -1,4 +1,5 @@
 import { ensureNativeApi } from "./nativeApi";
+import { notifyComposerModelPick } from "./composerModelPicks";
 import type { AssistantResponseContext } from "@t3tools/contracts";
 import {
   normalizeResponseReply,
@@ -2504,6 +2505,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
               .getState()
               .setLastModelOptions(normalizedProvider, legacyOptions);
           }
+          notifyComposerModelPick(threadId);
         }
       },
       setRuntimeMode: (threadId, runtimeMode) => {

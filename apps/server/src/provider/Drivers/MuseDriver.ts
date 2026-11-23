@@ -33,6 +33,7 @@ import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
 import { makeMuseUsageHistory } from "./MuseUsageHistory.ts";
 import { makeMuseAccountUsage } from "../msp/MuseAccountUsage";
+import { makeInstanceInstallTargetResolver } from "../providerInstallChannel.ts";
 
 const DRIVER_KIND = ProviderDriverKind.make("muse");
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
@@ -114,6 +115,13 @@ export const MuseDriver: ProviderDriver<MuseSettings, MuseDriverEnv> = {
       return {
         instanceId,
         driverKind: DRIVER_KIND,
+        resolveInstallTarget: makeInstanceInstallTargetResolver({
+          driver: DRIVER_KIND,
+          binaryPath: effectiveConfig.binaryPath,
+          instanceId,
+          resolutionEnvironment: processEnv,
+          instanceEnvironment: environment,
+        }),
         continuationIdentity,
         displayName,
         accentColor,
