@@ -92,7 +92,6 @@ import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import {
   ProviderCommandReactorLive,
-  resolveBoundSessionTurn,
   toProviderTurnDeliveryError,
 } from "./ProviderCommandReactor.ts";
 import { WorktreeInspectionError, WorktreeNotReadyError } from "../../project/worktreeReadiness.ts";
@@ -204,69 +203,6 @@ function mergeRuntimePayload(
   }
   return next;
 }
-
-describe("resolveBoundSessionTurn", () => {
-  const codex = ProviderInstanceId.makeUnsafe("codex");
-  const projected: NonNullable<Parameters<typeof resolveBoundSessionTurn>[0]["projected"]> = {
-    threadId: ThreadId.makeUnsafe("thread-1"),
-    status: "running",
-    providerName: "codex",
-    providerInstanceId: codex,
-    runtimeMode: "full-access",
-    activeTurnId: asTurnId("turn-1"),
-    lastError: null,
-    updatedAt: "2026-01-01T00:00:10.000Z",
-  };
-  const bind = (
-    overrides: Partial<Parameters<typeof resolveBoundSessionTurn>[0]> = {},
-  ): ReturnType<typeof resolveBoundSessionTurn> =>
-    resolveBoundSessionTurn({
-      status: "running",
-      provider: "codex",
-      providerInstanceId: codex,
-      adapterActiveTurnId: undefined,
-      updatedAt: "2026-01-01T00:00:00.000Z",
-      projected,
-      ...overrides,
-    });
-
-  it("keeps the projected turn and timestamp when re-binding the running session", () => {
-    expect(bind()).toEqual({
-      activeTurnId: "turn-1",
-      updatedAt: "2026-01-01T00:00:10.000Z",
-    });
-    expect(bind({ adapterActiveTurnId: asTurnId("turn-adapter") }).activeTurnId).toBe("turn-1");
-  });
-
-  it("uses the adapter's turn when the projection has none", () => {
-    expect(
-      bind({
-        adapterActiveTurnId: asTurnId("turn-adapter"),
-        projected: { ...projected, activeTurnId: null },
-      }).activeTurnId,
-    ).toBe("turn-adapter");
-  });
-
-  it("clears the turn for a session that is not running", () => {
-    expect(bind({ status: "ready" })).toEqual({
-      activeTurnId: null,
-      updatedAt: "2026-01-01T00:00:00.000Z",
-    });
-  });
-
-  it("never carries a turn into another provider, instance or a stopped session", () => {
-    for (const overrides of [
-      { provider: "claudeAgent" },
-      { providerInstanceId: ProviderInstanceId.makeUnsafe("codex-work") },
-      { projected: { ...projected, status: "stopped" as const } },
-    ]) {
-      expect(bind(overrides)).toEqual({
-        activeTurnId: null,
-        updatedAt: "2026-01-01T00:00:00.000Z",
-      });
-    }
-  });
-});
 
 describe("ProviderCommandReactor", () => {
   let runtime: ManagedRuntime.ManagedRuntime<
@@ -2650,9 +2586,15 @@ describe("ProviderCommandReactor", () => {
     expect(harness.startSession.mock.calls.length).toBe(1);
   });
 
-  it("keeps the running turn when a worktree change re-binds the live session", async () => {
+  /**
+   * A projected running turn `turn-1` on a live session whose adapter record
+   * lags: it reports `running` without the turn id, with an older `updatedAt`.
+   */
+  async function runningTurnFixture(input: { readonly adapterKeepsCwd: boolean }) {
     const harness = await createHarness();
     const threadId = ThreadId.makeUnsafe("thread-1");
+    // A restart binds the resolved instance, so the live session uses it too.
+    const codexInstance = ProviderInstanceId.makeUnsafe("codex");
     const now = new Date().toISOString();
 
     await Effect.runPromise(
@@ -2674,10 +2616,12 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.sendTurn.mock.calls.length === 1);
     await harness.drain();
 
-    // The adapter reports the turn as running but keeps neither a cwd nor the
-    // turn id, and its record is older than the projection's.
-    harness.replaceLiveSession(threadId, ({ cwd: _cwd, activeTurnId: _turn, ...session }) => ({
+    // Without a cwd the adapter record cannot trigger a cwd restart, so a
+    // worktree change re-binds the live session instead.
+    harness.replaceLiveSession(threadId, ({ cwd, activeTurnId: _turn, ...session }) => ({
       ...session,
+      ...(input.adapterKeepsCwd && cwd !== undefined ? { cwd } : {}),
+      providerInstanceId: codexInstance,
       status: "running",
       updatedAt: "2020-01-01T00:00:00.000Z",
     }));
@@ -2695,6 +2639,7 @@ describe("ProviderCommandReactor", () => {
         threadId,
         session: {
           ...bound,
+          providerInstanceId: codexInstance,
           status: "running",
           activeTurnId: asTurnId("turn-1"),
           updatedAt: projectedAt,
@@ -2710,25 +2655,54 @@ describe("ProviderCommandReactor", () => {
           event.type === "thread.session-set" &&
           event.commandId?.startsWith("server:provider-session-set") === true,
       ).length;
-    const rebindsBefore = await rebindCount();
-    const nextCwd = path.join(harness.workspaceRoot, "worktree-rebind-running");
-    fs.mkdirSync(nextCwd);
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.meta.update",
-        commandId: CommandId.makeUnsafe("cmd-worktree-rebind-running"),
-        threadId,
-        worktreePath: nextCwd,
-      }),
-    );
-    await waitFor(async () => (await rebindCount()) > rebindsBefore);
-    await harness.drain();
+    const changeWorktree = async () => {
+      const rebindsBefore = await rebindCount();
+      const nextCwd = path.join(harness.workspaceRoot, "worktree-rebind-running");
+      fs.mkdirSync(nextCwd);
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.makeUnsafe("cmd-worktree-rebind-running"),
+          threadId,
+          worktreePath: nextCwd,
+        }),
+      );
+      await waitFor(async () => (await rebindCount()) > rebindsBefore);
+      await harness.drain();
+      return (await readThread()) ?? null;
+    };
+    return { harness, projectedAt, changeWorktree };
+  }
 
-    const session = (await readThread())?.session;
+  it("keeps the running turn when a worktree change re-binds the live session", async () => {
+    const { harness, projectedAt, changeWorktree } = await runningTurnFixture({
+      adapterKeepsCwd: false,
+    });
+
+    const thread = await changeWorktree();
+
     expect(harness.startSession.mock.calls.length).toBe(1);
-    expect(session?.status).toBe("running");
-    expect(session?.activeTurnId).toBe("turn-1");
-    expect(session?.updatedAt).toBe(projectedAt);
+    expect(thread?.session?.status).toBe("running");
+    expect(thread?.session?.activeTurnId).toBe("turn-1");
+    expect(thread?.session?.updatedAt).toBe(projectedAt);
+    expect(thread?.latestTurn).toMatchObject({ turnId: "turn-1", state: "running" });
+  });
+
+  it("starts a restarted session without the previous turn even when it reports running", async () => {
+    const { harness, changeWorktree } = await runningTurnFixture({ adapterKeepsCwd: true });
+    const start = harness.startSession.getMockImplementation();
+    if (!start) throw new Error("Missing startSession implementation");
+    harness.startSession.mockImplementationOnce((threadId, input) =>
+      start(threadId, input).pipe(
+        Effect.map((session) => ({ ...session, status: "running" as const })),
+      ),
+    );
+
+    const thread = await changeWorktree();
+
+    expect(harness.startSession.mock.calls.length).toBe(2);
+    expect(thread?.session?.status).toBe("running");
+    expect(thread?.session?.activeTurnId).toBeNull();
   });
 
   it("starts a fresh session when only projected session state exists", async () => {

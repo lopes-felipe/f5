@@ -1809,6 +1809,11 @@ const ThreadSessionSetCommand = Schema.Struct({
   session: OrchestrationSession,
   settledTurnId: Schema.optional(TurnId),
   usageFact: Schema.optional(UsageTurnFact),
+  /**
+   * Re-binds the session the thread already runs. The decider keeps the turn
+   * the current state still has running, so a refresh mid-turn does not drop it.
+   */
+  rebindLiveSession: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
 });
 

@@ -241,39 +241,6 @@ function mapProviderSessionStatusToOrchestrationStatus(
   }
 }
 
-/**
- * Turn identity and freshness for a bound session. Re-binding a session that is
- * already running a turn (for example after a worktree change) keeps the turn
- * the projection tracks, so steering and interrupts still target it, and never
- * moves `updatedAt` back to the adapter's older record.
- */
-export function resolveBoundSessionTurn(input: {
-  readonly status: OrchestrationSession["status"];
-  readonly provider: string;
-  readonly providerInstanceId: ProviderInstanceId | null;
-  readonly adapterActiveTurnId: TurnId | undefined;
-  readonly updatedAt: string;
-  readonly projected: OrchestrationSession | null | undefined;
-}): { readonly activeTurnId: TurnId | null; readonly updatedAt: string } {
-  if (input.status !== "running") return { activeTurnId: null, updatedAt: input.updatedAt };
-  const projected = input.projected;
-  const sameLiveSession =
-    projected != null &&
-    projected.status !== "stopped" &&
-    projected.providerName === input.provider &&
-    (projected.providerInstanceId ?? null) === input.providerInstanceId;
-  if (!sameLiveSession) {
-    return { activeTurnId: input.adapterActiveTurnId ?? null, updatedAt: input.updatedAt };
-  }
-  return {
-    activeTurnId: projected.activeTurnId ?? input.adapterActiveTurnId ?? null,
-    updatedAt:
-      projected.status === "running" && projected.updatedAt > input.updatedAt
-        ? projected.updatedAt
-        : input.updatedAt,
-  };
-}
-
 const serverCommandId = (tag: string): CommandId =>
   CommandId.makeUnsafe(`server:${tag}:${timeOrderedUuid()}`);
 
@@ -936,12 +903,14 @@ const make = Effect.gen(function* () {
     readonly threadId: ThreadId;
     readonly session: OrchestrationSession;
     readonly createdAt: string;
+    readonly rebindLiveSession?: boolean;
   }) =>
     orchestrationEngine.dispatch({
       type: "thread.session.set",
       commandId: serverCommandId("provider-session-set"),
       threadId: input.threadId,
       session: input.session,
+      ...(input.rebindLiveSession ? { rebindLiveSession: true } : {}),
       createdAt: input.createdAt,
     });
 
@@ -1067,6 +1036,8 @@ const make = Effect.gen(function* () {
     readonly desiredModel?: string;
     readonly instructionContext: Partial<SharedInstructionInput>;
     readonly freshCompactionLaunch?: boolean;
+    /** The session is the one the thread already runs, not a started or replaced one. */
+    readonly rebind?: boolean;
   }) =>
     Effect.promise(() =>
       estimateProviderInstructionTokens({
@@ -1135,26 +1106,19 @@ const make = Effect.gen(function* () {
                 : null,
           };
         }).pipe(
-          Effect.flatMap((tokenUsage) => {
-            const status = mapProviderSessionStatusToOrchestrationStatus(input.session.status);
-            const providerInstanceId = input.session.providerInstanceId ?? null;
-            const turn = resolveBoundSessionTurn({
-              status,
-              provider: input.session.provider,
-              providerInstanceId,
-              adapterActiveTurnId: input.session.activeTurnId,
-              updatedAt: input.session.updatedAt,
-              projected: input.thread.session,
-            });
-            return setThreadSession({
+          Effect.flatMap((tokenUsage) =>
+            setThreadSession({
               threadId: input.thread.id,
+              // Only a re-bind of the live session may keep its running turn;
+              // the decider checks current state at write time.
+              ...(input.rebind ? { rebindLiveSession: true } : {}),
               session: {
                 threadId: input.thread.id,
-                status,
+                status: mapProviderSessionStatusToOrchestrationStatus(input.session.status),
                 providerName: input.session.provider,
-                providerInstanceId,
+                providerInstanceId: input.session.providerInstanceId ?? null,
                 runtimeMode: input.desiredRuntimeMode,
-                activeTurnId: turn.activeTurnId,
+                activeTurnId: null,
                 lastError: tokenUsage.providerLastError,
                 lastErrorId: tokenUsage.lastErrorId,
                 lastErrorOccurredAt: tokenUsage.lastErrorOccurredAt,
@@ -1162,11 +1126,11 @@ const make = Effect.gen(function* () {
                 // Started or resumed sessions carry their generation's snapshot;
                 // re-binding an already running session keeps the projected one.
                 ...(input.session.capabilities ? { capabilities: input.session.capabilities } : {}),
-                updatedAt: turn.updatedAt,
+                updatedAt: input.session.updatedAt,
               },
               createdAt: input.createdAt,
-            });
-          }),
+            }),
+          ),
         ),
       ),
     );
@@ -1550,13 +1514,18 @@ const make = Effect.gen(function* () {
         }).pipe(Effect.withSpan("provider.start-session"));
       };
 
-      const bindSessionToThread = (session: ProviderSession, freshCompactionLaunch = false) =>
+      const bindSessionToThread = (
+        session: ProviderSession,
+        freshCompactionLaunch = false,
+        rebind = false,
+      ) =>
         bindSessionToThreadWithContext({
           thread,
           session,
           createdAt,
           desiredRuntimeMode,
           freshCompactionLaunch,
+          rebind,
           ...(desiredModel ? { desiredModel } : {}),
           instructionContext: {
             ...instructionContext,
@@ -2015,7 +1984,7 @@ const make = Effect.gen(function* () {
           !shouldRestartForWorkflowExecutionProfileChange
         ) {
           if (activeSession) {
-            yield* bindSessionToThread(activeSession);
+            yield* bindSessionToThread(activeSession, false, true);
           }
           yield* recordEffectiveStartConfig();
           yield* Effect.annotateCurrentSpan({
