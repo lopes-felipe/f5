@@ -104,7 +104,7 @@ describe("codeReviewWorkflowPrompts with more than two reviewers", () => {
     expect(result.smallestExcerpt).toBeGreaterThan(10_000);
     expect(result.prompt).toContain("Some reports were too long to include whole.");
     expect(result.reviewTexts[2]).toContain(
-      `[Excerpt: the first ${result.smallestExcerpt} of 40000 characters of this report. The full report is in the Reviewer C thread.]`,
+      `[Excerpt: the first ${result.smallestExcerpt} of 40000 characters of the Reviewer C report. The rest is not available to you.]`,
     );
     expect(result.reviewTexts.filter((text) => text.includes("[Excerpt:"))).toHaveLength(1);
   });

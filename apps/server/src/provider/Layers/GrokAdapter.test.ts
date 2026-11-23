@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createModelSelection } from "@t3tools/shared/model";
+import { READ_ONLY_WORKFLOW_UNCERTIFIED_ANTIGRAVITY_MESSAGE } from "@t3tools/shared/workflowProviders";
 import { fileURLToPath } from "node:url";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -409,7 +410,11 @@ it.layer(AntigravityAdapterTestLayer)("Antigravity native questions", (it) => {
         });
         const adapter = yield* makeGrokAdapter(
           Schema.decodeSync(GrokSettings)({ binaryPath: wrapperPath }),
-          { provider: "antigravity", instanceId: ProviderInstanceId.make("antigravity") },
+          {
+            provider: "antigravity",
+            instanceId: ProviderInstanceId.make("antigravity"),
+            antigravity: { readOnlyWorkflowCertified: () => true },
+          },
         );
         const events: ProviderRuntimeEvent[] = [];
         yield* adapter.streamEvents.pipe(
@@ -450,6 +455,71 @@ it.layer(AntigravityAdapterTestLayer)("Antigravity native questions", (it) => {
         assert.equal(resolved.length, 1);
         yield* adapter.stopSession(threadId);
       }).pipe(Effect.provide(AntigravityAdapterTestLayer), Effect.scoped),
+  );
+  rootIt.live("refuses workflow sessions on an uncertified or unknown Antigravity build", () =>
+    Effect.gen(function* () {
+      const dir = yield* Effect.promise(() =>
+        mkdtemp(path.join(os.tmpdir(), "antigravity-uncertified-")),
+      );
+      const wrapperPath = writeAcpWrapper(path.join(dir, "agent"), mockAgentPath, {
+        env: { F5_ACP_ANTIGRAVITY_PROFILE: "1" },
+      });
+      const settings = Schema.decodeSync(GrokSettings)({ binaryPath: wrapperPath });
+      const startWorkflowSession = (
+        adapter: Effect.Success<ReturnType<typeof makeGrokAdapter>>,
+        threadId: string,
+      ) =>
+        adapter.startSession({
+          threadId: ThreadId.make(threadId),
+          provider: "antigravity",
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          workflowExecutionProfile: "unattended-readonly",
+        });
+
+      // No launched version is known here and the allowlist is empty: uncertified.
+      const defaultAdapter = yield* makeGrokAdapter(settings, {
+        provider: "antigravity",
+        instanceId: ProviderInstanceId.make("antigravity"),
+      });
+      const refused = yield* Effect.flip(startWorkflowSession(defaultAdapter, "uncertified"));
+      assert.include(String(refused.message), READ_ONLY_WORKFLOW_UNCERTIFIED_ANTIGRAVITY_MESSAGE);
+
+      const seenVersions: Array<string | undefined> = [];
+      const rejectingAdapter = yield* makeGrokAdapter(settings, {
+        provider: "antigravity",
+        instanceId: ProviderInstanceId.make("antigravity"),
+        antigravity: {
+          readOnlyWorkflowCertified: (version) => {
+            seenVersions.push(version);
+            return false;
+          },
+        },
+      });
+      yield* Effect.flip(startWorkflowSession(rejectingAdapter, "rejected-by-hook"));
+      assert.deepEqual(seenVersions, [undefined]);
+
+      // An ordinary session is not gated, but it never takes a workflow turn.
+      yield* defaultAdapter.startSession({
+        threadId: ThreadId.make("ordinary"),
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      const workflowTurn = yield* Effect.flip(
+        defaultAdapter.sendTurn({
+          threadId: ThreadId.make("ordinary"),
+          input: "Review this",
+          attachments: [],
+          workflowExecutionProfile: "unattended-readonly",
+        }),
+      );
+      assert.include(
+        String(workflowTurn.message),
+        "This Antigravity session was not started for read-only workflow turns.",
+      );
+      yield* defaultAdapter.stopSession(ThreadId.make("ordinary"));
+    }).pipe(Effect.provide(AntigravityAdapterTestLayer), Effect.scoped),
   );
   it.effect("waits for the user's answer even in full-access mode", () =>
     Effect.gen(function* () {

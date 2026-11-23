@@ -66,7 +66,9 @@ the rest. Each model shows only the thinking levels it supports. Orchestrator ha
 [Workflow](../user/workflows.md) reviews, investigations and document stages must not change
 your project. Antigravity can run them only on a version F5 has certified; until then its rows
 in the workflow dialog and in upstream port review are disabled with "Read-only workflow turns
-are not certified for this Antigravity version." No version is certified yet.
+are not certified for this Antigravity version." No version is certified yet. The check
+uses the version of the executable the session actually launches; if F5 can't read that
+version, the workflow session is refused.
 
 On a certified version, F5 keeps every workflow turn read-only:
 
@@ -94,8 +96,9 @@ On a certified version, F5 keeps every workflow turn read-only:
 5. Add `{ version, platform }` to `ANTIGRAVITY_READ_ONLY_WORKFLOW_CERTIFIED_RUNTIMES` in
    `packages/shared/src/workflowProviders.ts`.
 
-The opt-in live test runs steps 2 to 4 against a signed-in instance. It spends account quota, and
-checks the MCP step only when you name the tool and its marker file:
+The opt-in live test runs steps 2 to 4 against a signed-in instance. It admits the version it
+launches even though that version isn't on the list yet, and prints it for step 5. It spends
+account quota, and checks the MCP step only when you name the tool and its marker file:
 
 ```sh
 cd apps/server

@@ -2602,7 +2602,9 @@ export const makeWorkflowService = Effect.gen(function* () {
       const writeReview = (
         threadId: ThreadId,
         from: ReadonlyArray<string>,
-        patch: { readonly status: "running" } | { readonly status: "error"; readonly error: string },
+        patch:
+          | { readonly status: "running" }
+          | { readonly status: "error"; readonly error: string },
       ) =>
         Effect.gen(function* () {
           const current = yield* readWorkflow(orchestrationEngine, workflow.id);

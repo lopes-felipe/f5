@@ -3493,6 +3493,189 @@ describe("CodeReviewWorkflowService stage dispatch correlation", () => {
     );
     expect(upserted?.reviewerA.dispatchCommandId).not.toBe(upserted?.reviewerB.dispatchCommandId);
   });
+
+  it("requeues a running reviewer whose recorded dispatch never happened", async () => {
+    const workflow = runningReviewerWorkflow(DISPATCH_A);
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeThread({ id: workflow.reviewerA.threadId }),
+          makeCompletedThread({ threadId: workflow.reviewerB.threadId, suffix: "b" }),
+        ],
+      }),
+      {
+        providerTurnDeliveryWorker: makeDeliveryWorker(),
+        getDeliveryByCommandId: () => Effect.succeed(null),
+      },
+    );
+    await harness.start();
+
+    const turn = harness.dispatched.find(
+      (command): command is Extract<OrchestrationCommand, { type: "thread.turn.start" }> =>
+        command.type === "thread.turn.start" && command.threadId === workflow.reviewerA.threadId,
+    );
+    expect(turn).toBeDefined();
+    expect(turn?.commandId).not.toBe(DISPATCH_A);
+    const reviewerA = harness.getSnapshot().codeReviewWorkflows[0]?.reviewerA;
+    expect(reviewerA).toMatchObject({ status: "running", error: null });
+    expect(reviewerA?.dispatchCommandId).toBe(turn?.commandId);
+  });
+
+  it("records a fresh reviewer retry before dispatching it", async () => {
+    const workflow = makeWorkflow({
+      reviewerA: {
+        ...makeWorkflow().reviewerA,
+        status: "error",
+        error: "Reviewer A failed",
+      },
+      reviewerB: {
+        ...makeWorkflow().reviewerB,
+        status: "completed",
+        pinnedTurnId: "turn-b",
+        pinnedAssistantMessageId: "assistant-b",
+      },
+    });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeThread({ id: workflow.reviewerA.threadId }),
+          makeCompletedThread({ threadId: workflow.reviewerB.threadId, suffix: "b" }),
+        ],
+      }),
+      { providerTurnDeliveryWorker: makeDeliveryWorker() },
+    );
+
+    await Effect.runPromise(
+      harness.service.retryWorkflow({ workflowId: workflow.id, scope: "failed" }),
+    );
+
+    const turnIndex = harness.dispatched.findIndex(
+      (command) =>
+        command.type === "thread.turn.start" && command.threadId === workflow.reviewerA.threadId,
+    );
+    const turn = harness.dispatched[turnIndex] as Extract<
+      OrchestrationCommand,
+      { type: "thread.turn.start" }
+    >;
+    expect(
+      harness.dispatched
+        .slice(0, turnIndex)
+        .some(
+          (command) =>
+            command.type === "project.code-review-workflow.upsert" &&
+            command.workflow.reviewerA.status === "running" &&
+            command.workflow.reviewerA.dispatchCommandId === turn.commandId,
+        ),
+    ).toBe(true);
+  });
+
+  it("resends a queued reviewer's failed delivery when a slot frees", async () => {
+    const base = makeWorkflow();
+    const dispatchE = CommandId.makeUnsafe("dispatch-reviewer-e");
+    const liveThread = (threadId: ThreadId) =>
+      makeThread({
+        id: threadId,
+        latestTurn: {
+          turnId: TurnId.makeUnsafe(`turn-${threadId}`),
+          state: "running",
+          requestedAt: NOW,
+          startedAt: NOW,
+          completedAt: null,
+          assistantMessageId: null,
+        },
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "full-access",
+          activeTurnId: TurnId.makeUnsafe(`turn-${threadId}`),
+          lastError: null,
+          updatedAt: NOW,
+        },
+      });
+    const extra = (id: "c" | "d" | "e" | "f", status: "running" | "error" | "completed") => ({
+      ...base.reviewerA,
+      label: `Reviewer ${id.toUpperCase()} (codex:model-${id})`,
+      slot: { provider: "codex" as const, model: `model-${id}` },
+      threadId: ThreadId.makeUnsafe(`reviewer-${id}`),
+      status,
+      error: status === "error" ? "Provider rejected the turn." : null,
+      ...(status === "error" ? { dispatchCommandId: dispatchE } : {}),
+      ...(status === "completed"
+        ? { pinnedTurnId: `turn-${id}`, pinnedAssistantMessageId: `assistant-${id}` }
+        : {}),
+    });
+    const workflow = makeWorkflow({
+      reviewerA: { ...base.reviewerA, status: "running" },
+      reviewerB: { ...base.reviewerB, status: "running" },
+      additionalReviewers: [
+        extra("c", "running"),
+        extra("d", "running"),
+        extra("e", "error"),
+        extra("f", "completed"),
+      ],
+    });
+    const retry = vi.fn<ProviderTurnDeliveryWorkerShape["retry"]>(({ threadId }) =>
+      Effect.succeed(makeProviderTurnDelivery(threadId, "pending", { commandId: dispatchE })),
+    );
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          liveThread(workflow.reviewerA.threadId),
+          liveThread(workflow.reviewerB.threadId),
+          liveThread(ThreadId.makeUnsafe("reviewer-c")),
+          liveThread(ThreadId.makeUnsafe("reviewer-d")),
+          makeThread({ id: ThreadId.makeUnsafe("reviewer-e") }),
+          makeCompletedThread({ threadId: ThreadId.makeUnsafe("reviewer-f"), suffix: "f" }),
+        ],
+      }),
+      {
+        providerTurnDeliveryWorker: makeDeliveryWorker({
+          recheck: (threadId) =>
+            Effect.succeed(
+              threadId === "reviewer-e"
+                ? makeProviderTurnDelivery(threadId, "rejected", { commandId: dispatchE })
+                : null,
+            ),
+          retry,
+        }),
+      },
+    );
+
+    // Four reviewers are running, so the retry queues Reviewer E instead of resending now.
+    await Effect.runPromise(
+      harness.service.retryWorkflow({ workflowId: workflow.id, scope: "failed" }),
+    );
+    expect(harness.getSnapshot().codeReviewWorkflows[0]?.additionalReviewers?.[2]?.status).toBe(
+      "pending",
+    );
+    expect(retry).not.toHaveBeenCalled();
+
+    // Reviewer A's thread is gone at startup: it fails, and its slot goes to Reviewer E, whose
+    // original delivery is resent rather than replaced by a new turn.
+    harness.setSnapshot({
+      ...harness.getSnapshot(),
+      threads: harness
+        .getSnapshot()
+        .threads.filter((thread) => thread.id !== workflow.reviewerA.threadId),
+    });
+    await harness.start();
+    expect(retry).toHaveBeenCalledWith({
+      threadId: ThreadId.makeUnsafe("reviewer-e"),
+      allowPossibleDuplicate: false,
+      deliveryId: dispatchE,
+    });
+    expect(
+      harness.dispatched.some(
+        (command) => command.type === "thread.turn.start" && command.threadId === "reviewer-e",
+      ),
+    ).toBe(false);
+    const reviewerE = harness.getSnapshot().codeReviewWorkflows[0]?.additionalReviewers?.[2];
+    expect(reviewerE).toMatchObject({ status: "running", dispatchCommandId: dispatchE });
+  });
 });
 
 const PULL_REQUEST = {

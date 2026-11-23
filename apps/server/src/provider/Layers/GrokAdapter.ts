@@ -220,6 +220,12 @@ export interface AntigravityAdapterHooks {
    * formats. When false the session runs standard ACP only. Absent means certified.
    */
   readonly nativeReaders?: (runtime: object) => Effect.Effect<boolean>;
+  /**
+   * Whether the launched executable (its version, when known) may run unattended read-only
+   * workflow turns. Defaults to the certified allowlist, where an unknown version is uncertified.
+   * Certification runs and tests inject the candidate build here.
+   */
+  readonly readOnlyWorkflowCertified?: (launchedVersion: string | undefined) => boolean;
 }
 
 interface PendingApproval {
@@ -926,11 +932,16 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           // version a status snapshot reported earlier. Later workflow sends need a session
           // started this way, so they stay bound to the same executable.
           if (PROVIDER === "antigravity" && input.workflowExecutionProfile !== undefined) {
-            const launchedVersion = antigravityLaunchedVersion(acp);
-            if (
-              launchedVersion !== undefined &&
-              !driverSupportsReadOnlyWorkflowTurns("antigravity", launchedVersion, process.platform)
-            )
+            const launchedVersion = antigravityLaunchedVersion(acp) ?? undefined;
+            const certified =
+              options?.antigravity?.readOnlyWorkflowCertified?.(launchedVersion) ??
+              (launchedVersion !== undefined &&
+                driverSupportsReadOnlyWorkflowTurns(
+                  "antigravity",
+                  launchedVersion,
+                  process.platform,
+                ));
+            if (!certified)
               return yield* new ProviderAdapterValidationError({
                 provider: PROVIDER,
                 operation: "startSession",

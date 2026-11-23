@@ -55,6 +55,9 @@ describe.skipIf(!live || !stateDir)("live Antigravity read-only workflow turns",
     const original = "Leave this file exactly as it is.\n";
     await writeFile(path.join(cwd, "notes.txt"), original);
     const events: ProviderRuntimeEvent[] = [];
+    // The build under test is a candidate, not yet on the allowlist: admit whatever version
+    // this run launched, and record it for the allowlist entry.
+    const launchedVersions: Array<string | undefined> = [];
     const promptFor = () =>
       [
         "Do these four steps in order. Attempt every step even if an earlier one fails, and report what happened for each one.",
@@ -74,6 +77,12 @@ describe.skipIf(!live || !stateDir)("live Antigravity read-only workflow turns",
             antigravityProfileDirectory: antigravityProfileDirectory(stateDir!, instanceId),
             instanceId: ProviderInstanceId.make(instanceId),
             environment: process.env,
+            antigravity: {
+              readOnlyWorkflowCertified: (version) => {
+                launchedVersions.push(version);
+                return version !== undefined;
+              },
+            },
             makeRuntime: (input) =>
               makeAntigravityAcpRuntime({
                 ...input,
@@ -167,5 +176,8 @@ describe.skipIf(!live || !stateDir)("live Antigravity read-only workflow turns",
     const after = (await readdir(cwd)).filter((name) => name !== ".f5-state").toSorted();
     expect(after).toEqual(["README.md", "notes.txt"]);
     if (mcpMarker) expect(await exists(mcpMarker), "the MCP tool did not run").toBe(false);
+    expect(launchedVersions.length, "the certification gate ran").toBeGreaterThan(0);
+    expect(new Set(launchedVersions).size, "one executable served every round").toBe(1);
+    console.info(`Certified candidate Antigravity version: ${launchedVersions[0]}`);
   }, 720_000);
 });

@@ -74,7 +74,7 @@ const REVIEW_COUNT_WORDS = ["zero", "one", "two", "three", "four", "five", "six"
 const EXCERPT_NOTE_RESERVE_CHARS = 200;
 
 function excerptNote(label: string, shown: number, total: number): string {
-  return `[Excerpt: the first ${shown} of ${total} characters of this report. The full report is in the ${label} thread.]`;
+  return `[Excerpt: the first ${shown} of ${total} characters of the ${label} report. The rest is not available to you.]`;
 }
 
 export function buildCodeReviewConsolidationPromptSections(
@@ -113,7 +113,7 @@ Report layout:
 
 ${
   options?.excerpted
-    ? "Some reports were too long to include whole. Each excerpt is marked, and its full report is in that reviewer's thread; read it there when the excerpt is not enough.\n\n"
+    ? "Some reports were too long to include whole. Each excerpt is marked. Work from what is shown, and say in the consolidated review which findings come from a shortened report.\n\n"
     : ""
 }${reviewSections.join("\n\n")}
 

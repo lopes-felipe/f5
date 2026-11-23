@@ -9489,11 +9489,11 @@ describe("WorkflowService", () => {
   });
 
   /** Three authors whose plans are all saved, before any review exists. */
-  const threeSavedPlans = () => {
+  const meshSavedPlans = (extraIds: ReadonlyArray<"c" | "d"> = ["c"]) => {
     const savedAt = "2026-08-31T17:01:57.000Z";
     const savedBranch = (
       branch: PlanningWorkflow["branchA"],
-      id: "a" | "b" | "c",
+      id: "a" | "b" | "c" | "d",
       slot: PlanningWorkflow["branchA"]["authorSlot"],
     ) => ({
       ...branch,
@@ -9509,7 +9509,9 @@ describe("WorkflowService", () => {
     const workflow = makeWorkflow({
       branchA: savedBranch(base.branchA, "a", base.branchA.authorSlot),
       branchB: savedBranch(base.branchB, "b", base.branchB.authorSlot),
-      additionalBranches: [savedBranch(base.branchA, "c", { provider: "codex", model: "gpt-5.5" })],
+      additionalBranches: extraIds.map((id) =>
+        savedBranch(base.branchA, id, { provider: "codex", model: `gpt-5.5-${id}` }),
+      ),
       merge: {
         ...base.merge,
         threadId: null,
@@ -9519,7 +9521,7 @@ describe("WorkflowService", () => {
         status: "not_started",
       },
     });
-    const authorThread = (id: "a" | "b" | "c") =>
+    const authorThread = (id: "a" | "b" | "c" | "d") =>
       makeThread({
         id: ThreadId.makeUnsafe(`author-${id}`),
         latestTurn: {
@@ -9545,12 +9547,44 @@ describe("WorkflowService", () => {
       });
     return {
       workflow,
-      threads: [authorThread("a"), authorThread("b"), authorThread("c")],
+      threads: [authorThread("a"), authorThread("b"), ...extraIds.map(authorThread)],
     };
   };
 
+  it("queues sixteen reviews for four authors with self-review and runs at most four", async () => {
+    const fixture = meshSavedPlans(["c", "d"]);
+    harness = await createHarness(
+      makeReadModel({ ...fixture, workflow: { ...fixture.workflow, selfReviewEnabled: true } }),
+    );
+
+    await harness.start();
+    await waitFor(() => {
+      const current = harness!.getSnapshot().planningWorkflows[0];
+      return (
+        current !== undefined &&
+        [current.branchA, current.branchB, ...(current.additionalBranches ?? [])].every(
+          (branch) => branch.status === "reviews_requested",
+        )
+      );
+    });
+
+    const current = harness.getSnapshot().planningWorkflows[0]!;
+    const reviews = [
+      current.branchA,
+      current.branchB,
+      ...(current.additionalBranches ?? []),
+    ].flatMap((branch) => branch.reviews);
+    expect(reviews).toHaveLength(16);
+    expect(reviews.filter((review) => review.slot === "self")).toHaveLength(4);
+    expect(reviews.filter((review) => review.status === "running")).toHaveLength(4);
+    expect(reviews.filter((review) => review.status === "pending")).toHaveLength(12);
+    expect(
+      harness.dispatched.filter((command) => command.type === "thread.turn.start"),
+    ).toHaveLength(4);
+  });
+
   it("queues the full review mesh for three authors and runs at most four reviews", async () => {
-    harness = await createHarness(makeReadModel(threeSavedPlans()));
+    harness = await createHarness(makeReadModel(meshSavedPlans()));
 
     await harness.start();
     await waitFor(() => {
@@ -9590,7 +9624,7 @@ describe("WorkflowService", () => {
   });
 
   it("backfills failed review launches and retries them through the capped launcher", async () => {
-    const fixture = threeSavedPlans();
+    const fixture = meshSavedPlans();
     const authorThreadIds = new Set(fixture.threads.map((thread) => thread.id));
     let failReviewThreads = 6;
     harness = await createHarness(makeReadModel(fixture), {
@@ -9634,7 +9668,7 @@ describe("WorkflowService", () => {
 
   it("resends failed review deliveries only into free review slots", async () => {
     // Three authors: nine reviews, all with a rejected delivery.
-    const fixture = threeSavedPlans();
+    const fixture = meshSavedPlans();
     const failedAt = "2026-08-31T17:05:00.000Z";
     const reviewEdges = {
       a: [
