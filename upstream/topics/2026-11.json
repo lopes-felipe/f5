@@ -2884,14 +2884,24 @@
     },
     {
       "createdAt": "2026-11-01T11:11:31.013Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-23T11:42:22.808Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/provider/acp/AcpRuntimeModel.ts:757",
+          "apps/server/src/provider/Layers/GrokAdapter.ts:1442"
+        ],
+        "f5Refs": [
+          "e0656eb14fc18be68596bcbdab9c243ecfe717f1"
+        ]
+      },
       "id": "pr-22608",
+      "reason": "Already present in f5",
       "relatedTopics": [
         "pr-19958"
       ],
-      "status": "port",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
@@ -7496,11 +7506,13 @@
     },
     {
       "createdAt": "2026-11-02T10:32:38.196Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-23T11:42:22.808Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-24362",
-      "status": "port",
+      "reason": "F5 refreshes provider status independently of client activity reports.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -14977,11 +14989,21 @@
     },
     {
       "createdAt": "2026-11-02T10:32:38.196Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-23T11:42:22.808Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/provider/Layers/ClaudeAdapter.ts:8481",
+          "apps/server/src/provider/Layers/ClaudeAdapter.ts:8506"
+        ],
+        "f5Refs": [
+          "e0656eb14fc18be68596bcbdab9c243ecfe717f1"
+        ]
+      },
       "id": "pr-27320",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
@@ -42187,11 +42209,20 @@
     },
     {
       "createdAt": "2026-11-07T11:05:23.639Z",
-      "decidedAt": "2026-11-07T23:28:08.434Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-23T11:42:22.806Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/provider/pi/materializeExtension.ts:10"
+        ],
+        "f5Refs": [
+          "e0656eb14fc18be68596bcbdab9c243ecfe717f1"
+        ]
+      },
       "id": "pr-32231",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
@@ -42985,11 +43016,20 @@
     },
     {
       "createdAt": "2026-11-07T11:05:23.639Z",
-      "decidedAt": "2026-11-07T23:28:08.434Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-23T11:42:22.808Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/provider/Layers/PiAdapter.ts:881"
+        ],
+        "f5Refs": [
+          "e0656eb14fc18be68596bcbdab9c243ecfe717f1"
+        ]
+      },
       "id": "pr-32389",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers"

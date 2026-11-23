@@ -36932,11 +36932,21 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-03T10:30:22.437Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-23T11:42:22.809Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/provider/Layers/ClaudeAdapter.ts:7981",
+          "apps/web/src/components/ChatView.tsx:8888"
+        ],
+        "f5Refs": [
+          "e0656eb14fc18be68596bcbdab9c243ecfe717f1"
+        ]
+      },
       "id": "pr-21903",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
@@ -46187,11 +46197,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-07T23:28:08.434Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-23T11:42:22.809Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-23684",
-      "status": "port",
+      "reason": "F5 has no ACP Registry installer.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers"
