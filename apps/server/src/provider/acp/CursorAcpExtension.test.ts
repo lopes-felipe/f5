@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
@@ -300,12 +300,13 @@ describe("CursorAcpExtension", () => {
   });
 
   it("shows generated images only from the workspace or attachments directory", () => {
+    // Resolved like the code does, so Windows drive letters and separators match.
     expect(cursorGeneratedImagePath("out/a.png", "/work", "/state/attachments")).toBe(
-      "/work/out/a.png",
+      resolve("/work/out/a.png"),
     );
     expect(
       cursorGeneratedImagePath("/state/attachments/b.webp", "/work", "/state/attachments"),
-    ).toBe("/state/attachments/b.webp");
+    ).toBe(resolve("/state/attachments/b.webp"));
     expect(
       cursorGeneratedImagePath("../escape.png", "/work", "/state/attachments"),
     ).toBeUndefined();

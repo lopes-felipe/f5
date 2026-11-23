@@ -51,7 +51,8 @@ describe("CursorNativeSessions", () => {
 
   it("deletes only the recorded paths of one session", async () => {
     const configDir = await makeStore();
-    const cwd = "/work/project";
+    // The CLI hashes the resolved workspace path (a drive-letter path on Windows).
+    const cwd = nodePath.resolve("/work/project");
     const owned = await seedSession(configDir, "owned-1", cwd);
     const other = await seedSession(configDir, "other-2", cwd);
 
@@ -103,10 +104,11 @@ describe("CursorNativeSessions", () => {
     const linkParent = await makeStore();
     const configDir = nodePath.join(linkParent, ".cursor");
     await nodeFs.symlink(realStore, configDir);
-    const owned = await seedSession(realStore, "owned-1", "/work/project");
+    const cwd = nodePath.resolve("/work/project");
+    const owned = await seedSession(realStore, "owned-1", cwd);
 
     const removed = await Effect.runPromise(
-      deleteCursorAcpSession({ configDir, sessionId: "owned-1", cwd: "/work/project" }),
+      deleteCursorAcpSession({ configDir, sessionId: "owned-1", cwd }),
     );
 
     expect(removed).toBe(2);
