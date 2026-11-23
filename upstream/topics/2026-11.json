@@ -9377,11 +9377,13 @@
     },
     {
       "createdAt": "2026-11-09T11:09:57.237Z",
-      "decidedAt": "2026-11-09T19:20:10.758Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-23T00:04:53.714Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-25211",
-      "status": "port",
+      "reason": "F5 writes the Antigravity browser helper directly and has no browser verification subprocess with a timeout.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -31862,11 +31864,13 @@
     },
     {
       "createdAt": "2026-11-09T19:21:12.112Z",
-      "decidedAt": "2026-11-09T19:23:49.892Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-23T00:04:53.713Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-30038",
-      "status": "port",
+      "reason": "F5 renders reasoning previews as plain text and has no upstream Markdown preview formatter.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "timeline",
@@ -47437,11 +47441,21 @@
     },
     {
       "createdAt": "2026-11-11T10:06:30.778Z",
-      "decidedAt": "2026-11-20T11:45:27.611Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-23T00:04:53.713Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/mcp/threadToolRuntime.ts:50",
+          "apps/server/src/orchestration/Layers/OrchestrationEngine.ts:1235"
+        ],
+        "f5Refs": [
+          "2b6e7ce029d851b15e9b5cd20c8adbb07d3ef262"
+        ]
+      },
       "id": "pr-33295",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "mcp",
@@ -47486,11 +47500,20 @@
     },
     {
       "createdAt": "2026-11-11T10:06:30.778Z",
-      "decidedAt": "2026-11-20T11:45:27.611Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-23T00:04:53.713Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts:3234"
+        ],
+        "f5Refs": [
+          "2b6e7ce029d851b15e9b5cd20c8adbb07d3ef262"
+        ]
+      },
       "id": "pr-33305",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "threads",
