@@ -1,7 +1,7 @@
 import { writeAcpWrapper } from "../../testUtils/cli.ts";
 import * as os from "node:os";
 import * as path from "node:path";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createModelSelection } from "@t3tools/shared/model";
 import { fileURLToPath } from "node:url";
 
@@ -14,6 +14,7 @@ import {
   ProviderInstanceId,
   type ProviderRuntimeEvent,
   ThreadId,
+  type TurnId,
 } from "@t3tools/contracts";
 import { Cause, Effect, Fiber, Layer, Schema, ServiceMap, Stream } from "effect";
 
@@ -820,6 +821,63 @@ rootIt.layer(
       // Stopping an Antigravity turn may end its session already.
       yield* adapter.stopSession(threadId).pipe(Effect.ignore);
     }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "keeps the turn's acceptance when a steer arrives before the agent's first progress",
+    () =>
+      Effect.gen(function* () {
+        const gateDir = yield* Effect.acquireRelease(
+          Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "agy-steer-gate-"))),
+          (directory) => Effect.promise(() => rm(directory, { recursive: true, force: true })),
+        );
+        const gate = path.join(gateDir, "go");
+        const { adapter } = yield* antigravityProfileAdapter({
+          env: { T3_ACP_PROMPT_GATE_PATH: gate },
+        });
+        const threadId = ThreadId.make("agy-steer-before-progress");
+        yield* adapter.startSession({
+          threadId,
+          provider: "antigravity",
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+        const accepted: Array<string> = [];
+        const turn = yield* adapter.sendTurn({ threadId, input: "Start", attachments: [] }).pipe(
+          Effect.provideService(TurnAcceptanceSignal, {
+            accept: (receipt) => Effect.sync(() => accepted.push(String(receipt.turnId))),
+          }),
+          Effect.forkChild,
+        );
+        let activeTurnId: TurnId | undefined;
+        yield* Effect.promise(() =>
+          vi.waitFor(async () => {
+            const sessions = await Effect.runPromise(adapter.listSessions());
+            activeTurnId = sessions.find((session) => session.threadId === threadId)?.activeTurnId;
+            if (!activeTurnId) throw new Error("no running turn yet");
+          }),
+        );
+        // The steer runs with a signal too; a steer never reports acceptance itself.
+        const steer = yield* adapter
+          .sendTurn({ threadId, input: "Also this", attachments: [], expectedTurnId: activeTurnId })
+          .pipe(
+            Effect.provideService(TurnAcceptanceSignal, {
+              accept: () => Effect.sync(() => accepted.push("steer")),
+            }),
+            Effect.forkChild,
+          );
+        yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 50)));
+        yield* Effect.promise(() => writeFile(gate, ""));
+        yield* Effect.promise(() =>
+          vi.waitFor(() => {
+            if (accepted.length === 0) throw new Error("not accepted yet");
+          }),
+        );
+        const result = yield* Fiber.join(turn);
+        yield* Fiber.join(steer).pipe(Effect.ignore);
+        assert.deepEqual(accepted, [String(result.turnId)]);
+        yield* adapter.stopSession(threadId).pipe(Effect.ignore);
+      }).pipe(Effect.scoped),
   );
 
   it.effect("does not report acceptance when the prompt fails before any progress", () =>

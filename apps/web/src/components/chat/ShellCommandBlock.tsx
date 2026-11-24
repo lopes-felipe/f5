@@ -12,7 +12,8 @@ import { retryableImport } from "../../lib/retryableImport";
 // at a hyphen; a word longer than the line still breaks anywhere.
 const WORD_CLASS_NAME = "inline-block max-w-full [overflow-wrap:anywhere]";
 
-// The shell parser loads with the first expanded command, not with the timeline.
+// The shell parser loads with the first highlighted command card (collapsed or
+// expanded), not with the timeline; the import and the grammar stay cached after that.
 const loadEmbeddedScripts = retryableImport(() => import("../../lib/embeddedScripts"));
 
 function HighlightedCommand({ code, theme }: { code: string; theme: "light" | "dark" }) {

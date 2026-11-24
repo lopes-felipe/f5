@@ -86,7 +86,7 @@ import {
   makeAcpToolCallEvent,
 } from "../acp/AcpCoreRuntimeEvents.ts";
 import { AcpCommandOutputTracker, makeAcpCommandOutputEvent } from "../acp/AcpCommandOutput.ts";
-import { firePendingAcceptance, isAcpPromptProgress } from "../acp/AcpPromptAcceptance.ts";
+import { AcpPromptProgressGate, firePendingAcceptance } from "../acp/AcpPromptAcceptance.ts";
 import { TurnAcceptanceSignal } from "../deliveryAttemptContext.ts";
 import {
   type AcpSessionMode,
@@ -258,6 +258,8 @@ interface CursorSessionContext {
   readonly commandOutput: AcpCommandOutputTracker;
   /** Reports the running prompt's delivery accepted; fired on the agent's first progress. */
   pendingAcceptance: Effect.Effect<void> | undefined;
+  /** Tells the running prompt's own progress from late updates of earlier tools. */
+  readonly promptProgress: AcpPromptProgressGate;
 }
 
 function settlePendingApprovalsAsCancelled(
@@ -1479,8 +1481,11 @@ export function makeCursorAdapter(
               ),
             ),
             stopped: false,
-            commandOutput: new AcpCommandOutputTracker(),
+            commandOutput: new AcpCommandOutputTracker((text) =>
+              catalogs.credentialPrefixHoldback(text),
+            ),
             pendingAcceptance: undefined,
+            promptProgress: new AcpPromptProgressGate(),
           };
 
           const offCatalogStatus = catalogs.onChanged(() => {
@@ -1503,7 +1508,7 @@ export function makeCursorAdapter(
             Stream.mapEffect(acp.getEvents(), (event) =>
               Effect.gen(function* () {
                 if (event._tag === "ToolCallUpdated") classifyAcpToolEvent(catalogs, event);
-                if (isAcpPromptProgress(event)) yield* firePendingAcceptance(ctx);
+                if (ctx.promptProgress.observe(event)) yield* firePendingAcceptance(ctx);
                 switch (event._tag) {
                   case "TransportTerminated":
                     // Closing a scope from its own notification fiber deadlocks.
@@ -1932,7 +1937,8 @@ export function makeCursorAdapter(
                 resumeCursor: ctx.session.resumeCursor,
               })
             : undefined;
-        ctx.pendingAcceptance = pendingAcceptance;
+        // A steer never replaces the main prompt's acceptance, which may still be waiting.
+        if (pendingAcceptance !== undefined) ctx.pendingAcceptance = pendingAcceptance;
         // Preparation shares the session lifecycle lock. The live prompt stays
         // outside it so steers can reach the active turn and replacement can cancel it.
         const result = yield* ctx.acp
@@ -1953,7 +1959,8 @@ export function makeCursorAdapter(
             Effect.ensuring(
               Effect.sync(() => {
                 ctx.promptsInFlight = Math.max(0, ctx.promptsInFlight - 1);
-                if (ctx.pendingAcceptance === pendingAcceptance) ctx.pendingAcceptance = undefined;
+                if (pendingAcceptance !== undefined && ctx.pendingAcceptance === pendingAcceptance)
+                  ctx.pendingAcceptance = undefined;
               }),
             ),
             // A failed `session/prompt` leaves the session alive: the turn's own tools and

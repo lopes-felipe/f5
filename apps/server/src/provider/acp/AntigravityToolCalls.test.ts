@@ -51,5 +51,14 @@ describe("Antigravity native tools", () => {
       },
     });
     expect(kept.data.input).toEqual({ description: "Existing" });
+
+    // Other tools keep their own titles: a subagent's `input.description` names the task.
+    const subagent = normalize({
+      toolCallId: "agent-1",
+      title: "start_subagent",
+      kind: "other",
+      data: { rawInput: { Prompt: "Audit", toolSummary: "Start an audit subagent" } },
+    });
+    expect(subagent.data.input).toBeUndefined();
   });
 });

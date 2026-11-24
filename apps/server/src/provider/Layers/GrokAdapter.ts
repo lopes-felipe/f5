@@ -103,7 +103,7 @@ import {
   makeAcpToolCallEvent,
 } from "../acp/AcpCoreRuntimeEvents.ts";
 import { AcpCommandOutputTracker, makeAcpCommandOutputEvent } from "../acp/AcpCommandOutput.ts";
-import { firePendingAcceptance, isAcpPromptProgress } from "../acp/AcpPromptAcceptance.ts";
+import { AcpPromptProgressGate, firePendingAcceptance } from "../acp/AcpPromptAcceptance.ts";
 import { TurnAcceptanceSignal } from "../deliveryAttemptContext.ts";
 import {
   boundPermissionRequestPayload,
@@ -279,6 +279,8 @@ interface GrokSessionContext {
   readonly commandOutput: AcpCommandOutputTracker;
   /** Reports the running prompt's delivery accepted; fired on the agent's first progress. */
   pendingAcceptance: Effect.Effect<void> | undefined;
+  /** Tells the running prompt's own progress from late updates of earlier tools. */
+  readonly promptProgress: AcpPromptProgressGate;
 }
 
 function settlePendingApprovalsAsCancelled(
@@ -1419,8 +1421,11 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             antigravityAccountRevision: PROVIDER === "antigravity" ? accountRevision : undefined,
             antigravitySelection,
             lastContextUsage: undefined,
-            commandOutput: new AcpCommandOutputTracker(),
+            commandOutput: new AcpCommandOutputTracker((text) =>
+              catalogs.credentialPrefixHoldback(text),
+            ),
             pendingAcceptance: undefined,
+            promptProgress: new AcpPromptProgressGate(),
           };
 
           let nativeSkillCommands: typeof discoveredSkillCommands = [];
@@ -1449,7 +1454,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   event._tag === "AssistantItemStarted"
                 )
                   ctx.antigravityTasks.noteParentProgress();
-                if (isAcpPromptProgress(event)) yield* firePendingAcceptance(ctx);
+                if (ctx.promptProgress.observe(event)) yield* firePendingAcceptance(ctx);
                 const computerCall =
                   event._tag === "ToolCallUpdated" && classifyAcpToolEvent(catalogs, event);
                 switch (event._tag) {
@@ -2093,13 +2098,18 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   resumeCursor: prepared.context.session.resumeCursor,
                 })
               : undefined;
-          prepared.context.pendingAcceptance = pendingAcceptance;
+          // A steer never replaces the main prompt's acceptance, which may still be waiting.
+          if (pendingAcceptance !== undefined)
+            prepared.context.pendingAcceptance = pendingAcceptance;
           const result = yield* (
             deadline === undefined ? prompt : Effect.raceFirst(prompt, watchdog)
           ).pipe(
             Effect.ensuring(
               Effect.sync(() => {
-                if (prepared.context.pendingAcceptance === pendingAcceptance)
+                if (
+                  pendingAcceptance !== undefined &&
+                  prepared.context.pendingAcceptance === pendingAcceptance
+                )
                   prepared.context.pendingAcceptance = undefined;
               }),
             ),

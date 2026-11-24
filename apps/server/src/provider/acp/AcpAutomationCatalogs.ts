@@ -331,6 +331,25 @@ export const prepareAcpAutomationCatalogs = (input: {
       classify,
       redactForLog,
       scrubDiagnostic: (value: string) => scrubber.scrub(value),
+      /**
+       * How many trailing characters of `text` could be the start of a credential that
+       * runtime events redact. Streamed text holds them back until it knows, so a
+       * credential is never published split across two events.
+       */
+      credentialPrefixHoldback(text: string): number {
+        let longest = 0;
+        for (const credential of eventCredentials)
+          for (
+            let length = Math.min(credential.length - 1, text.length);
+            length > longest;
+            length--
+          )
+            if (text.endsWith(credential.slice(0, length))) {
+              longest = length;
+              break;
+            }
+        return longest;
+      },
       sanitizeEvent(unscrubbed: ProviderRuntimeEvent): ProviderRuntimeEvent {
         const event = scrubEventCredentials(unscrubbed);
         if (!computerCapable) return event;

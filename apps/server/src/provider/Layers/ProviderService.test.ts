@@ -534,6 +534,158 @@ it.effect("still accepts after the send when the adapter never signals", () => {
   }).pipe(Effect.provide(layer), Effect.scoped);
 });
 
+/** A send that signals acceptance and then settles as `settle` says. */
+const earlyAcceptanceHarness = (
+  threadName: string,
+  settle: (
+    turnId: TurnId,
+  ) => Effect.Effect<{ threadId: ThreadId; turnId: TurnId }, ProviderAdapterRequestError>,
+  accepted: (turnId: string) => Effect.Effect<void>,
+) => {
+  const codex = makeFakeCodexAdapter();
+  const layer = makeProviderServiceLayerForAdapters(new Map([["codex", codex.adapter]]));
+  return Effect.gen(function* () {
+    const provider = yield* ProviderService;
+    const threadId = asThreadId(threadName);
+    yield* provider.startSession(threadId, {
+      provider: "codex",
+      threadId,
+      runtimeMode: "full-access",
+    });
+    const turnId = TurnId.make(`${threadName}-turn`);
+    codex.sendTurn.mockImplementationOnce(
+      (input) =>
+        Effect.gen(function* () {
+          const signal = yield* TurnAcceptanceSignal;
+          yield* signal!.accept({ threadId: input.threadId, turnId });
+          return yield* settle(turnId);
+        }) as never,
+    );
+    const events: Array<ProviderRuntimeEvent> = [];
+    yield* Stream.runForEach(provider.streamEvents, (event) =>
+      Effect.sync(() => {
+        if (event.threadId === threadId) events.push(event);
+      }),
+    ).pipe(Effect.forkChild);
+    yield* sleep(20);
+    const exit = yield* provider.sendTurn({ threadId, input: "Turn", attachments: [] }).pipe(
+      Effect.provideService(DeliveryAttemptContext, {
+        attemptId: "attempt-1",
+        accepted: (receipt) => accepted(String(receipt.turnId)),
+        prepared: () => Effect.void,
+      }),
+      Effect.exit,
+    );
+    yield* sleep(20);
+    return { exit, events, turnId };
+  }).pipe(Effect.provide(layer), Effect.scoped);
+};
+
+it.effect("waits for an early acceptance still being written before the send returns", () =>
+  Effect.gen(function* () {
+    const writes: Array<string> = [];
+    const release = yield* Deferred.make<void>();
+    const result = yield* earlyAcceptanceHarness(
+      "early-acceptance-slow-write",
+      (turnId) =>
+        Effect.succeed({ threadId: asThreadId("early-acceptance-slow-write"), turnId }).pipe(
+          // The send returns while the early write is still pending.
+          Effect.tap(() => sleep(10).pipe(Effect.andThen(Deferred.succeed(release, undefined)))),
+        ),
+      (turnId) =>
+        Deferred.await(release).pipe(
+          Effect.andThen(sleep(20)),
+          Effect.andThen(Effect.sync(() => writes.push(turnId))),
+        ),
+    );
+    assert.equal(result.exit._tag, "Success");
+    // One receipt: the early one, committed before the send was reported.
+    assert.deepEqual(writes, [String(result.turnId)]);
+  }),
+);
+
+it.effect("records the acceptance after the send when the early write fails", () =>
+  Effect.gen(function* () {
+    const writes: Array<string> = [];
+    let calls = 0;
+    const result = yield* earlyAcceptanceHarness(
+      "early-acceptance-failed-write",
+      (turnId) => Effect.succeed({ threadId: asThreadId("early-acceptance-failed-write"), turnId }),
+      (turnId) =>
+        Effect.suspend(() =>
+          calls++ === 0
+            ? Effect.die(new Error("database busy"))
+            : Effect.sync(() => {
+                writes.push(turnId);
+              }),
+        ),
+    );
+    assert.equal(result.exit._tag, "Success");
+    assert.deepEqual(writes, [String(result.turnId)]);
+  }),
+);
+
+it.effect("settles the turn as failed when the send fails after its delivery was accepted", () =>
+  Effect.gen(function* () {
+    const writes: Array<string> = [];
+    const usageLimit = {
+      windows: [],
+      resetsAt: "2026-11-24T12:00:00.000Z",
+      resetSource: "provider" as const,
+      evidence: "typed" as const,
+    };
+    const result = yield* earlyAcceptanceHarness(
+      "early-acceptance-then-failure",
+      () =>
+        sleep(10).pipe(
+          Effect.andThen(
+            Effect.fail(
+              new ProviderAdapterRequestError({
+                provider: "codex",
+                method: "session/prompt",
+                detail: "Usage limit reached.",
+                usageLimit,
+              }),
+            ),
+          ),
+        ),
+      (turnId) => Effect.sync(() => writes.push(turnId)),
+    );
+    assert.equal(result.exit._tag, "Failure");
+    assert.deepEqual(writes, [String(result.turnId)]);
+    const error = result.events.find((event) => event.type === "runtime.error");
+    assert.equal(error?.turnId, result.turnId);
+    assert.deepInclude(error?.type === "runtime.error" ? error.payload : {}, { usageLimit });
+    const completed = result.events.find((event) => event.type === "turn.completed");
+    assert.equal(completed?.turnId, result.turnId);
+    assert.deepInclude(completed?.type === "turn.completed" ? completed.payload : {}, {
+      state: "failed",
+    });
+  }),
+);
+
+it.effect("leaves a failure before acceptance to the delivery worker", () =>
+  Effect.gen(function* () {
+    const result = yield* earlyAcceptanceHarness(
+      "early-acceptance-failed-write-then-failure",
+      () =>
+        Effect.fail(
+          new ProviderAdapterRequestError({
+            provider: "codex",
+            method: "session/prompt",
+            detail: "not sent",
+          }),
+        ),
+      () => Effect.die(new Error("database busy")),
+    );
+    assert.equal(result.exit._tag, "Failure");
+    assert.equal(
+      result.events.some((event) => event.type === "turn.completed"),
+      false,
+    );
+  }),
+);
+
 it.effect("reads child transcripts without recovering stopped or replacement sessions", () => {
   const codex = makeFakeCodexAdapter();
   const read = vi.fn(() => Effect.succeed({ data: [], nextCursor: null }));

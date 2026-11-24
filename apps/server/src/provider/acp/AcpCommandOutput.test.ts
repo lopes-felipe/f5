@@ -2,6 +2,7 @@ import { EventId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 
 import {
+  ACP_OUTPUT_TRUNCATION_MARKER,
   AcpCommandOutputTracker,
   acpCommandOutputText,
   makeAcpCommandOutputEvent,
@@ -30,7 +31,7 @@ describe("acpCommandOutputText", () => {
           { type: "content", content: { type: "text", text: "b" } },
         ],
       }),
-    ).toBe("ab");
+    ).toBe("a\nb");
     expect(acpCommandOutputText({ rawOutput: { exitCode: 0 } })).toBe("");
   });
 
@@ -78,6 +79,71 @@ describe("AcpCommandOutputTracker", () => {
         data: { rawOutput: { output: "file text" } },
       }),
     ).toBe(undefined);
+  });
+});
+
+describe("AcpCommandOutputTracker edge cases", () => {
+  const content = (...texts: string[]) =>
+    texts.map((text) => ({ type: "content", content: { type: "text", text } }));
+  const truncated = (full: string) =>
+    full.length <= 8_000 ? full : `${ACP_OUTPUT_TRUNCATION_MARKER}${full.slice(-8_000)}`;
+  const line = (index: number) => `line ${index.toString().padStart(5, "0")}\n`;
+  const lines = (count: number) =>
+    Array.from({ length: count }, (_, index) => line(index)).join("");
+
+  it("lets content text through when rawOutput.output is empty, and keeps blocks apart", () => {
+    expect(acpCommandOutputText({ rawOutput: { output: "" }, content: content("a", "b") })).toBe(
+      "a\nb",
+    );
+  });
+
+  it("keeps streaming new output after the runtime starts truncating it", () => {
+    const tracker = new AcpCommandOutputTracker();
+    let emitted = "";
+    // 11 characters a line: crosses the 8,000-character bound after ~730 lines.
+    for (const count of [300, 700, 900, 1_200, 1_500]) {
+      const delta = tracker.next(
+        execute({ rawOutput: { output: truncated(lines(count)) } }, "inProgress"),
+      );
+      emitted += delta ?? "";
+    }
+    emitted += tracker.next(execute({ rawOutput: { output: truncated(lines(1_600)) } })) ?? "";
+    expect(emitted).toBe(lines(1_600));
+  });
+
+  it("marks a gap when an update skips past everything already emitted", () => {
+    const tracker = new AcpCommandOutputTracker();
+    expect(tracker.next(execute({ rawOutput: { output: lines(100) } }, "inProgress"))).toBe(
+      lines(100),
+    );
+    const full = lines(5_000);
+    const delta = tracker.next(execute({ rawOutput: { output: truncated(full) } }));
+    expect(delta).toBe(`\n${ACP_OUTPUT_TRUNCATION_MARKER}${full.slice(-8_000)}`);
+  });
+
+  it("never splits a registered credential across two chunks", () => {
+    const credential = "abcdefgh12345678";
+    const holdback = (text: string) => {
+      for (let length = credential.length - 1; length > 0; length--)
+        if (text.endsWith(credential.slice(0, length))) return length;
+      return 0;
+    };
+    const tracker = new AcpCommandOutputTracker(holdback);
+    const first = tracker.next(execute({ rawOutput: { output: "token=abcdefgh" } }, "inProgress"));
+    expect(first).toBe("token=");
+    const second = tracker.next(
+      execute({ rawOutput: { output: "token=abcdefgh12345678 done" } }, "inProgress"),
+    );
+    // The whole credential is in one chunk, where publishing scrubs it.
+    expect(second).toBe("abcdefgh12345678 done");
+    // Held text is flushed when the command ends.
+    const third = tracker.next(
+      execute({ rawOutput: { output: "token=abcdefgh12345678 done abc" } }, "inProgress"),
+    );
+    expect(third).toBe(" ");
+    expect(
+      tracker.next(execute({ rawOutput: { output: "token=abcdefgh12345678 done abc" } })),
+    ).toBe("abc");
   });
 });
 

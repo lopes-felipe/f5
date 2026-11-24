@@ -8367,7 +8367,7 @@ describe("ProviderRuntimeIngestion", () => {
       )?.pullRequests ?? [];
     const runCommand = async (input: {
       readonly key: string;
-      readonly provider: "codex" | "claudeAgent";
+      readonly provider: "codex" | "claudeAgent" | "antigravity";
       readonly detail: string;
       readonly status: "completed" | "failed";
       readonly output: string;
@@ -8454,6 +8454,16 @@ describe("ProviderRuntimeIngestion", () => {
           url: prUrl,
         },
       ]);
+    });
+    it("links the PR an ACP agent's gh pr create printed, as for other agents", async () => {
+      const harness = await runCommand({
+        key: "antigravity-pr",
+        provider: "antigravity",
+        detail: "gh pr create --fill",
+        status: "completed",
+        output: `Creating pull request\n${prUrl}\n`,
+      });
+      expect((await linksOf(harness)).map((link) => link.number)).toEqual([493]);
     });
     it.each([false, true])("honors the GitLab linking preference: %s", async (enabled) => {
       const harness = await runCommand({
