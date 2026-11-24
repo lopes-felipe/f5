@@ -8,6 +8,7 @@
 import {
   isDiffCommand,
   parseFileReadSegments,
+  parseOutputStatements,
   parseSearchOutputCommand,
   type SearchOutputCommand,
 } from "@t3tools/shared/commandSummary";
@@ -78,8 +79,36 @@ export interface DiffFileSection {
   readonly rows: ReadonlyArray<DiffRow>;
 }
 
+/** One statement's output within a compound command's output. */
+export type OutputSection =
+  | {
+      readonly type: "file";
+      /** The path as written; `rev:path` for `git show rev:path`. */
+      readonly displayPath: string;
+      /** Null when where it ran is unknown, or for a revision's text. */
+      readonly filePath: string | null;
+      readonly language: string;
+      readonly code: string;
+      /** From `nl -ba` / `cat -n` prefixes; null otherwise. */
+      readonly lineNumbers: ReadonlyArray<number> | null;
+    }
+  | {
+      readonly type: "search";
+      readonly segments: ReadonlyArray<SearchSegment>;
+      readonly matchCount: number;
+      readonly fileCount: number;
+    }
+  | { readonly type: "plain"; readonly text: string };
+
 export type CommandOutputPresentation =
   | { readonly kind: "plain"; readonly text: string }
+  | {
+      readonly kind: "sections";
+      readonly sections: ReadonlyArray<OutputSection>;
+      /** File reads among the sections. */
+      readonly fileCount: number;
+      readonly matchCount: number;
+    }
   | { readonly kind: "json"; readonly text: string }
   | {
       readonly kind: "ansi";
@@ -234,22 +263,27 @@ function classifyFileRead(input: ClassifyCommandOutputInput): CommandOutputPrese
 
   // Reads of different files in one language are highlighted together, but
   // no single file can be named or opened for them. A read after `cd x;` may
-  // have run in either directory, so it is named but cannot be opened.
+  // have run in either directory, and `git show rev:path` prints a revision's
+  // text, so those are named but cannot be opened.
+  const displayPathOf = (segment: (typeof parsed.segments)[number]) =>
+    segment.revision === null ? segment.filePath : `${segment.revision}:${segment.filePath}`;
   const filePaths = new Set(
     parsed.segments.map((segment) =>
       resolveCommandPath(segment.filePath, input.cwd, segment.cwdOffset),
     ),
   );
-  const displayPaths = new Set(parsed.segments.map((segment) => segment.filePath));
-  const cwdKnown = parsed.segments.every((segment) => segment.cwdKnown);
+  const displayPaths = new Set(parsed.segments.map(displayPathOf));
+  const openable = parsed.segments.every(
+    (segment) => segment.cwdKnown && segment.revision === null,
+  );
   const file =
-    filePaths.size === 1 && cwdKnown
+    filePaths.size === 1 && displayPaths.size === 1 && openable
       ? {
           displayPath: first.filePath,
           filePath: resolveCommandPath(first.filePath, input.cwd, first.cwdOffset),
         }
       : displayPaths.size === 1
-        ? { displayPath: first.filePath, filePath: null }
+        ? { displayPath: displayPathOf(first), filePath: null }
         : null;
   return {
     kind: "file",
@@ -437,6 +471,8 @@ const NUMBER_LINE_PATTERN = /^(\d+)([:-])(.*)$/;
 function searchesSingleFile(search: SearchOutputCommand): boolean {
   const [target] = search.targets;
   if (search.targets.length !== 1 || !target) return false;
+  // `git grep` always prints the path.
+  if (search.tool === "git") return false;
   if (search.tool === "grep") return !search.recursive;
   // ripgrep prints no path for a lone file argument; guess files by extension.
   return /\.[A-Za-z0-9]+$/.test(basename(target));
@@ -502,21 +538,56 @@ function parseContextLine(line: string, matchPaths: ReadonlySet<string>): Parsed
   return null;
 }
 
-function classifySearch(input: ClassifyCommandOutputInput): CommandOutputPresentation | null {
-  const search = parseSearchOutputCommand(input.command);
-  // Without line numbers a leading `2026-11-23` or `12:` in the matched text
-  // would be read as one, so unnumbered output stays plain.
-  if (!search?.lineNumbers || input.output.length === 0) return null;
+/**
+ * `git grep pattern origin/main` prints `origin/main:path:12:text`. A prefix
+ * is dropped only when the line does not parse as a result without it, since
+ * without `--` a "revision" may be a path (`a.ts:12:text`).
+ */
+function stripRevisionPrefix(
+  line: string,
+  revisions: ReadonlyArray<string>,
+): { line: string; revision: string | null } {
+  if (revisions.length > 0 && !PATH_LINE_PATTERN.test(line)) {
+    for (const revision of revisions) {
+      if (line.startsWith(`${revision}:`)) {
+        return { line: line.slice(revision.length + 1), revision };
+      }
+    }
+  }
+  return { line, revision: null };
+}
+
+interface SearchResults {
+  readonly segments: ReadonlyArray<SearchSegment>;
+  readonly matchCount: number;
+  readonly fileCount: number;
+  /** Index of the first line that is not part of the results. */
+  readonly end: number;
+}
+
+/**
+ * Reads search results from `rawLines`. When `stopAtOtherOutput` is set,
+ * output of later statements follows the results: the first line that is not
+ * a result, or whose file's line numbers stop increasing, ends them (even one
+ * shaped like `12: build complete`). Otherwise such lines stay in place as
+ * plain segments.
+ */
+function readSearchResults(
+  rawLines: ReadonlyArray<string>,
+  search: SearchOutputCommand,
+  cwd: string | null | undefined,
+  stopAtOtherOutput: boolean,
+): SearchResults {
   const singleFile = searchesSingleFile(search) ? search.targets[0]! : null;
   const matcher = buildSearchMatcher(search);
   const segments: SearchSegment[] = [];
   const paths = new Set<string>();
   let matchCount = 0;
   const state: {
-    group: { displayPath: string; lines: SearchLine[] } | null;
-    lastGroupPath: string | null;
+    group: { key: string; displayPath: string; fromRevision: boolean; lines: SearchLine[] } | null;
+    lastGroupKey: string | null;
     plainLines: string[];
-  } = { group: null, lastGroupPath: null, plainLines: [] };
+  } = { group: null, lastGroupKey: null, plainLines: [] };
 
   const flushPlain = () => {
     if (state.plainLines.length === 0) return;
@@ -529,34 +600,28 @@ function classifySearch(input: ClassifyCommandOutputInput): CommandOutputPresent
     segments.push({
       type: "group",
       displayPath: group.displayPath,
+      // A revision's text may differ from the file on disk.
       filePath:
-        group.displayPath.length > 0 && search.cwdKnown
-          ? resolveCommandPath(group.displayPath, input.cwd, search.cwdOffset)
+        group.displayPath.length > 0 && search.cwdKnown && !group.fromRevision
+          ? resolveCommandPath(group.displayPath, cwd, search.cwdOffset)
           : null,
       language: languageForPath(group.displayPath),
-      showHeader: group.displayPath !== state.lastGroupPath,
+      showHeader: group.key !== state.lastGroupKey,
       lines: group.lines,
     });
-    state.lastGroupPath = group.displayPath;
+    state.lastGroupKey = group.key;
     state.group = null;
   };
 
-  const lines = outputLines(input.output);
+  const lines = rawLines.map((line) => stripRevisionPrefix(line, search.revisions));
   const matchPaths = new Set<string>();
-  for (const line of lines) {
+  for (const { line } of lines) {
     const match = PATH_LINE_PATTERN.exec(line);
     if (match?.[3] === ":") matchPaths.add(match[1]!);
   }
-  // Output of statements after the search follows its matches. Once a line
-  // is not a result, or a file's line numbers stop increasing, every later
-  // line is that output, even one shaped like `12: build complete`.
-  let searchEnded = false;
-  const lastLineByPath = new Map<string, number>();
-  for (const line of lines) {
-    if (searchEnded) {
-      state.plainLines.push(line);
-      continue;
-    }
+  const lastLineByKey = new Map<string, number>();
+  let end = lines.length;
+  for (const [index, { line, revision }] of lines.entries()) {
     if (line === "--") {
       flushGroup();
       flushPlain();
@@ -564,19 +629,28 @@ function classifySearch(input: ClassifyCommandOutputInput): CommandOutputPresent
       continue;
     }
     const parsed = parseSearchLine(line, search, singleFile, matchPaths);
-    const displayPath = parsed?.path ?? "";
+    const path = parsed?.path ?? "";
+    const displayPath = revision !== null && path ? `${revision}:${path}` : path;
     const outOfOrder =
-      parsed !== null && parsed.lineNumber <= (lastLineByPath.get(displayPath) ?? 0);
-    if (!parsed || (search.followedByOtherStatements && outOfOrder)) {
+      parsed !== null && parsed.lineNumber <= (lastLineByKey.get(displayPath) ?? 0);
+    if (!parsed || (stopAtOtherOutput && outOfOrder)) {
+      if (stopAtOtherOutput) {
+        end = index;
+        break;
+      }
       flushGroup();
-      state.plainLines.push(line);
-      searchEnded = search.followedByOtherStatements;
+      state.plainLines.push(rawLines[index]!);
       continue;
     }
-    lastLineByPath.set(displayPath, parsed.lineNumber);
+    lastLineByKey.set(displayPath, parsed.lineNumber);
     flushPlain();
-    if (state.group && state.group.displayPath !== displayPath) flushGroup();
-    const group = state.group ?? { displayPath, lines: [] };
+    if (state.group && state.group.key !== displayPath) flushGroup();
+    const group = state.group ?? {
+      key: displayPath,
+      displayPath,
+      fromRevision: revision !== null,
+      lines: [],
+    };
     state.group = group;
     if (parsed.isMatch) matchCount += 1;
     if (displayPath) paths.add(displayPath);
@@ -592,13 +666,119 @@ function classifySearch(input: ClassifyCommandOutputInput): CommandOutputPresent
   }
   flushGroup();
   flushPlain();
-  if (!segments.some((segment) => segment.type === "group")) return null;
+  return { segments, matchCount, fileCount: paths.size, end };
+}
+
+function classifySearch(input: ClassifyCommandOutputInput): CommandOutputPresentation | null {
+  const search = parseSearchOutputCommand(input.command);
+  // Without line numbers a leading `2026-11-23` or `12:` in the matched text
+  // would be read as one, so unnumbered output stays plain.
+  if (!search?.lineNumbers || input.output.length === 0) return null;
+  const lines = outputLines(input.output);
+  const results = readSearchResults(lines, search, input.cwd, search.followedByOtherStatements);
+  if (!results.segments.some((segment) => segment.type === "group")) return null;
+  const segments = [...results.segments];
+  if (results.end < lines.length) {
+    segments.push({ type: "plain", text: lines.slice(results.end).join("\n") });
+  }
   return {
     kind: "search",
     segments,
-    matchCount,
-    fileCount: paths.size,
+    matchCount: results.matchCount,
+    fileCount: results.fileCount,
     partial: input.shortened === true,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Compound commands
+
+/** A tool's error message where a read's output was expected. */
+const TOOL_ERROR_PATTERN = /^(?:fatal|error|usage):|^(?:git|sed|cat|head|tail|nl): /i;
+
+/**
+ * `git show A:a.ts | sed -n 10,20p; git grep -n foo; ps …`: the output of each
+ * statement in turn. A read takes as many lines as it can print, a search
+ * takes lines while they are results, and the first statement whose output
+ * cannot be told apart (an unbounded read before others, anything else) makes
+ * the rest plain. Reads without number prefixes get no gutter: a file shorter
+ * than its range would shift every later number.
+ */
+function classifySections(input: ClassifyCommandOutputInput): CommandOutputPresentation | null {
+  // Lines missing from the middle would shift every boundary.
+  if (input.shortened) return null;
+  const statements = parseOutputStatements(input.command);
+  if (!statements || statements.length < 2 || statements[0]!.kind === "other") return null;
+  const lines = outputLines(input.output);
+  const sections: OutputSection[] = [];
+  let position = 0;
+  for (const [index, statement] of statements.entries()) {
+    if (position >= lines.length || statement.kind === "other") break;
+    const last = index === statements.length - 1;
+    if (statement.kind === "search") {
+      const { search } = statement;
+      if (!search.lineNumbers) break;
+      const results = readSearchResults(lines.slice(position), search, input.cwd, !last);
+      if (!results.segments.some((segment) => segment.type === "group")) break;
+      sections.push({
+        type: "search",
+        segments: results.segments,
+        matchCount: results.matchCount,
+        fileCount: results.fileCount,
+      });
+      position += results.end;
+      continue;
+    }
+    const { read } = statement;
+    if ((read.lineLimit === null && !last) || TOOL_ERROR_PATTERN.test(lines[position]!)) break;
+    const end = last ? lines.length : Math.min(lines.length, position + read.lineLimit!);
+    let code = lines.slice(position, end);
+    let lineNumbers: number[] | null = null;
+    if (read.numberedOutput) {
+      // `nl -ba` / `cat -n` number every line consecutively, so the first line
+      // without the next number is where the read's output ended.
+      lineNumbers = [];
+      const texts: string[] = [];
+      for (const line of code) {
+        const match = NUMBERED_LINE_PATTERN.exec(line);
+        const number = match ? Number.parseInt(match[1]!, 10) : null;
+        const previous = lineNumbers[lineNumbers.length - 1];
+        if (number === null || (previous !== undefined && number !== previous + 1)) break;
+        lineNumbers.push(number);
+        texts.push(match![2]!);
+      }
+      if (texts.length === 0) break;
+      code = texts;
+    }
+    sections.push({
+      type: "file",
+      displayPath: read.revision === null ? read.filePath : `${read.revision}:${read.filePath}`,
+      filePath:
+        read.revision === null && read.cwdKnown
+          ? resolveCommandPath(read.filePath, input.cwd, read.cwdOffset)
+          : null,
+      language: languageForPath(read.filePath),
+      code: code.join("\n"),
+      lineNumbers,
+    });
+    position += code.length;
+  }
+  if (position < lines.length) {
+    sections.push({ type: "plain", text: lines.slice(position).join("\n") });
+  }
+  // A lone search followed by other output is a search presentation.
+  const structured = sections.filter((section) => section.type !== "plain");
+  if (structured.length === 0 || (structured.length === 1 && structured[0]!.type === "search")) {
+    return null;
+  }
+  return {
+    kind: "sections",
+    sections,
+    fileCount: sections.filter((section) => section.type === "file").length,
+    matchCount: sections.reduce(
+      (count, section) => count + (section.type === "search" ? section.matchCount : 0),
+      0,
+    ),
   };
 }
 
@@ -772,6 +952,7 @@ export function classifyCommandOutput(
   return (
     classifyDiff(input) ??
     classifyFileRead(input) ??
+    classifySections(input) ??
     classifySearch(input) ??
     classifyJson(output) ?? { kind: "plain", text: output }
   );

@@ -10,6 +10,7 @@ import {
   type CommandOutputPresentation,
   type DiffFileSection,
   type MatchRange,
+  type OutputSection,
   type SearchSegment,
 } from "../../lib/commandOutputPresentation";
 import { cn } from "~/lib/utils";
@@ -237,6 +238,34 @@ function FileOutput(props: {
   );
 }
 
+/** A file name above its lines; a button when the file can be opened. */
+function FileHeader(props: {
+  displayPath: string;
+  /** `path:line` to open, or null when the file cannot be opened. */
+  openTarget: string | null;
+  openFile: (path: string) => void;
+}) {
+  const { displayPath, openTarget } = props;
+  if (displayPath.length === 0) return null;
+  if (!openTarget) {
+    return (
+      <p className="mt-1 mb-0.5 max-w-full select-none truncate text-2xs text-muted-foreground first:mt-0">
+        {displayPath}
+      </p>
+    );
+  }
+  return (
+    <button
+      type="button"
+      className="mt-1 mb-0.5 block max-w-full select-none truncate rounded-sm text-left text-2xs text-muted-foreground outline-none first:mt-0 hover:text-foreground hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+      title={`Open ${displayPath}`}
+      onClick={() => props.openFile(openTarget)}
+    >
+      {displayPath}
+    </button>
+  );
+}
+
 function SearchGroup(props: {
   segment: Extract<SearchSegment, { type: "group" }>;
   /** The first openable group holds the block's line-button tab stop. */
@@ -253,20 +282,12 @@ function SearchGroup(props: {
   const openLine = filePath ? (line: number) => props.openFile(`${filePath}:${line}`) : null;
   return (
     <div data-testid="command-output-search-group">
-      {segment.showHeader && segment.displayPath.length > 0 && !filePath && (
-        <p className="mt-1 mb-0.5 max-w-full select-none truncate text-2xs text-muted-foreground first:mt-0">
-          {segment.displayPath}
-        </p>
-      )}
-      {segment.showHeader && filePath && (
-        <button
-          type="button"
-          className="mt-1 mb-0.5 block max-w-full select-none truncate rounded-sm text-left text-2xs text-muted-foreground outline-none first:mt-0 hover:text-foreground hover:underline focus-visible:ring-2 focus-visible:ring-ring"
-          title={`Open ${segment.displayPath}`}
-          onClick={() => props.openFile(`${filePath}:${segment.lines[0]?.lineNumber ?? 1}`)}
-        >
-          {segment.displayPath}
-        </button>
+      {segment.showHeader && (
+        <FileHeader
+          displayPath={segment.displayPath}
+          openTarget={filePath ? `${filePath}:${segment.lines[0]?.lineNumber ?? 1}` : null}
+          openFile={props.openFile}
+        />
       )}
       <CodeLines
         code={code}
@@ -295,15 +316,18 @@ function SearchGroup(props: {
 }
 
 function SearchOutput(props: {
-  presentation: Extract<CommandOutputPresentation, { kind: "search" }>;
+  segments: ReadonlyArray<SearchSegment>;
   theme: Theme;
   highlight: boolean;
   openFile: (path: string) => void;
+  /** False when an earlier section already holds the line-button tab stop. */
+  tabStop?: boolean | undefined;
 }) {
-  const { segments } = props.presentation;
-  const firstOpenableGroup = segments.findIndex(
-    (segment) => segment.type === "group" && segment.filePath !== null,
-  );
+  const { segments } = props;
+  const firstOpenableGroup =
+    props.tabStop === false
+      ? -1
+      : segments.findIndex((segment) => segment.type === "group" && segment.filePath !== null);
   const gutter = useMemo(() => {
     let max = 1;
     for (const segment of segments) {
@@ -334,6 +358,100 @@ function SearchOutput(props: {
         theme={props.theme}
         highlight={props.highlight}
         openFile={props.openFile}
+      />
+    );
+  });
+}
+
+function FileSectionOutput(props: {
+  section: Extract<OutputSection, { type: "file" }>;
+  theme: Theme;
+  highlight: boolean;
+  openFile: (path: string) => void;
+  tabStop: boolean;
+}) {
+  const { section } = props;
+  const lineCount = useMemo(() => section.code.split("\n").length, [section.code]);
+  const numbers = section.lineNumbers;
+  const gutter = numbers && numbers.length > 0 ? gutterWidth(Math.max(...numbers)) : null;
+  const { filePath } = section;
+  const openLine = filePath ? (line: number) => props.openFile(`${filePath}:${line}`) : null;
+  return (
+    <div data-testid="command-output-file-section">
+      <FileHeader
+        displayPath={section.displayPath}
+        openTarget={filePath ? `${filePath}${numbers?.[0] ? `:${numbers[0]}` : ""}` : null}
+        openFile={props.openFile}
+      />
+      <CodeLines
+        code={section.code}
+        language={section.language}
+        theme={props.theme}
+        highlight={props.highlight}
+      >
+        {(renderLine) =>
+          Array.from({ length: lineCount }, (_, index) => (
+            <LineRow
+              key={index}
+              number={numbers?.[index] ?? null}
+              gutter={gutter}
+              onOpenLine={openLine}
+              openLabel={`Open ${basename(section.displayPath)}`}
+              tabStop={props.tabStop && index === 0}
+            >
+              {renderLine(index)}
+            </LineRow>
+          ))
+        }
+      </CodeLines>
+    </div>
+  );
+}
+
+/** A compound command's output, one statement's section after another. */
+function SectionsOutput(props: {
+  presentation: Extract<CommandOutputPresentation, { kind: "sections" }>;
+  theme: Theme;
+  highlight: boolean;
+  openFile: (path: string) => void;
+}) {
+  const { sections } = props.presentation;
+  // One tab stop for the whole block, on the first section with line buttons.
+  const firstButtons = sections.findIndex((section) =>
+    section.type === "file"
+      ? section.filePath !== null && section.lineNumbers !== null
+      : section.type === "search" &&
+        section.segments.some((segment) => segment.type === "group" && segment.filePath !== null),
+  );
+  return sections.map((section, index) => {
+    if (section.type === "plain") {
+      return (
+        <div key={index} className="mt-1 whitespace-pre-wrap break-words first:mt-0">
+          {section.text}
+        </div>
+      );
+    }
+    if (section.type === "search") {
+      return (
+        <div key={index} className="mt-1 first:mt-0">
+          <SearchOutput
+            segments={section.segments}
+            theme={props.theme}
+            highlight={props.highlight}
+            openFile={props.openFile}
+            tabStop={index === firstButtons}
+          />
+        </div>
+      );
+    }
+    return (
+      <FileSectionOutput
+        key={index}
+        section={section}
+        theme={props.theme}
+        highlight={props.highlight}
+        openFile={props.openFile}
+        tabStop={index === firstButtons}
       />
     );
   });
@@ -550,6 +668,26 @@ function OutputChip(props: {
       </button>
     );
   }
+  if (presentation.kind === "sections") {
+    const files = presentation.sections.filter((section) => section.type === "file");
+    const [onlyFile] = files;
+    const fileLabel =
+      files.length === 1 && onlyFile
+        ? basename(onlyFile.displayPath)
+        : files.length > 1
+          ? pluralize(files.length, "file")
+          : null;
+    return (
+      <span data-testid="command-output-chip" className={CHIP_CLASS_NAME}>
+        {fileLabel && <span className="truncate">{fileLabel}</span>}
+        {presentation.matchCount > 0 && (
+          <span className={fileLabel ? "shrink-0 text-muted-foreground" : undefined}>
+            {pluralize(presentation.matchCount, "match", "matches")}
+          </span>
+        )}
+      </span>
+    );
+  }
   if (presentation.kind === "search") {
     return (
       <span data-testid="command-output-chip" className={CHIP_CLASS_NAME}>
@@ -584,6 +722,18 @@ function OutputChip(props: {
   return null;
 }
 
+function searchSegmentsText(segments: ReadonlyArray<SearchSegment>): string {
+  return segments
+    .map((segment) =>
+      segment.type === "group"
+        ? segment.lines.map((line) => line.text).join("\n")
+        : segment.type === "plain"
+          ? segment.text
+          : "",
+    )
+    .join("\n");
+}
+
 function presentationText(presentation: CommandOutputPresentation): string {
   switch (presentation.kind) {
     case "file":
@@ -593,13 +743,15 @@ function presentationText(presentation: CommandOutputPresentation): string {
     case "ansi":
       return presentation.text;
     case "search":
-      return presentation.segments
-        .map((segment) =>
-          segment.type === "group"
-            ? segment.lines.map((line) => line.text).join("\n")
-            : segment.type === "plain"
-              ? segment.text
-              : "",
+      return searchSegmentsText(presentation.segments);
+    case "sections":
+      return presentation.sections
+        .map((section) =>
+          section.type === "file"
+            ? section.code
+            : section.type === "search"
+              ? searchSegmentsText(section.segments)
+              : section.text,
         )
         .join("\n");
     case "diff":
@@ -652,6 +804,15 @@ function OutputBody(props: {
     case "search":
       return (
         <SearchOutput
+          segments={presentation.segments}
+          theme={theme}
+          highlight={highlight}
+          openFile={props.openFile}
+        />
+      );
+    case "sections":
+      return (
+        <SectionsOutput
           presentation={presentation}
           theme={theme}
           highlight={highlight}
