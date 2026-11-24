@@ -119,6 +119,17 @@ export interface ProviderTurnDeliveryRepositoryShape {
   readonly getByCommandId: (
     commandId: CommandId,
   ) => Effect.Effect<ProviderTurnDelivery | null, ProviderTurnDeliveryRepositoryError>;
+  readonly getWorkflowStageDelivery?: (input: {
+    readonly runKind: string;
+    readonly workflowId: string;
+    readonly taskId: string;
+    readonly threadId: ThreadId;
+    readonly first?: boolean;
+  }) => Effect.Effect<ProviderTurnDelivery | null, ProviderTurnDeliveryRepositoryError>;
+  readonly getWorkflowAttemptDelivery?: (
+    originCommandId: CommandId,
+    threadId: ThreadId,
+  ) => Effect.Effect<ProviderTurnDelivery | null, ProviderTurnDeliveryRepositoryError>;
   readonly getLatestByThread: (
     threadId: ThreadId,
   ) => Effect.Effect<ProviderTurnDelivery | null, ProviderTurnDeliveryRepositoryError>;

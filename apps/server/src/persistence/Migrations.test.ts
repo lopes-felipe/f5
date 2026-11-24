@@ -83,6 +83,65 @@ effectIt.effect("upgrades a version 173 database for managed workspace groups", 
   }).pipe(Effect.provide(SqliteClient.layerMemory()), Effect.scoped),
 );
 
+effectIt.effect("upgrades the benchmark preview and preserves its captured data", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const through167 = Object.fromEntries(
+      Object.entries(MIGRATIONS).filter(([key]) => Number.parseInt(key, 10) <= 167),
+    );
+    yield* Migrator.make({})({ loader: Migrator.fromRecord(through167) });
+    yield* MIGRATIONS["175_WorkflowBenchmark"];
+    yield* sql`
+      INSERT INTO effect_sql_migrations(migration_id, name) VALUES
+        (168, 'WorkflowBenchmark'),
+        (169, 'WorkflowBenchmarkSubagents'),
+        (170, 'RepairDuplicateWorkflowCosts')
+    `;
+    yield* sql`
+      INSERT INTO workflow_benchmark_turn_models(thread_id, turn_id, model, rerouted, reported_at)
+      VALUES ('thread', 'turn', 'preview-model', 0, '2026-11-23T00:00:00.000Z')
+    `;
+    yield* sql`UPDATE workflow_benchmark_cutover SET started_at = '2026-11-23T00:00:00.000Z'`;
+
+    yield* runMigrations;
+    yield* runMigrations;
+
+    expect(
+      yield* sql`
+        SELECT name FROM effect_sql_migrations WHERE migration_id BETWEEN 168 AND 170
+        ORDER BY migration_id
+      `,
+    ).toEqual([
+      { name: "ProviderExtensionStatuses" },
+      { name: "ThreadContextBoundaries" },
+      { name: "ProjectPinArchive" },
+    ]);
+    expect(
+      yield* sql`
+        SELECT name FROM pragma_table_info('projection_thread_sessions')
+        WHERE name = 'extension_statuses_json'
+      `,
+    ).toEqual([{ name: "extension_statuses_json" }]);
+    expect(
+      yield* sql`
+        SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'thread_context_boundaries'
+      `,
+    ).toEqual([{ name: "thread_context_boundaries" }]);
+    expect(
+      yield* sql`
+        SELECT name FROM pragma_table_info('projection_projects')
+        WHERE name IN ('pinned', 'archived') ORDER BY name
+      `,
+    ).toEqual([{ name: "archived" }, { name: "pinned" }]);
+    expect(yield* sql`SELECT model FROM workflow_benchmark_turn_models`).toEqual([
+      { model: "preview-model" },
+    ]);
+    expect(yield* sql`SELECT started_at FROM workflow_benchmark_cutover`).toEqual([
+      { started_at: "2026-11-23T00:00:00.000Z" },
+    ]);
+  }).pipe(Effect.provide(SqliteClient.layerMemory()), Effect.scoped),
+);
+
 type PrecedingVersion =
   | "main126"
   | "main127"
@@ -209,6 +268,9 @@ const assertUpgrade = (version: PrecedingVersion) =>
       { migration_id: 172, name: "ThreadSideChat" },
       { migration_id: 173, name: "SessionAuthFailure" },
       { migration_id: 174, name: "WorktreeGroups" },
+      { migration_id: 175, name: "WorkflowBenchmark" },
+      { migration_id: 176, name: "WorkflowBenchmarkSubagents" },
+      { migration_id: 177, name: "RepairDuplicateWorkflowCosts" },
     ]);
     // The queue reads linked threads by pull request; the lookup uses its own index.
     const linkLookup = yield* sql<{

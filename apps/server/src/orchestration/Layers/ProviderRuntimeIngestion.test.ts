@@ -1144,6 +1144,54 @@ describe("ProviderRuntimeIngestion", () => {
     }
   });
 
+  it("publishes Claude capabilities and the cost in a single completion snapshot", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("claude-charged-turn");
+    const providerInstanceId = ProviderInstanceId.makeUnsafe("claude-test");
+    const now = new Date().toISOString();
+    harness.setSessionCapabilities({
+      generation: 2,
+      providerInstanceId,
+      discovery: "discovered",
+      checkedAt: now,
+      actions: [{ action: "nativeCommands", supported: true }],
+    });
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("claude-charged-start"),
+      provider: "claudeAgent",
+      threadId,
+      turnId,
+      createdAt: now,
+    });
+    await waitForThread(harness.engine, (thread) => thread.session?.activeTurnId === turnId);
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("claude-charged-end"),
+      provider: "claudeAgent",
+      threadId,
+      turnId,
+      createdAt: new Date().toISOString(),
+      payload: { state: "completed", totalCostUsd: 0.25 },
+    });
+    await harness.drain();
+    const thread = await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.status === "ready",
+    );
+    expect(thread.session?.turnCostUsd).toBe(0.25);
+    expect(thread.session?.capabilities?.generation).toBe(2);
+    const events = await Effect.runPromise(harness.sql`
+      SELECT json_extract(payload_json, '$.settledTurnId') AS turn_id,
+        json_extract(payload_json, '$.session.turnCostUsd') AS cost
+      FROM orchestration_events
+      WHERE stream_id = ${threadId} AND event_type = 'thread.session-set'
+        AND json_extract(payload_json, '$.session.turnCostUsd') IS NOT NULL
+    `);
+    expect(events).toEqual([{ turn_id: turnId, cost: 0.25 }]);
+  });
+
   it("rejects retired session-field frames before they mutate current usage or identity", async () => {
     const harness = await createHarness();
     const threadId = asThreadId("thread-1"),

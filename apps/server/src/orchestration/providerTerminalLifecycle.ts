@@ -195,6 +195,11 @@ export function makeCompletedTurnUsageFact(input: {
   };
 }
 
+export function runtimeCompletionModel(event: TurnCompletedRuntimeEvent): string | undefined {
+  const models = Object.keys(event.payload?.modelUsage ?? {});
+  return event.payload?.model ?? (models.length === 1 ? models[0] : undefined);
+}
+
 /** Correlate terminal reports by provider instance and turn, rather than event id. */
 export function toOrchestrationUsageLimit(
   limit: RuntimeUsageLimit | undefined,

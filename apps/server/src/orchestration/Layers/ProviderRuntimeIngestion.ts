@@ -73,11 +73,13 @@ import {
   Layer,
   Option,
   Path,
+  PubSub,
   Schedule,
   Stream,
   Schema,
 } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { recordEffectiveTurnModel } from "../workflowTurnModel.ts";
 import { enqueueBackgroundWork, makeBackgroundWorker } from "../../backgroundWorker.ts";
 import { isBlockingUserInput } from "@t3tools/shared/pendingUserInputs";
 import { reconcileElicitationsOnStartup } from "../elicitationSubmission.ts";
@@ -151,6 +153,7 @@ import {
   type TaskToolName,
 } from "@t3tools/shared/claudeTaskToolProjection";
 import { ThreadBackgroundWork } from "../Services/ThreadBackgroundWork.ts";
+import { parseWorkflowFindingOutput } from "../workflowFindingProtocol.ts";
 import { increment, providerProjectionWriteFailuresTotal } from "../../observability/Metrics.ts";
 import {
   extractContextTokens,
@@ -2353,6 +2356,14 @@ export function runtimeEventToActivities(
     }
 
     case "task.completed": {
+      const summary = event.payload.summary;
+      const report =
+        event.provider === "claudeAgent" &&
+        event.payload.status === "completed" &&
+        summary?.includes("f5-findings-v1") &&
+        summary.length <= 8_000
+          ? parseWorkflowFindingOutput(summary, "findings")
+          : null;
       return [
         {
           id: event.eventId,
@@ -2370,6 +2381,7 @@ export function runtimeEventToActivities(
             ...(event.payload.runId ? { runId: event.payload.runId } : {}),
             status: event.payload.status,
             ...(event.payload.summary ? { detail: truncateDetail(event.payload.summary) } : {}),
+            ...(report?.coverage === "structured" ? { subagentFindings: report.metadata } : {}),
             ...(event.payload.usage !== undefined ? { usage: event.payload.usage } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
@@ -2603,6 +2615,7 @@ const make = Effect.gen(function* () {
   const threadBackgroundWork = yield* ThreadBackgroundWork;
   const computerAutomationBroker = yield* Effect.serviceOption(ComputerAutomationBroker);
   const sqlOption = yield* Effect.serviceOption(SqlClient.SqlClient);
+  const benchmarkModelChanges = yield* PubSub.sliding<{ threadId: ThreadId; turnId: TurnId }>(256);
   const imageStorage = {
     config: yield* Effect.serviceOption(ServerConfig),
     sql: sqlOption,
@@ -4676,6 +4689,19 @@ const make = Effect.gen(function* () {
           yield* providerTerminalEventRepository.markApplied(event.eventId);
         return;
       }
+      if (Option.isSome(sqlOption) && event.turnId) {
+        const turnId = TurnId.make(event.turnId);
+        yield* recordEffectiveTurnModel(sqlOption.value, event).pipe(
+          Effect.flatMap((changed) =>
+            changed
+              ? PubSub.publish(benchmarkModelChanges, { threadId: event.threadId, turnId })
+              : Effect.void,
+          ),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Effective turn model could not be stored", { cause }),
+          ),
+        );
+      }
       if (isProviderTerminalRuntimeEvent(event)) {
         const binding = Option.getOrUndefined(
           yield* providerSessionDirectory.getBinding(event.threadId),
@@ -5300,13 +5326,25 @@ const make = Effect.gen(function* () {
 
           if (event.type === "turn.completed") {
             const command = makeTurnCompletedSessionSetCommand({ event, thread, createdAt: now });
+            // A Claude result also updates the cache split. Publish both changes in
+            // the completion snapshot so a separate session update cannot repeat its cost.
+            const capabilities =
+              event.provider === "claudeAgent"
+                ? yield* providerService
+                    .getSessionCapabilities(thread.id)
+                    .pipe(Effect.orElseSucceed(() => null))
+                : null;
+            const settledSession = {
+              ...command.session,
+              ...(capabilities ? { capabilities } : {}),
+              ...(estimatedContextTokens !== undefined
+                ? { estimatedContextTokens, tokenUsageSource }
+                : {}),
+            };
             yield* orchestrationEngine.dispatch({
               ...command,
               session: retainIncompleteHistoryError(
-                // Without a pending report this repeats the command's own values.
-                estimatedContextTokens !== undefined
-                  ? { ...command.session, estimatedContextTokens, tokenUsageSource }
-                  : command.session,
+                settledSession,
                 thread.session,
                 incompleteHistory,
                 now,
@@ -6607,31 +6645,6 @@ const make = Effect.gen(function* () {
         }
       }
 
-      // Claude reports its cache-write split with each result; re-snapshot so the
-      // runtime panel shows the latest session figures.
-      if (event.type === "turn.completed" && event.provider === "claudeAgent") {
-        const capabilities = yield* providerService
-          .getSessionCapabilities(thread.id)
-          .pipe(Effect.orElseSucceed(() => null));
-        // Turn completion already updated the session above; build on the current one.
-        const session = (yield* orchestrationEngine.getReadModel()).threads.find(
-          (entry) => entry.id === thread.id,
-        )?.session;
-        if (
-          capabilities &&
-          session &&
-          !sameSessionCapabilities(session.capabilities ?? null, capabilities)
-        ) {
-          yield* orchestrationEngine.dispatch({
-            type: "thread.session.set",
-            commandId: providerCommandId(event, "thread-session-capabilities-turn"),
-            threadId: thread.id,
-            session: { ...session, capabilities, updatedAt: now },
-            createdAt: now,
-          });
-        }
-      }
-
       if (
         event.type === "compaction.recommended" &&
         (thread.session?.modelContextWindowTokens !== event.payload.modelContextWindowTokens ||
@@ -7400,7 +7413,11 @@ const make = Effect.gen(function* () {
     ["provider-event-delivery"],
   );
 
-  return { start, drain } satisfies ProviderRuntimeIngestionShape;
+  return {
+    start,
+    drain,
+    benchmarkModelChanges: Stream.fromPubSub(benchmarkModelChanges),
+  } satisfies ProviderRuntimeIngestionShape;
 });
 
 export const ProviderRuntimeIngestionLive = Layer.effect(

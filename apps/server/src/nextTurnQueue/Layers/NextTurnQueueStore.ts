@@ -24,6 +24,7 @@ import {
   type QueueReasonCode,
   ThreadId,
   ThreadTurnStartCommand,
+  TurnId,
 } from "@t3tools/contracts";
 import { Effect, Exit, FileSystem, Layer, Schema } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -574,6 +575,10 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
             if (input.scheduledSourceTurnId)
               input = {
                 ...input,
+                command: {
+                  ...input.command,
+                  workflowContinuationTurnId: TurnId.make(input.scheduledSourceTurnId),
+                },
                 scheduledRun: yield* scheduledContinuationFor(
                   input.command.threadId,
                   input.scheduledSourceTurnId,

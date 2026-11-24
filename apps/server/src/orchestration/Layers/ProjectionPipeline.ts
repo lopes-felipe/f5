@@ -88,6 +88,7 @@ import { revertTaskToolState } from "@t3tools/shared/claudeTaskToolProjection";
 import { REASONING_STATUS_ACTIVITY_KIND } from "@t3tools/shared/orchestrationActivityPayload";
 import { readTurnAssistantMessages } from "../turnAssistantMessage.ts";
 import { MessageId } from "@t3tools/contracts";
+import { markWorkflowBenchmarkReverted } from "../workflowBenchmarkPersistence.ts";
 
 export const ORCHESTRATION_PROJECTOR_NAMES = {
   projects: "projection.projects",
@@ -310,7 +311,7 @@ function resolveProjectedMessageState(
     ? payload.text
     : existingMessage && payload.streaming
       ? `${existingMessage.text}${payload.text}`
-      : existingMessage && payload.text.length === 0
+      : existingMessage && payload.text.length === 0 && !payload.replaceText
         ? existingMessage.text
         : payload.text;
   const reasoningText = payload.replace
@@ -2417,6 +2418,22 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             existingTurns,
             event.payload.turnCount,
             event.payload,
+          );
+          const kept = new Set(keptTurns.map((turn) => turn.turnId));
+          const removed =
+            event.payload.removedTurnIds ??
+            existingTurns.flatMap((turn) =>
+              turn.turnId && !kept.has(turn.turnId) ? [turn.turnId] : [],
+            );
+          yield* markWorkflowBenchmarkReverted(
+            sql,
+            event.payload.threadId,
+            removed,
+            event.occurredAt,
+          ).pipe(
+            Effect.mapError(
+              toPersistenceSqlError("ProjectionPipeline.markWorkflowBenchmarkReverted"),
+            ),
           );
           if (event.payload.removedTurnIds) {
             for (const turnId of event.payload.removedTurnIds)

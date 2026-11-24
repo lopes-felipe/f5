@@ -287,6 +287,12 @@ import {
   createWorkflowPlatformRun,
   inspectWorkflowPlatformRun,
 } from "./workflowPlatform.ts";
+import { getWorkflowBenchmark } from "./workflowBenchmark.ts";
+import { ProviderRuntimeIngestionService } from "./orchestration/Services/ProviderRuntimeIngestion.ts";
+import {
+  findWorkflowTurnAttribution,
+  readAttribution,
+} from "./orchestration/workflowBenchmarkPersistence.ts";
 import { GitManager } from "./git/Services/GitManager.ts";
 import { TerminalManager, type TerminalError } from "./terminal/Services/Manager.ts";
 import { Keybindings } from "./keybindings";
@@ -3130,6 +3136,26 @@ export const createServer = Effect.fn(function* (
         orchestrationRuntimeServices,
         ProviderTurnDeliveryWorker,
       );
+      const providerRuntimeIngestion = ServiceMap.getOrUndefined(
+        orchestrationRuntimeServices,
+        ProviderRuntimeIngestionService,
+      );
+      const publishBenchmarkTurnChange = (threadId: string, turnId: string) =>
+        findWorkflowTurnAttribution(sql, threadId, turnId, true).pipe(
+          Effect.flatMap((attribution) =>
+            attribution
+              ? pushBus
+                  .publishAll(WS_CHANNELS.workflowBenchmarkChanged, {
+                    runKind: attribution.runKind,
+                    workflowId: attribution.workflowId,
+                  })
+                  .pipe(Effect.asVoid)
+              : Effect.void,
+          ),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Workflow benchmark turn signal failed", { cause }),
+          ),
+        );
       const providerSessionDirectory = ServiceMap.get(
         orchestrationRuntimeServices,
         ProviderSessionDirectory,
@@ -3271,6 +3297,47 @@ export const createServer = Effect.fn(function* (
           if (event.type === "thread.turn-processing-quiesced") {
             yield* refreshTurnGitStatus(event.payload.threadId);
           }
+          if (event.type === "thread.reverted") {
+            yield* Effect.gen(function* () {
+              const rows = yield* sql<{ attribution: string }>`
+                SELECT json_extract(event_json,'$.payload.workflowAttribution') AS attribution
+                FROM provider_turn_deliveries WHERE thread_id = ${event.payload.threadId}
+                  AND benchmark_reverted_at = ${event.occurredAt}
+                  AND json_extract(event_json,'$.payload.workflowAttribution') IS NOT NULL
+              `;
+              const runs = new Map(
+                rows.map(({ attribution }) => {
+                  const { runKind, workflowId } = readAttribution(attribution);
+                  return [JSON.stringify([runKind, workflowId]), { runKind, workflowId }] as const;
+                }),
+              );
+              for (const run of runs.values())
+                yield* pushBus.publishAll(WS_CHANNELS.workflowBenchmarkChanged, run);
+            }).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("Workflow benchmark rewind signal failed", { cause }),
+              ),
+            );
+          }
+          const changedTurn =
+            event.type === "thread.usage-recorded"
+              ? event.payload.usageFact.turnId
+              : event.type === "thread.session-set"
+                ? (event.payload.session.activeTurnId ?? event.payload.settledTurnId)
+                : event.type === "thread.turn-processing-quiesced"
+                  ? event.payload.turnId
+                  : event.type === "thread.activity-appended" &&
+                      [
+                        "subagent.activity",
+                        "task.started",
+                        "task.progress",
+                        "task.completed",
+                      ].includes(event.payload.activity.kind)
+                    ? event.payload.activity.turnId
+                    : null;
+          if (changedTurn) {
+            yield* publishBenchmarkTurnChange(event.aggregateId, changedTurn);
+          }
           if (event.type === "thread.turn-processing-quiesced" || event.type === "thread.deleted")
             yield* wakeUpstreamPorts(event.aggregateId);
           const gitStatusInvalidation = resolveGitStatusInvalidation(event);
@@ -3281,12 +3348,49 @@ export const createServer = Effect.fn(function* (
           }
         }),
       ).pipe(Effect.forkIn(subscriptionsScope, { startImmediately: true }));
+      if (providerRuntimeIngestion?.benchmarkModelChanges) {
+        yield* Stream.runForEach(
+          providerRuntimeIngestion.benchmarkModelChanges,
+          ({ threadId, turnId }) => publishBenchmarkTurnChange(threadId, turnId),
+        ).pipe(Effect.forkIn(subscriptionsScope, { startImmediately: true }));
+      }
+      yield* Stream.runForEach(providerTurnDeliveryWorker.outcomes, (outcome) =>
+        Effect.gen(function* () {
+          const [row] = yield* sql<{ attribution: string | null }>`
+            SELECT json_extract(event_json, '$.payload.workflowAttribution') AS attribution
+            FROM provider_turn_deliveries WHERE delivery_id = ${outcome.deliveryId}
+          `;
+          if (!row?.attribution) return;
+          const { runKind, workflowId } = readAttribution(row.attribution);
+          yield* pushBus.publishAll(WS_CHANNELS.workflowBenchmarkChanged, { runKind, workflowId });
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Workflow benchmark delivery signal failed", { cause }),
+          ),
+        ),
+      ).pipe(Effect.forkIn(subscriptionsScope, { startImmediately: true }));
       yield* Stream.runForEach(nextTurnQueueDispatcher.changes, (threadId) =>
         nextTurnQueueDispatcher.getSnapshot(threadId).pipe(
           Effect.flatMap((snapshot) =>
             pushBus.publishAll(WS_CHANNELS.nextTurnQueueUpdated, snapshot),
           ),
           Effect.tap(() => wakeUpstreamPorts(threadId)),
+          Effect.tap(() =>
+            Effect.gen(function* () {
+              const runs = yield* sql<import("@t3tools/contracts").WorkflowBenchmarkChanged>`
+                SELECT DISTINCT json_extract(event_json, '$.payload.workflowAttribution.runKind') AS runKind,
+                  json_extract(event_json, '$.payload.workflowAttribution.workflowId') AS workflowId
+                FROM provider_turn_deliveries WHERE thread_id = ${threadId}
+                  AND json_extract(event_json,'$.payload.workflowAttribution') IS NOT NULL
+              `;
+              for (const run of runs)
+                yield* pushBus.publishAll(WS_CHANNELS.workflowBenchmarkChanged, run);
+            }).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("Workflow benchmark queue signal failed", { cause }),
+              ),
+            ),
+          ),
           Effect.catchCause((cause) =>
             Effect.logWarning("failed to publish next-turn queue snapshot", {
               threadId,
@@ -7851,6 +7955,37 @@ export const createServer = Effect.fn(function* (
           catch: (cause) =>
             new RouteRequestError({ message: `Failed to inspect workflow run: ${String(cause)}` }),
         });
+      }
+
+      case WS_METHODS.workflowPlatformGetBenchmark: {
+        const body = stripRequestTag(request.body);
+        const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+        const snapshot = yield* orchestrationEngine.getReadModel();
+        const runs =
+          body.runKind === "planning"
+            ? snapshot.planningWorkflows
+            : body.runKind === "codeReview"
+              ? snapshot.codeReviewWorkflows
+              : snapshot.investigationWorkflows;
+        const run = runs.find((entry) => entry.id === body.workflowId && !entry.deletedAt);
+        if (!run) return yield* new RouteRequestError({ message: "Workflow run was not found." });
+        const settings = yield* serverSettings.getSettings;
+        return yield* getWorkflowBenchmark(sql, body, run, settings).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Failed to read workflow benchmark", {
+              cause,
+              workflowId: body.workflowId,
+            }).pipe(
+              Effect.andThen(
+                Effect.fail(
+                  new RouteRequestError({
+                    message: "Failed to read workflow benchmark.",
+                  }),
+                ),
+              ),
+            ),
+          ),
+        );
       }
 
       case WS_METHODS.mcpGetProjectConfig: {

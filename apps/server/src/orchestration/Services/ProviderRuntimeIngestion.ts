@@ -8,7 +8,8 @@ import type { WorkerAdmissionError } from "@t3tools/shared/DrainableWorker";
  * @module ProviderRuntimeIngestionService
  */
 import { ServiceMap } from "effect";
-import type { Effect, Scope } from "effect";
+import type { Effect, Scope, Stream } from "effect";
+import type { ThreadId, TurnId } from "@t3tools/contracts";
 
 /**
  * ProviderRuntimeIngestionShape - Service API for runtime ingestion lifecycle.
@@ -30,6 +31,10 @@ export interface ProviderRuntimeIngestionShape {
    * Intended for test use to replace timing-sensitive sleeps.
    */
   readonly drain: Effect.Effect<void, WorkerAdmissionError>;
+  readonly benchmarkModelChanges?: Stream.Stream<{
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId;
+  }>;
 }
 
 /**

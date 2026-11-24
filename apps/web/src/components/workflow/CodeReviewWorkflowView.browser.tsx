@@ -7,11 +7,12 @@ import {
   ProjectId,
   ThreadId,
   type CodeReviewWorkflow,
+  type WorkflowBenchmarkSummary,
 } from "@t3tools/contracts";
 import type { AnchorHTMLAttributes } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
-import { render } from "vitest-browser-react";
+import { cleanup, render } from "vitest-browser-react";
 const renderView = (view: ReactNode) =>
   render(
     <QueryClientProvider
@@ -26,26 +27,29 @@ import { toastManager } from "../ui/toast";
 
 const nativeApiMocks = vi.hoisted(() => ({
   connected: true,
+  getBenchmark: vi.fn(),
   retryCodeReviewWorkflow: vi.fn(),
   deleteCodeReviewWorkflow: vi.fn(),
   postCodeReviewWorkflow: vi.fn(),
 }));
 
-vi.mock("../../nativeApi", () => ({
-  ensureNativeApi: () => {
-    throw new Error("Native API not available in this test");
-  },
-  readNativeApi: () =>
-    nativeApiMocks.connected
-      ? {
-          orchestration: {
-            retryCodeReviewWorkflow: nativeApiMocks.retryCodeReviewWorkflow,
-            deleteCodeReviewWorkflow: nativeApiMocks.deleteCodeReviewWorkflow,
-            postCodeReviewWorkflow: nativeApiMocks.postCodeReviewWorkflow,
-          },
-        }
-      : null,
-}));
+vi.mock("../../nativeApi", () => {
+  const api = {
+    workflowPlatform: { getBenchmark: nativeApiMocks.getBenchmark },
+    orchestration: {
+      retryCodeReviewWorkflow: nativeApiMocks.retryCodeReviewWorkflow,
+      deleteCodeReviewWorkflow: nativeApiMocks.deleteCodeReviewWorkflow,
+      postCodeReviewWorkflow: nativeApiMocks.postCodeReviewWorkflow,
+    },
+  };
+  return {
+    ensureNativeApi: () => {
+      if (!nativeApiMocks.connected) throw new Error("Native API not available in this test");
+      return api;
+    },
+    readNativeApi: () => (nativeApiMocks.connected ? api : null),
+  };
+});
 
 vi.mock("@tanstack/react-router", async () => {
   const actual =
@@ -67,7 +71,6 @@ vi.mock("@tanstack/react-router", async () => {
   };
 });
 
-vi.mock("../../lib/orchestrationReactQuery", () => ({ useThreadDetail: () => undefined }));
 vi.mock("./WorkflowRunInspector", () => ({ WorkflowRunInspector: () => null }));
 
 import { CodeReviewWorkflowView } from "./CodeReviewWorkflowView";
@@ -119,18 +122,41 @@ function makeWorkflow(): CodeReviewWorkflow {
   };
 }
 
+beforeEach(() => {
+  nativeApiMocks.connected = true;
+  nativeApiMocks.getBenchmark.mockReset();
+  nativeApiMocks.getBenchmark.mockResolvedValue({
+    kind: "summary",
+    models: [],
+    phases: [],
+    modelTotals: [],
+    total: {
+      tokens: 0,
+      costUsd: 0,
+      estimated: false,
+      missingTokens: 0,
+      missingCost: 0,
+      pending: 0,
+    },
+    findings: 0,
+    historicalPartial: false,
+    ambiguous: 0,
+    evaluationsIncomplete: 0,
+    coverage: [],
+  } satisfies WorkflowBenchmarkSummary);
+});
+
+afterEach(async () => {
+  await cleanup();
+  vi.restoreAllMocks();
+  useStore.setState({ threads: [], codeReviewWorkflows: [] });
+});
+
 describe("CodeReviewWorkflowView recovery", () => {
   beforeEach(() => {
-    nativeApiMocks.connected = true;
     nativeApiMocks.retryCodeReviewWorkflow.mockReset();
     nativeApiMocks.deleteCodeReviewWorkflow.mockReset();
     useStore.setState({ threads: [], codeReviewWorkflows: [makeWorkflow()] });
-  });
-
-  afterEach(() => {
-    document.body.innerHTML = "";
-    vi.restoreAllMocks();
-    useStore.setState({ threads: [], codeReviewWorkflows: [] });
   });
 
   it("shows the exact failed stage and reports retry failures", async () => {
@@ -140,6 +166,13 @@ describe("CodeReviewWorkflowView recovery", () => {
 
     try {
       await expect.element(page.getByText("Reviewer A provider disconnected")).toBeVisible();
+      await vi.waitFor(() =>
+        expect(nativeApiMocks.getBenchmark).toHaveBeenCalledWith({
+          runKind: "codeReview",
+          workflowId,
+          select: { kind: "summary" },
+        }),
+      );
       await page.getByRole("button", { name: "Retry failed" }).click();
       await vi.waitFor(() => {
         expect(toastSpy).toHaveBeenCalledWith({
@@ -230,15 +263,8 @@ function makePost(
 
 describe("CodeReviewWorkflowView pull request posting", () => {
   beforeEach(() => {
-    nativeApiMocks.connected = true;
     nativeApiMocks.postCodeReviewWorkflow.mockReset();
     nativeApiMocks.postCodeReviewWorkflow.mockResolvedValue({ status: "started" });
-  });
-
-  afterEach(() => {
-    document.body.innerHTML = "";
-    vi.restoreAllMocks();
-    useStore.setState({ threads: [], codeReviewWorkflows: [] });
   });
 
   it("links the pull request and posts the merged review", async () => {

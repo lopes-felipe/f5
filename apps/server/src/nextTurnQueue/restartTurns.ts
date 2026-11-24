@@ -1,6 +1,6 @@
 import { scheduledContinuationFor } from "../scheduledTasks/continuations.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
-import { CommandId, MessageId, type ThreadId } from "@t3tools/contracts";
+import { CommandId, MessageId, TurnId, type ThreadId } from "@t3tools/contracts";
 import { holdsAutomaticResume } from "@t3tools/shared/pendingUserInputs";
 import { Effect, Option } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -88,6 +88,7 @@ export const recoverRestartTurnMarkers = Effect.gen(function* () {
       runtimeMode: thread.runtimeMode,
       interactionMode: thread.interactionMode,
       presentation: "continuation" as const,
+      workflowContinuationTurnId: TurnId.make(marker.turnId),
       createdAt: new Date().toISOString(),
     };
     const inserted = yield* sql

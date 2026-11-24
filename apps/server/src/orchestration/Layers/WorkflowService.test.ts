@@ -593,6 +593,7 @@ async function createHarness(
     readonly requestSummary?: CompactionServiceShape["requestSummary"];
     readonly readEvents?: OrchestrationEngineShape["readEvents"];
     readonly dispatchDefect?: (command: OrchestrationCommand) => Error | null;
+    readonly getStageDelivery?: ProviderTurnDeliveryRepositoryShape["getWorkflowStageDelivery"];
   },
 ) {
   let snapshot = initialSnapshot;
@@ -795,6 +796,7 @@ async function createHarness(
           getByCommandId: options?.getRevisionDelivery ?? (() => Effect.succeed(null)),
           getLatestByThread: () => Effect.succeed(options?.latestDelivery ?? null),
           getUnresolvedByThread: () => Effect.succeed(null),
+          getWorkflowStageDelivery: options?.getStageDelivery,
         } as unknown as ProviderTurnDeliveryRepositoryShape),
       ),
       Layer.provideMerge(
@@ -1065,6 +1067,151 @@ describe("WorkflowService", () => {
       model: next.readerSlot!.model,
       workflowExecutionProfile: "unattended-readonly",
     });
+  });
+
+  it.each([
+    ["implementation", "accepted-first"],
+    ["implementation", "quiesced-first"],
+    ["apply-feedback", "accepted-first"],
+    ["apply-feedback", "quiesced-first"],
+    ["reader-review", "accepted-first"],
+    ["reader-review", "quiesced-first"],
+  ] as const)("pins %s when delivery is %s", async (taskId, order) => {
+    const threadId = ThreadId.make("attributed-stage-thread");
+    const mergeId = ThreadId.make("attributed-document-merge");
+    const turnId = TurnId.make("attributed-final-turn");
+    const delivery = makeProviderTurnDelivery(threadId, "sending");
+    const base = makeWorkflow();
+    const workflow =
+      taskId === "reader-review"
+        ? markReaderRunning(
+            markDocumentMergeDrafted(
+              documentWorkflow({
+                merge: { ...base.merge, threadId: mergeId },
+              }),
+              {
+                turnId: "draft",
+                draftPlanId: "plan-draft",
+                readerThreadId: threadId,
+                updatedAt: NOW,
+              },
+            ),
+            NOW,
+          )
+        : makeWorkflow({
+            implementation: {
+              implementationSlot: base.branchA.authorSlot,
+              threadId,
+              codeReviews: [],
+              codeReviewEnabled: false,
+              implementationTurnId:
+                taskId === "apply-feedback" ? "previous-implementation-turn" : null,
+              revisionTurnId: null,
+              ...(taskId === "apply-feedback"
+                ? { revisionAttempt: 1, revisionDispatchCommandId: delivery.commandId }
+                : {}),
+              status: taskId === "apply-feedback" ? "applying_reviews" : "implementing",
+              error: null,
+              retryCount: 0,
+              lastRetryAt: null,
+              updatedAt: NOW,
+            },
+          });
+    const started = completedDocumentThread(
+      threadId,
+      turnId,
+      "The stage delivered a report.",
+      NOW,
+      false,
+    );
+    let state = delivery;
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          completedDocumentThread(mergeId, "draft", documentMarkdown),
+          {
+            ...started,
+            latestTurn: { ...started.latestTurn!, state: "running", completedAt: null },
+            session: {
+              threadId,
+              status: "running",
+              providerName: "codex",
+              runtimeMode: "full-access",
+              activeTurnId: turnId,
+              lastError: null,
+              updatedAt: NOW,
+            },
+          },
+        ],
+      }),
+      {
+        getRevisionDelivery: (commandId) =>
+          Effect.sync(() => (commandId === delivery.commandId ? state : null)),
+        getStageDelivery: (input) =>
+          Effect.sync(() =>
+            input.taskId === taskId && input.threadId === threadId ? state : null,
+          ),
+      },
+    );
+    const attributed = {
+      ...delivery,
+      event: makeEvent("thread.turn-start-requested", {
+        threadId,
+        messageId: delivery.messageId,
+        createdAt: NOW,
+        workflowAttribution: {
+          runKind: "planning",
+          workflowId: workflow.id,
+          taskId,
+          originCommandId: delivery.commandId,
+        },
+      }),
+    };
+    state = attributed;
+    await harness.start();
+    harness.setSnapshot({
+      ...harness.getSnapshot(),
+      threads: harness
+        .getSnapshot()
+        .threads.map((thread) =>
+          thread.id === threadId
+            ? { ...started, latestTurn: { ...started.latestTurn!, processingQuiescedAt: null } }
+            : thread,
+        ),
+    });
+    const accept = async () => {
+      state = { ...attributed, state: "accepted", providerTurnId: turnId };
+      await harness!.emitOutcome({
+        deliveryId: delivery.deliveryId,
+        commandId: delivery.commandId,
+        threadId,
+        state: "accepted",
+        detail: null,
+        occurredAt: NOW,
+      });
+    };
+    const quiesce = () =>
+      harness!.emit(
+        makeEvent("thread.turn-processing-quiesced", {
+          threadId,
+          turnId,
+          processingQuiescedAt: NOW,
+        }),
+      );
+    const pin = () => {
+      const current = harness!.getSnapshot().planningWorkflows[0]!;
+      return taskId === "reader-review"
+        ? current.readerPass?.pinnedTurnId
+        : taskId === "implementation"
+          ? current.implementation?.implementationTurnId
+          : current.implementation?.revisionTurnId;
+    };
+    await (order === "accepted-first" ? accept() : quiesce());
+    await harness.drain();
+    expect(pin()).toBeNull();
+    await (order === "accepted-first" ? quiesce() : accept());
+    await waitFor(() => pin() === turnId);
   });
 
   it("consumes an already completed requested reader after restart without dispatching twice", async () => {
@@ -5340,6 +5487,11 @@ describe("WorkflowService", () => {
       await waitFor(() => starts().length === 1);
       expect(starts()[0]?.message.text).toContain(reportA);
       expect(starts()[0]?.message.text).toContain(reportB);
+      expect(starts()[0]?.workflowAttribution).toMatchObject({
+        runKind: "planning",
+        taskId: "apply-feedback",
+        originCommandId: starts()[0]?.commandId,
+      });
       expect(current()?.status).toBe("applying_reviews");
       expect(current()?.revisionTurnId).toBeNull();
       expect(current()?.branch).toBe("implementation-branch");
@@ -10405,6 +10557,11 @@ describe("WorkflowService", () => {
       turnStartsForThread(harness.dispatched, ThreadId.makeUnsafe("implementation-thread"))[0]
         ?.message.text,
     ).toBe("Apply the implementation plan");
+    const [retry] = turnStartsForThread(harness.dispatched, ThreadId.make("implementation-thread"));
+    expect(retry?.workflowAttribution).toMatchObject({
+      taskId: "implementation",
+      originCommandId: retry?.commandId,
+    });
   });
 
   it("auto-retries code review turns on retryable session errors", async () => {
@@ -11496,6 +11653,12 @@ describe("WorkflowService", () => {
 
       const [revision] = turnStartsForThread(harness.dispatched, branchB.authorThreadId);
       expect(revision?.model).toBe(branchB.authorSlot.model);
+      expect(revision?.workflowAttribution).toEqual({
+        runKind: "planning",
+        workflowId: fixture.workflow.id,
+        taskId: "revision-b",
+        originCommandId: revision?.commandId,
+      });
     });
 
     it("resumes the sibling after a revision error was persisted before its dispatch", async () => {

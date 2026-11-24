@@ -412,6 +412,11 @@ import type {
   WorkflowPlatformListTemplatesResult,
 } from "./workflowPlatform";
 import type {
+  WorkflowBenchmarkChanged,
+  WorkflowBenchmarkInput,
+  WorkflowBenchmarkResult,
+} from "./workflowBenchmark";
+import type {
   PrHubAdvisorySnapshot,
   PrHubAdvisoriesChanged,
   PrHubAnalyzeAdvisoriesInput,
@@ -1496,6 +1501,8 @@ export interface NativeApi {
     inspectRun: (
       input: WorkflowPlatformInspectRunInput,
     ) => Promise<WorkflowPlatformInspectRunResult>;
+    getBenchmark: (input: WorkflowBenchmarkInput) => Promise<WorkflowBenchmarkResult>;
+    onBenchmarkChanged: (listener: (change: WorkflowBenchmarkChanged) => void) => () => void;
   };
   upstreamPorts: {
     listProjects: () => Promise<UpstreamPortsListProjectsResult>;

@@ -74,6 +74,9 @@ export const threadPurgePolicy: Readonly<
   next_turn_queue_orphaned_attachments: { kind: "explicit" },
   next_turn_queue_quarantine: { kind: "explicit" },
   projection_turn_usage_facts: { kind: "explicit" },
+  workflow_benchmark_outputs: { kind: "explicit" },
+  workflow_benchmark_artifacts: { kind: "explicit" },
+  workflow_benchmark_turn_models: { kind: "explicit" },
   projection_thread_messages: { kind: "explicit" },
   projection_thread_activities: { kind: "explicit" },
   projection_thread_command_executions: { kind: "explicit" },
@@ -157,6 +160,12 @@ export const threadPurgeHandlers = {
     sql`DELETE FROM projection_turns WHERE rowid IN (SELECT rowid FROM projection_turns WHERE thread_id = ${threadId} LIMIT 500) RETURNING rowid`,
   projection_turn_usage_facts: (sql: SqlClient.SqlClient, threadId: ThreadId) =>
     sql`DELETE FROM projection_turn_usage_facts WHERE rowid IN (SELECT rowid FROM projection_turn_usage_facts WHERE thread_id = ${threadId} LIMIT 500) RETURNING rowid`,
+  workflow_benchmark_outputs: (sql: SqlClient.SqlClient, threadId: ThreadId) =>
+    sql`DELETE FROM workflow_benchmark_outputs WHERE rowid IN (SELECT rowid FROM workflow_benchmark_outputs WHERE thread_id = ${threadId} LIMIT 500) RETURNING rowid`,
+  workflow_benchmark_artifacts: (sql: SqlClient.SqlClient, threadId: ThreadId) =>
+    sql`DELETE FROM workflow_benchmark_artifacts WHERE rowid IN (SELECT rowid FROM workflow_benchmark_artifacts WHERE thread_id = ${threadId} LIMIT 500) RETURNING rowid`,
+  workflow_benchmark_turn_models: (sql: SqlClient.SqlClient, threadId: ThreadId) =>
+    sql`DELETE FROM workflow_benchmark_turn_models WHERE rowid IN (SELECT rowid FROM workflow_benchmark_turn_models WHERE thread_id = ${threadId} LIMIT 500) RETURNING rowid`,
   provider_session_runtime: (sql: SqlClient.SqlClient, threadId: ThreadId) =>
     sql`DELETE FROM provider_session_runtime WHERE rowid IN (SELECT rowid FROM provider_session_runtime WHERE thread_id = ${threadId} LIMIT 500) RETURNING rowid`,
   provider_handoff_state: (sql: SqlClient.SqlClient, threadId: ThreadId) =>

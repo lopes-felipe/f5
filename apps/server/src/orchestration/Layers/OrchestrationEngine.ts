@@ -1,4 +1,10 @@
 import { makeCommitSideEffects } from "../commitSideEffects.ts";
+import {
+  bestEffortBenchmark,
+  captureWorkflowBenchmarkArtifact,
+  prepareWorkflowBenchmarkDispatch,
+  reconcileMissingBenchmarkOutputs,
+} from "../workflowBenchmarkPersistence.ts";
 import { hydrateDeciderReadModel, withoutDeletedThreadDetails } from "../deciderReadModel.ts";
 import { coldThreadIdsOf, eventThreadId, withThreadActivities } from "../coldThreadActivities.ts";
 import { ProviderControlTarget } from "../../provider/controlTarget.ts";
@@ -714,9 +720,18 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             envelope.command,
             projectionSnapshotQuery.getRetainedThreadDetails,
           );
+        const dispatchCommand =
+          command.type === "thread.turn.start" || command.type === "thread.turn.steer"
+            ? yield* prepareWorkflowBenchmarkDispatch(
+                sql,
+                command,
+                steerFallback,
+                commandReadModel,
+              ).pipe(bestEffortBenchmark("prepare dispatch", command))
+            : envelope.command;
         const eventBase = yield* decideOrchestrationCommand({
           nativeRemovedMessageIds,
-          command: envelope.command,
+          command: dispatchCommand,
           readModel: commandReadModel,
           ...(envelope.command.type === "thread.turn.start" && providerRegistry._tag === "Some"
             ? { providerInstances: yield* providerRegistry.value.getProviders }
@@ -886,10 +901,15 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                           nextEvent.payload.threadId,
                         ).pipe(Effect.provideService(SqlClient.SqlClient, sql))
                     : undefined;
+                const persistedEvent = yield* captureWorkflowBenchmarkArtifact(
+                  sql,
+                  nextEvent,
+                  nextReadModel,
+                ).pipe(bestEffortBenchmark("capture output", nextEvent));
                 const savedEvent = yield* eventStore.append(
                   nextEvent.type === "thread.message-sent" && authorship === "automation"
                     ? { ...nextEvent, payload: { ...nextEvent.payload, authorship } }
-                    : nextEvent,
+                    : persistedEvent,
                 );
                 appendedEventIds.add(savedEvent.eventId);
                 nextReadModel = yield* measurePerformanceStage(
@@ -1224,6 +1244,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       );
     });
   yield* Effect.forkScoped(worker);
+  yield* Effect.forkScoped(reconcileMissingBenchmarkOutputs(sql, readModel));
   yield* Effect.log("orchestration engine started").pipe(
     Effect.annotateLogs({
       sequence: readModel.snapshotSequence,

@@ -352,6 +352,7 @@ import {
   WorkflowPlatformCreateRunInput,
   WorkflowPlatformInspectRunInput,
 } from "./workflowPlatform";
+import { WorkflowBenchmarkInput } from "./workflowBenchmark";
 import { WorktreeSetupActionInput, WorktreeSetupThreadInput } from "./worktreeSetup";
 
 // ── WebSocket RPC Method Names ───────────────────────────────────────
@@ -763,6 +764,7 @@ const WebSocketRequestBody = Schema.Union([
     Tuple.map(Schema.fieldsAssign({ _tag: Schema.tag(WS_METHODS.workflowPlatformCreateRun) })),
   ),
   tagRequestBody(WS_METHODS.workflowPlatformInspectRun, WorkflowPlatformInspectRunInput),
+  tagRequestBody(WS_METHODS.workflowPlatformGetBenchmark, WorkflowBenchmarkInput),
   tagRequestBody(WS_METHODS.mcpGetCommonConfig, McpGetCommonConfigRequest),
   tagRequestBody(WS_METHODS.mcpReplaceCommonConfig, McpReplaceCommonConfigRequest),
   tagRequestBody(WS_METHODS.mcpGetProjectConfig, McpGetProjectConfigRequest),

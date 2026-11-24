@@ -21,6 +21,26 @@ import {
 const layer = it.layer(
   ProviderTurnDeliveryRepositoryLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
 );
+layer("benchmark reconciliation", (it) => {
+  it.effect("keeps the provider receipt when stored benchmark attribution cannot be decoded", () =>
+    Effect.gen(function* () {
+      const repository = yield* ProviderTurnDeliveryRepository;
+      const sql = yield* SqlClient.SqlClient;
+      const at = "2026-10-01T00:00:00.000Z";
+      const deliveryId = CommandId.make("broken-benchmark-delivery");
+      const turnId = TurnId.make("accepted-benchmark-turn");
+      yield* sql`
+        INSERT INTO provider_turn_deliveries (delivery_id, thread_id, command_id, message_id, state, event_json, created_at, updated_at)
+        VALUES (${deliveryId}, 'broken-benchmark-thread', ${deliveryId}, 'msg', 'sending',
+          '{"payload":{"workflowAttribution":{"runKind":"invalid"}}}', ${at}, ${at})
+      `;
+      assert.isTrue(yield* repository.markAccepted({ deliveryId, providerTurnId: turnId }));
+      const [accepted] = yield* sql`SELECT state, provider_turn_id AS turnId
+        FROM provider_turn_deliveries WHERE delivery_id = ${deliveryId}`;
+      assert.deepStrictEqual(accepted, { state: "accepted", turnId });
+    }),
+  );
+});
 layer("durable usage-limit delivery rejection", (it) => {
   it.effect(
     "round-trips reset evidence through rejection and unprojected replay; retry clears it",

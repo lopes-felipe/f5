@@ -1,0 +1,2 @@
+- Open findings by reviewer and turn in the Workflow Benchmark, and return from a thread to the same filters, selection, and scroll position. Expanded phases show separate, centered tables for turns and findings. Expand recorded subagents and see which agent each usage figure covers.
+- Show usage totals and available credit estimates in the Workflow Benchmark's column header tooltips. Fix workflow budgets that counted a Claude turn again when session capabilities changed.

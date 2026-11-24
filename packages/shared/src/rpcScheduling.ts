@@ -450,6 +450,7 @@ export const RPC_METHOD_POLICY = {
 
   "workflowPlatform.createRun": MUTATION_RT,
   "workflowPlatform.inspectRun": READ_RT,
+  "workflowPlatform.getBenchmark": READ_RT,
   "workflowPlatform.listTemplates": READ,
 
   "worktrees.discardMovedChanges": MUTATION_RT,

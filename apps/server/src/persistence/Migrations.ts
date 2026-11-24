@@ -6,6 +6,9 @@ import Migration0171 from "./Migrations/171_SessionAutoCompactThreshold.ts";
 import Migration0172 from "./Migrations/172_ThreadSideChat.ts";
 import Migration0173 from "./Migrations/173_SessionAuthFailure.ts";
 import Migration0174 from "./Migrations/174_WorktreeGroups.ts";
+import Migration0175 from "./Migrations/175_WorkflowBenchmark.ts";
+import Migration0176 from "./Migrations/176_WorkflowBenchmarkSubagents.ts";
+import Migration0177 from "./Migrations/177_RepairDuplicateWorkflowCosts.ts";
 import Migration0161 from "./Migrations/161_UsageNativeIdentity.ts";
 import Migration0154 from "./Migrations/154_DesktopActivityPendingIndex.ts";
 import Migration0155 from "./Migrations/155_BackgroundWorkNativeParentSession.ts";
@@ -213,6 +216,9 @@ export const MIGRATIONS = {
   "172_ThreadSideChat": Migration0172,
   "173_SessionAuthFailure": Migration0173,
   "174_WorktreeGroups": Migration0174,
+  "175_WorkflowBenchmark": Migration0175,
+  "176_WorkflowBenchmarkSubagents": Migration0176,
+  "177_RepairDuplicateWorkflowCosts": Migration0177,
   "168_ProviderExtensionStatuses": Migration0168,
   "161_UsageNativeIdentity": Migration0161,
   "154_DesktopActivityPendingIndex": Migration0154,

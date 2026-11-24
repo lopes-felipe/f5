@@ -3642,11 +3642,18 @@ describe("ChatView timeline (full app)", () => {
         await waitForLayout();
         expect(form.dataset.composerCollapsed).toBe("false");
         window.getSelection()!.removeAllRanges();
-        wheel(-12);
-        // Both deltas must belong to the same 120 ms gesture, including on
-        // loaded CI runners where waiting for layout can exceed that interval.
-        expect(form.dataset.composerCollapsed).toBe("false");
-        wheel(-12);
+        timeline.scrollTop = (timeline.scrollHeight - timeline.clientHeight) / 2;
+        // Keep both deltas in the same gesture even if layout on CI takes
+        // longer than the gesture window.
+        const clock = vi.spyOn(performance, "now").mockReturnValue(performance.now());
+        try {
+          wheel(-12);
+          await waitForLayout();
+          expect(form.dataset.composerCollapsed).toBe("false");
+          wheel(-12);
+        } finally {
+          clock.mockRestore();
+        }
         await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("true"));
       } finally {
         pane.remove();

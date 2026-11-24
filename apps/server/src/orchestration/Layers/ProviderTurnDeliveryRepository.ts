@@ -7,6 +7,10 @@ import {
 } from "@t3tools/contracts";
 import { Effect, Layer, Schema, Struct } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import {
+  bestEffortBenchmark,
+  reconcileAcceptedBenchmarkDelivery,
+} from "../workflowBenchmarkPersistence.ts";
 
 import { toPersistenceDecodeError, toPersistenceSqlError } from "../../persistence/Errors.ts";
 import {
@@ -81,8 +85,9 @@ export const LIST_CANDIDATE_IDS_SQL = `
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  const select = (where: string) =>
-    sql.unsafe<Record<string, unknown>>(`
+  const select = (where: string, params: readonly string[] = []) =>
+    sql.unsafe<Record<string, unknown>>(
+      `
     SELECT
       delivery_id AS "deliveryId", thread_id AS "threadId", command_id AS "commandId",
       message_id AS "messageId", state, provider_turn_id AS "providerTurnId", attempt,
@@ -91,7 +96,9 @@ const make = Effect.gen(function* () {
       not_before AS "notBefore", created_at AS "createdAt", updated_at AS "updatedAt",
       outcome_projected_at AS "outcomeProjectedAt"
     FROM provider_turn_deliveries ${where}
-  `);
+  `,
+      params,
+    );
   const decodeRows = Schema.decodeUnknownEffect(Schema.Array(DbRow));
 
   const listCandidateIds: ProviderTurnDeliveryRepositoryShape["listCandidateIds"] = ({
@@ -123,6 +130,41 @@ const make = Effect.gen(function* () {
     Effect.flatMap(decodeRows),
     Effect.mapError(mapError("ProviderTurnDelivery.listActionable")),
   );
+
+  const getWorkflowStageDelivery: NonNullable<
+    ProviderTurnDeliveryRepositoryShape["getWorkflowStageDelivery"]
+  > = (input) =>
+    select(
+      `
+      WHERE json_extract(event_json, '$.payload.workflowAttribution.runKind') = ?
+        AND json_extract(event_json, '$.payload.workflowAttribution.workflowId') = ?
+        AND json_extract(event_json, '$.payload.workflowAttribution.taskId') = ?
+        AND thread_id = ? AND command_id = json_extract(event_json, '$.payload.workflowAttribution.originCommandId')
+      ORDER BY created_at ${input.first ? "ASC" : "DESC"}, rowid ${input.first ? "ASC" : "DESC"} LIMIT 1
+    `,
+      [input.runKind, input.workflowId, input.taskId, input.threadId],
+    ).pipe(
+      Effect.flatMap(decodeRows),
+      Effect.map((rows) => rows[0] ?? null),
+      Effect.mapError(mapError("ProviderTurnDelivery.getWorkflowStageDelivery")),
+    );
+
+  const getWorkflowAttemptDelivery: NonNullable<
+    ProviderTurnDeliveryRepositoryShape["getWorkflowAttemptDelivery"]
+  > = (originCommandId, threadId) =>
+    select(
+      `
+      WHERE json_extract(event_json, '$.payload.workflowAttribution.originCommandId') = ? AND thread_id = ?
+        AND json_extract(event_json, '$.type') = 'thread.turn-start-requested'
+        AND benchmark_reverted_at IS NULL AND state <> 'abandoned'
+      ORDER BY created_at DESC, rowid DESC LIMIT 1
+    `,
+      [originCommandId, threadId],
+    ).pipe(
+      Effect.flatMap(decodeRows),
+      Effect.map((rows) => rows[0] ?? null),
+      Effect.mapError(mapError("ProviderTurnDelivery.getWorkflowAttemptDelivery")),
+    );
 
   const listSending = select("WHERE state = 'sending' ORDER BY created_at LIMIT 64").pipe(
     Effect.flatMap(decodeRows),
@@ -352,7 +394,16 @@ const make = Effect.gen(function* () {
           return true;
         }),
       )
-      .pipe(Effect.mapError(mapError("ProviderTurnDelivery.markAccepted")));
+      .pipe(
+        Effect.mapError(mapError("ProviderTurnDelivery.markAccepted")),
+        Effect.tap((accepted) =>
+          accepted
+            ? reconcileAcceptedBenchmarkDelivery(sql, input.deliveryId).pipe(
+                bestEffortBenchmark("reconcile accepted delivery", undefined),
+              )
+            : Effect.void,
+        ),
+      );
 
   /**
    * Settled handoff bodies beyond the newest few on the thread keep only their
@@ -452,6 +503,8 @@ const make = Effect.gen(function* () {
     listSending,
     listUnprojectedTerminal,
     getByCommandId,
+    getWorkflowStageDelivery,
+    getWorkflowAttemptDelivery,
     getLatestByThread,
     getUnresolvedByThread,
     listAcceptedTurnIdsByThread,

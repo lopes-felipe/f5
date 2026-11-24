@@ -3,6 +3,7 @@ import { roughTokenEstimateFromCharacters } from "@t3tools/shared/model";
 import { truncatePatchAtFileBoundary } from "../git/patchTruncation.ts";
 import { OrchestrationCommandInvariantError } from "./Errors.ts";
 import { buildCodeReviewPrompt } from "./workflowPrompts.ts";
+import { structuredReviewPrompt } from "./workflowBenchmarkDispatch.ts";
 import {
   workflowArtifactFit,
   type WorkflowFitThread,
@@ -13,12 +14,11 @@ import {
 export function prepareCodeReviewPrompt(
   input: Parameters<typeof buildCodeReviewPrompt>[0] & {
     readonly enforceArtifactBudget: boolean;
+    readonly structuredFindings?: boolean;
     readonly thread?: WorkflowFitThread | null | undefined;
   },
-):
-  | { readonly prompt: string; readonly artifacts: ReadonlyArray<string> }
-  | OrchestrationCommandInvariantError {
-  const fixedArtifacts = [input.requirementPrompt, input.mergedPlanMarkdown];
+): PreparedImplementationReviewPrompt | OrchestrationCommandInvariantError {
+  const fixedArtifacts = [input.requirementPrompt, input.mergedPlanMarkdown] as const;
   const fit = workflowArtifactFit({
     artifacts: fixedArtifacts,
     targetSlot: input.reviewerSlot,
@@ -27,11 +27,14 @@ export function prepareCodeReviewPrompt(
   const remainingTokens = fit.availableTokens - fit.estimatedTokens;
   const artifactFits = (characters: number) =>
     !input.enforceArtifactBudget || roughTokenEstimateFromCharacters(characters) <= remainingTokens;
-  const render = (reviewArtifact: typeof input.reviewArtifact) =>
-    buildCodeReviewPrompt({ ...input, reviewArtifact });
+  const render = (reviewArtifact: typeof input.reviewArtifact) => {
+    const prompt = buildCodeReviewPrompt({ ...input, reviewArtifact });
+    return input.structuredFindings ? structuredReviewPrompt(prompt) : prompt;
+  };
   const result = (prompt: string, patch: string) => ({
     prompt,
-    artifacts: [...fixedArtifacts, patch],
+    artifacts: [...fixedArtifacts, patch] as const,
+    truncated: input.reviewArtifact.truncated === true || patch !== input.reviewArtifact.patchText,
   });
   const original = render(input.reviewArtifact);
   if (
@@ -79,4 +82,10 @@ export function prepareCodeReviewPrompt(
     });
   }
   return result(prompt, bounded.patch);
+}
+
+export interface PreparedImplementationReviewPrompt {
+  readonly prompt: string;
+  readonly artifacts: readonly [requirement: string, plan: string, patch: string];
+  readonly truncated: boolean;
 }

@@ -13,12 +13,10 @@ import {
   ThreadSessionNotes,
 } from "./orchestration";
 import { DOCUMENT_WORKFLOW_TEMPLATE_ID, WorkflowModelSlot } from "./planningWorkflow";
+import { WorkflowRunKind } from "./workflowBenchmark";
 
 export const WorkflowTemplateId = TrimmedNonEmptyString;
 export type WorkflowTemplateId = typeof WorkflowTemplateId.Type;
-
-export const WorkflowRunKind = Schema.Literals(["planning", "codeReview", "investigation"]);
-export type WorkflowRunKind = typeof WorkflowRunKind.Type;
 
 export const WorkflowNodeKind = Schema.Literals([
   "agent",

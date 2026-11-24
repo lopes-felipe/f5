@@ -1030,6 +1030,12 @@ export function createOrchestrationSyncController(deps: OrchestrationSyncControl
     updateProfileAccounts(payload.providers);
     void queryClient.invalidateQueries({ queryKey: serverQueryKeys.all });
     if (!subscribed) return;
+    if (payload.source === "settings") {
+      const queryKey = ["workflow-platform", "benchmark"];
+      void queryClient
+        .cancelQueries({ queryKey })
+        .then(() => queryClient.invalidateQueries({ queryKey }));
+    }
     if (payload.source !== "keybindings") return;
     const issue = payload.issues.find((entry) => entry.kind.startsWith("keybindings."));
     if (!issue) {

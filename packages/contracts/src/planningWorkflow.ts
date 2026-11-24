@@ -99,7 +99,7 @@ export const WorkflowCodeReview = Schema.Struct({
   status: WorkflowStepStatus,
   error: Schema.NullOr(Schema.String),
   pinnedTurnId: Schema.optional(TurnId),
-  pinnedAssistantMessageId: Schema.optional(MessageId),
+  pinnedAssistantMessageId: Schema.optional(Schema.NullOr(MessageId)),
   retryCount: Schema.Number.pipe(Schema.withDecodingDefault(() => 0)),
   lastRetryAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(() => null)),
   updatedAt: IsoDateTime,
