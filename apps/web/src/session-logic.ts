@@ -917,7 +917,10 @@ function diagnosticCallKeyResolver(
 
 function dedupeProviderItemWorkLogEntries(entries: ReadonlyArray<WorkLogEntry>): WorkLogEntry[] {
   const deduped: Array<WorkLogEntry | null> = [];
-  const latestByProviderItemId = new Map<string, { index: number; signature: string }>();
+  const latestByProviderItemId = new Map<
+    string,
+    { index: number; signature: string; filelessSignature?: string }
+  >();
   const terminalTieKeys = new Set<string>();
 
   for (const entry of entries) {
@@ -942,8 +945,21 @@ function dedupeProviderItemWorkLogEntries(entries: ReadonlyArray<WorkLogEntry>):
     }
 
     const signature = workEntryVisibleSignature(entry);
+    // A file change whose files arrive only with its completion (Antigravity
+    // sends the diff on `completed`) is the same row as its fileless snapshots.
+    const filelessSignature =
+      entry.itemType === "file_change" || entry.requestKind === "file-change"
+        ? workEntryVisibleSignature({ ...entry, changedFiles: [] })
+        : undefined;
     const previous = latestByProviderItemId.get(callKey);
-    if (previous && previous.signature === signature) {
+    const previousWasFileless =
+      previous?.filelessSignature !== undefined &&
+      previous.filelessSignature === previous.signature;
+    if (
+      previous &&
+      (previous.signature === signature ||
+        (previousWasFileless && previous.filelessSignature === filelessSignature))
+    ) {
       deduped[previous.index] = null;
     }
 
@@ -951,6 +967,7 @@ function dedupeProviderItemWorkLogEntries(entries: ReadonlyArray<WorkLogEntry>):
     latestByProviderItemId.set(callKey, {
       index: deduped.length - 1,
       signature,
+      ...(filelessSignature !== undefined ? { filelessSignature } : {}),
     });
   }
 

@@ -78,6 +78,26 @@ export function readAntigravityPreEditFile(path: string): string | undefined {
   }
 }
 
+/** A file as it was before a write: absent, its text, or not readable cheaply. */
+export type AntigravityPreWriteFile =
+  | { readonly state: "missing" }
+  | { readonly state: "text"; readonly text: string }
+  | { readonly state: "unknown" };
+
+/** Reads a write's target before it runs, telling a new file apart from a replaced one. */
+export function readAntigravityPreWriteFile(path: string): AntigravityPreWriteFile {
+  try {
+    const stat = NodeFS.statSync(path);
+    return stat.isFile() && stat.size <= PRE_EDIT_FILE_LIMIT
+      ? { state: "text", text: NodeFS.readFileSync(path, "utf8") }
+      : { state: "unknown" };
+  } catch (cause) {
+    return (cause as NodeJS.ErrnoException).code === "ENOENT"
+      ? { state: "missing" }
+      : { state: "unknown" };
+  }
+}
+
 /** The line of the snippet's only match starting within `from`..`to`, if it spans whole lines. */
 function uniqueStartLine(
   text: string | undefined,

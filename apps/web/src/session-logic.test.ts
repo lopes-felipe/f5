@@ -3607,6 +3607,47 @@ describe("deriveWorkLogEntries", () => {
     ]);
   });
 
+  it("collapses a file change snapshot that only learns its files on completion", () => {
+    const payload = {
+      itemType: "file_change",
+      providerItemId: "provider-item-edit",
+      title: "Changed files",
+      detail: "src/a.ts",
+      fileChangeId: "file-change-edit",
+    };
+    const entries = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "edit-updated",
+          createdAt: "2026-02-23T00:00:01.000Z",
+          kind: "tool.updated",
+          summary: "Tool updated",
+          payload: { ...payload, status: "inProgress" },
+        }),
+        makeActivity({
+          id: "edit-completed",
+          createdAt: "2026-02-23T00:00:02.000Z",
+          kind: "tool.completed",
+          summary: "Tool",
+          payload: { ...payload, changedFiles: ["src/a.ts"] },
+        }),
+        makeActivity({
+          id: "other-edit-completed",
+          createdAt: "2026-02-23T00:00:03.000Z",
+          kind: "tool.completed",
+          summary: "Tool",
+          payload: { ...payload, changedFiles: ["src/b.ts"] },
+        }),
+      ],
+      undefined,
+    );
+
+    expect(entries.map((entry) => [entry.id, entry.changedFiles])).toEqual([
+      ["edit-completed", ["src/a.ts"]],
+      ["other-edit-completed", ["src/b.ts"]],
+    ]);
+  });
+
   it("keeps tool snapshots when the visible read range changes", () => {
     const entries = deriveWorkLogEntries(
       [

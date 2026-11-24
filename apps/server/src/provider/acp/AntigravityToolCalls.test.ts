@@ -167,6 +167,42 @@ describe("Antigravity native tools", () => {
     expect(second).toEqual({ path: "/repo/src/two.ts", type: "update" });
   });
 
+  it("diffs a write against the file as it was when the call was announced", () => {
+    const files: Record<string, string> = { "/repo/src/old.ts": "export const a = 1;\n" };
+    const normalize = makeAntigravityToolNormalizer(
+      () => undefined,
+      [],
+      (path) => (path in files ? { state: "text", text: files[path]! } : { state: "missing" }),
+    );
+    // Antigravity marks every write as an overwrite, new files included.
+    const write = (toolCallId: string, path: string, content: string) => {
+      const rawInput = { Path: path, Content: content, Overwrite: true };
+      for (const status of ["in_progress", "pending", "in_progress"] as const)
+        normalize({
+          toolCallId,
+          title: `File ${path}`,
+          kind: "edit",
+          status: status as never,
+          data: { rawInput, content: [] },
+        });
+      files[path] = content;
+      return normalize({
+        toolCallId,
+        title: `File ${path}`,
+        kind: "edit",
+        status: "completed",
+        data: { rawInput, content: [{ type: "diff", path, newText: content }] },
+      });
+    };
+    const [created] = acpFileChanges(write("write-new", "/repo/src/new.ts", "x\n").data.content);
+    expect(created?.diff).toContain("--- /dev/null\n+++ b//repo/src/new.ts\n@@ -0,0 +1,1 @@\n+x");
+    const [replaced] = acpFileChanges(
+      write("write-old", "/repo/src/old.ts", "export const a = 2;\n").data.content,
+    );
+    expect(replaced?.diff).toContain("-export const a = 1;\n+export const a = 2;\n");
+    expect(replaced?.diff).not.toContain("/dev/null");
+  });
+
   it("shows a new-file write as an addition and an overwrite as a path-only change", () => {
     const normalize = makeAntigravityToolNormalizer(() => undefined);
     const write = (toolCallId: string, overwrite: boolean | undefined) =>
