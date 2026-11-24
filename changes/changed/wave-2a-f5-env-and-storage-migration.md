@@ -1,0 +1,2 @@
+- Added first-class `F5_*` server and build environment variables (`F5_MODE`, `F5_PORT`, `F5_HOST`, `F5_NO_BROWSER`, `F5_AUTH_TOKEN`, `F5_LOG_WS_EVENTS`, `F5_LOG_THREAD_OPEN_TIMINGS`, `F5_LOG_PROJECTION_TIMINGS`, `F5_OBSERVABILITY_ENABLED`, `F5_WEB_SOURCEMAP`) while retaining `T3CODE_*` aliases as automatic fallbacks.
+- Migrated theme, Agents panel, model preferences, terminal state, and notification-prompt browser storage keys to the `f5:*` namespace with silent one-way fallback from legacy `t3code:*` keys.

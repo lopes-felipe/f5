@@ -7,6 +7,7 @@ import {
 import { areProviderModelOptionsEqual } from "@t3tools/shared/providerOptions";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
+import { createSafeZustandStorage } from "./lib/safeStorage";
 
 import { normalizeProviderModelOptions } from "./providerModelOptions";
 
@@ -52,7 +53,8 @@ export interface ModelPreferencesState {
   recordRecentModelSelection: (selection: RecentModelSelection) => void;
 }
 
-export const MODEL_PREFERENCES_STORAGE_KEY = "t3code:model-preferences:v1";
+export const LEGACY_MODEL_PREFERENCES_STORAGE_KEY = "t3code:model-preferences:v1";
+export const MODEL_PREFERENCES_STORAGE_KEY = "f5:model-preferences:v1";
 
 const EMPTY_MODEL_PREFERENCES: Pick<
   ModelPreferencesState,
@@ -69,23 +71,7 @@ const EMPTY_MODEL_PREFERENCES: Pick<
   recentModelSelections: [],
 };
 
-const noopStorage = {
-  getItem: (_name: string) => null,
-  setItem: (_name: string, _value: string) => {},
-  removeItem: (_name: string) => {},
-};
-
-function getModelPreferencesStorage() {
-  if (
-    typeof localStorage !== "undefined" &&
-    typeof localStorage.getItem === "function" &&
-    typeof localStorage.setItem === "function" &&
-    typeof localStorage.removeItem === "function"
-  ) {
-    return localStorage;
-  }
-  return noopStorage;
-}
+const modelPreferencesStorage = createSafeZustandStorage(LEGACY_MODEL_PREFERENCES_STORAGE_KEY);
 
 function normalizeProviderKind(value: unknown): ProviderKind | null {
   return isKnownProviderKind(value) ? value : null;
@@ -352,7 +338,7 @@ export const useModelPreferencesStore = create<ModelPreferencesState>()(
     {
       name: MODEL_PREFERENCES_STORAGE_KEY,
       version: 1,
-      storage: createJSONStorage(() => getModelPreferencesStorage()),
+      storage: createJSONStorage(() => modelPreferencesStorage),
       partialize: (state) => ({
         lastProvider: state.lastProvider,
         lastModelByProvider: state.lastModelByProvider,

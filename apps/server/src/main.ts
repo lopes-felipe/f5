@@ -57,6 +57,7 @@ import { ServerLoggerLive } from "./serverLogger";
 import {
   makeTrustedProxyCheck,
   MIN_REMOTE_AUTH_TOKEN_BYTES,
+  PRIMARY_SERVER_AUTH_TOKEN_ENV,
   SERVER_AUTH_TOKEN_ENV,
 } from "./serverAuth";
 import { AnalyticsServiceLayerLive } from "./telemetry/Layers/AnalyticsService";
@@ -126,18 +127,22 @@ export class CliConfig extends ServiceMap.Service<CliConfig, CliConfigShape>()(
   );
 }
 
-const CliEnvConfig = Config.all({
-  mode: Config.string("T3CODE_MODE").pipe(
-    Config.option,
-    Config.map(
-      Option.match<RuntimeMode, string>({
-        onNone: () => "web",
-        onSome: (value) => (value === "desktop" ? "desktop" : "web"),
-      }),
+const optionalWithLegacy = <A>(
+  primary: Config.Config<A>,
+  legacy: Config.Config<A>,
+): Config.Config<A | undefined> =>
+  Config.all([Config.option(primary), Config.option(legacy)]).pipe(
+    Config.map(([primaryValue, legacyValue]) =>
+      Option.getOrUndefined(Option.orElse(primaryValue, () => legacyValue)),
     ),
+  );
+
+const CliEnvConfig = Config.all({
+  mode: optionalWithLegacy(Config.string("F5_MODE"), Config.string("T3CODE_MODE")).pipe(
+    Config.map((value): RuntimeMode => (value === "desktop" ? "desktop" : "web")),
   ),
-  port: Config.port("T3CODE_PORT").pipe(Config.option, Config.map(Option.getOrUndefined)),
-  host: Config.string("T3CODE_HOST").pipe(Config.option, Config.map(Option.getOrUndefined)),
+  port: optionalWithLegacy(Config.port("F5_PORT"), Config.port("T3CODE_PORT")),
+  host: optionalWithLegacy(Config.string("F5_HOST"), Config.string("T3CODE_HOST")),
   profile: Config.string("F5_PROFILE").pipe(Config.option, Config.map(Option.getOrUndefined)),
   executionEnvironment: Config.string("F5_EXECUTION_ENVIRONMENT").pipe(
     Config.option,
@@ -155,29 +160,29 @@ const CliEnvConfig = Config.all({
     Config.map(Option.getOrUndefined),
   ),
   devUrl: Config.url("VITE_DEV_SERVER_URL").pipe(Config.option, Config.map(Option.getOrUndefined)),
-  noBrowser: Config.boolean("T3CODE_NO_BROWSER").pipe(
-    Config.option,
-    Config.map(Option.getOrUndefined),
+  noBrowser: optionalWithLegacy(
+    Config.boolean("F5_NO_BROWSER"),
+    Config.boolean("T3CODE_NO_BROWSER"),
   ),
-  authToken: Config.string(SERVER_AUTH_TOKEN_ENV).pipe(
-    Config.option,
-    Config.map(Option.getOrUndefined),
+  authToken: optionalWithLegacy(
+    Config.string(PRIMARY_SERVER_AUTH_TOKEN_ENV),
+    Config.string(SERVER_AUTH_TOKEN_ENV),
   ),
   trustedProxies: Config.string("F5_TRUSTED_PROXIES").pipe(
     Config.option,
     Config.map(Option.getOrUndefined),
   ),
-  autoBootstrapProjectFromCwd: Config.boolean("T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD").pipe(
-    Config.option,
-    Config.map(Option.getOrUndefined),
+  autoBootstrapProjectFromCwd: optionalWithLegacy(
+    Config.boolean("F5_AUTO_BOOTSTRAP_PROJECT_FROM_CWD"),
+    Config.boolean("T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD"),
   ),
-  logWebSocketEvents: Config.boolean("T3CODE_LOG_WS_EVENTS").pipe(
-    Config.option,
-    Config.map(Option.getOrUndefined),
+  logWebSocketEvents: optionalWithLegacy(
+    Config.boolean("F5_LOG_WS_EVENTS"),
+    Config.boolean("T3CODE_LOG_WS_EVENTS"),
   ),
-  observabilityEnabled: Config.boolean("T3CODE_OBSERVABILITY_ENABLED").pipe(
-    Config.option,
-    Config.map(Option.getOrUndefined),
+  observabilityEnabled: optionalWithLegacy(
+    Config.boolean("F5_OBSERVABILITY_ENABLED"),
+    Config.boolean("T3CODE_OBSERVABILITY_ENABLED"),
   ),
   acpHardeningEnabled: Config.boolean("F5_ACP_HARDENING_ENABLED").pipe(Config.withDefault(false)),
   githubPrEventsEnabled: Config.boolean("F5_GITHUB_PR_EVENTS").pipe(Config.withDefault(false)),
@@ -607,14 +612,22 @@ const makeServerProgram = (input: CliInput) =>
       );
     }
     yield* Effect.logInfo("server instrumentation flags", {
-      threadOpenTimingsEnv: process.env.T3CODE_LOG_THREAD_OPEN_TIMINGS ?? null,
-      threadOpenTimingsEnabled:
-        process.env.T3CODE_LOG_THREAD_OPEN_TIMINGS === "1" ||
-        process.env.T3CODE_LOG_THREAD_OPEN_TIMINGS === "true",
-      projectionTimingsEnv: process.env.T3CODE_LOG_PROJECTION_TIMINGS ?? null,
-      projectionTimingsEnabled:
-        process.env.T3CODE_LOG_PROJECTION_TIMINGS === "1" ||
-        process.env.T3CODE_LOG_PROJECTION_TIMINGS === "true",
+      threadOpenTimingsEnv:
+        process.env.F5_LOG_THREAD_OPEN_TIMINGS ??
+        process.env.T3CODE_LOG_THREAD_OPEN_TIMINGS ??
+        null,
+      threadOpenTimingsEnabled: (() => {
+        const value =
+          process.env.F5_LOG_THREAD_OPEN_TIMINGS ?? process.env.T3CODE_LOG_THREAD_OPEN_TIMINGS;
+        return value === "1" || value === "true";
+      })(),
+      projectionTimingsEnv:
+        process.env.F5_LOG_PROJECTION_TIMINGS ?? process.env.T3CODE_LOG_PROJECTION_TIMINGS ?? null,
+      projectionTimingsEnabled: (() => {
+        const value =
+          process.env.F5_LOG_PROJECTION_TIMINGS ?? process.env.T3CODE_LOG_PROJECTION_TIMINGS;
+        return value === "1" || value === "true";
+      })(),
     });
 
     if (!config.devUrl && !config.staticDir) {

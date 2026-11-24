@@ -11,20 +11,15 @@ const sources = import.meta.glob<string>(
  * `safeLocalStorageSetItem` / `safeLocalStorageRemoveItem` instead.
  */
 const LEGACY_LOCAL_STORAGE_WRITE_FILES = new Set([
-  "agentsPanelStore.ts",
   "components/RepositoryPicker.tsx",
   "components/chat/UserMessageRevertPopover.tsx",
   "components/prHub/PrQueueView.tsx",
   "components/usage/ResetCreditButton.tsx",
   "hooks/useMigrateClientSettings.ts",
   "hooks/useServerUpdateOutcome.ts",
-  "modelPreferencesStore.ts",
   "notificationCenter/inboxStore.ts",
-  "pinnedThreadsStore.ts",
   "routes/_chat.tsx",
   "store.ts",
-  "terminalStateStore.ts",
-  "threadStatusNotifications.ts",
 ]);
 
 const DIRECT_LOCAL_STORAGE_WRITE = /\blocalStorage\.(?:setItem|removeItem)\s*\(/;

@@ -67,6 +67,7 @@ import {
   macRevealLaunch,
   registerDesktopFileActions,
 } from "./fileActions";
+import { createAppIpcRegistrar } from "./ipcRegistry";
 import { profilePreviewPartition } from "./profileRuntime";
 import { CaptureShortcut } from "./snapShot/CaptureShortcut";
 import { captureBoundedPage } from "./preview/capture";
@@ -4022,7 +4023,11 @@ function registerIpcHandlers(): void {
       return action();
     });
   }
-  ipcMain.handle("desktop:take-prompt-links", (event) => {
+  const handleAppIpc = createAppIpcRegistrar({
+    ipcMain,
+    authorize: authorizeAppMainFrame,
+  });
+  handleAppIpc("desktop:take-prompt-links", "Prompt links", ({ event }) => {
     const runtime = runtimeForRenderer(event.sender.id);
     const links = promptLinks.take(runtime.profile.id);
     let profileCount = 1;
@@ -4034,34 +4039,34 @@ function registerIpcHandlers(): void {
     // With several profiles, the user is told which one the link opened in.
     return { links, profileName: profileCount > 1 ? runtime.profile.name : null };
   });
-  ipcMain.handle("desktop:take-app-activations", (event) => {
-    authorizeAppMainFrame(event, "Desktop activation");
+  handleAppIpc("desktop:take-app-activations", "Desktop activation", ({ event }) => {
     const runtime = runtimeForRenderer(event.sender.id);
     return takeAppActivations(appActivations, runtime.profile.id, event.sender.id);
   });
-  ipcMain.handle("desktop:complete-app-activation", (event, id: string, error?: string) => {
-    authorizeAppMainFrame(event, "Desktop activation");
-    const runtime = runtimeForRenderer(event.sender.id);
-    completeAppActivation(appActivations, runtime.profile.id, event.sender.id, id, error);
-  });
-  ipcMain.handle(DESKTOP_NOTIFICATION_SHOW_CHANNEL, (event, raw: unknown) => {
-    const profileId = authorizeAppMainFrame(event, "Notification");
+  handleAppIpc(
+    "desktop:complete-app-activation",
+    "Desktop activation",
+    ({ event }, id: string, error?: string) => {
+      const runtime = runtimeForRenderer(event.sender.id);
+      completeAppActivation(appActivations, runtime.profile.id, event.sender.id, id, error);
+    },
+  );
+  handleAppIpc(DESKTOP_NOTIFICATION_SHOW_CHANNEL, "Notification", ({ profileId }, raw: unknown) => {
     if (!Notification.isSupported()) return false;
     const input = parseDesktopNotificationInput(raw);
     if (!input) throw new Error("Invalid notification.");
     return desktopNotifications.show(profileId, input);
   });
-  ipcMain.handle(DESKTOP_NOTIFICATION_TAKE_ACTIVATIONS_CHANNEL, (event) => {
-    const profileId = authorizeAppMainFrame(event, "Notification activation");
-    return desktopNotifications.take(profileId, event.sender.id);
-  });
-  ipcMain.handle("desktop:switch-profile", async (event, id: unknown) => {
-    runtimeForRenderer(event.sender.id);
+  handleAppIpc(
+    DESKTOP_NOTIFICATION_TAKE_ACTIVATIONS_CHANNEL,
+    "Notification activation",
+    ({ event, profileId }) => desktopNotifications.take(profileId, event.sender.id),
+  );
+  handleAppIpc("desktop:switch-profile", "Profile switch", async (_ctx, id: unknown) => {
     if (typeof id !== "string") return false;
     return openProfile(id);
   });
-  ipcMain.handle("desktop:stop-profile", async (event, id: unknown) => {
-    runtimeForRenderer(event.sender.id);
+  handleAppIpc("desktop:stop-profile", "Profile stop", async (_ctx, id: unknown) => {
     if (typeof id !== "string") return false;
     const runtime = backends.get(id);
     if (!runtime) return true;
@@ -4070,8 +4075,7 @@ function registerIpcHandlers(): void {
       if (profileByWebContentsId.get(window.webContents.id) === id) window.close();
     return runtime.backendProcess === null;
   });
-  ipcMain.removeHandler(PICK_FOLDER_CHANNEL);
-  ipcMain.handle(PICK_FOLDER_CHANNEL, async () => {
+  handleAppIpc(PICK_FOLDER_CHANNEL, "Folder picker", async () => {
     const owner = BrowserWindow.getFocusedWindow() ?? mainWindow;
     const result = owner
       ? await dialog.showOpenDialog(owner, {
@@ -4084,8 +4088,7 @@ function registerIpcHandlers(): void {
     return result.filePaths[0] ?? null;
   });
 
-  ipcMain.removeHandler(CONFIRM_CHANNEL);
-  ipcMain.handle(CONFIRM_CHANNEL, async (_event, message: unknown) => {
+  handleAppIpc(CONFIRM_CHANNEL, "Confirm dialog", async (_ctx, message: unknown) => {
     if (typeof message !== "string") {
       return false;
     }
@@ -4094,8 +4097,7 @@ function registerIpcHandlers(): void {
     return showDesktopConfirmDialog(message, owner);
   });
 
-  ipcMain.removeHandler(SET_THEME_CHANNEL);
-  ipcMain.handle(SET_THEME_CHANNEL, async (_event, rawTheme: unknown) => {
+  handleAppIpc(SET_THEME_CHANNEL, "Theme updates", async (_ctx, rawTheme: unknown) => {
     const theme = getSafeTheme(rawTheme);
     if (!theme) {
       return;
@@ -4105,11 +4107,11 @@ function registerIpcHandlers(): void {
     else nativeTheme.themeSource = theme;
   });
 
-  ipcMain.removeHandler(CONTEXT_MENU_CHANNEL);
-  ipcMain.handle(
+  handleAppIpc(
     CONTEXT_MENU_CHANNEL,
+    "Context menu",
     async (
-      event,
+      { event },
       items: ContextMenuItem[],
       position?: { x: number; y: number },
       fileAction?: { editorTarget: string },
@@ -4161,21 +4163,14 @@ function registerIpcHandlers(): void {
     },
   );
 
-  ipcMain.removeHandler(READ_CLIPBOARD_TEXT_CHANNEL);
-  ipcMain.handle(READ_CLIPBOARD_TEXT_CHANNEL, (event, source: unknown) => {
-    if (
-      !profileByWebContentsId.has(event.sender.id) ||
-      event.senderFrame !== event.sender.mainFrame
-    )
-      throw new Error("Clipboard reads require an F5 application window.");
+  handleAppIpc(READ_CLIPBOARD_TEXT_CHANNEL, "Clipboard reads", (_ctx, source: unknown) => {
     if (source !== "clipboard" && source !== "selection")
       throw new Error("Invalid clipboard source.");
     if (source === "selection" && process.platform !== "linux") return "";
     return (source === "selection" ? clipboard.selection : clipboard).readText();
   });
 
-  ipcMain.removeHandler(COPY_IMAGE_CHANNEL);
-  ipcMain.handle(COPY_IMAGE_CHANNEL, async (_event, rawBytes: unknown) => {
+  handleAppIpc(COPY_IMAGE_CHANNEL, "Image copy", async (_ctx, rawBytes: unknown) => {
     const bytes = readDesktopImageActionBytes(rawBytes);
     const image = nativeImage.createFromBuffer(Buffer.from(bytes));
     if (image.isEmpty()) {
@@ -4186,10 +4181,10 @@ function registerIpcHandlers(): void {
     ]);
   });
 
-  ipcMain.removeHandler(DOWNLOAD_IMAGE_CHANNEL);
-  ipcMain.handle(
+  handleAppIpc(
     DOWNLOAD_IMAGE_CHANNEL,
-    async (_event, rawBytes: unknown, rawFilename: unknown) => {
+    "Image download",
+    async (_ctx, rawBytes: unknown, rawFilename: unknown) => {
       const bytes = readDesktopImageActionBytes(rawBytes);
       const filename = typeof rawFilename === "string" ? rawFilename : "image";
       const savedPath = await saveDesktopImageDownload({
@@ -4201,8 +4196,7 @@ function registerIpcHandlers(): void {
     },
   );
 
-  ipcMain.removeHandler(OPEN_EXTERNAL_CHANNEL);
-  ipcMain.handle(OPEN_EXTERNAL_CHANNEL, async (_event, rawUrl: unknown) => {
+  handleAppIpc(OPEN_EXTERNAL_CHANNEL, "External links", async (_ctx, rawUrl: unknown) => {
     const externalUrl = getSafeShellExternalUrl(rawUrl);
     if (!externalUrl) {
       return false;
@@ -4216,27 +4210,30 @@ function registerIpcHandlers(): void {
     }
   });
 
-  ipcMain.removeHandler(OPEN_THREAD_WINDOW_CHANNEL);
-  ipcMain.handle(OPEN_THREAD_WINDOW_CHANNEL, async (event, rawThreadId: unknown) => {
-    const threadId = normalizeThreadIdForDesktopWindow(rawThreadId);
-    if (!threadId) return false;
-    const now = Date.now();
-    const previous = lastOpenThreadWindowAtByRenderer.get(event.sender.id) ?? 0;
-    if (
-      now - previous < OPEN_THREAD_WINDOW_MIN_INTERVAL_MS ||
-      BrowserWindow.getAllWindows().length >= MAX_DESKTOP_WINDOWS
-    ) {
-      return false;
-    }
-    lastOpenThreadWindowAtByRenderer.set(event.sender.id, now);
-    try {
-      createWindow(threadId, runtimeForRenderer(event.sender.id));
-      return true;
-    } catch (error) {
-      console.error(`[desktop] failed to open thread window: ${formatErrorMessage(error)}`);
-      return false;
-    }
-  });
+  handleAppIpc(
+    OPEN_THREAD_WINDOW_CHANNEL,
+    "Thread windows",
+    async ({ event }, rawThreadId: unknown) => {
+      const threadId = normalizeThreadIdForDesktopWindow(rawThreadId);
+      if (!threadId) return false;
+      const now = Date.now();
+      const previous = lastOpenThreadWindowAtByRenderer.get(event.sender.id) ?? 0;
+      if (
+        now - previous < OPEN_THREAD_WINDOW_MIN_INTERVAL_MS ||
+        BrowserWindow.getAllWindows().length >= MAX_DESKTOP_WINDOWS
+      ) {
+        return false;
+      }
+      lastOpenThreadWindowAtByRenderer.set(event.sender.id, now);
+      try {
+        createWindow(threadId, runtimeForRenderer(event.sender.id));
+        return true;
+      } catch (error) {
+        console.error(`[desktop] failed to open thread window: ${formatErrorMessage(error)}`);
+        return false;
+      }
+    },
+  );
 
   const assertUpdateSender = (event: Electron.IpcMainInvokeEvent) =>
     assertUpdateCaller(event, runtimeForRenderer);
@@ -4306,11 +4303,9 @@ function registerIpcHandlers(): void {
   });
 
   const previewHandle = (channel: string, run: (owner: number, ...args: unknown[]) => unknown) => {
-    ipcMain.removeHandler(channel);
-    ipcMain.handle(channel, (event, ...args) => {
-      runtimeForRenderer(event.sender.id);
-      return run(event.sender.id, ...args);
-    });
+    handleAppIpc(channel, "Preview controls", ({ event }, ...args: unknown[]) =>
+      run(event.sender.id, ...args),
+    );
   };
   const stringArg = (value: unknown) => {
     if (typeof value !== "string" || value.length > 200 || !value.trim())

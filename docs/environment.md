@@ -8,6 +8,15 @@ Prefer `F5_*` variables for F5-owned state. The legacy `T3CODE_*` prefix remains
 
 | Variable                           | Description                                                                                                                         |
 | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `F5_MODE`                          | Operating mode (`web` or `desktop`; overrides `T3CODE_MODE`)                                                                        |
+| `F5_PORT`                          | Server port (overrides `T3CODE_PORT`)                                                                                               |
+| `F5_HOST`                          | Bind interface/address (overrides `T3CODE_HOST`)                                                                                    |
+| `F5_NO_BROWSER`                    | Skip auto-opening the browser on start (overrides `T3CODE_NO_BROWSER`)                                                              |
+| `F5_AUTH_TOKEN`                    | Authentication token for remote HTTP and WebSocket connections (overrides `T3CODE_AUTH_TOKEN`)                                      |
+| `F5_LOG_WS_EVENTS`                 | Enable verbose WebSocket event logging (overrides `T3CODE_LOG_WS_EVENTS`)                                                           |
+| `F5_LOG_THREAD_OPEN_TIMINGS`       | Log per-thread open timing diagnostics (overrides `T3CODE_LOG_THREAD_OPEN_TIMINGS`)                                                 |
+| `F5_LOG_PROJECTION_TIMINGS`        | Log orchestration projection timing diagnostics (overrides `T3CODE_LOG_PROJECTION_TIMINGS`)                                         |
+| `F5_OBSERVABILITY_ENABLED`         | Enable local ndjson trace/metrics export (overrides `T3CODE_OBSERVABILITY_ENABLED`)                                                 |
 | `F5_COALESCE_STREAMING_DELTAS`     | Set to `false` before server startup to disable Codex streaming delta batching independently of workflow summary/storage changes    |
 | `F5_HOME`                          | Base directory for F5 state; defaults to `~/.f5`                                                                                    |
 | `F5_GITHUB_OAUTH_CLIENT_ID`        | GitHub OAuth app for browser sign-in; defaults to GitHub CLI's public app, empty disables it                                        |
@@ -23,24 +32,24 @@ Prefer `F5_*` variables for F5-owned state. The legacy `T3CODE_*` prefix remains
 | `F5_BACKUP_MIN_FREE_BYTES`         | Free disk space restore staging leaves; defaults to 512 MiB                                                                         |
 | `F5_RELEASE_REPOSITORY`            | Marketing site build: GitHub `owner/name` for download links; defaults to `lopes-felipe/f5`                                         |
 | `F5_TRUSTED_PROXIES`               | Reverse proxies whose `X-Forwarded-For` is believed: comma-separated IP addresses or CIDR ranges (see [REMOTE.md](../REMOTE.md))    |
-| `T3CODE_PORT`                      | Server port                                                                                                                         |
-| `T3CODE_MODE`                      | Operating mode                                                                                                                      |
-| `T3CODE_AUTH_TOKEN`                | Authentication token for WebSocket connections                                                                                      |
-| `T3CODE_HOME`                      | Legacy base directory override                                                                                                      |
-| `T3CODE_STATE_DIR`                 | Legacy state directory override                                                                                                     |
+| `T3CODE_PORT`                      | Legacy alias for `F5_PORT`                                                                                                          |
+| `T3CODE_MODE`                      | Legacy alias for `F5_MODE`                                                                                                          |
+| `T3CODE_AUTH_TOKEN`                | Legacy alias for `F5_AUTH_TOKEN`                                                                                                    |
+| `T3CODE_HOME`                      | Legacy base directory override (`F5_HOME` wins when both are set)                                                                   |
+| `T3CODE_STATE_DIR`                 | Legacy state directory override (`F5_STATE_DIR` wins when both are set)                                                             |
 | `T3CODE_PORT_OFFSET`               | Legacy dev-runner port offset                                                                                                       |
 | `T3CODE_DEV_INSTANCE`              | Legacy dev-runner deterministic port-offset seed                                                                                    |
-| `T3CODE_NO_BROWSER`                | Skip auto-opening the browser on start                                                                                              |
-| `T3CODE_LOG_WS_EVENTS`             | Enable verbose WebSocket event logging                                                                                              |
-| `T3CODE_LOG_THREAD_OPEN_TIMINGS`   | Log per-thread open timing diagnostics                                                                                              |
-| `T3CODE_LOG_PROJECTION_TIMINGS`    | Log orchestration projection timing diagnostics                                                                                     |
-| `T3CODE_OBSERVABILITY_ENABLED`     | Enable local ndjson trace/metrics export                                                                                            |
+| `T3CODE_NO_BROWSER`                | Legacy alias for `F5_NO_BROWSER`                                                                                                    |
+| `T3CODE_LOG_WS_EVENTS`             | Legacy alias for `F5_LOG_WS_EVENTS`                                                                                                 |
+| `T3CODE_LOG_THREAD_OPEN_TIMINGS`   | Legacy alias for `F5_LOG_THREAD_OPEN_TIMINGS`                                                                                       |
+| `T3CODE_LOG_PROJECTION_TIMINGS`    | Legacy alias for `F5_LOG_PROJECTION_TIMINGS`                                                                                        |
+| `T3CODE_OBSERVABILITY_ENABLED`     | Legacy alias for `F5_OBSERVABILITY_ENABLED`                                                                                         |
 | `T3CODE_TELEMETRY_ENABLED`         | Set to `false` to force anonymous usage telemetry off even when a key is configured                                                 |
 | `T3CODE_POSTHOG_KEY`               | PostHog project key for anonymous usage telemetry; empty by default, which disables it                                              |
 | `T3CODE_POSTHOG_HOST`              | PostHog ingestion host; defaults to `https://us.i.posthog.com`                                                                      |
 | `T3CODE_DESKTOP_WS_URL`            | Short-lived desktop startup bootstrap URL; its token expires within 24 hours. Use the desktop bridge for a fresh URL.               |
 | `F5_DISABLE_PREVIEW_PASSKEYS`      | Set to `1` and restart the desktop to disable both Touch ID configuration and the preview passkey bridge, independently of signing. |
-| `PORT`                             | Fallback HTTP port (used when `T3CODE_PORT` unset)                                                                                  |
+| `PORT`                             | Fallback HTTP port (used when `F5_PORT` and `T3CODE_PORT` are unset)                                                                |
 | `ELECTRON_RENDERER_PORT`           | Port for the Electron renderer dev server                                                                                           |
 | `VITE_WS_URL`                      | WebSocket URL for the web frontend (dev)                                                                                            |
 | `VITE_DEV_SERVER_URL`              | Vite dev server URL for proxy mode                                                                                                  |

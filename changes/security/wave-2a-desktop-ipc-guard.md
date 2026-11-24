@@ -1,0 +1,1 @@
+- Centralized Electron desktop IPC handler registration behind a mandatory F5 app main-frame origin and ownership guard so preview webviews, HTML sandboxes, and child frames cannot invoke privileged desktop channels.

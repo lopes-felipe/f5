@@ -936,4 +936,31 @@ it.layer(testLayer)("profile startup selection", (it) => {
       }
     }),
   );
+  it.effect("prefers primary F5_* server environment variables over legacy T3CODE_* aliases", () =>
+    Effect.gen(function* () {
+      yield* runCli([], {
+        F5_MODE: "desktop",
+        T3CODE_MODE: "web",
+        F5_PORT: "4123",
+        T3CODE_PORT: "4999",
+        F5_HOST: "127.0.0.1",
+        T3CODE_HOST: "0.0.0.0",
+        F5_NO_BROWSER: "true",
+        T3CODE_NO_BROWSER: "false",
+        F5_AUTH_TOKEN: "f5-primary-token-0123456789abcdef",
+        T3CODE_AUTH_TOKEN: "legacy-token-0123456789abcdef0123",
+        F5_LOG_WS_EVENTS: "true",
+        T3CODE_LOG_WS_EVENTS: "false",
+        F5_OBSERVABILITY_ENABLED: "true",
+        T3CODE_OBSERVABILITY_ENABLED: "false",
+      });
+      assert.equal(resolvedConfig?.mode, "desktop");
+      assert.equal(resolvedConfig?.port, 4123);
+      assert.equal(resolvedConfig?.host, "127.0.0.1");
+      assert.equal(resolvedConfig?.noBrowser, true);
+      assert.equal(resolvedConfig?.authToken, "f5-primary-token-0123456789abcdef");
+      assert.equal(resolvedConfig?.logWebSocketEvents, true);
+      assert.equal(resolvedConfig?.observabilityEnabled, true);
+    }),
+  );
 });

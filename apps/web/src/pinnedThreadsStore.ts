@@ -14,6 +14,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { useSyncExternalStore } from "react";
+import { safeLocalStorageGetItem, safeLocalStorageSetItem } from "./lib/safeStorage";
 
 const STORAGE_KEY = "t3code:pinned-threads:v1";
 export const MAX_PINNED_THREADS = CONTRACT_MAX_PINNED_THREADS;
@@ -27,7 +28,7 @@ function isBrowser(): boolean {
 function readFromStorage(): ReadonlyArray<ThreadId> {
   if (!isBrowser()) return [];
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
+    const raw = safeLocalStorageGetItem(STORAGE_KEY);
     if (!raw) return [];
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
@@ -43,12 +44,7 @@ function readFromStorage(): ReadonlyArray<ThreadId> {
 
 function writeToStorage(ids: ReadonlyArray<ThreadId>): void {
   if (!isBrowser()) return;
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(ids));
-  } catch {
-    // localStorage can fail when disabled or over-quota; swallow since
-    // pinning is an optional enhancement, not critical UX.
-  }
+  safeLocalStorageSetItem(STORAGE_KEY, JSON.stringify(ids));
 }
 
 // Single global state + listener set. Using a manual pub/sub keeps the module
