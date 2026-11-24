@@ -1,5 +1,5 @@
 import type { ProfileSummary } from "@t3tools/contracts";
-import { PlusIcon, RotateCwIcon, TriangleAlertIcon, UsersIcon } from "lucide-react";
+import { InfoIcon, PlusIcon, RotateCwIcon, TriangleAlertIcon, UsersIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { useCopyToClipboard } from "../../../hooks/useCopyToClipboard";
@@ -10,7 +10,11 @@ import { ProfileAccountsSection } from "../../profiles/ProfileAccountsSection";
 import { ProfileCard } from "../../profiles/ProfileCard";
 import { ProfileCreateDialog } from "../../profiles/ProfileCreateDialog";
 import { ProfileRemoveDialog } from "../../profiles/ProfileRemoveDialog";
-import { orderProfiles } from "../../profiles/profileStatus";
+import {
+  isLinuxVmGuestWindow,
+  LINUX_VM_GUEST_PROFILES_NOTICE,
+  orderProfiles,
+} from "../../profiles/profileStatus";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "../../ui/alert";
 import { Button } from "../../ui/button";
 import {
@@ -29,9 +33,12 @@ import { GithubAccountPanel } from "../GithubAccountPanel";
 
 export { ACCOUNTS_SETTINGS_DESCRIPTORS } from "./AccountsSettings.descriptors";
 
-/** The registry keeps removed profiles under `<profiles root>/.trash`. */
+/**
+ * The registry keeps removed profiles under `<profiles root>/.trash`. A Linux VM guest's
+ * registry lives on its own disk and can't remove profiles, so it has none to show.
+ */
 function metadataRootFor(active: ProfileSummary | null): string | null {
-  if (!active) return null;
+  if (!active || isLinuxVmGuestWindow(active)) return null;
   return active.isDefault
     ? `${active.stateDir}-profiles`
     : active.stateDir.replace(/[\\/][^\\/]+$/, "");
@@ -51,7 +58,9 @@ export function AccountsSettings() {
 
   const metadataRoot = metadataRootFor(active);
   const ordered = orderProfiles(profiles);
-  const locked = Boolean(diagnostic);
+  const guestWindow = isLinuxVmGuestWindow(active);
+  // The guest backend refuses every profile change, so offer none.
+  const locked = Boolean(diagnostic) || guestWindow;
 
   const confirmRemove = () => {
     if (!removeTarget) return;
@@ -81,6 +90,13 @@ export function AccountsSettings() {
               Creating, renaming, and removing profiles is disabled until this file is repaired.
             </p>
           </AlertDescription>
+        </Alert>
+      ) : null}
+      {guestWindow ? (
+        <Alert variant="info">
+          <InfoIcon />
+          <AlertTitle>Linux VM profile</AlertTitle>
+          <AlertDescription>{LINUX_VM_GUEST_PROFILES_NOTICE}</AlertDescription>
         </Alert>
       ) : null}
 
@@ -216,7 +232,11 @@ export function AccountsSettings() {
             {active ? (
               <div className="flex items-center justify-between gap-3 border-b border-border py-2 last:border-b-0">
                 <div className="min-w-0">
-                  <p className="text-sm font-medium text-foreground">This profile's data</p>
+                  <p className="text-sm font-medium text-foreground">
+                    {guestWindow
+                      ? "This profile's data, inside the Linux VM"
+                      : "This profile's data"}
+                  </p>
                   <p className="break-all font-mono text-2xs text-muted-foreground">
                     {active.stateDir}
                   </p>
