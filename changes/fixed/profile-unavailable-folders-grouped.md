@@ -1,1 +1,0 @@
-- The Profiles card no longer lists every removed thread worktree as an unavailable project folder. It checks only live project folders and groups several into one collapsible warning.

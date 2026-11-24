@@ -1,1 +1,0 @@
-- Resolve startup service tiers after Codex opens the conversation's native provider, preventing recovery from applying another provider's tier.

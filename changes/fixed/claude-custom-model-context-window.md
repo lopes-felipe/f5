@@ -1,1 +1,0 @@
-- Claude’s context meter uses the context window reported by Claude for models outside F5’s catalog.

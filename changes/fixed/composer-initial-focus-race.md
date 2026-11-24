@@ -1,3 +1,0 @@
-- Keep focus in project search and preserve the composer's caret or selection when a thread finishes loading.
-- Preserve selected draft text when the app window regains focus so pasting replaces the selection.
-- Keep automatic composer focus after thread navigation without letting closing popups or hovered tooltips block typing.

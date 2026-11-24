@@ -1,1 +1,0 @@
-- Preview, computer, thread, and integration MCP endpoints now refuse browser requests with 403 before checking credentials, including preflight requests.

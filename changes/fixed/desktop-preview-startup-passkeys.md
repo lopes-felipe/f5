@@ -1,2 +1,0 @@
-- Preview tabs restored before entitlement checks finish gain passkey support when the check completes. Set F5_DISABLE_PREVIEW_PASSKEYS=1 before starting the desktop to disable F5's passkey integration.
-- Stopped desktop profiles no longer cause repeated synchronous IPC on every URL lookup.
