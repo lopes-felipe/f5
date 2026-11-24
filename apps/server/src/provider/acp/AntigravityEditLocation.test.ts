@@ -21,8 +21,14 @@ describe("readAntigravityPreWriteFile", () => {
     await fs.writeFile(NodePath.join(root, "binary.bin"), Buffer.from([0x61, 0x00, 0x62]));
     await fs.writeFile(NodePath.join(root, "latin1.txt"), Buffer.from([0x63, 0x61, 0x66, 0xe9]));
     await fs.writeFile(NodePath.join(root, ".git", "config"), "[remote]\n");
-    await fs.writeFile(NodePath.join(base, "secret"), "token\n");
-    await fs.symlink(NodePath.join(base, "secret"), NodePath.join(root, "escape"));
+    await fs.mkdir(NodePath.join(base, "outside"));
+    await fs.writeFile(NodePath.join(base, "outside", "secret"), "token\n");
+    // A junction needs no symlink privilege on Windows and behaves the same for directories.
+    await fs.symlink(
+      NodePath.join(base, "outside"),
+      NodePath.join(root, "escape"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
   });
   afterAll(() => fs.rm(base, { recursive: true, force: true }));
 
@@ -38,9 +44,9 @@ describe("readAntigravityPreWriteFile", () => {
 
   it("never reads outside the workspace, Git metadata, relative paths or non-text files", () => {
     for (const target of [
-      NodePath.join(base, "secret"),
-      NodePath.join(root, "escape"),
-      NodePath.join(root, "..", "secret"),
+      NodePath.join(base, "outside", "secret"),
+      NodePath.join(root, "escape", "secret"),
+      `${root}${NodePath.sep}..${NodePath.sep}outside${NodePath.sep}secret`,
       NodePath.join(root, ".git", "config"),
       "a.ts",
       NodePath.join(root, "binary.bin"),
