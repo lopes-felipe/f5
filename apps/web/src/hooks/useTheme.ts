@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useSyncExternalStore } from "react";
+import { safeLocalStorageSetItem } from "../lib/safeStorage";
 import {
   applyThemeMode,
   getSystemPrefersDark,
@@ -90,7 +91,7 @@ export function useTheme() {
   const resolvedTheme = resolveThemeMode(theme);
 
   const setTheme = useCallback((next: ThemeMode) => {
-    localStorage.setItem(THEME_MODE_STORAGE_KEY, next);
+    safeLocalStorageSetItem(THEME_MODE_STORAGE_KEY, next);
     applyTheme(next, true);
     emitChange();
   }, []);

@@ -13,6 +13,8 @@ const AUTH_FAILURE_WINDOW_MS = 60 * 1_000;
 const AUTH_LOCKOUT_MS = 60 * 1_000;
 const MAX_AUTH_FAILURES_PER_SOURCE = 5;
 const MAX_AUTH_FAILURES_GLOBAL = 100;
+const MAX_ACTIVE_SESSIONS = 1_024;
+const MAX_AUTH_FAILURE_SOURCES = 4_096;
 
 export const MIN_REMOTE_AUTH_TOKEN_BYTES = 24;
 /** Environment variable that carries the backend's WebSocket/HTTP credential into the server. */
@@ -36,6 +38,8 @@ export interface ServerAuthOptions {
   readonly lockoutMs?: number;
   readonly maxFailuresPerSource?: number;
   readonly maxFailuresGlobal?: number;
+  readonly maxActiveSessions?: number;
+  readonly maxFailureSources?: number;
   readonly allowedWebSocketOrigins?: ReadonlyArray<string>;
   /**
    * Addresses and CIDR ranges of reverse proxies. Only a listed proxy's `X-Forwarded-For` is
@@ -369,6 +373,8 @@ export function makeServerAuth(
   const lockoutMs = options.lockoutMs ?? AUTH_LOCKOUT_MS;
   const maxFailuresPerSource = options.maxFailuresPerSource ?? MAX_AUTH_FAILURES_PER_SOURCE;
   const maxFailuresGlobal = options.maxFailuresGlobal ?? MAX_AUTH_FAILURES_GLOBAL;
+  const maxActiveSessions = Math.max(1, options.maxActiveSessions ?? MAX_ACTIVE_SESSIONS);
+  const maxFailureSources = Math.max(1, options.maxFailureSources ?? MAX_AUTH_FAILURE_SOURCES);
   const allowedWebSocketOrigins = new Set(
     (options.allowedWebSocketOrigins ?? []).flatMap((origin) => {
       const normalized = normalizedOrigin(origin);
@@ -436,11 +442,24 @@ export function makeServerAuth(
   };
 
   const recordSourceFailure = (source: string, timestamp: number): number => {
+    pruneExpiredAuthFailures(timestamp);
     const sourceFailures = nextFailureBucket(
       authFailuresBySource.get(source),
       timestamp,
       maxFailuresPerSource,
     );
+    authFailuresBySource.delete(source);
+    if (authFailuresBySource.size >= maxFailureSources) {
+      let evictKey: string | undefined;
+      for (const [candidate, bucket] of authFailuresBySource) {
+        if (bucket.blockedUntil <= timestamp) {
+          evictKey = candidate;
+          break;
+        }
+      }
+      evictKey ??= authFailuresBySource.keys().next().value;
+      if (evictKey !== undefined) authFailuresBySource.delete(evictKey);
+    }
     authFailuresBySource.set(source, sourceFailures);
     return sourceFailures.blockedUntil;
   };
@@ -580,9 +599,15 @@ export function makeServerAuth(
 
       authFailuresBySource.delete(source);
       globalAuthFailures = null;
-      pruneExpiredSessions(now());
+      const issuedAt = now();
+      pruneExpiredSessions(issuedAt);
+      while (sessions.size >= maxActiveSessions) {
+        const oldestSession = sessions.keys().next().value;
+        if (oldestSession === undefined) break;
+        sessions.delete(oldestSession);
+      }
       const sessionToken = Crypto.randomBytes(32).toString("base64url");
-      sessions.set(sessionToken, { expiresAt: now() + AUTH_SESSION_TTL_MS });
+      sessions.set(sessionToken, { expiresAt: issuedAt + AUTH_SESSION_TTL_MS });
       respond(response, 204, "", {
         "Set-Cookie": sessionCookie(
           cookieName,

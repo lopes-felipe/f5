@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   groupInboxEntries,
@@ -104,6 +104,15 @@ describe("recordInboxEntry", () => {
 });
 
 describe("inbox store", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("reads, resolves and removes entries", () => {
     const store = useNotificationInbox.getState();
     store.clear();

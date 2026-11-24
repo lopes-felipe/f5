@@ -25,20 +25,20 @@ packaged release may lag behind them.
 
 ## Configure & operate
 
-| Page                                                | What it covers                                         |
-| --------------------------------------------------- | ------------------------------------------------------ |
-| [Install F5](install.md)                            | Desktop downloads, availability, upgrades and updates  |
-| [Provider prerequisites](provider-prerequisites.md) | Install, sign in to and update all seven providers     |
-| [Claude](providers/claude.md)                       | Accounts, OpenRouter, Claude Code Router, presets      |
-| [Codex](providers/codex.md)                         | Accounts, Codex homes, profiles                        |
-| [Antigravity](providers/antigravity.md)             | Antigravity setup and isolation                        |
-| [Custom ACP agents](providers/acp.md)               | Local ACP commands, models and initialization checks   |
-| [Muse Code](providers/muse.md)                      | Muse Code setup and modes                              |
-| [Runtime modes](runtime-modes.md)                   | The four permission modes and provider support         |
-| [Project configuration](project-configuration.md)   | The checked-in `f5.json` file                          |
-| [Profiles](profiles.md)                             | Separate F5 profiles with their own state and accounts |
-| [Remote access](../REMOTE.md)                       | Run F5 on another machine                              |
-| [Environment variables](environment.md)             | Every supported variable                               |
+| Page                                                | What it covers                                                          |
+| --------------------------------------------------- | ----------------------------------------------------------------------- |
+| [Install F5](install.md)                            | Desktop downloads, availability, upgrades and updates                   |
+| [Provider prerequisites](provider-prerequisites.md) | Install, sign in to and update built-in providers and custom ACP agents |
+| [Claude](providers/claude.md)                       | Accounts, OpenRouter, Claude Code Router, presets                       |
+| [Codex](providers/codex.md)                         | Accounts, Codex homes, profiles                                         |
+| [Antigravity](providers/antigravity.md)             | Antigravity setup and isolation                                         |
+| [Custom ACP agents](providers/acp.md)               | Local ACP commands, models and initialization checks                    |
+| [Muse Code](providers/muse.md)                      | Muse Code setup and modes                                               |
+| [Runtime modes](runtime-modes.md)                   | The four permission modes and provider support                          |
+| [Project configuration](project-configuration.md)   | The checked-in `f5.json` file                                           |
+| [Profiles](profiles.md)                             | Separate F5 profiles with their own state and accounts                  |
+| [Remote access](../REMOTE.md)                       | Run F5 on another machine                                               |
+| [Environment variables](environment.md)             | Every supported variable                                                |
 
 F5 stores state under `~/.f5` (`%USERPROFILE%\.f5` on Windows). Use `F5_HOME` and `F5_STATE_DIR`
 to override it. The inherited `T3CODE_*` variables still work; see [`NOTICE.md`](../NOTICE.md).

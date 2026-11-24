@@ -2766,10 +2766,19 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
     const probeResumableClaudeSession =
       options?.probeResumableClaudeSession ?? probeClaudeSessionAvailability;
 
+    const MAX_TRACKED_RESUME_RECOVERY_THREADS = 1_024;
     const sessions = new Map<ThreadId, ClaudeSessionContext>();
     const pendingForks = new Set<ThreadId>();
     const resumeFailures = new Map<ThreadId, number>();
     const resumeRecoveryGenerations = new Map<ThreadId, unknown>();
+    const setBoundedThreadMap = <V>(map: Map<ThreadId, V>, threadId: ThreadId, value: V): void => {
+      map.delete(threadId);
+      map.set(threadId, value);
+      if (map.size > MAX_TRACKED_RESUME_RECOVERY_THREADS) {
+        const oldest = map.keys().next().value;
+        if (oldest !== undefined) map.delete(oldest);
+      }
+    };
     const settlementClock = yield* Clock.Clock;
     interface ThreadLockEntry {
       readonly semaphore: Semaphore.Semaphore;
@@ -6898,7 +6907,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             context.recoveryMetadata.missingResumePoint ??= requested ?? context.lastAssistantUuid;
           yield* updateResumeCursor(context);
           const failures = (resumeFailures.get(threadId) ?? 0) + 1;
-          resumeFailures.set(threadId, failures);
+          setBoundedThreadMap(resumeFailures, threadId, failures);
           // Resuming from an older boundary would drop turns the user saw.
           if (forked) return yield* Effect.fail(new Error(CLAUDE_TRANSCRIPT_FORKED_MESSAGE));
           if (failures >= 3 || attempt > 0 || !context.resumeSessionId) {
@@ -7732,7 +7741,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                     ? selection.target
                     : undefined;
               if (!selected) {
-                resumeFailures.set(threadId, (resumeFailures.get(threadId) ?? 0) + 1);
+                setBoundedThreadMap(
+                  resumeFailures,
+                  threadId,
+                  (resumeFailures.get(threadId) ?? 0) + 1,
+                );
                 return yield* new ProviderAdapterProcessError({
                   provider: PROVIDER,
                   threadId,
@@ -7775,7 +7788,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const generation = readClaudeRecoveryMetadata(input.resumeCursor).resumeRecoveryGeneration;
         if (!resumeState?.resume || generation !== resumeRecoveryGenerations.get(threadId)) {
           resumeFailures.delete(threadId);
-          resumeRecoveryGenerations.set(threadId, generation);
+          if (!resumeState?.resume && generation === undefined) {
+            resumeRecoveryGenerations.delete(threadId);
+          } else {
+            setBoundedThreadMap(resumeRecoveryGenerations, threadId, generation);
+          }
         }
         const failures = resumeFailures.get(threadId) ?? 0;
         if (resumeState?.resume && failures >= 3)

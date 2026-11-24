@@ -573,7 +573,13 @@ describe("WebSocket Server", () => {
     expect(response.status).toBe(200);
     expect(await response.text()).toContain("static-root");
     expect(response.headers.get("cache-control")).toBe("no-cache");
-    expect(response.headers.get("content-security-policy")).toBe("frame-ancestors 'none'");
+    expect(response.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    expect(response.headers.get("content-security-policy")).toContain("object-src 'none'");
+    expect(response.headers.get("content-security-policy")).toContain("base-uri 'self'");
+    expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(response.headers.get("permissions-policy")).toBe(
+      "camera=(), microphone=(), geolocation=()",
+    );
     expect(response.headers.get("x-frame-options")).toBe("DENY");
     fs.writeFileSync(path.join(staticDir, "index.html"), "<h1>updated app</h1>", "utf8");
     const refreshed = await fetch(`http://127.0.0.1:${port}/index.html`, {
@@ -581,7 +587,8 @@ describe("WebSocket Server", () => {
     });
     expect(refreshed.status).toBe(200);
     expect(refreshed.headers.get("cache-control")).toBe("no-cache");
-    expect(refreshed.headers.get("content-security-policy")).toBe("frame-ancestors 'none'");
+    expect(refreshed.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    expect(refreshed.headers.get("referrer-policy")).toBe("no-referrer");
     expect(refreshed.headers.get("x-frame-options")).toBe("DENY");
     expect(await refreshed.text()).toContain("updated app");
   });
@@ -627,11 +634,13 @@ describe("WebSocket Server", () => {
     expect(navigation.status).toBe(200);
     expect(await navigation.text()).toContain("Application shell");
     expect(navigation.headers.get("cache-control")).toBe("no-cache");
-    expect(navigation.headers.get("content-security-policy")).toBe("frame-ancestors 'none'");
+    expect(navigation.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    expect(navigation.headers.get("referrer-policy")).toBe("no-referrer");
     expect(navigation.headers.get("x-frame-options")).toBe("DENY");
     const htmlHead = await fetch(`http://127.0.0.1:${port}/index.html`, { method: "HEAD" });
     expect(htmlHead.status).toBe(200);
-    expect(htmlHead.headers.get("content-security-policy")).toBe("frame-ancestors 'none'");
+    expect(htmlHead.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    expect(htmlHead.headers.get("referrer-policy")).toBe("no-referrer");
     expect(htmlHead.headers.get("x-frame-options")).toBe("DENY");
     expect(await htmlHead.text()).toBe("");
     const request = await fetch(`http://127.0.0.1:${port}/thread/client-route`, {
@@ -1928,6 +1937,13 @@ describe("WebSocket Server", () => {
       headers: { Authorization: "Bearer secret-token" },
     });
     expect(metadata.headers.get("cache-control")).toBe("no-store");
+    const foreignOriginBootstrap = await fetch(`${base}/api/bootstrap`, {
+      headers: {
+        Authorization: "Bearer secret-token",
+        Origin: "https://attacker.example",
+      },
+    });
+    expect(foreignOriginBootstrap.status).toBe(403);
     expect(await metadata.json()).toEqual(SERVER_BOOTSTRAP);
     for (const version of [undefined, "0", "999"]) {
       const response = await fetch(`${base}/api/storage/restore`, {

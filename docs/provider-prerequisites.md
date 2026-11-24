@@ -26,10 +26,12 @@ send a message with it.
 | Grok        | Grok CLI, so `grok` is on your PATH                                               | `grok login`                                                                                 |
 | Antigravity | **Install Antigravity** in Settings (F5 never installs it on its own)             | **Sign in** with Google, or enter a Gemini API key and **Connect**, in Settings              |
 | Muse Code   | `curl -fsSL https://dev.meta.ai/install.sh \| bash` (F5 never runs the installer) | Run `muse`, `muse auth set`, or set `META_API_KEY`                                           |
+| Pi          | Install `pi` CLI so `pi` is on your PATH, or set **Binary path**                  | Configure credentials in Pi's own settings/environment                                       |
+| Custom ACP  | Any local ACP-compatible CLI command configured in **Settings → Providers**       | Managed by the configured ACP command (see [Custom ACP agents](providers/acp.md))            |
 
-Cursor, Grok and Muse Code are Early Access. Provider pages: [Codex](providers/codex.md),
-[Claude](providers/claude.md), [Antigravity](providers/antigravity.md) and
-[Muse Code](providers/muse.md).
+Cursor, Grok, Muse Code and Pi are Early Access. Provider pages: [Codex](providers/codex.md),
+[Claude](providers/claude.md), [Antigravity](providers/antigravity.md), [Muse Code](providers/muse.md)
+and [Custom ACP agents](providers/acp.md).
 
 ## Several accounts
 

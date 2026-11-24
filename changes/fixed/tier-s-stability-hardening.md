@@ -1,0 +1,3 @@
+- Guarded theme and client-settings `localStorage` writes so switching themes or completing settings migration no longer throws when browser storage is restricted or full.
+- Bounded long-lived in-memory tracking maps in server runtime ingestion and the Claude adapter to prevent unbounded memory growth during extended uptime.
+- Memoized document sanitization and iframe source generation in the document preview viewer so zooming or changing themes no longer re-sanitizes the entire document on every click.

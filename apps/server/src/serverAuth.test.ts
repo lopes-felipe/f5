@@ -438,3 +438,53 @@ it("keeps two authenticated profiles on one hostname independent", async () => {
   expect((await fetch(`${a}/private`, { headers: { cookie } })).status).toBe(200);
   expect((await fetch(`${b}/private`, { headers: { cookie } })).status).toBe(401);
 });
+
+it("caps active sessions by evicting the oldest session on overflow", async () => {
+  const origin = await startAuthServer(makeServerAuth("secret-token", { maxActiveSessions: 2 }));
+  const login = async () => {
+    const result = await fetch(`${origin}/auth/session`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: "secret-token" }),
+    });
+    expect(result.status).toBe(204);
+    return result.headers.get("set-cookie")!.split(";")[0]!;
+  };
+
+  const first = await login();
+  const second = await login();
+  const third = await login();
+
+  expect((await fetch(`${origin}/private`, { headers: { cookie: first } })).status).toBe(401);
+  expect((await fetch(`${origin}/private`, { headers: { cookie: second } })).status).toBe(200);
+  expect((await fetch(`${origin}/private`, { headers: { cookie: third } })).status).toBe(200);
+});
+
+it("caps per-source auth failure buckets without losing blocked peers", async () => {
+  const origin = await startAuthServer(
+    makeServerAuth("secret-token", {
+      trustedProxies: ["127.0.0.1"],
+      maxFailuresPerSource: 2,
+      maxFailuresGlobal: 100,
+      maxFailureSources: 2,
+    }),
+  );
+  const badLogin = (forwardedFor: string) =>
+    fetch(`${origin}/auth/session`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Forwarded-For": forwardedFor,
+      },
+      body: JSON.stringify({ token: "wrong-token" }),
+    });
+
+  // Lock out 198.51.100.1 (2 failures).
+  expect((await badLogin("198.51.100.1")).status).toBe(401);
+  expect((await badLogin("198.51.100.1")).status).toBe(429);
+  // Record one non-blocked failure for 198.51.100.2, then a third source 198.51.100.3.
+  expect((await badLogin("198.51.100.2")).status).toBe(401);
+  expect((await badLogin("198.51.100.3")).status).toBe(401);
+  // 198.51.100.1 stays blocked because non-blocked buckets are evicted first.
+  expect((await badLogin("198.51.100.1")).status).toBe(429);
+});

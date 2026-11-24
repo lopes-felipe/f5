@@ -2341,9 +2341,8 @@ export const createServer = Effect.fn(function* (
           return;
         }
         if (
-          (url.pathname === ORCHESTRATION_STARTUP_SNAPSHOT_PATH ||
-            url.pathname.startsWith("/api/storage/") ||
-            url.pathname.startsWith("/api/attachments/")) &&
+          isPrivatePath &&
+          url.pathname.startsWith("/api/") &&
           !serverAuth.isWebSocketOriginAllowed(req)
         ) {
           respond(
@@ -2824,7 +2823,10 @@ export const createServer = Effect.fn(function* (
               "X-Content-Type-Options": "nosniff",
               ...(contentType === "text/html"
                 ? {
-                    "Content-Security-Policy": "frame-ancestors 'none'",
+                    "Content-Security-Policy":
+                      "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; media-src 'self' data: blob: https:; connect-src 'self' ws: wss: http: https:; worker-src 'self' blob:; frame-src 'self' blob: data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+                    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+                    "Referrer-Policy": "no-referrer",
                     "X-Frame-Options": "DENY",
                   }
                 : {}),
