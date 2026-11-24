@@ -101,14 +101,43 @@ export function readAntigravityPreWriteFile(
   const target = root === undefined ? undefined : workspaceTarget(path, root);
   if (target === undefined) return ANTIGRAVITY_PRE_WRITE_UNKNOWN;
   try {
-    const stat = NodeFS.statSync(target);
-    if (!stat.isFile() || stat.size > PRE_EDIT_FILE_LIMIT) return ANTIGRAVITY_PRE_WRITE_UNKNOWN;
-    const text = strictUtf8.decode(NodeFS.readFileSync(target));
+    const bytes = readCheckedFile(target);
+    if (bytes === undefined) return ANTIGRAVITY_PRE_WRITE_UNKNOWN;
+    const text = strictUtf8.decode(bytes);
     return text.includes("\0") ? ANTIGRAVITY_PRE_WRITE_UNKNOWN : { state: "text", text };
   } catch (cause) {
     return (cause as NodeJS.ErrnoException | undefined)?.code === "ENOENT"
       ? { state: "missing" }
       : ANTIGRAVITY_PRE_WRITE_UNKNOWN;
+  }
+}
+
+/**
+ * Reads the canonical `target` through one descriptor, so the checks and the read see the same
+ * file: the open refuses a final link, and the path must still resolve to the opened inode, so
+ * a component swapped for a link after the containment check is refused too.
+ */
+function readCheckedFile(target: string): Buffer | undefined {
+  const { O_RDONLY, O_NOFOLLOW = 0 } = NodeFS.constants;
+  const fd = NodeFS.openSync(target, O_RDONLY | O_NOFOLLOW);
+  try {
+    const opened = NodeFS.fstatSync(fd);
+    if (!opened.isFile() || opened.size > PRE_EDIT_FILE_LIMIT) return undefined;
+    const current = NodeFS.statSync(target);
+    if (
+      NodeFS.realpathSync.native(target) !== target ||
+      current.dev !== opened.dev ||
+      current.ino !== opened.ino
+    )
+      return undefined;
+    // Bounded even if the file grows after the size check.
+    const buffer = Buffer.alloc(PRE_EDIT_FILE_LIMIT + 1);
+    let length = 0;
+    for (let read = -1; read !== 0 && length < buffer.length; length += read)
+      read = NodeFS.readSync(fd, buffer, length, buffer.length - length, length);
+    return length > PRE_EDIT_FILE_LIMIT ? undefined : buffer.subarray(0, length);
+  } finally {
+    NodeFS.closeSync(fd);
   }
 }
 

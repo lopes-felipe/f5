@@ -1731,10 +1731,11 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             stopped: false,
             backgroundTasks: new Map(),
             antigravityTasks: new AntigravityTasks(),
-            // Write targets are snapshotted only during a turn, so a replayed update is never
-            // diffed against the file as it is now.
+            // Write targets are snapshotted only while a prompt runs, so a replayed or
+            // between-turn update is never diffed against the file as it is now.
+            // `activeTurnId` outlives its turn; `promptsInFlight` does not.
             normalizeAntigravityTool: makeAntigravityToolNormalizer(undefined, brainRoots, (path) =>
-              ctx.activeTurnId
+              ctx.activeTurnId && ctx.promptsInFlight > 0
                 ? readAntigravityPreWriteFile(path, cwd)
                 : ANTIGRAVITY_PRE_WRITE_UNKNOWN,
             ),
