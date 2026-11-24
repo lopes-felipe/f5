@@ -342,6 +342,9 @@ describe("model catalog invariants", () => {
     for (const defaults of defaultMaps) {
       expect(slugs.has(defaults[provider])).toBe(true);
     }
+    // Cursor's models come from the account's live catalog; its static list is only Auto,
+    // and its aliases still normalize slugs stored by older versions.
+    if (provider === "cursor") return;
     for (const target of Object.values(MODEL_SLUG_ALIASES_BY_PROVIDER[provider])) {
       expect(slugs.has(target)).toBe(true);
     }

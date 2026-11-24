@@ -304,7 +304,7 @@ describe("getCustomModelOptionsByProvider", () => {
     ]);
   });
 
-  it("keeps the static Cursor fallback before live discovery reports built-ins", () => {
+  it("keeps only Auto as the static Cursor fallback before the server reports its catalog", () => {
     const options = getCustomModelOptionsByProvider({
       customCodexModels: [],
       customClaudeModels: [],
@@ -312,14 +312,7 @@ describe("getCustomModelOptionsByProvider", () => {
       providerModelPreferences: {},
     });
 
-    expect(options.cursor.map((option) => option.slug)).toEqual([
-      "auto",
-      "composer-2",
-      "composer-1.5",
-      "claude-opus-4-6",
-      "claude-opus-4-5",
-      "claude-sonnet-4-6",
-    ]);
+    expect(options.cursor.map((option) => option.slug)).toEqual(["auto"]);
   });
 
   it("uses live OpenCode-discovered models instead of the static fallback list", () => {
