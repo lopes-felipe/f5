@@ -69,17 +69,19 @@ import {
 import {
   ASK_USER_QUESTION_TOOL,
   callInteractionTool,
+  INTERACTION_WAIT_MS,
   type InteractionSession,
+  WAIT_FOR_USER_ANSWER_TOOL,
 } from "./interactionMcpTools.ts";
 
 const MCP_ENDPOINT_PATH = "/mcp/preview";
 const PREVIEW_MCP_SERVER_NAME = "__f5_preview";
 const PREVIEW_MCP_ENV_PREFIX = "F5_PREVIEW_MCP_TOKEN_";
 const MCP_PROTOCOL_VERSION = "2024-11-05";
-/** A question waits for the user, however long that takes. */
-const INTERACTION_TOOL_TIMEOUT_SEC = 24 * 60 * 60;
+/** One call waits `INTERACTION_WAIT_MS` at most, then returns pending; the card stays open. */
+const INTERACTION_TOOL_TIMEOUT_SEC = INTERACTION_WAIT_MS / 1000 + 60;
 const INTERACTION_GUIDANCE =
-  "When the user must choose between options, call ask_user_question instead of asking in prose, and wait for the answer.";
+  "When the user must choose between options, call ask_user_question instead of asking in prose, and wait for the answer. While a result is pending, call wait_for_user_answer with its questionId.";
 
 export type McpCatalog = "preview" | "computer" | "thread" | "integration" | "interaction";
 const CATALOG_PATHS: Record<McpCatalog, string> = {
@@ -309,7 +311,11 @@ function handleRpcRequest(input: {
           }),
         );
       if (input.catalog === "interaction")
-        return Promise.resolve(jsonRpcSuccess(request.id, { tools: [ASK_USER_QUESTION_TOOL] }));
+        return Promise.resolve(
+          jsonRpcSuccess(request.id, {
+            tools: [ASK_USER_QUESTION_TOOL, WAIT_FOR_USER_ANSWER_TOOL],
+          }),
+        );
       return Promise.resolve(
         jsonRpcSuccess(request.id, {
           tools:
@@ -453,9 +459,9 @@ export const makePreviewMcpHttpServer = Effect.gen(function* () {
           writeJson(response, 404, { error: "expired_mcp_session" });
           return;
         }
-      } else if (catalog === "integration") {
+      } else if (catalog === "integration" || catalog === "interaction") {
         // Each connection gets its own id space, so a late `notifications/cancelled` from a
-        // previous connection can never name a live call after Codex reconnects.
+        // previous connection can never name a live call after the client reconnects.
         if (requests.some((entry) => asObject(entry).method === "initialize")) {
           scope.rpcIncarnation = randomUUID();
           response.setHeader("Mcp-Session-Id", scope.rpcIncarnation);
@@ -463,7 +469,8 @@ export const makePreviewMcpHttpServer = Effect.gen(function* () {
       }
       const requestIncarnation = request.headers["mcp-session-id"];
       const incarnation =
-        catalog === "integration" && typeof requestIncarnation === "string"
+        (catalog === "integration" || catalog === "interaction") &&
+        typeof requestIncarnation === "string"
           ? requestIncarnation
           : (scope.rpcIncarnation ?? scope.automationSessionId);
       // A question can wait a long time; a client that hangs up stops waiting for it.

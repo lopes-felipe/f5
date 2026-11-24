@@ -48,6 +48,24 @@ describe("runMcpSessionStdio", () => {
     expect(lines).toEqual([{ jsonrpc: "2.0", id: 1, result: {} }]);
   });
 
+  it("sends back the MCP session id F5 assigned on initialize", async () => {
+    const sent: Array<string | undefined> = [];
+    const { input, done } = harness(async ({ body, sessionId }) => {
+      sent.push(sessionId);
+      const request = JSON.parse(body) as { id?: number; method?: string };
+      return {
+        status: 200,
+        body: JSON.stringify({ jsonrpc: "2.0", id: request.id, result: {} }),
+        ...(request.method === "initialize" ? { sessionId: "incarnation-1" } : {}),
+      };
+    });
+    input.write('{"jsonrpc":"2.0","id":1,"method":"initialize"}\n');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    input.end('{"jsonrpc":"2.0","id":2,"method":"tools/list"}\n');
+    await done;
+    expect(sent).toEqual([undefined, "incarnation-1"]);
+  });
+
   it("answers with a clear error when F5 is unreachable or not configured", async () => {
     const unreachable = harness(async () => {
       throw new Error("ECONNREFUSED");

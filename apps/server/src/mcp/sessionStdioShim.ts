@@ -26,6 +26,8 @@ const UNAVAILABLE_MESSAGE = "F5 is not reachable. The F5 session that started th
 export interface McpSessionPostResult {
   readonly status: number;
   readonly body: string;
+  /** The `Mcp-Session-Id` F5 assigned on `initialize`. */
+  readonly sessionId?: string;
 }
 
 export type McpSessionPost = (input: {
@@ -33,6 +35,8 @@ export type McpSessionPost = (input: {
   readonly token: string;
   readonly body: string;
   readonly signal: AbortSignal;
+  /** Sent back as `Mcp-Session-Id`, so this relay's request ids never meet another relay's. */
+  readonly sessionId?: string;
 }) => Promise<McpSessionPostResult>;
 
 export interface McpSessionStdioOptions {
@@ -43,7 +47,7 @@ export interface McpSessionStdioOptions {
 }
 
 /** node:http, not fetch: fetch gives up on a reply that takes more than five minutes. */
-const postWithNodeHttp: McpSessionPost = ({ url, token, body, signal }) =>
+const postWithNodeHttp: McpSessionPost = ({ url, token, body, signal, sessionId }) =>
   new Promise((resolve, reject) => {
     const request = http.request(
       url,
@@ -54,16 +58,19 @@ const postWithNodeHttp: McpSessionPost = ({ url, token, body, signal }) =>
           "content-type": "application/json",
           accept: "application/json",
           "content-length": Buffer.byteLength(body),
+          ...(sessionId ? { "mcp-session-id": sessionId } : {}),
         },
         signal,
       },
       (response) => {
         const chunks: Buffer[] = [];
         response.on("data", (chunk: Buffer) => chunks.push(chunk));
+        const assigned = response.headers["mcp-session-id"];
         response.on("end", () =>
           resolve({
             status: response.statusCode ?? 0,
             body: Buffer.concat(chunks).toString("utf8"),
+            ...(typeof assigned === "string" && assigned ? { sessionId: assigned } : {}),
           }),
         );
         response.on("error", reject);
@@ -80,6 +87,7 @@ export async function runMcpSessionStdio(options: McpSessionStdioOptions): Promi
   const post = options.post ?? postWithNodeHttp;
   const closed = new AbortController();
   const pending = new Set<Promise<void>>();
+  let sessionId: string | undefined;
 
   const write = (message: unknown) => {
     options.output.write(`${JSON.stringify(message)}\n`);
@@ -93,11 +101,18 @@ export async function runMcpSessionStdio(options: McpSessionStdioOptions): Promi
     if (!url || !token) return fail(UNAVAILABLE_MESSAGE);
     let response: McpSessionPostResult;
     try {
-      response = await post({ url, token, body: line, signal: closed.signal });
+      response = await post({
+        url,
+        token,
+        body: line,
+        signal: closed.signal,
+        ...(sessionId ? { sessionId } : {}),
+      });
     } catch {
       if (closed.signal.aborted) return;
       return fail(UNAVAILABLE_MESSAGE);
     }
+    if (response.sessionId) sessionId = response.sessionId;
     if (response.status === 202 || isNotification) return;
     if (response.status === 401) return fail(UNAVAILABLE_MESSAGE);
     let body: unknown;

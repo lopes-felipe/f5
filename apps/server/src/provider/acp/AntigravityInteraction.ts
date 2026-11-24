@@ -9,13 +9,10 @@
 import type { ProviderUserInputAnswers, UserInputQuestion } from "@t3tools/contracts";
 import type * as EffectAcpSchema from "effect-acp/schema";
 
-import {
-  ASK_USER_QUESTION_TOOL_NAME,
-  type InteractionQuestion,
-} from "../../mcp/interactionMcpTools.ts";
+import { INTERACTION_TOOL_NAMES, type InteractionQuestion } from "../../mcp/interactionMcpTools.ts";
 
 export const ANTIGRAVITY_INTERACTION_GUIDANCE =
-  "When you need the user to decide between options, call the ask_user_question tool from the F5 MCP server instead of asking in prose, and wait for the answer. In Plan mode, ask before finalizing the plan; then write the plan artifact as usual.";
+  "When you need the user to decide between options, call the ask_user_question tool from the F5 MCP server instead of asking in prose, and wait for the answer. If it returns pending, call wait_for_user_answer with the questionId until the answer arrives; never ask the same question again. In Plan mode, ask before finalizing the plan; then write the plan artifact as usual.";
 
 const record = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value)
@@ -39,18 +36,27 @@ export function antigravityInteractionSessionMeta(
 }
 
 /**
- * Antigravity names an MCP tool `mcp_<server>_<tool>` and titles its call
- * `Run mcp_<server>_<tool>`. Matched exactly, against the per-session random
- * server name, never by prefix.
+ * Which of F5's question tools a call runs. Antigravity names an MCP tool
+ * `mcp_<server>_<tool>` and titles its call `Run mcp_<server>_<tool>`.
+ * Matched exactly, against the per-session random server name, never by prefix.
  */
+export function antigravityInteractionTool(
+  toolCall: { readonly title?: string | null | undefined },
+  serverName: string | undefined,
+): (typeof INTERACTION_TOOL_NAMES)[number] | undefined {
+  if (!serverName) return undefined;
+  const call = record(toolCall);
+  return INTERACTION_TOOL_NAMES.find((tool) => {
+    const name = `mcp_${serverName}_${tool}`;
+    return call.name === name || toolCall.title === name || toolCall.title === `Run ${name}`;
+  });
+}
+
 export function isAntigravityInteractionToolCall(
   toolCall: { readonly title?: string | null | undefined },
   serverName: string | undefined,
 ): boolean {
-  if (!serverName) return false;
-  const name = `mcp_${serverName}_${ASK_USER_QUESTION_TOOL_NAME}`;
-  const call = record(toolCall);
-  return call.name === name || toolCall.title === name || toolCall.title === `Run ${name}`;
+  return antigravityInteractionTool(toolCall, serverName) !== undefined;
 }
 
 export function antigravityInteractionQuestions(
@@ -68,14 +74,19 @@ export function antigravityInteractionQuestions(
   }));
 }
 
-/** The user's answers keyed by question text, as the tool returns them. */
+/**
+ * The user's answers keyed by question text, as the tool returns them. A
+ * null-prototype object, so a question named `__proto__` keeps its answer.
+ */
 export function antigravityInteractionAnswers(
   questions: ReadonlyArray<InteractionQuestion>,
   answers: ProviderUserInputAnswers,
 ): Record<string, string | ReadonlyArray<string>> {
-  const result: Record<string, string | ReadonlyArray<string>> = {};
+  const result: Record<string, string | ReadonlyArray<string>> = Object.create(null);
   for (const question of questions) {
-    const value: unknown = answers[question.question];
+    const value: unknown = Object.hasOwn(answers, question.question)
+      ? answers[question.question]
+      : undefined;
     if (Array.isArray(value)) {
       const values = value.filter(
         (entry): entry is string => typeof entry === "string" && entry.trim().length > 0,

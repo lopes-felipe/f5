@@ -499,7 +499,8 @@ export const prepareAcpAutomationCatalogs = (input: {
             serverName: `f5_interaction_${randomBytes(4).toString("hex")}`,
             interaction: input.interaction,
           });
-          for (const credential of Object.values(interaction.env)) scrubber.register(credential);
+          // Scrubbed from diagnostics and from published events: the agent may echo its config.
+          addEventCredentials(Object.values(interaction.env));
           configs.push(interaction);
           if (!http) stdioConfigs.set(interaction, stdioLaunch!);
           interactionServerName = interaction.serverName;

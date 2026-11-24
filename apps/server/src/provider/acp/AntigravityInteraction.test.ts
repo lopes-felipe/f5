@@ -4,6 +4,7 @@ import {
   ANTIGRAVITY_INTERACTION_GUIDANCE,
   antigravityInteractionAnswers,
   antigravityInteractionSessionMeta,
+  antigravityInteractionTool,
   isAntigravityInteractionToolCall,
 } from "./AntigravityInteraction.ts";
 
@@ -53,6 +54,12 @@ describe("isAntigravityInteractionToolCall", () => {
     expect(
       isAntigravityInteractionToolCall({ title: `Run mcp_${server}_ask_user_question` }, undefined),
     ).toBe(false);
+    expect(
+      antigravityInteractionTool({ title: `Run mcp_${server}_wait_for_user_answer` }, server),
+    ).toBe("wait_for_user_answer");
+    expect(
+      antigravityInteractionTool({ title: `Run mcp_${server}_ask_user_question` }, server),
+    ).toBe("ask_user_question");
   });
 });
 
@@ -66,6 +73,15 @@ describe("antigravityInteractionAnswers", () => {
       }),
     ).toEqual({ "Which database?": "SQLite", "Which features?": ["Auth"] });
     expect(antigravityInteractionAnswers(questions, { "Which database?": "  " })).toEqual({});
+  });
+
+  it("keeps a question named __proto__", () => {
+    const reserved = [{ ...questions[0]!, question: "__proto__" }];
+    const answers = antigravityInteractionAnswers(reserved, JSON.parse('{"__proto__":"SQLite"}'));
+    expect(Object.keys(answers)).toEqual(["__proto__"]);
+    expect(JSON.stringify(answers)).toBe('{"__proto__":"SQLite"}');
+    // An inherited property is no answer.
+    expect(Object.keys(antigravityInteractionAnswers(reserved, {}))).toEqual([]);
   });
 });
 

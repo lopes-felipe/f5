@@ -406,7 +406,10 @@ describe("launch credential scrubbing", () => {
 });
 
 describe("interaction catalog", () => {
-  const interaction = { askUserQuestion: async () => ({ cancelled: true as const }) };
+  const interaction = {
+    openQuestion: async () => ({ cancelled: true as const }),
+    questionOutcome: () => undefined,
+  };
   const launch = { command: "/opt/f5/f5", args: ["entry.mjs", "mcp-session-stdio"], env: {} };
   const preview = () => {
     const createSessionConfig = vi.fn((input: { catalog?: string; serverName?: string }) => ({
@@ -462,6 +465,18 @@ describe("interaction catalog", () => {
         ],
       });
       expect(catalogs.scrubDiagnostic("token interaction-private-token")).not.toContain(
+        "interaction-private-token",
+      );
+      // An agent echoing its MCP configuration never publishes the token.
+      const echoed = {
+        type: "content.delta",
+        eventId: "evt-echo",
+        provider: "antigravity",
+        threadId: ThreadId.make("thread-interaction"),
+        createdAt: new Date(0).toISOString(),
+        payload: { streamKind: "assistant_text", delta: "F5_MCP_TOKEN=interaction-private-token" },
+      } as unknown as Parameters<typeof catalogs.sanitizeEvent>[0];
+      expect(JSON.stringify(catalogs.sanitizeEvent(echoed))).not.toContain(
         "interaction-private-token",
       );
       expect(catalogs.hasSensitiveConfiguration()).toBe(true);

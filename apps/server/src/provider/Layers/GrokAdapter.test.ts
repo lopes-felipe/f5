@@ -1555,23 +1555,62 @@ rootIt.layer(
     }).pipe(Effect.scoped),
   );
 
-  it.effect("shows the questions as a card and returns the answers", () =>
+  /** An Antigravity session whose prompt runs until the test opens its gate. */
+  const gatedInteraction = (threadName: string, env: Record<string, string> = {}) =>
     Effect.gen(function* () {
-      const { adapter, events, sessions } = yield* interactionAdapter();
-      const threadId = ThreadId.make("agy-interaction-answer");
-      yield* adapter.startSession({
+      const gateDir = yield* Effect.acquireRelease(
+        Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "agy-gate-"))),
+        (dir) => Effect.promise(() => rm(dir, { recursive: true, force: true })),
+      );
+      const gate = path.join(gateDir, "open");
+      const harness = yield* interactionAdapter({ T3_ACP_PROMPT_GATE_PATH: gate, ...env });
+      const threadId = ThreadId.make(threadName);
+      yield* harness.adapter.startSession({
         threadId,
         provider: "antigravity",
         cwd: process.cwd(),
         runtimeMode: "approval-required",
       });
-      const session = sessions[0]!;
-      const answer = session.askUserQuestion(QUESTIONS, new AbortController().signal);
+      const session = harness.sessions[0]!;
+      const turn = yield* harness.adapter
+        .sendTurn({ threadId, input: "Ask me", attachments: [] })
+        .pipe(Effect.exit, Effect.forkChild);
       yield* Effect.promise(() =>
-        vi.waitFor(() => assert.ok(events.some((event) => event.type === "user-input.requested"))),
+        vi.waitFor(async () =>
+          assert.ok(
+            (await Effect.runPromise(harness.requests())).some(
+              (request) => request.method === "session/prompt",
+            ),
+          ),
+        ),
       );
-      const request = events.find((event) => event.type === "user-input.requested");
-      assert.ok(request?.type === "user-input.requested");
+      const ask = () =>
+        Effect.gen(function* () {
+          const opened = yield* Effect.promise(() => session.openQuestion(QUESTIONS));
+          assert.ok("questionId" in opened);
+          const outcome = session.questionOutcome(opened.questionId);
+          assert.ok(outcome);
+          const request = yield* Effect.promise(() =>
+            vi.waitFor(() => {
+              const found = harness.events.find(
+                (event) =>
+                  event.type === "user-input.requested" && event.requestId === opened.questionId,
+              );
+              assert.ok(found?.type === "user-input.requested");
+              return found;
+            }),
+          );
+          return { questionId: opened.questionId, outcome, request };
+        });
+      const openGate = Effect.promise(() => writeFile(gate, ""));
+      return { ...harness, threadId, session, turn, ask, openGate };
+    });
+
+  it.effect("shows the questions as a card and returns the answers", () =>
+    Effect.gen(function* () {
+      const { adapter, events, threadId, turn, ask, openGate } =
+        yield* gatedInteraction("agy-interaction-answer");
+      const { questionId, outcome, request } = yield* ask();
       assert.deepEqual(request.payload.questions, [
         {
           id: "Which database?",
@@ -1584,61 +1623,73 @@ rootIt.layer(
           ],
         },
       ]);
-      yield* adapter.respondToUserInput(threadId, ApprovalRequestId.make(request.requestId!), {
+      assert.ok(request.turnId);
+      yield* adapter.respondToUserInput(threadId, ApprovalRequestId.make(questionId), {
         "Which database?": "SQLite",
       });
-      assert.deepEqual(yield* Effect.promise(() => answer), {
+      assert.deepEqual(yield* Effect.promise(() => outcome), {
         answers: { "Which database?": "SQLite" },
       });
       assert.equal(events.filter((event) => event.type === "user-input.resolved").length, 1);
 
       // Dismissing the card answers nothing.
-      const dismissed = session.askUserQuestion(QUESTIONS, new AbortController().signal);
-      yield* Effect.promise(() =>
-        vi.waitFor(() =>
-          assert.equal(events.filter((event) => event.type === "user-input.requested").length, 2),
-        ),
-      );
-      const second = events.filter((event) => event.type === "user-input.requested")[1]!;
-      yield* adapter.respondToUserInput(threadId, ApprovalRequestId.make(second.requestId!), {});
-      assert.deepEqual(yield* Effect.promise(() => dismissed), { cancelled: true });
+      const dismissed = yield* ask();
+      yield* adapter.respondToUserInput(threadId, ApprovalRequestId.make(dismissed.questionId), {});
+      assert.deepEqual(yield* Effect.promise(() => dismissed.outcome), { cancelled: true });
+      yield* openGate;
+      yield* Fiber.join(turn);
       yield* adapter.stopSession(threadId);
     }).pipe(Effect.scoped),
   );
 
-  it.effect("closes the card when Antigravity stops waiting", () =>
+  it.effect("closes the card before the turn that asked completes", () =>
     Effect.gen(function* () {
-      const { adapter, events, sessions } = yield* interactionAdapter();
-      const threadId = ThreadId.make("agy-interaction-abort");
-      yield* adapter.startSession({
-        threadId,
-        provider: "antigravity",
-        cwd: process.cwd(),
-        runtimeMode: "approval-required",
-      });
-      const controller = new AbortController();
-      const answer = sessions[0]!.askUserQuestion(QUESTIONS, controller.signal);
-      yield* Effect.promise(() =>
-        vi.waitFor(() => assert.ok(events.some((event) => event.type === "user-input.requested"))),
+      const { adapter, events, threadId, session, turn, ask, openGate } = yield* gatedInteraction(
+        "agy-interaction-turn-end",
       );
-      controller.abort();
-      assert.deepEqual(yield* Effect.promise(() => answer), { cancelled: true });
-      assert.equal(events.filter((event) => event.type === "user-input.resolved").length, 1);
+      const { questionId, outcome, request } = yield* ask();
+      yield* openGate;
+      const exit = yield* Fiber.join(turn);
+      assert.equal(exit._tag, "Success");
+      assert.deepEqual(yield* Effect.promise(() => outcome), { cancelled: true });
+      const resolvedAt = events.findIndex(
+        (event) => event.type === "user-input.resolved" && event.requestId === questionId,
+      );
+      const completedAt = events.findIndex((event) => event.type === "turn.completed");
+      assert.ok(resolvedAt >= 0 && resolvedAt < completedAt);
+      const warning = events.find((event) => event.type === "runtime.warning");
+      assert.ok(warning?.type === "runtime.warning");
+      assert.include(warning.payload.message, "finished its turn");
+      assert.equal(warning.turnId, request.turnId);
+      // Between turns, nobody waits for an answer: no card opens.
+      assert.deepEqual(yield* Effect.promise(() => session.openQuestion(QUESTIONS)), {
+        cancelled: true,
+      });
+      yield* adapter.stopSession(threadId);
+      assert.deepEqual(yield* Effect.promise(() => session.openQuestion(QUESTIONS)), {
+        cancelled: true,
+      });
+      assert.equal(events.filter((event) => event.type === "user-input.requested").length, 1);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("closes the card when the prompt that asked fails", () =>
+    Effect.gen(function* () {
+      const { adapter, events, threadId, turn, ask, openGate } = yield* gatedInteraction(
+        "agy-interaction-prompt-failure",
+        { T3_ACP_FAIL_PROMPT_AFTER_GATE: "1" },
+      );
+      const { questionId, outcome } = yield* ask();
+      yield* openGate;
+      const exit = yield* Fiber.join(turn);
+      assert.equal(exit._tag, "Failure");
+      assert.deepEqual(yield* Effect.promise(() => outcome), { cancelled: true });
       assert.ok(
         events.some(
-          (event) =>
-            event.type === "runtime.warning" &&
-            event.payload.message.includes("stopped waiting for an answer"),
+          (event) => event.type === "user-input.resolved" && event.requestId === questionId,
         ),
       );
       yield* adapter.stopSession(threadId);
-      // After the session stops, a new question is cancelled without a card.
-      assert.deepEqual(
-        yield* Effect.promise(() =>
-          sessions[0]!.askUserQuestion(QUESTIONS, new AbortController().signal),
-        ),
-        { cancelled: true },
-      );
     }).pipe(Effect.scoped),
   );
 });

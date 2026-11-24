@@ -721,6 +721,8 @@ const program = Effect.gen(function* () {
 
       const promptGate = process.env.T3_ACP_PROMPT_GATE_PATH;
       while (promptGate && !existsSync(promptGate)) yield* Effect.sleep("5 millis");
+      if (process.env.T3_ACP_FAIL_PROMPT_AFTER_GATE === "1")
+        return yield* AcpError.AcpRequestError.internalError("Mock prompt failure");
       if (promptDelayMs > 0) {
         yield* Effect.sleep(`${promptDelayMs} millis`);
       }

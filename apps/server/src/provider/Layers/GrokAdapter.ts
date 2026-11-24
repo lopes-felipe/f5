@@ -27,6 +27,7 @@ import {
   antigravityInteractionAnswers,
   antigravityInteractionQuestions,
   antigravityInteractionSessionMeta,
+  antigravityInteractionTool,
   isAntigravityInteractionToolCall,
 } from "../acp/AntigravityInteraction.ts";
 import type { InteractionOutcome, InteractionSession } from "../../mcp/interactionMcpTools.ts";
@@ -243,8 +244,12 @@ type PendingUserInputResolution =
 interface PendingUserInput {
   readonly validate?: (answers: ProviderUserInputAnswers) => boolean;
   readonly resolution: Deferred.Deferred<PendingUserInputResolution>;
-  /** Asked through F5's MCP question tool, which nothing ends but F5 or the user. */
-  readonly viaInteractionTool?: true;
+  /**
+   * Asked through F5's MCP question tool. Nothing ends it but the user, the
+   * end of the turn that asked, or the session; `done` completes once its card
+   * has closed (`user-input.resolved` published).
+   */
+  readonly interaction?: { readonly turnId: TurnId; readonly done: Deferred.Deferred<void> };
 }
 
 interface GrokSessionContext {
@@ -318,6 +323,24 @@ function settlePendingUserInputsAsCancelled(
   return Effect.forEach(
     Array.from(pendingUserInputs.values()),
     (pending) => Deferred.succeed(pending.resolution, { _tag: "cancelled" }).pipe(Effect.ignore),
+    { discard: true },
+  );
+}
+
+/** Cancels the questions one turn asked through F5's tool, once their cards have closed. */
+function settleInteractionQuestions(
+  pendingUserInputs: ReadonlyMap<ApprovalRequestId, PendingUserInput>,
+  turnId: TurnId,
+): Effect.Effect<void> {
+  return Effect.forEach(
+    Array.from(pendingUserInputs.values()).flatMap((pending) =>
+      pending.interaction?.turnId === turnId ? [{ pending, done: pending.interaction.done }] : [],
+    ),
+    ({ pending, done }) =>
+      Deferred.succeed(pending.resolution, { _tag: "cancelled" }).pipe(
+        Effect.ignore,
+        Effect.andThen(Deferred.await(done)),
+      ),
     { discard: true },
   );
 }
@@ -865,26 +888,33 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               ? antigravityBrainRoots(options.antigravityProfileDirectory)
               : [];
           // Antigravity has no question channel F5 can show; it asks through F5's MCP tool.
-          const askThroughCard = (
-            questions: Parameters<InteractionSession["askUserQuestion"]>[0],
-            signal: AbortSignal,
-          ): Effect.Effect<InteractionOutcome> =>
+          // A question's outcome outlives each tool call that waits for it: Antigravity cancels
+          // a call after three minutes, then waits again by id while the card stays open.
+          const interactionOutcomes = new Map<string, Deferred.Deferred<InteractionOutcome>>();
+          const openInteractionQuestion = (
+            questions: Parameters<InteractionSession["openQuestion"]>[0],
+          ): Effect.Effect<{ readonly questionId: string } | { readonly cancelled: true }> =>
             Effect.gen(function* () {
               const live = sessions.get(input.threadId);
-              if (!live || live.stopped || live.pendingUserInputs !== pendingUserInputs)
+              const turnId = live?.activeTurnId;
+              // A question belongs to a running turn; between turns nobody waits for the answer.
+              if (
+                !live ||
+                live.stopped ||
+                live.pendingUserInputs !== pendingUserInputs ||
+                live.promptsInFlight === 0 ||
+                !turnId
+              )
                 return { cancelled: true } as const;
               const requestId = ApprovalRequestId.make(yield* Random.nextUUIDv4);
               const runtimeRequestId = RuntimeRequestId.make(requestId);
               const resolution = yield* Deferred.make<PendingUserInputResolution>();
-              pendingUserInputs.set(requestId, { resolution, viaInteractionTool: true });
-              const abandon = () => {
-                Effect.runSync(
-                  Deferred.succeed(resolution, { _tag: "cancelled" }).pipe(Effect.ignore),
-                );
-              };
-              signal.addEventListener("abort", abandon, { once: true });
-              if (signal.aborted) abandon();
-              const turnId = live.activeTurnId;
+              const done = yield* Deferred.make<void>();
+              const outcome = yield* Deferred.make<InteractionOutcome>();
+              pendingUserInputs.set(requestId, { resolution, interaction: { turnId, done } });
+              interactionOutcomes.set(requestId, outcome);
+              if (interactionOutcomes.size > 64)
+                interactionOutcomes.delete(interactionOutcomes.keys().next().value!);
               const raw = {
                 source: "acp.antigravity.mcp" as const,
                 method: "tools/call",
@@ -900,50 +930,63 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 payload: { questions: antigravityInteractionQuestions(questions) },
                 raw,
               });
-              const resolved = yield* Deferred.await(resolution).pipe(
-                Effect.ensuring(
-                  Effect.sync(() => {
-                    signal.removeEventListener("abort", abandon);
-                    pendingUserInputs.delete(requestId);
-                  }),
-                ),
-              );
-              yield* offerRuntimeEvent({
-                type: "user-input.resolved",
-                ...(yield* makeEventStamp(live)),
-                provider: PROVIDER,
-                threadId: input.threadId,
-                turnId,
-                requestId: runtimeRequestId,
-                payload: { answers: resolved._tag === "answered" ? resolved.answers : {} },
-                raw,
-              });
-              if (resolved._tag === "answered") {
-                const answers = antigravityInteractionAnswers(questions, resolved.answers);
-                // Dismissing the card answers nothing.
-                return Object.keys(answers).length > 0
-                  ? { answers }
-                  : ({ cancelled: true } as const);
-              }
-              // Antigravity gave up on the question, or its turn ended, while the session lives.
-              if (!live.stopped)
+              yield* Effect.gen(function* () {
+                const resolved = yield* Deferred.await(resolution);
+                pendingUserInputs.delete(requestId);
                 yield* offerRuntimeEvent({
-                  type: "runtime.warning",
+                  type: "user-input.resolved",
                   ...(yield* makeEventStamp(live)),
                   provider: PROVIDER,
                   threadId: input.threadId,
                   turnId,
-                  payload: {
-                    message: `${providerLabel} stopped waiting for an answer. Reply in the composer instead.`,
-                  },
+                  requestId: runtimeRequestId,
+                  payload: { answers: resolved._tag === "answered" ? resolved.answers : {} },
+                  raw,
                 });
-              return { cancelled: true } as const;
+                if (resolved._tag === "answered") {
+                  const answers = antigravityInteractionAnswers(questions, resolved.answers);
+                  // Dismissing the card answers nothing.
+                  const settled: InteractionOutcome =
+                    Object.keys(answers).length > 0 ? { answers } : { cancelled: true };
+                  yield* Deferred.succeed(outcome, settled);
+                  return;
+                }
+                // The turn ended before the user answered, while the session lives.
+                if (!live.stopped)
+                  yield* offerRuntimeEvent({
+                    type: "runtime.warning",
+                    ...(yield* makeEventStamp(live)),
+                    provider: PROVIDER,
+                    threadId: input.threadId,
+                    turnId,
+                    payload: {
+                      message: `${providerLabel} finished its turn before the question was answered. Reply in the composer instead.`,
+                    },
+                  });
+                yield* Deferred.succeed(outcome, { cancelled: true });
+              }).pipe(
+                Effect.ensuring(
+                  Effect.suspend(() => {
+                    pendingUserInputs.delete(requestId);
+                    return Deferred.succeed(outcome, { cancelled: true }).pipe(
+                      Effect.andThen(Deferred.succeed(done, undefined)),
+                      Effect.ignore,
+                    );
+                  }),
+                ),
+                Effect.forkIn(sessionScope),
+              );
+              return { questionId: requestId };
             });
           const interaction: InteractionSession | undefined =
             PROVIDER === "antigravity"
               ? {
-                  askUserQuestion: (questions, signal) =>
-                    Effect.runPromise(askThroughCard(questions, signal)),
+                  openQuestion: (questions) =>
+                    Effect.runPromise(openInteractionQuestion(questions)),
+                  questionOutcome: (questionId) => {
+                    const outcome = interactionOutcomes.get(questionId);
+                    return outcome ? Effect.runPromise(Deferred.await(outcome)) : undefined;
+                  },
                 }
               : undefined;
           const catalogs = yield* prepareAcpAutomationCatalogs({
@@ -1724,20 +1767,28 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                           rawPayload: event.rawPayload,
                         }),
                       );
+                    const interactionTool =
+                      PROVIDER === "antigravity"
+                        ? antigravityInteractionTool(
+                            event.toolCall,
+                            catalogs.interactionServerName(),
+                          )
+                        : undefined;
                     yield* offerRuntimeEvent(
                       makeAcpToolCallEvent({
                         stamp: yield* makeEventStamp(ctx),
                         provider: PROVIDER,
                         threadId: ctx.threadId,
                         turnId: ctx.activeTurnId,
-                        toolCall:
-                          PROVIDER === "antigravity" &&
-                          isAntigravityInteractionToolCall(
-                            event.toolCall,
-                            catalogs.interactionServerName(),
-                          )
-                            ? { ...toolCall, title: "Asked a question" }
-                            : toolCall,
+                        toolCall: interactionTool
+                          ? {
+                              ...toolCall,
+                              title:
+                                interactionTool === "wait_for_user_answer"
+                                  ? "Waited for an answer"
+                                  : "Asked a question",
+                            }
+                          : toolCall,
                         rawPayload: event.rawPayload,
                       }),
                     );
@@ -2355,12 +2406,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   );
                 }
                 yield* settleElicitationsForTurn(input.threadId, prepared.turnId);
-                // A question asked through the MCP tool cannot outlive the turn that asked it.
-                yield* settlePendingUserInputsAsCancelled(
-                  new Map(
-                    [...ctx.pendingUserInputs].filter(([, pending]) => pending.viaInteractionTool),
-                  ),
-                );
+                // A question asked through the MCP tool cannot outlive the turn that asked it;
+                // its card closes before the turn completes.
+                yield* settleInteractionQuestions(ctx.pendingUserInputs, prepared.turnId);
                 const turnState = nativeFailure
                   ? "failed"
                   : result.stopReason === "cancelled"
@@ -2372,7 +2420,12 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   turnState === "completed" &&
                   ctx.antigravityPlanRequested &&
                   planArtifact
-                    ? yield* Effect.promise(() => readAntigravityPlanArtifact(planArtifact))
+                    ? yield* Effect.promise(() =>
+                        readAntigravityPlanArtifact(
+                          planArtifact,
+                          ctx.antigravityPlanArtifacts.brainRoots,
+                        ),
+                      )
                     : undefined;
                 if (planArtifact && planMarkdown?.trim())
                   yield* offerRuntimeEvent({
@@ -2438,11 +2491,14 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               : Effect.failCause(cause),
           ),
           Effect.ensuring(
-            Effect.sync(() => {
+            Effect.suspend(() => {
               const liveCtx = sessions.get(input.threadId);
-              if (liveCtx === prepared.context) {
-                liveCtx.promptsInFlight = Math.max(0, liveCtx.promptsInFlight - 1);
-              }
+              if (liveCtx !== prepared.context) return Effect.void;
+              liveCtx.promptsInFlight = Math.max(0, liveCtx.promptsInFlight - 1);
+              // A failed prompt ends its turn too; the success path already closed the cards.
+              return liveCtx.promptsInFlight === 0
+                ? settleInteractionQuestions(liveCtx.pendingUserInputs, prepared.turnId)
+                : Effect.void;
             }),
           ),
         );

@@ -1,3 +1,5 @@
+import * as NodePath from "node:path";
+
 import { describe, expect, it } from "vitest";
 import { makeAntigravityToolNormalizer } from "./AntigravityToolCalls.ts";
 import { acpFileChanges } from "./AcpFileChanges.ts";
@@ -63,7 +65,7 @@ describe("Antigravity native tools", () => {
   });
 
   it("shows writes into the brain directory as artifacts, not file changes", () => {
-    const brain = "/profile/antigravity-acp/brain";
+    const brain = NodePath.resolve("/profile/antigravity-acp/brain");
     const normalize = makeAntigravityToolNormalizer(undefined, [brain]);
     const artifact = (path: string, requestFeedback: boolean) =>
       normalize({
@@ -81,17 +83,34 @@ describe("Antigravity native tools", () => {
           content: [{ type: "diff", path, oldText: null, newText: "# Plan" }],
         },
       });
-    const plan = artifact(`${brain}/conv-1/implementation_plan.md`, true);
+    const planPath = NodePath.join(brain, "conv-1", "implementation_plan.md");
+    const plan = artifact(planPath, true);
     expect(plan.kind).toBe("other");
     expect(plan.title).toBe("Updated plan artifact implementation_plan.md");
     expect(plan.data).toEqual({
-      rawInput: { Path: `${brain}/conv-1/implementation_plan.md`, summary: "The plan" },
+      rawInput: { Path: planPath, summary: "The plan" },
     });
     expect(acpFileChanges(plan.data.content)).toEqual([]);
-    expect(artifact(`${brain}/conv-1/task.md`, false).title).toBe("Updated artifact task.md");
+    expect(artifact(NodePath.join(brain, "conv-1", "task.md"), false).title).toBe(
+      "Updated artifact task.md",
+    );
     // Outside the brain directory an edit stays an edit.
     const workspace = artifact("/workspace/plan.md", true);
     expect(workspace.kind).toBe("edit");
     expect(workspace.title).toBe("File plan.md");
+
+    // Reading a brain file stays a read, with its output.
+    const read = normalize({
+      toolCallId: "read-1",
+      title: "Running view_file",
+      kind: "other",
+      status: "completed",
+      data: {
+        rawInput: { Path: NodePath.join(brain, "conv-1", "task.md") },
+        rawOutput: { output: "- [ ] step" },
+      },
+    });
+    expect(read.kind).toBe("read");
+    expect(read.data.rawOutput).toEqual({ output: "- [ ] step" });
   });
 });
