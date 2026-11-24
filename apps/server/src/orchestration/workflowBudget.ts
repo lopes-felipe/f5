@@ -1,3 +1,5 @@
+import type { OrchestrationEvent } from "@t3tools/contracts";
+
 import { OrchestrationCommandInvariantError } from "./Errors.ts";
 
 export interface CostedWorkflow {
@@ -8,6 +10,18 @@ export interface CostedWorkflow {
 
 function addUsd(left: number, right: number): number {
   return Number((left + right).toFixed(6));
+}
+
+export function workflowSessionTurnCost(
+  event: Extract<OrchestrationEvent, { type: "thread.session-set" }>,
+) {
+  // Capability snapshots can carry the last turn's cost even when no new turn ended.
+  if (
+    event.commandId?.endsWith(":thread-session-capabilities-set") ||
+    event.commandId?.endsWith(":thread-session-capabilities-turn")
+  )
+    return undefined;
+  return event.payload.session.turnCostUsd;
 }
 
 export function applyWorkflowTurnCost<T extends CostedWorkflow>(

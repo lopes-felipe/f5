@@ -1,8 +1,10 @@
 import type {
   WorkflowBenchmarkFinding,
   WorkflowBenchmarkInput,
+  WorkflowBenchmarkMetricScope,
   WorkflowBenchmarkPhase,
   WorkflowBenchmarkSummary,
+  WorkflowBenchmarkTurn,
   WorkflowBenchmarkUsage,
   WorkflowFindingOrigin,
   WorkflowRunKind,
@@ -12,7 +14,15 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useDebouncedValue } from "@tanstack/react-pacer";
 import { Link } from "@tanstack/react-router";
 import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
-import { Fragment, useEffect, useRef, useState, type RefObject } from "react";
+import {
+  Fragment,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  type Dispatch,
+  type RefObject,
+  type SetStateAction,
+} from "react";
 import { formatUsd } from "../../lib/formatUsd";
 import { workflowBenchmarkQueryKey } from "../../lib/workflowQueries";
 import { threadCommandExecutionQueryOptions } from "../../lib/orchestrationReactQuery";
@@ -21,10 +31,17 @@ import { formatElapsed } from "../../session-logic";
 import { formatCompactTokens } from "../chat/composer/contextMeter.logic";
 import { Button } from "../ui/button";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import type {
+  BenchmarkFindingsView,
+  BenchmarkReviewTurn,
+  BenchmarkView,
+} from "./workflowBenchmarkViewState";
 
 type Run = Pick<WorkflowBenchmarkInput, "runKind" | "workflowId">;
 type FindingSelect = Extract<WorkflowBenchmarkInput["select"], { kind: "findings" }>;
 type Phase = WorkflowBenchmarkSummary["phases"][number];
+type SetBenchmarkView = Dispatch<SetStateAction<BenchmarkView>>;
 const PAGE_SIZE = 50;
 
 function queryOptions(run: Run, select: WorkflowBenchmarkInput["select"]) {
@@ -57,6 +74,64 @@ function formatUsage(usage: WorkflowBenchmarkUsage, compact = false) {
     (usage.costUsd !== null && usage.missingCost > 0) ||
     usage.pending > 0;
   return `${tokens} (${cost})${partial ? (compact ? " · partial" : " · known portion") : ""}`;
+}
+
+function formatCreditEstimate(credits: number) {
+  return credits > 0 && credits < 0.01 ? "<0.01" : `≈${credits.toFixed(2)}`;
+}
+
+function UsageColumnHeader({
+  label,
+  summary,
+  modelId,
+}: {
+  label: string;
+  summary: WorkflowBenchmarkSummary;
+  modelId?: string;
+}) {
+  const usage =
+    modelId === undefined
+      ? summary.total
+      : summary.modelTotals.find((cell) => cell.model === modelId)?.usage;
+  if (!usage) return label;
+
+  const credits = usage.estimatedCodexCredits;
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        type="button"
+        className="cursor-help rounded-sm focus-visible:outline-2 focus-visible:outline-ring"
+      >
+        {label}
+      </TooltipTrigger>
+      <TooltipPopup side="bottom">
+        <div className="space-y-1 py-1 text-start tabular-nums">
+          <p>{formatUsage(usage, true)}</p>
+          {credits !== undefined && (
+            <>
+              <p>{formatCreditEstimate(credits)} Codex Standard credits</p>
+              <dl className="grid grid-cols-[1fr_auto] gap-x-3 text-muted-foreground">
+                {summary.phases.map((phase) => {
+                  const phaseCredits = (
+                    modelId === undefined
+                      ? phase.total
+                      : phase.cells.find((cell) => cell.model === modelId)?.usage
+                  )?.estimatedCodexCredits;
+                  if (phaseCredits === undefined) return null;
+                  return (
+                    <Fragment key={phase.id}>
+                      <dt>{phase.label}</dt>
+                      <dd className="text-end">{formatCreditEstimate(phaseCredits)}</dd>
+                    </Fragment>
+                  );
+                })}
+              </dl>
+            </>
+          )}
+        </div>
+      </TooltipPopup>
+    </Tooltip>
+  );
 }
 
 function Usage({ usage }: { readonly usage?: WorkflowBenchmarkUsage | undefined }) {
@@ -96,80 +171,225 @@ function Pages(props: { offset: number; count: number; onChange: (offset: number
   );
 }
 
-function TurnDetails({ run, phase }: { run: Run; phase: WorkflowBenchmarkPhase }) {
-  const [offset, setOffset] = useState(0);
-  const query = useQuery(queryOptions(run, { kind: "turns", phase, offset }));
+function metricScopeLabel(scope: WorkflowBenchmarkMetricScope) {
+  switch (scope) {
+    case "main-agent":
+      return "Main agent";
+    case "provider-total":
+      return "Provider total (may include subagents)";
+    case "unknown":
+      return "Scope unreported";
+  }
+}
+
+function Subagents({
+  agents,
+  open,
+  onOpenChange,
+}: {
+  agents: NonNullable<WorkflowBenchmarkTurn["subagents"]>;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  return (
+    <details
+      className="mx-auto mt-1 max-w-80"
+      open={open}
+      onToggle={(event) => {
+        if (event.currentTarget.open !== open) onOpenChange(event.currentTarget.open);
+      }}
+    >
+      <summary className="cursor-pointer text-muted-foreground">
+        {agents.length} {agents.length === 1 ? "subagent" : "subagents"}
+      </summary>
+      <ul className="mt-1 space-y-2 border-s border-border ps-2">
+        {agents.map((agent) => (
+          <li key={agent.id} className="whitespace-normal">
+            <div className="break-words font-medium">{agent.label}</div>
+            <div className="text-muted-foreground">
+              {agent.model?.label ?? "Model unreported"} · {agent.status}
+            </div>
+            <div className="text-muted-foreground">
+              {agent.tokens === null
+                ? "Tokens unreported"
+                : `${formatCompactTokens(agent.tokens)} tokens`}
+              {" · "}
+              {agent.costUsd === null ? "Cost unreported" : formatUsd(agent.costUsd)}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
+function TurnDetails({
+  run,
+  phase,
+  view,
+  setView,
+  onToggleFindings,
+}: {
+  run: Run;
+  phase: Phase;
+  view: BenchmarkView;
+  setView: SetBenchmarkView;
+  onToggleFindings: (turn: BenchmarkReviewTurn) => void;
+}) {
+  const offset = view.turnOffsets[phase.id] ?? 0;
+  const selectedTurn = view.findings?.phase === phase.id ? view.findings.turn : undefined;
+  const query = useQuery(queryOptions(run, { kind: "turns", phase: phase.id, offset }));
   const data = query.data?.kind === "turns" ? query.data : null;
-  if (!data)
-    return (
-      <p className="px-3 py-2" role="status">
-        {query.isError ? "Turn details unavailable." : "Loading turns…"}
-      </p>
-    );
-  if (!data.count) return <p className="px-3 py-2">No attributed turns.</p>;
   return (
     <>
-      <table className="w-full min-w-max text-left text-xs">
-        <thead>
+      <table className="w-full min-w-[44rem] text-center text-xs">
+        <caption className="sr-only">{phase.label} turns</caption>
+        <thead className="bg-muted">
           <tr className="text-muted-foreground">
             {["Thread", "Model", "Role", "Attempt", "Duration", "Status", "Usage"].map((label) => (
-              <th scope="col" className="px-3 py-2" key={label}>
+              <th scope="col" className="whitespace-nowrap px-3 py-2" key={label}>
                 {label}
               </th>
             ))}
           </tr>
         </thead>
         <tbody>
-          {data.items.map((turn) => (
-            <tr className="border-t border-border" key={turn.id}>
-              <td className="px-3 py-2">
-                {turn.threadId ? (
-                  <Link
-                    className="underline underline-offset-2"
-                    to="/$threadId"
-                    params={{ threadId: turn.threadId }}
-                  >
-                    {turn.threadTitle ?? turn.threadId}
-                  </Link>
-                ) : (
-                  "Awaiting thread"
-                )}
-              </td>
-              <td className="px-3 py-2">
-                {turn.model.label}
-                {turn.modelSource === "configured" && (
-                  <span className="block text-muted-foreground">Configured model</span>
-                )}
-              </td>
-              <td className="px-3 py-2">
-                {turn.role}
-                {turn.target && (
-                  <span className="block text-muted-foreground">{turn.target.label}</span>
-                )}
-              </td>
-              <td className="px-3 py-2">{turn.attempt}</td>
-              <td className="px-3 py-2">
-                {turn.durationMs === null
-                  ? "Unavailable"
-                  : (formatElapsed(
-                      new Date(0).toISOString(),
-                      new Date(turn.durationMs).toISOString(),
-                    ) ?? "<1s")}
-              </td>
-              <td className="px-3 py-2 capitalize">{turn.status}</td>
-              <td className="px-3 py-2">
-                <Usage usage={turn.usage} />
-                {turn.aggregateRerouteUsage && (
-                  <span className="block text-muted-foreground">
-                    Turn totals cover a model reroute
-                  </span>
-                )}
+          {!data?.items.length && (
+            <tr className="border-t border-border">
+              <td colSpan={7} className="px-3 py-2">
+                <span role="status">
+                  {data
+                    ? "No attributed turns."
+                    : query.isError
+                      ? "Turn details unavailable."
+                      : "Loading turns…"}
+                </span>
               </td>
             </tr>
-          ))}
+          )}
+          {data?.items.map((turn) => {
+            const selected =
+              selectedTurn?.turnId === turn.turnId && selectedTurn?.threadId === turn.threadId;
+            return (
+              <tr
+                data-selected={selected}
+                className="border-t border-border hover:bg-muted data-[selected=true]:bg-ring/12"
+                key={turn.id}
+              >
+                <td className="px-3 py-2">
+                  {turn.threadId ? (
+                    <Link
+                      data-benchmark-thread-link
+                      className="underline underline-offset-2 [overflow-wrap:anywhere]"
+                      to="/$threadId"
+                      params={{ threadId: turn.threadId }}
+                    >
+                      {turn.threadTitle ?? turn.threadId}
+                    </Link>
+                  ) : (
+                    "Awaiting thread"
+                  )}
+                  {!!turn.subagents?.length && (
+                    <Subagents
+                      agents={turn.subagents}
+                      open={view.openSubagents.includes(turn.id)}
+                      onOpenChange={(open) =>
+                        setView((previous) => ({
+                          ...previous,
+                          openSubagents: open
+                            ? [...previous.openSubagents, turn.id]
+                            : previous.openSubagents.filter((id) => id !== turn.id),
+                        }))
+                      }
+                    />
+                  )}
+                </td>
+                <td className="px-3 py-2">
+                  {turn.model.label}
+                  {turn.modelSource === "configured" && (
+                    <span className="block text-muted-foreground">Configured model</span>
+                  )}
+                </td>
+                <td className="px-3 py-2">
+                  {turn.role}
+                  {turn.target && (
+                    <span className="block text-muted-foreground">{turn.target.label}</span>
+                  )}
+                  {(() => {
+                    const review = phase.findingTurns?.find(
+                      ({ threadId, turnId }) =>
+                        threadId === turn.threadId && turnId === turn.turnId,
+                    );
+                    if (!review || !turn.reviewer) return null;
+                    if (review.count === 0) {
+                      return <span className="mt-1 block text-muted-foreground">0 findings</span>;
+                    }
+                    const scope = {
+                      threadId: review.threadId,
+                      turnId: review.turnId,
+                      reviewer: turn.reviewer.id,
+                      label: turn.reviewer.label,
+                      attempt: turn.attempt,
+                    };
+                    const label = `${review.count} ${review.count === 1 ? "finding" : "findings"}`;
+                    return (
+                      <button
+                        type="button"
+                        className="mx-auto mt-1 block cursor-pointer rounded px-1.5 underline underline-offset-2"
+                        aria-label={`${label} from ${scope.label}, attempt ${scope.attempt}`}
+                        aria-pressed={selected}
+                        onClick={() => onToggleFindings(scope)}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })()}
+                </td>
+                <td className="px-3 py-2">{turn.attempt}</td>
+                <td className="px-3 py-2">
+                  {turn.durationMs === null
+                    ? "Unavailable"
+                    : (formatElapsed(
+                        new Date(0).toISOString(),
+                        new Date(turn.durationMs).toISOString(),
+                      ) ?? "<1s")}
+                </td>
+                <td className="px-3 py-2 capitalize">{turn.status}</td>
+                <td className="px-3 py-2">
+                  <Usage usage={turn.usage} />
+                  {turn.tokenScope && (
+                    <span className="block text-muted-foreground">
+                      Tokens: {metricScopeLabel(turn.tokenScope)}
+                    </span>
+                  )}
+                  {turn.costScope && (
+                    <span className="block text-muted-foreground">
+                      Cost: {metricScopeLabel(turn.costScope)}
+                    </span>
+                  )}
+                  {turn.aggregateRerouteUsage && (
+                    <span className="block text-muted-foreground">
+                      Turn totals cover a model reroute
+                    </span>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
-      <Pages offset={offset} count={data.count} onChange={setOffset} />
+      {data && (
+        <Pages
+          offset={offset}
+          count={data.count}
+          onChange={(offset) =>
+            setView((previous) => ({
+              ...previous,
+              turnOffsets: { ...previous.turnOffsets, [phase.id]: offset },
+            }))
+          }
+        />
+      )}
     </>
   );
 }
@@ -185,6 +405,7 @@ function SourceLink({
 }) {
   return (
     <Link
+      data-benchmark-thread-link
       to="/$threadId"
       params={{ threadId: origin.threadId }}
       search={{
@@ -248,39 +469,40 @@ function Findings({
   run,
   phase,
   models,
+  view,
+  onChange,
+  heading,
 }: {
   run: Run;
   phase: Phase;
   models: WorkflowBenchmarkSummary["models"];
+  view: BenchmarkFindingsView;
+  onChange: (view: BenchmarkFindingsView) => void;
+  heading: RefObject<HTMLHeadingElement | null>;
 }) {
-  const [filter, setFilter] = useState<Omit<FindingSelect, "kind" | "phase">>({});
+  const { filter, turn, openFinding } = view;
+  const setFilter = (filter: BenchmarkFindingsView["filter"]) => onChange({ ...view, filter });
   const [search] = useDebouncedValue(filter.search?.trim() ?? "", { wait: 250 });
-  const heading = useRef<HTMLHeadingElement>(null);
-  const [openFinding, setOpenFinding] = useState<string | null>(null);
   const query = useQuery(
     queryOptions(run, {
       ...filter,
       search,
       kind: "findings",
       phase: phase.id,
+      ...(turn ? { reviewTurn: { threadId: turn.threadId, turnId: turn.turnId } } : {}),
     }),
   );
   const data = query.data?.kind === "findings" ? query.data : null;
   const selected = data?.items.find(
     (finding) => finding.id === openFinding || finding.aliases.includes(openFinding ?? ""),
   );
-  const modelLabel = (id: string) => models.find((model) => model.id === id)?.label ?? id;
-  useEffect(() => {
-    heading.current?.scrollIntoView({ block: "nearest" });
-    heading.current?.focus({ preventScroll: true });
-  }, []);
   return (
     <section
-      className="min-w-0 border-t border-border px-4 py-3"
+      className="min-w-0 rounded-lg border border-border bg-card px-4 py-3"
       aria-label={`${phase.label} findings`}
     >
-      <h3 ref={heading} tabIndex={-1} className="mb-2 text-sm font-semibold">
-        {phase.label} findings
+      <h3 ref={heading} tabIndex={-1} className="mb-2 text-sm font-semibold outline-none">
+        {turn ? `${turn.label} findings · attempt ${turn.attempt}` : `${phase.label} findings`}
       </h3>
       {data && (
         <div className="mb-3 space-y-1 text-xs text-muted-foreground">
@@ -292,7 +514,7 @@ function Findings({
             <p>
               {[
                 ...data.counts.exclusive.map(
-                  ({ model, count }) => `${count} exclusive to ${modelLabel(model)}`,
+                  ({ reviewer, count }) => `${count} exclusive to ${reviewer.label}`,
                 ),
                 `${data.counts.shared} shared`,
               ].join(" · ")}
@@ -300,7 +522,42 @@ function Findings({
           )}
         </div>
       )}
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        {!!phase.reviewers?.length && (
+          <select
+            className={filterStyle}
+            aria-label="Filter by reviewer"
+            value={filter.reviewer ?? ""}
+            onChange={(event) => {
+              const { reviewer: _reviewer, ...rest } = filter;
+              onChange({
+                ...view,
+                turn: undefined,
+                filter: {
+                  ...rest,
+                  offset: 0,
+                  ...(event.target.value ? { reviewer: event.target.value } : {}),
+                },
+              });
+            }}
+          >
+            <option value="">All reviewers</option>
+            {phase.reviewers.map((reviewer) => (
+              <option key={reviewer.id} value={reviewer.id}>
+                {reviewer.label}
+              </option>
+            ))}
+          </select>
+        )}
+        {turn && (
+          <Button
+            size="xs"
+            variant="outline"
+            onClick={() => onChange({ ...view, turn: undefined, filter: { ...filter, offset: 0 } })}
+          >
+            Show all turns for this reviewer
+          </Button>
+        )}
         <input
           className={filterStyle}
           type="search"
@@ -372,12 +629,15 @@ function Findings({
       ) : (
         <>
           <p className="mt-3 text-xs text-muted-foreground">{data.count} matching findings</p>
-          <div className="overflow-x-auto">
-            <table className="mt-1 w-full min-w-[32rem] text-left text-xs">
-              <thead>
+          <div
+            className="mt-1 overflow-x-auto rounded-md border border-border"
+            data-benchmark-scroll={`findings:${phase.id}`}
+          >
+            <table className="w-full min-w-[32rem] text-center text-xs">
+              <thead className="bg-muted text-muted-foreground">
                 <tr>
                   {["Severity", "Problem", "Found by", "Status"].map((label) => (
-                    <th scope="col" className="px-2 py-2" key={label}>
+                    <th scope="col" className="whitespace-nowrap px-3 py-2" key={label}>
                       {label}
                     </th>
                   ))}
@@ -386,15 +646,21 @@ function Findings({
               <tbody>
                 {data.items.map((finding) => (
                   <Fragment key={finding.id}>
-                    <tr className="border-t border-border align-top">
+                    <tr
+                      data-expanded={selected?.id === finding.id}
+                      className="border-t border-border align-middle hover:bg-muted data-[expanded=true]:bg-foreground/8"
+                    >
                       <td className="px-2 py-2 capitalize">{finding.severity}</td>
                       <td className="max-w-96 px-2 py-2">
                         <button
                           type="button"
-                          className="text-left font-medium underline-offset-2 hover:underline"
+                          className="cursor-pointer text-center font-medium underline-offset-2 hover:underline"
                           aria-expanded={selected?.id === finding.id}
                           onClick={() =>
-                            setOpenFinding(selected?.id === finding.id ? null : finding.id)
+                            onChange({
+                              ...view,
+                              openFinding: selected?.id === finding.id ? null : finding.id,
+                            })
                           }
                         >
                           {finding.title}
@@ -404,7 +670,15 @@ function Findings({
                         )}
                       </td>
                       <td className="px-2 py-2">
-                        {[...new Set(finding.reporters.map(({ model }) => model.label))].join(", ")}
+                        {[
+                          ...new Set(
+                            finding.reporters.map(({ reviewer, model, discoveredBy }) =>
+                              discoveredBy
+                                ? `${discoveredBy.label} via ${reviewer?.label ?? model.label}`
+                                : (reviewer?.label ?? model.label),
+                            ),
+                          ),
+                        ].join(", ")}
                       </td>
                       <td className="px-2 py-2">
                         {finding.resolution
@@ -422,8 +696,11 @@ function Findings({
                       </td>
                     </tr>
                     {selected?.id === finding.id && (
-                      <tr className="border-t border-border bg-muted/30">
-                        <td colSpan={4} className="space-y-2 px-3 py-2">
+                      <tr className="border-t border-border bg-muted">
+                        <td
+                          colSpan={4}
+                          className="space-y-2 border-s-2 border-s-ring/60 px-4 py-3 text-start"
+                        >
                           <p className="whitespace-pre-wrap">{finding.description}</p>
                           {finding.evidence.map((evidence) => (
                             <p key={evidence} className="whitespace-pre-wrap text-muted-foreground">
@@ -431,9 +708,27 @@ function Findings({
                             </p>
                           ))}
                           <ul className="flex flex-wrap gap-x-4 gap-y-1">
-                            {finding.reporters.map(({ model, origin }) => (
-                              <li key={JSON.stringify(origin)}>
-                                <SourceLink origin={origin}>{`${model.label} source`}</SourceLink>
+                            {finding.reporters.map(({ model, origin, reviewer, discoveredBy }) => (
+                              <li key={JSON.stringify([origin, discoveredBy?.id])}>
+                                <SourceLink
+                                  origin={origin}
+                                >{`${reviewer?.label ?? model.label} source`}</SourceLink>
+                                {reviewer && (
+                                  <span className="ms-1 text-muted-foreground">
+                                    ({model.label})
+                                  </span>
+                                )}
+                                {discoveredBy && (
+                                  <p className="mt-1 text-muted-foreground">
+                                    Found by {discoveredBy.label} · incorporated by{" "}
+                                    {reviewer?.label ?? model.label}
+                                    {discoveredBy.evidence && (
+                                      <span className="block whitespace-pre-wrap">
+                                        {discoveredBy.evidence}
+                                      </span>
+                                    )}
+                                  </p>
+                                )}
                               </li>
                             ))}
                           </ul>
@@ -475,14 +770,15 @@ function Findings({
 export function WorkflowBenchmark(props: {
   readonly workflowId: string;
   readonly runKind: WorkflowRunKind;
-  readonly open: boolean;
-  readonly onOpenChange: (open: boolean) => void;
+  readonly view: BenchmarkView;
+  readonly setView: SetBenchmarkView;
   readonly triggerRef: RefObject<HTMLButtonElement | null>;
 }) {
-  const { runKind, workflowId } = props;
+  const { runKind, workflowId, view, setView } = props;
   const run = { runKind, workflowId };
-  const [expanded, setExpanded] = useState<ReadonlySet<WorkflowBenchmarkPhase>>(new Set());
-  const [findingPhase, setFindingPhase] = useState<WorkflowBenchmarkPhase | null>(null);
+  const { findings, expanded, open } = view;
+  const heading = useRef<HTMLHeadingElement>(null);
+  const focusFindings = useRef(false);
   const client = useQueryClient();
   const summary = useQuery(queryOptions(run, { kind: "summary" }));
   const data = summary.data?.kind === "summary" ? summary.data : null;
@@ -502,9 +798,36 @@ export function WorkflowBenchmark(props: {
       unsubscribe?.();
     };
   }, [client, runKind, workflowId]);
-  const selectedPhase = data?.phases.find((phase) => phase.id === findingPhase);
+  useLayoutEffect(() => {
+    if (!focusFindings.current || !heading.current) return;
+    focusFindings.current = false;
+    heading.current.scrollIntoView({ block: "nearest" });
+    heading.current.focus({ preventScroll: true });
+  }, [findings, data, open]);
+
+  function toggleFindings(phase: WorkflowBenchmarkPhase, turn?: BenchmarkReviewTurn) {
+    const alreadySelected =
+      findings?.phase === phase &&
+      findings.turn?.threadId === turn?.threadId &&
+      findings.turn?.turnId === turn?.turnId;
+    focusFindings.current = !alreadySelected;
+    setView((previous) => ({
+      ...previous,
+      expanded: previous.expanded.includes(phase)
+        ? previous.expanded
+        : [...previous.expanded, phase],
+      findings: alreadySelected
+        ? null
+        : { phase, turn, filter: turn ? { reviewer: turn.reviewer } : {}, openFinding: null },
+    }));
+  }
+
   return (
-    <Collapsible open={props.open} onOpenChange={props.onOpenChange} data-slot="workflow-benchmark">
+    <Collapsible
+      open={open}
+      onOpenChange={(open) => setView((previous) => ({ ...previous, open }))}
+      data-slot="workflow-benchmark"
+    >
       <section className="rounded-xl border border-border bg-card">
         <h2 className="text-sm font-semibold text-foreground">
           <CollapsibleTrigger
@@ -518,7 +841,7 @@ export function WorkflowBenchmark(props: {
                 {formatUsage(data.total, true)} · {data.findings} findings
               </span>
             )}
-            {!props.open && summary.isError && (
+            {!open && summary.isError && (
               <span className="text-xs font-normal text-muted-foreground">Update pending</span>
             )}
             <ChevronDownIcon
@@ -544,86 +867,135 @@ export function WorkflowBenchmark(props: {
             )}
             {data && (
               <>
-                <div className="overflow-x-auto">
-                  <table className="w-full min-w-max text-left text-xs tabular-nums">
+                <div className="overflow-x-auto" data-benchmark-scroll="summary">
+                  <table className="w-full text-left text-xs tabular-nums">
                     <caption className="sr-only">Usage cost by phase and model</caption>
                     <thead>
-                      <tr className="text-muted-foreground">
+                      <tr className="text-center text-muted-foreground">
                         <th scope="col" className="px-4 py-2">
                           Phase
                         </th>
                         {data.models.map((model) => (
-                          <th scope="col" className="px-4 py-2 text-right" key={model.id}>
-                            {model.label}
+                          <th scope="col" className="px-4 py-2" key={model.id}>
+                            <UsageColumnHeader
+                              label={model.label}
+                              summary={data}
+                              modelId={model.id}
+                            />
                           </th>
                         ))}
-                        <th scope="col" className="px-4 py-2 text-right">
-                          Phase total
+                        <th scope="col" className="px-4 py-2">
+                          <UsageColumnHeader label="Phase total" summary={data} />
                         </th>
                       </tr>
                     </thead>
                     <tbody>
-                      {data.phases.map((phase) => (
-                        <Fragment key={phase.id}>
-                          <tr className="border-t border-border">
-                            <th scope="row" className="px-4 py-2 font-medium">
-                              <div className="flex items-center gap-2">
-                                <button
-                                  type="button"
-                                  aria-expanded={expanded.has(phase.id)}
-                                  className="flex items-center gap-1 hover:underline"
-                                  onClick={() =>
-                                    setExpanded((previous) => {
-                                      const next = new Set(previous);
-                                      if (next.has(phase.id)) next.delete(phase.id);
-                                      else next.add(phase.id);
-                                      return next;
-                                    })
-                                  }
-                                >
-                                  <ChevronRightIcon
-                                    aria-hidden="true"
-                                    className={
-                                      expanded.has(phase.id) ? "size-3 rotate-90" : "size-3"
-                                    }
-                                  />
-                                  {phase.label}
-                                </button>
-                                {phase.review && (
+                      {data.phases.map((phase) => {
+                        const turnsOpen = expanded.includes(phase.id);
+                        const phaseFindings = findings?.phase === phase.id ? findings : null;
+                        const findingCount = `${phase.findings} ${phase.findings === 1 ? "finding" : "findings"}`;
+                        return (
+                          <Fragment key={phase.id}>
+                            <tr
+                              data-expanded={turnsOpen}
+                              className="border-t border-border hover:bg-muted data-[expanded=true]:bg-foreground/8"
+                            >
+                              <th scope="row" className="px-4 py-2 font-medium">
+                                <div className="flex items-center gap-2 whitespace-nowrap">
                                   <button
                                     type="button"
-                                    aria-expanded={findingPhase === phase.id}
-                                    aria-label={`${phase.findings} findings in ${phase.label}`}
-                                    className="text-muted-foreground underline-offset-2 hover:underline"
+                                    aria-expanded={turnsOpen}
+                                    className="flex cursor-pointer items-center gap-1 hover:underline"
                                     onClick={() =>
-                                      setFindingPhase(findingPhase === phase.id ? null : phase.id)
+                                      setView((previous) => ({
+                                        ...previous,
+                                        expanded: turnsOpen
+                                          ? previous.expanded.filter((id) => id !== phase.id)
+                                          : [...previous.expanded, phase.id],
+                                        findings:
+                                          turnsOpen && previous.findings?.phase === phase.id
+                                            ? null
+                                            : previous.findings,
+                                      }))
                                     }
                                   >
-                                    {phase.findings} findings
+                                    <ChevronRightIcon
+                                      aria-hidden="true"
+                                      className={turnsOpen ? "size-3 rotate-90" : "size-3"}
+                                    />
+                                    {phase.label}
                                   </button>
-                                )}
-                              </div>
-                            </th>
-                            {data.models.map((model) => (
-                              <td className="px-4 py-2 text-right" key={model.id}>
-                                <Usage
-                                  usage={phase.cells.find((cell) => cell.model === model.id)?.usage}
-                                />
-                              </td>
-                            ))}
-                            <td className="px-4 py-2 text-right font-semibold">
-                              <Usage usage={phase.total} />
-                            </td>
-                          </tr>
-                          {expanded.has(phase.id) && (
-                            <tr className="border-t border-border bg-muted/30">
-                              <td colSpan={data.models.length + 2}>
-                                <TurnDetails run={run} phase={phase.id} />
+                                  {phase.review &&
+                                    (phase.findings === 0 ? (
+                                      <span className="text-muted-foreground">{findingCount}</span>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        aria-expanded={
+                                          phaseFindings !== null && !phaseFindings.turn
+                                        }
+                                        aria-label={`${findingCount} in ${phase.label}`}
+                                        className="cursor-pointer text-muted-foreground underline-offset-2 hover:underline"
+                                        onClick={() => toggleFindings(phase.id)}
+                                      >
+                                        {findingCount}
+                                      </button>
+                                    ))}
+                                </div>
+                              </th>
+                              {data.models.map((model) => (
+                                <td className="px-4 py-2 text-right" key={model.id}>
+                                  <Usage
+                                    usage={
+                                      phase.cells.find((cell) => cell.model === model.id)?.usage
+                                    }
+                                  />
+                                </td>
+                              ))}
+                              <td className="px-4 py-2 text-right font-semibold">
+                                <Usage usage={phase.total} />
                               </td>
                             </tr>
-                          )}
-                        </Fragment>
-                      ))}
+                            {turnsOpen && (
+                              <tr className="border-t border-border bg-muted">
+                                <td colSpan={data.models.length + 2} className="px-4 py-3">
+                                  <div className="space-y-3 [contain:inline-size]">
+                                    <div
+                                      className="overflow-x-auto rounded-lg border border-border border-s-2 border-s-ring/60 bg-background"
+                                      data-benchmark-scroll={`turns:${phase.id}`}
+                                    >
+                                      <TurnDetails
+                                        run={run}
+                                        phase={phase}
+                                        view={view}
+                                        setView={setView}
+                                        onToggleFindings={(turn) => toggleFindings(phase.id, turn)}
+                                      />
+                                    </div>
+                                    {phaseFindings && (
+                                      <Findings
+                                        key={JSON.stringify([
+                                          phase.id,
+                                          phaseFindings.turn?.threadId,
+                                          phaseFindings.turn?.turnId,
+                                        ])}
+                                        run={run}
+                                        phase={phase}
+                                        models={data.models}
+                                        view={phaseFindings}
+                                        onChange={(findings) =>
+                                          setView((previous) => ({ ...previous, findings }))
+                                        }
+                                        heading={heading}
+                                      />
+                                    )}
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </Fragment>
+                        );
+                      })}
                     </tbody>
                     <tfoot>
                       <tr className="border-t border-border font-semibold">
@@ -667,14 +1039,6 @@ export function WorkflowBenchmark(props: {
                       </p>
                     ))}
                   </div>
-                )}
-                {selectedPhase && (
-                  <Findings
-                    key={selectedPhase.id}
-                    run={run}
-                    phase={selectedPhase}
-                    models={data.models}
-                  />
                 )}
               </>
             )}

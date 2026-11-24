@@ -5,6 +5,7 @@ import type {
   WorkflowRunKind,
 } from "@t3tools/contracts";
 import type { OrchestrationEngineShape } from "./Services/OrchestrationEngine.ts";
+import { WORKFLOW_SUBAGENT_FINDING_INSTRUCTIONS } from "./workflowFindingProtocol.ts";
 
 export function dispatchWorkflowTurn(
   engine: OrchestrationEngineShape,
@@ -35,6 +36,7 @@ export function structuredReviewPrompt(prompt: string, reader = false): string {
       : "",
     "Each entry must have a unique local id, severity (critical, high, medium or low), title, description, location (a file and line or artifact section, or null) and evidence (text or null).",
     "When available, quote the exact affected line or document passage and name the specific test case and F5 execution that reproduced the issue in evidence.",
+    WORKFLOW_SUBAGENT_FINDING_INSTRUCTIONS,
     'Format: a fence labeled f5-findings-v1 containing [{"id":"1","severity":"high","title":"Problem","description":"Impact","location":null,"evidence":null}]. Place it inside the delivered artifact if using a native plan submission.',
   ]
     .filter(Boolean)

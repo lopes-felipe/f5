@@ -11,7 +11,10 @@ const Finding = Schema.Struct({
   description: textField,
   location: Schema.NullOr(textField),
   evidence: Schema.NullOr(textField),
+  subagentFinding: Schema.optional(Schema.Struct({ agentId: reference, findingId: localId })),
 });
+export const WORKFLOW_SUBAGENT_FINDING_INSTRUCTIONS =
+  "If you delegate a review, ask the subagent to return its own f5-findings-v1 block. When you include one of those findings, keep its title and location and add subagentFinding with the exact provider agent ID and local finding ID from that result, if available.";
 export type Finding = typeof Finding.Type;
 
 const Disposition = Schema.Struct({

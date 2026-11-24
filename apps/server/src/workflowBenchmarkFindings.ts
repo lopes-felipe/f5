@@ -4,8 +4,10 @@ import {
   type WorkflowBenchmarkFinding,
   type WorkflowBenchmarkInput,
   type WorkflowBenchmarkPhase,
+  type WorkflowBenchmarkReviewer,
 } from "@t3tools/contracts";
 import type { AttributedBenchmarkTurn } from "./workflowBenchmark.ts";
+import { workflowTurnKey, type BenchmarkSubagentEvidence } from "./workflowBenchmarkSubagents.ts";
 import {
   decodeStoredDispositions,
   decodeFindings,
@@ -33,6 +35,8 @@ interface Report {
   readonly phase: WorkflowBenchmarkPhase;
   readonly target: string | null;
   readonly model: Model;
+  readonly reviewer: WorkflowBenchmarkReviewer;
+  readonly discoveredBy?: WorkflowBenchmarkFinding["reporters"][number]["discoveredBy"];
   readonly origin: WorkflowBenchmarkFinding["reporters"][number]["origin"];
   readonly finding: Finding;
   verdict: "confirmed" | "checking" | "dismissed";
@@ -97,16 +101,23 @@ function countFindings(findings: readonly WorkflowBenchmarkFinding[]) {
   let checking = 0;
   let dismissed = 0;
   let shared = 0;
-  const exclusive = new Map<string, number>();
+  const exclusive = new Map<string, { reviewer: WorkflowBenchmarkReviewer; count: number }>();
   for (const finding of findings) {
     if (isConfirmed(finding)) {
       confirmed++;
-      const models = new Set(finding.reporters.map(({ model }) => model.id));
-      const unknown = models.delete("unknown");
-      if (models.size > 1) shared++;
+      const reviewers = new Map(
+        finding.reporters.flatMap(({ reviewer }) =>
+          reviewer ? [[reviewer.id, reviewer] as const] : [],
+        ),
+      );
+      if (reviewers.size > 1) shared++;
       else {
-        const [model] = models;
-        if (model && !unknown) exclusive.set(model, (exclusive.get(model) ?? 0) + 1);
+        const [reviewer] = reviewers.values();
+        if (reviewer)
+          exclusive.set(reviewer.id, {
+            reviewer,
+            count: (exclusive.get(reviewer.id)?.count ?? 0) + 1,
+          });
       }
     } else if (finding.status === "dismissed") dismissed++;
     else checking++;
@@ -116,19 +127,19 @@ function countFindings(findings: readonly WorkflowBenchmarkFinding[]) {
     checking,
     dismissed,
     shared,
-    exclusive: Array.from(exclusive, ([model, count]) => ({ model, count })),
+    exclusive: [...exclusive.values()],
   };
 }
 
 export function benchmarkFindings(
   turns: ReadonlyArray<AttributedBenchmarkTurn>,
   outputs: ReadonlyArray<BenchmarkOutputRow>,
+  subagents: ReadonlyMap<string, readonly BenchmarkSubagentEvidence[]> = new Map(),
 ) {
-  const key = (threadId: string, turnId: string) => JSON.stringify([threadId, turnId]);
   const byTurn = new Map(
     turns.flatMap((entry) =>
       entry.turn.turnId && entry.turn.threadId
-        ? [[key(entry.turn.threadId, entry.turn.turnId), entry] as const]
+        ? [[workflowTurnKey(entry.turn.threadId, entry.turn.turnId), entry] as const]
         : [],
     ),
   );
@@ -153,7 +164,8 @@ export function benchmarkFindings(
   };
   for (const row of outputs) {
     if (row.kind !== "findings" || !row.metadata || row.coverage !== "structured") continue;
-    const entry = byTurn.get(key(row.threadId, row.turnId));
+    const key = workflowTurnKey(row.threadId, row.turnId);
+    const entry = byTurn.get(key);
     if (!entry || entry.attribution.taskId !== row.taskId || entry.turn.status === "Reverted")
       continue;
     for (const finding of decodeFindings(JSON.parse(row.metadata))) {
@@ -162,11 +174,33 @@ export function benchmarkFindings(
       const index = reports.length;
       indexes.set(ref, index);
       parent.push(index);
+      const reference = finding.subagentFinding;
+      const possibleAgents = reference
+        ? (subagents.get(key) ?? []).filter(
+            (agent) => agent.id === reference.agentId || agent.providerId === reference.agentId,
+          )
+        : [];
+      const agent = possibleAgents.length === 1 ? possibleAgents[0] : undefined;
+      const evidence = agent?.findings.find(
+        (candidate) =>
+          candidate.id === reference?.findingId &&
+          normalized(candidate.title) === normalized(finding.title) &&
+          (candidate.location?.trim() ?? "") === (finding.location?.trim() ?? "") &&
+          (finding.location?.trim() ||
+            normalized(candidate.description) === normalized(finding.description)),
+      );
       reports.push({
         ref,
         phase: entry.phase,
         target,
         model: entry.turn.model,
+        reviewer: entry.turn.reviewer ?? {
+          id: row.taskId,
+          label: entry.turn.threadTitle ?? entry.turn.role,
+        },
+        ...(agent && evidence
+          ? { discoveredBy: { id: agent.id, label: agent.label, evidence: evidence.evidence } }
+          : {}),
         origin: source(row),
         finding,
         verdict: "checking",
@@ -191,7 +225,7 @@ export function benchmarkFindings(
   }
   for (const [order, row] of outputs.entries()) {
     if (row.kind !== "dispositions" || !row.metadata || row.coverage !== "structured") continue;
-    const entry = byTurn.get(key(row.threadId, row.turnId));
+    const entry = byTurn.get(workflowTurnKey(row.threadId, row.turnId));
     if (!entry || entry.attribution.taskId !== row.taskId || entry.turn.status === "Reverted")
       continue;
     const allowed = new Set(entry.attribution.findingRefs);
@@ -246,7 +280,28 @@ export function benchmarkFindings(
     groups.set(group, members);
   }
   const byPhase = new Map<WorkflowBenchmarkPhase, WorkflowBenchmarkFinding[]>();
+  const countsByTurn = new Map<string, { threadId: ThreadId; turnId: TurnId; count: number }>();
+  for (const row of outputs) {
+    const key = workflowTurnKey(row.threadId, row.turnId);
+    const entry = byTurn.get(key);
+    if (
+      row.kind === "findings" &&
+      row.coverage === "structured" &&
+      entry?.attribution.taskId === row.taskId &&
+      entry.turn.status !== "Reverted"
+    ) {
+      countsByTurn.set(key, {
+        threadId: ThreadId.make(row.threadId),
+        turnId: TurnId.make(row.turnId),
+        count: 0,
+      });
+    }
+  }
   for (const members of groups.values()) {
+    const turnKeys = new Set(
+      members.map(({ origin }) => workflowTurnKey(origin.threadId, origin.turnId)),
+    );
+    for (const key of turnKeys) countsByTurn.get(key)!.count++;
     const first = members[0]!;
     const severe = members.reduce(
       (worst, member) =>
@@ -283,7 +338,14 @@ export function benchmarkFindings(
           ]),
         ),
       ],
-      reporters: members.map(({ model, origin }) => ({ model, origin })),
+      reporters: [
+        ...new Map(
+          members.map(({ model, origin, reviewer, discoveredBy }) => [
+            JSON.stringify([origin.threadId, origin.turnId, discoveredBy?.id]),
+            { model, origin, reviewer, ...(discoveredBy ? { discoveredBy } : {}) },
+          ]),
+        ).values(),
+      ],
       status,
       resolution: resolved?.resolution ?? null,
       test:
@@ -298,7 +360,6 @@ export function benchmarkFindings(
     [...byPhase].map(([phase, findings]) => [
       phase,
       {
-        counts: countFindings(findings),
         entries: findings
           .sort(
             (a, b) =>
@@ -324,13 +385,24 @@ export function benchmarkFindings(
   );
   return {
     count: (phase: WorkflowBenchmarkPhase) => pages.get(phase)?.entries.length ?? 0,
+    turnCount: (threadId: ThreadId, turnId: TurnId) =>
+      countsByTurn.get(workflowTurnKey(threadId, turnId)),
     total: groups.size,
     page: (select: FindingSelection) => {
       const page = pages.get(select.phase);
       const search = normalized(select.search ?? "");
-      const filtered = (page?.entries ?? []).filter(
+      const scoped = (page?.entries ?? []).filter(({ finding }) =>
+        finding.reporters.some(
+          ({ origin, reviewer, model }) =>
+            (!select.reviewer || reviewer?.id === select.reviewer) &&
+            (!select.model || model.id === select.model) &&
+            (!select.reviewTurn ||
+              (origin.threadId === select.reviewTurn.threadId &&
+                origin.turnId === select.reviewTurn.turnId)),
+        ),
+      );
+      const filtered = scoped.filter(
         ({ finding, searchText }) =>
-          (!select.model || finding.reporters.some(({ model }) => model.id === select.model)) &&
           (!select.severity || finding.severity === select.severity) &&
           (!select.status || finding.status === select.status) &&
           (!search || searchText.includes(search)),
@@ -340,7 +412,7 @@ export function benchmarkFindings(
         kind: "findings" as const,
         items: filtered.slice(offset, offset + 50).map(({ finding }) => finding),
         count: filtered.length,
-        counts: page?.counts ?? countFindings([]),
+        counts: countFindings(scoped.map(({ finding }) => finding)),
       };
     },
   };

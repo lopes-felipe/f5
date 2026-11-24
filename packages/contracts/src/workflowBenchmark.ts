@@ -69,6 +69,8 @@ export const WorkflowBenchmarkInput = Schema.Struct({
       offset: Schema.optional(NonNegativeInt),
       search: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
       model: Schema.optional(Schema.String),
+      reviewer: Schema.optional(Schema.String),
+      reviewTurn: Schema.optional(Schema.Struct({ threadId: ThreadId, turnId: TurnId })),
       severity: Schema.optional(WorkflowFindingSeverity),
       status: Schema.optional(WorkflowFindingStatus),
     }),
@@ -85,6 +87,7 @@ export const WorkflowBenchmarkUsage = Schema.Struct({
   tokens: Schema.NullOr(NonNegativeInt),
   costUsd: Schema.NullOr(Schema.Number),
   estimated: Schema.Boolean,
+  estimatedCodexCredits: Schema.optional(Schema.Number),
   missingTokens: NonNegativeInt,
   missingCost: NonNegativeInt,
   pending: NonNegativeInt,
@@ -92,13 +95,26 @@ export const WorkflowBenchmarkUsage = Schema.Struct({
 export type WorkflowBenchmarkUsage = typeof WorkflowBenchmarkUsage.Type;
 
 const BenchmarkModel = Schema.Struct({ id: Schema.String, label: Schema.String });
+const BenchmarkReviewer = Schema.Struct({ id: Schema.String, label: Schema.String });
+export type WorkflowBenchmarkReviewer = typeof BenchmarkReviewer.Type;
+const BenchmarkSubagent = Schema.Struct({
+  id: Schema.String,
+  label: Schema.String,
+  model: Schema.NullOr(BenchmarkModel),
+  status: Schema.String,
+  tokens: Schema.NullOr(NonNegativeInt),
+  costUsd: Schema.NullOr(Schema.Number),
+});
+export type WorkflowBenchmarkSubagent = typeof BenchmarkSubagent.Type;
+const BenchmarkMetricScope = Schema.Literals(["main-agent", "provider-total", "unknown"]);
+export type WorkflowBenchmarkMetricScope = typeof BenchmarkMetricScope.Type;
 const BenchmarkCell = Schema.Struct({ model: Schema.String, usage: WorkflowBenchmarkUsage });
 const FindingCounts = Schema.Struct({
   confirmed: NonNegativeInt,
   checking: NonNegativeInt,
   dismissed: NonNegativeInt,
   shared: NonNegativeInt,
-  exclusive: Schema.Array(Schema.Struct({ model: Schema.String, count: NonNegativeInt })),
+  exclusive: Schema.Array(Schema.Struct({ reviewer: BenchmarkReviewer, count: NonNegativeInt })),
 });
 
 const BenchmarkSummary = Schema.Struct({
@@ -112,6 +128,10 @@ const BenchmarkSummary = Schema.Struct({
       total: WorkflowBenchmarkUsage,
       findings: NonNegativeInt,
       review: Schema.Boolean,
+      reviewers: Schema.optional(Schema.Array(BenchmarkReviewer)),
+      findingTurns: Schema.optional(
+        Schema.Array(Schema.Struct({ threadId: ThreadId, turnId: TurnId, count: NonNegativeInt })),
+      ),
     }),
   ),
   total: WorkflowBenchmarkUsage,
@@ -144,6 +164,10 @@ const BenchmarkTurn = Schema.Struct({
   status: Schema.String,
   target: Schema.NullOr(WorkflowReviewTarget),
   aggregateRerouteUsage: Schema.Boolean,
+  reviewer: Schema.optional(BenchmarkReviewer),
+  subagents: Schema.optional(Schema.Array(BenchmarkSubagent)),
+  tokenScope: Schema.optional(BenchmarkMetricScope),
+  costScope: Schema.optional(BenchmarkMetricScope),
   usage: WorkflowBenchmarkUsage,
 });
 export type WorkflowBenchmarkTurn = typeof BenchmarkTurn.Type;
@@ -164,7 +188,20 @@ const BenchmarkFinding = Schema.Struct({
   description: Schema.String,
   location: Schema.NullOr(Schema.String),
   evidence: Schema.Array(Schema.String),
-  reporters: Schema.Array(Schema.Struct({ model: BenchmarkModel, origin: FindingOrigin })),
+  reporters: Schema.Array(
+    Schema.Struct({
+      model: BenchmarkModel,
+      origin: FindingOrigin,
+      reviewer: Schema.optional(BenchmarkReviewer),
+      discoveredBy: Schema.optional(
+        Schema.Struct({
+          id: Schema.String,
+          label: Schema.String,
+          evidence: Schema.NullOr(Schema.String),
+        }),
+      ),
+    }),
+  ),
   status: WorkflowFindingStatus,
   resolution: Schema.NullOr(
     Schema.Struct({

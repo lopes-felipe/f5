@@ -75,7 +75,11 @@ import {
 } from "../Services/ProviderTurnDeliveryWorker.ts";
 import type { ProviderTurnDelivery } from "../Services/ProviderTurnDeliveryRepository.ts";
 import { OrchestrationCommandInvariantError } from "../Errors.ts";
-import { applyWorkflowTurnCost, workflowBudgetError } from "../workflowBudget.ts";
+import {
+  applyWorkflowTurnCost,
+  workflowBudgetError,
+  workflowSessionTurnCost,
+} from "../workflowBudget.ts";
 import {
   resolveAvailableWorkflowModelSlot,
   workflowTurnProviderFields,
@@ -1460,7 +1464,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
           if (matchedWorkflow) {
             const workflow = applyWorkflowTurnCost(
               matchedWorkflow,
-              event.payload.session.turnCostUsd,
+              workflowSessionTurnCost(event),
               event.occurredAt,
             );
             if (workflow !== matchedWorkflow) {
@@ -1531,7 +1535,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
           }
           const consolidationWorkflow = applyWorkflowTurnCost(
             matchedConsolidationWorkflow,
-            event.payload.session.turnCostUsd,
+            workflowSessionTurnCost(event),
             event.occurredAt,
           );
           if (consolidationWorkflow !== matchedConsolidationWorkflow) {

@@ -14,6 +14,8 @@ import Migration0165 from "./Migrations/165_UsageResetCreditGrant.ts";
 import Migration0166 from "./Migrations/166_ThreadPullRequestLookupIndex.ts";
 import Migration0167 from "./Migrations/167_PrHubSeenBaseline.ts";
 import Migration0168 from "./Migrations/168_WorkflowBenchmark.ts";
+import Migration0169 from "./Migrations/169_WorkflowBenchmarkSubagents.ts";
+import Migration0170 from "./Migrations/170_RepairDuplicateWorkflowCosts.ts";
 import Migration0152 from "./Migrations/152_UpstreamTopicOutcomes.ts";
 import Migration0137 from "./Migrations/137_UpstreamPorts.ts";
 import Migration0136 from "./Migrations/136_ScratchProjects.ts";
@@ -216,6 +218,8 @@ export const MIGRATIONS = {
   "166_ThreadPullRequestLookupIndex": Migration0166,
   "167_PrHubSeenBaseline": Migration0167,
   "168_WorkflowBenchmark": Migration0168,
+  "169_WorkflowBenchmarkSubagents": Migration0169,
+  "170_RepairDuplicateWorkflowCosts": Migration0170,
   "152_UpstreamTopicOutcomes": Migration0152,
   "147_StorageMachineCleanupAudit": Migration0147,
   // 124 to 128 shipped on main first; the October migrations follow them.

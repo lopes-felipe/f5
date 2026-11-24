@@ -1,7 +1,8 @@
-import type { ProjectId } from "@t3tools/contracts";
+import type { ProjectId, WorkflowRunKind } from "@t3tools/contracts";
+import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { CheckIcon, CircleAlertIcon, CircleIcon, LoaderIcon, type LucideIcon } from "lucide-react";
-import { useRef, useState, type ReactNode } from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { formatUsd } from "../../lib/formatUsd";
@@ -20,6 +21,12 @@ import { ProjectIcon } from "../ProjectIcon";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
 import { WorkflowBoard } from "./WorkflowBoard";
 import { WorkflowBenchmark } from "./WorkflowBenchmark";
+import {
+  initialBenchmarkView,
+  readBenchmarkBookmark,
+  restoreBenchmarkScroll,
+  saveBenchmarkBookmark,
+} from "./workflowBenchmarkViewState";
 import { WorkflowTimelinePhaseList } from "./WorkflowTimelinePhaseList";
 import type { WorkflowOverallState, WorkflowTimelinePhase } from "./workflowTimelineTypes";
 
@@ -102,7 +109,7 @@ export function WorkflowPageNotFound() {
  * actions, the steps (a board of phase columns at `lg+`, a list below), then
  * the run's artifacts.
  */
-export function WorkflowPageLayout(props: {
+interface WorkflowPageLayoutProps {
   readonly projectId: ProjectId;
   readonly workflowId: string;
   readonly workflowType: WorkflowTypeValue;
@@ -120,10 +127,26 @@ export function WorkflowPageLayout(props: {
   /** Overrides the breakpoint switch (board at `lg+`, list below). */
   readonly view?: WorkflowPageView | undefined;
   readonly children: ReactNode;
-}) {
+}
+
+export function WorkflowPageLayout(props: WorkflowPageLayoutProps) {
+  const runKind = props.workflowType === "document" ? "planning" : props.workflowType;
+  const runKey = `${runKind}:${props.workflowId}`;
+  return <WorkflowPageContent key={runKey} {...props} runKind={runKind} runKey={runKey} />;
+}
+
+function WorkflowPageContent(
+  props: WorkflowPageLayoutProps & { readonly runKind: WorkflowRunKind; readonly runKey: string },
+) {
   const navigate = useNavigate();
-  const [benchmarkRun, setBenchmarkRun] = useState<string | null>(null);
+  const client = useQueryClient();
+  const [bookmark] = useState(() => readBenchmarkBookmark(client, props.runKey));
+  const [benchmarkView, setBenchmarkView] = useState(() => bookmark?.view ?? initialBenchmarkView);
   const benchmarkTrigger = useRef<HTMLButtonElement>(null);
+  const viewport = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (bookmark && viewport.current) return restoreBenchmarkScroll(viewport.current, bookmark);
+  }, [bookmark]);
   const project = useWorkflowProject(props.projectId);
   const isWide = useMediaQuery("lg");
   const view = props.view ?? (isWide ? "board" : "list");
@@ -137,15 +160,12 @@ export function WorkflowPageLayout(props: {
     props.totalCostUsd !== null && props.totalCostUsd !== undefined
       ? formatUsd(props.totalCostUsd)
       : null;
-  const runKind = props.workflowType === "document" ? "planning" : props.workflowType;
-  const runKey = `${runKind}:${props.workflowId}`;
   const benchmark = (
     <WorkflowBenchmark
-      key={runKey}
-      runKind={runKind}
+      runKind={props.runKind}
       workflowId={props.workflowId}
-      open={benchmarkRun === runKey}
-      onOpenChange={(open) => setBenchmarkRun(open ? runKey : null)}
+      view={benchmarkView}
+      setView={setBenchmarkView}
       triggerRef={benchmarkTrigger}
     />
   );
@@ -189,7 +209,20 @@ export function WorkflowPageLayout(props: {
         onClose={() => void navigate({ to: "/" })}
         closeLabel="Close workflow"
       />
-      <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain">
+      <div
+        ref={viewport}
+        className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain"
+        onClickCapture={(event) => {
+          if (event.button || event.metaKey || event.altKey || event.ctrlKey || event.shiftKey)
+            return;
+          if (
+            event.target instanceof Element &&
+            event.target.closest("a[data-benchmark-thread-link]")
+          ) {
+            saveBenchmarkBookmark(client, props.runKey, benchmarkView, event.currentTarget);
+          }
+        }}
+      >
         <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-6 pt-4 pb-10">
           <header className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
             <div className="min-w-0">
@@ -212,7 +245,7 @@ export function WorkflowPageLayout(props: {
                   }
                   title={cost ? "Budget spend" : undefined}
                   onClick={() => {
-                    setBenchmarkRun(runKey);
+                    setBenchmarkView((view) => ({ ...view, open: true }));
                     benchmarkTrigger.current?.scrollIntoView({ block: "nearest" });
                     benchmarkTrigger.current?.focus({ preventScroll: true });
                   }}

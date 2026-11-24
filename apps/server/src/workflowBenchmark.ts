@@ -25,8 +25,14 @@ import {
 } from "./orchestration/workflowBenchmarkTasks.ts";
 import { readAttribution } from "./orchestration/workflowBenchmarkPersistence.ts";
 import { applyPriceOverride, resolveModelAliases } from "./usage/usageSummary.ts";
+import { estimateCodexStandardCredits } from "./usage/codexCreditEstimate.ts";
 import type { UsageAggregateRow } from "./persistence/Services/UsageFacts.ts";
 import { benchmarkFindings, type BenchmarkOutputRow } from "./workflowBenchmarkFindings.ts";
+import {
+  readBenchmarkSubagents,
+  workflowTurnKey,
+  type BenchmarkSubagentEvidence,
+} from "./workflowBenchmarkSubagents.ts";
 
 interface TurnRow {
   readonly id: string;
@@ -222,6 +228,7 @@ function groupedFindings(
   run: Pick<WorkflowBenchmarkInput, "runKind" | "workflowId">,
   turns: readonly AttributedBenchmarkTurn[],
   outputs: readonly (BenchmarkOutputRow & { readonly version: string })[],
+  subagents: ReadonlyMap<string, readonly BenchmarkSubagentEvidence[]>,
 ) {
   const cache = findingCaches.get(sql) ?? new Map();
   findingCaches.set(sql, cache);
@@ -233,13 +240,20 @@ function groupedFindings(
   const revision = JSON.stringify(
     outputs.map((row) => {
       const turn = byTurn.get(workflowTurnKey(row.threadId, row.turnId));
-      return [row.version, turn?.turn.model, turn?.turn.status, turn?.attribution];
+      return [
+        row.version,
+        turn?.turn.model,
+        turn?.turn.status,
+        turn?.turn.reviewer,
+        turn?.attribution,
+        subagents.get(workflowTurnKey(row.threadId, row.turnId)),
+      ];
     }),
   );
   const key = JSON.stringify([run.runKind, run.workflowId]);
   const cached = cache.get(key);
   if (cached?.revision === revision) return cached.groups;
-  const groups = benchmarkFindings(turns, outputs);
+  const groups = benchmarkFindings(turns, outputs, subagents);
   cache.delete(key);
   cache.set(key, { revision, groups });
   if (cache.size > 8) cache.delete(cache.keys().next().value!);
@@ -305,10 +319,20 @@ function usageForRow(
     overrides,
   );
   const costUsd = row.cost ?? cost.estimatedCostUsd ?? null;
+  const estimatedCodexCredits =
+    provider === "codex" && row.cost === null && !row.rerouted
+      ? estimateCodexStandardCredits(
+          row.effectiveModel ?? pricingModel,
+          row.input,
+          row.cacheRead,
+          row.output,
+        )
+      : undefined;
   return {
     tokens: row.tokens,
     costUsd,
     estimated: cost.estimatedCostUsd !== undefined,
+    ...(estimatedCodexCredits !== undefined ? { estimatedCodexCredits } : {}),
     missingTokens: Number(row.tokens === null),
     missingCost: Number(costUsd === null),
     pending: Number(Boolean(row.pausedContinuation && !row.revertedAt)),
@@ -331,6 +355,9 @@ function sumUsage(a: WorkflowBenchmarkUsage, b: WorkflowBenchmarkUsage): Workflo
     tokens: a.tokens === null && b.tokens === null ? null : (a.tokens ?? 0) + (b.tokens ?? 0),
     costUsd: a.costUsd === null && b.costUsd === null ? null : (a.costUsd ?? 0) + (b.costUsd ?? 0),
     estimated: a.estimated || b.estimated,
+    ...(a.estimatedCodexCredits !== undefined || b.estimatedCodexCredits !== undefined
+      ? { estimatedCodexCredits: (a.estimatedCodexCredits ?? 0) + (b.estimatedCodexCredits ?? 0) }
+      : {}),
     missingTokens: a.missingTokens + b.missingTokens,
     missingCost: a.missingCost + b.missingCost,
     pending: a.pending + b.pending,
@@ -338,6 +365,7 @@ function sumUsage(a: WorkflowBenchmarkUsage, b: WorkflowBenchmarkUsage): Workflo
 }
 
 export interface AttributedBenchmarkTurn {
+  readonly provider?: string | null;
   turn: WorkflowBenchmarkTurn;
   readonly attribution: WorkflowAttribution;
   readonly phase: WorkflowBenchmarkPhase;
@@ -428,9 +456,29 @@ export function getWorkflowBenchmark(
       const rawModel = row.effectiveModel ?? historicalModel ?? row.configuredModel;
       const model = benchmarkModel(provider, rawModel);
       modelMap.set(model.id, model);
+      const role = benchmarkRole(attribution.taskId);
+      const target = attribution.reviewTarget ?? null;
+      const reviewer =
+        benchmarkOutputKind(attribution.taskId) === "findings"
+          ? {
+              id: attribution.taskId,
+              label: row.title ?? (target ? `${role} · ${target.label}` : role),
+            }
+          : undefined;
+      const usage =
+        select.kind === "findings"
+          ? emptyUsage()
+          : usageForRow(
+              row,
+              provider,
+              row.factModel ?? rawModel,
+              settings.usagePriceOverrides,
+              aliases,
+            );
       turns.push({
         attribution,
         phase,
+        provider,
         turn: {
           id: row.id,
           threadId: ThreadId.make(row.threadId),
@@ -444,7 +492,7 @@ export function getWorkflowBenchmark(
               : row.configuredModel
                 ? "configured"
                 : "unknown",
-          role: benchmarkRole(attribution.taskId),
+          role,
           attempt,
           durationMs: duration(row),
           status: row.revertedAt
@@ -452,18 +500,23 @@ export function getWorkflowBenchmark(
             : row.pausedContinuation
               ? "Pending continuation (paused)"
               : (row.turnState ?? row.state),
-          target: attribution.reviewTarget ?? null,
+          target,
           aggregateRerouteUsage: row.rerouted === 1,
-          usage:
-            select.kind === "findings"
-              ? emptyUsage()
-              : usageForRow(
-                  row,
-                  provider,
-                  row.factModel ?? rawModel,
-                  settings.usagePriceOverrides,
-                  aliases,
-                ),
+          ...(reviewer ? { reviewer } : {}),
+          ...(usage.tokens !== null
+            ? ({ tokenScope: provider === "claudeAgent" ? "main-agent" : "unknown" } as const)
+            : {}),
+          ...(usage.costUsd !== null
+            ? ({
+                costScope:
+                  provider === "claudeAgent"
+                    ? usage.estimated
+                      ? "main-agent"
+                      : "provider-total"
+                    : "unknown",
+              } as const)
+            : {}),
+          usage,
         },
       });
     }
@@ -521,7 +574,33 @@ export function getWorkflowBenchmark(
     if (select.kind === "turns") {
       const deliveryCount = rows[0]?.pageCount ?? 0;
       const offset = select.offset ?? 0;
-      const items = turns.map(({ turn }) => turn);
+      const agents = yield* readBenchmarkSubagents(
+        sql,
+        turns.map(({ turn, provider }) => ({
+          threadId: turn.threadId,
+          turnId: turn.turnId,
+          provider: provider ?? null,
+        })),
+      );
+      const items = turns.map(({ turn, provider }) => {
+        const children =
+          turn.threadId && turn.turnId
+            ? agents.get(workflowTurnKey(turn.threadId, turn.turnId))
+            : undefined;
+        return children?.length
+          ? {
+              ...turn,
+              subagents: children.map(({ id, label, status, model, tokens, costUsd }) => ({
+                id,
+                label,
+                status,
+                model: model ? benchmarkModel(provider ?? null, model) : null,
+                tokens,
+                costUsd,
+              })),
+            }
+          : turn;
+      });
       return {
         kind: "turns",
         items: [
@@ -554,7 +633,24 @@ export function getWorkflowBenchmark(
       WHERE o.run_kind = ${input.runKind} AND o.workflow_id = ${input.workflowId}
       ORDER BY o.rowid
     `;
-    const findings = groupedFindings(sql, input, turns, outputs);
+    const referencedTurns = new Set(
+      outputs.flatMap((row) =>
+        row.kind === "findings" && row.metadata?.includes('"subagentFinding"')
+          ? [workflowTurnKey(row.threadId, row.turnId)]
+          : [],
+      ),
+    );
+    const agents = yield* readBenchmarkSubagents(
+      sql,
+      turns.flatMap(({ turn, provider }) =>
+        turn.threadId &&
+        turn.turnId &&
+        referencedTurns.has(workflowTurnKey(turn.threadId, turn.turnId))
+          ? [{ threadId: turn.threadId, turnId: turn.turnId, provider: provider ?? null }]
+          : [],
+      ),
+    );
+    const findings = groupedFindings(sql, input, turns, outputs, agents);
     if (select.kind === "findings") return findings.page(select);
     const coverage = new Map<
       string,
@@ -617,6 +713,7 @@ export function getWorkflowBenchmark(
       ),
       phases: phases.map((id) => {
         const phaseCells = cells.get(id) ?? new Map<string, WorkflowBenchmarkUsage>();
+        const reviewTurns = turns.filter((entry) => entry.phase === id && entry.turn.reviewer);
         return {
           id,
           label: BENCHMARK_PHASES[id],
@@ -624,6 +721,22 @@ export function getWorkflowBenchmark(
           total: [...phaseCells.values()].reduce(sumUsage, emptyUsage()),
           findings: findings.count(id),
           review: id === "reviews" || id === "code-review" || id === "reader-review",
+          ...(reviewTurns.length
+            ? {
+                reviewers: [
+                  ...new Map(
+                    reviewTurns.map(({ turn }) => [turn.reviewer!.id, turn.reviewer!]),
+                  ).values(),
+                ],
+                findingTurns: reviewTurns.flatMap(({ turn }) => {
+                  const count =
+                    turn.threadId && turn.turnId
+                      ? findings.turnCount(turn.threadId, turn.turnId)
+                      : null;
+                  return count ? [count] : [];
+                }),
+              }
+            : {}),
         };
       }),
       total,
@@ -636,6 +749,3 @@ export function getWorkflowBenchmark(
     };
   });
 }
-
-export const workflowTurnKey = (threadId: string, turnId: string) =>
-  JSON.stringify([threadId, turnId]);

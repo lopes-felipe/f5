@@ -3187,7 +3187,15 @@ export const createServer = Effect.fn(function* (
                 ? (event.payload.session.activeTurnId ?? event.payload.settledTurnId)
                 : event.type === "thread.turn-processing-quiesced"
                   ? event.payload.turnId
-                  : null;
+                  : event.type === "thread.activity-appended" &&
+                      [
+                        "subagent.activity",
+                        "task.started",
+                        "task.progress",
+                        "task.completed",
+                      ].includes(event.payload.activity.kind)
+                    ? event.payload.activity.turnId
+                    : null;
           if (changedTurn) {
             yield* publishBenchmarkTurnChange(event.aggregateId, changedTurn);
           }

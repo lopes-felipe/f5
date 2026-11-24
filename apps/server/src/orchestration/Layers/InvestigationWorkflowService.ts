@@ -46,7 +46,11 @@ import {
 } from "../workflowSharedUtils.ts";
 import type { WorkflowRetryContext } from "../workflowPromptFragments.ts";
 import { OrchestrationCommandInvariantError } from "../Errors.ts";
-import { applyWorkflowTurnCost, workflowBudgetError } from "../workflowBudget.ts";
+import {
+  applyWorkflowTurnCost,
+  workflowBudgetError,
+  workflowSessionTurnCost,
+} from "../workflowBudget.ts";
 import {
   resolveAvailableWorkflowModelSlot,
   workflowTurnProviderFields,
@@ -2240,7 +2244,7 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
           }
           const workflow = applyWorkflowTurnCost(
             matchedWorkflow,
-            event.payload.session.turnCostUsd,
+            workflowSessionTurnCost(event),
             event.occurredAt,
           );
           if (workflow !== matchedWorkflow) {

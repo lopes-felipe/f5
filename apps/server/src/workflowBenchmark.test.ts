@@ -20,6 +20,7 @@ import {
   type AttributedBenchmarkTurn,
 } from "./workflowBenchmark.ts";
 import { benchmarkFindings, type BenchmarkOutputRow } from "./workflowBenchmarkFindings.ts";
+import { readBenchmarkSubagents, workflowTurnKey } from "./workflowBenchmarkSubagents.ts";
 import { parseWorkflowFindingOutput } from "./orchestration/workflowFindingProtocol.ts";
 import {
   captureWorkflowBenchmarkArtifact,
@@ -179,6 +180,128 @@ const run = Schema.decodeUnknownSync(CodeReviewWorkflow)({
 });
 const scope = { workflowId: run.id, runKind: "codeReview" } as const;
 
+it.layer(SqliteClient.layerMemory())("benchmark subagent attribution", (it) => {
+  it.effect("uses native task snapshots only for the matching parent turn and run", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations;
+      const activity = (
+        id: string,
+        turn: string,
+        kind: string,
+        payload: object,
+        sequence: number,
+      ) =>
+        sql`INSERT INTO projection_thread_activities
+          (activity_id, thread_id, turn_id, kind, tone, summary, payload_json, created_at, sequence)
+          VALUES (${id}, 'claude-parent', ${turn}, ${kind}, 'info', 'Agent', ${JSON.stringify(payload)}, ${now}, ${sequence})`;
+      const task = { taskId: "native-task", runId: "first-run" };
+      yield* activity(
+        "start",
+        "first-turn",
+        "task.started",
+        {
+          ...task,
+          taskType: "local_agent",
+          detail: "Explorer",
+          model: "claude-haiku-4-5",
+        },
+        1,
+      );
+      yield* activity(
+        "progress-1",
+        "first-turn",
+        "task.progress",
+        {
+          ...task,
+          usage: { total_tokens: 100 },
+        },
+        2,
+      );
+      yield* activity(
+        "progress-2",
+        "first-turn",
+        "task.progress",
+        {
+          ...task,
+          usage: { total_tokens: 250 },
+        },
+        3,
+      );
+      yield* activity(
+        "finish",
+        "first-turn",
+        "task.completed",
+        {
+          ...task,
+          status: "completed",
+          usage: { total_tokens: 300, total_cost_usd: 0 },
+        },
+        4,
+      );
+      yield* activity(
+        "late-other-parent",
+        "retry-turn",
+        "task.progress",
+        {
+          ...task,
+          usage: { total_tokens: 999 },
+        },
+        5,
+      );
+      yield* activity(
+        "retry-start",
+        "retry-turn",
+        "task.started",
+        {
+          ...task,
+          runId: "second-run",
+          taskType: "local_agent",
+          detail: "Retry explorer",
+        },
+        6,
+      );
+      yield* activity(
+        "shell-start",
+        "retry-turn",
+        "task.started",
+        {
+          taskId: "shell",
+          taskType: "local_bash",
+          detail: "Unrelated shell",
+        },
+        7,
+      );
+      const agents = yield* readBenchmarkSubagents(
+        sql,
+        ["first-turn", "retry-turn"].map((turnId) => ({
+          threadId: "claude-parent",
+          turnId,
+          provider: "claudeAgent",
+        })),
+      );
+      assert.deepStrictEqual(agents.get(workflowTurnKey("claude-parent", "first-turn")), [
+        {
+          id: "native-task::run:first-run",
+          providerId: "native-task",
+          label: "Explorer",
+          status: "completed",
+          model: "claude-haiku-4-5",
+          tokens: 300,
+          costUsd: 0,
+          findings: [],
+        },
+      ]);
+      assert.deepStrictEqual(
+        agents
+          .get(workflowTurnKey("claude-parent", "retry-turn"))
+          ?.map((agent) => [agent.id, agent.tokens]),
+        [["native-task::run:second-run", null]],
+      );
+    }),
+  );
+});
+
 test("groups only a proven shared target and restores surviving decisions after rewind", () => {
   const refs = ["thread-a/turn-a/1", "thread-b/turn-b/1", "thread-c/turn-c/1"];
   const report = (
@@ -221,7 +344,7 @@ test("groups only a proven shared target and restores surviving decisions after 
   });
   const turns = [
     report("a", "reviewer-a", "Codex", "head"),
-    report("b", "reviewer-b", "Claude", "head"),
+    report("b", "reviewer-b", "Codex", "head"),
     report("c", "reviewer-a", "Codex", "different-head"),
     report("d", "consolidation", "Codex"),
   ];
@@ -253,21 +376,65 @@ test("groups only a proven shared target and restores surviving decisions after 
               description: "Boundary logic returns the wrong row",
               location: "src/file.ts:42",
               evidence: "Input ended on a page boundary",
+              ...(index < 2
+                ? { subagentFinding: { agentId: "explorer", findingId: "child" } }
+                : {}),
             },
           ],
     ),
   }));
-  const results = benchmarkFindings(turns, outputs);
+  const results = benchmarkFindings(
+    turns,
+    outputs,
+    new Map([
+      [
+        workflowTurnKey("thread-a", "turn-a"),
+        [
+          {
+            id: "explorer",
+            providerId: "explorer",
+            label: "Explorer",
+            model: null,
+            status: "completed",
+            tokens: null,
+            costUsd: null,
+            findings: [
+              {
+                id: "child",
+                severity: "medium",
+                title: "Unexpected data at boundary",
+                description: "Reproduced",
+                location: "src/file.ts:42",
+                evidence: "Child evidence",
+              },
+            ],
+          },
+        ],
+      ],
+    ]),
+  );
   expect(results.total).toBe(2);
   const matches = results.page({
     kind: "findings",
     phase: "reviews",
-    model: "Claude",
+    model: "Codex",
+    reviewer: "reviewer-b",
+    reviewTurn: { threadId: ThreadId.make("thread-b"), turnId: TurnId.make("turn-b") },
     severity: "high",
     status: "confirmed",
     search: "page boundary",
   });
-  expect(matches.counts).toMatchObject({ confirmed: 1, checking: 1, shared: 1, dismissed: 0 });
+  expect(matches.counts).toMatchObject({ confirmed: 1, checking: 0, shared: 1, dismissed: 0 });
+  expect(matches.items[0]?.reporters.map(({ reviewer }) => reviewer?.id)).toEqual([
+    "reviewer-a",
+    "reviewer-b",
+  ]);
+  expect(matches.items[0]?.reporters.map(({ discoveredBy }) => discoveredBy?.label)).toEqual([
+    "Explorer",
+    undefined,
+  ]);
+  expect(results.turnCount(ThreadId.make("thread-a"), TurnId.make("turn-a"))?.count).toBe(1);
+  expect(results.turnCount(ThreadId.make("thread-b"), TurnId.make("turn-b"))?.count).toBe(1);
   expect(matches.items).toMatchObject([
     { id: refs[0], aliases: [refs[1]], severity: "high", test: "reported" },
   ]);
@@ -537,6 +704,11 @@ it.layer(SqliteClient.layerMemory())("workflow benchmark usage", (it) => {
         yield* fact("a", "retry-turn", 0, 0);
         yield* fact("a", "manual-turn", 1_000, 5);
         yield* fact("b", "turn-b", 1_000, 5);
+        yield* sql`INSERT INTO projection_thread_activities
+          (activity_id, thread_id, turn_id, kind, tone, summary, payload_json, created_at)
+          VALUES ('codex-child', 'thread-a', 'turn-a', 'subagent.activity', 'tool', 'Subagent',
+            '{"subagentThreadId":"child","subagentPath":"Explorer","subagentType":"completed","subagentModel":"gpt-6.2-sol"}',
+            ${now})`;
         yield* sql`UPDATE provider_turn_deliveries SET benchmark_reverted_at = ${later} WHERE delivery_id = 'retry-a'`;
         const settings = {
           usageModelAliases: { "gpt-6.2-sol": "pricing-model" },
@@ -563,6 +735,7 @@ it.layer(SqliteClient.layerMemory())("workflow benchmark usage", (it) => {
         assert.strictEqual(result.total.tokens, 200);
         assert.strictEqual(result.total.costUsd, 80 / 1_000_000);
         assert.isTrue(result.total.estimated);
+        assert.strictEqual(result.total.estimatedCodexCredits, 5_575 / 1_000_000);
         assert.strictEqual(result.ambiguous, 1);
         assert.strictEqual(result.models.length, 1);
         const turns = yield* getWorkflowBenchmark(
@@ -581,6 +754,13 @@ it.layer(SqliteClient.layerMemory())("workflow benchmark usage", (it) => {
           ],
         );
         assert.strictEqual(turns.items[2]?.status, "Reverted");
+        assert.strictEqual(turns.items[0]?.tokenScope, "unknown");
+        assert.strictEqual(turns.items[0]?.usage.tokens, 100);
+        assert.isUndefined(turns.items[0]?.usage.estimatedCodexCredits);
+        assert.strictEqual(turns.items[1]?.usage.estimatedCodexCredits, 5_575 / 1_000_000);
+        assert.strictEqual(turns.items[0]?.subagents?.[0]?.label, "Explorer");
+        assert.isNull(turns.items[0]?.subagents?.[0]?.tokens);
+        assert.isUndefined(turns.items[1]?.subagents);
         const reroute = Schema.decodeUnknownSync(ProviderRuntimeEvent)({
           type: "model.rerouted",
           threadId: "thread-a",

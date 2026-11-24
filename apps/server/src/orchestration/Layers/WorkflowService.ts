@@ -108,7 +108,11 @@ import {
   workflowPromptFitError,
   workflowPromptFit,
 } from "../workflowSharedUtils.ts";
-import { applyWorkflowTurnCost, workflowBudgetError } from "../workflowBudget.ts";
+import {
+  applyWorkflowTurnCost,
+  workflowBudgetError,
+  workflowSessionTurnCost,
+} from "../workflowBudget.ts";
 import {
   resolveAvailableWorkflowModelSlot,
   workflowTurnProviderFields,
@@ -5301,7 +5305,9 @@ export const makeWorkflowService = Effect.gen(function* () {
         )?.workflow;
         if (applying && isApplyReviewsLifecycle(applying)) {
           if (event.type === "thread.session-set") {
-            yield* reconcileApplyReviews(applying.id, { session: event.payload.session });
+            yield* reconcileApplyReviews(applying.id, {
+              session: { ...event.payload.session, turnCostUsd: workflowSessionTurnCost(event) },
+            });
             if (
               event.payload.session.status === "ready" ||
               event.payload.session.status === "stopped"
@@ -5332,7 +5338,7 @@ export const makeWorkflowService = Effect.gen(function* () {
             ) {
               current = yield* recordWorkflowTurnCost(
                 current,
-                event.payload.session.turnCostUsd,
+                workflowSessionTurnCost(event),
                 event.occurredAt,
               );
             }
@@ -5787,7 +5793,7 @@ export const makeWorkflowService = Effect.gen(function* () {
         case "thread.session-set": {
           const readModel = yield* orchestrationEngine.getReadModel();
           const applyTurnCost = (workflow: PlanningWorkflow) =>
-            recordWorkflowTurnCost(workflow, event.payload.session.turnCostUsd, event.occurredAt);
+            recordWorkflowTurnCost(workflow, workflowSessionTurnCost(event), event.occurredAt);
           const reviewMatch = workflowForReviewThread(
             readModel.planningWorkflows,
             event.payload.threadId,

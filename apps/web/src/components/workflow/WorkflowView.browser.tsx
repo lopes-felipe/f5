@@ -9,13 +9,14 @@ import type { WorkflowBenchmarkChanged, WorkflowBenchmarkInput } from "@t3tools/
 import type { AnchorHTMLAttributes } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
-import { render } from "vitest-browser-react";
+import { cleanup, render } from "vitest-browser-react";
+import { TooltipProvider } from "../ui/tooltip";
 const renderView = (view: ReactNode) =>
   render(
     <QueryClientProvider
       client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
     >
-      {view}
+      <TooltipProvider delay={0}>{view}</TooltipProvider>
     </QueryClientProvider>,
   );
 
@@ -130,8 +131,8 @@ describe("WorkflowView retry", () => {
     });
   });
 
-  afterEach(() => {
-    document.body.innerHTML = "";
+  afterEach(async () => {
+    await cleanup();
     vi.restoreAllMocks();
     useStore.setState({ threads: [], planningWorkflows: [] });
   });
@@ -158,11 +159,14 @@ describe("WorkflowView retry", () => {
       tokens: 200,
       costUsd: 0.01,
       estimated: false,
+      estimatedCodexCredits: 0.47,
       missingTokens: 0,
       missingCost: 0,
       pending: 0,
     };
     const model = { id: "gpt", label: "GPT-6.2 Sol" };
+    const reviewerA = { id: "cross-review-a", label: "Review A Cross" };
+    const reviewerB = { id: "self-review-b", label: "Review B Self" };
     const push: { listener?: ((change: WorkflowBenchmarkChanged) => void) | undefined } = {};
     nativeApiMocks.onBenchmarkChanged.mockImplementation((callback: typeof push.listener) => {
       push.listener = callback;
@@ -198,6 +202,19 @@ describe("WorkflowView retry", () => {
               status: turnStatus,
               target: null,
               aggregateRerouteUsage: modelSource === "effective",
+              reviewer: reviewerA,
+              tokenScope: "main-agent",
+              costScope: "provider-total",
+              subagents: [
+                {
+                  id: "explorer",
+                  label: "Explorer",
+                  model,
+                  status: "completed",
+                  tokens: 123,
+                  costUsd: null,
+                },
+              ],
               usage: turnUsage,
             },
           ],
@@ -211,7 +228,7 @@ describe("WorkflowView retry", () => {
             checking: 0,
             dismissed: 0,
             shared: 0,
-            exclusive: [{ model: "gpt", count: 1 }],
+            exclusive: [{ reviewer: reviewerA, count: 1 }],
           },
           items: [
             {
@@ -228,6 +245,8 @@ describe("WorkflowView retry", () => {
               reporters: [
                 {
                   model,
+                  reviewer: reviewerA,
+                  discoveredBy: { id: "explorer", label: "Explorer", evidence: "Child evidence" },
                   origin: {
                     threadId: ThreadId.make("review"),
                     turnId: TurnId.make("turn"),
@@ -250,6 +269,10 @@ describe("WorkflowView retry", () => {
             total: usage,
             findings: 1,
             review: true,
+            reviewers: [reviewerA, reviewerB],
+            findingTurns: [
+              { threadId: ThreadId.make("review"), turnId: TurnId.make("turn"), count: 1 },
+            ],
           },
         ],
         total: usage,
@@ -265,7 +288,25 @@ describe("WorkflowView retry", () => {
     await screen
       .getByRole("button", { name: "Budget spend $0.00, open workflow benchmark" })
       .click();
-    await screen.getByRole("button", { name: "1 findings in Reviews" }).click();
+    const reviews = screen.getByRole("button", { name: "Reviews", exact: true });
+    await expect.element(reviews).toBeVisible();
+    await expect.element(page.getByText(/Codex Standard credits/)).not.toBeInTheDocument();
+    await screen.getByRole("button", { name: model.label, exact: true }).hover();
+    await expect
+      .element(page.getByText("≈0.47 Codex Standard credits", { exact: true }))
+      .toBeVisible();
+    await expect.element(page.getByText("≈0.47", { exact: true })).toBeVisible();
+    const phaseRow = reviews.element().closest("tr")!;
+    const closedPhaseBackground = getComputedStyle(phaseRow).backgroundColor;
+    const reviewFindings = screen.getByRole("button", { name: "1 finding in Reviews" });
+    const turnTable = screen.getByRole("table", { name: "Reviews turns" });
+    await expect.element(turnTable).not.toBeInTheDocument();
+    await reviewFindings.click();
+    await expect.element(turnTable).toBeVisible();
+    await expect
+      .element(turnTable.getByRole("columnheader", { name: "Role", exact: true }))
+      .toBeVisible();
+    expect(getComputedStyle(phaseRow).backgroundColor).not.toBe(closedPhaseBackground);
     await expect
       .element(screen.getByText("1 confirmed · 0 in verification · 0 dismissed"))
       .toBeVisible();
@@ -291,10 +332,58 @@ describe("WorkflowView retry", () => {
         },
       ]);
     await screen.getByRole("button", { name: "Unexpected data at boundary" }).click();
-    await expect.element(screen.getByRole("link", { name: "GPT-6.2 Sol source" })).toBeVisible();
-    await screen.getByRole("button", { name: "Reviews", exact: true }).click();
+    await expect.element(screen.getByRole("link", { name: "Review A Cross source" })).toBeVisible();
+    await expect.element(screen.getByText("Child evidence", { exact: true })).toBeVisible();
+    await reviews.click();
+    await expect.element(turnTable).not.toBeInTheDocument();
+    await expect
+      .element(screen.getByRole("region", { name: "Reviews findings" }))
+      .not.toBeInTheDocument();
+    await reviews.click();
+    await expect.element(turnTable).toBeVisible();
+    for (const cell of turnTable.element().querySelectorAll("th, td")) {
+      expect(getComputedStyle(cell).textAlign).toBe("center");
+    }
     const turnRow = screen.getByRole("row", { name: /^Review thread/ });
     await expect.element(turnRow).toHaveTextContent("pending");
+    await screen.getByText("1 subagent", { exact: true }).click();
+    await expect.element(turnRow).toHaveTextContent("123 tokens");
+    await expect.element(turnRow).toHaveTextContent("Provider total (may include subagents)");
+    await screen.getByRole("button", { name: "1 finding from Review A Cross, attempt 2" }).click();
+    await expect
+      .element(screen.getByRole("heading", { name: "Review A Cross findings · attempt 2" }))
+      .toBeVisible();
+    await expect
+      .poll(() => nativeApiMocks.getBenchmark.mock.calls)
+      .toContainEqual([
+        {
+          runKind: "planning",
+          workflowId,
+          select: {
+            kind: "findings",
+            phase: "reviews",
+            search: "",
+            reviewer: reviewerA.id,
+            reviewTurn: { threadId: "review", turnId: "turn" },
+          },
+        },
+      ]);
+    await screen.getByRole("combobox", { name: "Filter by reviewer" }).selectOptions(reviewerB.id);
+    await expect
+      .poll(() => nativeApiMocks.getBenchmark.mock.calls)
+      .toContainEqual([
+        {
+          runKind: "planning",
+          workflowId,
+          select: {
+            kind: "findings",
+            phase: "reviews",
+            search: "",
+            reviewer: reviewerB.id,
+            offset: 0,
+          },
+        },
+      ]);
     turnStatus = "running";
     modelSource = "effective";
     turnModel = { id: "effective", label: "Rerouted model" };
