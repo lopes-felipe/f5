@@ -1,6 +1,8 @@
 import type { OrchestrationGetLatestSequenceResult } from "@t3tools/contracts";
 import { raceWithAbort } from "@t3tools/shared/abortSignal";
 
+export const FULL_RECONCILIATION_INTERVAL_MS = 10 * 60_000;
+
 interface ReconciliationDeps {
   readonly probe: () => Promise<OrchestrationGetLatestSequenceResult>;
   readonly committedSequence: () => number;
@@ -40,7 +42,7 @@ export function startSequenceReconciliation(deps: ReconciliationDeps) {
         lastFullSync = deps.now();
         return;
       }
-      if (deps.now() - lastFullSync >= 600_000) {
+      if (deps.now() - lastFullSync >= FULL_RECONCILIATION_INTERVAL_MS) {
         await deps.syncSnapshot();
         lastFullSync = deps.now();
         return;

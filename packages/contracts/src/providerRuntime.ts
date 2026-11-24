@@ -110,6 +110,8 @@ const RuntimeErrorClass = Schema.Literals([
   "transport_error",
   "permission_error",
   "validation_error",
+  /** The provider account's login expired or was rejected; signing in again fixes it. */
+  "auth_error",
   "unknown",
 ]);
 export type RuntimeErrorClass = typeof RuntimeErrorClass.Type;
@@ -323,6 +325,7 @@ export type ThreadMetadataUpdatedPayload = typeof ThreadMetadataUpdatedPayload.T
 
 const ThreadTokenUsageUpdatedPayload = Schema.Struct({
   usage: Schema.Unknown,
+  autoCompactThreshold: Schema.optional(Schema.NullOr(NonNegativeInt)),
   contextTokens: Schema.optional(NonNegativeInt),
   modelContextWindowTokens: Schema.optional(NonNegativeInt),
 });
@@ -502,6 +505,7 @@ const UserInputResolvedPayload = Schema.Struct({
 export type UserInputResolvedPayload = typeof UserInputResolvedPayload.Type;
 
 const TaskStartedPayload = Schema.Struct({
+  prompt: Schema.optional(Schema.String),
   nativeParentSessionId: Schema.optional(
     TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(128)),
   ),

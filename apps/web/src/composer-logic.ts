@@ -6,7 +6,7 @@ import {
 import { INLINE_TERMINAL_CONTEXT_PLACEHOLDER } from "./lib/terminalContext";
 
 export type ComposerTriggerKind = "path" | "slash-command" | "skill";
-export type ComposerSlashCommand = "model" | "plan" | "default";
+export type ComposerSlashCommand = "model" | "plan" | "default" | "clear";
 
 export interface ComposerTrigger {
   kind: ComposerTriggerKind;
@@ -135,6 +135,7 @@ export function expandCollapsedComposerCursor(
       segment.type === "mention" ||
       segment.type === "pull-request" ||
       segment.type === "thread-reference" ||
+      segment.type === "model-reference" ||
       segment.type === "assistant-quote"
     ) {
       const expandedLength = segment.raw.length;
@@ -216,6 +217,7 @@ export function collapseExpandedComposerCursor(
       segment.type === "mention" ||
       segment.type === "pull-request" ||
       segment.type === "thread-reference" ||
+      segment.type === "model-reference" ||
       segment.type === "assistant-quote"
     ) {
       const expandedLength = segment.raw.length;
@@ -335,7 +337,7 @@ export function detectComposerTrigger(text: string, cursorInput: number): Compos
 
 export function parseStandaloneComposerSlashCommand(
   text: string,
-): Exclude<ComposerSlashCommand, "model"> | null {
+): Exclude<ComposerSlashCommand, "model" | "clear"> | null {
   const match = /^\/(plan|default)\s*$/i.exec(text.trim());
   if (!match) {
     return null;

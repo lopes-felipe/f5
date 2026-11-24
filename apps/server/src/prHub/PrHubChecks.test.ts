@@ -405,6 +405,21 @@ const unconfirmed = new SourceControlProviderError({
   requestDispatched: true,
 });
 
+it.effect("re-runs only the selected failed workflow on the prepared head", () =>
+  run(({ engine, state }) =>
+    Effect.gen(function* () {
+      const input: ForgePrepareOperationInput = {
+        ...rerun("rerun-one"),
+        payload: { kind: "action", action: "rerun-failed-checks", workflowRunId: 13 },
+      };
+      state.failedRuns = [failedRun(11), failedRun(13)];
+      yield* engine.prepareOperation(input);
+      assert.strictEqual((yield* engine.submitOperation(identify(input))).status, "succeeded");
+      assert.deepStrictEqual(state.reruns, [13]);
+    }),
+  ),
+);
+
 it.effect("restarts the other runs when GitHub refuses one, and says so", () =>
   run(({ engine, state }) =>
     Effect.gen(function* () {

@@ -1,6 +1,7 @@
 import * as Crypto from "node:crypto";
 import type * as Http from "node:http";
 import * as Net from "node:net";
+import { isValidDesktopBootstrapToken } from "@t3tools/shared/desktopBootstrapToken";
 
 const AUTH_SESSION_PATH = "/auth/session";
 const AUTH_STATUS_PATH = "/auth/status";
@@ -28,6 +29,7 @@ interface AuthFailureBucket {
 }
 
 export interface ServerAuthOptions {
+  readonly rotateDesktopBootstrapToken?: boolean;
   readonly profileId?: string;
   readonly now?: () => number;
   readonly failureWindowMs?: number;
@@ -358,6 +360,11 @@ export function makeServerAuth(
   const authFailuresBySource = new Map<string, AuthFailureBucket>();
   let globalAuthFailures: AuthFailureBucket | null = null;
   const now = options.now ?? Date.now;
+  const tokenValid = (presented: string) =>
+    secretsEqual(expectedToken, presented) ||
+    (options.rotateDesktopBootstrapToken === true &&
+      enabled &&
+      isValidDesktopBootstrapToken(expectedToken, presented, now()));
   const failureWindowMs = options.failureWindowMs ?? AUTH_FAILURE_WINDOW_MS;
   const lockoutMs = options.lockoutMs ?? AUTH_LOCKOUT_MS;
   const maxFailuresPerSource = options.maxFailuresPerSource ?? MAX_AUTH_FAILURES_PER_SOURCE;
@@ -492,7 +499,7 @@ export function makeServerAuth(
     const source = clientAddress(request, isListedProxy);
     const timestamp = now();
     if (limited && sourceBlockedUntil(source, timestamp) > timestamp) return false;
-    if (secretsEqual(expectedToken, presented)) return true;
+    if (tokenValid(presented)) return true;
     if (limited && !countedTokenFailures.has(request)) {
       countedTokenFailures.add(request);
       recordSourceFailure(source, timestamp);
@@ -560,7 +567,7 @@ export function makeServerAuth(
     try {
       const body = JSON.parse(await readRequestBody(request)) as { token?: unknown };
       const providedToken = typeof body.token === "string" ? body.token : "";
-      if (!secretsEqual(expectedToken, providedToken)) {
+      if (!tokenValid(providedToken)) {
         const failedAt = now();
         const blockedUntil = recordAuthFailure(source, failedAt);
         if (blockedUntil > failedAt) {
@@ -609,7 +616,12 @@ export function makeServerAuth(
     // loopback so they cannot leak on remote URLs or proxy access logs. A
     // client that a local reverse proxy forwards for is not on loopback.
     const legacyToken = url.searchParams.get("token") ?? "";
-    return isDirectLocalRequest(request) && secretsEqual(expectedToken, legacyToken);
+    return (
+      isDirectLocalRequest(request) &&
+      (options.rotateDesktopBootstrapToken === true
+        ? isValidDesktopBootstrapToken(expectedToken, legacyToken, now())
+        : secretsEqual(expectedToken, legacyToken))
+    );
   };
 
   const isWebSocketOriginAllowed: ServerAuth["isWebSocketOriginAllowed"] = (request) => {

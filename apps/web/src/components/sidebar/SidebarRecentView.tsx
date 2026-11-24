@@ -1,4 +1,5 @@
 import type { ProjectId, ThreadId } from "@t3tools/contracts";
+import { projectChoices } from "../../lib/projectChoices";
 import { isScratchProject } from "@t3tools/shared/scratchProject";
 import { Schema } from "effect";
 import { ChevronRightIcon } from "lucide-react";
@@ -101,7 +102,7 @@ export function SidebarRecentView(props: {
 
   const projectById = new Map(projects.map((project) => [project.id, project] as const));
   const allItems = collectRecentSidebarItems(listsByProjectId, props.liveActivityHours);
-  const listedProjects = projects.filter((project) => !isScratchProject(project));
+  const listedProjects = projectChoices(projects.filter((project) => !isScratchProject(project)));
   const scratchProjects = projects.filter(
     (project) =>
       isScratchProject(project) && allItems.some((item) => item.projectId === project.id),

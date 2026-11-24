@@ -1,4 +1,3 @@
-import type { OrchestrationThread } from "@t3tools/contracts";
 import { roughTokenEstimateFromCharacters } from "@t3tools/shared/model";
 
 import { truncatePatchAtFileBoundary } from "../git/patchTruncation.ts";
@@ -7,6 +6,7 @@ import { buildCodeReviewPrompt } from "./workflowPrompts.ts";
 import { structuredReviewPrompt } from "./workflowBenchmarkDispatch.ts";
 import {
   workflowArtifactFit,
+  type WorkflowFitThread,
   WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT,
 } from "./workflowSharedUtils.ts";
 
@@ -15,7 +15,7 @@ export function prepareCodeReviewPrompt(
   input: Parameters<typeof buildCodeReviewPrompt>[0] & {
     readonly enforceArtifactBudget: boolean;
     readonly structuredFindings?: boolean;
-    readonly thread?: Pick<OrchestrationThread, "estimatedContextTokens"> | null | undefined;
+    readonly thread?: WorkflowFitThread | null | undefined;
   },
 ): PreparedImplementationReviewPrompt | OrchestrationCommandInvariantError {
   const fixedArtifacts = [input.requirementPrompt, input.mergedPlanMarkdown] as const;

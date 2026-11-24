@@ -13,6 +13,7 @@ import {
 } from "@t3tools/contracts";
 import { Effect } from "effect";
 import { withEventBase } from "./eventBase.ts";
+import { resolveRebindSessionTurn } from "./sessionRebind.ts";
 import {
   decideWorkflowArchive,
   decideWorkflowDelete,
@@ -57,6 +58,29 @@ import {
 const nowIso = () => new Date().toISOString();
 const DEFAULT_ASSISTANT_DELIVERY_MODE = "buffered" as const;
 export const GLOBAL_PIN_AGGREGATE_ID = ProjectId.makeUnsafe("f5-global-pins");
+
+type SessionSetInput = Extract<OrchestrationCommand, { type: "thread.session.set" }>["session"];
+
+/**
+ * An expired-login failure lasts only while session updates still concern it:
+ * updates for the failed turn itself, or status refreshes that keep the same
+ * error. A different turn, a new error (such as a later send that fails before
+ * starting), a cleared error, or another provider account ends it. Ingestion
+ * passes the failure explicitly when the failed turn completes.
+ */
+export function carryAuthFailure(
+  next: SessionSetInput,
+  previous: OrchestrationReadModel["threads"][number]["session"] | null | undefined,
+): SessionSetInput["authFailure"] {
+  if (next.authFailure !== undefined) return next.authFailure;
+  const failure = previous?.authFailure;
+  if (!failure) return null;
+  if (next.lastError === null) return null;
+  if ((next.providerInstanceId ?? failure.providerInstanceId) !== failure.providerInstanceId)
+    return null;
+  if (next.activeTurnId) return next.activeTurnId === failure.turnId ? failure : null;
+  return (next.lastErrorId ?? null) === (previous?.lastErrorId ?? null) ? failure : null;
+}
 
 /** The scratch project is server-owned: its folder, actions, memories and skills stay fixed. */
 function scratchProjectRefusal(commandType: string, what: string) {
@@ -128,6 +152,52 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
   OrchestrationCommandInvariantError | ThreadTurnAlreadyActiveError | ThreadSettingsChangedError
 > {
   switch (command.type) {
+    case "thread.import": {
+      const project = yield* requireProject({ readModel, command, projectId: command.projectId });
+      if (project.workspaceRoot !== command.expectedWorkspaceRoot)
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "The project directory changed before history import.",
+        });
+      if (command.worktreePath !== null || command.branch !== null)
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Imported history cannot create a worktree or change branches.",
+        });
+      const created = yield* decideCommand({
+        command: { ...command, type: "thread.create" },
+        readModel,
+        providerInstances,
+        nativeRemovedMessageIds,
+      });
+      return [
+        ...(Array.isArray(created) ? created : [created]).map((event) =>
+          event.type === "thread.created" && command.modelSelection
+            ? { ...event, payload: { ...event.payload, modelSelection: command.modelSelection } }
+            : event,
+        ),
+        ...command.messages.map((message, index) => ({
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: message.createdAt,
+            commandId: command.commandId,
+            metadata: { source: "agent-history-import" },
+          }),
+          type: "thread.message-sent" as const,
+          payload: {
+            threadId: command.threadId,
+            messageId: MessageId.make("import:" + command.threadId + ":" + index),
+            role: message.role,
+            text: message.text,
+            turnId: null,
+            streaming: false,
+            createdAt: message.createdAt,
+            updatedAt: message.createdAt,
+          },
+        })),
+      ];
+    }
     case "project.create": {
       yield* requireProjectAbsent({
         readModel,
@@ -201,6 +271,11 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
       });
       if (
         isScratchProject(project) &&
+        (command.pinned !== undefined || command.archived !== undefined)
+      )
+        return yield* scratchProjectRefusal(command.type, "its visibility");
+      if (
+        isScratchProject(project) &&
         (command.workspaceRoot !== undefined || command.scripts !== undefined)
       )
         return yield* scratchProjectRefusal(command.type, "its folder or actions");
@@ -234,6 +309,8 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
         payload: {
           projectId: command.projectId,
           ...(command.title !== undefined ? { title: command.title } : {}),
+          ...(command.pinned !== undefined ? { pinned: command.pinned } : {}),
+          ...(command.archived !== undefined ? { archived: command.archived } : {}),
           ...(command.workspaceRoot !== undefined ? { workspaceRoot: command.workspaceRoot } : {}),
           ...(command.defaultModel !== undefined ? { defaultModel: command.defaultModel } : {}),
           ...(command.defaultEnvMode !== undefined
@@ -706,6 +783,23 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
         threadId: command.threadId,
       });
       const scratchPath = command.scratchPath ?? null;
+      if (command.sideChatOf) {
+        const parent = readModel.threads.find(
+          (thread) => thread.id === command.sideChatOf && thread.deletedAt === null,
+        );
+        if (
+          !parent ||
+          parent.projectId !== project.id ||
+          parent.sideChatOf ||
+          parent.worktreePath !== command.worktreePath ||
+          parent.branch !== command.branch ||
+          (parent.scratchPath ?? null) !== scratchPath
+        )
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "A side chat needs a main thread in the same project.",
+          });
+      }
       if (isScratchProject(project)) {
         // The engine allocates the folder before dispatch; without one a scratch thread
         // would have no workspace of its own, so creation fails closed.
@@ -741,12 +835,16 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
           titleRevision: 0,
           titleUpdatedAt: command.createdAt,
           model: command.model,
+          ...(command.sideChatOf && command.modelSelection
+            ? { modelSelection: command.modelSelection }
+            : {}),
           runtimeMode: command.runtimeMode,
           interactionMode: command.interactionMode,
           branch: command.branch,
           worktreePath: command.worktreePath,
           scratchPath,
           threadReferences: command.threadReferences ?? [],
+          ...(command.sideChatOf ? { sideChatOf: command.sideChatOf } : {}),
           ...(command.scheduledOrigin ? { scheduledOrigin: command.scheduledOrigin } : {}),
           ...(command.pullRequest ? { pullRequest: command.pullRequest } : {}),
           createdAt: command.createdAt,
@@ -1256,6 +1354,7 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
           ...(command.modelSelection !== undefined
             ? { modelSelection: command.modelSelection }
             : {}),
+          ...(command.deferModelSwitch ? { deferModelSwitch: true as const } : {}),
           ...(command.branch !== undefined ? { branch: command.branch } : {}),
           ...(command.worktreePath !== undefined ? { worktreePath: command.worktreePath } : {}),
           updatedAt: occurredAt,
@@ -1497,6 +1596,11 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
         threadId: command.threadId,
       });
       const steering = command.type === "thread.turn.steer";
+      if (steering && command.freshContext)
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A fresh session cannot steer an active turn.",
+        });
       if (
         steering &&
         (targetThread.session?.activeTurnId !== command.expectedTurnId ||
@@ -1712,6 +1816,7 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
           ...(command.workflowAttribution
             ? { workflowAttribution: command.workflowAttribution }
             : {}),
+          ...(command.freshContext ? { freshContext: true } : {}),
           ...(command.continuationRequestId
             ? { continuationRequestId: command.continuationRequestId }
             : {}),
@@ -2045,6 +2150,9 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
         command,
         threadId: command.threadId,
       });
+      const session = command.rebindLiveSession
+        ? resolveRebindSessionTurn(previous, command.session)
+        : command.session;
       return {
         ...withEventBase({
           aggregateKind: "thread",
@@ -2057,15 +2165,16 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
         payload: {
           threadId: command.threadId,
           session: {
-            ...command.session,
+            ...session,
             usageLimit:
-              command.session.usageLimit !== undefined
-                ? command.session.usageLimit
-                : previous.session?.lastErrorId === command.session.lastErrorId &&
-                    (!command.session.activeTurnId ||
-                      command.session.activeTurnId === previous.session?.usageLimit?.turnId)
+              session.usageLimit !== undefined
+                ? session.usageLimit
+                : previous.session?.lastErrorId === session.lastErrorId &&
+                    (!session.activeTurnId ||
+                      session.activeTurnId === previous.session?.usageLimit?.turnId)
                   ? (previous.session?.usageLimit ?? null)
                   : null,
+            authFailure: carryAuthFailure(session, previous.session),
           },
           ...(command.settledTurnId !== undefined ? { settledTurnId: command.settledTurnId } : {}),
           ...(command.usageFact !== undefined ? { usageFact: command.usageFact } : {}),

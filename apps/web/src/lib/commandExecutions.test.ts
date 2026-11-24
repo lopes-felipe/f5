@@ -19,7 +19,7 @@ describe("displayCommandExecutionCommand", () => {
 
   it("leaves non-wrapper commands unchanged", () => {
     expect(displayCommandExecutionCommand("bun run typecheck")).toBe("bun run typecheck");
-    expect(displayCommandExecutionCommand("cmd.exe /d /s /c dir")).toBe("cmd.exe /d /s /c dir");
+    expect(displayCommandExecutionCommand("cmd.exe /k dir")).toBe("cmd.exe /k dir");
   });
 
   it("unescapes common single-quoted shell payloads", () => {

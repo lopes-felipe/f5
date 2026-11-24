@@ -1,5 +1,10 @@
 import type { ThreadSearchInput, ThreadSearchResult } from "./threadSearch";
 import type {
+  AgentSessionImportInput,
+  AgentSessionImportResult,
+  AgentSessionScanResult,
+} from "./agentSessions";
+import type {
   McpAppCallToolInput,
   McpAppReadResourceInput,
   McpAppToolInfoInput,
@@ -125,6 +130,8 @@ import type {
   PrHubPeekInput,
   PrHubStack,
   PrHubStackInput,
+  PrHubCompletionsInput,
+  PrHubCompletion,
   PrHubViewedFilesInput,
   PrHubSetViewedFileInput,
   ForgePrepareOperationInput,
@@ -202,6 +209,9 @@ import type {
 import type {
   ProjectCheckedInConfig,
   ProjectGetCheckedInConfigInput,
+  ProjectListRepositoriesInput,
+  ProjectSetRepositoryInput,
+  ProjectRepository,
 } from "./checkedInProjectFile";
 import type { FilesystemBrowseInput, FilesystemBrowseResult } from "./filesystem";
 import type {
@@ -216,6 +226,7 @@ import type {
   ServerKeybindingMutationResult,
   ServerProviderUpdatedPayload,
   ServerCheckProviderUpdatesInput,
+  ServerRefreshProvidersInput,
   ServerRunProviderUpdateInput,
   ServerRunProviderUpdateResult,
   ServerRemoveKeybindingInput,
@@ -367,6 +378,8 @@ import type {
   NextTurnQueueRetryInput,
   NextTurnQueueSetPausedInput,
   NextTurnQueueScheduleUsageLimitResumeInput,
+  NextTurnQueueResendAuthFailedTurnInput,
+  NextTurnQueueResendAuthFailedTurnResult,
   NextTurnQueueCancelUsageLimitResumeInput,
   NextTurnQueueRefreshUsageLimitResumeInput,
   NextTurnQueueSnapshot,
@@ -422,6 +435,7 @@ import type {
   PrHubDetailResult,
   PrHubFilesInput,
   PrHubFilesPage,
+  PrHubChangeBreakdownResult,
   PrHubThreadsInput,
   PrHubReplyInput,
   PrHubRecoverReplyInput,
@@ -499,6 +513,7 @@ import type {
   OrchestrationGetStartupSnapshotInput,
   OrchestrationGetStartupSnapshotResult,
   OrchestrationGetLatestSequenceResult,
+  OrchestrationGetLatestSequenceInput,
   OrchestrationGetThreadCommandExecutionInput,
   OrchestrationGetThreadCommandExecutionResult,
   OrchestrationGetThreadCommandExecutionsInput,
@@ -1159,7 +1174,13 @@ export interface NativeApi {
     onLocalServersUpdated: (callback: (event: DiscoveredLocalServerList) => void) => () => void;
   };
   projects: {
+    scanAgentSessions: () => Promise<AgentSessionScanResult>;
+    importAgentSessions: (input: AgentSessionImportInput) => Promise<AgentSessionImportResult>;
     getCheckedInConfig: (input: ProjectGetCheckedInConfigInput) => Promise<ProjectCheckedInConfig>;
+    listRepositories: (
+      input: ProjectListRepositoriesInput,
+    ) => Promise<ReadonlyArray<ProjectRepository>>;
+    setRepository: (input: ProjectSetRepositoryInput) => Promise<void>;
     authorizeEntry: (input: ProjectAuthorizeEntryInput) => Promise<ProjectAuthorizeEntryResult>;
     clone: (input: ProjectCloneInput) => Promise<ProjectCloneJob>;
     cloneList: () => Promise<ReadonlyArray<ProjectCloneJob>>;
@@ -1250,7 +1271,7 @@ export interface NativeApi {
     getProjectSettings: (input: { projectId: ProjectId }) => Promise<ProjectSettingsResult>;
     migrateClientSetting: (input: MigrateClientSettingInput) => Promise<MigrateClientSettingResult>;
     refreshProviders: (
-      input?: ServerCheckProviderUpdatesInput,
+      input?: ServerRefreshProvidersInput,
     ) => Promise<ServerProviderUpdatedPayload>;
     checkProviderUpdates: (
       input?: ServerCheckProviderUpdatesInput,
@@ -1359,6 +1380,9 @@ export interface NativeApi {
     scheduleUsageLimitResume: (
       input: NextTurnQueueScheduleUsageLimitResumeInput,
     ) => Promise<NextTurnQueueSnapshot>;
+    resendAuthFailedTurn: (
+      input: NextTurnQueueResendAuthFailedTurnInput,
+    ) => Promise<NextTurnQueueResendAuthFailedTurnResult>;
     cancelUsageLimitResume: (input: NextTurnQueueCancelUsageLimitResumeInput) => Promise<{
       readonly kind: "cancelled" | "already_sending";
       readonly snapshot: NextTurnQueueSnapshot;
@@ -1547,6 +1571,7 @@ export interface NativeApi {
     recoverOperation: (input: ForgeOperationInput) => Promise<ForgeOperation>;
     cancelOperation: (input: ForgeOperationInput) => Promise<ForgeOperation>;
     listReviewerCandidates: (input: PrHubStackInput) => Promise<unknown>;
+    completions: (input: PrHubCompletionsInput) => Promise<ReadonlyArray<PrHubCompletion>>;
     getChecks: (input: PrHubChecksInput) => Promise<PrHubChecksResult>;
     getCheckLog: (input: PrHubCheckLogInput) => Promise<PrHubCheckLog>;
 
@@ -1581,6 +1606,7 @@ export interface NativeApi {
     getTimeline: (input: PrHubTimelineInput) => Promise<PrHubTimelinePage>;
     getUnresolvedThreads: (input: PrHubDetailInput) => Promise<PrHubUnresolvedThreadsResult>;
     getFiles: (input: PrHubFilesInput) => Promise<PrHubFilesPage>;
+    getChangeBreakdown: (input: PrHubDetailInput) => Promise<PrHubChangeBreakdownResult | null>;
     replyReviewThread: (input: PrHubReplyInput) => Promise<PrHubReplyOperation>;
     getReplyOperation: (input: PrHubThreadsInput) => Promise<PrHubReplyOperation | null>;
     recoverReply: (input: PrHubRecoverReplyInput) => Promise<PrHubReplyOperation>;
@@ -1611,7 +1637,9 @@ export interface NativeApi {
   };
   orchestration: {
     searchThread: (input: ThreadSearchInput) => Promise<ThreadSearchResult>;
-    getLatestSequence: () => Promise<OrchestrationGetLatestSequenceResult>;
+    getLatestSequence: (
+      input?: OrchestrationGetLatestSequenceInput,
+    ) => Promise<OrchestrationGetLatestSequenceResult>;
     getSnapshot: () => Promise<OrchestrationReadModel>;
     getStartupSnapshot: (
       input?: OrchestrationGetStartupSnapshotInput,

@@ -28,22 +28,22 @@ describe("Claude SDK executable resolution", () => {
   });
   it.each([undefined, null, "", " ", "claude", " claude "])(
     "uses the bundled executable for the default SDK setting %s",
-    (setting) => {
-      expect(resolveClaudeSdkExecutableOptions(setting)).toEqual({
+    async (setting) => {
+      expect(await resolveClaudeSdkExecutableOptions(setting)).toEqual({
         pathToClaudeCodeExecutable: resolveBundledClaudeExecutable(),
       });
     },
   );
 
-  it("uses the same executable for SDK sessions and CLI probes", () => {
-    expect(resolveClaudeSdkExecutableOptions(undefined).pathToClaudeCodeExecutable).toBe(
-      resolveClaudeCliInvocation(undefined, ["--version"], { PATH: "" }).file,
+  it("uses the same executable for SDK sessions and CLI probes", async () => {
+    expect((await resolveClaudeSdkExecutableOptions(undefined)).pathToClaudeCodeExecutable).toBe(
+      (await resolveClaudeCliInvocation(undefined, ["--version"], { PATH: "" })).file,
     );
   });
 
-  it("preserves explicit native ASAR-named directories outside Electron", () => {
+  it("preserves explicit native ASAR-named directories outside Electron", async () => {
     expect(
-      resolveClaudeSdkExecutableOptions(
+      await resolveClaudeSdkExecutableOptions(
         "/F5.app/Contents/Resources/app.asar/bin/claude",
         {},
         "darwin",
@@ -53,12 +53,12 @@ describe("Claude SDK executable resolution", () => {
     });
   });
 
-  it("resolves an unpacked Windows executable using a real filesystem fixture", () => {
+  it("resolves an unpacked Windows executable using a real filesystem fixture", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "f5-claude-sdk-"));
     const executable = path.join(directory, "app.asar.unpacked", "bin", "claude.exe");
     mkdirSync(path.dirname(executable), { recursive: true });
     writeFileSync(executable, "");
-    expect(resolveClaudeSdkExecutableOptions(executable, {}, "win32")).toEqual({
+    expect(await resolveClaudeSdkExecutableOptions(executable, {}, "win32")).toEqual({
       pathToClaudeCodeExecutable: executable,
     });
   });
@@ -108,11 +108,11 @@ describe("Claude SDK executable resolution", () => {
     ).toThrow(CommandNotFoundError);
   });
 
-  it("ignores PATH-installed Windows shims for the default setting on every host", () => {
+  it("ignores PATH-installed Windows shims for the default setting on every host", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "f5-claude-sdk-"));
     writeFileSync(path.join(directory, "claude.CMD"), "@echo off\r\n");
     expect(
-      resolveClaudeSdkExecutableOptions("claude", { PATH: directory, PATHEXT: ".CMD" }),
+      await resolveClaudeSdkExecutableOptions("claude", { PATH: directory, PATHEXT: ".CMD" }),
     ).toEqual({ pathToClaudeCodeExecutable: resolveBundledClaudeExecutable() });
   });
 
@@ -120,33 +120,33 @@ describe("Claude SDK executable resolution", () => {
     expect(resolveBundledClaudeExecutable()).toMatch(/claude(?:\.exe)?$/);
   });
 
-  it("uses the bundled executable for default CLI probes without a PATH-installed claude", () => {
-    const invocation = resolveClaudeCliInvocation(undefined, ["--version"], { PATH: "" });
+  it("uses the bundled executable for default CLI probes without a PATH-installed claude", async () => {
+    const invocation = await resolveClaudeCliInvocation(undefined, ["--version"], { PATH: "" });
     expect(invocation.file).toBe(resolveBundledClaudeExecutable());
     expect(invocation.args).toEqual(["--version"]);
     expect(invocation.kind).toBe("native");
   });
 
-  it("uses Node for an explicit JavaScript entry", () => {
+  it("uses Node for an explicit JavaScript entry", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "f5-claude-sdk-"));
     const script = path.join(directory, "cli.js");
     writeFileSync(script, "console.log('claude')\n");
     chmodSync(script, 0o755);
-    expect(resolveClaudeSdkExecutableOptions(script)).toEqual({
+    expect(await resolveClaudeSdkExecutableOptions(script)).toEqual({
       pathToClaudeCodeExecutable: script,
       executable: "node",
     });
   });
 
-  it("rejects Windows cmd shims with a typed, actionable error", () => {
+  it("rejects Windows cmd shims with a typed, actionable error", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "f5-claude-sdk-"));
     writeFileSync(path.join(directory, "custom-claude.CMD"), "@echo off\r\n");
-    expect(() =>
+    await expect(
       resolveClaudeSdkExecutableOptions(
         "custom-claude",
         { PATH: directory, PATHEXT: ".CMD" },
         "win32",
       ),
-    ).toThrow(CommandNotFoundError);
+    ).rejects.toThrow(CommandNotFoundError);
   });
 });

@@ -3,6 +3,7 @@ import type {
   PrAttentionReason,
   PrHubListFilter,
   PrHubListInput,
+  PrHubPeek,
   PrHubSection,
   PrAttentionState,
   PrCheckRollup,
@@ -13,6 +14,32 @@ import type {
   TrackedPullRequest,
 } from "@t3tools/contracts";
 import { PR_HUB_STALE_AFTER_DAYS_DEFAULT } from "@t3tools/contracts";
+
+export function prHubPeekFromTracked(pr: TrackedPullRequest): PrHubPeek {
+  const hasStats = pr.provider === "github" || pr.additions > 0 || pr.deletions > 0;
+  return {
+    provider: pr.provider,
+    host: pr.host,
+    repository: pr.repository.nameWithOwner,
+    number: pr.number,
+    title: pr.title.slice(0, 1000),
+    url: pr.url,
+    state: pr.state,
+    author: pr.author,
+    isDraft: pr.isDraft,
+    additions: hasStats ? pr.additions : null,
+    deletions: hasStats ? pr.deletions : null,
+    createdAt: pr.createdAt,
+    updatedAt: pr.updatedAt,
+    mergedAt: null,
+    status: {
+      checkRollup: pr.checkRollup,
+      reviewDecision: pr.reviewDecision,
+      mergeable: pr.mergeable,
+      unresolvedThreadCount: pr.unresolvedThreadCount,
+    },
+  };
+}
 
 export interface RawPrFields {
   readonly mergeRequirements?: TrackedPullRequest["mergeRequirements"] | undefined;

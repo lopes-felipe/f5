@@ -17,6 +17,27 @@ const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettingsPatch = Schema.encodeSync(ServerSettingsPatch);
 const decodeProjectSettingsResult = Schema.decodeUnknownSync(ProjectSettingsResult);
 
+it("rejects text generators that shadow native or configured provider ids on settings load", () => {
+  const generator = {
+    kind: "openaiCompatible",
+    label: "Test",
+    baseUrl: "https://example.test/v1",
+    apiKey: "",
+    enabled: true,
+    models: ["model"],
+  };
+  expect(() => decodeServerSettings({ textGenerators: { codex: generator } })).toThrow();
+  expect(() =>
+    decodeServerSettings({
+      textGenerators: { textgen_custom: generator },
+      providerInstances: { textgen_custom: { driver: "codex", config: {} } },
+    }),
+  ).toThrow();
+  expect(
+    decodeServerSettings({ textGenerators: { textgen_unique: generator } }).textGenerators,
+  ).toHaveProperty("textgen_unique");
+});
+
 describe("usageMonthlyBudget", () => {
   it("defaults to no budget and accepts a cost, token, or cleared budget", () => {
     expect(decodeServerSettings({}).usageMonthlyBudget).toBeNull();
@@ -93,6 +114,30 @@ describe("ServerSettings project overrides across versions", () => {
         projectSettingsOverrides: { [projectId]: { autoPullDefaultBranch: "yes" } },
       }),
     ).toThrow();
+  });
+});
+
+describe("ServerSettings legacy Antigravity block", () => {
+  it("drops a Gemini key written into the legacy block, keeping the other fields", () => {
+    const settings = decodeServerSettings({
+      providers: {
+        antigravity: {
+          enabled: true,
+          authMethod: "gemini-api-key",
+          apiKey: "AIzaSyLegacyPlaintext00000",
+          apiKeyRedacted: true,
+        },
+      },
+    });
+    expect(settings.providers.antigravity).toMatchObject({
+      enabled: true,
+      authMethod: "gemini-api-key",
+    });
+    expect(settings.providers.antigravity).not.toHaveProperty("apiKey");
+    expect(settings.providers.antigravity).not.toHaveProperty("apiKeyRedacted");
+    expect(JSON.stringify(Schema.encodeSync(ServerSettings)(settings))).not.toContain(
+      "AIzaSyLegacyPlaintext",
+    );
   });
 });
 

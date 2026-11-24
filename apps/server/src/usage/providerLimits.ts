@@ -14,6 +14,7 @@ import { makeAccountUsageCapability, emptyAccountSection } from "./Layers/Accoun
 import { accountUsageIdentity } from "./accountUsage.ts";
 import { asRecord, asNonNegativeNumber, asTrimmedString, resetDate } from "./accountUsageJson.ts";
 import { mergeProviderUsageWindows } from "./providerUsageWindows.ts";
+import { makeAntigravityQuotaReader } from "./antigravityQuota.ts";
 
 // The capability has an eight-second deadline; leave one second to publish collected quotas.
 const ANTIGRAVITY_READ_BUDGET_MS = 7_000;
@@ -429,10 +430,35 @@ export function makeProviderLimits(input: {
   environment: NodeJS.ProcessEnv;
   serverUrl?: string;
   apiEndpoint?: string;
+  antigravityProfileDirectory?: string;
+  /** Gemini API key instances have no subscription quota: usage is billed per token. */
+  antigravityBilledPerToken?: boolean;
+  /** False when the runtime version is not certified for the private token format. */
+  antigravityNativeReaders?: () => Promise<boolean>;
 }) {
+  const readNativeAntigravity =
+    input.antigravityProfileDirectory && !input.antigravityBilledPerToken
+      ? makeAntigravityQuotaReader({
+          profileDirectory: input.antigravityProfileDirectory,
+          normalize: (response, requestedAt) =>
+            normalizeProviderLimits("antigravity", response, requestedAt),
+        })
+      : undefined;
   const read = Effect.tryPromise({
     try: async (signal): Promise<ReadonlyArray<AccountUsageSection>> => {
       const env = input.environment;
+      if (input.provider === "antigravity" && input.antigravityBilledPerToken) {
+        const fetchedAt = new Date().toISOString();
+        return [
+          {
+            kind: "provider-limits",
+            outcome: "available",
+            errorCode: null,
+            lastAttemptAt: fetchedAt,
+            snapshot: { fetchedAt, data: { windows: [], plan: "Billed per token" } },
+          },
+        ];
+      }
       const home = env.HOME || env.USERPROFILE || os.homedir();
       let value: unknown;
       let partial = false;
@@ -625,6 +651,23 @@ export function makeProviderLimits(input: {
             },
           ];
         value = await fetchJson("https://opencode.ai/zen/go/v1/usage", token, signal);
+      } else if (readNativeAntigravity && !env.F5_CLIPROXY_HUB_URL && !env.F5_CLIPROXY_USAGE_URL) {
+        const certified = (await input.antigravityNativeReaders?.()) ?? true;
+        const result = certified
+          ? await readNativeAntigravity(signal, performance.now() + ANTIGRAVITY_READ_BUDGET_MS)
+          : undefined;
+        if (!result)
+          return [
+            {
+              ...emptyAccountSection("provider-limits"),
+              outcome: "unavailable",
+              errorCode: "unsupported",
+              lastAttemptAt: new Date().toISOString(),
+            },
+          ];
+        value = { windows: result.windows };
+        partial = result.partial;
+        accountFingerprint = result.accountFingerprint;
       } else if (env.F5_CLIPROXY_HUB_URL) {
         const result = await readAntigravityHub(env, signal);
         value = { windows: result.windows };
@@ -745,12 +788,14 @@ export function providerLimitsIdentity(input: {
   readonly environment: NodeJS.ProcessEnv;
   readonly serverUrl?: string;
   readonly apiEndpoint?: string;
+  readonly antigravityProfileDirectory?: string;
 }): string {
   const env = input.environment;
   return accountUsageIdentity(input.provider, [
     env.HOME || env.USERPROFILE || os.homedir(),
     input.serverUrl,
     input.apiEndpoint,
+    input.antigravityProfileDirectory,
     `OPENCODE_AUTH_CONTENT=${opencodeGoCredential(env.OPENCODE_AUTH_CONTENT) ?? ""}`,
     ...IDENTITY_ENV_KEYS.map((key) => `${key}=${env[key] ?? ""}`),
     ...Object.keys(env)

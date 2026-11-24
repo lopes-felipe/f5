@@ -1,13 +1,47 @@
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { Cause, Effect, Fiber, Layer } from "effect";
+import { Cause, Effect, Fiber, Layer, Stream } from "effect";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it, vi } from "vitest";
 import { AcpSessionRuntime } from "./AcpSessionRuntime";
 import { writeAcpWrapper } from "../../testUtils/cli";
 
 describe("ACP catalog startup wire payloads", () => {
+  it("replays startup notices only for the accepted session under hardening", async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "f5-acp-startup-notice-"));
+    const executable = writeAcpWrapper(
+      path.join(cwd, "agent"),
+      path.resolve("scripts/acp-mock-agent.ts"),
+      { env: { F5_ACP_STARTUP_NOTICES: "1" } },
+    );
+    const notices = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const context = yield* Layer.build(
+            AcpSessionRuntime.layer({
+              spawn: { command: executable, args: [], cwd },
+              cwd,
+              clientInfo: { name: "test", version: "1" },
+              authMethodId: "test",
+              hardening: { enabled: true, provider: "custom-acp" },
+            }),
+          );
+          const runtime = yield* Effect.service(AcpSessionRuntime).pipe(Effect.provide(context));
+          yield* runtime.start();
+          const collected = yield* runtime.getEvents().pipe(
+            Stream.filter((event) => event._tag === "NoticeReceived"),
+            Stream.take(1),
+            Stream.runCollect,
+          );
+          return collected;
+        }),
+      ).pipe(Effect.provide(NodeServices.layer)),
+    );
+    expect(notices).toMatchObject([
+      { _tag: "NoticeReceived", title: "Skipped skill", description: "Startup details" },
+    ]);
+  });
   it("redacts whole API keys in process-exit stderr and request failure traces", async () => {
     const failures: unknown[] = [];
     const secret = "sk-ant-api03-AbCdEf_GhIjKlMnOpQr-StUvWx_yz0123456789-AA";

@@ -85,6 +85,7 @@ export interface ThreadTerminalGroup {
 }
 
 export interface ChatImageAttachment {
+  source?: "pasted-text" | "snapshot" | undefined;
   type: "image";
   id: string;
   name: string;
@@ -103,6 +104,8 @@ export type ChatAttachment = Omit<ChatImageAttachment, "type"> & {
 };
 
 export interface ChatMessage {
+  /** Optimistic send awaiting a persisted server message. */
+  sending?: boolean;
   id: MessageId;
   role: "user" | "assistant" | "system";
   text: string;
@@ -130,6 +133,7 @@ export interface ProposedPlan {
 
 export interface TurnDiffFileChange {
   path: string;
+  repositoryPath?: string;
   kind?: string | undefined;
   additions?: number | undefined;
   deletions?: number | undefined;
@@ -147,6 +151,8 @@ export interface TurnDiffSummary {
 }
 
 export interface Project {
+  pinned?: boolean;
+  archived?: boolean;
   defaultModel?: string | null;
   defaultModelSelection?: ModelSelection | null | undefined;
   id: ProjectId;
@@ -165,6 +171,7 @@ export interface Project {
 }
 
 export interface Thread {
+  sideChatOf?: ThreadId | null;
   id: ThreadId;
   codexThreadId: string | null;
   projectId: ProjectId;
@@ -237,6 +244,7 @@ export interface Thread {
  */
 export type ThreadListItem = Pick<
   Thread,
+  | "sideChatOf"
   | "id"
   | "projectId"
   | "title"
@@ -271,6 +279,8 @@ export type ThreadListItem = Pick<
 >;
 
 export interface ThreadSession {
+  autoCompactThreshold?: number | null;
+  extensionStatuses?: import("@t3tools/contracts").OrchestrationSession["extensionStatuses"];
   provider: ProviderKind;
   providerInstanceId?: ProviderInstanceId | null | undefined;
   status: SessionPhase | "error" | "closed";
@@ -281,6 +291,7 @@ export interface ThreadSession {
   lastErrorId?: string | null;
   lastErrorOccurredAt?: string | null;
   usageLimit?: import("@t3tools/contracts").OrchestrationUsageLimit | null;
+  authFailure?: import("@t3tools/contracts").OrchestrationAuthFailure | null;
   tokenUsageSource?: "provider" | "estimated";
   /** Capabilities of the bound session generation (Release 2). */
   capabilities?: import("@t3tools/contracts").ProviderSessionCapabilities | null;

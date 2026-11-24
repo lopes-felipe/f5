@@ -13,6 +13,14 @@ import { VscodeEntryIcon } from "./VscodeEntryIcon";
 export type ComposerCommandItem =
   | {
       id: string;
+      type: "model";
+      instanceId: string;
+      model: string;
+      label: string;
+      description: string;
+    }
+  | {
+      id: string;
       type: "path";
       path: string;
       pathKind: ProjectEntry["kind"];
@@ -148,6 +156,9 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
         <BotIcon className="size-4 shrink-0 text-muted-foreground" />
       ) : null}
       {props.item.type === "skill" ? (
+        <BotIcon className="size-4 shrink-0 text-muted-foreground" />
+      ) : null}
+      {props.item.type === "model" ? (
         <BotIcon className="size-4 shrink-0 text-muted-foreground" />
       ) : null}
       {/* The name wins the space; the description takes what is left. */}

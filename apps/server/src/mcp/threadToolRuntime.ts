@@ -12,6 +12,7 @@ import type { OrchestrationEngineShape } from "../orchestration/Services/Orchest
 import type { PrHubFederationShape } from "../prHub/Layers/PrHubFederation.ts";
 import type { PrHubReviewGuideService } from "../prHub/Layers/PrHubReviewGuideService.ts";
 import type { PrHubExtensions } from "../prHub/PrHubExtensions.ts";
+import type { makePullRequestMcpHandler } from "./pullRequestMcpRuntime";
 import {
   hasHumanThreadReferenceGrant,
   workflowRequirementReferences,
@@ -35,6 +36,7 @@ export function makeThreadToolHandler(input: {
   readonly guides: PrHubReviewGuideService["Service"];
   readonly html: Effect.Success<ReturnType<typeof makeHtmlRenderRuntime>>;
   readonly links: Pick<PrHubExtensions["Service"], "getThreadLinks">;
+  readonly pullRequests?: ReturnType<typeof makePullRequestMcpHandler>;
   readonly messages: ThreadReadDependencies["messages"];
   readonly plans: ThreadReadDependencies["plans"];
   readonly sql: SqlClient.SqlClient;
@@ -49,6 +51,13 @@ export function makeThreadToolHandler(input: {
       const thread = model.threads.find((value) => value.id === threadId && !value.deletedAt);
       if (!thread)
         return yield* new ThreadToolError({ message: "This thread is no longer available." });
+      if (request.name === "forge_pull_request") {
+        if (!input.pullRequests)
+          return yield* new ThreadToolError({ message: "Pull request tools are unavailable." });
+        const project = model.projects.find((value) => value.id === thread.projectId);
+        const links = yield* input.links.getThreadLinks(threadId);
+        return yield* input.pullRequests(thread, project, links, request.request);
+      }
       if (request.name === "thread_read")
         return yield* readReferencedThread(input, threadId, request.input);
       if (request.name === "image_publish") {

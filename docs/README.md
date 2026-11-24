@@ -56,6 +56,7 @@ to override it. The inherited `T3CODE_*` variables still work; see [`NOTICE.md`]
 | [Performance](performance.md)                     | Performance baseline and budgets                        |
 | [Agent browser reference](agent-browser.md)       | Technical reference for browser and computer automation |
 | [Agent Bridge](agent-bridge.md)                   | Internal reference for the hidden Agent Bridge and Bots |
+| [Linux VM profiles](vm-profiles.md)               | VM execution design status and its feasibility gate     |
 | [Scripts](scripts.md)                             | Repository scripts, including screenshot capture        |
 | [CI quality gates](ci.md)                         | What CI checks                                          |
 | [Flake burn-down](flake-burndown.md)              | Runbook for fixing one flaky test per scheduled run     |

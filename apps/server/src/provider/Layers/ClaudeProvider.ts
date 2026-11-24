@@ -14,7 +14,7 @@ import {
   type ServerProviderModel,
   type ServerProviderSlashCommand,
 } from "@t3tools/contracts";
-import { Clock, Effect, FileSystem, Option, Path, Result } from "effect";
+import { Clock, Effect, Exit, FileSystem, Option, Path, Result } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import {
   formatModelDisplayName,
@@ -47,7 +47,11 @@ import {
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
 import { compareCliVersions } from "../cliVersion.ts";
-import { makeClaudeEnvironment, readClaudeSettingsBaseUrl } from "../Drivers/ClaudeHome.ts";
+import {
+  makeClaudeEnvironment,
+  readClaudeSettingsBaseUrl,
+  readClaudeSettingsEnv,
+} from "../Drivers/ClaudeHome.ts";
 import {
   resolveClaudeCliInvocation,
   claudeCliSpawnEnvironment,
@@ -293,7 +297,7 @@ export type ClaudeCapabilitiesProbe = {
   readonly subscriptionType: string | undefined;
   readonly tokenSource: string | undefined;
   readonly slashCommands: ReadonlyArray<ServerProviderSlashCommand>;
-  /** Models the executable reported during initialization, keyed by canonical slug. */
+  /** Canonical Claude ids and selectable gateway ids reported during initialization. */
   readonly models?: ReadonlyArray<ClaudeReportedModel>;
 };
 
@@ -304,22 +308,40 @@ type ClaudeInitializationModel = NonNullable<
 >[number];
 
 /**
- * Canonical slugs for the SDK's model rows. Alias rows (`default`, `sonnet`)
- * resolve through `resolvedModel`; rows that do not name a Claude model id are
- * skipped so F5 never persists an alias as a model slug.
+ * Native Claude models keep canonical ids. Gateway selections retain their
+ * selectable value, including context suffixes and aliases accepted by the gateway.
  */
 export function parseClaudeInitializationModels(
   models: ReadonlyArray<ClaudeInitializationModel> | undefined,
+  customModels: ReadonlyArray<CustomModelSetting> = [],
 ): ReadonlyArray<ClaudeReportedModel> {
+  const comparisonId = (id: string) =>
+    normalizeModelSlug(id.replace(/\[[^\]]*\]$/, "").trim(), "claudeAgent")?.toLowerCase();
+  const known = new Set([
+    ...BUILT_IN_MODELS.map((model) => comparisonId(model.slug)),
+    ...customModels.map((model) => comparisonId(customModelSlug(model))),
+  ]);
   const bySlug = new Map<string, ClaudeReportedModel>();
   for (const model of models ?? []) {
-    const raw = [model.resolvedModel, model.value]
-      .map((value) => nonEmptyProbeString(value ?? ""))
-      .find((value) => value?.startsWith("claude-"));
-    const slug = raw?.startsWith("claude-")
-      ? normalizeModelSlug(raw.replace(/\[(?:1m|200k)\]$/i, ""), "claudeAgent")
-      : null;
-    if (!slug || !slug.startsWith("claude-") || bySlug.has(slug)) continue;
+    const value = nonEmptyProbeString(model.value);
+    if (!value) continue;
+    const resolved = nonEmptyProbeString(model.resolvedModel ?? "");
+    const native =
+      value.startsWith("claude-") ||
+      (resolved?.startsWith("claude-") &&
+        (value === "default" || normalizeModelSlug(value, "claudeAgent")?.startsWith("claude-")));
+    if (
+      !native &&
+      (value === "default" || [value, resolved].some((id) => id && known.has(comparisonId(id))))
+    )
+      continue;
+    const slug = native
+      ? normalizeModelSlug(
+          (resolved?.startsWith("claude-") ? resolved : value).replace(/\[[^\]]*\]$/, "").trim(),
+          "claudeAgent",
+        )
+      : value;
+    if (!slug || bySlug.has(slug)) continue;
     bySlug.set(slug, {
       slug,
       name:
@@ -419,12 +441,30 @@ function waitForAbortSignal(signal: AbortSignal): Promise<void> {
   });
 }
 
+export function claudeGatewayDiscoveryGraceMs(
+  environment: Readonly<Record<string, unknown>>,
+): number {
+  const enabled = String(environment.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY ?? "")
+    .trim()
+    .toLowerCase();
+  if (
+    !enabled ||
+    enabled === "0" ||
+    enabled === "false" ||
+    !String(environment.ANTHROPIC_BASE_URL ?? "").trim()
+  )
+    return 0;
+  const configured = Number(environment.CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY_TIMEOUT_MS);
+  return Number.isFinite(configured) && configured > 0 ? configured : 3_000;
+}
+
 /**
  * Run a prompt-free control query in the configured server authentication context.
  *
  * We pass a never-yielding AsyncIterable so no user message reaches stdin.
  * Initialization alone is local; usage control calls can contact the provider
- * and scan local transcripts. Always abort after the supplied operation.
+ * and scan local transcripts. Abort after the operation, allowing an explicit
+ * grace period only on successful machine model probes.
  */
 export function withClaudeProbeQuery<A>(
   claudeSettings: ClaudeSettings,
@@ -437,15 +477,28 @@ export function withClaudeProbeQuery<A>(
     readonly cwd?: string;
     /** Whole-operation budget; the default fits status probes. */
     readonly timeoutMs?: number;
+    /** Machine model probes allow Claude Code's background gateway cache refresh to finish. */
+    readonly gatewayDiscoveryGraceMs?: number;
   } = {},
 ) {
   return Effect.suspend(() => {
     const abort = new AbortController();
+    const abortProbe = Effect.sync(() => {
+      if (!abort.signal.aborted) abort.abort();
+    });
+    const graceMs = options.gatewayDiscoveryGraceMs ?? 0;
     const cwd = options.cwd ?? process.cwd();
     return Effect.gen(function* () {
       const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment);
       const q = yield* Effect.tryPromise({
-        try: async () => {
+        try: async (signal) => {
+          const executableOptions = await resolveClaudeSdkExecutableOptions(
+            claudeSettings.binaryPath,
+            claudeEnvironment,
+            process.platform,
+            cwd,
+          );
+          signal.throwIfAborted();
           const q = (options.createQuery ?? claudeQuery)({
             // Never yield: closing stdin before the control request can terminate the CLI.
             // oxlint-disable-next-line require-yield
@@ -454,13 +507,7 @@ export function withClaudeProbeQuery<A>(
             })(),
             options: {
               persistSession: false,
-              // Keep resolution inside tryPromise: Windows shim resolution throws synchronously.
-              ...resolveClaudeSdkExecutableOptions(
-                claudeSettings.binaryPath,
-                claudeEnvironment,
-                process.platform,
-                cwd,
-              ),
+              ...executableOptions,
               cwd,
               abortController: abort,
               settingSources: ["user", "project", "local"],
@@ -494,10 +541,10 @@ export function withClaudeProbeQuery<A>(
             });
       });
     }).pipe(
-      Effect.ensuring(
-        Effect.sync(() => {
-          if (!abort.signal.aborted) abort.abort();
-        }),
+      Effect.onExit((exit) =>
+        Exit.isSuccess(exit) && graceMs > 0
+          ? Effect.sleep(graceMs).pipe(Effect.andThen(abortProbe), Effect.forkDetach, Effect.asVoid)
+          : abortProbe,
       ),
       Effect.timeoutOption(options.timeoutMs ?? 8_000),
       Effect.flatMap((result) =>
@@ -510,6 +557,23 @@ export function withClaudeProbeQuery<A>(
 }
 
 export const CLAUDE_USAGE_ANALYSIS_TIMEOUT_MS = 60_000;
+
+/** Only instance-level model/usage probes warm the gateway model cache. */
+function withClaudeMachineProbeQuery<A>(
+  settings: ClaudeSettings,
+  environment: NodeJS.ProcessEnv,
+  use: (q: ReturnType<typeof claudeQuery>) => Promise<A> | Effect.Effect<A, AccountUsageReadError>,
+  options: { readonly createQuery?: typeof claudeQuery; readonly cwd?: string },
+) {
+  return Effect.gen(function* () {
+    const childEnv = yield* makeClaudeEnvironment(settings, environment);
+    const settingsEnv = yield* readClaudeSettingsEnv(settings, childEnv, options.cwd);
+    return yield* withClaudeProbeQuery(settings, environment, use, {
+      ...options,
+      gatewayDiscoveryGraceMs: claudeGatewayDiscoveryGraceMs({ ...childEnv, ...settingsEnv }),
+    });
+  });
+}
 
 function normalizeClaudeUsageAnalysisWindow(value: unknown): ClaudeUsageAnalysisWindow | null {
   if (!value || typeof value !== "object") return null;
@@ -590,6 +654,7 @@ export const analyzeClaudeUsage = (
 
 export function claudeCapabilitiesFromInitialization(
   init: Awaited<ReturnType<ReturnType<typeof claudeQuery>["initializationResult"]>>,
+  customModels: ReadonlyArray<CustomModelSetting> = [],
 ): ClaudeCapabilitiesProbe {
   const account = init.account;
   return {
@@ -597,7 +662,7 @@ export function claudeCapabilitiesFromInitialization(
     subscriptionType: account?.subscriptionType,
     tokenSource: account?.tokenSource,
     slashCommands: parseClaudeInitializationCommands(init.commands),
-    models: parseClaudeInitializationModels(init.models),
+    models: parseClaudeInitializationModels(init.models, customModels),
   };
 }
 
@@ -606,10 +671,14 @@ const probeClaudeCapabilities = (
   environment: NodeJS.ProcessEnv = process.env,
   options: { readonly createQuery?: typeof claudeQuery; readonly cwd?: string } = {},
 ) =>
-  withClaudeProbeQuery(
+  withClaudeMachineProbeQuery(
     claudeSettings,
     environment,
-    async (q) => claudeCapabilitiesFromInitialization(await q.initializationResult()),
+    async (q) =>
+      claudeCapabilitiesFromInitialization(
+        await q.initializationResult(),
+        claudeSettings.customModels,
+      ),
     options,
   ).pipe(
     Effect.result,
@@ -634,7 +703,7 @@ export const probeClaudeAccountUsage = (
     readonly onCapabilities?: (value: ClaudeCapabilitiesProbe) => Effect.Effect<void>;
   } = {},
 ) =>
-  withClaudeProbeQuery(
+  withClaudeMachineProbeQuery(
     claudeSettings,
     environment,
     (q) =>
@@ -644,7 +713,7 @@ export const probeClaudeAccountUsage = (
           catch: (error) => new AccountUsageReadError(accountUsageErrorCode(error)),
         });
         const capabilities = {
-          ...claudeCapabilitiesFromInitialization(init),
+          ...claudeCapabilitiesFromInitialization(init, claudeSettings.customModels),
           modelCatalogFetchedAt: new Date(yield* Clock.currentTimeMillis).toISOString(),
         };
         if (options.onCapabilities) yield* options.onCapabilities(capabilities);
@@ -681,7 +750,7 @@ const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (
   cwd?: string,
 ) {
   const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment);
-  const invocation = yield* Effect.try({
+  const invocation = yield* Effect.tryPromise({
     try: () => resolveClaudeCliInvocation(claudeSettings.binaryPath, args, claudeEnvironment),
     catch: (cause) =>
       cause instanceof CommandNotFoundError

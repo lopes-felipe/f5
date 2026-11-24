@@ -1,12 +1,17 @@
 import { useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { formatSourceControlPullRequestKey } from "@t3tools/shared/sourceControl";
+import {
+  formatSourceControlPullRequestKey,
+  sourceControlPullRequestKeysEqual,
+} from "@t3tools/shared/sourceControl";
+import { prHubPeekFromTracked } from "@t3tools/shared/prHub";
 import type { PrHubPeek } from "@t3tools/contracts";
 import { AlertTriangleIcon, CheckIcon, CopyIcon, ExternalLinkIcon } from "lucide-react";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { useExternalLinkContextMenu } from "../../hooks/useExternalLinkContextMenu";
 import { OpenLinkThread, useOpenLink } from "../../hooks/useOpenLink";
-import { prHubPeekQueryOptions } from "../../lib/prHubReactQuery";
+import { cachedPrHubRows, prHubPeekQueryOptions } from "../../lib/prHubReactQuery";
+import { useAppSettingsSelector } from "../../appSettings";
 import { parsePullRequestReference } from "../../lib/pullRequestReference";
 import { formatRelativeTimeLabel } from "../../lib/relativeTime";
 import { useRightPanelStore } from "../../rightPanelStore";
@@ -121,12 +126,21 @@ export function PrLinkPreview({ url, children }: { url: string; children: ReactN
   const openLink = useOpenLink();
   const thread = useContext(OpenLinkThread);
   const [open, setOpen] = useState(false);
+  // Changing the selected account must discard the previous account's preview on render.
+  useAppSettingsSelector((settings) => settings.prHubAccountId);
   const client = useQueryClient();
   const options = prHubPeekQueryOptions(url);
   const query = useQuery({ ...options, enabled: open });
-  const value = query.data;
+  const parsed = parsePullRequestReference(url);
+  const listed =
+    open && !query.isError && query.data === undefined && parsed
+      ? cachedPrHubRows(client).find((pr) =>
+          sourceControlPullRequestKeysEqual(pr.key, formatSourceControlPullRequestKey(parsed)),
+        )
+      : undefined;
+  const value = query.data ?? (listed ? prHubPeekFromTracked(listed) : undefined);
   const actionUrl = value?.url ?? url;
-  const ref = value ?? parsePullRequestReference(url);
+  const ref = value ?? parsed;
   const host = ref?.host;
   const { copyToClipboard, isCopied } = useCopyToClipboard({ timeout: 1500 });
   const prefetch = () => {

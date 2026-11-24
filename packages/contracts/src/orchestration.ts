@@ -1,4 +1,5 @@
 import { ScheduledOrigin } from "./baseSchemas";
+import { ImportedSessionMessages } from "./agentSessions";
 import { OrchestrationProposedPlanId, OrchestrationProposedPlan } from "./proposedPlan";
 import { FilesystemPath } from "./baseSchemas";
 import { ThreadSearchInput, ThreadSearchResult } from "./threadSearch";
@@ -29,7 +30,7 @@ import {
   WorkflowModelSlot,
 } from "./planningWorkflow";
 import { ProviderInstanceId } from "./providerInstance";
-import { ProviderSessionCapabilities } from "./sessionCapabilities";
+import { ProviderSessionCapabilities, ProviderExtensionStatuses } from "./sessionCapabilities";
 import { ProviderStartOptions } from "./providerStartOptions";
 import { ProjectIcon } from "./project";
 import { ThreadEnvMode } from "./threadEnvMode";
@@ -227,6 +228,8 @@ export const ProviderApprovalPresentation = Schema.Struct({
   description: Schema.optional(Schema.String),
   displayName: Schema.optional(Schema.String),
   decisionReason: Schema.optional(Schema.String),
+  fullAccessOverride: Schema.optional(Schema.Literals(["ask_rule", "provider_check"])),
+  askRuleSource: Schema.optional(Schema.String),
   blockedPath: Schema.optional(Schema.String),
   agentId: Schema.optional(Schema.String),
   defaultToNo: Schema.optional(Schema.Boolean),
@@ -267,6 +270,7 @@ export const ChatImageAttachment = Schema.Struct({
   name: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
   mimeType: TrimmedNonEmptyString.check(Schema.isMaxLength(100), Schema.isPattern(/^image\//i)),
   sizeBytes: NonNegativeInt.check(Schema.isLessThanOrEqualTo(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES)),
+  source: Schema.optional(Schema.Literals(["pasted-text", "snapshot"])),
 });
 export type ChatImageAttachment = typeof ChatImageAttachment.Type;
 
@@ -311,6 +315,7 @@ export const ProjectScript = Schema.Struct({
   command: TrimmedNonEmptyString,
   icon: ProjectScriptIcon,
   runOnWorktreeCreate: Schema.Boolean,
+  worktreeLayout: Schema.optionalKey(Schema.Literals(["create", "remove"])),
   runOnWorktreeSettle: Schema.optional(Schema.Boolean),
   stopOnSettle: Schema.optional(Schema.Boolean),
   /**
@@ -374,6 +379,8 @@ export type ProjectKind = typeof ProjectKind.Type;
 
 export const OrchestrationProject = Schema.Struct({
   id: ProjectId,
+  pinned: Schema.optional(Schema.Boolean),
+  archived: Schema.optional(Schema.Boolean),
   kind: Schema.optional(ProjectKind).pipe(Schema.withDecodingDefault(() => "standard" as const)),
   title: TrimmedNonEmptyString,
   workspaceRoot: FilesystemPath,
@@ -666,8 +673,22 @@ export const OrchestrationUsageLimit = Schema.Struct({
 });
 export type OrchestrationUsageLimit = typeof OrchestrationUsageLimit.Type;
 
+/**
+ * A turn failed because the provider account's login expired or was rejected.
+ * It stays on the session until a new turn starts, so the thread can offer a
+ * one-click sign-in and resend the turn that never reached the provider.
+ */
+export const OrchestrationAuthFailure = Schema.Struct({
+  providerInstanceId: ProviderInstanceId,
+  turnId: Schema.NullOr(TurnId),
+  occurredAt: IsoDateTime,
+});
+export type OrchestrationAuthFailure = typeof OrchestrationAuthFailure.Type;
+
 export const OrchestrationSession = Schema.Struct({
+  extensionStatuses: Schema.optional(ProviderExtensionStatuses),
   usageLimit: Schema.optional(Schema.NullOr(OrchestrationUsageLimit)),
+  authFailure: Schema.optional(Schema.NullOr(OrchestrationAuthFailure)),
   threadId: ThreadId,
   status: OrchestrationSessionStatus,
   providerName: Schema.NullOr(TrimmedNonEmptyString),
@@ -688,6 +709,7 @@ export const OrchestrationSession = Schema.Struct({
     Schema.NullOr(Schema.Literals(["retryable", "non-retryable"])),
   ).pipe(Schema.withDecodingDefault(() => null)),
   turnCostUsd: Schema.optional(Schema.Number),
+  autoCompactThreshold: Schema.optional(Schema.NullOr(NonNegativeInt)),
   estimatedContextTokens: Schema.optional(NonNegativeInt),
   estimatedThinkingTokens: Schema.optional(NonNegativeInt),
   modelContextWindowTokens: Schema.optional(NonNegativeInt),
@@ -703,6 +725,7 @@ export type OrchestrationSession = typeof OrchestrationSession.Type;
 
 export const OrchestrationCheckpointFile = Schema.Struct({
   path: FilesystemPath,
+  repositoryPath: Schema.optionalKey(FilesystemPath),
   kind: TrimmedNonEmptyString,
   additions: NonNegativeInt,
   deletions: NonNegativeInt,
@@ -988,6 +1011,7 @@ export type ThreadSettledBy = typeof ThreadSettledBy.Type;
 
 export const ThreadPullRequestLink = Schema.Struct({
   ...SourceControlPullRequestRef.fields,
+  repositoryPath: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(2048))),
   title: TrimmedNonEmptyString.check(Schema.isMaxLength(1000)),
   url: TrimmedNonEmptyString.check(Schema.isMaxLength(2048), Schema.isPattern(/^https?:\/\//)),
 });
@@ -997,6 +1021,7 @@ export type ThreadPullRequestLink = typeof ThreadPullRequestLink.Type;
 export const THREAD_PULL_REQUEST_SHELL_LIMIT = 20;
 
 export const OrchestrationThread = Schema.Struct({
+  sideChatOf: Schema.optional(Schema.NullOr(ThreadId)),
   /** PRs linked to this thread, newest first, at most `THREAD_PULL_REQUEST_SHELL_LIMIT`. */
   pullRequests: Schema.optional(Schema.Array(ThreadPullRequestLink)),
   scheduledOrigin: Schema.optional(Schema.NullOr(ScheduledOrigin)),
@@ -1129,6 +1154,8 @@ const ProjectMetaUpdateCommand = Schema.Struct({
   type: Schema.Literal("project.meta.update"),
   commandId: CommandId,
   projectId: ProjectId,
+  pinned: Schema.optional(Schema.Boolean),
+  archived: Schema.optional(Schema.Boolean),
   title: Schema.optional(TrimmedNonEmptyString),
   workspaceRoot: Schema.optional(FilesystemPath),
   defaultModel: Schema.optional(TrimmedNonEmptyString),
@@ -1304,6 +1331,7 @@ const ProjectInvestigationWorkflowDeleteCommand = Schema.Struct({
 });
 
 const ThreadCreateCommand = Schema.Struct({
+  sideChatOf: Schema.optional(Schema.NullOr(ThreadId)),
   scheduledOrigin: Schema.optional(Schema.NullOr(ScheduledOrigin)),
   sharedFilesystemConfirmed: Schema.optional(Schema.Boolean),
   pullRequest: Schema.optional(ThreadPullRequestLink),
@@ -1427,6 +1455,8 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   regenerateTitle: Schema.optional(Schema.Literal(true)),
   model: Schema.optional(TrimmedNonEmptyString),
   modelSelection: Schema.optional(ModelSelection),
+  /** Save the composer's next-turn choice without refreshing the live session. */
+  deferModelSwitch: Schema.optional(Schema.Literal(true)),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(FilesystemPath)),
   expectedArchivedAt: Schema.optional(IsoDateTime),
@@ -1484,6 +1514,9 @@ export const ThreadTurnStartBootstrapPrepareWorktree = Schema.Struct({
   projectCwd: FilesystemPath,
   baseBranch: TrimmedNonEmptyString,
   branch: Schema.optional(TrimmedNonEmptyString),
+  repositoryPaths: Schema.optionalKey(
+    Schema.Array(TrimmedNonEmptyString).check(Schema.isMaxLength(128)),
+  ),
   /**
    * Reject the send, before the thread exists, when no separate worktree can
    * be prepared, instead of falling back to the project checkout. Multi-model
@@ -1502,6 +1535,7 @@ export const ThreadTurnStartBootstrap = Schema.Struct({
 export type ThreadTurnStartBootstrap = typeof ThreadTurnStartBootstrap.Type;
 
 export const ThreadTurnStartCommand = Schema.Struct({
+  freshContext: Schema.optional(Schema.Boolean),
   /** Server-only identity; intentionally absent from ClientThreadTurnStartCommand. */
   continuationRequestId: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(128))),
   workflowAttribution: Schema.optional(WorkflowAttribution),
@@ -1558,6 +1592,7 @@ export const ThreadTurnSteerCommand = Schema.Struct({
 export type ThreadTurnSteerCommand = typeof ThreadTurnSteerCommand.Type;
 
 export const ClientThreadTurnStartCommand = Schema.Struct({
+  freshContext: Schema.optional(Schema.Boolean),
   type: Schema.Literal("thread.turn.start"),
   commandId: CommandId,
   threadId: ThreadId,
@@ -1777,6 +1812,11 @@ const ThreadSessionSetCommand = Schema.Struct({
   session: OrchestrationSession,
   settledTurnId: Schema.optional(TurnId),
   usageFact: Schema.optional(UsageTurnFact),
+  /**
+   * Re-binds the session the thread already runs. The decider keeps the turn
+   * the current state still has running, so a refresh mid-turn does not drop it.
+   */
+  rebindLiveSession: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
 });
 
@@ -2063,6 +2103,12 @@ export const ProjectScratchCreateCommand = Schema.Struct({
 });
 
 const InternalOrchestrationCommand = Schema.Union([
+  Schema.Struct({
+    ...ThreadCreateCommand.fields,
+    type: Schema.Literal("thread.import"),
+    expectedWorkspaceRoot: FilesystemPath,
+    messages: ImportedSessionMessages,
+  }),
   ProjectScratchCreateCommand,
   Schema.Struct({
     type: Schema.Literals(["project.workflow.archive", "project.workflow.unarchive"]),
@@ -2204,6 +2250,8 @@ export const ProjectCreatedPayload = Schema.Struct({
 
 export const ProjectMetaUpdatedPayload = Schema.Struct({
   projectId: ProjectId,
+  pinned: Schema.optional(Schema.Boolean),
+  archived: Schema.optional(Schema.Boolean),
   title: Schema.optional(TrimmedNonEmptyString),
   workspaceRoot: Schema.optional(FilesystemPath),
   defaultModel: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
@@ -2290,6 +2338,7 @@ export const ProjectInvestigationWorkflowDeletedPayload = Schema.Struct({
 });
 
 export const ThreadCreatedPayload = Schema.Struct({
+  sideChatOf: Schema.optional(Schema.NullOr(ThreadId)),
   scheduledOrigin: Schema.optional(Schema.NullOr(ScheduledOrigin)),
   pullRequest: Schema.optional(ThreadPullRequestLink),
   threadId: ThreadId,
@@ -2394,6 +2443,7 @@ export const ThreadMetaUpdatedPayload = Schema.Struct({
   titleRegeneration: Schema.optional(Schema.NullOr(ThreadTitleRegeneration)),
   model: Schema.optional(TrimmedNonEmptyString),
   modelSelection: Schema.optional(ModelSelection),
+  deferModelSwitch: Schema.optional(Schema.Literal(true)),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(FilesystemPath)),
   updatedAt: IsoDateTime,
@@ -2477,6 +2527,7 @@ export const ThreadMessageReasoningTokensAddedPayload = Schema.Struct({
 });
 
 export const ThreadTurnStartRequestedPayload = Schema.Struct({
+  freshContext: Schema.optional(Schema.Boolean),
   continuationRequestId: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(128))),
   workflowAttribution: Schema.optional(WorkflowAttribution),
 
@@ -2660,6 +2711,8 @@ export const ThreadFileChangeRecordedPayload = Schema.Struct({
 });
 
 export const OrchestrationEventMetadata = Schema.Struct({
+  /** Historical messages do not represent a new turn or checkpoint request. */
+  source: Schema.optional(Schema.Literal("agent-history-import")),
   providerTurnId: Schema.optional(TrimmedNonEmptyString),
   providerItemId: Schema.optional(ProviderItemId),
   adapterKey: Schema.optional(TrimmedNonEmptyString),
@@ -3626,15 +3679,28 @@ export const OrchestrationStartImplementationInput = Schema.Struct({
 export type OrchestrationStartImplementationInput =
   typeof OrchestrationStartImplementationInput.Type;
 
+export const OrchestrationGetLatestSequenceInput = Schema.Struct({
+  resume: Schema.optional(
+    Schema.Struct({
+      afterSequence: NonNegativeInt,
+      backendIncarnation: Schema.String,
+    }),
+  ),
+});
+export type OrchestrationGetLatestSequenceInput = typeof OrchestrationGetLatestSequenceInput.Type;
+
 export const OrchestrationGetLatestSequenceResult = Schema.Struct({
   latestSequence: NonNegativeInt,
   backendIncarnation: Schema.String,
+  /** Present when the entire requested range can be replayed, including an empty range. */
+  events: Schema.optional(Schema.Array(OrchestrationEvent)),
+  /** A matched backend could not replay this gap. Read the shell snapshot over HTTP. */
+  snapshotRequired: Schema.optional(Schema.Literal(true)),
 });
 export type OrchestrationGetLatestSequenceResult = typeof OrchestrationGetLatestSequenceResult.Type;
 
-export const OrchestrationRpcSchemas = {
+const orchestrationRpcSchemas = {
   searchThread: { input: ThreadSearchInput, output: ThreadSearchResult },
-  getLatestSequence: { input: Schema.Struct({}), output: OrchestrationGetLatestSequenceResult },
   getSnapshot: {
     input: OrchestrationGetSnapshotInput,
     output: OrchestrationGetSnapshotResult,
@@ -3768,3 +3834,18 @@ export const OrchestrationRpcSchemas = {
     output: Schema.Void,
   },
 } as const;
+
+// Refer to the replay schema by name rather than expanding its event union
+// into the already large declaration for the table.
+export const OrchestrationRpcSchemas: typeof orchestrationRpcSchemas & {
+  readonly getLatestSequence: {
+    readonly input: typeof OrchestrationGetLatestSequenceInput;
+    readonly output: typeof OrchestrationGetLatestSequenceResult;
+  };
+} = {
+  ...orchestrationRpcSchemas,
+  getLatestSequence: {
+    input: OrchestrationGetLatestSequenceInput,
+    output: OrchestrationGetLatestSequenceResult,
+  },
+};

@@ -7,7 +7,13 @@
  *
  * @module ProviderHandoffStateRepository
  */
-import { MessageId, ProviderInstanceId, ProviderKind, ThreadId } from "@t3tools/contracts";
+import {
+  MessageId,
+  OrchestrationMessage,
+  ProviderInstanceId,
+  ProviderKind,
+  ThreadId,
+} from "@t3tools/contracts";
 import { Schema, ServiceMap } from "effect";
 import type { Effect } from "effect";
 
@@ -17,6 +23,22 @@ export const ProviderHandoffMode = Schema.Literals(["full", "delta"]);
 export type ProviderHandoffMode = typeof ProviderHandoffMode.Type;
 
 export const PendingProviderHandoff = Schema.Struct({
+  /** Bounded, immutable history captured when a side chat was created. */
+  sourceContext: Schema.optional(
+    Schema.Struct({
+      effectiveMode: Schema.Literal("full"),
+      messages: Schema.Array(
+        Schema.Struct({
+          id: MessageId,
+          role: OrchestrationMessage.fields.role,
+          text: Schema.String.check(Schema.isMaxLength(8000)),
+          streaming: Schema.Boolean,
+          createdAt: OrchestrationMessage.fields.createdAt,
+        }),
+      ).check(Schema.isMaxLength(200)),
+      summary: Schema.NullOr(Schema.String.check(Schema.isMaxLength(12000))),
+    }),
+  ),
   id: Schema.String,
   mode: ProviderHandoffMode,
   targetInstanceId: ProviderInstanceId,

@@ -6,10 +6,11 @@
  *
  * @module Open
  */
-import { spawn } from "node:child_process";
-import { readFileSync, statSync } from "node:fs";
+import { execFile, spawn } from "node:child_process";
+import { readFile, stat } from "node:fs/promises";
 import NodeOs from "node:os";
 import NodePath from "node:path";
+import { promisify } from "node:util";
 
 import { EDITORS, type EditorId } from "@t3tools/contracts";
 import { Cause, Effect, Exit, Layer, Schema, ServiceMap } from "effect";
@@ -17,7 +18,6 @@ import { Cause, Effect, Exit, Layer, Schema, ServiceMap } from "effect";
 import { editorLaunchTotal, increment } from "./observability/Metrics.ts";
 import {
   isCommandAvailable,
-  PathDirectoryListings,
   resolveExecutables,
   resolveInvocation,
 } from "./spawn/resolveCommand.ts";
@@ -41,6 +41,7 @@ export interface OpenInEditorInput {
 interface EditorLaunch {
   readonly command: string;
   readonly args: ReadonlyArray<string>;
+  readonly windowsVerbatimArguments?: boolean;
 }
 
 export function resolveFileManagerRevealLaunch(
@@ -50,8 +51,19 @@ export function resolveFileManagerRevealLaunch(
   switch (platform) {
     case "darwin":
       return { command: "open", args: ["-R", targetPath] };
-    case "win32":
-      return { command: "explorer", args: [`/select,${targetPath}`] };
+    case "win32": {
+      const windowsPath = targetPath.replaceAll("/", "\\");
+      // Explorer parses /select itself and needs quotes around just the path.
+      // A quote is invalid in a Windows filename, so never pass it verbatim.
+      if (windowsPath.includes('"')) {
+        return { command: "explorer", args: [`/select,${windowsPath}`] };
+      }
+      return {
+        command: "explorer",
+        args: [`/select,"${windowsPath}"`],
+        windowsVerbatimArguments: true,
+      };
+    }
     default:
       return { command: "xdg-open", args: [NodePath.posix.dirname(targetPath)] };
   }
@@ -167,38 +179,41 @@ const EDITOR_SHIM_MARKERS: Partial<Record<EditorId, string>> = {
 };
 const MAX_EDITOR_SHIM_BYTES = 4096;
 
-export function isEditorShim(editorId: EditorId, filePath: string): boolean {
+export async function isEditorShim(editorId: EditorId, filePath: string): Promise<boolean> {
   const marker = EDITOR_SHIM_MARKERS[editorId];
   if (!marker) return false;
   try {
-    const stat = statSync(filePath);
-    if (!stat.isFile() || stat.size > MAX_EDITOR_SHIM_BYTES) return false;
-    return readFileSync(filePath, "utf8").includes(marker);
+    const info = await stat(filePath);
+    if (!info.isFile() || info.size > MAX_EDITOR_SHIM_BYTES) return false;
+    return (await readFile(filePath, "utf8")).includes(marker);
   } catch {
     return false;
   }
 }
 
 /** Absolute paths of usable editor executables, in preference order, shims removed. */
-function resolveEditorExecutables(
+async function resolveEditorExecutables(
   editor: (typeof EDITORS)[number],
   platform: NodeJS.Platform,
   env: NodeJS.ProcessEnv,
-  pathDirectoryListings?: PathDirectoryListings,
-): ReadonlyArray<string> {
-  return resolveEditorCommandCandidates(editor, platform, env)
-    .flatMap((candidate) => resolveExecutables(candidate, env, { platform, pathDirectoryListings }))
-    .filter((executable) => !isEditorShim(editor.id, executable));
+): Promise<ReadonlyArray<string>> {
+  const executables: string[] = [];
+  for (const candidate of resolveEditorCommandCandidates(editor, platform, env)) {
+    for (const executable of await resolveExecutables(candidate, env, { platform })) {
+      if (!(await isEditorShim(editor.id, executable))) executables.push(executable);
+    }
+  }
+  return executables;
 }
 
-function resolveEditorCommand(
+async function resolveEditorCommand(
   editor: (typeof EDITORS)[number],
   platform: NodeJS.Platform,
   env: NodeJS.ProcessEnv,
-): string | null {
+): Promise<string | null> {
   // Launch the accepted path itself: a bare command would resolve through PATH
   // again and could land on a skipped shim.
-  const executable = resolveEditorExecutables(editor, platform, env)[0];
+  const executable = (await resolveEditorExecutables(editor, platform, env))[0];
   if (executable) return executable;
   // The bare name would only reach a shim; report the editor as missing instead.
   return EDITOR_SHIM_MARKERS[editor.id] ? null : editor.command!;
@@ -215,20 +230,18 @@ function fileManagerCommandForPlatform(platform: NodeJS.Platform): string {
   }
 }
 
-export function resolveAvailableEditors(
+export async function resolveAvailableEditors(
   platform: NodeJS.Platform = process.platform,
   env: NodeJS.ProcessEnv = process.env,
-): ReadonlyArray<EditorId> {
+): Promise<ReadonlyArray<EditorId>> {
   const available: EditorId[] = [];
-  const pathDirectoryListings = new PathDirectoryListings();
 
   for (const editor of EDITORS) {
     const commandAvailable = editor.command
-      ? resolveEditorExecutables(editor, platform, env, pathDirectoryListings).length > 0
-      : isCommandAvailable(fileManagerCommandForPlatform(platform), {
+      ? (await resolveEditorExecutables(editor, platform, env)).length > 0
+      : await isCommandAvailable(fileManagerCommandForPlatform(platform), {
           platform,
           env,
-          pathDirectoryListings,
         });
     if (commandAvailable) {
       available.push(editor.id);
@@ -283,7 +296,7 @@ export const resolveEditorLaunch = Effect.fnUntraced(function* (
   }
 
   if (editorDef.command) {
-    const command = resolveEditorCommand(editorDef, platform, env);
+    const command = yield* Effect.promise(() => resolveEditorCommand(editorDef, platform, env));
     if (!command) {
       return yield* new OpenError({ message: `Editor command not found: ${editorDef.command}` });
     }
@@ -294,7 +307,9 @@ export const resolveEditorLaunch = Effect.fnUntraced(function* (
     return yield* new OpenError({ message: `Unsupported editor: ${input.editor}` });
   }
 
-  return { command: fileManagerCommandForPlatform(platform), args: [input.cwd] };
+  // A file manager has no line to jump to, and `file.ts:12` is not a path.
+  const path = parseTargetPosition(input.cwd)?.path ?? input.cwd;
+  return { command: fileManagerCommandForPlatform(platform), args: [path] };
 });
 
 /**
@@ -328,25 +343,87 @@ export function resolveBrowserLaunch(
   return { command: "xdg-open", args: [target] };
 }
 
-export const launchDetached = (launch: EditorLaunch, checkEarlyExit = true) =>
+const decodeManagerEnvironment = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Struct({ data: Schema.Array(Schema.String) })),
+);
+const graphicalSessionKeys = new Set(["DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY"]);
+const execFileAsync = promisify(execFile);
+
+const readGraphicalSessionEnvironment = Effect.fn("open.read-graphical-session")(function* (
+  env: NodeJS.ProcessEnv,
+) {
+  if (process.platform !== "linux" || env.DISPLAY?.trim() || env.WAYLAND_DISPLAY?.trim()) {
+    return env;
+  }
+
+  // A boot-started server can miss the display imported into systemd at login.
+  // busctl returns raw values, including paths that systemctl would shell-quote.
+  return yield* Effect.gen(function* () {
+    const { stdout } = yield* Effect.tryPromise((signal) =>
+      execFileAsync(
+        "busctl",
+        [
+          "--user",
+          "--json=short",
+          "get-property",
+          "org.freedesktop.systemd1",
+          "/org/freedesktop/systemd1",
+          "org.freedesktop.systemd1.Manager",
+          "Environment",
+        ],
+        { env, signal },
+      ),
+    );
+    const { data } = yield* decodeManagerEnvironment(stdout);
+    const recovered = { ...env };
+    for (const entry of data) {
+      const separator = entry.indexOf("=");
+      if (separator < 0) continue;
+      const key = entry.slice(0, separator);
+      if (graphicalSessionKeys.has(key)) recovered[key] = entry.slice(separator + 1);
+    }
+    return recovered;
+  }).pipe(
+    Effect.timeout("2 seconds"),
+    Effect.catch(() => Effect.succeed(env)),
+    Effect.tap((result) =>
+      Effect.annotateCurrentSpan(
+        "open.graphical_session",
+        result.DISPLAY?.trim() || result.WAYLAND_DISPLAY?.trim() ? "recovered" : "unavailable",
+      ),
+    ),
+  );
+});
+
+export const launchDetached = (
+  launch: EditorLaunch,
+  checkEarlyExit = true,
+  env?: NodeJS.ProcessEnv,
+) =>
   Effect.gen(function* () {
     yield* Effect.annotateCurrentSpan({
       "open.command": launch.command,
       "open.args_count": launch.args.length,
     });
-    if (!isCommandAvailable(launch.command)) {
+    if (!(yield* Effect.promise(() => isCommandAvailable(launch.command)))) {
       return yield* new OpenError({ message: `Editor command not found: ${launch.command}` });
     }
 
+    const launchEnv = env ?? launchedAppEnvironment();
+    const invocation = yield* Effect.tryPromise({
+      try: () => resolveInvocation(launch.command, launch.args, launchEnv),
+      catch: (cause) => new OpenError({ message: "failed to spawn detached process", cause }),
+    });
     yield* Effect.callback<void, OpenError>((resume) => {
       let child;
       try {
-        const invocation = resolveInvocation(launch.command, launch.args);
         child = spawn(invocation.file, [...invocation.args], {
           detached: true,
-          env: launchedAppEnvironment(),
+          env: launchEnv,
           stdio: "ignore",
           windowsHide: true,
+          windowsVerbatimArguments:
+            launch.windowsVerbatimArguments === true && invocation.kind === "native",
         });
       } catch (error) {
         return resume(
@@ -437,8 +514,9 @@ const make = Effect.gen(function* () {
       return yield* Effect.failCause(launchExit.cause);
     }
 
+    const env = yield* readGraphicalSessionEnvironment(launchedAppEnvironment());
     const detachedExit = yield* Effect.exit(
-      launchDetached(launchExit.value, input.editor !== "file-manager"),
+      launchDetached(launchExit.value, input.editor !== "file-manager", env),
     );
     if (Exit.isFailure(detachedExit)) {
       const error = Cause.squash(detachedExit.cause) as OpenError;
@@ -458,10 +536,11 @@ const make = Effect.gen(function* () {
   const revealInFileManager = Effect.fn("open.reveal-in-file-manager")(function* (
     targetPath: string,
   ) {
+    const env = yield* readGraphicalSessionEnvironment(launchedAppEnvironment());
     const detachedExit = yield* Effect.exit(
       // Explorer can exit 1 after a successful handoff. File-manager launchers
       // retain spawn-only semantics on every platform.
-      launchDetached(resolveFileManagerRevealLaunch(targetPath), false),
+      launchDetached(resolveFileManagerRevealLaunch(targetPath), false, env),
     );
     if (Exit.isFailure(detachedExit)) {
       const error = Cause.squash(detachedExit.cause) as OpenError;

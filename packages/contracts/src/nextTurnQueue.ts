@@ -305,6 +305,20 @@ export type NextTurnQueueRetryDeliveryInput = typeof NextTurnQueueRetryDeliveryI
 export const NextTurnQueueDiscardDeliveryInput = Schema.Struct({ threadId: ThreadId });
 export type NextTurnQueueDiscardDeliveryInput = typeof NextTurnQueueDiscardDeliveryInput.Type;
 
+/** Resend the turn an expired provider login rejected, once per failure. */
+export const NextTurnQueueResendAuthFailedTurnInput = Schema.Struct({
+  threadId: ThreadId,
+  expectedFailureKey: Schema.String,
+});
+export type NextTurnQueueResendAuthFailedTurnInput =
+  typeof NextTurnQueueResendAuthFailedTurnInput.Type;
+export const NextTurnQueueResendAuthFailedTurnResult = Schema.Struct({
+  kind: Schema.Literals(["sent", "busy", "ineligible"]),
+  reason: Schema.optional(Schema.String),
+});
+export type NextTurnQueueResendAuthFailedTurnResult =
+  typeof NextTurnQueueResendAuthFailedTurnResult.Type;
+
 export const NextTurnQueueScheduleUsageLimitResumeInput = Schema.Struct({
   threadId: ThreadId,
   expectedLimitKey: Schema.String,

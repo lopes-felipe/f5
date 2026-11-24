@@ -57,6 +57,10 @@ import {
 } from "../Services/ProviderInstanceRegistryMutator.ts";
 import type { AnyProviderDriver, ProviderInstance } from "../ProviderDriver.ts";
 import {
+  cursorInstanceHarness,
+  cursorSdkHarnessHostAvailability,
+} from "../cursor/cursorHarnessDescriptor.ts";
+import {
   fingerprintableProviderConfig,
   fingerprintableProviderEnvironment,
 } from "../sensitiveFingerprint.ts";
@@ -156,6 +160,27 @@ const buildEntry = <R>(input: {
           reason: `unsupported-isolation: ${entry.driver} is not certified for isolated profiles.`,
         }),
       };
+    // An SDK-harness Cursor instance stays visible but unusable until this host
+    // passes the SDK gates; it never silently falls back to ACP.
+    if (entry.driver === "cursor" && cursorInstanceHarness(entry.config) === "sdk") {
+      const availability = cursorSdkHarnessHostAvailability(
+        profileConfig._tag === "Some" ? profileConfig.value : {},
+      );
+      if (!availability.available)
+        return {
+          kind: "unavailable" as const,
+          snapshot: {
+            ...buildUnavailableProviderSnapshot({
+              driverKind: entry.driver,
+              instanceId,
+              displayName: entry.displayName,
+              accentColor: entry.accentColor,
+              reason: availability.reason,
+            }),
+            harnessVariant: "sdk" as const,
+          },
+        };
+    }
     const driver = driversById.get(entry.driver);
     if (!driver) {
       return {

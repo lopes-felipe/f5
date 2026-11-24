@@ -1,4 +1,5 @@
 import * as Scheduled from "./scheduledTasks";
+import { AgentSessionImportInput } from "./agentSessions";
 import { ServerCodexConfigurationInput } from "./codexConfiguration";
 import { ThreadSearchInput } from "./threadSearch";
 import {
@@ -55,6 +56,7 @@ import {
   PrHubPeekInput,
   PrHubSetViewedFileInput,
   PrHubStackInput,
+  PrHubCompletionsInput,
   PrHubThreadLinksInput,
   PrHubThreadsForPrInput,
   PrHubViewedFilesInput,
@@ -128,7 +130,11 @@ import {
   AgentsGetSnapshotInput,
   AgentsReadTranscriptInput,
 } from "./backgroundWork";
-import { ProjectGetCheckedInConfigInput } from "./checkedInProjectFile";
+import {
+  ProjectGetCheckedInConfigInput,
+  ProjectListRepositoriesInput,
+  ProjectSetRepositoryInput,
+} from "./checkedInProjectFile";
 import { OpenInEditorInput, RevealInFileManagerInput } from "./editor";
 import { ELICITATION_WS_METHODS, ElicitationSubmitInput } from "./elicitation";
 import { FilesystemBrowseInput } from "./filesystem";
@@ -184,6 +190,7 @@ import {
   NextTurnQueueRestoreInput,
   NextTurnQueueRetryDeliveryInput,
   NextTurnQueueRetryInput,
+  NextTurnQueueResendAuthFailedTurnInput,
   NextTurnQueueScheduleUsageLimitResumeInput,
   NextTurnQueueSetPausedInput,
   NextTurnQueueSteerInput,
@@ -209,6 +216,7 @@ import {
   OrchestrationGetThreadPeeksInput,
   OrchestrationGetSnapshotInput,
   OrchestrationGetStartupSnapshotInput,
+  OrchestrationGetLatestSequenceInput,
   OrchestrationGetThreadCommandExecutionInput,
   OrchestrationGetThreadCommandExecutionsInput,
   OrchestrationGetThreadDetailsInput,
@@ -302,6 +310,7 @@ import { ReviewPreviewDiffInput } from "./review";
 import {
   ServerAddKeybindingInput,
   ServerCheckProviderUpdatesInput,
+  ServerRefreshProvidersInput,
   ServerRemoveKeybindingInput,
   ServerResetKeybindingsInput,
   ServerRunProviderUpdateInput,
@@ -439,7 +448,7 @@ const WebSocketRequestBody = Schema.Union([
     ORCHESTRATION_WS_METHODS.dispatchCommand,
     Schema.Struct({ command: ClientOrchestrationCommand }),
   ),
-  tagRequestBody(ORCHESTRATION_WS_METHODS.getLatestSequence, Schema.Struct({})),
+  tagRequestBody(ORCHESTRATION_WS_METHODS.getLatestSequence, OrchestrationGetLatestSequenceInput),
   tagRequestBody(ORCHESTRATION_WS_METHODS.getSnapshot, OrchestrationGetSnapshotInput),
   tagRequestBody(ORCHESTRATION_WS_METHODS.getStartupSnapshot, OrchestrationGetStartupSnapshotInput),
   tagRequestBody(
@@ -532,12 +541,16 @@ const WebSocketRequestBody = Schema.Union([
 
   // Project Search
   tagRequestBody(WS_METHODS.projectsGetCheckedInConfig, ProjectGetCheckedInConfigInput),
+  tagRequestBody(WS_METHODS.projectsListRepositories, ProjectListRepositoriesInput),
+  tagRequestBody(WS_METHODS.projectsSetRepository, ProjectSetRepositoryInput),
   tagRequestBody(WS_METHODS.projectsListEntries, ProjectListEntriesInput),
   tagRequestBody(WS_METHODS.projectsClone, ProjectCloneInput),
   tagRequestBody(WS_METHODS.projectsCloneCancel, ProjectCloneCancelInput),
   tagRequestBody(WS_METHODS.projectsCloneList, Schema.Struct({})),
   tagRequestBody(WS_METHODS.projectsEnsureScratch, Schema.Struct({})),
   tagRequestBody(WS_METHODS.projectsCreateNew, ProjectCreateNewInput),
+  tagRequestBody(WS_METHODS.projectsScanAgentSessions, Schema.Struct({})),
+  tagRequestBody(WS_METHODS.projectsImportAgentSessions, AgentSessionImportInput),
   tagRequestBody(WS_METHODS.projectsFindByRepository, ProjectFindByRepositoryInput),
   tagRequestBody(WS_METHODS.projectsListDirectory, ProjectListDirectoryInput),
   tagRequestBody(WS_METHODS.projectsSearchEntries, ProjectSearchEntriesInput),
@@ -636,7 +649,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.serverGetProjectSettings, Schema.Struct({ projectId: ProjectId })),
   tagRequestBody(WS_METHODS.serverMigrateClientSetting, MigrateClientSettingInput.members[0]),
   tagRequestBody(WS_METHODS.serverMigrateClientSetting, MigrateClientSettingInput.members[1]),
-  tagRequestBody(WS_METHODS.serverRefreshProviders, ServerCheckProviderUpdatesInput),
+  tagRequestBody(WS_METHODS.serverRefreshProviders, ServerRefreshProvidersInput),
   tagRequestBody(WS_METHODS.serverCheckProviderUpdates, ServerCheckProviderUpdatesInput),
   tagRequestBody(WS_METHODS.serverRunProviderUpdate, ServerRunProviderUpdateInput),
   tagRequestBody(WS_METHODS.serverValidateHarnesses, ServerValidateHarnessesInput),
@@ -699,6 +712,10 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(
     WS_METHODS.nextTurnQueueScheduleUsageLimitResume,
     NextTurnQueueScheduleUsageLimitResumeInput,
+  ),
+  tagRequestBody(
+    WS_METHODS.nextTurnQueueResendAuthFailedTurn,
+    NextTurnQueueResendAuthFailedTurnInput,
   ),
   tagRequestBody(
     WS_METHODS.nextTurnQueueCancelUsageLimitResume,
@@ -795,6 +812,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(PR_HUB_WS_METHODS.recoverOperation, ForgeOperationInput),
   tagRequestBody(PR_HUB_WS_METHODS.cancelOperation, ForgeOperationInput),
   tagRequestBody(PR_HUB_WS_METHODS.listReviewerCandidates, PrHubStackInput),
+  tagRequestBody(PR_HUB_WS_METHODS.completions, PrHubCompletionsInput),
   tagRequestBody(PR_HUB_WS_METHODS.getChecks, PrHubChecksInput),
   tagRequestBody(PR_HUB_WS_METHODS.getCheckLog, PrHubCheckLogInput),
 
@@ -829,6 +847,7 @@ const WebSocketRequestBody = Schema.Union([
   tagPrHubRequestBody(PR_HUB_WS_METHODS.getDetail, PrHubDetailInput),
   tagPrHubRequestBody(PR_HUB_WS_METHODS.getTimeline, PrHubTimelineInput),
   tagPrHubRequestBody(PR_HUB_WS_METHODS.getFiles, PrHubFilesInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.getChangeBreakdown, PrHubDetailInput),
   tagPrHubRequestBody(PR_HUB_WS_METHODS.getReviewDraft, PrHubDetailInput),
   tagPrHubRequestBody(PR_HUB_WS_METHODS.getReviewThreads, PrHubThreadsInput),
   tagPrHubRequestBody(PR_HUB_WS_METHODS.getReplyOperation, PrHubThreadsInput),

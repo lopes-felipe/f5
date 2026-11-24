@@ -1,5 +1,6 @@
 import {
   PI_THINKING_LEVELS,
+  type AntigravityModelOptions,
   type PiModelOptions,
   type ClaudeCodeEffort,
   type ClaudeModelOptions,
@@ -66,6 +67,7 @@ export function normalizeProviderModelOptions(
   const grokCandidate = readRecordField(candidate, "grok");
   const museCandidate = readRecordField(candidate, "muse");
   const piCandidate = readRecordField(candidate, "pi");
+  const antigravityCandidate = readRecordField(candidate, "antigravity");
 
   const codexReasoningEffort =
     readCodexReasoningEffort(codexCandidate?.reasoningEffort) ??
@@ -78,7 +80,12 @@ export function normalizeProviderModelOptions(
   // No model is known here, so every valid effort is kept: a model's reported
   // default can differ from the provider-wide one (Sol reports "low"), and only
   // `normalizeCodexModelOptions` knows which effort is the default to omit.
-  const codex = codexReasoningEffort
+  const cyberAccessProgram =
+    typeof codexCandidate?.cyberAccessProgram === "string" &&
+    ["standard", "daybreakBlue", "daybreakRed"].includes(codexCandidate.cyberAccessProgram)
+      ? (codexCandidate?.cyberAccessProgram as NonNullable<CodexModelOptions["cyberAccessProgram"]>)
+      : undefined;
+  const baseCodex = codexReasoningEffort
     ? {
         reasoningEffort: codexReasoningEffort,
         ...(codexFastMode !== undefined ? { fastMode: codexFastMode } : {}),
@@ -86,6 +93,7 @@ export function normalizeProviderModelOptions(
     : codexFastMode !== undefined
       ? { fastMode: codexFastMode }
       : undefined;
+  const codex = cyberAccessProgram ? { ...baseCodex, cyberAccessProgram } : baseCodex;
 
   const claudeThinking = claudeCandidate?.thinking === false ? false : undefined;
   const claudeEffort: ClaudeCodeEffort | undefined =
@@ -98,16 +106,19 @@ export function normalizeProviderModelOptions(
       ? claudeCandidate.effort
       : undefined;
   const claudeFastMode = claudeCandidate?.fastMode === true;
+  const claudeUltracode = claudeCandidate?.ultracode === true;
   const claudeContextWindow = readTrimmedString(claudeCandidate?.contextWindow);
   const claude =
     claudeThinking === false ||
     claudeEffort !== undefined ||
     claudeFastMode ||
+    claudeUltracode ||
     claudeContextWindow !== undefined
       ? {
           ...(claudeThinking === false ? { thinking: false } : {}),
           ...(claudeEffort ? { effort: claudeEffort } : {}),
           ...(claudeFastMode ? { fastMode: true } : {}),
+          ...(claudeUltracode ? { ultracode: true } : {}),
           ...(claudeContextWindow ? { contextWindow: claudeContextWindow } : {}),
         }
       : undefined;
@@ -148,7 +159,12 @@ export function normalizeProviderModelOptions(
 
   const thinking = PI_THINKING_LEVELS.find((level) => level === piCandidate?.thinking);
   const pi: PiModelOptions | undefined = thinking ? { thinking } : undefined;
-  if (!codex && !claude && !cursor && !opencode && !grok && !muse && !pi) {
+  // Levels are model-specific and open-ended; the server validates them against the model.
+  const antigravityThinking = readTrimmedString(antigravityCandidate?.thinking);
+  const antigravity: AntigravityModelOptions | undefined = antigravityThinking
+    ? { thinking: antigravityThinking }
+    : undefined;
+  if (!codex && !claude && !cursor && !opencode && !grok && !muse && !pi && !antigravity) {
     return null;
   }
   return {
@@ -159,6 +175,7 @@ export function normalizeProviderModelOptions(
     ...(grok ? { grok } : {}),
     ...(muse ? { muse } : {}),
     ...(pi ? { pi } : {}),
+    ...(antigravity ? { antigravity } : {}),
   };
 }
 
@@ -182,6 +199,9 @@ export function providerSelectionsToModelOptions(
     case "codex":
       return normalizeProviderModelOptions({
         codex: {
+          ...(stringValue("cyberAccessProgram")
+            ? { cyberAccessProgram: stringValue("cyberAccessProgram") }
+            : {}),
           ...(stringValue("reasoningEffort")
             ? { reasoningEffort: stringValue("reasoningEffort") }
             : {}),
@@ -194,6 +214,9 @@ export function providerSelectionsToModelOptions(
           ...(stringValue("effort") ? { effort: stringValue("effort") } : {}),
           ...(booleanValue("thinking") !== undefined ? { thinking: booleanValue("thinking") } : {}),
           ...(booleanValue("fastMode") !== undefined ? { fastMode: booleanValue("fastMode") } : {}),
+          ...(booleanValue("ultracode") !== undefined
+            ? { ultracode: booleanValue("ultracode") }
+            : {}),
           ...(stringValue("contextWindow") ? { contextWindow: stringValue("contextWindow") } : {}),
         },
       });
@@ -223,8 +246,9 @@ export function providerSelectionsToModelOptions(
       });
     case "pi":
       return normalizeProviderModelOptions({ pi: { thinking: stringValue("thinking") } });
-    case "acp":
     case "antigravity":
+      return normalizeProviderModelOptions({ antigravity: { thinking: stringValue("thinking") } });
+    case "acp":
     case "grok":
       return null;
   }
@@ -258,6 +282,7 @@ export function providerModelOptionsToSelections(
       const codexOptions = providerOptions as CodexModelOptions;
       pushString("reasoningEffort", codexOptions.reasoningEffort);
       pushBoolean("fastMode", codexOptions.fastMode);
+      pushString("cyberAccessProgram", codexOptions.cyberAccessProgram);
       break;
     }
     case "claudeAgent": {
@@ -265,6 +290,7 @@ export function providerModelOptionsToSelections(
       pushString("effort", claudeOptions.effort);
       pushBoolean("thinking", claudeOptions.thinking);
       pushBoolean("fastMode", claudeOptions.fastMode);
+      pushBoolean("ultracode", claudeOptions.ultracode);
       pushString("contextWindow", claudeOptions.contextWindow);
       break;
     }
@@ -290,8 +316,10 @@ export function providerModelOptionsToSelections(
     case "pi":
       pushString("thinking", (providerOptions as PiModelOptions).thinking);
       break;
-    case "acp":
     case "antigravity":
+      pushString("thinking", (providerOptions as AntigravityModelOptions).thinking);
+      break;
+    case "acp":
     case "grok":
       break;
   }

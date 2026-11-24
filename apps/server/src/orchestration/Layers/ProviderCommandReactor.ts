@@ -1,4 +1,5 @@
 import { timeOrderedUuid } from "@t3tools/shared/ids";
+import { readThreadAfterContextBoundary } from "../contextBoundary.ts";
 import { assertScheduledDeliveryAllowed } from "../../scheduledTasks/deliveryGate.ts";
 import { readMcpAppModelContext } from "../../mcpApps/McpAppContext.ts";
 import { MCP_APP_PROVIDERS } from "@t3tools/shared/mcpApp";
@@ -902,18 +903,26 @@ const make = Effect.gen(function* () {
     readonly threadId: ThreadId;
     readonly session: OrchestrationSession;
     readonly createdAt: string;
+    readonly rebindLiveSession?: boolean;
   }) =>
     orchestrationEngine.dispatch({
       type: "thread.session.set",
       commandId: serverCommandId("provider-session-set"),
       threadId: input.threadId,
       session: input.session,
+      ...(input.rebindLiveSession ? { rebindLiveSession: true } : {}),
       createdAt: input.createdAt,
     });
 
   const resolveThread = Effect.fnUntraced(function* (threadId: ThreadId) {
     const readModel = yield* orchestrationEngine.getReadModel();
     return readModel.threads.find((entry) => entry.id === threadId);
+  });
+  const resolveProviderThread = Effect.fnUntraced(function* (threadId: ThreadId) {
+    const thread = yield* resolveThread(threadId);
+    return thread
+      ? yield* readThreadAfterContextBoundary(thread, Option.getOrUndefined(sqlOption), true)
+      : thread;
   });
 
   const resolveActiveThread = Effect.fnUntraced(function* (threadId: ThreadId) {
@@ -927,7 +936,7 @@ const make = Effect.gen(function* () {
     reportFailure = true,
   ) {
     const readModel = yield* orchestrationEngine.getReadModel();
-    const thread = readModel.threads.find((entry) => entry.id === threadId);
+    const thread = yield* resolveProviderThread(threadId);
     if (!thread) {
       return yield* new ProviderTurnDeliveryError({
         certainty: "not_sent",
@@ -993,7 +1002,11 @@ const make = Effect.gen(function* () {
       cwd: effectiveCwd,
       workflowExecutionProfile,
     });
-    return { thread, instructionContext, effectiveCwd };
+    return {
+      thread,
+      instructionContext,
+      effectiveCwd,
+    };
   });
 
   const resolveThreadSessionStartContext = Effect.fnUntraced(function* (
@@ -1023,6 +1036,8 @@ const make = Effect.gen(function* () {
     readonly desiredModel?: string;
     readonly instructionContext: Partial<SharedInstructionInput>;
     readonly freshCompactionLaunch?: boolean;
+    /** The session is the one the thread already runs, not a started or replaced one. */
+    readonly rebind?: boolean;
   }) =>
     Effect.promise(() =>
       estimateProviderInstructionTokens({
@@ -1094,6 +1109,9 @@ const make = Effect.gen(function* () {
           Effect.flatMap((tokenUsage) =>
             setThreadSession({
               threadId: input.thread.id,
+              // Only a re-bind of the live session may keep its running turn;
+              // the decider checks current state at write time.
+              ...(input.rebind ? { rebindLiveSession: true } : {}),
               session: {
                 threadId: input.thread.id,
                 status: mapProviderSessionStatusToOrchestrationStatus(input.session.status),
@@ -1132,6 +1150,7 @@ const make = Effect.gen(function* () {
       readonly reportWorkspaceFailure?: boolean;
       /** For an automation's turn: a new session asks no consent, and none restarts for one. */
       readonly unattended?: boolean;
+      readonly freshContext?: boolean;
       /**
        * Set only for an ordinary turn. A switch to another provider instance then
        * hands this conversation off instead of resetting the agent's context.
@@ -1335,6 +1354,7 @@ const make = Effect.gen(function* () {
          * never restore the compaction summary and transcripts next to it.
          */
         readonly carriesHandoff?: boolean;
+        readonly discardResumeCursor?: boolean;
       }) => {
         const providerForStart = input?.provider ?? preferredProvider;
         const startInstructionContext = input?.carriesHandoff
@@ -1434,6 +1454,7 @@ const make = Effect.gen(function* () {
               ? withoutTranscriptIncomplete(input?.resumeCursor)
               : input?.resumeCursor;
           const startInput = {
+            ...(input?.discardResumeCursor ? { discardResumeCursor: true } : {}),
             threadId,
             projectId: thread.projectId,
             ...(providerForStart ? { provider: providerForStart } : {}),
@@ -1493,13 +1514,22 @@ const make = Effect.gen(function* () {
         }).pipe(Effect.withSpan("provider.start-session"));
       };
 
-      const bindSessionToThread = (session: ProviderSession, freshCompactionLaunch = false) =>
+      /**
+       * `start`: a started or replaced session. `fresh-compaction`: a session
+       * launched to continue from a compaction. `rebind`: the live session the
+       * thread already runs, which may keep its running turn.
+       */
+      const bindSessionToThread = (
+        session: ProviderSession,
+        mode: "start" | "fresh-compaction" | "rebind" = "start",
+      ) =>
         bindSessionToThreadWithContext({
           thread,
           session,
           createdAt,
           desiredRuntimeMode,
-          freshCompactionLaunch,
+          freshCompactionLaunch: mode === "fresh-compaction",
+          rebind: mode === "rebind",
           ...(desiredModel ? { desiredModel } : {}),
           instructionContext: {
             ...instructionContext,
@@ -1508,6 +1538,55 @@ const make = Effect.gen(function* () {
         });
 
       const activeSession = yield* resolveActiveSession(threadId);
+      if (Option.isSome(sqlOption)) {
+        const boundary = yield* sqlOption.value.unsafe<{ prepared: number; messageId: string }>(
+          "SELECT prepared, message_id AS messageId FROM thread_context_boundaries WHERE thread_id = ?",
+          [threadId],
+        );
+        if (boundary[0]?.prepared === 0) {
+          if (activeSession) yield* providerService.stopSession({ threadId });
+          if (Option.isSome(handoffStates)) {
+            const state = yield* handoffStates.value.get(threadId);
+            if (state) {
+              const updated = yield* handoffStates.value.compareAndSet({
+                threadId,
+                expectedRevision: state.revision,
+                pending: null,
+                parked: {},
+              });
+              if (!updated)
+                return yield* Effect.fail(
+                  new Error("Session context changed. Retry the fresh send."),
+                );
+            }
+          }
+          const started = yield* startProviderSession({
+            carriesHandoff: true,
+            discardResumeCursor: true,
+          });
+          yield* bindSessionToThread(started, "fresh-compaction");
+          yield* sqlOption.value.unsafe(
+            "UPDATE thread_context_boundaries SET prepared = 1 WHERE thread_id = ?",
+            [threadId],
+          );
+          yield* orchestrationEngine.dispatch({
+            type: "thread.activity.append",
+            commandId: serverCommandId("fresh-context"),
+            threadId,
+            createdAt,
+            activity: {
+              id: EventId.makeUnsafe("fresh-context:" + threadId + ":" + createdAt),
+              kind: "session.context-reset",
+              tone: "info",
+              summary: "New session",
+              payload: { freshContext: true, messageId: boundary[0].messageId },
+              turnId: null,
+              createdAt,
+            },
+          });
+          return threadId;
+        }
+      }
       const computerPolicy = yield* resolveAgentBrowserPolicy(threadId);
       const supportsComputer = preferredProvider === "claudeAgent" || preferredProvider === "codex";
       const computerSelection = (yield* resolveProviderComputerBackendSelection(preferredProvider, {
@@ -1909,7 +1988,7 @@ const make = Effect.gen(function* () {
           !shouldRestartForWorkflowExecutionProfileChange
         ) {
           if (activeSession) {
-            yield* bindSessionToThread(activeSession);
+            yield* bindSessionToThread(activeSession, "rebind");
           }
           yield* recordEffectiveStartConfig();
           yield* Effect.annotateCurrentSpan({
@@ -2062,7 +2141,10 @@ const make = Effect.gen(function* () {
           : {}),
         ...(startCarriesHandoff ? { carriesHandoff: true } : {}),
       });
-      yield* bindSessionToThread(startedSession, freshCompactionLaunch);
+      yield* bindSessionToThread(
+        startedSession,
+        freshCompactionLaunch ? "fresh-compaction" : "start",
+      );
       yield* recordEffectiveStartConfig();
       if (
         resumeCursorForStoppedSession === undefined &&
@@ -2090,6 +2172,7 @@ const make = Effect.gen(function* () {
   });
 
   interface SendTurnForThreadInput {
+    readonly freshContext?: boolean;
     readonly threadId: ThreadId;
     /** The user message being delivered; required for a context handoff. */
     readonly messageId?: string;
@@ -2121,11 +2204,11 @@ const make = Effect.gen(function* () {
       const live = (yield* providerService.listSessions()).find(
         (session) => session.threadId === input.threadId && session.status !== "closed",
       );
+      // A native wake belongs to an existing session. Its adapter validates the
+      // request's generation, while the thread model may be a pick for a later turn.
       if (
         !live ||
         live.runtimeMode !== thread.runtimeMode ||
-        (live.model !== undefined &&
-          live.model !== (thread.modelSelection?.model ?? thread.model)) ||
         (thread.modelSelection && thread.modelSelection.instanceId !== live.providerInstanceId)
       )
         return yield* new ProviderTurnDeliveryError({
@@ -2139,8 +2222,6 @@ const make = Effect.gen(function* () {
         input: input.providerInput,
         ...(input.deliveryId ? { deliveryId: input.deliveryId } : {}),
         submissionSource: "automation",
-        ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
-        ...(input.model ? { model: input.model } : {}),
         ...(input.interactionMode ? { interactionMode: input.interactionMode } : {}),
         ...(input.workflowExecutionProfile
           ? { workflowExecutionProfile: input.workflowExecutionProfile }
@@ -2315,13 +2396,15 @@ const make = Effect.gen(function* () {
         Option.isSome(sqlOption)
           ? yield* readFirstUserMessage(threadId)
           : null;
-      const source = selectHandoffSource({
-        thread,
-        mode: requestedMode,
-        sinceMessageId: pending.sinceMessageId,
-        excludeMessageId: input.messageId,
-        evictedFirstUserMessage,
-      });
+      const source =
+        pending.sourceContext ??
+        selectHandoffSource({
+          thread,
+          mode: requestedMode,
+          sinceMessageId: pending.sinceMessageId,
+          excludeMessageId: input.messageId,
+          evictedFirstUserMessage,
+        });
       const images = input.attachments.filter((attachment) => attachment.type === "image").length;
       const rendered = renderProviderHandoff({
         source,
@@ -2395,6 +2478,9 @@ const make = Effect.gen(function* () {
           createdAt: string;
         }>`SELECT message_id AS "id", role, text, is_streaming AS "streaming", created_at AS "createdAt"
           FROM projection_thread_messages WHERE thread_id = ${threadId} AND role = 'user'
+          AND created_at >= COALESCE(
+            (SELECT created_at FROM thread_context_boundaries WHERE thread_id = ${threadId} AND prepared = 1), ''
+          )
           ORDER BY created_at, message_id LIMIT 1`.pipe(
           Effect.map((rows) => {
             const row = rows[0];
@@ -2420,6 +2506,15 @@ const make = Effect.gen(function* () {
     input: SendTurnForThreadInput,
     thread: OrchestrationThread,
   ) {
+    if (input.freshContext) {
+      if (Option.isNone(sqlOption) || !input.messageId)
+        return yield* Effect.fail(new Error("Fresh sessions require durable context boundaries."));
+      yield* sqlOption.value.unsafe(
+        "INSERT INTO thread_context_boundaries(thread_id,message_id,created_at,prepared) VALUES(?,?,?,0) ON CONFLICT(thread_id) DO UPDATE SET message_id=excluded.message_id,created_at=excluded.created_at,prepared=0 WHERE thread_context_boundaries.message_id != excluded.message_id",
+        [input.threadId, input.messageId, input.createdAt],
+      );
+      thread = (yield* resolveThread(input.threadId)) ?? thread;
+    }
     const resolvedContext = yield* resolveThreadInstructionContext(
       thread.id,
       input.workflowExecutionProfile,
@@ -2448,6 +2543,7 @@ const make = Effect.gen(function* () {
     if (workspace) yield* ensureWorkspaceDirectory(workspace);
     yield* requireDeliverableThread(input.threadId);
     yield* ensureSessionForThread(input.threadId, input.createdAt, {
+      ...(input.freshContext ? { freshContext: true } : {}),
       resolvedContext,
       ...(input.provider !== undefined ? { provider: input.provider } : {}),
       ...(input.model !== undefined ? { model: input.model } : {}),
@@ -2531,7 +2627,9 @@ const make = Effect.gen(function* () {
       input.messageId !== undefined &&
       activeSession !== undefined &&
       (normalizedInput !== undefined || normalizedAttachments.length > 0);
-    const handoffThread = handoffEligible ? yield* resolveThread(input.threadId) : undefined;
+    const handoffThread = handoffEligible
+      ? yield* resolveProviderThread(input.threadId)
+      : undefined;
     const prepared =
       handoffThread && input.messageId !== undefined && activeSession
         ? yield* prepareHandoffForTurn({
@@ -3057,6 +3155,7 @@ const make = Effect.gen(function* () {
     );
 
     return yield* sendTurnForThread({
+      ...(event.payload.freshContext ? { freshContext: true } : {}),
       ...(event.payload.continuationRequestId
         ? { continuationRequestId: event.payload.continuationRequestId }
         : {}),
@@ -4064,9 +4163,9 @@ const make = Effect.gen(function* () {
           // Titles and observed checkout branches do not change the provider
           // launch context. Re-reading its stale session would erase turn errors.
           if (
-            event.payload.model === undefined &&
-            event.payload.modelSelection === undefined &&
-            event.payload.worktreePath === undefined
+            event.payload.worktreePath === undefined &&
+            (event.payload.deferModelSwitch ||
+              (event.payload.model === undefined && event.payload.modelSelection === undefined))
           )
             return;
           if (!thread?.session || thread.session.status === "stopped") {

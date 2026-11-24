@@ -5,15 +5,11 @@ import {
   type PrReviewAnchor,
 } from "@t3tools/shared/prReview";
 import { useMemo } from "react";
-import { FileDiff, Virtualizer } from "@pierre/diffs/react";
+import { SearchableDiffView } from "../SearchableDiffView";
 import type { PrHubChangedFile } from "@t3tools/contracts";
 import { useAppSettings } from "../../appSettings";
 import { useTheme } from "../../hooks/useTheme";
-import {
-  buildFileDiffRenderKey,
-  DIFF_PANEL_UNSAFE_CSS,
-  resolveFileDiffPath,
-} from "../../lib/diffPatch";
+import { buildFileDiffRenderKey, DIFF_PANEL_UNSAFE_CSS } from "../../lib/diffPatch";
 import { getRenderablePrFilePatch, isPurePrFileRename } from "../../lib/prFilePatch";
 import { PREFERRED_HIGHLIGHTER, resolveDiffThemeName } from "../../lib/diffRendering";
 import { DiffSurfaceBoundary } from "../DiffSurfaceBoundary";
@@ -63,40 +59,38 @@ export function PrFileDiff({
   }
   return (
     <DiffSurfaceBoundary fallback={<p className="p-3 text-sm">Loading diff…</p>}>
-      <Virtualizer
+      <SearchableDiffView
         className="diff-render-surface h-[32rem] overflow-auto"
-        config={{ overscrollSize: 600, intersectionObserverMargin: 1200 }}
-      >
-        {patch.files.map((diff) => (
-          <div key={buildFileDiffRenderKey(diff)} data-diff-file-path={resolveFileDiffPath(diff)}>
-            <FileDiff
-              fileDiff={diff}
-              options={{
-                diffStyle: settings.diffRenderMode === "split" ? "split" : "unified",
-                lineDiffType: "none",
-                ...(onComment
-                  ? {
-                      onLineNumberClick: (event) => {
-                        const anchor: PrReviewAnchor = {
-                          path: file.path,
-                          line: event.lineNumber,
-                          side: event.annotationSide === "deletions" ? "LEFT" : "RIGHT",
-                        };
-                        if (file.patch && isPrReviewAnchorInPatch(anchor, file.patch))
-                          onComment(anchor);
-                      },
-                    }
-                  : {}),
-                overflow: settings.diffWordWrap ? "wrap" : "scroll",
-                theme: resolveDiffThemeName(resolvedTheme),
-                preferredHighlighter: PREFERRED_HIGHLIGHTER,
-                themeType: resolvedTheme,
-                unsafeCSS: DIFF_PANEL_UNSAFE_CSS,
-              }}
-            />
-          </div>
-        ))}
-      </Virtualizer>
+        files={patch.files.map((diff) => ({
+          id: buildFileDiffRenderKey(diff),
+          fileDiff: diff,
+          collapsed: false,
+        }))}
+        options={{
+          diffStyle: settings.diffRenderMode === "split" ? "split" : "unified",
+          lineDiffType: "none",
+          ...(onComment
+            ? {
+                onLineNumberClick: (event) => {
+                  const anchor: PrReviewAnchor = {
+                    path: file.path,
+                    line: event.lineNumber,
+                    side:
+                      "annotationSide" in event && event.annotationSide === "deletions"
+                        ? "LEFT"
+                        : "RIGHT",
+                  };
+                  if (file.patch && isPrReviewAnchorInPatch(anchor, file.patch)) onComment(anchor);
+                },
+              }
+            : {}),
+          overflow: settings.diffWordWrap ? "wrap" : "scroll",
+          theme: resolveDiffThemeName(resolvedTheme),
+          preferredHighlighter: PREFERRED_HIGHLIGHTER,
+          themeType: resolvedTheme,
+          unsafeCSS: DIFF_PANEL_UNSAFE_CSS,
+        }}
+      />
     </DiffSurfaceBoundary>
   );
 }

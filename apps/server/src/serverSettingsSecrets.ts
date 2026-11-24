@@ -1,6 +1,11 @@
 import { Effect } from "effect";
 import type { ServerSettings } from "@t3tools/contracts";
 import type { ServerSecretStoreShape } from "./auth/Services/ServerSecretStore.ts";
+import {
+  PROVIDER_INSTANCE_SECRET_FIELDS,
+  providerInstanceSecretField,
+  type ProviderInstanceSecretField,
+} from "@t3tools/shared/serverSettings";
 
 export interface SettingsSecretChange {
   readonly name: string;
@@ -9,7 +14,10 @@ export interface SettingsSecretChange {
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const globalName = "provider-opencode-password";
-const instanceName = (id: string) => `provider-password-${Buffer.from(id).toString("base64url")}`;
+const opencodeSecret = PROVIDER_INSTANCE_SECRET_FIELDS.opencode;
+/** Secret-store name for a provider instance's secret field. */
+export const providerInstanceSecretName = (secret: ProviderInstanceSecretField, id: string) =>
+  `${secret.secretPrefix}${Buffer.from(id).toString("base64url")}`;
 const record = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
@@ -22,11 +30,45 @@ export function prepareSettingsSecrets(
   changes: SettingsSecretChange[];
 } {
   const changes: SettingsSecretChange[] = [];
-  const protect = (config: Record<string, unknown>, name: string) => {
-    const value = config.serverPassword;
-    if (typeof value !== "string" || !value.trim()) return config;
+  const textGenerators = Object.fromEntries(
+    Object.entries(settings.textGenerators).map(([id, generator]) => {
+      const name = "text-generator-" + Buffer.from(id).toString("base64url");
+      if (generator.apiKey) {
+        changes.push({ name, value: encoder.encode(generator.apiKey) });
+        return [id, { ...generator, apiKey: "", apiKeyRedacted: true }];
+      }
+      if (!generator.apiKeyRedacted) changes.push({ name, value: null });
+      return [id, generator];
+    }),
+  );
+  for (const id of Object.keys(previous.textGenerators)) {
+    if (!Object.hasOwn(settings.textGenerators, id))
+      changes.push({
+        name: "text-generator-" + Buffer.from(id).toString("base64url"),
+        value: null,
+      });
+  }
+  const hadStoredSecret = (id: string, redactedField: string) => {
+    const config = (previous.providerInstances as Record<string, { config?: unknown } | undefined>)[
+      id
+    ]?.config;
+    return record(config) && config[redactedField] === true;
+  };
+  const protect = (
+    config: Record<string, unknown>,
+    name: string,
+    secret: ProviderInstanceSecretField = opencodeSecret,
+    { deleteWhenCleared = false }: { deleteWhenCleared?: boolean } = {},
+  ) => {
+    const value = config[secret.field];
+    if (typeof value !== "string" || !value.trim()) {
+      // A blank value without its reference is an explicit clear.
+      if (deleteWhenCleared && config[secret.redactedField] !== true)
+        changes.push({ name, value: null });
+      return config;
+    }
     changes.push({ name, value: encoder.encode(value.trim()) });
-    return { ...config, serverPassword: "", serverPasswordRedacted: true };
+    return { ...config, [secret.field]: "", [secret.redactedField]: true };
   };
   const headers = settings.observability.otlpHeaders?.map((header) => {
     if (header.valueRedacted && !header.value) return header;
@@ -45,16 +87,18 @@ export function prepareSettingsSecrets(
       });
   }
   for (const [id, instance] of Object.entries(previous.providerInstances)) {
+    const secret = providerInstanceSecretField(instance.driver);
     if (
-      instance.driver === "opencode" &&
+      secret &&
       settings.providerInstances[id as keyof typeof settings.providerInstances]?.driver !==
-        "opencode"
+        instance.driver
     )
-      changes.push({ name: instanceName(id), value: null });
+      changes.push({ name: providerInstanceSecretName(secret, id), value: null });
   }
   return {
     settings: {
       ...settings,
+      textGenerators,
       ...(headers ? { observability: { ...settings.observability, otlpHeaders: headers } } : {}),
       providers: {
         ...settings.providers,
@@ -64,12 +108,29 @@ export function prepareSettingsSecrets(
         ) as ServerSettings["providers"]["opencode"],
       },
       providerInstances: Object.fromEntries(
-        Object.entries(settings.providerInstances).map(([id, instance]) => [
-          id,
-          instance.driver === "opencode" && record(instance.config)
-            ? { ...instance, config: protect(instance.config, instanceName(id)) }
-            : instance,
-        ]),
+        Object.entries(settings.providerInstances).map(([id, instance]) => {
+          const secret = providerInstanceSecretField(instance.driver);
+          return [
+            id,
+            secret && record(instance.config)
+              ? {
+                  ...instance,
+                  config: protect(
+                    instance.config,
+                    providerInstanceSecretName(secret, id),
+                    secret,
+                    // OpenCode keeps its historical behaviour of never deleting on a blank save.
+                    // Others delete only a secret that was stored, so saving an instance that
+                    // never had one touches no secret-store entry.
+                    {
+                      deleteWhenCleared:
+                        secret !== opencodeSecret && hadStoredSecret(id, secret.redactedField),
+                    },
+                  ),
+                }
+              : instance,
+          ];
+        }),
       ),
     },
     changes,
@@ -78,6 +139,14 @@ export function prepareSettingsSecrets(
 
 export const OPENCODE_PASSWORD_UNAVAILABLE =
   "A stored OpenCode password is unavailable. Re-enter it in Settings.";
+export const PROVIDER_SECRET_UNAVAILABLE =
+  "A stored provider API key is unavailable. Re-enter it in Settings.";
+
+/** A secret reference whose value was missing when the settings were read. */
+export const isProviderSecretUnavailable = (
+  secret: ProviderInstanceSecretField,
+  config: Readonly<Record<string, unknown>>,
+) => config[secret.redactedField] === true && !config[secret.field];
 
 /** A password reference whose secret was missing when the settings were read. */
 export const isOpenCodePasswordUnavailable = (config: {
@@ -96,26 +165,56 @@ export const materializeSettingsSecrets = (
   store: ServerSecretStoreShape,
 ) =>
   Effect.gen(function* () {
-    const hydrate = (config: Record<string, unknown>, name: string) =>
+    const textGenerators = Object.fromEntries(
+      yield* Effect.forEach(Object.entries(settings.textGenerators), ([id, generator]) =>
+        Effect.gen(function* () {
+          if (!generator.apiKeyRedacted || generator.apiKey) return [id, generator] as const;
+          const secret = yield* store.get(
+            "text-generator-" + Buffer.from(id).toString("base64url"),
+          );
+          return [
+            id,
+            secret
+              ? { ...generator, apiKey: decoder.decode(secret), apiKeyRedacted: false }
+              : generator,
+          ] as const;
+        }),
+      ),
+    );
+    const hydrate = (
+      config: Record<string, unknown>,
+      name: string,
+      field: ProviderInstanceSecretField = opencodeSecret,
+    ) =>
       Effect.gen(function* () {
-        if (config.serverPasswordRedacted !== true || config.serverPassword) return config;
+        if (config[field.redactedField] !== true || config[field.field]) return config;
         const secret = yield* store.get(name);
         if (!secret) {
-          yield* Effect.logWarning(OPENCODE_PASSWORD_UNAVAILABLE);
+          yield* Effect.logWarning(
+            field === opencodeSecret ? OPENCODE_PASSWORD_UNAVAILABLE : PROVIDER_SECRET_UNAVAILABLE,
+          );
           return config;
         }
-        const { serverPasswordRedacted: _reference, ...rest } = config;
-        return { ...rest, serverPassword: decoder.decode(secret) };
+        const { [field.redactedField]: _reference, ...rest } = config;
+        return { ...rest, [field.field]: decoder.decode(secret) };
       });
     const opencode = yield* hydrate(settings.providers.opencode, globalName);
     const entries = yield* Effect.forEach(
       Object.entries(settings.providerInstances),
       ([id, instance]) =>
         Effect.gen(function* () {
+          const secret = providerInstanceSecretField(instance.driver);
           return [
             id,
-            instance.driver === "opencode" && record(instance.config)
-              ? { ...instance, config: yield* hydrate(instance.config, instanceName(id)) }
+            secret && record(instance.config)
+              ? {
+                  ...instance,
+                  config: yield* hydrate(
+                    instance.config,
+                    providerInstanceSecretName(secret, id),
+                    secret,
+                  ),
+                }
               : instance,
           ] as const;
         }),
@@ -137,6 +236,7 @@ export const materializeSettingsSecrets = (
     );
     return {
       ...settings,
+      textGenerators,
       observability: {
         ...settings.observability,
         ...(settings.observability.otlpHeaders ? { otlpHeaders: headers } : {}),

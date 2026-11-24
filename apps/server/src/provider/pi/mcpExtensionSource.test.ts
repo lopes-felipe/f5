@@ -11,7 +11,7 @@ import { loadMcpBridge } from "./mcpBridge.testkit.ts";
 
 type RequestHook = (
   event: { payload: unknown },
-  ctx: { model: { provider: string } },
+  ctx: { model: { provider: string; serviceTiers?: { id: string }[] } },
 ) => Record<string, unknown> | undefined;
 
 interface SkillCommand {
@@ -40,12 +40,65 @@ async function loadHooks(commands: ReadonlyArray<SkillCommand> = []) {
     NodePath,
     stripFrontmatter: (content: string) => content,
     pi: {
+      registerCommand: () => undefined,
       on: (name: string, handler: unknown) => handlers.set(name, handler),
       getCommands: () => commands,
     },
   });
   return handlers;
 }
+
+describe("Pi orchestration prompt section", () => {
+  it("preserves existing sections and reconciles tool discovery", async () => {
+    const bridge = await loadMcpBridge({ modern: true, toolSearchAvailable: true });
+    const hook = bridge.handlers.get("before_agent_start")!;
+    const sections: Record<string, string> = { existing: "Other extension guidance" };
+    const event = { systemPrompt: "base", systemPromptOptions: { sections } };
+    const ctx = { model: { api: "openai-completions" }, ui: { notify: assert.fail } };
+
+    assert.isUndefined(await hook(event, ctx));
+    assert.equal(event.systemPrompt, "base");
+    assert.include(bridge.getActiveTools(), "mcp__f5__preview_snapshot");
+    const guidance = sections.f5_orchestration!;
+    assert.include(guidance, "thread_status");
+    assert.include(guidance, "Show data trends and comparisons with html_render");
+
+    assert.isUndefined(await hook(event, ctx));
+    assert.deepEqual(sections, {
+      existing: "Other extension guidance",
+      f5_orchestration: guidance,
+    });
+  });
+
+  it.each([undefined, {}, { sections: null }])(
+    "appends guidance when Pi provides no section map (%j)",
+    async (systemPromptOptions) => {
+      const bridge = await loadMcpBridge();
+      const hook = bridge.handlers.get("before_agent_start")!;
+      const event = {
+        systemPrompt: "base",
+        ...(systemPromptOptions === undefined ? {} : { systemPromptOptions }),
+      };
+      const result = await hook(event, { ui: { notify: assert.fail } });
+      assert.isTrue(result?.systemPrompt.startsWith("base\n\n"));
+      assert.include(result?.systemPrompt, "thread_status");
+    },
+  );
+
+  it("appends guidance to a prompt forced by an earlier extension", async () => {
+    const bridge = await loadMcpBridge();
+    const hook = bridge.handlers.get("before_agent_start")!;
+    const sections = { existing: "Other extension guidance" };
+    const event = {
+      systemPrompt: "forced",
+      systemPromptOptions: { sections, forceSystemPrompt: "forced" },
+    };
+    const result = await hook(event, { ui: { notify: assert.fail } });
+    assert.isTrue(result?.systemPrompt.startsWith("forced\n\n"));
+    assert.include(result?.systemPrompt, "thread_status");
+    assert.deepEqual(sections, { existing: "Other extension guidance" });
+  });
+});
 
 describe("Pi MCP tool results", () => {
   it("returns mixed screenshot blocks and typed script output without repeating structured text", async () => {
@@ -139,14 +192,14 @@ describe("Pi MCP tool exposure", () => {
   );
 
   it("adds the chart nudge only when the live catalog can preview and publish pages", async () => {
-    const chart = "prefer showing it as a chart with html_render";
+    const chart = "Show data trends and comparisons with html_render";
     const full = await loadMcpBridge({ modern: true, toolSearchAvailable: true });
     await full.handlers.get("session_start")!({ systemPrompt: "" }, discoveryContext);
     const withCharts = await full.handlers.get("before_agent_start")!(
       { systemPrompt: "Pi system prompt" },
       discoveryContext,
     );
-    assert.include(withCharts.systemPrompt, chart);
+    assert.include(withCharts?.systemPrompt, chart);
     const renderOnly = await loadMcpBridge({
       modern: true,
       toolSearchAvailable: true,
@@ -157,8 +210,8 @@ describe("Pi MCP tool exposure", () => {
       { systemPrompt: "Pi system prompt" },
       discoveryContext,
     );
-    assert.include(withoutCharts.systemPrompt, "thread_status");
-    assert.notInclude(withoutCharts.systemPrompt, chart);
+    assert.include(withoutCharts?.systemPrompt, "thread_status");
+    assert.notInclude(withoutCharts?.systemPrompt, chart);
   });
 
   it("keeps orchestration direct and optional bridge tools discoverable on modern Pi", async () => {
@@ -167,7 +220,7 @@ describe("Pi MCP tool exposure", () => {
     const start = bridge.handlers.get("before_agent_start");
     assert.isDefined(start);
     const prompt = await start!({ systemPrompt: "Pi system prompt" }, discoveryContext);
-    assert.include(prompt.systemPrompt, "thread_status");
+    assert.include(prompt?.systemPrompt, "thread_status");
     assert.equal(bridge.servers.length, 0);
     assert.equal(bridge.tools.length, 4);
     assert.deepEqual(bridge.getActiveTools(), ["read", "tool_search"]);
@@ -420,6 +473,7 @@ describe("Pi tool discovery permissions", () => {
     await NodeVM.runInNewContext(`${source}\nf5McpExtension(pi)`, {
       process: { env: { F5_PI_RUNTIME_MODE: "approval-required" } },
       pi: {
+        registerCommand: () => undefined,
         on: (name: string, handler: ToolCallHook) => {
           if (name === "tool_call") toolCall = handler;
         },
@@ -497,7 +551,7 @@ describe("Pi MCP bounds and private failures", () => {
   });
 });
 
-async function loadRequestHook(): Promise<RequestHook> {
+async function loadRequestHook(tier?: string): Promise<RequestHook> {
   const handlers = new Map<string, RequestHook>();
   const source = NodeModule.stripTypeScriptTypes(
     PI_F5_MCP_EXTENSION_SOURCE.replace(/^import .*;$/gm, "").replace(
@@ -507,7 +561,12 @@ async function loadRequestHook(): Promise<RequestHook> {
   );
   await NodeVM.runInNewContext(`${source}\nf5McpExtension(pi)`, {
     process: { env: {} },
-    pi: { on: (name: string, handler: RequestHook) => handlers.set(name, handler) },
+    pi: {
+      registerCommand: (_name: string, command: { handler: (args: string) => Promise<void> }) => {
+        if (tier !== undefined) void command.handler(tier);
+      },
+      on: (name: string, handler: RequestHook) => handlers.set(name, handler),
+    },
   });
   const hook = handlers.get("before_provider_request");
   assert.isDefined(hook);
@@ -515,6 +574,25 @@ async function loadRequestHook(): Promise<RequestHook> {
 }
 
 describe("Pi upstream output-budget workaround", () => {
+  it("sends only advertised tiers and Standard leaves the provider default", async () => {
+    const hook = await loadRequestHook("priority");
+    expect(
+      hook(
+        { payload: { model: "test" } },
+        { model: { provider: "anthropic", serviceTiers: [{ id: "priority" }] } },
+      ),
+    ).toMatchObject({ service_tier: "priority" });
+    expect(
+      hook({ payload: { model: "test" } }, { model: { provider: "anthropic" } }),
+    ).toBeUndefined();
+    const standard = await loadRequestHook("");
+    expect(
+      standard(
+        { payload: { model: "test" } },
+        { model: { provider: "anthropic", serviceTiers: [{ id: "priority" }] } },
+      ),
+    ).toBeUndefined();
+  });
   it.each(["max_tokens", "max_completion_tokens"])(
     "caps %s without changing the conversation or tools",
     async (key) => {

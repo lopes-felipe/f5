@@ -10,6 +10,14 @@ import {
   rewriteMarkdownFileUriHref,
 } from "./markdown-links";
 
+it("retains local editor file links on anchors only", () => {
+  const editorLink = "vscode://file/C:/repo/main.ts:186:2";
+  expect(chatMarkdownUrlTransform(editorLink)).toBe(editorLink);
+  expect(chatMarkdownUrlTransform(editorLink, "src")).toBe("");
+  expect(chatMarkdownUrlTransform("cursor://extension/id")).toBe("");
+  expect(chatMarkdownUrlTransform("cursor://file/tmp/main.ts?command=test")).toBe("");
+});
+
 describe("collectMarkdownLinkHrefs", () => {
   // The regex the scanner replaced; it is quadratic on unterminated brackets.
   const reference = (text: string) =>

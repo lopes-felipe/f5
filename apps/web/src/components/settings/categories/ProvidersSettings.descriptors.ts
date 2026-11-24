@@ -37,4 +37,21 @@ export const PROVIDERS_SETTINGS_DESCRIPTORS = [
     keywords: ["codex binary", "claude binary", "cli arguments", "custom models", "migrate"],
     targetSelector: '[data-settings-search-target="providers.legacy-overrides"]',
   },
+  {
+    ...SETTINGS_ITEM_ROUTES["providers.text-generators"],
+    label: "Text generators",
+    description:
+      "Add model APIs for titles, commit messages, PR text, and text cleanup without a coding agent.",
+    keywords: [
+      "openai",
+      "openrouter",
+      "ollama",
+      "lm studio",
+      "anthropic",
+      "api key",
+      "commit message",
+      "title",
+    ],
+    targetSelector: '[data-settings-search-target="providers.text-generators"]',
+  },
 ] as const satisfies ReadonlyArray<SettingsItemDescriptor>;

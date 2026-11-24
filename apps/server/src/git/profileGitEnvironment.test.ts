@@ -73,6 +73,66 @@ describe("profile Git identity", () => {
       await FS.rm(root, { recursive: true, force: true });
     }
   });
+  it("lets checkpoint commit-tree use its own identity when the profile has no author", async () => {
+    const root = await FS.mkdtemp(Path.join(OS.tmpdir(), "f5-git-checkpoint-"));
+    try {
+      const stateDir = Path.join(root, "state");
+      await FS.mkdir(stateDir);
+      const repo = Path.join(root, "repo");
+      await runProcess("git", ["init", repo], { env: process.env });
+      const config = {
+        stateDir,
+        profile: { ...fallbackDefaultProfile(stateDir), isDefault: false },
+      } as unknown as ServerConfigShape;
+      const tree = (
+        await runProcess("git", ["mktree"], { cwd: repo, env: process.env, stdin: "" })
+      ).stdout.trim();
+      const checkpointIdentity = {
+        GIT_AUTHOR_NAME: "T3 Code",
+        GIT_AUTHOR_EMAIL: "t3code@users.noreply.github.com",
+        GIT_COMMITTER_NAME: "T3 Code",
+        GIT_COMMITTER_EMAIL: "t3code@users.noreply.github.com",
+      };
+      const base = {
+        config,
+        cwd: repo,
+        authorName: "",
+        authorEmail: "",
+        tokenForHost: async () => null,
+      };
+      // The checkpoint store's exact shape: durable-write `-c` options before the subcommand.
+      const args = ["-c", "core.fsync=objects,reference", "commit-tree", tree, "-m", "checkpoint"];
+      const env = await profileGitEnvironment({ ...base, args, overrides: checkpointIdentity });
+      const commit = (await runProcess("git", args, { cwd: repo, env })).stdout.trim();
+      expect(
+        (
+          await runProcess("git", ["log", "-1", "--format=%an <%ae>|%cn <%ce>", commit], {
+            cwd: repo,
+            env,
+          })
+        ).stdout.trim(),
+      ).toBe("T3 Code <t3code@users.noreply.github.com>|T3 Code <t3code@users.noreply.github.com>");
+      // A porcelain commit still needs the profile author, whatever the caller passes.
+      await expect(
+        profileGitEnvironment({
+          ...base,
+          args: ["commit", "--allow-empty", "-m", "x"],
+          overrides: checkpointIdentity,
+        }),
+      ).rejects.toThrow(/Git author/);
+      // A configured profile author still wins for commit-tree.
+      const authored = await profileGitEnvironment({
+        ...base,
+        authorName: "Work",
+        authorEmail: "work@example.com",
+        args,
+        overrides: checkpointIdentity,
+      });
+      expect(authored.GIT_AUTHOR_NAME).toBe("Work");
+    } finally {
+      await FS.rm(root, { recursive: true, force: true });
+    }
+  });
   it("rejects SSH and embedded remote credentials before requesting a token", async () => {
     const tokenForHost = vi.fn(async () => "saved");
     const stateDir = process.cwd();

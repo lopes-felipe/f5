@@ -9,6 +9,8 @@ import { describe, expect, it } from "vitest";
 
 import { repairUnreleasedScheduledTaskMigrations } from "./repairUnreleasedScheduledTaskMigrations.ts";
 import { LATEST_MIGRATION_ID, MIGRATIONS, runMigrations } from "./Migrations.ts";
+import { WorktreePreparationsLive } from "./Layers/WorktreePreparations.ts";
+import { WorktreePreparations } from "./Services/WorktreePreparations.ts";
 import * as SqliteClient from "./NodeSqliteClient.ts";
 import quarantineMigration from "./Migrations/139_ScheduledTaskQuarantine.ts";
 import scheduledMigration from "./Migrations/138_ScheduledTasks.ts";
@@ -24,6 +26,121 @@ describe("MIGRATIONS", () => {
     expect(ids).toEqual(Array.from({ length: LATEST_MIGRATION_ID }, (_, index) => index + 1));
   });
 });
+
+effectIt.effect("upgrades a version 173 database for managed workspace groups", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const oldMigrations = Object.fromEntries(
+      Object.entries(MIGRATIONS).filter(([key]) => Number.parseInt(key, 10) <= 173),
+    );
+    yield* Migrator.make({})({ loader: Migrator.fromRecord(oldMigrations) });
+    expect(
+      yield* sql`SELECT name FROM pragma_table_info('projection_thread_pull_requests')
+      WHERE name = 'repository_path'`,
+    ).toEqual([]);
+    yield* runMigrations;
+    expect(
+      yield* sql`SELECT name FROM pragma_table_info('projection_thread_pull_requests')
+      WHERE name = 'repository_path'`,
+    ).toEqual([{ name: "repository_path" }]);
+    yield* Effect.gen(function* () {
+      const preparations = yield* WorktreePreparations;
+      const group = {
+        projectId: "project",
+        threadId: "thread",
+        projectRoot: "/project",
+        path: "/worktree",
+        branch: "work",
+        repositories: ["/project/api"],
+        members: [
+          {
+            path: "/worktree/api",
+            source: "/project/api",
+            identity: "/project/api/.git",
+            baseOid: "a".repeat(40),
+          },
+        ],
+      };
+      yield* preparations.saveGroup(group);
+      expect(yield* preparations.getGroup(group.path)).toEqual(group);
+      expect(yield* preparations.getGroupLayoutPhase(group.path)).toBe("pending");
+      yield* preparations.deleteGroup({ ...group, threadId: "other-thread" });
+      expect(yield* preparations.getGroup(group.path)).toEqual(group);
+      yield* preparations.deleteGroup(group);
+      expect(yield* preparations.getGroup(group.path)).toBeNull();
+      yield* sql`WITH RECURSIVE paths(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM paths WHERE i < 128)
+        INSERT INTO project_repository_roots(project_id, path)
+        SELECT 'project', '/extra-' || i FROM paths`;
+      yield* preparations.setProjectRepositoryRoot("project", "/extra-1", true);
+      const result = yield* Effect.result(
+        preparations.setProjectRepositoryRoot("project", "/too-many", true),
+      );
+      expect(result).toMatchObject({
+        _tag: "Failure",
+        failure: { message: expect.stringContaining("128 registered external repositories") },
+      });
+    }).pipe(Effect.provide(WorktreePreparationsLive));
+  }).pipe(Effect.provide(SqliteClient.layerMemory()), Effect.scoped),
+);
+
+effectIt.effect("upgrades the benchmark preview and preserves its captured data", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const through167 = Object.fromEntries(
+      Object.entries(MIGRATIONS).filter(([key]) => Number.parseInt(key, 10) <= 167),
+    );
+    yield* Migrator.make({})({ loader: Migrator.fromRecord(through167) });
+    yield* MIGRATIONS["175_WorkflowBenchmark"];
+    yield* sql`
+      INSERT INTO effect_sql_migrations(migration_id, name) VALUES
+        (168, 'WorkflowBenchmark'),
+        (169, 'WorkflowBenchmarkSubagents'),
+        (170, 'RepairDuplicateWorkflowCosts')
+    `;
+    yield* sql`
+      INSERT INTO workflow_benchmark_turn_models(thread_id, turn_id, model, rerouted, reported_at)
+      VALUES ('thread', 'turn', 'preview-model', 0, '2026-11-23T00:00:00.000Z')
+    `;
+    yield* sql`UPDATE workflow_benchmark_cutover SET started_at = '2026-11-23T00:00:00.000Z'`;
+
+    yield* runMigrations;
+    yield* runMigrations;
+
+    expect(
+      yield* sql`
+        SELECT name FROM effect_sql_migrations WHERE migration_id BETWEEN 168 AND 170
+        ORDER BY migration_id
+      `,
+    ).toEqual([
+      { name: "ProviderExtensionStatuses" },
+      { name: "ThreadContextBoundaries" },
+      { name: "ProjectPinArchive" },
+    ]);
+    expect(
+      yield* sql`
+        SELECT name FROM pragma_table_info('projection_thread_sessions')
+        WHERE name = 'extension_statuses_json'
+      `,
+    ).toEqual([{ name: "extension_statuses_json" }]);
+    expect(
+      yield* sql`
+        SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'thread_context_boundaries'
+      `,
+    ).toEqual([{ name: "thread_context_boundaries" }]);
+    expect(
+      yield* sql`
+        SELECT name FROM pragma_table_info('projection_projects')
+        WHERE name IN ('pinned', 'archived') ORDER BY name
+      `,
+    ).toEqual([{ name: "archived" }, { name: "pinned" }]);
+    expect(yield* sql`SELECT model FROM workflow_benchmark_turn_models`).toEqual([
+      { model: "preview-model" },
+    ]);
+    expect(yield* sql`SELECT started_at FROM workflow_benchmark_cutover`).toEqual([
+      { started_at: "2026-11-23T00:00:00.000Z" },
+    ]);
+  }).pipe(Effect.provide(SqliteClient.layerMemory()), Effect.scoped),
+);
 
 type PrecedingVersion =
   | "main126"
@@ -144,6 +261,16 @@ const assertUpgrade = (version: PrecedingVersion) =>
       { migration_id: 165, name: "UsageResetCreditGrant" },
       { migration_id: 166, name: "ThreadPullRequestLookupIndex" },
       { migration_id: 167, name: "PrHubSeenBaseline" },
+      { migration_id: 168, name: "ProviderExtensionStatuses" },
+      { migration_id: 169, name: "ThreadContextBoundaries" },
+      { migration_id: 170, name: "ProjectPinArchive" },
+      { migration_id: 171, name: "SessionAutoCompactThreshold" },
+      { migration_id: 172, name: "ThreadSideChat" },
+      { migration_id: 173, name: "SessionAuthFailure" },
+      { migration_id: 174, name: "WorktreeGroups" },
+      { migration_id: 175, name: "WorkflowBenchmark" },
+      { migration_id: 176, name: "WorkflowBenchmarkSubagents" },
+      { migration_id: 177, name: "RepairDuplicateWorkflowCosts" },
     ]);
     // The queue reads linked threads by pull request; the lookup uses its own index.
     const linkLookup = yield* sql<{

@@ -1,0 +1,1 @@
+- Timeline command rows show the script inside simple Windows cmd launchers, matching existing PowerShell launcher handling.

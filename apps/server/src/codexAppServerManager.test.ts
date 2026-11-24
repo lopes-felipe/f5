@@ -164,6 +164,47 @@ function createThreadControlHarness() {
   return { manager, context, requireSession, sendRequest, updateSession };
 }
 
+it.each(["gpt-5.3-codex-spark", undefined])(
+  "applies Cyber Access config to the effective model for request %s",
+  async (model) => {
+    const { manager, context, sendRequest } = createSendTurnHarness();
+    context.account.type = "chatgpt";
+    context.account.sparkEnabled = false;
+    context.session.model = model ?? "";
+    Object.assign(context, {
+      reportedModelCapabilities: new Map([
+        [
+          DEFAULT_MODEL_BY_PROVIDER.codex,
+          createReportedCodexModelCapabilities({
+            model: DEFAULT_MODEL_BY_PROVIDER.codex,
+            availableAccessPrograms: { cyber: ["daybreakBlue"] },
+          }),
+        ],
+        [
+          "gpt-5.3-codex",
+          createReportedCodexModelCapabilities({
+            model: "gpt-5.3-codex",
+            availableAccessPrograms: { cyber: ["daybreakBlue"] },
+          }),
+        ],
+      ]),
+    });
+    sendRequest.mockImplementation(async (_context, method) =>
+      method === "config/read" ? { config: { daybreak: true } } : { turn: { id: "turn_1" } },
+    );
+    await manager.sendTurn({
+      threadId: asThreadId("thread_1"),
+      input: "Go",
+      ...(model ? { model } : {}),
+    });
+    expect(sendRequest).toHaveBeenCalledWith(
+      context,
+      "turn/start",
+      expect.objectContaining({ cyberAccessProgram: "daybreakBlue" }),
+    );
+  },
+);
+
 function createPendingUserInputHarness() {
   const manager = new CodexAppServerManager();
   const context = {
@@ -751,10 +792,13 @@ describe("Codex runtime-mode thread configuration", () => {
     },
   );
 
-  it("gives slow MCP servers a startup grace on start, resume and fork", () => {
+  it("configures MCP startup grace and concurrent reasoning on start, resume and fork", () => {
     const input = { runtimeMode: "full-access", resumeThreadId: "provider-thread-1" } as const;
     const params = buildCodexThreadOpenRequestParams(input);
-    const config = { mcp_optional_startup_grace_ms: 10_000 };
+    const config = {
+      mcp_optional_startup_grace_ms: 10_000,
+      "features.concurrent_reasoning_summaries": true,
+    };
     expect(params.start.config).toEqual(config);
     expect(params.resume?.config).toEqual(config);
     expect(buildCodexThreadForkParams(input, "provider-thread-1").config).toEqual(config);
@@ -1647,6 +1691,21 @@ describe("sendTurn", () => {
       expect(params.effort).toBe("high");
       expect(params.collaborationMode?.settings.reasoning_effort).toBe("high");
     });
+    it("sends Cyber Access each turn only for a reported eligible model", () => {
+      const capabilities = createReportedCodexModelCapabilities({
+        model: "gpt-5.3-codex",
+        availableAccessPrograms: { cyber: ["standard", "daybreakBlue"] },
+      });
+      const state = { reportedModelCapabilities: new Map([["gpt-5.3-codex", capabilities]]) };
+      expect(build({}, state).cyberAccessProgram).toBe("standard");
+      expect(build({ cyberAccessProgram: "daybreakRed" }, state).cyberAccessProgram).toBe(
+        "standard",
+      );
+      expect(build({ cyberAccessProgram: "daybreakBlue" }, state).cyberAccessProgram).toBe(
+        "daybreakBlue",
+      );
+      expect(build({ cyberAccessProgram: "daybreakBlue" }).cyberAccessProgram).toBeUndefined();
+    });
 
     it("uses the reported default effort", () => {
       const params = build({}, { reportedModelCapabilities: reportedEfforts("medium") });
@@ -2432,6 +2491,52 @@ describe("skills refresh", () => {
 });
 
 describe("Codex collaboration notification routing", () => {
+  it("drops command notifications after the native thread closes", () => {
+    const manager = new CodexAppServerManager();
+    const context = {
+      session: {
+        threadId: asThreadId("thread-parent"),
+        resumeCursor: { threadId: "parent" },
+        status: "ready",
+      },
+    };
+    const internals = manager as unknown as {
+      emitEvent: (...args: unknown[]) => void;
+      updateSession: (context: unknown, patch: { status: string }) => void;
+      handleServerNotification: (
+        context: unknown,
+        notification: { method: string; params: unknown },
+      ) => void;
+    };
+    const emit = vi.spyOn(internals, "emitEvent").mockImplementation(() => {});
+    vi.spyOn(internals, "updateSession").mockImplementation((_context, patch) => {
+      Object.assign(context.session, patch);
+    });
+    const command = {
+      threadId: "parent",
+      turnId: "settled-turn",
+      item: { type: "commandExecution", id: "command" },
+    };
+    internals.handleServerNotification(context, {
+      method: "thread/closed",
+      params: { threadId: "unrelated" },
+    });
+    internals.handleServerNotification(context, { method: "item/started", params: command });
+    internals.handleServerNotification(context, {
+      method: "thread/closed",
+      params: { threadId: "parent" },
+    });
+    internals.handleServerNotification(context, { method: "item/completed", params: command });
+    internals.handleServerNotification(context, {
+      method: "item/commandExecution/outputDelta",
+      params: { threadId: "parent", turnId: "settled-turn", itemId: "command", delta: "late" },
+    });
+    expect(emit.mock.calls.map(([event]) => event)).toEqual([
+      expect.objectContaining({ method: "item/started" }),
+      expect.objectContaining({ method: "thread/closed" }),
+    ]);
+  });
+
   it.each([
     { threadSource: "memory_consolidation" },
     { source: { subAgent: "memory_consolidation" } },

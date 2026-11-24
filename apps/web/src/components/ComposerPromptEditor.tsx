@@ -3,6 +3,10 @@ import {
   $createPullRequestReferenceNode,
 } from "./chat/composer/ComposerPullRequestReferenceNode";
 import {
+  ComposerModelReferenceNode,
+  $createModelReferenceNode,
+} from "./chat/composer/ComposerModelReferenceNode";
+import {
   ComposerThreadReferenceNode,
   $createThreadReferenceNode,
 } from "./chat/composer/ComposerThreadReferenceNode";
@@ -300,6 +304,7 @@ type ComposerInlineTokenNode =
   | ComposerTerminalContextNode
   | ComposerPullRequestReferenceNode
   | ComposerThreadReferenceNode
+  | ComposerModelReferenceNode
   | ComposerAssistantQuoteNode;
 
 function isComposerInlineTokenNode(candidate: unknown): candidate is ComposerInlineTokenNode {
@@ -308,6 +313,7 @@ function isComposerInlineTokenNode(candidate: unknown): candidate is ComposerInl
     candidate instanceof ComposerTerminalContextNode ||
     candidate instanceof ComposerPullRequestReferenceNode ||
     candidate instanceof ComposerThreadReferenceNode ||
+    candidate instanceof ComposerModelReferenceNode ||
     candidate instanceof ComposerAssistantQuoteNode
   );
 }
@@ -663,6 +669,10 @@ function $setComposerEditorPrompt(
       paragraph.append($createThreadReferenceNode(segment.raw));
       continue;
     }
+    if (segment.type === "model-reference") {
+      paragraph.append($createModelReferenceNode(segment.raw));
+      continue;
+    }
     if (segment.type === "mention") {
       paragraph.append($createComposerMentionNode(segment.path, segment.raw, segment.id));
       continue;
@@ -696,6 +706,8 @@ function collectTerminalContextIds(node: LexicalNode): string[] {
 }
 
 export interface ComposerPromptEditorHandle {
+  /** Selection in the expanded prompt text, including the source of inline chips. */
+  readSelectionRange: () => { start: number; end: number };
   insertAssistantQuote: (quote: AssistantQuote) => void;
   focus: () => void;
   focusAt: (cursor: number) => void;
@@ -1320,6 +1332,23 @@ function ComposerPromptEditorInner({
         );
       },
       readSnapshot,
+      readSelectionRange: () =>
+        editor.getEditorState().read(() => {
+          const selection = $getSelection();
+          if (!$isRangeSelection(selection)) {
+            const cursor = readSnapshot().expandedCursor;
+            return { start: cursor, end: cursor };
+          }
+          const anchor = getExpandedAbsoluteOffsetForPoint(
+            selection.anchor.getNode(),
+            selection.anchor.offset,
+          );
+          const focus = getExpandedAbsoluteOffsetForPoint(
+            selection.focus.getNode(),
+            selection.focus.offset,
+          );
+          return { start: Math.min(anchor, focus), end: Math.max(anchor, focus) };
+        }),
     }),
     [editor, focusAt, readSnapshot],
   );
@@ -1407,7 +1436,7 @@ function ComposerPromptEditorInner({
                 : {})}
               aria-placeholder={placeholder}
               placeholder={<span />}
-              onPaste={onPaste}
+              onPasteCapture={onPaste}
             />
           }
           placeholder={
@@ -1469,6 +1498,7 @@ export const ComposerPromptEditor = forwardRef<
         ComposerAssistantQuoteNode,
         ComposerPullRequestReferenceNode,
         ComposerThreadReferenceNode,
+        ComposerModelReferenceNode,
       ],
       editorState: () => {
         $setComposerEditorPrompt(

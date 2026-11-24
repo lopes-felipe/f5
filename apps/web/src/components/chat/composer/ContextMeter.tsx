@@ -26,12 +26,16 @@ const TONE_CLASS_NAME: Record<ContextMeterTone, string> = {
   destructive: "text-destructive",
 };
 
-function ContextRing(props: { ratio: number; tone: ContextMeterTone }) {
+function ContextRing(props: {
+  ratio: number;
+  tone: ContextMeterTone;
+  thresholdRatio?: number | undefined;
+}) {
   const filled = Math.min(1, Math.max(0, props.ratio));
   return (
     <svg
       viewBox="0 0 16 16"
-      className={cn("size-4 shrink-0 -rotate-90", TONE_CLASS_NAME[props.tone])}
+      className={cn("size-full shrink-0 -rotate-90", TONE_CLASS_NAME[props.tone])}
       aria-hidden="true"
     >
       <circle cx="8" cy="8" r={RING_RADIUS} fill="none" strokeWidth="2" className="stroke-border" />
@@ -46,6 +50,17 @@ function ContextRing(props: { ratio: number; tone: ContextMeterTone }) {
         strokeDasharray={RING_CIRCUMFERENCE}
         strokeDashoffset={RING_CIRCUMFERENCE * (1 - filled)}
       />
+      {props.thresholdRatio !== undefined ? (
+        <line
+          data-slot="context-auto-compact-mark"
+          x1={8 + 4 * Math.cos(props.thresholdRatio * 2 * Math.PI)}
+          y1={8 + 4 * Math.sin(props.thresholdRatio * 2 * Math.PI)}
+          x2={8 + 8 * Math.cos(props.thresholdRatio * 2 * Math.PI)}
+          y2={8 + 8 * Math.sin(props.thresholdRatio * 2 * Math.PI)}
+          stroke="currentColor"
+          strokeWidth="1"
+        />
+      ) : null}
     </svg>
   );
 }
@@ -71,6 +86,11 @@ export function ContextMeter(props: {
   if (!context && thinkingTokens === null && !promptCache) return null;
 
   const tone = context ? contextMeterTone(context.ratio) : "muted";
+  const threshold = tokenUsage.autoCompactThreshold;
+  const thresholdRatio =
+    context && threshold != null && threshold > 0 && threshold < context.windowTokens
+      ? threshold / context.windowTokens
+      : undefined;
   const sourceLabel = tokenUsageSourceLabel(tokenUsage.tokenUsageSource);
   const lastTurnMissed = promptCache?.summary.last?.state === "miss";
   const ariaLabel = [
@@ -84,7 +104,7 @@ export function ContextMeter(props: {
     .filter(Boolean)
     .join(", ");
   const triggerClassName = cn(
-    "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-1.5 text-2xs tabular-nums text-muted-foreground outline-none transition-colors duration-(--duration-fast) hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring data-popup-open:bg-accent",
+    "group/context-meter inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-1.5 text-2xs tabular-nums text-muted-foreground outline-none transition-colors duration-(--duration-fast) hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring data-popup-open:bg-accent",
     props.className,
   );
 
@@ -93,7 +113,26 @@ export function ContextMeter(props: {
       {context || promptCache ? (
         <span className="relative inline-flex">
           {context ? (
-            <ContextRing ratio={context.ratio} tone={tone} />
+            // The ring alone carries occupancy; hovering enlarges it to show the percentage.
+            // It grows with a transform inside a fixed 16px box, so the footer never reflows.
+            <span
+              data-slot="context-ring"
+              className="relative inline-flex size-4 shrink-0 items-center justify-center"
+            >
+              <span
+                data-slot="context-ring-scale"
+                className="absolute inset-0 transition-transform duration-(--duration-fast) group-hover/context-meter:scale-175 group-focus-visible/context-meter:scale-175 group-data-popup-open/context-meter:scale-175"
+              >
+                <ContextRing ratio={context.ratio} tone={tone} thresholdRatio={thresholdRatio} />
+              </span>
+              <span
+                aria-hidden="true"
+                data-slot="context-percent"
+                className="absolute inset-0 flex items-center justify-center text-2xs leading-none font-medium tracking-tighter tabular-nums text-foreground opacity-0 transition-opacity duration-(--duration-fast) group-hover/context-meter:opacity-100 group-focus-visible/context-meter:opacity-100 group-data-popup-open/context-meter:opacity-100"
+              >
+                {Math.round(Math.min(1, Math.max(0, context.ratio)) * 100)}
+              </span>
+            </span>
           ) : (
             <DatabaseIcon className="size-3.5" aria-hidden="true" />
           )}
@@ -127,6 +166,11 @@ export function ContextMeter(props: {
             Window: {formatExactTokens(context.windowTokens)} tokens
           </p>
           <p className="text-muted-foreground">Model: {tokenUsage.model}</p>
+          {thresholdRatio !== undefined ? (
+            <p className="text-muted-foreground">
+              Auto-compacts around {formatExactTokens(threshold!)} tokens
+            </p>
+          ) : null}
           {sourceLabel ? <p className="text-muted-foreground">Source: {sourceLabel}</p> : null}
         </div>
       ) : null}

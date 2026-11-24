@@ -1,6 +1,8 @@
-import { execFileSync } from "node:child_process";
-import { accessSync, constants, readFileSync, readdirSync, statSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { constants, type Stats } from "node:fs";
+import { access, readFile, readdir, stat } from "node:fs/promises";
 import * as NodePath from "node:path";
+import { promisify } from "node:util";
 import { ensureWindowsPathHydrated } from "@t3tools/shared/windowsPath";
 import { Effect } from "effect";
 
@@ -17,30 +19,67 @@ export interface ResolvedCliInvocation {
 }
 
 export interface CommandResolutionOptions {
-  readonly pathDirectoryListings?: PathDirectoryListings | undefined;
   readonly platform?: NodeJS.Platform;
   readonly useCache?: boolean;
   readonly cwd?: string | undefined;
 }
 
-/** Scan-local listings; unreadable directories fall back to candidate probes. */
-export class PathDirectoryListings {
-  private readonly entries = new Map<string, { mtime: number; names: Set<string> }>();
+const MAX_PATH_DIRECTORY_LISTINGS = 1024;
+const PATH_DIRECTORY_SETTLE_MS = 2_000;
+const EMPTY_DIRECTORY = new Set<string>();
+const pathDirectoryListings = new Map<
+  string,
+  { readonly info: Stats; readonly names: Promise<ReadonlySet<string> | undefined> }
+>();
 
-  names(directory: string): ReadonlySet<string> | undefined {
-    try {
-      const mtime = statSync(directory).mtimeMs;
-      const cached = this.entries.get(directory);
-      if (cached?.mtime === mtime) return cached.names;
-      const names = new Set(readdirSync(directory).map((name) => name.toLowerCase()));
-      this.entries.set(directory, { mtime, names });
-      return names;
-    } catch {
-      this.entries.delete(directory);
-      return undefined;
-    }
+async function listPathDirectory(directory: string): Promise<ReadonlySet<string> | undefined> {
+  const info = await stat(directory).catch((cause: NodeJS.ErrnoException) =>
+    cause.code === "ENOENT" || cause.code === "ENOTDIR" ? null : undefined,
+  );
+  if (!info || !info.isDirectory()) {
+    pathDirectoryListings.delete(directory);
+    return info === undefined ? undefined : EMPTY_DIRECTORY;
   }
+
+  const cached = pathDirectoryListings.get(directory);
+  if (
+    cached &&
+    cached.info.mtimeMs === info.mtimeMs &&
+    cached.info.ino === info.ino &&
+    cached.info.dev === info.dev
+  ) {
+    return cached.names;
+  }
+  pathDirectoryListings.delete(directory);
+  // Relative directories depend on the working directory. Recent changes can
+  // share an mtime on filesystems with coarse timestamps (FAT has a 2 s step).
+  const absolute =
+    process.platform === "win32"
+      ? /^(?:[A-Za-z]:[\\/]|[\\/]{2})/.test(directory)
+      : NodePath.isAbsolute(directory);
+  const reusable = absolute && Date.now() - info.mtimeMs >= PATH_DIRECTORY_SETTLE_MS;
+  const names = readdir(directory).then(
+    (entries) => new Set(entries.map((name) => name.toLowerCase())),
+    () => undefined,
+  );
+  if (!reusable) return names;
+
+  const listing = { info, names };
+  if (pathDirectoryListings.size >= MAX_PATH_DIRECTORY_LISTINGS) {
+    const oldest = pathDirectoryListings.keys().next().value;
+    if (oldest !== undefined) pathDirectoryListings.delete(oldest);
+  }
+  pathDirectoryListings.set(directory, listing);
+  const result = await names;
+  if (result === undefined && pathDirectoryListings.get(directory) === listing) {
+    pathDirectoryListings.delete(directory);
+  }
+  return result;
 }
+
+// Listings omit 8.3 aliases and cannot account for trailing-dot normalization
+// or differences between JavaScript and Windows Unicode case folding.
+const LISTED_NAME_PATTERN = /^[\w.+-]*[\w+-]$/;
 
 export class CommandNotFoundError extends Error {
   readonly _tag = "CommandNotFoundError";
@@ -54,7 +93,7 @@ export class CommandNotFoundError extends Error {
 }
 
 const POSITIVE_RESOLUTION_CACHE_TTL_MS = 5_000;
-const resolutionCache = new Map<string, { readonly value: string; readonly expiresAt: number }>();
+let resolutionCache = new Map<string, { readonly value: string; readonly expiresAt: number }>();
 
 function findEnvironmentValue(env: NodeJS.ProcessEnv, name: string): string | undefined {
   const normalizedName = name.toLowerCase();
@@ -95,19 +134,19 @@ function isPathQualified(command: string, platform: NodeJS.Platform): boolean {
   return platform === "win32" && /^[A-Za-z]:/.test(command);
 }
 
-function isFile(filePath: string): boolean {
+async function isFile(filePath: string): Promise<boolean> {
   try {
-    return statSync(filePath).isFile();
+    return (await stat(filePath)).isFile();
   } catch {
     return false;
   }
 }
 
-function isExecutableFile(filePath: string, platform: NodeJS.Platform): boolean {
-  if (!isFile(filePath)) return false;
+async function isExecutableFile(filePath: string, platform: NodeJS.Platform): Promise<boolean> {
+  if (!(await isFile(filePath))) return false;
   if (platform === "win32") return true;
   try {
-    accessSync(filePath, constants.X_OK);
+    await access(filePath, constants.X_OK);
     return true;
   } catch {
     return false;
@@ -181,27 +220,29 @@ function resolveQualifiedCandidate(
 }
 
 export function clearCommandResolutionCache(): void {
-  resolutionCache.clear();
+  resolutionCache = new Map();
+  pendingXcodeGitLookups = new Map();
+  pathDirectoryListings.clear();
 }
 
-function findExecutables(
+async function findExecutables(
   command: string,
   env: NodeJS.ProcessEnv,
   platform: NodeJS.Platform,
   cwd: string | undefined,
   firstOnly: boolean,
-  listings?: PathDirectoryListings,
-): string[] {
+): Promise<string[]> {
   const pathExtensions =
     platform === "win32" ? resolveWindowsPathExtensions(env) : ([] as ReadonlyArray<string>);
   const pathQualified = isPathQualified(command, platform);
   const candidates = commandCandidates(command, platform, pathExtensions, pathQualified);
 
   if (pathQualified) {
-    const found = candidates
-      .map((candidate) => resolveQualifiedCandidate(candidate, platform, cwd))
-      .find((candidate) => isExecutableFile(candidate, platform));
-    return found ? [found] : [];
+    for (const candidate of candidates) {
+      const candidatePath = resolveQualifiedCandidate(candidate, platform, cwd);
+      if (await isExecutableFile(candidatePath, platform)) return [candidatePath];
+    }
+    return [];
   }
 
   // Skip exact repeats only. Windows can make a directory case-sensitive, so
@@ -214,11 +255,12 @@ function findExecutables(
   );
   const found: string[] = [];
   for (const pathEntry of pathEntries) {
-    const names = listings?.names(pathEntry);
+    const names = platform === "win32" ? await listPathDirectory(pathEntry) : undefined;
     for (const candidate of candidates) {
-      if (names && !names.has(candidate.toLowerCase())) continue;
+      if (names && LISTED_NAME_PATTERN.test(candidate) && !names.has(candidate.toLowerCase()))
+        continue;
       const candidatePath = joinForPlatform(pathEntry, candidate, platform);
-      if (isExecutableFile(candidatePath, platform)) {
+      if (await isExecutableFile(candidatePath, platform)) {
         found.push(candidatePath);
         if (firstOnly) return found;
         // One match per directory, as PATH lookup would pick it.
@@ -238,40 +280,33 @@ export function resolveExecutables(
   command: string,
   env: NodeJS.ProcessEnv = process.env,
   options: Omit<CommandResolutionOptions, "useCache"> = {},
-): string[] {
-  return findExecutables(
-    command,
-    env,
-    options.platform ?? process.platform,
-    options.cwd,
-    false,
-    options.pathDirectoryListings,
-  );
+): Promise<string[]> {
+  return findExecutables(command, env, options.platform ?? process.platform, options.cwd, false);
 }
 
-export function resolveExecutable(
+export async function resolveExecutable(
   command: string,
   env: NodeJS.ProcessEnv = process.env,
   options: CommandResolutionOptions = {},
-): string | null {
+): Promise<string | null> {
   const platform = options.platform ?? process.platform;
   const useCache = options.useCache ?? true;
+  // An update can clear the cache while this lookup is waiting on filesystem I/O.
+  const cache = resolutionCache;
   const cacheKey = resolutionCacheKey(command, platform, env, options.cwd);
-  const cached = useCache ? resolutionCache.get(cacheKey) : undefined;
+  const cached = useCache ? cache.get(cacheKey) : undefined;
   if (cached && cached.expiresAt > Date.now()) {
     return cached.value;
   }
-  if (cached) resolutionCache.delete(cacheKey);
+  if (cached) cache.delete(cacheKey);
 
-  const resolved =
-    findExecutables(command, env, platform, options.cwd, true, options.pathDirectoryListings)[0] ??
-    null;
+  const resolved = (await findExecutables(command, env, platform, options.cwd, true))[0] ?? null;
 
   // Misses must self-heal immediately when a CLI is installed into an
   // existing PATH directory. Positive entries are bounded to avoid stale
   // executable paths after upgrades or removals.
   if (useCache && resolved) {
-    resolutionCache.set(cacheKey, {
+    cache.set(cacheKey, {
       value: resolved,
       expiresAt: Date.now() + POSITIVE_RESOLUTION_CACHE_TTL_MS,
     });
@@ -337,11 +372,11 @@ export function runsGitWithoutConsole(
  * unset, so the launcher stays when MSYSTEM is set. Anything else is returned
  * as is.
  */
-export function preferGitForWindowsBinary(
+export async function preferGitForWindowsBinary(
   executable: string,
   env: NodeJS.ProcessEnv,
-  fileExists: (filePath: string) => boolean = isFile,
-): string {
+  fileExists: (filePath: string) => boolean | Promise<boolean> = isFile,
+): Promise<string> {
   if (findEnvironmentValue(env, "MSYSTEM")) return executable;
   const path = NodePath.win32;
   if (path.basename(executable).toLowerCase() !== "git.exe") return executable;
@@ -351,22 +386,25 @@ export function preferGitForWindowsBinary(
   const installRoot = path.dirname(launcherDirectory);
   for (const build of GIT_FOR_WINDOWS_BUILDS) {
     const candidate = path.join(installRoot, build, "bin", "git.exe");
-    if (fileExists(candidate)) return candidate;
+    if (await fileExists(candidate)) return candidate;
   }
   return executable;
 }
 
-export type XcodeGitLocator = (env: NodeJS.ProcessEnv) => string | undefined;
+export type XcodeGitLocator = (
+  env: NodeJS.ProcessEnv,
+) => string | undefined | Promise<string | undefined>;
 
 // xcrun honors DEVELOPER_DIR and the `xcode-select` choice, as the shim does.
-function locateXcodeGitWithXcrun(env: NodeJS.ProcessEnv): string | undefined {
+const execFileAsync = promisify(execFile);
+async function locateXcodeGitWithXcrun(env: NodeJS.ProcessEnv): Promise<string | undefined> {
   try {
-    const located = execFileSync("/usr/bin/xcrun", ["--find", "git"], {
+    const { stdout } = await execFileAsync("/usr/bin/xcrun", ["--find", "git"], {
       encoding: "utf8",
       env,
       timeout: 5_000,
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
+    });
+    const located = stdout.trim();
     return NodePath.posix.isAbsolute(located) ? located : undefined;
   } catch {
     return undefined;
@@ -375,6 +413,7 @@ function locateXcodeGitWithXcrun(env: NodeJS.ProcessEnv): string | undefined {
 
 const MACOS_GIT_SHIM = "/usr/bin/git";
 const XCODE_GIT_CACHE_TTL_MS = 30_000;
+let pendingXcodeGitLookups = new Map<string, Promise<string>>();
 
 // An injected locator may answer differently for the same PATH, so its entries
 // are kept apart from every other locator's.
@@ -402,9 +441,14 @@ export interface GitExecutableOptions {
  * Nix) still wins, and git's own children keep the same PATH. Any lookup
  * failure keeps plain `git`.
  */
-function resolveMacosGit(env: NodeJS.ProcessEnv, options: GitExecutableOptions): string {
+async function resolveMacosGit(
+  env: NodeJS.ProcessEnv,
+  options: GitExecutableOptions,
+): Promise<string> {
   const locateXcodeGit = options.locateXcodeGit ?? locateXcodeGitWithXcrun;
   const shim = options.macosGitShim ?? MACOS_GIT_SHIM;
+  const cache = resolutionCache;
+  const pendingLookups = pendingXcodeGitLookups;
   const cacheKey = [
     resolutionCacheKey("git", "darwin", env, undefined),
     "xcode-git",
@@ -412,25 +456,33 @@ function resolveMacosGit(env: NodeJS.ProcessEnv, options: GitExecutableOptions):
     shim,
     String(xcodeGitLocatorId(locateXcodeGit)),
   ].join("\0");
-  const cached = resolutionCache.get(cacheKey);
-  // An Xcode update or removal deletes the binary; look again instead of failing the spawn.
-  if (
-    cached &&
-    cached.expiresAt > Date.now() &&
-    (cached.value === "git" || isExecutableFile(cached.value, "darwin"))
-  ) {
-    return cached.value;
-  }
-  const located =
-    resolveExecutable("git", env, { platform: "darwin" }) === shim
-      ? locateXcodeGit(env)
-      : undefined;
-  const resolved = located !== undefined && isExecutableFile(located, "darwin") ? located : "git";
-  resolutionCache.set(cacheKey, {
-    value: resolved,
-    expiresAt: Date.now() + XCODE_GIT_CACHE_TTL_MS,
-  });
-  return resolved;
+  const pending = pendingLookups.get(cacheKey);
+  if (pending) return pending;
+
+  const lookup = (async () => {
+    const cached = cache.get(cacheKey);
+    // An Xcode update or removal deletes the binary; look again instead of failing the spawn.
+    if (
+      cached &&
+      cached.expiresAt > Date.now() &&
+      (cached.value === "git" || (await isExecutableFile(cached.value, "darwin")))
+    ) {
+      return cached.value;
+    }
+    const located =
+      (await resolveExecutable("git", env, { platform: "darwin" })) === shim
+        ? await locateXcodeGit(env)
+        : undefined;
+    const resolved =
+      located !== undefined && (await isExecutableFile(located, "darwin")) ? located : "git";
+    cache.set(cacheKey, {
+      value: resolved,
+      expiresAt: Date.now() + XCODE_GIT_CACHE_TTL_MS,
+    });
+    return resolved;
+  })().finally(() => pendingLookups.delete(cacheKey));
+  pendingLookups.set(cacheKey, lookup);
+  return lookup;
 }
 
 /**
@@ -439,52 +491,53 @@ function resolveMacosGit(env: NodeJS.ProcessEnv, options: GitExecutableOptions):
  * first newline), this stays `git` for the platform's own lookup. On macOS the
  * xcrun shim is skipped (see `resolveMacosGit`).
  */
-export function resolveGitExecutable(
+export async function resolveGitExecutable(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
   options: GitExecutableOptions = {},
-): string {
+): Promise<string> {
   if (platform === "darwin") return resolveMacosGit(env, options);
   if (platform !== "win32") return "git";
+  const cache = resolutionCache;
   const cacheKey = `${resolutionCacheKey("git", platform, env, undefined)}\0real-git\0${
     findEnvironmentValue(env, "MSYSTEM") ? "msystem" : ""
   }`;
-  const cached = resolutionCache.get(cacheKey);
+  const cached = cache.get(cacheKey);
   // Cached with the PATH scan: its file checks would otherwise run before every
   // git launch.
   if (cached && cached.expiresAt > Date.now()) return cached.value;
-  const found = resolveExecutable("git", env, { platform });
+  const found = await resolveExecutable("git", env, { platform });
   const resolved =
     found && NodePath.win32.extname(found).toLowerCase() === ".exe"
-      ? preferGitForWindowsBinary(found, env)
+      ? await preferGitForWindowsBinary(found, env)
       : "git";
-  resolutionCache.set(cacheKey, {
+  cache.set(cacheKey, {
     value: resolved,
     expiresAt: Date.now() + POSITIVE_RESOLUTION_CACHE_TTL_MS,
   });
   return resolved;
 }
 
-export function isCommandAvailable(
+export async function isCommandAvailable(
   command: string,
   options: CommandResolutionOptions & { readonly env?: NodeJS.ProcessEnv } = {},
-): boolean {
-  return resolveExecutable(command, options.env ?? process.env, options) !== null;
+): Promise<boolean> {
+  return (await resolveExecutable(command, options.env ?? process.env, options)) !== null;
 }
 
-function resolveNodeExecutable(
+async function resolveNodeExecutable(
   command: string,
   env: NodeJS.ProcessEnv,
   platform: NodeJS.Platform,
   adjacentTo?: string,
-): string {
+): Promise<string> {
   if (adjacentTo) {
     const adjacentNode = adjacentTo.startsWith("/")
       ? NodePath.join(NodePath.dirname(adjacentTo), "node.exe")
       : NodePath.win32.join(NodePath.win32.dirname(adjacentTo), "node.exe");
-    if (isFile(adjacentNode)) return adjacentNode;
+    if (await isFile(adjacentNode)) return adjacentNode;
   }
-  const node = resolveExecutable("node", env, { platform });
+  const node = await resolveExecutable("node", env, { platform });
   if (!node) {
     throw new CommandNotFoundError(
       command,
@@ -507,10 +560,10 @@ const NPM_EXECUTABLE_SHIM_PREFIX = [
 ];
 const NPM_EXECUTABLE_SHIM_RUN = /^"%dp0%\\([^"%]+\.exe)" +%\*$/;
 
-function readShimSource(shimPath: string): string | undefined {
+async function readShimSource(shimPath: string): Promise<string | undefined> {
   try {
-    if (statSync(shimPath).size > MAX_CMD_SHIM_BYTES) return undefined;
-    return readFileSync(shimPath, "utf8");
+    if ((await stat(shimPath)).size > MAX_CMD_SHIM_BYTES) return undefined;
+    return await readFile(shimPath, "utf8");
   } catch {
     return undefined;
   }
@@ -522,17 +575,17 @@ function readShimSource(shimPath: string): string | undefined {
  * executable stays in the kill-on-close job libuv puts every child in, so it
  * stops when this process is killed.
  */
-export function npmShimExecutable(
+export async function npmShimExecutable(
   shimPath: string,
-  readFile: (filePath: string) => string | undefined = readShimSource,
-  fileExists: (filePath: string) => boolean = isFile,
-): string | undefined {
+  readSource: (
+    filePath: string,
+  ) => string | undefined | Promise<string | undefined> = readShimSource,
+  fileExists: (filePath: string) => boolean | Promise<boolean> = isFile,
+): Promise<string | undefined> {
   if (NodePath.win32.extname(shimPath).toLowerCase() !== ".cmd") return undefined;
   // Compared exactly: whitespace CMD keeps, such as after `SET dp0=`, would
   // make it run a different file than the one found here.
-  const lines = readFile(shimPath)
-    ?.split(/\r?\n/)
-    .filter((line) => line.length > 0);
+  const lines = (await readSource(shimPath))?.split(/\r?\n/).filter((line) => line.length > 0);
   if (lines?.length !== NPM_EXECUTABLE_SHIM_PREFIX.length + 1) return undefined;
   if (NPM_EXECUTABLE_SHIM_PREFIX.some((expected, index) => lines[index] !== expected)) {
     return undefined;
@@ -543,20 +596,19 @@ export function npmShimExecutable(
   const executable = shimPath.startsWith("/")
     ? NodePath.join(NodePath.dirname(shimPath), target.replaceAll("\\", "/"))
     : NodePath.win32.join(NodePath.win32.dirname(shimPath), target);
-  return fileExists(executable) ? executable : undefined;
+  return (await fileExists(executable)) ? executable : undefined;
 }
 
-function resolveNpmShimTarget(shimPath: string, command: string): string {
+async function resolveNpmShimTarget(shimPath: string, command: string): Promise<string> {
   let source: string;
   try {
-    const stat = statSync(shimPath);
-    if (stat.size > MAX_CMD_SHIM_BYTES) {
+    if ((await stat(shimPath)).size > MAX_CMD_SHIM_BYTES) {
       throw new CommandNotFoundError(
         command,
         `Refusing to run unsupported command shim '${shimPath}' (larger than 64 KiB).`,
       );
     }
-    source = readFileSync(shimPath, "utf8");
+    source = await readFile(shimPath, "utf8");
   } catch (cause) {
     if (cause instanceof CommandNotFoundError) throw cause;
     throw new CommandNotFoundError(command, `Unable to read command shim '${shimPath}'.`);
@@ -601,7 +653,7 @@ function resolveNpmShimTarget(shimPath: string, command: string): string {
   const target = shimPath.startsWith("/")
     ? NodePath.resolve(NodePath.dirname(shimPath), targetReferences[0].replaceAll("\\", "/"))
     : NodePath.win32.resolve(NodePath.win32.dirname(shimPath), targetReferences[0]);
-  if (!isFile(target)) {
+  if (!(await isFile(target))) {
     throw new CommandNotFoundError(
       command,
       `Windows command shim '${shimPath}' points to missing script '${target}'.`,
@@ -610,18 +662,18 @@ function resolveNpmShimTarget(shimPath: string, command: string): string {
   return target;
 }
 
-export function resolveInvocation(
+export async function resolveInvocation(
   command: string,
   args: ReadonlyArray<string>,
   env: NodeJS.ProcessEnv = process.env,
   options: CommandResolutionOptions = {},
-): ResolvedCliInvocation {
+): Promise<ResolvedCliInvocation> {
   const platform = options.platform ?? process.platform;
   if (platform !== "win32") {
     return { file: command, args: [...args], kind: "native" };
   }
 
-  const executable = resolveExecutable(command, env, options);
+  const executable = await resolveExecutable(command, env, options);
   if (!executable) throw new CommandNotFoundError(command);
 
   const extension = NodePath.win32.extname(executable).toLowerCase();
@@ -630,19 +682,19 @@ export function resolveInvocation(
   }
   if (NODE_SCRIPT_EXTENSIONS.has(extension)) {
     return {
-      file: resolveNodeExecutable(command, env, platform),
+      file: await resolveNodeExecutable(command, env, platform),
       args: [executable, ...args],
       kind: "nodeScript",
     };
   }
   if (extension === ".cmd") {
-    const shimExecutable = npmShimExecutable(executable);
+    const shimExecutable = await npmShimExecutable(executable);
     if (shimExecutable !== undefined) {
       return { file: shimExecutable, args: [...args], kind: "native" };
     }
-    const target = resolveNpmShimTarget(executable, command);
+    const target = await resolveNpmShimTarget(executable, command);
     return {
-      file: resolveNodeExecutable(command, env, platform, executable),
+      file: await resolveNodeExecutable(command, env, platform, executable),
       args: [target, ...args],
       kind: "npmShim",
     };
@@ -662,7 +714,7 @@ export function resolveInvocationEffect(
 ) {
   return Effect.promise(() => ensureWindowsPathHydrated(env)).pipe(
     Effect.flatMap(() =>
-      Effect.try({
+      Effect.tryPromise({
         try: () => resolveInvocation(command, args, env, options),
         catch: (cause) =>
           cause instanceof CommandNotFoundError

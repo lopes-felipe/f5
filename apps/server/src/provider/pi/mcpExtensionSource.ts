@@ -13,6 +13,7 @@ import { HTML_RENDER_CHART_GUIDANCE } from "../../htmlRender/htmlRenderGuide.ts"
 const F5_ORCHESTRATION_INSTRUCTIONS = `F5's MCP tools are scoped to this thread. Use thread_status to inspect it and thread_settle only when work is complete. Use thread_read to read a thread the user referenced as [title](f5://thread/<id>). PR watch tools create continuing work only when requested. Use html_preview to validate a visual before html_render publishes it in the thread. Discover available tools from the live catalog and follow their input schemas.`;
 
 export const PI_F5_MCP_EXTENSION_FILENAME = "pi-f5-mcp-extension.ts";
+export const PI_F5_SERVICE_TIER_COMMAND = "f5-service-tier";
 
 /**
  * Pi tools whose confirmations the bridge raises as file-change approvals.
@@ -355,18 +356,27 @@ export default async function f5McpExtension(pi: ExtensionAPI) {
   // then reserves almost all remaining context for output. OpenRouter can
   // reject even a short conversation. Remove this cap when Pi accounts for
   // the current request prefix reliably (api/simple-options + utils/estimate).
+  let serviceTier: string | undefined;
+  pi.registerCommand("f5-service-tier", {
+    description: "Set the service tier F5 sends with provider requests",
+    handler: async (args) => { serviceTier = args.trim() || undefined; },
+  });
   pi.on("before_provider_request", (event, ctx) => {
-    if (ctx.model?.provider !== "openrouter") return;
     const payload = event.payload;
     if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return;
     const replacement = { ...payload } as Record<string, unknown>;
     let changed = false;
     for (const key of ["max_tokens", "max_completion_tokens"]) {
       const limit = replacement[key];
-      if (typeof limit === "number" && Number.isFinite(limit) && limit > 32_768) {
+      if (ctx.model?.provider === "openrouter" && typeof limit === "number" && Number.isFinite(limit) && limit > 32_768) {
         replacement[key] = 32_768;
         changed = true;
       }
+    }
+    const tiers = (ctx.model as { serviceTiers?: unknown } | undefined)?.serviceTiers;
+    if (serviceTier && Array.isArray(tiers) && tiers.some((tier) => tier?.id === serviceTier)) {
+      replacement.service_tier = serviceTier;
+      changed = true;
     }
     if (changed) return replacement;
   });
@@ -525,15 +535,20 @@ export default async function f5McpExtension(pi: ExtensionAPI) {
     }
   });
 
-  // Deliver orchestration guidance through pi's real system-prompt channel.
-  // Wrapping the first user message instead would stop it from starting
-  // with "/" and silently break slash-command expansion.
+  // Keep guidance in the system prompt so leading slash commands still expand.
   pi.on("before_agent_start", (event, ctx) => {
     reconcileDiscovery(ctx);
     // Only a catalog that can preview and publish pages gets the chart nudge.
     const names = new Set(catalog.map((tool) => tool.name));
     const charts = names.has("html_render") && names.has("html_preview") ? " " + CHART_INSTRUCTIONS : "";
-    return { systemPrompt: event.systemPrompt + "\\n\\n" + ORCHESTRATION_INSTRUCTIONS + charts };
+    const guidance = ORCHESTRATION_INSTRUCTIONS + charts;
+    const options = event.systemPromptOptions;
+    const sections = options?.sections;
+    if (sections && typeof sections === "object" && options?.forceSystemPrompt === undefined) {
+      sections.f5_orchestration = guidance;
+      return undefined;
+    }
+    return { systemPrompt: event.systemPrompt + "\\n\\n" + guidance };
   });
 }
 `;

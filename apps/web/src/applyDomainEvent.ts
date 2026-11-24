@@ -806,12 +806,16 @@ function reduceDomainEvent(
             ? event.payload.defaultEnvMode
             : project.defaultEnvMode;
         const icon = event.payload.icon !== undefined ? event.payload.icon : project.icon;
+        const pinned = event.payload.pinned ?? project.pinned;
+        const archived = event.payload.archived ?? project.archived;
         if (
           (event.payload.title ?? project.name) === project.name &&
           (event.payload.workspaceRoot ?? project.cwd) === project.cwd &&
           model === project.model &&
           defaultEnvMode === project.defaultEnvMode &&
           icon === project.icon &&
+          pinned === project.pinned &&
+          archived === project.archived &&
           scripts === project.scripts
         ) {
           return project;
@@ -825,6 +829,8 @@ function reduceDomainEvent(
           ...(model !== project.model ? { model } : {}),
           ...(defaultEnvMode !== project.defaultEnvMode ? { defaultEnvMode } : {}),
           ...(icon !== project.icon ? { icon } : {}),
+          ...(pinned !== project.pinned ? { pinned } : {}),
+          ...(archived !== project.archived ? { archived } : {}),
           ...(scripts !== project.scripts ? { scripts } : {}),
         };
       });
@@ -978,6 +984,7 @@ function reduceDomainEvent(
         tasksTracking: null,
         sessionNotes: null,
         threadReferences: [...(event.payload.threadReferences ?? [])],
+        ...(event.payload.sideChatOf ? { sideChatOf: event.payload.sideChatOf } : {}),
         history: {
           stage: "complete",
           hasOlderMessages: false,

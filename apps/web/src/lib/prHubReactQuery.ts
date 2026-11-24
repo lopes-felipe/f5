@@ -1,14 +1,25 @@
-import { infiniteQueryOptions, queryOptions, type InfiniteData } from "@tanstack/react-query";
+import {
+  infiniteQueryOptions,
+  queryOptions,
+  type InfiniteData,
+  type QueryClient,
+} from "@tanstack/react-query";
+import { PrHubChecksResult, PrHubFilesPage, PrHubTimelinePage } from "@t3tools/contracts";
+import { Schema } from "effect";
 import type {
   PrHubListInput,
   PrHubListPage,
   PrHubReviewComment,
   PrHubSavedQuery,
   PullRequestKey,
+  TrackedPullRequest,
 } from "@t3tools/contracts";
 
 import { ensureNativeApi } from "../nativeApi";
 import { getPrHubSelectedAccountId, getPrHubAccountGeneration } from "./prHubAccount";
+import { persistPrHubRead } from "./prHubReadCache";
+
+const DETAIL_STALE_MS = 30_000;
 
 export const prHubQueryKeys = {
   overview: ["prHub", "overview"] as const,
@@ -19,6 +30,14 @@ export const prHubQueryKeys = {
     ["prHub", "timeline", getPrHubAccountGeneration(), key] as const,
   files: (key: PullRequestKey) => ["prHub", "files", getPrHubAccountGeneration(), key] as const,
 };
+
+export function cachedPrHubRows(client: QueryClient) {
+  const generation = getPrHubAccountGeneration();
+  if (!generation) return [];
+  return client
+    .getQueriesData<InfiniteData<PrHubListPage>>({ queryKey: ["prHub", "list", generation] })
+    .flatMap(([, data]) => data?.pages.flatMap((page) => page.pullRequests) ?? []);
+}
 
 export function prHubPeekQueryOptions(url: string) {
   const accountId = getPrHubSelectedAccountId();
@@ -79,16 +98,50 @@ export function prHubDetailQueryOptions(key: PullRequestKey) {
   return queryOptions({
     queryKey: prHubQueryKeys.detail(key),
     queryFn: async () => ensureNativeApi().prHub.getDetail({ key, accountGeneration }),
-    staleTime: 30_000,
+    staleTime: DETAIL_STALE_MS,
   });
 }
 
+export async function prefetchCachedPrHubDetail(
+  client: QueryClient,
+  key: PullRequestKey,
+  isCurrent: () => boolean,
+) {
+  const accountGeneration = getPrHubAccountGeneration();
+  const queryKey = prHubQueryKeys.detail(key);
+  const before = client.getQueryState(queryKey);
+  if (!accountGeneration || before?.data || before?.fetchStatus === "fetching") return;
+  try {
+    const detail = await ensureNativeApi().prHub.getDetail({
+      key,
+      accountGeneration,
+      cacheOnly: true,
+    });
+    if (
+      !detail.stale &&
+      isCurrent() &&
+      accountGeneration === getPrHubAccountGeneration() &&
+      client.getQueryState(queryKey) === before
+    ) {
+      client.setQueryData(queryKey, detail, { updatedAt: Date.parse(detail.refreshedAt) });
+    }
+  } catch {
+    // A cache miss leaves the normal detail read to the opened pull request.
+  }
+}
+
 /** The head commit's checks. A change to the pull request re-reads them. */
-export function prHubChecksQueryOptions(key: PullRequestKey) {
+export function prHubChecksQueryOptions(key: PullRequestKey, expectedHead?: string | null) {
   const accountGeneration = getPrHubAccountGeneration();
   return queryOptions({
     queryKey: ["prHub", "checks", accountGeneration, key] as const,
-    queryFn: async () => ensureNativeApi().prHub.getChecks({ key, accountGeneration }),
+    queryFn: persistPrHubRead<PrHubChecksResult>(
+      () => ensureNativeApi().prHub.getChecks({ key, accountGeneration }),
+      (value) => {
+        const checks = Schema.decodeUnknownSync(PrHubChecksResult)(value);
+        if (!expectedHead || checks.headOid === expectedHead) return checks;
+      },
+    ),
     staleTime: 15_000,
     // The hub reports a change when the overall result changes, not when one job of many
     // finishes, so a list with running jobs is read again while it is on screen.
@@ -117,12 +170,16 @@ export function prHubTimelineQueryOptions(key: PullRequestKey) {
   return infiniteQueryOptions({
     queryKey: prHubQueryKeys.timeline(key),
     initialPageParam: undefined as string | undefined,
-    queryFn: async ({ pageParam }) =>
-      ensureNativeApi().prHub.getTimeline({
-        key,
-        accountGeneration,
-        ...(pageParam ? { cursor: pageParam } : {}),
-      }),
+    queryFn: persistPrHubRead<PrHubTimelinePage>(
+      ({ pageParam }) =>
+        ensureNativeApi().prHub.getTimeline({
+          key,
+          accountGeneration,
+          ...(typeof pageParam === "string" ? { cursor: pageParam } : {}),
+        }),
+      Schema.decodeUnknownSync(PrHubTimelinePage),
+      true,
+    ),
     getNextPageParam: (page) =>
       page.pageInfo.hasNextPage ? (page.pageInfo.endCursor ?? undefined) : undefined,
     staleTime: 30_000,
@@ -177,20 +234,28 @@ export function prHubReviewThreadCommentsQueryOptions(key: PullRequestKey, threa
 }
 
 export function prHubFilesQueryOptions(
-  key: PullRequestKey,
+  { key, headRefOid }: Pick<TrackedPullRequest, "key" | "headRefOid">,
   comparisonMode: "current_pr" | "changes_since_review" = "current_pr",
 ) {
   const accountGeneration = getPrHubAccountGeneration();
   return infiniteQueryOptions({
     queryKey: [...prHubQueryKeys.files(key), comparisonMode],
     initialPageParam: undefined as string | undefined,
-    queryFn: async ({ pageParam }) =>
-      ensureNativeApi().prHub.getFiles({
-        key,
-        accountGeneration,
-        comparisonMode,
-        ...(pageParam ? { cursor: pageParam } : {}),
-      }),
+    queryFn: persistPrHubRead<PrHubFilesPage>(
+      ({ pageParam }) =>
+        ensureNativeApi().prHub.getFiles({
+          key,
+          accountGeneration,
+          comparisonMode,
+          ...(typeof pageParam === "string" ? { cursor: pageParam } : {}),
+        }),
+      (value) => {
+        const files = Schema.decodeUnknownSync(PrHubFilesPage)(value);
+        if (!headRefOid || !files.comparison || files.comparison.headOid === headRefOid)
+          return files;
+      },
+      true,
+    ),
     getNextPageParam: (page) =>
       page.pageInfo.hasNextPage ? (page.pageInfo.endCursor ?? undefined) : undefined,
     staleTime: 30_000,

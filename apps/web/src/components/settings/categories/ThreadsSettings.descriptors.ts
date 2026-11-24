@@ -3,6 +3,13 @@ import type { SettingsItemDescriptor } from "../settingsSearch";
 
 export const THREADS_SETTINGS_DESCRIPTORS = [
   {
+    ...SETTINGS_ITEM_ROUTES["threads.keep-awake"],
+    label: "Keep the server awake while agents work",
+    description: "Prevent server idle sleep while runs are active.",
+    keywords: ["sleep", "power", "caffeinate", "inhibit", "awake"],
+    targetSelector: '[aria-label="Keep the server awake while agents work"]',
+  },
+  {
     ...SETTINGS_ITEM_ROUTES["threads.default-permissions"],
     label: "Default permissions",
     description: "Choose what agents in new threads may do without asking first.",

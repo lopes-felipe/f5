@@ -102,7 +102,7 @@ export const BunPtyAdapterLive = Layer.effect(
     return {
       spawn: (input) =>
         Effect.gen(function* () {
-          const shell = resolvePtyShell(input);
+          const shell = yield* Effect.promise(() => resolvePtyShell(input));
           if (!shell) {
             return yield* new PtySpawnError({
               adapter: "bun",

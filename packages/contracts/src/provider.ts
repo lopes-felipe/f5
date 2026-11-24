@@ -4,7 +4,7 @@ import { ComputerBackendSelection } from "./computerAutomation";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas";
 import { ProviderModelOptions } from "./model";
 import { ProviderInstanceId } from "./providerInstance";
-import { ProviderSessionCapabilities } from "./sessionCapabilities";
+import { ProviderSessionCapabilities, ProviderExtensionStatuses } from "./sessionCapabilities";
 import {
   ApprovalRequestId,
   CommandId,
@@ -44,6 +44,7 @@ const ProviderSessionStatus = Schema.Literals([
 ]);
 
 export const ProviderSession = Schema.Struct({
+  extensionStatuses: Schema.optional(ProviderExtensionStatuses),
   provider: ProviderKind,
   providerInstanceId: Schema.optional(ProviderInstanceId),
   status: ProviderSessionStatus,
@@ -89,6 +90,8 @@ export const ProviderSessionStartInput = Schema.Struct({
   workflowExecutionProfile: Schema.optional(WorkflowTurnExecutionProfile),
   /** Started for an automation's turn: nobody is there to answer a consent dialog. */
   unattended: Schema.optional(Schema.Boolean),
+  /** Start a new native conversation and discard any previously stored cursor. */
+  discardResumeCursor: Schema.optional(Schema.Boolean),
   resumeCursor: Schema.optional(Schema.Unknown),
   approvalPolicy: Schema.optional(ProviderApprovalPolicy),
   sandboxMode: Schema.optional(ProviderSandboxMode),

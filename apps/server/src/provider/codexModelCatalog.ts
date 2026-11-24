@@ -1,6 +1,7 @@
 import type { ModelCapabilities, ServerProviderSkill } from "@t3tools/contracts";
 import {
   createReportedCodexModelCapabilities,
+  configureCodexCyberAccess,
   formatModelDisplayName,
   normalizeModelSlug,
 } from "@t3tools/shared/model";
@@ -54,6 +55,16 @@ export function parseCodexModelList(entries: ReadonlyArray<unknown>): {
           : {}),
         defaultServiceTier: entry.defaultServiceTier,
         upgrade: entry.upgrade,
+        ...(isRecord(entry.availableAccessPrograms) &&
+        Array.isArray(entry.availableAccessPrograms.cyber)
+          ? {
+              availableAccessPrograms: {
+                cyber: entry.availableAccessPrograms.cyber.filter(
+                  (value): value is string => typeof value === "string",
+                ),
+              },
+            }
+          : {}),
       }),
     });
   }
@@ -82,7 +93,7 @@ async function readConfiguredServiceTier(client: CodexControlClient): Promise<un
       // No cwd: the shared catalog must not inherit launch-project configuration.
       Promise.resolve()
         .then(() => client.readConfig(false))
-        .then((result) => result.config.service_tier)
+        .then((result) => result.config)
         .catch(() => undefined),
       new Promise<undefined>((resolve) => {
         const timer = setTimeout(() => resolve(undefined), 3_000);
@@ -91,6 +102,20 @@ async function readConfiguredServiceTier(client: CodexControlClient): Promise<un
     ]);
   } finally {
     cancelTimeout?.();
+  }
+}
+
+async function readCatalogAccount(client: CodexControlClient) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      client.readAccount().catch(() => undefined),
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), 3_000);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -166,18 +191,33 @@ export async function probeCodexInstanceCatalog(
     client = await CodexControlClient.create(environment, signal, { probeConfigRead: false });
     const opened = client;
     const listed = (async () => {
-      const [pages, serviceTier] = await Promise.all([
+      const [pages, config] = await Promise.all([
         opened.listModelPages(),
         readConfiguredServiceTier(opened),
       ]);
       const { models, presentSlugs } = parseCodexModelList(pages.entries);
+      const account = models.some((model) =>
+        model.capabilities.optionDescriptors?.some((option) => option.id === "cyberAccessProgram"),
+      )
+        ? await readCatalogAccount(opened)
+        : undefined;
       if (models.length === 0) throw new Error("Empty Codex model catalog");
       const skills = await opened
         .listSkills([environment.cwd])
         .then(parseCodexInstanceSkills)
         .catch(() => undefined);
       return {
-        models: applyConfiguredCodexServiceTier(models, serviceTier),
+        models: applyConfiguredCodexServiceTier(
+          models,
+          isRecord(config) ? config.service_tier : undefined,
+        ).map((model) => ({
+          ...model,
+          capabilities: configureCodexCyberAccess(
+            model.capabilities,
+            config,
+            isRecord(account?.account) ? String(account.account.type) : undefined,
+          ),
+        })),
         ...(skills ? { skills } : {}),
         presentSlugs,
         complete: pages.complete,

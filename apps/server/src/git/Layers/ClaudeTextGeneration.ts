@@ -221,7 +221,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         // already excludes every other MCP source.
         ...(hasClaudeManagedMcpConfig() ? [] : ["--strict-mcp-config"]),
       ];
-      const invocation = yield* Effect.try({
+      const invocation = yield* Effect.tryPromise({
         try: () => resolveClaudeCliInvocation(binaryPath, args, claudeEnvironment, { cwd }),
         catch: (cause) =>
           normalizeCliError("claude", operation, cause, "Failed to resolve Claude CLI process"),

@@ -73,13 +73,7 @@ export function toLegacySessionStatus(
 }
 
 export function toLegacyProvider(providerName: string | null): ProviderKind {
-  if (
-    providerName === "codex" ||
-    providerName === "claudeAgent" ||
-    providerName === "cursor" ||
-    providerName === "opencode" ||
-    providerName === "grok"
-  ) {
+  if (isKnownProviderKind(providerName)) {
     return providerName;
   }
   return "codex";
@@ -119,11 +113,36 @@ export function mapSessionFromReadModel(
 
   const lastError = sanitizeThreadErrorMessage(incoming.lastError);
   const next: Thread["session"] = {
+    ...(incoming.autoCompactThreshold !== undefined || previous?.autoCompactThreshold !== undefined
+      ? {
+          autoCompactThreshold:
+            incoming.autoCompactThreshold !== undefined
+              ? incoming.autoCompactThreshold
+              : incoming.providerName === previous?.provider &&
+                  incoming.providerInstanceId === previous?.providerInstanceId
+                ? (previous?.autoCompactThreshold ?? null)
+                : null,
+        }
+      : {}),
+    ...(incoming.extensionStatuses !== undefined || previous?.extensionStatuses !== undefined
+      ? {
+          extensionStatuses:
+            incoming.status === "stopped"
+              ? []
+              : (incoming.extensionStatuses ??
+                (toLegacyProvider(incoming.providerName) === previous?.provider &&
+                (incoming.providerInstanceId ?? null) === previous?.providerInstanceId
+                  ? previous?.extensionStatuses
+                  : undefined) ??
+                []),
+        }
+      : {}),
     provider: toLegacyProvider(incoming.providerName),
     providerInstanceId: incoming.providerInstanceId ?? null,
     status: toLegacySessionStatus(incoming.status),
     orchestrationStatus: incoming.status,
     usageLimit: incoming.usageLimit ?? null,
+    ...(incoming.authFailure ? { authFailure: incoming.authFailure } : {}),
     activeTurnId: incoming.activeTurnId ?? undefined,
     createdAt: incoming.updatedAt,
     updatedAt: incoming.updatedAt,
@@ -156,7 +175,10 @@ export function mapSessionFromReadModel(
     previous.lastErrorId === next.lastErrorId &&
     previous.lastErrorOccurredAt === next.lastErrorOccurredAt &&
     areUnknownEqual(previous.usageLimit ?? null, next.usageLimit ?? null) &&
+    areUnknownEqual(previous.authFailure ?? null, next.authFailure ?? null) &&
     previous.tokenUsageSource === next.tokenUsageSource &&
+    previous.autoCompactThreshold === next.autoCompactThreshold &&
+    areUnknownEqual(previous.extensionStatuses ?? [], next.extensionStatuses ?? []) &&
     areUnknownEqual(previous.capabilities ?? null, next.capabilities ?? null)
   ) {
     return previous;
@@ -187,6 +209,7 @@ export function mapMessageAttachmentsFromReadModel(
       existing.name === attachment.name &&
       existing.mimeType === attachment.mimeType &&
       existing.sizeBytes === attachment.sizeBytes &&
+      existing.source === attachment.source &&
       existing.previewUrl === previewUrl &&
       existing.sourceUrl === previewUrl
     ) {
@@ -199,6 +222,7 @@ export function mapMessageAttachmentsFromReadModel(
       name: attachment.name,
       mimeType: attachment.mimeType,
       sizeBytes: attachment.sizeBytes,
+      ...(attachment.source ? { source: attachment.source } : {}),
       previewUrl,
       sourceUrl: previewUrl,
     };

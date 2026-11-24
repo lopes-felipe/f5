@@ -33,6 +33,7 @@ import { dispatchVerifiedWorkspace } from "../workspaceTransitionContext.ts";
 import { isProjectCheckout, isProjectOrManagedPath } from "../workspaceAttachment.ts";
 import { WorktreeManager, type WorktreeManagerShape } from "../Services/WorktreeManager.ts";
 import { WorktreeSetupGate } from "../Services/WorktreeSetupGate.ts";
+import { withWorktreeLifecycleLock } from "./WorktreeLifecycleCoordinator.ts";
 
 export const makeWorktreeManager = Effect.gen(function* () {
   const services = yield* Effect.services<
@@ -212,7 +213,11 @@ export const makeWorktreeManager = Effect.gen(function* () {
       );
       let branchDeleted = false;
       const branchReasons: string[] = [];
+      const layoutRemove = project.scripts.find(
+        (script) => script.worktreeLayout === "remove",
+      )?.command;
       const checked = yield* removeWorktreeSafely({
+        ...(layoutRemove ? { layoutRemove } : {}),
         projectCwd: project.workspaceRoot,
         path: input.path,
         policy: {
@@ -378,10 +383,55 @@ export const makeWorktreeManager = Effect.gen(function* () {
     });
   const recover: WorktreeManagerShape["recover"] = (input) =>
     Effect.gen(function* () {
-      const { thread } = yield* context(input.threadId);
+      const { thread, project } = yield* context(input.threadId);
       const data = yield* queue.listByThread(thread.id);
       if (data.state.revision !== input.expectedQueueRevision)
         return yield* Effect.fail(new Error("The queue changed. Refresh and try again."));
+      if (
+        input.action === "recreate" &&
+        thread.worktreePath &&
+        thread.branch &&
+        git.readWorktreeGroup &&
+        (yield* git.readWorktreeGroup(thread.worktreePath))
+      ) {
+        const target = thread.worktreePath;
+        const branch = thread.branch;
+        yield* withWorktreeLifecycleLock(
+          target,
+          Effect.gen(function* () {
+            const latest = yield* queue.listByThread(thread.id);
+            if (
+              latest.state.revision !== input.expectedQueueRevision ||
+              latest.state.worktreeBlockToken
+            )
+              return yield* Effect.fail(
+                new Error("The queue changed or workspace setup is active."),
+              );
+            yield* Effect.tryPromise(() => assertExclusiveProfileCheckout(config, target));
+            const claims = yield* withClaimServices(
+              readWorktreeClaims(target).pipe(Effect.provideServices(services)),
+            );
+            if (
+              claims.unknown ||
+              claims.activeThreadIds.length ||
+              claims.setupThreadIds.length ||
+              claims.sessions.length ||
+              claims.terminals.length ||
+              claims.threadIds.some((owner) => owner !== thread.id)
+            )
+              return yield* Effect.fail(
+                new Error("A conversation, session, or terminal is using this workspace."),
+              );
+            yield* git.ensureWorktree({
+              cwd: project.workspaceRoot,
+              path: target,
+              branch,
+              owner: "thread:" + thread.id,
+            });
+          }),
+        );
+        return yield* resumeAfterRecovery(thread.id, input);
+      }
       // Adopting only re-records metadata; restoring runs its own in-place transition.
       if (input.action === "adoptCheckoutBranch" || input.action === "restoreRecordedBranch") {
         yield* repairBranchDrift(input.action, thread, data);

@@ -2835,6 +2835,23 @@ describe("Thread sidebar", () => {
       );
       expect(mounted.router.state.location.search.timelineEntryId).toBe("message-search-match");
       expect(input.value).toBe("");
+
+      // The deep-linked message belongs to that thread only: switching threads
+      // without a search must not carry it along and report it unavailable.
+      await mounted.router.navigate({ to: "/$threadId", params: { threadId: retryThreadId } });
+      await waitForPath(
+        mounted.router,
+        (pathname) => pathname.endsWith(`/${retryThreadId}`),
+        "Plain thread navigation should open the other thread.",
+      );
+      expect(mounted.router.state.location.search.timelineEntryId).toBeUndefined();
+      expect(mounted.router.state.location.search.timelineEntryKind).toBeUndefined();
+      await new Promise((resolve) => window.setTimeout(resolve, 300));
+      expect(
+        document.querySelector(
+          '[data-slot="timeline-navigation-status"][data-status="unavailable"]',
+        ),
+      ).toBeNull();
     } finally {
       await mounted.cleanup();
     }
@@ -3255,6 +3272,60 @@ describe("Thread sidebar", () => {
     }
   });
 
+  it("pins a project from its context menu instead of a floating header button", async () => {
+    const showContextMenu = vi.fn(async () => "toggle-pin");
+    installDesktopBridgeMock({
+      showContextMenu: showContextMenu as unknown as DesktopBridge["showContextMenu"],
+    });
+
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: [`/${THREAD_ID}`],
+    });
+
+    try {
+      const projectButton = await waitForElement(
+        () => queryProjectButton("Project"),
+        "Project button should render before pinning.",
+      );
+      const header = projectButton.closest<HTMLElement>(".group\\/project-header")!;
+      expect(header.querySelector('button[aria-label^="Pin "]')).toBeNull();
+      expect(header.querySelector('[data-slot="project-pinned-indicator"]')).toBeNull();
+      const requestCountBeforeContextMenu = wsRequests.length;
+
+      projectButton.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          button: 2,
+          clientX: 24,
+          clientY: 24,
+        }),
+      );
+
+      await vi.waitFor(() => expect(showContextMenu).toHaveBeenCalled());
+      const items = (
+        showContextMenu.mock.calls[0] as unknown as [Array<{ id: string; label: string }>]
+      )[0];
+      expect(items[0]).toEqual({ id: "toggle-pin", label: "Pin project" });
+      await vi.waitFor(
+        () => {
+          const command = wsRequests
+            .slice(requestCountBeforeContextMenu)
+            .find(
+              (request) =>
+                request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+                (request.command as { type?: string } | undefined)?.type === "project.meta.update",
+            )?.command as { projectId?: string; pinned?: boolean } | undefined;
+          expect(command).toMatchObject({ projectId: PROJECT_ID, pinned: true });
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("dispatches a revisioned full-list command when pinning from the thread menu", async () => {
     installDesktopBridgeMock({
       showContextMenu: (async () => "pin") as DesktopBridge["showContextMenu"],
@@ -3407,6 +3478,7 @@ describe("Thread sidebar", () => {
         () => document.querySelector('[aria-label="Regenerating thread title"]'),
         "Pending title regeneration indicator should render.",
       );
+      expect(document.querySelector(".sidebar-title-regenerating")).not.toBeNull();
     } finally {
       await pendingMounted.cleanup();
     }
@@ -5948,6 +6020,36 @@ describe("Thread sidebar", () => {
       await mounted.cleanup();
     }
   });
+  it("keeps unrelated sidebar rows rendered when switching threads", async () => {
+    const nextId = ThreadId.makeUnsafe("route-next");
+    const otherId = ThreadId.makeUnsafe("route-other");
+    const mounted = await mountApp({
+      width: 1400,
+      initialEntries: ["/" + THREAD_ID],
+      configureFixture: (next) => {
+        next.snapshot = createSnapshot([
+          createSnapshotThread({ id: THREAD_ID, title: "Initial thread" }),
+          createSnapshotThread({ id: nextId, title: "Next thread" }),
+          createSnapshotThread({ id: otherId, title: "Unrelated thread" }),
+        ]);
+      },
+    });
+    try {
+      await waitForSidebarThreadRow("Initial thread");
+      const row = await waitForSidebarThreadRow("Unrelated thread");
+      await waitForLayout();
+      const before = row.getAttribute("data-render-count");
+      expect(before).toBeTruthy();
+      await mounted.router.navigate({ to: "/$threadId", params: { threadId: nextId } });
+      await waitForLayout();
+      expect(
+        querySidebarThreadRowByTitle("Unrelated thread")?.getAttribute("data-render-count"),
+      ).toBe(before);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("isolates terminal updates from the sidebar and another thread's chat", async () => {
     const otherId = ThreadId.makeUnsafe("background-terminal");
     const mounted = await mountApp({

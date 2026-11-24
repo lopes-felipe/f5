@@ -19,7 +19,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Select, SelectButton, SelectItem, SelectPopup } from "../ui/select";
-import { Textarea } from "../ui/textarea";
+import { PrCompletionTextarea as Textarea } from "./PrCompletionTextarea";
 import type { PrActionDialogProps, PrPendingAction } from "./usePrActions";
 import { SnoozePresetPicker } from "../SnoozePresetPicker";
 import { PrReviewerPicker, usePrReviewerCandidates } from "./PrReviewerPicker";
@@ -143,6 +143,7 @@ export function PrActionDialogs({
               ) ? (
                 <div className="space-y-2">
                   <Textarea
+                    prKey={pr.key}
                     aria-label="Review explanation"
                     value={reviewBody}
                     onChange={(event) => setReviewBody(event.target.value)}

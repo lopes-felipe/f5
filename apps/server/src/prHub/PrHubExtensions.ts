@@ -22,6 +22,7 @@ import {
   type PrHubSnapshot,
   type SourceControlPullRequestRef,
   type PrHubStackInput,
+  type PrHubCompletionsInput,
   type PrHubThreadLink,
   type PrHubViewedFilesInput,
   type PrHubSetViewedFileInput,
@@ -32,6 +33,7 @@ import {
   sourceControlPullRequestKeysEqual,
 } from "@t3tools/shared/sourceControl";
 import { resolvePrReviewPosition, type PrReviewPosition } from "@t3tools/shared/prReview";
+import { prHubPeekFromTracked } from "@t3tools/shared/prHub";
 import { ServerConfig } from "../config.ts";
 import { GITHUB_CLI_LOGS_UNSUPPORTED } from "../git/githubApi.ts";
 import { SourceControlProviderError } from "../sourceControl/SourceControlProvider.ts";
@@ -111,69 +113,54 @@ export const makePrHubExtensions = Effect.gen(function* () {
       return { runtime, ref, snapshot };
     });
   const peek = (input: PrHubPeekInput) =>
-    permit.withPermits(1)(
-      Effect.gen(function* () {
-        const ref = yield* federation.parseUrl(input.url);
-        if (!ref) return null;
-        const runtime = yield* federation.resolve(input);
-        if (runtime.account.provider !== ref.provider || runtime.account.host !== ref.host)
-          return yield* new SourceControlProviderError({
-            provider: ref.provider,
-            operation: "prHub.peek",
-            kind: "forbidden",
-            detail: "Link preview account mismatch.",
-            code: "PrHubAccountMismatch",
-          });
-        const identity = JSON.stringify([runtime.account.id, runtime.account.generation, ref]);
-        const cached = peekCache.get(identity);
-        const value =
-          cached && cached.expires > Date.now()
-            ? cached.value
-            : yield* Effect.gen(function* () {
-                const detail = yield* runtime.provider.getDetail(ref);
-                const facts = yield* Schema.decodeUnknownEffect(PrHubPeek)({
-                  provider: ref.provider,
-                  host: ref.host,
-                  repository: ref.repository,
-                  number: ref.number,
-                  title: detail.title.slice(0, 1000),
-                  url: detail.url,
-                  state: detail.state ?? "open",
-                  ...peekFactsFromRaw(detail.raw),
-                  updatedAt: peekIsoDate(detail.updatedAt),
-                }).pipe(
-                  Effect.mapError(() => failure("Invalid link preview.", "invalid_response")),
-                );
-                peekCache.delete(identity);
-                peekCache.set(identity, { expires: Date.now() + 60000, value: facts });
-                while (peekCache.size > 128) peekCache.delete(peekCache.keys().next().value!);
-                return facts;
-              });
-        const snapshot = yield* runtime.hub.getSnapshot.pipe(
-          Effect.catchCause(() => Effect.succeed(null)),
+    Effect.gen(function* () {
+      const ref = yield* federation.parseUrl(input.url);
+      if (!ref) return null;
+      const runtime = yield* federation.resolve(input);
+      if (runtime.account.provider !== ref.provider || runtime.account.host !== ref.host)
+        return yield* new SourceControlProviderError({
+          provider: ref.provider,
+          operation: "prHub.peek",
+          kind: "forbidden",
+          detail: "Link preview account mismatch.",
+          code: "PrHubAccountMismatch",
+        });
+      const snapshot = yield* runtime.hub.getSnapshot.pipe(
+        Effect.catchCause(() => Effect.succeed(null)),
+      );
+      const key = formatSourceControlPullRequestKey(ref);
+      const tracked =
+        snapshot?.pullRequests.find((pr) => sourceControlPullRequestKeysEqual(pr.key, key)) ??
+        snapshot?.recentlyResolved.find((pr) => sourceControlPullRequestKeysEqual(pr.key, key));
+      if (tracked)
+        return yield* Schema.decodeUnknownEffect(PrHubPeek)(prHubPeekFromTracked(tracked)).pipe(
+          Effect.mapError(() => failure("Invalid link preview.", "invalid_response")),
         );
-        const key = formatSourceControlPullRequestKey(ref);
-        const tracked =
-          snapshot &&
-          [...snapshot.pullRequests, ...snapshot.recentlyResolved].find((pr) =>
-            sourceControlPullRequestKeysEqual(pr.key, key),
-          );
-        return {
-          ...value,
-          ...(tracked
-            ? {
-                isDraft: tracked.isDraft,
-                status: {
-                  checkRollup: tracked.checkRollup,
-                  reviewDecision: tracked.reviewDecision,
-                  mergeable: tracked.mergeable,
-                  unresolvedThreadCount: tracked.unresolvedThreadCount,
-                },
-              }
-            : {}),
-        };
-      }),
-    );
+
+      return yield* permit.withPermits(1)(
+        Effect.gen(function* () {
+          const identity = JSON.stringify([runtime.account.id, runtime.account.generation, key]);
+          const cached = peekCache.get(identity);
+          if (cached && cached.expires > Date.now()) return cached.value;
+          const detail = yield* runtime.provider.getDetail(ref);
+          const facts = yield* Schema.decodeUnknownEffect(PrHubPeek)({
+            provider: ref.provider,
+            host: ref.host,
+            repository: ref.repository,
+            number: ref.number,
+            title: detail.title.slice(0, 1000),
+            url: detail.url,
+            state: detail.state ?? "open",
+            ...peekFactsFromRaw(detail.raw),
+            updatedAt: peekIsoDate(detail.updatedAt),
+          }).pipe(Effect.mapError(() => failure("Invalid link preview.", "invalid_response")));
+          peekCache.delete(identity);
+          peekCache.set(identity, { expires: Date.now() + 60000, value: facts });
+          while (peekCache.size > 128) peekCache.delete(peekCache.keys().next().value!);
+          return facts;
+        }),
+      );
+    });
   const getStack = (input: PrHubStackInput) =>
     Effect.gen(function* () {
       const { runtime, ref } = yield* resolve(input);
@@ -365,6 +352,8 @@ export const makePrHubExtensions = Effect.gen(function* () {
               !!runtime.provider.deletePullRequestBranch)) &&
           (p.action !== "delete-branch" || !!runtime.provider.deletePullRequestBranch) &&
           (p.action !== "rerun-failed-checks" || caps.checks.rerun) &&
+          (p.workflowRunId === undefined ||
+            (p.action === "rerun-failed-checks" && !!runtime.provider.workflowRuns)) &&
           caps.actions.includes(p.action) &&
           (!p.method ||
             (p.action === "update-branch" ? caps.updateMethods : caps.mergeMethods).includes(
@@ -378,7 +367,10 @@ export const makePrHubExtensions = Effect.gen(function* () {
           (!p.replyTo || caps.review.reply);
         break;
       case "review":
-        supported = caps.review.verdicts.includes(p.verdict);
+        supported =
+          caps.review.verdicts.includes(p.verdict) &&
+          (!p.comments?.length ||
+            (runtime.account.provider === "github" && caps.review.inlineComment));
         break;
       case "edit":
         supported = caps.edit.changeRequest;
@@ -692,6 +684,38 @@ export const makePrHubExtensions = Effect.gen(function* () {
                   );
                 }
                 case "review": {
+                  if (p.comments?.length) {
+                    if (!p.baseOid || forgeComparison(ref, detail)?.baseOid !== p.baseOid)
+                      return yield* failure("The inline review comparison changed.", "forbidden");
+                    const files = yield* runtime.provider.getFiles(ref);
+                    for (const comment of p.comments) {
+                      const patch = files.find((file) => file.path === comment.path)?.patch;
+                      if (
+                        !patch ||
+                        !resolvePrReviewPosition(
+                          {
+                            path: comment.path,
+                            line: comment.line,
+                            side: comment.side === "old" ? "LEFT" : "RIGHT",
+                          },
+                          patch,
+                        )
+                      )
+                        return yield* failure(
+                          "An inline review line is outside the complete diff.",
+                          "forbidden",
+                        );
+                    }
+                    const latest = yield* runtime.provider.getDetail(ref);
+                    if (
+                      latest.headRefOid !== saved.operation.expectedHeadOid ||
+                      forgeComparison(ref, latest)?.baseOid !== p.baseOid
+                    )
+                      return yield* failure(
+                        "The inline review comparison changed while loading files.",
+                        "forbidden",
+                      );
+                  }
                   const separated = ref.provider === "gitlab" || ref.provider === "bitbucket";
                   if (
                     separated &&
@@ -713,6 +737,7 @@ export const makePrHubExtensions = Effect.gen(function* () {
                       body: separated && p.verdict !== "comment" ? "" : commentBody(p.body),
                       verdict: p.verdict,
                       headSha: saved.operation.expectedHeadOid,
+                      ...(p.comments?.length ? { comments: p.comments } : {}),
                     }),
                   );
                 }
@@ -732,10 +757,14 @@ export const makePrHubExtensions = Effect.gen(function* () {
                   }
                   const workflowRuns = runtime.provider.workflowRuns;
                   if (p.action === "rerun-failed-checks" && workflowRuns) {
-                    const failed = yield* workflowRuns.listFailed({
+                    const failedRuns = yield* workflowRuns.listFailed({
                       ref,
                       expectedHeadOid: saved.operation.expectedHeadOid,
                     });
+                    const failed =
+                      p.workflowRunId === undefined
+                        ? failedRuns
+                        : failedRuns.filter((run) => run.id === p.workflowRunId);
                     const reruns: Array<{ id: number; attempt: number }> = [];
                     const refused: string[] = [];
                     for (const target of failed) {
@@ -1171,6 +1200,14 @@ export const makePrHubExtensions = Effect.gen(function* () {
         ),
       ),
     );
+  const completions = (input: PrHubCompletionsInput) =>
+    permit.withPermits(1)(
+      resolve(input).pipe(
+        Effect.flatMap(
+          ({ runtime, ref }) => runtime.provider.completions?.(ref, input) ?? Effect.succeed([]),
+        ),
+      ),
+    );
   const listReviewerCandidates = (input: PrHubStackInput) =>
     resolve(input).pipe(
       Effect.flatMap(({ runtime, ref }) =>
@@ -1364,6 +1401,7 @@ export const makePrHubExtensions = Effect.gen(function* () {
     recoverOperation,
     cancelOperation,
     listReviewerCandidates,
+    completions,
   };
 });
 export const PrHubExtensionsLive = Layer.effect(PrHubExtensions, makePrHubExtensions);

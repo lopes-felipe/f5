@@ -25,6 +25,7 @@ import {
   resolveClaudeEffort,
   VERSION_GATED_CLAUDE_MODELS,
   parseClaudeInitializationModels,
+  claudeGatewayDiscoveryGraceMs,
 } from "./ClaudeProvider.ts";
 
 const encoder = new TextEncoder();
@@ -524,9 +525,12 @@ describe("makePendingClaudeProvider", () => {
 });
 
 describe("getClaudeModelCapabilities", () => {
-  it("uses only effort for Fable 5.2 and strips stale context suffixes on the wire", () => {
+  it("keeps effort and Ultracode independent for Fable 5.2", () => {
     const caps = getClaudeModelCapabilities("fable");
-    expect(caps.optionDescriptors?.map((descriptor) => descriptor.id)).toEqual(["effort"]);
+    expect(caps.optionDescriptors?.map((descriptor) => descriptor.id)).toEqual([
+      "effort",
+      "ultracode",
+    ]);
     expect(resolveClaudeEffort(caps, undefined)).toBe("high");
     expect(resolveClaudeEffort(caps, "xhigh")).toBe("xhigh");
     expect(normalizeClaudeCliEffort("xhigh")).toBe("xhigh");
@@ -544,7 +548,11 @@ describe("getClaudeModelCapabilities", () => {
     const descriptors = caps.optionDescriptors ?? [];
     const effortDescriptor = descriptors.find((descriptor) => descriptor.id === "effort");
 
-    expect(descriptors.map((descriptor) => descriptor.id)).toEqual(["effort", "fastMode"]);
+    expect(descriptors.map((descriptor) => descriptor.id)).toEqual([
+      "effort",
+      "fastMode",
+      "ultracode",
+    ]);
     expect(
       effortDescriptor?.type === "select"
         ? effortDescriptor.options.map((option) => option.id)
@@ -557,7 +565,11 @@ describe("getClaudeModelCapabilities", () => {
     const descriptors = caps.optionDescriptors ?? [];
     const effortDescriptor = descriptors.find((descriptor) => descriptor.id === "effort");
 
-    expect(descriptors.map((descriptor) => descriptor.id)).toEqual(["effort", "contextWindow"]);
+    expect(descriptors.map((descriptor) => descriptor.id)).toEqual([
+      "effort",
+      "ultracode",
+      "contextWindow",
+    ]);
     expect(
       effortDescriptor?.type === "select"
         ? effortDescriptor.options.map((option) => option.id)
@@ -570,7 +582,11 @@ describe("getClaudeModelCapabilities", () => {
     const descriptors = caps.optionDescriptors ?? [];
     const effortDescriptor = descriptors.find((descriptor) => descriptor.id === "effort");
 
-    expect(descriptors.map((descriptor) => descriptor.id)).toEqual(["effort", "contextWindow"]);
+    expect(descriptors.map((descriptor) => descriptor.id)).toEqual([
+      "effort",
+      "ultracode",
+      "contextWindow",
+    ]);
     expect(effortDescriptor?.type).toBe("select");
     expect(
       effortDescriptor?.type === "select"
@@ -585,7 +601,7 @@ describe("getClaudeModelCapabilities", () => {
       getClaudeModelCapabilities("claude-opus-4-8").optionDescriptors?.map(
         (descriptor) => descriptor.id,
       ),
-    ).toEqual(["effort", "contextWindow"]);
+    ).toEqual(["effort", "ultracode", "contextWindow"]);
     expect(
       getClaudeModelCapabilities("claude-opus-4-6").optionDescriptors?.map(
         (descriptor) => descriptor.id,
@@ -659,6 +675,26 @@ describe("Claude version gates", () => {
   });
 });
 
+describe("claudeGatewayDiscoveryGraceMs", () => {
+  it.each([
+    { enabled: "", url: "https://gateway.example", timeout: "10", expected: 0 },
+    { enabled: "0", url: "https://gateway.example", timeout: "10", expected: 0 },
+    { enabled: " FALSE ", url: "https://gateway.example", timeout: "10", expected: 0 },
+    { enabled: "true", url: "", timeout: "10", expected: 0 },
+    { enabled: "1", url: "https://gateway.example", timeout: "10", expected: 10 },
+    { enabled: "1", url: "https://gateway.example", timeout: "invalid", expected: 3000 },
+    { enabled: "1", url: "https://gateway.example", timeout: "-10", expected: 3000 },
+  ])("resolves enabled discovery and valid timeouts: %o", ({ enabled, url, timeout, expected }) => {
+    expect(
+      claudeGatewayDiscoveryGraceMs({
+        CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: enabled,
+        ANTHROPIC_BASE_URL: url,
+        CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY_TIMEOUT_MS: timeout,
+      }),
+    ).toBe(expected);
+  });
+});
+
 describe("parseClaudeInitializationModels", () => {
   it("resolves aliases to canonical slugs, strips context suffixes and dedupes", () => {
     const models = parseClaudeInitializationModels([
@@ -671,12 +707,59 @@ describe("parseClaudeInitializationModels", () => {
         supportedEffortLevels: ["low", "max"],
       },
       { value: "claude-cli-only-9", displayName: "Duplicate", description: "" },
-      { value: "team-alias", displayName: "Alias without resolution", description: "" },
+      {
+        value: "claude-cli-other-9",
+        resolvedModel: "backend/private",
+        displayName: "Other CLI",
+        description: "",
+      },
     ] as never);
     expect(models.map((model) => [model.slug, model.name])).toEqual([
       ["claude-cli-only-9", "CLI Only"],
+      ["claude-cli-other-9", "Other CLI"],
     ]);
     expect(models[0]?.capabilities.source).toBe("reported");
+  });
+
+  it("preserves selectable gateway values and separate context variants", () => {
+    const models = parseClaudeInitializationModels([
+      { value: "default", displayName: "Default", description: "" },
+      {
+        value: "gateway/reasoner[500k]",
+        resolvedModel: "backend/internal-reasoner",
+        displayName: "Gateway Reasoner",
+        description: "",
+        supportsEffort: true,
+        supportedEffortLevels: ["low", "high"],
+      },
+      { value: "gateway/reasoner[1m]", displayName: "Large Reasoner", description: "" },
+      { value: "gateway/reasoner[500k]", displayName: "Duplicate", description: "" },
+    ] as never);
+    expect(models.map(({ slug, name }) => [slug, name])).toEqual([
+      ["gateway/reasoner[500k]", "Gateway Reasoner"],
+      ["gateway/reasoner[1m]", "Large Reasoner"],
+    ]);
+    expect(models[0]?.capabilities.source).toBe("reported");
+    expect(JSON.stringify(models[0]?.capabilities)).toContain("high");
+  });
+
+  it("omits catalog aliases and custom model duplicates without dropping unknown gateway ids", () => {
+    const models = parseClaudeInitializationModels(
+      [
+        { value: "opus-5.5", displayName: "Alias", description: "" },
+        { value: "opus-4.7", displayName: "Alias", description: "" },
+        { value: "gateway/custom[500k]", displayName: "Custom variant", description: "" },
+        {
+          value: "gateway/alias",
+          resolvedModel: "gateway/custom",
+          displayName: "Custom alias",
+          description: "",
+        },
+        { value: "team-alias", displayName: "Team", description: "" },
+      ] as never,
+      ["gateway/custom"],
+    );
+    expect(models.map(({ slug }) => slug)).toEqual(["team-alias"]);
   });
 });
 

@@ -20,13 +20,16 @@ import {
   XIcon,
   type LucideIcon,
 } from "lucide-react";
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, Suspense, use, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import type { TimestampFormat } from "../../appSettings";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
-import type { DisplayCommandTokenKind } from "../../lib/commandExecutions";
-import { tokenizeDisplayCommand } from "../../lib/commandExecutions";
+import { HighlightedCommandText } from "./HighlightedCommandText";
+import { retryableImport } from "../../lib/retryableImport";
+import { escapeSafeCutIndex, stripAnsi } from "../../lib/ansiOutput";
+import type { CommandOutputBlockProps } from "./CommandOutputView";
+import { classifyCodeHighlight } from "../../lib/codeHighlightPolicy";
 import {
   scheduleThreadCommandExecutionRefreshIfMissing,
   threadCommandExecutionQueryOptions,
@@ -37,7 +40,13 @@ import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { cn } from "~/lib/utils";
 import { useNowIso } from "../../lib/nowTicker";
 import { toastManager } from "../ui/toast";
+import { SurfaceErrorBoundary } from "../ui/SurfaceErrorBoundary";
 import { CopyIconButton } from "./CopyIconButton";
+
+const loadShellCommandBlock = retryableImport(() => import("./ShellCommandBlock"));
+// Output presentation (and the grammar lookup it needs) loads with the first
+// expanded card, not with the timeline.
+const loadCommandOutputView = retryableImport(() => import("./CommandOutputView"));
 
 interface CommandTranscriptCardProps {
   threadId?: ThreadId | null;
@@ -98,21 +107,6 @@ const STATUS_PRESENTATION: Record<
   },
 };
 
-// Shell syntax colours from the semantic set so themes recolour them too.
-const COMMAND_TOKEN_CLASS_NAME: Record<DisplayCommandTokenKind, string> = {
-  command: "text-info-foreground",
-  env: "text-attention-foreground",
-  flag: "text-warning-foreground",
-  number: "text-warning-foreground",
-  operator: "text-muted-foreground",
-  path: "text-success-foreground",
-  string: "text-success-foreground",
-  substitution: "text-attention-foreground",
-  text: "text-foreground",
-  variable: "text-destructive-foreground",
-  whitespace: "text-inherit",
-};
-
 // Matches the MCP card's section headers.
 const SECTION_LABEL_CLASS_NAME =
   "text-2xs font-semibold tracking-widest text-muted-foreground uppercase";
@@ -124,26 +118,22 @@ const FAILED_OUTPUT_TAIL_LINES = 4;
 const FAILED_OUTPUT_TAIL_CHAR_LIMIT = 600;
 const FAILED_OUTPUT_TAIL_SCAN_CHARS = 8_000;
 
-const HighlightedCommandText = memo(function HighlightedCommandText(props: { command: string }) {
-  const tokens = tokenizeDisplayCommand(props.command);
-  let offset = 0;
+function LoadedShellCommand({ command }: { command: string }) {
+  const { ShellCommandBlock } = use(loadShellCommandBlock());
+  return <ShellCommandBlock command={command} />;
+}
+
+function ExpandedCommandText({ command }: { command: string }) {
+  const fallback = <HighlightedCommandText command={command} />;
+  if (classifyCodeHighlight(command) !== "inline") return fallback;
   return (
-    <>
-      {tokens.map((token) => {
-        const tokenOffset = offset;
-        offset += token.text.length;
-        return (
-          <span
-            key={`command-token:${tokenOffset}:${token.kind}`}
-            className={COMMAND_TOKEN_CLASS_NAME[token.kind]}
-          >
-            {token.text}
-          </span>
-        );
-      })}
-    </>
+    <SurfaceErrorBoundary name="Command highlighting" fallback={fallback} resetKeys={[command]}>
+      <Suspense fallback={fallback}>
+        <LoadedShellCommand command={command} />
+      </Suspense>
+    </SurfaceErrorBoundary>
   );
-});
+}
 
 function resolveExecutionOutput(
   execution: OrchestrationCommandExecutionSummary | OrchestrationCommandExecution,
@@ -176,8 +166,12 @@ function buildInlineOutputPreview(output: string): {
     0,
     INLINE_OUTPUT_PREVIEW_CHAR_LIMIT - headChars - INLINE_OUTPUT_PREVIEW_MARKER.length,
   );
-  const head = output.slice(0, headChars);
-  const tail = tailChars > 0 ? output.slice(-tailChars) : "";
+  // Neither cut may split an escape sequence, or its remains show as text.
+  const head = output.slice(0, escapeSafeCutIndex(output, headChars, "end"));
+  const tail =
+    tailChars > 0
+      ? output.slice(escapeSafeCutIndex(output, output.length - tailChars, "start"))
+      : "";
   return {
     text: `${head}${INLINE_OUTPUT_PREVIEW_MARKER}${tail}`,
     shortened: true,
@@ -190,8 +184,8 @@ function buildInlineOutputPreview(output: string): {
  * budget from the end so minified or single-line output stays cheap to render.
  */
 function buildOutputTail(output: string): string {
-  const tail = output
-    .slice(-FAILED_OUTPUT_TAIL_SCAN_CHARS)
+  const scanStart = Math.max(0, output.length - FAILED_OUTPUT_TAIL_SCAN_CHARS);
+  const tail = stripAnsi(output.slice(escapeSafeCutIndex(output, scanStart, "start")))
     .split("\n")
     .filter((line) => line.trim().length > 0)
     .slice(-FAILED_OUTPUT_TAIL_LINES)
@@ -226,8 +220,18 @@ function CommandStatusIcon(props: { status: OrchestrationCommandExecutionSummary
   );
 }
 
+function LoadedCommandOutputBlock(props: CommandOutputBlockProps) {
+  const { CommandOutputBlock } = use(loadCommandOutputView());
+  return <CommandOutputBlock {...props} />;
+}
+
 const CommandTranscriptOutput = memo(function CommandTranscriptOutput(props: {
   executionId: OrchestrationCommandExecutionSummary["id"];
+  command: string;
+  status: OrchestrationCommandExecutionSummary["status"];
+  exitCode: number | null;
+  cwd: string | undefined;
+  workspaceRoot: string | undefined;
   outputText: string;
   outputTruncated: boolean;
   isLoadingOutput: boolean;
@@ -260,20 +264,27 @@ const CommandTranscriptOutput = memo(function CommandTranscriptOutput(props: {
   const canCopyOutput =
     !props.isLoadingOutput && props.outputError === null && props.outputText.length > 0;
 
-  return (
-    <div>
-      <div className="flex min-h-5 items-center justify-between gap-2">
+  const renderHeader = (chip: ReactNode) => (
+    <div className="flex min-h-5 items-center justify-between gap-2">
+      <div className="flex min-w-0 items-center gap-2">
         <p className={SECTION_LABEL_CLASS_NAME}>Output</p>
-        {canCopyOutput && (
-          <CopyIconButton
-            label={isCopied ? "Output copied" : "Copy output"}
-            copied={isCopied}
-            onClick={() => {
-              copyToClipboard(props.outputText);
-            }}
-          />
-        )}
+        {chip}
       </div>
+      {canCopyOutput && (
+        <CopyIconButton
+          label={isCopied ? "Output copied" : "Copy output"}
+          copied={isCopied}
+          onClick={() => {
+            // Escape codes are invisible in the card; copy what it shows.
+            copyToClipboard(stripAnsi(props.outputText));
+          }}
+        />
+      )}
+    </div>
+  );
+  const plainBlock = (
+    <div>
+      {renderHeader(null)}
       <div className="mt-1 max-h-80 overflow-auto rounded-md bg-background/70 p-2">
         <pre className="whitespace-pre-wrap break-words font-mono text-[length:var(--f5-chat-font-size)] text-foreground">
           {props.isLoadingOutput
@@ -281,10 +292,41 @@ const CommandTranscriptOutput = memo(function CommandTranscriptOutput(props: {
             : props.outputError
               ? props.outputError
               : displayOutput.length > 0
-                ? displayOutput
+                ? stripAnsi(displayOutput)
                 : "(no output)"}
         </pre>
       </div>
+    </div>
+  );
+  const showPresentedOutput =
+    !props.isLoadingOutput && props.outputError === null && displayOutput.trim().length > 0;
+
+  return (
+    <div>
+      {showPresentedOutput ? (
+        <SurfaceErrorBoundary
+          name="Command output"
+          fallback={plainBlock}
+          resetKeys={[displayOutput, props.command]}
+        >
+          <Suspense fallback={plainBlock}>
+            <LoadedCommandOutputBlock
+              command={props.command}
+              output={displayOutput}
+              status={props.status}
+              cwd={props.cwd ?? props.workspaceRoot}
+              exitCode={props.exitCode}
+              // The server compacts long output around a marker, which leaves
+              // a gap even in the "full" output.
+              shortened={(preview.shortened && !showFullOutput) || props.outputTruncated}
+              workspaceRoot={props.workspaceRoot}
+              renderHeader={renderHeader}
+            />
+          </Suspense>
+        </SurfaceErrorBoundary>
+      ) : (
+        plainBlock
+      )}
       {showPreviewToggle && (
         <div className="mt-1 flex flex-wrap items-center gap-x-1.5 text-xs">
           {!showFullOutput && (
@@ -501,7 +543,11 @@ export const CommandTranscriptCard = memo(function CommandTranscriptCard({
               title={expanded ? undefined : displayCommand}
             >
               {summaryText === displayCommand ? (
-                <HighlightedCommandText command={displayCommand} />
+                expanded ? (
+                  <ExpandedCommandText command={displayCommand} />
+                ) : (
+                  <HighlightedCommandText command={displayCommand} />
+                )
               ) : (
                 summaryText
               )}
@@ -549,13 +595,18 @@ export const CommandTranscriptCard = memo(function CommandTranscriptCard({
               <div>
                 <p className={SECTION_LABEL_CLASS_NAME}>Command</p>
                 <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all rounded-md bg-background/70 p-2 font-mono text-[length:var(--f5-chat-font-size)] text-foreground">
-                  <HighlightedCommandText command={displayCommand} />
+                  <ExpandedCommandText command={displayCommand} />
                 </pre>
               </div>
             )}
 
             <CommandTranscriptOutput
               executionId={execution.id}
+              command={displayCommand}
+              status={detailSource.status}
+              exitCode={detailSource.exitCode}
+              cwd={detailSource.cwd ?? execution.cwd}
+              workspaceRoot={workspaceRoot}
               outputText={waitingForDetail ? "" : outputText}
               outputTruncated={outputTruncated}
               isLoadingOutput={isLoadingOutput || waitingForDetail}

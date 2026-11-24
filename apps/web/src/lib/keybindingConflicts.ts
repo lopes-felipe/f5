@@ -170,6 +170,8 @@ export function formatKeybindingCommandLabel(
       return "Toggle thread settlement";
     case "thread.togglePin":
       return "Pin or unpin thread";
+    case "project.togglePin":
+      return "Pin or unpin project";
     case "thread.copyReference":
       return "Copy thread reference";
     case "thread.undo":
@@ -267,6 +269,8 @@ export function formatKeybindingCommandLabel(
       return "Close terminal";
     case "diff.toggle":
       return "Toggle diff panel";
+    case "agents.toggle":
+      return "Toggle Agents panel";
     case "chat.new":
       return "New thread";
     case "chat.newLocal":

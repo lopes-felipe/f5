@@ -18,6 +18,12 @@ import { PrHubJobCoordinator } from "../Services/PrHubJobCoordinator.ts";
 import { PrHubReviewOperations } from "../Services/PrHubReviewOperations.ts";
 import { readPrDetailCache, type CachedPrDetailRead } from "../detailCache.ts";
 import { fetchGitHubPrFiles } from "../githubPrFiles.ts";
+import {
+  readGitHubFileStats,
+  PR_FILE_STATS_QUERY,
+  gitHubStatsComparison,
+} from "../githubPrFileStats.ts";
+import { makeChangeBreakdownCache } from "../changeBreakdownCache.ts";
 import { readViewerReviewedHead } from "../viewerReviewedHead.ts";
 
 import { GitHubCredentialScope } from "../../git/githubApi.ts";
@@ -45,7 +51,7 @@ import {
   parseGitHubPullRequestUrl,
   sourceControlPullRequestKeysEqual,
 } from "@t3tools/shared/sourceControl";
-import { Effect, Exit, Layer, Option, PubSub, Ref, Schema, Stream } from "effect";
+import { Cache, Effect, Exit, Layer, Option, PubSub, Ref, Schema, Stream } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { ServerConfig } from "../../config.ts";
@@ -105,6 +111,49 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
     const providerKind = "github" as const;
     const cwd = accountCwd(serverConfig.cwd);
     const snapshotRef = yield* Ref.make<PrHubSnapshot | null>(null);
+    const cachedBreakdown = yield* makeChangeBreakdownCache;
+    const getChangeBreakdown: PrHubServiceShape["getChangeBreakdown"] = (input) =>
+      trackedPrByKey(input.key).pipe(
+        Effect.flatMap((pr) =>
+          Effect.gen(function* () {
+            const capture = yield* Effect.serviceOption(GitHubCredentialScope);
+            if (Option.isNone(capture))
+              return yield* new SourceControlProviderError({
+                provider: pr.provider,
+                host: pr.host,
+                operation: "prHub.getChangeBreakdown",
+                kind: "unauthenticated",
+                detail: "A verified account is required to read PR statistics.",
+              });
+            const context = capture.value;
+            const { owner, repo } = yield* repositoryParts(pr);
+            const read = (cursor: string | null) =>
+              githubCli
+                .request({
+                  cwd,
+                  context,
+                  endpoint: "graphql",
+                  method: "POST",
+                  body: {
+                    query: PR_FILE_STATS_QUERY,
+                    variables: { owner, repo, number: pr.number, cursor },
+                  },
+                })
+                .pipe(Effect.mapError(mapGitHubCliError));
+            // The first stats page verifies the actual comparison before reusing the sum.
+            const initial = yield* read(null);
+            const comparison = gitHubStatsComparison(initial);
+            if (comparison === null) return null;
+            const key = JSON.stringify([context.host, context.generation, pr.key, comparison]);
+            return yield* cachedBreakdown(
+              key,
+              readGitHubFileStats((cursor) =>
+                cursor === null ? Effect.succeed(initial) : read(cursor),
+              ),
+            );
+          }),
+        ),
+      );
     // Room for a burst. Events that still do not fit are dropped oldest first, which the
     // reader sees as a jump in their sequence numbers.
     const changePubSub = yield* PubSub.sliding<PrHubChanged>(16);
@@ -344,8 +393,9 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
 
     const trackedPrByKey = (
       key: PullRequestKey,
+      snapshotRead = getSnapshot,
     ): Effect.Effect<TrackedPullRequest, SourceControlProviderError> =>
-      getSnapshot.pipe(
+      snapshotRead.pipe(
         Effect.flatMap((snapshot) => {
           const pr = [...snapshot.pullRequests, ...snapshot.recentlyResolved].find((candidate) =>
             sourceControlPullRequestKeysEqual(candidate.key, key),
@@ -393,6 +443,11 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
           }),
       });
 
+    const refusedReviewers = yield* Cache.make({
+      capacity: 512,
+      timeToLive: "10 minutes",
+      lookup: (_key: string) => Effect.void,
+    });
     const getDetail: PrHubServiceShape["getDetail"] = (input) =>
       trackedPrByKey(input.key).pipe(
         Effect.flatMap((pr) =>
@@ -411,10 +466,18 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
               cache: detailCache,
               key: cacheKey,
               mode: input.mode ?? "if_stale",
-              fetch: read(GITHUB_PR_DETAIL_REQUESTED_REVIEWERS).pipe(
-                Effect.flatMap((response) =>
-                  isRefusedRequestedReviewersOnly(response) ? read(0) : Effect.succeed(response),
-                ),
+              fetch: Effect.gen(function* () {
+                const credential = yield* Effect.serviceOption(GitHubCredentialScope);
+                const refusalKey = Option.isSome(credential)
+                  ? JSON.stringify([credential.value.generation, pr.key])
+                  : undefined;
+                if (refusalKey && (yield* Cache.has(refusedReviewers, refusalKey)))
+                  return yield* read(0);
+                const response = yield* read(GITHUB_PR_DETAIL_REQUESTED_REVIEWERS);
+                if (!isRefusedRequestedReviewersOnly(response)) return response;
+                if (refusalKey) yield* Cache.set(refusedReviewers, refusalKey, undefined);
+                return yield* read(0);
+              }).pipe(
                 Effect.flatMap((response) =>
                   decodeDetailResponse(pr, "prHub.getDetail.decode", () => {
                     const decoded = decodeGitHubPrDetail(response, pr);
@@ -826,6 +889,7 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
       getDetail,
       getTimeline,
       getFiles,
+      getChangeBreakdown,
       getUnresolvedThreads,
       replyReviewThread,
       getReplyOperation,
@@ -1059,7 +1123,27 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
       markReady: (input) => withPrAccount(operations.markReady(input), input, true, "update"),
       reRequestReview: (input) =>
         withPrAccount(operations.reRequestReview(input), input, true, "update"),
-      getDetail: (input) => withPrAccount(operations.getDetail(input), input, false),
+      getDetail: (input) =>
+        input.cacheOnly
+          ? Effect.gen(function* () {
+              const snapshot = yield* getSnapshot;
+              const generation = snapshot.account?.generation;
+              const missing = prHubActionError(
+                "No cached pull request detail for the current account.",
+              );
+              if (!generation || generation !== input.accountGeneration) return yield* missing;
+              const pr = yield* trackedPrByKey(input.key, Effect.succeed(snapshot));
+              const key = generation + ":" + pr.key;
+              if (!detailCache.has(key)) return yield* missing;
+              const context = yield* githubCli
+                .getCredentialContext({ cwd, host, cacheOnly: true })
+                .pipe(Effect.option);
+              const cached = detailCache.get(key);
+              if (Option.isSome(context) && context.value.generation === generation && cached)
+                return cached.value;
+              return yield* missing;
+            })
+          : withPrAccount(operations.getDetail(input), input, false),
       getTimeline: (input) => withPrAccount(operations.getTimeline(input), input, false),
       prepareComment: (input) => withPrAccount(operations.prepareComment(input), input, true),
       submitComment: (input) => withPrAccount(operations.submitComment(input), input, true),
@@ -1091,6 +1175,8 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
           ? withPrAccount(operations.saveReviewDraft(input), input, false)
           : withLocalAccount(operations.saveReviewDraft(input), input.accountGeneration),
       getFiles: (input) => withPrAccount(operations.getFiles(input), input, false),
+      getChangeBreakdown: (input) =>
+        withPrAccount(operations.getChangeBreakdown(input), input, false),
       getUnresolvedThreads: (input) =>
         withPrAccount(operations.getUnresolvedThreads(input), input, false),
       updateComment: (input) => withPrAccount(operations.updateComment(input), input),

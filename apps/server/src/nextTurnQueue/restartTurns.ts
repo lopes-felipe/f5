@@ -8,6 +8,30 @@ import { OrchestrationEngineService } from "../orchestration/Services/Orchestrat
 import { NextTurnQueueStore } from "./Services/NextTurnQueueStore.ts";
 import { canonicalRequestHash } from "./canonicalRequestHash.ts";
 
+/**
+ * Work that must settle before the server starts a turn on its own: queued or
+ * dispatching items, an ambiguous delivery, a pending approval, a rewind, or a
+ * provider delivery still in flight.
+ */
+export const threadHasBlockedWork = (threadId: ThreadId) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const store = yield* NextTurnQueueStore;
+    const queue = yield* store.listByThread(threadId);
+    if (
+      queue.items.some(
+        (item) =>
+          item.status === "queued" ||
+          item.status === "dispatching" ||
+          item.lastErrorCode === "delivery_ambiguous",
+      )
+    )
+      return true;
+    const blocked =
+      yield* sql`SELECT request_id FROM projection_pending_approvals WHERE thread_id = ${threadId} AND status = 'pending' UNION ALL SELECT operation_id FROM rewind_requests WHERE thread_id = ${threadId} UNION ALL SELECT delivery_id FROM provider_turn_deliveries WHERE thread_id = ${threadId} AND state IN ('pending', 'sending', 'ambiguous')`;
+    return blocked.length > 0;
+  });
+
 export const recoverRestartTurnMarkers = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const engine = yield* OrchestrationEngineService;
@@ -21,22 +45,7 @@ export const recoverRestartTurnMarkers = Effect.gen(function* () {
     readonly turnId: string;
     readonly interruptedBackgroundWork: number;
   }>`SELECT thread_id AS "threadId", continuation_id AS "continuationId", turn_id AS "turnId", interrupted_background_work AS "interruptedBackgroundWork" FROM restart_turn_markers`;
-  const hasBlockedWork = (threadId: ThreadId) =>
-    Effect.gen(function* () {
-      const queue = yield* store.listByThread(threadId);
-      if (
-        queue.items.some(
-          (item) =>
-            item.status === "queued" ||
-            item.status === "dispatching" ||
-            item.lastErrorCode === "delivery_ambiguous",
-        )
-      )
-        return true;
-      const blocked =
-        yield* sql`SELECT request_id FROM projection_pending_approvals WHERE thread_id = ${threadId} AND status = 'pending' UNION ALL SELECT operation_id FROM rewind_requests WHERE thread_id = ${threadId} UNION ALL SELECT delivery_id FROM provider_turn_deliveries WHERE thread_id = ${threadId} AND state IN ('pending', 'sending', 'ambiguous')`;
-      return blocked.length > 0;
-    });
+  const hasBlockedWork = threadHasBlockedWork;
   const model = yield* engine.getReadModel();
   for (const marker of markers) {
     const thread = model.threads.find((thread) => thread.id === marker.threadId);

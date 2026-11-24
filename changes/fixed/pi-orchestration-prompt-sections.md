@@ -1,0 +1,1 @@
+- Pi keeps other extensions’ system prompt changes when adding F5’s orchestration guidance.

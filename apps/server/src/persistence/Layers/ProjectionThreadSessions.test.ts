@@ -35,6 +35,7 @@ it.layer(ProjectionThreadSessionRepositoryLive.pipe(Layer.provideMerge(SqlitePer
           lastErrorOccurredAt: at,
           lastErrorRetryability: null,
           usageLimit,
+          extensionStatuses: [{ key: "extension", text: "Ready" }],
           estimatedContextTokens: null,
           modelContextWindowTokens: null,
           tokenUsageSource: null,
@@ -44,6 +45,7 @@ it.layer(ProjectionThreadSessionRepositoryLive.pipe(Layer.provideMerge(SqlitePer
         const loaded = yield* repository.getByThreadId({ threadId });
         assert(Option.isSome(loaded));
         assert.deepEqual(loaded.value.usageLimit, usageLimit);
+        assert.deepEqual(loaded.value.extensionStatuses, row.extensionStatuses);
         const raw = yield* sql<{
           usage_limit_json: string;
         }>`SELECT usage_limit_json FROM projection_thread_sessions WHERE thread_id=${threadId}`;

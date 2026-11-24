@@ -43,7 +43,7 @@ import {
   SCHEDULE_PRESETS,
   oneShotCron,
 } from "@t3tools/shared/cronSchedule";
-import { runtimeModeCapabilities } from "@t3tools/shared/runtimeMode";
+import { savedRuntimeModeUnsupportedReason } from "@t3tools/shared/runtimeMode";
 import { Cause, Clock, Deferred, Duration, Effect, Semaphore, Stream } from "effect";
 import type { AgentBridgeHostShape } from "../agentBridge/AgentBridgeHost.ts";
 import { isProviderUsable } from "../agentBridge/threadTools.ts";
@@ -255,7 +255,12 @@ export const makeScheduledTaskService = (deps: {
             return yield* scheduleError("invalid_schedule", "Select an available provider.");
           if (
             !isKnownProviderKind(provider.driver) ||
-            !runtimeModeCapabilities(provider.driver).has(config.runtimeMode)
+            // The schedule's saved mode: Antigravity Auto runs and its adapter falls back.
+            savedRuntimeModeUnsupportedReason(
+              provider.driver,
+              config.runtimeMode,
+              provider.availableRuntimeModes,
+            ) !== undefined
           )
             return yield* scheduleError(
               "forbidden",
@@ -399,7 +404,7 @@ export const makeScheduledTaskService = (deps: {
       });
     const cancelUnstarted = (
       taskId: string,
-      reason: "task_disabled" | "task_deleted",
+      reason: "task_disabled" | "task_deleted" | "canceled",
       at: string,
     ) =>
       Effect.gen(function* () {
@@ -514,6 +519,7 @@ export const makeScheduledTaskService = (deps: {
             const value: ScheduledTask = {
               ...current,
               ...config,
+              freshContext: config.freshContext === true,
               runsConsumed: current.runsConsumed,
               lastRunAt: current.lastRunAt,
               ...(adopting ? { disabledReason: null } : {}),
@@ -544,6 +550,12 @@ export const makeScheduledTaskService = (deps: {
             if (adopting && value.enabled) yield* checkAgentCapacity(actor, value.id);
             yield* store.saveTask(value);
             if (!value.enabled) yield* cancelUnstarted(value.id, "task_disabled", at);
+            else if (
+              current.workspace.kind === "thread" &&
+              (value.workspace.kind !== "thread" ||
+                current.workspace.threadId !== value.workspace.threadId)
+            )
+              yield* cancelUnstarted(value.id, "canceled", at);
             yield* store.revision;
             return value;
           }),
@@ -1167,6 +1179,7 @@ export const makeScheduledTaskService = (deps: {
                 });
             const command = {
               ...built,
+              ...(boundWorkspace && current.snapshot.freshContext ? { freshContext: true } : {}),
               message: {
                 ...built.message,
                 ...(rewritten.skillCall ? { skillCall: rewritten.skillCall } : {}),

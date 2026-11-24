@@ -1,6 +1,16 @@
 import { timeOrderedUuid } from "@t3tools/shared/ids";
+import { AgentSessionScanner } from "./project/AgentSessionScanner";
+import {
+  importAgentSessionProject,
+  resolveAgentSessionHomes,
+} from "./project/AgentSessionImporter";
 import { desktopBusyThreadCount } from "./orchestration/sessionBusy.ts";
-import { DESKTOP_ACTIVITY_PATH, type DesktopBackendActivity } from "@t3tools/shared/backendPaths";
+import { startKeepAwake } from "./background/KeepAwake";
+import {
+  DESKTOP_ACTIVITY_PATH,
+  ORCHESTRATION_STARTUP_SNAPSHOT_PATH,
+  type DesktopBackendActivity,
+} from "@t3tools/shared/backendPaths";
 import { bindSubmissionTurnIds } from "./nextTurnQueue/submissionStatus.ts";
 import { cancelQueuedSubmission } from "./nextTurnQueue/cancelSubmission.ts";
 import { makeScheduledNotificationDelivery } from "./scheduledTasks/notificationDelivery.ts";
@@ -23,6 +33,7 @@ import { makeHtmlPreviewBroker } from "./htmlRender/HtmlPreviewBroker.ts";
 import { makeHtmlRenderRuntime } from "./htmlRender/HtmlRenderRuntime.ts";
 import { ThreadMcpBroker } from "./mcp/threadMcpTools.ts";
 import { makeThreadToolHandler } from "./mcp/threadToolRuntime.ts";
+import { makePullRequestMcpHandler } from "./mcp/pullRequestMcpRuntime";
 import { makeThreadImagePublisher } from "./mcp/publishThreadImage.ts";
 import { ProjectionThreadMessageRepositoryLive } from "./persistence/Layers/ProjectionThreadMessages.ts";
 import { ProjectionThreadProposedPlanRepositoryLive } from "./persistence/Layers/ProjectionThreadProposedPlans.ts";
@@ -157,6 +168,12 @@ import { MessageId } from "@t3tools/contracts";
 import { makeAttachmentUploads, AttachmentUploadError } from "./attachmentUploads";
 import { GitCommandError } from "./git/Errors";
 import { readProjectSettings, isInsideProjectWorkspace } from "./project/projectSettings";
+import {
+  discoverConfiguredProjectRepositories,
+  listWorkspaceRepositories,
+  makeWorkspaceRepositoryReadCache,
+} from "./project/discoverProjectRepositories.ts";
+import { selectNestedWorktreeRepositories } from "./project/worktreeRepositoryPaths.ts";
 import { makeProjectCloneTracker } from "./project/ProjectCloneTracker.ts";
 import { guardHttpResponseWriteErrors } from "./httpResponseErrorGuard.ts";
 import { protocolMatches, SERVER_BOOTSTRAP, UPGRADE_REQUIRED } from "./wsServer/protocol";
@@ -197,6 +214,8 @@ import { ProviderAccountService } from "./profiles/ProviderAccountService";
  */
 import http from "node:http";
 import { createHash, randomUUID } from "node:crypto";
+import { promisify } from "node:util";
+import { gzip } from "node:zlib";
 import fsPromises from "node:fs/promises";
 import type { Duplex } from "node:stream";
 
@@ -218,6 +237,7 @@ import {
   type OrchestrationEvent,
   ORCHESTRATION_WS_CHANNELS,
   ORCHESTRATION_WS_METHODS,
+  type OrchestrationGetStartupSnapshotInput,
   PR_HUB_WS_CHANNELS,
   PR_HUB_WS_METHODS,
   ProjectId,
@@ -290,6 +310,9 @@ import {
   type OrchestrationEngineShape,
 } from "./orchestration/Services/OrchestrationEngine";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery";
+import { captureSideChatContext } from "./orchestration/providerHandoff.ts";
+import { isKnownProviderKind } from "@t3tools/contracts";
+import { ProviderHandoffStateRepository } from "./persistence/Services/ProviderHandoffState.ts";
 import { submitElicitation } from "./orchestration/elicitationSubmission";
 import { ProjectionWorkspaceQuery } from "./orchestration/Services/ProjectionWorkspaceQuery";
 import {
@@ -447,6 +470,7 @@ import { PreviewAutomationBroker } from "./mcp/PreviewAutomationBroker.ts";
 import { computerUseLease } from "./provider/computerUseLease.ts";
 import { PrHubAdvisoryService } from "./prHub/Services/PrHubAdvisoryService.ts";
 import { PrHubService } from "./prHub/Services/PrHubService.ts";
+import { cursorSdkHarnessHostAvailability } from "./provider/cursor/cursorHarnessDescriptor.ts";
 
 /**
  * ServerShape - Service API for server lifecycle control.
@@ -481,6 +505,9 @@ type SubmissionSource = "human" | "automation";
 
 const clientDiagnosticsReporter = makeClientDiagnosticsReporter();
 const BACKEND_INCARNATION = process.env.F5_DESKTOP_BACKEND_INCARNATION || crypto.randomUUID();
+const MAX_RECONNECT_REPLAY_EVENTS = 128;
+const MAX_RECONNECT_REPLAY_BYTES = 512 * 1024;
+const gzipSnapshot = promisify(gzip);
 
 const DESKTOP_RENDERER_ORIGIN = "t3://app";
 const PRIVATE_CORS_METHODS = new Set(["GET", "POST"]);
@@ -1053,6 +1080,7 @@ function formatServerLifecycleRouteFailure(error: ServerLifecycleError): string 
 const ORCHESTRATION_RUNTIME_ROUTE_WAIT_MS = 55_000;
 
 interface OrchestrationRuntimeServices {
+  readonly providerHandoffStates: ProviderHandoffStateRepository["Service"] | undefined;
   readonly mcpApps: McpAppService["Service"];
   readonly threadSettlement: ThreadSettlementService["Service"];
   readonly pullRequestWatches: PullRequestWatchService["Service"];
@@ -1103,6 +1131,7 @@ export const createServer = Effect.fn(function* (
     autoBootstrapProjectFromCwd,
   } = serverConfig;
   const serverAuth = makeServerAuth(authToken, {
+    rotateDesktopBootstrapToken: mode === "desktop",
     ...(serverConfig.profile ? { profileId: serverConfig.profile.id } : {}),
     allowedWebSocketOrigins: [
       ...(mode === "desktop" ? [DESKTOP_RENDERER_ORIGIN] : []),
@@ -1110,7 +1139,7 @@ export const createServer = Effect.fn(function* (
     ],
     ...(serverConfig.trustedProxies ? { trustedProxies: serverConfig.trustedProxies } : {}),
   });
-  const availableEditors = resolveAvailableEditors();
+  const availableEditors = yield* Effect.promise(() => resolveAvailableEditors());
 
   const gitManager = yield* GitManager;
   const terminalManager = yield* TerminalManager;
@@ -1195,6 +1224,8 @@ export const createServer = Effect.fn(function* (
 
   const clients = yield* Ref.make(new Set<WebSocket>());
   const scratchProjectSemaphore = yield* Semaphore.make(1);
+  const agentSessionSemaphore = yield* Semaphore.make(1);
+  const agentSessionScanner = new AgentSessionScanner();
   const logger = createLogger("ws");
   const readiness = yield* makeServerReadiness;
   const shouldLogThreadOpenTimings =
@@ -1890,6 +1921,59 @@ export const createServer = Effect.fn(function* (
         dispatch: (command) => dispatchWithCreationAttachment(input.orchestrationEngine, command),
       },
       git: { ...git, createWorktree: createConfiguredWorktree },
+      prepareNestedWorktrees: (worktree) =>
+        Effect.gen(function* () {
+          const model = yield* input.orchestrationEngine.getReadModel();
+          const canonical = yield* Effect.tryPromise(() => canonicalWorktreePath(worktree.cwd));
+          const project = yield* Effect.findFirst(model.projects, (entry) =>
+            entry.deletedAt !== null
+              ? Effect.succeed(false)
+              : Effect.tryPromise(() => canonicalWorktreePath(entry.workspaceRoot)).pipe(
+                  Effect.map((root) => root === canonical),
+                  Effect.orElseSucceed(() => false),
+                ),
+          );
+          if (Option.isNone(project)) return;
+          const repositories = yield* discoverConfiguredProjectRepositories(
+            project.value,
+            git,
+          ).pipe(Effect.provideService(FileSystem.FileSystem, fileSystem));
+          const selected = yield* selectNestedWorktreeRepositories(
+            repositories,
+            worktree.repositoryPaths,
+          );
+          const layoutCreate = project.value.scripts.find(
+            (script) => script.worktreeLayout === "create",
+          )?.command;
+          if (selected.length === 0 && !layoutCreate) return;
+          if (!git.prepareWorktreeGroup)
+            return yield* Effect.fail(new Error("Worktree group setup is unavailable."));
+          yield* withWorktreeLifecycleLock(
+            worktree.path,
+            git.prepareWorktreeGroup({
+              ...(layoutCreate ? { layoutCreate } : {}),
+              rooted: true,
+              projectId: project.value.id,
+              threadId: prepared.command.threadId,
+              projectRoot: worktree.cwd,
+              path: worktree.path,
+              branch: worktree.branch,
+              baseBranch: worktree.baseBranch,
+              repositories: repositories.map(({ path }) => path),
+              selected: selected.map(({ path }) => path),
+            }),
+          );
+        }).pipe(
+          Effect.mapError(
+            (error) =>
+              new GitCommandError({
+                operation: "bootstrap",
+                cwd: worktree.cwd,
+                command: "prepare nested worktrees",
+                detail: error.message,
+              }),
+          ),
+        ),
       rollbackWorktree: (receipt, ownedTerminalId) =>
         Effect.gen(function* () {
           if (ownedTerminalId)
@@ -2239,7 +2323,8 @@ export const createServer = Effect.fn(function* (
           return;
         }
         if (
-          (url.pathname.startsWith("/api/storage/") ||
+          (url.pathname === ORCHESTRATION_STARTUP_SNAPSHOT_PATH ||
+            url.pathname.startsWith("/api/storage/") ||
             url.pathname.startsWith("/api/attachments/")) &&
           !serverAuth.isWebSocketOriginAllowed(req)
         ) {
@@ -2332,6 +2417,50 @@ export const createServer = Effect.fn(function* (
             { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" },
             JSON.stringify(SERVER_BOOTSTRAP),
           );
+          return;
+        }
+        if (url.pathname === ORCHESTRATION_STARTUP_SNAPSHOT_PATH) {
+          const headers = {
+            "Cache-Control": "no-store",
+            "Content-Type": "application/json; charset=utf-8",
+            Vary: "Origin, Accept-Encoding",
+          };
+          if (req.method !== "GET") {
+            respond(405, { ...headers, Allow: "GET" });
+            return;
+          }
+          if (url.searchParams.get("incarnation") !== BACKEND_INCARNATION) {
+            respond(409, headers);
+            return;
+          }
+          const detailThreadId = url.searchParams.get("detailThreadId");
+          const parsedDetailThreadId =
+            detailThreadId === null
+              ? Option.none()
+              : Schema.decodeUnknownOption(ThreadId)(detailThreadId);
+          if (detailThreadId !== null && Option.isNone(parsedDetailThreadId)) {
+            respond(400, headers);
+            return;
+          }
+          yield* awaitOrchestrationRuntimeForRoute;
+          const snapshot = yield* readStartupSnapshot(
+            Option.isSome(parsedDetailThreadId)
+              ? { detailThreadId: parsedDetailThreadId.value }
+              : {},
+            "http",
+          );
+          const json = JSON.stringify(snapshot);
+          const acceptGzip = req.headers["accept-encoding"]
+            ?.split(",")
+            .some((encoding) =>
+              /^\s*gzip\s*(?:;\s*q=(?:1(?:\.0*)?|0\.\d*[1-9]\d*))?\s*$/i.test(encoding),
+            );
+          if (acceptGzip) {
+            const body = yield* Effect.tryPromise(() => gzipSnapshot(json));
+            respond(200, { ...headers, "Content-Encoding": "gzip" }, body);
+          } else {
+            respond(200, headers, json);
+          }
           return;
         }
 
@@ -3031,6 +3160,9 @@ export const createServer = Effect.fn(function* (
         orchestrationRuntimeServices,
         ProviderSessionDirectory,
       );
+      const providerHandoffStates = Option.getOrUndefined(
+        ServiceMap.getOption(orchestrationRuntimeServices, ProviderHandoffStateRepository),
+      );
       const workflowService = ServiceMap.get(orchestrationRuntimeServices, WorkflowService);
       const codeReviewWorkflowService = ServiceMap.get(
         orchestrationRuntimeServices,
@@ -3082,6 +3214,7 @@ export const createServer = Effect.fn(function* (
       ) {
         const html = yield* makeHtmlRenderRuntime({
           engine: orchestrationEngine,
+          internalPaths: [serverConfig.stateDir],
           attachmentsDir: serverConfig.attachmentsDir,
           preview: htmlPreviewBroker,
         });
@@ -3113,6 +3246,12 @@ export const createServer = Effect.fn(function* (
               watches: pullRequestWatches,
               settlement: threadSettlement,
               links: prHubExtensions.value,
+              pullRequests: makePullRequestMcpHandler({
+                federation: threadMcpFederation.value,
+                extensions: prHubExtensions.value,
+                git: gitManager,
+                engine: orchestrationEngine,
+              }),
               html,
               publishImage,
             }),
@@ -3368,6 +3507,10 @@ export const createServer = Effect.fn(function* (
       yield* Scope.provide(pullRequestWatches.start, subscriptionsScope);
       yield* Scope.provide(threadSettlement.start, subscriptionsScope);
       yield* Scope.provide(defaultBranchAutoPull.start, subscriptionsScope);
+      yield* Scope.provide(
+        startKeepAwake(orchestrationEngine, serverSettings, { desktop: mode === "desktop" }),
+        subscriptionsScope,
+      );
       if (diskSpaceMonitor._tag === "Some")
         yield* Scope.provide(
           diskSpaceMonitor.value.start({
@@ -3388,6 +3531,7 @@ export const createServer = Effect.fn(function* (
         providerCommandReactor,
         providerTurnDeliveryWorker,
         providerSessionDirectory,
+        providerHandoffStates,
         workflowService,
         codeReviewWorkflowService,
         investigationWorkflowService,
@@ -4084,6 +4228,30 @@ export const createServer = Effect.fn(function* (
       });
     });
 
+  const readStartupSnapshot = (
+    body: OrchestrationGetStartupSnapshotInput,
+    transport: "ws" | "http",
+  ) =>
+    withWsThreadOpenTiming({
+      method: ORCHESTRATION_WS_METHODS.getStartupSnapshot,
+      threadId: body.detailThreadId ?? null,
+      effect: Effect.gen(function* () {
+        if (body.detailThreadId) {
+          yield* reconcileThreadSnapshotsInBackground({
+            threadId: body.detailThreadId,
+            reason: transport + ":getStartupSnapshot",
+          });
+        }
+        return yield* projectionReadModelQuery.getStartupSnapshot(body);
+      }),
+      summarize: (result) => ({
+        snapshotSequence: result.snapshot.snapshotSequence,
+        threadCount: result.snapshot.threads.length,
+        bundledTailMessages: result.threadTailDetails?.messages.length ?? 0,
+        bundledTailCheckpoints: result.threadTailDetails?.checkpoints.length ?? 0,
+      }),
+    });
+
   const resolveMcpAccount = async <
     T extends {
       binaryPath?: string | undefined;
@@ -4177,12 +4345,24 @@ export const createServer = Effect.fn(function* (
       }),
   });
 
+  const reviewRepositoryCache = makeWorkspaceRepositoryReadCache();
   const switchGitWorkspace =
     (threadId?: ThreadId, operationId?: string): GitWorkspaceSwitchHandler =>
     (input) =>
       Effect.gen(function* () {
         const { orchestrationEngine, workspaceTransition } =
           yield* awaitOrchestrationRuntimeForRoute;
+        const readClaims = (cwd: string) =>
+          withClaimServices(
+            readWorktreeClaims(cwd).pipe(
+              Effect.provideService(OrchestrationEngineService, orchestrationEngine),
+              Effect.provideService(ProviderService, providerService),
+              Effect.provideService(TerminalManager, terminalManager),
+              Effect.provideService(NextTurnQueueStore, nextTurnQueueStore),
+            ),
+          );
+        let parentWorkspace: string | undefined;
+        let validateMember: Effect.Effect<void, Error> | undefined;
         if (threadId) {
           const model = yield* orchestrationEngine.getReadModel();
           const thread = model.threads.find(
@@ -4190,103 +4370,143 @@ export const createServer = Effect.fn(function* (
           );
           const project = model.projects.find((entry) => entry.id === thread?.projectId);
           const workspace = threadWorkspaceCwd(thread, project);
-          if (
-            !thread ||
-            !project ||
-            isScratchProject(project) ||
-            !workspace ||
-            (yield* Effect.tryPromise(() => canonicalWorktreePath(input.cwd))) !==
-              (yield* Effect.tryPromise(() => canonicalWorktreePath(workspace)))
-          )
+          if (!thread || !project || isScratchProject(project) || !workspace)
             return yield* Effect.fail(
               new Error("The checkout does not match this conversation's workspace."),
             );
-          const result = yield* workspaceTransition.switchWorkspace({
-            operationId: operationId ?? crypto.randomUUID(),
-            threadId,
-            intent: input.create ? "create_branch_and_checkout" : "checkout_branch",
-            branch: input.branch,
-            expected: {
-              branch: thread.branch,
-              worktreePath: thread.worktreePath,
-              sessionUpdatedAt: thread.session?.updatedAt ?? null,
-            },
-          });
-          if (result.phase !== "completed") {
-            if (result.checkoutConflict)
-              return yield* new GitCommandError({
-                operation: "GitCore.checkoutBranch.checkout",
-                cwd: input.cwd,
-                command: "git checkout",
-                detail: result.error ?? "Local changes block branch switching.",
-                checkoutConflict: result.checkoutConflict,
-              });
-            // Keep the code so clients can offer "Start a new worktree" here too.
-            if (result.errorCode === "WorkspaceRequiresNewWorktree")
-              return yield* Effect.fail(
-                new WorkspaceRequiresNewWorktreeError(
-                  result.error ?? "Start a new worktree instead.",
-                ),
+          const target = yield* Effect.tryPromise(() => canonicalWorktreePath(input.cwd));
+          const root = yield* Effect.tryPromise(() => canonicalWorktreePath(workspace));
+          if (target !== root) {
+            parentWorkspace = root;
+            validateMember = Effect.gen(function* () {
+              const current = (yield* orchestrationEngine.getReadModel()).threads.find(
+                (entry) => entry.id === threadId && entry.deletedAt === null,
               );
-            return yield* Effect.fail(
-              new Error(result.error ?? "Inspect and resolve the workspace transition."),
-            );
-          }
-          return;
-        }
-        const checkout = yield* git.inspectCheckoutIdentity(input.cwd);
-        yield* withWorktreeLifecycleLock(
-          checkout.canonicalRoot,
-          withRepositoryLifecycleLock(
-            serverConfig.baseDir,
-            checkout.commonDir,
-            Effect.gen(function* () {
-              const current = yield* git.inspectCheckoutIdentity(input.cwd);
+              if (!current || threadWorkspaceCwd(current, project) !== workspace)
+                return yield* Effect.fail(new Error("The conversation's workspace changed."));
+              const repositories = yield* listWorkspaceRepositories(project, workspace, git).pipe(
+                Effect.provideService(FileSystem.FileSystem, fileSystem),
+              );
+              const member = repositories.find((repository) => repository.path === input.cwd);
               if (
-                current.canonicalRoot !== checkout.canonicalRoot ||
-                current.commonDir !== checkout.commonDir ||
-                current.branch !== checkout.branch
+                !member ||
+                member.relativePath === "." ||
+                target !==
+                  (member.externalSource === member.path
+                    ? member.path
+                    : path.resolve(root, member.relativePath)) ||
+                (yield* Effect.tryPromise(() => canonicalWorktreePath(input.cwd))) !== target
               )
                 return yield* Effect.fail(
-                  new Error("The checkout identity changed. Inspect it before switching branches."),
+                  new Error("The checkout does not match this conversation's workspace."),
                 );
-              const usage = yield* withClaimServices(
-                readWorktreeClaims(checkout.canonicalRoot).pipe(
-                  Effect.provideService(OrchestrationEngineService, orchestrationEngine),
-                  Effect.provideService(ProviderService, providerService),
-                  Effect.provideService(TerminalManager, terminalManager),
-                  Effect.provideService(NextTurnQueueStore, nextTurnQueueStore),
-                ),
-              );
-              const model = yield* orchestrationEngine.getReadModel();
-              const blockers = inPlaceSwitchBlockers(usage, {
-                requester: null,
-                projectCheckout: yield* isProjectCheckout(model, checkout.canonicalRoot),
-              });
-              if (blockers.length)
+              const usage = yield* readClaims(root);
+              if (
+                usage.unknown ||
+                usage.pendingTurnsChecked === false ||
+                usage.activeThreadIds.length ||
+                usage.queuedThreadIds.length ||
+                usage.setupThreadIds.length ||
+                usage.transitionThreadIds.length ||
+                usage.sessions.some((session) => session.live)
+              )
                 return yield* Effect.fail(
                   new WorkspaceRequiresNewWorktreeError(
-                    formatInPlaceSwitchBlockers(
-                      blockers,
-                      (id) => model.threads.find((thread) => thread.id === id)?.title ?? null,
-                    ),
+                    "Finish the active work in this workspace before switching a repository branch.",
                   ),
                 );
-              yield* Effect.tryPromise(() =>
-                assertExclusiveProfileCheckout(serverConfig, checkout.canonicalRoot),
-              ).pipe(
-                Effect.mapError((error) => (error.cause instanceof Error ? error.cause : error)),
+            });
+          } else {
+            const result = yield* workspaceTransition.switchWorkspace({
+              operationId: operationId ?? crypto.randomUUID(),
+              threadId,
+              intent: input.create ? "create_branch_and_checkout" : "checkout_branch",
+              branch: input.branch,
+              expected: {
+                branch: thread.branch,
+                worktreePath: thread.worktreePath,
+                sessionUpdatedAt: thread.session?.updatedAt ?? null,
+              },
+            });
+            if (result.phase !== "completed") {
+              if (result.checkoutConflict)
+                return yield* new GitCommandError({
+                  operation: "GitCore.checkoutBranch.checkout",
+                  cwd: input.cwd,
+                  command: "git checkout",
+                  detail: result.error ?? "Local changes block branch switching.",
+                  checkoutConflict: result.checkoutConflict,
+                });
+              // Keep the code so clients can offer "Start a new worktree" here too.
+              if (result.errorCode === "WorkspaceRequiresNewWorktree")
+                return yield* Effect.fail(
+                  new WorkspaceRequiresNewWorktreeError(
+                    result.error ?? "Start a new worktree instead.",
+                  ),
+                );
+              return yield* Effect.fail(
+                new Error(result.error ?? "Inspect and resolve the workspace transition."),
               );
-              if (input.create) yield* git.createBranch({ cwd: input.cwd, branch: input.branch });
-              yield* Effect.scoped(
-                git.checkoutBranch(
-                  { cwd: input.cwd, branch: input.branch },
-                  { refreshUpstream: false },
-                ),
-              );
-            }),
-          ),
-        );
+            }
+            return;
+          }
+        }
+        const switchCheckout = Effect.gen(function* () {
+          const checkout = yield* git.inspectCheckoutIdentity(input.cwd);
+          yield* withWorktreeLifecycleLock(
+            checkout.canonicalRoot,
+            withRepositoryLifecycleLock(
+              serverConfig.baseDir,
+              checkout.commonDir,
+              Effect.gen(function* () {
+                const current = yield* git.inspectCheckoutIdentity(input.cwd);
+                if (
+                  current.canonicalRoot !== checkout.canonicalRoot ||
+                  current.commonDir !== checkout.commonDir ||
+                  current.branch !== checkout.branch
+                )
+                  return yield* Effect.fail(
+                    new Error(
+                      "The checkout identity changed. Inspect it before switching branches.",
+                    ),
+                  );
+                const usage = yield* readClaims(checkout.canonicalRoot);
+                const model = yield* orchestrationEngine.getReadModel();
+                const blockers = inPlaceSwitchBlockers(usage, {
+                  requester: null,
+                  projectCheckout: yield* isProjectCheckout(model, checkout.canonicalRoot),
+                });
+                if (blockers.length)
+                  return yield* Effect.fail(
+                    new WorkspaceRequiresNewWorktreeError(
+                      formatInPlaceSwitchBlockers(
+                        blockers,
+                        (id) => model.threads.find((thread) => thread.id === id)?.title ?? null,
+                      ),
+                    ),
+                  );
+                yield* Effect.tryPromise(() =>
+                  assertExclusiveProfileCheckout(serverConfig, checkout.canonicalRoot),
+                ).pipe(
+                  Effect.mapError((error) => (error.cause instanceof Error ? error.cause : error)),
+                );
+                if (input.create) yield* git.createBranch({ cwd: input.cwd, branch: input.branch });
+                yield* Effect.scoped(
+                  git.checkoutBranch(
+                    { cwd: input.cwd, branch: input.branch },
+                    { refreshUpstream: false },
+                  ),
+                );
+              }),
+            ),
+          );
+        });
+        return yield* parentWorkspace && validateMember
+          ? withWorktreeLifecycleLock(
+              parentWorkspace,
+              validateMember.pipe(Effect.andThen(switchCheckout)),
+            )
+          : switchCheckout;
       });
 
   // Routes that live in their own modules. `routeRequest` answers from here
@@ -4383,6 +4603,7 @@ export const createServer = Effect.fn(function* (
             ),
           );
         return yield* readAgentTranscript(input, {
+          stateDir: serverConfig.stateDir,
           work: threadBackgroundWork,
           directory: providerSessionDirectory,
           service: providerService,
@@ -4505,8 +4726,12 @@ export const createServer = Effect.fn(function* (
 
       case NATIVE_OPERATION_WS_METHODS.fork: {
         const input = stripRequestTag(request.body);
-        const { orchestrationEngine, providerSessionDirectory, worktreePreparation } =
-          yield* awaitOrchestrationRuntimeForRoute;
+        const {
+          orchestrationEngine,
+          providerSessionDirectory,
+          worktreePreparation,
+          providerHandoffStates,
+        } = yield* awaitOrchestrationRuntimeForRoute;
         const snapshot = yield* orchestrationEngine.getReadModel();
         const source = snapshot.threads.find(
           (entry) => entry.id === input.threadId && entry.deletedAt === null,
@@ -4516,13 +4741,118 @@ export const createServer = Effect.fn(function* (
         if (
           !source ||
           !project ||
-          isScratchProject(project) ||
-          !providerService.nativeOperations?.executeWithApply
+          (isScratchProject(project) && !input.sideChat) ||
+          (!input.sideChat && !providerService.nativeOperations?.executeWithApply)
         )
           return yield* new RouteRequestError({ message: "This conversation cannot be forked." });
         if (!/^[0-9a-f-]{36}$/i.test(input.operationId))
           return yield* new RouteRequestError({ message: "Invalid fork identifier." });
         const targetId = NativeForkThreadId.makeUnsafe(`fork-${input.operationId}`);
+        if (input.sideChat && source.sideChatOf)
+          return yield* new RouteRequestError({
+            message: "Open a side chat from the main thread.",
+          });
+        if (input.sideChat) {
+          const at = new Date().toISOString();
+          const existing = snapshot.threads.find((thread) => thread.id === targetId);
+          if (existing && (existing.sideChatOf !== source.id || existing.deletedAt !== null))
+            return yield* new RouteRequestError({
+              message: "This side-chat identifier is already in use.",
+            });
+          if (!existing) {
+            if (!providerHandoffStates)
+              return yield* new RouteRequestError({
+                message: "Side-chat context storage is unavailable.",
+              });
+            const generation = source.session?.capabilities?.generation;
+            if (generation !== undefined && generation !== input.generation)
+              return yield* new RouteRequestError({
+                message: "The main thread session changed. Retry opening the side chat.",
+              });
+            const binding = Option.getOrUndefined(
+              yield* providerSessionDirectory
+                .getBinding(source.id)
+                .pipe(
+                  Effect.mapError((error) => new RouteRequestError({ message: String(error) })),
+                ),
+            );
+            const instanceId =
+              source.modelSelection?.instanceId ??
+              binding?.providerInstanceId ??
+              source.session?.providerInstanceId;
+            const provider = binding?.provider ?? source.session?.providerName;
+            if (!instanceId || !provider || !isKnownProviderKind(provider))
+              return yield* new RouteRequestError({
+                message: "Start a provider session before opening a side chat.",
+              });
+            const details = yield* projectionReadModelQuery
+              .getThreadDetails({ threadId: source.id })
+              .pipe(Effect.mapError((error) => new RouteRequestError({ message: String(error) })));
+            const captured = captureSideChatContext({
+              messages: details.messages,
+              compaction: source.compaction,
+            });
+            const seed = {
+              id: "side-chat:" + targetId,
+              mode: "full" as const,
+              targetInstanceId: instanceId,
+              fromProvider: provider,
+              fromInstanceId: instanceId,
+              fromModel: source.model,
+              sinceMessageId: null,
+              expectedNativeIdentity: null,
+              createdAt: at,
+              sourceContext: captured,
+            };
+            // Persist the fork context before publishing its thread, so a first send cannot race it.
+            yield* providerHandoffStates
+              .compareAndSet({
+                threadId: targetId,
+                expectedRevision: null,
+                pending: seed,
+                parked: {},
+              })
+              .pipe(Effect.mapError((error) => new RouteRequestError({ message: String(error) })));
+            yield* orchestrationEngine
+              .dispatch({
+                type: "thread.create",
+                commandId: CommandId.makeUnsafe("side-chat-create:" + input.operationId),
+                threadId: targetId,
+                projectId: project.id,
+                title: "Side chat · " + source.title,
+                model: source.model,
+                modelSelection: {
+                  ...(source.modelSelection ?? {}),
+                  instanceId,
+                  model: source.model,
+                },
+                runtimeMode: source.runtimeMode,
+                interactionMode: source.interactionMode,
+                branch: source.branch,
+                worktreePath: source.worktreePath,
+                sideChatOf: source.id,
+                sharedFilesystemConfirmed: true,
+                threadReferences: [{ threadId: source.id, relation: "source", createdAt: at }],
+                createdAt: at,
+              })
+              .pipe(Effect.mapError((error) => new RouteRequestError({ message: String(error) })));
+          }
+          return {
+            ...input,
+            command: {
+              kind: "fork",
+              targetThreadId: targetId,
+              cwd: threadWorkspaceCwd(source, project) ?? project.workspaceRoot,
+            },
+            state: "completed",
+            createdAt: at,
+            updatedAt: at,
+          };
+        }
+        if (!providerService.nativeOperations?.executeWithApply)
+          return yield* new RouteRequestError({
+            message: "Native forks are unavailable for this provider.",
+          });
         const branch = yield* resolveTemporaryWorktreeBranch(
           git,
           project.workspaceRoot,
@@ -4590,14 +4920,19 @@ export const createServer = Effect.fn(function* (
                   },
                 });
                 yield* worktreePreparation
-                  .prepare({ threadId: targetId, projectId: project.id, worktreePath: cwd, branch })
+                  .prepare({
+                    threadId: targetId,
+                    projectId: project.id,
+                    worktreePath: cwd,
+                    branch: branch!,
+                  })
                   .pipe(Effect.mapError(validation));
               }),
             createConfiguredWorktree({
               cwd: threadWorkspaceCwd(source, project) ?? project.workspaceRoot,
               branch: source.branch ?? "HEAD",
               baseRefName: source.branch ?? "HEAD",
-              newBranch: branch,
+              newBranch: branch!,
               preparation: { owner: `thread:${targetId}`, runSetupScript: true },
               path: cwd,
             }).pipe(Effect.asVoid, Effect.mapError(validation)),
@@ -4728,38 +5063,39 @@ export const createServer = Effect.fn(function* (
 
       case ORCHESTRATION_WS_METHODS.getLatestSequence: {
         const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
-        return {
+        const response = {
           latestSequence: (yield* orchestrationEngine.getReadModel()).snapshotSequence,
           backendIncarnation: BACKEND_INCARNATION,
         };
+        const resume = request.body.resume;
+        if (resume?.backendIncarnation !== BACKEND_INCARNATION) return response;
+        const snapshotRequired = { ...response, snapshotRequired: true as const };
+        const gap = response.latestSequence - resume.afterSequence;
+        if (gap < 0 || gap > MAX_RECONNECT_REPLAY_EVENTS) return snapshotRequired;
+        if (gap === 0) return { ...response, events: [] };
+
+        const events = yield* orchestrationEngine
+          .readEvents(resume.afterSequence, { limit: gap })
+          .pipe(
+            Stream.runCollect,
+            Effect.orElseSucceed(() => []),
+          );
+        if (events.length !== gap) return snapshotRequired;
+        let bytes = 0;
+        for (const [index, event] of events.entries()) {
+          if (event.sequence !== resume.afterSequence + index + 1) return snapshotRequired;
+          bytes += Buffer.byteLength(JSON.stringify(event));
+          if (bytes > MAX_RECONNECT_REPLAY_BYTES) return snapshotRequired;
+        }
+        return { ...response, events };
       }
       case ORCHESTRATION_WS_METHODS.getSnapshot: {
         const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
         return yield* orchestrationEngine.getReadModel();
       }
 
-      case ORCHESTRATION_WS_METHODS.getStartupSnapshot: {
-        const body = stripRequestTag(request.body);
-        return yield* withWsThreadOpenTiming({
-          method: ORCHESTRATION_WS_METHODS.getStartupSnapshot,
-          threadId: body?.detailThreadId ?? null,
-          effect: Effect.gen(function* () {
-            if (body?.detailThreadId) {
-              yield* reconcileThreadSnapshotsInBackground({
-                threadId: body.detailThreadId,
-                reason: "ws:getStartupSnapshot",
-              });
-            }
-            return yield* projectionReadModelQuery.getStartupSnapshot(body);
-          }),
-          summarize: (result) => ({
-            snapshotSequence: result.snapshot.snapshotSequence,
-            threadCount: result.snapshot.threads.length,
-            bundledTailMessages: result.threadTailDetails?.messages.length ?? 0,
-            bundledTailCheckpoints: result.threadTailDetails?.checkpoints.length ?? 0,
-          }),
-        });
-      }
+      case ORCHESTRATION_WS_METHODS.getStartupSnapshot:
+        return yield* readStartupSnapshot(stripRequestTag(request.body), "ws");
 
       case ORCHESTRATION_WS_METHODS.getRewindDrafts: {
         const body = stripRequestTag(request.body);
@@ -5277,6 +5613,54 @@ export const createServer = Effect.fn(function* (
       }
       case WS_METHODS.projectsCloneList:
         return projectClones.list();
+      case WS_METHODS.projectsScanAgentSessions: {
+        return yield* agentSessionSemaphore.withPermits(1)(
+          Effect.gen(function* () {
+            const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+            const settings = yield* serverSettings.getSettings;
+            const homes = yield* resolveAgentSessionHomes(settings, serverConfig);
+            const model = yield* orchestrationEngine.getReadModel();
+            return yield* Effect.tryPromise({
+              try: (signal) =>
+                agentSessionScanner.scan(
+                  homes,
+                  model.projects
+                    .filter((project) => project.deletedAt === null)
+                    .map((project) => project.workspaceRoot),
+                  serverConfig.worktreesDir,
+                  signal,
+                ),
+              catch: () =>
+                new RouteRequestError({ message: "Could not scan agent history. Try again." }),
+            });
+          }),
+        );
+      }
+      case WS_METHODS.projectsImportAgentSessions: {
+        const body = stripRequestTag(request.body);
+        return yield* agentSessionSemaphore.withPermits(1)(
+          Effect.gen(function* () {
+            const { orchestrationEngine, providerSessionDirectory } =
+              yield* awaitOrchestrationRuntimeForRoute;
+            const settings = yield* serverSettings.getSettings;
+            const homes = yield* resolveAgentSessionHomes(settings, serverConfig);
+            return yield* importAgentSessionProject({
+              request: body,
+              scanner: agentSessionScanner,
+              homes,
+              engine: orchestrationEngine,
+              directory: providerSessionDirectory,
+            }).pipe(
+              Effect.mapError(
+                () =>
+                  new RouteRequestError({
+                    message: "Could not import agent history. Scan for projects again and retry.",
+                  }),
+              ),
+            );
+          }),
+        );
+      }
       case WS_METHODS.projectsEnsureScratch: {
         return yield* scratchProjectSemaphore.withPermits(1)(
           Effect.gen(function* () {
@@ -5473,6 +5857,44 @@ export const createServer = Effect.fn(function* (
               message: `Failed to load checked-in project configuration: ${String(cause)}`,
             }),
         });
+      }
+
+      case WS_METHODS.projectsSetRepository: {
+        const body = stripRequestTag(request.body);
+        const project = yield* projectionWorkspaceQuery.getProjectWorkspace(body.projectId);
+        if (
+          Option.isNone(project) ||
+          isScratchProject(project.value) ||
+          !git.setProjectRepositoryRoot
+        )
+          return yield* new RouteRequestError({
+            message: "Project repository settings are unavailable.",
+          });
+        yield* git.setProjectRepositoryRoot({
+          ...body,
+          projectRoot: project.value.workspaceRoot,
+        });
+        reviewRepositoryCache.clear();
+        return;
+      }
+
+      case WS_METHODS.projectsListRepositories: {
+        const body = stripRequestTag(request.body);
+        const project = yield* projectionWorkspaceQuery.getProjectWorkspace(body.projectId);
+        if (Option.isNone(project) || isScratchProject(project.value)) return [];
+        const thread = body.threadId
+          ? yield* projectionWorkspaceQuery.getThreadWorkspace(body.threadId)
+          : Option.none();
+        if (body.threadId && (Option.isNone(thread) || thread.value.projectId !== body.projectId)) {
+          return yield* new RouteRequestError({
+            message: "Thread is unavailable for this project.",
+          });
+        }
+        return yield* listWorkspaceRepositories(
+          { id: body.projectId, workspaceRoot: project.value.workspaceRoot },
+          Option.getOrUndefined(thread)?.workspaceRoot,
+          git,
+        ).pipe(Effect.provideService(FileSystem.FileSystem, fileSystem));
       }
 
       case WS_METHODS.projectsSearchContents: {
@@ -5856,7 +6278,47 @@ export const createServer = Effect.fn(function* (
         const body = stripRequestTag(request.body);
         const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
         const readModel = yield* orchestrationEngine.getReadModel();
-        return yield* getReviewPreviewDiff({ request: body, readModel });
+        let repositoryCwd: string | undefined;
+        if (body.repositoryPath !== undefined) {
+          const thread = readModel.threads.find((entry) => entry.id === body.threadId);
+          const project =
+            thread && readModel.projects.find((entry) => entry.id === thread.projectId);
+          if (thread && project && !isScratchProject(project)) {
+            const workspace = threadWorkspaceCwd(thread, project);
+            const repositories = yield* reviewRepositoryCache
+              .list(project, workspace, git)
+              .pipe(Effect.provideService(FileSystem.FileSystem, fileSystem));
+            const repository = repositories.find(
+              (repository) => repository.relativePath === body.repositoryPath,
+            );
+            if (repository && workspace) {
+              const target = yield* fileSystem.realPath(repository.path).pipe(Effect.option);
+              const root = yield* fileSystem.realPath(workspace).pipe(Effect.option);
+              if (
+                Option.isSome(target) &&
+                Option.isSome(root) &&
+                target.value ===
+                  (repository.externalSource === repository.path
+                    ? repository.path
+                    : path.resolve(root.value, repository.relativePath))
+              )
+                repositoryCwd = repository.path;
+            }
+          }
+          if (repositoryCwd === undefined) {
+            return {
+              kind: "error",
+              code: "workspace_invalid",
+              message: "Repository is unavailable for this thread.",
+              retryable: false,
+            } as const;
+          }
+        }
+        return yield* getReviewPreviewDiff({
+          request: body,
+          readModel,
+          ...(repositoryCwd ? { repositoryCwd } : {}),
+        });
       }
 
       case PR_HUB_WS_METHODS.claimNotifications:
@@ -5929,6 +6391,9 @@ export const createServer = Effect.fn(function* (
       case PR_HUB_WS_METHODS.listReviewerCandidates:
         if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
         return yield* prHubExtensions.value.listReviewerCandidates(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.completions:
+        if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
+        return yield* prHubExtensions.value.completions(stripRequestTag(request.body));
       case PR_HUB_WS_METHODS.getChecks:
         if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
         return yield* prHubExtensions.value.getChecks(stripRequestTag(request.body));
@@ -6186,6 +6651,9 @@ export const createServer = Effect.fn(function* (
       case PR_HUB_WS_METHODS.getFiles: {
         const body = stripRequestTag(request.body);
         return yield* prHub.getFiles(body);
+      }
+      case PR_HUB_WS_METHODS.getChangeBreakdown: {
+        return yield* prHub.getChangeBreakdown(stripRequestTag(request.body));
       }
 
       case PR_HUB_WS_METHODS.updateComment: {
@@ -6555,6 +7023,7 @@ export const createServer = Effect.fn(function* (
           diagnostics: publicOtlpConfiguration(
             resolveOtlpConfiguration(settings.observability, process.env),
           ),
+          cursorSdkHarness: cursorSdkHarnessHostAvailability(serverConfig),
         };
 
       case WS_METHODS.serverGetProjectSettings: {
@@ -6624,7 +7093,14 @@ export const createServer = Effect.fn(function* (
       }
 
       case WS_METHODS.serverRefreshProviders: {
-        const { instanceId } = stripRequestTag(request.body);
+        const { instanceId, discoverModels } = stripRequestTag(request.body);
+        // Only the Settings refresh asks for it: drivers with an expensive catalog discovery
+        // (Antigravity) run it then, never for health checks, session restarts, startup or
+        // periodic refreshes.
+        if (discoverModels === true)
+          for (const instance of yield* providerInstanceRegistry.listInstances)
+            if (instanceId === undefined || instance.instanceId === instanceId)
+              yield* instance.requestModelDiscovery ?? Effect.void;
         if (instanceId) yield* providerRegistry.refreshInstance(instanceId);
         else yield* providerRegistry.refresh();
         const providers = yield* providerAdvisoryProjection.getProviders;
@@ -7163,6 +7639,13 @@ export const createServer = Effect.fn(function* (
         const { nextTurnQueueDispatcher } = yield* awaitOrchestrationRuntimeForRoute;
         return yield* nextTurnQueueDispatcher
           .scheduleUsageLimitResume({ ...body, source: "manual" })
+          .pipe(Effect.mapError(mapNextTurnQueueRouteError));
+      }
+      case WS_METHODS.nextTurnQueueResendAuthFailedTurn: {
+        const body = stripRequestTag(request.body);
+        const { nextTurnQueueDispatcher } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* nextTurnQueueDispatcher
+          .resendAuthFailedTurn(body)
           .pipe(Effect.mapError(mapNextTurnQueueRouteError));
       }
       case WS_METHODS.nextTurnQueueCancelUsageLimitResume: {
@@ -8020,6 +8503,7 @@ export const createServer = Effect.fn(function* (
   });
 
   wss.on("connection", (ws) => {
+    let disconnectRecorded = false;
     socketLiveness.add(ws);
     logger.info("websocket transport negotiated", {
       runtime: webSocketRuntimeName(),
@@ -8076,7 +8560,16 @@ export const createServer = Effect.fn(function* (
         ),
         Effect.flatMap((delivered) =>
           delivered
-            ? Ref.update(clients, (clients) => clients.add(ws)).pipe(
+            ? Ref.modify(clients, (clients) =>
+                ws.readyState === ws.OPEN && !disconnectRecorded
+                  ? [true, clients.add(ws)]
+                  : [false, clients],
+              )
+            : Effect.succeed(false),
+        ),
+        Effect.flatMap((joined) =>
+          joined
+            ? Effect.void.pipe(
                 // Readiness that changed between the welcome and joining the
                 // broadcast set would otherwise be lost for this client.
                 Effect.andThen(
@@ -8143,7 +8636,6 @@ export const createServer = Effect.fn(function* (
       void runPromise(handleMessage(ws, raw).pipe(Effect.ignoreCause({ log: true })));
     });
 
-    let disconnectRecorded = false;
     const recordDisconnect = () => {
       if (disconnectRecorded) {
         return;

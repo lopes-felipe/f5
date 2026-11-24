@@ -1,10 +1,10 @@
 import { ensureNativeApi } from "./nativeApi";
+import { notifyComposerModelPick } from "./composerModelPicks";
 import type { AssistantResponseContext } from "@t3tools/contracts";
 import {
   normalizeResponseReply,
   splitResponseReply,
 } from "@t3tools/shared/assistantResponseContext";
-import { processComposerImageBounded } from "./lib/imageCompression";
 import { getServerAttachmentLimits } from "./protocolState";
 import {
   uploadAttachment,
@@ -60,11 +60,11 @@ import {
   type StorageValue,
 } from "zustand/middleware";
 import { randomUUID } from "./lib/utils";
-import {
-  compressImageForComposer,
-  imageCompressionFailureMessage,
-  type ComposerImageProcessor,
-} from "./lib/imageCompression";
+import type { ComposerImageProcessor } from "./lib/imageCompression";
+import { processComposerImageBounded } from "./lib/imageCompressionQueue";
+
+// Image preparation loads on the first attachment, keeping it out of the startup bundle.
+const loadImageCompression = () => import("./lib/imageCompression");
 
 export const COMPOSER_DRAFT_STORAGE_KEY = "t3code:composer-drafts:v1";
 export const COMPOSER_DRAFT_PERSISTENCE_ERROR_EVENT = "f5:composer-draft-persistence-error";
@@ -515,6 +515,8 @@ interface PersistedDraftThreadState extends WorktreeCreationOptions {
   interactionMode: ProviderInteractionMode;
   branch: string | null;
   worktreePath: string | null;
+  sharedFilesystemConfirmed?: boolean;
+  plainWorktreeOptIn?: true;
   envMode: DraftThreadEnvMode;
 }
 
@@ -599,6 +601,12 @@ export interface DraftThreadState extends WorktreeCreationOptions {
   branch: string | null;
   worktreePath: string | null;
   sharedFilesystemConfirmed?: boolean;
+  /**
+   * The user picked "New worktree" for a project folder that is not a git
+   * repository but holds repositories. Such folders ignore `envMode` and run
+   * in the project folder unless this is set.
+   */
+  plainWorktreeOptIn?: true;
   envMode: DraftThreadEnvMode;
 }
 
@@ -773,6 +781,7 @@ interface ComposerDraftStoreState {
     threadId: ThreadId,
     options: {
       sharedFilesystemConfirmed?: boolean;
+      plainWorktreeOptIn?: boolean;
       promoting?: boolean | "accepted";
       branch?: string | null;
       worktreePath?: string | null;
@@ -1506,6 +1515,9 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
         ...(candidateDraftThread.sharedFilesystemConfirmed === true
           ? { sharedFilesystemConfirmed: true }
           : {}),
+        ...(candidateDraftThread.plainWorktreeOptIn === true
+          ? { plainWorktreeOptIn: true as const }
+          : {}),
         envMode: normalizeDraftThreadEnvMode(candidateDraftThread.envMode, normalizedWorktreePath),
         worktreeBranchName:
           typeof candidateDraftThread.worktreeBranchName === "string" &&
@@ -1971,6 +1983,9 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
               DEFAULT_INTERACTION_MODE,
             ...resolveDraftWorkspace(projectId, existingThread, options),
             ...resolveDraftWorktreeOptions(existingThread, options),
+            ...(existingThread?.projectId === projectId && existingThread.plainWorktreeOptIn
+              ? { plainWorktreeOptIn: true as const }
+              : {}),
           };
           const nextProjectDraftKey = keyForDraftThread(nextDraftThread);
           const previousThreadIdForProjectKey =
@@ -1986,7 +2001,8 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
             existingThread.worktreePath === nextDraftThread.worktreePath &&
             existingThread.envMode === nextDraftThread.envMode &&
             existingThread.worktreeBranchName === nextDraftThread.worktreeBranchName &&
-            existingThread.runSetupScript === nextDraftThread.runSetupScript;
+            existingThread.runSetupScript === nextDraftThread.runSetupScript &&
+            existingThread.plainWorktreeOptIn === nextDraftThread.plainWorktreeOptIn;
           if (hasSameProjectMapping && hasSameDraftThread) {
             return state;
           }
@@ -2097,6 +2113,10 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
               existing.sharedFilesystemConfirmed))
               ? { sharedFilesystemConfirmed: true }
               : {}),
+            ...((options.plainWorktreeOptIn ??
+            (nextProjectId === existing.projectId && existing.plainWorktreeOptIn))
+              ? { plainWorktreeOptIn: true as const }
+              : {}),
           };
           const isUnchanged =
             nextDraftThread.promoting === existing.promoting &&
@@ -2109,7 +2129,8 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
             nextDraftThread.envMode === existing.envMode &&
             nextDraftThread.worktreeBranchName === existing.worktreeBranchName &&
             nextDraftThread.runSetupScript === existing.runSetupScript &&
-            nextDraftThread.sharedFilesystemConfirmed === existing.sharedFilesystemConfirmed;
+            nextDraftThread.sharedFilesystemConfirmed === existing.sharedFilesystemConfirmed &&
+            nextDraftThread.plainWorktreeOptIn === existing.plainWorktreeOptIn;
           if (isUnchanged) {
             return state;
           }
@@ -2505,6 +2526,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
               .getState()
               .setLastModelOptions(normalizedProvider, legacyOptions);
           }
+          notifyComposerModelPick(threadId);
         }
       },
       setRuntimeMode: (threadId, runtimeMode) => {
@@ -2718,7 +2740,10 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
         const importId = randomUUID();
         const controller = new AbortController();
         registerImageImportController(threadId, importId, controller);
-        const processor = options?.processor ?? compressImageForComposer;
+        const processor: ComposerImageProcessor =
+          options?.processor ??
+          (async (file, processorOptions) =>
+            (await loadImageCompression()).compressImageForComposer(file, processorOptions));
         const processed = await Promise.all(
           acceptedFiles.map(async (file) => {
             try {
@@ -2762,6 +2787,10 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
         );
         const imported: ComposerImageImportSuccess[] = [];
         const nextImages: ComposerImageAttachment[] = [];
+        // Failure messages share the compressor's chunk; load it only when one is needed.
+        const imageCompressionFailureMessage = processed.some(({ result }) => !result.ok)
+          ? (await loadImageCompression()).imageCompressionFailureMessage
+          : (fileName: string) => `'${fileName}' could not be read as an image.`;
         for (const [index, { file, result }] of processed.entries()) {
           const preparing = preparingImages[index]!;
           if (!stillPreparingIds.has(preparing.id)) continue;

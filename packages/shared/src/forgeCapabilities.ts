@@ -41,7 +41,12 @@ export const FORGE_CAPABILITIES: Readonly<Record<ForgeKind, ForgeCapabilities>> 
     updateMethods: ["rebase"],
     search: true,
     reactions: true,
-    review: { inlineComment: true, reply: true, resolve: true, verdicts: ["comment", "approve"] },
+    review: {
+      inlineComment: true,
+      reply: true,
+      resolve: true,
+      verdicts: ["comment", "approve", "request-changes"],
+    },
   },
   bitbucket: {
     ...COMMON,

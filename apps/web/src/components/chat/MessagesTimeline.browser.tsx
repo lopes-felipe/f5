@@ -472,6 +472,124 @@ describe("MessagesTimeline (LegendList)", () => {
     }
   });
 
+  it("keeps a text drag in its message across the turn rail and minimap", async ({
+    onTestFinished,
+  }) => {
+    await page.viewport(600, 896);
+    const host = document.createElement("div");
+    document.body.append(host);
+    let listRef: LegendListRef | null = null;
+    await render(
+      <TimelineHarness
+        initialEntries={makeOverflowEntries(40)}
+        initialHeight={360}
+        onIsAtEndChangeSpy={() => {}}
+        onListRefChange={(next) => {
+          listRef = next;
+        }}
+      />,
+      { container: host },
+    );
+    const container = await waitForScrollContainer(host);
+    await scrollTimelineToOffset(listRef, container, 0);
+    const rail = host.querySelector<HTMLElement>('[data-testid="timeline-turn-rail-strip"]')!;
+    const minimap = host.querySelector<HTMLElement>('[aria-label="Conversation minimap"]')!;
+    const railBounds = rail.getBoundingClientRect();
+    const minimapBounds = minimap.getBoundingClientRect();
+    const railX = railBounds.x + railBounds.width / 2;
+    const minimapX = minimapBounds.x + minimapBounds.width / 2;
+    const message = host.querySelector<HTMLElement>('[data-message-id="overflow-assistant-1"]')!;
+    const firstLine = document.createRange();
+    firstLine.selectNodeContents(message.querySelector("p")!);
+    const lineBounds = firstLine.getClientRects()[0]!;
+    const y = lineBounds.y + lineBounds.height / 2;
+    const startX = lineBounds.x + 8;
+
+    // CDP uses coordinates in the outer page, where Vitest may scale the test iframe.
+    const frame = window.frameElement?.getBoundingClientRect();
+    const mouse = (
+      type: "mousePressed" | "mouseMoved" | "mouseReleased",
+      x: number,
+      y: number,
+      buttons: number,
+    ) =>
+      cdp().send("Input.dispatchMouseEvent", {
+        type,
+        x: frame ? x * (frame.width / window.innerWidth) + frame.left : x,
+        y: frame ? y * (frame.height / window.innerHeight) + frame.top : y,
+        button: type === "mouseMoved" && buttons === 0 ? "none" : "left",
+        buttons,
+        ...(type === "mouseMoved" ? {} : { clickCount: 1 }),
+        force: buttons > 0 ? 0.5 : 0,
+      });
+    onTestFinished(async () => {
+      await cdp().send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 0, y: 0, buttons: 0 });
+    });
+
+    expect(document.elementFromPoint(railX, y)).toBe(rail);
+    expect(document.elementFromPoint(minimapX, y)).toBe(minimap);
+    await mouse("mouseMoved", startX, y, 0);
+    await mouse("mousePressed", startX, y, 1);
+    try {
+      await mouse("mouseMoved", startX + 120, y, 1);
+      const selection = window.getSelection()!;
+      const initialLength = selection.toString().length;
+      expect(initialLength).toBeGreaterThan(0);
+      for (const x of [railX, minimapX]) {
+        await mouse("mouseMoved", x, y, 1);
+        expect(container.contains(document.elementFromPoint(x, y))).toBe(true);
+        expect(host.querySelector("[data-turn-rail-preview]")).toBeNull();
+        expect(selection.toString().length).toBeGreaterThan(initialLength);
+        expect(message.contains(selection.anchorNode)).toBe(true);
+        expect(message.contains(selection.focusNode)).toBe(true);
+      }
+    } finally {
+      await mouse("mouseReleased", minimapX, y, 0);
+    }
+    expect(document.elementFromPoint(railX, y)).toBe(rail);
+    expect(document.elementFromPoint(minimapX, y)).toBe(minimap);
+    await mouse("mouseMoved", railX, y, 0);
+    await vi.waitFor(() => expect(host.querySelector("[data-turn-rail-preview]")).not.toBeNull());
+
+    // A drag originating on the minimap keeps scrubbing even outside the track.
+    await mouse("mousePressed", minimapX, minimapBounds.top + 1, 1);
+    try {
+      await mouse("mouseMoved", startX, minimapBounds.bottom - 1, 1);
+      await vi.waitFor(() => {
+        expect(container.scrollTop).toBeGreaterThan(container.scrollHeight / 2);
+      });
+    } finally {
+      await mouse("mouseReleased", startX, minimapBounds.bottom - 1, 0);
+    }
+  });
+
+  it.each(["pointermove", "pointercancel"])(
+    "restores the minimap after a pen drag ends with %s",
+    async (releaseType) => {
+      const host = document.createElement("div");
+      document.body.append(host);
+      await render(
+        <TimelineHarness
+          initialEntries={makeOverflowEntries(40)}
+          initialHeight={360}
+          onIsAtEndChangeSpy={() => {}}
+        />,
+        { container: host },
+      );
+      const container = await waitForScrollContainer(host);
+      const minimap = host.querySelector<HTMLElement>('[aria-label="Conversation minimap"]')!;
+      const area = minimap.parentElement!;
+      // Start on the timeline surface outside the virtualized list.
+      expect(container.contains(area)).toBe(false);
+      const pen = { bubbles: true, pointerId: 42, pointerType: "pen", isPrimary: true };
+      area.dispatchEvent(new PointerEvent("pointerdown", { ...pen, button: 0, buttons: 1 }));
+      expect(getComputedStyle(minimap).pointerEvents).toBe("none");
+
+      window.dispatchEvent(new PointerEvent(releaseType, { ...pen, buttons: 0 }));
+      expect(getComputedStyle(minimap).pointerEvents).toBe("auto");
+    },
+  );
+
   it("tracks the active turn-rail tick while scrolling", async () => {
     await page.viewport(1200, 896);
     const host = document.createElement("div");
@@ -1047,6 +1165,72 @@ describe("MessagesTimeline (LegendList)", () => {
       expect(collage.getBoundingClientRect().width).toBe(320);
       expect(host.querySelector('img[alt="left.png"]')!.getBoundingClientRect().height).toBe(192);
       expect(host.querySelector('button[aria-label="Copy message"]')).toBeNull();
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("renders media above text and gives files, audio, pastes and pending sends their own shapes", async () => {
+    const file = (id: string, mimeType: string, extra = {}) => ({
+      type: "file" as const,
+      id,
+      name: `${id}.dat`,
+      mimeType,
+      sizeBytes: 128,
+      previewUrl: `/attachments/${id}`,
+      ...extra,
+    });
+    const entries = [
+      makeUserEntry("captioned", "Caption", 0, {
+        attachments: [
+          { ...file("left", "image/png"), type: "image" as const },
+          { ...file("right", "image/png"), type: "image" as const },
+          file("video", "video/mp4"),
+        ],
+      }),
+      makeUserEntry("file-card", "", 1, { attachments: [file("notes", "text/plain")] }),
+      makeUserEntry("pasted-card", "", 2, {
+        attachments: [file("paste", "text/plain", { source: "pasted-text" })],
+      }),
+      makeUserEntry("audio-card", "", 3, { attachments: [file("voice", "audio/wav")] }),
+      makeUserEntry("sending-card", "", 4, {
+        attachments: [file("pending", "text/plain")],
+        sending: true,
+      }),
+      makeUserEntry("snapshot-card", "", 5, {
+        attachments: [
+          { ...file("snapshot", "image/png"), type: "image" as const, source: "snapshot" as const },
+        ],
+      }),
+    ];
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness initialEntries={entries} onIsAtEndChangeSpy={() => {}} />,
+      { container: host },
+    );
+    try {
+      await vi.waitFor(() => expect(host.querySelector('[aria-label="video.dat"]')).not.toBeNull());
+      const image = host.querySelector('img[alt="left.dat"]')!;
+      const message = image.closest('[data-slot="user-message-bubble"]')!;
+      const body = message.querySelector('[data-slot="user-message-body"]')!;
+      expect(body.textContent).toBe("Caption");
+      expect(body.querySelector("img,video")).toBeNull();
+      expect(image.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+        body.getBoundingClientRect().top,
+      );
+      expect(host.querySelectorAll('[data-slot="user-file-card"]')).toHaveLength(4);
+      expect(host.textContent).toContain("Pasted text");
+      expect(host.querySelector('audio[aria-label="voice.dat"]')).not.toBeNull();
+      const pending = [...host.querySelectorAll('[data-slot="user-file-card"]')].find((card) =>
+        card.textContent?.includes("pending.dat"),
+      )!;
+      expect(pending.textContent).toContain("Sending…");
+      expect(pending.querySelector("a,button")).toBeNull();
+      const snapshot = host.querySelector('img[alt="snapshot.dat"]')!;
+      expect(snapshot.classList.contains("object-contain")).toBe(true);
+      expect(snapshot.classList.contains("h-auto")).toBe(true);
     } finally {
       await screen.unmount();
       host.remove();

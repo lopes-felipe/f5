@@ -19,12 +19,14 @@ import { CheckpointRef } from "@t3tools/contracts";
 export interface CaptureCheckpointInput {
   readonly cwd: string;
   readonly checkpointRef: CheckpointRef;
+  readonly excludePaths?: ReadonlyArray<string>;
 }
 
 export interface RestoreCheckpointInput {
   readonly cwd: string;
   readonly checkpointRef: CheckpointRef;
   readonly fallbackToHead?: boolean;
+  readonly excludePaths?: ReadonlyArray<string>;
 }
 
 export interface DiffCheckpointsInput {
@@ -34,6 +36,8 @@ export interface DiffCheckpointsInput {
   readonly fallbackFromToHead?: boolean;
   readonly options?: {
     readonly ignoreWhitespace?: boolean;
+    /** Project-relative base for a repository inside the thread workspace. */
+    readonly repositoryPath?: string;
     /**
      * Leave out files a pull, merge or rebase brought in between the checkpoints. A file
      * the turn also edited, committed or resolved stays whole. When the checkpoints carry
@@ -77,7 +81,7 @@ export interface CheckpointStoreShape {
    * Check whether a checkpoint ref exists.
    */
   readonly hasCheckpointRef: (
-    input: Omit<RestoreCheckpointInput, "fallbackToHead">,
+    input: Pick<RestoreCheckpointInput, "cwd" | "checkpointRef">,
   ) => Effect.Effect<boolean, CheckpointStoreError>;
 
   /** Resolve an exact set of owned refs in one read-only Git invocation. */

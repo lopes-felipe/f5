@@ -1538,6 +1538,50 @@ describe("composerDraftStore project draft thread mapping", () => {
     expect(store.getDraftThread(threadId)?.sharedFilesystemConfirmed).toBeUndefined();
   });
 
+  it("keeps a multi-repo worktree opt-in until it is cleared or the project changes", () => {
+    const store = useComposerDraftStore.getState();
+    store.setProjectDraftThreadId(projectId, threadId);
+    expect(store.getDraftThread(threadId)?.plainWorktreeOptIn).toBeUndefined();
+    store.setDraftThreadContext(threadId, { plainWorktreeOptIn: true });
+    expect(store.getDraftThread(threadId)?.plainWorktreeOptIn).toBe(true);
+    store.setDraftThreadContext(threadId, { runtimeMode: "full-access" });
+    store.setProjectDraftThreadId(projectId, threadId);
+    expect(store.getDraftThread(threadId)?.plainWorktreeOptIn).toBe(true);
+    store.setDraftThreadContext(threadId, { plainWorktreeOptIn: false });
+    expect(store.getDraftThread(threadId)?.plainWorktreeOptIn).toBeUndefined();
+
+    store.setDraftThreadContext(threadId, { plainWorktreeOptIn: true });
+    store.setDraftThreadContext(threadId, { projectId: otherProjectId });
+    expect(store.getDraftThread(threadId)?.plainWorktreeOptIn).toBeUndefined();
+    store.setDraftThreadContext(threadId, { plainWorktreeOptIn: true });
+    store.setProjectDraftThreadId(projectId, threadId);
+    expect(store.getDraftThread(threadId)?.plainWorktreeOptIn).toBeUndefined();
+  });
+
+  it("hydrates only a true multi-repo worktree opt-in", () => {
+    const merge = useComposerDraftStore.persist.getOptions().merge!;
+    const draft = (plainWorktreeOptIn: unknown) => ({
+      projectId,
+      createdAt: "2026-11-23T00:00:00.000Z",
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      envMode: "worktree",
+      plainWorktreeOptIn,
+    });
+    const merged = merge(
+      {
+        draftsByThreadId: {},
+        draftThreadsByThreadId: { [threadId]: draft(true), [otherThreadId]: draft("yes") },
+        projectDraftThreadIdByProjectId: {},
+      },
+      useComposerDraftStore.getInitialState(),
+    );
+    expect(merged.draftThreadsByThreadId[threadId]?.plainWorktreeOptIn).toBe(true);
+    expect(merged.draftThreadsByThreadId[otherThreadId]?.plainWorktreeOptIn).toBeUndefined();
+  });
+
   it("preserves existing branch and worktree when setProjectDraftThreadId receives undefined", () => {
     const store = useComposerDraftStore.getState();
     store.setProjectDraftThreadId(projectId, threadId, {

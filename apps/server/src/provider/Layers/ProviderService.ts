@@ -78,6 +78,7 @@ import {
   type ProviderRuntimeEvent,
   type ProviderSession,
   type ProviderSessionAction,
+  type ServerProvider,
   type McpReloadResult,
   type McpSessionReloadOutcome,
   type McpSessionSummary,
@@ -87,7 +88,10 @@ import {
 import { describeMcpReloadFailure, MCP_RELOAD_RETRY_DELAYS_MS } from "../mcpReconcile.ts";
 import { getProviderEnvironmentKey } from "@t3tools/shared/providerOptions";
 import { getProviderTurnInputLengthIssue } from "@t3tools/shared/providerInput";
-import { runtimeModeUnsupportedReason } from "@t3tools/shared/runtimeMode";
+import {
+  runtimeModeUnsupportedReason,
+  savedRuntimeModeUnsupportedReason,
+} from "@t3tools/shared/runtimeMode";
 import {
   Duration,
   Deferred,
@@ -726,15 +730,27 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           ),
         );
 
-    const readExecutableVersion = (instanceId: ProviderInstanceId) =>
+    const readProviderSnapshot = (instanceId: ProviderInstanceId) =>
       Option.match(providerRegistry, {
-        onNone: () => Effect.succeed<string | undefined>(undefined),
+        onNone: () => Effect.succeed<ServerProvider | undefined>(undefined),
+        onSome: (service) =>
+          service.getProviders.pipe(
+            Effect.map((providers) =>
+              providers.find((provider) => provider.instanceId === instanceId),
+            ),
+          ),
+      });
+
+    /** Per-instance runtime-mode support from the status snapshot, when it narrows the default. */
+    const readAvailableRuntimeModes = (instanceId: ProviderInstanceId) =>
+      Option.match(providerRegistry, {
+        onNone: () => Effect.succeed<ReadonlyArray<RuntimeMode> | undefined>(undefined),
         onSome: (service) =>
           service.getProviders.pipe(
             Effect.map(
               (providers) =>
-                providers.find((provider) => provider.instanceId === instanceId)?.version ??
-                undefined,
+                providers.find((provider) => provider.instanceId === instanceId)
+                  ?.availableRuntimeModes,
             ),
           ),
       });
@@ -754,11 +770,13 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         const instanceInfo = yield* registry
           .getInstanceInfo(input.instanceId)
           .pipe(Effect.option, Effect.map(Option.getOrUndefined));
+        const providerSnapshot = yield* readProviderSnapshot(input.instanceId);
         return buildProviderSessionCapabilities({
           generation: input.generation,
           driver: instanceInfo?.driverKind ?? input.adapter.provider,
           providerInstanceId: input.instanceId,
-          executableVersion: yield* readExecutableVersion(input.instanceId),
+          executableVersion: providerSnapshot?.version ?? undefined,
+          harnessVariant: providerSnapshot?.harnessVariant,
           adapterCapabilities: input.adapter.capabilities,
           hasSteer: input.adapter.steerTurn !== undefined,
           hasMcpReload: input.adapter.reloadMcpConfig !== undefined,
@@ -1342,9 +1360,11 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         });
 
         const recoveredRuntimeMode = input.binding.runtimeMode ?? DEFAULT_RUNTIME_MODE;
-        const unsupportedRuntimeMode = runtimeModeUnsupportedReason(
+        // A saved selection: the adapter's own fallback handles a mode the session lost.
+        const unsupportedRuntimeMode = savedRuntimeModeUnsupportedReason(
           input.binding.provider,
           recoveredRuntimeMode,
+          yield* readAvailableRuntimeModes(bindingInstanceId),
         );
         if (unsupportedRuntimeMode) {
           return yield* toValidationError(input.operation, unsupportedRuntimeMode);
@@ -1680,8 +1700,8 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           let installKey: string | undefined;
           if (hasProviderUpdate(stateDir) && instanceId) {
             const info = yield* registry.getInstanceInfo(ProviderInstanceId.make(instanceId));
-            const target = yield* Effect.try({
-              try: () => info.resolveInstallTarget?.(),
+            const target = yield* Effect.tryPromise({
+              try: async () => info.resolveInstallTarget?.(),
               catch: () =>
                 toValidationError(
                   operation,
@@ -1731,17 +1751,6 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           const instanceInfo = yield* registry.getInstanceInfo(requestedInstanceId);
           const resolvedProvider = instanceInfo.driverKind as ProviderKind;
           metricProvider = resolvedProvider;
-          if (
-            (resolvedProvider === "grok" ||
-              resolvedProvider === "antigravity" ||
-              resolvedProvider === "muse") &&
-            parsed.workflowExecutionProfile?.endsWith("readonly")
-          ) {
-            return yield* toValidationError(
-              "ProviderService.startSession",
-              `${PROVIDER_DISPLAY_NAMES[resolvedProvider]} cannot enforce read-only workflow turns.`,
-            );
-          }
           if (parsed.provider !== undefined && parsed.provider !== resolvedProvider) {
             return yield* toValidationError(
               "ProviderService.startSession",
@@ -1771,6 +1780,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           const unsupportedRuntimeMode = runtimeModeUnsupportedReason(
             resolvedProvider,
             parsed.runtimeMode,
+            yield* readAvailableRuntimeModes(requestedInstanceId),
           );
           if (unsupportedRuntimeMode) {
             return yield* toValidationError("ProviderService.startSession", unsupportedRuntimeMode);
@@ -1782,6 +1792,15 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             providerInstanceId: requestedInstanceId,
           };
           const adapter = yield* registry.getByInstance(requestedInstanceId);
+          if (
+            parsed.workflowExecutionProfile?.endsWith("readonly") &&
+            adapter.capabilities.enforcesReadOnlyWorkflow !== true
+          ) {
+            return yield* toValidationError(
+              "ProviderService.startSession",
+              `${PROVIDER_DISPLAY_NAMES[resolvedProvider]} cannot enforce read-only workflow turns.`,
+            );
+          }
           const previousBinding = yield* directory
             .getBinding(threadId)
             .pipe(Effect.map(Option.getOrUndefined));
@@ -1921,7 +1940,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                   launchFingerprint,
                   startConfig: persistedStartConfig,
                   instructionContext: toInstructionContextFromSessionStartInput(input),
-                  clearMissingResumeCursor: !sameProvenance,
+                  clearMissingResumeCursor: input.discardResumeCursor === true || !sameProvenance,
                   sessionGeneration,
                 },
               );
@@ -2361,10 +2380,8 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                 );
                 metricProvider = routed.adapter.provider;
                 if (
-                  (routed.adapter.provider === "grok" ||
-                    routed.adapter.provider === "antigravity" ||
-                    routed.adapter.provider === "muse") &&
-                  input.workflowExecutionProfile?.endsWith("readonly")
+                  input.workflowExecutionProfile?.endsWith("readonly") &&
+                  routed.adapter.capabilities.enforcesReadOnlyWorkflow !== true
                 ) {
                   return yield* toValidationError(
                     "ProviderService.sendTurn",

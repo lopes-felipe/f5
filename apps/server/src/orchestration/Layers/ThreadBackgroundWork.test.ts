@@ -26,6 +26,7 @@ const threadId = ThreadId.makeUnsafe("background-thread");
 const turnId = TurnId.makeUnsafe("background-turn");
 
 const directory: ProviderSessionDirectoryShape = {
+  removePendingImport: () => Effect.succeed(false),
   upsert: () => Effect.void,
   getProvider: () => Effect.succeed("claudeAgent"),
   getBinding: () =>

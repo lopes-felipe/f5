@@ -187,10 +187,11 @@ const makeGitService = Effect.gen(function* () {
       // close input before a checkpoint write completes (especially on shutdown).
       // Use the shared native runner for input-fed commands and await its shutdown
       // before releasing the repository's calling scope.
+      const executable = yield* Effect.promise(() => resolveGitExecutable(environment));
       const runNative = Effect.acquireUseRelease(
         Effect.sync(() => {
           const controller = new AbortController();
-          const pending = runProcess(resolveGitExecutable(environment), commandInput.args, {
+          const pending = runProcess(executable, commandInput.args, {
             cwd: commandInput.cwd,
             env: environment,
             stdin: input.stdin,
@@ -228,7 +229,7 @@ const makeGitService = Effect.gen(function* () {
       const runWithoutInput = Effect.gen(function* () {
         const child = yield* commandSpawner
           .spawn(
-            ChildProcess.make(resolveGitExecutable(environment), commandInput.args, {
+            ChildProcess.make(executable, commandInput.args, {
               cwd: commandInput.cwd,
               env: environment,
             }),
@@ -256,11 +257,7 @@ const makeGitService = Effect.gen(function* () {
       // windowsHide and detached, avoiding a console host for these exact Windows reads.
       const useNativeRunner =
         input.stdin !== undefined ||
-        runsGitWithoutConsole(
-          process.platform,
-          resolveGitExecutable(environment),
-          commandInput.args,
-        );
+        runsGitWithoutConsole(process.platform, executable, commandInput.args);
       const [stdout, stderr, exitCode] = yield* useNativeRunner ? runNative : runWithoutInput;
 
       if (!input.allowNonZeroExit && exitCode !== 0) {

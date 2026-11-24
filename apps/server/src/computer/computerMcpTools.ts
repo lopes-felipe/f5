@@ -16,6 +16,7 @@ import {
 } from "@t3tools/shared/computerControl";
 import { computerOpRequiresApp } from "@t3tools/shared/computerExecution";
 import { z } from "zod";
+import { advertisedJsonSchema } from "../mcp/advertisedJsonSchema";
 import { Duration, Effect, Metric } from "effect";
 import { computerToolDuration, metricAttributes } from "../observability/Metrics";
 import type { McpToolResult } from "../mcp/previewMcpTools";
@@ -365,7 +366,7 @@ export function computerToolInputJsonSchema(
   const { $schema: _schema, ...schema } = z.toJSONSchema(z.object(tool.shape).strict(), {
     io: "input",
   });
-  return schema;
+  return advertisedJsonSchema(schema);
 }
 export interface ComputerToolCallContext {
   readonly broker: ComputerAutomationBrokerRuntime;
@@ -1116,11 +1117,13 @@ async function executeComputerBatch(
           verification?.verified !== true
         )
           stopped = "unverified";
-        // A shortcut that moved focus, or a foreground press that removed its element, needs
-        // a fresh observation: later steps would otherwise act on an unexpected window.
+        // A shortcut that moved focus, typing cut short by a focus change, or a foreground
+        // press that removed its element, needs a fresh observation: later steps would
+        // otherwise act on an unexpected window.
         else if (
           verification?.verified === false &&
           (op === "key" ||
+            op === "type" ||
             (delivery !== "background" && op === "elementAction" && step.action !== "focus"))
         )
           stopped = "unverified";

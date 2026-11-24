@@ -40,6 +40,7 @@ import { agentBridgeLocalCredentialsPath } from "./agentBridge/localCredentials.
 import { runAgentBridgeStdio } from "./agentBridge/stdioShim.ts";
 import { makeThreadCommand } from "./threadCli/command.ts";
 import { profileStateDir } from "@t3tools/shared/profilePaths";
+import { hostExecutionRefusal } from "@t3tools/shared/profileExecution";
 import { Open } from "./open";
 import * as SqlitePersistence from "./persistence/Layers/Sqlite";
 import { makeServerProviderLayer, makeServerRuntimeServicesLayer } from "./serverLayers";
@@ -113,7 +114,7 @@ export class CliConfig extends ServiceMap.Service<CliConfig, CliConfigShape>()(
       const path = yield* Path.Path;
       return {
         cwd: process.cwd(),
-        fixPath: Effect.promise(() => fixPath()),
+        fixPath: Effect.promise((signal) => fixPath(process.env, process.platform, signal)),
         resolveStaticDir: resolveStaticDir().pipe(
           Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.provideService(Path.Path, path),
@@ -265,6 +266,8 @@ const ServerConfigLive = (input: CliInput) => {
             .join(", ")}`,
           profile?.id ?? fallbackDefaultProfile(defaultStateDir).id,
         );
+      const vmRefusal = hostExecutionRefusal(profile);
+      if (vmRefusal) return yield* startupFailure(vmRefusal, profile.id);
       startupErrorPath = path.join(registryStore.root, `last-startup-error-${profile.id}.json`);
       yield* Effect.tryPromise({
         try: () => assertProfileDirectory(defaultStateDir, profile),
@@ -773,6 +776,8 @@ const resolveCliProfileStateDir = Effect.gen(function* () {
   if (!profile) {
     return yield* new StartupError({ message: "Unknown F5 profile '" + profileRef + "'." });
   }
+  const vmRefusal = hostExecutionRefusal(profile);
+  if (vmRefusal) return yield* new StartupError({ message: vmRefusal });
   return profileStateDir(defaultStateDir, profile);
 });
 

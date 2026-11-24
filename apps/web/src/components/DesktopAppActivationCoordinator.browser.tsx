@@ -104,6 +104,30 @@ it("does not create a project or draft after the main-process deadline expires",
     await view.unmount();
   }
 });
+it("does not open an activation disposed during the pending IPC check", async () => {
+  state.requests = [{ id: "disposed", path: "/repo" }];
+  bridge();
+  let resolvePending!: (value: boolean) => void;
+  const pending = vi.fn(
+    () =>
+      new Promise<boolean>((resolve) => {
+        resolvePending = resolve;
+      }),
+  );
+  window.desktopBridge!.isAppActivationPending = pending;
+  const view = await render(<DesktopAppActivationCoordinator />);
+  await vi.waitFor(() => expect(pending).toHaveBeenCalled());
+  await view.unmount();
+  resolvePending(true);
+  await vi.waitFor(() =>
+    expect(state.complete).toHaveBeenCalledWith(
+      "disposed",
+      "Desktop activation was interrupted. Retry to reuse the project.",
+    ),
+  );
+  expect(state.dispatch).not.toHaveBeenCalled();
+  expect(state.start).not.toHaveBeenCalled();
+});
 it("drains new activations after an effect is replaced during an in-flight read", async () => {
   let release!: (value: { snapshot: object }) => void;
   state.snapshot.mockImplementationOnce(

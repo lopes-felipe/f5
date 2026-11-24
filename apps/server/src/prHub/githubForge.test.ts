@@ -97,6 +97,68 @@ function fixture(
   };
 }
 describe("typed GitHub forge", () => {
+  it("sends inline comments with the verdict in one GitHub review write", async () => {
+    const { provider, calls } = fixture();
+    await Effect.runPromise(
+      provider.submitReview({
+        ref,
+        body: "Review",
+        verdict: "request-changes",
+        headSha: "head-sha",
+        comments: [{ path: "src/test.ts", line: 5, side: "old", body: "Fix this" }],
+      }),
+    );
+    expect(calls).toMatchObject([
+      {
+        endpoint: "repos/team/repo/pulls/7/reviews",
+        method: "POST",
+        body: {
+          event: "REQUEST_CHANGES",
+          commit_id: "head-sha",
+          comments: [{ path: "src/test.ts", line: 5, side: "LEFT", body: "Fix this" }],
+        },
+      },
+    ]);
+  });
+  it("opens a draft from a pushed branch and returns an existing PR without another write", async () => {
+    const { provider, calls } = fixture([[], { default_branch: "main" }, pr, [pr]]);
+    const open = () =>
+      Effect.runPromise(
+        provider.openChangeRequest!({
+          ref,
+          head: "feature",
+          title: "Scoped pull request",
+          body: "Description",
+          draft: true,
+        }),
+      );
+    expect((await open()).number).toBe(7);
+    expect((await open()).number).toBe(7);
+    expect(calls.filter((call) => call.method === "POST")).toEqual([
+      expect.objectContaining({
+        endpoint: "repos/team/repo/pulls",
+        body: {
+          base: "main",
+          head: "feature",
+          title: "Scoped pull request",
+          body: "Description",
+          draft: true,
+        },
+      }),
+    ]);
+    expect(calls[0]?.query).toMatchObject({ state: "open", head: "team:feature" });
+  });
+  it("looks up an exact issue number and keeps search qualifiers repository-scoped", async () => {
+    const { provider, calls, queries } = fixture([{ number: 123, title: "Exact issue" }]);
+    expect(
+      await Effect.runPromise(provider.completions!(ref, { sigil: "#", query: "123" })),
+    ).toEqual([{ token: "#123", label: "#123", detail: "Exact issue" }]);
+    expect(calls[0]?.endpoint).toBe("repos/team/repo/issues/123");
+    expect(queries[0]?.variables).toEqual({ query: 'repo:team/repo "123" sort:updated-desc' });
+    expect(await Effect.runPromise(provider.completions!(ref, { sigil: "!", query: "" }))).toEqual(
+      [],
+    );
+  });
   it("preserves GitHub update time separately from creation time", async () => {
     const created = "2026-01-01T12:00:00Z";
     const updated = "2026-11-03T12:00:00Z";

@@ -5,7 +5,7 @@ import { canQueueGitHubAutoMerge } from "@t3tools/shared/forgeCapabilities";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { getPrHubDraftIdentity } from "../../lib/prHubAccount";
 import { ForgeOperationPanel } from "./ForgeOperationPanel";
-import { Textarea } from "../ui/textarea";
+import { PrCompletionTextarea as Textarea } from "./PrCompletionTextarea";
 import { Input } from "../ui/input";
 
 const split = (value: string) =>
@@ -59,6 +59,7 @@ export function ForgeComposer({
         </label>
       ) : null}
       <Textarea
+        prKey={pr.key}
         aria-label={anchor ? "Inline comment" : "Comment and review text"}
         value={body}
         onChange={(event) => setBody(event.target.value)}
@@ -181,6 +182,7 @@ export function ForgeControls({
               onChange={(e) => setTitle(e.target.value)}
             />
             <Textarea
+              prKey={pr.key}
               aria-label="Pull request description"
               value={body}
               onChange={(e) => setBody(e.target.value)}

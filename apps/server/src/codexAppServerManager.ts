@@ -85,6 +85,7 @@ import { isIgnorableCodexProcessStderrMessage } from "@t3tools/shared/codexStder
 import { codexServerRequestDisposition } from "@t3tools/shared/codexProtocolManifest";
 import {
   normalizeModelSlug,
+  configureCodexCyberAccess,
   resolveCodexEffectiveReasoningEffort,
   resolveModelCapabilities,
 } from "@t3tools/shared/model";
@@ -282,6 +283,7 @@ interface CodexSessionContext {
   legacyHistoryThreadIds?: Set<string>;
   lastProviderTitle?: string;
   reviewThreadIds?: Set<string>;
+  closedNativeThreadIds?: Set<string>;
   reviewOperationActive?: boolean;
   nativeReviewTurnId?: string;
   nativeGoalActive?: boolean;
@@ -368,6 +370,7 @@ interface CodexAccountSnapshot {
 }
 
 export interface CodexAppServerSendTurnInput {
+  readonly cyberAccessProgram?: "standard" | "daybreakBlue" | "daybreakRed";
   /** Ordinary files remain in attachment context; native audio is an optional extra. */
   audioFiles?: ReadonlyArray<string>;
   readonly expectedTurnId?: TurnId;
@@ -738,7 +741,10 @@ export function mapCodexRuntimeMode(runtimeMode: RuntimeMode): {
  * (default 1 s, too short for cold `npx`/`uvx` servers). A hung server delays
  * only the first turn of a session, not its 30 s startup timeout.
  */
-export const CODEX_THREAD_CONFIG = { mcp_optional_startup_grace_ms: 10_000 } as const;
+export const CODEX_THREAD_CONFIG = {
+  mcp_optional_startup_grace_ms: 10_000,
+  "features.concurrent_reasoning_summaries": true,
+} as const;
 
 export function buildCodexThreadOpenRequestParams(input: {
   readonly cwd?: string;
@@ -939,6 +945,7 @@ export function buildCodexTurnStartParams(
     >;
     model?: string;
     serviceTier?: string | null;
+    cyberAccessProgram?: "standard" | "daybreakBlue" | "daybreakRed";
     effort?: string;
     collaborationMode?: {
       mode: "default" | "plan";
@@ -966,6 +973,17 @@ export function buildCodexTurnStartParams(
   // CLI-only model receives the effort the composer offered for it.
   const effortModel = normalizedModel ?? DEFAULT_MODEL_BY_PROVIDER.codex;
   const reportedCapabilities = state.reportedModelCapabilities?.get(effortModel);
+  const cyber = reportedCapabilities?.optionDescriptors?.find(
+    (option) => option.id === "cyberAccessProgram",
+  );
+  if (cyber?.type === "select") {
+    const program = [input.cyberAccessProgram, cyber.currentValue].find(
+      (value): value is "standard" | "daybreakBlue" | "daybreakRed" =>
+        (value === "standard" || value === "daybreakBlue" || value === "daybreakRed") &&
+        cyber.options.some((option) => option.id === value),
+    );
+    if (program) turnStartParams.cyberAccessProgram = program;
+  }
   if (input.serviceTier !== undefined) {
     // A persisted fast-mode choice must not reach a model whose reported tiers
     // lack it (the composer hides the toggle); null clears a thread-level tier.
@@ -1370,7 +1388,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
           }),
         );
       }
-      const invocation = resolveInvocation(
+      const invocation = await resolveInvocation(
         codexBinaryPath,
         appServerCommand.argv,
         childEnvironment,
@@ -1740,13 +1758,38 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     const { serviceTier: _requestedTier, ...inputWithoutTier } = input;
     const turnInput =
       input.serviceTier === null && !context.serviceTierApplied ? inputWithoutTier : input;
+    const cyberModel =
+      resolveCodexModelForAccount(
+        normalizeCodexModelSlug(input.model ?? context.session.model),
+        context.account,
+      ) ?? DEFAULT_MODEL_BY_PROVIDER.codex;
+    const cyberCapabilities = cyberModel
+      ? context.reportedModelCapabilities?.get(cyberModel)
+      : undefined;
+    let turnCapabilities = context.reportedModelCapabilities;
+    if (
+      cyberModel &&
+      cyberCapabilities?.optionDescriptors?.some((option) => option.id === "cyberAccessProgram")
+    ) {
+      const config = asObject(
+        await this.sendRequest(context, "config/read", { includeLayers: false }).catch(
+          () => undefined,
+        ),
+      )?.config;
+      const configuredCapabilities = new Map(context.reportedModelCapabilities);
+      configuredCapabilities.set(
+        cyberModel,
+        configureCodexCyberAccess(cyberCapabilities, config, context.account.type),
+      );
+      turnCapabilities = configuredCapabilities;
+    }
     const turnStartParams = buildCodexTurnStartParams(turnInput, {
       providerThreadId,
       model: context.session.model,
       account: context.account,
       instructionContext: context.instructionContext,
       resumedContextSent: context.resumedContextSent,
-      reportedModelCapabilities: context.reportedModelCapabilities,
+      reportedModelCapabilities: turnCapabilities,
     });
     if (input.audioFiles?.length && supportsCodexRelease6(context.cliVersion)) {
       const model = normalizeCodexModelSlug(turnStartParams.model);
@@ -4228,6 +4271,22 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       if (typeof reviewTurnId === "string") context.nativeReviewTurnId = reviewTurnId;
     }
     const itemType = normalizeCodexThreadItemType(item?.type ?? item?.kind);
+    const nativeThreadId = notificationProviderThreadId ?? primaryProviderThreadId;
+    const closesThread =
+      notification.method === "thread/closed" || notification.method === "thread/deleted";
+    if (closesThread && nativeThreadId) {
+      const closed = (context.closedNativeThreadIds ??= new Set());
+      closed.add(nativeThreadId);
+      if (closed.size > 128) closed.delete(closed.values().next().value!);
+    }
+    if (
+      (nativeThreadId
+        ? context.closedNativeThreadIds?.has(nativeThreadId)
+        : context.session.status === "closed") &&
+      (itemType === "command_execution" || notification.method.startsWith("item/commandExecution/"))
+    ) {
+      return;
+    }
     // The adapter may display unscoped activity, but it cannot grant access:
     // only an explicit primary-thread envelope establishes child ownership.
     const activityChildId =
@@ -4309,6 +4368,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         this.readString(this.readObject(notification.params)?.thread, "id"),
       );
       if (providerThreadId && !context.reviewThreadIds?.has(providerThreadId)) {
+        context.closedNativeThreadIds?.delete(providerThreadId);
         this.updateSession(context, {
           resumeCursor: {
             ...this.readObject(context.session.resumeCursor),
@@ -4319,7 +4379,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       return;
     }
 
-    if (notification.method === "thread/deleted" || notification.method === "thread/closed") {
+    if (closesThread) {
       if (
         notificationProviderThreadId &&
         context.reviewThreadIds?.delete(notificationProviderThreadId)

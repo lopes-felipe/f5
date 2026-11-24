@@ -1104,6 +1104,55 @@ describe("CheckpointReactor", () => {
     ).toBe("v1\n");
   });
 
+  it("does not snapshot imported history but captures the first new turn normally", async () => {
+    const captureCheckpoint = vi.fn(fakeCheckpointStore.captureCheckpoint);
+    const harness = await createHarness({
+      hasSession: false,
+      seedFilesystemCheckpoints: false,
+      threadWorktreePath: null,
+      checkpointStore: { ...fakeCheckpointStore, captureCheckpoint },
+    });
+    const createdAt = new Date().toISOString();
+    const threadId = ThreadId.makeUnsafe("imported-history");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.import",
+        commandId: CommandId.makeUnsafe("import-history"),
+        projectId: ProjectId.makeUnsafe("project-1"),
+        threadId,
+        title: "Imported",
+        model: "gpt-5.4",
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+        expectedWorkspaceRoot: harness.cwd,
+        messages: [{ role: "user", text: "Old prompt", createdAt }],
+      }),
+    );
+    await harness.drain();
+    expect(captureCheckpoint).not.toHaveBeenCalled();
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.makeUnsafe("first-import-turn"),
+        threadId,
+        message: {
+          messageId: MessageId.makeUnsafe("new-prompt"),
+          role: "user",
+          text: "Continue",
+          attachments: [],
+        },
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        createdAt,
+      }),
+    );
+    await harness.drain();
+    expect(captureCheckpoint).toHaveBeenCalledTimes(1);
+  });
+
   it("captures turn completion checkpoint from project workspace root when provider session cwd is unavailable", async () => {
     const harness = await createHarness({
       hasSession: false,

@@ -81,6 +81,19 @@ describe("document prompts", () => {
       expect(prompts[0]).toContain("Author A");
     },
   );
+  it("resends the reviewed draft only for a retry after compaction", () => {
+    const input = {
+      documentType: "rfc" as const,
+      requirementPrompt: "Brief",
+      originalPlan: { markdown: "# Draft\n\nUnique reviewed draft body.", source },
+      reviews: [],
+      targetSlot: slot,
+    };
+    expect(buildDocumentRevisionPrompt(input)).not.toContain("Unique reviewed draft body.");
+    const retry = buildDocumentRevisionPrompt({ ...input, includeOriginalPlan: true });
+    expect(retry).toContain("Your reviewed draft");
+    expect(retry).toContain("Unique reviewed draft body.");
+  });
   it("includes original brief and rubric for reviewers, with a distinct self audit", () => {
     const input = {
       documentType: "runbook" as const,

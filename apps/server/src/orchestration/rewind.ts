@@ -1,11 +1,18 @@
 import { resolveThreadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
-import { pruneCheckpointRefs } from "../checkpointing/pruneCheckpointRefs.ts";
+import {
+  checkpointRepositoriesWithRef,
+  checkpointWorkspaceRepositories,
+  nestedCheckpointPaths,
+  pruneRepositoryCheckpointRefs,
+  restoreCheckpointRepositories,
+  scopedCheckpointRef,
+} from "../checkpointing/checkpointRepositories.ts";
 import { requireAttachmentOwner } from "../attachmentOwnership.ts";
 import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import path from "node:path";
 import { CheckpointRef, CommandId, EventId, type OrchestrationEvent } from "@t3tools/contracts";
-import { Cause, Effect, Exit, Semaphore } from "effect";
+import { Cause, Effect, Exit, FileSystem, Option, Semaphore } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { CheckpointStore } from "../checkpointing/Services/CheckpointStore.ts";
 import { checkpointRefForThreadTurn } from "../checkpointing/Utils.ts";
@@ -13,6 +20,9 @@ import { ProjectionTurnRepository } from "../persistence/Services/ProjectionTurn
 import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { checkSessionAction } from "../provider/sessionCapabilities.ts";
 import { withWorktreeLifecycleLock } from "../project/Layers/WorktreeLifecycleCoordinator.ts";
+import { listWorkspaceRepositories } from "../project/discoverProjectRepositories.ts";
+import { isScratchProject } from "@t3tools/shared/scratchProject";
+import { GitCore } from "../git/Services/GitCore.ts";
 import { OrchestrationEngineService } from "./Services/OrchestrationEngine.ts";
 
 type Request = Extract<
@@ -94,6 +104,8 @@ export const makeConversationRewind = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const provider = yield* ProviderService;
   const checkpoints = yield* CheckpointStore;
+  const fileSystem = yield* Effect.serviceOption(FileSystem.FileSystem);
+  const git = yield* Effect.serviceOption(GitCore);
   const turns = yield* ProjectionTurnRepository;
   const engine = yield* OrchestrationEngineService;
   const fail = (message: string) => Effect.fail(new Error(message));
@@ -140,10 +152,26 @@ export const makeConversationRewind = Effect.gen(function* () {
           "This provider cannot reliably rewind and verify its conversation history.",
         );
       const workspace = resolveThreadWorkspaceCwd({ thread, projects: model.projects });
+      const project = model.projects.find((entry) => entry.id === thread.projectId);
+      const requiresWorkspace = request.restoreFiles || caps.rollbackAffectsFiles;
+      const discovered =
+        requiresWorkspace &&
+        workspace &&
+        project &&
+        !isScratchProject(project) &&
+        Option.isSome(fileSystem)
+          ? yield* listWorkspaceRepositories(project, workspace, Option.getOrUndefined(git)).pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem.value),
+            )
+          : [];
+      const scoped = checkpointWorkspaceRepositories(discovered);
+      const repositories =
+        discovered.length === 0 && workspace ? [{ relativePath: ".", path: workspace }] : scoped;
       const nativeFiles =
         request.restoreFiles &&
         thread.session?.providerName === "claudeAgent" &&
         !!workspace &&
+        (!thread.worktreePath || scoped.length === 0) &&
         !(yield* checkpoints.isGitRepository(workspace));
       if (
         nativeFiles &&
@@ -168,7 +196,6 @@ export const makeConversationRewind = Effect.gen(function* () {
             )
           );
         });
-      const requiresWorkspace = request.restoreFiles || caps.rollbackAffectsFiles;
       if (requiresWorkspace && !workspace) return yield* fail("This rewind needs a workspace.");
       if (requiresWorkspace) {
         if (!thread.worktreePath && !nativeFiles)
@@ -268,10 +295,11 @@ export const makeConversationRewind = Effect.gen(function* () {
           if (
             request.restoreFiles &&
             !nativeFiles &&
-            !(yield* checkpoints.hasCheckpointRef({
-              cwd: workspace!,
-              checkpointRef: checkpointRefForThreadTurn(thread.id, target),
-            }))
+            (yield* checkpointRepositoriesWithRef(
+              checkpoints,
+              repositories,
+              checkpointRefForThreadTurn(thread.id, target),
+            )).length === 0
           )
             return yield* fail(
               "The file checkpoint for this boundary is unavailable. Rewind while keeping files instead.",
@@ -385,7 +413,16 @@ export const makeConversationRewind = Effect.gen(function* () {
           }
           const captureKeepFiles = caps.rollbackAffectsFiles && !request.restoreFiles;
           if (captureKeepFiles)
-            yield* checkpoints.captureCheckpoint({ cwd: workspace!, checkpointRef: keepFilesRef });
+            yield* Effect.forEach(
+              repositories,
+              (repository) =>
+                checkpoints.captureCheckpoint({
+                  cwd: repository.path,
+                  checkpointRef: scopedCheckpointRef(keepFilesRef, repository),
+                  excludePaths: nestedCheckpointPaths(repository, repositories, "capture"),
+                }),
+              { concurrency: 4, discard: true },
+            );
           // Persist before the external call. A process death here requires readback,
           // even when the provider never received the rollback. The conditional claim
           // also loses cleanly against a concurrent cancel.
@@ -395,10 +432,7 @@ export const makeConversationRewind = Effect.gen(function* () {
             // The user cancelled while this run was preparing. Cancel already restored
             // the queue and released the thread, so this is not a failure.
             if (captureKeepFiles)
-              yield* pruneCheckpointRefs(checkpoints, {
-                cwd: workspace!,
-                checkpointRefs: [keepFilesRef],
-              });
+              yield* pruneRepositoryCheckpointRefs(checkpoints, repositories, [keepFilesRef]);
             return;
           }
           state = "provider-pending";
@@ -486,8 +520,28 @@ export const makeConversationRewind = Effect.gen(function* () {
             const ref = request.restoreFiles
               ? checkpointRefForThreadTurn(thread.id, op.retained_count)
               : keepFilesRef;
-            if (!(yield* checkpoints.restoreCheckpoint({ cwd: workspace!, checkpointRef: ref })))
-              return yield* fail("The rewind file checkpoint is unavailable.");
+            const restore = yield* restoreCheckpointRepositories(checkpoints, repositories, ref);
+            if (!restore.restored) return yield* fail("The rewind file checkpoint is unavailable.");
+            if (restore.skipped.length > 0) {
+              const createdAt = new Date().toISOString();
+              yield* engine.dispatch({
+                type: "thread.activity.append",
+                threadId: thread.id,
+                commandId: CommandId.makeUnsafe(
+                  "rewind-skipped-repositories:" + request.operationId,
+                ),
+                activity: {
+                  id: EventId.makeUnsafe(randomUUID()),
+                  tone: "info",
+                  kind: "conversation.rewind.skipped-repositories",
+                  summary: "Some repositories had no checkpoint and kept their files.",
+                  payload: { repositories: restore.skipped.map((entry) => entry.relativePath) },
+                  turnId: null,
+                  createdAt,
+                },
+                createdAt,
+              });
+            }
           }
           yield* update(op.operation_id, "files-confirmed");
         }
@@ -512,12 +566,9 @@ export const makeConversationRewind = Effect.gen(function* () {
           .filter((checkpoint) => checkpoint.checkpointTurnCount > op!.retained_count)
           .map((checkpoint) => checkpoint.checkpointRef);
         if (workspace && stale.length)
-          yield* pruneCheckpointRefs(checkpoints, { cwd: workspace, checkpointRefs: stale });
+          yield* pruneRepositoryCheckpointRefs(checkpoints, repositories, stale);
         if (workspace && caps.rollbackAffectsFiles && !request.restoreFiles)
-          yield* pruneCheckpointRefs(checkpoints, {
-            cwd: workspace,
-            checkpointRefs: [keepFilesRef],
-          });
+          yield* pruneRepositoryCheckpointRefs(checkpoints, repositories, [keepFilesRef]);
       });
       yield* requiresWorkspace ? withWorktreeLifecycleLock(workspace!, perform) : perform;
     }).pipe(

@@ -1,0 +1,1 @@
+- Expanded timeline commands highlight shell syntax and embedded scripts, including Python heredocs and PowerShell commands.

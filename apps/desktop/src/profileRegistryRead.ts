@@ -2,7 +2,13 @@ import * as FS from "node:fs";
 import * as Path from "node:path";
 import { fallbackDefaultProfile } from "@t3tools/shared/profileIdentity";
 import { Schema } from "effect";
-import { ProfileRegistryFile, type ProfileRecord } from "@t3tools/contracts";
+import {
+  PROFILE_REGISTRY_VERSION_HOST,
+  PROFILE_REGISTRY_VERSION_LINUX_VM,
+  ProfileRegistryFile,
+  type ProfileRecord,
+} from "@t3tools/contracts";
+import { profileRegistryVersionViolation } from "@t3tools/shared/profileExecution";
 import { profileRegistryPath, profileStateDir } from "@t3tools/shared/profilePaths";
 
 /** Electron only reads. The backend is the sole registry writer. */
@@ -12,9 +18,17 @@ export function readDesktopProfiles(defaultStateDir: string): readonly ProfileRe
     if (FS.lstatSync(candidate).isSymbolicLink())
       throw new Error(`Profiles registry is a symbolic link: ${candidate}`);
   const raw: unknown = JSON.parse(FS.readFileSync(registryPath, "utf8"));
-  if (typeof raw !== "object" || raw === null || !("version" in raw) || raw.version !== 1)
+  if (
+    typeof raw !== "object" ||
+    raw === null ||
+    !("version" in raw) ||
+    (raw.version !== PROFILE_REGISTRY_VERSION_HOST &&
+      raw.version !== PROFILE_REGISTRY_VERSION_LINUX_VM)
+  )
     throw new Error("Unsupported profiles registry version.");
   const registry = Schema.decodeUnknownSync(ProfileRegistryFile)(raw);
+  const violation = profileRegistryVersionViolation(registry);
+  if (violation) throw new Error(violation);
   if (
     registry.profiles.filter((p) => p.isDefault).length !== 1 ||
     registry.profiles.some((p) => p.isDefault !== (p.slug === "default"))

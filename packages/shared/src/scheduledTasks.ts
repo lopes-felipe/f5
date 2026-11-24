@@ -2,6 +2,7 @@ import type { ScheduledTaskConfiguration } from "@t3tools/contracts";
 /** Execution-affecting fields, shared by admission validation and metadata-only UI edits. */
 export function scheduledExecutionConfiguration(value: ScheduledTaskConfiguration) {
   return {
+    freshContext: value.freshContext === true,
     prompt: value.prompt,
     modelSelection: value.modelSelection,
     runtimeMode: value.runtimeMode,

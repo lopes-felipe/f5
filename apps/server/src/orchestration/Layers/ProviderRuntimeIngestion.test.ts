@@ -2,6 +2,8 @@ import { backgroundWorkSessionIdentity } from "../../provider/backgroundWorkIden
 import { withProviderThreadAccess } from "../../provider/providerThreadAccess.ts";
 import { makeOrphanedSessionExitedEvent } from "../../provider/orphanedTurnRecovery.ts";
 import { CodexMcpEventBus } from "../../codex/CodexMcpEventBus.ts";
+import { CodexAppServerManager } from "../../codexAppServerManager.ts";
+import { makeCodexAdapter } from "../../provider/Layers/CodexAdapter.ts";
 import { withFixtureWorkspaceWrites } from "../testUtils/workspaceWrites.ts";
 import { NextTurnQueueStore } from "../../nextTurnQueue/Services/NextTurnQueueStore.ts";
 import { ServerSettingsService } from "../../serverSettings";
@@ -558,6 +560,67 @@ describe("ProviderRuntimeIngestion", () => {
         total_tokens: 110,
       },
     ]);
+  });
+
+  it("keeps an expired-login failure through the failed terminal and clears it on the next turn", async () => {
+    const instance = ProviderInstanceId.makeUnsafe("claude-test");
+    const harness = await createHarness();
+    await Effect.runPromise(
+      harness.providerSessionDirectory.upsert({
+        threadId: asThreadId("thread-1"),
+        provider: "claudeAgent",
+        providerInstanceId: instance,
+        runtimePayload: { sessionGeneration: 0, activeTurnId: "auth-turn" },
+      }),
+    );
+    harness.emit({
+      type: "runtime.error",
+      eventId: asEventId("auth-error"),
+      provider: "claudeAgent",
+      providerInstanceId: instance,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("auth-turn"),
+      createdAt: "2026-11-22T12:59:00Z",
+      payload: {
+        message: "Failed to authenticate: OAuth session expired and could not be refreshed",
+        class: "auth_error",
+      },
+    });
+    const failed = await waitForThread(harness.engine, (thread) => !!thread.session?.authFailure);
+    expect(failed.session?.authFailure).toMatchObject({
+      providerInstanceId: instance,
+      turnId: "auth-turn",
+    });
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("auth-terminal"),
+      provider: "claudeAgent",
+      providerInstanceId: instance,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("auth-turn"),
+      createdAt: "2026-11-22T12:59:00Z",
+      payload: { state: "failed", errorMessage: "Claude login expired" },
+    });
+    const terminal = await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.lastErrorId === "auth-terminal",
+    );
+    expect(terminal.session?.authFailure?.turnId).toBe("auth-turn");
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("next-turn-started"),
+      provider: "claudeAgent",
+      providerInstanceId: instance,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("next-turn"),
+      createdAt: "2026-11-22T13:05:00Z",
+      payload: {},
+    });
+    const resumed = await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.activeTurnId === "next-turn",
+    );
+    expect(resumed.session?.authFailure ?? null).toBeNull();
   });
 
   it("never infers the failed provider instance from the current composer selection", async () => {
@@ -4659,7 +4722,17 @@ describe("ProviderRuntimeIngestion", () => {
     const codexData = {
       item: { result: { content: [{ type: "image", mimeType: "image/png", data: png }] } },
     };
-    const emitTool = (id: string, data: unknown) =>
+    const codexDynamicData = {
+      item: {
+        type: "dynamicToolCall",
+        contentItems: [{ type: "inputImage", imageUrl: "data:image/png;base64," + png }],
+      },
+    };
+    const emitTool = (
+      id: string,
+      data: unknown,
+      itemType: "mcp_tool_call" | "dynamic_tool_call" = "mcp_tool_call",
+    ) =>
       harness.emit({
         type: "item.completed",
         eventId: asEventId(`evt-${id}`),
@@ -4668,10 +4741,11 @@ describe("ProviderRuntimeIngestion", () => {
         threadId: asThreadId("thread-1"),
         turnId: asTurnId("turn-images"),
         itemId: asItemId(id),
-        payload: { itemType: "mcp_tool_call", status: "completed", title: "Screenshot", data },
+        payload: { itemType, status: "completed", title: "Screenshot", data },
       });
     emitTool("claude-shot", claudeData);
     emitTool("codex-shot", codexData);
+    emitTool("codex-dynamic-shot", codexDynamicData, "dynamic_tool_call");
     // A replayed lifecycle event must not create a second attachment.
     emitTool("codex-shot", codexData);
 
@@ -4680,7 +4754,7 @@ describe("ProviderRuntimeIngestion", () => {
       (entry) =>
         entry.activities.filter(
           (activity: ProviderRuntimeTestActivity) => activity.kind === "tool.completed",
-        ).length >= 2,
+        ).length >= 3,
     );
     await harness.drain();
     const tools = thread.activities.filter(
@@ -4697,7 +4771,7 @@ describe("ProviderRuntimeIngestion", () => {
         FROM attachments ORDER BY attachment_id
       `,
     );
-    expect(rows).toHaveLength(2);
+    expect(rows).toHaveLength(3);
     for (const row of rows) {
       expect(row.lifecycle).toBe("ready");
       expect(fs.existsSync(row.finalPath)).toBe(true);
@@ -6704,6 +6778,29 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.lastError).toBe("runtime exploded");
   });
 
+  it("projects ACP notice titles as the warning summary", async () => {
+    const harness = await createHarness();
+    harness.emit({
+      type: "runtime.warning",
+      eventId: asEventId("startup-notice"),
+      provider: "antigravity",
+      createdAt: new Date().toISOString(),
+      threadId: asThreadId("thread-1"),
+      payload: {
+        message: "Skipped skill\n\nStartup details",
+        category: "provider",
+        detail: { noticeTitle: "Skipped skill", severity: "warning" },
+      },
+    });
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.activities.some((activity) => activity.id === "startup-notice"),
+    );
+    expect(thread.activities.find((activity) => activity.id === "startup-notice")).toMatchObject({
+      summary: "Skipped skill",
+      payload: { message: "Skipped skill\n\nStartup details" },
+    });
+  });
+
   it("keeps the session running when a runtime.warning arrives during an active turn", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();
@@ -8135,6 +8232,75 @@ describe("ProviderRuntimeIngestion", () => {
     expect(result.executions[0]?.title).toBe("Search workspace");
   });
 
+  it("interrupts a command still running when its native Codex thread closes", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("settled-turn");
+    const now = new Date().toISOString();
+    const base = { provider: "codex", createdAt: now, threadId, turnId } as const;
+    harness.emit({
+      ...base,
+      type: "turn.started",
+      eventId: asEventId("evt-close-turn-started"),
+      payload: {},
+    });
+    harness.emit({
+      ...base,
+      type: "turn.completed",
+      eventId: asEventId("evt-close-turn-completed"),
+      payload: { state: "completed" },
+    });
+    await runtime!.runPromise(
+      Effect.gen(function* () {
+        const manager = new CodexAppServerManager();
+        const adapter = yield* makeCodexAdapter({ manager });
+        for (const itemId of ["closing", "unrelated", "unscoped"]) {
+          manager.emit("event", {
+            ...base,
+            kind: "notification",
+            method: "item/started",
+            id: asEventId("evt-command-" + itemId),
+            itemId: asItemId(itemId),
+            payload: {
+              ...(itemId !== "unscoped" ? { threadId: itemId } : {}),
+              turnId,
+              item: { id: itemId, type: "commandExecution", command: "sleep 60" },
+            },
+          });
+        }
+        manager.emit("event", {
+          ...base,
+          kind: "notification",
+          method: "thread/closed",
+          id: asEventId("evt-native-thread-closed"),
+          payload: { threadId: "closing" },
+        });
+        yield* adapter.streamEvents.pipe(
+          Stream.take(4),
+          Stream.runForEach((event) => Effect.sync(() => harness.emit(event))),
+        );
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    );
+    await harness.drain();
+    const result = await Effect.runPromise(
+      harness.threadCommandExecutionQuery.getThreadCommandExecutions({ threadId }),
+    );
+    expect(result.executions).toHaveLength(3);
+    expect(result.executions.find((item) => item.providerItemId === "closing")?.status).toBe(
+      "interrupted",
+    );
+    expect(result.executions.find((item) => item.providerItemId === "unrelated")?.status).toBe(
+      "running",
+    );
+    expect(result.executions.find((item) => item.providerItemId === "unscoped")?.status).toBe(
+      "running",
+    );
+    const thread = (await Effect.runPromise(harness.engine.getReadModel())).threads.find(
+      (item) => item.id === threadId,
+    );
+    expect(thread?.latestTurn?.state).toBe("completed");
+  });
+
   for (const afterTurn of [false, true]) {
     it(`captures late command output after ${afterTurn ? "turn" : "item"} completion`, async () => {
       const harness = await createHarness();
@@ -8254,8 +8420,12 @@ describe("ProviderRuntimeIngestion", () => {
       readonly status: "completed" | "failed";
       readonly output: string;
       readonly outputAfterCompletion?: boolean;
+      readonly gitLabLinking?: boolean;
+      readonly fullCommand?: string;
     }) => {
-      const harness = await createHarness();
+      const harness = await createHarness({
+        settings: { autoLinkShellCreatedMergeRequests: input.gitLabLinking ?? false },
+      });
       const now = new Date().toISOString();
       const base = {
         provider: input.provider,
@@ -8286,6 +8456,9 @@ describe("ProviderRuntimeIngestion", () => {
           status: "inProgress",
           title: "Command run",
           detail: input.detail,
+          ...(input.fullCommand
+            ? { data: { toolName: "Bash", input: { command: input.fullCommand } } }
+            : {}),
         },
       });
       if (!input.outputAfterCompletion) output();
@@ -8329,6 +8502,41 @@ describe("ProviderRuntimeIngestion", () => {
           url: prUrl,
         },
       ]);
+    });
+    it.each([false, true])("honors the GitLab linking preference: %s", async (enabled) => {
+      const harness = await runCommand({
+        key: "gitlab-" + enabled,
+        provider: "claudeAgent",
+        detail: "Bash: glab mr create --fill",
+        status: "completed",
+        output: "https://gitlab.com/team/repo/-/merge_requests/7\n",
+        outputAfterCompletion: true,
+        gitLabLinking: enabled,
+      });
+      const links = await linksOf(harness);
+      expect(links.map((link) => link.number)).toEqual(enabled ? [7] : []);
+    });
+    it("uses the complete Claude command instead of its truncated display summary", async () => {
+      const fullCommand =
+        'gh pr create --body "' + "body mentions gh api and gh pr list. ".repeat(30) + '"';
+      const harness = await runCommand({
+        key: "long-claude-body",
+        provider: "claudeAgent",
+        detail: "Bash: " + fullCommand.slice(0, 400) + "…",
+        fullCommand,
+        status: "completed",
+        output: prUrl,
+      });
+      expect((await linksOf(harness)).map((link) => link.number)).toEqual([493]);
+      const ambiguous = await runCommand({
+        key: "long-claude-trailing-lookup",
+        provider: "claudeAgent",
+        detail: "Bash: " + fullCommand.slice(0, 400) + "…",
+        fullCommand: fullCommand + "; gh pr view feature --json url",
+        status: "completed",
+        output: prUrl,
+      });
+      expect(await linksOf(ambiguous)).toEqual([]);
     });
 
     it("links a PR whose URL arrives after the command completed", async () => {

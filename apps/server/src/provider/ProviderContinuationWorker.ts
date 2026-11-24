@@ -185,8 +185,6 @@ export const ProviderContinuationWorkerLive = Layer.effect(
                   text: "Continue the work already in progress.",
                   attachments: [],
                 },
-                model: thread.model,
-                ...(thread.modelSelection ? { modelSelection: thread.modelSelection } : {}),
                 runtimeMode: thread.runtimeMode,
                 interactionMode: thread.interactionMode,
                 ...(thread.session.workflowExecutionProfile

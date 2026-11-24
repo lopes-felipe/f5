@@ -131,7 +131,7 @@ export const runClaudeCliCommand = (
       options.baseEnvironment,
       options?.envOverrides,
     );
-    const invocation = yield* Effect.try({
+    const invocation = yield* Effect.tryPromise({
       try: () =>
         resolveClaudeCliInvocation(options?.binaryPath, args, environment, { cwd: options?.cwd }),
       catch: (cause) =>

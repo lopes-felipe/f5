@@ -44,7 +44,21 @@ import { isDebPackage } from "./linuxPackage";
 import { initializeUpdatePreferences, writeUpdatePreferences } from "./updateChannel";
 import { consumeUpdateInstallMarker, writeUpdateInstallMarker } from "./updateInstallMarker";
 import { migrateUserData } from "./userDataMigration";
-import { isolatedBackendCommand } from "./backendComputerIsolation";
+import {
+  hostBackendLauncher,
+  requireProfileBackendLauncher,
+  resolveProfileBackendLauncher,
+  HOST_BACKEND_STOP_GRACE_MS,
+  type BackendLaunch,
+  type ProfileBackendLauncher,
+} from "./profileBackendLauncher";
+import {
+  resolveVmLaunchAssets,
+  vmBackendLauncher,
+  VmSlotReservations,
+} from "./vm/vmBackendLauncher";
+import { VM_REFUSED_EXIT_CODE, VM_STOP_FAILED_EXIT_CODE } from "./vm/vmSupervisor";
+import { isLinuxVmProfile } from "@t3tools/shared/profileExecution";
 import { computerHostMetadata } from "@t3tools/shared/computerExecution";
 import {
   assertFileActionCaller,
@@ -57,7 +71,8 @@ import { profilePreviewPartition } from "./profileRuntime";
 import { CaptureShortcut } from "./snapShot/CaptureShortcut";
 import { captureBoundedPage } from "./preview/capture";
 import { capturePreviewSnapshotPage } from "./preview/snapshotScript";
-import { buildPreviewPickScript } from "./preview/pickScript";
+import { PreviewPicker } from "./preview/PreviewPicker";
+import { previewLocationPromptOptions } from "./preview/locationPrompt";
 import {
   PreviewAutomationControl,
   PreviewDiagnostics,
@@ -79,6 +94,8 @@ import {
 import { registerPreviewWindowOpen } from "./preview/previewWindowOpen";
 import { installAgentDownloadHandler } from "./preview/agentDownloads";
 import { installPreviewPermissionPolicy } from "./preview/previewPermissions";
+import { createPreviewPasskeys, signedWebAuthnEntitlements } from "./preview/Passkeys";
+import { PASSKEY_BRIDGE_ARGUMENT } from "./preview/GuestProtocol";
 import { captureMacWindow } from "./snapShot/MacSnapShot";
 import { profileStateDir } from "@t3tools/shared/profilePaths";
 import { closeWindowsForQuit } from "./quitPreflight";
@@ -118,13 +135,13 @@ import {
 } from "./browser/BrowserOpenPrompt";
 import { registerBrowserOpenIpc } from "./browser/registerBrowserOpenIpc";
 import { appMainFrameProfile } from "./appRendererCaller";
-import { getSafeExternalUrl } from "./browser/externalUrl";
+import { getSafeExternalUrl, getSafeShellExternalUrl } from "./browser/externalUrl";
 import { ChromeProcessSupervisor } from "./computer/ChromeProcessSupervisor";
 import { isIntegrationCertified } from "@t3tools/shared/providerIntegrationCertification";
 import { registerComputerIpc } from "./computer/registerComputerIpc";
 import { applyComputerPause } from "./computer/computerPause";
 import { capturePermissions, openComputerPermissionSettings } from "./computer/permissions";
-import { clickPreviewGuest } from "./preview/guestFocus";
+import { clickPreviewGuest, hasPendingPreviewInput } from "./preview/guestFocus";
 import type { ProfileRecord } from "@t3tools/contracts";
 import { desktopDefaultProfile, readDesktopProfiles } from "./profileRegistryRead";
 import {
@@ -368,6 +385,13 @@ interface BackendRuntime {
   stopped: boolean;
   outputTail: BackendOutputTail;
   startupReady: boolean;
+  /**
+   * The profile's port reaches this incarnation. Readiness checks carry the auth token, so
+   * none is sent before it: a VM's port stays free until its forward is up.
+   */
+  backendReachable: boolean;
+  /** When this incarnation's startup last reported progress (epoch ms, 0 for never). */
+  startupProgressAt: number;
   recoveryWindow: BrowserWindow | null;
   startupFailure: BackendStartupFailure | null;
 }
@@ -383,11 +407,52 @@ const makeBackendRuntime = (profile: ProfileRecord): BackendRuntime => ({
   stopped: false,
   outputTail: new BackendOutputTail(),
   startupReady: false,
+  backendReachable: false,
+  startupProgressAt: 0,
   recoveryWindow: null,
   startupFailure: null,
 });
 const defaultBackend = makeBackendRuntime(desktopDefaultProfile(STATE_DIR));
+const lastStartupErrorPath = (profileId: string) =>
+  Path.join(profilesRootDir(STATE_DIR), `last-startup-error-${profileId}.json`);
+/**
+ * Host profiles always have a launcher. Linux VM profiles get one only behind the hidden
+ * experiment flag, on Apple silicon, with Lima, the backend archive and a pinned image;
+ * otherwise they are refused, never rerouted to the host.
+ */
+const vmLaunchAssets = resolveVmLaunchAssets({
+  env: process.env,
+  platform: process.platform,
+  arch: process.arch,
+  resourcesPath: process.resourcesPath ?? "",
+  packaged: app.isPackaged,
+  appVersion: app.getVersion(),
+});
+if (!vmLaunchAssets.ok && process.env.F5_EXPERIMENTAL_LINUX_VM === "1")
+  console.warn(`[desktop] Linux VM profiles unavailable: ${vmLaunchAssets.reason}`);
+const backendLaunchers: Partial<Record<"host" | "linux-vm", ProfileBackendLauncher>> = {
+  host: hostBackendLauncher({ platform: process.platform, executable: process.execPath }),
+  ...(vmLaunchAssets.ok
+    ? {
+        "linux-vm": vmBackendLauncher({
+          platform: process.platform,
+          executable: process.execPath,
+          supervisorEntry: Path.join(__dirname, "vmSupervisorEntry.js"),
+          stateDir: STATE_DIR,
+          assets: vmLaunchAssets.assets,
+          startupErrorPath: lastStartupErrorPath,
+        }),
+      }
+    : {}),
+};
 const backends = new Map<string, BackendRuntime>([[defaultBackend.profile.id, defaultBackend]]);
+const vmSlots = new VmSlotReservations();
+/**
+ * VM profiles whose supervisor ended while Lima may still run their VM (a failed shutdown,
+ * or a supervisor killed after its grace). They keep their VM slot until a later supervisor
+ * of the same profile exits after a confirmed shutdown.
+ */
+const strandedVms = new Set<string>();
 const profileByWebContentsId = new Map<number, string>();
 function profileWindows(profileId: string): BrowserWindow[] {
   return BrowserWindow.getAllWindows().filter(
@@ -1048,10 +1113,13 @@ function hostOfUrl(url: string): string | undefined {
  * that start in this window keep agent provenance until they settle, however slow.
  */
 const AGENT_NAVIGATION_GRACE_MS = 10_000;
+const locationPromptsByGuest = new WeakMap<Electron.WebContents, AbortController>();
 
 function markAgentNavigation(tabId: string): void {
   const entry = lookupPreviewTabEntry(tabId);
   if (entry) entry.agentNavigationUntil = Date.now() + AGENT_NAVIGATION_GRACE_MS;
+  const guest = getPreviewWebContents(tabId);
+  if (guest) locationPromptsByGuest.get(guest)?.abort();
 }
 
 /** Agent-driven navigations are blocked with `external-blocked`, never handed to the system browser. */
@@ -1242,6 +1310,8 @@ function registerPreviewWebContents(tabId: string, webContentsId: number): boole
   entry.removeListeners = [];
   entry.ownerWebContentsId = guest.hostWebContents?.id ?? null;
   entry.webContentsId = webContentsId;
+  entry.removeListeners.push(previewPasskeys.attachGuest(guest));
+  previewPasskeys.installSessionHandlers(guest.session);
   installAgentDownloadHandler(guest.session, {
     // Each profile keeps its own downloads; sessions can outlive the guest that installed this.
     directoryFor: (sourceId) => {
@@ -1280,6 +1350,19 @@ function registerPreviewWebContents(tabId: string, webContentsId: number): boole
         isAgentNavigation: () => isAgentPreviewNavigation(tabId),
         isAllowedUrl: (url) => getSafePreviewUrl(url, previewTabExternalHosts(tabId)) !== null,
         onBlocked: (url) => recordBlockedAgentNavigation(tabId, url),
+        get passkeys() {
+          return previewPasskeys.bridgeEnabled
+            ? {
+                preload: Path.join(__dirname, "preview", "guestPreload.js"),
+                additionalArguments: [PASSKEY_BRIDGE_ARGUMENT],
+                onCreated: (child: BrowserWindow) => {
+                  const detach = previewPasskeys.attachGuest(child.webContents);
+                  previewPasskeys.installSessionHandlers(child.webContents.session);
+                  child.once("closed", detach);
+                },
+              }
+            : undefined;
+        },
       },
     );
     entry.enforcePopupPolicy = popups.enforcePolicy;
@@ -1650,12 +1733,17 @@ function isPickedElementResult(value: unknown): value is {
   );
 }
 
+const previewPicker = new PreviewPicker();
+
 async function pickPreviewElement(tabId: string): Promise<PreviewAnnotationPayload | null> {
   const guest = getPreviewWebContents(tabId);
   if (!guest) {
     throw new Error("Preview webview is not attached.");
   }
-  const rawResult = await guest.executeJavaScript(buildPreviewPickScript(), true);
+  const rawResult = await previewPicker.pick(
+    guest,
+    previewAutomationControl.isActive(tabId) || hasPendingPreviewInput(guest),
+  );
   if (!isPickedElementResult(rawResult)) {
     return null;
   }
@@ -1743,6 +1831,7 @@ async function runPreviewAutomationAction<T>(
   try {
     const result = await previewAutomationControl.run(tabId, async (checkpoint) => {
       const guest = requirePreviewWebContents(tabId);
+      previewPicker.assertAutomationAllowed(guest);
       requireAllowedPreviewPage(tabId, guest);
       markAgentNavigation(tabId);
       try {
@@ -2258,7 +2347,11 @@ function initializeDesktopLogging(): void {
   }
 }
 
-function captureBackendOutput(child: ChildProcess.ChildProcess, runtime: BackendRuntime): void {
+function captureBackendOutput(
+  child: ChildProcess.ChildProcess,
+  runtime: BackendRuntime,
+  stdoutIsLog: boolean,
+): void {
   const tail = runtime.outputTail;
   const writeChunk = (stream: "stdout" | "stderr") => (chunk: unknown) => {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), "utf8");
@@ -2266,7 +2359,8 @@ function captureBackendOutput(child: ChildProcess.ChildProcess, runtime: Backend
     backendLogSink?.write(Buffer.concat([Buffer.from(`[${runtime.profile.slug}] `), buffer]));
     if (!app.isPackaged) process[stream].write(buffer);
   };
-  child.stdout?.on("data", writeChunk("stdout"));
+  // A guest backend's stdout is its frame channel, never log output.
+  if (stdoutIsLog) child.stdout?.on("data", writeChunk("stdout"));
   child.stderr?.on("data", writeChunk("stderr"));
 }
 
@@ -3273,29 +3367,55 @@ function startBackend(runtime: BackendRuntime = defaultBackend): void {
     return;
   }
 
+  // No fallback: a profile whose environment has no launcher never starts elsewhere. Opening
+  // refuses such a profile earlier; this also covers restarts and the startup Default.
+  const resolved = resolveProfileBackendLauncher(runtime.profile, backendLaunchers);
+  if (!resolved.ok) {
+    runtime.stopped = true;
+    showStartupRecovery(runtime, resolved.message);
+    return;
+  }
+
   const backendIncarnation = Crypto.randomUUID();
   runtime.outputTail = new BackendOutputTail();
   runtime.startupReady = false;
-  const isolated = isolatedBackendCommand(
-    process.platform,
-    process.execPath,
-    backendEntry,
-    app.isPackaged ? compileCachePreloadArgs(__dirname) : [],
-  );
-  const child = ChildProcess.spawn(isolated.executable, isolated.args, {
-    cwd: resolveBackendCwd(),
-    // In Electron main, process.execPath points to the Electron binary.
-    // Run the child in Node mode so this backend process does not become a GUI app instance.
-    env: {
-      ...backendEnv(runtime),
-      ELECTRON_RUN_AS_NODE: "1",
-      F5_DESKTOP_COMPUTER_HOST: "ipc",
-      F5_DESKTOP_BACKEND_INCARNATION: backendIncarnation,
-    },
-    stdio: ["ignore", "pipe", "pipe", "ipc"],
-  });
+  runtime.startupProgressAt = 0;
+  // Progress arrives asynchronously, so `launched` is set by then; a superseded
+  // incarnation's progress is ignored.
+  let launched: ChildProcess.ChildProcess | null = null;
+  let launch: BackendLaunch;
+  try {
+    launch = resolved.launcher.launch({
+      entry: backendEntry,
+      nodeArgs: app.isPackaged ? compileCachePreloadArgs(__dirname) : [],
+      cwd: resolveBackendCwd(),
+      env: backendEnv(runtime),
+      incarnation: backendIncarnation,
+      profileId: runtime.profile.id,
+      profileStateDir: profileStateDir(STATE_DIR, runtime.profile),
+      port: runtime.backendPort,
+      authToken: runtime.backendAuthToken,
+      onStartupProgress: () => {
+        if (launched !== null && runtime.backendProcess === launched)
+          runtime.startupProgressAt = Date.now();
+      },
+    });
+  } catch (error) {
+    runtime.stopped = true;
+    showStartupRecovery(runtime, error instanceof Error ? error.message : String(error));
+    return;
+  }
+  const child = launch.process;
+  launched = child;
   runtime.backendProcess = child;
-  computerSystem?.channel.register(runtime.profile.id, backendIncarnation, child);
+  runtime.backendReachable = launch.reachable === undefined;
+  void launch.reachable?.then(
+    () => {
+      if (runtime.backendProcess === child) runtime.backendReachable = true;
+    },
+    () => undefined,
+  );
+  computerSystem?.channel.registerChannel(runtime.profile.id, backendIncarnation, launch.channel);
   stopHealthMonitor(runtime);
   runtime.cancelHealthMonitor = monitorBackendHealth({
     isCurrent: () =>
@@ -3319,6 +3439,8 @@ function startBackend(runtime: BackendRuntime = defaultBackend): void {
       runtime.recoveryWindow?.close();
       runtime.recoveryWindow = null;
     },
+    startupTimeoutMs: resolved.launcher.readinessTimeoutMs,
+    lastStartupProgressAt: () => runtime.startupProgressAt,
     onStartupTimeout: () =>
       showStartupRecovery(runtime, "The server started but did not become ready in time."),
     onSustainedHealth: () => {
@@ -3348,7 +3470,7 @@ function startBackend(runtime: BackendRuntime = defaultBackend): void {
     "START",
     `pid=${child.pid ?? "unknown"} port=${runtime.backendPort} cwd=${resolveBackendCwd()}`,
   );
-  captureBackendOutput(child, runtime);
+  captureBackendOutput(child, runtime, launch.stdoutIsLog);
 
   child.on("error", (error) => {
     if (runtime.backendProcess === child) {
@@ -3368,16 +3490,14 @@ function startBackend(runtime: BackendRuntime = defaultBackend): void {
     closeBackendSession(
       `pid=${child.pid ?? "unknown"} code=${code ?? "null"} signal=${signal ?? "null"}`,
     );
+    if (isLinuxVmProfile(runtime.profile)) noteVmSupervisorExit(runtime.profile.id, code, signal);
     if (!current || isQuitting || runtime.stopped) return;
     if (code === 78) {
       runtime.stopped = true;
       let message = "Profile startup failed. Check its registry, lock, and configured port.";
       try {
         message = JSON.parse(
-          FS.readFileSync(
-            Path.join(profilesRootDir(STATE_DIR), `last-startup-error-${runtime.profile.id}.json`),
-            "utf8",
-          ),
+          FS.readFileSync(lastStartupErrorPath(runtime.profile.id), "utf8"),
         ).message;
       } catch {
         /* Startup may have failed before the diagnostic could be written. */
@@ -3390,12 +3510,49 @@ function startBackend(runtime: BackendRuntime = defaultBackend): void {
   });
 }
 
+/**
+ * A VM supervisor shuts its VM down, confirmed by Lima, before every ordinary exit. It
+ * reports a VM it couldn't shut down with VM_STOP_FAILED_EXIT_CODE, or with
+ * `vmStillRunning` on a refusal; one killed by a signal never got to confirm anything.
+ */
+function noteVmSupervisorExit(
+  profileId: string,
+  code: number | null,
+  signal: NodeJS.Signals | null,
+): void {
+  if (signal !== null || code === VM_STOP_FAILED_EXIT_CODE) {
+    strandedVms.add(profileId);
+    return;
+  }
+  if (code === VM_REFUSED_EXIT_CODE) {
+    // A refusal can also come from a supervisor that never touched the VM (its lock was
+    // held), so only an explicit report changes what main knows.
+    try {
+      const report = JSON.parse(FS.readFileSync(lastStartupErrorPath(profileId), "utf8")) as {
+        vmStillRunning?: unknown;
+      };
+      if (report.vmStillRunning === true) strandedVms.add(profileId);
+    } catch {
+      /* No report: nothing new is known. */
+    }
+    return;
+  }
+  strandedVms.delete(profileId);
+}
+
+/** Counts until the supervisor has exited, not merely been signalled to stop. */
+function vmSupervisorAlive(runtime: BackendRuntime): boolean {
+  const child = runtime.backendProcess;
+  return !!child && child.exitCode === null && child.signalCode === null;
+}
+
 function stopHealthMonitor(runtime: BackendRuntime): void {
   runtime.cancelHealthMonitor?.();
   runtime.cancelHealthMonitor = null;
 }
 
 async function checkBackendReady(runtime: BackendRuntime): Promise<boolean> {
+  if (!runtime.backendReachable) return false;
   try {
     const response = await fetch(
       `${getDesktopBackendHttpOrigin(runtime.backendPort)}/api/bootstrap`,
@@ -3429,8 +3586,14 @@ function stopBackend(runtime: BackendRuntime = defaultBackend): void {
       if (child.exitCode === null && child.signalCode === null) {
         void killProcessTreeAsync(child, { isGroupLeader: false, graceful: false });
       }
-    }, 2_000).unref();
+    }, backendStopGraceMs(runtime)).unref();
   }
+}
+
+/** A VM supervisor shuts its VM down before exiting; host backends get the usual 2 s. */
+function backendStopGraceMs(runtime: BackendRuntime): number {
+  const resolved = resolveProfileBackendLauncher(runtime.profile, backendLaunchers);
+  return resolved.ok ? resolved.launcher.stopGraceMs : HOST_BACKEND_STOP_GRACE_MS;
 }
 
 async function stopBackendAndWaitForExit(
@@ -3451,6 +3614,9 @@ async function stopBackendAndWaitForExit(
     runtime.backendProcess = null;
     return;
   }
+  const graceMs = backendStopGraceMs(runtime);
+  // Never give up on a backend before its own grace period, plus time for the forced kill.
+  const waitMs = Math.max(timeoutMs, graceMs + 3_000);
 
   await new Promise<void>((resolve) => {
     let settled = false;
@@ -3489,12 +3655,12 @@ async function stopBackendAndWaitForExit(
       if (backendChild.exitCode === null && backendChild.signalCode === null) {
         void killProcessTreeAsync(backendChild, { isGroupLeader: false, graceful: false });
       }
-    }, 2_000);
+    }, graceMs);
     forceKillTimer.unref();
 
     exitTimeoutTimer = setTimeout(() => {
       settle();
-    }, timeoutMs);
+    }, waitMs);
     exitTimeoutTimer.unref();
   });
   if (backendChild.exitCode === null && backendChild.signalCode === null)
@@ -3508,15 +3674,48 @@ const bootstrapGate = createBootstrapGate();
 let lastOpenedProfileId = defaultBackend.profile.id;
 
 async function ensureBackendRunning(runtime: BackendRuntime): Promise<void> {
+  // Held from the synchronous cap check until the profile counts as running (or fails).
+  const vmSlot: { release?: () => void } = {};
+  try {
+    await ensureProfileBackendWithSlot(runtime, (release) => {
+      vmSlot.release = release;
+    });
+  } finally {
+    vmSlot.release?.();
+  }
+}
+
+async function ensureProfileBackendWithSlot(
+  runtime: BackendRuntime,
+  holdVmSlot: (release: () => void) => void,
+): Promise<void> {
   await ensureProfileBackend(runtime, {
     stop: () => stopBackendAndWaitForExit(5000, runtime),
     prepare: async () => {
       if (isQuitting) throw new Error("F5 is shutting down.");
+      // Before any port, auth or cap bookkeeping: a refused profile fails once, with its reason.
+      requireProfileBackendLauncher(runtime.profile, backendLaunchers);
       const otherBackends = [...backends.values()].filter(
         (entry) => entry !== runtime && (!entry.stopped || isProfileBackendRunning(entry)),
       );
       if (otherBackends.length >= MAX_ACTIVE_PROFILE_BACKENDS)
         throw new Error("Six profiles are already running. Stop one before opening another.");
+      if (isLinuxVmProfile(runtime.profile))
+        holdVmSlot(
+          vmSlots.reserve(runtime.profile.id, [
+            // A stopping VM counts until its supervisor exits; a crashed one awaiting its
+            // restart counts too, since the restart boots it again without a new check.
+            ...[...backends.values()]
+              .filter(
+                (entry) =>
+                  entry !== runtime &&
+                  isLinuxVmProfile(entry.profile) &&
+                  (!entry.stopped || vmSupervisorAlive(entry)),
+              )
+              .map((entry) => entry.profile.id),
+            ...strandedVms,
+          ]),
+        );
       await ensureProfileConnection(
         runtime,
         () =>
@@ -3541,6 +3740,8 @@ async function ensureBackendRunning(runtime: BackendRuntime): Promise<void> {
       waitForProfileBackend(
         () => !isQuitting && !runtime.stopped && isProfileBackendRunning(runtime),
         () => checkBackendReady(runtime),
+        requireProfileBackendLauncher(runtime.profile, backendLaunchers).readinessTimeoutMs,
+        () => runtime.startupProgressAt,
       ),
   });
 }
@@ -3791,7 +3992,11 @@ function registerIpcHandlers(): void {
     try {
       if (event.senderFrame !== event.sender.mainFrame)
         throw new Error("Only the owning main frame may bootstrap.");
-      event.returnValue = runtimeForRenderer(event.sender.id).backendWsUrl;
+      const runtime = runtimeForRenderer(event.sender.id);
+      event.returnValue = getDesktopBackendWebSocketUrl(
+        runtime.backendPort,
+        runtime.backendAuthToken,
+      );
     } catch {
       event.returnValue = null;
     }
@@ -3998,7 +4203,7 @@ function registerIpcHandlers(): void {
 
   ipcMain.removeHandler(OPEN_EXTERNAL_CHANNEL);
   ipcMain.handle(OPEN_EXTERNAL_CHANNEL, async (_event, rawUrl: unknown) => {
-    const externalUrl = getSafeExternalUrl(rawUrl);
+    const externalUrl = getSafeShellExternalUrl(rawUrl);
     if (!externalUrl) {
       return false;
     }
@@ -4296,18 +4501,21 @@ function registerIpcHandlers(): void {
         const guest = getPreviewWebContents(scopedTabId);
         const url = getSafePreviewUrl(rawUrl, previewTabExternalHosts(scopedTabId));
         if (!guest || !url) throw new Error("Preview navigation target is invalid.");
-        // Redirects from an agent's navigation are blocked, never opened externally.
-        if (agent) markAgentNavigation(scopedTabId);
-        // Take over stops a pending agent load (as ERR_FAILED); tell the agent it was
-        // interrupted rather than report success or a load failure.
-        const takeover = agent ? previewAutomationControl.checkpoint(scopedTabId) : null;
-        try {
-          await loadPreviewURL(guest, url);
-        } catch (error) {
-          takeover?.check();
-          throw error;
-        }
-        takeover?.check();
+        if (!agent) return loadPreviewURL(guest, url);
+        await previewAutomationControl.run(scopedTabId, async (takeover) => {
+          if (getPreviewWebContents(scopedTabId) !== guest)
+            throw new Error("Preview navigation target changed.");
+          previewPicker.assertAutomationAllowed(guest);
+          // Redirects from an agent's navigation are blocked, never opened externally.
+          markAgentNavigation(scopedTabId);
+          try {
+            await loadPreviewURL(guest, url);
+          } catch (error) {
+            takeover.check();
+            throw error;
+          }
+          takeover.check();
+        });
       },
       goBack: (tabId) => {
         const guest = getPreviewWebContents(scopeTabId(tabId));
@@ -4323,9 +4531,8 @@ function registerIpcHandlers(): void {
         getPreviewWebContents(scopeTabId(tabId))?.openDevTools({ mode: "detach" }),
       pickElement: (tabId) => pickPreviewElement(scopeTabId(tabId)),
       cancelPickElement: async (tabId) => {
-        await getPreviewWebContents(scopeTabId(tabId))
-          ?.executeJavaScript("window.__f5PreviewPickCancel?.()", true)
-          .catch(() => null);
+        const guest = getPreviewWebContents(scopeTabId(tabId));
+        if (guest) await previewPicker.cancel(guest);
       },
       automationStatus: (tabId) => previewAutomationStatus(scopeTabId(tabId)),
       automationSnapshot: (tabId, save) => previewAutomationSnapshot(scopeTabId(tabId), save),
@@ -4453,10 +4660,36 @@ function createWindow(
     params.src = "about:blank";
     installPreviewPermissionPolicy(electronSession.fromPartition(partition), {
       isUserDriven: (guest) => {
-        const id = (guest as { readonly id?: unknown }).id;
-        return [...previewTabs.entries()].some(
-          ([tabId, tab]) => tab.webContentsId === id && !isAgentPreviewNavigation(tabId),
+        return (
+          !guest.isDestroyed() &&
+          [...previewTabs.entries()].some(
+            ([tabId, tab]) => tab.webContentsId === guest.id && !isAgentPreviewNavigation(tabId),
+          )
         );
+      },
+      confirmGeolocation: async (guest, origin) => {
+        const host = guest.isDestroyed() ? null : guest.hostWebContents;
+        const parent = host && !host.isDestroyed() ? BrowserWindow.fromWebContents(host) : null;
+        if (!parent || parent.isDestroyed()) return undefined;
+        const controller = new AbortController();
+        const cancel = () => controller.abort();
+        locationPromptsByGuest.set(guest, controller);
+        guest.once("did-start-navigation", cancel);
+        guest.once("destroyed", cancel);
+        guest.once("render-process-gone", cancel);
+        try {
+          const options = previewLocationPromptOptions(origin, controller.signal);
+          const { response } =
+            process.platform === "win32"
+              ? await dialog.showMessageBox(options)
+              : await dialog.showMessageBox(parent, options);
+          return controller.signal.aborted ? undefined : response === 0;
+        } finally {
+          locationPromptsByGuest.delete(guest);
+          guest.off("did-start-navigation", cancel);
+          guest.off("destroyed", cancel);
+          guest.off("render-process-gone", cancel);
+        }
       },
     });
     // A page that goes fullscreen fills its own webview instead of the whole F5 window.
@@ -4468,6 +4701,12 @@ function createWindow(
     webPreferences.nodeIntegration = false;
     webPreferences.nodeIntegrationInSubFrames = false;
     webPreferences.contextIsolation = true;
+    webPreferences.additionalArguments = [
+      ...(webPreferences.additionalArguments ?? []).filter(
+        (argument) => argument !== PASSKEY_BRIDGE_ARGUMENT,
+      ),
+      ...(previewPasskeys.bridgeEnabled ? [PASSKEY_BRIDGE_ARGUMENT] : []),
+    ];
     webPreferences.preload = Path.join(__dirname, "preview", "guestPreload.js");
   });
 
@@ -4843,11 +5082,34 @@ async function initializeKeepAwake(): Promise<void> {
 }
 
 let desktopTheme: ReturnType<typeof createDesktopTheme> | undefined;
+let previewPasskeys = createPreviewPasskeys({ browserPasskeys: false });
+// Signing tools can take seconds. Start probing in parallel with Electron's
+// initialization; windows and backends never wait for this optional feature.
+const previewEntitlements = signedWebAuthnEntitlements();
 
 app
   .whenReady()
   .then(async () => {
     writeDesktopLogHeader("app ready");
+    void previewEntitlements
+      .then((entitlements) => {
+        previewPasskeys = createPreviewPasskeys(entitlements);
+        previewPasskeys.configure();
+        // Restored tabs may have attached while signing tools were running.
+        // Bind the main-process checks and enable their existing preload too.
+        for (const entry of previewTabs.values()) {
+          const guest =
+            entry.webContentsId === null
+              ? undefined
+              : electronWebContents.fromId(entry.webContentsId);
+          if (!guest || guest.isDestroyed()) continue;
+          entry.removeListeners.push(previewPasskeys.attachGuest(guest));
+          previewPasskeys.installSessionHandlers(guest.session);
+        }
+      })
+      .catch(() => {
+        writeDesktopLogHeader("Touch ID passkeys could not be configured for this signed build.");
+      });
     // Non-Linux artifacts omit dbus-next and its Unix-only native transport.
     const watchLinuxColorScheme =
       process.platform === "linux"

@@ -64,6 +64,8 @@ export interface CheckoutInspection extends CheckoutIdentity {
 
 /** Internal compatibility input; force is never honored for an existing checkout. */
 export interface InternalRemoveWorktreeInput {
+  /** Already approved by the project owner and supplied only by explicit removal. */
+  readonly layoutRemove?: string;
   readonly cwd: string;
   readonly path: string;
   readonly force?: boolean;
@@ -187,6 +189,40 @@ export interface GitWorktreeProgress {
  * GitCoreShape - Service API for low-level Git repository interactions.
  */
 export interface GitCoreShape extends MoveSnapshotOperations {
+  readonly listProjectRepositoryRoots?: (
+    projectId: string,
+  ) => Effect.Effect<ReadonlyArray<string>, GitCommandError>;
+  readonly setProjectRepositoryRoot?: (input: {
+    projectId: string;
+    projectRoot: string;
+    path: string;
+    tracked: boolean;
+  }) => Effect.Effect<void, GitCommandError>;
+  readonly readWorktreeGroup?: (
+    path: string,
+  ) => Effect.Effect<
+    import("../../persistence/Services/WorktreePreparations.ts").WorktreeGroupPlan | null,
+    GitCommandError
+  >;
+  readonly prepareWorktreeGroup?: (input: {
+    layoutCreate?: string;
+    retryLayout?: boolean;
+    rooted?: boolean;
+    projectId: string;
+    threadId: string;
+    projectRoot: string;
+    path: string;
+    branch: string;
+    baseBranch: string;
+    repositories: ReadonlyArray<string>;
+    selected: ReadonlyArray<string>;
+  }) => Effect.Effect<void, GitCommandError>;
+  readonly inspectWorktreeGroup?: (input: {
+    projectRoot: string;
+    path: string;
+    branch: string | null;
+    threadId?: string;
+  }) => Effect.Effect<{ ready: boolean; recoverable: boolean } | null, GitCommandError>;
   /** Await refreshes admitted for an owned checkout before releasing its files. */
   readonly drainUpstreamRefreshes?: (cwd: string) => Effect.Effect<void>;
 

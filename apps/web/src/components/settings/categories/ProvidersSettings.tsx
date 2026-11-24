@@ -22,6 +22,7 @@ import { Switch } from "../../ui/switch";
 import { toastManager } from "../../ui/toast";
 
 export { PROVIDERS_SETTINGS_DESCRIPTORS } from "./ProvidersSettings.descriptors";
+import { TextGeneratorsSettings } from "../TextGeneratorsSettings";
 import { withInstanceFavoriteModels } from "../../../favoritePresets";
 import { AddProviderInstanceDialog } from "../AddProviderInstanceDialog";
 import { ProviderInstanceCard } from "../ProviderInstanceCard";
@@ -41,6 +42,7 @@ const BUILT_IN_PROVIDER_DRIVERS = [
   ProviderDriverKind.make("cursor"),
   ProviderDriverKind.make("opencode"),
   ProviderDriverKind.make("grok"),
+  ProviderDriverKind.make("antigravity"),
   ProviderDriverKind.make("muse"),
 ] as const;
 
@@ -303,8 +305,9 @@ export function ProvidersSettings() {
   const refreshProviders = () => {
     if (isRefreshingProviders) return;
     setIsRefreshingProviders(true);
+    // The explicit refresh here is what runs Antigravity's model discovery.
     void ensureNativeApi()
-      .server.refreshProviders()
+      .server.refreshProviders({ discoverModels: true })
       .then(({ providers }) => {
         queryClient.setQueryData(serverQueryKeys.config(), (existing) =>
           existing ? { ...existing, providers } : existing,
@@ -375,6 +378,24 @@ export function ProvidersSettings() {
               aria-label="Automatically check for provider updates"
             />
           </div>
+        </div>
+        <div className="flex items-center justify-between gap-4 border-b border-border px-5 py-3">
+          <div>
+            <p className="text-sm font-medium text-foreground">
+              Refresh model classification online
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Fetch the current and legacy model lists from the hosted manifest. Cached lists work
+              offline. Turn this off to use the bundled lists.
+            </p>
+          </div>
+          <Switch
+            checked={unifiedSettings.enableRemoteModelManifest}
+            onCheckedChange={(checked) =>
+              updateUnifiedSettings({ enableRemoteModelManifest: Boolean(checked) })
+            }
+            aria-label="Refresh model classification online"
+          />
         </div>
         {updateCheckError ? (
           <p role="alert" className="px-5 py-2 text-xs text-destructive">
@@ -492,6 +513,8 @@ export function ProvidersSettings() {
           })}
         </div>
       </section>
+
+      <TextGeneratorsSettings />
 
       <LegacyProviderOverridesCard rows={providerInstanceRows} onMove={updateProviderInstance} />
 

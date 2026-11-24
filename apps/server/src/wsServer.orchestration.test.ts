@@ -15,6 +15,7 @@ import {
   type WorktreeSetupSnapshot,
 } from "@t3tools/contracts";
 import { Effect, Layer, PubSub, Stream } from "effect";
+import { ORCHESTRATION_STARTUP_SNAPSHOT_PATH } from "@t3tools/shared/backendPaths";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -57,6 +58,104 @@ describe("WebSocket Server", () => {
     createTestServer,
     closeTestServer,
   } = h;
+
+  it("replays a short orchestration gap only for the current backend", async () => {
+    h.server = await createTestServer({ cwd: "/test" });
+    const addr = h.server.address();
+    const [ws, welcome] = await connectAndAwaitWelcome(
+      typeof addr === "object" && addr !== null ? addr.port : 0,
+    );
+    connections.push(ws);
+    const backendIncarnation = welcome.data.backendIncarnation;
+    const initial = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getLatestSequence, {});
+    const afterSequence = (initial.result as { latestSequence: number }).latestSequence;
+    const created = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+      type: "project.create",
+      commandId: "cmd-ws-replay-project-create",
+      projectId: "replay-project",
+      title: "Replay project",
+      workspaceRoot: makeTempDir("t3code-ws-replay-project-"),
+      defaultModel: "gpt-5-codex",
+      createdAt: new Date().toISOString(),
+    });
+    expect(created.error).toBeUndefined();
+
+    const replay = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getLatestSequence, {
+      resume: { afterSequence, backendIncarnation },
+    });
+    expect(replay.result).toMatchObject({
+      backendIncarnation,
+      latestSequence: afterSequence + 1,
+      events: [{ sequence: afterSequence + 1, type: "project.created" }],
+    });
+    const current = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getLatestSequence, {
+      resume: { afterSequence: afterSequence + 1, backendIncarnation },
+    });
+    expect(current.result).toEqual({
+      backendIncarnation,
+      latestSequence: afterSequence + 1,
+      events: [],
+    });
+    const stale = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getLatestSequence, {
+      resume: { afterSequence, backendIncarnation: "previous-backend" },
+    });
+    expect(stale.result).toEqual({ backendIncarnation, latestSequence: afterSequence + 1 });
+  });
+
+  it("offers gzip startup snapshots when the replay window cannot satisfy a cursor", async () => {
+    h.server = await createTestServer({ cwd: "/test" });
+    const addr = h.server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const [ws, welcome] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+    const incarnation = welcome.data.backendIncarnation!;
+    const replay = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getLatestSequence, {
+      resume: { afterSequence: Number.MAX_SAFE_INTEGER, backendIncarnation: incarnation },
+    });
+    expect(replay.result).toMatchObject({
+      backendIncarnation: incarnation,
+      snapshotRequired: true,
+    });
+    const url = new URL(ORCHESTRATION_STARTUP_SNAPSHOT_PATH, "http://127.0.0.1:" + port);
+    url.searchParams.set("incarnation", incarnation);
+    const createdAt = new Date().toISOString();
+    const project = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+      type: "project.create",
+      commandId: "cmd-gzip-project",
+      projectId: "gzip-project",
+      title: "Gzip project",
+      workspaceRoot: makeTempDir("f5-ws-gzip-project-"),
+      defaultModel: "gpt-5-codex",
+      createdAt,
+    });
+    expect(project.error).toBeUndefined();
+    const thread = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+      type: "thread.create",
+      commandId: "cmd-gzip-thread",
+      threadId: "gzip-thread",
+      projectId: "gzip-project",
+      title: "Gzip thread",
+      model: "gpt-5-codex",
+      runtimeMode: "approval-required",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdAt,
+    });
+    expect(thread.error).toBeUndefined();
+    url.searchParams.set("detailThreadId", "gzip-thread");
+    const response = await fetch(url, { headers: { "Accept-Encoding": "gzip" } });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-encoding")).toBe("gzip");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    const startup = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getStartupSnapshot, {
+      detailThreadId: "gzip-thread",
+    });
+    expect(startup.result).toMatchObject({ threadTailDetails: { threadId: "gzip-thread" } });
+    expect(await response.json()).toEqual(startup.result);
+    url.searchParams.set("incarnation", "previous-backend");
+    expect((await fetch(url)).status).toBe(409);
+  });
 
   it("returns error when requesting turn diff for unknown thread", async () => {
     h.server = await createTestServer({ cwd: "/test" });
@@ -1223,16 +1322,21 @@ describe("WebSocket Server", () => {
             : never
           : never;
         readonly sentTurns: Array<Parameters<ProviderServiceShape["sendTurn"]>[0]>;
+        readonly startedCwds?: Array<string | undefined>;
         readonly generateBranchName?: ProviderInstance["textGeneration"]["generateBranchName"];
       }) {
+        const provider = makeTurnCapturingProviderService(options.sentTurns);
         h.server = await createTestServer({
           cwd: options.repo,
           ...(options.stateDir ? { stateDir: options.stateDir } : {}),
           ...(options.persistenceLayer ? { persistenceLayer: options.persistenceLayer } : {}),
-          providerLayer: Layer.succeed(
-            ProviderService,
-            makeTurnCapturingProviderService(options.sentTurns),
-          ),
+          providerLayer: Layer.succeed(ProviderService, {
+            ...provider,
+            startSession: (threadId, input) =>
+              Effect.sync(() => {
+                options.startedCwds?.push(input.cwd);
+              }).pipe(Effect.andThen(provider.startSession(threadId, input))),
+          }),
           ...(options.generateBranchName
             ? {
                 providerInstanceRegistryLayer: Layer.succeed(ProviderInstanceRegistry, {
@@ -1371,6 +1475,64 @@ describe("WebSocket Server", () => {
           return false;
         }
       };
+
+      it("delivers the first turn in a plain project worktree group", async () => {
+        const repo = makeTempDir("f5-ws-plain-worktree-");
+        for (const name of ["api", "web"]) {
+          const member = path.join(repo, name);
+          fs.mkdirSync(member);
+          execFileSync("git", ["init", "--initial-branch=main"], { cwd: member, stdio: "pipe" });
+          execFileSync(
+            "git",
+            [
+              "-c",
+              "user.email=test@example.com",
+              "-c",
+              "user.name=Test",
+              "commit",
+              "--allow-empty",
+              "-m",
+              "Initial",
+            ],
+            { cwd: member, stdio: "pipe" },
+          );
+        }
+        const sentTurns: Array<Parameters<ProviderServiceShape["sendTurn"]>[0]> = [];
+        const startedCwds: Array<string | undefined> = [];
+        const ws = await startServer({ repo, sentTurns, startedCwds });
+        await createProject(ws, repo);
+        const response = await sendRequest(
+          ws,
+          WS_METHODS.nextTurnQueueSubmit,
+          firstSend({ repo, threadId: "plain-worktree", requireWorktree: true }),
+        );
+        expect(response.error).toBeUndefined();
+        const done = await waitForSetup(
+          ws,
+          "plain-worktree",
+          (snapshot) => snapshot?.phase === "done" || snapshot?.phase === "failed",
+        );
+        expect(done?.phase, JSON.stringify(done)).toBe("done");
+        const workspace = done!.worktreePath!;
+        expect(workspace).not.toBe(repo);
+        for (const name of ["api", "web"]) {
+          expect(
+            execFileSync("git", ["branch", "--show-current"], {
+              cwd: path.join(workspace, name),
+              encoding: "utf8",
+            }).trim(),
+          ).toBe("f5/plain-worktree");
+        }
+        await vi.waitFor(() => expect(sentTurns).toHaveLength(1), SLOW_WAIT);
+        expect(startedCwds).toContain(workspace);
+        const switched = await sendRequest(ws, WS_METHODS.gitCheckout, {
+          cwd: workspace,
+          branch: "other",
+          threadId: "plain-worktree",
+          create: true,
+        });
+        expect(switched.error).toMatchObject({ code: "WorkspaceRequiresNewWorktree" });
+      });
 
       it("rejects a required worktree before creating the thread", async () => {
         const repo = makeTempDir("t3code-ws-setup-required-");
@@ -2780,120 +2942,143 @@ describe("WebSocket Server", () => {
     ).toBe(false);
   });
 
-  it("native fork persists and prepares the flat branch when t3code already exists", async () => {
-    const workspaceRoot = makeTempDir("f5-native-fork-repo-");
-    const stateDir = makeTempDir("f5-native-fork-state-");
-    const git = (...args: string[]) =>
-      execFileSync("git", ["-C", workspaceRoot, ...args], { encoding: "utf8" }).trim();
-    git("init", "-q", "-b", "main");
-    git(
-      "-c",
-      "user.name=Test",
-      "-c",
-      "user.email=test@example.com",
-      "commit",
-      "-q",
-      "--allow-empty",
-      "-m",
-      "initial",
-    );
-    git("branch", "t3code");
-    const nativeOperations: NonNullable<ProviderServiceShape["nativeOperations"]> = {
-      list: () => unsupportedProviderCall(),
-      inspect: () => unsupportedProviderCall(),
-      resolve: () => unsupportedProviderCall(),
-      execute: () => unsupportedProviderCall(),
-      executeWithApply: (input, apply, prepare) =>
-        Effect.gen(function* () {
-          if (prepare) yield* prepare;
-          yield* apply({ resumeCursor: { nativeThreadId: "forked-native-session" } });
-          const now = new Date().toISOString();
-          return { ...input, state: "completed" as const, createdAt: now, updatedAt: now };
-        }),
-    };
-    h.server = await createTestServer({
-      cwd: workspaceRoot,
-      stateDir,
-      persistenceLayer: makeSqlitePersistenceLive(path.join(stateDir, "state.sqlite")).pipe(
-        Layer.provide(NodeServices.layer),
-      ),
-      providerLayer: Layer.succeed(ProviderService, {
-        ...defaultProviderService,
-        nativeOperations,
-      }),
-    });
-    const address = h.server.address();
-    const [ws] = await connectAndAwaitWelcome(
-      typeof address === "object" && address !== null ? address.port : 0,
-    );
-    connections.push(ws);
-    const now = new Date().toISOString();
-    const project = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
-      type: "project.create",
-      commandId: "fork-project-create",
-      projectId: "fork-project",
-      title: "Fork",
-      workspaceRoot,
-      createdAt: now,
-    });
-    expect(project.error).toBeUndefined();
-    const source = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
-      type: "thread.create",
-      commandId: "fork-source-create",
-      threadId: "fork-source",
-      projectId: "fork-project",
-      title: "Source",
-      model: "gpt-5-codex",
-      runtimeMode: "full-access",
-      interactionMode: "default",
-      branch: "main",
-      worktreePath: null,
-      createdAt: now,
-    });
-    expect(source.error).toBeUndefined();
-    const database = new DatabaseSync(path.join(stateDir, "state.sqlite"));
-    try {
-      database
-        .prepare(
-          "INSERT INTO provider_session_runtime (thread_id, project_id, provider_name, provider_instance_id, adapter_key, runtime_mode, status, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .run(
-          "fork-source",
-          "fork-project",
-          "codex",
-          "codex",
-          "codex",
-          "full-access",
-          "stopped",
-          now,
-        );
-      const operationId = "abcdef12-1234-4234-8234-123456789abc";
-      const response = await sendRequest(ws, NATIVE_OPERATION_WS_METHODS.fork, {
-        threadId: "fork-source",
-        operationId,
-        generation: 1,
-      });
-      expect(response.error).toBeUndefined();
-      expect(response.result).toMatchObject({ state: "completed" });
-      const snapshot = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot);
-      const fork = (snapshot.result as OrchestrationReadModel).threads.find(
-        (thread) => thread.id === `fork-${operationId}`,
+  it.each([false, true])(
+    "native fork preserves its workspace contract (side chat: %s)",
+    async (sideChat) => {
+      const workspaceRoot = makeTempDir("f5-native-fork-repo-");
+      const stateDir = makeTempDir("f5-native-fork-state-");
+      const git = (...args: string[]) =>
+        execFileSync("git", ["-C", workspaceRoot, ...args], { encoding: "utf8" }).trim();
+      git("init", "-q", "-b", "main");
+      git(
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.com",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "initial",
       );
-      expect(fork?.branch).toBe("t3code-abcdef12");
-      expect(fork?.worktreePath).toBeTruthy();
-      expect(
-        execFileSync("git", ["-C", fork!.worktreePath!, "branch", "--show-current"], {
-          encoding: "utf8",
-        }).trim(),
-      ).toBe(fork?.branch);
-      const binding = database
-        .prepare("SELECT runtime_payload_json FROM provider_session_runtime WHERE thread_id = ?")
-        .get(fork!.id);
-      expect(JSON.parse(String(binding?.runtime_payload_json))).toMatchObject({
-        cwd: fork!.worktreePath,
+      git("branch", "t3code");
+      let nativeForks = 0;
+      const nativeOperations: NonNullable<ProviderServiceShape["nativeOperations"]> = {
+        list: () => unsupportedProviderCall(),
+        inspect: () => unsupportedProviderCall(),
+        resolve: () => unsupportedProviderCall(),
+        execute: () => unsupportedProviderCall(),
+        executeWithApply: (input, apply, prepare) =>
+          Effect.gen(function* () {
+            nativeForks++;
+            if (prepare) yield* prepare;
+            yield* apply({ resumeCursor: { nativeThreadId: "forked-native-session" } });
+            const now = new Date().toISOString();
+            return { ...input, state: "completed" as const, createdAt: now, updatedAt: now };
+          }),
+      };
+      h.server = await createTestServer({
+        cwd: workspaceRoot,
+        stateDir,
+        persistenceLayer: makeSqlitePersistenceLive(path.join(stateDir, "state.sqlite")).pipe(
+          Layer.provide(NodeServices.layer),
+        ),
+        providerLayer: Layer.succeed(ProviderService, {
+          ...defaultProviderService,
+          nativeOperations,
+        }),
       });
-    } finally {
-      database.close();
-    }
-  }, 60_000);
+      const address = h.server.address();
+      const [ws] = await connectAndAwaitWelcome(
+        typeof address === "object" && address !== null ? address.port : 0,
+      );
+      connections.push(ws);
+      const now = new Date().toISOString();
+      const project = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+        type: "project.create",
+        commandId: "fork-project-create",
+        projectId: "fork-project",
+        title: "Fork",
+        workspaceRoot,
+        createdAt: now,
+      });
+      expect(project.error).toBeUndefined();
+      const source = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+        type: "thread.create",
+        commandId: "fork-source-create",
+        threadId: "fork-source",
+        projectId: "fork-project",
+        title: "Source",
+        model: "gpt-5-codex",
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: "main",
+        worktreePath: null,
+        createdAt: now,
+      });
+      expect(source.error).toBeUndefined();
+      const database = new DatabaseSync(path.join(stateDir, "state.sqlite"));
+      try {
+        database
+          .prepare(
+            "INSERT INTO provider_session_runtime (thread_id, project_id, provider_name, provider_instance_id, adapter_key, runtime_mode, status, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+          )
+          .run(
+            "fork-source",
+            "fork-project",
+            "codex",
+            "codex",
+            "codex",
+            "full-access",
+            "stopped",
+            now,
+          );
+        const operationId = "abcdef12-1234-4234-8234-123456789abc";
+        const response = await sendRequest(ws, NATIVE_OPERATION_WS_METHODS.fork, {
+          threadId: "fork-source",
+          operationId,
+          generation: 1,
+          sideChat,
+        });
+        expect(response.error).toBeUndefined();
+        expect(response.result).toMatchObject({ state: "completed" });
+        expect(nativeForks).toBe(sideChat ? 0 : 1);
+        const snapshot = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot);
+        const fork = (snapshot.result as OrchestrationReadModel).threads.find(
+          (thread) => thread.id === `fork-${operationId}`,
+        );
+        expect(fork?.branch).toBe(sideChat ? "main" : "t3code-abcdef12");
+        expect(fork?.sideChatOf).toBe(sideChat ? "fork-source" : undefined);
+        expect(fork?.worktreePath).toEqual(sideChat ? null : expect.any(String));
+        expect(
+          execFileSync(
+            "git",
+            ["-C", fork!.worktreePath ?? workspaceRoot, "branch", "--show-current"],
+            {
+              encoding: "utf8",
+            },
+          ).trim(),
+        ).toBe(fork?.branch);
+        const binding = database
+          .prepare("SELECT runtime_payload_json FROM provider_session_runtime WHERE thread_id = ?")
+          .get(fork!.id);
+        if (sideChat) {
+          expect(binding).toBeUndefined();
+          const pending = database
+            .prepare("SELECT pending_json FROM provider_handoff_state WHERE thread_id = ?")
+            .get(fork!.id);
+          expect(JSON.parse(String(pending?.pending_json))).toMatchObject({
+            targetInstanceId: "codex",
+            sourceContext: { effectiveMode: "full", messages: [] },
+          });
+        } else
+          expect(JSON.parse(String(binding?.runtime_payload_json))).toMatchObject({
+            cwd: fork!.worktreePath,
+          });
+      } finally {
+        database.close();
+      }
+    },
+    60_000,
+  );
 });

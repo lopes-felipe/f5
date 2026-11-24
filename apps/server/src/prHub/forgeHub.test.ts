@@ -1,4 +1,5 @@
 import { it, assert } from "@effect/vitest";
+import { vi } from "vitest";
 import { Effect, Stream } from "effect";
 import { SqlClient } from "effect/unstable/sql";
 import {
@@ -466,6 +467,15 @@ it.layer(SqliteClient.layerMemory())("native forge hub", (it) => {
               ["Downstream: deploy", "failure"],
             ],
           );
+          const beforeStats = yield* hub.getSnapshot;
+          assert.equal(yield* hub.getChangeBreakdown({ key: pr.key }), null);
+          assert.deepEqual(yield* hub.getSnapshot, beforeStats);
+          const untracked = PullRequestKey.makeUnsafe(String(pr.key).replace(/7$/, "999"));
+          assert.equal(
+            (yield* hub.getChangeBreakdown({ key: untracked }).pipe(Effect.result))._tag,
+            "Failure",
+          );
+          assert.deepEqual(yield* hub.getSnapshot, beforeStats);
           const files = yield* hub.getFiles({ key: pr.key });
           assert.equal((yield* hub.getSnapshot).pullRequests[0]?.checkRollup, "failure");
           assert.equal(files.files.length, 1);
@@ -492,6 +502,20 @@ it.layer(SqliteClient.layerMemory())("native forge hub", (it) => {
               ._tag,
             "Failure",
           );
+          const intent = { key: pr.key, accountGeneration: account.generation, cacheOnly: true };
+          const beforeIntent = calls;
+          assert.equal((yield* hub.getDetail(intent)).stale, false);
+          const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 120_000);
+          try {
+            assert.equal((yield* Effect.exit(hub.getDetail(intent)))._tag, "Failure");
+          } finally {
+            clock.mockRestore();
+          }
+          assert.equal(
+            (yield* Effect.exit(hub.getDetail({ ...intent, accountGeneration: "stale" })))._tag,
+            "Failure",
+          );
+          assert.equal(calls, beforeIntent);
           assert.equal(
             (yield* hub
               .track({ url: "https://other.example.com/group/repo/-/merge_requests/7" })
@@ -502,6 +526,7 @@ it.layer(SqliteClient.layerMemory())("native forge hub", (it) => {
           const stale = yield* hub.getDetail({ key: pr.key, mode: "force" });
           assert.equal(stale.stale, true);
           const count = calls;
+          assert.equal((yield* Effect.exit(hub.getDetail(intent)))._tag, "Failure");
           assert.equal((yield* hub.getDetail({ key: pr.key })).stale, true);
           assert.equal(calls, count);
           const refresh = yield* hub.refreshNow({ mode: "force" });

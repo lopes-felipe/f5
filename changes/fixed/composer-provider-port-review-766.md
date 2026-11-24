@@ -1,0 +1,2 @@
+- Fresh sessions recover safely after failed starts; model mentions keep files first, Pi speeds survive optionless turns, and extension banners clear when switching providers.
+- Canceling API text generation cancels its HTTP request. Stored API keys no longer follow a changed endpoint origin or API type, and plaintext endpoints are limited to loopback hosts.

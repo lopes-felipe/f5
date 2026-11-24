@@ -5,6 +5,36 @@ import {
   resolveModelCapabilities,
 } from "./model";
 import { describe, expect, it } from "vitest";
+import { Schema } from "effect";
+import { ModelSelection } from "@t3tools/contracts";
+import { createModelCapabilities, getProviderOptionDescriptors } from "./model";
+
+it("accepts imported legacy Ultracode selections and translates them into effort plus a toggle", () => {
+  const selection = Schema.decodeUnknownSync(ModelSelection)({
+    instanceId: "claudeAgent",
+    model: "claude-opus-5",
+    options: [{ id: "effort", value: "ultracode" }],
+  });
+  const caps = createModelCapabilities({
+    optionDescriptors: [
+      {
+        id: "effort",
+        label: "Effort",
+        type: "select",
+        options: [
+          { id: "low", label: "Low" },
+          { id: "ultracode", label: "Ultracode" },
+        ],
+      },
+    ],
+  });
+  expect(getProviderOptionDescriptors({ caps, selections: selection.options })).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ id: "effort", currentValue: "xhigh" }),
+      expect.objectContaining({ id: "ultracode", currentValue: true }),
+    ]),
+  );
+});
 import {
   CLAUDE_CODE_EFFORT_OPTIONS,
   DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER,

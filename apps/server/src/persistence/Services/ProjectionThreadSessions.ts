@@ -8,12 +8,14 @@
  */
 import {
   RuntimeMode,
+  OrchestrationAuthFailure,
   OrchestrationUsageLimit,
   IsoDateTime,
   NonNegativeInt,
   OrchestrationSessionStatus,
   ProviderInstanceId,
   ProviderSessionCapabilities,
+  ProviderExtensionStatuses,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
@@ -23,6 +25,8 @@ import type { Effect } from "effect";
 import type { ProjectionRepositoryError } from "../Errors.ts";
 
 export const ProjectionThreadSession = Schema.Struct({
+  autoCompactThreshold: Schema.optional(Schema.NullOr(NonNegativeInt)),
+  extensionStatuses: Schema.optional(ProviderExtensionStatuses),
   threadId: ThreadId,
   status: OrchestrationSessionStatus,
   providerName: Schema.NullOr(Schema.String),
@@ -34,6 +38,7 @@ export const ProjectionThreadSession = Schema.Struct({
   lastError: Schema.NullOr(Schema.String),
   lastErrorId: Schema.NullOr(Schema.String),
   usageLimit: Schema.optional(Schema.NullOr(OrchestrationUsageLimit)),
+  authFailure: Schema.optional(Schema.NullOr(OrchestrationAuthFailure)),
   lastErrorOccurredAt: Schema.NullOr(IsoDateTime),
   lastErrorRetryability: Schema.NullOr(Schema.Literals(["retryable", "non-retryable"])),
   estimatedContextTokens: Schema.NullOr(NonNegativeInt),

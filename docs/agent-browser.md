@@ -672,14 +672,23 @@ session approval must be granted again. Background mode forces the F5 native bac
 
 Interruptions before dispatch report `Interrupted`; after dispatch, `OutcomeUnknown`, which
 puts the thread into recovery until the user resumes locally. This covers cancellation,
-timeouts and helper loss alike, and partially typed text. Local Pause/Resume changes native
+timeouts and helper loss alike, and text cut short by a pause or stop. Foreground typing
+checks the permit and focus before each 32-character chunk's keydown only, never before its
+keyup, because the inserted text may move focus as its own effect (Chrome reports a
+combobox's active option as focused). Focus counts as unchanged while the field keeps
+keyboard focus or the new, non-editable focus lies inside the field or an element it
+controls. A focus move after some text was sent stops typing with `verified: false`,
+`charactersDelivered`/`charactersRequested` (UTF-16 code units) and `stoppedBy`; a move
+caused by the last chunk is caught during settling and reported as `verified: false`.
+`computer_batch` stops after either. Local Pause/Resume changes native
 control and the thread's Chrome lease together, native first: a refusal about the thread's
 target keeps Chrome paused, while an unavailable helper still lets a Chrome holder resume
 Chrome and leaves native latched. Resuming only one would leave the other latched. Element
 actions dispatch with a 2 s AX messaging timeout in both deliveries. A foreground press that
 still times out but has removed its own element (a swatch closing its popover) is reported
 unverified, not unknown. Main logs each `OutcomeUnknown` the helper reports as `computer
-outcome-unknown` with the op, app, delivery and AX error code; outcomes main infers itself
+outcome-unknown` with the op, app, delivery and AX error code, plus `cause=<tag>[/<kind>]`
+when the helper names the failure it escalated (macOS only); outcomes main infers itself
 (request timeout, helper loss) are not logged there. The agent-facing error is unchanged.
 A dispatched mutation keeps excluding conflicting scopes (including Chrome) after its lease is released, until the helper
 answers or a drain confirms. A generation still stuck in its app after the helper's 5 s drain

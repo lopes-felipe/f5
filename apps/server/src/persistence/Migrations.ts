@@ -1,4 +1,14 @@
 import Migration0147 from "./Migrations/147_StorageMachineCleanupAudit.ts";
+import Migration0168 from "./Migrations/168_ProviderExtensionStatuses.ts";
+import Migration0169 from "./Migrations/169_ThreadContextBoundaries.ts";
+import Migration0170 from "./Migrations/170_ProjectPinArchive.ts";
+import Migration0171 from "./Migrations/171_SessionAutoCompactThreshold.ts";
+import Migration0172 from "./Migrations/172_ThreadSideChat.ts";
+import Migration0173 from "./Migrations/173_SessionAuthFailure.ts";
+import Migration0174 from "./Migrations/174_WorktreeGroups.ts";
+import Migration0175 from "./Migrations/175_WorkflowBenchmark.ts";
+import Migration0176 from "./Migrations/176_WorkflowBenchmarkSubagents.ts";
+import Migration0177 from "./Migrations/177_RepairDuplicateWorkflowCosts.ts";
 import Migration0161 from "./Migrations/161_UsageNativeIdentity.ts";
 import Migration0154 from "./Migrations/154_DesktopActivityPendingIndex.ts";
 import Migration0155 from "./Migrations/155_BackgroundWorkNativeParentSession.ts";
@@ -13,9 +23,6 @@ import Migration0164 from "./Migrations/164_UpstreamPortReviewRecovery.ts";
 import Migration0165 from "./Migrations/165_UsageResetCreditGrant.ts";
 import Migration0166 from "./Migrations/166_ThreadPullRequestLookupIndex.ts";
 import Migration0167 from "./Migrations/167_PrHubSeenBaseline.ts";
-import Migration0168 from "./Migrations/168_WorkflowBenchmark.ts";
-import Migration0169 from "./Migrations/169_WorkflowBenchmarkSubagents.ts";
-import Migration0170 from "./Migrations/170_RepairDuplicateWorkflowCosts.ts";
 import Migration0152 from "./Migrations/152_UpstreamTopicOutcomes.ts";
 import Migration0137 from "./Migrations/137_UpstreamPorts.ts";
 import Migration0136 from "./Migrations/136_ScratchProjects.ts";
@@ -203,6 +210,16 @@ import Migration0102 from "./Migrations/102_ForgeAccounts.ts";
 import Migration0101 from "./Migrations/101_UsageResetCreditRequests.ts";
 
 export const MIGRATIONS = {
+  "169_ThreadContextBoundaries": Migration0169,
+  "170_ProjectPinArchive": Migration0170,
+  "171_SessionAutoCompactThreshold": Migration0171,
+  "172_ThreadSideChat": Migration0172,
+  "173_SessionAuthFailure": Migration0173,
+  "174_WorktreeGroups": Migration0174,
+  "175_WorkflowBenchmark": Migration0175,
+  "176_WorkflowBenchmarkSubagents": Migration0176,
+  "177_RepairDuplicateWorkflowCosts": Migration0177,
+  "168_ProviderExtensionStatuses": Migration0168,
   "161_UsageNativeIdentity": Migration0161,
   "154_DesktopActivityPendingIndex": Migration0154,
   "155_BackgroundWorkNativeParentSession": Migration0155,
@@ -217,9 +234,6 @@ export const MIGRATIONS = {
   "165_UsageResetCreditGrant": Migration0165,
   "166_ThreadPullRequestLookupIndex": Migration0166,
   "167_PrHubSeenBaseline": Migration0167,
-  "168_WorkflowBenchmark": Migration0168,
-  "169_WorkflowBenchmarkSubagents": Migration0169,
-  "170_RepairDuplicateWorkflowCosts": Migration0170,
   "152_UpstreamTopicOutcomes": Migration0152,
   "147_StorageMachineCleanupAudit": Migration0147,
   // 124 to 128 shipped on main first; the October migrations follow them.

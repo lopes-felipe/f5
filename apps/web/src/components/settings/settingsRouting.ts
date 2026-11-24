@@ -233,6 +233,9 @@ export const SETTINGS_ITEM_ROUTES = defineItemRoutes({
   "appearance.theme": {
     category: "appearance",
   },
+  "appearance.math": {
+    category: "appearance",
+  },
   "appearance.palette": {
     category: "appearance",
   },
@@ -302,6 +305,9 @@ export const SETTINGS_ITEM_ROUTES = defineItemRoutes({
     category: "browser",
   },
   "conversation.send-shortcut": {
+    category: "conversation",
+  },
+  "conversation.persistent-usage-limits": {
     category: "conversation",
   },
   "conversation.composer-editor": {
@@ -437,6 +443,9 @@ export const SETTINGS_ITEM_ROUTES = defineItemRoutes({
     category: "git",
     scope: "both",
   },
+  "git.shell-merge-requests": {
+    category: "git",
+  },
   "git.text-model": {
     category: "git",
     scope: "both",
@@ -536,6 +545,9 @@ export const SETTINGS_ITEM_ROUTES = defineItemRoutes({
   "providers.legacy-overrides": {
     category: "providers",
   },
+  "providers.text-generators": {
+    category: "providers",
+  },
   "storage.attachments": {
     category: "storage",
   },
@@ -572,6 +584,7 @@ export const SETTINGS_ITEM_ROUTES = defineItemRoutes({
     category: "threads",
     scope: "both",
   },
+  "threads.keep-awake": { category: "threads" },
   "threads.auto-continue": {
     category: "threads",
     scope: "both",

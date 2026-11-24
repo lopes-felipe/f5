@@ -613,6 +613,7 @@ describe("ProviderCommandReactor", () => {
       streamEvents: Stream.fromPubSub(runtimeEventPubSub),
     };
     const providerSessionDirectory = {
+      removePendingImport: () => Effect.succeed(false),
       upsert: (binding: ProviderRuntimeBinding) =>
         Effect.sync(() => {
           upsertPersistedBinding(binding);
@@ -1049,6 +1050,15 @@ describe("ProviderCommandReactor", () => {
       removeLiveSession: (threadId: ThreadId) => {
         const index = runtimeSessions.findIndex((session) => session.threadId === threadId);
         if (index >= 0) runtimeSessions.splice(index, 1);
+      },
+      /** Rewrites the adapter's live session record, as a running turn would. */
+      replaceLiveSession: (
+        threadId: ThreadId,
+        update: (session: ProviderSession) => ProviderSession,
+      ) => {
+        const index = runtimeSessions.findIndex((session) => session.threadId === threadId);
+        if (index < 0) throw new Error(`No live session for ${threadId}`);
+        runtimeSessions[index] = update(runtimeSessions[index]!);
       },
       drain,
     };
@@ -2574,6 +2584,125 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.modelContextWindowTokens).toBe(258_400);
     expect(thread?.session?.tokenUsageSource).toBe("provider");
     expect(harness.startSession.mock.calls.length).toBe(1);
+  });
+
+  /**
+   * A projected running turn `turn-1` on a live session whose adapter record
+   * lags: it reports `running` without the turn id, with an older `updatedAt`.
+   */
+  async function runningTurnFixture(input: { readonly adapterKeepsCwd: boolean }) {
+    const harness = await createHarness();
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    // A restart binds the resolved instance, so the live session uses it too.
+    const codexInstance = ProviderInstanceId.makeUnsafe("codex");
+    const now = new Date().toISOString();
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.makeUnsafe("cmd-turn-start-rebind-running"),
+        threadId,
+        message: {
+          messageId: asMessageId("user-message-rebind-running"),
+          role: "user",
+          text: "run",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await harness.drain();
+
+    // Without a cwd the adapter record cannot trigger a cwd restart, so a
+    // worktree change re-binds the live session instead.
+    harness.replaceLiveSession(threadId, ({ cwd, activeTurnId: _turn, ...session }) => ({
+      ...session,
+      ...(input.adapterKeepsCwd && cwd !== undefined ? { cwd } : {}),
+      providerInstanceId: codexInstance,
+      status: "running",
+      updatedAt: "2020-01-01T00:00:00.000Z",
+    }));
+    const readThread = async () =>
+      (await Effect.runPromise(harness.engine.getReadModel())).threads.find(
+        (entry) => entry.id === threadId,
+      );
+    const bound = (await readThread())?.session;
+    if (!bound) throw new Error("Missing bound session");
+    const projectedAt = new Date().toISOString();
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.makeUnsafe("cmd-session-set-rebind-running"),
+        threadId,
+        session: {
+          ...bound,
+          providerInstanceId: codexInstance,
+          status: "running",
+          activeTurnId: asTurnId("turn-1"),
+          updatedAt: projectedAt,
+        },
+        createdAt: projectedAt,
+      }),
+    );
+    await waitFor(async () => (await readThread())?.session?.activeTurnId === "turn-1");
+
+    const rebindCount = async () =>
+      (await Effect.runPromise(Stream.runCollect(harness.engine.readEvents(0)))).filter(
+        (event) =>
+          event.type === "thread.session-set" &&
+          event.commandId?.startsWith("server:provider-session-set") === true,
+      ).length;
+    const changeWorktree = async () => {
+      const rebindsBefore = await rebindCount();
+      const nextCwd = path.join(harness.workspaceRoot, "worktree-rebind-running");
+      fs.mkdirSync(nextCwd);
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.makeUnsafe("cmd-worktree-rebind-running"),
+          threadId,
+          worktreePath: nextCwd,
+        }),
+      );
+      await waitFor(async () => (await rebindCount()) > rebindsBefore);
+      await harness.drain();
+      return (await readThread()) ?? null;
+    };
+    return { harness, projectedAt, changeWorktree };
+  }
+
+  it("keeps the running turn when a worktree change re-binds the live session", async () => {
+    const { harness, projectedAt, changeWorktree } = await runningTurnFixture({
+      adapterKeepsCwd: false,
+    });
+
+    const thread = await changeWorktree();
+
+    expect(harness.startSession.mock.calls.length).toBe(1);
+    expect(thread?.session?.status).toBe("running");
+    expect(thread?.session?.activeTurnId).toBe("turn-1");
+    expect(thread?.session?.updatedAt).toBe(projectedAt);
+    expect(thread?.latestTurn).toMatchObject({ turnId: "turn-1", state: "running" });
+  });
+
+  it("starts a restarted session without the previous turn even when it reports running", async () => {
+    const { harness, changeWorktree } = await runningTurnFixture({ adapterKeepsCwd: true });
+    const start = harness.startSession.getMockImplementation();
+    if (!start) throw new Error("Missing startSession implementation");
+    harness.startSession.mockImplementationOnce((threadId, input) =>
+      start(threadId, input).pipe(
+        Effect.map((session) => ({ ...session, status: "running" as const })),
+      ),
+    );
+
+    const thread = await changeWorktree();
+
+    expect(harness.startSession.mock.calls.length).toBe(2);
+    expect(thread?.session?.status).toBe("running");
+    expect(thread?.session?.activeTurnId).toBeNull();
   });
 
   it("starts a fresh session when only projected session state exists", async () => {
@@ -6065,6 +6194,35 @@ describe("ProviderCommandReactor", () => {
       if (!intent || intent.type !== "thread.turn-start-requested")
         throw new Error("Missing native intent.");
       expect(intent.payload.continuationRequestId).toBe("owned-wake");
+      if (live) {
+        await Effect.runPromise(
+          harness.engine.dispatch({
+            type: "thread.session.set",
+            commandId: CommandId.make("pi-wake-live-session"),
+            threadId,
+            session: {
+              threadId,
+              status: "ready",
+              providerName: "pi",
+              runtimeMode: "approval-required",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: createdAt,
+            },
+            createdAt,
+          }),
+        );
+      }
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.make("future-pi-model"),
+          threadId,
+          model: "another-pi-model",
+          deferModelSwitch: true,
+        }),
+      );
+      await harness.drain();
       const result = await Effect.runPromise(
         harness.reactor.deliverTurnStart(intent).pipe(Effect.result, Effect.scoped),
       );
@@ -6081,6 +6239,7 @@ describe("ProviderCommandReactor", () => {
       else expect(harness.sendTurn).not.toHaveBeenCalled();
       expect(harness.startSession).not.toHaveBeenCalled();
       expect(harness.ensureWorktree).not.toHaveBeenCalled();
+      if (live) expect(harness.runtimeSessions[0]?.model).toBe("default");
     },
   );
 
@@ -6192,6 +6351,7 @@ describe("ProviderCommandReactor", () => {
         readonly text: string;
         readonly selection: { readonly instanceId: ProviderInstanceId; readonly model: string };
         readonly durable?: boolean;
+        readonly freshContext?: boolean;
         readonly attachments?: ReadonlyArray<ChatAttachment>;
       },
     ) {
@@ -6203,6 +6363,7 @@ describe("ProviderCommandReactor", () => {
       harness: Harness,
       input: {
         readonly id: string;
+        readonly freshContext?: boolean;
         readonly text: string;
         readonly selection: { readonly instanceId: ProviderInstanceId; readonly model: string };
         readonly attachments?: ReadonlyArray<ChatAttachment>;
@@ -6213,6 +6374,7 @@ describe("ProviderCommandReactor", () => {
         harness.engine.dispatch({
           type: "thread.turn.start",
           commandId: CommandId.makeUnsafe(input.id),
+          ...(input.freshContext ? { freshContext: true } : {}),
           threadId,
           message: {
             messageId: asMessageId(`message-${input.id}`),
@@ -6337,6 +6499,89 @@ describe("ProviderCommandReactor", () => {
       return harness;
     }
 
+    it("starts fresh without handoff and never reintroduces earlier context on a provider switch", async () => {
+      const harness = await claudeConversation();
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.compacted.record",
+          commandId: CommandId.makeUnsafe("before-fresh-summary"),
+          threadId,
+          compaction: {
+            kind: "summary",
+            summary: "PRE_CLEAR_SUMMARY",
+            trigger: "manual",
+            estimatedTokens: 100000,
+            modelContextWindowTokens: 200000,
+            createdAt: nextAt(),
+            direction: "up_to",
+            pivotMessageId: asMessageId("message-c1"),
+            fromTurnCount: null,
+            toTurnCount: null,
+          },
+          createdAt: nextAt(),
+        }),
+      );
+      const cleared = await turn(harness, {
+        id: "clear",
+        text: "A new topic",
+        selection: claude,
+        freshContext: true,
+      });
+      expect(cleared._tag).toBe("Success");
+      expect(harness.startSession.mock.calls[1]?.[1]).not.toHaveProperty("resumeCursor");
+      expect(harness.startSession.mock.calls[1]?.[1]).not.toHaveProperty("priorWorkSummary");
+      const recoveryContext = harness.getBinding(threadId)?.runtimePayload as
+        | { instructionContext?: Record<string, unknown> }
+        | undefined;
+      expect(recoveryContext?.instructionContext).not.toHaveProperty("priorWorkSummary");
+      expect(recoveryContext?.instructionContext).not.toHaveProperty("preservedTranscriptBefore");
+      expect(recoveryContext?.instructionContext).not.toHaveProperty("restoredActivePlan");
+      const freshModel = await Effect.runPromise(harness.engine.getReadModel());
+      expect(
+        freshModel.threads.find((thread) => thread.id === threadId)?.session
+          ?.estimatedContextTokens,
+      ).toBeLessThan(100000);
+      expect(JSON.stringify(recoveryContext)).not.toContain("PRE_CLEAR_SUMMARY");
+      expect(sentInput(harness, 1)).toBe("A new topic");
+      await assistant(harness, "clear", "New response");
+      expect(
+        (await turn(harness, { id: "after-clear", text: "Continue", selection: codex }))._tag,
+      ).toBe("Success");
+      const switched = sentInput(harness, 2);
+      expect(switched).toContain("A new topic");
+      expect(switched).not.toContain("indent with tabs");
+      expect(switched).not.toContain("tabs only");
+      const model = await Effect.runPromise(harness.engine.getReadModel());
+      expect(
+        model.threads
+          .find((thread) => thread.id === threadId)
+          ?.messages.some((message) => message.text.includes("indent with tabs")),
+      ).toBe(true);
+    });
+
+    it("retries an incomplete fresh start on an ordinary send without restoring old history", async () => {
+      const harness = await claudeConversation();
+      harness.startSession.mockImplementationOnce(() => Effect.die(new Error("Start failed")));
+      expect(
+        (
+          await turn(harness, {
+            id: "failed-clear",
+            text: "New",
+            selection: claude,
+            freshContext: true,
+          })
+        )._tag,
+      ).toBe("Failure");
+      expect(
+        (await turn(harness, { id: "retry-clear", text: "Retry", selection: claude }))._tag,
+      ).toBe("Success");
+      expect(harness.startSession.mock.calls.at(-1)?.[1]).toMatchObject({
+        discardResumeCursor: true,
+      });
+      expect(harness.startSession.mock.calls.at(-1)?.[1]).not.toHaveProperty("resumeCursor");
+      expect(sentInput(harness, 1)).not.toContain("indent with tabs");
+    });
+
     it("hands the full conversation to a fresh target and parks the outgoing session", async () => {
       const harness = await claudeConversation();
       const exit = await turn(harness, { id: "x1", text: "What did I ask?", selection: codex });
@@ -6374,6 +6619,62 @@ describe("ProviderCommandReactor", () => {
         provider: "claudeAgent",
         lastSeenMessageId: "assistant-c1",
       });
+    });
+
+    it("delivers captured side-chat context once through durable handoff without replaying parent rows", async () => {
+      const harness = await createHarness({
+        handoff: true,
+        nativeCursors: true,
+        bridgeTurnDelivery: false,
+      });
+      const at = nextAt();
+      const pending = {
+        id: "side-chat-fork",
+        mode: "full",
+        targetInstanceId: "codex",
+        fromProvider: "codex",
+        fromInstanceId: "codex",
+        fromModel: codex.model,
+        sinceMessageId: null,
+        expectedNativeIdentity: null,
+        createdAt: at,
+        sourceContext: {
+          effectiveMode: "full",
+          messages: [
+            {
+              id: "parent-context",
+              role: "user",
+              text: "The parent asked about portable forks.",
+              streaming: false,
+              createdAt: at,
+            },
+          ],
+          summary: null,
+        },
+      };
+      await harness.withSql(
+        (sql) =>
+          sql`INSERT INTO provider_handoff_state(thread_id,pending_json,parked_json,revision,updated_at) VALUES (${threadId},${JSON.stringify(pending)},'{}',1,${at})`,
+      );
+      const delivered = await turn(harness, {
+        id: "side-first",
+        text: "Explain it.",
+        selection: codex,
+        durable: true,
+      });
+      expect(delivered._tag).toBe("Success");
+      expect(sentInput(harness, 0)).toContain("The parent asked about portable forks.");
+      expect(sentInput(harness, 0)).toContain("Explain it.");
+      expect((await harness.readHandoffState(threadId))?.pending).toBeNull();
+      await harness.completeAcceptedTurns();
+      const second = await turn(harness, {
+        id: "side-second",
+        text: "Continue.",
+        selection: codex,
+        durable: true,
+      });
+      expect(second._tag).toBe("Success");
+      expect(sentInput(harness, 1)).toBe("Continue.");
     });
 
     it("resumes the parked session on the way back and sends only the delta", async () => {

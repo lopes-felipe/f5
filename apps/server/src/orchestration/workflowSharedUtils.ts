@@ -1,6 +1,7 @@
 import type { OrchestrationThread, ProviderKind, WorkflowModelSlot } from "@t3tools/contracts";
 import {
   estimateModelContextWindowTokens,
+  normalizeModelSlug,
   roughTokenEstimateFromCharacters,
 } from "@t3tools/shared/model";
 
@@ -11,10 +12,27 @@ import { parseWorkflowFindingOutput } from "./workflowFindingProtocol.ts";
 export const WORKFLOW_AUTHORITATIVE_ARTIFACT_TOKEN_SHARE = 0.5;
 export const WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT = 116_000;
 
+export type WorkflowFitThread = Partial<
+  Pick<
+    OrchestrationThread,
+    "estimatedContextTokens" | "model" | "modelSelection" | "modelContextWindowTokens"
+  >
+> & {
+  readonly session?:
+    | (Pick<NonNullable<OrchestrationThread["session"]>, "providerName"> &
+        Partial<
+          Pick<
+            NonNullable<OrchestrationThread["session"]>,
+            "modelContextWindowTokens" | "providerInstanceId"
+          >
+        >)
+    | null;
+};
+
 interface WorkflowArtifactFitInput {
   readonly artifacts: ReadonlyArray<string>;
   readonly targetSlot: WorkflowModelSlot;
-  readonly thread?: Pick<OrchestrationThread, "estimatedContextTokens"> | null;
+  readonly thread?: WorkflowFitThread | null;
   readonly contextUsageTokens?: number;
   readonly contextWindowTokens?: number;
   readonly promptFramingTokens?: number;
@@ -52,14 +70,17 @@ export function workflowPromptFit(
 }
 
 export function workflowPromptFitError(
-  input: WorkflowPromptFitInput,
+  input: WorkflowPromptFitInput & { readonly artifactBudgetRecovery?: string },
 ): OrchestrationCommandInvariantError | null {
   const fit = workflowPromptFit(input);
   return fit.kind === "fits"
     ? null
     : new OrchestrationCommandInvariantError({
         commandType: "workflow.turn.start",
-        detail: fit.detail,
+        detail:
+          fit.kind === "artifact-budget" && input.artifactBudgetRecovery
+            ? `${fit.detail} ${input.artifactBudgetRecovery}`
+            : fit.detail,
       });
 }
 
@@ -496,10 +517,50 @@ export function truncateWorkflowPromptArtifact(text: string, maxChars = 60_000):
   }).output;
 }
 
+/**
+ * Where a workflow turn on `slot` will run in `thread`: the thread's session when
+ * it is the same model on the same provider and instance, and the context window
+ * that turn gets. A provider-reported window (session first, then the thread's
+ * last report) wins over static metadata only for that matching model. Planning
+ * revisions and Apply Reviews both size their prompts with this.
+ */
+export function workflowContextTarget<T extends WorkflowFitThread>(
+  slot: WorkflowModelSlot,
+  thread: T | null | undefined,
+): {
+  readonly session: NonNullable<T["session"]> | null;
+  readonly matchingThread: boolean;
+  readonly contextWindowTokens: number;
+} {
+  const staticWindow = estimateModelContextWindowTokens(slot.model, slot.provider);
+  if (!thread) return { session: null, matchingThread: false, contextWindowTokens: staticWindow };
+  const matchingModel =
+    normalizeModelSlug(thread.model, slot.provider) ===
+    normalizeModelSlug(slot.model, slot.provider);
+  const matchingInstance =
+    !thread.modelSelection ||
+    thread.session?.providerInstanceId == null ||
+    thread.session.providerInstanceId === thread.modelSelection.instanceId;
+  const session =
+    matchingModel && matchingInstance && thread.session?.providerName === slot.provider
+      ? (thread.session as NonNullable<T["session"]>)
+      : null;
+  const matchingThread =
+    matchingModel && (thread.session?.providerName == null || session !== null);
+  return {
+    session,
+    matchingThread,
+    contextWindowTokens:
+      (session?.modelContextWindowTokens || undefined) ??
+      (matchingThread ? thread.modelContextWindowTokens || undefined : undefined) ??
+      staticWindow,
+  };
+}
+
 function contextHeadroom(input: WorkflowArtifactFitInput): number {
   const contextWindow =
     input.contextWindowTokens ??
-    estimateModelContextWindowTokens(input.targetSlot.model, input.targetSlot.provider);
+    workflowContextTarget(input.targetSlot, input.thread).contextWindowTokens;
   const outputReserve = Math.max(8_000, Math.floor(contextWindow * 0.15));
   const contextTokens = input.contextUsageTokens ?? input.thread?.estimatedContextTokens ?? 0;
   return Math.max(

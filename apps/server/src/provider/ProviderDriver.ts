@@ -68,7 +68,7 @@ export interface ProviderInstance {
   readonly continuationIdentity: ProviderContinuationIdentity;
   /** Opaque server-side identity for executable, argv, and environment defaults. */
   readonly launchIdentity?: string;
-  readonly resolveInstallTarget?: () => ProviderInstallTarget | null;
+  readonly resolveInstallTarget?: () => Promise<ProviderInstallTarget | null>;
   /** Stable identity for the complete decoded provider-instance configuration. */
   readonly configurationFingerprint?: string;
   readonly displayName: string | undefined;
@@ -99,7 +99,20 @@ export interface ProviderInstance {
   >;
   readonly invalidateAccountStatus?: Effect.Effect<void>;
   readonly invalidateModelCatalog?: Effect.Effect<void>;
+  /**
+   * Explicit user refresh only (Settings → Providers → Refresh, which sends `discoverModels`):
+   * run an expensive catalog discovery on the next status check. Never called by startup,
+   * periodic refreshes, health banners or session restarts.
+   */
+  readonly requestModelDiscovery?: Effect.Effect<void>;
   readonly updateModelCatalog?: (models: ReadonlyArray<ServerProviderModel>) => Effect.Effect<void>;
+  /**
+   * Boot only: the models from this instance's cached status snapshot, offered before the first
+   * live probe is published, so a restart can restore a catalog the live probe cannot rebuild.
+   */
+  readonly hydrateModelCatalog?: (
+    models: ReadonlyArray<ServerProviderModel>,
+  ) => Effect.Effect<void>;
   /**
    * Read-only hooks/plugins/connectors/agents inventory for this instance.
    * `projectRoot` is resolved by the server from a project id, never taken

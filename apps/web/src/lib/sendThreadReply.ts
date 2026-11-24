@@ -29,6 +29,7 @@ export type ThreadReplyTarget = Pick<
 export interface ThreadReplyInput {
   readonly thread: ThreadReplyTarget;
   readonly text: string;
+  readonly attachments?: ClientThreadTurnStartCommand["message"]["attachments"];
   /** Defaults to the thread's mode. */
   readonly interactionMode?: ProviderInteractionMode | undefined;
   /** The plan this message implements; only sent in default mode, as the thread does. */
@@ -53,7 +54,7 @@ export function buildThreadReplyCommand(input: ThreadReplyInput): ClientThreadTu
       messageId: newMessageId(),
       role: "user",
       text: input.text,
-      attachments: [],
+      attachments: input.attachments ?? [],
     },
     model: thread.model,
     ...(thread.modelSelection ? { modelSelection: thread.modelSelection } : {}),

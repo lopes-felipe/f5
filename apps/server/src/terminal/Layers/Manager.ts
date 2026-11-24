@@ -88,10 +88,12 @@ const decodeTerminalResizeInput = Schema.decodeUnknownSync(TerminalResizeInput);
 const decodeTerminalClearInput = Schema.decodeUnknownSync(TerminalClearInput);
 const decodeTerminalCloseInput = Schema.decodeUnknownSync(TerminalCloseInput);
 
-let cachedDefaultWindowsShell: string | undefined;
+let cachedDefaultWindowsShell: Promise<string> | undefined;
 
-export function resolveDefaultWindowsShell(environment: NodeJS.ProcessEnv = process.env): string {
-  const pwsh = resolveExecutable("pwsh.exe", environment, { platform: "win32" });
+export async function resolveDefaultWindowsShell(
+  environment: NodeJS.ProcessEnv = process.env,
+): Promise<string> {
+  const pwsh = await resolveExecutable("pwsh.exe", environment, { platform: "win32" });
   if (pwsh) return pwsh;
 
   const systemRoot = environment.SystemRoot ?? environment.SYSTEMROOT ?? "C:\\Windows";
@@ -102,17 +104,23 @@ export function resolveDefaultWindowsShell(environment: NodeJS.ProcessEnv = proc
     "v1.0",
     "powershell.exe",
   );
-  if (fs.existsSync(windowsPowerShell)) return windowsPowerShell;
+  if (
+    await fs.promises.access(windowsPowerShell).then(
+      () => true,
+      () => false,
+    )
+  )
+    return windowsPowerShell;
 
   return (
-    resolveExecutable("powershell.exe", environment, { platform: "win32" }) ??
+    (await resolveExecutable("powershell.exe", environment, { platform: "win32" })) ??
     environment.ComSpec ??
     environment.COMSPEC ??
     "cmd.exe"
   );
 }
 
-function defaultShellResolver(): string {
+function defaultShellResolver(): string | Promise<string> {
   if (process.platform === "win32") {
     cachedDefaultWindowsShell ??= resolveDefaultWindowsShell();
     return cachedDefaultWindowsShell;
@@ -165,14 +173,16 @@ function uniqueShellCandidates(candidates: Array<ShellCandidate | null>): ShellC
   return ordered;
 }
 
-function resolveShellCandidates(shellResolver: () => string): ShellCandidate[] {
-  const requested = shellCandidateFromCommand(normalizeShellCommand(shellResolver()));
+async function resolveShellCandidates(
+  shellResolver: () => string | Promise<string>,
+): Promise<ShellCandidate[]> {
+  const requested = shellCandidateFromCommand(normalizeShellCommand(await shellResolver()));
 
   if (process.platform === "win32") {
     const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows";
     return uniqueShellCandidates([
       requested,
-      shellCandidateFromCommand(resolveExecutable("pwsh.exe", process.env)),
+      shellCandidateFromCommand(await resolveExecutable("pwsh.exe", process.env)),
       shellCandidateFromCommand(
         path.win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
       ),
@@ -322,7 +332,7 @@ interface TerminalManagerOptions {
   logsDir?: string;
   historyLineLimit?: number;
   ptyAdapter: PtyAdapterShape;
-  shellResolver?: () => string;
+  shellResolver?: () => string | Promise<string>;
   processTableReader?: () => Promise<TerminalProcessTable>;
   subprocessPollIntervalMs?: number;
   processKillGraceMs?: number;
@@ -344,7 +354,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
   private readonly logsDir: string;
   private readonly historyLineLimit: number;
   private readonly ptyAdapter: PtyAdapterShape;
-  private readonly shellResolver: () => string;
+  private readonly shellResolver: () => string | Promise<string>;
   private readonly persistQueues = new Map<string, Promise<void>>();
   private readonly persistTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly pendingPersistHistory = new Map<string, BoundedTerminalHistory>();
@@ -368,7 +378,8 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
       options.writeHistory ??
       ((filePath, contents) =>
         Effect.runPromise(
-          writeFileStringAtomically({ filePath, contents }).pipe(
+          // Live scrollback flushes frequently and can use the OS writeback schedule.
+          writeFileStringAtomically({ filePath, contents, durable: false }).pipe(
             Effect.provide(NodeServices.layer),
           ),
         ));
@@ -771,7 +782,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
           lifecycle: eventType,
         }),
       );
-      const shellCandidates = resolveShellCandidates(this.shellResolver);
+      const shellCandidates = await resolveShellCandidates(this.shellResolver);
       // A thread's terminals follow its access mode for browser opens, like its agent.
       const terminalEnv = withBrowserOpenThreadToken(
         createTerminalSpawnEnv(

@@ -64,15 +64,18 @@ public func computerElementTimeoutOutcome(
     ? .unverified : .failed(tag: "OutcomeUnknown", reason: nil, started: true)
 }
 
-public enum ComputerChordStep: Equatable {
+public enum ComputerDeliveryStep: Equatable {
   case send
-  /// Focus moved before any chord was delivered: nothing happened yet.
+  /// Focus moved before anything was delivered: nothing happened yet.
   case blocked
-  /// Focus moved after delivered chords (often their own effect): stop, report unverified.
+  /// Focus moved after delivered chords or text (often their own effect): stop, report
+  /// unverified with what was delivered.
   case stop
 }
 
-/// Focus is checked before each chord's keydown only; a keyup always follows its keydown.
-public func computerChordStep(chordsDelivered: Int, focusUnchanged: Bool) -> ComputerChordStep {
-  focusUnchanged ? .send : chordsDelivered == 0 ? .blocked : .stop
+/// Shared by key chords and typed text. Focus is checked before each keydown only; a keyup
+/// always follows its keydown, because the keydown itself may move focus (Cmd+N, or typed text
+/// that changes a combobox's active option).
+public func computerDeliveryStep(delivered: Int, focusUnchanged: Bool) -> ComputerDeliveryStep {
+  focusUnchanged ? .send : delivered == 0 ? .blocked : .stop
 }

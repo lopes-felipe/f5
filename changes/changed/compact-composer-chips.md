@@ -1,0 +1,2 @@
+- The composer's reasoning chip shows only what differs from the defaults: "High" instead of "High · Ultracode Off", with icons for Fast mode and Ultracode when on.
+- The context meter is now just the ring. Hovering it shows the percentage inside the ring and the exact token counts in the popup.

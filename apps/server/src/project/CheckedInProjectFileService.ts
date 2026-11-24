@@ -112,6 +112,7 @@ export function makeCheckedInProjectFileService(
           sourceFile,
           defaultThreadEnvMode: parsed.defaultThreadEnvMode,
           ...(parsed.settings ? { settings: parsed.settings } : {}),
+          ...(parsed.ignoreRepositories ? { ignoreRepositories: parsed.ignoreRepositories } : {}),
           iconPath,
           upstream: parsed.upstream,
           diagnostics,

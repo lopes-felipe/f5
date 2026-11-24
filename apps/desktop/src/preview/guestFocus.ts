@@ -108,6 +108,10 @@ export async function preservePreviewHostFocus<T>(
 // A timed-out command remains live in Chromium. Do not overlap it with a retry.
 const pendingInput = new WeakMap<WebContents, Promise<unknown>>();
 
+export function hasPendingPreviewInput(guest: WebContents): boolean {
+  return pendingInput.has(guest);
+}
+
 function sendInput(
   guest: WebContents,
   params: Record<string, unknown>,
@@ -151,7 +155,7 @@ export async function clickPreviewGuest(
   checkpoint: PreviewAutomationCheckpoint,
 ): Promise<void> {
   checkpoint.check();
-  if (pendingInput.has(guest))
+  if (hasPendingPreviewInput(guest))
     throw new Error("Preview input is still pending. Reload the preview before retrying.");
   const debuggee = previewDebugger(guest);
   if (!debuggee.isAttached()) debuggee.attach("1.3");

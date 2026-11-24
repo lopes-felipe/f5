@@ -30,6 +30,8 @@ import {
 } from "effect";
 import { ServerConfig } from "./config.ts";
 import { SecretStoreError, ServerSecretStore } from "./auth/Services/ServerSecretStore.ts";
+import { acquireAccountAdmission, beginAccountChange } from "./profiles/ProviderAccountGuard.ts";
+import { isAntigravityAuthCurrent } from "./provider/antigravityAuthSupport.ts";
 import {
   ServerSettingsLiveWithSecretStore,
   ServerSettingsLive,
@@ -48,6 +50,93 @@ const makeServerSettingsLayer = () =>
   );
 
 it.layer(NodeServices.layer)("server settings", (it) => {
+  const agyInstance = (authMethod: "oauth-personal" | "gemini-api-key", enabled = true) => ({
+    driver: ProviderDriverKind.make("antigravity"),
+    config: { enabled, authMethod },
+  });
+  const agyId = ProviderInstanceId.make("agy_fence");
+  const authMethodOf = (settings: ServerSettings) =>
+    (settings.providerInstances[agyId]?.config as { authMethod?: string } | undefined)?.authMethod;
+
+  it.effect("refuses a sign-in method change while the instance runs work, then saves", () =>
+    Effect.gen(function* () {
+      const service = yield* ServerSettingsService;
+      const config = yield* ServerConfig;
+      yield* service.updateSettings({
+        providerInstances: { [agyId]: agyInstance("oauth-personal") },
+      });
+      const release = acquireAccountAdmission(config.stateDir, agyId);
+      const refused = yield* Effect.exit(
+        service.updateSettings({
+          providerInstances: { [agyId]: agyInstance("gemini-api-key") },
+          enableAssistantStreaming: false,
+        }),
+      );
+      release();
+      assert.isTrue(Exit.isFailure(refused));
+      if (Exit.isFailure(refused))
+        assert.include(String(Cause.squash(refused.cause)), "save again");
+      // Nothing from the refused save landed, unrelated fields included.
+      const unchanged = yield* service.getSettings;
+      assert.equal(authMethodOf(unchanged), "oauth-personal");
+      assert.notEqual(unchanged.enableAssistantStreaming, false);
+      // A save that keeps the method needs no guard, and the change succeeds once work ends.
+      yield* service.updateSettings({
+        providerInstances: { [agyId]: agyInstance("oauth-personal", false) },
+      });
+      yield* service.updateSettings({
+        providerInstances: { [agyId]: agyInstance("gemini-api-key") },
+      });
+      assert.equal(authMethodOf(yield* service.getSettings), "gemini-api-key");
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
+  it.effect("lets an account job that holds the guard save its own change", () =>
+    Effect.gen(function* () {
+      const service = yield* ServerSettingsService;
+      const config = yield* ServerConfig;
+      yield* service.updateSettings({
+        providerInstances: { [agyId]: agyInstance("oauth-personal") },
+      });
+      const release = beginAccountChange(config.stateDir, agyId);
+      const saved = yield* service.updateSettingsWith!(
+        (current) => ({
+          providerInstances: {
+            ...current.providerInstances,
+            [agyId]: agyInstance("gemini-api-key"),
+          },
+        }),
+        { heldAccountChanges: [agyId] },
+      ).pipe(Effect.ensuring(Effect.sync(release)));
+      assert.equal(saved ? authMethodOf(saved) : undefined, "gemini-api-key");
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
+  it.effect("moves the sign-in fence when an instance is removed and recreated", () =>
+    Effect.gen(function* () {
+      const service = yield* ServerSettingsService;
+      const config = yield* ServerConfig;
+      const oauth = { authMethod: "oauth-personal", apiKey: "" } as const;
+      const key = { authMethod: "gemini-api-key", apiKey: "" } as const;
+      yield* service.updateSettings({
+        providerInstances: { [agyId]: agyInstance("oauth-personal") },
+      });
+      yield* service.updateSettings({
+        providerInstances: { [agyId]: agyInstance("gemini-api-key") },
+      });
+      assert.isFalse(isAntigravityAuthCurrent(config.stateDir, agyId, oauth));
+      // Removed: adapters still built for it refuse work.
+      yield* service.updateSettings({ providerInstances: {} });
+      assert.isFalse(isAntigravityAuthCurrent(config.stateDir, agyId, key));
+      // Recreated with other settings: the new adapter is current without a restart.
+      yield* service.updateSettings({
+        providerInstances: { [agyId]: agyInstance("oauth-personal") },
+      });
+      assert.isTrue(isAntigravityAuthCurrent(config.stateDir, agyId, oauth));
+      assert.isFalse(isAntigravityAuthCurrent(config.stateDir, agyId, key));
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
   it.effect("preserves legacy sparse off/foreground settings through saves and reloads", () =>
     Effect.gen(function* () {
       const service = yield* ServerSettingsService;
@@ -88,6 +177,32 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       const reloaded = yield* service.updateSettings({ enableAssistantStreaming: true });
       assert.equal(reloaded.enableAgentComputerUse, true);
       assert.equal(reloaded.computerUseExecutionMode, "background");
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+  it.effect("writes the Cursor harness pin explicitly alongside its migration marker", () =>
+    Effect.gen(function* () {
+      const service = yield* ServerSettingsService;
+      const config = yield* ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.writeFileString(config.settingsPath!, "{}");
+      yield* service.updateSettings({ enableAssistantStreaming: false });
+      const saved = JSON.parse(yield* fs.readFileString(config.settingsPath!));
+      // The pin equals today's default but must stay on disk: once the marker
+      // is written the load-time pin never runs again, so a later default
+      // change would otherwise move this provider to another harness.
+      assert.equal(saved.providers.cursor.harness, "acp");
+      assert.ok(saved.clientSettingMigrations.cursorHarnessPinnedV1);
+      yield* service.updateSettings({
+        providerInstances: {
+          [ProviderInstanceId.make("cursor_work")]: {
+            driver: ProviderDriverKind.make("cursor"),
+            config: { binaryPath: "agent" },
+          },
+        },
+      } as unknown as ServerSettingsPatch);
+      const withInstance = JSON.parse(yield* fs.readFileString(config.settingsPath!));
+      assert.equal(withInstance.providers.cursor.harness, "acp");
+      assert.equal(withInstance.providerInstances.cursor_work.config.harness, "acp");
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
   it.effect("validates repository search folders before saving storage discovery", () =>
@@ -915,6 +1030,26 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 
+  it.effect("defaults history retention and persists an unlimited setting", () =>
+    Effect.gen(function* () {
+      const settings = yield* ServerSettingsService;
+      assert.equal(yield* settings.getUsageHistoryRetention!, 182);
+      yield* settings.updateSettings({ usageHistoryRetentionDays: "unlimited" });
+      assert.equal(yield* settings.getUsageHistoryRetention!, "unlimited");
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
+  it.effect("does not prune history while the settings file is malformed", () =>
+    Effect.gen(function* () {
+      const { settingsPath } = yield* ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      assert.ok(settingsPath);
+      yield* fs.writeFileString(settingsPath, '{"usageHistoryRetentionDays":0}');
+      const settings = yield* ServerSettingsService;
+      assert.isNull(yield* settings.getUsageHistoryRetention!);
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
   it.effect("writes only non-default server settings to disk", () =>
     Effect.gen(function* () {
       const serverSettings = yield* ServerSettingsService;
@@ -954,6 +1089,8 @@ it.layer(NodeServices.layer)("server settings", (it) => {
           codex: {
             binaryPath: "/opt/homebrew/bin/codex",
           },
+          // The Cursor harness pin is kept even though it equals the default.
+          cursor: { harness: "acp" },
           opencode: {
             serverUrl: "http://127.0.0.1:4096",
             serverPasswordRedacted: true,

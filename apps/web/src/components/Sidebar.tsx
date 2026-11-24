@@ -25,8 +25,11 @@ import {
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
 import { useQueries, useQuery } from "@tanstack/react-query";
+import { projectRepositoriesQueryOptions } from "./RepositoryPicker";
 import { useLocation, useNavigate, useParams, useRouter } from "@tanstack/react-router";
 import { type AppSettings, useAppSettingsSelector } from "../appSettings";
+import { projectChoices } from "../lib/projectChoices";
+import { updateProjectVisibility } from "./ProjectPinButton";
 import { selectProjectDraftThread, useComposerDraftStore } from "../composerDraftStore";
 import { useStartupReady } from "../lib/startupReady";
 import { cn, newCommandId } from "../lib/utils";
@@ -38,6 +41,7 @@ import { gitStatusQueryOptions } from "../lib/gitReactQuery";
 import { resolveThreadPullRequests, threadBranchPullRequest } from "../lib/threadPullRequests";
 import {
   linkedPullRequestLookupCwd,
+  linkedRepositoryCwd,
   useLinkedPullRequestStates,
 } from "../hooks/useLinkedPullRequestStates";
 import { serverConfigQueryOptions } from "../lib/serverReactQuery";
@@ -119,6 +123,7 @@ import {
 } from "./sidebar/sidebarLists";
 import { useDesktopUpdate } from "./sidebar/useDesktopUpdate";
 import { SidebarPeekProvider, SidebarPeekScrollDismissArea } from "./sidebar/SidebarPeekCard";
+import { SidebarFolderDrop } from "./sidebar/SidebarFolderDrop";
 import { SidebarRecentView } from "./sidebar/SidebarRecentView";
 import { bucketRecentSidebarItems, collectRecentSidebarItems } from "./sidebar/sidebarRecent";
 import { useLocalStorage } from "../hooks/useLocalStorage";
@@ -242,7 +247,10 @@ export default function Sidebar() {
   );
   const clearSelection = useThreadSelectionStore((s) => s.clearSelection);
   const multipleThreadsSelected = useThreadSelectionStore((s) => s.selectedThreadIds.size >= 2);
-  const listedProjects = useMemo(() => withoutScratchProjects(projects), [projects]);
+  const listedProjects = useMemo(
+    () => projectChoices(withoutScratchProjects(projects)),
+    [projects],
+  );
   const firstProjectId = listedProjects[0]?.id ?? null;
   const mostRecentProjectId = useMemo(
     () =>
@@ -363,6 +371,42 @@ export default function Sidebar() {
       ),
     [projectById, threads],
   );
+  const projectsWithExternalLinks = useMemo(
+    () => [
+      ...new Set(
+        threads.flatMap((thread) =>
+          thread.pullRequests?.some((link) => link.repositoryPath?.startsWith(".f5-repositories/"))
+            ? [thread.projectId]
+            : [],
+        ),
+      ),
+    ],
+    [threads],
+  );
+  const externalRepositoryQueries = useQueries({
+    queries: projectsWithExternalLinks.map((projectId) =>
+      projectRepositoriesQueryOptions(projectId),
+    ),
+  });
+  const externalCwdsByProject = useMemo(
+    () =>
+      new Map(
+        projectsWithExternalLinks.map(
+          (projectId, index) =>
+            [
+              projectId,
+              Object.fromEntries(
+                (externalRepositoryQueries[index]?.data ?? []).flatMap((repository) =>
+                  repository.externalSource
+                    ? [[repository.relativePath, repository.externalSource]]
+                    : [],
+                ),
+              ),
+            ] as const,
+        ),
+      ),
+    [externalRepositoryQueries, projectsWithExternalLinks],
+  );
   const linkedPullRequestTargets = useMemo(
     () =>
       sidebarPullRequestLinkTargets(
@@ -370,11 +414,12 @@ export default function Sidebar() {
           id: thread.id,
           archived: thread.archivedAt !== null,
           lookupCwd: threadPullRequestLookupCwds.get(thread.id) ?? null,
+          externalCwds: externalCwdsByProject.get(thread.projectId),
           pullRequests: thread.pullRequests,
         })),
         routeThreadId,
       ),
-    [routeThreadId, threadPullRequestLookupCwds, threads],
+    [externalCwdsByProject, routeThreadId, threadPullRequestLookupCwds, threads],
   );
   const linkedPullRequestState = useLinkedPullRequestStates(linkedPullRequestTargets);
   // The branch PR and the thread's links, merged once per change instead of once per row render.
@@ -389,13 +434,27 @@ export default function Sidebar() {
               resolveThreadPullRequests({
                 branchPr: prByThreadId.get(thread.id) ?? null,
                 links: thread.pullRequests,
-                linkState: (url) => linkedPullRequestState(lookupCwd, url),
+                linkState: (url, path) =>
+                  linkedPullRequestState(
+                    linkedRepositoryCwd(
+                      lookupCwd,
+                      path,
+                      externalCwdsByProject.get(thread.projectId),
+                    ),
+                    url,
+                  ),
               }),
             ),
           ] as const;
         }),
       ),
-    [linkedPullRequestState, prByThreadId, threadPullRequestLookupCwds, threads],
+    [
+      externalCwdsByProject,
+      linkedPullRequestState,
+      prByThreadId,
+      threadPullRequestLookupCwds,
+      threads,
+    ],
   );
   const indicatorsForThread: SidebarIndicatorsForThread = (thread) => ({
     threadStatus: pillForStatus(threadStatusById.get(thread.id) ?? "none"),
@@ -735,16 +794,28 @@ export default function Sidebar() {
     },
   );
 
+  const toggleProjectPin = useStableCallback((project: Project) => {
+    void updateProjectVisibility(project.id, { pinned: !project.pinned }).catch((error) => {
+      toastManager.add({
+        type: "error",
+        title: "Could not update project pin",
+        description: String(error),
+      });
+    });
+  });
+
   const handleProjectContextMenu = useStableCallback(
     async (projectId: ProjectId, position: { x: number; y: number }) => {
       const api = readNativeApi();
       if (!api) return;
       // The home for threads without a project has no path, worktrees or identity to change.
-      const scratch = isScratchProject(projects.find((entry) => entry.id === projectId));
+      const menuProject = projects.find((entry) => entry.id === projectId);
+      const scratch = isScratchProject(menuProject);
       const clicked = await api.contextMenu.show(
         scratch
           ? [{ id: "settle-idle", label: "Settle idle threads" }]
           : [
+              { id: "toggle-pin", label: menuProject?.pinned ? "Unpin project" : "Pin project" },
               { id: "worktrees", label: "Worktrees…" },
               { id: "settle-idle", label: "Settle idle threads" },
               { id: "settings", label: "Project settings…" },
@@ -756,6 +827,10 @@ export default function Sidebar() {
       );
       const project = projects.find((entry) => entry.id === projectId);
       if (!project) return;
+      if (clicked === "toggle-pin") {
+        toggleProjectPin(project);
+        return;
+      }
       if (clicked === "settle-idle") {
         try {
           const result = await api.threadSettlement.settleProjectIdle({ projectId });
@@ -945,6 +1020,14 @@ export default function Sidebar() {
         mostRecentProjectId,
         firstProjectId,
       });
+
+      if (command === "project.togglePin") {
+        const project = projects.find((entry) => entry.id === projectId);
+        if (!project || isScratchProject(project)) return;
+        event.preventDefault();
+        toggleProjectPin(project);
+        return;
+      }
 
       if (command === "workflow.new") {
         if (!projectId || isScratchProject(projects.find((entry) => entry.id === projectId)))
@@ -1260,126 +1343,128 @@ export default function Sidebar() {
           onViewChange={setSidebarView}
         />
 
-        <SidebarPeekScrollDismissArea className="contents">
-          <SidebarContent className="gap-0">
-            <SidebarArm64Warning update={desktopUpdate} />
-            {sidebarSearchQuery.trim().length > 0 ? (
-              <SidebarThreadSearchResults
-                query={sidebarSearchQuery}
-                projects={projects}
-                threads={threads}
-                {...(routeThreadId ? { activeThreadId: routeThreadId } : {})}
-                onResultOpened={handleSidebarSearchResultOpened}
-              />
-            ) : null}
-            <div className={cn("px-2", sidebarSearchQuery.trim().length > 0 && "hidden")}>
-              <SidebarAttentionSection
-                threads={attentionThreads}
-                projectsById={projectsById}
-                routeThreadId={routeThreadId}
-                indicatorsForThread={indicatorsForThread}
-                actions={threadActions}
-              />
-            </div>
-            <SidebarGroup
-              className={cn("px-2 pt-0 pb-2", sidebarSearchQuery.trim().length > 0 && "hidden")}
-            >
-              {sidebarView === "projects" ? (
-                <div
-                  className="flex h-5 items-center justify-between gap-2 pr-1.5 pl-2"
-                  data-testid="sidebar-projects-label"
-                >
-                  <span className="text-[10.5px] font-medium tracking-wide text-muted-foreground uppercase">
-                    Projects
-                  </span>
-                  <Tooltip>
-                    <TooltipTrigger
-                      render={
-                        <button
-                          type="button"
-                          aria-label="Add project"
-                          aria-pressed={addProject.showPathEntry}
-                          className="inline-flex size-5 items-center justify-center rounded-md text-muted-foreground transition-colors duration-(--duration-fast) hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-                          onClick={addProject.handleStartAddProject}
-                        />
-                      }
-                    >
-                      <FolderPlusIcon className="size-3.5" />
-                    </TooltipTrigger>
-                    <TooltipPopup side="right">Add project</TooltipPopup>
-                  </Tooltip>
-                </div>
-              ) : null}
-
-              {addProject.showPathEntry && <SidebarAddProjectForm controller={addProject} />}
-
-              {sidebarView === "recent" ? (
-                <SidebarRecentView
+        <SidebarFolderDrop>
+          <SidebarPeekScrollDismissArea className="contents">
+            <SidebarContent className="gap-0">
+              <SidebarArm64Warning update={desktopUpdate} />
+              {sidebarSearchQuery.trim().length > 0 ? (
+                <SidebarThreadSearchResults
+                  query={sidebarSearchQuery}
                   projects={projects}
-                  listsByProjectId={projectSidebarListsById}
-                  statusById={threadStatusById}
-                  now={nowHour}
-                  liveActivityHours={liveActivityHours}
-                  frozenItemKeys={sidebarHoverFreezeSnapshot?.recentItemKeys}
-                  threadPreviewLimit={threadPreviewLimit}
-                  draftThreadsByThreadId={draftThreadsByThreadId}
-                  persistedThreadIds={persistedThreadIds}
-                  routeThreadId={routeThreadId}
-                  pathname={pathname}
-                  expandWorkflowThreadsByDefault={appSettings.expandWorkflowThreadsByDefault}
-                  workflowExpandedById={workflowExpandedById}
-                  indicatorsForThread={indicatorsForThread}
-                  threadActions={threadActions}
-                  projectActions={projectActions}
+                  threads={threads}
+                  {...(routeThreadId ? { activeThreadId: routeThreadId } : {})}
+                  onResultOpened={handleSidebarSearchResultOpened}
                 />
-              ) : (
-                <DndContext
-                  sensors={projectDnDSensors}
-                  collisionDetection={projectCollisionDetection}
-                  modifiers={[restrictToVerticalAxis, restrictToFirstScrollableAncestor]}
-                  onDragStart={handleProjectDragStart}
-                  onDragEnd={handleProjectDragEnd}
-                  onDragCancel={handleProjectDragCancel}
-                >
-                  <SidebarMenu
-                    {...SIDEBAR_TREE_PROPS}
-                    aria-label="Threads and projects"
-                    ref={attachSidebarTree}
-                    className="gap-4"
-                  >
-                    {projects.filter(isScratchProject).map(renderProjectItem)}
-                    <SortableContext
-                      items={listedProjects.map((project) => project.id)}
-                      strategy={verticalListSortingStrategy}
-                    >
-                      {listedProjects.map(renderProjectItem)}
-                    </SortableContext>
-                  </SidebarMenu>
-                </DndContext>
-              )}
-
-              {!startupReady && projects.length === 0 && !addProject.showPathEntry ? (
-                <StartupSidebarSkeleton />
-              ) : startupReady && projects.length === 0 && !addProject.showPathEntry ? (
-                <div className="mx-1 mt-2 flex flex-col items-center gap-2 rounded-xl border border-dashed border-border px-3 py-5 text-center">
-                  <p className="text-ui text-muted-foreground">No projects yet</p>
-                  <Button size="sm" variant="outline" onClick={addProject.handleStartAddProject}>
-                    <PlusIcon className="size-4" />
-                    Add a project
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="link"
-                    data-testid="sidebar-start-without-project"
-                    onClick={() => void startScratchThread()}
-                  >
-                    or start without a project
-                  </Button>
-                </div>
               ) : null}
-            </SidebarGroup>
-          </SidebarContent>
-        </SidebarPeekScrollDismissArea>
+              <div className={cn("px-2", sidebarSearchQuery.trim().length > 0 && "hidden")}>
+                <SidebarAttentionSection
+                  threads={attentionThreads}
+                  projectsById={projectsById}
+                  routeThreadId={routeThreadId}
+                  indicatorsForThread={indicatorsForThread}
+                  actions={threadActions}
+                />
+              </div>
+              <SidebarGroup
+                className={cn("px-2 pt-0 pb-2", sidebarSearchQuery.trim().length > 0 && "hidden")}
+              >
+                {sidebarView === "projects" ? (
+                  <div
+                    className="flex h-5 items-center justify-between gap-2 pr-1.5 pl-2"
+                    data-testid="sidebar-projects-label"
+                  >
+                    <span className="text-[10.5px] font-medium tracking-wide text-muted-foreground uppercase">
+                      Projects
+                    </span>
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <button
+                            type="button"
+                            aria-label="Add project"
+                            aria-pressed={addProject.showPathEntry}
+                            className="inline-flex size-5 items-center justify-center rounded-md text-muted-foreground transition-colors duration-(--duration-fast) hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+                            onClick={addProject.handleStartAddProject}
+                          />
+                        }
+                      >
+                        <FolderPlusIcon className="size-3.5" />
+                      </TooltipTrigger>
+                      <TooltipPopup side="right">Add project</TooltipPopup>
+                    </Tooltip>
+                  </div>
+                ) : null}
+
+                {addProject.showPathEntry && <SidebarAddProjectForm controller={addProject} />}
+
+                {sidebarView === "recent" ? (
+                  <SidebarRecentView
+                    projects={projects}
+                    listsByProjectId={projectSidebarListsById}
+                    statusById={threadStatusById}
+                    now={nowHour}
+                    liveActivityHours={liveActivityHours}
+                    frozenItemKeys={sidebarHoverFreezeSnapshot?.recentItemKeys}
+                    threadPreviewLimit={threadPreviewLimit}
+                    draftThreadsByThreadId={draftThreadsByThreadId}
+                    persistedThreadIds={persistedThreadIds}
+                    routeThreadId={routeThreadId}
+                    pathname={pathname}
+                    expandWorkflowThreadsByDefault={appSettings.expandWorkflowThreadsByDefault}
+                    workflowExpandedById={workflowExpandedById}
+                    indicatorsForThread={indicatorsForThread}
+                    threadActions={threadActions}
+                    projectActions={projectActions}
+                  />
+                ) : (
+                  <DndContext
+                    sensors={projectDnDSensors}
+                    collisionDetection={projectCollisionDetection}
+                    modifiers={[restrictToVerticalAxis, restrictToFirstScrollableAncestor]}
+                    onDragStart={handleProjectDragStart}
+                    onDragEnd={handleProjectDragEnd}
+                    onDragCancel={handleProjectDragCancel}
+                  >
+                    <SidebarMenu
+                      {...SIDEBAR_TREE_PROPS}
+                      aria-label="Threads and projects"
+                      ref={attachSidebarTree}
+                      className="gap-4"
+                    >
+                      {projects.filter(isScratchProject).map(renderProjectItem)}
+                      <SortableContext
+                        items={listedProjects.map((project) => project.id)}
+                        strategy={verticalListSortingStrategy}
+                      >
+                        {listedProjects.map(renderProjectItem)}
+                      </SortableContext>
+                    </SidebarMenu>
+                  </DndContext>
+                )}
+
+                {!startupReady && projects.length === 0 && !addProject.showPathEntry ? (
+                  <StartupSidebarSkeleton />
+                ) : startupReady && projects.length === 0 && !addProject.showPathEntry ? (
+                  <div className="mx-1 mt-2 flex flex-col items-center gap-2 rounded-xl border border-dashed border-border px-3 py-5 text-center">
+                    <p className="text-ui text-muted-foreground">No projects yet</p>
+                    <Button size="sm" variant="outline" onClick={addProject.handleStartAddProject}>
+                      <PlusIcon className="size-4" />
+                      Add a project
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="link"
+                      data-testid="sidebar-start-without-project"
+                      onClick={() => void startScratchThread()}
+                    >
+                      or start without a project
+                    </Button>
+                  </div>
+                ) : null}
+              </SidebarGroup>
+            </SidebarContent>
+          </SidebarPeekScrollDismissArea>
+        </SidebarFolderDrop>
 
         <SidebarSeparator />
         <AlertDialog

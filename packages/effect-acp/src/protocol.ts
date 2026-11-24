@@ -15,7 +15,7 @@ import * as RpcMessage from "effect/unstable/rpc/RpcMessage";
 import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization";
 import * as RpcServer from "effect/unstable/rpc/RpcServer";
 
-import * as AcpSchema from "./_generated/schema.gen";
+import * as AcpSchema from "./schema";
 import { CLIENT_METHODS } from "./_generated/meta.gen";
 import * as AcpError from "./errors";
 import { isolateNotificationHandler } from "./_internal/shared";
@@ -182,6 +182,8 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
   const extPending = yield* Ref.make(
     new Map<string, Deferred.Deferred<unknown, AcpError.AcpError>>(),
   );
+  // Method of each inbound core request awaiting its response, for diagnostics only.
+  const serverRequestMethodsById = new Map<string, string>();
 
   const logProtocol = (event: AcpProtocolLogEvent) => {
     if (event.direction === "incoming" && !options.logIncoming) {
@@ -424,7 +426,33 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
       );
     }
 
+    serverRequestMethodsById.set(message.id, message.tag);
     return Queue.offer(serverQueue, message).pipe(Effect.asVoid);
+  };
+
+  // Handlers turn their own defects into a typed `Fail` (see `runHandler`), so a response whose
+  // cause has a `Die` and no `Fail` failed in the RPC layer: decoding the payload, encoding the
+  // handler's response, or a defect alongside an interrupt. The agent sees that as an error and
+  // may stop the turn, so leave a trace here. The defect text and payload are never logged: they
+  // can hold command lines and file contents.
+  const warnOnRpcLayerFailure = (response: RpcMessage.FromServerEncoded) => {
+    if (response._tag !== "Exit") return Effect.void;
+    const method = serverRequestMethodsById.get(response.requestId);
+    serverRequestMethodsById.delete(response.requestId);
+    const exit = response.exit;
+    if (
+      exit._tag !== "Failure" ||
+      !exit.cause.some((reason) => reason._tag === "Die") ||
+      exit.cause.some((reason) => reason._tag === "Fail")
+    )
+      return Effect.void;
+    return Effect.logWarning(
+      "ACP request failed outside its handler (payload decode or response encode)",
+      {
+        method: method ?? "unknown",
+        requestId: response.requestId,
+      },
+    );
   };
 
   const handleExitEncoded = (message: RpcMessage.ResponseExitEncoded) =>
@@ -475,10 +503,15 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
       case "ClientProtocolError":
       case "Pong":
         return Queue.offer(clientQueue, message).pipe(Effect.asVoid);
-      case "Ack":
       case "Interrupt":
-      case "Ping":
+        // An interrupted request may never get an `Exit` to clean up after.
+        serverRequestMethodsById.delete(message.requestId);
+        return Queue.offer(serverQueue, message).pipe(Effect.asVoid);
       case "Eof":
+        serverRequestMethodsById.clear();
+        return Queue.offer(serverQueue, message).pipe(Effect.asVoid);
+      case "Ack":
+      case "Ping":
         return Queue.offer(serverQueue, message).pipe(Effect.asVoid);
     }
   };
@@ -607,7 +640,11 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
       Effect.forkScoped,
       Effect.as({
         disconnects,
-        send: (_clientId, response) => offerOutgoing(response).pipe(Effect.orDie),
+        send: (_clientId, response) =>
+          warnOnRpcLayerFailure(response).pipe(
+            Effect.andThen(offerOutgoing(response)),
+            Effect.orDie,
+          ),
         end: (_clientId) => Queue.end(outgoing),
         clientIds: Effect.succeed(new Set([0])),
         initialMessage: Effect.succeedNone,

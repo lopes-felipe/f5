@@ -41,6 +41,8 @@ export const WS_METHODS = {
   projectsCloneCancel: "projects.cloneCancel",
   projectsEnsureScratch: "projects.ensureScratch",
   projectsCreateNew: "projects.createNew",
+  projectsScanAgentSessions: "projects.scanAgentSessions",
+  projectsImportAgentSessions: "projects.importAgentSessions",
   projectsFindByRepository: "projects.findByRepository",
   projectsListDirectory: "projects.listDirectory",
   projectsSearchEntries: "projects.searchEntries",
@@ -56,6 +58,8 @@ export const WS_METHODS = {
   projectsIssueAssetUrl: "projects.issueAssetUrl",
   projectsAuthorizeEntry: "projects.authorizeEntry",
   projectsGetCheckedInConfig: "projects.getCheckedInConfig",
+  projectsListRepositories: "projects.listRepositories",
+  projectsSetRepository: "projects.setRepository",
 
   // Filesystem methods
   filesystemBrowse: "filesystem.browse",
@@ -162,6 +166,7 @@ export const WS_METHODS = {
   nextTurnQueueSteer: "nextTurnQueue.steer",
   nextTurnQueueSetPaused: "nextTurnQueue.setPaused",
   nextTurnQueueScheduleUsageLimitResume: "nextTurnQueue.scheduleUsageLimitResume",
+  nextTurnQueueResendAuthFailedTurn: "nextTurnQueue.resendAuthFailedTurn",
   nextTurnQueueCancelUsageLimitResume: "nextTurnQueue.cancelUsageLimitResume",
   nextTurnQueueRefreshUsageLimitResume: "nextTurnQueue.refreshUsageLimitResume",
   nextTurnQueueDuplicate: "nextTurnQueue.duplicate",

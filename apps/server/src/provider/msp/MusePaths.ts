@@ -25,10 +25,10 @@ export const resolveMuseInvocation = (
 ): Effect.Effect<ResolvedCliInvocation, CommandNotFoundError> =>
   resolveInvocationEffect(command, args, env, { cwd, platform }).pipe(
     Effect.catch((error) =>
-      Effect.try({
-        try: () => {
+      Effect.tryPromise({
+        try: async () => {
           const executable =
-            platform === "win32" ? resolveExecutable(command, env, { cwd, platform }) : null;
+            platform === "win32" ? await resolveExecutable(command, env, { cwd, platform }) : null;
           if (!executable || !/\.(cmd|bat)$/i.test(executable)) throw error;
           const value = (name: string) =>
             env[Object.keys(env).find((key) => key.toLowerCase() === name.toLowerCase()) ?? name];

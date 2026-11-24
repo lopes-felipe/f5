@@ -1,13 +1,12 @@
-import { CopyPathButton } from "./CopyPathButton";
 import { ChangedFileTree } from "./ChangedFileTree";
 import { showFileEntryContextMenu } from "./fileEntryActions";
 import { insertFileMentionIntoComposer } from "./composerFileMentionInsertion";
-import { FileDiff, Virtualizer } from "@pierre/diffs/react";
+import { type CodeViewHandle } from "@pierre/diffs/react";
+import { SearchableDiffView } from "./SearchableDiffView";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { ThreadId, type TurnId } from "@t3tools/contracts";
 import {
-  ChevronDownIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   Columns2Icon,
@@ -29,6 +28,7 @@ import { gitBranchesQueryOptions } from "~/lib/gitReactQuery";
 import { threadFileChangeQueryOptions } from "~/lib/orchestrationReactQuery";
 import { checkpointDiffQueryOptions } from "~/lib/providerReactQuery";
 import { reviewPreviewDiffQueryOptions } from "~/lib/reviewReactQuery";
+import { RepositoryPicker, useRepositoryPicker } from "./RepositoryPicker";
 import { cn } from "~/lib/utils";
 import { type AppSettings, updateAppSettings, useAppSettingsSelector } from "../appSettings";
 import { readNativeApi } from "../nativeApi";
@@ -96,6 +96,7 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
     Readonly<Record<string, boolean>>
   >({});
   const patchViewportRef = useRef<HTMLDivElement>(null);
+  const diffViewerRef = useRef<CodeViewHandle<undefined, undefined>>(null);
   const turnStripRef = useRef<HTMLDivElement>(null);
   const [canScrollTurnStripLeft, setCanScrollTurnStripLeft] = useState(false);
   const [canScrollTurnStripRight, setCanScrollTurnStripRight] = useState(false);
@@ -116,9 +117,15 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
   const gitAutoRefreshIntervalMs = settings.gitStatusAutoRefreshIntervalSeconds * 1000;
   const gitAutoRefreshEnabled = settings.gitStatusAutoRefreshIntervalSeconds > 0;
   const scratch = isScratchProject(activeProject);
+  const repositoryPicker = useRepositoryPicker(
+    scratch ? null : activeProjectId,
+    activeThreadId,
+    activeCwd ?? null,
+  );
+  const selectedRepository = repositoryPicker.repository;
   const gitBranchesQuery = useQuery(
     gitBranchesQueryOptions({
-      cwd: scratch ? null : (activeCwd ?? null),
+      cwd: scratch ? null : (selectedRepository?.path ?? activeCwd ?? null),
       autoRefresh: gitAutoRefreshEnabled,
     }),
   );
@@ -214,6 +221,9 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
       ignoreWhitespace: settings.diffIgnoreWhitespace,
       autoRefresh: gitAutoRefreshEnabled,
       refetchIntervalMs: gitAutoRefreshIntervalMs,
+      ...(selectedRepository?.relativePath && selectedRepository.relativePath !== "."
+        ? { repositoryPath: selectedRepository.relativePath }
+        : {}),
     }),
   );
   const exactFileChangeQuery = useQuery(
@@ -278,7 +288,7 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
       return `file-change:${selectedFileChangeId ?? ""}`;
     }
     if (isReviewScope) {
-      return `review:${selectedReviewScope ?? ""}:${diffSearch.diffBaseRef ?? ""}`;
+      return `review:${selectedRepository?.relativePath ?? "."}:${selectedReviewScope ?? ""}:${diffSearch.diffBaseRef ?? ""}`;
     }
     return selectedTurn
       ? `turn:${selectedTurn.turnId}`
@@ -293,6 +303,7 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
     isReviewScope,
     selectedFileChangeId,
     selectedReviewScope,
+    selectedRepository?.relativePath,
     selectedTurn,
   ]);
   const aggregateDiffStat = useMemo(
@@ -320,11 +331,11 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
         [logicalFileKey(buildFileDiffLogicalIdentity(file))]: false,
       }));
       window.requestAnimationFrame(() =>
-        Array.from(
-          patchViewportRef.current?.querySelectorAll<HTMLElement>("[data-diff-file-path]") ?? [],
-        )
-          .find((node) => node.dataset.diffFilePath === path)
-          ?.scrollIntoView({ block: "start" }),
+        diffViewerRef.current?.scrollTo({
+          type: "item",
+          id: logicalFileKey(buildFileDiffLogicalIdentity(file)),
+          align: "start",
+        }),
       );
       return true;
     },
@@ -345,36 +356,47 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
     if (revealDiffFile(selectedFilePath)) routeRevealKeyRef.current = key;
   }, [logicalFileKey, revealDiffFile, revealRequestId, selectedFilePath]);
 
+  const diffCwd = isReviewScope ? (selectedRepository?.path ?? activeCwd) : activeCwd;
   const openDiffFileInEditor = useCallback(
     (filePath: string) => {
       const api = readNativeApi();
       if (!api) return;
-      const targetPath = activeCwd ? resolvePathLinkTarget(filePath, activeCwd) : filePath;
+      const repository = !isReviewScope
+        ? repositoryPicker.repositories
+            .filter(
+              ({ relativePath }) => relativePath !== "." && filePath.startsWith(relativePath + "/"),
+            )
+            .sort((a, b) => b.relativePath.length - a.relativePath.length)[0]
+        : undefined;
+      const targetPath = repository
+        ? resolvePathLinkTarget(filePath.slice(repository.relativePath.length + 1), repository.path)
+        : diffCwd
+          ? resolvePathLinkTarget(filePath, diffCwd)
+          : filePath;
       void openInPreferredEditor(api, targetPath).catch((error) => {
         console.warn("Failed to open diff file in editor.", error);
       });
     },
-    [activeCwd],
+    [diffCwd, isReviewScope, repositoryPicker.repositories],
   );
 
   const openFileContextMenu = (event: ReactMouseEvent, path: string) => {
     event.preventDefault();
     const api = readNativeApi();
     if (!api || !activeCwd || !activeProjectId || !activeThreadId) return;
+    const repositoryPath = isReviewScope ? selectedRepository?.relativePath : undefined;
+    const entryPath = repositoryPath && repositoryPath !== "." ? repositoryPath + "/" + path : path;
     void showFileEntryContextMenu({
       api,
       cwd: activeCwd,
       projectId: activeProjectId,
       threadId: activeThreadId,
-      entry: { kind: "file", path },
+      entry: { kind: "file", path: entryPath },
       position: { x: event.clientX, y: event.clientY },
       onAddToChat: (relativePath) => insertFileMentionIntoComposer(activeThreadId, relativePath),
     });
   };
 
-  const toggleCollapsedFileKey = useCallback((fileKey: string, isCollapsed: boolean) => {
-    setCollapsedFileOverrides((previous) => ({ ...previous, [fileKey]: !isCollapsed }));
-  }, []);
   const setAllFilesCollapsed = useCallback(
     (collapsed: boolean) => {
       setCollapsedFileOverrides((previous) => ({
@@ -538,6 +560,15 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
           Branch
         </Toggle>
       </ToggleGroup>
+      {selectedReviewScope ? (
+        <RepositoryPicker
+          {...repositoryPicker}
+          select={(path) => {
+            repositoryPicker.select(path);
+            selectDiffScope(selectedReviewScope);
+          }}
+        />
+      ) : null}
       {selectedReviewScope === "branch-range" ? (
         <Select value={diffSearch.diffBaseRef ?? "__auto__"} onValueChange={selectBaseRef}>
           <SelectTrigger size="xs" className="max-w-40">
@@ -802,99 +833,42 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
                 </div>
               )
             ) : renderablePatch.kind === "files" ? (
-              <Virtualizer
+              <SearchableDiffView
+                viewerRef={diffViewerRef}
                 className="diff-render-surface h-full min-h-0 overflow-auto px-2 pb-2"
-                config={{
-                  overscrollSize: 600,
-                  intersectionObserverMargin: 1200,
-                }}
-              >
-                {renderableFiles.map((fileDiff, fileIndex) => {
-                  const filePath = resolveFileDiffPath(fileDiff);
+                files={renderableFiles.map((fileDiff, fileIndex) => {
                   const fileKey = logicalFileKey(buildFileDiffLogicalIdentity(fileDiff));
-                  const isCollapsed =
-                    collapsedFileOverrides[fileKey] ??
-                    (settings.diffFileDefaultState === "auto"
-                      ? !isChangedFileExpandedByDefault({
-                          presentation: defaultPresentation,
-                          fileIndex,
-                        })
-                      : settings.diffFileDefaultState === "collapsed");
-                  return (
-                    <div
-                      key={fileKey}
-                      data-diff-file-path={filePath}
-                      className="diff-render-file relative mb-2 rounded-md first:mt-2 last:mb-0"
-                      onContextMenu={(event) => {
-                        if (
-                          event.nativeEvent
-                            .composedPath()
-                            .some(
-                              (node) =>
-                                node instanceof Element && node.hasAttribute("data-diffs-header"),
-                            )
-                        )
-                          openFileContextMenu(event, filePath);
-                      }}
-                      onClickCapture={(event) => {
-                        const nativeEvent = event.nativeEvent as MouseEvent;
-                        const composedPath = nativeEvent.composedPath?.() ?? [];
-                        if (
-                          composedPath.some(
-                            (node) => node instanceof Element && node.tagName === "BUTTON",
-                          )
-                        )
-                          return;
-                        const clickedHeader = composedPath.some((node) => {
-                          if (!(node instanceof Element)) return false;
-                          return node.hasAttribute("data-title");
-                        });
-                        if (clickedHeader) {
-                          openDiffFileInEditor(filePath);
-                          return;
-                        }
-                        const clickedFileHeader = composedPath.some((node) => {
-                          if (!(node instanceof Element)) return false;
-                          return node.hasAttribute("data-diffs-header");
-                        });
-                        if (!clickedFileHeader) return;
-                        toggleCollapsedFileKey(fileKey, isCollapsed);
-                      }}
-                    >
-                      <button
-                        type="button"
-                        className="absolute top-2 left-2 z-10 inline-flex size-5 items-center justify-center rounded-sm border border-border/60 bg-background/90 text-muted-foreground shadow-xs transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-                        aria-expanded={!isCollapsed}
-                        aria-label={`${isCollapsed ? "Expand" : "Collapse"} ${filePath}`}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          toggleCollapsedFileKey(fileKey, isCollapsed);
-                        }}
-                      >
-                        {isCollapsed ? (
-                          <ChevronRightIcon className="size-3" />
-                        ) : (
-                          <ChevronDownIcon className="size-3" />
-                        )}
-                      </button>
-                      <FileDiff
-                        renderHeaderPrefix={() => <CopyPathButton path={filePath} />}
-                        fileDiff={fileDiff}
-                        options={{
-                          diffStyle: diffRenderMode === "split" ? "split" : "unified",
-                          lineDiffType: "none",
-                          collapsed: isCollapsed,
-                          overflow: settings.diffWordWrap ? "wrap" : "scroll",
-                          theme: resolveDiffThemeName(resolvedTheme),
-                          preferredHighlighter: PREFERRED_HIGHLIGHTER,
-                          themeType: resolvedTheme as DiffThemeType,
-                          unsafeCSS: DIFF_PANEL_UNSAFE_CSS,
-                        }}
-                      />
-                    </div>
-                  );
+                  return {
+                    id: fileKey,
+                    fileDiff,
+                    collapsed:
+                      collapsedFileOverrides[fileKey] ??
+                      (settings.diffFileDefaultState === "auto"
+                        ? !isChangedFileExpandedByDefault({
+                            presentation: defaultPresentation,
+                            fileIndex,
+                          })
+                        : settings.diffFileDefaultState === "collapsed"),
+                  };
                 })}
-              </Virtualizer>
+                onCollapse={(id, collapsed) =>
+                  setCollapsedFileOverrides((previous) => ({
+                    ...previous,
+                    [id]: collapsed,
+                  }))
+                }
+                onOpenFile={openDiffFileInEditor}
+                onFileContextMenu={openFileContextMenu}
+                options={{
+                  diffStyle: diffRenderMode === "split" ? "split" : "unified",
+                  lineDiffType: "none",
+                  overflow: settings.diffWordWrap ? "wrap" : "scroll",
+                  theme: resolveDiffThemeName(resolvedTheme),
+                  preferredHighlighter: PREFERRED_HIGHLIGHTER,
+                  themeType: resolvedTheme as DiffThemeType,
+                  unsafeCSS: DIFF_PANEL_UNSAFE_CSS,
+                }}
+              />
             ) : (
               <div className="h-full overflow-auto p-2">
                 <div className="space-y-2">

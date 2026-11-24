@@ -161,6 +161,7 @@ describe("RPC method policy", () => {
         "mcp.startLogin",
         "mcp.startOAuthLogin",
         "prHub.analyzeAdvisories",
+        "projects.importAgentSessions",
         "server.codexConfiguration",
         "server.runProviderUpdate",
         "server.saveProviderFeedback",
@@ -171,6 +172,9 @@ describe("RPC method policy", () => {
       ].sort(),
     );
     expect(rpcLongRunningTimeoutMs({ _tag: "git.runStackedAction" })).toBeNull();
+    expect(rpcLongRunningTimeoutMs({ _tag: "projects.importAgentSessions" })).toBe(120_000);
+    expect(isReadOnlyRpc("projects.importAgentSessions")).toBe(false);
+    expect(isReadOnlyRpc("projects.scanAgentSessions")).toBe(true);
     expect(rpcLongRunningTimeoutMs({ _tag: "server.runProviderUpdate" })).toBeNull();
     expect(rpcLongRunningTimeoutMs({ _tag: "server.saveProviderFeedback" })).toBe(130_000);
     expect(isReadOnlyRpc("server.saveProviderFeedback")).toBe(false);

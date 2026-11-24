@@ -50,3 +50,5 @@ apps/desktop/native-bin/
 apps/desktop/native/macos/.build/
 apps/desktop/native/windows/target/
 apps/desktop/native/windows/fixture/target/
+__pycache__/
+*.pyc

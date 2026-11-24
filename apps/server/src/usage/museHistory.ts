@@ -1,3 +1,7 @@
+import {
+  DEFAULT_USAGE_HISTORY_RETENTION_DAYS,
+  type UsageHistoryRetention,
+} from "@t3tools/contracts";
 import { open, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { Option, Schema } from "effect";
@@ -110,8 +114,12 @@ export function museHistoryUsageRow(record: MuseHistoryRecord): UsageAggregateRo
   };
 }
 
-// Current and previous 90-day ranges, with slack for timezone boundaries.
-export const MUSE_HISTORY_LOOKBACK_MS = 182 * 24 * 60 * 60_000;
+const DAY_MS = 24 * 60 * 60_000;
+export function usageHistoryCutoff(now: number, retention: UsageHistoryRetention): string {
+  return new Date(
+    retention === "unlimited" ? 0 : Math.max(0, now - retention * DAY_MS),
+  ).toISOString();
+}
 type Fingerprint = { ino: number; size: number; mtimeMs: number; ctimeMs: number };
 interface CachedFile {
   fingerprint: Fingerprint | null;
@@ -124,26 +132,50 @@ export class MuseHistoryReader {
   private readonly files = new Map<string, CachedFile>();
   private snapshot: readonly MuseHistoryRecord[] = [];
   private dirty = false;
-  private pending: Promise<readonly MuseHistoryRecord[]> | undefined;
+  private cutoff: string | undefined;
+  private pending:
+    | { retention: UsageHistoryRetention; result: Promise<readonly MuseHistoryRecord[]> }
+    | undefined;
   constructor(
     private readonly home: string,
     private readonly now = Date.now,
   ) {}
 
-  read(signal?: AbortSignal): Promise<readonly MuseHistoryRecord[]> {
-    if (this.pending) return this.pending;
-    const pending = this.update(signal);
+  read(
+    signal?: AbortSignal,
+    retention: UsageHistoryRetention = DEFAULT_USAGE_HISTORY_RETENTION_DAYS,
+  ): Promise<readonly MuseHistoryRecord[]> {
+    const active = this.pending;
+    if (active) {
+      if (active.retention === retention) return active.result;
+      return active.result
+        .catch(() => {})
+        .then(() => {
+          signal?.throwIfAborted();
+          return this.read(signal, retention);
+        });
+    }
+    const cutoff = usageHistoryCutoff(this.now(), retention);
+    if (this.cutoff !== undefined && cutoff < this.cutoff) {
+      // A wider window needs to read the lines that were skipped in the old window.
+      this.files.clear();
+      this.dirty = true;
+    }
+    this.cutoff = cutoff;
+    const pending = {
+      retention,
+      result: this.update(cutoff, signal).finally(() => {
+        this.pending = undefined;
+      }),
+    };
     this.pending = pending;
-    void pending
-      .finally(() => {
-        if (this.pending === pending) this.pending = undefined;
-      })
-      .catch(() => {});
-    return pending;
+    return pending.result;
   }
 
-  private async update(signal?: AbortSignal): Promise<readonly MuseHistoryRecord[]> {
-    const cutoff = new Date(this.now() - MUSE_HISTORY_LOOKBACK_MS).toISOString();
+  private async update(
+    cutoff: string,
+    signal?: AbortSignal,
+  ): Promise<readonly MuseHistoryRecord[]> {
     const directories = [path.join(this.home, "sessions")];
     const visited = new Set<string>();
     let changed = this.dirty;

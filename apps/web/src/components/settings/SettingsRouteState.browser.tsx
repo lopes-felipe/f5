@@ -161,6 +161,7 @@ function createNativeApiMock(providers?: ReadonlyArray<ServerProvider>) {
       })),
     },
     projects: {
+      listRepositories: vi.fn(async () => []),
       getCheckedInConfig: vi.fn(async ({ projectId }: { projectId: ProjectId }) => ({
         projectId,
         sourceFile: "f5.json" as const,

@@ -20,6 +20,7 @@ import {
 import { PROVIDER_OPTIONS, type ProviderPickerKind } from "../../session-logic";
 
 export type ModelEsque = {
+  isLegacy?: boolean;
   isUnlisted?: boolean | undefined;
   slug: string;
   name: string;
@@ -64,9 +65,10 @@ export const PROVIDER_ICON_BY_PICKER_KIND: Record<ProviderPickerKind, Icon> = {
   pi: PiIcon,
 };
 
-export const COMING_SOON_PROVIDER_OPTIONS = [
-  { id: "gemini", label: "Gemini", icon: Gemini },
-] as const;
+/** Extra search terms for providers whose harness name differs from the model family. */
+export const PROVIDER_SEARCH_KEYWORDS: Partial<Record<ProviderKind, readonly string[]>> = {
+  antigravity: ["gemini", "google", "neon"],
+};
 
 function isAvailableProviderOption(option: (typeof PROVIDER_OPTIONS)[number]): option is {
   value: ProviderKind;

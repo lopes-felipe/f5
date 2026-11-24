@@ -22,9 +22,15 @@ export function ProviderAccountPanel({
   driver,
   status,
   className,
+  autoStart = false,
+  cancelOnUnmount = false,
+  onLoginFinished,
+  authType,
 }: {
   readonly instanceId: ProviderInstanceId;
   readonly driver?: string;
+  /** The instance's sign-in method from its provider snapshot, when the caller has it. */
+  readonly authType?: string | undefined;
   /**
    * When the caller already knows the account state (the Profiles surface),
    * only the relevant primary action is offered. Omitted on the Providers
@@ -32,8 +38,24 @@ export function ProviderAccountPanel({
    */
   readonly status?: AccountStatus;
   readonly className?: string;
+  /** Start the default sign-in as soon as the panel mounts (one-click recovery). */
+  readonly autoStart?: boolean;
+  /**
+   * Cancel the sign-ins this panel started when it unmounts. A transient surface
+   * (a dialog) sets it so closing mid-login frees the shared login lease instead
+   * of blocking every profile's sign-in until the CLI times out.
+   */
+  readonly cancelOnUnmount?: boolean;
+  /** Called once per sign-in this panel started, when its CLI process exits. */
+  readonly onLoginFinished?: (succeeded: boolean) => void;
 }) {
   const finishedHandles = useRef(new Set<string>());
+  // Exit codes for handles that ended, and the sign-ins this panel itself started:
+  // another surface may run a login for the same instance at the same time.
+  const exitCodes = useRef(new Map<string, string>());
+  const ownLoginHandles = useRef(new Set<string>());
+  const onLoginFinishedRef = useRef(onLoginFinished);
+  onLoginFinishedRef.current = onLoginFinished;
   const [pending, setPending] = useState(false);
   const [handle, setHandle] = useState<string | null>(null);
   const [output, setOutput] = useState("");
@@ -44,6 +66,9 @@ export function ProviderAccountPanel({
   const [detailsOpen, setDetailsOpen] = useState(false);
   const { copyToClipboard, isCopied } = useCopyToClipboard();
   const api = readNativeApi()?.profiles;
+  // API-key instances verify the key instead of signing in through a browser.
+  const signInLabel =
+    driver === "antigravity" && authType === "gemini-api-key" ? "Connect" : "Sign in";
 
   useEffect(
     () =>
@@ -51,9 +76,16 @@ export function ProviderAccountPanel({
         if (event.instanceId !== instanceId) return;
         if (event.type === "output") setOutput((value) => (value + event.data).slice(-100000));
         else {
-          if (event.type === "exited") finishedHandles.current.add(event.handle);
+          if (event.type === "exited") {
+            finishedHandles.current.add(event.handle);
+            exitCodes.current.set(event.handle, event.data);
+            if (ownLoginHandles.current.delete(event.handle))
+              onLoginFinishedRef.current?.(event.data === "0");
+          }
           if (finishedHandles.current.size > 32)
             finishedHandles.current.delete(finishedHandles.current.values().next().value!);
+          if (exitCodes.current.size > 32)
+            exitCodes.current.delete(exitCodes.current.keys().next().value!);
           setHandle((current) => (current === event.handle ? null : current));
           if (event.type === "error") setError(event.data);
           else setOutput((value) => value + `\nAccount setup exited: ${event.data}`);
@@ -67,6 +99,28 @@ export function ProviderAccountPanel({
   useEffect(() => {
     if (handle !== null) setOutputOpen(true);
   }, [handle]);
+
+  const cancelOnUnmountRef = useRef(cancelOnUnmount);
+  cancelOnUnmountRef.current = cancelOnUnmount;
+  useEffect(
+    () => () => {
+      if (!cancelOnUnmountRef.current) return;
+      const profiles = readNativeApi()?.profiles;
+      for (const running of ownLoginHandles.current)
+        void profiles?.cancel({ handle: running }).catch(() => undefined);
+      ownLoginHandles.current.clear();
+    },
+    [],
+  );
+
+  // Assigned below once the API is known; the mount effect starts sign-in exactly once.
+  const startLoginRef = useRef<(() => void) | null>(null);
+  const autoStarted = useRef(false);
+  useEffect(() => {
+    if (!autoStart || autoStarted.current || !startLoginRef.current) return;
+    autoStarted.current = true;
+    startLoginRef.current();
+  }, [autoStart]);
 
   if (!api) return null;
 
@@ -90,6 +144,25 @@ export function ProviderAccountPanel({
   const showSignIn = status !== "authenticated";
   const showSignOut = status === undefined || status === "authenticated";
 
+  const startLogin = (method?: "device-code") =>
+    run(async () => {
+      if (method && handle) await api.cancel({ handle });
+      if (method) setHandle(null);
+      setOutput("");
+      setDetails("");
+      const result = await api.loginStart({ instanceId, ...(method ? { method } : {}) });
+      const exitCode = exitCodes.current.get(result.handle);
+      if (finishedHandles.current.has(result.handle)) {
+        // The CLI finished before the start call returned.
+        setHandle(null);
+        if (exitCode !== undefined) onLoginFinishedRef.current?.(exitCode === "0");
+      } else {
+        ownLoginHandles.current.add(result.handle);
+        setHandle(result.handle);
+      }
+    });
+  startLoginRef.current = () => void startLogin();
+
   return (
     <div className={cn("space-y-2.5", className)}>
       <div className="flex flex-wrap items-center gap-1.5">
@@ -107,23 +180,12 @@ export function ProviderAccountPanel({
               })
             }
           >
-            Install Antigravity
+            {status === "authenticated" ? "Update Antigravity" : "Install or update Antigravity"}
           </Button>
         ) : null}
         {showSignIn ? (
-          <Button
-            size="xs"
-            disabled={pending || isRunning}
-            onClick={() =>
-              void run(async () => {
-                setOutput("");
-                setDetails("");
-                const result = await api.loginStart({ instanceId });
-                setHandle(finishedHandles.current.has(result.handle) ? null : result.handle);
-              })
-            }
-          >
-            Sign in
+          <Button size="xs" disabled={pending || isRunning} onClick={() => void startLogin()}>
+            {signInLabel}
           </Button>
         ) : null}
         {showSignIn && driver === "codex" ? (
@@ -131,16 +193,7 @@ export function ProviderAccountPanel({
             size="xs"
             variant="outline"
             disabled={pending}
-            onClick={() =>
-              void run(async () => {
-                if (handle) await api.cancel({ handle });
-                setHandle(null);
-                setOutput("");
-                setDetails("");
-                const result = await api.loginStart({ instanceId, method: "device-code" });
-                setHandle(finishedHandles.current.has(result.handle) ? null : result.handle);
-              })
-            }
+            onClick={() => void startLogin("device-code")}
           >
             Use device code
           </Button>

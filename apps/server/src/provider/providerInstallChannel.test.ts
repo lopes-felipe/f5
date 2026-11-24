@@ -21,7 +21,7 @@ import {
   type InstallTargetDependencies,
 } from "./providerInstallChannel.ts";
 
-function fixture(
+async function fixture(
   realPath: string,
   options: {
     driver?: string;
@@ -41,9 +41,9 @@ function fixture(
     serverUrl: options.serverUrl,
   };
   const dependencies: Partial<InstallTargetDependencies> = {
-    resolveExecutable: () => options.binaryPath ?? "/bin/cli",
+    resolveExecutable: async () => options.binaryPath ?? "/bin/cli",
     realpath: () => realPath,
-    resolveInvocation: () => ({ file: "C:\\node.exe", args: [realPath], kind: "npmShim" }),
+    resolveInvocation: async () => ({ file: "C:\\node.exe", args: [realPath], kind: "npmShim" }),
     exists: (file) => Object.hasOwn(files, file),
     canWrite: () => true,
     readFile: (file) => {
@@ -55,7 +55,7 @@ function fixture(
     bundledExecutable: () => "/f5/sdk/claude",
     bundledCodexExecutable: () => "/f5/codex/bin/codex",
   };
-  return { input, dependencies, target: detectProviderInstallTarget(input, dependencies) };
+  return { input, dependencies, target: await detectProviderInstallTarget(input, dependencies) };
 }
 const npmFiles = {
   "/nvm/v24/lib/node_modules/@openai/codex/package.json": '{"name":"@openai/codex"}',
@@ -64,18 +64,145 @@ const npmFiles = {
 };
 
 describe("provider installation ownership", () => {
-  it("does not group bundled Codex and Claude as one shared installation", () => {
-    const codex = fixture("", { driver: "codex", binaryPath: "codex" }).target!;
-    const claude = fixture("", { driver: "claudeAgent", binaryPath: "claude" }).target!;
+  it.each([
+    ["a latest shim", "/home/test/.local/share/mise/shims/grok", "latest", true, true, false],
+    ["a latest symlink", "/mise-data/installs/grok/latest/bin/grok", "latest", true, true, false],
+    ["a pinned shim", "/home/test/.local/share/mise/shims/grok", "2.0", true, false, false],
+    ["a fixed version path", "/mise-data/installs/grok/2.0/bin/grok", "latest", true, false, false],
+    [
+      "an inactive install",
+      "/mise-data/installs/grok/latest/bin/grok",
+      "latest",
+      false,
+      false,
+      false,
+    ],
+    ["a mise exec wrapper", "/some/bin/grok", "latest", true, false, true],
+  ])(
+    "uses mise ownership for %s",
+    async (_, executable, requestedVersion, active, automatic, wrapper) => {
+      const binary = "/mise-data/installs/grok/2.0/bin/grok";
+      const mise = "/usr/local/bin/mise";
+      const runProcess = vi.fn<InstallTargetDependencies["runProcess"]>(async (_command, args) => ({
+        stdout:
+          args[0] === "which"
+            ? binary
+            : JSON.stringify({
+                grok: [
+                  {
+                    active,
+                    requested_version: requestedVersion,
+                    install_path: "/mise-data/installs/grok/2.0",
+                  },
+                ],
+              }),
+        stderr: "",
+        code: 0,
+        timedOut: false,
+        signal: null,
+      }));
+      const target = (await detectProviderInstallTarget(
+        {
+          driver: ProviderDriverKind.make("grok"),
+          resolutionEnvironment: { PATH: "/usr/local/bin" },
+          updateEnvironment: {
+            PATH: "/usr/local/bin",
+            MISE_DATA_DIR: "/mise-data",
+            GROK_API_KEY: "secret",
+          },
+        },
+        {
+          platform: "linux",
+          resolveExecutable: async (command) => (command === "mise" ? mise : executable),
+          realpath: (file) =>
+            file === executable ? (file.includes("/shims/") ? mise : binary) : file,
+          runProcess,
+          isMiseWrapper: () => wrapper,
+        },
+      ))!;
+      expect(target.channel).toBe("mise");
+      expect(canRunInApp(target, "linux", { isDefault: true })).toBe(automatic);
+      if (!automatic) {
+        expect(target.latestSource).toBeNull();
+        expect(buildProviderUpdateCommand(target, "linux", "3.0.0")).toBeNull();
+        return;
+      }
+      expect(runProcess).toHaveBeenCalledWith(
+        mise,
+        ["which", "grok"],
+        expect.objectContaining({
+          env: { PATH: "/usr/local/bin", MISE_DATA_DIR: "/mise-data", MISE_OFFLINE: "1" },
+        }),
+      );
+      expect(target.latestSource).toEqual({ kind: "mise", executable: mise, tool: "grok" });
+      expect(buildProviderUpdateCommand(target, "linux", "3.0.0")).toMatchObject({
+        executable: mise,
+        channel: "mise",
+        args: ["upgrade", "grok"],
+      });
+    },
+  );
+
+  it.each(["opencode", "grok"])(
+    "keeps mise in charge of %s when upgrade eligibility is unverified",
+    async (tool) => {
+      const mise = "/usr/local/bin/mise";
+      const executable = "/custom/tools/" + tool + "/latest/bin/" + tool;
+      const binary = executable.replace("/latest/", "/1.0.0/");
+      const target = await detectProviderInstallTarget(
+        {
+          driver: ProviderDriverKind.make(tool),
+          resolutionEnvironment: {},
+          updateEnvironment: {},
+        },
+        {
+          platform: "linux",
+          resolveExecutable: async (command) => (command === "mise" ? mise : executable),
+          realpath: (file) => (file === executable ? binary : file),
+          isMiseWrapper: () => false,
+          runProcess: async (_command, args) => {
+            if (tool === "grok" && args[0] === "ls") throw new Error("probe failed");
+            return {
+              stdout:
+                args[0] === "which"
+                  ? binary
+                  : JSON.stringify([
+                      {
+                        install_path: "/custom/tools/opencode/1.0.0",
+                        active: true,
+                        requested_version: "latest",
+                      },
+                    ]),
+              stderr: "",
+              code: 0,
+              timedOut: false,
+              signal: null,
+            };
+          },
+        },
+      );
+      expect(target).toMatchObject({
+        channel: "mise",
+        latestSource: null,
+        blockedReason: "unsupported_source",
+      });
+      if (tool === "opencode") expect(target?.guidance).toContain("1.x");
+      expect(buildProviderUpdateCommand(target!, "linux", "2.0.0")).toBeNull();
+    },
+  );
+
+  it("does not group bundled Codex and Claude as one shared installation", async () => {
+    const codex = (await fixture("", { driver: "codex", binaryPath: "codex" })).target!;
+    const claude = (await fixture("", { driver: "claudeAgent", binaryPath: "claude" })).target!;
     expect(codex.installKey).not.toBe(claude.installKey);
   });
   it.each(["", "codex", " codex "])(
     "classifies default Codex %s as bundled without probing PATH",
-    (binaryPath) => {
-      const { input, dependencies } = fixture("/other/codex", { binaryPath });
-      const target = detectProviderInstallTarget(input, {
+    async (binaryPath) => {
+      const { input, dependencies } = await fixture("/other/codex", { binaryPath });
+      const target = await detectProviderInstallTarget(input, {
         ...dependencies,
-        resolveExecutable: () => {
+        resolveExecutable: async () => {
           throw new Error("must not resolve PATH");
         },
       });
@@ -84,32 +211,39 @@ describe("provider installation ownership", () => {
       expect(buildProviderUpdateCommand(target!, "linux", "1.0.0")).toBeNull();
     },
   );
-  it("uses one canonical native-install key for different Claude aliases", () => {
-    const first = fixture("/home/test/.local/share/claude/versions/2.0.0", {
-      driver: "claudeAgent",
-      binaryPath: "/bin/claude-alias",
-    }).target!;
-    const second = fixture("/home/test/.local/share/claude/versions/2.1.0", {
-      driver: "claudeAgent",
-      binaryPath: "/other/claude",
-    }).target!;
+  it("uses one canonical native-install key for different Claude aliases", async () => {
+    const first = (
+      await fixture("/home/test/.local/share/claude/versions/2.0.0", {
+        driver: "claudeAgent",
+        binaryPath: "/bin/claude-alias",
+      })
+    ).target!;
+    const second = (
+      await fixture("/home/test/.local/share/claude/versions/2.1.0", {
+        driver: "claudeAgent",
+        binaryPath: "/other/claude",
+      })
+    ).target!;
     expect(first.installKey).toBe(second.installKey);
     expect(first.executablePath).not.toBe(second.executablePath);
     expect(buildProviderUpdateCommand(first, "linux")?.executable).toBe("/bin/claude-alias");
   });
-  it("keeps non-writable npm prefixes copy-only", () => {
-    const { input, dependencies } = fixture(
+  it("keeps non-writable npm prefixes copy-only", async () => {
+    const { input, dependencies } = await fixture(
       "/nvm/v24/lib/node_modules/@openai/codex/bin/codex.js",
       { files: npmFiles },
     );
-    const target = detectProviderInstallTarget(input, { ...dependencies, canWrite: () => false })!;
+    const target = (await detectProviderInstallTarget(input, {
+      ...dependencies,
+      canWrite: () => false,
+    }))!;
     expect(target.channel).toBe("npm");
     expect(target.blockedReason).toBe("permissions");
     expect(canRunInApp(target, "linux", { isDefault: true })).toBe(false);
     expect(buildProviderUpdateCommand(target, "linux", "1.1.0")).not.toBeNull();
   });
-  it("keeps third-party cask references qualified for checking and upgrading", () => {
-    const { target } = fixture("/opt/homebrew/Caskroom/codex/1.0/codex", {
+  it("keeps third-party cask references qualified for checking and upgrading", async () => {
+    const { target } = await fixture("/opt/homebrew/Caskroom/codex/1.0/codex", {
       files: {
         "/opt/homebrew/bin/brew": "",
         "/opt/homebrew/Caskroom/codex/.metadata/INSTALL_RECEIPT.json": JSON.stringify({
@@ -128,10 +262,10 @@ describe("provider installation ownership", () => {
       "custom/tap/codex",
     ]);
   });
-  it("finds Windows npm in the Node installation when the global prefix is APPDATA", () => {
+  it("finds Windows npm in the Node installation when the global prefix is APPDATA", async () => {
     const prefix = "C:\\Users\\test\\AppData\\Roaming\\npm";
     const npmPath = "C:\\Program Files\\nodejs\\npm.cmd";
-    const { input, dependencies } = fixture(
+    const { input, dependencies } = await fixture(
       prefix + "\\node_modules\\@openai\\codex\\bin\\codex.js",
       {
         platform: "win32",
@@ -142,10 +276,10 @@ describe("provider installation ownership", () => {
         },
       },
     );
-    const target = detectProviderInstallTarget(input, {
+    const target = (await detectProviderInstallTarget(input, {
       ...dependencies,
-      resolveExecutable: (command) => (command === "npm" ? npmPath : input.binaryPath!),
-    })!;
+      resolveExecutable: async (command) => (command === "npm" ? npmPath : input.binaryPath!),
+    }))!;
     expect(target.channel).toBe("npm");
     const command = buildProviderUpdateCommand(target, "win32", "1.1.0")!;
     expect(command.executable).toBe(npmPath);
@@ -154,8 +288,8 @@ describe("provider installation ownership", () => {
     expect(canRunInApp(target, "win32", { isDefault: true })).toBe(false);
   });
 
-  it("uses same-prefix nvm npm and pins the requested version", () => {
-    const { target } = fixture("/nvm/v24/lib/node_modules/@openai/codex/bin/codex.js", {
+  it("uses same-prefix nvm npm and pins the requested version", async () => {
+    const { target } = await fixture("/nvm/v24/lib/node_modules/@openai/codex/bin/codex.js", {
       files: npmFiles,
     });
     expect(target?.channel).toBe("npm");
@@ -177,22 +311,25 @@ describe("provider installation ownership", () => {
   });
   it.each(["/nvm/v24/bin/npm", "/nvm/v24/bin/node"])(
     "requires %s without a PATH fallback",
-    (missing) => {
+    async (missing) => {
       const files = { ...npmFiles };
       delete files[missing as keyof typeof files];
       expect(
-        fixture("/nvm/v24/lib/node_modules/@openai/codex/bin/codex.js", { files }).target?.channel,
+        (await fixture("/nvm/v24/lib/node_modules/@openai/codex/bin/codex.js", { files })).target
+          ?.channel,
       ).toBe("unmanaged");
     },
   );
-  it("checks package ownership", () => {
+  it("checks package ownership", async () => {
     expect(
-      fixture("/nvm/v24/lib/node_modules/@openai/codex/bin/codex.js", {
-        files: {
-          ...npmFiles,
-          "/nvm/v24/lib/node_modules/@openai/codex/package.json": '{"name":"other"}',
-        },
-      }).target?.channel,
+      (
+        await fixture("/nvm/v24/lib/node_modules/@openai/codex/bin/codex.js", {
+          files: {
+            ...npmFiles,
+            "/nvm/v24/lib/node_modules/@openai/codex/package.json": '{"name":"other"}',
+          },
+        })
+      ).target?.channel,
     ).toBe("unmanaged");
   });
   it.each([
@@ -201,15 +338,15 @@ describe("provider installation ownership", () => {
     "/home/test/.bun/install/global/node_modules/@openai/codex/bin/codex",
     "/project/node_modules/@openai/codex/bin/codex",
     "/home/test/pnpm/global/cli",
-  ])("keeps %s manual", (file) => {
-    const { target } = fixture(file);
+  ])("keeps %s manual", async (file) => {
+    const { target } = await fixture(file);
     expect(target?.channel).toBe("unmanaged");
     expect(buildProviderUpdateCommand(target!, "linux", "1.0.0")).toBeNull();
   });
   it.each(["anomalyco/tap", "homebrew/core"])(
     "reads formula tap %s before npm ownership",
-    (tap) => {
-      const { target } = fixture(
+    async (tap) => {
+      const { target } = await fixture(
         "/opt/homebrew/Cellar/opencode/1.0/libexec/lib/node_modules/opencode-ai/bin/opencode",
         {
           driver: "opencode",
@@ -231,8 +368,8 @@ describe("provider installation ownership", () => {
       ]);
     },
   );
-  it("uses the cask API and cask upgrade", () => {
-    const { target } = fixture("/opt/homebrew/Caskroom/codex/1.0/codex", {
+  it("uses the cask API and cask upgrade", async () => {
+    const { target } = await fixture("/opt/homebrew/Caskroom/codex/1.0/codex", {
       files: {
         "/opt/homebrew/bin/brew": "",
         "/opt/homebrew/Caskroom/codex/.metadata/INSTALL_RECEIPT.json": "{}",
@@ -249,19 +386,19 @@ describe("provider installation ownership", () => {
     {},
     { "/opt/homebrew/bin/brew": "" },
     { "/opt/homebrew/Cellar/codex/1.0/INSTALL_RECEIPT.json": '{"source":{"tap":"homebrew/core"}}' },
-  ])("requires both brew and a receipt", (files) => {
-    expect(fixture("/opt/homebrew/Cellar/codex/1.0/bin/codex", { files }).target?.channel).toBe(
-      "unmanaged",
-    );
+  ])("requires both brew and a receipt", async (files) => {
+    expect(
+      (await fixture("/opt/homebrew/Cellar/codex/1.0/bin/codex", { files })).target?.channel,
+    ).toBe("unmanaged");
   });
-  it("identifies default Claude as bundled before PATH resolution", () => {
-    const { input, dependencies } = fixture("/other/claude", {
+  it("identifies default Claude as bundled before PATH resolution", async () => {
+    const { input, dependencies } = await fixture("/other/claude", {
       driver: "claudeAgent",
       binaryPath: "claude",
     });
-    const target = detectProviderInstallTarget(input, {
+    const target = await detectProviderInstallTarget(input, {
       ...dependencies,
-      resolveExecutable: () => {
+      resolveExecutable: async () => {
         throw new Error("must not resolve PATH");
       },
     });
@@ -270,7 +407,7 @@ describe("provider installation ownership", () => {
   });
   it.each([undefined, '"latest"', '"stable"', '"nightly"', "malformed"])(
     "respects native Claude channel %s and the real home",
-    (setting) => {
+    async (setting) => {
       const files =
         setting === undefined
           ? {}
@@ -278,7 +415,7 @@ describe("provider installation ownership", () => {
               "/home/test/.claude/settings.json":
                 setting === "malformed" ? "{" : `{"autoUpdatesChannel":${setting}}`,
             };
-      const { target } = fixture("/home/test/.local/share/claude/versions/2.0.0", {
+      const { target } = await fixture("/home/test/.local/share/claude/versions/2.0.0", {
         driver: "claudeAgent",
         files,
       });
@@ -297,8 +434,8 @@ describe("provider installation ownership", () => {
       );
     },
   );
-  it("honors an explicit Claude config directory", () => {
-    const { target } = fixture("/home/test/.local/share/claude/versions/2.0.0", {
+  it("honors an explicit Claude config directory", async () => {
+    const { target } = await fixture("/home/test/.local/share/claude/versions/2.0.0", {
       driver: "claudeAgent",
       environment: { CLAUDE_CONFIG_DIR: "/custom" },
       files: { "/custom/settings.json": '{"autoUpdatesChannel":"stable"}' },
@@ -309,18 +446,18 @@ describe("provider installation ownership", () => {
       tag: "stable",
     });
   });
-  it("uses OpenCode's updater for its native install", () => {
-    const { target } = fixture("/home/test/.opencode/bin/opencode", { driver: "opencode" });
+  it("uses OpenCode's updater for its native install", async () => {
+    const { target } = await fixture("/home/test/.opencode/bin/opencode", { driver: "opencode" });
     expect(buildProviderUpdateCommand(target!, "linux")?.args).toEqual(["upgrade"]);
   });
-  it("marks a remote OpenCode server as remotely managed", () => {
+  it("marks a remote OpenCode server as remotely managed", async () => {
     expect(
-      fixture("/bin/opencode", { driver: "opencode", serverUrl: "http://localhost:1234" }).target
-        ?.channel,
+      (await fixture("/bin/opencode", { driver: "opencode", serverUrl: "http://localhost:1234" }))
+        .target?.channel,
     ).toBe("remote");
   });
-  it("resolves Windows npm shims but only provides PowerShell copy commands", () => {
-    const { target } = fixture("C:\\npm\\node_modules\\@openai\\codex\\bin\\codex.js", {
+  it("resolves Windows npm shims but only provides PowerShell copy commands", async () => {
+    const { target } = await fixture("C:\\npm\\node_modules\\@openai\\codex\\bin\\codex.js", {
       platform: "win32",
       binaryPath: "C:\\npm\\codex.cmd",
       files: {
@@ -333,25 +470,30 @@ describe("provider installation ownership", () => {
     expect(canRunInApp(target!, "win32", { isDefault: true })).toBe(false);
     expect(canRunInApp(target!, "linux", { isDefault: false })).toBe(false);
   });
-  it("treats a malformed Windows shim as unmanaged", () => {
-    const { input, dependencies } = fixture("C:\\codex.cmd", { platform: "win32" });
+  it("treats a malformed Windows shim as unmanaged", async () => {
+    const { input, dependencies } = await fixture("C:\\codex.cmd", { platform: "win32" });
     expect(
-      detectProviderInstallTarget(input, {
-        ...dependencies,
-        resolveExecutable: () => "C:\\codex.cmd",
-        resolveInvocation: () => {
-          throw new Error("bad shim");
-        },
-      })?.channel,
+      (
+        await detectProviderInstallTarget(input, {
+          ...dependencies,
+          resolveExecutable: async () => "C:\\codex.cmd",
+          resolveInvocation: async () => {
+            throw new Error("bad shim");
+          },
+        })
+      )?.channel,
     ).toBe("unmanaged");
   });
-  it("returns null when the configured executable cannot be resolved", () => {
-    const { input, dependencies } = fixture("/missing");
+  it("returns null when the configured executable cannot be resolved", async () => {
+    const { input, dependencies } = await fixture("/missing");
     expect(
-      detectProviderInstallTarget(input, { ...dependencies, resolveExecutable: () => null }),
+      await detectProviderInstallTarget(input, {
+        ...dependencies,
+        resolveExecutable: async () => null,
+      }),
     ).toBeNull();
   });
-  it("keeps the same physical key across a real version symlink retarget", () => {
+  it("keeps the same physical key across a real version symlink retarget", async () => {
     const root = realpathSync(mkdtempSync(Path.join(tmpdir(), "f5-install-target-")));
     try {
       const bin = Path.join(root, "claude");
@@ -367,11 +509,15 @@ describe("provider installation ownership", () => {
         resolutionEnvironment: {},
         updateEnvironment: {},
       };
-      const deps = { homeDir: root, platform: process.platform, resolveExecutable: () => bin };
-      const first = detectProviderInstallTarget(input, deps);
+      const deps = {
+        homeDir: root,
+        platform: process.platform,
+        resolveExecutable: async () => bin,
+      };
+      const first = await detectProviderInstallTarget(input, deps);
       unlinkSync(bin);
       symlinkSync(versions[1]!, bin);
-      expect(detectProviderInstallTarget(input, deps)?.installKey).toBe(first?.installKey);
+      expect((await detectProviderInstallTarget(input, deps))?.installKey).toBe(first?.installKey);
       expect(first?.channel).toBe("self-update");
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -384,8 +530,8 @@ it.each([
   ["stable", "latest"],
 ] as const)(
   "keeps instance channel %s separate from host channel %s",
-  (instanceChannel, hostChannel) => {
-    const { input, dependencies } = fixture("/home/test/.local/share/claude/versions/2.0.0", {
+  async (instanceChannel, hostChannel) => {
+    const { input, dependencies } = await fixture("/home/test/.local/share/claude/versions/2.0.0", {
       driver: "claudeAgent",
       files: {
         "/host/settings.json": JSON.stringify({ autoUpdatesChannel: hostChannel }),
@@ -395,7 +541,7 @@ it.each([
     vi.stubEnv("CLAUDE_CONFIG_DIR", "/host");
     try {
       const { updateEnvironment: _update, ...resolution } = input;
-      const target = makeInstanceInstallTargetResolver(
+      const target = await makeInstanceInstallTargetResolver(
         { ...resolution, claudeConfigDir: "/instance", instanceEnvironment: [] },
         dependencies,
       )();
@@ -446,8 +592,8 @@ it("only gives each updater its own tooling variables and never provider credent
   });
 });
 
-it("updates Grok through `grok update` with the instance's Grok home", () => {
-  const { target } = fixture("/home/test/.grok/bin/grok", {
+it("updates Grok through `grok update` with the instance's Grok home", async () => {
+  const { target } = await fixture("/home/test/.grok/bin/grok", {
     driver: "grok",
     environment: { HOME: "/isolated", GROK_HOME: "/custom/grok", XAI_API_KEY: "secret" },
   });
@@ -480,13 +626,13 @@ it("updates Grok through `grok update` with the instance's Grok home", () => {
   });
 });
 
-it("updates Grok with the instance's GROK_HOME instead of the host's", () => {
-  const { input, dependencies } = fixture("/home/test/.grok/bin/grok", { driver: "grok" });
+it("updates Grok with the instance's GROK_HOME instead of the host's", async () => {
+  const { input, dependencies } = await fixture("/home/test/.grok/bin/grok", { driver: "grok" });
   vi.stubEnv("GROK_HOME", "/host/grok");
   vi.stubEnv("CLAUDE_CONFIG_DIR", "/host/claude");
   try {
     const { updateEnvironment: _update, ...resolution } = input;
-    const target = makeInstanceInstallTargetResolver(
+    const target = await makeInstanceInstallTargetResolver(
       {
         ...resolution,
         instanceEnvironment: [{ name: "GROK_HOME", value: "/instance/grok", sensitive: false }],
@@ -504,37 +650,40 @@ it("updates Grok with the instance's GROK_HOME instead of the host's", () => {
   }
 });
 
-it("gives each self-updater only its own provider home", () => {
+it("gives each self-updater only its own provider home", async () => {
   const environment = { HOME: "/isolated", GROK_HOME: "/grok", CLAUDE_CONFIG_DIR: "/claude" };
-  const grok = fixture("/home/test/.grok/bin/grok", { driver: "grok", environment }).target!;
+  const grok = (await fixture("/home/test/.grok/bin/grok", { driver: "grok", environment }))
+    .target!;
   expect(grok.updateEnvironment).toEqual({ HOME: "/isolated", GROK_HOME: "/grok" });
   expect(buildProviderUpdateCommand(grok, "linux")?.env).toEqual({
     GROK_HOME: "/grok",
     NPM_CONFIG_ALLOW_SCRIPTS: "@xai-official/grok",
   });
 
-  const claude = fixture("/home/test/.local/share/claude/versions/2.0.0", {
-    driver: "claudeAgent",
-    environment,
-    files: { "/claude/settings.json": "{}" },
-  }).target!;
+  const claude = (
+    await fixture("/home/test/.local/share/claude/versions/2.0.0", {
+      driver: "claudeAgent",
+      environment,
+      files: { "/claude/settings.json": "{}" },
+    })
+  ).target!;
   expect(buildProviderUpdateCommand(claude, "linux")?.env).toEqual({
     CLAUDE_CONFIG_DIR: "/claude",
   });
 
-  const pi = fixture("/pi/install/bin/pi", { driver: "pi", environment }).target!;
+  const pi = (await fixture("/pi/install/bin/pi", { driver: "pi", environment })).target!;
   expect(pi.updateEnvironment).toEqual({ HOME: "/isolated" });
   expect(buildProviderUpdateCommand(pi, "linux")?.env).toBeUndefined();
 });
 
-it("updates a Homebrew-installed Grok through its own updater", () => {
-  const { target } = fixture("/opt/homebrew/Cellar/grok/1.0.0/bin/grok", { driver: "grok" });
+it("updates a Homebrew-installed Grok through its own updater", async () => {
+  const { target } = await fixture("/opt/homebrew/Cellar/grok/1.0.0/bin/grok", { driver: "grok" });
   expect(target?.channel).toBe("self-update");
   expect(buildProviderUpdateCommand(target!, "linux")?.args).toEqual(["update"]);
 });
 
-it("uses Pi's native self-updater and canonical executable identity", () => {
-  const { target } = fixture("/pi/install/bin/pi", { driver: "pi" });
+it("uses Pi's native self-updater and canonical executable identity", async () => {
+  const { target } = await fixture("/pi/install/bin/pi", { driver: "pi" });
   expect(target).toMatchObject({
     channel: "self-update",
     installKey: "pi-self-update:/pi/install/bin/pi",
@@ -544,4 +693,33 @@ it("uses Pi's native self-updater and canonical executable identity", () => {
     executable: "/bin/cli",
     args: ["update", "--self"],
   });
+});
+
+it("updates the Cursor CLI through `agent update`", async () => {
+  const { target } = await fixture(
+    "/home/test/.local/share/cursor-agent/versions/2026.07.09/cursor-agent",
+    {
+      driver: "cursor",
+    },
+  );
+  expect(target).toMatchObject({
+    channel: "self-update",
+    installKey:
+      "cursor-self-update:/home/test/.local/share/cursor-agent/versions/2026.07.09/cursor-agent",
+  });
+  expect(target?.blockedReason).toBeUndefined();
+  expect(buildProviderUpdateCommand(target!, "linux")).toMatchObject({
+    executable: "/bin/cli",
+    args: ["update"],
+    channel: "self-update",
+  });
+  // No latest-version source exists, so the advisor offers manual guidance.
+  expect(target?.latestSource ?? null).toBeNull();
+});
+
+it("does not offer `agent update` for a Cursor binary outside Cursor's installer layout", async () => {
+  for (const realPath of ["/usr/local/bin/agent-wrapper.sh", "/opt/homebrew/bin/cursor-agent"]) {
+    const { target } = await fixture(realPath, { driver: "cursor" });
+    expect(target?.channel).not.toBe("self-update");
+  }
 });

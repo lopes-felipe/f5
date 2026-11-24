@@ -7,13 +7,13 @@ import {
 } from "./contextMeter.logic";
 
 describe("contextMeterTone", () => {
-  it("stays muted below three quarters", () => {
+  it("stays muted below 80%", () => {
     expect(contextMeterTone(0)).toBe("muted");
-    expect(contextMeterTone(0.749)).toBe("muted");
+    expect(contextMeterTone(0.799)).toBe("muted");
   });
 
-  it("warns from 75% and turns destructive from 90%", () => {
-    expect(contextMeterTone(0.75)).toBe("warning");
+  it("warns from 80% and turns destructive from 90%", () => {
+    expect(contextMeterTone(0.8)).toBe("warning");
     expect(contextMeterTone(0.899)).toBe("warning");
     expect(contextMeterTone(0.9)).toBe("destructive");
     expect(contextMeterTone(1.4)).toBe("destructive");

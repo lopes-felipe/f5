@@ -419,6 +419,7 @@ export function resolveAttachedFileReferencePaths(input: {
 }
 
 export function buildFirstSendBootstrap(input: {
+  repositoryPaths?: ReadonlyArray<string> | undefined;
   worktreeBranchName?: string | null;
   runSetupScript?: boolean | null;
   sharedFilesystemConfirmed?: boolean;
@@ -456,6 +457,7 @@ export function buildFirstSendBootstrap(input: {
     ? {
         projectCwd: input.projectCwd,
         baseBranch: input.baseBranchForWorktree,
+        ...(input.repositoryPaths ? { repositoryPaths: input.repositoryPaths } : {}),
         branch: input.worktreeBranchName ?? buildTemporaryWorktreeBranchName(),
         ...(input.worktreeBranchName ? { namingIntent: "explicit" as const } : {}),
         ...(input.runSetupScript !== null && input.runSetupScript !== undefined

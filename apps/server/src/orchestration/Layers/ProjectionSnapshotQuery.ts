@@ -112,6 +112,8 @@ const shouldLogProjectionTimings =
     process.env.T3CODE_LOG_PROJECTION_TIMINGS === "true");
 const ProjectionProjectDbRowSchema = ProjectionProject.mapFields(
   Struct.assign({
+    pinned: Schema.optional(Schema.BooleanFromBit),
+    archived: Schema.optional(Schema.BooleanFromBit),
     defaultModelSelection: Schema.NullOr(
       Schema.fromJsonString(ProjectionProject.fields.defaultModelSelection),
     ),
@@ -152,6 +154,7 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
   }),
 );
 const ProjectionThreadSummaryDbRowSchema = Schema.Struct({
+  sideChatOf: ProjectionThread.fields.sideChatOf,
   scheduledOrigin: Schema.optional(Schema.NullOr(Schema.fromJsonString(ScheduledOrigin))),
   threadId: ProjectionThread.fields.threadId,
   projectId: ProjectionThread.fields.projectId,
@@ -198,7 +201,11 @@ const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
 const ProjectionThreadSessionDbRowSchema = ProjectionThreadSession.mapFields(
   Struct.assign({
     usageLimit: Schema.NullOr(Schema.fromJsonString(ProjectionThreadSession.fields.usageLimit)),
+    authFailure: Schema.NullOr(Schema.fromJsonString(ProjectionThreadSession.fields.authFailure)),
     capabilities: Schema.NullOr(Schema.fromJsonString(ProjectionThreadSession.fields.capabilities)),
+    extensionStatuses: Schema.NullOr(
+      Schema.fromJsonString(ProjectionThreadSession.fields.extensionStatuses),
+    ),
   }),
 );
 const ProjectionCheckpointDbRowSchema = ProjectionCheckpoint.mapFields(
@@ -584,6 +591,7 @@ function buildThreadSnapshot(params: {
     branch: row.branch,
     worktreePath: row.worktreePath,
     scratchPath: row.scratchPath ?? null,
+    ...(row.sideChatOf ? { sideChatOf: row.sideChatOf } : {}),
     latestTurn: params.latestTurnByThread.get(row.threadId) ?? null,
     archivedAt: row.archivedAt,
     settledAt: row.settledAt ?? null,
@@ -1068,6 +1076,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       sql`
         SELECT
           project_id AS "projectId",
+          pinned,
+          archived,
           kind,
           title,
           workspace_root AS "workspaceRoot",
@@ -1099,6 +1109,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           branch,
           worktree_path AS "worktreePath",
           scratch_path AS "scratchPath",
+          side_chat_of AS "sideChatOf",
           latest_turn_id AS "latestTurnId",
           tasks_json AS "tasks",
           tasks_turn_id AS "tasksTurnId",
@@ -1146,6 +1157,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           branch,
           worktree_path AS "worktreePath",
           scratch_path AS "scratchPath",
+          side_chat_of AS "sideChatOf",
           settled_at AS "settledAt",settled_by AS "settledBy",auto_settle_disabled AS "autoSettleDisabled",
           archived_at AS "archivedAt",
           pinned_at AS "pinnedAt",
@@ -1478,12 +1490,15 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           last_error AS "lastError",
           last_error_id AS "lastErrorId",
           usage_limit_json AS "usageLimit",
+          auth_failure_json AS "authFailure",
           last_error_occurred_at AS "lastErrorOccurredAt",
           last_error_retryability AS "lastErrorRetryability",
           estimated_context_tokens AS "estimatedContextTokens",
           model_context_window_tokens AS "modelContextWindowTokens",
           token_usage_source AS "tokenUsageSource",
+          auto_compact_threshold AS "autoCompactThreshold",
           capabilities_json AS "capabilities",
+          extension_statuses_json AS "extensionStatuses",
           updated_at AS "updatedAt"
         FROM projection_thread_sessions
         ORDER BY thread_id ASC
@@ -2844,11 +2859,15 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           threadId: row.threadId,
           status: row.status,
           providerName: row.providerName,
+          ...(row.autoCompactThreshold != null
+            ? { autoCompactThreshold: row.autoCompactThreshold }
+            : {}),
           runtimeMode: row.runtimeMode,
           activeTurnId: row.activeTurnId,
           lastError: row.lastError,
           lastErrorId: row.lastErrorId,
           usageLimit: row.usageLimit ?? null,
+          ...(row.authFailure ? { authFailure: row.authFailure } : {}),
           providerInstanceId: row.providerInstanceId ?? null,
           lastErrorOccurredAt: row.lastErrorOccurredAt,
           lastErrorRetryability: row.lastErrorRetryability,
@@ -2857,6 +2876,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             : {}),
           ...(row.tokenUsageSource !== null ? { tokenUsageSource: row.tokenUsageSource } : {}),
           ...(row.capabilities ? { capabilities: row.capabilities } : {}),
+          ...(row.extensionStatuses?.length ? { extensionStatuses: row.extensionStatuses } : {}),
           updatedAt: row.updatedAt,
         });
       }
@@ -2898,7 +2918,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         readonly number: number;
         readonly title: string;
         readonly url: string;
-      }>`SELECT thread_id AS "threadId", provider, host, repository, number, title, url
+        readonly repositoryPath: string | null;
+      }>`SELECT thread_id AS "threadId", provider, host, repository, number, title, url, repository_path AS "repositoryPath"
         FROM (
           SELECT *, ROW_NUMBER() OVER (
             PARTITION BY thread_id ORDER BY updated_at DESC, link_id DESC
@@ -2915,8 +2936,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         ),
       );
       const pullRequestsByThread = new Map<string, ThreadPullRequestLink[]>();
-      for (const { threadId, ...row } of pullRequestRows) {
-        const decoded = Schema.decodeUnknownOption(ThreadPullRequestLink)(row);
+      for (const { threadId, repositoryPath, ...row } of pullRequestRows) {
+        const decoded = Schema.decodeUnknownOption(ThreadPullRequestLink)({
+          ...row,
+          ...(repositoryPath ? { repositoryPath } : {}),
+        });
         if (Option.isNone(decoded)) {
           yield* Effect.logWarning("Skipping invalid thread pull request link in snapshot", {
             threadId,
@@ -2960,6 +2984,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           ? { defaultModelSelection: row.defaultModelSelection }
           : {}),
         defaultEnvMode: row.defaultEnvMode,
+        pinned: row.pinned ?? false,
+        archived: row.archived ?? false,
         icon: row.icon,
         scripts: row.scripts,
         memories: memoriesByProject.get(row.projectId) ?? [],

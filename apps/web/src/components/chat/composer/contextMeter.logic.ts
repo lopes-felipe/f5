@@ -2,6 +2,7 @@ import type { ProviderKind } from "@t3tools/contracts";
 import { estimateModelContextWindowTokens } from "@t3tools/shared/model";
 
 export interface ComposerTokenUsage {
+  autoCompactThreshold?: number | null | undefined;
   estimatedContextTokens: number | null;
   estimatedThinkingTokens: number | null;
   modelContextWindowTokens: number | null;
@@ -12,10 +13,10 @@ export interface ComposerTokenUsage {
 
 export type ContextMeterTone = "muted" | "warning" | "destructive";
 
-export const CONTEXT_METER_WARNING_RATIO = 0.75;
+export const CONTEXT_METER_WARNING_RATIO = 0.8;
 export const CONTEXT_METER_DESTRUCTIVE_RATIO = 0.9;
 
-/** Quiet until the window is three-quarters full, loud from 90%. */
+/** Quiet below 80% occupancy, loud from 90%. */
 export function contextMeterTone(ratio: number): ContextMeterTone {
   if (!Number.isFinite(ratio) || ratio < CONTEXT_METER_WARNING_RATIO) return "muted";
   if (ratio < CONTEXT_METER_DESTRUCTIVE_RATIO) return "warning";

@@ -64,6 +64,24 @@ export const readWorktreeState = (
 ) =>
   Effect.gen(function* () {
     const target = input.worktreePath ?? input.projectCwd;
+    if (input.worktreePath && git.inspectWorktreeGroup) {
+      const group = yield* git.inspectWorktreeGroup({
+        projectRoot: input.projectCwd,
+        path: input.worktreePath,
+        branch: input.branch,
+      });
+      if (group)
+        return {
+          worktreePath: input.worktreePath,
+          branch: input.branch,
+          directoryExists: group.ready,
+          registration: group.ready ? "matching" : group.recoverable ? "stale" : "otherBranch",
+          branchExists: group.recoverable,
+          defaultBranch: null,
+          checkoutBranch: group.ready ? input.branch : null,
+          branchDriftOnly: false,
+        } as const;
+    }
     const canonical = yield* Effect.tryPromise(() => canonicalWorktreePath(target));
     const directoryExists = yield* Effect.tryPromise(() => stat(target)).pipe(
       Effect.map((entry) => entry.isDirectory()),

@@ -5,6 +5,7 @@ import { ThreadAutomationsButton } from "../scheduled/ThreadAutomationsButton";
 import { ThreadPrLinks } from "../prHub/ThreadPrLinks";
 import {
   type EditorId,
+  type GitStatusResult,
   type ProjectId,
   type ProjectKind,
   type ProjectScript,
@@ -12,6 +13,8 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { memo, useState, type ComponentType, type MouseEvent, type ReactNode } from "react";
+import { classifyChangedFile } from "@t3tools/shared/changedFileKind";
+import { ChangeBreakdownGrid } from "../prHub/ChangeBreakdownGrid";
 import GitActionsControl from "../GitActionsControl";
 import {
   BotIcon,
@@ -116,7 +119,9 @@ interface ChatHeaderProps {
   liveAgentCount: number;
   terminalToggleShortcutLabel: string | null;
   diffToggleShortcutLabel: string | null;
+  agentsToggleShortcutLabel: string | null;
   gitCwd: string | null;
+  workingTree?: GitStatusResult["workingTree"] | undefined;
   diffState: RightPanelSurfaceHeaderState;
   threadActionItems: ReadonlyArray<ThreadActionMenuItem>;
   onThreadAction: (actionId: ThreadActionId) => void;
@@ -147,6 +152,7 @@ interface PanelToggleSpec {
   disabled: boolean;
   disabledReason: string;
   badgeCount?: number;
+  tooltipDetails?: ReactNode;
   onToggle: () => void;
 }
 
@@ -191,6 +197,7 @@ export const ChatHeader = memo(function ChatHeader({
   liveAgentCount,
   terminalToggleShortcutLabel,
   diffToggleShortcutLabel,
+  agentsToggleShortcutLabel,
   gitCwd,
   diffState,
   threadActionItems,
@@ -205,6 +212,7 @@ export const ChatHeader = memo(function ChatHeader({
   onToggleAgents,
   onTogglePreview,
   onToggleDiff,
+  workingTree,
   navigationHostRef,
 }: ChatHeaderProps) {
   "use memo";
@@ -237,6 +245,12 @@ export const ChatHeader = memo(function ChatHeader({
       label: "Diff",
       ariaLabel: "Toggle diff panel",
       shortcutLabel: diffToggleShortcutLabel,
+      tooltipDetails:
+        workingTree &&
+        !workingTree.countUnavailableReason &&
+        (workingTree.insertions > 0 || workingTree.deletions > 0) ? (
+          <WorkingTreeBreakdown workingTree={workingTree} />
+        ) : null,
       state: diffState,
       disabled: !isGitRepo && diffState === "closed",
       disabledReason: "Diff panel is unavailable because this project is not a git repository.",
@@ -264,7 +278,7 @@ export const ChatHeader = memo(function ChatHeader({
       ariaLabel: agentsWorkingLabel
         ? `Toggle Agents panel, ${agentsWorkingLabel}`
         : "Toggle Agents panel",
-      shortcutLabel: null,
+      shortcutLabel: agentsToggleShortcutLabel,
       state: agentsState,
       disabled: false,
       disabledReason: "",
@@ -647,6 +661,7 @@ function PanelToggle(props: { panel: PanelToggleSpec; variant?: "default" | "seg
       label={panel.label}
       ariaLabel={panel.ariaLabel}
       shortcutLabel={panel.shortcutLabel}
+      tooltipDetails={panel.tooltipDetails}
       pressed={panel.state === "active"}
       inBackground={panel.state === "background"}
       variant={props.variant}
@@ -657,6 +672,32 @@ function PanelToggle(props: { panel: PanelToggleSpec; variant?: "default" | "seg
     />
   );
 }
+
+const WorkingTreeBreakdown = memo(function WorkingTreeBreakdown({
+  workingTree,
+}: {
+  workingTree: GitStatusResult["workingTree"];
+}) {
+  const breakdown = {
+    code: { additions: 0, deletions: 0 },
+    tests: { additions: 0, deletions: 0 },
+    mocks: { additions: 0, deletions: 0 },
+    generated: { additions: 0, deletions: 0 },
+    docs: { additions: 0, deletions: 0 },
+  };
+  for (const file of workingTree.files) {
+    const counts = breakdown[classifyChangedFile(file.path)];
+    counts.additions += file.insertions;
+    counts.deletions += file.deletions;
+  }
+  return (
+    <ChangeBreakdownGrid
+      breakdown={breakdown}
+      additions={workingTree.insertions}
+      deletions={workingTree.deletions}
+    />
+  );
+});
 
 function PanelMenuItem(props: { panel: PanelToggleSpec }) {
   const { panel } = props;

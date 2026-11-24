@@ -959,7 +959,67 @@ describe("plus key parsing", () => {
 import {
   DEFAULT_RESOLVED_KEYBINDINGS,
   compileResolvedKeybindingsConfig,
+  mergeWithDefaultKeybindings,
 } from "@t3tools/shared/keybindings";
+
+describe("Agents panel shortcut", () => {
+  it.each(["MacIntel", "Win32", "Linux"])("toggles outside the terminal on %s", (platform) => {
+    const pressed = event({
+      key: "B",
+      shiftKey: true,
+      metaKey: platform === "MacIntel",
+      ctrlKey: platform !== "MacIntel",
+    });
+    assert.equal(
+      resolveShortcutCommand(pressed, DEFAULT_RESOLVED_KEYBINDINGS, {
+        platform,
+        context: { composerFocus: true, terminalFocus: false },
+      }),
+      "agents.toggle",
+    );
+    assert.isNull(
+      resolveShortcutCommand(pressed, DEFAULT_RESOLVED_KEYBINDINGS, {
+        platform,
+        context: { terminalFocus: true },
+      }),
+    );
+  });
+
+  it("gives a saved shortcut priority where its condition matches", () => {
+    const bindings = mergeWithDefaultKeybindings(
+      compileResolvedKeybindingsConfig([
+        { key: "mod+shift+b", command: "script.custom-action.run", when: "composerFocus" },
+      ]),
+    );
+    const pressed = event({ key: "B", ctrlKey: true, shiftKey: true });
+    assert.equal(
+      resolveShortcutCommand(pressed, bindings, {
+        platform: "Linux",
+        context: { composerFocus: true },
+      }),
+      "script.custom-action.run",
+    );
+    assert.equal(resolveShortcutCommand(pressed, bindings, { platform: "Linux" }), "agents.toggle");
+  });
+
+  it("replaces the default when the Agents panel shortcut is reassigned", () => {
+    const bindings = mergeWithDefaultKeybindings(
+      compileResolvedKeybindingsConfig([{ key: "mod+alt+b", command: "agents.toggle" }]),
+    );
+    assert.equal(
+      resolveShortcutCommand(event({ key: "b", altKey: true, ctrlKey: true }), bindings, {
+        platform: "Linux",
+      }),
+      "agents.toggle",
+    );
+    assert.isNull(
+      resolveShortcutCommand(event({ key: "B", shiftKey: true, ctrlKey: true }), bindings, {
+        platform: "Linux",
+      }),
+    );
+  });
+});
+
 describe("Phase 3 shortcut contexts", () => {
   it.each([
     ["w", false, "rightPanel.closeTab"],

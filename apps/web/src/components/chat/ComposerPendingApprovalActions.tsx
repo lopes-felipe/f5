@@ -3,11 +3,13 @@ import {
   type ProviderApprovalOption,
   type ProviderApprovalDecision,
 } from "@t3tools/contracts";
-import { memo } from "react";
+import { memo, useRef } from "react";
 import { type PendingApproval } from "../../session-logic";
 import { Button } from "../ui/button";
 
 interface ComposerPendingApprovalActionsProps {
+  inline?: boolean;
+  focusedRequestIds?: Set<string> | undefined;
   requestId: ApprovalRequestId;
   requestKind: PendingApproval["requestKind"];
   requestedPermissions?: PendingApproval["requestedPermissions"];
@@ -87,6 +89,8 @@ function optionVariant(
 }
 
 export const ComposerPendingApprovalActions = memo(function ComposerPendingApprovalActions({
+  inline = false,
+  focusedRequestIds,
   requestId,
   requestKind,
   requestedPermissions,
@@ -97,6 +101,8 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
   isResponding,
   onRespondToApproval,
 }: ComposerPendingApprovalActionsProps) {
+  const localFocusedIds = useRef(new Set<string>());
+  const focusedIds = focusedRequestIds ?? localFocusedIds.current;
   const options = resolveApprovalOptions({
     requestKind,
     requestedPermissions,
@@ -108,25 +114,58 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
       ? "decline"
       : "cancel"
     : undefined;
+  const primaryAccept = options.some((option) => option.decision === "accept")
+    ? "accept"
+    : options.find((option) => option.decision.startsWith("accept"))?.decision;
+  const visible = (decision: ProviderApprovalDecision) =>
+    decision === "accept" ||
+    decision === "decline" ||
+    decision === primaryAccept ||
+    decision === focusDecision;
   return (
     <>
-      {options.map((option) => (
+      {(inline ? options.filter((option) => visible(option.decision)) : options).map((option) => (
         <Button
           key={option.decision}
-          size="sm"
+          size={inline ? "xs" : "sm"}
           variant={approvalOptionVariant({
             decision: option.decision,
             providerOptions: Boolean(approvalOptions?.length),
             defaultToNo,
           })}
           // The provider asked for Decline to be the focused choice.
-          autoFocus={option.decision === focusDecision}
+          ref={(button) => {
+            if (!button || option.decision !== focusDecision) return;
+            if (focusedIds.has(requestId)) return;
+            focusedIds.add(requestId);
+            button.focus({ preventScroll: true });
+          }}
           disabled={isResponding || (option.decision.startsWith("accept") && !canApprove)}
           onClick={() => void onRespondToApproval(requestId, option.decision)}
         >
           {option.label}
         </Button>
       ))}
+      {inline && options.some((option) => !visible(option.decision)) ? (
+        <details>
+          <summary className="cursor-pointer">More</summary>
+          <div className="mt-1 flex flex-wrap gap-2">
+            {options
+              .filter((option) => !visible(option.decision))
+              .map((option) => (
+                <Button
+                  key={option.decision}
+                  size="xs"
+                  variant="outline"
+                  disabled={isResponding || (option.decision.startsWith("accept") && !canApprove)}
+                  onClick={() => void onRespondToApproval(requestId, option.decision)}
+                >
+                  {option.label}
+                </Button>
+              ))}
+          </div>
+        </details>
+      ) : null}
       {options
         .filter((option) => option.warning)
         .map((option) => (

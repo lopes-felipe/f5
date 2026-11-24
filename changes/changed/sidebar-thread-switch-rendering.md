@@ -1,0 +1,1 @@
+- Switching conversations is smoother in sidebars with many threads.

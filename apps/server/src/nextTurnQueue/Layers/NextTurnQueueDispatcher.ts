@@ -26,6 +26,7 @@ import {
   normalizeTarget,
 } from "../usageLimitResume.ts";
 import { recoverRestartTurnMarkers } from "../restartTurns.ts";
+import { resendAuthFailedTurn } from "../authFailureResend.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import {
   ProviderInstanceId as importProviderInstanceId,
@@ -377,7 +378,20 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
           if (recreate || requireExisting) inspectionRetries.delete(item.threadId);
           return gate;
         }
-        if (thread.branch && !(yield* git.branchExists(project.workspaceRoot, thread.branch))) {
+        const group =
+          thread.worktreePath && git.inspectWorktreeGroup
+            ? yield* git.inspectWorktreeGroup({
+                projectRoot: project.workspaceRoot,
+                path: thread.worktreePath,
+                branch: thread.branch,
+                threadId: thread.threadId,
+              })
+            : null;
+        if (
+          !group &&
+          thread.branch &&
+          !(yield* git.branchExists(project.workspaceRoot, thread.branch))
+        ) {
           return {
             kind: "autoPause" as const,
             reasonCode: "worktree_missing" as const,
@@ -1521,6 +1535,22 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
         yield* publishChanged(input.threadId);
         yield* notify(input.threadId);
         return yield* getSnapshot(input.threadId);
+      }),
+    resendAuthFailedTurn: (input) =>
+      Effect.gen(function* () {
+        if (Option.isNone(sqlOption))
+          return { kind: "ineligible", reason: "Resend is unavailable." } as const;
+        const result = yield* resendAuthFailedTurn(input).pipe(
+          Effect.provideService(SqlClient.SqlClient, sqlOption.value),
+          Effect.provideService(OrchestrationEngineService, engine),
+          Effect.provideService(NextTurnQueueStore, store),
+          Effect.catchTag("SqlError", (error) => Effect.fail(storageError(error))),
+        );
+        if (result.kind === "sent") {
+          yield* publishChanged(input.threadId);
+          yield* notify(input.threadId);
+        }
+        return result;
       }),
     cancelUsageLimitResume: (input) =>
       Effect.gen(function* () {

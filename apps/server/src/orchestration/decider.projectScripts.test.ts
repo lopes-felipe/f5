@@ -350,6 +350,8 @@ describe("decider project scripts", () => {
           type: "project.meta.update",
           commandId: CommandId.makeUnsafe("cmd-project-update-metadata"),
           projectId,
+          pinned: true,
+          archived: true,
           defaultEnvMode: "worktree",
           icon: { type: "emoji", emoji: "🧪" },
         },
@@ -362,6 +364,8 @@ describe("decider project scripts", () => {
       type: "project.meta-updated",
       payload: {
         projectId,
+        pinned: true,
+        archived: true,
         defaultEnvMode: "worktree",
         icon: { type: "emoji", emoji: "🧪" },
       },

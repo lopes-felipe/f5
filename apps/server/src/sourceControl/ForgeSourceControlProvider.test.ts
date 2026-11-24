@@ -36,6 +36,107 @@ function fixture(kind: ForgeKind, responses: unknown[] = [], login = `viewer-${+
 }
 
 describe("forge adapters", () => {
+  it("finds an existing Forgejo pull request beyond the first page", async () => {
+    const first = Array.from({ length: 100 }, (_, index) => ({
+      number: index + 1,
+      head: { ref: "unrelated" },
+    }));
+    const { provider, ref, calls } = fixture("forgejo", [
+      first,
+      [{ number: 101, head: { ref: "feature" } }],
+    ]);
+    const opened = await Effect.runPromise(
+      provider.openChangeRequest!({
+        ref,
+        head: "feature",
+        title: "Test",
+        body: "",
+        draft: false,
+      }),
+    );
+    expect(opened.number).toBe(101);
+    expect(calls.map(({ url }) => new URL(url).searchParams.get("page"))).toEqual(["1", "2"]);
+    expect(calls.every(({ init }) => init.method === "GET")).toBe(true);
+  });
+
+  it.each([
+    ["gitlab", [], { iid: 11 }],
+    ["bitbucket", { values: [] }, { id: 11 }],
+    ["azure-devops", { value: [] }, { pullRequestId: 11 }],
+    ["forgejo", [], { number: 11 }],
+  ] as const)(
+    "opens a pull request on %s through the routed repository",
+    async (kind, empty, response) => {
+      const { provider, ref, calls } = fixture(kind, [empty, response]);
+      const opened = await Effect.runPromise(
+        provider.openChangeRequest!({
+          ref,
+          head: "feature",
+          base: "main",
+          title: "Test",
+          body: "",
+          draft: false,
+        }),
+      );
+      expect(opened.number).toBe(11);
+      expect(calls.map(({ init }) => init.method)).toEqual(["GET", "POST"]);
+    },
+  );
+  it("completes GitLab issue and MR numbers within the selected project", async () => {
+    const { provider, ref, calls } = fixture("gitlab", [
+      [{ iid: 123, title: "Exact merge request" }],
+      [
+        { iid: 123, title: "Exact merge request" },
+        { iid: 1234, title: "Related" },
+      ],
+    ]);
+    expect(
+      await Effect.runPromise(provider.completions!(ref, { sigil: "!", query: "123" })),
+    ).toEqual([
+      { token: "!123", label: "!123", detail: "Exact merge request" },
+      { token: "!1234", label: "!1234", detail: "Related" },
+    ]);
+    expect(calls).toHaveLength(2);
+    expect(
+      calls.every((call) =>
+        call.url.startsWith("https://gitlab.com/api/v4/projects/team%2Frepo/merge_requests?"),
+      ),
+    ).toBe(true);
+    expect(calls[0]!.url).toContain("iids[]=123");
+    expect(calls[1]!.url).not.toContain("search=");
+  });
+  it("appends the GitLab viewer before requesting changes and surfaces refused mutations", async () => {
+    const { provider, ref, calls } = fixture(
+      "gitlab",
+      [
+        { data: { mergeRequestSetReviewers: { errors: [] } } },
+        { data: { mergeRequestRequestChanges: { errors: ["Merge request is locked"] } } },
+      ],
+      "reviewer",
+    );
+    const result = await Effect.runPromise(
+      Effect.result(provider.submitReview({ ref, body: "", verdict: "request-changes" })),
+    );
+    expect(result._tag).toBe("Failure");
+    if (result._tag === "Failure")
+      expect(result.failure.detail).toContain("Merge request is locked");
+    expect(calls).toHaveLength(2);
+    expect(calls.every((call) => call.url === "https://gitlab.com/api/graphql")).toBe(true);
+    const first = JSON.parse(String(calls[0]!.init.body));
+    expect(first.query).toContain("operationMode: APPEND");
+    expect(first.variables.reviewers).toEqual(["reviewer"]);
+    expect(JSON.parse(String(calls[1]!.init.body)).query).toContain("mergeRequestRequestChanges");
+  });
+  it("reports successful GitLab change requests without approving the merge request", async () => {
+    const { provider, ref, calls } = fixture("gitlab", [
+      { data: { mergeRequestSetReviewers: { errors: [] } } },
+      { data: { mergeRequestRequestChanges: { errors: [] } } },
+    ]);
+    expect(
+      await Effect.runPromise(provider.submitReview({ ref, body: "", verdict: "request-changes" })),
+    ).toEqual({ state: "changes_requested" });
+    expect(calls).toHaveLength(2);
+  });
   it("starts the branch policy and first status page together", async () => {
     const bothStarted = Promise.withResolvers<void>();
     let starts = 0;

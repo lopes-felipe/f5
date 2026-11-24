@@ -1,8 +1,9 @@
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Schema } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import {
   PreparationError,
   WorktreePreparations,
+  WorktreeGroupPlan,
   type WorktreePreparationReceipt,
 } from "../Services/WorktreePreparations.ts";
 
@@ -38,11 +39,88 @@ export const makeWorktreePreparations = Effect.gen(function* () {
       Effect.mapError(queryError),
     );
   return WorktreePreparations.of({
+    getGroupLayoutPhase: (path) =>
+      sql<{
+        layout_phase: string;
+      }>`SELECT layout_phase FROM worktree_groups WHERE workspace_path = ${path}`.pipe(
+        Effect.map(([row]) => row?.layout_phase ?? null),
+        Effect.mapError(queryError),
+      ),
+    setGroupLayoutPhase: (path, phase) =>
+      sql`UPDATE worktree_groups SET layout_phase = ${phase} WHERE workspace_path = ${path}`.pipe(
+        Effect.asVoid,
+        Effect.mapError(queryError),
+      ),
+    listProjectRepositoryRoots: (projectId) =>
+      sql<{
+        path: string;
+      }>`SELECT path FROM project_repository_roots WHERE project_id = ${projectId} ORDER BY path`.pipe(
+        Effect.map((rows) => rows.map(({ path }) => path)),
+        Effect.mapError(queryError),
+      ),
+    setProjectRepositoryRoot: (projectId, path, tracked) =>
+      Effect.gen(function* () {
+        if (!tracked) {
+          yield* sql`DELETE FROM project_repository_roots WHERE project_id = ${projectId} AND path = ${path}`.pipe(
+            Effect.mapError(queryError),
+          );
+          return;
+        }
+        const [row] = yield* sql<{
+          path: string;
+        }>`INSERT INTO project_repository_roots(project_id, path)
+            SELECT ${projectId}, ${path}
+            WHERE (SELECT COUNT(*) FROM project_repository_roots WHERE project_id = ${projectId}) < 128
+               OR EXISTS (SELECT 1 FROM project_repository_roots WHERE project_id = ${projectId} AND path = ${path})
+            ON CONFLICT(project_id, path) DO UPDATE SET path = excluded.path
+            RETURNING path`.pipe(Effect.mapError(queryError));
+        if (!row)
+          return yield* new PreparationError({
+            message: "This project already has 128 registered external repositories.",
+            path,
+          });
+      }),
+    getGroup: (path) =>
+      sql<{
+        plan_json: string;
+      }>`SELECT plan_json FROM worktree_groups WHERE workspace_path = ${path}`.pipe(
+        Effect.flatMap(([row]) =>
+          row
+            ? Schema.decodeUnknownEffect(Schema.fromJsonString(WorktreeGroupPlan))(row.plan_json)
+            : Effect.succeed(null),
+        ),
+        Effect.mapError(queryError),
+      ),
+    saveGroup: (group) =>
+      Effect.gen(function* () {
+        const serialized = JSON.stringify(group);
+        const [row] = yield* sql<{ plan_json: string }>`
+          INSERT INTO worktree_groups(workspace_path, plan_json) VALUES (${group.path}, ${serialized})
+          ON CONFLICT(workspace_path) DO UPDATE SET plan_json = excluded.plan_json
+          WHERE worktree_groups.plan_json = excluded.plan_json
+          RETURNING plan_json`;
+        if (!row)
+          return yield* new PreparationError({
+            message: "Worktree group ownership changed.",
+            path: group.path,
+          });
+      }).pipe(Effect.mapError(queryError)),
+    deleteGroup: (group) =>
+      sql`DELETE FROM worktree_groups
+        WHERE workspace_path = ${group.path} AND json_extract(plan_json, '$.threadId') = ${group.threadId}`.pipe(
+        Effect.asVoid,
+        Effect.mapError(queryError),
+      ),
     unfinished: sql<Row>`${select} WHERE phase NOT IN ('completed', 'skipped')`.pipe(
       Effect.map((rows) => rows.map(decode)),
       Effect.mapError(queryError),
     ),
     latest,
+    listByOwner: (owner) =>
+      sql<Row>`${select} WHERE owner = ${owner} ORDER BY created_at DESC, rowid DESC`.pipe(
+        Effect.map((rows) => rows.map(decode)),
+        Effect.mapError(queryError),
+      ),
     branchReserved,
     allocate: (input) =>
       Effect.gen(function* () {

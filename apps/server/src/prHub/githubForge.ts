@@ -17,6 +17,7 @@ import { SourceControlProviderError } from "../sourceControl/SourceControlProvid
 import { record, text } from "./forgeModel.ts";
 import { GITHUB_AUTO_MERGE_QUERY, gitHubAutoMergeAvailable } from "./githubAutoMerge.ts";
 import { failedGitHubWorkflowRuns, gitHubWorkflowRunOf } from "./githubChecks.ts";
+import { completionCandidates } from "./completionCandidates.ts";
 
 export function makeGitHubForge(github: GitHubCliShape, cwd: string): ForgeProvider {
   const scope = <A>(
@@ -221,8 +222,58 @@ export function makeGitHubForge(github: GitHubCliShape, cwd: string): ForgeProvi
     forgeCapabilities: GITHUB_FORGE_CAPABILITIES,
     workflowRuns,
     getDetail,
-    listPullRequests: (ref, limit = 100) =>
-      request(ref, `/pulls?state=open&per_page=${Math.min(limit, 100)}`).pipe(
+    openChangeRequest: (input) =>
+      Effect.gen(function* () {
+        const { ref, head } = input;
+        const owner = ref.repository.split("/")[0]!;
+        const existing = yield* request(
+          ref,
+          "/pulls?" +
+            new URLSearchParams({
+              state: "open",
+              head: owner + ":" + head,
+              per_page: "2",
+            }).toString(),
+        );
+        if (!Array.isArray(existing))
+          return yield* failure("create", "GitHub returned an invalid pull request list.");
+        if (existing.length > 1)
+          return yield* failure("create", "More than one open pull request uses this branch.");
+        if (existing[0]) {
+          const number = record(existing[0]).number;
+          if (typeof number !== "number" || !Number.isSafeInteger(number) || number < 1)
+            return yield* failure("create", "GitHub returned an invalid pull request reference.");
+          return yield* decodeDetail({ ...ref, number }, existing[0]);
+        }
+        const base = input.base ?? text(record(yield* request(ref, "")).default_branch);
+        if (!base || base === head)
+          return yield* failure("create", "Select a base branch different from the pushed branch.");
+        const created = yield* request(ref, "/pulls", "POST", {
+          base,
+          head,
+          title: input.title,
+          body: input.body,
+          draft: input.draft,
+        });
+        const number = record(created).number;
+        if (typeof number !== "number" || !Number.isSafeInteger(number) || number < 1)
+          return yield* failure(
+            "create",
+            "GitHub returned an invalid pull request reference.",
+            true,
+          );
+        return yield* decodeDetail({ ...ref, number }, created);
+      }),
+    listPullRequests: (ref, limit = 100, options) =>
+      request(
+        ref,
+        "/pulls?" +
+          new URLSearchParams({
+            state: options?.state === "merged" ? "closed" : (options?.state ?? "open"),
+            per_page: String(Math.min(limit, 100)),
+            ...(options ? { sort: "updated", direction: "desc" } : {}),
+          }).toString(),
+      ).pipe(
         Effect.flatMap((value) =>
           !Array.isArray(value)
             ? Effect.fail(failure("list", "GitHub returned an invalid pull request list."))
@@ -371,6 +422,16 @@ export function makeGitHubForge(github: GitHubCliShape, cwd: string): ForgeProvi
               ? "REQUEST_CHANGES"
               : "COMMENT",
         ...(input.headSha ? { commit_id: input.headSha } : {}),
+        ...(input.comments?.length
+          ? {
+              comments: input.comments.map(({ path, line, side, body }) => ({
+                path,
+                line,
+                side: side === "old" ? "LEFT" : "RIGHT",
+                body,
+              })),
+            }
+          : {}),
       }),
     performAction: (input) =>
       Effect.gen(function* () {
@@ -638,6 +699,50 @@ export function makeGitHubForge(github: GitHubCliShape, cwd: string): ForgeProvi
         }),
       ),
     listReviewerCandidates: (ref) => request(ref, "/collaborators?per_page=100"),
+    completions: (ref, input) => {
+      if (input.sigil === "!") return Effect.succeed([]);
+      const [owner = "", name = ""] = ref.repository.split("/");
+      if (input.sigil === "@")
+        return graphql(
+          ref,
+          "query($owner:String!,$name:String!,$query:String!){repository(owner:$owner,name:$name){mentionableUsers(first:100,query:$query){nodes{login name}}}}",
+          { owner, name, query: input.query },
+        ).pipe(
+          Effect.map((v) =>
+            completionCandidates(
+              record(record(record(record(v).data).repository).mentionableUsers).nodes,
+              "@",
+              input.query,
+            ),
+          ),
+        );
+      const phrase = input.query.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
+      const search = graphql(
+        ref,
+        "query($query:String!){search(query:$query,type:ISSUE,first:100){nodes{... on Issue{number title}... on PullRequest{number title}}}}",
+        {
+          query:
+            "repo:" + ref.repository + (phrase ? ' "' + phrase + '"' : "") + " sort:updated-desc",
+        },
+      ).pipe(
+        Effect.map((v) => {
+          const nodes = record(record(record(v).data).search).nodes;
+          return Array.isArray(nodes) ? nodes : [];
+        }),
+      );
+      const exact =
+        /^\d+$/.test(input.query) && Number(input.query) > 0
+          ? request(ref, "/issues/" + encodeURIComponent(input.query)).pipe(
+              Effect.map((v) => [v]),
+              Effect.catch((error) =>
+                error.kind === "not_found" ? Effect.succeed([]) : Effect.fail(error),
+              ),
+            )
+          : Effect.succeed([]);
+      return Effect.all([exact, search]).pipe(
+        Effect.map((pages) => completionCandidates(pages.flat(), "#", input.query)),
+      );
+    },
     setLabels: (input) =>
       request(input.ref, `/issues/${input.ref.number}/labels`, "PUT", { labels: input.labels }),
     react: (input) =>

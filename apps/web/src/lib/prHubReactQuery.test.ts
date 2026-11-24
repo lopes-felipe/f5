@@ -1,13 +1,41 @@
 import { InfiniteQueryObserver, QueryClient } from "@tanstack/react-query";
+import { PullRequestKey } from "@t3tools/contracts";
 import { expect, it, vi } from "vitest";
-import { prHubListQueryOptions, prHubPeekQueryOptions } from "./prHubReactQuery";
-const api = vi.hoisted(() => ({ listPullRequests: vi.fn(), peek: vi.fn() }));
+import {
+  prefetchCachedPrHubDetail,
+  prHubDetailQueryOptions,
+  prHubListQueryOptions,
+  prHubPeekQueryOptions,
+} from "./prHubReactQuery";
+const api = vi.hoisted(() => ({ listPullRequests: vi.fn(), peek: vi.fn(), getDetail: vi.fn() }));
 const account = vi.hoisted(() => ({ generation: "account", id: "first" }));
 vi.mock("../nativeApi", () => ({ ensureNativeApi: () => ({ prHub: api }) }));
 vi.mock("./prHubAccount", () => ({
   getPrHubAccountGeneration: () => account.generation,
   getPrHubSelectedAccountId: () => account.id,
 }));
+
+it("warms the normal detail query only from a current, cache-only answer", async () => {
+  const client = new QueryClient();
+  const key = PullRequestKey.makeUnsafe("github:github.com/org/repo#7");
+  const detail = { stale: false, refreshedAt: new Date().toISOString() };
+  const options = prHubDetailQueryOptions(key);
+  api.getDetail.mockResolvedValue(detail);
+  try {
+    await prefetchCachedPrHubDetail(client, key, () => false);
+    expect(client.getQueryData(options.queryKey)).toBeUndefined();
+    await prefetchCachedPrHubDetail(client, key, () => true);
+    expect(client.getQueryData(options.queryKey)).toEqual(detail);
+    await client.fetchQuery(options);
+    expect(api.getDetail.mock.calls).toEqual([
+      [{ key, accountGeneration: "account", cacheOnly: true }],
+      [{ key, accountGeneration: "account", cacheOnly: true }],
+    ]);
+  } finally {
+    client.clear();
+    api.getDetail.mockReset();
+  }
+});
 it("caches peeks within an account and captures the account used by each query", async () => {
   const client = new QueryClient();
   const url = "https://github.com/org/repo/pull/7";

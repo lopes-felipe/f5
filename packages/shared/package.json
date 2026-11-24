@@ -4,6 +4,26 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./editorLinks": {
+      "types": "./src/editorLinks.ts",
+      "import": "./src/editorLinks.ts"
+    },
+    "./changedFileKind": {
+      "types": "./src/changedFileKind.ts",
+      "import": "./src/changedFileKind.ts"
+    },
+    "./composerModelMentions": {
+      "types": "./src/composerModelMentions.ts",
+      "import": "./src/composerModelMentions.ts"
+    },
+    "./macWebAuthn": {
+      "types": "./src/macWebAuthn.ts",
+      "import": "./src/macWebAuthn.ts"
+    },
+    "./desktopBootstrapToken": {
+      "types": "./src/desktopBootstrapToken.ts",
+      "import": "./src/desktopBootstrapToken.ts"
+    },
     "./codexMessagePresentation": {
       "types": "./src/codexMessagePresentation.ts",
       "import": "./src/codexMessagePresentation.ts"
@@ -320,6 +340,10 @@
       "types": "./src/runtimeMode.ts",
       "import": "./src/runtimeMode.ts"
     },
+    "./cursorHarness": {
+      "types": "./src/cursorHarness.ts",
+      "import": "./src/cursorHarness.ts"
+    },
     "./threadEnvMode": {
       "types": "./src/threadEnvMode.ts",
       "import": "./src/threadEnvMode.ts"
@@ -343,6 +367,14 @@
     "./profileIdentity": {
       "types": "./src/profileIdentity.ts",
       "import": "./src/profileIdentity.ts"
+    },
+    "./profileExecution": {
+      "types": "./src/profileExecution.ts",
+      "import": "./src/profileExecution.ts"
+    },
+    "./backendFrames": {
+      "types": "./src/backendFrames.ts",
+      "import": "./src/backendFrames.ts"
     },
     "./profilePaths": {
       "types": "./src/profilePaths.ts",
@@ -391,6 +423,10 @@
     "./cliRelease": {
       "types": "./src/cliRelease.ts",
       "import": "./src/cliRelease.ts"
+    },
+    "./vmBackendPin": {
+      "types": "./src/vmBackendPin.ts",
+      "import": "./src/vmBackendPin.ts"
     },
     "./hostRuntime": {
       "types": "./src/hostRuntime.ts",

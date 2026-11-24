@@ -23,6 +23,7 @@ import { cn } from "~/lib/utils";
 
 import { COMPOSER_CHIP_CLASS_NAME } from "./composerChip";
 import { ProjectPicker } from "~/components/ProjectPicker";
+import { SideChatMenuItems } from "./SideChatMenuItems";
 
 import type {
   ComposerAttachments,
@@ -167,6 +168,7 @@ export function ComposerFooterControls(props: {
             <AtSignIcon className="size-4 shrink-0" />
             Mention a file
           </MenuItem>
+          <SideChatMenuItems threadId={threadId} />
           {nativeGoal ? (
             <>
               <MenuSeparator />
@@ -240,6 +242,7 @@ export function ComposerFooterControls(props: {
           showInteractionModeToggle={mode.showInteractionModeToggle}
           planSidebarOpen={mode.planSidebarOpen}
           provider={model.selectedProvider}
+          availableRuntimeModes={mode.availableRuntimeModes}
           runtimeMode={mode.runtimeMode}
           contextSummary={props.contextSummary}
           traitsMenuContent={
@@ -295,6 +298,7 @@ export function ComposerFooterControls(props: {
           <RuntimeModePicker
             disabled={isPendingTurnDispatchBlocked}
             provider={model.selectedProvider}
+            availableRuntimeModes={mode.availableRuntimeModes}
             value={mode.runtimeMode}
             onValueChange={mode.handleRuntimeModeChange}
           />

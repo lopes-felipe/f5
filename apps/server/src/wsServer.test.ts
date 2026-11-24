@@ -1,5 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { currentDesktopBootstrapToken } from "@t3tools/shared/desktopBootstrapToken";
 import {
   DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_PROVIDER_INTERACTION_MODE,
@@ -1902,7 +1903,11 @@ describe("WebSocket Server", () => {
     const address = h.server.address();
     const port = typeof address === "object" && address ? address.port : 0;
     const base = `http://127.0.0.1:${port}`;
-    const [ws] = await connectAndAwaitWelcome(port, "secret-token", { Origin: "t3://app" });
+    const [ws] = await connectAndAwaitWelcome(
+      port,
+      currentDesktopBootstrapToken("secret-token", Date.now()),
+      { Origin: "t3://app" },
+    );
     connections.push(ws);
     const response = await sendRequest(ws, WS_METHODS.projectsIssueAssetUrl, {
       identity: { kind: "attachments" },
@@ -2142,9 +2147,13 @@ describe("WebSocket Server", () => {
     const addr = h.server.address();
     const port = typeof addr === "object" && addr !== null ? addr.port : 0;
 
-    const [authorizedWs] = await connectAndAwaitWelcome(port, "secret-token", {
-      Origin: "t3://app",
-    });
+    const [authorizedWs] = await connectAndAwaitWelcome(
+      port,
+      currentDesktopBootstrapToken("secret-token", Date.now()),
+      {
+        Origin: "t3://app",
+      },
+    );
     connections.push(authorizedWs);
   });
 

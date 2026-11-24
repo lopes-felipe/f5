@@ -1,3 +1,4 @@
+import { projectChoices } from "../../lib/projectChoices";
 import {
   fixedTimeCron,
   normalizeCron,
@@ -21,12 +22,14 @@ import {
   type ScheduledTaskConfiguration,
   type ScheduledWorkspace,
   type ProjectId,
-  type ThreadId,
+  ThreadId,
   isKnownProviderKind,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import { buildSlashComposerMenuItems } from "@t3tools/shared/slashCommands";
 import { useStore } from "../../store";
+import { selectThreadById, useOrderedThreadIds, useThreadSummary } from "../../threadSelectors";
+import { useShallow } from "zustand/react/shallow";
 import { useSettings } from "../../hooks/useSettings";
 import { serverConfigQueryOptions } from "../../lib/serverReactQuery";
 import { gitBranchesQueryOptions } from "../../lib/gitReactQuery";
@@ -90,6 +93,7 @@ const sameFixed = (a: FixedTimeCronDraft, b: FixedTimeCronDraft) =>
  * project, so switching project never carries the previous project's defaults.
  */
 interface Draft {
+  freshContext: boolean;
   name: string;
   prompt: string;
   timezone: string;
@@ -106,6 +110,7 @@ interface Draft {
 function initialDraft(task: ScheduledTask | undefined, boundThreadId: ThreadId | undefined): Draft {
   if (!task)
     return {
+      freshContext: false,
       name: "",
       prompt: "",
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -122,6 +127,7 @@ function initialDraft(task: ScheduledTask | undefined, boundThreadId: ThreadId |
   // A bound task's stored settings mirror its conversation, so they are not explicit choices.
   const explicit = task.workspace.kind !== "thread";
   return {
+    freshContext: task.freshContext === true,
     name: task.name,
     prompt: task.prompt,
     timezone: task.timezone,
@@ -151,11 +157,10 @@ export function ScheduledTaskDialog(props: {
   onSaved: (projectId: ProjectId) => void;
 }) {
   const { task } = props;
-  const boundThreadId =
-    task?.workspace.kind === "thread" ? task.workspace.threadId : props.boundThreadId;
-  const boundThread = useStore((s) =>
-    boundThreadId ? s.threads.find((t) => t.id === boundThreadId) : undefined,
+  const [boundThreadId, setBoundThreadId] = useState(
+    task?.workspace.kind === "thread" ? task.workspace.threadId : props.boundThreadId,
   );
+  const boundThread = useThreadSummary(boundThreadId);
   const projects = useStore((s) => s.projects);
   const [draft, setDraft] = useState(() => initialDraft(task, props.boundThreadId));
   const update = (patch: Partial<Draft>) => setDraft((d) => ({ ...d, ...patch }));
@@ -165,6 +170,12 @@ export function ScheduledTaskDialog(props: {
   const threadMode = draft.workspaceKind === "thread";
   const projectId =
     task?.projectId ?? (threadMode && boundThread ? boundThread.projectId : creationProjectId);
+  const orderedThreadIds = useOrderedThreadIds({ projectId });
+  const destinationThreadIds = useStore(
+    useShallow((state) =>
+      orderedThreadIds.filter((id) => !selectThreadById(state, id)?.scheduledOrigin),
+    ),
+  );
   const project = useStore((s) => s.projects.find((p) => p.id === projectId));
   const config = useQuery(serverConfigQueryOptions());
   const settings = useSettings(undefined, projectId);
@@ -277,11 +288,13 @@ export function ScheduledTaskDialog(props: {
       : boundThread;
   const threadError = !threadMode
     ? null
-    : !boundThreadId || (!boundThread && !task)
-      ? "This conversation is no longer available."
-      : !boundSource?.modelSelection
-        ? "Send a message in this conversation before scheduling into it."
-        : null;
+    : !boundThreadId
+      ? "Select a conversation."
+      : !boundSource
+        ? "This conversation is no longer available."
+        : !boundSource.modelSelection
+          ? "Send a message in this conversation before scheduling into it."
+          : null;
   const modelSelection = threadMode
     ? (boundSource?.modelSelection ?? null)
     : (draft.modelSelection ?? resolvedModel);
@@ -337,6 +350,7 @@ export function ScheduledTaskDialog(props: {
           runtimeMode,
           interactionMode,
           workspace,
+          freshContext: threadMode && draft.freshContext,
           cron: effective.cron,
           timezone: draft.timezone,
           scheduleSource: task?.scheduleSource ?? "",
@@ -473,9 +487,17 @@ export function ScheduledTaskDialog(props: {
                 <NativeSelect
                   aria-label="Project"
                   value={projectId}
-                  onChange={(e) => setCreationProjectId(e.target.value as ProjectId)}
+                  onChange={(e) => {
+                    setCreationProjectId(e.target.value as ProjectId);
+                    setBoundThreadId(undefined);
+                  }}
                 >
-                  {projects.map((p) => (
+                  {project?.archived && (
+                    <option hidden disabled value={project.id}>
+                      {project.name} (archived)
+                    </option>
+                  )}
+                  {projectChoices(projects).map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.name}
                     </option>
@@ -575,6 +597,7 @@ export function ScheduledTaskDialog(props: {
                   {isKnownProviderKind(driver) && (
                     <RuntimeModePicker
                       provider={driver}
+                      availableRuntimeModes={provider?.availableRuntimeModes}
                       value={runtimeMode}
                       onValueChange={(runtimeMode) => update({ runtimeMode })}
                     />
@@ -604,13 +627,47 @@ export function ScheduledTaskDialog(props: {
               >
                 <option value="projectRoot">Project root (shared filesystem)</option>
                 <option value="worktree">New worktree for every run</option>
-                {boundThreadId && (
-                  <option value="thread">
-                    {boundThread ? `Conversation: ${boundThread.title}` : "This conversation"}
-                  </option>
+                {(threadMode || boundThreadId || destinationThreadIds.length > 0) && (
+                  <option value="thread">Existing conversation</option>
                 )}
               </NativeSelect>
             </label>
+            {threadMode && (
+              <label className="block">
+                Destination conversation
+                <NativeSelect
+                  aria-label="Destination conversation"
+                  value={boundThreadId ?? ""}
+                  onChange={(event) =>
+                    setBoundThreadId(
+                      event.target.value ? ThreadId.makeUnsafe(event.target.value) : undefined,
+                    )
+                  }
+                >
+                  <option value="">Select a conversation</option>
+                  {boundThreadId && !destinationThreadIds.includes(boundThreadId) && (
+                    <option value={boundThreadId}>
+                      {boundThread
+                        ? `${boundThread.title} (${boundThread.archivedAt ? "archived" : "unavailable"})`
+                        : "Current conversation (unavailable)"}
+                    </option>
+                  )}
+                  {destinationThreadIds.map((id) => (
+                    <DestinationConversationOption key={id} threadId={id} />
+                  ))}
+                </NativeSelect>
+              </label>
+            )}
+            {threadMode && (
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={draft.freshContext}
+                  onChange={(event) => update({ freshContext: event.target.checked })}
+                />
+                Start a fresh provider session for each run
+              </label>
+            )}
             {draft.workspaceKind === "worktree" && (
               <label className="block">
                 Base branch
@@ -792,4 +849,9 @@ export function ScheduledTaskDialog(props: {
       </DialogPopup>
     </Dialog>
   );
+}
+
+function DestinationConversationOption({ threadId }: { threadId: ThreadId }) {
+  const title = useStore((state) => selectThreadById(state, threadId)?.title);
+  return <option value={threadId}>{title}</option>;
 }

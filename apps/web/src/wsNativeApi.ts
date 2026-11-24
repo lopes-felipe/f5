@@ -1,5 +1,7 @@
 import {
   MCP_APPS_WS_METHODS,
+  AgentSessionImportResult,
+  AgentSessionScanResult,
   McpAppToolInfo,
   McpAppToolResult,
   McpLoginStatusResult,
@@ -82,6 +84,7 @@ import {
   setPrHubAccount,
   getPrHubSelectedAccountId,
 } from "./lib/prHubAccount";
+import { clearPrHubReadCache } from "./lib/prHubReadCache";
 
 let instance: { api: NativeApi; transport: WsTransport } | null = null;
 const profilesListeners = new Set<(payload: typeof ProfileListResult.Type) => void>();
@@ -273,6 +276,11 @@ export function onPrHubAdvisoriesUpdated(
   return () => {
     prHubAdvisoriesUpdatedListeners.delete(listener);
   };
+}
+
+export function resetWsNativeApiForTests(): void {
+  instance?.transport.dispose();
+  instance = null;
 }
 
 export function createWsNativeApi(): NativeApi {
@@ -556,7 +564,10 @@ export function createWsNativeApi(): NativeApi {
       githubLoginStatus: requestMethod(WS_METHODS.githubLoginStatus),
       githubLoginCancel: requestMethod(WS_METHODS.githubLoginCancel),
       githubSet: requestMethod(WS_METHODS.githubAccountSet),
-      githubRemove: requestMethod(WS_METHODS.githubAccountRemove),
+      githubRemove: async (input) => {
+        await transport.request(WS_METHODS.githubAccountRemove, input);
+        await clearPrHubReadCache();
+      },
       githubStatus: requestMethod(WS_METHODS.githubAccountStatus),
       githubCliCandidates: () => transport.request(WS_METHODS.githubAccountCliCandidates, {}),
       githubCliImport: requestMethod(WS_METHODS.githubAccountCliImport),
@@ -746,6 +757,14 @@ export function createWsNativeApi(): NativeApi {
         Schema.decodeUnknownSync(ProjectEnsureScratchResult)(
           await transport.request(WS_METHODS.projectsEnsureScratch, {}),
         ),
+      scanAgentSessions: async () =>
+        Schema.decodeUnknownSync(AgentSessionScanResult)(
+          await transport.request(WS_METHODS.projectsScanAgentSessions, {}),
+        ),
+      importAgentSessions: async (input) =>
+        Schema.decodeUnknownSync(AgentSessionImportResult)(
+          await transport.request(WS_METHODS.projectsImportAgentSessions, input),
+        ),
       createNew: async (input) =>
         Schema.decodeUnknownSync(ProjectCreateNewResult)(
           await transport.request(WS_METHODS.projectsCreateNew, input),
@@ -756,6 +775,8 @@ export function createWsNativeApi(): NativeApi {
         ),
       getCheckedInConfig: (input) =>
         transport.request(WS_METHODS.projectsGetCheckedInConfig, input),
+      listRepositories: (input) => transport.request(WS_METHODS.projectsListRepositories, input),
+      setRepository: (input) => transport.request(WS_METHODS.projectsSetRepository, input),
       authorizeEntry: requestMethod(WS_METHODS.projectsAuthorizeEntry),
       listDirectory: requestMethod(WS_METHODS.projectsListDirectory),
       listEntries: requestMethod(WS_METHODS.projectsListEntries),
@@ -1013,6 +1034,8 @@ export function createWsNativeApi(): NativeApi {
       setPaused: requestMethod(WS_METHODS.nextTurnQueueSetPaused),
       scheduleUsageLimitResume: (input) =>
         transport.request(WS_METHODS.nextTurnQueueScheduleUsageLimitResume, input),
+      resendAuthFailedTurn: (input) =>
+        transport.request(WS_METHODS.nextTurnQueueResendAuthFailedTurn, input),
       cancelUsageLimitResume: (input) =>
         transport.request(WS_METHODS.nextTurnQueueCancelUsageLimitResume, input),
       refreshUsageLimitResume: (input) =>
@@ -1130,7 +1153,10 @@ export function createWsNativeApi(): NativeApi {
     prHub: {
       listAccounts: () => transport.request(PR_HUB_WS_METHODS.listAccounts, {}),
       saveAccount: (input) => transport.request(PR_HUB_WS_METHODS.saveAccount, input),
-      removeAccount: (input) => transport.request(PR_HUB_WS_METHODS.removeAccount, input),
+      removeAccount: async (input) => {
+        await transport.request(PR_HUB_WS_METHODS.removeAccount, input);
+        await clearPrHubReadCache();
+      },
       listAccountRouting: () => transport.request(PR_HUB_WS_METHODS.listAccountRouting, {}),
       setAccountRouting: (input) => transport.request(PR_HUB_WS_METHODS.setAccountRouting, input),
       removeAccountRouting: (input) =>
@@ -1148,6 +1174,7 @@ export function createWsNativeApi(): NativeApi {
       cancelOperation: (input) => transport.request(PR_HUB_WS_METHODS.cancelOperation, input),
       listReviewerCandidates: (input) =>
         transport.request(PR_HUB_WS_METHODS.listReviewerCandidates, input),
+      completions: (input) => transport.request(PR_HUB_WS_METHODS.completions, input),
       getChecks: (input) => transport.request(PR_HUB_WS_METHODS.getChecks, input),
       getCheckLog: (input) => transport.request(PR_HUB_WS_METHODS.getCheckLog, input),
 
@@ -1203,16 +1230,25 @@ export function createWsNativeApi(): NativeApi {
       saveReviewDraft: (input) => requestPrHub(PR_HUB_WS_METHODS.saveReviewDraft, input),
       getUnresolvedThreads: (input) => requestPrHub(PR_HUB_WS_METHODS.getUnresolvedThreads, input),
       getFiles: (input) => requestPrHub(PR_HUB_WS_METHODS.getFiles, input),
+      getChangeBreakdown: (input) => requestPrHub(PR_HUB_WS_METHODS.getChangeBreakdown, input),
       updateComment: (input) => requestPrHub(PR_HUB_WS_METHODS.updateComment, input),
       setReaction: (input) => requestPrHub(PR_HUB_WS_METHODS.setReaction, input),
       changeReviewers: (input) => requestPrHub(PR_HUB_WS_METHODS.changeReviewers, input),
       updateBranch: (input) => requestPrHub(PR_HUB_WS_METHODS.updateBranch, input),
-      clearData: (input = {}) => requestPrHub(PR_HUB_WS_METHODS.clearData, input),
+      clearData: async (input = {}) => {
+        const result = await requestPrHub<Awaited<ReturnType<NativeApi["prHub"]["clearData"]>>>(
+          PR_HUB_WS_METHODS.clearData,
+          input,
+        );
+        await clearPrHubReadCache();
+        return result;
+      },
       onChanged: (callback) => onPrHubChanged(callback),
       onAdvisoriesUpdated: (callback) => onPrHubAdvisoriesUpdated(callback),
     },
     orchestration: {
-      getLatestSequence: () => transport.request(ORCHESTRATION_WS_METHODS.getLatestSequence),
+      getLatestSequence: (input) =>
+        transport.request(ORCHESTRATION_WS_METHODS.getLatestSequence, input),
       getSnapshot: () => transport.request(ORCHESTRATION_WS_METHODS.getSnapshot),
       getStartupSnapshot: (input) =>
         transport.request(ORCHESTRATION_WS_METHODS.getStartupSnapshot, input),

@@ -16,6 +16,10 @@ describe("project provider runtime hydration", () => {
       projectId = ProjectId.makeUnsafe("runtime-policy");
     const settings = {
       ...DEFAULT_SERVER_SETTINGS,
+      providers: {
+        ...DEFAULT_SERVER_SETTINGS.providers,
+        antigravity: { ...DEFAULT_SERVER_SETTINGS.providers.antigravity, enabled: false },
+      },
       projectSettingsOverrides: {
         [projectId]: { providerInstances: { [id]: { enabled: true } } },
       },
@@ -41,7 +45,7 @@ describe("project provider runtime hydration", () => {
       deriveRuntimeProviderInstanceConfigMap({ ...settings, projectSettingsOverrides: {} })[id]
         ?.enabled,
     ).toBe(false);
-    expect(DEFAULT_SERVER_SETTINGS.providers.antigravity.enabled).toBe(false);
+    expect(DEFAULT_SERVER_SETTINGS.providers.antigravity.enabled).toBe(true);
   });
 });
 

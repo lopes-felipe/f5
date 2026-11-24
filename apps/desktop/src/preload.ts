@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { DesktopBridge } from "@t3tools/contracts";
 import { createFileActionGesture } from "./fileActionGesture";
+import { createDesktopWsUrlReader } from "./desktopWsUrlReader";
 
 const PICK_FOLDER_CHANNEL = "desktop:pick-folder";
 const CONFIRM_CHANNEL = "desktop:confirm";
@@ -56,7 +57,7 @@ const PREVIEW_STATE_CHANNEL = "desktop-preview:state";
 const argument = (name: string) =>
   process.argv.find((arg) => arg.startsWith(`--${name}=`))?.slice(name.length + 3) ?? null;
 // Keep the synchronous bridge contract; credentials are obtained only by the owning preload.
-const wsUrl: string | null = ipcRenderer.sendSync("desktop:get-ws-url") ?? null;
+const getWsUrl = createDesktopWsUrlReader(() => ipcRenderer.sendSync("desktop:get-ws-url") ?? null);
 const profileId = argument("f5-profile-id");
 const systemLocale = argument("f5-system-locale");
 
@@ -173,7 +174,7 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     ipcRenderer.on("desktop:quit-hint", wrapped);
     return () => ipcRenderer.removeListener("desktop:quit-hint", wrapped);
   },
-  getWsUrl: () => wsUrl,
+  getWsUrl,
   getProfileId: () => profileId,
   switchProfile: (id) => ipcRenderer.invoke("desktop:switch-profile", id),
   stopProfile: (id) => ipcRenderer.invoke("desktop:stop-profile", id),

@@ -86,6 +86,13 @@ interface BootstrapTurnStartBaseDependencies {
     | "resolveCommonDir"
   >;
   readonly projectSetupScriptRunner: Pick<ProjectSetupScriptRunnerShape, "runForThread">;
+  readonly prepareNestedWorktrees?: (
+    input: BootstrapCreatedWorktree & {
+      branch: string;
+      baseBranch: string;
+      repositoryPaths?: ReadonlyArray<string>;
+    },
+  ) => Effect.Effect<void, GitCommandError>;
   readonly rollbackWorktree: (
     input: BootstrapCreatedWorktree,
     ownedTerminalId?: string,
@@ -602,6 +609,15 @@ export const dispatchBootstrapTurnStart = Effect.fnUntraced(function* (
           commonDir,
           baseSha,
         };
+        if (input.prepareNestedWorktrees)
+          yield* input.prepareNestedWorktrees({
+            ...createdWorktree,
+            branch: worktree.worktree.branch,
+            baseBranch: bootstrap.prepareWorktree.baseBranch,
+            ...(bootstrap.prepareWorktree.repositoryPaths
+              ? { repositoryPaths: bootstrap.prepareWorktree.repositoryPaths }
+              : {}),
+          });
         yield* annotateBootstrapSpan();
 
         failureStage = "thread-meta-update";

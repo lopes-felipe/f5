@@ -39,5 +39,12 @@ public func computerOutcomeUnknownDiagnostic(
   var diagnostic: [String: Any] = ["op": op, "delivery": background ? "background" : "foreground"]
   if !appId.isEmpty { diagnostic["appId"] = appId }
   if let axError = failure["axError"] as? Int { diagnostic["axError"] = axError }
+  // The failure that escalated (e.g. TargetBlocked/focus-unknown after a posted keydown).
+  if let cause = failure["_tag"] as? String, cause != "OutcomeUnknown" {
+    diagnostic["cause"] = cause
+    if let kind = (failure["kind"] ?? failure["reason"] ?? failure["cause"]) as? String {
+      diagnostic["kind"] = kind
+    }
+  }
   return diagnostic
 }

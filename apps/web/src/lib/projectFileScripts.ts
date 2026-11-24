@@ -3,6 +3,7 @@ export interface ProjectFileScript {
   name: string;
   command: string;
   icon: ProjectScriptIcon;
+  worktreeLayout?: "create" | "remove";
 }
 /** Repository scripts are templates for explicit import, never executable defaults. */
 export function parseProjectFileScripts(source: string): ProjectFileScript[] {
@@ -10,10 +11,9 @@ export function parseProjectFileScripts(source: string): ProjectFileScript[] {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error("Project configuration must be an object.");
   const scripts = (value as { scripts?: unknown }).scripts;
-  if (scripts === undefined) return [];
-  if (!Array.isArray(scripts) || scripts.length > 100)
+  if (scripts !== undefined && (!Array.isArray(scripts) || scripts.length > 100))
     throw new Error("Expected at most 100 project actions.");
-  return scripts.map((script) => {
+  const actions: ProjectFileScript[] = (Array.isArray(scripts) ? scripts : []).map((script) => {
     if (
       !script ||
       typeof script !== "object" ||
@@ -34,4 +34,22 @@ export function parseProjectFileScripts(source: string): ProjectFileScript[] {
       icon: icon as ProjectScriptIcon,
     };
   });
+  const layout = (value as { worktreeLayout?: unknown }).worktreeLayout;
+  if (layout !== undefined) {
+    if (!layout || typeof layout !== "object" || Array.isArray(layout))
+      throw new Error("Worktree layout must be an object.");
+    for (const phase of ["create", "remove"] as const) {
+      const command = (layout as Partial<Record<typeof phase, unknown>>)[phase];
+      if (command === undefined) continue;
+      if (typeof command !== "string" || !command.trim() || command.length > 100_000)
+        throw new Error("A worktree layout command is invalid.");
+      actions.push({
+        name: phase === "create" ? "Create worktree layout" : "Remove worktree layout",
+        command: command.trim(),
+        icon: "configure",
+        worktreeLayout: phase,
+      });
+    }
+  }
+  return actions;
 }

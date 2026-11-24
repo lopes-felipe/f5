@@ -91,11 +91,11 @@ function normalizeHost(host: string): string {
   return normalized;
 }
 
-function isCloudHost(host: string): boolean {
+export function isGitHubCloudHost(host: string): boolean {
   return host === "github.com" || host.endsWith(".ghe.com");
 }
 
-function cleanEnvironment(): NodeJS.ProcessEnv {
+export function cleanGitHubEnvironment(): NodeJS.ProcessEnv {
   return Object.fromEntries(
     Object.entries(process.env).filter(([key]) => {
       const name = key.toUpperCase();
@@ -107,9 +107,9 @@ function cleanEnvironment(): NodeJS.ProcessEnv {
 
 function tokenEnvironment(host: string, token: string): NodeJS.ProcessEnv {
   return {
-    ...cleanEnvironment(),
+    ...cleanGitHubEnvironment(),
     GH_HOST: host,
-    [isCloudHost(host) ? "GH_TOKEN" : "GH_ENTERPRISE_TOKEN"]: token,
+    [isGitHubCloudHost(host) ? "GH_TOKEN" : "GH_ENTERPRISE_TOKEN"]: token,
   };
 }
 
@@ -244,8 +244,11 @@ function requestEndpoint(input: Pick<GitHubApiRequest, "endpoint" | "query">): s
 export function makeGitHubApi(
   execute: GitHubCliShape["execute"],
   scheduler = githubRequestScheduler,
-  resolveToken: (host: string, cwd: string) => Effect.Effect<string, GitHubCliError> = () =>
-    Effect.succeed(""),
+  resolveToken: (
+    host: string,
+    cwd: string,
+    bypassCliCache?: boolean,
+  ) => Effect.Effect<string, GitHubCliError> = () => Effect.succeed(""),
   options: { readonly invalidateToken?: (host: string) => void } = {},
 ) {
   const rejectedCredentials = new Map<string, string>();
@@ -545,6 +548,7 @@ export function makeGitHubApi(
   const getCredentialContext = (input: {
     cwd: string;
     host: string;
+    cacheOnly?: boolean;
   }): Effect.Effect<GitHubCredentialContext, GitHubCliError> =>
     Effect.gen(function* () {
       const host = yield* Effect.try({
@@ -556,7 +560,7 @@ export function makeGitHubApi(
             detail: "Invalid GitHub hostname.",
           }),
       });
-      const token = (yield* resolveToken(host, input.cwd)).trim();
+      const token = (yield* resolveToken(host, input.cwd, input.cacheOnly)).trim();
       if (!token || /[\r\n]/.test(token))
         return yield* Effect.fail(
           new GitHubCliError({
@@ -581,6 +585,12 @@ export function makeGitHubApi(
         Date.now() - (verifiedAt.get(host) ?? 0) < 60_000
       )
         return cached;
+      if (input.cacheOnly)
+        return yield* new GitHubCliError({
+          operation: "credentials",
+          kind: "unauthenticated",
+          detail: "No recently verified GitHub identity for the current credential.",
+        });
       // Some credentials (GitHub App and restricted tokens) cannot read /user but can still
       // read pull requests, so a plain 403 verifies the same token through the GraphQL viewer.
       // Its failures are this verification's failures, never a raw request error.
@@ -676,7 +686,7 @@ export function makeGitHubApi(
     });
   return {
     request,
-    getCredentialContext: (input: { cwd: string; host: string }) =>
+    getCredentialContext: (input: Parameters<typeof getCredentialContext>[0]) =>
       identityLock.withPermits(1)(getCredentialContext(input)),
   };
 }

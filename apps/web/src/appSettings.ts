@@ -386,6 +386,10 @@ export const AppSettingsSchema = Schema.Struct({
     Schema.withConstructorDefault(() => Option.some("activity" as const)),
     Schema.withDecodingDefault(() => "activity" as const),
   ),
+  persistentUsageLimits: Schema.Boolean.pipe(
+    Schema.withConstructorDefault(() => Option.some(false)),
+    Schema.withDecodingDefault(() => false),
+  ),
   usageRange: Schema.Literals(["24h", "7d", "30d", "90d"]).pipe(
     Schema.withConstructorDefault(() => Option.some("7d" as const)),
     Schema.withDecodingDefault(() => "7d" as const),
@@ -545,6 +549,10 @@ export const AppSettingsSchema = Schema.Struct({
     Schema.withConstructorDefault(() => Option.some(true)),
   ),
   diffIgnoreWhitespace: Schema.Boolean.pipe(
+    Schema.withConstructorDefault(() => Option.some(false)),
+    Schema.withDecodingDefault(() => false),
+  ),
+  mathRenderingEnabled: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(false)),
     Schema.withDecodingDefault(() => false),
   ),

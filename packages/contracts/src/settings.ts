@@ -4,7 +4,13 @@ import { Effect } from "effect";
 import * as Combiner from "effect/Combiner";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
-import { IsoDateTime, ProjectId, TrimmedNonEmptyString, TrimmedString } from "./baseSchemas";
+import {
+  IsoDateTime,
+  PositiveInt,
+  ProjectId,
+  TrimmedNonEmptyString,
+  TrimmedString,
+} from "./baseSchemas";
 import {
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
   ProviderOptionSelections,
@@ -165,7 +171,16 @@ export const ClaudeSettings = Schema.Struct({
 });
 export type ClaudeSettings = typeof ClaudeSettings.Type;
 
+/**
+ * Cursor harness: `acp` runs the CLI's ACP server (`agent acp`); `sdk` runs
+ * `@cursor/sdk`'s local runtime. Fixed per provider instance: moving a thread
+ * between harnesses is a switch between two Cursor instances.
+ */
+export const CursorHarness = Schema.Literals(["acp", "sdk"]);
+export type CursorHarness = typeof CursorHarness.Type;
+
 export const CursorSettings = Schema.Struct({
+  harness: CursorHarness.pipe(Schema.withDecodingDefault(() => "acp" as const)),
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   binaryPath: makeBinaryPathSetting("agent"),
   apiEndpoint: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
@@ -197,12 +212,50 @@ export const MuseSettings = Schema.Struct({
 });
 export type MuseSettings = typeof MuseSettings.Type;
 
+/** Antigravity sign-in methods, named as upstream T3 Code and the `agy` CLI name them. */
+export const ANTIGRAVITY_AUTH_METHODS = [
+  { value: "oauth-personal", label: "Google account" },
+  { value: "oauth-business", label: "Gemini Enterprise" },
+  { value: "gemini-api-key", label: "Gemini API key" },
+  { value: "agent-platform", label: "Agent Platform (Vertex AI)" },
+] as const;
+export const AntigravityAuthMethod = Schema.Literals(
+  ANTIGRAVITY_AUTH_METHODS.map((method) => method.value),
+);
+export type AntigravityAuthMethod = typeof AntigravityAuthMethod.Type;
+/**
+ * Methods F5 offers and accepts. The others decode (so settings written by a newer build or by
+ * upstream round-trip) but stay unavailable until their live checks pass.
+ */
+export const ANTIGRAVITY_EXPOSED_AUTH_METHODS = [
+  "oauth-personal",
+  "gemini-api-key",
+] as const satisfies ReadonlyArray<AntigravityAuthMethod>;
+
 export const AntigravitySettings = Schema.Struct({
-  enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  // On by default like the other built-ins. Status checks only read local files, so nothing is
+  // installed or started until the user clicks Install and signs in.
+  enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   customModels: Schema.Array(CustomModelSetting).pipe(Schema.withDecodingDefault(() => [])),
   nativeCompaction: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  authMethod: AntigravityAuthMethod.pipe(
+    Schema.withDecodingDefault(() => "oauth-personal" as const),
+  ),
+  /** Gemini API key. Persisted only as a secret-store reference (`apiKeyRedacted`). */
+  apiKey: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
+  apiKeyRedacted: Schema.optionalKey(Schema.Boolean),
 });
 export type AntigravitySettings = typeof AntigravitySettings.Type;
+
+/**
+ * The legacy `providers.antigravity` block never carries a key. Only explicit instances keep one,
+ * in the secret store; a key written into the legacy block by hand is dropped on decode, so it is
+ * never stored in plaintext, sent to clients or left behind by sign-out. Editing the default
+ * instance in Settings moves it into `providerInstances`, where the key can be entered.
+ */
+export const LegacyAntigravitySettings = AntigravitySettings.mapFields(
+  ({ apiKey: _apiKey, apiKeyRedacted: _apiKeyRedacted, ...fields }) => fields,
+);
 
 /** Pi is instantiated only through an explicit provider-instance entry. */
 export const PiSettings = Schema.Struct({
@@ -507,13 +560,54 @@ export const keepUnknownOverrideKeys = <Entry extends Schema.Struct<Schema.Struc
   Entry["EncodingServices"]
 > => Schema.StructWithRest(entry, [UnknownOverrideKeys]);
 
+export const TextGeneratorConfig = Schema.Struct({
+  kind: Schema.Literals(["openaiCompatible", "anthropic"]),
+  label: TrimmedNonEmptyString,
+  baseUrl: TrimmedNonEmptyString.check(
+    Schema.makeFilter((value) => {
+      try {
+        const url = new URL(value);
+        return (
+          (url.protocol === "https:" ||
+            (url.protocol === "http:" &&
+              ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) &&
+          !url.username &&
+          !url.password &&
+          !url.hash &&
+          !url.search
+        );
+      } catch {
+        return false;
+      }
+    }),
+  ),
+  apiKey: Schema.String.pipe(Schema.withDecodingDefault(() => "")),
+  apiKeyRedacted: Schema.optional(Schema.Boolean),
+  enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
+  models: Schema.Array(TrimmedNonEmptyString).check(Schema.isMaxLength(100)),
+});
+export type TextGeneratorConfig = typeof TextGeneratorConfig.Type;
+const TextGeneratorId = ProviderInstanceId.check(Schema.isPattern(/^textgen_/));
+
+// The current and previous 90-day comparison windows, with slack for timezone boundaries.
+export const DEFAULT_USAGE_HISTORY_RETENTION_DAYS = 182;
+export const UsageHistoryRetention = Schema.Union([PositiveInt, Schema.Literal("unlimited")]);
+export type UsageHistoryRetention = typeof UsageHistoryRetention.Type;
+
 export const ServerSettings = Schema.Struct({
+  keepAwakeWhileAgentsWork: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  textGenerators: Schema.Record(TextGeneratorId, TextGeneratorConfig).pipe(
+    Schema.withDecodingDefault(() => ({})),
+  ),
   removeAgentCreditsOnMerge: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   autoSettleOnPullRequestMerge: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   autoSettleAfterDays: AutoSettleAfterDays.pipe(Schema.withDecodingDefault(() => null)),
   autoSettleKeepPullRequests: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   usagePriceOverrides: Schema.Array(UsagePriceOverride).pipe(Schema.withDecodingDefault(() => [])),
   usageModelAliases: UsageModelAliases.pipe(Schema.withDecodingDefault(() => ({}))),
+  usageHistoryRetentionDays: UsageHistoryRetention.pipe(
+    Schema.withDecodingDefault(() => DEFAULT_USAGE_HISTORY_RETENTION_DAYS),
+  ),
   usageMonthlyBudget: Schema.NullOr(UsageMonthlyBudget).pipe(
     Schema.withDecodingDefault(() => null),
   ),
@@ -537,6 +631,7 @@ export const ServerSettings = Schema.Struct({
   enableClaudePromptSuggestions: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   enableAssistantStreaming: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   enableProviderUpdateChecks: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
+  enableRemoteModelManifest: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   defaultThreadEnvMode: ThreadEnvMode.pipe(
     Schema.withDecodingDefault(() => "local" as const satisfies ThreadEnvModeType),
   ),
@@ -606,6 +701,8 @@ export const ServerSettings = Schema.Struct({
   /** Allow agents to request control of apps. Each app still requires approval. */
   enableAgentComputerUse: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   autoPullDefaultBranch: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  /** Extends existing GitHub shell PR linking to GitLab; opt-in automatic behavior. */
+  autoLinkShellCreatedMergeRequests: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   /** Upstream tracking schedule and models. Local only; a checked-in file never sets it. */
   upstreamPorts: UpstreamPortsSettings.pipe(Schema.withDecodingDefault(() => ({}))),
   /**
@@ -626,7 +723,7 @@ export const ServerSettings = Schema.Struct({
     cursor: CursorSettings.pipe(Schema.withDecodingDefault(() => ({}))),
     opencode: OpenCodeSettings.pipe(Schema.withDecodingDefault(() => ({}))),
     grok: GrokSettings.pipe(Schema.withDecodingDefault(() => ({}))),
-    antigravity: AntigravitySettings.pipe(Schema.withDecodingDefault(() => ({}))),
+    antigravity: LegacyAntigravitySettings.pipe(Schema.withDecodingDefault(() => ({}))),
     muse: MuseSettings.pipe(Schema.withDecodingDefault(() => ({}))),
   }).pipe(Schema.withDecodingDefault(() => ({}))),
   // New driver-agnostic instance map. Keyed by `ProviderInstanceId`; values
@@ -648,7 +745,13 @@ export const ServerSettings = Schema.Struct({
     ),
   }).pipe(Schema.withDecodingDefault(() => ({}))),
   agentBridge: AgentBridgeSettings.pipe(Schema.withDecodingDefault(() => ({}))),
-});
+}).check(
+  Schema.makeFilter((settings) =>
+    Object.keys(settings.textGenerators).every(
+      (id) => !Object.hasOwn(settings.providerInstances, id),
+    ),
+  ),
+);
 export type ServerSettings = typeof ServerSettings.Type;
 
 export const DEFAULT_SERVER_SETTINGS: ServerSettings = Schema.decodeSync(ServerSettings)({});
@@ -707,6 +810,7 @@ const ClaudeSettingsPatch = Schema.Struct({
 });
 
 const CursorSettingsPatch = Schema.Struct({
+  harness: Schema.optionalKey(CursorHarness),
   enabled: Schema.optionalKey(Schema.Boolean),
   binaryPath: Schema.optionalKey(Schema.String),
   apiEndpoint: Schema.optionalKey(Schema.String),
@@ -742,6 +846,8 @@ const PrHubSettingsPatch = Schema.Struct({
 });
 
 export const ServerSettingsPatch = Schema.Struct({
+  keepAwakeWhileAgentsWork: Schema.optionalKey(Schema.Boolean),
+  textGenerators: Schema.optionalKey(Schema.Record(TextGeneratorId, TextGeneratorConfig)),
   removeAgentCreditsOnMerge: Schema.optionalKey(Schema.Boolean),
   autoSettleOnPullRequestMerge: Schema.optionalKey(Schema.Boolean),
   autoSettleAfterDays: Schema.optionalKey(AutoSettleAfterDays),
@@ -749,6 +855,7 @@ export const ServerSettingsPatch = Schema.Struct({
   usagePriceOverrides: Schema.optionalKey(Schema.Array(UsagePriceOverride)),
   /** Replaces every mapping. */
   usageModelAliases: Schema.optionalKey(UsageModelAliases),
+  usageHistoryRetentionDays: Schema.optionalKey(UsageHistoryRetention),
   usageMonthlyBudget: Schema.optionalKey(Schema.NullOr(UsageMonthlyBudget)),
   usageBackgroundSampling: Schema.optionalKey(Schema.Boolean),
   autoResumeUsageLimitedThreads: Schema.optionalKey(Schema.Boolean),
@@ -764,6 +871,7 @@ export const ServerSettingsPatch = Schema.Struct({
   enableClaudePromptSuggestions: Schema.optionalKey(Schema.Boolean),
   enableAssistantStreaming: Schema.optionalKey(Schema.Boolean),
   enableProviderUpdateChecks: Schema.optionalKey(Schema.Boolean),
+  enableRemoteModelManifest: Schema.optionalKey(Schema.Boolean),
   defaultThreadEnvMode: Schema.optionalKey(ThreadEnvMode),
   addProjectBaseDirectory: Schema.optionalKey(Schema.String),
   projectsRoot: Schema.optionalKey(Schema.String),
@@ -790,6 +898,7 @@ export const ServerSettingsPatch = Schema.Struct({
   computerUseBackend: Schema.optionalKey(Schema.Literals(["auto", "f5"])),
   computerUseExecutionMode: Schema.optionalKey(ComputerUseExecutionMode),
   computerUsePasswordMasking: Schema.optionalKey(ComputerPasswordMasking),
+  autoLinkShellCreatedMergeRequests: Schema.optionalKey(Schema.Boolean),
   autoPullDefaultBranch: Schema.optionalKey(Schema.Boolean),
   upstreamPorts: Schema.optionalKey(UpstreamPortsSettingsPatch),
   githubTransport: Schema.optionalKey(GitHubTransport),

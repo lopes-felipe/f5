@@ -1,4 +1,6 @@
 "use client";
+import { projectChoices } from "../lib/projectChoices";
+import { updateProjectVisibility } from "./ProjectPinButton";
 
 import { resolvePastedPath } from "@t3tools/shared/path";
 
@@ -331,7 +333,10 @@ function OpenCommandPaletteDialog(props: {
   const { theme, setTheme } = useTheme();
   const { activeDraftThread, activeThread, handleNewThread, routeThreadId } = useHandleNewThread();
   const projects = useStore((store) => store.projects);
-  const listedProjects = useMemo(() => withoutScratchProjects(projects), [projects]);
+  const listedProjects = useMemo(
+    () => projectChoices(withoutScratchProjects(projects)),
+    [projects],
+  );
   const startScratchThread = useStartScratchThread();
   const threads = useThreadSummaries();
   const planningWorkflows = useStore((store) => store.planningWorkflows);
@@ -642,7 +647,7 @@ function OpenCommandPaletteDialog(props: {
   const projectThreadItems = useMemo(
     () =>
       buildNewThreadInProjectItems({
-        projects,
+        projects: projectChoices(projects),
         currentProjectId,
         noProjectItem: {
           kind: "action" as const,
@@ -900,6 +905,30 @@ function OpenCommandPaletteDialog(props: {
     });
 
   if (projects.length > 0) {
+    for (const project of listedProjects) {
+      actionItems.push(
+        {
+          kind: "action",
+          value: `project-pin:${project.id}`,
+          title: `${project.pinned ? "Unpin" : "Pin"} project ${project.name}`,
+          searchTerms: ["project", "pin", "favorite", project.name],
+          icon: <FolderIcon className={ITEM_ICON_CLASS} />,
+          run: async () => {
+            await updateProjectVisibility(project.id, { pinned: !project.pinned });
+          },
+        },
+        {
+          kind: "action",
+          value: `project-archive:${project.id}`,
+          title: `Archive project ${project.name}`,
+          searchTerms: ["project", "archive", project.name],
+          icon: <FolderIcon className={ITEM_ICON_CLASS} />,
+          run: async () => {
+            await updateProjectVisibility(project.id, { archived: true });
+          },
+        },
+      );
+    }
     const activeProjectTitle = newThreadProjectId
       ? (projectTitleById.get(newThreadProjectId) ?? null)
       : null;

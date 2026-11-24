@@ -2470,6 +2470,29 @@ describe("deriveWorkLogEntries", () => {
     });
   });
 
+  it("keeps ACP notice descriptions available with summarized warnings", () => {
+    const entries = deriveWorkLogEntries(
+      [
+        makeActivity({
+          kind: "runtime.warning",
+          summary: "Skipped skill",
+          tone: "info",
+          payload: {
+            message: "Skipped skill\n\nStartup details",
+            category: "provider",
+            detail: { noticeTitle: "Skipped skill" },
+          },
+        }),
+      ],
+      undefined,
+      { runtimeWarningVisibility: "summarized" },
+    );
+    expect(entries[0]).toMatchObject({
+      label: "Skipped skill",
+      detail: "Skipped skill\n\nStartup details",
+    });
+  });
+
   it("keeps runtime warnings summarized when visibility is summarized", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

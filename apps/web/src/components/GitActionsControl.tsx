@@ -1,4 +1,5 @@
 import { useOpenLink } from "../hooks/useOpenLink";
+import { RepositoryPicker, useRepositoryPicker } from "./RepositoryPicker";
 import { MiddleTruncate } from "./MiddleTruncate";
 import { githubThreadLink } from "../linkedPullRequest";
 import { newCommandId } from "../lib/utils";
@@ -6,6 +7,7 @@ import type {
   GitActionProgressEvent,
   GitStackedAction,
   GitStatusResult,
+  ProjectRepository,
   ThreadId,
 } from "@t3tools/contracts";
 import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -36,6 +38,7 @@ import {
 } from "./GitActionsControl.logic";
 import {
   linkedPullRequestLookupCwd,
+  linkedRepositoryCwd,
   useLinkedPullRequestStates,
 } from "../hooks/useLinkedPullRequestStates";
 import {
@@ -95,6 +98,7 @@ import {
 import { randomUUID } from "~/lib/utils";
 import { resolvePathLinkTarget } from "~/terminal-links";
 import { readNativeApi } from "~/nativeApi";
+import { HEADER_ACTION_LABEL_CLASS_NAME } from "./headerActionLabel";
 
 interface GitActionsControlProps {
   gitCwd: string | null;
@@ -236,11 +240,40 @@ function GitQuickActionIcon({ quickAction }: { quickAction: GitQuickAction }) {
   return <InfoIcon className={iconClassName} />;
 }
 
-export default function GitActionsControl({
+export default function GitActionsControl(props: GitActionsControlProps) {
+  const projectId = useStore(
+    (state) => selectThreadById(state, props.activeThreadId)?.projectId ?? null,
+  );
+  const picker = useRepositoryPicker(
+    props.isServerThread ? projectId : null,
+    props.activeThreadId,
+    props.gitCwd,
+  );
+  const gitCwd = picker.repository?.path ?? props.gitCwd;
+  return (
+    <>
+      <RepositoryPicker {...picker} />
+      <RepositoryGitActionsControl
+        key={gitCwd}
+        {...props}
+        gitCwd={gitCwd}
+        repositoryPath={picker.repository?.relativePath}
+        repositories={picker.repositories}
+      />
+    </>
+  );
+}
+
+function RepositoryGitActionsControl({
   gitCwd,
   activeThreadId,
   isServerThread,
-}: GitActionsControlProps) {
+  repositoryPath,
+  repositories,
+}: GitActionsControlProps & {
+  repositoryPath: string | undefined;
+  repositories: ReadonlyArray<ProjectRepository>;
+}) {
   const { settings } = useAppSettings();
   const openLink = useOpenLink(activeThreadId ?? undefined);
   const threadToastData = useMemo(
@@ -298,7 +331,30 @@ export default function GitActionsControl({
     void invalidateGitQueries(queryClient, { cwd: gitCwd });
   }, [gitCwd, isGitStatusOutOfSync, queryClient]);
 
-  const gitStatusForActions = isGitStatusOutOfSync ? null : gitStatus;
+  const nestedScopes = useMemo(() => {
+    const prefix = !repositoryPath || repositoryPath === "." ? "" : repositoryPath + "/";
+    return repositories.flatMap((repository) =>
+      !repository.submodule &&
+      repository.relativePath !== "." &&
+      repository.relativePath !== repositoryPath &&
+      repository.relativePath.startsWith(prefix)
+        ? [repository.relativePath.slice(prefix.length)]
+        : [],
+    );
+  }, [repositories, repositoryPath]);
+  const gitStatusForActions = useMemo(() => {
+    if (isGitStatusOutOfSync || !gitStatus || nestedScopes.length === 0)
+      return isGitStatusOutOfSync ? null : gitStatus;
+    const files = gitStatus.workingTree.files.filter((file) => {
+      const path = file.path.replaceAll("\\", "/").replace(/\/+$/u, "");
+      return !nestedScopes.some((scope) => path === scope || path.startsWith(scope + "/"));
+    });
+    return {
+      ...gitStatus,
+      hasWorkingTreeChanges: files.length > 0,
+      workingTree: { ...gitStatus.workingTree, files },
+    };
+  }, [gitStatus, isGitStatusOutOfSync, nestedScopes]);
 
   const allFiles = gitStatusForActions?.workingTree.files ?? [];
   const workingTreeRoot = gitStatusForActions?.workingTree.rootPath ?? null;
@@ -346,14 +402,23 @@ export default function GitActionsControl({
       thread ? state.projects.find((project) => project.id === thread.projectId) : undefined,
     );
   });
+  const externalCwds = useMemo(
+    () =>
+      Object.fromEntries(
+        repositories.flatMap((repository) =>
+          repository.externalSource ? [[repository.relativePath, repository.externalSource]] : [],
+        ),
+      ),
+    [repositories],
+  );
   const linkedPullRequestTargets = useMemo(
     () =>
       (threadPullRequestLinks ?? []).map((link) => ({
-        cwd: pullRequestLookupCwd,
+        cwd: linkedRepositoryCwd(pullRequestLookupCwd, link.repositoryPath, externalCwds),
         url: link.url,
         enabled: true,
       })),
-    [pullRequestLookupCwd, threadPullRequestLinks],
+    [externalCwds, pullRequestLookupCwd, threadPullRequestLinks],
   );
   const linkedPullRequestState = useLinkedPullRequestStates(linkedPullRequestTargets);
   const threadPullRequests = useMemo(
@@ -361,7 +426,11 @@ export default function GitActionsControl({
       resolveThreadPullRequests({
         branchPr: threadBranchPullRequest(threadBranch, gitStatusForActions),
         links: threadPullRequestLinks,
-        linkState: (url) => linkedPullRequestState(pullRequestLookupCwd, url),
+        linkState: (url, path) =>
+          linkedPullRequestState(
+            linkedRepositoryCwd(pullRequestLookupCwd, path, externalCwds),
+            url,
+          ),
       }),
     [
       gitStatusForActions?.pr,
@@ -369,6 +438,7 @@ export default function GitActionsControl({
       threadBranch,
       linkedPullRequestState,
       pullRequestLookupCwd,
+      externalCwds,
       threadPullRequestLinks,
     ],
   );
@@ -633,7 +703,11 @@ export default function GitActionsControl({
         action,
         ...(commitMessage ? { commitMessage } : {}),
         ...(featureBranch ? { featureBranch } : {}),
-        ...(filePaths ? { filePaths } : {}),
+        ...(filePaths
+          ? { filePaths }
+          : nestedScopes.length > 0
+            ? { filePaths: (gitStatusForActions?.workingTree.files ?? []).map((file) => file.path) }
+            : {}),
       });
 
       try {
@@ -684,7 +758,10 @@ export default function GitActionsControl({
               type: "thread.meta.update",
               commandId: newCommandId(),
               threadId: activeThreadId,
-              pullRequest,
+              pullRequest: {
+                ...pullRequest,
+                ...(repositoryPath && repositoryPath !== "." ? { repositoryPath } : {}),
+              },
             })
             .catch((error) =>
               toastManager.add({
@@ -780,9 +857,11 @@ export default function GitActionsControl({
       isServerThread,
       isDefaultBranch,
       runImmediateGitActionMutation,
+      repositoryPath,
       setPendingDefaultBranchAction,
       threadToastData,
       gitStatusForActions,
+      nestedScopes,
     ],
   );
 
@@ -977,7 +1056,7 @@ export default function GitActionsControl({
           onClick={() => initMutation.mutate()}
         >
           <GitBranchPlusIcon aria-hidden="true" className="size-4 @xl/header-actions:hidden" />
-          <span className="sr-only @xl/header-actions:not-sr-only">
+          <span className="sr-only @xl/header-actions:not-sr-only @xl/header-actions:whitespace-nowrap">
             {initMutation.isPending ? "Initializing..." : "Initialize Git"}
           </span>
         </Button>
@@ -997,9 +1076,7 @@ export default function GitActionsControl({
                 }
               >
                 <GitQuickActionIcon quickAction={quickAction} />
-                <span className="sr-only @xl/header-actions:not-sr-only @xl/header-actions:ml-0.5">
-                  {quickAction.label}
-                </span>
+                <span className={HEADER_ACTION_LABEL_CLASS_NAME}>{quickAction.label}</span>
               </PopoverTrigger>
               <PopoverPopup tooltipStyle side="bottom" align="start">
                 {quickActionDisabledReason}
@@ -1018,9 +1095,7 @@ export default function GitActionsControl({
                 }
               >
                 <GitQuickActionIcon quickAction={quickAction} />
-                <span className="sr-only @xl/header-actions:not-sr-only @xl/header-actions:ml-0.5">
-                  {quickAction.label}
-                </span>
+                <span className={HEADER_ACTION_LABEL_CLASS_NAME}>{quickAction.label}</span>
                 <span className="rounded-sm bg-muted px-1 text-2xs tabular-nums text-muted-foreground">
                   {quickAction.pullRequestCount}
                 </span>
@@ -1040,9 +1115,7 @@ export default function GitActionsControl({
               onClick={runQuickAction}
             >
               <GitQuickActionIcon quickAction={quickAction} />
-              <span className="sr-only @xl/header-actions:not-sr-only @xl/header-actions:ml-0.5">
-                {quickAction.label}
-              </span>
+              <span className={HEADER_ACTION_LABEL_CLASS_NAME}>{quickAction.label}</span>
             </Button>
           )}
           <GroupSeparator className="hidden @xl/header-actions:block" />

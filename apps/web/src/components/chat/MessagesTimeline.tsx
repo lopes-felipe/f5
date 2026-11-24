@@ -2,7 +2,7 @@ import { McpAppFrame } from "./McpAppFrame";
 import { settleListScroll } from "./settleListScroll";
 import { AttachmentImage } from "../AttachmentImage";
 import { ThreadFindContext } from "./threadFindContext";
-import { highlightThreadFind } from "./threadFindHighlights";
+import { watchThreadFindHighlights } from "./threadFindHighlights";
 import { HtmlRenderFrame } from "./HtmlRenderFrame";
 import { recordTimelineRowRender } from "../../lib/performanceCounters";
 import { messageTextRevision, messageReasoningContent } from "../../lib/streamingTextRevision";
@@ -19,6 +19,7 @@ import { McpToolCallDetails } from "./McpToolCallDetails";
 import type { PromptLinkRepository } from "@t3tools/shared/promptLinks";
 import { NativeFilePreview } from "./NativeFilePreview";
 import { AttachmentFileChip } from "./AttachmentFileChip";
+import { videoPreviewMimeType } from "@t3tools/shared/filePreview";
 import { ChatAssetImage } from "../ChatAssetImage";
 import { readTimelineScrollAnchor, timelineScrollAnchors } from "./timelineScrollAnchors";
 import {
@@ -33,6 +34,8 @@ import {
 import {
   createContext,
   Fragment,
+  lazy,
+  Suspense,
   memo,
   useCallback,
   useContext,
@@ -117,6 +120,12 @@ import { UserMessageRevertPopover } from "./UserMessageRevertPopover";
 import { computeRevertImpact } from "./revertImpact";
 import { AssistantMessageActions } from "./AssistantMessageActions";
 import { AssistantResponseCard } from "./AssistantResponseCard";
+import type { TimelineApprovalActions } from "./TimelinePendingApprovalRow";
+const TimelinePendingApprovalRow = lazy(() =>
+  import("./TimelinePendingApprovalRow").then((module) => ({
+    default: module.TimelinePendingApprovalRow,
+  })),
+);
 import { assistantResponseContextMatches } from "@t3tools/shared/assistantResponseContext";
 import { PromptCacheMissPill } from "./PromptCacheMissPill";
 import type { TurnCacheSummary } from "./cacheIndicator.logic";
@@ -194,6 +203,8 @@ import {
   clipUserMessageSegments,
   hasUserMessageMarkup,
   parseUserMessageMarkup,
+  trimResponseCardSeparators,
+  userMessageSegmentDisplayText,
 } from "../../lib/userMessageMarkup";
 import { ReasoningSection } from "./ReasoningSection";
 import { MessageTokenUsage } from "./MessageTokenUsage";
@@ -306,6 +317,7 @@ const EMPTY_WORK_GROUP_COLLAPSE_OVERRIDES: Readonly<Record<string, boolean>> = {
 const EMPTY_CACHE_MISSES: ReadonlyMap<MessageId, TurnCacheSummary> = new Map();
 
 interface MessagesTimelineProps {
+  approvalActions?: TimelineApprovalActions | undefined;
   nativeSessionCapabilities?:
     | import("@t3tools/contracts").ProviderSessionCapabilities
     | null
@@ -493,6 +505,7 @@ function selectTimelineSettings(settings: AppSettings) {
 }
 
 export const MessagesTimeline = memo(function MessagesTimeline({
+  approvalActions,
   nativeSessionCapabilities,
   threadId = null,
   hasMessages,
@@ -676,6 +689,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   }, [enteringRowIds]);
 
   const rowCount = rows.length;
+  const refreshFindRef = useRef<(() => void) | null>(null);
+
   useEffect(() => {
     // The empty pane has no list. Keep its initial measured end target armed
     // until LegendList actually mounts, including after loading a thread.
@@ -1227,6 +1242,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     scheduleEndSettle();
   }, [scheduleEndSettle]);
   const handleItemSizeChanged = useCallback(() => {
+    refreshFindRef.current?.();
     if (!liveFollowEnabledRef.current && !disclosurePinsEndRef.current) return;
     queueMicrotask(pinTimelineToEnd);
     scheduleEndSettle();
@@ -1481,6 +1497,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   );
   const timelineRowContext = useMemo<TimelineRowContextValue>(
     () => ({
+      approvalActions,
       threadId,
       nativeSessionCapabilities: nativeSessionCapabilities ?? null,
       expandMcpToolCalls: settings.expandMcpToolCalls,
@@ -1509,6 +1526,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       actions: rowActions,
     }),
     [
+      approvalActions,
       allDirectoriesExpanded,
       canRestoreFiles,
       onQuoteAssistantMessage,
@@ -1621,37 +1639,80 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       const reverting = dimmed && pendingRevert !== null;
       const externalsEntry = rowExternals.get(item.id);
       return (
-        // Keep `overflow-x-clip`: `hidden` computes `overflow-y: auto`, so ChangedFilesTree would
-        // take this row as its scroller and mount every row of a large tree.
-        <div
-          className="mx-auto w-full min-w-0 max-w-(--chat-content-max-width) overflow-x-clip"
-          data-timeline-root="true"
-        >
-          {pendingRevert && index === revertDimFromRowIndex ? (
-            <RevertStatusPill label={pendingRevert.label} />
-          ) : null}
+        // Give the virtual row the full width so selection in the gutters
+        // resolves to the row beneath the pointer.
+        <div className={CHAT_CONTENT_GUTTERS_CLASS_NAME}>
+          {/* Keep overflow-x-clip so ChangedFilesTree uses the timeline as its scroller. */}
           <div
-            className={cn(
-              "transition-opacity duration-150 motion-reduce:transition-none",
-              dimmed && "opacity-50",
-              reverting && "pointer-events-none select-none opacity-40",
-            )}
-            data-revert-dimmed={dimmed ? "" : undefined}
-            aria-busy={reverting || undefined}
+            className="mx-auto w-full min-w-0 max-w-(--chat-content-max-width) overflow-x-clip"
+            data-timeline-root="true"
           >
-            {externalsEntry ? (
-              <TimelineRowView
-                row={item}
-                externals={externalsEntry.externals}
-                rowVersion={externalsEntry.version}
-              />
+            {pendingRevert && index === revertDimFromRowIndex ? (
+              <RevertStatusPill label={pendingRevert.label} />
             ) : null}
+            <div
+              className={cn(
+                "transition-opacity duration-150 motion-reduce:transition-none",
+                dimmed && "opacity-50",
+                reverting && "pointer-events-none select-none opacity-40",
+              )}
+              data-revert-dimmed={dimmed ? "" : undefined}
+              aria-busy={reverting || undefined}
+            >
+              {externalsEntry ? (
+                <TimelineRowView
+                  row={item}
+                  externals={externalsEntry.externals}
+                  rowVersion={externalsEntry.version}
+                />
+              ) : null}
+            </div>
           </div>
         </div>
       );
     },
     [pendingRevert, revertDimFromRowIndex, rowExternals],
   );
+
+  const setTimelineSelectionRef = useCallback((node: HTMLDivElement | null) => {
+    if (!node) return;
+    let stopSelection: (() => void) | undefined;
+    const startSelection = (event: PointerEvent) => {
+      if (event.button !== 0 || (event.pointerType !== "mouse" && event.pointerType !== "pen")) {
+        return;
+      }
+      if (
+        !(event.target instanceof Element) ||
+        event.target.closest("[data-timeline-navigation]")
+      ) {
+        return;
+      }
+
+      // Let native selection hit the timeline underneath the navigation overlays.
+      stopSelection?.();
+      node.setAttribute("data-selecting-text", "");
+      const controller = new AbortController();
+      stopSelection = () => {
+        controller.abort();
+        node.removeAttribute("data-selecting-text");
+        stopSelection = undefined;
+      };
+      const finishSelection = (next: PointerEvent) => {
+        if (next.pointerId !== event.pointerId) return;
+        // A release outside the window may only be seen on the next move.
+        if (next.type !== "pointermove" || (next.buttons & 1) === 0) stopSelection?.();
+      };
+      const options = { capture: true, signal: controller.signal };
+      window.addEventListener("pointerup", finishSelection, options);
+      window.addEventListener("pointercancel", finishSelection, options);
+      window.addEventListener("pointermove", finishSelection, options);
+    };
+    node.addEventListener("pointerdown", startSelection, true);
+    return () => {
+      node.removeEventListener("pointerdown", startSelection, true);
+      stopSelection?.();
+    };
+  }, []);
 
   // Portalled into the header: turn data never passes through header props.
   const navigationControl = navigationHost
@@ -1693,7 +1754,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   return (
     <TimelineRowContext.Provider value={timelineRowContext}>
       <RowEnteringContext value={enteringRowIds}>
-        <TooltipScrollDismissArea className="relative h-full min-h-0">
+        <TooltipScrollDismissArea
+          ref={setTimelineSelectionRef}
+          className="relative h-full min-h-0 [&[data-selecting-text]_[data-timeline-navigation]]:pointer-events-none"
+        >
           <LegendList<TimelineRow>
             ref={listRef}
             data={rows}
@@ -1748,15 +1812,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             // queries — the LegendList's overflow container has inline styles that
             // make class-based selectors fragile.
             data-slot="messages-scroll-container"
-            className={cn(
-              "h-full overflow-x-hidden overscroll-y-contain",
-              CHAT_CONTENT_GUTTERS_CLASS_NAME,
-            )}
+            className="h-full overflow-x-hidden overscroll-y-contain"
             ListHeaderComponent={
-              <>
+              <div className={CHAT_CONTENT_GUTTERS_CLASS_NAME}>
                 <div className="h-3 sm:h-4" />
                 {listHeaderContent}
-              </>
+              </div>
             }
             // The follow control overlays the timeline; only the composer needs a spacer.
             ListFooterComponent={
@@ -1769,6 +1830,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
               />
             }
           />
+          <ThreadFindHighlighter key={threadId} listRef={listRef} refreshRef={refreshFindRef} />
           {/* Outside the virtualized list so scrolling and cell recycling never unmount it. */}
           {ribbonOrigin && isWorking ? (
             <LiveWorkingRibbon
@@ -1872,6 +1934,7 @@ function TimelineMinimap(props: {
       <button
         type="button"
         aria-label="Previous turn"
+        data-timeline-navigation
         title="Previous turn"
         disabled={previousTurn === undefined}
         onClick={() => {
@@ -1884,6 +1947,7 @@ function TimelineMinimap(props: {
       <button
         type="button"
         aria-label="Next turn"
+        data-timeline-navigation
         title="Next turn"
         disabled={nextTurn === undefined}
         onClick={() => {
@@ -1899,6 +1963,7 @@ function TimelineMinimap(props: {
         role="slider"
         tabIndex={0}
         aria-label="Conversation minimap"
+        data-timeline-navigation
         title={
           props.hasUnloadedHistory
             ? "Loaded conversation range; scroll upward to load earlier history"
@@ -1977,6 +2042,44 @@ function RevertStatusPill({ label }: { label: string }) {
   );
 }
 
+const ThreadFindHighlighter = memo(function ThreadFindHighlighter({
+  listRef,
+  refreshRef,
+}: {
+  listRef: MessagesTimelineProps["listRef"];
+  refreshRef: MutableRefObject<(() => void) | null>;
+}) {
+  const find = useContext(ThreadFindContext);
+  const query = find?.query;
+  const selectionRef = useRef<typeof find>(null);
+  useEffect(() => {
+    if (!query) return;
+    let attachFrame = 0;
+    let clear: (() => void) | undefined;
+    const attach = () => {
+      const node = listRef.current?.getScrollableNode?.();
+      if (!(node instanceof HTMLElement)) {
+        attachFrame = requestAnimationFrame(attach);
+        return;
+      }
+      const highlights = watchThreadFindHighlights(node, query, () => selectionRef.current);
+      refreshRef.current = highlights.refresh;
+      clear = highlights.clear;
+    };
+    attach();
+    return () => {
+      cancelAnimationFrame(attachFrame);
+      refreshRef.current = null;
+      clear?.();
+    };
+  }, [listRef, query, refreshRef]);
+  useEffect(() => {
+    selectionRef.current = find;
+    refreshRef.current?.();
+  }, [find, refreshRef]);
+  return null;
+});
+
 // Wraps each row with the DOM attributes that tests and selectors depend on
 // (data-timeline-row-id, data-timeline-row-kind, data-message-id, data-message-role).
 // Replaces the former `ObservedTimelineRow` — LegendList measures rows
@@ -1996,47 +2099,10 @@ const TimelineRowWrapper = memo(function TimelineRowWrapper({
   // A freshly appended row rises in (a transform, so list measurement is unaffected).
   const entering = useContext(RowEnteringContext).has(row.id);
   const find = useContext(ThreadFindContext);
-  const element = useRef<HTMLDivElement>(null);
   const active = find?.entryId === row.id;
-  useEffect(() => {
-    const root = element.current;
-    if (!active || !find || !root) return;
-    let clear = () => {};
-    let frame = 0;
-    let reported = false;
-    // Streaming and highlighter mutations only refresh the highlights; the
-    // range is reported once so the navigation owner places it a single time.
-    const refresh = () => {
-      window.cancelAnimationFrame(frame);
-      frame = window.requestAnimationFrame(() => {
-        frame = window.requestAnimationFrame(() => {
-          clear();
-          const highlight = highlightThreadFind(root, find.query, find.occurrence);
-          clear = highlight.clear;
-          // Only the requested occurrence is reported; a stand-in (the first
-          // match, while a later block is still rendering) would place the
-          // wrong text, and the report happens once.
-          if (reported || !highlight.exact || !highlight.selected || find.requestId == null) {
-            return;
-          }
-          reported = true;
-          find.onSelectedRange?.(find.requestId, highlight.selected);
-        });
-      });
-    };
-    const observer = new MutationObserver(refresh);
-    observer.observe(root, { childList: true, subtree: true, characterData: true });
-    refresh();
-    return () => {
-      observer.disconnect();
-      window.cancelAnimationFrame(frame);
-      clear();
-    };
-  }, [active, find]);
   recordTimelineRowRender(row.id);
   return (
     <div
-      ref={element}
       data-thread-find-active={active ? "true" : undefined}
       data-row-entering={entering ? "" : undefined}
       className={cn(
@@ -2087,7 +2153,9 @@ function shouldRenderWorkEntryAsStandaloneRow(
   options: { settingsExpandMcpToolCalls: boolean },
 ): boolean {
   return (
+    !!entry.pendingApproval ||
     entry.usageLimited === true ||
+    entry.activityKind === "session.context-reset" ||
     entry.activityKind === "user-input.resolved" ||
     !!entry.userInput ||
     !!entry.htmlRender ||
@@ -2303,8 +2371,18 @@ function renderWithThreadReferences(text: string): ReactNode {
   if (matches.length === 0) return text;
   const nodes: ReactNode[] = [];
   let cursor = 0;
+  let afterCard = false;
   for (const match of matches) {
-    if (match.start > cursor) nodes.push(text.slice(cursor, match.start));
+    const isCard = "record" in match;
+    if (match.start > cursor) {
+      const between = trimResponseCardSeparators(
+        text.slice(cursor, match.start),
+        afterCard,
+        isCard,
+      );
+      if (between) nodes.push(between);
+    }
+    afterCard = isCard;
     if ("record" in match) {
       nodes.push(<AssistantResponseCard key={match.start} record={match.record} />);
       cursor = match.end;
@@ -2320,7 +2398,10 @@ function renderWithThreadReferences(text: string): ReactNode {
     );
     cursor = match.end;
   }
-  if (cursor < text.length) nodes.push(text.slice(cursor));
+  if (cursor < text.length) {
+    const rest = trimResponseCardSeparators(text.slice(cursor), afterCard, false);
+    if (rest) nodes.push(rest);
+  }
   return nodes;
 }
 
@@ -2356,12 +2437,14 @@ function UserMessageMarkupText(props: {
       data-user-message-markup=""
       {...(props.testRenderCountProps ?? {})}
     >
-      {segments.map((segment) => {
+      {segments.map((segment, index) => {
         switch (segment.kind) {
           case "response-context":
             return <AssistantResponseCard key={segment.start} record={segment.record} />;
-          case "text":
-            return <Fragment key={segment.start}>{segment.raw}</Fragment>;
+          case "text": {
+            const text = userMessageSegmentDisplayText(segments, index);
+            return text ? <Fragment key={segment.start}>{text}</Fragment> : null;
+          }
           case "code":
             return (
               <code key={segment.start} className="user-message-inline-code">
@@ -2457,13 +2540,15 @@ const TimelineUserMessageBody = memo(function TimelineUserMessageBody(props: {
     [props.text, props.skillCall, props.terminalContexts, props.markup],
   );
   return (
-    <CollapsibleUserMessageBody
-      text={props.text}
-      collapseAllowed={props.terminalContexts.length === 0}
-      preservesCollapsedPrefix={preservesCollapsedPrefix}
-      renderBody={renderBody}
-      forceExpandedForFind={props.forceExpandedForFind}
-    />
+    <div data-thread-find-text>
+      <CollapsibleUserMessageBody
+        text={props.text}
+        collapseAllowed={props.terminalContexts.length === 0}
+        preservesCollapsedPrefix={preservesCollapsedPrefix}
+        renderBody={renderBody}
+        forceExpandedForFind={props.forceExpandedForFind}
+      />
+    </div>
   );
 });
 
@@ -4285,7 +4370,35 @@ const WorkEntryRow = memo(function WorkEntryRow(props: {
   onImageExpand: (preview: ExpandedImagePreview) => void;
 }) {
   const { workEntry } = props;
-  const { threadId } = useTimelineRowContext();
+  const { threadId, approvalActions } = useTimelineRowContext();
+  if (workEntry.pendingApproval)
+    return (
+      <Suspense
+        fallback={
+          <pre className="whitespace-pre-wrap text-xs">
+            {workEntry.pendingApproval.detail || "Waiting for approval"}
+          </pre>
+        }
+      >
+        <TimelinePendingApprovalRow
+          approval={workEntry.pendingApproval}
+          actions={approvalActions}
+        />
+      </Suspense>
+    );
+  if (workEntry.activityKind === "session.context-reset") {
+    return (
+      <div
+        role="separator"
+        aria-label="New session"
+        className="my-4 flex items-center gap-3 text-xs text-muted-foreground"
+      >
+        <div className="h-px flex-1 bg-border" />
+        <span>New session</span>
+        <div className="h-px flex-1 bg-border" />
+      </div>
+    );
+  }
   if (workEntry.activityKind === "native.aside") {
     return (
       <details className="my-2 rounded-lg border p-3">
@@ -4432,6 +4545,7 @@ interface TimelineRowActions {
  * actions). A change re-renders every row, so per-row inputs stay out of it.
  */
 interface TimelineRowContextValue {
+  approvalActions?: TimelineApprovalActions | undefined;
   threadId: ThreadId | null;
   nativeSessionCapabilities: ProviderSessionCapabilities | null;
   expandMcpToolCalls: boolean;
@@ -4638,6 +4752,7 @@ function WorkGroupRowContent(props: {
     (row.groupedEntries[0]?.usageLimited ||
       row.groupedEntries[0]?.htmlRender ||
       row.groupedEntries[0]?.mcpApp ||
+      row.groupedEntries[0]?.activityKind === "session.context-reset" ||
       row.groupedEntries[0]?.activityKind === "user-input.resolved" ||
       row.groupedEntries[0]?.userInput)
       ? row.groupedEntries[0]
@@ -4757,7 +4872,10 @@ function UserMessageRowContent(props: {
     (attachment) => attachment.type === "image",
   );
   const userFiles = (row.message.attachments ?? []).filter(
-    (attachment) => attachment.type === "file",
+    (attachment) => attachment.type === "file" && !videoPreviewMimeType(attachment),
+  );
+  const userVideos = (row.message.attachments ?? []).filter(
+    (attachment) => attachment.type === "file" && videoPreviewMimeType(attachment),
   );
   // A message-mode answer is delivered as JSON for the provider; show the chosen answers.
   const displayedUserMessage = deriveDisplayedUserMessageState(
@@ -4765,17 +4883,22 @@ function UserMessageRowContent(props: {
   );
   const terminalContexts = displayedUserMessage.contexts;
   const canRevertAgentWork = externals.canRevert;
-  // Images sent without words show as media, not as a bubble around them.
+  const hasBody =
+    displayedUserMessage.visibleText.trim().length > 0 ||
+    terminalContexts.length > 0 ||
+    displayedUserMessage.attachedFilePaths.length > 0;
+  // Media is its own shape even when a message also includes words.
   const mediaOnly =
-    userImages.length > 0 &&
+    userImages.length + userVideos.length > 0 &&
     userFiles.length === 0 &&
     displayedUserMessage.attachedFilePaths.length === 0 &&
     terminalContexts.length === 0 &&
     displayedUserMessage.visibleText.trim() === "";
   // A lone image keeps its own shape; a fixed crop hides most of a wide screenshot.
-  const loneImage = mediaOnly && userImages.length === 1;
+  const loneImage = userImages.length === 1;
   // Several images sent without words share one rounded shape, split by hairlines.
-  const collage = mediaOnly && userImages.length > 1;
+  const hasSnapshots = userImages.some((image) => image.source === "snapshot");
+  const collage = userImages.length > 1 && !hasSnapshots;
   return (
     <div className="group/user-message flex flex-col items-end">
       {row.userInput ? (
@@ -4785,33 +4908,39 @@ function UserMessageRowContent(props: {
         </div>
       ) : (
         <div
-          className={cn(
-            "max-w-full sm:max-w-[85%]",
-            !mediaOnly && "rounded-xl rounded-br-md border border-border bg-secondary px-4 py-2.5",
-          )}
+          className={cn("flex max-w-full flex-col items-end gap-2 sm:max-w-[85%]")}
           data-slot="user-message-bubble"
           data-media-only={mediaOnly ? "" : undefined}
         >
-          {userFiles.map((file) => (
-            <AttachmentFileChip key={file.id} file={file} />
+          {userVideos.map((file) => (
+            <video
+              key={file.id}
+              aria-label={file.name}
+              controls
+              preload="metadata"
+              src={file.sourceUrl ?? file.previewUrl}
+              className="max-h-80 max-w-full rounded-2xl"
+            />
           ))}
           {userImages.length > 0 && (
             <div
               className={cn(
                 "grid",
-                loneImage
-                  ? "max-w-full"
-                  : collage
-                    ? cn(
-                        USER_MEDIA_EDGE_CLASS_NAME,
-                        "w-80 max-w-full gap-px overflow-hidden rounded-2xl bg-black/9 dark:bg-white/12",
-                        userImages.length === 2
-                          ? "auto-rows-[12rem] grid-cols-2"
-                          : userImages.length === 3
-                            ? "auto-rows-[calc(6rem-0.5px)] grid-cols-[3fr_2fr]"
-                            : "auto-rows-[6rem] grid-cols-2",
-                      )
-                    : "mb-2 max-w-[420px] grid-cols-2 gap-2",
+                hasSnapshots
+                  ? "max-w-full grid-cols-1 gap-2"
+                  : loneImage
+                    ? "max-w-full"
+                    : collage
+                      ? cn(
+                          USER_MEDIA_EDGE_CLASS_NAME,
+                          "w-80 max-w-full gap-px overflow-hidden rounded-2xl bg-black/9 dark:bg-white/12",
+                          userImages.length === 2
+                            ? "auto-rows-[12rem] grid-cols-2"
+                            : userImages.length === 3
+                              ? "auto-rows-[calc(6rem-0.5px)] grid-cols-[3fr_2fr]"
+                              : "auto-rows-[6rem] grid-cols-2",
+                        )
+                      : "mb-2 max-w-[420px] grid-cols-2 gap-2",
               )}
             >
               {userImages.map(
@@ -4821,21 +4950,26 @@ function UserMessageRowContent(props: {
                     <div
                       key={image.id}
                       className={cn(
-                        loneImage
+                        image.source === "snapshot"
                           ? cn(
                               USER_MEDIA_EDGE_CLASS_NAME,
-                              "overflow-hidden rounded-2xl bg-background/70",
+                              "max-w-full overflow-hidden rounded-2xl bg-background/70",
                             )
-                          : collage
+                          : loneImage
                             ? cn(
-                                "overflow-hidden bg-background",
-                                userImages.length === 3 && index === 0 && "row-span-2",
-                                userImages.length > 3 &&
-                                  userImages.length % 2 === 1 &&
-                                  index === userImages.length - 1 &&
-                                  "col-span-2",
+                                USER_MEDIA_EDGE_CLASS_NAME,
+                                "overflow-hidden rounded-2xl bg-background/70",
                               )
-                            : "overflow-hidden rounded-lg border border-border/80 bg-background/70",
+                            : collage
+                              ? cn(
+                                  "overflow-hidden bg-background",
+                                  userImages.length === 3 && index === 0 && "row-span-2",
+                                  userImages.length > 3 &&
+                                    userImages.length % 2 === 1 &&
+                                    index === userImages.length - 1 &&
+                                    "col-span-2",
+                                )
+                              : "overflow-hidden rounded-lg border border-border/80 bg-background/70",
                       )}
                     >
                       {previewUrl ? (
@@ -4872,11 +5006,13 @@ function UserMessageRowContent(props: {
                             className={cn(
                               "block object-cover",
                               // A fixed height keeps the row from growing when the image loads.
-                              loneImage
-                                ? "h-48 w-auto min-w-24 max-w-full"
-                                : collage
-                                  ? "size-full"
-                                  : "h-full max-h-[220px] w-full",
+                              image.source === "snapshot"
+                                ? "h-auto max-h-96 w-auto max-w-full object-contain"
+                                : loneImage
+                                  ? "h-48 w-auto min-w-24 max-w-full"
+                                  : collage
+                                    ? "size-full"
+                                    : "h-full max-h-[220px] w-full",
                             )}
                             draggable={false}
                           />
@@ -4898,36 +5034,57 @@ function UserMessageRowContent(props: {
               )}
             </div>
           )}
-          {displayedUserMessage.attachedFilePaths.length > 0 && (
-            <div className="mb-2 flex flex-wrap gap-1.5">
-              {displayedUserMessage.attachedFilePaths.map((filePath) => {
-                const displayPath = relativePathForDisplay(filePath, workspaceRoot);
-                return (
-                  <span
-                    key={filePath}
-                    className={COMPOSER_INLINE_CHIP_CLASS_NAME}
-                    title={displayPath}
-                  >
-                    <VscodeEntryIcon pathValue={filePath} kind="file" theme={resolvedTheme} />
-                    <span className="max-w-[320px] truncate">{displayPath}</span>
-                  </span>
-                );
-              })}
-            </div>
-          )}
-          {(displayedUserMessage.visibleText.trim().length > 0 || terminalContexts.length > 0) && (
-            <>
-              {/* The copy button below uses copyText, which is derived before
+          {(hasBody || userFiles.length > 0) && (
+            <div
+              data-slot="user-message-body"
+              className={cn(
+                "max-w-full",
+                hasBody
+                  ? "rounded-xl rounded-br-md border border-border bg-secondary px-4 py-2.5"
+                  : "flex flex-col items-end gap-2",
+              )}
+            >
+              {userFiles.map((file) => (
+                <AttachmentFileChip
+                  key={file.id}
+                  file={file}
+                  standalone={!hasBody}
+                  sending={row.message.sending === true}
+                />
+              ))}
+              {displayedUserMessage.attachedFilePaths.length > 0 && (
+                <div className="mb-2 flex flex-wrap gap-1.5">
+                  {displayedUserMessage.attachedFilePaths.map((filePath) => {
+                    const displayPath = relativePathForDisplay(filePath, workspaceRoot);
+                    return (
+                      <span
+                        key={filePath}
+                        className={COMPOSER_INLINE_CHIP_CLASS_NAME}
+                        title={displayPath}
+                      >
+                        <VscodeEntryIcon pathValue={filePath} kind="file" theme={resolvedTheme} />
+                        <span className="max-w-[320px] truncate">{displayPath}</span>
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+              {(displayedUserMessage.visibleText.trim().length > 0 ||
+                terminalContexts.length > 0) && (
+                <>
+                  {/* The copy button below uses copyText, which is derived before
                     visual collapse, so collapsed messages still copy in full. */}
-              <TimelineUserMessageBody
-                key={row.message.id}
-                text={displayedUserMessage.visibleText}
-                skillCall={row.message.skillCall}
-                terminalContexts={terminalContexts}
-                markup={userMessageMarkup}
-                forceExpandedForFind={forceExpandedForFind}
-              />
-            </>
+                  <TimelineUserMessageBody
+                    key={row.message.id}
+                    text={displayedUserMessage.visibleText}
+                    skillCall={row.message.skillCall}
+                    terminalContexts={terminalContexts}
+                    markup={userMessageMarkup}
+                    forceExpandedForFind={forceExpandedForFind}
+                  />
+                </>
+              )}
+            </div>
           )}
         </div>
       )}
@@ -5062,6 +5219,7 @@ function AssistantMessageRowContent(props: {
           />
         ) : null}
         <div
+          data-thread-find-text={rawText ? "" : undefined}
           className={
             /^★ Insight(?:\s|─)/mu.test(messageText)
               ? "[&_.chat-markdown_p]:whitespace-pre-line"
@@ -5155,6 +5313,14 @@ function AssistantChangedFiles(props: { externals: TimelineRowExternalsOf<"assis
   });
   const presentation = externals.presentationOverride ?? defaultPresentation;
   const isExpanded = presentation === "expanded";
+  const repositories = new Map<string | undefined, Array<(typeof checkpointFiles)[number]>>();
+  if (isExpanded) {
+    for (const file of checkpointFiles) {
+      const group = repositories.get(file.repositoryPath);
+      if (group) group.push(file);
+      else repositories.set(file.repositoryPath, [file]);
+    }
+  }
   const togglePresentation = () => {
     actions.setChangedFilesPresentationOverrides((current) => ({
       ...current,
@@ -5217,14 +5383,22 @@ function AssistantChangedFiles(props: { externals: TimelineRowExternalsOf<"assis
         </div>
       </div>
       {presentation === "expanded" ? (
-        <ChangedFilesTree
-          key={`changed-files-tree:${turnSummary.turnId}`}
-          turnId={turnSummary.turnId}
-          files={checkpointFiles}
-          allDirectoriesExpanded={allDirectoriesExpanded}
-          resolvedTheme={resolvedTheme}
-          onOpenTurnDiff={actions.onOpenTurnDiff}
-        />
+        Array.from(repositories).map(([repository, files]) => (
+          <div key={repository ?? ""}>
+            {repository !== undefined && (
+              <div className="px-2 pt-2 text-xs font-medium">
+                {repository === "." ? "Project root" : repository}
+              </div>
+            )}
+            <ChangedFilesTree
+              turnId={turnSummary.turnId}
+              files={files}
+              allDirectoriesExpanded={allDirectoriesExpanded}
+              resolvedTheme={resolvedTheme}
+              onOpenTurnDiff={actions.onOpenTurnDiff}
+            />
+          </div>
+        ))
       ) : presentation === "compact" ? (
         <div className="flex flex-wrap gap-1 pt-0.5">
           {checkpointFiles.slice(0, CHANGED_FILES_COMPACT_PREVIEW_COUNT).map((file) => (
@@ -5253,7 +5427,7 @@ function ProposedPlanRowContent(props: { row: ProposedPlanTimelineRow }) {
   const { markdownCwd, workspaceRoot } = useTimelineRowContext();
   const find = useContext(ThreadFindContext);
   return (
-    <div className="min-w-0 px-1 py-0.5">
+    <div className="min-w-0 px-1 py-0.5" data-thread-find-text>
       <ProposedPlanCard
         forceExpanded={find?.entryId === row.id}
         planMarkdown={row.proposedPlan.planMarkdown}

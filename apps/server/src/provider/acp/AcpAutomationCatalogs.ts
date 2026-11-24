@@ -153,12 +153,61 @@ export const prepareAcpAutomationCatalogs = (input: {
   computerCapableLineage?: boolean;
   /** Certification/test seam; production drivers never supply overrides. */
   verification?: { preview?: boolean; computer?: boolean };
+  /** Launch credentials (an Antigravity Gemini API key) scrubbed from logs, errors and events. */
+  credentials?: ReadonlyArray<string>;
 }) =>
   Effect.gen(function* () {
     const configs: PreviewMcpSessionConfig[] = [];
     const scrubber = new AcpCredentialScrubber();
+    // Launch credentials plus forwarded MCP credentials, longest first so a value that contains
+    // another (a URL and its query string) is replaced whole.
+    let eventCredentials: ReadonlyArray<string> = [];
+    const addEventCredentials = (values: Iterable<string>) => {
+      eventCredentials = [...new Set([...eventCredentials, ...values])].sort(
+        (a, b) => b.length - a.length,
+      );
+      for (const credential of eventCredentials) scrubber.register(credential);
+    };
+    addEventCredentials((input.credentials ?? []).filter((value) => value.length >= 8));
+    // Exact-value replacement in every decoded string, so JSON escaping (quotes, backslashes)
+    // cannot hide an echoed key. Property names are scrubbed too: an agent can echo the key as a
+    // name in unstructured data. Schema field names never contain a credential, so they and the
+    // routing fields are left as they are.
+    const scrubString = (value: string): string => {
+      let scrubbed = value;
+      for (const credential of eventCredentials)
+        scrubbed = scrubbed.replaceAll(credential, "[redacted]");
+      return scrubbed;
+    };
+    const scrubValue = (value: unknown): unknown => {
+      if (typeof value === "string") return scrubString(value);
+      if (Array.isArray(value)) {
+        let changed = false;
+        const next = value.map((entry) => {
+          const scrubbed = scrubValue(entry);
+          changed ||= scrubbed !== entry;
+          return scrubbed;
+        });
+        return changed ? next : value;
+      }
+      if (value !== null && typeof value === "object") {
+        let changed = false;
+        const next: Record<string, unknown> = {};
+        for (const [key, entry] of Object.entries(value)) {
+          const scrubbed = scrubValue(entry);
+          const scrubbedKey = scrubString(key);
+          changed ||= scrubbed !== entry || scrubbedKey !== key;
+          next[scrubbedKey] = scrubbed;
+        }
+        return changed ? next : value;
+      }
+      return value;
+    };
+    const scrubEventCredentials = (event: ProviderRuntimeEvent): ProviderRuntimeEvent =>
+      eventCredentials.length === 0 ? event : (scrubValue(event) as ProviderRuntimeEvent);
     const serverName = `f5_computer_${randomBytes(4).toString("hex")}`;
     let computerCapable = input.computerCapableLineage === true;
+    let forwardedCredentials = false;
     let disposed = false;
     let memo: ReadonlyArray<McpServer> | undefined;
     const state: ClaudeAgentBrowserState = { mutatingPreviewGranted: false };
@@ -282,13 +331,18 @@ export const prepareAcpAutomationCatalogs = (input: {
       classify,
       redactForLog,
       scrubDiagnostic: (value: string) => scrubber.scrub(value),
-      sanitizeEvent(event: ProviderRuntimeEvent): ProviderRuntimeEvent {
+      sanitizeEvent(unscrubbed: ProviderRuntimeEvent): ProviderRuntimeEvent {
+        const event = scrubEventCredentials(unscrubbed);
         if (!computerCapable) return event;
         if (
           (event.type === "item.started" ||
             event.type === "item.updated" ||
             event.type === "item.completed") &&
-          automationEventSanitizer.isComputerItem(event.threadId, event.itemId ?? event.eventId)
+          // Items are registered under their provider IDs, before any credential was scrubbed.
+          automationEventSanitizer.isComputerItem(
+            unscrubbed.threadId,
+            unscrubbed.itemId ?? unscrubbed.eventId,
+          )
         ) {
           return {
             ...event,
@@ -323,7 +377,19 @@ export const prepareAcpAutomationCatalogs = (input: {
         return event;
       },
       computerCapable: () => computerCapable,
-      hasSensitiveConfiguration: () => computerCapable || configs.length > 0,
+      hasSensitiveConfiguration: () =>
+        computerCapable || configs.length > 0 || forwardedCredentials,
+      /**
+       * Credentials the session passes outside F5's own catalogs (forwarded
+       * project MCP servers): scrubbed from diagnostics and runtime events, and
+       * their presence makes setup errors use the fixed sensitive-configuration
+       * message.
+       */
+      registerForwardedCredentials(values: ReadonlyArray<string>) {
+        if (values.length === 0) return;
+        forwardedCredentials = true;
+        addEventCredentials(values);
+      },
       agentBrowser: () => agentBrowserConfigPayload(state),
       endTurn: (turnId: string) => {
         for (const config of configs) config.endTurn?.(turnId);

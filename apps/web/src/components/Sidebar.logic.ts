@@ -1,4 +1,5 @@
 import type { ProjectId, ThreadId } from "@t3tools/contracts";
+import { linkedRepositoryCwd } from "../hooks/useLinkedPullRequestStates";
 import {
   type ThreadStatusPill,
   hasUnseenCompletion,
@@ -391,7 +392,10 @@ export interface SidebarPullRequestLinkThread {
   readonly id: ThreadId;
   readonly archived: boolean;
   readonly lookupCwd: string | null;
-  readonly pullRequests: ReadonlyArray<{ readonly url: string }> | undefined;
+  readonly externalCwds?: Readonly<Record<string, string>> | undefined;
+  readonly pullRequests:
+    | ReadonlyArray<{ readonly url: string; readonly repositoryPath?: string }>
+    | undefined;
 }
 
 /**
@@ -404,7 +408,7 @@ export function sidebarPullRequestLinkTargets(
 ): Array<{ cwd: string | null; url: string; enabled: boolean }> {
   return threads.flatMap((thread) =>
     (thread.pullRequests ?? []).map((link) => ({
-      cwd: thread.lookupCwd,
+      cwd: linkedRepositoryCwd(thread.lookupCwd, link.repositoryPath, thread.externalCwds),
       url: link.url,
       enabled: thread.lookupCwd !== null && (!thread.archived || thread.id === routeThreadId),
     })),

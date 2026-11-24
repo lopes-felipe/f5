@@ -46,6 +46,7 @@ const WORK_LOG_FILTER_LABELS = {
 } as const;
 
 const COMPOSER_KEYS = [
+  "persistentUsageLimits",
   "sendShortcut",
   "composerRichTextEnabled",
   "composerCollapseOnScroll",
@@ -110,6 +111,17 @@ export function ConversationSettings() {
           ) : null
         }
       >
+        <SettingsRow
+          title="Keep usage limits visible"
+          description="Keep the selected provider's 5-hour and weekly limits and this thread's context usage above the composer."
+          control={
+            <Switch
+              aria-label="Keep usage limits visible"
+              checked={settings.persistentUsageLimits}
+              onCheckedChange={(persistentUsageLimits) => updateSettings({ persistentUsageLimits })}
+            />
+          }
+        />
         <SettingsRow
           title="Send shortcut"
           description="Shift+Enter always inserts a new line."

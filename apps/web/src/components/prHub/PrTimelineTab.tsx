@@ -1,6 +1,7 @@
 import { ForgeReactionControl } from "./ForgeReactionControl";
 import { ForgeOperationPanel } from "./ForgeOperationPanel";
 import { PrSendToAgent } from "./PrSendToAgent";
+import { PrAddCommentToChat } from "./PrAddCommentToChat";
 import { PrMarkdown } from "./PrMarkdown";
 import { PrAuthorLink } from "./PrAuthorLink";
 import { createContext, useContext, useEffect, useState, type SetStateAction } from "react";
@@ -32,7 +33,7 @@ import { cn } from "../../lib/utils";
 import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { Textarea } from "../ui/textarea";
+import { PrCompletionTextarea as Textarea } from "./PrCompletionTextarea";
 import { PrReactionBar } from "./PrReactionBar";
 import { prDetailCapability } from "./prDetails.logic";
 import {
@@ -131,6 +132,7 @@ function TimelineComment({
         </div>
       </header>
 
+      <PrAddCommentToChat pr={pr} body={comment.body} path={comment.path} line={comment.line} />
       {comment.path ? (
         <PrSendToAgent pr={pr} body={comment.body} path={comment.path} line={comment.line} />
       ) : null}
@@ -143,7 +145,11 @@ function TimelineComment({
 
       {isEditing ? (
         <div className="space-y-2">
-          <Textarea value={draft} onChange={(event) => setDraft(event.target.value)} />
+          <Textarea
+            prKey={pr.key}
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+          />
           <div className="flex gap-2">
             {pr.provider !== "github" ? (
               <ForgeOperationPanel
@@ -474,7 +480,7 @@ export function PrTimelineTab({
           <Button
             size="sm"
             variant="outline"
-            disabled={query.isFetchingNextPage}
+            disabled={query.isFetchingNextPage || !query.isFetched}
             onClick={() => void query.fetchNextPage()}
           >
             {query.isFetchingNextPage ? "Loading…" : "Load older activity"}

@@ -251,24 +251,30 @@ it.effect("enriches and caches untracked previews without adding tracked status"
   ),
 );
 
-it.effect("uses tracked draft and status facts, including recently resolved PRs", () =>
-  run(({ create, hub }) =>
+it.effect("previews tracked rows using local facts, including recently resolved PRs", () =>
+  run(({ create, hub, state }) =>
     Effect.gen(function* () {
+      const url = "https://gitlab.example/team/repo/-/merge_requests/7";
+      const row = yield* hub.track({ url });
       const snapshot = yield* hub.getSnapshot;
+      const empty = { ...snapshot, pullRequests: [], recentlyResolved: [] };
       const tracked = {
-        key,
+        ...row,
+        title: "Title from the tracked row",
         isDraft: true,
         checkRollup: "success",
         reviewDecision: "approved",
         mergeable: "mergeable",
         unresolvedThreadCount: 2,
-      } as TrackedPullRequest;
+      } satisfies TrackedPullRequest;
+      // An uncached request to the forge would read this new state.
+      state.lifecycle = "closed";
       for (const bucket of ["pullRequests", "recentlyResolved"] as const) {
-        let current = { ...snapshot, [bucket]: [tracked] };
+        let current = { ...empty, [bucket]: [tracked] };
         const engine = yield* create(Effect.sync(() => current));
-        const value = yield* engine.peek({
-          url: "https://gitlab.example/team/repo/-/merge_requests/7",
-        });
+        const value = yield* engine.peek({ url });
+        assert.strictEqual(value?.title, tracked.title);
+        assert.strictEqual(value?.state, row.state);
         assert.strictEqual(value?.isDraft, true);
         assert.deepStrictEqual(value?.status, {
           checkRollup: "success",
@@ -277,7 +283,7 @@ it.effect("uses tracked draft and status facts, including recently resolved PRs"
           unresolvedThreadCount: 2,
         });
         current = {
-          ...snapshot,
+          ...empty,
           [bucket]: [{ ...tracked, isDraft: false, checkRollup: "failure" as const }],
         };
         const refreshed = yield* engine.peek({
@@ -285,7 +291,7 @@ it.effect("uses tracked draft and status facts, including recently resolved PRs"
         });
         assert.strictEqual(refreshed?.isDraft, false);
         assert.strictEqual(refreshed?.status?.checkRollup, "failure");
-        current = snapshot;
+        current = empty;
         assert.strictEqual(
           (yield* engine.peek({ url: "https://gitlab.example/team/repo/-/merge_requests/7" }))
             ?.status,
@@ -517,9 +523,8 @@ it.effect("rejects unadvertised operations before preparing or dispatching", () 
   run(({ engine, state }) =>
     Effect.gen(function* () {
       const input = prepared("unsupported", {
-        kind: "review",
-        body: "Request changes",
-        verdict: "request-changes",
+        kind: "action",
+        action: "rerun-failed-checks",
       });
       assert.equal((yield* engine.prepareOperation(input).pipe(Effect.result))._tag, "Failure");
       assert.equal(state.writes.length, 0);

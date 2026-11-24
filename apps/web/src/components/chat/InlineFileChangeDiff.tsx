@@ -6,12 +6,10 @@ import {
   type TurnId,
 } from "@t3tools/contracts";
 import { ChevronRightIcon } from "lucide-react";
-import { memo, useCallback, useMemo } from "react";
+import { memo, useMemo } from "react";
 import { useDiffWordWrap } from "../../appSettings";
-import { openInPreferredEditor } from "../../editorPreferences";
-import { useFileNavigation } from "../../fileNavigationContext";
+import { useOpenWorkspaceFile } from "../../hooks/useOpenWorkspaceFile";
 import type { TurnDiffSummary } from "../../types";
-import { readNativeApi } from "../../nativeApi";
 import {
   buildFileDiffRenderKey,
   DIFF_PANEL_UNSAFE_CSS,
@@ -22,9 +20,7 @@ import { relativePathForDisplay } from "~/lib/attachedFiles";
 import { PREFERRED_HIGHLIGHTER, resolveDiffThemeName } from "~/lib/diffRendering";
 import { normalizeFilePathForDiffLookup } from "~/lib/normalizeFilePathForDiff";
 import { checkpointDiffQueryOptions } from "~/lib/providerReactQuery";
-import { resolvePathLinkTarget } from "../../terminal-links";
 import { Button } from "../ui/button";
-import { toastManager } from "../ui/toast";
 import { compareFilePaths } from "../../lib/filePathCollator";
 import { buildInlineFileChangeCheckpointDiffQueryInput } from "./InlineFileChangeDiff.logic";
 
@@ -58,7 +54,6 @@ export const InlineFileChangeDiff = memo(function InlineFileChangeDiff(
     turnDiffSummary,
     onOpenTurnDiff,
   } = props;
-  const handleFileNavigation = useFileNavigation();
   const diffWordWrap = useDiffWordWrap();
   const diffUnavailable =
     threadId === null || typeof checkpointTurnCount !== "number" || filePaths.length === 0;
@@ -129,30 +124,7 @@ export const InlineFileChangeDiff = memo(function InlineFileChangeDiff(
       .toSorted((left, right) => compareFilePaths(left.filePath, right.filePath));
   }, [normalizedEntryFiles, renderablePatch, turnDiffFileByPath, workspaceRoot]);
 
-  const openFile = useCallback(
-    (filePath: string) => {
-      if (handleFileNavigation(filePath, turnId)) {
-        return;
-      }
-      const api = readNativeApi();
-      if (!api) {
-        toastManager.add({
-          type: "error",
-          title: "Editor opening is unavailable.",
-        });
-        return;
-      }
-      const targetPath = workspaceRoot ? resolvePathLinkTarget(filePath, workspaceRoot) : filePath;
-      void openInPreferredEditor(api, targetPath).catch((error) => {
-        toastManager.add({
-          type: "error",
-          title: "Unable to open file",
-          description: error instanceof Error ? error.message : "An error occurred.",
-        });
-      });
-    },
-    [handleFileNavigation, turnId, workspaceRoot],
-  );
+  const openFile = useOpenWorkspaceFile({ workspaceRoot, turnId });
 
   const content = (() => {
     if (diffUnavailable) {

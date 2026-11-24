@@ -144,17 +144,38 @@ describe("main computer controller", () => {
       type: "response",
       requestId: "odd",
       error: { _tag: "OutcomeUnknown" },
-      diagnostic: { op: "type text", appId: "a b", axError: "x", delivery: "elsewhere" },
+      diagnostic: {
+        op: "type text",
+        appId: "a b",
+        axError: "x",
+        delivery: "elsewhere",
+        cause: "Target Blocked",
+        kind: "focus unknown",
+      },
     });
     h.event({ type: "response", requestId: "bare", error: { _tag: "OutcomeUnknown" } });
+    h.event({
+      type: "response",
+      requestId: "focus",
+      error: { _tag: "OutcomeUnknown" },
+      diagnostic: {
+        op: "type",
+        delivery: "foreground",
+        cause: "TargetBlocked",
+        kind: "focus-unknown",
+      },
+    });
     h.event({ type: "response", requestId: "stale", error: { _tag: "StaleElement" } });
     h.event({ type: "response", requestId: "ok", result: {} });
     expect(h.log.mock.calls).toEqual([
       [
         "computer outcome-unknown: op=elementAction app=com.apple.Preview axError=-25204 delivery=fg",
       ],
+      ["computer outcome-unknown: op=? app=? axError=none delivery=? cause=?/?"],
       ["computer outcome-unknown: op=? app=? axError=none delivery=?"],
-      ["computer outcome-unknown: op=? app=? axError=none delivery=?"],
+      [
+        "computer outcome-unknown: op=type app=? axError=none delivery=fg cause=TargetBlocked/focus-unknown",
+      ],
     ]);
   });
   it("leaves recovery on a confirmed Resume for a thread that also holds the Chrome lease", async () => {

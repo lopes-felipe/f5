@@ -78,10 +78,10 @@ final class ElementDispatchTests: XCTestCase {
       computerElementDispatchOutcome(action: "press", error: .invalidUIElement, background: true),
       .failed(tag: "StaleElement", reason: "element-gone", started: true))
   }
-  func testChordSteps() {
-    XCTAssertEqual(computerChordStep(chordsDelivered: 0, focusUnchanged: true), .send)
-    XCTAssertEqual(computerChordStep(chordsDelivered: 0, focusUnchanged: false), .blocked)
-    XCTAssertEqual(computerChordStep(chordsDelivered: 1, focusUnchanged: false), .stop)
-    XCTAssertEqual(computerChordStep(chordsDelivered: 3, focusUnchanged: true), .send)
+  func testDeliverySteps() {
+    XCTAssertEqual(computerDeliveryStep(delivered: 0, focusUnchanged: true), .send)
+    XCTAssertEqual(computerDeliveryStep(delivered: 0, focusUnchanged: false), .blocked)
+    XCTAssertEqual(computerDeliveryStep(delivered: 1, focusUnchanged: false), .stop)
+    XCTAssertEqual(computerDeliveryStep(delivered: 3, focusUnchanged: true), .send)
   }
 }

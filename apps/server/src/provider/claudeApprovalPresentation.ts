@@ -1,13 +1,43 @@
-import type { CanUseTool } from "@anthropic-ai/claude-agent-sdk";
+import type { CanUseTool, PermissionResult } from "@anthropic-ai/claude-agent-sdk";
+import { stripVTControlCharacters } from "node:util";
 import type { ProviderApprovalDecision, ProviderApprovalPresentation } from "@t3tools/contracts";
 
 type ClaudePermissionCallbackOptions = Parameters<CanUseTool>[2];
+
+/** A forwarded removal warning is a failed safety check, not a request for bypass consent. */
+export function claudeRemovalSafetyDenial(
+  toolName: string,
+  permissionMode: unknown,
+  options: Pick<ClaudePermissionCallbackOptions, "decisionReason" | "matchedAskRule" | "toolUseID">,
+): PermissionResult | undefined {
+  if (
+    toolName !== "Bash" ||
+    permissionMode !== "bypassPermissions" ||
+    options.matchedAskRule !== undefined
+  )
+    return undefined;
+  const reason = stripVTControlCharacters(options.decisionReason ?? "").trim();
+  if (
+    !(
+      /^Dangerous rm(?:dir)?\b/i.test(reason) ||
+      /\bdangerous removal\b/i.test(reason) ||
+      reason === "This shell -c script runs rm and could not be checked" ||
+      reason === "A permission rule denies a command in this shell -c script"
+    )
+  )
+    return undefined;
+  return {
+    behavior: "deny",
+    message: `Claude Code's removal safety check denied this command; the user did not reject it. The command did not run. Do not bypass the check by splitting the removal, putting it in a script, or using another tool or shell. If the warning below supplies a safe rewrite, use it and let the same check evaluate it. Otherwise continue the rest of the task without the removal and tell the user what you needed to delete and why. Warning: ${reason}`,
+    toolUseID: options.toolUseID,
+  };
+}
 
 const MAX_PRESENTATION_TEXT_CHARS = 2_000;
 
 function text(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
+  const trimmed = stripVTControlCharacters(value).trim();
   if (!trimmed) return undefined;
   return trimmed.length > MAX_PRESENTATION_TEXT_CHARS
     ? `${trimmed.slice(0, MAX_PRESENTATION_TEXT_CHARS - 1)}…`
@@ -32,8 +62,12 @@ export function claudeApprovalPresentation(
     | "agentID"
     | "defaultToNo"
     | "suppressAlwaysAllowRule"
+    | "matchedAskRule"
   >,
-  context: { readonly sessionGrantAvailable?: boolean } = {},
+  context: {
+    readonly sessionGrantAvailable?: boolean;
+    readonly permissionMode?: string | undefined;
+  } = {},
 ): ProviderApprovalPresentation | undefined {
   const suppressAlwaysAllowRule =
     options.suppressAlwaysAllowRule === true || context.sessionGrantAvailable === false;
@@ -43,7 +77,20 @@ export function claudeApprovalPresentation(
   const decisionReason = text(options.decisionReason);
   const blockedPath = text(options.blockedPath);
   const agentId = text(options.agentID);
+  const askRuleSource =
+    context.permissionMode === "bypassPermissions"
+      ? text(options.matchedAskRule?.source)
+      : undefined;
   const presentation: ProviderApprovalPresentation = {
+    ...(askRuleSource ? { askRuleSource } : {}),
+    ...(context.permissionMode === "bypassPermissions"
+      ? {
+          fullAccessOverride:
+            options.matchedAskRule === undefined
+              ? ("provider_check" as const)
+              : ("ask_rule" as const),
+        }
+      : {}),
     ...(title ? { title } : {}),
     ...(description ? { description } : {}),
     ...(displayName ? { displayName } : {}),

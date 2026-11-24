@@ -63,6 +63,18 @@ export const PrHubStackInput = Schema.Struct({
   accountGeneration: Schema.optional(Schema.String),
 });
 export type PrHubStackInput = typeof PrHubStackInput.Type;
+export const PrHubCompletionsInput = Schema.Struct({
+  ...PrHubStackInput.fields,
+  sigil: Schema.Literals(["@", "#", "!"]),
+  query: Schema.String.check(Schema.isMaxLength(100)),
+});
+export type PrHubCompletionsInput = typeof PrHubCompletionsInput.Type;
+export const PrHubCompletion = Schema.Struct({
+  token: Schema.String,
+  label: Schema.String,
+  detail: Schema.optional(Schema.String),
+});
+export type PrHubCompletion = typeof PrHubCompletion.Type;
 export const PrHubStackLayer = Schema.Struct({
   number: Schema.Int,
   title: Schema.String,
@@ -122,6 +134,7 @@ export const ForgeMutationPayload = Schema.Union([
     action: ForgeAction,
     deleteBranch: Schema.optional(Schema.Boolean),
     method: Schema.optional(Schema.Literals(["merge", "squash", "rebase"])),
+    workflowRunId: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
   }),
   Schema.Struct({
     kind: Schema.Literal("comment"),
@@ -136,6 +149,17 @@ export const ForgeMutationPayload = Schema.Union([
     kind: Schema.Literal("review"),
     body: Schema.String.check(Schema.isMaxLength(64000)),
     verdict: Schema.Literals(["comment", "approve", "request-changes"]),
+    baseOid: Schema.optional(Schema.String),
+    comments: Schema.optional(
+      Schema.Array(
+        Schema.Struct({
+          path: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4096)),
+          line: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+          side: Schema.Literals(["old", "new"]),
+          body: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(32_000)),
+        }),
+      ).check(Schema.isMaxLength(20)),
+    ),
   }),
   Schema.Struct({
     kind: Schema.Literal("edit"),
@@ -170,6 +194,7 @@ export const ForgeMutationPayload = Schema.Union([
 ]);
 export type ForgeMutationPayload = typeof ForgeMutationPayload.Type;
 export const ForgePrepareOperationInput = Schema.Struct({
+  requestFingerprint: Schema.optional(Schema.String),
   key: PullRequestKey,
   accountGeneration: Schema.String,
   operationId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),

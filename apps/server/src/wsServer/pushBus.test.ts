@@ -488,6 +488,27 @@ describe("makeServerPushBus", () => {
     ),
   );
 
+  it.effect("reserves one queued slot for another oversized frame and preserves send order", () =>
+    Effect.gen(function* () {
+      const client = new MockWebSocket();
+      client.autoCompleteSends = false;
+      const socket = client as unknown as WebSocket;
+      const clients = yield* Ref.make(new Set([socket]));
+      const controller = makeWebSocketSendController({ clients, maxClientBufferedBytes: 10 });
+
+      expect(yield* controller.send(socket, "first snapshot")).toBe(true);
+      expect(yield* controller.send(socket, "second snapshot")).toBe(true);
+      expect(yield* controller.send(socket, "event")).toBe(true);
+      expect(client.sent).toEqual(["first snapshot"]);
+      client.completeNextSend();
+      expect(client.sent).toEqual(["first snapshot", "second snapshot"]);
+      client.completeNextSend();
+      expect(client.sent).toEqual(["first snapshot", "second snapshot", "event"]);
+      client.completeNextSend();
+      expect(controller.logicalOutstandingBytes(socket)).toBe(0);
+    }),
+  );
+
   it.live("removes a failed client after a targeted push", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -531,9 +552,30 @@ it("releases oversized-send timers, queued frames and listeners on normal close"
     expect(controller.logicalOutstandingBytes(client as unknown as WebSocket)).toBe(0);
     expect(Effect.runSync(Ref.get(clients)).size).toBe(0);
     client.completeNextSend();
-    vi.advanceTimersByTime(10_000);
+    vi.advanceTimersByTime(30_000);
     expect(client.sent).toEqual(["x".repeat(101)]);
     expect(client.closes).toHaveLength(1);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("gives an oversized frame more time while it drains and closes if it stalls", async () => {
+  vi.useFakeTimers();
+  try {
+    const client = new MockWebSocket();
+    client.autoCompleteSends = false;
+    client.bufferedAmount = 100;
+    const socket = client as unknown as WebSocket;
+    const clients = Effect.runSync(Ref.make(new Set([socket])));
+    const controller = makeWebSocketSendController({ clients, maxClientBufferedBytes: 100 });
+    expect(Effect.runSync(controller.send(socket, "x".repeat(1_000)))).toBe(true);
+    client.bufferedAmount = 80;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(client.closes).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(30_001);
+    expect(client.closes).toHaveLength(1);
+    expect(controller.logicalOutstandingBytes(socket)).toBe(0);
   } finally {
     vi.useRealTimers();
   }

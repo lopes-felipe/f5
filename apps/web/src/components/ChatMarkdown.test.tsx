@@ -2,6 +2,7 @@ import ChatMarkdown from "./ChatMarkdown";
 import { RepositoryLinks } from "../repositoryLinkContext";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
+import * as appSettings from "../appSettings";
 import type { ReactNode } from "react";
 
 // ChatMarkdown pulls in shiki, the native API, and the file-navigation
@@ -88,6 +89,20 @@ describe("ChatMarkdown streaming vs settled rendering", () => {
     expect(markup).toContain("chat-markdown-codeblock");
     expect(markup).toContain('<pre><code class="language-ts">const x = 1;');
   });
+});
+
+it("renders math only when enabled and preserves code fences", () => {
+  const text = "$x^2$ and `$code$`";
+  expect(renderToStaticMarkup(<ChatMarkdown text={text} cwd={undefined} />)).not.toContain(
+    'data-markdown-math="inline"',
+  );
+  const select = <T,>(selector: (settings: appSettings.AppSettings) => T): T =>
+    selector({ ...appSettings.readAppSettingsSnapshot(), mathRenderingEnabled: true });
+  using _selector = vi.spyOn(appSettings, "useAppSettingsSelector").mockImplementation(select);
+  const html = renderToStaticMarkup(<ChatMarkdown text={text} cwd={undefined} />);
+  expect(html).toContain('data-markdown-math="inline"');
+  expect(html).toContain("Copy TeX source");
+  expect(html).toContain("<code>$code$</code>");
 });
 
 it("links repository references in rendered chat without changing code or existing links", async () => {

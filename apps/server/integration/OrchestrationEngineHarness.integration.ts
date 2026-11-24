@@ -484,6 +484,7 @@ export const makeOrchestrationIntegrationHarness = (
       refreshGate: () => Effect.die("unsupported in orchestration harness"),
       scheduleUsageLimitResume: () => Effect.die("unsupported"),
       cancelUsageLimitResume: () => Effect.die("unsupported"),
+      resendAuthFailedTurn: () => Effect.die("unsupported"),
       refreshUsageLimitResume: () => Effect.die("unsupported"),
       getBlockingDelivery: () => Effect.succeed(null),
       reconcileDeliveryPause: () => Effect.void,

@@ -309,6 +309,8 @@ export function claudeModelOptionsToProviderOptionSelections(
     return undefined;
   }
   const selections: ProviderOptionSelection[] = [];
+  if (typeof options.ultracode === "boolean")
+    selections.push({ id: "ultracode", value: options.ultracode });
   if (options.effort) {
     selections.push({ id: "effort", value: options.effort });
   }
@@ -332,7 +334,34 @@ export function createModelCapabilities(input: {
   optionDescriptors: ReadonlyArray<ProviderOptionDescriptor>;
 }): ModelCapabilities {
   return {
-    optionDescriptors: input.optionDescriptors.map(cloneProviderOptionDescriptor),
+    optionDescriptors: input.optionDescriptors.flatMap((descriptor): ProviderOptionDescriptor[] => {
+      if (
+        descriptor.type !== "select" ||
+        descriptor.id !== "effort" ||
+        !descriptor.options.some((option) => option.id === "ultracode")
+      )
+        return [cloneProviderOptionDescriptor(descriptor)];
+      const hasXhigh = descriptor.options.some((option) => option.id === "xhigh");
+      return [
+        {
+          ...descriptor,
+          ...(descriptor.currentValue === "ultracode" ? { currentValue: "xhigh" } : {}),
+          options: descriptor.options.flatMap((option) =>
+            option.id !== "ultracode"
+              ? [option]
+              : hasXhigh
+                ? []
+                : [{ ...option, id: "xhigh", label: "Extra High" }],
+          ),
+        },
+        {
+          id: "ultracode",
+          label: "Ultracode",
+          type: "boolean",
+          currentValue: descriptor.currentValue === "ultracode",
+        },
+      ];
+    }),
   };
 }
 
@@ -380,6 +409,8 @@ export function createClaudeModelCapabilities(model: string | null | undefined):
       type: "boolean",
     });
   }
+  if (metadata.effortOptions?.includes("xhigh"))
+    optionDescriptors.push({ id: "ultracode", label: "Ultracode", type: "boolean" });
   if (metadata.supportsContextWindow) {
     optionDescriptors.push({
       id: "contextWindow",
@@ -488,6 +519,22 @@ export function getProviderOptionDescriptors(input: {
   caps: ModelCapabilities | null | undefined;
   selections?: ReadonlyArray<ProviderOptionSelection> | null | undefined;
 }): ReadonlyArray<ProviderOptionDescriptor> {
+  if (
+    input.selections?.some((entry) => entry.id === "effort" && entry.value === "ultracode") &&
+    input.caps?.optionDescriptors?.some((entry) => entry.id === "ultracode")
+  ) {
+    input = {
+      ...input,
+      selections: [
+        ...input.selections.map((entry) =>
+          entry.id === "effort" ? { ...entry, value: "xhigh" } : entry,
+        ),
+        ...(input.selections.some((entry) => entry.id === "ultracode")
+          ? []
+          : [{ id: "ultracode", value: true }]),
+      ],
+    };
+  }
   return (input.caps?.optionDescriptors ?? []).map((descriptor) => {
     if (descriptor.type === "boolean") {
       const selected = getProviderOptionBooleanSelectionValue(input.selections, descriptor.id);
@@ -848,6 +895,12 @@ export function normalizeCodexModelOptions(
       ? resolveCodexEffectiveReasoningEffort(model, modelOptions.reasoningEffort, reported)
       : undefined;
     const reportedOptions: CodexModelOptions = {
+      ...(modelOptions?.cyberAccessProgram &&
+      selectDescriptor(reported, "cyberAccessProgram")?.options.some(
+        (option) => option.id === modelOptions.cyberAccessProgram,
+      )
+        ? { cyberAccessProgram: modelOptions.cyberAccessProgram }
+        : {}),
       ...(effort && effort !== capabilities.defaultEffort ? { reasoningEffort: effort } : {}),
       ...(modelOptions?.fastMode !== undefined &&
       capabilities.supportsFastMode &&
@@ -883,6 +936,13 @@ export function normalizeClaudeModelOptions(
     capabilities.supportsThinkingToggle && modelOptions?.thinking === false ? false : undefined;
   const fastMode =
     capabilities.supportsFastMode && modelOptions?.fastMode === true ? true : undefined;
+  const ultracode =
+    modelOptions?.ultracode === true &&
+    (
+      reported?.optionDescriptors ??
+      createClaudeModelCapabilities(model).optionDescriptors ??
+      []
+    ).some((descriptor) => descriptor.id === "ultracode");
   const contextWindow = capabilities.supportsContextWindow
     ? normalizeClaudeContextWindow(modelOptions?.contextWindow)
     : undefined;
@@ -890,6 +950,7 @@ export function normalizeClaudeModelOptions(
     ...(thinking === false ? { thinking: false } : {}),
     ...(effort ? { effort } : {}),
     ...(fastMode ? { fastMode: true } : {}),
+    ...(ultracode ? { ultracode: true } : {}),
     ...(contextWindow ? { contextWindow } : {}),
   };
   return Object.keys(nextOptions).length > 0 ? nextOptions : undefined;
@@ -1241,6 +1302,8 @@ export function createReportedClaudeModelCapabilities(
       currentValue: true,
     });
   }
+  const ultracode = builtIn.optionDescriptors?.find((entry) => entry.id === "ultracode");
+  if (ultracode) optionDescriptors.push(ultracode);
   return {
     optionDescriptors,
     source: "reported",
@@ -1261,6 +1324,7 @@ export function createReportedClaudeModelCapabilities(
 
 /** Subset of Codex `model/list` `Model` entries that F5 reads. */
 export interface ReportedCodexModelInfo {
+  readonly availableAccessPrograms?: { readonly cyber?: ReadonlyArray<string> };
   readonly inputModalities?: unknown;
   readonly model: string;
   readonly supportedReasoningEfforts?: ReadonlyArray<{ readonly reasoningEffort?: unknown }>;
@@ -1318,6 +1382,30 @@ export function createReportedCodexModelCapabilities(
   });
   const defaultServiceTier = nonEmptyString(info.defaultServiceTier);
   const upgradeTo = nonEmptyString(info.upgrade);
+  const cyber = [...new Set(info.availableAccessPrograms?.cyber ?? [])].filter((program) =>
+    ["standard", "daybreakBlue", "daybreakRed"].includes(program),
+  );
+  const defaultCyberProgram = "standard";
+  const cyberOptions: ProviderOptionDescriptor[] = cyber.length
+    ? [
+        {
+          id: "cyberAccessProgram",
+          label: "Cyber Access",
+          type: "select",
+          options: [...new Set(["standard", ...cyber])].map((id) => ({
+            id,
+            label:
+              id === "standard"
+                ? "Standard"
+                : id === "daybreakBlue"
+                  ? "Daybreak Blue"
+                  : "Daybreak Red",
+            ...(id === defaultCyberProgram ? { isDefault: true } : {}),
+          })),
+          ...(defaultCyberProgram ? { currentValue: defaultCyberProgram } : {}),
+        },
+      ]
+    : [];
   return {
     inputModalities: Array.isArray(info.inputModalities)
       ? info.inputModalities.filter(
@@ -1325,13 +1413,14 @@ export function createReportedCodexModelCapabilities(
             value === "text" || value === "image" || value === "audio",
         )
       : ["text", "image"],
-    optionDescriptors:
-      efforts.length > 0
+    optionDescriptors: [
+      ...cyberOptions,
+      ...(efforts.length > 0
         ? [
             {
               id: "reasoningEffort",
               label: "Reasoning",
-              type: "select",
+              type: "select" as const,
               options: efforts.map((effort) => ({
                 id: effort,
                 label: CODEX_EFFORT_LABELS[effort],
@@ -1340,7 +1429,8 @@ export function createReportedCodexModelCapabilities(
               ...(defaultEffort ? { currentValue: defaultEffort } : {}),
             },
           ]
-        : [],
+        : []),
+    ],
     source: "reported",
     // A reported empty list means "none"; an absent field leaves F5's defaults.
     ...(effortsReported ? { supportsEffort: efforts.length > 0 } : {}),
@@ -1354,6 +1444,49 @@ export function createReportedCodexModelCapabilities(
     ...(serviceTiers.length > 0 ? { serviceTiers } : {}),
     ...(defaultServiceTier ? { defaultServiceTier } : {}),
     ...(upgradeTo && upgradeTo !== info.model ? { upgradeTo } : {}),
+  };
+}
+
+/** Unknown config keeps the choice explicit; API-key opt-outs offer no program. */
+export function configureCodexCyberAccess(
+  capabilities: ModelCapabilities,
+  config: unknown,
+  accountType?: string,
+): ModelCapabilities {
+  const record =
+    config !== null && typeof config === "object" ? (config as Record<string, unknown>) : undefined;
+  const features =
+    record?.features !== null && typeof record?.features === "object"
+      ? (record.features as Record<string, unknown>)
+      : undefined;
+  return {
+    ...capabilities,
+    optionDescriptors: (capabilities.optionDescriptors ?? []).flatMap((descriptor) => {
+      if (descriptor.id !== "cyberAccessProgram" || descriptor.type !== "select")
+        return [descriptor];
+      if (
+        accountType === "apiKey" &&
+        (!record || features?.api_key_cyber_access_programs === false)
+      )
+        return [];
+      const program = !record
+        ? undefined
+        : record.daybreak === true
+          ? (["daybreakBlue", "daybreakRed"].find((id) =>
+              descriptor.options.some((option) => option.id === id),
+            ) ?? descriptor.currentValue)
+          : descriptor.currentValue;
+      const { currentValue: _current, ...rest } = descriptor;
+      return [
+        {
+          ...rest,
+          ...(program ? { currentValue: program } : {}),
+          options: descriptor.options.map(({ isDefault: _default, ...option }) =>
+            option.id === program ? { ...option, isDefault: true } : option,
+          ),
+        },
+      ];
+    }),
   };
 }
 

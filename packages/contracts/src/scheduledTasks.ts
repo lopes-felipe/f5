@@ -19,6 +19,7 @@ export type ScheduledWorkspace = typeof ScheduledWorkspace.Type;
 /** Activity appended to a bound conversation when a scheduled task sends its prompt. */
 export const SCHEDULED_TASK_TURN_SUBMITTED_ACTIVITY_KIND = "scheduled-task.turn-submitted";
 export const ScheduledTaskConfiguration = Schema.Struct({
+  freshContext: Schema.optional(Schema.Boolean),
   name: TrimmedNonEmptyString,
   prompt: TrimmedNonEmptyString,
   modelSelection: ModelSelection,

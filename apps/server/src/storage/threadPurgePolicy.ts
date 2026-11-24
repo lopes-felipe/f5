@@ -40,6 +40,7 @@ export const threadPurgePolicy: Readonly<
     reason: "Durable notification intent has independent retention.",
   },
   thread_pull_request_watches: { kind: "cascade" },
+  thread_context_boundaries: { kind: "cascade" },
   thread_pull_request_watch_stops: { kind: "cascade" },
   thread_message_authorship: { kind: "cascade" },
   thread_reference_grants: { kind: "cascade" },

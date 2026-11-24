@@ -24,6 +24,7 @@ import { UsageService } from "../../usage/Services/UsageService.ts";
 import { resolveAccountUsageLimit } from "../../provider/usageLimitMessages.ts";
 import { toOrchestrationUsageLimit } from "../providerTerminalLifecycle.ts";
 import { ServerSettingsService } from "../../serverSettings";
+import { ForgeAccounts } from "../../sourceControl/accountRouting";
 import { readProjectSettings } from "../../project/projectSettings";
 import { createHash } from "node:crypto";
 import * as NodeFs from "node:fs/promises";
@@ -39,6 +40,7 @@ import {
   type AssistantDeliveryMode,
   CommandId,
   ProviderInstanceId,
+  ProviderExtensionStatuses,
   EventId,
   MessageId,
   OrchestrationCommandExecutionId,
@@ -74,6 +76,7 @@ import {
   PubSub,
   Schedule,
   Stream,
+  Schema,
 } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { recordEffectiveTurnModel } from "../workflowTurnModel.ts";
@@ -93,6 +96,7 @@ import {
 } from "@t3tools/shared/orchestrationActivityPayload";
 
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
+import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import { isSyntheticClaudeThreadId, isUuid } from "../../provider/claudeResumeState.ts";
 import { ProviderSessionDirectory } from "../../provider/Services/ProviderSessionDirectory.ts";
 import { ThreadCommandExecutionQuery } from "../Services/ThreadCommandExecutionQuery.ts";
@@ -383,7 +387,8 @@ interface OpenCommandExecutionState {
   readonly threadId: ThreadId;
   readonly turnId: TurnId;
   readonly providerItemId: ProviderItemId;
-  readonly command: string;
+  readonly nativeThreadId?: string;
+  command: string;
   cwd: string | undefined;
   description: string | undefined;
   title: string | null;
@@ -740,25 +745,38 @@ function normalizeLifecycleCommandExecutionTitle(
   return backgroundStatus ? `${searchSummary} — ${backgroundStatus}` : searchSummary;
 }
 
+function extractRawCommandExecutionCommand(
+  event: Extract<
+    ProviderRuntimeEvent,
+    { type: "item.started" | "item.updated" | "item.completed" }
+  >,
+): string | undefined {
+  const data = asRecord(event.payload.data);
+  const item = asRecord(data?.item);
+  const itemInput = asRecord(item?.input);
+  const toolInput = asRecord(data?.input);
+  const itemResult = asRecord(item?.result);
+  return (
+    normalizeCommandValue(item?.command) ??
+    normalizeCommandValue(itemInput?.command) ??
+    normalizeCommandValue(toolInput?.command) ??
+    normalizeCommandValue(itemResult?.command) ??
+    normalizeCommandValue(data?.command)
+  );
+}
+
 function extractCommandExecutionCommand(
   event: Extract<
     ProviderRuntimeEvent,
     { type: "item.started" | "item.updated" | "item.completed" }
   >,
 ): string {
-  const data = asRecord(event.payload.data);
-  const item = asRecord(data?.item);
-  const itemInput = asRecord(item?.input);
-  const itemResult = asRecord(item?.result);
   const payloadTitle =
     typeof event.payload.title === "string" && !isGenericCommandTitle(event.payload.title)
       ? event.payload.title
       : undefined;
   return (
-    normalizeCommandValue(item?.command) ??
-    normalizeCommandValue(itemInput?.command) ??
-    normalizeCommandValue(itemResult?.command) ??
-    normalizeCommandValue(data?.command) ??
+    extractRawCommandExecutionCommand(event) ??
     event.payload.detail ??
     payloadTitle ??
     event.payload.title ??
@@ -1567,6 +1585,7 @@ export function runtimeEventToActivities(
   switch (event.type) {
     case "session.configured": {
       const config = event.payload.config;
+      if ("extensionStatuses" in config && Object.keys(config).length === 1) return [];
       const model =
         typeof config.model === "string" && config.model.trim().length > 0
           ? config.model.trim()
@@ -2146,7 +2165,9 @@ export function runtimeEventToActivities(
                 ? "Verification required"
                 : event.payload.category === "protocol"
                   ? "Protocol warning"
-                  : "Runtime warning",
+                  : typeof asRecord(event.payload.detail)?.noticeTitle === "string"
+                    ? String(asRecord(event.payload.detail)!.noticeTitle)
+                    : "Runtime warning",
           payload: {
             message: event.payload.message,
             ...(event.payload.detail !== undefined ? { detail: event.payload.detail } : {}),
@@ -2508,8 +2529,10 @@ const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const serverConfig = yield* ServerConfig;
   const serverSettings = yield* ServerSettingsService;
+  const forgeAccounts = yield* Effect.serviceOption(ForgeAccounts);
   const providerService = yield* ProviderService;
   const usageService = yield* Effect.serviceOption(UsageService);
+  const providerRegistry = yield* Effect.serviceOption(ProviderRegistry);
   const ingestionScope = yield* Effect.scope;
   const mcpEventBus = yield* Effect.serviceOption(CodexMcpEventBus);
   const pendingMcpPushes = new Map<
@@ -4053,6 +4076,11 @@ const make = Effect.gen(function* () {
     );
     const fallbackCwd =
       eventCwd ?? existing?.cwd ?? (yield* resolveWorkspaceCwdForThread(input.threadId));
+    const data = asRecord(input.event.payload.data);
+    const nativeThreadId =
+      input.event.provider === "codex"
+        ? (asString(data?.threadId) ?? asString(data?.thread_id))
+        : undefined;
     const commandExecution: OpenCommandExecutionState =
       existing ??
       ({
@@ -4060,6 +4088,7 @@ const make = Effect.gen(function* () {
         threadId: input.threadId,
         turnId: input.turnId,
         providerItemId: input.providerItemId,
+        ...(nativeThreadId ? { nativeThreadId } : {}),
         command,
         cwd: fallbackCwd,
         description: eventDescription,
@@ -4079,6 +4108,8 @@ const make = Effect.gen(function* () {
       } satisfies OpenCommandExecutionState);
 
     commandExecution.cwd = eventCwd ?? commandExecution.cwd ?? fallbackCwd;
+    commandExecution.command =
+      extractRawCommandExecutionCommand(input.event) ?? commandExecution.command;
     commandExecution.description = eventDescription ?? commandExecution.description;
     commandExecution.title = normalizedTitle ?? commandExecution.title;
     commandExecution.detail = input.event.payload.detail ?? commandExecution.detail;
@@ -4090,8 +4121,9 @@ const make = Effect.gen(function* () {
         : laterIsoTimestamp(input.event.createdAt, pendingOutput.updatedAt);
     commandExecution.completedAt =
       input.event.type === "item.completed" ? input.event.createdAt : commandExecution.completedAt;
-    // Claude names the tool in `command` and puts the shell text in `detail`; either may
-    // arrive after the item starts. Output not flushed yet is still in `bufferedOutput`.
+    // Structured shell input can arrive after the item starts. Keep its full text,
+    // even when later lifecycle events carry only a shortened display summary.
+    // Output not flushed yet is still in `bufferedOutput`.
     if (
       commandExecution.pullRequestCreateOutput === null &&
       (commandCreatesPullRequest(commandExecution.command) ||
@@ -4149,13 +4181,30 @@ const make = Effect.gen(function* () {
       (commandExecution.exitCode !== null && commandExecution.exitCode !== 0)
     )
       return;
+    const allowedGitLabHosts = new Set(["gitlab.com"]);
+    if (
+      Option.isSome(forgeAccounts) &&
+      commandExecution.pullRequestCreateOutput.includes("/-/merge_requests/")
+    ) {
+      const accounts = yield* forgeAccounts.value
+        .listAccounts()
+        .pipe(Effect.catch(() => Effect.succeed([])));
+      for (const account of accounts)
+        if (account.provider === "gitlab") allowedGitLabHosts.add(account.host);
+    }
     const pullRequest = detectCreatedPullRequest({
       command: commandExecution.command,
       detail: commandExecution.detail,
       output: commandExecution.pullRequestCreateOutput,
+      allowedGitLabHosts,
     });
     if (!pullRequest) return;
     commandExecution.pullRequestCreateOutput = null;
+    if (
+      pullRequest.provider === "gitlab" &&
+      !(yield* serverSettings.getSettings).autoLinkShellCreatedMergeRequests
+    )
+      return;
     yield* orchestrationEngine
       .dispatch({
         type: "thread.meta.update",
@@ -4248,6 +4297,8 @@ const make = Effect.gen(function* () {
     readonly event: ProviderRuntimeEvent;
     readonly threadId: ThreadId;
     readonly turnId?: TurnId;
+    readonly nativeThreadId?: string;
+    readonly excludeTurnId?: TurnId | null;
     readonly status: Exclude<
       OrchestrationCommandExecutionStatus,
       "running" | "completed" | "declined"
@@ -4259,6 +4310,9 @@ const make = Effect.gen(function* () {
       (commandExecution) =>
         commandExecution.threadId === input.threadId &&
         (input.turnId === undefined || commandExecution.turnId === input.turnId) &&
+        commandExecution.turnId !== input.excludeTurnId &&
+        (input.nativeThreadId === undefined ||
+          commandExecution.nativeThreadId === input.nativeThreadId) &&
         commandExecution.completedAt === null,
     );
 
@@ -5403,6 +5457,23 @@ const make = Effect.gen(function* () {
       }
 
       if (event.type === "thread.state.changed" && event.payload.state === "closed") {
+        if (event.provider === "codex") {
+          const detail = asRecord(event.payload.detail);
+          const nativeThreadId = asString(detail?.threadId) ?? asString(detail?.thread_id);
+          if (nativeThreadId) {
+            yield* finalizeOpenCommandExecutions({
+              event,
+              threadId: thread.id,
+              nativeThreadId,
+              excludeTurnId:
+                activeTurnId ??
+                (thread.latestTurn?.state === "running" ? thread.latestTurn.turnId : null),
+              status: "interrupted",
+              updatedAt: now,
+              commandTag: "command-execution-thread-closed-finalize",
+            });
+          }
+        }
         yield* orchestrationEngine.dispatch({
           type: "thread.session.set",
           commandId: providerCommandId(event, "thread-provider-state-set"),
@@ -5503,6 +5574,7 @@ const make = Effect.gen(function* () {
           authoritativeSnapshot: normalizedContextTokens !== undefined,
         });
         const modelContextWindowTokens = event.payload.modelContextWindowTokens;
+        const autoCompactThreshold = event.payload.autoCompactThreshold ?? null;
         const tokenUsageSource =
           estimatedContextTokens === providerReportedContextTokens
             ? ("provider" as const)
@@ -5515,6 +5587,7 @@ const make = Effect.gen(function* () {
           thread.session?.status === "running" &&
           thread.session.activeTurnId !== null &&
           thread.session.tokenUsageSource === tokenUsageSource &&
+          autoCompactThreshold === (thread.session.autoCompactThreshold ?? null) &&
           (modelContextWindowTokens === undefined ||
             modelContextWindowTokens === thread.session.modelContextWindowTokens) &&
           Math.abs(estimatedContextTokens - storedContextTokens) <
@@ -5553,6 +5626,7 @@ const make = Effect.gen(function* () {
                 ? { estimatedContextTokens, tokenUsageSource }
                 : {}),
               ...(modelContextWindowTokens !== undefined ? { modelContextWindowTokens } : {}),
+              autoCompactThreshold,
               updatedAt: now,
             },
             createdAt: now,
@@ -6305,6 +6379,16 @@ const make = Effect.gen(function* () {
           : activeTurnId === null || eventTurnId === undefined || sameId(activeTurnId, eventTurnId);
 
         if (shouldApplyRuntimeError) {
+          const errorProviderInstanceId =
+            event.providerInstanceId ?? thread.session?.providerInstanceId ?? null;
+          const authFailure =
+            event.payload.class === "auth_error" && errorProviderInstanceId
+              ? {
+                  providerInstanceId: errorProviderInstanceId,
+                  turnId: eventTurnId ?? activeTurnId ?? null,
+                  occurredAt: now,
+                }
+              : undefined;
           yield* orchestrationEngine.dispatch({
             type: "thread.session.set",
             commandId: providerCommandId(event, "runtime-error-session-set"),
@@ -6313,8 +6397,8 @@ const make = Effect.gen(function* () {
               threadId: thread.id,
               status: "error",
               providerName: event.provider,
-              providerInstanceId:
-                event.providerInstanceId ?? thread.session?.providerInstanceId ?? null,
+              providerInstanceId: errorProviderInstanceId,
+              ...(authFailure ? { authFailure } : {}),
               runtimeMode: thread.session?.runtimeMode ?? thread.runtimeMode,
               activeTurnId:
                 activeTurnId === null && thread.session?.usageLimit?.turnId === eventTurnId
@@ -6328,6 +6412,15 @@ const make = Effect.gen(function* () {
             },
             createdAt: now,
           });
+          // Re-probe the account so Settings and the picker show it signed out too.
+          if (authFailure && Option.isSome(providerRegistry)) {
+            yield* Effect.forkIn(
+              providerRegistry.value
+                .refreshInstance(authFailure.providerInstanceId)
+                .pipe(Effect.ignoreCause({ log: true })),
+              ingestionScope,
+            );
+          }
         }
       }
 
@@ -6451,6 +6544,23 @@ const make = Effect.gen(function* () {
       }
 
       if (event.type === "session.configured") {
+        if (
+          event.provider === "pi" &&
+          thread.session &&
+          Schema.is(ProviderExtensionStatuses)(event.payload.config.extensionStatuses)
+        ) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.session.set",
+            commandId: providerCommandId(event, "extension-status-set"),
+            createdAt: now,
+            threadId: thread.id,
+            session: {
+              ...thread.session,
+              extensionStatuses: event.payload.config.extensionStatuses,
+              updatedAt: now,
+            },
+          });
+        }
         const configuredConfig =
           typeof event.payload.config === "object" && event.payload.config !== null
             ? event.payload.config

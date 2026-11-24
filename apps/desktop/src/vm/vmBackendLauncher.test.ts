@@ -1,0 +1,375 @@
+import { EventEmitter } from "node:events";
+import type { ChildProcess } from "node:child_process";
+import { PassThrough } from "node:stream";
+import { describe, expect, it, vi } from "vitest";
+import { encodeBackendFrame } from "@t3tools/shared/backendFrames";
+import { MAC_BACKEND_COMPUTER_SANDBOX } from "../backendComputerIsolation";
+import {
+  resolveVmLaunchAssets,
+  VM_BACKEND_MANIFEST_NAME,
+  VM_READINESS_TIMEOUT_MS,
+  VM_STOP_GRACE_MS,
+  vmBackendLauncher,
+  VmSlotReservations,
+  type VmLaunchAssets,
+} from "./vmBackendLauncher";
+import { VM_FORWARD_READY, VM_SHUTDOWN_BUDGET_MS, VM_STARTUP_PROGRESS } from "./vmSupervisor";
+
+const archive = "/res/vm/f5-1.2.3-linux-arm64.tar.gz";
+const manifest = {
+  schemaVersion: 1,
+  version: "1.2.3",
+  artifacts: [
+    {
+      target: "linux-arm64",
+      url: "https://github.com/lopes-felipe/f5/releases/download/v1.2.3/f5-1.2.3-linux-arm64.tar.gz",
+      sha256: "d".repeat(64),
+      size: 100,
+    },
+  ],
+};
+const lock = {
+  image: {
+    url: "https://github.com/lopes-felipe/f5/releases/download/0.0.0-guest-image-abc/f5-guest.qcow2",
+    sha256: "c".repeat(64),
+    size: 10,
+  },
+};
+
+function resolve(overrides: Partial<Parameters<typeof resolveVmLaunchAssets>[0]> = {}) {
+  return resolveVmLaunchAssets({
+    env: {
+      F5_EXPERIMENTAL_LINUX_VM: "1",
+      F5_VM_LIMACTL: "/lima/bin/limactl",
+      F5_VM_BACKEND_ARCHIVE: archive,
+    },
+    platform: "darwin",
+    arch: "arm64",
+    resourcesPath: "/res",
+    packaged: false,
+    appVersion: "1.2.3",
+    lock,
+    exists: () => true,
+    readFile: (path) => {
+      expect(path).toBe("/res/vm/f5-1.2.3-linux-arm64.json");
+      return JSON.stringify(manifest);
+    },
+    ...overrides,
+  });
+}
+
+describe("resolveVmLaunchAssets", () => {
+  it("resolves Lima, the backend archive and the pinned image", () => {
+    expect(resolve()).toEqual({
+      ok: true,
+      assets: {
+        limactl: "/lima/bin/limactl",
+        backend: { archive, sha256: "d".repeat(64), version: "1.2.3" },
+        imagePin: lock.image,
+      },
+    });
+  });
+
+  it("is off without the hidden flag", () => {
+    expect(resolve({ env: { F5_VM_LIMACTL: "/l", F5_VM_BACKEND_ARCHIVE: archive } })).toMatchObject(
+      { ok: false, reason: expect.stringMatching(/not enabled/) },
+    );
+  });
+
+  it("needs Apple silicon", () => {
+    expect(resolve({ arch: "x64" }).ok).toBe(false);
+    expect(resolve({ platform: "linux" }).ok).toBe(false);
+  });
+
+  it("refuses missing Lima or a manifest for another archive", () => {
+    expect(resolve({ exists: (path) => path !== "/lima/bin/limactl" })).toMatchObject({
+      ok: false,
+      reason: expect.stringMatching(/Lima is missing/),
+    });
+    expect(
+      resolve({
+        readFile: () =>
+          JSON.stringify({
+            ...manifest,
+            artifacts: [{ ...manifest.artifacts[0], url: "https://x.test/other.tar.gz" }],
+          }),
+      }),
+    ).toMatchObject({ ok: false, reason: expect.stringMatching(/different archive/) });
+  });
+
+  it("refuses a build without a pinned image", () => {
+    expect(resolve({ lock: { image: null } })).toMatchObject({
+      ok: false,
+      reason: expect.stringMatching(/no pinned guest image/),
+    });
+  });
+
+  const evilEnv = {
+    F5_EXPERIMENTAL_LINUX_VM: "1",
+    F5_VM_LIMACTL: "/evil/limactl",
+    F5_VM_BACKEND_ARCHIVE: "/evil/f5-1.2.3-linux-arm64.tar.gz",
+    F5_VM_IMAGE_URL: "https://evil.test/image.qcow2",
+    F5_VM_IMAGE_SHA256: "a".repeat(64),
+    F5_VM_IMAGE_SIZE: "5",
+  };
+  const bundledManifest = `/res/vm/${VM_BACKEND_MANIFEST_NAME}`;
+  const packaged = (
+    pin: unknown = manifest,
+    overrides: Partial<Parameters<typeof resolveVmLaunchAssets>[0]> = {},
+  ) =>
+    resolve({
+      packaged: true,
+      env: evilEnv,
+      exists: (path) => !path.startsWith("/evil"),
+      readFile: (path) => {
+        expect(path).toBe(bundledManifest);
+        return JSON.stringify(pin);
+      },
+      ...overrides,
+    });
+
+  it("resolves a packaged build's bundled pin as a download, whatever the overrides say", () => {
+    expect(packaged()).toEqual({
+      ok: true,
+      assets: {
+        limactl: "/res/native/lima/bin/limactl",
+        backend: {
+          version: "1.2.3",
+          sha256: "d".repeat(64),
+          download: { url: manifest.artifacts[0]!.url, size: 100 },
+        },
+        imagePin: lock.image,
+      },
+    });
+  });
+
+  it("refuses a packaged build without a bundled backend pin, never reading /evil", () => {
+    const readFile = vi.fn(() => JSON.stringify(manifest));
+    expect(
+      packaged(manifest, { exists: (path) => path === "/res/native/lima/bin/limactl", readFile }),
+    ).toMatchObject({ ok: false, reason: expect.stringMatching(/no pinned linux-arm64 backend/) });
+    expect(readFile).not.toHaveBeenCalled();
+  });
+
+  it("refuses a bundled pin for another version or outside this version's release", () => {
+    expect(packaged(manifest, { appVersion: "1.2.4" })).toMatchObject({
+      ok: false,
+      reason: expect.stringMatching(/pins 1\.2\.3, not this app's 1\.2\.4/),
+    });
+    for (const url of [
+      "https://github.com/lopes-felipe/f5/releases/download/v1.2.2/f5-1.2.3-linux-arm64.tar.gz",
+      "https://github.com/someone/f5/releases/download/v1.2.3/f5-1.2.3-linux-arm64.tar.gz",
+      "https://evil.test/f5-1.2.3-linux-arm64.tar.gz",
+    ])
+      expect(
+        packaged({ ...manifest, artifacts: [{ ...manifest.artifacts[0], url }] }),
+      ).toMatchObject({ ok: false, reason: expect.stringMatching(/outside this version/) });
+  });
+
+  it("refuses, rather than throwing, when the bundled pin is unreadable or malformed", () => {
+    expect(
+      packaged(manifest, {
+        readFile: () => {
+          throw new Error("EACCES: permission denied");
+        },
+      }),
+    ).toMatchObject({ ok: false, reason: expect.stringMatching(/pin is invalid: EACCES/) });
+    expect(packaged({ schemaVersion: 2 })).toMatchObject({
+      ok: false,
+      reason: expect.stringMatching(/pin is invalid/),
+    });
+  });
+
+  it("lets development builds override the image", () => {
+    const resolved = resolve({
+      env: {
+        F5_EXPERIMENTAL_LINUX_VM: "1",
+        F5_VM_LIMACTL: "/lima/bin/limactl",
+        F5_VM_BACKEND_ARCHIVE: archive,
+        F5_VM_IMAGE_URL: "https://dev.test/image.qcow2",
+        F5_VM_IMAGE_SHA256: "a".repeat(64),
+        F5_VM_IMAGE_SIZE: "5",
+      },
+    });
+    expect(resolved.ok && resolved.assets.imagePin).toEqual({
+      url: "https://dev.test/image.qcow2",
+      sha256: "a".repeat(64),
+      size: 5,
+    });
+  });
+});
+
+describe("VmSlotReservations", () => {
+  it("lets three concurrent opens take only the two VM slots", () => {
+    const slots = new VmSlotReservations();
+    const a = slots.reserve("a", []);
+    slots.reserve("b", []);
+    // Neither a nor b counts as running yet; their reservations alone fill the cap.
+    expect(() => slots.reserve("c", [])).toThrow(/Two Linux VM profiles/);
+    a();
+    expect(() => slots.reserve("c", [])).not.toThrow();
+  });
+
+  it("counts running VMs and doesn't double-count a profile that is both", () => {
+    const slots = new VmSlotReservations();
+    const release = slots.reserve("a", []);
+    // `a` is now opening and running: one slot, so `b` still fits and `c` doesn't.
+    expect(() => slots.reserve("b", ["a"])).not.toThrow();
+    expect(() => slots.reserve("c", ["a"])).toThrow(/Two Linux VM profiles/);
+    release();
+    release();
+    // Only `b` is left.
+    expect(() => slots.reserve("c", [])).not.toThrow();
+  });
+
+  it("lets a profile reopen while it holds its own slot", () => {
+    const slots = new VmSlotReservations();
+    slots.reserve("a", []);
+    slots.reserve("b", []);
+    expect(() => slots.reserve("a", ["b"])).not.toThrow();
+  });
+});
+
+function fakeSupervisor() {
+  const stdin = new PassThrough();
+  const stdout = new PassThrough();
+  const child = Object.assign(new EventEmitter(), {
+    pid: 9,
+    stdin,
+    stdout,
+    stderr: new PassThrough(),
+  });
+  return { child: child as unknown as ChildProcess, stdin, stdout };
+}
+
+describe("vmBackendLauncher", () => {
+  const assets: VmLaunchAssets = {
+    limactl: "/lima/bin/limactl",
+    backend: { archive, sha256: "d".repeat(64), version: "1.2.3" },
+    imagePin: lock.image,
+  };
+  const request = {
+    entry: "/server/index.mjs",
+    nodeArgs: [],
+    cwd: "/home",
+    env: { HOME: "/Users/me", TMPDIR: "/tmp/me", T3CODE_AUTH_TOKEN: "secret", GH_TOKEN: "gh" },
+    incarnation: "11111111-2222-4333-8444-555555555555",
+    profileId: "0123456789abcdef0123456789abcdef",
+    profileStateDir: "/Users/me/.f5/userdata-profiles/0123456789abcdef0123456789abcdef",
+    port: 41000,
+    authToken: "a".repeat(48),
+  };
+
+  it("runs the supervisor sandboxed, with no inherited secrets, and sends the boot line first", async () => {
+    const { child, stdin, stdout } = fakeSupervisor();
+    const spawn = vi.fn(() => child);
+    const launcher = vmBackendLauncher({
+      platform: "darwin",
+      executable: "/F5",
+      supervisorEntry: "/app/vmSupervisorEntry.js",
+      stateDir: "/Users/me/.f5/userdata",
+      assets,
+      startupErrorPath: (id) => `/errors/${id}.json`,
+      spawn,
+    });
+    expect(launcher.environment).toBe("linux-vm");
+    expect(launcher.readinessTimeoutMs).toBe(VM_READINESS_TIMEOUT_MS);
+    // Main must not force-kill the supervisor while `limactl stop` can still be running.
+    expect(launcher.stopGraceMs).toBe(VM_STOP_GRACE_MS);
+    expect(VM_STOP_GRACE_MS).toBeGreaterThan(VM_SHUTDOWN_BUDGET_MS);
+    const launch = launcher.launch(request);
+    const [command, args, options] = spawn.mock.calls[0] as unknown as [
+      string,
+      string[],
+      { env: NodeJS.ProcessEnv; stdio: unknown },
+    ];
+    expect(command).toBe("/usr/bin/sandbox-exec");
+    expect(args).toEqual(["-p", MAC_BACKEND_COMPUTER_SANDBOX, "/F5", "/app/vmSupervisorEntry.js"]);
+    expect(options.stdio).toEqual(["pipe", "pipe", "pipe"]);
+    expect(Object.keys(options.env).sort()).toEqual([
+      "ELECTRON_RUN_AS_NODE",
+      "F5_VM_SUPERVISOR_CONFIG",
+      "HOME",
+      "LANG",
+      "PATH",
+      "TMPDIR",
+    ]);
+    const config = JSON.parse(options.env.F5_VM_SUPERVISOR_CONFIG!);
+    expect(config).toMatchObject({
+      profileId: request.profileId,
+      incarnation: request.incarnation,
+      port: 41000,
+      limaHome: "/Users/me/.f5/userdata/vm/0123456789abcdef",
+      vmDir: `${request.profileStateDir}/vm`,
+      imageCacheDir: "/Users/me/.f5/userdata/vm/images",
+      backendCacheDir: "/Users/me/.f5/userdata/vm/backends",
+      startupErrorPath: `/errors/${request.profileId}.json`,
+    });
+    expect(JSON.stringify(config)).not.toContain(request.authToken);
+
+    expect(stdin.read()?.toString()).toBe(
+      JSON.stringify({ port: 41000, authToken: request.authToken, profileId: request.profileId }) +
+        "\n",
+    );
+    expect(launch.stdoutIsLog).toBe(false);
+    expect(launch.channel.hostPid).toBeUndefined();
+    const received: unknown[] = [];
+    launch.channel.onMessage((message) => received.push(message));
+    let reachable = false;
+    void launch.reachable!.then(() => {
+      reachable = true;
+    });
+    // The supervisor's own frame comes first and is consumed; the backend's follow.
+    stdout.write(encodeBackendFrame({ type: VM_FORWARD_READY, incarnation: request.incarnation }));
+    stdout.write(encodeBackendFrame({ type: "hello" }));
+    await vi.waitFor(() => expect(received).toEqual([{ type: "hello" }]));
+    expect(reachable).toBe(true);
+  });
+
+  it("reports the supervisor's startup progress before the forward is ready", async () => {
+    const { child, stdout } = fakeSupervisor();
+    const onStartupProgress = vi.fn();
+    const launch = vmBackendLauncher({
+      platform: "darwin",
+      executable: "/F5",
+      supervisorEntry: "/app/vmSupervisorEntry.js",
+      stateDir: "/Users/me/.f5/userdata",
+      assets,
+      startupErrorPath: (id) => `/errors/${id}.json`,
+      spawn: () => child,
+    }).launch({ ...request, onStartupProgress });
+    const received: unknown[] = [];
+    launch.channel.onMessage((message) => received.push(message));
+    const progress = { type: VM_STARTUP_PROGRESS, incarnation: request.incarnation };
+    stdout.write(encodeBackendFrame(progress));
+    stdout.write(encodeBackendFrame(progress));
+    stdout.write(encodeBackendFrame({ type: VM_FORWARD_READY, incarnation: request.incarnation }));
+    await launch.reachable;
+    expect(onStartupProgress).toHaveBeenCalledTimes(2);
+    expect(launch.channel.connected).toBe(true);
+    expect(received).toEqual([]);
+  });
+
+  it.each([
+    ["a backend frame", { type: "hello" }],
+    ["another incarnation's signal", { type: VM_FORWARD_READY, incarnation: "other" }],
+    ["another incarnation's progress", { type: VM_STARTUP_PROGRESS, incarnation: "other" }],
+  ])("closes the channel, never reachable, when %s comes first", async (_name, first) => {
+    const { child, stdout } = fakeSupervisor();
+    const launch = vmBackendLauncher({
+      platform: "darwin",
+      executable: "/F5",
+      supervisorEntry: "/app/vmSupervisorEntry.js",
+      stateDir: "/Users/me/.f5/userdata",
+      assets,
+      startupErrorPath: (id) => `/errors/${id}.json`,
+      spawn: () => child,
+    }).launch(request);
+    const received: unknown[] = [];
+    launch.channel.onMessage((message) => received.push(message));
+    stdout.write(encodeBackendFrame(first));
+    await expect(launch.reachable).rejects.toThrow(/before the port was forwarded/);
+    expect(launch.channel.connected).toBe(false);
+    expect(received).toEqual([]);
+  });
+});

@@ -1,0 +1,1 @@
+- Use Cmd+F or Ctrl+F in workspace and pull-request diffs to search virtualized lines. Navigating to a match opens its collapsed file.

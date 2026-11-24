@@ -10,6 +10,20 @@ export type IgnoredFilesRemovalPolicy =
       readonly approvedEntries?: ReadonlyArray<string> | undefined;
     };
 
+export function scopeIgnoredFilesRemovalPolicy(
+  relativePath: string,
+  policy: IgnoredFilesRemovalPolicy | undefined,
+): IgnoredFilesRemovalPolicy | undefined {
+  if (policy?.kind !== "manual") return policy;
+  const prefix = relativePath.replaceAll("\\", "/") + "/";
+  return {
+    kind: "manual",
+    approvedEntries: policy.approvedEntries?.flatMap((entry) =>
+      entry.startsWith(prefix) ? [entry.slice(prefix.length)] : [],
+    ),
+  };
+}
+
 /** Ignored directory names that hold regenerated build, test, or cache output. */
 const REBUILDABLE_IGNORED_DIRECTORIES: ReadonlySet<string> = new Set([
   "node_modules",
