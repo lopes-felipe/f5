@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off - the tool-call normalizer is synchronous
+import * as NodePath from "node:path";
+
 import { formatPatch, OMIT_HEADERS, structuredPatch } from "diff";
 
 import type { AcpToolCallState } from "./AcpRuntimeModel.ts";
@@ -5,7 +8,9 @@ import {
   ANTIGRAVITY_EDIT_DIFF_OMITTED,
   antigravityEditPatch,
   isAntigravitySnippetPatch,
+  ANTIGRAVITY_PRE_WRITE_UNKNOWN,
   readAntigravityPreEditFile,
+  type AntigravityPreWriteFile,
 } from "./AntigravityEditLocation.ts";
 import { antigravityArtifactWrite } from "./AntigravityPlanArtifacts.ts";
 
@@ -116,7 +121,7 @@ const normalizeEol = (text: string) => text.replaceAll("\r\n", "\n");
 function fullTextKind(
   entry: Record<string, unknown>,
   rawInput: unknown,
-): "edit" | "add" | "overwrite" | undefined {
+): "edit" | "write" | undefined {
   const { path, oldText, newText } = entry;
   if (typeof path !== "string" || typeof newText !== "string") return undefined;
   const snippets = snippetTargets(rawInput);
@@ -127,38 +132,77 @@ function fullTextKind(
     return targets.every((target) => file.includes(target)) ? "edit" : undefined;
   }
   if (oldText != null || snippets.length > 0) return undefined;
-  const raw = record(rawInput);
-  return (raw.Overwrite ?? raw.overwrite) === true ? "overwrite" : "add";
+  return "write";
 }
+
+const isOverwrite = (rawInput: unknown) => {
+  const raw = record(rawInput);
+  return (raw.Overwrite ?? raw.overwrite) === true;
+};
+
+/** The file a whole-file write targets, from its input or its reported location. */
+function writeTarget(tool: AcpToolCallState): string | undefined {
+  const raw = record(tool.data.rawInput);
+  if (snippetTargets(raw).length > 0) return undefined;
+  const content = [raw.Content, raw.CodeContent, raw.content].find(
+    (value) => typeof value === "string",
+  );
+  if (content === undefined) return undefined;
+  const locations = Array.isArray(tool.data.locations) ? tool.data.locations : [];
+  const target = [
+    raw.Path,
+    raw.TargetFile,
+    raw.path,
+    raw.file_path,
+    record(locations[0]).path,
+  ].find((value): value is string => typeof value === "string" && value.trim().length > 0);
+  return target?.trim();
+}
+
+const samePath = (left: string, right: string) =>
+  NodePath.resolve(left) === NodePath.resolve(right);
+
+const addition = (path: string, newText: string, budget: DiffBudget): DiffResolution => ({
+  // An empty new file has no hunks; keep its path rather than drop the entry.
+  patch: hunkPatch(path, "", newText, budget) ?? OMITTED_PATCH,
+  changes: [{ path, operation: "add" }],
+});
 
 /** Only a completed update is diffed; earlier ones name the file and nothing more. */
 function fullTextDiff(
   entry: Record<string, unknown>,
-  kind: "edit" | "add" | "overwrite",
+  kind: "edit" | "write",
   completed: boolean,
   budget: DiffBudget,
+  rawInput: unknown,
+  before: AntigravityPreWriteFile | undefined,
 ): DiffResolution {
   const path = entry.path as string;
   const newText = entry.newText as string;
-  // An overwrite replaced content this update does not carry; the checkpoint diff shows it.
-  if (kind === "overwrite" || !completed) return { patch: OMITTED_PATCH };
-  if (kind === "add")
-    return {
-      // An empty new file has no hunks; keep its path rather than drop the entry.
-      patch: hunkPatch(path, "", newText, budget) ?? OMITTED_PATCH,
-      changes: [{ path, operation: "add" }],
-    };
-  return { patch: hunkPatch(path, entry.oldText as string, newText, budget) };
+  if (!completed) return { patch: OMITTED_PATCH };
+  if (kind === "edit") return { patch: hunkPatch(path, entry.oldText as string, newText, budget) };
+  // A write carries only the new text. The runtime marks new files as overwrites too, so what
+  // the file held before the write decides: nothing, its old text, or unknown.
+  if (before?.state === "missing") return addition(path, newText, budget);
+  // No change against the snapshot is ambiguous: a rewrite with the same contents, or a
+  // snapshot taken after the write ran. Keep the path rather than drop the entry.
+  if (before?.state === "text")
+    return { patch: hunkPatch(path, before.text, newText, budget) ?? OMITTED_PATCH };
+  if (before === undefined && !isOverwrite(rawInput)) return addition(path, newText, budget);
+  // The replaced content is unknown; the checkpoint diff shows it.
+  return { patch: OMITTED_PATCH };
 }
 
 /**
  * Retain pending diff locations before native edits change the source file.
  * Writes into the brain directories under `brainRoots` are Antigravity's own
- * artifacts, not workspace changes.
+ * artifacts, not workspace changes. `readPreWriteFile` snapshots a write's target;
+ * the adapter binds it to the session workspace, and nothing is read without it.
  */
 export function makeAntigravityToolNormalizer(
   readFile = readAntigravityPreEditFile,
   brainRoots: ReadonlyArray<string> = [],
+  readPreWriteFile: (path: string) => AntigravityPreWriteFile = () => ANTIGRAVITY_PRE_WRITE_UNKNOWN,
 ) {
   const patches = new Map<string, unknown>();
   const resolutions = new Map<string, DiffResolution>();
@@ -167,6 +211,8 @@ export function makeAntigravityToolNormalizer(
     if (resolutions.size > 256) resolutions.delete(resolutions.keys().next().value!);
     return resolution;
   };
+  // A write's target as it was when the call was first announced, before the write ran.
+  const preWrites = new Map<string, { path: string; before: AntigravityPreWriteFile }>();
   return (tool: AcpToolCallState): AcpToolCallState => {
     const artifact = antigravityArtifactWrite(tool, brainRoots);
     if (artifact) {
@@ -187,6 +233,16 @@ export function makeAntigravityToolNormalizer(
       };
     }
     const kind = editKind(tool);
+    const terminal = tool.status === "completed" || tool.status === "failed";
+    if (kind === "edit" && !terminal && !preWrites.has(tool.toolCallId)) {
+      const target = writeTarget(tool);
+      if (target) {
+        preWrites.set(tool.toolCallId, { path: target, before: readPreWriteFile(target) });
+        if (preWrites.size > 32) preWrites.delete(preWrites.keys().next().value!);
+      }
+    }
+    const preWrite = preWrites.get(tool.toolCallId);
+    if (terminal) preWrites.delete(tool.toolCallId);
     // Full before/after texts become a patch before sanitizing, which keeps only each string's
     // last 8000 characters; the texts themselves are dropped, never stored cut.
     const fullText = new Map<number, DiffResolution>();
@@ -209,7 +265,16 @@ export function makeAntigravityToolNormalizer(
           // A later update without texts reuses the completed result.
           let resolution = resolutions.get(key);
           if (!resolution && textKind) {
-            resolution = fullTextDiff(entry, textKind, completed, budget);
+            resolution = fullTextDiff(
+              entry,
+              textKind,
+              completed,
+              budget,
+              tool.data.rawInput,
+              preWrite && samePath(preWrite.path, entry.path as string)
+                ? preWrite.before
+                : undefined,
+            );
             if (completed && resolution.patch !== undefined) remember(key, resolution);
           }
           if (!resolution) return item;

@@ -1232,7 +1232,7 @@ export const makePrHubExtensions = Effect.gen(function* () {
           const detail = yield* runtime.provider.getDetail(ref);
           const candidatesSupported = runtime.provider.forgeCapabilities.reviewers.listCandidates;
           const candidates = candidatesSupported
-            ? yield* runtime.provider.listReviewerCandidates(ref)
+            ? yield* runtime.provider.listReviewerCandidates(ref, detail)
             : [];
           return {
             candidates,

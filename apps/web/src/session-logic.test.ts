@@ -3607,6 +3607,82 @@ describe("deriveWorkLogEntries", () => {
     ]);
   });
 
+  it("collapses a file change snapshot that only learns its files on completion", () => {
+    const payload = {
+      itemType: "file_change",
+      providerItemId: "provider-item-edit",
+      title: "Changed files",
+      detail: "src/a.ts",
+      fileChangeId: "file-change-edit",
+    };
+    const entries = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "edit-updated",
+          createdAt: "2026-02-23T00:00:01.000Z",
+          kind: "tool.updated",
+          summary: "Tool updated",
+          payload: { ...payload, status: "inProgress" },
+        }),
+        makeActivity({
+          id: "edit-completed",
+          createdAt: "2026-02-23T00:00:02.000Z",
+          kind: "tool.completed",
+          summary: "Tool",
+          payload: { ...payload, changedFiles: ["src/a.ts"] },
+        }),
+        makeActivity({
+          id: "other-edit-completed",
+          createdAt: "2026-02-23T00:00:03.000Z",
+          kind: "tool.completed",
+          summary: "Tool",
+          payload: { ...payload, changedFiles: ["src/b.ts"] },
+        }),
+      ],
+      undefined,
+    );
+
+    expect(entries.map((entry) => [entry.id, entry.changedFiles])).toEqual([
+      ["edit-completed", ["src/a.ts"]],
+      ["other-edit-completed", ["src/b.ts"]],
+    ]);
+  });
+
+  it("collapses a fileless file change whose detail also arrives on completion", () => {
+    const payload = {
+      itemType: "file_change",
+      providerItemId: "provider-item-edit",
+      title: "Changed files",
+      fileChangeId: "file-change-edit",
+    };
+    const snapshot = (id: string, second: number, extra: Record<string, unknown>) =>
+      makeActivity({
+        id,
+        createdAt: `2026-02-23T00:00:0${second}.000Z`,
+        kind: extra.changedFiles ? "tool.completed" : "tool.updated",
+        summary: "Tool",
+        payload: { ...payload, ...extra },
+      });
+    const learned = deriveWorkLogEntries(
+      [
+        snapshot("edit-updated", 1, { status: "inProgress" }),
+        snapshot("edit-completed", 2, { detail: "src/a.ts", changedFiles: ["src/a.ts"] }),
+      ],
+      undefined,
+    );
+    expect(learned.map((entry) => entry.id)).toEqual(["edit-completed"]);
+
+    // A detail that was already shown and then changed is a different row.
+    const changed = deriveWorkLogEntries(
+      [
+        snapshot("edit-updated", 1, { status: "inProgress", detail: "src/a.ts" }),
+        snapshot("edit-completed", 2, { detail: "src/b.ts", changedFiles: ["src/b.ts"] }),
+      ],
+      undefined,
+    );
+    expect(changed.map((entry) => entry.id)).toEqual(["edit-updated", "edit-completed"]);
+  });
+
   it("keeps tool snapshots when the visible read range changes", () => {
     const entries = deriveWorkLogEntries(
       [

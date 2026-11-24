@@ -45,6 +45,7 @@ import {
 } from "../Errors.ts";
 import {
   NextTurnQueueStore,
+  usageResumeAllowsAuto,
   type NextTurnQueueState,
   type NextTurnQueueStoreShape,
   type NextTurnQueueSubmissionRecord,
@@ -557,7 +558,7 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
         Effect.mapError(normalizeError),
       ),
     getUsageResumeLedger: (threadId) =>
-      sql<UsageResumeLedger>`SELECT l.limit_key AS "limitKey", l.state, l.source, l.item_id AS "itemId", l.not_before AS "notBefore", (SELECT h.not_before FROM usage_limit_resumes h WHERE h.thread_id=l.thread_id AND h.not_before IS NOT NULL ORDER BY h.updated_at DESC,h.rowid DESC LIMIT 1) AS "previousTarget", COALESCE(s.auto_count,0) AS "autoCount" FROM usage_limit_resumes l LEFT JOIN usage_limit_resume_streaks s ON s.thread_id=l.thread_id WHERE l.thread_id=${threadId} ORDER BY l.updated_at DESC, l.rowid DESC LIMIT 1`.pipe(
+      sql<UsageResumeLedger>`SELECT l.limit_key AS "limitKey", l.state, l.auto_eligible_at_failure AS "autoEligibleAtFailure", l.source, l.item_id AS "itemId", l.not_before AS "notBefore", (SELECT h.not_before FROM usage_limit_resumes h WHERE h.thread_id=l.thread_id AND h.not_before IS NOT NULL ORDER BY h.updated_at DESC,h.rowid DESC LIMIT 1) AS "previousTarget", COALESCE(s.auto_count,0) AS "autoCount" FROM usage_limit_resumes l LEFT JOIN usage_limit_resume_streaks s ON s.thread_id=l.thread_id WHERE l.thread_id=${threadId} ORDER BY l.updated_at DESC, l.rowid DESC LIMIT 1`.pipe(
         Effect.map((rows) => rows[0] ?? null),
         Effect.mapError(normalizeError),
       ),
@@ -597,10 +598,9 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
                   "A workspace transition must finish or be resolved before scheduling a continuation.",
               });
             const at = now();
-            const ledger = (yield* sql<{
-              state: string;
-              eligible: number;
-            }>`SELECT state,auto_eligible_at_failure AS eligible FROM usage_limit_resumes WHERE thread_id=${threadId} AND limit_key=${input.limitKey}`)[0];
+            const ledger = (yield* sql<
+              Pick<UsageResumeLedger, "state" | "autoEligibleAtFailure">
+            >`SELECT state,auto_eligible_at_failure AS "autoEligibleAtFailure" FROM usage_limit_resumes WHERE thread_id=${threadId} AND limit_key=${input.limitKey}`)[0];
             const existing = (yield* queueRows(
               "WHERE thread_id=? AND schedule_reason='usage_limit_reset' AND deleted_at IS NULL",
               [threadId],
@@ -611,12 +611,7 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
               : null;
             if (context?.limitKey === input.limitKey && existing?.status !== "failed")
               return "already_scheduled" as const;
-            if (
-              input.source === "auto" &&
-              ledger &&
-              (ledger.eligible === 0 ||
-                ["cancelled", "superseded", "gave_up", "completed"].includes(ledger.state))
-            )
+            if (input.source === "auto" && ledger && !usageResumeAllowsAuto(ledger))
               return "suppressed" as const;
             if (!previous && (yield* readSubmission(input.submissionId)))
               return "already_scheduled" as const;

@@ -29,6 +29,7 @@ import {
   $addUpdateTag,
   HISTORY_PUSH_TAG,
   $createRangeSelection,
+  $createRangeSelectionFromDom,
   $getSelection,
   $setSelection,
   $isElementNode,
@@ -37,7 +38,6 @@ import {
   $isTextNode,
   $createLineBreakNode,
   $createParagraphNode,
-  $createRangeSelectionFromDom,
   $createTextNode,
   KEY_ARROW_DOWN_COMMAND,
   KEY_ARROW_LEFT_COMMAND,
@@ -1336,17 +1336,17 @@ function ComposerPromptEditorInner({
       readSelectionRange: () =>
         editor.getEditorState().read(
           () => {
-            // Paste can arrive before Lexical processes the browser's selectionchange.
             const root = editor.getRootElement();
             const domSelection = root?.ownerDocument.getSelection();
-            const range =
-              root &&
-              domSelection &&
+            // Paste can arrive before Lexical has committed the browser's selectionchange.
+            const selection =
+              (root &&
+              domSelection?.anchorNode &&
+              domSelection.focusNode &&
               root.contains(domSelection.anchorNode) &&
               root.contains(domSelection.focusNode)
                 ? $createRangeSelectionFromDom(domSelection, editor)
-                : null;
-            const selection = range ?? $getSelection();
+                : null) ?? $getSelection();
             if (!$isRangeSelection(selection)) {
               const cursor = readSnapshot().expandedCursor;
               return { start: cursor, end: cursor };

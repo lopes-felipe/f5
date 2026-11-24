@@ -373,6 +373,26 @@ describe("forge adapters", () => {
       }
     },
   );
+
+  it("reads Forgejo reviewers once and includes read-only collaborators", async () => {
+    const reviewers = [
+      { login: "read-only-collaborator" },
+      ...Array.from({ length: 99 }, (_, index) => ({ login: "user-" + index })),
+    ];
+    const { provider, ref, calls } = fixture("forgejo", [
+      { number: 7, user: { login: "author" } },
+      [{ login: "author" }, ...reviewers, { login: "USER-0" }],
+    ]);
+    const detail = await Effect.runPromise(provider.getDetail(ref));
+    expect(await Effect.runPromise(provider.listReviewerCandidates(ref, detail))).toEqual(
+      reviewers,
+    );
+    expect(calls.map(({ url }) => url)).toEqual([
+      "https://codeberg.org/api/v1/repos/team/repo/pulls/7",
+      "https://codeberg.org/api/v1/repos/team/repo/reviewers",
+    ]);
+  });
+
   it("finds an existing Forgejo pull request beyond the first page", async () => {
     const first = Array.from({ length: 100 }, (_, index) => ({
       number: index + 1,

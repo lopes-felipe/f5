@@ -127,7 +127,7 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
   });
 
   yield* Stream.runForEach(input.streamSettings, (nextSettings) =>
-    Effect.asVoid(applySnapshot(nextSettings)),
+    applySnapshot(nextSettings).pipe(Effect.ignoreCause({ log: true })),
   ).pipe(Effect.forkScoped);
 
   yield* Effect.forever(

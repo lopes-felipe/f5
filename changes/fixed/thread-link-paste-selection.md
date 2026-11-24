@@ -1,1 +1,0 @@
-- Pasting a thread link inserts it at the cursor or replaces the selected text.

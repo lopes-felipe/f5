@@ -18,6 +18,7 @@ import { resolveAccountUsageLimit } from "../../provider/usageLimitMessages.ts";
 import { ProviderInstanceRegistry } from "../../provider/Services/ProviderInstanceRegistry.ts";
 import {
   scheduleUsageLimitResumeFor,
+  autoResumeUsageLimitEnabled,
   usageLimitKey,
   LEDGER_RETENTION_MS,
   BUFFER_MS,
@@ -874,13 +875,7 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
           const settings = yield* restartSettingsOption.value.getSettings.pipe(
             Effect.mapError(storageError),
           );
-          if (
-            !thread ||
-            !(
-              settings.projectSettingsOverrides[thread.projectId]?.autoResumeUsageLimitedThreads ??
-              settings.autoResumeUsageLimitedThreads
-            )
-          ) {
+          if (!thread || !autoResumeUsageLimitEnabled(settings, thread.projectId)) {
             yield* store.revokeAutoResumes([threadId]);
             yield* publishChanged(threadId);
             return;
@@ -1344,9 +1339,7 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
           : model.threads;
         const policies = candidates.map((thread) => ({
           thread,
-          enabled:
-            settings.projectSettingsOverrides[thread.projectId]?.autoResumeUsageLimitedThreads ??
-            settings.autoResumeUsageLimitedThreads,
+          enabled: autoResumeUsageLimitEnabled(settings, thread.projectId),
           wasEnabled: previousPolicy.get(thread.id),
         }));
         // Only policy transitions need revocation. SQL filters the entire disabled scope once.
