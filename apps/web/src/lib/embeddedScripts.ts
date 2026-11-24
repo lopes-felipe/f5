@@ -1,4 +1,4 @@
-import { getFiletypeFromFileName } from "@pierre/diffs";
+import { getFiletypeFromFileName } from "./fileLanguage";
 import {
   parse,
   type Command,

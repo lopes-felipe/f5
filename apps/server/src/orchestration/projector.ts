@@ -148,13 +148,13 @@ function updateThread(
 }
 
 function decodeForEvent<A>(
-  schema: Schema.Schema<A>,
+  schema: Schema.Decoder<A, never>,
   value: unknown,
   eventType: OrchestrationEvent["type"],
   field: string,
 ): Effect.Effect<A, OrchestrationProjectorDecodeError> {
   return Effect.try({
-    try: () => Schema.decodeUnknownSync(schema as any)(value),
+    try: () => Schema.decodeUnknownSync(schema)(value),
     catch: (error) => toProjectorDecodeError(`${eventType}:${field}`)(error as Schema.SchemaError),
   });
 }

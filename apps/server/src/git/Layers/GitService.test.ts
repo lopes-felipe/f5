@@ -3,7 +3,7 @@ import * as OS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it, assert } from "@effect/vitest";
-import { expect, vi } from "vitest";
+import { vi } from "vitest";
 import * as GitProcessEnvironment from "../gitProcessEnvironment.ts";
 import {
   Deferred,

@@ -12,7 +12,7 @@ import {
   parseSearchOutputCommand,
   type SearchOutputCommand,
 } from "@t3tools/shared/commandSummary";
-import { getFiletypeFromFileName } from "@pierre/diffs";
+import { getFiletypeFromFileName } from "./fileLanguage";
 
 import { hasAnsiEscapes, parseAnsiOutput, stripAnsi, type AnsiSpan } from "./ansiOutput";
 import { resolvePathLinkTarget } from "../terminal-links";
