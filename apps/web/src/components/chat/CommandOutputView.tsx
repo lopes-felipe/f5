@@ -377,7 +377,7 @@ function FileSectionOutput(props: {
   const { filePath } = section;
   const openLine = filePath ? (line: number) => props.openFile(`${filePath}:${line}`) : null;
   return (
-    <div data-testid="command-output-file-section">
+    <div data-testid="command-output-file-section" className="mt-1 first:mt-0">
       <FileHeader
         displayPath={section.displayPath}
         openTarget={filePath ? `${filePath}${numbers?.[0] ? `:${numbers[0]}` : ""}` : null}

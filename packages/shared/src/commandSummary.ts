@@ -2318,20 +2318,27 @@ function parseGitStage(
   return { subcommand, args: words.slice(index + 1), directory };
 }
 
+/**
+ * `<rev>:<path>` naming one blob, or `:<path>` / `:<stage>:<path>` in the
+ * index. Not `:/message` (a commit found by message) or a revision with
+ * `@{…}`, `^{…}` or spaces, which name commits.
+ */
+const GIT_BLOB_PATTERN = /^(?:([^:\s{}-][^:\s{}]*)|(:[0-3])?):([^\s/:][^\s:]*)$/;
+
 /** `git show <rev>:<path>`: one blob, printed whole. */
 function parseGitShowFileRead(stage: ReadonlyArray<string>): FileRead | null {
   const git = parseGitStage(stage);
   if (!git || git.subcommand !== "show" || git.args.length !== 1) return null;
-  const match = /^([^:\s-][^:\s]*|):([^\s]+)$/.exec(git.args[0] ?? "");
+  const match = GIT_BLOB_PATTERN.exec(git.args[0] ?? "");
   if (!match) return null;
   // `HEAD:./a.ts` is relative to the cwd, `HEAD:a.ts` to the repository root.
-  const filePath = match[2]!.replace(/^\.\//, "");
+  const filePath = match[3]!.replace(/^\.\//, "");
   if (filePath.length === 0 || filePath.endsWith("/")) return null;
   return {
     filePath,
     startLine: 1,
     numberedOutput: false,
-    revision: match[1]!,
+    revision: match[1] ?? match[2] ?? "",
     lineLimit: null,
   };
 }
@@ -2468,8 +2475,14 @@ export interface SearchOutputCommand {
    * when the line does not parse without it.
    */
   readonly revisions: ReadonlyArray<string>;
+  /** The `revisions` came before `--`, so they surely are trees. */
+  readonly revisionsKnown: boolean;
   readonly cwdOffset: string | null;
-  /** False when a `cd` before the search may have failed (`cd x; rg …`). */
+  /**
+   * False when result paths may not be relative to `cwdOffset`: a `cd`
+   * before the search may have failed (`cd x; rg …`), or `git grep
+   * --full-name` printed them from the repository root.
+   */
   readonly cwdKnown: boolean;
   /** Statements after the search print output of their own after its matches. */
   readonly followedByOtherStatements: boolean;
@@ -2737,12 +2750,14 @@ function parseSearchStatement(
       ? []
       : parsed.targets;
   let revisions: ReadonlyArray<string> = [];
+  let revisionsKnown = false;
   if (tool === "git") {
     // `git grep <pattern> [<tree>...] [--] [<path>...]`: words before `--`
     // are trees; without `--` each may be a tree or a path.
     const dash = args.indexOf("--");
     const paths = dash === -1 ? [] : args.slice(dash + 1).map(maybeUnquoteShellToken);
     revisions = targets.filter((target) => !paths.includes(target));
+    revisionsKnown = dash !== -1;
     if (dash !== -1) targets = paths;
   }
   return {
@@ -2750,9 +2765,11 @@ function parseSearchStatement(
     patterns: parsed.patterns,
     targets,
     revisions,
+    revisionsKnown,
     // `git -C dir grep` prints paths relative to `dir`.
     cwdOffset: git?.directory ? joinCwdOffset(context.cwdOffset, git.directory) : context.cwdOffset,
-    cwdKnown: context.cwdKnown,
+    // `--full-name` prints paths from the repository root, which is unknown.
+    cwdKnown: context.cwdKnown && !(tool === "git" && longFlags.has("--full-name")),
     followedByOtherStatements: context.followedByOtherStatements,
     fixedStrings: has("F", "--fixed-strings"),
     ignoreCase: has("i", "--ignore-case") || smartCase,
@@ -2825,9 +2842,7 @@ function isDiffStage(stage: ReadonlyArray<string>): boolean {
   const rest = words.slice(index + 1);
   const patch = rest.some((word) => word === "-p" || word === "--patch" || word === "-u");
   // `git show <rev>:<path>` prints a file, not a patch.
-  if (subcommand === "show" && rest.some((word) => !word.startsWith("-") && word.includes(":"))) {
-    return false;
-  }
+  if (subcommand === "show" && parseGitShowFileRead(stage) !== null) return false;
   if (subcommand === "diff" || subcommand === "show") {
     return !rest.some((word) =>
       ["--stat", "--name-only", "--name-status", "--shortstat", "--numstat"].includes(word),

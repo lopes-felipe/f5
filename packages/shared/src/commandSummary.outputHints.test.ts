@@ -97,8 +97,12 @@ describe("parseFileReadSegments", () => {
       startLine: 2800,
       lineLimit: 13,
     });
+    expect(first("git show :2:src/a.ts")).toMatchObject({ filePath: "src/a.ts", revision: ":2" });
     // Commits, several objects and directories are not file reads.
     expect(parseFileReadSegments("git show HEAD")).toBeNull();
+    expect(parseFileReadSegments("git show ':/fix typo'")).toBeNull();
+    expect(parseFileReadSegments("git show :/fix")).toBeNull();
+    expect(parseFileReadSegments("git show 'main@{10:00}'")).toBeNull();
     expect(parseFileReadSegments("git show HEAD:a.ts HEAD:b.ts")).toBeNull();
     expect(parseFileReadSegments("git show HEAD:src/")).toBeNull();
     expect(parseFileReadSegments("git show --stat HEAD:a.ts")).toBeNull();
@@ -177,6 +181,7 @@ describe("parseSearchOutputCommand", () => {
       patterns: ["plainDraft\\|isLocal ="],
       targets: ["ChatView.tsx"],
       revisions: [],
+      revisionsKnown: false,
       cwdOffset: "src",
       cwdKnown: true,
       followedByOtherStatements: true,
@@ -217,6 +222,16 @@ describe("parseSearchOutputCommand", () => {
     expect(parseSearchOutputCommand("git grep -A 2 -n foo")?.patterns).toEqual(["foo"]);
     expect(parseSearchOutputCommand("git grep foo")?.lineNumbers).toBe(false);
     expect(parseSearchOutputCommand("git log --grep foo")).toBeNull();
+    expect(parseSearchOutputCommand("git grep -n foo A -- a.ts")).toMatchObject({
+      revisions: ["A"],
+      revisionsKnown: true,
+    });
+    expect(parseSearchOutputCommand("git grep -n foo A")?.revisionsKnown).toBe(false);
+    // `--full-name` paths start at the repository root, wherever it ran.
+    expect(parseSearchOutputCommand("git -C apps grep -n --full-name foo")).toMatchObject({
+      cwdOffset: "apps",
+      cwdKnown: false,
+    });
   });
 
   it("reports whether output lines are numbered", () => {
@@ -388,6 +403,10 @@ describe("isDiffCommand", () => {
     "git log -p -3",
     "git stash show -p",
     "diff -u a b",
+    // Commits named by message or date, and colon pathspecs after `--`.
+    "git show ':/fix typo'",
+    "git show 'main@{2026-11-01 10:00}'",
+    "git show abc123 -- ':(glob)src/*.ts'",
   ])("accepts %s", (command) => {
     expect(isDiffCommand(command)).toBe(true);
   });
