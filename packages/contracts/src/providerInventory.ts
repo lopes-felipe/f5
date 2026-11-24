@@ -49,6 +49,11 @@ export const ProviderInventoryHook = Schema.Struct({
   key: Schema.optional(BoundedText),
   /** Absent when the provider does not report trust (older Codex CLIs, Claude). */
   trustStatus: Schema.optional(ProviderInventoryHookTrustStatus),
+  /**
+   * Opaque server-made token binding this row to the hook contents it shows.
+   * Present only on hooks that need approval; a trust request must echo it.
+   */
+  trustToken: Schema.optional(BoundedText),
 });
 export type ProviderInventoryHook = typeof ProviderInventoryHook.Type;
 
@@ -137,10 +142,11 @@ export const ServerTrustProviderHooksInput = Schema.Struct({
   /** Resolved server-side to the project's workspace root; paths are never accepted. */
   projectId: Schema.optional(ProjectId),
   /**
-   * Hook keys from the inventory. Hashes are never accepted: the server trusts
-   * what the provider reports for each key at the moment of the write.
+   * Hooks from the inventory with the `trustToken` it returned. Hashes are
+   * never accepted: the server re-reads each hook and trusts it only while its
+   * contents still match what the inventory showed.
    */
-  keys: Schema.Array(BoundedText).check(
+  hooks: Schema.Array(Schema.Struct({ key: BoundedText, token: BoundedText })).check(
     Schema.isMinLength(1),
     Schema.isMaxLength(MAX_TRUST_PROVIDER_HOOK_KEYS),
   ),
@@ -148,8 +154,13 @@ export const ServerTrustProviderHooksInput = Schema.Struct({
 export type ServerTrustProviderHooksInput = typeof ServerTrustProviderHooksInput.Type;
 
 export const ServerTrustProviderHooksResult = Schema.Struct({
+  /** Approved, and reported as approved by the provider after the write. */
   trusted: Schema.Array(BoundedText),
   /** Requested keys that were unknown, managed, or already trusted. */
   skipped: Schema.Array(BoundedText),
+  /** Contents changed since the inventory was read; review them again. */
+  changed: Schema.Array(BoundedText),
+  /** Written, but the provider still reports them as needing approval. */
+  failed: Schema.Array(BoundedText),
 });
 export type ServerTrustProviderHooksResult = typeof ServerTrustProviderHooksResult.Type;

@@ -51,7 +51,7 @@ import { parseLaunchArgv } from "@t3tools/shared/cliArgs";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import { mergeReportedProviderModels, providerModelsFromSettings } from "../providerSnapshot.ts";
 import { type CodexInstanceCatalog, probeCodexInstanceCatalog } from "../codexModelCatalog.ts";
-import { readCodexInventory } from "../codexInventory.ts";
+import { codexHookTrustScope, readCodexInventory } from "../codexInventory.ts";
 import { trustCodexHooks } from "../codexHookTrust.ts";
 
 const DRIVER_KIND = ProviderDriverKind.make("codex");
@@ -535,7 +535,11 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
           }),
         inventory: ({ projectRoot }) =>
           Effect.tryPromise({
-            try: () => readCodexInventory(controlEnvironment, { projectRoot }),
+            try: () =>
+              readCodexInventory(controlEnvironment, {
+                projectRoot,
+                trustTokenScope: codexHookTrustScope(instanceId, projectRoot),
+              }),
             catch: (cause) =>
               new ProviderDriverError({
                 driver: DRIVER_KIND,
@@ -545,9 +549,14 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
                 cause,
               }),
           }).pipe(Effect.map((inventory) => ({ ...inventory, agents: [] }))),
-        trustHooks: ({ projectRoot, keys }) =>
+        trustHooks: ({ projectRoot, hooks }) =>
           Effect.tryPromise({
-            try: () => trustCodexHooks(controlEnvironment, { projectRoot, keys }),
+            try: () =>
+              trustCodexHooks(controlEnvironment, {
+                projectRoot,
+                trustTokenScope: codexHookTrustScope(instanceId, projectRoot),
+                hooks,
+              }),
             catch: (cause) =>
               new ProviderDriverError({
                 driver: DRIVER_KIND,

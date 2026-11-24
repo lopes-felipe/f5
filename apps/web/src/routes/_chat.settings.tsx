@@ -21,6 +21,7 @@ function SettingsRouteView() {
   const routeState = useSettingsRouteState({
     projectId: search.project ?? null,
     focusedProviderInstanceId: search.instance ?? null,
+    focusedProviderInstanceProjectId: search.instanceProject ?? null,
   });
 
   return (
@@ -88,7 +89,8 @@ export const Route = createFileRoute("/_chat/settings")({
       (raw.category !== undefined && raw.category !== canonical.category) ||
       (raw.item !== undefined && raw.item !== canonical.item) ||
       (raw.project !== undefined && raw.project !== canonical.project) ||
-      (raw.instance !== undefined && raw.instance !== canonical.instance);
+      (raw.instance !== undefined && raw.instance !== canonical.instance) ||
+      (raw.instanceProject !== undefined && raw.instanceProject !== canonical.instanceProject);
     if (!stale) return;
     const {
       projectId: _projectId,
@@ -96,6 +98,7 @@ export const Route = createFileRoute("/_chat/settings")({
       item: _item,
       project: _project,
       instance: _instance,
+      instanceProject: _instanceProject,
       ...rest
     } = raw;
     throw redirect({ to: "/settings", search: { ...rest, ...canonical } as never, replace: true });

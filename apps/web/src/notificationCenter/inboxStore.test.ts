@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   groupInboxEntries,
@@ -104,6 +104,15 @@ describe("recordInboxEntry", () => {
 });
 
 describe("inbox store", () => {
+  // The store stamps and prunes with the real clock; pin it to the fixtures'
+  // day so entries never age past INBOX_MAX_AGE_MS as the calendar moves on.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"], now: NOW });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("reads, resolves and removes entries", () => {
     const store = useNotificationInbox.getState();
     store.clear();

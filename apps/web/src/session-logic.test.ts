@@ -1179,6 +1179,36 @@ describe("hook approval failures", () => {
     expect(timeline.map((row) => row.id)).toEqual(["hook-approval:start-core", "broken"]);
   });
 
+  it("links to the instance that ran the hooks and ignores the phrase inside other output", () => {
+    const withInstance = makeActivity({
+      id: "instance-hook",
+      kind: "hook.completed",
+      tone: "error",
+      createdAt: "2026-11-23T10:00:01.000Z",
+      turnId,
+      payload: {
+        hookId: "instance-hook",
+        hookEvent: "sessionStart",
+        outcome: "error",
+        rawStatus: "failed",
+        sourcePath: core,
+        providerInstanceId: "codex_work",
+        output: "plugin contents changed; hook approval required",
+      },
+    });
+    const chatty = failure(
+      "chatty",
+      "stop",
+      "/repo/.codex/hooks.json",
+      "lint failed: see docs on 'plugin contents changed; hook approval required' errors",
+      2,
+    );
+    const entries = deriveWorkLogEntries([withInstance, chatty], TurnId.makeUnsafe(turnId));
+    expect(entries.map((entry) => entry.id)).toEqual(["hook-approval:instance-hook", "chatty"]);
+    expect(entries[0]?.hookApproval?.instanceId).toBe("codex_work");
+    expect(entries[1]?.diagnostic).toMatchObject({ type: "hook", status: "failed" });
+  });
+
   it("keeps one row per turn, a stable row object, and the singular label", () => {
     const first = failure("only", "stop", "/tmp/custom/hooks.json");
     const second = makeActivity({

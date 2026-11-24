@@ -369,8 +369,15 @@ describe("WebSocket Server", () => {
     const workspaceRoot = makeTempDir("f5-hook-trust-");
     const codexId = ProviderInstanceId.makeUnsafe("codex-trust-test");
     const claudeId = ProviderInstanceId.makeUnsafe("claude-trust-test");
-    const trustHooks = vi.fn((input: { projectRoot?: string; keys: ReadonlyArray<string> }) =>
-      Effect.succeed({ trusted: [...input.keys], skipped: [] }),
+    const hook = (key: string) => ({ key, token: `token-${key}` });
+    const trustHooks = vi.fn(
+      (input: { projectRoot?: string; hooks: ReadonlyArray<{ key: string; token: string }> }) =>
+        Effect.succeed({
+          trusted: input.hooks.map((entry) => entry.key),
+          skipped: [],
+          changed: [],
+          failed: [],
+        }),
     );
     const codex = {
       instanceId: codexId,
@@ -417,22 +424,28 @@ describe("WebSocket Server", () => {
 
     const rejected = await sendRequest(ws, WS_METHODS.serverTrustProviderHooks, {
       instanceId: claudeId,
-      keys: ["k"],
+      hooks: [hook("k")],
     });
     expect(rejected.error?.message).toBe(
       "Hook approval is only available for a configured Codex provider.",
     );
-    for (const keys of [[], Array.from({ length: 65 }, (_, i) => `k${i}`)]) {
+    for (const hooks of [
+      [],
+      Array.from({ length: 65 }, (_, i) => hook(`k${i}`)),
+      [{ key: "k" }],
+      // Bare keys (the pre-token shape) are no longer accepted.
+      ["k"],
+    ]) {
       const invalid = await sendRequest(ws, WS_METHODS.serverTrustProviderHooks, {
         instanceId: codexId,
-        keys,
+        hooks,
       });
       expect(invalid.error?.message).toContain("Invalid request format");
     }
     const missingProject = await sendRequest(ws, WS_METHODS.serverTrustProviderHooks, {
       instanceId: codexId,
       projectId: "missing-project",
-      keys: ["k"],
+      hooks: [hook("k")],
     });
     expect(missingProject.error?.message).toBe("Project not found.");
     expect(trustHooks).not.toHaveBeenCalled();
@@ -440,10 +453,13 @@ describe("WebSocket Server", () => {
     const trusted = await sendRequest(ws, WS_METHODS.serverTrustProviderHooks, {
       instanceId: codexId,
       projectId,
-      keys: ["a", "b"],
+      hooks: [hook("a"), hook("b")],
     });
-    expect(trusted.result).toEqual({ trusted: ["a", "b"], skipped: [] });
-    expect(trustHooks).toHaveBeenCalledWith({ projectRoot: workspaceRoot, keys: ["a", "b"] });
+    expect(trusted.result).toEqual({ trusted: ["a", "b"], skipped: [], changed: [], failed: [] });
+    expect(trustHooks).toHaveBeenCalledWith({
+      projectRoot: workspaceRoot,
+      hooks: [hook("a"), hook("b")],
+    });
 
     trustHooks.mockImplementationOnce(
       () =>
@@ -457,10 +473,10 @@ describe("WebSocket Server", () => {
     );
     const failed = await sendRequest(ws, WS_METHODS.serverTrustProviderHooks, {
       instanceId: codexId,
-      keys: ["a"],
+      hooks: [hook("a")],
     });
     expect(failed.error?.message).toBe("invalid configuration: features.chronicle");
-    expect(trustHooks).toHaveBeenLastCalledWith({ projectRoot: undefined, keys: ["a"] });
+    expect(trustHooks).toHaveBeenLastCalledWith({ projectRoot: undefined, hooks: [hook("a")] });
   });
 
   it("resolves project settings over files, replaces overrides and prunes deleted projects", async () => {

@@ -7123,7 +7123,7 @@ export const createServer = Effect.fn(function* (
           });
         const projectRoot = yield* resolveProviderInventoryProjectRoot(body.projectId);
         return yield* instance
-          .trustHooks({ projectRoot, keys: body.keys })
+          .trustHooks({ projectRoot, hooks: body.hooks })
           .pipe(
             Effect.mapError(
               (error) => new RouteRequestError({ message: error.detail ?? error.message }),

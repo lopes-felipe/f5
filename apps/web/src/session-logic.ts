@@ -69,6 +69,8 @@ export interface WorkLogDiagnostic {
   outcome?: "success" | "error" | "cancelled";
   incomplete?: boolean;
   hookEvent?: string;
+  /** The provider instance that ran the hook (recorded on newer activities). */
+  providerInstanceId?: string;
   handlerType?: string;
   executionMode?: string;
   scope?: string;
@@ -161,6 +163,8 @@ export interface WorkLogEntry {
   hookApproval?: {
     readonly plugins: ReadonlyArray<string>;
     readonly entries: ReadonlyArray<WorkLogEntry>;
+    /** The provider instance that refused them, when the activities record it. */
+    readonly instanceId?: string;
   };
   subagentThreadId?: string;
   subagentPath?: string;
@@ -1287,12 +1291,14 @@ function diagnosticFromActivity(
     const displayOrder = asFiniteNumber(payload?.displayOrder);
     const statusMessage = asTrimmedString(payload?.statusMessage);
     const durationMs = asFiniteNumber(payload?.durationMs);
+    const providerInstanceId = asTrimmedString(payload?.providerInstanceId);
     return {
       type: "hook",
       id,
       status,
       ...(outcome ? { outcome } : {}),
       ...(hookEvent ? { hookEvent } : {}),
+      ...(providerInstanceId ? { providerInstanceId } : {}),
       ...(handlerType ? { handlerType } : {}),
       ...(executionMode ? { executionMode } : {}),
       ...(scope ? { scope } : {}),
@@ -1404,7 +1410,11 @@ function pairDiagnosticLifecycles(entries: ReadonlyArray<WorkLogEntry>): WorkLog
   });
 }
 
-const HOOK_APPROVAL_REQUIRED_TEXT = "hook approval required";
+/**
+ * Codex's refusal (`hooks/src/engine/plugin_trust.rs`, 0.166+). It is raised
+ * only for plugin hooks whose bundle no longer matches the approved one.
+ */
+const HOOK_APPROVAL_REQUIRED_TEXT = "plugin contents changed; hook approval required";
 
 function hookDiagnosticTexts(diagnostic: WorkLogDiagnostic): string[] {
   const texts = [diagnostic.output, diagnostic.statusMessage];
@@ -1418,14 +1428,16 @@ function hookDiagnosticTexts(diagnostic: WorkLogDiagnostic): string[] {
 
 /**
  * Codex (0.166+) refuses to run a hook whose plugin contents changed since it
- * was approved, and reports it as a failed run with this message.
+ * was approved, and reports it as a failed run with this message. Only a line
+ * that is exactly the message counts, so a hook that merely prints the phrase
+ * among other output is not mistaken for a refusal.
  */
 export function isHookApprovalRequired(entry: WorkLogEntry): boolean {
   const diagnostic = entry.diagnostic;
   if (diagnostic?.type !== "hook" || diagnostic.incomplete) return false;
   if (diagnostic.status !== "failed" && diagnostic.outcome !== "error") return false;
   return hookDiagnosticTexts(diagnostic).some((text) =>
-    text.toLowerCase().includes(HOOK_APPROVAL_REQUIRED_TEXT),
+    text.split(/\r?\n/u).some((line) => line.trim().toLowerCase() === HOOK_APPROVAL_REQUIRED_TEXT),
   );
 }
 
@@ -1485,6 +1497,9 @@ function collapseHookApprovalFailures(entries: ReadonlyArray<WorkLogEntry>): Wor
       ),
     ];
     const count = group.length;
+    // The instance that ran these hooks, not whichever the thread uses now.
+    const instanceId = group.find((failure) => failure.diagnostic?.providerInstanceId)?.diagnostic
+      ?.providerInstanceId;
     const row: WorkLogEntry = {
       id: `hook-approval:${entry.id}`,
       createdAt: entry.createdAt,
@@ -1496,7 +1511,7 @@ function collapseHookApprovalFailures(entries: ReadonlyArray<WorkLogEntry>): Wor
       activityKind: "hook.approval-required",
       category: "hook",
       isIssue: true,
-      hookApproval: { plugins, entries: group },
+      hookApproval: { plugins, entries: group, ...(instanceId ? { instanceId } : {}) },
     };
     hookApprovalRowCache.set(entry, row);
     result.push(row);

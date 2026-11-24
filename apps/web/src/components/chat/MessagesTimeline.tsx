@@ -4434,7 +4434,11 @@ const WorkEntryRow = memo(function WorkEntryRow(props: {
   ) : workEntry.diagnostic ? (
     <DiagnosticWorkEntryRow workEntry={workEntry} />
   ) : workEntry.hookApproval ? (
-    <HookApprovalWorkEntryRow label={workEntry.label} threadId={threadId}>
+    <HookApprovalWorkEntryRow
+      label={workEntry.label}
+      threadId={threadId}
+      instanceId={workEntry.hookApproval.instanceId}
+    >
       <NestedDiagnosticList diagnostics={workEntry.hookApproval.entries} />
     </HookApprovalWorkEntryRow>
   ) : workEntry.itemType === "collab_agent_tool_call" ? (

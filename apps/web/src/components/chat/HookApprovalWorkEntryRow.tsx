@@ -1,4 +1,4 @@
-import type { ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import type { ThreadId } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
 import { ChevronRightIcon, ShieldAlertIcon } from "lucide-react";
 import { memo, useState, type ReactNode } from "react";
@@ -7,22 +7,38 @@ import { cn } from "../../lib/utils";
 import { useStore } from "../../store";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 
+/** Settings search that opens one instance's hooks, scoped to the thread's project. */
+export function hookApprovalSettingsSearch(input: {
+  readonly instanceId: string;
+  readonly projectId?: string | undefined;
+}) {
+  return {
+    category: "providers" as const,
+    item: "providers.instances",
+    instance: input.instanceId,
+    ...(input.projectId ? { instanceProject: input.projectId } : {}),
+  };
+}
+
 /**
  * One warning per turn for hooks Codex refused to run until their changed
  * contents are approved. The individual failures stay in the panel; the link
- * opens the thread's provider instance in Settings, where they can be trusted.
+ * opens the provider instance that refused them in Settings, at its hooks for
+ * the thread's project, where they can be trusted.
  */
 export const HookApprovalWorkEntryRow = memo(function HookApprovalWorkEntryRow(props: {
   readonly label: string;
   readonly threadId: ThreadId | null;
+  /** The instance that ran the hooks; falls back to the thread's current one. */
+  readonly instanceId?: string | undefined;
   readonly children: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
-  const instanceId = useStore((store): ProviderInstanceId | undefined => {
-    if (!props.threadId) return undefined;
-    const thread = store.threads.find((candidate) => candidate.id === props.threadId);
-    return thread?.session?.providerInstanceId ?? thread?.modelSelection?.instanceId;
-  });
+  const thread = useStore((store) =>
+    props.threadId ? store.threads.find((candidate) => candidate.id === props.threadId) : undefined,
+  );
+  const instanceId =
+    props.instanceId ?? thread?.session?.providerInstanceId ?? thread?.modelSelection?.instanceId;
   return (
     <Collapsible open={open} onOpenChange={setOpen} className="rounded-md">
       <div className="flex min-h-6 w-full min-w-0 items-center gap-2 px-1 py-0.5">
@@ -46,14 +62,20 @@ export const HookApprovalWorkEntryRow = memo(function HookApprovalWorkEntryRow(p
         {instanceId ? (
           <Link
             to="/settings"
-            search={{ category: "providers", item: "providers.instances", instance: instanceId }}
+            search={hookApprovalSettingsSearch({ instanceId, projectId: thread?.projectId })}
             className="shrink-0 rounded-sm text-2xs text-muted-foreground underline outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
           >
             Review hooks
           </Link>
         ) : null}
       </div>
-      <CollapsiblePanel>{props.children}</CollapsiblePanel>
+      <CollapsiblePanel>
+        <p className="ml-7 px-1 pb-1 text-2xs text-muted-foreground">
+          Codex checks approvals when a session starts, so this conversation keeps skipping these
+          hooks until its session restarts, even after you trust them.
+        </p>
+        {props.children}
+      </CollapsiblePanel>
     </Collapsible>
   );
 });

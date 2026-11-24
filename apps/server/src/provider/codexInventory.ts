@@ -15,6 +15,8 @@ import type {
   ProviderInventorySource,
 } from "@t3tools/contracts";
 
+import { createHmac, randomBytes } from "node:crypto";
+
 import {
   CodexControlClient,
   type CodexControlEnvironmentConfig,
@@ -83,11 +85,45 @@ export function codexHookTrustStatus(value: unknown): ProviderInventoryHookTrust
 }
 
 /**
+ * The `currentHash` a `hooks/list` row would be approved with, or undefined
+ * when it is not approvable (managed, already trusted, or no hash reported).
+ */
+export function codexHookApprovalHash(hook: unknown): string | undefined {
+  if (!isRecord(hook) || typeof hook.key !== "string" || hook.isManaged === true) return undefined;
+  const status = codexHookTrustStatus(hook.trustStatus);
+  if (status !== "modified" && status !== "untrusted") return undefined;
+  return typeof hook.currentHash === "string" && hook.currentHash.length > 0
+    ? hook.currentHash
+    : undefined;
+}
+
+// Per process: tokens never outlive the server that issued them.
+const TRUST_TOKEN_SECRET = randomBytes(32);
+
+/**
+ * Opaque token binding an approval to the hook contents the user was shown:
+ * an HMAC over the scope (instance and project), key and current hash, so the
+ * hash itself never reaches the browser and a changed hook no longer matches.
+ */
+export function codexHookTrustToken(scope: string, key: string, hash: string): string {
+  return createHmac("sha256", TRUST_TOKEN_SECRET)
+    .update(`${scope}\0${key}\0${hash}`)
+    .digest("base64url");
+}
+
+/** Token scope for one instance, optionally narrowed to a project root. */
+export function codexHookTrustScope(instanceId: string, projectRoot: string | undefined): string {
+  return `${instanceId}\0${projectRoot ?? ""}`;
+}
+
+/**
  * Inventory rows from `hooks/list`. `currentHash` is deliberately not copied:
- * the browser names hooks by key, and the server re-reads the hash itself.
+ * hooks that need approval carry an opaque `trustToken` instead (when a token
+ * scope is given), and the server re-reads the hash at write time.
  */
 export function parseCodexHooks(
   entries: ReadonlyArray<unknown>,
+  trustTokenScope?: string,
 ): ReadonlyArray<ProviderInventoryHook> {
   const seen = new Set<string>();
   const result: ProviderInventoryHook[] = [];
@@ -105,6 +141,11 @@ export function parseCodexHooks(
       // Only keys that round-trip unchanged through a trust request are exposed.
       const key = rawKey && bounded(rawKey) === rawKey ? rawKey : undefined;
       const trustStatus = codexHookTrustStatus(hook.trustStatus);
+      const approvalHash = key ? codexHookApprovalHash(hook) : undefined;
+      const trustToken =
+        key && approvalHash !== undefined && trustTokenScope !== undefined
+          ? codexHookTrustToken(trustTokenScope, key, approvalHash)
+          : undefined;
       const matcher = bounded(hook.matcher);
       const handlerType = bounded(hook.handlerType);
       const program = hookProgramName(hook.command);
@@ -125,6 +166,7 @@ export function parseCodexHooks(
         ...(pluginId ? { pluginId } : {}),
         ...(key ? { key } : {}),
         ...(trustStatus ? { trustStatus } : {}),
+        ...(trustToken ? { trustToken } : {}),
       });
     }
   }
@@ -281,7 +323,11 @@ async function attempt<T>(
  */
 export async function readCodexInventory(
   environment: CodexControlEnvironmentConfig,
-  input: { readonly projectRoot?: string | undefined },
+  input: {
+    readonly projectRoot?: string | undefined;
+    /** Issues trust tokens for hooks that need approval (see `codexHookTrustScope`). */
+    readonly trustTokenScope?: string | undefined;
+  },
   timeoutMs = CODEX_INVENTORY_TIMEOUT_MS,
 ): Promise<CodexInventory> {
   const signal = AbortSignal.timeout(timeoutMs);
@@ -314,7 +360,7 @@ export async function readCodexInventory(
         feedbackSupported: supportsCodexRelease5(opened.cliVersion),
         ...(account ? { account } : {}),
         ...(accountWorkspaces ? { accountWorkspaces } : {}),
-        hooks: parseCodexHooks(hooks ?? []),
+        hooks: parseCodexHooks(hooks ?? [], input.trustTokenScope),
         plugins: parseCodexPlugins(plugins),
         connectors: [
           ...parseCodexMcpServersFromLayers(config?.layers),

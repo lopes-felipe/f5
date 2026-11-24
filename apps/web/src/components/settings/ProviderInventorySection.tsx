@@ -1,9 +1,11 @@
-import type {
-  ProjectId,
-  ProviderInstanceId,
-  ProviderInstanceInventory,
-  ProviderInventoryHook,
-  ProviderInventorySource,
+import {
+  MAX_TRUST_PROVIDER_HOOK_KEYS,
+  type ProjectId,
+  type ProviderInstanceId,
+  type ProviderInstanceInventory,
+  type ProviderInventoryHook,
+  type ProviderInventorySource,
+  type ServerTrustProviderHooksResult,
 } from "@t3tools/contracts";
 import { withoutScratchProjects } from "@t3tools/shared/scratchProject";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -57,6 +59,7 @@ function InventoryGroup(props: {
   readonly children: ReadonlyArray<ReactNode>;
   readonly action?: ReactNode;
   readonly error?: string | null;
+  readonly notice?: string | null;
   readonly groupRef?: Ref<HTMLDivElement>;
 }) {
   return (
@@ -71,6 +74,11 @@ function InventoryGroup(props: {
       {props.error ? (
         <p role="alert" className="whitespace-pre-wrap break-words text-xs text-destructive">
           {props.error}
+        </p>
+      ) : null}
+      {props.notice ? (
+        <p role="status" className="text-xs text-muted-foreground">
+          {props.notice}
         </p>
       ) : null}
       {props.children.length === 0 ? (
@@ -122,15 +130,77 @@ function hookEventLabel(event: string): string {
   return HOOK_EVENT_LABELS[event] ?? event;
 }
 
+type ApprovableHook = ProviderInventoryHook & { key: string; trustToken: string };
+
 /** Hooks the provider will not run until their current contents are approved. */
-export function hookNeedsApproval(
-  hook: ProviderInventoryHook,
-): hook is ProviderInventoryHook & { key: string } {
+export function hookNeedsApproval(hook: ProviderInventoryHook): hook is ApprovableHook {
   return (
     hook.key !== undefined &&
+    hook.trustToken !== undefined &&
     hook.source !== "managed" &&
     (hook.trustStatus === "modified" || hook.trustStatus === "untrusted")
   );
+}
+
+function plural(count: number, one: string, many: string): string {
+  return `${count} ${count === 1 ? one : many}`;
+}
+
+const RUNNING_SESSIONS_NOTE =
+  "Conversations that are already running keep skipping them until their Codex session restarts.";
+
+/** What one trust attempt did, as the notice and error the Hooks group shows. */
+export function describeHookTrustOutcome(
+  result: ServerTrustProviderHooksResult,
+  error?: string,
+): { readonly notice: string | null; readonly error: string | null } {
+  const notices: string[] = [];
+  const problems: string[] = [];
+  if (result.trusted.length > 0) {
+    notices.push(
+      `Trusted ${plural(result.trusted.length, "hook", "hooks")}.`,
+      RUNNING_SESSIONS_NOTE,
+    );
+  }
+  if (result.changed.length > 0) {
+    problems.push(
+      `${plural(result.changed.length, "hook changed", "hooks changed")} since this list loaded and ${
+        result.changed.length === 1 ? "was" : "were"
+      } not trusted. Review ${result.changed.length === 1 ? "it" : "them"} again.`,
+    );
+  }
+  if (result.failed.length > 0) {
+    problems.push(
+      `Codex still reports ${plural(result.failed.length, "hook", "hooks")} as needing approval after the write.`,
+    );
+  }
+  if (error) problems.push(error);
+  if (notices.length === 0 && problems.length === 0 && result.skipped.length > 0) {
+    notices.push("Nothing to trust: these hooks no longer need approval.");
+  }
+  return {
+    notice: notices.length > 0 ? notices.join(" ") : null,
+    error: problems.length > 0 ? problems.join(" ") : null,
+  };
+}
+
+const EMPTY_TRUST_RESULT: ServerTrustProviderHooksResult = {
+  trusted: [],
+  skipped: [],
+  changed: [],
+  failed: [],
+};
+
+function mergeTrustResults(
+  left: ServerTrustProviderHooksResult,
+  right: ServerTrustProviderHooksResult,
+): ServerTrustProviderHooksResult {
+  return {
+    trusted: [...left.trusted, ...right.trusted],
+    skipped: [...left.skipped, ...right.skipped],
+    changed: [...left.changed, ...right.changed],
+    failed: [...left.failed, ...right.failed],
+  };
 }
 
 function HookTrustDialog(props: {
@@ -154,8 +224,9 @@ function HookTrustDialog(props: {
           </AlertDialogTitle>
           <AlertDialogDescription>
             Trusted hooks run their commands on every matching event, with your permissions. Codex
-            approves their current contents; if a plugin changes them again, they need approval
-            again.
+            approves the contents listed here; if they changed since this list loaded, nothing is
+            trusted and you are asked to review again. New sessions use the approval; conversations
+            that are already running pick it up when their session restarts.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <ul className="mx-6 max-h-64 space-y-1.5 overflow-y-auto text-xs">
@@ -198,9 +269,10 @@ function HooksGroup(props: {
 }) {
   const { inventory } = props;
   const queryClient = useQueryClient();
-  const [confirming, setConfirming] = useState<ReadonlyArray<ProviderInventoryHook>>([]);
+  const [confirming, setConfirming] = useState<ReadonlyArray<ApprovableHook>>([]);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const groupRef = useRef<HTMLDivElement>(null);
   const trust = ensureNativeApi().server.trustProviderHooks;
   const approvable = trust ? inventory.hooks.filter(hookNeedsApproval) : [];
@@ -209,27 +281,39 @@ function HooksGroup(props: {
     if (props.focusHooks) groupRef.current?.scrollIntoView({ block: "start" });
   }, [props.focusHooks]);
 
-  const confirm = () => {
+  const confirm = async () => {
     if (!trust) return;
-    const keys = confirming.flatMap((hook) => (hook.key ? [hook.key] : []));
+    const requested = confirming.map((hook) => ({ key: hook.key, token: hook.trustToken }));
     setPending(true);
     setError(null);
-    void trust({
-      instanceId: inventory.instanceId,
-      ...(inventory.projectId ? { projectId: inventory.projectId } : {}),
-      keys,
-    })
-      .then(() => {
-        setConfirming([]);
-        return queryClient.invalidateQueries({
-          queryKey: providerInventoryQueryKey(inventory.instanceId, inventory.projectId),
-        });
-      })
-      .catch((cause: unknown) => {
-        setConfirming([]);
-        setError(cause instanceof Error ? cause.message : String(cause));
-      })
-      .finally(() => setPending(false));
+    setNotice(null);
+    let result = EMPTY_TRUST_RESULT;
+    let failure: string | undefined;
+    try {
+      // The request accepts a bounded number of hooks; larger sets go in batches.
+      for (let start = 0; start < requested.length; start += MAX_TRUST_PROVIDER_HOOK_KEYS) {
+        const batch = requested.slice(start, start + MAX_TRUST_PROVIDER_HOOK_KEYS);
+        result = mergeTrustResults(
+          result,
+          await trust({
+            instanceId: inventory.instanceId,
+            ...(inventory.projectId ? { projectId: inventory.projectId } : {}),
+            hooks: batch,
+          }),
+        );
+      }
+    } catch (cause) {
+      failure = cause instanceof Error ? cause.message : String(cause);
+    }
+    const outcome = describeHookTrustOutcome(result, failure);
+    setConfirming([]);
+    setNotice(outcome.notice);
+    setError(outcome.error);
+    setPending(false);
+    // Always re-read: a write can land even when its reply failed or timed out.
+    await queryClient.invalidateQueries({
+      queryKey: providerInventoryQueryKey(inventory.instanceId, inventory.projectId),
+    });
   };
 
   return (
@@ -239,6 +323,7 @@ function HooksGroup(props: {
         empty="No hooks configured."
         groupRef={groupRef}
         error={error}
+        notice={notice}
         action={
           approvable.length > 0 ? (
             <Button
@@ -307,7 +392,7 @@ function HooksGroup(props: {
         hooks={confirming}
         pending={pending}
         onCancel={() => setConfirming([])}
-        onConfirm={confirm}
+        onConfirm={() => void confirm()}
       />
     </>
   );
@@ -419,19 +504,33 @@ function InventoryBody({
 export function ProviderInventorySection({
   instanceId,
   focusHooks = false,
+  focusProjectId,
 }: {
   readonly instanceId: ProviderInstanceId;
   /** Open on mount (and when it turns true) scrolled to the hooks. */
   readonly focusHooks?: boolean;
+  /**
+   * With `focusHooks`: list this project's hooks too, so project-scoped hooks a
+   * thread reported are there to approve. Ignored when it is not a listed project.
+   */
+  readonly focusProjectId?: string | undefined;
 }) {
   const projects = useStore((store) => store.projects);
+  const listedProjects = withoutScratchProjects(projects);
+  const focusProject =
+    focusHooks && focusProjectId
+      ? listedProjects.find((project) => project.id === focusProjectId)?.id
+      : undefined;
   const [open, setOpen] = useState(focusHooks);
-  const [focusedOpen, setFocusedOpen] = useState(focusHooks);
-  if (focusHooks !== focusedOpen) {
-    setFocusedOpen(focusHooks);
-    if (focusHooks) setOpen(true);
+  const [projectId, setProjectId] = useState<ProjectId | undefined>(focusProject);
+  const [focused, setFocused] = useState({ hooks: focusHooks, project: focusProject });
+  if (focusHooks !== focused.hooks || focusProject !== focused.project) {
+    setFocused({ hooks: focusHooks, project: focusProject });
+    if (focusHooks) {
+      setOpen(true);
+      if (focusProject) setProjectId(focusProject);
+    }
   }
-  const [projectId, setProjectId] = useState<ProjectId | undefined>(undefined);
   const [feedbackPath, setFeedbackPath] = useState<string | null>(null);
   const [feedbackError, setFeedbackError] = useState<string | null>(null);
   const [savingFeedback, setSavingFeedback] = useState(false);
@@ -523,7 +622,7 @@ export function ProviderInventorySection({
                 }
               >
                 <option value="">Instance only (no project)</option>
-                {withoutScratchProjects(projects).map((project) => (
+                {listedProjects.map((project) => (
                   <option key={project.id} value={project.id}>
                     {project.name}
                   </option>

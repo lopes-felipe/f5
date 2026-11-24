@@ -208,6 +208,25 @@ describe("resolveSettingsSearch", () => {
     ).toEqual({ category: "providers", item: "providers.instances" });
   });
 
+  it("keeps the inventory project only alongside an instance focus", () => {
+    expect(
+      resolveSettingsSearch({
+        item: "providers.instances",
+        instance: "codex_work",
+        instanceProject: "p-1",
+      }),
+    ).toEqual({
+      category: "providers",
+      item: "providers.instances",
+      instance: "codex_work",
+      instanceProject: "p-1",
+    });
+    expect(resolveSettingsSearch({ item: "providers.instances", instanceProject: "p-1" })).toEqual({
+      category: "providers",
+      item: "providers.instances",
+    });
+  });
+
   it("rewrites legacy item deep links to the new page", () => {
     expect(
       resolveSettingsSearch({ category: "integrations", item: "integrations.keybindings" }),
