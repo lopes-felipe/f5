@@ -20,6 +20,13 @@ import {
   agentBrowserConfigPayload,
   type ClaudeAgentBrowserState,
 } from "../Layers/claudeAgentBrowser";
+import type { InteractionSession } from "../../mcp/interactionMcpTools";
+import {
+  MCP_SESSION_TOKEN_ENV,
+  MCP_SESSION_URL_ENV,
+  mcpSessionStdioLaunch,
+  type McpSessionStdioLaunch,
+} from "../../mcp/sessionStdioShim";
 import { AcpCredentialScrubber, redactAcpLogPayload } from "./AcpNativeLogging";
 
 type AcpProvider = "cursor" | "grok" | "antigravity" | "acp";
@@ -63,6 +70,27 @@ export function toAcpHttpMcpServer(config: PreviewMcpSessionConfig): McpServer {
     name: config.serverName,
     url: definition.url,
     headers: [{ name: "Authorization", value: `Bearer ${token}` }],
+  };
+}
+
+/** The same catalog for an agent without HTTP MCP: `t3 mcp-session-stdio` relays to it. */
+export function toAcpStdioMcpServer(
+  config: PreviewMcpSessionConfig,
+  launch: McpSessionStdioLaunch,
+): McpServer {
+  const definition = config.serverDefinition;
+  const token = definition.bearerTokenEnvVar ? config.env[definition.bearerTokenEnvVar] : undefined;
+  if (definition.type !== "http" || !definition.url || !token)
+    throw new Error("ACP_MCP_CONFIGURATION_INVALID");
+  return {
+    name: config.serverName,
+    command: launch.command,
+    args: [...launch.args],
+    env: [
+      ...Object.entries(launch.env).map(([name, value]) => ({ name, value })),
+      { name: MCP_SESSION_URL_ENV, value: definition.url },
+      { name: MCP_SESSION_TOKEN_ENV, value: token },
+    ],
   };
 }
 
@@ -155,6 +183,10 @@ export const prepareAcpAutomationCatalogs = (input: {
   verification?: { preview?: boolean; computer?: boolean };
   /** Launch credentials (an Antigravity Gemini API key) scrubbed from logs, errors and events. */
   credentials?: ReadonlyArray<string>;
+  /** Shows the agent's `ask_user_question` calls; offers the interaction catalog when set. */
+  interaction?: InteractionSession;
+  /** Test seam for the stdio relay's launch command. */
+  stdioLaunch?: McpSessionStdioLaunch | undefined;
 }) =>
   Effect.gen(function* () {
     const configs: PreviewMcpSessionConfig[] = [];
@@ -206,6 +238,9 @@ export const prepareAcpAutomationCatalogs = (input: {
     const scrubEventCredentials = (event: ProviderRuntimeEvent): ProviderRuntimeEvent =>
       eventCredentials.length === 0 ? event : (scrubValue(event) as ProviderRuntimeEvent);
     const serverName = `f5_computer_${randomBytes(4).toString("hex")}`;
+    let interactionServerName: string | undefined;
+    /** Configs that reach the agent over stdio rather than HTTP. */
+    const stdioConfigs = new Map<PreviewMcpSessionConfig, McpSessionStdioLaunch>();
     let computerCapable = input.computerCapableLineage === true;
     let forwardedCredentials = false;
     let disposed = false;
@@ -410,6 +445,8 @@ export const prepareAcpAutomationCatalogs = (input: {
         addEventCredentials(values);
       },
       agentBrowser: () => agentBrowserConfigPayload(state),
+      /** The registered name of F5's question server, once offered to the agent. */
+      interactionServerName: () => interactionServerName,
       endTurn: (turnId: string) => {
         for (const config of configs) config.endTurn?.(turnId);
       },
@@ -447,6 +484,27 @@ export const prepareAcpAutomationCatalogs = (input: {
           for (const credential of Object.values(thread.env)) scrubber.register(credential);
           configs.push(thread);
         }
+        const stdioLaunch = "stdioLaunch" in input ? input.stdioLaunch : mcpSessionStdioLaunch();
+        if (
+          input.interaction &&
+          input.preview &&
+          !input.readOnlyWorkflow &&
+          (input.threadSession ?? input.ordinarySession) &&
+          (http || stdioLaunch)
+        ) {
+          const interaction = input.preview.createSessionConfig({
+            threadId: input.threadId,
+            provider: input.provider,
+            catalog: "interaction",
+            serverName: `f5_interaction_${randomBytes(4).toString("hex")}`,
+            interaction: input.interaction,
+          });
+          // Scrubbed from diagnostics and from published events: the agent may echo its config.
+          addEventCredentials(Object.values(interaction.env));
+          configs.push(interaction);
+          if (!http) stdioConfigs.set(interaction, stdioLaunch!);
+          interactionServerName = interaction.serverName;
+        }
         let detail = `Computer control for ${input.provider === "acp" ? "Custom ACP agent" : COMPUTER_AGENT_DISPLAY[input.provider].label} is awaiting verification`;
         if (input.verification?.computer ?? ACP_COMPUTER_CATALOG_VERIFIED[input.provider]) {
           if (input.readOnlyWorkflow)
@@ -473,7 +531,10 @@ export const prepareAcpAutomationCatalogs = (input: {
           }
         }
         state.computerUse ??= { state: "unavailable", detail };
-        return (memo = configs.map(toAcpHttpMcpServer));
+        return (memo = configs.map((config) => {
+          const launch = stdioConfigs.get(config);
+          return launch ? toAcpStdioMcpServer(config, launch) : toAcpHttpMcpServer(config);
+        }));
       },
     };
   });
