@@ -104,10 +104,10 @@ describe("recordInboxEntry", () => {
 });
 
 describe("inbox store", () => {
-  // The store prunes by the real clock; pin it to the fixtures' time so entries never age out.
+  // The store stamps and prunes with the real clock; pin it to the fixtures'
+  // day so entries never age past INBOX_MAX_AGE_MS as the calendar moves on.
   beforeEach(() => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(NOW);
+    vi.useFakeTimers({ toFake: ["Date"], now: NOW });
   });
   afterEach(() => {
     vi.useRealTimers();

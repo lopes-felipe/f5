@@ -116,6 +116,7 @@ import { ChangedFilesTree } from "./ChangedFilesTree";
 import { DiffStatLabel, hasNonZeroStat } from "./DiffStatLabel";
 import { MessageCopyButton } from "./MessageCopyButton";
 import { PromptLinkCopyButton } from "../promptLinks/PromptLinkCopyButton";
+import { HookApprovalWorkEntryRow } from "./HookApprovalWorkEntryRow";
 import { UserMessageRevertPopover } from "./UserMessageRevertPopover";
 import { computeRevertImpact } from "./revertImpact";
 import { AssistantMessageActions } from "./AssistantMessageActions";
@@ -4478,6 +4479,14 @@ const WorkEntryRow = memo(function WorkEntryRow(props: {
     <HtmlRenderFrame reference={workEntry.htmlRender} onImageExpand={props.onImageExpand} />
   ) : workEntry.diagnostic ? (
     <DiagnosticWorkEntryRow workEntry={workEntry} />
+  ) : workEntry.hookApproval ? (
+    <HookApprovalWorkEntryRow
+      label={workEntry.label}
+      threadId={threadId}
+      instanceId={workEntry.hookApproval.instanceId}
+    >
+      <NestedDiagnosticList diagnostics={workEntry.hookApproval.entries} />
+    </HookApprovalWorkEntryRow>
   ) : workEntry.itemType === "collab_agent_tool_call" ? (
     <SubagentWorkEntryRow
       workEntry={workEntry}

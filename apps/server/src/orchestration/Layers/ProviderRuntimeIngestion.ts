@@ -1817,6 +1817,8 @@ export function runtimeEventToActivities(
             hookEvent,
             outcome: event.payload.outcome,
             rawStatus,
+            // The instance that ran the hook, so its diagnostics link to the right inventory.
+            ...(event.providerInstanceId ? { providerInstanceId: event.providerInstanceId } : {}),
             ...(event.payload.targetItemId ? { providerItemId: event.payload.targetItemId } : {}),
             ...(event.payload.handlerType ? { handlerType: event.payload.handlerType } : {}),
             ...(event.payload.executionMode ? { executionMode: event.payload.executionMode } : {}),

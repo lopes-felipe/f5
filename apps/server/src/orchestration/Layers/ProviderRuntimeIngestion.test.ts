@@ -7243,6 +7243,7 @@ describe("ProviderRuntimeIngestion", () => {
       type: "hook.completed",
       eventId: asEventId("evt-hook-completed"),
       provider: "codex",
+      providerInstanceId: ProviderInstanceId.makeUnsafe("codex"),
       createdAt: now,
       threadId: asThreadId("thread-1"),
       turnId: asTurnId("turn-hook"),
@@ -7326,6 +7327,7 @@ describe("ProviderRuntimeIngestion", () => {
     expect(completedPayload).toMatchObject({
       hookName: "pre_tool_use",
       hookEvent: "pre_tool_use",
+      providerInstanceId: "codex",
       rawStatus: "failed",
       handlerType: "command",
       executionMode: "sync",

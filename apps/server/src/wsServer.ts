@@ -3649,6 +3649,16 @@ export const createServer = Effect.fn(function* (
         ),
     }),
   );
+  /** Provider inventory routes: a project id to its workspace root; paths never come from the browser. */
+  const resolveProviderInventoryProjectRoot = (projectId: string | undefined) =>
+    Effect.gen(function* () {
+      if (!projectId) return undefined;
+      const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+      const model = yield* orchestrationEngine.getReadModel();
+      const project = model.projects.find((p) => p.id === projectId && p.deletedAt === null);
+      if (!project) return yield* new RouteRequestError({ message: "Project not found." });
+      return project.workspaceRoot;
+    });
   const withTerminalThreadAccess = <A>(threadId: string, action: Effect.Effect<A, TerminalError>) =>
     Effect.gen(function* () {
       const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
@@ -7080,16 +7090,7 @@ export const createServer = Effect.fn(function* (
         if (!instance) {
           return yield* new RouteRequestError({ message: "Provider instance not found." });
         }
-        let projectRoot: string | undefined;
-        if (body.projectId) {
-          const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
-          const model = yield* orchestrationEngine.getReadModel();
-          const project = model.projects.find(
-            (p) => p.id === body.projectId && p.deletedAt === null,
-          );
-          if (!project) return yield* new RouteRequestError({ message: "Project not found." });
-          projectRoot = project.workspaceRoot;
-        }
+        const projectRoot = yield* resolveProviderInventoryProjectRoot(body.projectId);
         const entries = instance.inventory
           ? yield* instance
               .inventory({ projectRoot })
@@ -7112,6 +7113,22 @@ export const createServer = Effect.fn(function* (
           ...(body.projectId ? { projectId: body.projectId } : {}),
           ...entries,
         };
+      }
+      case WS_METHODS.serverTrustProviderHooks: {
+        const body = stripRequestTag(request.body);
+        const instance = yield* providerInstanceRegistry.getInstance(body.instanceId);
+        if (!instance || instance.driverKind !== "codex" || !instance.trustHooks)
+          return yield* new RouteRequestError({
+            message: "Hook approval is only available for a configured Codex provider.",
+          });
+        const projectRoot = yield* resolveProviderInventoryProjectRoot(body.projectId);
+        return yield* instance
+          .trustHooks({ projectRoot, hooks: body.hooks })
+          .pipe(
+            Effect.mapError(
+              (error) => new RouteRequestError({ message: error.detail ?? error.message }),
+            ),
+          );
       }
 
       case WS_METHODS.serverValidateHarnesses: {

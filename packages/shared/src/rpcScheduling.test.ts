@@ -233,6 +233,8 @@ describe("RPC method policy", () => {
       [{ _tag: "server.updateSettings", projectSettingsOverrides: { p: null } }, true],
       [{ _tag: "server.getProviderInventory", instanceId: "codex" }, false],
       [{ _tag: "server.getProviderInventory", instanceId: "codex", projectId: "p" }, true],
+      [{ _tag: "server.trustProviderHooks", instanceId: "codex", hooks: [] }, false],
+      [{ _tag: "server.trustProviderHooks", instanceId: "codex", projectId: "p", hooks: [] }, true],
       [{ _tag: "git.preparePullRequestThread", mode: "worktree" }, false],
       [{ _tag: "git.preparePullRequestThread", mode: "local" }, true],
       [{ _tag: "git.runStackedAction", action: "commit" }, false],
