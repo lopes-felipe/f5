@@ -271,19 +271,17 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
   const actorSelections = actors.map((row) =>
     resolveWorkflowModelSelection(row.provider, row.model),
   );
-  // Keyed by row so a resolved selection is applied to the row it was resolved for.
-  const actorSelectionsKey = actors
-    .map((row, index) => `${row.key}\t${actorSelections[index]}`)
-    .join("\n");
+  // Keyed by row so a resolved selection is applied to the row it was resolved for. JSON keeps
+  // slugs that contain delimiters intact.
+  const actorSelectionsKey = JSON.stringify(
+    actors.map((row, index) => [row.key, actorSelections[index]!] as const),
+  );
   const mergeSelection = resolveWorkflowModelSelection(mergeProvider, mergeModel);
   useEffect(() => {
     if (!serverConfigQuery.data) return;
 
     const selections = new Map(
-      actorSelectionsKey.split("\n").map((entry) => {
-        const [key = "", selection = ""] = entry.split("\t");
-        return [key, selection] as const;
-      }),
+      JSON.parse(actorSelectionsKey) as ReadonlyArray<readonly [string, string]>,
     );
     setActors((current) => {
       let changed = false;
@@ -329,6 +327,15 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
     effectiveReaderSlot.provider,
     effectiveReaderSlot.model,
   );
+  // A remembered final-stage provider can lose support after it was picked; the picker only
+  // stops new picks. The Reader counts only while reader review is on.
+  const mergeProviderError = serverConfigQuery.data
+    ? readOnlyWorkflowUnsupportedReason(mergeProvider, providers)
+    : null;
+  const readerProviderError =
+    serverConfigQuery.data && workflowType === "document" && readerReviewEnabled
+      ? readOnlyWorkflowUnsupportedReason(effectiveReaderSlot.provider, providers)
+      : null;
   const sameDocumentAuthors = workflowType === "document" && duplicateActorIndexes.size > 0;
   const titleGenerationModel = resolveThreadTitleModel(settings);
   const workspaceRoots = [project?.cwd];
@@ -369,6 +376,8 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
     !sameDocumentAuthors &&
     !actorsOverMax &&
     actorProviderErrors.every((reason) => reason === null) &&
+    mergeProviderError === null &&
+    readerProviderError === null &&
     (workflowType !== "document" || submittedBriefLength <= DOCUMENT_WORKFLOW_BRIEF_MAX_CHARS) &&
     validMaxCostUsd;
   const primaryActionShortcutLabel = useMemo(
@@ -1183,6 +1192,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                         workflowType === "investigation"
                           ? investigationSelfReviewEnabled
                           : selfReviewEnabled,
+                        readerReviewEnabled,
                       )}
                     </p>
                   ) : null}
@@ -1209,6 +1219,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                   modelOptionsByProvider={modelOptionsByProvider}
                   // The merge is a read-only turn for every workflow type.
                   providerUnavailableReason={workflowProviderUnavailableReason}
+                  error={mergeProviderError}
                   onProviderModelChange={(provider, model) => {
                     setMergeProvider(provider);
                     setMergeModel(model);
@@ -1270,6 +1281,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                         modelOptions={effectiveReaderSlot.modelOptions}
                         modelOptionsByProvider={modelOptionsByProvider}
                         providerUnavailableReason={workflowProviderUnavailableReason}
+                        error={readerProviderError}
                         onProviderModelChange={(provider, model) =>
                           setReaderSlot({ provider, model })
                         }

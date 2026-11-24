@@ -107,6 +107,8 @@ export function formatWorkflowTurnEstimate(
   type: WorkflowTypeValue,
   count: number,
   selfReviewEnabled: boolean,
+  /** Document runs end with a reader review and a polish turn when reader review is on. */
+  readerReviewEnabled = false,
 ): string {
   const estimate = workflowTurnEstimate(workflowActorKind(type), count, selfReviewEnabled);
   const plural = (value: number, singular: string, pluralForm = `${singular}s`) =>
@@ -122,6 +124,7 @@ export function formatWorkflowTurnEstimate(
           ...(estimate.revisions > 0 ? [plural(estimate.revisions, "revision")] : []),
         ];
   parts.push(`${estimate.finalTurns} ${FINAL_TURN_NAME[type]}`);
+  if (type === "document" && readerReviewEnabled) parts.push("1 reader review", "1 polish");
   return `${count} ${ACTOR_NOUN[type].plural}: ${parts.join(", ")}`;
 }
 

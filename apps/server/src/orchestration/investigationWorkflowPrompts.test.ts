@@ -160,15 +160,43 @@ describe("investigation workflow prompts with more than two investigators", () =
   });
 
   it("computes the creation-time share per report only for mesh runs", () => {
+    const labels = ["A", "B", "C", "D"];
     const input = {
       problemPrompt: "p".repeat(4_000),
       selfReviewEnabled: true,
+      synthesisSlot: codexSlot,
       renderedMessageCharLimit: 250_000,
     };
-    expect(investigationSynthesisShareAtCreation({ ...input, investigatorCount: 2 })).toBeNull();
-    // 4 investigations + 12 cross-reviews + 4 own-model reviews.
-    expect(investigationSynthesisShareAtCreation({ ...input, investigatorCount: 4 })).toBe(
-      Math.floor((250_000 - 4_000 - 6_000) / 20),
-    );
+    expect(
+      investigationSynthesisShareAtCreation({
+        ...input,
+        investigatorLabels: ["Investigator A", "Investigator B"],
+      }),
+    ).toBeNull();
+    const share = investigationSynthesisShareAtCreation({
+      ...input,
+      investigatorLabels: labels.map((label) => `Investigator ${label}`),
+    })!;
+    // 4 investigations + 12 cross-reviews + 4 own-model reviews, all long, on a retry: the
+    // runtime gives every report exactly the creation-time share.
+    const long = "z".repeat(100_000);
+    const runtime = buildBudgetedInvestigationSynthesisPrompt({
+      ...base,
+      problemPrompt: input.problemPrompt,
+      retry: { kind: "retry", reusedThread: true },
+      contributions: labels.map((label) => ({
+        ...contribution(
+          label,
+          labels.filter((peer) => peer !== label),
+          long,
+        ),
+        crossReviews: labels
+          .filter((peer) => peer !== label)
+          .map((peer) => ({ reviewerLabel: `Investigator ${peer}`, text: long })),
+        selfReview: long,
+      })),
+      maxRenderedChars: input.renderedMessageCharLimit,
+    });
+    expect(runtime.smallestExcerpt).toBe(share);
   });
 });

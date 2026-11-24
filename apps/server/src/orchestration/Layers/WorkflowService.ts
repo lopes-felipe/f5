@@ -39,7 +39,18 @@ import {
   workflowUsesMesh,
 } from "@t3tools/shared/workflowParticipants";
 import { createHash } from "node:crypto";
-import { Cause, Clock, Duration, Effect, Exit, Layer, Option, Scope, Stream } from "effect";
+import {
+  Cause,
+  Clock,
+  Duration,
+  Effect,
+  Exit,
+  Layer,
+  Option,
+  Scope,
+  Semaphore,
+  Stream,
+} from "effect";
 import { roughTokenEstimateFromCharacters } from "@t3tools/shared/model";
 import {
   defaultDocumentReaderSlot,
@@ -638,10 +649,9 @@ function markPlanningReviewError(
 ): PlanningWorkflow {
   const branch = requirePlanningBranch(workflow, branchId);
   const review = branch.reviews.find((entry) => entry.threadId === threadId);
-  if (
-    branch.status !== "reviews_requested" ||
-    (review?.status !== "running" && review?.status !== "pending")
-  ) {
+  // Only a running attempt can fail this way: a review requeued as pending hasn't started, and
+  // an error from its previous attempt must not fail it (admission failures use `writeReview`).
+  if (branch.status !== "reviews_requested" || review?.status !== "running") {
     return workflow;
   }
 
@@ -1185,15 +1195,23 @@ function validateCapturedPlanForTurn(input: {
    * per-plan budget (`workflowPlanCharBudget`); merge captures pass nothing.
    */
   readonly maxPlanChars?: number | null | undefined;
+  /** The author whose plan is measured against `maxPlanChars` as the merge renders it. */
+  readonly branchId?: WorkflowBranchId | undefined;
 }):
   | { readonly valid: true }
   | { readonly valid: false; readonly error: string; readonly overBudget?: true } {
   const plan = input.thread.proposedPlans.find((candidate) => candidate.turnId === input.turnId);
-  if (input.maxPlanChars != null && plan && plan.planMarkdown.length > input.maxPlanChars) {
+  const renderedChars =
+    input.maxPlanChars != null && plan
+      ? input.branchId
+        ? workflowPlanMergeChars(input.workflow, input.branchId, plan.planMarkdown, input.turnId)
+        : plan.planMarkdown.length
+      : null;
+  if (input.maxPlanChars != null && renderedChars !== null && renderedChars > input.maxPlanChars) {
     return {
       valid: false,
       overBudget: true,
-      error: `The ${planningWorkflowDocumentType(input.workflow) ? "document" : "plan"} is ${plan.planMarkdown.length.toLocaleString("en-US")} characters; this run allows at most ${input.maxPlanChars.toLocaleString("en-US")} characters per author so every plan fits in the merge. Submit a shorter complete version.`,
+      error: `The ${planningWorkflowDocumentType(input.workflow) ? "document" : "plan"} takes ${renderedChars.toLocaleString("en-US")} characters in the merge; this run allows at most ${input.maxPlanChars.toLocaleString("en-US")} characters per author so every plan fits. Submit a shorter complete version.`,
     };
   }
   const behavior = resolveWorkflowBehavior({
@@ -1660,6 +1678,7 @@ export const makeWorkflowService = Effect.gen(function* () {
         branch.authorThreadId,
         branch.planTurnId,
         branch.updatedAt,
+        planReplacementFilter(workflow, branch.branchId),
       )?.planMarkdown;
       if (!planMarkdown) {
         return yield* Effect.fail(new Error("Saved plan not found for automatic review retry."));
@@ -1716,6 +1735,13 @@ export const makeWorkflowService = Effect.gen(function* () {
               failedAt,
             ),
           );
+          // The failed retry frees its slot; nothing else would admit the next queued review.
+          const launchSnapshot = yield* orchestrationEngine.getReadModel();
+          const launchWorkflow =
+            launchSnapshot.planningWorkflows.find((entry) => entry.id === input.workflowId) ?? null;
+          if (launchWorkflow && !isArchivedWorkflow(launchWorkflow)) {
+            yield* maybeStartReviews(launchWorkflow, launchSnapshot, failedAt);
+          }
         }),
       ),
       Scope.provide(sources.scope),
@@ -2026,7 +2052,9 @@ export const makeWorkflowService = Effect.gen(function* () {
         provider,
         thread: input.thread,
         turnId: input.turnId,
-        ...(branch ? { maxPlanChars: workflowPlanCharBudget(workflow) } : {}),
+        ...(branch
+          ? { maxPlanChars: workflowPlanCharBudget(workflow), branchId: branch.branchId }
+          : {}),
       });
       if (validation.valid) return;
       // Every workflow kind records the rejected turn, so the stage evaluates it once. Planning
@@ -2156,6 +2184,7 @@ export const makeWorkflowService = Effect.gen(function* () {
           branch.authorThreadId,
           branch.planTurnId,
           branch.updatedAt,
+          planReplacementFilter(workflow, branch.branchId),
         )?.planMarkdown;
         const reviews = yield* reviewFeedbackForBranch(workflow, branch, input.snapshot);
         if (!originalPlan || reviews.length === 0) {
@@ -2268,11 +2297,17 @@ export const makeWorkflowService = Effect.gen(function* () {
       });
     });
 
+  /**
+   * The author's accepted plan: the pinned one, or a newer finished turn's plan that replaces it.
+   * A replacement that `acceptsReplacement` refuses (one over the per-plan budget) is never
+   * selected, so the accepted pin stays usable when an over-long replacement is rejected.
+   */
   const resolvePinnedAuthorPlan = (
     snapshot: OrchestrationReadModel,
     threadId: ThreadId,
     pinnedTurnId: string | null,
     replacementNotBefore?: string,
+    acceptsReplacement?: (plan: ReplacementPlanCandidate) => boolean,
   ):
     | { readonly status: "missing" | "waiting" }
     | {
@@ -2282,6 +2317,8 @@ export const makeWorkflowService = Effect.gen(function* () {
     if (!pinnedTurnId) {
       return { status: "missing" };
     }
+    const withinReplacementBudget = (plan: ReplacementPlanCandidate) =>
+      acceptsReplacement?.(plan) ?? true;
 
     const thread = snapshot.threads.find((entry) => entry.id === threadId);
     if (!thread) {
@@ -2307,6 +2344,7 @@ export const makeWorkflowService = Effect.gen(function* () {
       if (
         latestTurn.state === "completed" &&
         replacementPlan &&
+        withinReplacementBudget(replacementPlan) &&
         (replacementNotBefore === undefined || latestTurn.requestedAt > replacementNotBefore)
       ) {
         return { status: "ready", plan: replacementPlan };
@@ -2344,7 +2382,11 @@ export const makeWorkflowService = Effect.gen(function* () {
     const replacementPlan = thread.proposedPlans.find(
       (candidate) => candidate.turnId === latestTurn.turnId,
     );
-    if (latestTurn.state === "completed" && replacementPlan) {
+    if (
+      latestTurn.state === "completed" &&
+      replacementPlan &&
+      withinReplacementBudget(replacementPlan)
+    ) {
       return { status: "ready", plan: replacementPlan };
     }
 
@@ -2356,12 +2398,14 @@ export const makeWorkflowService = Effect.gen(function* () {
     threadId: ThreadId,
     expectedTurnId: string | null,
     replacementNotBefore?: string,
+    acceptsReplacement?: (plan: ReplacementPlanCandidate) => boolean,
   ): { readonly planMarkdown: string } | null => {
     const resolution = resolvePinnedAuthorPlan(
       snapshot,
       threadId,
       expectedTurnId,
       replacementNotBefore,
+      acceptsReplacement,
     );
     return resolution.status === "ready" && resolution.plan.turnId === expectedTurnId
       ? resolution.plan
@@ -2380,6 +2424,7 @@ export const makeWorkflowService = Effect.gen(function* () {
         branch.authorThreadId,
         branch.revisionTurnId,
         branch.updatedAt,
+        planReplacementFilter(workflow, branch.branchId),
       )?.planMarkdown;
       if (!plan) return null;
       plans.push(plan);
@@ -2397,6 +2442,27 @@ export const makeWorkflowService = Effect.gen(function* () {
     ThreadId,
     { readonly allowPossibleDuplicate: boolean }
   >();
+
+  /**
+   * The resend a requeued review still owes after a restart dropped its in-memory intent. When
+   * the thread's latest delivery is rejected or ambiguous and older than the review's current
+   * attempt, a retry requeued the review to resend it (or the resend was interrupted), so that
+   * delivery is resent rather than a new turn started. A failed delivery from the current
+   * attempt still fails the review for a manual retry. The duplicate-risk confirmation is not
+   * carried over: an ambiguous delivery then fails visibly and asks for it again.
+   */
+  const persistedPlanReviewRedelivery = (threadId: ThreadId, attemptStartedAt: string) =>
+    providerTurnDeliveryWorker._tag === "Some"
+      ? providerTurnDeliveryWorker.value.recheck(threadId).pipe(
+          Effect.map((delivery) =>
+            (delivery?.state === "rejected" || delivery?.state === "ambiguous") &&
+            delivery.createdAt < attemptStartedAt
+              ? { allowPossibleDuplicate: false }
+              : undefined,
+          ),
+          Effect.catchCause(() => Effect.succeed(undefined)),
+        )
+      : Effect.succeed(undefined);
 
   /**
    * Whether a plan review holds one of the `WORKFLOW_MAX_ACTIVE_REVIEW_TURNS` slots. A running
@@ -2434,13 +2500,39 @@ export const makeWorkflowService = Effect.gen(function* () {
    * failure marks only that review. Results are applied by thread id onto a fresh read.
    */
 
+  /**
+   * One launcher pass at a time. The event fiber, manual retries and reconciliation all admit
+   * reviews; each pass counts occupancy and reserves slots from a fresh read inside this gate, so
+   * two overlapping passes can't both fill the same free slot.
+   */
+  const reviewLaunchGate = yield* Semaphore.make(1);
+
+  /** Runs one launcher pass and returns the review threads it dispatched. */
   const maybeStartReviews = (
     workflow: PlanningWorkflow,
     snapshot: OrchestrationReadModel,
     updatedAt: string,
     retries?: ReadonlyMap<ThreadId, WorkflowRetryContext>,
   ) =>
+    reviewLaunchGate.withPermits(1)(
+      Effect.gen(function* () {
+        const fresh = yield* orchestrationEngine.getReadModel();
+        const current = fresh.planningWorkflows.find((entry) => entry.id === workflow.id);
+        if (current && (isDeletedWorkflow(current) || isArchivedWorkflow(current))) {
+          return new Set<ThreadId>();
+        }
+        return yield* maybeStartReviewsPass(current ?? workflow, fresh, updatedAt, retries);
+      }),
+    );
+
+  const maybeStartReviewsPass = (
+    workflow: PlanningWorkflow,
+    snapshot: OrchestrationReadModel,
+    updatedAt: string,
+    retries?: ReadonlyMap<ThreadId, WorkflowRetryContext>,
+  ) =>
     Effect.gen(function* () {
+      const dispatched = new Set<ThreadId>();
       const branches = planningBranches(workflow);
       // Only running reviews need the mark; the rest of this run's entries are dropped here.
       for (const branch of branches) {
@@ -2459,7 +2551,7 @@ export const makeWorkflowService = Effect.gen(function* () {
             branch.reviews.length > 0,
         ) && branches.some((branch) => branch.status === "reviews_requested");
       if (!startsFresh && !resumesPersistedIntent) {
-        return;
+        return dispatched;
       }
 
       const plans = new Map<WorkflowBranchId, string>();
@@ -2469,8 +2561,9 @@ export const makeWorkflowService = Effect.gen(function* () {
           branch.authorThreadId,
           branch.planTurnId,
           branch.updatedAt,
+          planReplacementFilter(workflow, branch.branchId),
         )?.planMarkdown;
-        if (!plan) return;
+        if (!plan) return dispatched;
         plans.set(branch.branchId, plan);
       }
 
@@ -2485,7 +2578,7 @@ export const makeWorkflowService = Effect.gen(function* () {
         const budgetError = workflowBudgetError(workflow);
         if (budgetError) {
           yield* upsertWorkflow(markMergeError(workflow, budgetError.message, updatedAt));
-          return;
+          return dispatched;
         }
         const reviews = new Map<WorkflowBranchId, PlanReviewIntent[]>();
         for (const branch of branches) {
@@ -2542,7 +2635,9 @@ export const makeWorkflowService = Effect.gen(function* () {
           const { branch, review, reviewerBranchId } = record;
           const budgetError = workflowBudgetError(intentWorkflow);
           if (budgetError) return yield* Effect.fail(budgetError);
-          const redelivery = requeuedPlanReviewDeliveries.get(review.threadId);
+          const redelivery =
+            requeuedPlanReviewDeliveries.get(review.threadId) ??
+            (yield* persistedPlanReviewRedelivery(review.threadId, review.updatedAt));
           if (redelivery && providerTurnDeliveryWorker._tag === "Some") {
             requeuedPlanReviewDeliveries.delete(review.threadId);
             yield* providerTurnDeliveryWorker.value.retry({
@@ -2652,6 +2747,7 @@ export const makeWorkflowService = Effect.gen(function* () {
         const exit = yield* Effect.exit(launch(record));
         if (Exit.isSuccess(exit)) {
           active += 1;
+          dispatched.add(record.review.threadId);
           continue;
         }
         dispatchedPlanReviewThreads.delete(record.review.threadId);
@@ -2669,6 +2765,7 @@ export const makeWorkflowService = Effect.gen(function* () {
           });
         }
       }
+      return dispatched;
     });
 
   const maybeStartRevisions = (
@@ -3210,7 +3307,7 @@ export const makeWorkflowService = Effect.gen(function* () {
   ) =>
     Effect.gen(function* () {
       if (isArchivedWorkflow(workflow)) return;
-      yield* maybeStartReviews(workflow, snapshot, updatedAt);
+      const dispatchedReviews = yield* maybeStartReviews(workflow, snapshot, updatedAt);
       const dispatchedRevisions = yield* maybeStartRevisions(
         workflow,
         snapshot,
@@ -3219,7 +3316,8 @@ export const makeWorkflowService = Effect.gen(function* () {
       );
       yield* maybeStartMerge(workflow, snapshot, updatedAt);
       yield* maybeContinueDocumentReaderPass(workflow);
-      return dispatchedRevisions;
+      // Every author and review thread this pass dispatched a turn to.
+      return new Set<ThreadId>([...dispatchedReviews, ...(dispatchedRevisions ?? [])]);
     });
 
   const maybeAdvancePlanningWorkflowFromCompletedThread = (
@@ -3259,6 +3357,7 @@ export const makeWorkflowService = Effect.gen(function* () {
             threadId,
             pinnedTurnId,
             branch.updatedAt,
+            planReplacementFilter(workflow, branch.branchId),
           );
           if (selection.status !== "ready" || selection.plan.turnId === pinnedTurnId) {
             return workflow;
@@ -3276,6 +3375,7 @@ export const makeWorkflowService = Effect.gen(function* () {
               thread,
               turnId: replacementTurnId,
               maxPlanChars: workflowPlanCharBudget(workflow),
+              branchId: authorBranchId,
             }).valid
           ) {
             return workflow;
@@ -3343,6 +3443,7 @@ export const makeWorkflowService = Effect.gen(function* () {
           thread,
           turnId,
           maxPlanChars: workflowPlanCharBudget(workflow),
+          branchId: authorBranchId,
         });
         if (!capture.valid) {
           // An over-long plan was captured: repair it rather than synthesizing another.
@@ -3355,14 +3456,31 @@ export const makeWorkflowService = Effect.gen(function* () {
               turnId,
               createdAt: updatedAt,
             }));
-          if (!synthesized) {
+          // A plan synthesized from the reply must meet the per-plan budget too, so check the
+          // saved record; an over-long one takes the same repair path as an over-long capture.
+          let repairSnapshot = snapshot;
+          let repairThread = thread;
+          let accepted = false;
+          if (synthesized) {
+            repairSnapshot = yield* orchestrationEngine.getReadModel();
+            repairThread = repairSnapshot.threads.find((entry) => entry.id === threadId) ?? thread;
+            accepted = validateCapturedPlanForTurn({
+              workflow,
+              provider: branch.authorSlot.provider,
+              thread: repairThread,
+              turnId,
+              maxPlanChars: workflowPlanCharBudget(workflow),
+              branchId: authorBranchId,
+            }).valid;
+          }
+          if (!accepted) {
             // Valid late output can still be captured; a failed turn must not
             // trigger another provider turn to repair invalid output.
             if (branch.status === "error") return workflow;
             yield* retryOrFailInvalidPlanCapture({
               workflow,
-              snapshot,
-              thread,
+              snapshot: repairSnapshot,
+              thread: repairThread,
               turnId,
               branchId: authorBranchId,
               createdAt: updatedAt,
@@ -5059,6 +5177,8 @@ export const makeWorkflowService = Effect.gen(function* () {
             ...updatePlanningBranch(reconciledWorkflow, branchId, () => repairedBranch),
             updatedAt,
           };
+          // Saved now: the review launcher reads the stored record.
+          yield* upsertWorkflow(reconciledWorkflow);
           continue;
         }
         if (branch.reviews.every((review) => review.status === "completed")) {
@@ -5171,8 +5291,11 @@ export const makeWorkflowService = Effect.gen(function* () {
           const baselineReview = baselineBranch.reviews.find(
             (entry) => entry.threadId === review.threadId,
           );
+          // Includes a running review startup re-dispatched (a restart mid-launch): its session
+          // may not be projected yet.
           const startedReviewThisPass =
-            (baselineReview?.status ?? null) !== "running" && review.status === "running";
+            ((baselineReview?.status ?? null) !== "running" && review.status === "running") ||
+            dispatchedRevisions?.has(review.threadId) === true;
           const reviewThread = latestSnapshot.threads.find(
             (thread) => thread.id === review.threadId,
           );
@@ -7237,6 +7360,7 @@ export const makeWorkflowService = Effect.gen(function* () {
           branch.authorThreadId,
           branch.planTurnId,
           branch.updatedAt,
+          planReplacementFilter(workflow, branch.branchId),
         )?.planMarkdown ?? null;
 
       if (retriesLegacyReviewSetup) {
@@ -7638,6 +7762,8 @@ export const makeWorkflowService = Effect.gen(function* () {
       }
 
       if (retriesLegacyReviewSetup) {
+        // The launcher reads the stored record, so the repaired branches are saved first.
+        yield* upsertWorkflow(retriedWorkflow);
         yield* maybeStartReviews(retriedWorkflow, snapshot, updatedAt, reviewRetries);
         const refreshed = yield* orchestrationEngine.getReadModel();
         retriedWorkflow =
@@ -8033,6 +8159,49 @@ export function workflowPlanCharBudget(workflow: PlanningWorkflow): number | nul
   return Math.floor(
     (WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT - emptyMergePrompt.length - 1_000) / count,
   );
+}
+
+/**
+ * The characters a plan adds to the merge prompt as the merge renders it. Document drafts are
+ * normalized, their envelope terminators escaped and their source turn named, so the raw length
+ * can understate it. The baseline is the merge prompt with every plan empty and no turn ids, the
+ * same one `workflowPlanCharBudget` subtracts, so plans that each fit their share fit together.
+ */
+export function workflowPlanMergeChars(
+  workflow: PlanningWorkflow,
+  branchId: WorkflowBranchId,
+  planMarkdown: string,
+  turnId: string | null,
+): number {
+  const branches = planningBranches(workflow);
+  const measured = updatePlanningBranch(workflow, branchId, (branch) => ({
+    ...branch,
+    revisionTurnId: turnId === null ? null : TurnId.makeUnsafe(turnId),
+  }));
+  const withPlan = buildWorkflowMergePrompt(
+    measured,
+    branches.map((branch) => (branch.branchId === branchId ? planMarkdown : "")),
+  ).length;
+  const withoutPlan = buildWorkflowMergePrompt(
+    measured,
+    branches.map(() => ""),
+    undefined,
+    { includeTurnIds: false },
+  ).length;
+  return withPlan - withoutPlan;
+}
+
+interface ReplacementPlanCandidate {
+  readonly planMarkdown: string;
+  readonly turnId: TurnId | null;
+}
+
+/** Accepts a replacement plan only when it fits the per-plan budget as the merge renders it. */
+function planReplacementFilter(workflow: PlanningWorkflow, branchId: WorkflowBranchId) {
+  const budget = workflowPlanCharBudget(workflow);
+  return (plan: ReplacementPlanCandidate) =>
+    budget === null ||
+    workflowPlanMergeChars(workflow, branchId, plan.planMarkdown, plan.turnId) <= budget;
 }
 
 /** Stable plan-review thread id; mesh runs add the reviewer so every edge gets its own thread. */

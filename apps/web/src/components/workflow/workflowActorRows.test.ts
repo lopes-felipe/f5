@@ -47,5 +47,10 @@ describe("workflow actor rows", () => {
     expect(formatWorkflowTurnEstimate("codeReview", 5, true)).toBe(
       "5 reviewers: 5 reviews, 1 consolidation",
     );
+    expect(formatWorkflowTurnEstimate("document", 3, true, true)).toMatch(
+      /, 1 merge, 1 reader review, 1 polish$/,
+    );
+    expect(formatWorkflowTurnEstimate("document", 3, true, false)).toMatch(/, 1 merge$/);
+    expect(formatWorkflowTurnEstimate("planning", 3, true, true)).toMatch(/, 1 merge$/);
   });
 });

@@ -208,6 +208,17 @@ describe("document workflow decider", () => {
           decideOrchestrationCommand({
             readModel: h.get(),
             providerInstances: [
+              // A default Antigravity instance whose certification disagrees comes first, so a
+              // default-or-first lookup would decide the opposite of the selected instance.
+              ...(driver === "antigravity"
+                ? [
+                    {
+                      instanceId: ProviderInstanceId.makeUnsafe("antigravity"),
+                      driver: ProviderDriverKind.make("antigravity"),
+                      runtimeCapabilities: { readOnlyWorkflowTurns: !readOnlyWorkflowTurns },
+                    } as WorkflowProviderSnapshot,
+                  ]
+                : []),
               {
                 instanceId,
                 driver: ProviderDriverKind.make(driver),

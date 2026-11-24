@@ -870,14 +870,15 @@ function createSynthesisThread(input: {
   });
 }
 
-function startSynthesisTurn(input: {
-  readonly orchestrationEngine: OrchestrationEngineShape;
-  readonly commandId: CommandId;
+/**
+ * The synthesis prompt, or why it cannot be sent (cost limit, too little room per report, size).
+ * Checked before the stage is marked running, so a rejected prompt never looks dispatched.
+ */
+function prepareSynthesisPrompt(input: {
   readonly workflow: InvestigationWorkflow;
   readonly contributions: ReadonlyArray<InvestigationSynthesisContributionInput>;
   readonly retry: WorkflowRetryContext;
-  readonly createdAt: string;
-}) {
+}): Effect.Effect<string, Error> {
   const budgetError = workflowBudgetError(input.workflow);
   if (budgetError) return Effect.fail(budgetError);
   const promptInput = {
@@ -910,6 +911,16 @@ function startSynthesisTurn(input: {
   }
   const promptError = investigationPromptInvariant(prompt, "Investigation synthesis");
   if (promptError) return Effect.fail(promptError);
+  return Effect.succeed(prompt);
+}
+
+function startSynthesisTurn(input: {
+  readonly orchestrationEngine: OrchestrationEngineShape;
+  readonly commandId: CommandId;
+  readonly workflow: InvestigationWorkflow;
+  readonly prompt: string;
+  readonly createdAt: string;
+}) {
   return input.orchestrationEngine.dispatch({
     type: "thread.turn.start",
     commandId: input.commandId,
@@ -917,7 +928,7 @@ function startSynthesisTurn(input: {
     message: {
       messageId: MessageId.makeUnsafe(crypto.randomUUID()),
       role: "user",
-      text: prompt,
+      text: input.prompt,
       attachments: [],
     },
     ...workflowTurnProviderFields(input.workflow.synthesis.slot),
@@ -1542,6 +1553,33 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
         }
       }
 
+      const prepared = yield* Effect.exit(
+        prepareSynthesisPrompt({
+          workflow: pendingWorkflow,
+          contributions: contributions.map((contribution) => ({
+            label: contribution.label,
+            investigation: contribution.investigation!,
+            crossReviews: contribution.crossReviews.map((review) => ({
+              reviewerLabel: review.reviewerLabel,
+              text: review.text!,
+            })),
+            selfReview: contribution.selfReview,
+          })),
+          retry: hasPriorThreadWork(synthesisThread)
+            ? { kind: "retry", reusedThread: true }
+            : { kind: "none" },
+        }),
+      );
+      if (prepared._tag === "Failure") {
+        const errorWorkflow = withSynthesisError(
+          pendingWorkflow,
+          String(prepared.cause),
+          updatedAt,
+        );
+        yield* upsertWorkflow(orchestrationEngine, errorWorkflow, updatedAt);
+        return errorWorkflow;
+      }
+
       const dispatchCommandId = CommandId.makeUnsafe(timeOrderedUuid());
       const runningWorkflow = withSynthesisRunning(
         pendingWorkflow,
@@ -1555,18 +1593,7 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
           orchestrationEngine,
           commandId: dispatchCommandId,
           workflow: runningWorkflow,
-          contributions: contributions.map((contribution) => ({
-            label: contribution.label,
-            investigation: contribution.investigation!,
-            crossReviews: contribution.crossReviews.map((review) => ({
-              reviewerLabel: review.reviewerLabel,
-              text: review.text!,
-            })),
-            selfReview: contribution.selfReview,
-          })),
-          retry: hasPriorThreadWork(synthesisThread)
-            ? { kind: "retry", reusedThread: true }
-            : { kind: "none" },
+          prompt: prepared.value,
           createdAt: updatedAt,
         }),
       );
@@ -2242,18 +2269,6 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
         );
       }
       const selfReviewEnabled = input.selfReviewEnabled ?? false;
-      const synthesisShare = investigationSynthesisShareAtCreation({
-        problemPrompt: input.problemPrompt,
-        investigatorCount: investigatorSlots.length,
-        selfReviewEnabled,
-        renderedMessageCharLimit: WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT,
-      });
-      if (synthesisShare !== null && synthesisShare < WORKFLOW_FAN_IN_MIN_ARTIFACT_CHARS) {
-        return yield* Effect.fail(
-          new Error(synthesisShareMessage(investigatorSlots.length, synthesisShare)),
-        );
-      }
-
       const snapshot = yield* orchestrationEngine.getReadModel();
       const existingSlugs = new Set(
         snapshot.investigationWorkflows
@@ -2294,6 +2309,20 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
         synthesis: input.synthesis,
         maxCostUsd: input.maxCostUsd,
       });
+      const synthesisShare = investigationSynthesisShareAtCreation({
+        problemPrompt: input.problemPrompt,
+        investigatorLabels: investigationInvestigators(workflow).map(
+          ({ investigator }) => investigator.label,
+        ),
+        selfReviewEnabled,
+        synthesisSlot: input.synthesis,
+        renderedMessageCharLimit: WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT,
+      });
+      if (synthesisShare !== null && synthesisShare < WORKFLOW_FAN_IN_MIN_ARTIFACT_CHARS) {
+        return yield* Effect.fail(
+          new Error(synthesisShareMessage(investigatorSlots.length, synthesisShare)),
+        );
+      }
 
       yield* orchestrationEngine.dispatch({
         type: "project.investigation-workflow.create",
@@ -2338,7 +2367,14 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
         ),
       );
 
-      yield* startPendingInvestigations(workflow, new Date().toISOString());
+      // Under the write lock, like the event handler: a completion that lands while later
+      // investigators start must not be overwritten by this pass's earlier read.
+      yield* withWorkflowWriteLock(
+        Effect.gen(function* () {
+          const stored = yield* readInvestigationWorkflow(orchestrationEngine, workflowId);
+          if (stored) yield* startPendingInvestigations(stored, new Date().toISOString());
+        }),
+      );
       if (input.title === undefined) {
         yield* titleGenerationWorker.enqueue({
           workflowId,
@@ -2391,7 +2427,7 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
     changeWorkflowArchive.unarchive(workflowId, (snapshot) =>
       Effect.gen(function* () {
         const workflow = snapshot.investigationWorkflows.find((entry) => entry.id === workflowId);
-        if (workflow) yield* reconcileStuckWorkflow(workflow, snapshot);
+        if (workflow) yield* withWorkflowWriteLock(reconcileStuckWorkflow(workflow, snapshot));
       }),
     );
 

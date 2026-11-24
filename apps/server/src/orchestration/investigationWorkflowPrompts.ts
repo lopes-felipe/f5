@@ -313,6 +313,21 @@ export function buildInvestigationSynthesisPrompt(
 /** Room each truncation marker may take beyond its artifact's allowance. */
 const SYNTHESIS_MARKER_RESERVE_CHARS = 200;
 
+/** The synthesis prompt's length with every section kept and the reports left out. */
+function synthesisFixedLength(input: InvestigationSynthesisPromptInput): number {
+  // One-character stand-ins keep the own-model review sections that a report would add.
+  const emptyInput: InvestigationSynthesisPromptInput = {
+    ...input,
+    contributions: input.contributions.map((contribution) => ({
+      ...contribution,
+      investigation: "",
+      crossReviews: contribution.crossReviews.map((review) => ({ ...review, text: "" })),
+      ...(contribution.selfReview ? { selfReview: "-" } : {}),
+    })),
+  };
+  return joinPromptSections(buildInvestigationSynthesisPromptSections(emptyInput)).length;
+}
+
 /**
  * The synthesis prompt for runs with more than two investigators, kept within
  * `maxRenderedChars`: the room left after the fixed text is shared among every report with
@@ -328,19 +343,7 @@ export function buildBudgetedInvestigationSynthesisPrompt(
     for (const review of contribution.crossReviews) lengths.push(review.text.length);
     if (contribution.selfReview) lengths.push(contribution.selfReview.length);
   }
-  // Fixed text: every section kept, with one-character stand-ins for the reports.
-  const emptyInput: InvestigationSynthesisPromptInput = {
-    ...input,
-    contributions: input.contributions.map((contribution) => ({
-      ...contribution,
-      investigation: "",
-      crossReviews: contribution.crossReviews.map((review) => ({ ...review, text: "" })),
-      ...(contribution.selfReview ? { selfReview: "-" } : {}),
-    })),
-  };
-  const fixedLength = joinPromptSections(
-    buildInvestigationSynthesisPromptSections(emptyInput),
-  ).length;
+  const fixedLength = synthesisFixedLength(input);
   const { allowances, smallestExcerpt } = allocateArtifactCharBudget(
     lengths,
     input.maxRenderedChars - fixedLength - SYNTHESIS_MARKER_RESERVE_CHARS * lengths.length,
@@ -364,18 +367,40 @@ export function buildBudgetedInvestigationSynthesisPrompt(
 
 /**
  * Creation-time floor for runs with more than two investigators: the share each report would
- * get if all were long, or null when the run is not a mesh run.
+ * get if all were long, or null when the run is not a mesh run. It measures the same fixed text
+ * and marker reserve as `buildBudgetedInvestigationSynthesisPrompt`, with the longer retry note,
+ * so a run admitted here can always start synthesis.
  */
 export function investigationSynthesisShareAtCreation(input: {
   readonly problemPrompt: string;
-  readonly investigatorCount: number;
+  /** Investigator labels in roster order, as the synthesis prompt names them. */
+  readonly investigatorLabels: ReadonlyArray<string>;
   readonly selfReviewEnabled: boolean;
+  readonly synthesisSlot: WorkflowModelSlot;
   readonly renderedMessageCharLimit: number;
 }): number | null {
-  const count = input.investigatorCount;
+  const labels = input.investigatorLabels;
+  const count = labels.length;
   if (!workflowUsesMesh(count)) return null;
   const artifactCount = count + count * (count - 1) + (input.selfReviewEnabled ? count : 0);
+  const fixedLength = synthesisFixedLength({
+    workflowId: "",
+    problemPrompt: input.problemPrompt,
+    targetSlot: input.synthesisSlot,
+    retry: { kind: "retry", reusedThread: true },
+    contributions: labels.map((label, index) => ({
+      label,
+      investigation: "",
+      crossReviews: labels
+        .filter((_, reviewer) => reviewer !== index)
+        .map((reviewerLabel) => ({ reviewerLabel, text: "" })),
+      ...(input.selfReviewEnabled ? { selfReview: "-" } : {}),
+    })),
+  });
   return Math.floor(
-    (input.renderedMessageCharLimit - input.problemPrompt.length - 6_000) / artifactCount,
+    (input.renderedMessageCharLimit -
+      fixedLength -
+      SYNTHESIS_MARKER_RESERVE_CHARS * artifactCount) /
+      artifactCount,
   );
 }

@@ -161,6 +161,28 @@ describe("planning roster", () => {
       "Plan A must hold exactly one cross review by B.",
     );
   });
+
+  it("checks stored reviewer ids on two-author records", () => {
+    const two = (reviews: Parameters<typeof branch>[1]) => ({
+      branchA: branch("a", reviews),
+      branchB: branch("b"),
+    });
+    expect(planReviewEdgesError(two([{ slot: "cross" }, { slot: "self" }]))).toBeNull();
+    expect(
+      planReviewEdgesError(
+        two([
+          { slot: "cross", reviewerBranchId: "b" },
+          { slot: "self", reviewerBranchId: "a" },
+        ]),
+      ),
+    ).toBeNull();
+    expect(planReviewEdgesError(two([{ slot: "cross", reviewerBranchId: "a" }]))).toBe(
+      "Plan A has a cross review by an invalid reviewer.",
+    );
+    expect(planReviewEdgesError(two([{ slot: "self", reviewerBranchId: "b" }]))).toBe(
+      "Plan A has a self review by an invalid reviewer.",
+    );
+  });
 });
 
 describe("code review roster", () => {
@@ -254,6 +276,18 @@ describe("investigation roster and cross-reviews", () => {
       status: "running",
     });
     expect(investigationCrossReviewsError(started)).toBeNull();
+    const reverse = updateInvestigationCrossReview(
+      started,
+      { reviewerId: "b", revieweeId: "a" },
+      { status: "running" },
+      AT,
+    );
+    expect(reverse.investigatorB.crossReviewStatus).toBe("running");
+    for (const revieweeId of ["a", "c"] as const) {
+      expect(() =>
+        updateInvestigationCrossReview(two, { reviewerId: "a", revieweeId }, {}, AT),
+      ).toThrow(WorkflowParticipantInvariantError);
+    }
   });
 
   it("keeps a legacy investigator error while another phase still failed", () => {

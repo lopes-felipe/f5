@@ -155,6 +155,7 @@ describe("workflow creation provider rules", () => {
   const createCodeReview = (
     provider: "antigravity" | "muse" | "codex",
     providerInstances: ReadonlyArray<WorkflowProviderSnapshot> = [],
+    templateVersion = 2,
   ) => {
     const fixture = workflowArchiveFixture("codeReview");
     const projectId = fixture.model.projects[0]!.id;
@@ -169,9 +170,8 @@ describe("workflow creation provider rules", () => {
           workflowId: CodeReviewWorkflowId.makeUnsafe(`review-${provider}`),
           title: "Review",
           slug: `review-${provider}`,
-          // Version 2 runs reviewers as read-only turns (version 1 had no profile).
           templateId: "builtin.code-review.dual",
-          templateVersion: 2,
+          templateVersion,
           reviewPrompt: "Review the change",
           branch: null,
           reviewerA: { provider: "codex", model: "gpt-5-codex" },
@@ -203,5 +203,16 @@ describe("workflow creation provider rules", () => {
 
   it("rejects Muse reviewers", () => {
     expect(() => createCodeReview("muse")).toThrow("cannot enforce read-only workflow turns.");
+  });
+
+  it("applies the same rules to a new run on template version 1", () => {
+    // Version 1 has no read-only profile, but a new run can't use it to bypass the rule.
+    expect(() => createCodeReview("muse", [], 1)).toThrow(
+      "cannot enforce read-only workflow turns.",
+    );
+    expect(() => createCodeReview("antigravity", [antigravityInstance(false)], 1)).toThrow(
+      "Antigravity cannot enforce read-only workflow turns.",
+    );
+    expect(() => createCodeReview("codex", [], 1)).not.toThrow();
   });
 });

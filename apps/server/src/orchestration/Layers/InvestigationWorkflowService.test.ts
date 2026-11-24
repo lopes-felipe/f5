@@ -1,5 +1,9 @@
 import { applyArchiveTestCommand } from "../workflowArchive.testUtils.ts";
 import {
+  buildInvestigationWorkflowRecord,
+  investigationCommandInvestigators,
+} from "../workflowRecordBuilders.ts";
+import {
   CommandId,
   InvestigationWorkflowId,
   EventId,
@@ -316,6 +320,22 @@ function applyInvestigationWorkflowCommandToSnapshot(
     case "project.workflow.unarchive":
       return applyArchiveTestCommand(snapshot, command).model;
     case "project.investigation-workflow.create": {
+      // Investigators past the first two (and their mesh edges) as the decider builds them.
+      const built = buildInvestigationWorkflowRecord({
+        workflowId: command.workflowId,
+        projectId: command.projectId,
+        title: command.title,
+        slug: command.slug,
+        templateId: command.templateId ?? "builtin.investigation.dual",
+        templateVersion: command.templateVersion ?? 1,
+        problemPrompt: command.problemPrompt,
+        branch: command.branch,
+        selfReviewEnabled: command.selfReviewEnabled,
+        investigators: investigationCommandInvestigators(command),
+        synthesis: command.synthesis,
+        createdAt: command.createdAt,
+      });
+      const mesh = built.additionalInvestigators !== undefined;
       const workflow = makeWorkflow({
         id: command.workflowId,
         projectId: command.projectId,
@@ -329,6 +349,7 @@ function applyInvestigationWorkflowCommandToSnapshot(
           label: `Investigator A (${command.investigatorA.provider}:${command.investigatorA.model})`,
           slot: command.investigatorA,
           investigationThreadId: command.investigationThreadIdA,
+          ...(mesh ? { crossReviews: built.investigatorA.crossReviews } : {}),
           updatedAt: command.createdAt,
         },
         investigatorB: {
@@ -336,8 +357,10 @@ function applyInvestigationWorkflowCommandToSnapshot(
           label: `Investigator B (${command.investigatorB.provider}:${command.investigatorB.model})`,
           slot: command.investigatorB,
           investigationThreadId: command.investigationThreadIdB,
+          ...(mesh ? { crossReviews: built.investigatorB.crossReviews } : {}),
           updatedAt: command.createdAt,
         },
+        ...(mesh ? { additionalInvestigators: built.additionalInvestigators } : {}),
         synthesis: {
           ...makeWorkflow().synthesis,
           slot: command.synthesis,
@@ -931,20 +954,25 @@ describe("InvestigationWorkflowService", () => {
     });
 
     const started = harness.start();
-    await vi.waitFor(() => expect(launchReached).toBe(true));
-    const dispatchedBeforeRetry = harness.dispatched.length;
-    let retryDone = false;
-    const retried = Effect.runPromise(
-      harness.service.retryWorkflow({ workflowId: workflow.id }),
-    ).then(() => {
-      retryDone = true;
-    });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    // The retry waits for the launch in progress instead of reading the workflow mid-launch.
-    expect(retryDone).toBe(false);
-    expect(harness.dispatched).toHaveLength(dispatchedBeforeRetry);
-
-    releaseLaunch();
+    let retried: Promise<void> | undefined;
+    try {
+      await vi.waitFor(() => expect(launchReached).toBe(true));
+      const dispatchedBeforeRetry = harness.dispatched.length;
+      let retryDone = false;
+      retried = Effect.runPromise(harness.service.retryWorkflow({ workflowId: workflow.id })).then(
+        () => {
+          retryDone = true;
+        },
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      // The retry waits for the launch in progress instead of reading the workflow mid-launch.
+      expect(retryDone).toBe(false);
+      expect(harness.dispatched).toHaveLength(dispatchedBeforeRetry);
+    } finally {
+      // Released even when an assertion fails, so both operations settle.
+      releaseLaunch();
+      await Promise.allSettled([started, retried]);
+    }
     await Promise.all([started, retried]);
     expect(
       threadTurnStartCommands(harness.dispatched).filter(
@@ -1852,6 +1880,80 @@ describe("InvestigationWorkflowService", () => {
     expect(reconciled.synthesis.status).toBe("running");
     expect(reconciled.synthesis.error).toBeNull();
     expect(reconciled.synthesis.threadId).toBe("synthesis");
+  });
+
+  it("records a refused synthesis prompt as an error without marking synthesis running", async () => {
+    const completedWorkflow = makeCompletedInvestigationWorkflow();
+    const workflow = makeCompletedInvestigationWorkflow({
+      investigatorA: {
+        ...completedWorkflow.investigatorA,
+        crossReviewThreadId: ThreadId.makeUnsafe("cross-review-a"),
+        crossReviewStatus: "completed",
+        crossReviewTurnId: "turn-cross-review-a",
+        crossReviewMessageId: "message-cross-review-a",
+      },
+      investigatorB: {
+        ...completedWorkflow.investigatorB,
+        crossReviewThreadId: ThreadId.makeUnsafe("cross-review-b"),
+        crossReviewStatus: "completed",
+        crossReviewTurnId: "turn-cross-review-b",
+        crossReviewMessageId: "message-cross-review-b",
+      },
+      synthesis: {
+        ...completedWorkflow.synthesis,
+        threadId: ThreadId.makeUnsafe("synthesis"),
+        status: "not_started",
+        error: null,
+      },
+      maxCostUsd: 1,
+      totalCostUsd: 2,
+    });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeReportThread({
+            threadId: workflow.investigatorA.investigationThreadId,
+            messageId: "message-investigation-a",
+            turnId: "turn-investigation-a",
+            text: "Investigation A report",
+          }),
+          makeReportThread({
+            threadId: workflow.investigatorB.investigationThreadId,
+            messageId: "message-investigation-b",
+            turnId: "turn-investigation-b",
+            text: "Investigation B report",
+          }),
+          makeReportThread({
+            threadId: ThreadId.makeUnsafe("cross-review-a"),
+            messageId: "message-cross-review-a",
+            turnId: "turn-cross-review-a",
+            text: "Cross-review A report",
+          }),
+          makeReportThread({
+            threadId: ThreadId.makeUnsafe("cross-review-b"),
+            messageId: "message-cross-review-b",
+            turnId: "turn-cross-review-b",
+            text: "Cross-review B report",
+          }),
+          makeThread({ id: ThreadId.makeUnsafe("synthesis"), title: "RCA Synthesis" }),
+        ],
+      }),
+    );
+
+    await harness.start();
+
+    const reconciled = harness.getSnapshot().investigationWorkflows[0]!;
+    expect(reconciled.synthesis.status).toBe("error");
+    expect(reconciled.synthesis.error).toContain("Workflow cost limit reached");
+    expect(
+      harness.dispatched.some(
+        (command) =>
+          command.type === "project.investigation-workflow.upsert" &&
+          command.workflow.synthesis.status === "running",
+      ),
+    ).toBe(false);
+    expect(threadTurnStartCommands(harness.dispatched)).toEqual([]);
   });
 
   it("ignores stale session errors after a review phase is already completed", async () => {

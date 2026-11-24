@@ -88,8 +88,8 @@ On a certified version, F5 keeps every workflow turn read-only:
 2. In a scratch repository, start one workflow turn on the candidate version and tell it to read
    a file holding a fresh token, edit a file, run a shell command and call that MCP tool.
 3. Resume the session and repeat with a new token.
-4. The version passes when the read succeeds in both rounds, the edit and the command each reach
-   F5 as a permission request that F5 refuses, nothing changes on disk, and the marker file never
+4. The version passes when the read succeeds in both rounds, the edit, the command and the MCP
+   call each reach F5 as a permission request that F5 refuses, nothing changes on disk, and the marker file never
    appears. If the run shows a tool kind
    that is labelled wrongly, remove that kind from `ANTIGRAVITY_READ_ONLY_WORKFLOW_TOOL_KINDS` in
    `apps/server/src/provider/acp/AntigravityAcpSupport.ts`.
@@ -98,11 +98,14 @@ On a certified version, F5 keeps every workflow turn read-only:
 
 The opt-in live test runs steps 2 to 4 against a signed-in instance. It admits the version it
 launches even though that version isn't on the list yet, and prints it for step 5. It spends
-account quota, and checks the MCP step only when you name the tool and its marker file:
+account quota. Set `F5_ANTIGRAVITY_LIVE_INSTANCE` to the id of the instance you signed in to in
+step 1 (it defaults to `antigravity`), and name the MCP tool and its marker file; the test fails
+without them, and requires the tool call to reach F5 as a refused permission request:
 
 ```sh
 cd apps/server
 F5_ANTIGRAVITY_READ_ONLY_LIVE=1 F5_ANTIGRAVITY_LIVE_STATE_DIR=<F5 state dir> \
+  F5_ANTIGRAVITY_LIVE_INSTANCE=<instance id> \
   F5_ANTIGRAVITY_LIVE_MCP_TOOL=<tool> F5_ANTIGRAVITY_LIVE_MCP_MARKER=<marker file> \
   node node_modules/vitest/vitest.mjs run integration/antigravityReadOnlyWorkflow.live.test.ts
 ```

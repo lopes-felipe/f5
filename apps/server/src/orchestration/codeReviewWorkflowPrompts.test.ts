@@ -91,6 +91,22 @@ describe("codeReviewWorkflowPrompts with more than two reviewers", () => {
     expect(result.reviewTexts).toEqual(sixReviews.map((review) => review.text));
   });
 
+  it("keeps every report whole when the whole prompt exactly fits", () => {
+    const short = sixReviews.map((review) => ({ ...review, text: "0123456789" }));
+    const whole = buildBudgetedCodeReviewConsolidationPrompt({
+      ...input,
+      reviews: short,
+      maxRenderedChars: 1_000_000,
+    }).prompt;
+    const result = buildBudgetedCodeReviewConsolidationPrompt({
+      ...input,
+      reviews: short,
+      maxRenderedChars: whole.length,
+    });
+    expect(result.smallestExcerpt).toBeNull();
+    expect(result.prompt).toBe(whole);
+  });
+
   it("excerpts only the oversized report, marks it and stays within the limit", () => {
     const reviews = sixReviews.map((review, index) =>
       index === 2 ? { ...review, text: "x".repeat(40_000) } : review,

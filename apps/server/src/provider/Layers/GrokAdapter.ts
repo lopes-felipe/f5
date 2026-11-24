@@ -2117,16 +2117,22 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 : undefined;
               let antigravityTurnWarning: string | undefined;
               let antigravityModeWarning: string | undefined;
+              // Checked before the steering branch too: a workflow prompt steered into an
+              // ordinary session's running turn would otherwise skip the read-only guards.
+              if (
+                PROVIDER === "antigravity" &&
+                input.workflowExecutionProfile &&
+                !ctx.antigravityWorkflowSession
+              )
+                return yield* new ProviderAdapterValidationError({
+                  provider: PROVIDER,
+                  operation: "sendTurn",
+                  issue:
+                    "This Antigravity session was not started for read-only workflow turns. Start a new session to continue.",
+                });
               if (PROVIDER === "antigravity" && steeringTurnId === undefined) {
                 // Steers stay inside the running turn: no mode, model or level writes.
                 const mapTurnError = antigravityErrorMapper(input.threadId, "sendTurn");
-                if (input.workflowExecutionProfile && !ctx.antigravityWorkflowSession)
-                  return yield* new ProviderAdapterValidationError({
-                    provider: PROVIDER,
-                    operation: "sendTurn",
-                    issue:
-                      "This Antigravity session was not started for read-only workflow turns. Start a new session to continue.",
-                  });
                 // Set before the mode write, so a request that arrives while the native mode
                 // lags behind is still held to Plan's and the workflow's rules.
                 ctx.antigravityWorkflowProfile = input.workflowExecutionProfile;

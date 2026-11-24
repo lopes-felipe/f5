@@ -191,6 +191,25 @@ export function workflowTurnBehaviorFields(input: {
   };
 }
 
+/**
+ * Whether a new run's stage needs a provider that can enforce read-only turns. A new run on an
+ * older template version follows the latest version's rule too, so asking for version 1 can't
+ * admit a provider (such as Muse or an uncertified Antigravity) that the current version refuses.
+ * Existing records are judged only at creation, so they keep their behavior.
+ */
+export function newRunStageRequiresReadOnlyProvider(
+  behavior: WorkflowBehavior,
+  stage: WorkflowBehaviorStage,
+): boolean {
+  if (behavior.executionProfileForStage(stage) !== undefined) return true;
+  const latest = resolveWorkflowBehavior({
+    runKind: behavior.runKind,
+    templateId: behavior.templateId,
+    templateVersion: latestWorkflowTemplateVersion(behavior),
+  });
+  return latest.executionProfileForStage(stage) !== undefined;
+}
+
 export function assertWorkflowStageProviderSupported(input: {
   readonly behavior: WorkflowBehavior;
   readonly stage: WorkflowBehaviorStage;
@@ -199,7 +218,7 @@ export function assertWorkflowStageProviderSupported(input: {
   readonly providers: ReadonlyArray<WorkflowProviderSnapshot>;
 }): void {
   if (
-    input.behavior.executionProfileForStage(input.stage) !== undefined &&
+    newRunStageRequiresReadOnlyProvider(input.behavior, input.stage) &&
     !providerSupportsReadOnlyWorkflow(input.provider, input.providers)
   ) {
     throw new UnsupportedWorkflowProviderError(input.provider, input.stage);

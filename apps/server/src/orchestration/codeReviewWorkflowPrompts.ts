@@ -143,6 +143,16 @@ export function buildBudgetedCodeReviewConsolidationPrompt(
   readonly reviewTexts: ReadonlyArray<string>;
 } {
   const texts = input.reviews.map((review) => review.text.trim());
+  // Reports that fit whole are sent whole; excerpt-note space is reserved only when cutting.
+  const whole = joinPromptSections(
+    buildCodeReviewConsolidationPromptSections({
+      ...input,
+      reviews: input.reviews.map((review, index) => ({ ...review, text: texts[index]! })),
+    }),
+  );
+  if (whole.length <= input.maxRenderedChars) {
+    return { prompt: whole, smallestExcerpt: null, reviewTexts: texts };
+  }
   const fixedLength = joinPromptSections(
     buildCodeReviewConsolidationPromptSections(
       { ...input, reviews: input.reviews.map((review) => ({ ...review, text: "" })) },

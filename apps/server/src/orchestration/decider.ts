@@ -54,6 +54,7 @@ import { validateThreadTaskTracking, validateThreadTasks } from "./threadTasks.t
 import {
   resolveWorkflowBehavior,
   documentWorkflowCreateInvariant,
+  newRunStageRequiresReadOnlyProvider,
   type WorkflowBehaviorStage,
   type WorkflowRunKind,
 } from "./workflowBehavior.ts";
@@ -187,7 +188,8 @@ function readOnlyWorkflowSlotMessage(input: {
   }
   for (const { slot, stage } of input.slots) {
     if (!slot) continue;
-    if (!input.document && behavior?.executionProfileForStage(stage) === undefined) continue;
+    if (!input.document && (!behavior || !newRunStageRequiresReadOnlyProvider(behavior, stage)))
+      continue;
     if (providerSupportsReadOnlyWorkflow(slot.provider, input.providerInstances)) continue;
     return `${PROVIDER_DISPLAY_NAMES[slot.provider]} cannot enforce read-only ${
       input.document ? "document" : "workflow"

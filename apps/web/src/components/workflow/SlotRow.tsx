@@ -285,13 +285,16 @@ export function SlotRow(props: {
       {props.trailing}
     </div>
   );
-  if (!props.error) return row;
+  // The same tree with or without an error, so the row (and a focused picker in it) stays
+  // mounted when the error appears or clears.
   return (
     <div className="flex min-w-0 flex-col gap-1">
       {row}
-      <p role="alert" className="ps-27 text-2xs text-destructive-foreground">
-        {props.error}
-      </p>
+      {props.error ? (
+        <p role="alert" className="ps-27 text-2xs text-destructive-foreground">
+          {props.error}
+        </p>
+      ) : null}
     </div>
   );
 }

@@ -232,7 +232,19 @@ export function planReviewEdgesError(workflow: PlanningRoster<PlanningBranchShap
       return `Workflow branch ${index + 1} must have id '${ids[index]}'.`;
     }
   }
-  if (!workflowUsesMesh(branches.length)) return null;
+  if (!workflowUsesMesh(branches.length)) {
+    // Two-author records may omit reviewer ids; one that is stored must match the slot.
+    for (const branch of branches) {
+      for (const review of branch.reviews) {
+        if (review.reviewerBranchId === undefined) continue;
+        const sameBranch = review.reviewerBranchId === branch.branchId;
+        if (review.slot === "cross" ? sameBranch : !sameBranch) {
+          return `Plan ${workflowParticipantLabel(branch.branchId)} has a ${review.slot} review by an invalid reviewer.`;
+        }
+      }
+    }
+    return null;
+  }
   for (const branch of branches) {
     if (branch.reviews.length === 0) continue;
     const expected = expectedPlanReviewEdges(workflow, branch.branchId);
@@ -485,9 +497,19 @@ export function updateInvestigationCrossReview<
   patch: InvestigationCrossReviewPatch,
   updatedAt: string,
 ): W {
-  const mesh = workflowUsesMesh(investigationInvestigators(workflow).length);
+  const investigators = investigationInvestigators(workflow);
+  const mesh = workflowUsesMesh(investigators.length);
   return updateInvestigator(workflow, edge.reviewerId, (investigator) => {
     if (!mesh) {
+      // The legacy fields hold the reviewer's one cross review, of the other investigator.
+      if (
+        edge.revieweeId === edge.reviewerId ||
+        !investigators.some((entry) => entry.id === edge.revieweeId)
+      ) {
+        throw new WorkflowParticipantInvariantError(
+          `Investigator ${workflowParticipantLabel(edge.reviewerId)} has no cross-review of ${workflowParticipantLabel(edge.revieweeId)}.`,
+        );
+      }
       const status = patch.status ?? investigator.crossReviewStatus;
       const error =
         patch.error === undefined

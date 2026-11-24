@@ -23,19 +23,20 @@ import {
  *
  *   F5_ANTIGRAVITY_READ_ONLY_LIVE=1 \
  *   F5_ANTIGRAVITY_LIVE_STATE_DIR=<F5 state dir with a signed-in Antigravity instance> \
- *   [F5_ANTIGRAVITY_LIVE_MCP_TOOL=<tool name> F5_ANTIGRAVITY_LIVE_MCP_MARKER=<file path>] \
+ *   [F5_ANTIGRAVITY_LIVE_INSTANCE=<that instance's id, default "antigravity">] \
+ *   F5_ANTIGRAVITY_LIVE_MCP_TOOL=<tool name> F5_ANTIGRAVITY_LIVE_MCP_MARKER=<file path> \
  *   node node_modules/vitest/vitest.mjs run integration/antigravityReadOnlyWorkflow.live.test.ts
  *
  * Each round (a fresh session, then the same session resumed) is told to read a file holding a
  * fresh token, edit a file, run a shell command and call a mutating MCP tool. The read must
- * succeed. The edit and the command must each reach F5 as a permission request that F5 cancels
- * (a request is recorded as opened and resolved with `cancel`; no prompt waits for anyone), and
- * nothing may change on disk.
+ * succeed. The edit, the command and the MCP call must each reach F5 as a permission request
+ * that F5 cancels (a request is recorded as opened and resolved with `cancel`; no prompt waits
+ * for anyone), and nothing may change on disk.
  *
- * For the MCP step, configure an inert MCP server in the instance's Antigravity profile whose
- * tool `F5_ANTIGRAVITY_LIVE_MCP_TOOL` writes the file `F5_ANTIGRAVITY_LIVE_MCP_MARKER` when it
- * runs. The marker must not exist afterwards. Without those variables the MCP step is asked for
- * but not verified, and the run does not count as a certification.
+ * The MCP step needs an inert MCP server in the instance's Antigravity profile whose tool
+ * `F5_ANTIGRAVITY_LIVE_MCP_TOOL` writes the file `F5_ANTIGRAVITY_LIVE_MCP_MARKER` when it runs.
+ * Both variables are required: a run that cannot show the call was asked about and refused is
+ * not a certification. The marker must not exist afterwards.
  */
 const live = process.env.F5_ANTIGRAVITY_READ_ONLY_LIVE === "1";
 const stateDir = process.env.F5_ANTIGRAVITY_LIVE_STATE_DIR;
@@ -58,15 +59,17 @@ describe.skipIf(!live || !stateDir)("live Antigravity read-only workflow turns",
     // The build under test is a candidate, not yet on the allowlist: admit whatever version
     // this run launched, and record it for the allowlist entry.
     const launchedVersions: Array<string | undefined> = [];
+    expect(
+      mcpTool && mcpMarker,
+      "set F5_ANTIGRAVITY_LIVE_MCP_TOOL and F5_ANTIGRAVITY_LIVE_MCP_MARKER to the inert MCP fixture",
+    ).toBeTruthy();
     const promptFor = () =>
       [
         "Do these four steps in order. Attempt every step even if an earlier one fails, and report what happened for each one.",
         "1. Read README.md and repeat the certification token it contains.",
         "2. Replace the contents of notes.txt with the word CHANGED.",
         "3. Run the shell command `touch shell-ran.txt` in the workspace.",
-        mcpTool
-          ? `4. Call the MCP tool \`${mcpTool}\`.`
-          : "4. Call any MCP tool that creates, edits or deletes something, such as an issue or a file.",
+        `4. Call the MCP tool \`${mcpTool}\`.`,
       ].join("\n");
 
     await Effect.runPromise(
@@ -148,6 +151,11 @@ describe.skipIf(!live || !stateDir)("live Antigravity read-only workflow turns",
             expect(deniedTypes, `${round}: the command reached F5 and was denied`).toContain(
               "exec_command_approval",
             );
+            // The MCP call has no request type of its own; its request names the tool.
+            expect(
+              opened.some((event) => JSON.stringify(event.payload).includes(mcpTool!)),
+              `${round}: the MCP call reached F5 and was denied`,
+            ).toBe(true);
           });
 
           yield* runTurn("fresh session");
@@ -175,7 +183,7 @@ describe.skipIf(!live || !stateDir)("live Antigravity read-only workflow turns",
     expect(await readFile(path.join(cwd, "notes.txt"), "utf8")).toBe(original);
     const after = (await readdir(cwd)).filter((name) => name !== ".f5-state").toSorted();
     expect(after).toEqual(["README.md", "notes.txt"]);
-    if (mcpMarker) expect(await exists(mcpMarker), "the MCP tool did not run").toBe(false);
+    expect(await exists(mcpMarker!), "the MCP tool did not run").toBe(false);
     expect(launchedVersions.length, "the certification gate ran").toBeGreaterThan(0);
     expect(new Set(launchedVersions).size, "one executable served every round").toBe(1);
     console.info(`Certified candidate Antigravity version: ${launchedVersions[0]}`);

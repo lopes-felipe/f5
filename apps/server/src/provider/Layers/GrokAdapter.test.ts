@@ -956,6 +956,52 @@ rootIt.layer(
     }).pipe(Effect.scoped),
   );
 
+  it.effect("refuses a workflow prompt steered into an ordinary session's running turn", () =>
+    Effect.gen(function* () {
+      const gateDir = yield* Effect.acquireRelease(
+        Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "agy-workflow-steer-"))),
+        (directory) => Effect.promise(() => rm(directory, { recursive: true, force: true })),
+      );
+      const gate = path.join(gateDir, "go");
+      const { adapter } = yield* antigravityProfileAdapter({
+        env: { T3_ACP_PROMPT_GATE_PATH: gate },
+      });
+      const threadId = ThreadId.make("agy-workflow-steer");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter
+        .sendTurn({ threadId, input: "Start", attachments: [] })
+        .pipe(Effect.forkChild);
+      let activeTurnId: TurnId | undefined;
+      yield* Effect.promise(() =>
+        vi.waitFor(async () => {
+          const sessions = await Effect.runPromise(adapter.listSessions());
+          activeTurnId = sessions.find((session) => session.threadId === threadId)?.activeTurnId;
+          if (!activeTurnId) throw new Error("no running turn yet");
+        }),
+      );
+      const refused = yield* Effect.flip(
+        adapter.sendTurn({
+          threadId,
+          input: "Review this",
+          attachments: [],
+          expectedTurnId: activeTurnId,
+          workflowExecutionProfile: "unattended-readonly",
+        }),
+      );
+      assert.include(
+        String(refused.message),
+        "This Antigravity session was not started for read-only workflow turns.",
+      );
+      yield* Effect.promise(() => writeFile(gate, ""));
+      yield* Fiber.join(turn);
+      yield* adapter.stopSession(threadId).pipe(Effect.ignore);
+    }).pipe(Effect.scoped),
+  );
   it.effect(
     "keeps the turn's acceptance when a steer arrives before the agent's first progress",
     () =>

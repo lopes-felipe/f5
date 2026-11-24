@@ -1362,6 +1362,12 @@ describe("WorkflowCreateDialog", () => {
         "4 authors: 12 cross-reviews, 4 own-model reviews, 4 revisions, 1 merge",
       );
 
+      const rowText = (label: string) =>
+        document.querySelector(`[data-slot="workflow-slot-row"][aria-label="${label}"]`)
+          ?.textContent ?? "";
+      const authorCBefore = rowText("Author C");
+      const authorDBefore = rowText("Author D");
+      expect(authorDBefore).not.toBe(authorCBefore);
       const removeC = document.querySelector('button[aria-label="Remove Author C"]');
       if (!(removeC instanceof HTMLButtonElement)) throw new Error("Remove Author C not found.");
       removeC.click();
@@ -1369,6 +1375,10 @@ describe("WorkflowCreateDialog", () => {
         expect(rowLabels()).toEqual(["Author A", "Author B", "Author C"]);
       });
       expect(addAuthorButton().disabled).toBe(false);
+      // The former Author D keeps its model under its new label.
+      expect(rowText("Author C").replace("Author C", "")).toBe(
+        authorDBefore.replace("Author D", ""),
+      );
 
       await vi.waitFor(() => {
         expect(createWorkflowButton().disabled).toBe(false);
