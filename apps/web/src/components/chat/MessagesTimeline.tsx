@@ -140,7 +140,7 @@ import {
   findNearestMinimapMarkerIndex,
   formatWorkingLabel,
   allowsTurnFileFallback,
-  countFileChangesByTurn,
+  countFileChangeEntriesByTurn,
   isFileChangeWorkEntry,
   isFileReadWorkEntry,
   isSearchWorkEntry,
@@ -1492,10 +1492,17 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     }),
     [],
   );
-  const fileChangeCountByTurnId = useMemo(
-    () => countFileChangesByTurn(chatDiffContext.fileChangeSummariesById),
-    [chatDiffContext.fileChangeSummariesById],
-  );
+  // Counted from the rows, not the exact summaries, which stay empty while inline diffs are
+  // off or still loading. Kept stable while the counts are unchanged.
+  const fileChangeCountRef = useRef<Readonly<Record<TurnId, number>>>({});
+  const fileChangeCountByTurnId = useMemo(() => {
+    const counts = countFileChangeEntriesByTurn(
+      timelineEntries.flatMap((entry) => (entry.kind === "work" ? [entry.entry] : [])),
+      fileChangeCountRef.current,
+    );
+    fileChangeCountRef.current = counts;
+    return counts;
+  }, [timelineEntries]);
   const rowChatDiffContext = useMemo<ChatDiffContext>(
     () => ({
       ...chatDiffContext,
@@ -3365,7 +3372,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const EntryIcon = workEntryIcon(workEntry);
   const heading = toolWorkEntryHeading(workEntry);
   const allowTurnFallback = allowsTurnFileFallback(
-    workEntry.turnId,
+    workEntry,
     chatDiffContext.fileChangeCountByTurnId,
   );
   const preview = workEntryPreview(
@@ -6011,10 +6018,16 @@ function describeTimelineRowExternals(
         const fileChangeSummary = entry.fileChangeId
           ? chatDiffContext.fileChangeSummariesById[entry.fileChangeId]
           : undefined;
+        // Whether the row may borrow the turn's files depends on its sibling file changes.
+        const allowTurnFallback = allowsTurnFileFallback(
+          entry,
+          chatDiffContext.fileChangeCountByTurnId,
+        );
         return [
           timelineObjectVersion(turnSummary),
           inferredCheckpointTurnCount,
           timelineObjectVersion(fileChangeSummary),
+          allowTurnFallback ? "fallback" : "own",
           isInlineFileChangeDiffExpanded(entry.id, chatDiffContext.expandedFileChangeDiffs)
             ? "expanded"
             : "collapsed",

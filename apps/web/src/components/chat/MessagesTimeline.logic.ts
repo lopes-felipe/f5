@@ -344,26 +344,53 @@ export function isFileChangeWorkEntry(
   return normalizedLabel === "file change" || normalizedLabel === "write file";
 }
 
-/** How many file changes the server recorded per turn. */
-export function countFileChangesByTurn(
-  summaries: Readonly<Record<string, { readonly turnId: TurnId }>>,
-): Record<TurnId, number> {
-  const counts: Record<TurnId, number> = {};
-  for (const summary of Object.values(summaries)) {
-    counts[summary.turnId] = (counts[summary.turnId] ?? 0) + 1;
+/**
+ * How many file-change rows each turn has, from the timeline itself so it holds whether or
+ * not exact file-change summaries are loaded or shown. Returns `previous` when nothing
+ * changed, so streaming does not invalidate every row.
+ */
+export function countFileChangeEntriesByTurn(
+  entries: ReadonlyArray<
+    Pick<
+      WorkLogEntry,
+      "id" | "fileChangeId" | "itemType" | "label" | "requestKind" | "toolTitle" | "turnId"
+    >
+  >,
+  previous?: Readonly<Record<TurnId, number>>,
+): Readonly<Record<TurnId, number>> {
+  const idsByTurn = new Map<TurnId, Set<string>>();
+  for (const entry of entries) {
+    if (!entry.turnId || !isFileChangeWorkEntry(entry)) continue;
+    const ids = idsByTurn.get(entry.turnId) ?? new Set<string>();
+    ids.add(entry.fileChangeId ?? entry.id);
+    idsByTurn.set(entry.turnId, ids);
   }
+  const counts: Record<TurnId, number> = {};
+  for (const [turnId, ids] of idsByTurn) counts[turnId] = ids.size;
+  const keys = Object.keys(counts) as TurnId[];
+  if (
+    previous &&
+    keys.length === Object.keys(previous).length &&
+    keys.every((turnId) => previous[turnId] === counts[turnId])
+  )
+    return previous;
   return counts;
 }
 
 /**
- * Whether a file-change row without its own file list may borrow the turn's checkpoint files.
- * Only a turn's sole file change may: with several, each would claim every file of the turn.
+ * Whether a row without its own file list may borrow the turn's checkpoint files. Only a
+ * turn's sole file-change row may: other rows changed nothing, and with several file
+ * changes each would claim every file of the turn.
  */
 export function allowsTurnFileFallback(
-  turnId: TurnId | null | undefined,
+  entry: Pick<
+    WorkLogEntry,
+    "fileChangeId" | "itemType" | "label" | "requestKind" | "toolTitle" | "turnId"
+  >,
   fileChangeCountByTurnId: Readonly<Record<TurnId, number>> | undefined,
 ): boolean {
-  return !turnId || (fileChangeCountByTurnId?.[turnId] ?? 0) <= 1;
+  if (!isFileChangeWorkEntry(entry)) return false;
+  return !entry.turnId || (fileChangeCountByTurnId?.[entry.turnId] ?? 0) <= 1;
 }
 
 type WorkSummaryBucket = "edit" | "read" | "search" | "command" | "agent" | "tool" | "error";

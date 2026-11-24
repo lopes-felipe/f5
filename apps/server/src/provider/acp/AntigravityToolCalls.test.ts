@@ -85,10 +85,74 @@ describe("Antigravity native tools", () => {
       ...tool,
       toolCallId: "edit-same",
       data: {
+        rawInput: { Path: "/repo/file.ts", Target: "const value1 = 1;\n", Replacement: "x" },
         content: [{ type: "diff", path: "/repo/file.ts", oldText: before, newText: before }],
       },
     });
     expect(acpFileChanges(same.data.content)).toEqual([]);
+  });
+
+  it("diffs only the completed update, never a cached preview", () => {
+    const normalize = makeAntigravityToolNormalizer(() => undefined);
+    const update = (status: "pending" | "completed", oldText: string, newText: string) =>
+      normalize({
+        toolCallId: "edit-preview",
+        title: "File src/a.ts",
+        kind: "edit",
+        status,
+        data: {
+          rawInput: { Path: "/repo/src/a.ts", Target: "a\n", Replacement: "b\n" },
+          content: [{ type: "diff", path: "/repo/src/a.ts", oldText, newText }],
+        },
+      });
+    // A pending preview names the file and nothing more, even an identical one.
+    expect(acpFileChanges(update("pending", "a\n", "a\n").data.content)).toEqual([
+      { path: "/repo/src/a.ts", type: "update" },
+    ]);
+    const completed = update("completed", "x\na\n", "x\nb\n");
+    expect(acpFileChanges(completed.data.content)[0]?.diff).toContain("-a\n+b\n");
+    // A later update without texts reuses the completed patch.
+    const later = normalize({
+      ...completed,
+      data: { content: [{ type: "diff", path: "/repo/src/a.ts" }] },
+    });
+    expect(acpFileChanges(later.data.content)[0]?.diff).toContain("-a\n+b\n");
+  });
+
+  it("keeps snippet-shaped texts off the full-file path", () => {
+    const tool = makeAntigravityToolNormalizer(() => undefined)({
+      toolCallId: "edit-unknown-target",
+      title: "File src/a.ts",
+      kind: "edit",
+      status: "completed",
+      data: {
+        // `oldText` does not contain the replaced snippet, so it is not the whole file.
+        rawInput: { Path: "/repo/src/a.ts", Target: "missing\n", Replacement: "b\n" },
+        content: [{ type: "diff", path: "/repo/src/a.ts", oldText: "a\n", newText: "b\n" }],
+      },
+    });
+    expect(acpFileChanges(tool.data.content)).toEqual([{ path: "/repo/src/a.ts", type: "update" }]);
+  });
+
+  it("shares one patch budget across the entries of an update", () => {
+    const big = (seed: string) =>
+      Array.from({ length: 3_000 }, (_, index) => `${seed} line ${index}\n`).join("");
+    const tool = makeAntigravityToolNormalizer(() => undefined)({
+      toolCallId: "write-many",
+      title: "File src/many.ts",
+      kind: "edit",
+      status: "completed",
+      data: {
+        rawInput: { Path: "/repo/src/one.ts", Content: "" },
+        content: [
+          { type: "diff", path: "/repo/src/one.ts", newText: big("one") },
+          { type: "diff", path: "/repo/src/two.ts", newText: big("two") },
+        ],
+      },
+    });
+    const [first, second] = acpFileChanges(tool.data.content);
+    expect(first?.diff).toContain("+one line 0\n");
+    expect(second).toEqual({ path: "/repo/src/two.ts", type: "update" });
   });
 
   it("shows a new-file write as an addition and an overwrite as a path-only change", () => {
@@ -111,6 +175,20 @@ describe("Antigravity native tools", () => {
     const [added] = acpFileChanges(write("write-new", undefined).data.content);
     expect(added?.diff).toContain("--- /dev/null\n+++ b//repo/src/new.ts\n@@ -0,0 +1,1 @@");
     expect(acpFileChanges(write("write-over", true).data.content)).toEqual([
+      { path: "/repo/src/new.ts", type: "update" },
+    ]);
+    // The runtime accepts the snake-case flag too.
+    const snake = normalize({
+      toolCallId: "write-over-snake",
+      title: "File src/new.ts",
+      kind: "edit",
+      status: "completed",
+      data: {
+        rawInput: { path: "/repo/src/new.ts", content: "x\n", overwrite: true },
+        content: [{ type: "diff", path: "/repo/src/new.ts", newText: "x\n" }],
+      },
+    });
+    expect(acpFileChanges(snake.data.content)).toEqual([
       { path: "/repo/src/new.ts", type: "update" },
     ]);
   });

@@ -6158,6 +6158,11 @@ describe("ProviderRuntimeIngestion", () => {
           message.id === messageId && !message.streaming && message.text === "first answer",
       ),
     );
+    const before = (await Effect.runPromise(harness.engine.getReadModel())).threads
+      .find((entry) => entry.id === asThreadId("thread-1"))
+      ?.messages.find((entry: ProviderRuntimeTestMessage) => entry.id === messageId);
+    expect(before?.turnId).toBe("turn-reused-item-1");
+    const later = new Date(Date.parse(now) + 60_000).toISOString();
 
     // A resumed runtime that reuses the item id: its reasoning and text arrive for a message
     // that is already closed, and so does its completion.
@@ -6165,7 +6170,7 @@ describe("ProviderRuntimeIngestion", () => {
       type: "turn.started",
       eventId: asEventId("evt-reused-item-turn-2"),
       provider: "antigravity",
-      createdAt: now,
+      createdAt: later,
       threadId: asThreadId("thread-1"),
       turnId: asTurnId("turn-reused-item-2"),
     });
@@ -6173,7 +6178,7 @@ describe("ProviderRuntimeIngestion", () => {
       type: "content.delta",
       eventId: asEventId("evt-reused-item-reasoning-2"),
       provider: "antigravity",
-      createdAt: now,
+      createdAt: later,
       threadId: asThreadId("thread-1"),
       turnId: asTurnId("turn-reused-item-2"),
       itemId,
@@ -6183,7 +6188,7 @@ describe("ProviderRuntimeIngestion", () => {
       type: "content.delta",
       eventId: asEventId("evt-reused-item-delta-2"),
       provider: "antigravity",
-      createdAt: now,
+      createdAt: later,
       threadId: asThreadId("thread-1"),
       turnId: asTurnId("turn-reused-item-2"),
       itemId,
@@ -6193,7 +6198,7 @@ describe("ProviderRuntimeIngestion", () => {
       type: "item.completed",
       eventId: asEventId("evt-reused-item-completed-2"),
       provider: "antigravity",
-      createdAt: now,
+      createdAt: later,
       threadId: asThreadId("thread-1"),
       turnId: asTurnId("turn-reused-item-2"),
       itemId,
@@ -6208,6 +6213,9 @@ describe("ProviderRuntimeIngestion", () => {
       ?.messages.find((entry: ProviderRuntimeTestMessage) => entry.id === messageId);
     expect(message?.text).toBe("first answer");
     expect(message?.streaming).toBe(false);
+    // Not moved into the later turn, nor restamped.
+    expect(message?.turnId).toBe("turn-reused-item-1");
+    expect(message?.updatedAt).toBe(before?.updatedAt);
   });
 
   it("keeps computer approvals answerable through sanitized runtime ingestion", async () => {

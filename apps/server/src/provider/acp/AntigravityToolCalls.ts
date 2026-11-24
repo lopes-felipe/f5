@@ -46,7 +46,10 @@ export function sanitizeAntigravityToolPayload(value: unknown): unknown {
 }
 
 const OMITTED_PATCH = { format: "omitted" } as const;
-const FULL_TEXT_PATCH_LIMIT = 64 * 1024;
+// One budget per update, shared by its entries: the diffs run synchronously on the event loop
+// and their patches are attached after the sanitizer's own payload budget.
+const FULL_TEXT_PATCH_BUDGET_CHARS = 64 * 1024;
+const FULL_TEXT_DIFF_BUDGET_MS = 200;
 
 /** How one diff entry is shown: its patch, plus the change kind when it adds a file. */
 interface DiffResolution {
@@ -79,38 +82,71 @@ function snippetTargets(rawInput: unknown): ReadonlyArray<string> {
   );
 }
 
+interface DiffBudget {
+  chars: number;
+  readonly deadline: number;
+}
+
 /** Hunks only; `acpFileChanges` adds the file headers. Undefined when nothing changed. */
-function hunkPatch(path: string, oldText: string, newText: string): unknown {
+function hunkPatch(path: string, oldText: string, newText: string, budget: DiffBudget): unknown {
   if (oldText === newText) return undefined;
+  const remainingMs = budget.deadline - performance.now();
+  if (remainingMs <= 0 || budget.chars <= 0) return OMITTED_PATCH;
   const patch = structuredPatch(path, path, oldText, newText, undefined, undefined, {
     context: 3,
     maxEditLength: 100_000,
-    timeout: 100,
+    timeout: Math.min(100, Math.ceil(remainingMs)),
   });
   if (!patch) return OMITTED_PATCH;
   if (patch.hunks.length === 0) return undefined;
   const text = formatPatch(patch, OMIT_HEADERS);
-  return text.length > FULL_TEXT_PATCH_LIMIT ? OMITTED_PATCH : { text };
+  if (text.length > budget.chars) return OMITTED_PATCH;
+  budget.chars -= text.length;
+  return { text };
 }
+
+const normalizeEol = (text: string) => text.replaceAll("\r\n", "\n");
 
 /**
  * Current releases complete an edit with the whole file before and after it, and a write with
- * the whole new file. Older releases sent the replaced snippet as `oldText`; those, and any
- * entry without full text, return undefined and keep the snippet path.
+ * the whole new file. Older releases sent the replaced snippet as `oldText`. So `oldText` counts
+ * as the whole file only when it is not a snippet itself and contains every replaced snippet;
+ * anything else keeps the snippet path.
  */
-function fullTextDiff(
+function fullTextKind(
   entry: Record<string, unknown>,
   rawInput: unknown,
-): DiffResolution | undefined {
+): "edit" | "add" | "overwrite" | undefined {
   const { path, oldText, newText } = entry;
   if (typeof path !== "string" || typeof newText !== "string") return undefined;
   const snippets = snippetTargets(rawInput);
-  if (typeof oldText === "string")
-    return snippets.includes(oldText) ? undefined : { patch: hunkPatch(path, oldText, newText) };
+  if (typeof oldText === "string") {
+    if (snippets.length === 0 || snippets.includes(oldText)) return undefined;
+    const file = normalizeEol(oldText);
+    return snippets.every((snippet) => file.includes(normalizeEol(snippet))) ? "edit" : undefined;
+  }
   if (oldText != null || snippets.length > 0) return undefined;
+  const raw = record(rawInput);
+  return (raw.Overwrite ?? raw.overwrite) === true ? "overwrite" : "add";
+}
+
+/** Only a completed update is diffed; earlier ones name the file and nothing more. */
+function fullTextDiff(
+  entry: Record<string, unknown>,
+  kind: "edit" | "add" | "overwrite",
+  completed: boolean,
+  budget: DiffBudget,
+): DiffResolution {
+  const path = entry.path as string;
+  const newText = entry.newText as string;
   // An overwrite replaced content this update does not carry; the checkpoint diff shows it.
-  if (record(rawInput).Overwrite === true) return { patch: OMITTED_PATCH };
-  return { patch: hunkPatch(path, "", newText), changes: [{ path, operation: "add" }] };
+  if (kind === "overwrite" || !completed) return { patch: OMITTED_PATCH };
+  if (kind === "add")
+    return {
+      patch: hunkPatch(path, "", newText, budget),
+      changes: [{ path, operation: "add" }],
+    };
+  return { patch: hunkPatch(path, entry.oldText as string, newText, budget) };
 }
 
 /**
@@ -155,18 +191,25 @@ export function makeAntigravityToolNormalizer(
     let source: unknown = tool.data;
     if (kind === "edit" && Array.isArray(tool.data.content)) {
       const rawContent = tool.data.content;
+      const completed = tool.status === "completed";
+      const budget: DiffBudget = {
+        chars: FULL_TEXT_PATCH_BUDGET_CHARS,
+        deadline: performance.now() + FULL_TEXT_DIFF_BUDGET_MS,
+      };
       source = {
         ...tool.data,
         content: rawContent.map((item, index) => {
           const entry = record(item);
           if (entry.type !== "diff" || typeof entry.path !== "string") return item;
           const key = tool.toolCallId + ":" + index;
-          const resolution =
-            resolutions.get(key) ??
-            (() => {
-              const resolved = fullTextDiff(entry, tool.data.rawInput);
-              return resolved ? remember(key, resolved) : undefined;
-            })();
+          const textKind = fullTextKind(entry, tool.data.rawInput);
+          // Only completed patches are cached, so a preview never shadows the final texts.
+          // A later update without texts reuses the completed result.
+          let resolution = resolutions.get(key);
+          if (!resolution && textKind) {
+            resolution = fullTextDiff(entry, textKind, completed, budget);
+            if (completed && resolution.patch !== undefined) remember(key, resolution);
+          }
           if (!resolution) return item;
           fullText.set(index, resolution);
           const { oldText: _oldText, newText: _newText, ...rest } = entry;

@@ -3573,21 +3573,34 @@ const make = Effect.gen(function* () {
           message.role === "assistant" &&
           message.streaming === false,
       );
-      if (alreadyComplete && (text.length > 0 || bufferedReasoningText.length > 0)) {
-        yield* Effect.logWarning(
-          "provider runtime ingestion dropped late assistant finalization on completed message",
-          {
-            threadId: input.threadId,
-            messageId: input.messageId,
-            deltaLength: text.length,
-            reasoningDeltaLength: bufferedReasoningText.length,
-            eventId: input.event.eventId,
-          },
-        );
+      if (alreadyComplete) {
+        if (text.length > 0) {
+          yield* Effect.logWarning(
+            "provider runtime ingestion dropped late assistant finalization on completed message",
+            {
+              threadId: input.threadId,
+              messageId: input.messageId,
+              deltaLength: text.length,
+              eventId: input.event.eventId,
+            },
+          );
+        }
+        // Completing it again would move the message into this turn and restamp it. The
+        // turn's buffered reasoning may belong to another message still streaming: keep it.
+        if (turnKey && bufferedReasoningText.length > 0) {
+          yield* restoreBufferedReasoningText(turnKey, bufferedReasoningText);
+        }
+        yield* flushDeferredReasoningTokens({
+          event: input.event,
+          threadId: input.threadId,
+          messageId: input.messageId,
+        });
+        streamingDeltas.forgetMessage(input.threadId, input.messageId);
+        yield* clearAssistantMessageState(input.messageId);
+        return;
       }
 
       yield* Effect.gen(function* () {
-        if (alreadyComplete) return;
         if (text.length > 0) {
           yield* orchestrationEngine.dispatch({
             type: "thread.message.assistant.delta",
@@ -3632,7 +3645,7 @@ const make = Effect.gen(function* () {
               ),
         ),
       );
-      if (!alreadyComplete && bufferedReasoningText.length > 0 && input.turnId) {
+      if (bufferedReasoningText.length > 0 && input.turnId) {
         yield* noteReasoningRecipient({
           event: input.event,
           threadId: input.threadId,
