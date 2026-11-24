@@ -645,6 +645,124 @@ describe("classifyCommandOutput: compound commands", () => {
   });
 });
 
+describe("classifyCommandOutput: more command shapes", () => {
+  it("reads grep -n over a revision's file as results in that file", () => {
+    const result = classify({
+      command: 'git show origin/main:src/a.ts | grep -n "useTheme\\|sendTurn" | head',
+      output: "12:const t = useTheme();\n40:  sendTurn();\n",
+    });
+    expect(result).toMatchObject({
+      kind: "search",
+      matchCount: 2,
+      segments: [
+        {
+          type: "group",
+          displayPath: "origin/main:src/a.ts",
+          filePath: null,
+          language: "typescript",
+          lines: [
+            { lineNumber: 12, matches: [[10, 18]] },
+            { lineNumber: 40, matches: [[2, 10]] },
+          ],
+        },
+      ],
+    });
+  });
+
+  it("shifts grep -n numbers by where a range read started", () => {
+    const result = classify({
+      command: "sed -n 40,80p src/a.ts | grep -n foo",
+      output: "1:foo()\n3:  foo\n",
+    });
+    expect(result).toMatchObject({
+      kind: "search",
+      segments: [
+        {
+          displayPath: "src/a.ts",
+          filePath: "/repo/src/a.ts",
+          lines: [{ lineNumber: 40 }, { lineNumber: 42 }],
+        },
+      ],
+    });
+  });
+
+  it("keeps echo labels as plain lines between results", () => {
+    const result = classify({
+      command: 'H=c61e736d; echo "== adapters"; git grep -n foo $H -- p',
+      output: "== adapters\nc61e736d:p/a.ts:3:foo\n",
+    });
+    expect(result).toMatchObject({
+      kind: "sections",
+      sections: [
+        { type: "plain", text: "== adapters" },
+        {
+          type: "search",
+          segments: [
+            { displayPath: "c61e736d:p/a.ts", filePath: null, lines: [{ lineNumber: 3 }] },
+          ],
+        },
+      ],
+    });
+  });
+
+  it("takes wc -l output before a read", () => {
+    const result = classify({
+      command: "wc -l a.tsx; sed -n 1,2p a.tsx",
+      output: "     320 a.tsx\nconst a = 1;\nconst b = 2;\n",
+    });
+    expect(result).toMatchObject({
+      kind: "sections",
+      sections: [
+        { type: "plain", text: "     320 a.tsx" },
+        // The last statement takes the rest, so its end is known.
+        { type: "file", filePath: "/repo/a.tsx", code: "const a = 1;\nconst b = 2;" },
+      ],
+    });
+  });
+
+  it("names a read of a file written from a revision after its source", () => {
+    const result = classify({
+      command: "git show A:src/x.ts > /tmp/x.ts; F=/tmp/x.ts; sed -n 80,81p $F",
+      output: "const a = 1;\nconst b = 2;\n",
+    });
+    expect(result).toMatchObject({
+      kind: "file",
+      file: { displayPath: "A:src/x.ts", filePath: null },
+      language: "typescript",
+      lineNumbers: [80, 81],
+    });
+  });
+
+  it("numbers a read after a variable from its range", () => {
+    const result = classify({
+      command: "H=abc; git show $H:a.ts | sed -n 5,6p",
+      output: "x\ny\n",
+    });
+    expect(result).toMatchObject({ kind: "file", lineNumbers: [5, 6] });
+  });
+
+  it("stays plain for unresolved paths and output it cannot bound", () => {
+    expect(classify({ command: "sed -n 1,2p $F", output: "a\nb\n" }).kind).toBe("plain");
+    expect(
+      classify({ command: "git status; foo || bar; cat a.ts", output: "On branch x\nhi\n" }).kind,
+    ).toBe("plain");
+  });
+
+  it("keeps a read before a statement it cannot follow", () => {
+    const result = classify({
+      command: "sed -n 1,2p a.ts; foo || bar",
+      output: "a\nb\nfoo output\n",
+    });
+    expect(result).toMatchObject({
+      kind: "sections",
+      sections: [
+        { type: "file", displayPath: "a.ts", filePath: null, code: "a\nb" },
+        { type: "plain", text: "foo output" },
+      ],
+    });
+  });
+});
+
 describe("classifyCommandOutput: diffs", () => {
   const diff = [
     "diff --git a/src/a.ts b/src/a.ts",

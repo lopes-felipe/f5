@@ -479,6 +479,8 @@ const PATH_LINE_PATTERN = /^((?:[A-Za-z]:)?[^:\n]+):(\d+)([:-])(.*)$/;
 const NUMBER_LINE_PATTERN = /^(\d+)([:-])(.*)$/;
 
 function searchesSingleFile(search: SearchOutputCommand): boolean {
+  // Lines read from stdin carry no path.
+  if (search.stdin) return true;
   const [target] = search.targets;
   if (search.targets.length !== 1 || !target) return false;
   // `git grep` always prints the path.
@@ -591,7 +593,28 @@ function readSearchResults(
   cwd: string | null | undefined,
   stopAtOtherOutput: boolean,
 ): SearchResults {
-  const singleFile = searchesSingleFile(search) ? search.targets[0]! : null;
+  // A search over stdin (`git show A:a.ts | grep -n x`, `sed -n 40,80p a.ts |
+  // grep -n x`) numbers lines from where its input started.
+  const { stdin } = search;
+  const singleFile = stdin
+    ? stdin.revision === null
+      ? stdin.filePath
+      : `${stdin.revision}:${stdin.filePath}`
+    : searchesSingleFile(search)
+      ? search.targets[0]!
+      : null;
+  const lineOffset = stdin?.lineOffset ?? 0;
+  const linkFor = (displayPath: string, fromRevision: boolean): string | null => {
+    if (stdin) {
+      return stdin.revision === null && stdin.cwdKnown
+        ? resolveCommandPath(stdin.filePath, cwd, stdin.cwdOffset)
+        : null;
+    }
+    // A revision's text may differ from the file on disk.
+    return displayPath.length > 0 && search.cwdKnown && !fromRevision
+      ? resolveCommandPath(displayPath, cwd, search.cwdOffset)
+      : null;
+  };
   const matcher = buildSearchMatcher(search);
   const segments: SearchSegment[] = [];
   const paths = new Set<string>();
@@ -613,12 +636,8 @@ function readSearchResults(
     segments.push({
       type: "group",
       displayPath: group.displayPath,
-      // A revision's text may differ from the file on disk.
-      filePath:
-        group.displayPath.length > 0 && search.cwdKnown && !group.fromRevision
-          ? resolveCommandPath(group.displayPath, cwd, search.cwdOffset)
-          : null,
-      language: languageForPath(group.displayPath),
+      filePath: linkFor(group.displayPath, group.fromRevision),
+      language: languageForPath(stdin?.filePath ?? group.displayPath),
       showHeader: group.key !== state.lastGroupKey,
       lines: group.lines,
     });
@@ -668,7 +687,7 @@ function readSearchResults(
     if (parsed.isMatch) matchCount += 1;
     if (displayPath) paths.add(displayPath);
     group.lines.push({
-      lineNumber: parsed.lineNumber,
+      lineNumber: parsed.lineNumber + lineOffset,
       text: parsed.text,
       isMatch: parsed.isMatch,
       matches:
@@ -771,10 +790,25 @@ function classifySections(input: ClassifyCommandOutputInput): CommandOutputPrese
   if (!statements || statements.length < 2 || statements[0]!.kind === "other") return null;
   const lines = outputLines(input.output);
   const sections: OutputSection[] = [];
+  const pushPlain = (text: string) => {
+    const previous = sections[sections.length - 1];
+    if (previous?.type === "plain") {
+      sections[sections.length - 1] = { type: "plain", text: `${previous.text}\n${text}` };
+    } else {
+      sections.push({ type: "plain", text });
+    }
+  };
   let position = 0;
   for (const [index, statement] of statements.entries()) {
     if (position >= lines.length || statement.kind === "other") break;
     const last = index === statements.length - 1;
+    if (statement.kind === "lines") {
+      // `echo "== label"`, `wc -l a.ts`: as many lines as they always print.
+      const end = Math.min(lines.length, position + statement.count);
+      pushPlain(lines.slice(position, end).join("\n"));
+      position = end;
+      continue;
+    }
     if (statement.kind === "search") {
       const { search } = statement;
       if (!search.lineNumbers) break;
@@ -831,9 +865,7 @@ function classifySections(input: ClassifyCommandOutputInput): CommandOutputPrese
     });
     position += code.length;
   }
-  if (position < lines.length) {
-    sections.push({ type: "plain", text: lines.slice(position).join("\n") });
-  }
+  if (position < lines.length) pushPlain(lines.slice(position).join("\n"));
   // A search that comes first and alone, then other output, is a search
   // presentation (after an empty read it is not, so it stays a section).
   const structured = sections.filter((section) => section.type !== "plain");
