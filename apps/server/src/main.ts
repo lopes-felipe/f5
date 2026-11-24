@@ -42,6 +42,7 @@ import { runMcpSessionStdio } from "./mcp/sessionStdioShim.ts";
 import { makeThreadCommand } from "./threadCli/command.ts";
 import { profileStateDir } from "@t3tools/shared/profilePaths";
 import { hostExecutionRefusal } from "@t3tools/shared/profileExecution";
+import { resolveGuestProfileIdentity } from "./profiles/guestProfileIdentity.ts";
 import { Open } from "./open";
 import * as SqlitePersistence from "./persistence/Layers/Sqlite";
 import { makeServerProviderLayer, makeServerRuntimeServicesLayer } from "./serverLayers";
@@ -138,6 +139,14 @@ const CliEnvConfig = Config.all({
   port: Config.port("T3CODE_PORT").pipe(Config.option, Config.map(Option.getOrUndefined)),
   host: Config.string("T3CODE_HOST").pipe(Config.option, Config.map(Option.getOrUndefined)),
   profile: Config.string("F5_PROFILE").pipe(Config.option, Config.map(Option.getOrUndefined)),
+  executionEnvironment: Config.string("F5_EXECUTION_ENVIRONMENT").pipe(
+    Config.option,
+    Config.map(Option.getOrUndefined),
+  ),
+  desktopProfileId: Config.string("F5_DESKTOP_PROFILE_ID").pipe(
+    Config.option,
+    Config.map(Option.getOrUndefined),
+  ),
   f5Home: Config.string("F5_HOME").pipe(Config.option, Config.map(Option.getOrUndefined)),
   t3Home: Config.string("T3CODE_HOME").pipe(Config.option, Config.map(Option.getOrUndefined)),
   f5StateDir: Config.string("F5_STATE_DIR").pipe(Config.option, Config.map(Option.getOrUndefined)),
@@ -269,6 +278,9 @@ const ServerConfigLive = (input: CliInput) => {
         );
       const vmRefusal = hostExecutionRefusal(profile);
       if (vmRefusal) return yield* startupFailure(vmRefusal, profile.id);
+      const guestIdentity = resolveGuestProfileIdentity(env);
+      if (!guestIdentity.ok) return yield* startupFailure(guestIdentity.message, profile.id);
+      const guestProfileId = guestIdentity.profileId;
       startupErrorPath = path.join(registryStore.root, `last-startup-error-${profile.id}.json`);
       yield* Effect.tryPromise({
         try: () => assertProfileDirectory(defaultStateDir, profile),
@@ -364,6 +376,7 @@ const ServerConfigLive = (input: CliInput) => {
           isDefault: profile.isDefault,
           ...(profile.accentColor ? { accentColor: profile.accentColor } : {}),
         },
+        ...(guestProfileId ? { guestProfileId } : {}),
         profilesRoot: registryStore.root,
         defaultStateDir,
         mode,

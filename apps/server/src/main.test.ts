@@ -849,6 +849,54 @@ it.layer(testLayer)("profile startup selection", (it) => {
       }
     }),
   );
+  it.effect("serves a Linux VM guest as the host's profile, keeping the guest's own state", () =>
+    Effect.gen(function* () {
+      const root = FS.mkdtempSync(Path.join(OS.tmpdir(), "f5-profile-guest-"));
+      try {
+        const stateDir = Path.join(root, "state");
+        const hostProfileId = "3f4e411d2db24ee2929521c467030696";
+        yield* runCli(["--state-dir", stateDir], {
+          T3CODE_NO_BROWSER: "true",
+          F5_EXECUTION_ENVIRONMENT: "linux-vm-guest",
+          F5_DESKTOP_PROFILE_ID: hostProfileId,
+        });
+        assert.equal(start.mock.calls.length, 1);
+        assert.equal(resolvedConfig?.guestProfileId, hostProfileId);
+        // Its own Default stays its identity for storage: nothing moves on the data disk.
+        assert.equal(resolvedConfig?.profile?.isDefault, true);
+        assert.equal(resolvedConfig?.stateDir, stateDir);
+      } finally {
+        FS.rmSync(root, { recursive: true, force: true });
+      }
+    }),
+  );
+  it.effect("refuses a Linux VM guest launch without the profile it serves", () =>
+    Effect.gen(function* () {
+      const root = FS.mkdtempSync(Path.join(OS.tmpdir(), "f5-profile-guest-bad-"));
+      try {
+        const stateDir = Path.join(root, "state");
+        for (const id of [undefined, "../default", "A".repeat(32)]) {
+          const result = yield* Effect.result(
+            runCli(["--state-dir", stateDir], {
+              T3CODE_NO_BROWSER: "true",
+              F5_EXECUTION_ENVIRONMENT: "linux-vm-guest",
+              ...(id === undefined ? {} : { F5_DESKTOP_PROFILE_ID: id }),
+            }),
+          );
+          assert.equal(result._tag, "Failure");
+        }
+        assert.equal(start.mock.calls.length, 0);
+        // A host backend ignores a stray profile id.
+        yield* runCli(["--state-dir", stateDir], {
+          T3CODE_NO_BROWSER: "true",
+          F5_DESKTOP_PROFILE_ID: "a".repeat(32),
+        });
+        assert.equal(resolvedConfig?.guestProfileId, undefined);
+      } finally {
+        FS.rmSync(root, { recursive: true, force: true });
+      }
+    }),
+  );
   it.effect("refuses a Linux VM profile in local CLI clients before touching its state", () =>
     Effect.gen(function* () {
       const root = FS.mkdtempSync(Path.join(OS.tmpdir(), "f5-profile-vm-cli-"));

@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { MigrationError } from "@effect/sql-sqlite-bun/SqliteMigrator";
 import type {
+  ProfileId,
   TerminalClearInput,
   TerminalCloseInput,
   TerminalEvent,
@@ -888,6 +889,7 @@ export function createWsServerTestHarness() {
       observabilityEnabled?: boolean;
       createServerFactory?: typeof createServer;
       computerAccess?: boolean;
+      guestProfileId?: ProfileId;
     } = {},
   ): Promise<Http.Server> {
     if (serverScope) {
@@ -922,6 +924,7 @@ export function createWsServerTestHarness() {
       makePreviewAutomationBroker(),
     );
     const serverConfigLayer = Layer.succeed(ServerConfig, {
+      ...(options.guestProfileId ? { guestProfileId: options.guestProfileId } : {}),
       mode: options.mode ?? "web",
       port: options.port ?? 0,
       // Match the client's address family. On macOS an IPv6 wildcard listener

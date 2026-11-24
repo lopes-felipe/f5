@@ -8,6 +8,7 @@ import {
   F5_PROTOCOL_VERSION,
   F5_UPGRADE_REQUIRED_CLOSE_CODE,
   ORCHESTRATION_WS_METHODS,
+  ProfileId,
   ProjectId,
   ServerHealth,
   ThreadId,
@@ -250,6 +251,25 @@ describe("WebSocket Server", () => {
       projectName: "project",
       profile: { isDefault: true, slug: "default", isActive: true },
     });
+  });
+
+  it("welcomes as the host's VM profile from a Linux VM guest, and refuses profile changes", async () => {
+    const hostProfileId = Schema.decodeUnknownSync(ProfileId)("3f4e411d2db24ee2929521c467030696");
+    h.server = await createTestServer({ cwd: "/test/project", guestProfileId: hostProfileId });
+    const addr = h.server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const [ws, welcome] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+
+    expect(welcome.data).toMatchObject({
+      profile: { id: hostProfileId, isDefault: false, isActive: true, slug: "linux-vm" },
+    });
+    const listed = await sendRequest(ws, WS_METHODS.profilesList, {});
+    expect(listed.error).toBeUndefined();
+    const profiles = (listed.result as { profiles: Array<{ id: string }> }).profiles;
+    expect(profiles.map((profile) => profile.id)).toEqual([hostProfileId]);
+    const created = await sendRequest(ws, WS_METHODS.profilesCreate, { name: "Side" });
+    expect(created.error?.message).toMatch(/managed from a host profile/);
   });
 
   it("answers a method that lives in a route table rather than the switch", async () => {

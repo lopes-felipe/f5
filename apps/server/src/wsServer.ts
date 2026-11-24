@@ -203,6 +203,10 @@ import {
 import { makeServerSecretStore } from "./auth/Layers/ServerSecretStore";
 import { integrationUnavailableDetail } from "@t3tools/shared/providerIntegrationCertification";
 import { ProfileRegistryStore, fallbackDefaultProfile } from "./profiles/ProfileRegistryStore";
+import {
+  GUEST_PROFILE_MUTATION_REFUSAL,
+  guestProfileSnapshot,
+} from "./profiles/guestProfileIdentity.ts";
 import { ProviderAccountService } from "./profiles/ProviderAccountService";
 /**
  * Server - HTTP/WebSocket server service interface.
@@ -1317,7 +1321,7 @@ export const createServer = Effect.fn(function* (
     const invalidDirectories = await invalidExecutionDirectories(serverConfig.stateDir).catch(
       () => [],
     );
-    return {
+    const enriched = {
       ...snapshot,
       profiles: snapshot.profiles.map((profile) =>
         profile.isActive
@@ -1330,6 +1334,10 @@ export const createServer = Effect.fn(function* (
           : profile,
       ),
     };
+    // A Linux VM guest reports the host's VM profile, never its own Default.
+    return serverConfig.guestProfileId
+      ? guestProfileSnapshot(enriched, serverConfig.guestProfileId, serverConfig.port)
+      : enriched;
   };
   let profileReadCache: { expires: number; value: ReturnType<typeof computeProfiles> } | undefined;
   const readProfiles = () => {
@@ -4421,6 +4429,7 @@ export const createServer = Effect.fn(function* (
         list: readProfiles,
         defaultStateDir: defaultProfileStateDir,
         activeProfileId: activeProfile.id,
+        ...(serverConfig.guestProfileId ? { mutationRefusal: GUEST_PROFILE_MUTATION_REFUSAL } : {}),
       }),
     )
     .and(
@@ -8409,6 +8418,9 @@ export const createServer = Effect.fn(function* (
             profile: snapshot.profiles.find((profile) => profile.isActive) ?? {
               ...fallbackDefaultProfile(defaultProfileStateDir),
               ...activeProfile,
+              ...(serverConfig.guestProfileId
+                ? { id: serverConfig.guestProfileId, isDefault: false }
+                : {}),
               port,
               stateDir: serverConfig.stateDir,
               isActive: true,
