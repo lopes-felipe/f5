@@ -3,6 +3,10 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  const [eventLog] = yield* sql`
+    SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'orchestration_events'
+  `;
+  if (!eventLog) return;
   const suffix = ":thread-session-capabilities-turn";
 
   // Repair only totals fully explained by usage facts plus a verified duplicate
