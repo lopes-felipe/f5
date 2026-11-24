@@ -48584,12 +48584,14 @@
     },
     {
       "createdAt": "2026-11-10T11:08:25.209Z",
+      "decidedAt": "2026-11-24T00:05:14.034Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-33448",
       "relatedTopics": [
         "pr-21524"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers",
