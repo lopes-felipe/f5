@@ -1,1 +1,0 @@
-- Drop folders from your file manager onto the desktop sidebar to open them as projects and start a thread. Existing projects are reused.

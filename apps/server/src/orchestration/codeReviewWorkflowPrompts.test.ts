@@ -1,10 +1,20 @@
+import {
+  CODE_REVIEW_PROMPT_MAX_CHARS,
+  WORKFLOW_PARTICIPANT_IDS,
+  WORKFLOW_REVIEW_MAX_PARTICIPANTS,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 
 import {
+  buildBudgetedCodeReviewConsolidationPrompt,
   buildCodeReviewConsolidationPrompt,
   buildCodeReviewReviewerPrompt,
   buildCodeReviewReviewerPromptSections,
 } from "./codeReviewWorkflowPrompts.ts";
+import {
+  WORKFLOW_FAN_IN_MIN_ARTIFACT_CHARS,
+  WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT,
+} from "./workflowSharedUtils.ts";
 
 const CLAUDE_SLOT = { provider: "claudeAgent" as const, model: "claude-sonnet-4-6" };
 const CODEX_SLOT = { provider: "codex" as const, model: "gpt-5.6-sol" };
@@ -53,6 +63,93 @@ describe("codeReviewWorkflowPrompts pull request target", () => {
     const withoutPullRequest = buildCodeReviewConsolidationPrompt(input);
     expect(withoutPullRequest).toContain("Start with a `#` title that names what was reviewed.");
     expect(withoutPullRequest).not.toContain("acme/widgets#123");
+  });
+});
+
+describe("codeReviewWorkflowPrompts with more than two reviewers", () => {
+  const sixReviews = ["A", "B", "C", "D", "E", "F"].map((label) => ({
+    label: `Reviewer ${label}`,
+    text: `${label} findings`,
+  }));
+  const input = {
+    workflowId: "review-1",
+    reviewPrompt: "Review the branch",
+    consolidationSlot: CODEX_SLOT,
+  };
+
+  it("counts the reviews and keeps them in roster order", () => {
+    const prompt = buildCodeReviewConsolidationPrompt({ ...input, reviews: sixReviews });
+    expect(prompt).toContain("You are consolidating six independent code reviews");
+    const positions = sixReviews.map((review) => prompt.indexOf(`## ${review.label}`));
+    expect(positions.every((position) => position > 0)).toBe(true);
+    expect(positions).toEqual(positions.toSorted((left, right) => left - right));
+    expect(buildCodeReviewConsolidationPrompt({ ...input, reviews: REVIEWS })).toContain(
+      "You are consolidating two independent code reviews",
+    );
+  });
+
+  it("keeps every report whole when they fit", () => {
+    const result = buildBudgetedCodeReviewConsolidationPrompt({
+      ...input,
+      reviews: sixReviews,
+      maxRenderedChars: 50_000,
+    });
+    expect(result.smallestExcerpt).toBeNull();
+    expect(result.prompt).not.toContain("[Excerpt:");
+    expect(result.prompt).not.toContain("Some reports were too long");
+    expect(result.reviewTexts).toEqual(sixReviews.map((review) => review.text));
+  });
+
+  it("keeps every report whole when the whole prompt exactly fits", () => {
+    const short = sixReviews.map((review) => ({ ...review, text: "0123456789" }));
+    const whole = buildBudgetedCodeReviewConsolidationPrompt({
+      ...input,
+      reviews: short,
+      maxRenderedChars: 1_000_000,
+    }).prompt;
+    const result = buildBudgetedCodeReviewConsolidationPrompt({
+      ...input,
+      reviews: short,
+      maxRenderedChars: whole.length,
+    });
+    expect(result.smallestExcerpt).toBeNull();
+    expect(result.prompt).toBe(whole);
+  });
+
+  it("excerpts only the oversized report, marks it and stays within the limit", () => {
+    const reviews = sixReviews.map((review, index) =>
+      index === 2 ? { ...review, text: "x".repeat(40_000) } : review,
+    );
+    const result = buildBudgetedCodeReviewConsolidationPrompt({
+      ...input,
+      reviews,
+      maxRenderedChars: 20_000,
+    });
+    expect(result.prompt.length).toBeLessThanOrEqual(20_000);
+    expect(result.smallestExcerpt).toBeGreaterThan(10_000);
+    expect(result.prompt).toContain("Some reports were too long to include whole.");
+    expect(result.reviewTexts[2]).toContain(
+      `[Excerpt: the first ${result.smallestExcerpt} of 40000 characters of the Reviewer C report. The rest is not available to you.]`,
+    );
+    expect(result.reviewTexts.filter((text) => text.includes("[Excerpt:"))).toHaveLength(1);
+  });
+
+  it("leaves every report its minimum share next to the longest allowed instructions", () => {
+    // Creation doesn't measure consolidation, so the instruction cap is what keeps a full roster
+    // from paying for every review and then failing at consolidation.
+    const longModel = "m".repeat(120);
+    const result = buildBudgetedCodeReviewConsolidationPrompt({
+      ...input,
+      reviewPrompt: "r".repeat(CODE_REVIEW_PROMPT_MAX_CHARS),
+      pullRequest: PULL_REQUEST,
+      reviews: WORKFLOW_PARTICIPANT_IDS.slice(0, WORKFLOW_REVIEW_MAX_PARTICIPANTS).map((id) => ({
+        label: `Reviewer ${id.toUpperCase()} (codex:${longModel})`,
+        text: "x".repeat(200_000),
+      })),
+      maxRenderedChars: WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT,
+    });
+    expect(result.prompt.length).toBeLessThanOrEqual(WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT);
+    expect(result.smallestExcerpt).toBeGreaterThanOrEqual(WORKFLOW_FAN_IN_MIN_ARTIFACT_CHARS);
   });
 });
 

@@ -46,6 +46,17 @@ jobs:
             ~/AppData/Local/electron-builder/Cache
           key: builder-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('bun.lock') }}
           restore-keys: builder-${{ runner.os }}-${{ runner.arch }}-
+      # Linux VM profiles: the arm64 app pins the digest of the linux-arm64 CLI archive this
+      # release publishes, from the latest attempt of the cli job (the archive the candidate
+      # publishes), and downloads it when a VM profile first needs it.
+      - if: inputs.platform == 'mac' && inputs.arch == 'arm64'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: vm-backend-manifest-attempt-*
+          path: vm-backend-manifest
+      - name: Select the Linux VM backend manifest
+        if: inputs.platform == 'mac' && inputs.arch == 'arm64'
+        run: node scripts/select-vm-backend-manifest.ts vm-backend-manifest "$VERSION"
       - name: Compile application without signing credentials
         env:
           NODE_OPTIONS: --max-old-space-size=6144

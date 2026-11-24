@@ -307,7 +307,9 @@ export const resolveEditorLaunch = Effect.fnUntraced(function* (
     return yield* new OpenError({ message: `Unsupported editor: ${input.editor}` });
   }
 
-  return { command: fileManagerCommandForPlatform(platform), args: [input.cwd] };
+  // A file manager has no line to jump to, and `file.ts:12` is not a path.
+  const path = parseTargetPosition(input.cwd)?.path ?? input.cwd;
+  return { command: fileManagerCommandForPlatform(platform), args: [path] };
 });
 
 /**

@@ -165,3 +165,64 @@ describe("deriveInvestigationTimelinePhases modelSlot", () => {
     expect(byId.get("synthesis")!.steps[0]!.modelSlot).toEqual(workflow.synthesis.slot);
   });
 });
+
+describe("investigation timeline with three investigators", () => {
+  const edge = (revieweeId: "a" | "b" | "c", status: "completed" | "error" | "running") => ({
+    revieweeId,
+    threadId: null,
+    status,
+    turnId: null,
+    messageId: null,
+    error: status === "error" ? "Cross-review failed." : null,
+    retryCount: 0,
+    dispatchCommandId: null,
+    updatedAt: NOW,
+  });
+  const meshWorkflow = () => {
+    const base = makeWorkflow();
+    return makeWorkflow({
+      investigatorA: {
+        ...base.investigatorA,
+        crossReviews: [edge("b", "completed"), edge("c", "completed")],
+      },
+      investigatorB: {
+        ...base.investigatorB,
+        crossReviews: [edge("a", "completed"), edge("c", "running")],
+      },
+      additionalInvestigators: [
+        {
+          ...base.investigatorA,
+          label: "Investigator C",
+          slot: { provider: "codex", model: "gpt-5.5" },
+          investigationThreadId: ThreadId.makeUnsafe("investigator-c"),
+          crossReviews: [edge("a", "completed"), edge("b", "error")],
+        },
+      ],
+    });
+  };
+
+  it("shows one step per investigator and one per directed cross-review", () => {
+    const phases = deriveInvestigationTimelinePhases(meshWorkflow());
+    const byId = new Map(phases.map((phase) => [phase.id, phase] as const));
+    expect(byId.get("investigation")!.steps.map((step) => step.label)).toEqual([
+      "Investigator A",
+      "Investigator B",
+      "Investigator C",
+    ]);
+    const crossReview = byId.get("cross-review")!;
+    expect(crossReview.steps.map((step) => step.label)).toEqual([
+      "Cross-review A on B",
+      "Cross-review A on C",
+      "Cross-review B on A",
+      "Cross-review B on C",
+      "Cross-review C on A",
+      "Cross-review C on B",
+    ]);
+    expect(new Set(crossReview.steps.map((step) => step.key)).size).toBe(6);
+    expect(crossReview.state).toBe("error");
+  });
+
+  it("offers a retry when one mesh cross-review failed", () => {
+    expect(canRetryFailedInvestigationPhase(meshWorkflow())).toBe(true);
+  });
+});

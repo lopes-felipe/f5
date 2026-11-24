@@ -41,11 +41,14 @@ const decodeEditInput = Schema.decodeUnknownOption(
   ]),
 );
 const decodeLocations = Schema.decodeUnknownOption(Schema.Array(Schema.Struct({ line: Line })));
-// The runtime accepts edit arguments in either casing.
+// The runtime accepts edit arguments in either casing; current releases also send the short
+// `Target`/`Replacement` names.
 const PASCAL_KEYS: Readonly<Record<string, string>> = {
   replacement_chunks: "ReplacementChunks",
   target_content: "TargetContent",
   replacement_content: "ReplacementContent",
+  Target: "TargetContent",
+  Replacement: "ReplacementContent",
   start_line: "StartLine",
   end_line: "EndLine",
 };

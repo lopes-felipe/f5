@@ -187,6 +187,103 @@ describe("profile account terminals", () => {
       }
     },
   );
+  it("groups Cursor ACP instances by their effective credential store", async () => {
+    const root = await FS.realpath(await FS.mkdtemp(Path.join(OS.tmpdir(), "f5-cursor-peers-")));
+    const home = Path.join(root, "home");
+    const other = Path.join(root, "other");
+    await FS.mkdir(Path.join(home, ".cursor"), { recursive: true });
+    // A junction on Windows needs no symlink privilege; elsewhere the type is ignored.
+    await FS.symlink(home, Path.join(root, "home-link"), "junction");
+    const cursor = (homePath: string, harness = "acp", extra: Array<[string, string]> = []) => ({
+      driver: "cursor",
+      config: { harness },
+      environment: [["HOME", homePath], ...extra].map(([name, value]) => ({ name, value })),
+    });
+    const settings = Schema.decodeUnknownSync(ServerSettings)({
+      providerInstances: {
+        cursor_a: cursor(home),
+        cursor_link: cursor(Path.join(root, "home-link")),
+        cursor_other: cursor(other),
+        cursor_store: cursor(home, "acp", [["AGENT_CLI_CREDENTIAL_STORE", "file"]]),
+        cursor_sdk: cursor(home, "sdk"),
+      },
+    });
+    let busy = new Set<string>();
+    const stopped: string[] = [];
+    const service = new ProviderAccountService(
+      { stateDir: root, profilesRoot: root } as ServerConfigShape,
+      { getSettings: Effect.succeed(settings) } as unknown as ServerSettingsShape,
+      { createAccountProcess: vi.fn() } as unknown as TerminalManagerShape,
+      () => {},
+      async () => {},
+      async (id) => busy.has(id),
+      async (id) => {
+        stopped.push(id);
+      },
+    );
+    try {
+      // A symlinked HOME resolves to the same store; another HOME, another
+      // credential store selection and SDK instances do not share it.
+      expect(await service.accountPeers(ProviderInstanceId.make("cursor_a"))).toEqual([
+        "cursor_a",
+        "cursor_link",
+      ]);
+      expect(await service.accountPeers(ProviderInstanceId.make("cursor_sdk"))).toEqual([
+        "cursor_sdk",
+      ]);
+
+      vi.spyOn(
+        service as unknown as { resolveCliAccount: () => Promise<unknown> },
+        "resolveCliAccount",
+      ).mockResolvedValue({
+        instance: { driver: "cursor" },
+        driver: "cursor",
+        environment: {},
+        invocation: (args: string[]) => ({ file: "agent", args }),
+      });
+      busy = new Set(["cursor_link"]);
+      // Signing in changes the peer's account too, so its active turn blocks it.
+      await expect(service.start(ProviderInstanceId.make("cursor_a"))).rejects.toThrow(
+        /every provider using this account/,
+      );
+      expect(stopped).toEqual([]);
+
+      // A peer joins the store while the change waits for the OAuth lease: the
+      // guarded set is stale, so the change is refused instead of missing it.
+      busy = new Set();
+      const ids = (...names: string[]) => names.map((name) => ProviderInstanceId.make(name));
+      const peers = vi
+        .spyOn(service, "accountPeers")
+        .mockResolvedValueOnce(ids("cursor_a", "cursor_link"))
+        .mockResolvedValueOnce(ids("cursor_a", "cursor_link", "cursor_other"));
+      await expect(service.start(ProviderInstanceId.make("cursor_a"))).rejects.toThrow(
+        /changed while it was waiting/,
+      );
+      expect(stopped).toEqual([]);
+      peers.mockRestore();
+
+      // The peer set is unchanged, but settings moved this instance to another HOME after its
+      // environment was resolved: the child would sign in to the old store, so it is refused.
+      const account = (homePath: string) => ({
+        instance: { driver: "cursor", config: { harness: "acp" } },
+        driver: "cursor",
+        environment: { HOME: homePath },
+        invocation: (args: string[]) => ({ file: "agent", args }),
+      });
+      vi.spyOn(
+        service as unknown as { resolveCliAccount: () => Promise<unknown> },
+        "resolveCliAccount",
+      )
+        .mockResolvedValueOnce(account(home))
+        .mockResolvedValueOnce(account(other));
+      await expect(service.start(ProviderInstanceId.make("cursor_a"))).rejects.toThrow(
+        /changed while it was waiting/,
+      );
+      expect(stopped).toEqual([]);
+    } finally {
+      await FS.rm(root, { recursive: true, force: true });
+    }
+  });
   it("rejects logout before spawning when the instance has an active turn", async () => {
     const service = new ProviderAccountService(
       {} as ServerConfigShape,

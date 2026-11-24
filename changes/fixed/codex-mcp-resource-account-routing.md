@@ -1,1 +1,0 @@
-- Keep MCP app resource reads tied to their originating Codex call and connector account.

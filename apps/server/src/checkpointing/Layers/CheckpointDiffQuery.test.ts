@@ -164,7 +164,9 @@ describe("CheckpointDiffQueryLive", () => {
         }
         const checkpointStore: CheckpointStoreShape = {
           isGitRepository: () => Effect.succeed(true),
-          captureCheckpoint: () => Effect.void,
+          captureCheckpoint: () => Effect.die("unused"),
+          fingerprintWorkspace: () => Effect.succeed(null),
+          reuseCheckpoint: () => Effect.succeed(false),
           hasCheckpointRef: ({ cwd, checkpointRef }) =>
             Effect.succeed(path.basename(cwd) !== "late" || checkpointRef === toRef),
           restoreCheckpoint: () => Effect.succeed(true),
@@ -203,7 +205,9 @@ describe("CheckpointDiffQueryLive", () => {
 
     const checkpointStore: CheckpointStoreShape = {
       isGitRepository: () => Effect.succeed(true),
-      captureCheckpoint: () => Effect.void,
+      captureCheckpoint: () => Effect.die("unused"),
+      fingerprintWorkspace: () => Effect.succeed(null),
+      reuseCheckpoint: () => Effect.succeed(false),
       hasCheckpointRef: ({ checkpointRef }) =>
         Effect.sync(() => {
           hasCheckpointRefCalls.push(checkpointRef);
@@ -272,7 +276,9 @@ describe("CheckpointDiffQueryLive", () => {
 
     const checkpointStore: CheckpointStoreShape = {
       isGitRepository: () => Effect.succeed(true),
-      captureCheckpoint: () => Effect.void,
+      captureCheckpoint: () => Effect.die("unused"),
+      fingerprintWorkspace: () => Effect.succeed(null),
+      reuseCheckpoint: () => Effect.succeed(false),
       hasCheckpointRef: () => Effect.succeed(true),
       restoreCheckpoint: () => Effect.succeed(true),
       diffCheckpoints: ({ options }) =>
@@ -325,7 +331,9 @@ describe("CheckpointDiffQueryLive", () => {
 
     const checkpointStore: CheckpointStoreShape = {
       isGitRepository: () => Effect.succeed(true),
-      captureCheckpoint: () => Effect.void,
+      captureCheckpoint: () => Effect.die("unused"),
+      fingerprintWorkspace: () => Effect.succeed(null),
+      reuseCheckpoint: () => Effect.succeed(false),
       hasCheckpointRef: () => Effect.succeed(true),
       restoreCheckpoint: () => Effect.succeed(true),
       diffCheckpoints: ({ fromCheckpointRef, toCheckpointRef }) =>
@@ -376,7 +384,9 @@ describe("CheckpointDiffQueryLive", () => {
 
     const checkpointStore: CheckpointStoreShape = {
       isGitRepository: () => Effect.succeed(true),
-      captureCheckpoint: () => Effect.void,
+      captureCheckpoint: () => Effect.die("unused"),
+      fingerprintWorkspace: () => Effect.succeed(null),
+      reuseCheckpoint: () => Effect.succeed(false),
       hasCheckpointRef: () => Effect.succeed(true),
       restoreCheckpoint: () => Effect.succeed(true),
       diffCheckpoints: () => Effect.succeed(""),

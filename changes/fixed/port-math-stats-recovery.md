@@ -1,3 +1,0 @@
-- Math rendering preserves shell variables, prices, escaped dollars and table columns; copying or quoting equations keeps their TeX source.
-- PR change breakdowns reuse cached statistics without downloading GitHub patch bodies, and queue hovers wait for intent before loading.
-- Startup recovery avoids a theme flash, preserves useful stack locations in copied reports, and only offers verified terminal commands.

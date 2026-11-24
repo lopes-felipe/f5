@@ -159,6 +159,25 @@ describe("modelPreferencesStore", () => {
     });
   });
 
+  it.each([
+    { provider: "antigravity", model: "gemini-4-neon", options: { thinking: "xhigh" } },
+    { provider: "pi", model: "pi-model", options: { thinking: "high" } },
+    { provider: "muse", model: "muse-model", options: { reasoningEffort: "high" } },
+  ] as const)("keeps $provider selections across reload", ({ provider, model, options }) => {
+    recordModelSelection(provider, model, { [provider]: options });
+
+    const persistApi = getPersistApi();
+    const persistedState = persistApi.getOptions().partialize(useModelPreferencesStore.getState());
+    const mergedState = persistApi
+      .getOptions()
+      .merge(persistedState, useModelPreferencesStore.getInitialState());
+
+    expect(mergedState.lastProvider).toBe(provider);
+    expect(mergedState.lastModelByProvider).toEqual({ [provider]: model });
+    expect(mergedState.lastModelOptions).toEqual({ [provider]: options });
+    expect(mergedState.recentModelSelections).toEqual([{ provider, model, options }]);
+  });
+
   it("round-trips claude fast mode for remembered Opus 4.6 selections", () => {
     const store = useModelPreferencesStore.getState();
     store.setLastModel("claudeAgent", "claude-opus-4-6");

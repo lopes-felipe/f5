@@ -1,1 +1,0 @@
-- An opt-in Git setting links merge requests created with GitLab's shell CLI to the thread. Shell PR detection now ignores quoted examples, comments, and ambiguous output.

@@ -93,6 +93,7 @@ const makeClaudeConfig = (overrides: Partial<ClaudeSettings>): ClaudeSettings =>
 });
 
 const makeCursorConfig = (overrides: Partial<CursorSettings>): CursorSettings => ({
+  harness: "acp",
   enabled: false,
   binaryPath: "agent",
   apiEndpoint: "",

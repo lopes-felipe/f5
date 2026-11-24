@@ -179,6 +179,32 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       assert.equal(reloaded.computerUseExecutionMode, "background");
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
+  it.effect("writes the Cursor harness pin explicitly alongside its migration marker", () =>
+    Effect.gen(function* () {
+      const service = yield* ServerSettingsService;
+      const config = yield* ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.writeFileString(config.settingsPath!, "{}");
+      yield* service.updateSettings({ enableAssistantStreaming: false });
+      const saved = JSON.parse(yield* fs.readFileString(config.settingsPath!));
+      // The pin equals today's default but must stay on disk: once the marker
+      // is written the load-time pin never runs again, so a later default
+      // change would otherwise move this provider to another harness.
+      assert.equal(saved.providers.cursor.harness, "acp");
+      assert.ok(saved.clientSettingMigrations.cursorHarnessPinnedV1);
+      yield* service.updateSettings({
+        providerInstances: {
+          [ProviderInstanceId.make("cursor_work")]: {
+            driver: ProviderDriverKind.make("cursor"),
+            config: { binaryPath: "agent" },
+          },
+        },
+      } as unknown as ServerSettingsPatch);
+      const withInstance = JSON.parse(yield* fs.readFileString(config.settingsPath!));
+      assert.equal(withInstance.providers.cursor.harness, "acp");
+      assert.equal(withInstance.providerInstances.cursor_work.config.harness, "acp");
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
   it.effect("validates repository search folders before saving storage discovery", () =>
     Effect.gen(function* () {
       const settings = yield* ServerSettingsService;
@@ -1063,6 +1089,8 @@ it.layer(NodeServices.layer)("server settings", (it) => {
           codex: {
             binaryPath: "/opt/homebrew/bin/codex",
           },
+          // The Cursor harness pin is kept even though it equals the default.
+          cursor: { harness: "acp" },
           opencode: {
             serverUrl: "http://127.0.0.1:4096",
             serverPasswordRedacted: true,

@@ -1,1 +1,0 @@
-- Images embedded in Codex tool output appear inline in the conversation.

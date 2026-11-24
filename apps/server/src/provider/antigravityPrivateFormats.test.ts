@@ -7,11 +7,18 @@ import { ANTIGRAVITY_STALE_AUTH_MESSAGE } from "./antigravityAuthSupport.ts";
 import { antigravityPrivateFormatGate } from "./antigravityPrivateFormats.ts";
 
 describe("Antigravity private-format gate", () => {
-  it("enables the readers only for certified versions", () => {
-    expect(antigravityPrivateFormatGate("1.5.13")).toEqual({ enabled: true, version: "1.5.13" });
-    const newer = antigravityPrivateFormatGate("1.5.14");
-    expect(newer.enabled).toBe(false);
-    if (!newer.enabled) expect(newer.reason).toContain("1.5.14 is not yet certified");
+  it("enables the readers from the floor version up, with no per-release list", () => {
+    for (const version of ["1.5.13", "1.5.14", "1.5.15", "1.6.0", "2.0", " 1.5.13 "])
+      expect(antigravityPrivateFormatGate(version).enabled).toBe(true);
+    expect(antigravityPrivateFormatGate("1.5.15")).toEqual({ enabled: true, version: "1.5.15" });
+    const older = antigravityPrivateFormatGate("1.5.12");
+    expect(older.enabled).toBe(false);
+    if (!older.enabled) expect(older.reason).toContain("1.5.12 is older than 1.5.13");
+    expect(antigravityPrivateFormatGate("1.4.5").enabled).toBe(false);
+    // A version F5 can't order is not trusted.
+    const odd = antigravityPrivateFormatGate("1.6.0-beta");
+    expect(odd.enabled).toBe(false);
+    if (!odd.enabled) expect(odd.reason).toContain("unrecognised version");
     expect(antigravityPrivateFormatGate(null).enabled).toBe(false);
     expect(antigravityPrivateFormatGate("  ").enabled).toBe(false);
   });
@@ -19,11 +26,16 @@ describe("Antigravity private-format gate", () => {
   it("reports the runtime source, version and reader gate", () => {
     expect(antigravityRuntimeHealthDetails("1.5.13", "1.5.13")).toEqual([
       { label: "Runtime", value: "Managed 1.5.13 (bundled with F5)" },
-      { label: "Native readers", value: "On, certified for 1.5.13" },
+      { label: "Native readers", value: "On (1.5.13 or newer)" },
     ]);
     const update = antigravityRuntimeHealthDetails("1.6.0", "1.5.13");
-    expect(update[0]).toEqual({ label: "Runtime", value: "Managed 1.6.0 (installed update)" });
-    expect(update[1]?.value).toMatch(/^Off\. Antigravity 1\.6\.0 is not yet certified/);
+    expect(update).toEqual([
+      { label: "Runtime", value: "Managed 1.6.0 (installed update)" },
+      { label: "Native readers", value: "On (1.5.13 or newer)" },
+    ]);
+    expect(antigravityRuntimeHealthDetails("1.5.12", "1.5.13")[1]?.value).toMatch(
+      /^Off\. Antigravity 1\.5\.12 is older than 1\.5\.13/,
+    );
     expect(antigravityRuntimeHealthDetails(null, "1.5.13")).toEqual([]);
   });
 });

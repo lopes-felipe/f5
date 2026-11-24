@@ -1286,6 +1286,9 @@ export interface NativeApi {
     saveProviderFeedback?: (
       input: import("./providerInventory").ServerSaveProviderFeedbackInput,
     ) => Promise<{ path: string }>;
+    trustProviderHooks?: (
+      input: import("./providerInventory").ServerTrustProviderHooksInput,
+    ) => Promise<import("./providerInventory").ServerTrustProviderHooksResult>;
     upsertKeybinding: (input: ServerUpsertKeybindingInput) => Promise<ServerUpsertKeybindingResult>;
     addKeybinding: (input: ServerAddKeybindingInput) => Promise<ServerKeybindingMutationResult>;
     updateKeybinding: (

@@ -92,6 +92,10 @@ function memoryScopeForType(type: ProjectMemoryType): "user" | "project" {
 export interface UseSettingsRouteStateOptions {
   /** The project selected in the settings scope picker, or null for global scope. */
   readonly projectId?: ProjectId | null;
+  /** A provider instance a link asked to open at its hooks (`instance` search param). */
+  readonly focusedProviderInstanceId?: string | null;
+  /** The project that link's inventory should list first (`instanceProject` search param). */
+  readonly focusedProviderInstanceProjectId?: string | null;
 }
 
 export function useSettingsRouteState(options: UseSettingsRouteStateOptions = {}) {
@@ -410,6 +414,8 @@ export function useSettingsRouteState(options: UseSettingsRouteStateOptions = {}
   );
 
   return {
+    focusedProviderInstanceId: options.focusedProviderInstanceId ?? null,
+    focusedProviderInstanceProjectId: options.focusedProviderInstanceProjectId ?? null,
     theme,
     setTheme,
     resolvedTheme,

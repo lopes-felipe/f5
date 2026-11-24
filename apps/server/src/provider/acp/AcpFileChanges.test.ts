@@ -45,6 +45,24 @@ describe("acpFileChanges", () => {
         .filter((line) => line.startsWith("-") && !line.startsWith("---")),
     ).toHaveLength(1);
   });
+  it("keeps the edited path when the patch is omitted", () => {
+    expect(
+      acpFileChanges([
+        { type: "diff", path: "/repo/a.ts", patch: { format: "omitted" } },
+        {
+          type: "diff",
+          path: "/repo/b.ts",
+          changes: [{ operation: "modify", path: "/repo/moved.ts" }],
+          patch: { format: "omitted" },
+        },
+        { type: "diff", patch: { format: "omitted" } },
+        { type: "diff", path: "/repo/same.ts", oldText: "same", newText: "same" },
+      ]),
+    ).toEqual([
+      { path: "/repo/a.ts", type: "update" },
+      { path: "/repo/moved.ts", type: "update" },
+    ]);
+  });
   it("retains mixed patch and contents diffs in their original order", () => {
     expect(
       acpFileChanges([

@@ -78,8 +78,15 @@ import {
   markPolishRequested,
   markReaderPassError,
 } from "../documentReaderPass.ts";
-import { reviewFeedbackForPinnedTurn } from "../workflowSharedUtils.ts";
-import { WorkflowServiceLive } from "./WorkflowService.ts";
+import {
+  reviewFeedbackForPinnedTurn,
+  WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT,
+} from "../workflowSharedUtils.ts";
+import {
+  prepareRevisionTurn,
+  WorkflowServiceLive,
+  workflowPlanMergeChars,
+} from "./WorkflowService.ts";
 
 const NOW = "2026-03-26T12:00:00.000Z";
 
@@ -589,6 +596,7 @@ async function createHarness(
     readonly getRevisionDelivery?: ProviderTurnDeliveryRepositoryShape["getByCommandId"];
     readonly getProjectedTurn?: ProjectionTurnRepositoryShape["getByTurnId"];
     readonly latestDelivery?: ProviderTurnDelivery;
+    readonly getLatestDelivery?: ProviderTurnDeliveryRepositoryShape["getLatestByThread"];
     readonly getCommandReceipt?: OrchestrationCommandReceiptRepositoryShape["getByCommandId"];
     readonly requestSummary?: CompactionServiceShape["requestSummary"];
     readonly readEvents?: OrchestrationEngineShape["readEvents"];
@@ -793,7 +801,8 @@ async function createHarness(
       Layer.provideMerge(
         Layer.succeed(ProviderTurnDeliveryRepository, {
           getByCommandId: options?.getRevisionDelivery ?? (() => Effect.succeed(null)),
-          getLatestByThread: () => Effect.succeed(options?.latestDelivery ?? null),
+          getLatestByThread:
+            options?.getLatestDelivery ?? (() => Effect.succeed(options?.latestDelivery ?? null)),
           getUnresolvedByThread: () => Effect.succeed(null),
         } as unknown as ProviderTurnDeliveryRepositoryShape),
       ),
@@ -9486,6 +9495,762 @@ describe("WorkflowService", () => {
     expect(reviewPrompts.some((prompt) => prompt.includes("PINNED_PLAN_B"))).toBe(true);
   });
 
+  /** Three authors whose plans are all saved, before any review exists. */
+  const meshSavedPlans = (extraIds: ReadonlyArray<"c" | "d"> = ["c"]) => {
+    const savedAt = "2026-08-31T17:01:57.000Z";
+    const savedBranch = (
+      branch: PlanningWorkflow["branchA"],
+      id: "a" | "b" | "c" | "d",
+      slot: PlanningWorkflow["branchA"]["authorSlot"],
+    ) => ({
+      ...branch,
+      branchId: id,
+      authorSlot: slot,
+      authorThreadId: ThreadId.makeUnsafe(`author-${id}`),
+      status: "plan_saved" as const,
+      planTurnId: TurnId.makeUnsafe(`plan-turn-${id}`),
+      revisionTurnId: null,
+      updatedAt: savedAt,
+    });
+    const base = makeWorkflow();
+    const workflow = makeWorkflow({
+      branchA: savedBranch(base.branchA, "a", base.branchA.authorSlot),
+      branchB: savedBranch(base.branchB, "b", base.branchB.authorSlot),
+      additionalBranches: extraIds.map((id) =>
+        savedBranch(base.branchA, id, { provider: "codex", model: `gpt-5.5-${id}` }),
+      ),
+      merge: {
+        ...base.merge,
+        threadId: null,
+        outputFilePath: null,
+        turnId: null,
+        approvedPlanId: null,
+        status: "not_started",
+      },
+    });
+    const authorThread = (id: "a" | "b" | "c" | "d") =>
+      makeThread({
+        id: ThreadId.makeUnsafe(`author-${id}`),
+        latestTurn: {
+          turnId: TurnId.makeUnsafe(`plan-turn-${id}`),
+          state: "completed",
+          requestedAt: savedAt,
+          startedAt: savedAt,
+          completedAt: savedAt,
+          processingQuiescedAt: savedAt,
+          assistantMessageId: MessageId.makeUnsafe(`assistant-plan-${id}`),
+        },
+        proposedPlans: [
+          {
+            id: OrchestrationProposedPlanId.makeUnsafe(`plan-${id}`),
+            turnId: TurnId.makeUnsafe(`plan-turn-${id}`),
+            planMarkdown: `PLAN_${id.toUpperCase()}`,
+            implementedAt: null,
+            implementationThreadId: null,
+            createdAt: savedAt,
+            updatedAt: savedAt,
+          },
+        ],
+      });
+    return {
+      workflow,
+      threads: [authorThread("a"), authorThread("b"), ...extraIds.map(authorThread)],
+    };
+  };
+
+  it("keeps reviewing the pinned plan when a newer reply is over the per-plan limit", async () => {
+    const fixture = meshSavedPlans();
+    const repliedAt = "2026-08-31T17:03:00.000Z";
+    const threads = fixture.threads.map((thread) =>
+      thread.id === "author-c"
+        ? {
+            ...thread,
+            latestTurn: {
+              turnId: TurnId.makeUnsafe("replacement-turn-c"),
+              state: "completed" as const,
+              requestedAt: repliedAt,
+              startedAt: repliedAt,
+              completedAt: repliedAt,
+              processingQuiescedAt: repliedAt,
+              assistantMessageId: MessageId.makeUnsafe("assistant-replacement-c"),
+            },
+            proposedPlans: [
+              ...thread.proposedPlans,
+              {
+                id: OrchestrationProposedPlanId.makeUnsafe("replacement-plan-c"),
+                turnId: TurnId.makeUnsafe("replacement-turn-c"),
+                planMarkdown: `OVERSIZED_${"x".repeat(60_000)}`,
+                implementedAt: null,
+                implementationThreadId: null,
+                createdAt: repliedAt,
+                updatedAt: repliedAt,
+              },
+            ],
+          }
+        : thread,
+    );
+    harness = await createHarness(makeReadModel({ ...fixture, threads }));
+
+    await harness.start();
+    // Reviews start only once every author's plan resolves, so the rejected replacement must
+    // leave Author C's pinned plan usable.
+    await waitFor(
+      () =>
+        harness!.dispatched.filter((command) => command.type === "thread.turn.start").length === 4,
+    );
+
+    const current = harness.getSnapshot().planningWorkflows[0]!;
+    expect(current.additionalBranches![0]!.planTurnId).toBe("plan-turn-c");
+    const turnStarts = () =>
+      harness!.dispatched.filter(
+        (command): command is Extract<OrchestrationCommand, { type: "thread.turn.start" }> =>
+          command.type === "thread.turn.start",
+      );
+
+    // Reviews of C wait behind the cap: finish the first four so they start.
+    const finishedAt = "2099-01-01T00:00:00.000Z";
+    for (const [index, command] of turnStarts().entries()) {
+      const turnId = TurnId.makeUnsafe(`finished-review-${index}`);
+      const messageId = MessageId.makeUnsafe(`finished-review-message-${index}`);
+      harness.setSnapshot({
+        ...harness.getSnapshot(),
+        threads: harness.getSnapshot().threads.map((thread) =>
+          thread.id === command.threadId
+            ? {
+                ...thread,
+                latestTurn: {
+                  turnId,
+                  state: "completed",
+                  requestedAt: finishedAt,
+                  startedAt: finishedAt,
+                  completedAt: finishedAt,
+                  processingQuiescedAt: finishedAt,
+                  assistantMessageId: messageId,
+                },
+                messages: [
+                  {
+                    id: messageId,
+                    role: "assistant",
+                    text: "Review findings",
+                    turnId,
+                    streaming: false,
+                    createdAt: finishedAt,
+                    updatedAt: finishedAt,
+                  },
+                ],
+              }
+            : thread,
+        ),
+      });
+      await harness.emit(
+        makeEvent(
+          "thread.turn-processing-quiesced",
+          { threadId: command.threadId, turnId, processingQuiescedAt: finishedAt },
+          finishedAt,
+        ),
+      );
+    }
+    const reviewsOfC = new Set(
+      harness
+        .getSnapshot()
+        .planningWorkflows[0]!.additionalBranches![0]!.reviews.map((review) => review.threadId),
+    );
+    await waitFor(
+      () => turnStarts().filter((command) => reviewsOfC.has(command.threadId)).length > 0,
+    );
+    const promptsForC = turnStarts()
+      .filter((command) => reviewsOfC.has(command.threadId))
+      .map((command) => command.message.text);
+    for (const prompt of promptsForC) {
+      expect(prompt).toContain("PLAN_C");
+      expect(prompt).not.toContain("OVERSIZED_");
+    }
+    expect(turnStarts().some((command) => command.message.text.includes("OVERSIZED_"))).toBe(false);
+  });
+
+  it("repairs an over-limit plan synthesized from a wrapped reply instead of saving it", async () => {
+    const fixture = meshSavedPlans();
+    const repliedAt = "2026-08-31T17:03:00.000Z";
+    const turnId = TurnId.makeUnsafe("authoring-turn-c");
+    const reply = `<proposed_plan>\nOVERSIZED_${"x".repeat(60_000)}\n</proposed_plan>`;
+    const workflow: PlanningWorkflow = {
+      ...fixture.workflow,
+      additionalBranches: [
+        {
+          ...fixture.workflow.additionalBranches![0]!,
+          status: "authoring",
+          planTurnId: null,
+          updatedAt: "2026-08-31T17:02:00.000Z",
+        },
+      ],
+    };
+    const threads = fixture.threads.map((thread) =>
+      thread.id === "author-c"
+        ? {
+            ...thread,
+            latestTurn: {
+              turnId,
+              state: "completed" as const,
+              requestedAt: repliedAt,
+              startedAt: repliedAt,
+              completedAt: repliedAt,
+              processingQuiescedAt: repliedAt,
+              assistantMessageId: MessageId.makeUnsafe("assistant-authoring-c"),
+            },
+            session: {
+              threadId: ThreadId.makeUnsafe("author-c"),
+              status: "ready" as const,
+              providerName: "codex",
+              runtimeMode: "full-access" as const,
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: repliedAt,
+            },
+            messages: [
+              {
+                id: MessageId.makeUnsafe("assistant-authoring-c"),
+                role: "assistant" as const,
+                text: reply,
+                turnId,
+                streaming: false,
+                createdAt: repliedAt,
+                updatedAt: repliedAt,
+              },
+            ],
+            proposedPlans: [],
+          }
+        : thread,
+    );
+    harness = await createHarness(makeReadModel({ workflow, threads }));
+
+    await harness.start();
+    await harness.emit(
+      makeEvent("thread.turn-diff-completed", {
+        threadId: ThreadId.makeUnsafe("author-c"),
+        turnId,
+        checkpointTurnCount: 1,
+        checkpointRef: CheckpointRef.makeUnsafe("checkpoint-author-c"),
+        status: "ready",
+        files: [],
+        assistantMessageId: MessageId.makeUnsafe("assistant-authoring-c"),
+        completedAt: repliedAt,
+      }),
+    );
+
+    const repairTurn = () =>
+      harness!.dispatched.find(
+        (command): command is Extract<OrchestrationCommand, { type: "thread.turn.start" }> =>
+          command.type === "thread.turn.start" && command.threadId === "author-c",
+      );
+    // The author is asked again, within the length limit, instead of the plan being saved.
+    await waitFor(() => repairTurn() !== undefined);
+    expect(repairTurn()!.message.text).toContain("## Length Limit");
+    const branchC = harness.getSnapshot().planningWorkflows[0]!.additionalBranches![0]!;
+    expect(branchC.status).toBe("authoring");
+    expect(branchC.planTurnId).toBeNull();
+    expect(branchC.authorFormatRepairAttempts).toBe(1);
+    // The over-long reply was not kept as a plan for its turn.
+    expect(
+      harness
+        .getSnapshot()
+        .threads.find((thread) => thread.id === "author-c")!
+        .proposedPlans.some((plan) => plan.turnId === turnId),
+    ).toBe(false);
+  });
+
+  it("excerpts long reviews to fit a four-author revision, and keeps short ones whole", () => {
+    const { workflow } = meshSavedPlans(["c", "d"]);
+    const review = (label: string, text: string) => ({
+      reviewerLabel: label,
+      reviewMarkdown: text,
+      source: { workflowId: workflow.id, stage: `review-${label}` },
+    });
+    const prepare = (reviews: ReadonlyArray<ReturnType<typeof review>>) =>
+      prepareRevisionTurn({
+        workflow,
+        branch: workflow.branchA,
+        originalPlanMarkdown: "PLAN_A",
+        reviews,
+        createdAt: "2026-08-31T17:05:00.000Z",
+      });
+
+    // Three cross-reviews and the self-review, each 40k characters: 160k in full.
+    const long = ["B", "C", "D", "Self"].map((label) =>
+      review(`Reviewer ${label}`, `${label}:${"x".repeat(40_000)}`),
+    );
+    const excerpted = prepare(long);
+    if (!("command" in excerpted)) throw new Error(excerpted.rejection);
+    const text = excerpted.command.message.text;
+    expect(text.length).toBeLessThanOrEqual(WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT);
+    for (const label of ["B", "C", "D", "Self"]) {
+      expect(text).toContain(`${label}:xxx`);
+      expect(text).toMatch(
+        new RegExp(
+          `\\[Excerpt: the first \\d+ of ${40_000 + label.length + 1} characters of the Reviewer ${label} review\\.`,
+        ),
+      );
+    }
+
+    // Reviews that fit are sent unchanged.
+    const short = prepare(long.map((entry) => ({ ...entry, reviewMarkdown: "short review" })));
+    if (!("command" in short)) throw new Error(short.rejection);
+    expect(short.command.message.text).not.toContain("[Excerpt:");
+  });
+
+  it("queues sixteen reviews for four authors with self-review and runs at most four", async () => {
+    const fixture = meshSavedPlans(["c", "d"]);
+    harness = await createHarness(
+      makeReadModel({ ...fixture, workflow: { ...fixture.workflow, selfReviewEnabled: true } }),
+    );
+
+    await harness.start();
+    await waitFor(() => {
+      const current = harness!.getSnapshot().planningWorkflows[0];
+      return (
+        current !== undefined &&
+        [current.branchA, current.branchB, ...(current.additionalBranches ?? [])].every(
+          (branch) => branch.status === "reviews_requested",
+        )
+      );
+    });
+
+    const current = harness.getSnapshot().planningWorkflows[0]!;
+    const reviews = [
+      current.branchA,
+      current.branchB,
+      ...(current.additionalBranches ?? []),
+    ].flatMap((branch) => branch.reviews);
+    expect(reviews).toHaveLength(16);
+    expect(reviews.filter((review) => review.slot === "self")).toHaveLength(4);
+    expect(reviews.filter((review) => review.status === "running")).toHaveLength(4);
+    expect(reviews.filter((review) => review.status === "pending")).toHaveLength(12);
+    expect(
+      harness.dispatched.filter((command) => command.type === "thread.turn.start"),
+    ).toHaveLength(4);
+  });
+
+  it("queues the full review mesh for three authors and runs at most four reviews", async () => {
+    harness = await createHarness(makeReadModel(meshSavedPlans()));
+
+    await harness.start();
+    await waitFor(() => {
+      const current = harness!.getSnapshot().planningWorkflows[0];
+      return (
+        current !== undefined &&
+        [current.branchA, current.branchB, ...(current.additionalBranches ?? [])].every(
+          (branch) => branch.status === "reviews_requested",
+        )
+      );
+    });
+
+    const current = harness.getSnapshot().planningWorkflows[0]!;
+    const branches = [current.branchA, current.branchB, ...(current.additionalBranches ?? [])];
+    expect(
+      branches.map((branch) =>
+        branch.reviews.map((review) => `${review.slot}:${review.reviewerBranchId}`),
+      ),
+    ).toEqual([
+      ["cross:b", "cross:c", "self:a"],
+      ["cross:a", "cross:c", "self:b"],
+      ["cross:a", "cross:b", "self:c"],
+    ]);
+    const reviewTurns = harness.dispatched.filter(
+      (command): command is Extract<OrchestrationCommand, { type: "thread.turn.start" }> =>
+        command.type === "thread.turn.start",
+    );
+    expect(reviewTurns).toHaveLength(4);
+    const running = branches.flatMap((branch) =>
+      branch.reviews.filter((review) => review.status === "running"),
+    );
+    expect(running).toHaveLength(4);
+    const reviewThreadIds = branches.flatMap((branch) =>
+      branch.reviews.map((review) => review.threadId).filter((id) => id !== null),
+    );
+    expect(new Set(reviewThreadIds).size).toBe(reviewThreadIds.length);
+  });
+
+  it("backfills failed review launches and retries them through the capped launcher", async () => {
+    const fixture = meshSavedPlans();
+    const authorThreadIds = new Set(fixture.threads.map((thread) => thread.id));
+    let failReviewThreads = 6;
+    harness = await createHarness(makeReadModel(fixture), {
+      dispatchDefect: (command) =>
+        command.type === "thread.create" &&
+        !authorThreadIds.has(command.threadId) &&
+        failReviewThreads-- > 0
+          ? new Error("thread create failed")
+          : null,
+    });
+    const reviewsOf = () => {
+      const current = harness!.getSnapshot().planningWorkflows[0]!;
+      return [current.branchA, current.branchB, ...(current.additionalBranches ?? [])].flatMap(
+        (branch) => branch.reviews,
+      );
+    };
+    const countBy = (status: string) =>
+      reviewsOf().filter((review) => review.status === status).length;
+    const turnStarts = () =>
+      harness!.dispatched.filter((command) => command.type === "thread.turn.start");
+
+    await harness.start();
+    // The first six launches fail; their slots go to the next reviews in line.
+    await waitFor(() => countBy("error") === 6 && countBy("running") === 3);
+    expect(turnStarts()).toHaveLength(3);
+
+    // Retry requeues all six; one slot is free, so exactly one starts, on a recreated thread
+    // with its saved id.
+    const firstFailed = reviewsOf().find((review) => review.status === "error")!;
+    await Effect.runPromise(harness.service.retryWorkflow({ workflowId: fixture.workflow.id }));
+    await waitFor(() => countBy("running") === 4);
+    expect(countBy("pending")).toBe(5);
+    expect(countBy("error")).toBe(0);
+    expect(turnStarts()).toHaveLength(4);
+    expect(
+      harness.dispatched.some(
+        (command) => command.type === "thread.create" && command.threadId === firstFailed.threadId,
+      ),
+    ).toBe(true);
+  });
+
+  it.each([false, true])(
+    "resends failed review deliveries only into free review slots (after a restart: %s)",
+    async (restart) => {
+      // Three authors: nine reviews, all with a rejected delivery.
+      const fixture = meshSavedPlans();
+      const failedAt = "2026-08-31T17:05:00.000Z";
+      const reviewEdges = {
+        a: [
+          ["cross", "b"],
+          ["cross", "c"],
+          ["self", "a"],
+        ],
+        b: [
+          ["cross", "a"],
+          ["cross", "c"],
+          ["self", "b"],
+        ],
+        c: [
+          ["cross", "a"],
+          ["cross", "b"],
+          ["self", "c"],
+        ],
+      } as const;
+      const failedBranch = (
+        branch: PlanningWorkflow["branchA"],
+        id: keyof typeof reviewEdges,
+      ): PlanningWorkflow["branchA"] => ({
+        ...branch,
+        status: "reviews_requested",
+        reviews: reviewEdges[id].map(([slot, reviewerBranchId]) => ({
+          slot,
+          reviewerBranchId,
+          threadId: ThreadId.makeUnsafe(`review-${id}-${reviewerBranchId}`),
+          outputFilePath: null,
+          status: "error" as const,
+          error: "Provider rejected the turn.",
+          retryCount: 0,
+          lastRetryAt: null,
+          updatedAt: failedAt,
+        })),
+      });
+      const workflow: PlanningWorkflow = {
+        ...fixture.workflow,
+        branchA: failedBranch(fixture.workflow.branchA, "a"),
+        branchB: failedBranch(fixture.workflow.branchB, "b"),
+        additionalBranches: [failedBranch(fixture.workflow.additionalBranches![0]!, "c")],
+      };
+      const reviewThreadIds = [
+        workflow.branchA,
+        workflow.branchB,
+        ...workflow.additionalBranches!,
+      ].flatMap((branch) => branch.reviews.map((review) => review.threadId));
+      const deliveryStates = new Map<ThreadId, ProviderTurnDelivery["state"]>(
+        reviewThreadIds.map((threadId) => [threadId, "rejected"]),
+      );
+      const retryDelivery = vi.fn<ProviderTurnDeliveryWorkerShape["retry"]>((input) => {
+        deliveryStates.set(input.threadId, "pending");
+        return Effect.succeed(makeProviderTurnDelivery(input.threadId, "pending"));
+      });
+      const deliveryOptions = {
+        recheckDelivery: (threadId: ThreadId) => {
+          const state = deliveryStates.get(threadId);
+          return Effect.succeed(state ? makeProviderTurnDelivery(threadId, state) : null);
+        },
+        getLatestDelivery: (threadId: ThreadId) => {
+          const state = deliveryStates.get(threadId);
+          return Effect.succeed(state ? makeProviderTurnDelivery(threadId, state) : null);
+        },
+        retryDelivery,
+      };
+      harness = await createHarness(
+        makeReadModel({
+          workflow,
+          threads: [
+            ...fixture.threads,
+            ...reviewThreadIds.map((threadId) => makeThread({ id: threadId })),
+          ],
+        }),
+        deliveryOptions,
+      );
+      const reviewsOf = () => {
+        const current = harness!.getSnapshot().planningWorkflows[0]!;
+        return [current.branchA, current.branchB, ...(current.additionalBranches ?? [])].flatMap(
+          (branch) => branch.reviews,
+        );
+      };
+
+      await Effect.runPromise(harness.service.retryWorkflow({ workflowId: workflow.id }));
+      // Four resends fill the slots; those reviews stay visibly failed until their turns finish.
+      expect(retryDelivery).toHaveBeenCalledTimes(4);
+      expect(reviewsOf().filter((review) => review.status === "pending")).toHaveLength(5);
+      expect(reviewsOf().filter((review) => review.status === "error")).toHaveLength(4);
+      expect(harness.dispatched.filter((command) => command.type === "thread.turn.start")).toEqual(
+        [],
+      );
+
+      // A resent review finishing frees a slot: the launcher resends the next queued delivery
+      // instead of starting a new turn, even after a restart dropped the in-memory resend intent.
+      if (restart) {
+        const saved = harness.getSnapshot();
+        await harness.dispose();
+        harness = await createHarness(saved, deliveryOptions);
+      }
+      await harness.start();
+      // Slots stay full until a resent review finishes, so startup must not resend.
+      expect(retryDelivery).toHaveBeenCalledTimes(4);
+      const queuedThreadIds = new Set(
+        reviewsOf()
+          .filter((review) => review.status === "pending")
+          .map((review) => review.threadId),
+      );
+      expect(queuedThreadIds.size).toBe(5);
+      const finishedThreadId = retryDelivery.mock.calls[0]![0].threadId;
+      deliveryStates.set(finishedThreadId, "accepted");
+      const finishedAt = "2099-01-01T00:00:00.000Z";
+      const finishedTurnId = TurnId.makeUnsafe("resent-review-turn");
+      harness.setSnapshot({
+        ...harness.getSnapshot(),
+        threads: harness.getSnapshot().threads.map((thread) =>
+          thread.id === finishedThreadId
+            ? {
+                ...thread,
+                latestTurn: {
+                  turnId: finishedTurnId,
+                  state: "completed",
+                  requestedAt: finishedAt,
+                  startedAt: finishedAt,
+                  completedAt: finishedAt,
+                  processingQuiescedAt: finishedAt,
+                  assistantMessageId: MessageId.makeUnsafe("resent-review-message"),
+                },
+                messages: [
+                  {
+                    id: MessageId.makeUnsafe("resent-review-message"),
+                    role: "assistant",
+                    text: "Review findings",
+                    turnId: finishedTurnId,
+                    streaming: false,
+                    createdAt: finishedAt,
+                    updatedAt: finishedAt,
+                  },
+                ],
+              }
+            : thread,
+        ),
+      });
+      await harness.emit(
+        makeEvent(
+          "thread.turn-processing-quiesced",
+          { threadId: finishedThreadId, turnId: finishedTurnId, processingQuiescedAt: finishedAt },
+          finishedAt,
+        ),
+      );
+      await waitFor(() => retryDelivery.mock.calls.length === 5);
+      expect(retryDelivery.mock.calls[4]![0].allowPossibleDuplicate).toBe(false);
+      // The fifth resend is one of the queued reviews, not an in-flight one.
+      expect(queuedThreadIds.has(retryDelivery.mock.calls[4]![0].threadId)).toBe(true);
+      expect(reviewsOf().filter((review) => review.status === "pending")).toHaveLength(4);
+      expect(harness.dispatched.filter((command) => command.type === "thread.turn.start")).toEqual(
+        [],
+      );
+    },
+  );
+
+  it("keeps a launcher pass out of the slots a manual retry is resending into", async () => {
+    // Three authors: Branch A's two cross-reviews failed with a rejected delivery, and the other
+    // seven reviews wait for a slot.
+    const fixture = meshSavedPlans();
+    const at = "2026-08-31T17:05:00.000Z";
+    const edges = {
+      a: [
+        ["cross", "b"],
+        ["cross", "c"],
+        ["self", "a"],
+      ],
+      b: [
+        ["cross", "a"],
+        ["cross", "c"],
+        ["self", "b"],
+      ],
+      c: [
+        ["cross", "a"],
+        ["cross", "b"],
+        ["self", "c"],
+      ],
+    } as const;
+    const failedThreadIds = new Set([
+      ThreadId.makeUnsafe("review-a-b"),
+      ThreadId.makeUnsafe("review-a-c"),
+    ]);
+    const queuedBranch = (
+      branch: PlanningWorkflow["branchA"],
+      id: keyof typeof edges,
+    ): PlanningWorkflow["branchA"] => ({
+      ...branch,
+      status: "reviews_requested",
+      reviews: edges[id].map(([slot, reviewerBranchId]) => {
+        const threadId = ThreadId.makeUnsafe(`review-${id}-${reviewerBranchId}`);
+        const failed = failedThreadIds.has(threadId);
+        return {
+          slot,
+          reviewerBranchId,
+          threadId,
+          outputFilePath: null,
+          status: failed ? ("error" as const) : ("pending" as const),
+          error: failed ? "Provider rejected the turn." : null,
+          retryCount: 0,
+          lastRetryAt: null,
+          updatedAt: at,
+        };
+      }),
+    });
+    const workflow: PlanningWorkflow = {
+      ...fixture.workflow,
+      branchA: queuedBranch(fixture.workflow.branchA, "a"),
+      branchB: queuedBranch(fixture.workflow.branchB, "b"),
+      additionalBranches: [queuedBranch(fixture.workflow.additionalBranches![0]!, "c")],
+    };
+    const reviewThreadIds = [workflow.branchA, workflow.branchB, ...workflow.additionalBranches!]
+      .flatMap((branch) => branch.reviews.map((review) => review.threadId))
+      .filter((threadId) => threadId !== null);
+    const deliveryStates = new Map<ThreadId, ProviderTurnDelivery["state"]>(
+      [...failedThreadIds].map((threadId) => [threadId, "rejected"]),
+    );
+    let releaseResend!: () => void;
+    const resendPaused = new Promise<void>((resolve) => {
+      releaseResend = resolve;
+    });
+    let resends = 0;
+    const retryDelivery = vi.fn<ProviderTurnDeliveryWorkerShape["retry"]>((input) =>
+      Effect.promise(async () => {
+        resends += 1;
+        // The first resend stalls after the retry has counted the free slots.
+        if (resends === 1) await resendPaused;
+        deliveryStates.set(input.threadId, "pending");
+        return makeProviderTurnDelivery(input.threadId, "pending");
+      }),
+    );
+    const delivery = (threadId: ThreadId) => {
+      const state = deliveryStates.get(threadId);
+      return Effect.succeed(state ? makeProviderTurnDelivery(threadId, state) : null);
+    };
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          ...fixture.threads,
+          ...reviewThreadIds.map((threadId) => makeThread({ id: threadId })),
+        ],
+      }),
+      { recheckDelivery: delivery, getLatestDelivery: delivery, retryDelivery },
+    );
+    const reviewTurnStarts = () =>
+      harness!.dispatched.filter(
+        (command) =>
+          command.type === "thread.turn.start" &&
+          reviewThreadIds.includes(command.threadId) &&
+          !failedThreadIds.has(command.threadId),
+      );
+
+    const retried = Effect.runPromise(harness.service.retryWorkflow({ workflowId: workflow.id }));
+    await waitFor(() => retryDelivery.mock.calls.length === 1);
+    // A launcher pass starts while the retry is between counting and resending.
+    const started = harness.start();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(reviewTurnStarts()).toHaveLength(0);
+
+    releaseResend();
+    await retried;
+    await started;
+    await waitFor(() => reviewTurnStarts().length === 2);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    // Two resends and two new turns: never more than four reviews in flight.
+    expect(retryDelivery).toHaveBeenCalledTimes(2);
+    expect(reviewTurnStarts()).toHaveLength(2);
+  });
+
+  it("records a merge error instead of starting a merge whose inputs can't fit", async () => {
+    const revisedAt = "2026-08-31T17:20:00.000Z";
+    const revisedBranch = (branch: PlanningWorkflow["branchA"], id: "a" | "b") => ({
+      ...branch,
+      status: "revised" as const,
+      revisionTurnId: TurnId.makeUnsafe(`revision-turn-${id}`),
+      updatedAt: revisedAt,
+    });
+    const base = makeWorkflow();
+    const workflow = makeWorkflow({
+      branchA: revisedBranch(base.branchA, "a"),
+      branchB: revisedBranch(base.branchB, "b"),
+      merge: {
+        ...base.merge,
+        threadId: null,
+        outputFilePath: null,
+        turnId: null,
+        approvedPlanId: null,
+        status: "not_started",
+      },
+    });
+    const revisedThread = (id: "a" | "b") =>
+      makeThread({
+        id: ThreadId.makeUnsafe(`author-${id}`),
+        latestTurn: {
+          turnId: TurnId.makeUnsafe(`revision-turn-${id}`),
+          state: "completed",
+          requestedAt: revisedAt,
+          startedAt: revisedAt,
+          completedAt: revisedAt,
+          processingQuiescedAt: revisedAt,
+          assistantMessageId: MessageId.makeUnsafe(`assistant-revision-${id}`),
+        },
+        proposedPlans: [
+          {
+            id: OrchestrationProposedPlanId.makeUnsafe(`revised-plan-${id}`),
+            turnId: TurnId.makeUnsafe(`revision-turn-${id}`),
+            // Each plan fits on its own; together they exceed one merge prompt.
+            planMarkdown: `# Plan ${id}\n${"Step detail. ".repeat(6_000)}`,
+            implementedAt: null,
+            implementationThreadId: null,
+            createdAt: revisedAt,
+            updatedAt: revisedAt,
+          },
+        ],
+      });
+    harness = await createHarness(
+      makeReadModel({ workflow, threads: [revisedThread("a"), revisedThread("b")] }),
+    );
+
+    await harness.start();
+    await waitFor(() => harness!.getSnapshot().planningWorkflows[0]!.merge.status === "error");
+    const merge = harness.getSnapshot().planningWorkflows[0]!.merge;
+    expect(merge.threadId).toBeNull();
+    expect(merge.error).toContain("Merge inputs");
+    expect(
+      harness.dispatched.filter(
+        (command) => command.type === "thread.create" || command.type === "thread.turn.start",
+      ),
+    ).toEqual([]);
+  });
+
   it("waits for a newer no-plan follow-up to quiesce before starting reviews", async () => {
     const planTurnIdA = TurnId.makeUnsafe("plan-turn-a-waiting");
     const planTurnIdB = TurnId.makeUnsafe("plan-turn-b-waiting");
@@ -10887,6 +11652,92 @@ describe("WorkflowService", () => {
     expect(recovered?.status).toBe("reviews_saved");
   });
 
+  it("does not complete a requeued running review from an earlier attempt's turn", async () => {
+    const reviewThreadId = ThreadId.makeUnsafe("review-a-cross");
+    const staleTurnId = TurnId.makeUnsafe("review-turn-earlier");
+    const earlier = "2026-03-26T11:00:00.000Z";
+    const workflow = makeWorkflow({
+      branchA: {
+        ...makeWorkflow().branchA,
+        planTurnId: "plan-a",
+        status: "reviews_requested",
+        reviews: [
+          {
+            slot: "cross",
+            threadId: reviewThreadId,
+            outputFilePath: null,
+            // Requeued and admitted at NOW; its new turn has not been projected yet.
+            status: "running",
+            error: null,
+            retryCount: 1,
+            lastRetryAt: NOW,
+            updatedAt: NOW,
+          },
+        ],
+      },
+      branchB: { ...makeWorkflow().branchB, status: "reviews_requested" },
+      merge: { ...makeWorkflow().merge, threadId: null, status: "not_started" },
+    });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeThread({
+            id: reviewThreadId,
+            latestTurn: {
+              turnId: staleTurnId,
+              state: "completed",
+              requestedAt: earlier,
+              startedAt: earlier,
+              completedAt: earlier,
+              processingQuiescedAt: earlier,
+              assistantMessageId: MessageId.makeUnsafe("earlier-answer"),
+            },
+            messages: [
+              {
+                id: MessageId.makeUnsafe("earlier-answer"),
+                role: "assistant",
+                text: "Earlier attempt's review",
+                turnId: staleTurnId,
+                streaming: false,
+                createdAt: earlier,
+                updatedAt: earlier,
+              },
+            ],
+            session: {
+              threadId: reviewThreadId,
+              status: "running",
+              providerName: "codex",
+              runtimeMode: "full-access",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: NOW,
+            },
+          }),
+        ],
+      }),
+    );
+    await harness.start();
+    await harness.emit(
+      makeEvent("thread.turn-processing-quiesced", {
+        threadId: reviewThreadId,
+        turnId: staleTurnId,
+        processingQuiescedAt: earlier,
+      }),
+    );
+
+    expect(
+      harness.dispatched.some(
+        (command) =>
+          command.type === "project.workflow.upsert" &&
+          command.workflow.branchA.reviews[0]?.status === "completed",
+      ),
+    ).toBe(false);
+    expect(harness.getSnapshot().planningWorkflows[0]!.branchA.reviews[0]?.status).not.toBe(
+      "completed",
+    );
+  });
+
   it("requires confirmation for ambiguous manual retry and reuses its durable delivery", async () => {
     const reviewThreadId = ThreadId.makeUnsafe("review-a-cross");
     const planTurnId = TurnId.makeUnsafe("plan-a");
@@ -11310,6 +12161,45 @@ describe("WorkflowService", () => {
       status: "error",
       error: "authoring failed",
       errorStage: "authoring",
+    });
+  });
+
+  describe("per-plan merge budget", () => {
+    const meshDocument = () => {
+      const base = makeWorkflow();
+      return makeWorkflow({
+        templateId: "builtin.document.dual",
+        templateVersion: 2,
+        documentType: "rfc",
+        additionalBranches: [
+          { ...base.branchA, branchId: "c", authorThreadId: ThreadId.makeUnsafe("author-c") },
+        ],
+      });
+    };
+
+    it("measures a draft as the merge renders it, with escaped terminators and its turn", () => {
+      const workflow = meshDocument();
+      const terminator = "</workflow_upstream_artifact>";
+      const plain = "# Draft\n\nBody";
+      const withTerminators = `${plain}\n${terminator.repeat(10)}`;
+      const turnId = "turn-0123456789";
+      const plainChars = workflowPlanMergeChars(workflow, "c", plain, turnId);
+      // The turn is named in the draft's source line, beyond the body itself.
+      expect(plainChars).toBeGreaterThanOrEqual(plain.length + turnId.length);
+      // Each escaped terminator renders six characters longer than written.
+      expect(workflowPlanMergeChars(workflow, "c", withTerminators, turnId)).toBe(
+        plainChars + 1 + terminator.length * 10 + 6 * 10,
+      );
+    });
+
+    it("counts only the plan text for feature plans", () => {
+      const base = makeWorkflow();
+      const workflow = makeWorkflow({
+        additionalBranches: [
+          { ...base.branchA, branchId: "c", authorThreadId: ThreadId.makeUnsafe("author-c") },
+        ],
+      });
+      expect(workflowPlanMergeChars(workflow, "c", "PLAN_C", "turn-c")).toBe("PLAN_C".length);
     });
   });
 

@@ -1,3 +1,7 @@
+import {
+  driverSupportsReadOnlyWorkflowTurns,
+  runtimeBuildTarget,
+} from "@t3tools/shared/workflowProviders";
 import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { MCP_APP_PROVIDERS } from "@t3tools/shared/mcpApp";
@@ -18,7 +22,7 @@ import { GitCore } from "../../git/Services/GitCore.ts";
 import { assertMcpRuntimeConfig, mcpConfigErrorMessage } from "@t3tools/shared/mcpValidation";
 import { readCodexMcpOAuthCallbackConfig } from "@t3tools/shared/mcpTranslation";
 import { resolveClaudeLaunchAppendSystemPrompt } from "../claudeAppendSystemPrompt.ts";
-import { DeliveryAttemptContext } from "../deliveryAttemptContext";
+import { DeliveryAttemptContext, TurnAcceptanceSignal } from "../deliveryAttemptContext";
 import { automationEventSanitizer } from "@t3tools/shared/automationActivitySanitizer";
 import { ComputerAutomationBroker } from "../../computer/ComputerAutomationBroker";
 import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts";
@@ -78,6 +82,8 @@ import {
   type ProviderRuntimeEvent,
   type ProviderSession,
   type ProviderSessionAction,
+  type ServerProvider,
+  type ProviderTurnStartResult,
   type McpReloadResult,
   type McpSessionReloadOutcome,
   type McpSessionSummary,
@@ -95,6 +101,7 @@ import {
   Duration,
   Deferred,
   Effect,
+  Exit,
   Fiber,
   Layer,
   Option,
@@ -729,17 +736,35 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           ),
         );
 
-    const readExecutableVersion = (instanceId: ProviderInstanceId) =>
+    const readProviderSnapshot = (instanceId: ProviderInstanceId) =>
       Option.match(providerRegistry, {
-        onNone: () => Effect.succeed<string | undefined>(undefined),
+        onNone: () => Effect.succeed<ServerProvider | undefined>(undefined),
         onSome: (service) =>
           service.getProviders.pipe(
-            Effect.map(
-              (providers) =>
-                providers.find((provider) => provider.instanceId === instanceId)?.version ??
-                undefined,
+            Effect.map((providers) =>
+              providers.find((provider) => provider.instanceId === instanceId),
             ),
           ),
+      });
+
+    /**
+     * Read-only workflow turns run only on providers that can confine the turn. Grok and Muse
+     * never can; Antigravity can only when this instance's runtime is certified.
+     */
+    const readOnlyWorkflowRejection = (
+      operation: string,
+      provider: ProviderKind,
+      instanceId: ProviderInstanceId,
+      profile: string | undefined,
+    ) =>
+      Effect.gen(function* () {
+        if (!profile?.endsWith("readonly")) return;
+        const version = (yield* readProviderSnapshot(instanceId))?.version ?? undefined;
+        if (driverSupportsReadOnlyWorkflowTurns(provider, version, runtimeBuildTarget())) return;
+        return yield* toValidationError(
+          operation,
+          `${PROVIDER_DISPLAY_NAMES[provider]} cannot enforce read-only workflow turns.`,
+        );
       });
 
     /** Per-instance runtime-mode support from the status snapshot, when it narrows the default. */
@@ -771,11 +796,13 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         const instanceInfo = yield* registry
           .getInstanceInfo(input.instanceId)
           .pipe(Effect.option, Effect.map(Option.getOrUndefined));
+        const providerSnapshot = yield* readProviderSnapshot(input.instanceId);
         return buildProviderSessionCapabilities({
           generation: input.generation,
           driver: instanceInfo?.driverKind ?? input.adapter.provider,
           providerInstanceId: input.instanceId,
-          executableVersion: yield* readExecutableVersion(input.instanceId),
+          executableVersion: providerSnapshot?.version ?? undefined,
+          harnessVariant: providerSnapshot?.harnessVariant,
           adapterCapabilities: input.adapter.capabilities,
           hasSteer: input.adapter.steerTurn !== undefined,
           hasMcpReload: input.adapter.reloadMcpConfig !== undefined,
@@ -1750,17 +1777,12 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           const instanceInfo = yield* registry.getInstanceInfo(requestedInstanceId);
           const resolvedProvider = instanceInfo.driverKind as ProviderKind;
           metricProvider = resolvedProvider;
-          if (
-            (resolvedProvider === "grok" ||
-              resolvedProvider === "antigravity" ||
-              resolvedProvider === "muse") &&
-            parsed.workflowExecutionProfile?.endsWith("readonly")
-          ) {
-            return yield* toValidationError(
-              "ProviderService.startSession",
-              `${PROVIDER_DISPLAY_NAMES[resolvedProvider]} cannot enforce read-only workflow turns.`,
-            );
-          }
+          yield* readOnlyWorkflowRejection(
+            "ProviderService.startSession",
+            resolvedProvider,
+            requestedInstanceId,
+            parsed.workflowExecutionProfile,
+          );
           if (parsed.provider !== undefined && parsed.provider !== resolvedProvider) {
             return yield* toValidationError(
               "ProviderService.startSession",
@@ -1802,6 +1824,15 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             providerInstanceId: requestedInstanceId,
           };
           const adapter = yield* registry.getByInstance(requestedInstanceId);
+          if (
+            parsed.workflowExecutionProfile?.endsWith("readonly") &&
+            adapter.capabilities.enforcesReadOnlyWorkflow !== true
+          ) {
+            return yield* toValidationError(
+              "ProviderService.startSession",
+              `${PROVIDER_DISPLAY_NAMES[resolvedProvider]} cannot enforce read-only workflow turns.`,
+            );
+          }
           const previousBinding = yield* directory
             .getBinding(threadId)
             .pipe(Effect.map(Option.getOrUndefined));
@@ -2380,11 +2411,15 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                   ),
                 );
                 metricProvider = routed.adapter.provider;
+                yield* readOnlyWorkflowRejection(
+                  "ProviderService.sendTurn",
+                  routed.adapter.provider,
+                  routed.instanceId,
+                  input.workflowExecutionProfile,
+                );
                 if (
-                  (routed.adapter.provider === "grok" ||
-                    routed.adapter.provider === "antigravity" ||
-                    routed.adapter.provider === "muse") &&
-                  input.workflowExecutionProfile?.endsWith("readonly")
+                  input.workflowExecutionProfile?.endsWith("readonly") &&
+                  routed.adapter.capabilities.enforcesReadOnlyWorkflow !== true
                 ) {
                   return yield* toValidationError(
                     "ProviderService.sendTurn",
@@ -2582,10 +2617,98 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                 ),
               )
             : admit;
+          // Adapters whose send lasts the whole turn report acceptance early through this.
+          // The write runs on its own fiber so the agent's event stream never waits on it,
+          // and is joined once the send settles: the call after a successful send is the
+          // fallback whenever the early write did not commit, and a late write can never
+          // land after the send's outcome was decided.
+          let acceptanceClosed = false;
+          let earlyAcceptance:
+            | {
+                readonly receipt: ProviderTurnStartResult;
+                readonly write: Fiber.Fiber<void, unknown>;
+              }
+            | undefined;
+          const acceptanceSignal = deliveryAttempt
+            ? {
+                accept: (receipt: ProviderTurnStartResult) =>
+                  Effect.suspend(() => {
+                    if (acceptanceClosed || earlyAcceptance) return Effect.void;
+                    return deliveryAttempt
+                      .accepted(receipt, { runtimeGeneration: generation, nativeHistoryIdentity })
+                      .pipe(
+                        Effect.forkDetach,
+                        Effect.flatMap((write) =>
+                          Effect.sync(() => {
+                            earlyAcceptance = { receipt, write };
+                          }),
+                        ),
+                      );
+                  }),
+              }
+            : null;
+          /** Whether the early acceptance write committed. Closes the signal first. */
+          const settleEarlyAcceptance = Effect.suspend(() => {
+            acceptanceClosed = true;
+            const early = earlyAcceptance;
+            if (!early) return Effect.succeed(false);
+            return Fiber.await(early.write).pipe(
+              Effect.flatMap((exit) =>
+                Exit.isSuccess(exit)
+                  ? Effect.succeed(true)
+                  : Effect.logWarning("early turn acceptance failed", {
+                      threadId: input.threadId,
+                      cause: Cause.pretty(exit.cause),
+                    }).pipe(Effect.as(false)),
+              ),
+            );
+          });
+          /**
+           * A send that fails after its delivery was accepted is a failed turn, not a
+           * rejected delivery: the agent already started on the message, so it must not be
+           * sent again. The turn is settled here, with its usage limit, as any provider
+           * reports a turn that fails mid-way.
+           */
+          const failAcceptedTurn = (
+            receipt: ProviderTurnStartResult,
+            cause: Cause.Cause<unknown>,
+          ) =>
+            Effect.gen(function* () {
+              if (Cause.hasInterruptsOnly(cause)) return;
+              const error = Cause.squash(cause);
+              const usageLimit =
+                (Schema.is(ProviderTurnDeliveryError)(error) && error.usageLimit) ||
+                (Schema.is(ProviderAdapterRequestError)(error) && error.usageLimit) ||
+                undefined;
+              const message =
+                (error instanceof Error && error.message.trim()) ||
+                "The provider stopped this turn with an error.";
+              const stamp = () => ({
+                eventId: EventId.makeUnsafe(timeOrderedUuid()),
+                provider: routed.adapter.provider,
+                threadId: input.threadId,
+                turnId: receipt.turnId,
+                createdAt: new Date().toISOString(),
+              });
+              yield* publishRuntimeEvent({
+                ...stamp(),
+                type: "runtime.error",
+                payload: {
+                  class: "provider_error",
+                  message,
+                  ...(usageLimit ? { usageLimit } : {}),
+                },
+              });
+              yield* publishRuntimeEvent({
+                ...stamp(),
+                type: "turn.completed",
+                payload: { state: "failed", errorMessage: message, stopReason: null },
+              });
+            });
           const send = Effect.gen(function* () {
             yield* requireProjectProvider(deliveryBinding.value);
             yield* ensureAccepting;
-            const turn = yield* (
+            const sent = yield* (
               input.expectedTurnId !== undefined
                 ? routed.adapter.steerTurn!({
                     ...input,
@@ -2610,14 +2733,29 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                     })
                   : error,
               ),
+              Effect.provideService(TurnAcceptanceSignal, acceptanceSignal),
+              Effect.exit,
             );
-            if (deliveryAttempt)
+            const earlyCommitted = yield* settleEarlyAcceptance;
+            if (Exit.isFailure(sent)) {
+              if (earlyCommitted && earlyAcceptance)
+                yield* failAcceptedTurn(earlyAcceptance.receipt, sent.cause);
+              return yield* Effect.failCause(sent.cause);
+            }
+            const turn = sent.value;
+            if (deliveryAttempt && !earlyCommitted)
               yield* deliveryAttempt.accepted(turn, {
                 runtimeGeneration: generation,
                 nativeHistoryIdentity,
               });
             return turn;
-          });
+          }).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                acceptanceClosed = true;
+              }),
+            ),
+          );
           const turn = yield* send;
           return yield* withProviderThreadAccess(
             input.threadId,

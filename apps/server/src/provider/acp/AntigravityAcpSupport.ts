@@ -293,6 +293,7 @@ export const makeAntigravityAcpRuntime = (input: {
   accountSetup?: boolean;
   onAuthorizationUrl?: (url: string) => void;
   mcpServers?: AcpSessionRuntimeOptions["mcpServers"];
+  sessionMeta?: AcpSessionRuntimeOptions["sessionMeta"];
   requestLogger?: AcpSessionRuntimeOptions["requestLogger"];
   logWritersRedact?: AcpSessionRuntimeOptions["logWritersRedact"];
   protocolLogging?: AcpSessionRuntimeOptions["protocolLogging"];
@@ -337,6 +338,7 @@ export const makeAntigravityAcpRuntime = (input: {
           ? { hasSensitiveConfiguration: input.hasSensitiveConfiguration }
           : {}),
         ...(input.mcpServers ? { mcpServers: input.mcpServers } : {}),
+        ...(input.sessionMeta ? { sessionMeta: input.sessionMeta } : {}),
         ...(input.logWritersRedact ? { logWritersRedact: true } : {}),
         ...(input.requestLogger ? { requestLogger: input.requestLogger } : {}),
         ...(input.protocolLogging ? { protocolLogging: input.protocolLogging } : {}),
@@ -751,6 +753,100 @@ const writeAntigravitySessionMode = <E>(input: {
     return input.target;
   });
 
+// ── Read-only workflow turns ─────────────────────────────────────────────────
+
+/**
+ * Tool kinds a read-only workflow turn may run; everything else is denied. `fetch` is allowed in
+ * unattended stages too, matching other providers' plan mode; the exfiltration risk this leaves
+ * is recorded in `docs/providers/antigravity.md`.
+ */
+export const ANTIGRAVITY_READ_ONLY_WORKFLOW_TOOL_KINDS: ReadonlySet<string> = new Set([
+  "read",
+  "search",
+  "think",
+  "fetch",
+]);
+
+/** A tool call that names an MCP server. Read-only workflow sessions install no MCP catalog. */
+function antigravityMcpToolCall(toolCall: {
+  readonly title?: string | null | undefined;
+  readonly rawInput?: unknown;
+}): boolean {
+  if (/\bmcp(?:__|[_:/.])/i.test(toolCall.title ?? "")) return true;
+  const raw = toolCall.rawInput;
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return false;
+  return ["server", "serverName", "server_name", "mcpServer", "mcp_server"].some(
+    (key) => key in raw,
+  );
+}
+
+/**
+ * Permission policy for a read-only workflow turn. It runs before the access-mode policy, saved
+ * thread grants and Full access, and never opens an approval prompt: read, search, think and
+ * fetch tools run once; edits, deletes, moves, commands, computer control, MCP tools and
+ * requests with an unknown or missing kind are denied.
+ */
+export function antigravityReadOnlyWorkflowDecision(input: {
+  readonly toolCall: {
+    readonly kind?: string | null | undefined;
+    readonly title?: string | null | undefined;
+    readonly rawInput?: unknown;
+  };
+  readonly computerRequest: boolean;
+}): "allow" | "deny" {
+  if (input.computerRequest) return "deny";
+  const kind = input.toolCall.kind;
+  if (!kind || !ANTIGRAVITY_READ_ONLY_WORKFLOW_TOOL_KINDS.has(kind)) return "deny";
+  return antigravityMcpToolCall(input.toolCall) ? "deny" : "allow";
+}
+
+/** Read-only workflow sessions never run with native auto-approval, whatever the thread says. */
+export function antigravityWorkflowRuntimeMode(
+  runtimeMode: RuntimeMode,
+  workflowExecutionProfile: string | undefined,
+): RuntimeMode {
+  return workflowExecutionProfile ? "approval-required" : runtimeMode;
+}
+
+/**
+ * Enters Plan before a workflow prompt and confirms the session reports it. A runtime without
+ * Plan, or one that reports any other mode afterwards, fails the turn before anything is sent.
+ */
+export const enterAntigravityWorkflowPlanMode = <E>(input: {
+  readonly runtime: Pick<
+    AcpSessionRuntimeShape,
+    "getModeState" | "getConfigOptions" | "setNativeMode" | "setConfigOption"
+  >;
+  readonly mapError: (cause: AcpErrors.AcpError | AntigravityModeUnavailableError) => E;
+}): Effect.Effect<string, E> =>
+  Effect.gen(function* () {
+    yield* writeAntigravitySessionMode({ ...input, target: "plan" });
+    const effective = antigravityAdvertisedModes(
+      yield* input.runtime.getModeState,
+      yield* input.runtime.getConfigOptions,
+    ).current;
+    if (effective !== "plan")
+      return yield* Effect.fail(
+        input.mapError(
+          new AntigravityModeUnavailableError(
+            "Antigravity could not confirm Plan mode, so F5 cannot keep this workflow turn read-only. Start a new session to continue.",
+          ),
+        ),
+      );
+    return effective;
+  });
+
+/**
+ * ACP tool kinds that follow the thread's access mode in Plan. `kind` comes from the agent and
+ * may be missing, `other` or new, so this is an allowlist: anything else asks.
+ */
+const ANTIGRAVITY_PLAN_ACCESS_MODE_KINDS: ReadonlySet<string> = new Set([
+  "execute",
+  "read",
+  "search",
+  "think",
+]);
+
 export type AntigravityApprovalDecision =
   | { readonly kind: "ask"; readonly applyThreadGrants: boolean }
   | { readonly kind: "allow" };
@@ -769,9 +865,15 @@ export function antigravityApprovalDecision(input: {
   readonly workspaceRoot: string;
 }): AntigravityApprovalDecision {
   if (input.computerRequest) return { kind: "ask", applyThreadGrants: false };
-  // Plan always asks; thread grants never apply there, even under Full access. The turn's own
-  // request counts as well as the native mode, so a lagging mode can't widen a Plan turn.
-  if (input.sessionMode === "plan" || input.planRequested === true)
+  // In Plan, commands and read-only tools follow the thread's access mode as outside Plan, so
+  // thread grants apply there too. Everything else (edits, deletes, moves, `other`, a missing or
+  // unknown kind) always asks, without thread grants, even under Full access. Commands can still
+  // change files; that is the access mode's call. The turn's own request counts as well as the
+  // native mode, so a lagging mode can't widen a Plan turn.
+  if (
+    (input.sessionMode === "plan" || input.planRequested === true) &&
+    !ANTIGRAVITY_PLAN_ACCESS_MODE_KINDS.has(input.toolCall.kind ?? "")
+  )
     return { kind: "ask", applyThreadGrants: false };
   switch (input.runtimeMode) {
     case "full-access":

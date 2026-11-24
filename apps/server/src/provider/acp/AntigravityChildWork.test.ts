@@ -18,6 +18,7 @@ import { sanitizeAntigravityToolPayload } from "./AntigravityToolCalls.ts";
 import {
   autoApproved,
   CHILD,
+  genericInvokeStep,
   invokeStep,
   LAUNCH,
   makeProfile,
@@ -66,6 +67,220 @@ it.layer(NodeServices.layer)("readAntigravityChildWork", (it) => {
         "marker 4242 found",
       ]);
       expect(child?.steps?.[0]?.toolCalls[0]?.input).toBe('{"AbsolutePath":"/project/README.md"}');
+    }),
+  );
+
+  it.effect("reads a 1.5.15 launch recorded as a generic invoke_subagent step", () =>
+    Effect.gen(function* () {
+      const { profile } = yield* makeProfile({
+        steps: (logUri) => [
+          [1, 15, plannerStep(["call-a"])],
+          // Another tool's generic step between the planner call and the launch.
+          [
+            2,
+            132,
+            genericInvokeStep({
+              callId: "call-other",
+              toolName: "run_command",
+              launches: [],
+              children: [],
+            }),
+          ],
+          [
+            3,
+            132,
+            genericInvokeStep({
+              callId: "call-a",
+              launches: [LAUNCH],
+              children: [{ id: CHILD, logUri }],
+            }),
+          ],
+        ],
+      });
+      const [child, ...rest] = yield* read(profile, `${ROOT}:1`);
+      expect(rest).toEqual([]);
+      expect(child).toMatchObject({
+        conversationId: CHILD,
+        role: LAUNCH.role,
+        prompt: LAUNCH.prompt,
+        truncated: false,
+      });
+      expect(child?.steps?.map((step) => step.text ?? step.toolCalls[0]?.name)).toEqual([
+        "view_file",
+        "2: child read marker 4242",
+        "marker 4242 found",
+      ]);
+      // A permission-prompt call matches by launch text; other tools' generic steps don't count.
+      const opaque = "35bea692fa95447fbdae6333fec5515f";
+      const matched = yield* read(profile, opaque, describeAntigravitySubagentLaunches([LAUNCH]));
+      expect(matched.map((entry) => entry.conversationId)).toEqual([CHILD]);
+    }),
+  );
+
+  it.effect("refuses a generic invoke_subagent step whose child id is not a native id", () =>
+    Effect.gen(function* () {
+      const { profile } = yield* makeProfile({
+        steps: (logUri) => [
+          [1, 15, plannerStep(["call-a"])],
+          [
+            2,
+            132,
+            genericInvokeStep({
+              callId: "call-a",
+              launches: [LAUNCH],
+              children: [{ id: "../escape", logUri }],
+            }),
+          ],
+        ],
+      });
+      expect(yield* read(profile, `${ROOT}:1`)).toEqual([]);
+      const opaque = "35bea692fa95447fbdae6333fec5515f";
+      expect(yield* read(profile, opaque, describeAntigravitySubagentLaunches([LAUNCH]))).toEqual(
+        [],
+      );
+    }),
+  );
+
+  it.effect("lets an unreadable or nameless 1.5.15 launch step block a launch-text match", () =>
+    Effect.gen(function* () {
+      const opaque = "35bea692fa95447fbdae6333fec5515f";
+      const other = "b468cf3831a24f0e8e2b1d6a7c9e0f12";
+      const good = (logUri: string) =>
+        [
+          3,
+          132,
+          genericInvokeStep({ callId: "x", launches: [LAUNCH], children: [{ id: CHILD, logUri }] }),
+        ] as const;
+      const blockers: ReadonlyArray<(logUri: string) => Uint8Array> = [
+        // A launch whose nested body is cut short.
+        () =>
+          genericInvokeStep({
+            callId: "y",
+            launches: [],
+            children: [],
+            body: Uint8Array.from([0x12, 0x10, 0x01]),
+          }),
+        // The same launch text with another child and no tool name: it can't be ruled out.
+        (logUri) =>
+          genericInvokeStep({
+            callId: "y",
+            toolName: null,
+            launches: [LAUNCH],
+            children: [{ id: other, logUri }],
+          }),
+        // A spec-only entry followed by a result-only entry.
+        (logUri) =>
+          genericInvokeStep({
+            callId: "y",
+            launches: [LAUNCH],
+            children: [],
+            entries: [{ launch: LAUNCH }, { child: { id: other, logUri } }],
+          }),
+      ];
+      for (const blocker of blockers) {
+        const { profile } = yield* makeProfile({
+          steps: (logUri) => [good(logUri), [5, 132, blocker(logUri)]],
+        });
+        expect(yield* read(profile, opaque, describeAntigravitySubagentLaunches([LAUNCH]))).toEqual(
+          [],
+        );
+      }
+    }),
+  );
+
+  it.effect("pairs each 1.5.15 entry's spec with its own result", () =>
+    Effect.gen(function* () {
+      const { profile } = yield* makeProfile({
+        steps: (logUri) => [
+          [1, 15, plannerStep(["call-a"])],
+          [
+            2,
+            132,
+            genericInvokeStep({
+              callId: "call-a",
+              launches: [LAUNCH],
+              children: [],
+              entries: [{ launch: LAUNCH }, { child: { id: CHILD, logUri } }],
+            }),
+          ],
+        ],
+      });
+      expect(yield* read(profile, `${ROOT}:1`)).toEqual([]);
+    }),
+  );
+
+  it.effect("reads 1.5.13 and 1.5.15 launches in one resumed conversation", () =>
+    Effect.gen(function* () {
+      const other = { role: "Test Runner", prompt: "Run the tests" };
+      const { profile } = yield* makeProfile({
+        steps: (logUri) => [
+          [1, 15, plannerStep(["call-a"])],
+          [
+            2,
+            127,
+            invokeStep({ callId: "call-a", launches: [LAUNCH], children: [{ id: CHILD, logUri }] }),
+          ],
+          [3, 15, plannerStep(["call-b"])],
+          [
+            4,
+            132,
+            genericInvokeStep({
+              callId: "call-b",
+              launches: [other],
+              children: [{ id: CHILD, logUri }],
+            }),
+          ],
+        ],
+      });
+      expect((yield* read(profile, `${ROOT}:1`)).map((child) => child.role)).toEqual([LAUNCH.role]);
+      expect((yield* read(profile, `${ROOT}:3`)).map((child) => child.role)).toEqual([other.role]);
+      const opaque = "35bea692fa95447fbdae6333fec5515f";
+      for (const launch of [LAUNCH, other])
+        expect(
+          yield* read(profile, opaque, describeAntigravitySubagentLaunches([launch])),
+        ).toHaveLength(1);
+    }),
+  );
+
+  it.effect("keeps other tools' generic steps out of the scan bounds", () =>
+    Effect.gen(function* () {
+      const command = (callId: string, body?: Uint8Array) =>
+        genericInvokeStep({
+          callId,
+          toolName: "run_command",
+          launches: [],
+          children: [],
+          ...(body ? { body } : {}),
+        });
+      const { profile } = yield* makeProfile({
+        steps: (logUri) => [
+          [1, 15, plannerStep(["call-a"])],
+          // More rows than the launch budget, and one output over the per-row cap.
+          ...Array.from(
+            { length: 250 },
+            (_, index) => [index + 2, 132, command(`c${index}`)] as const,
+          ),
+          [260, 132, command("big", new Uint8Array(1_100_000))],
+          [
+            300,
+            132,
+            genericInvokeStep({
+              callId: "call-a",
+              launches: [LAUNCH],
+              children: [{ id: CHILD, logUri }],
+            }),
+          ],
+        ],
+      });
+      expect((yield* read(profile, `${ROOT}:1`)).map((child) => child.conversationId)).toEqual([
+        CHILD,
+      ]);
+      const opaque = "35bea692fa95447fbdae6333fec5515f";
+      expect(
+        (yield* read(profile, opaque, describeAntigravitySubagentLaunches([LAUNCH]))).map(
+          (child) => child.conversationId,
+        ),
+      ).toEqual([CHILD]);
     }),
   );
 

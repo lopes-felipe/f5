@@ -1,11 +1,50 @@
 import { describe, expect, it } from "vitest";
+import { MessageId, ThreadId } from "@t3tools/contracts";
+import { serializeAssistantResponseContext } from "@t3tools/shared/assistantResponseContext";
 import { buildCollapsedUserMessageText } from "../components/chat/userMessageCollapse";
 import {
   clipUserMessageSegments,
   hasUserMessageMarkup,
   parseUserMessageMarkup,
+  userMessageSegmentDisplayText,
   type UserMessageSegment,
 } from "./userMessageMarkup";
+
+describe("userMessageSegmentDisplayText", () => {
+  const card = serializeAssistantResponseContext({
+    version: 1,
+    kind: "quote",
+    threadId: ThreadId.make("thread-1"),
+    messageId: MessageId.make("message-1"),
+    text: "Quoted text",
+  });
+  const displayed = (text: string) => {
+    const segments = parseUserMessageMarkup(text);
+    expect(segments.map((segment) => segment.raw).join("")).toBe(text);
+    return segments.flatMap((segment, index) =>
+      segment.kind === "text" ? [userMessageSegmentDisplayText(segments, index)] : ["[card]"],
+    );
+  };
+
+  it("drops one blank-line separator beside a response card", () => {
+    expect(displayed(`${card}\n\ntest`)).toEqual(["[card]", "test"]);
+    expect(displayed(`intro\n\n${card}`)).toEqual(["intro", "[card]"]);
+    expect(displayed(`${card}\r\n\r\ntest`)).toEqual(["[card]", "test"]);
+    expect(displayed(`${card}\ntest`)).toEqual(["[card]", "test"]);
+  });
+
+  it("keeps blank lines typed beyond the separator", () => {
+    expect(displayed(`${card}\n\n\n\ntest`)).toEqual(["[card]", "\n\ntest"]);
+  });
+
+  it("trims both sides of text between two cards", () => {
+    expect(displayed(`${card}\n\nbetween\n\n${card}`)).toEqual(["[card]", "between", "[card]"]);
+  });
+
+  it("leaves text without a neighboring card unchanged", () => {
+    expect(displayed("\n\nplain\n\n")).toEqual(["\n\nplain\n\n"]);
+  });
+});
 
 const summarize = (segments: readonly UserMessageSegment[]) =>
   segments.map((segment) =>

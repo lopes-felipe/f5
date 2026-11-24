@@ -4196,6 +4196,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
       capabilities: {
         sessionModelSwitch: "in-session",
         runtimeCapabilities: providerRuntimeCapabilities(PROVIDER),
+        enforcesReadOnlyWorkflow: true,
       },
       getChromeReadiness,
       executeNativeOperation: (input, onReceipt) =>

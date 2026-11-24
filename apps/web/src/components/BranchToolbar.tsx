@@ -4,7 +4,7 @@ import { toastManager } from "./ui/toast";
 import type { ThreadId } from "@t3tools/contracts";
 import { isScratchProject } from "@t3tools/shared/scratchProject";
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
-import { useCallback } from "react";
+import { type ReactNode, useCallback } from "react";
 
 import { useComposerDraftStore } from "../composerDraftStore";
 import { useShallow } from "zustand/react/shallow";
@@ -27,6 +27,20 @@ interface BranchToolbarProps {
   onComposerFocusRequest?: () => void;
   /** The server is still creating this thread's worktree. */
   preparingWorktree?: boolean;
+  /** Extra controls on the same row, after the workspace picker. */
+  trailing?: ReactNode;
+}
+
+/** The row under the composer that holds workspace controls. */
+export function BranchToolbarRow({ children }: { children: ReactNode }) {
+  return (
+    <div
+      data-slot="branch-toolbar"
+      className="mx-auto flex min-h-7 w-full flex-wrap max-w-(--chat-content-max-width) shrink-0 items-center gap-2 px-1 text-2xs text-muted-foreground"
+    >
+      {children}
+    </div>
+  );
 }
 
 export default function BranchToolbar({
@@ -37,6 +51,7 @@ export default function BranchToolbar({
   onCheckoutPullRequestRequest,
   onComposerFocusRequest,
   preparingWorktree = false,
+  trailing,
 }: BranchToolbarProps) {
   // Only the workspace fields; a streaming delta on this thread does not re-render the toolbar.
   const serverThread = useStore(
@@ -158,10 +173,7 @@ export default function BranchToolbar({
   if (!activeThreadId || !activeProject) return null;
 
   return (
-    <div
-      data-slot="branch-toolbar"
-      className="mx-auto flex min-h-7 w-full flex-wrap max-w-(--chat-content-max-width) shrink-0 items-center gap-2 px-1 text-2xs text-muted-foreground"
-    >
+    <BranchToolbarRow>
       <WorkspacePicker
         key={threadId}
         threadId={threadId}
@@ -186,6 +198,7 @@ export default function BranchToolbar({
         {...(onCheckoutPullRequestRequest ? { onCheckoutPullRequestRequest } : {})}
         {...(onComposerFocusRequest ? { onComposerFocusRequest } : {})}
       />
-    </div>
+      {trailing}
+    </BranchToolbarRow>
   );
 }

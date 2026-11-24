@@ -15,6 +15,7 @@ import { ComposerUsageLimits } from "../../usage/ComposerUsageLimits";
 import { useEffect, useRef, useId, useState, useSyncExternalStore } from "react";
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { isKeyboardEventComposing } from "~/lib/keyboardComposition";
+import { hasVisibleFocusPopup } from "~/lib/keyboardFocus";
 import { stepPromptHistory, type PromptHistoryPosition } from "./promptHistory";
 import type * as React from "react";
 import { proposedPlanTitle } from "~/proposedPlan";
@@ -309,7 +310,10 @@ export function ChatComposer({
         isConnecting ||
         isComposerApprovalState ||
         isPendingTurnDispatchBlocked ||
-        document.querySelector('[role="dialog"][data-state="open"]') ||
+        // Refocusing an already focused editor collapses its live selection
+        // to the saved cursor. Window activation must leave that selection alone.
+        active?.matches(EDITOR_SELECTOR) ||
+        hasVisibleFocusPopup() ||
         (active && active !== document.body && !composerFormRef.current?.contains(active))
       )
         return;

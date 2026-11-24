@@ -37,6 +37,10 @@ export const UpstreamPortReviewSettings = Schema.Struct({
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   reviewerA: Schema.NullOr(UpstreamReviewerSlot).pipe(Schema.withDecodingDefault(() => null)),
   reviewerB: Schema.NullOr(UpstreamReviewerSlot).pipe(Schema.withDecodingDefault(() => null)),
+  /** Reviewers beyond A and B (C to F), in roster order. Omitted when there are none. */
+  additionalReviewers: Schema.optional(
+    Schema.Array(UpstreamReviewerSlot).check(Schema.isMaxLength(4)),
+  ),
   consolidation: Schema.NullOr(UpstreamReviewerSlot).pipe(Schema.withDecodingDefault(() => null)),
 });
 export type UpstreamPortReviewSettings = typeof UpstreamPortReviewSettings.Type;

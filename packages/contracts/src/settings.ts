@@ -171,7 +171,16 @@ export const ClaudeSettings = Schema.Struct({
 });
 export type ClaudeSettings = typeof ClaudeSettings.Type;
 
+/**
+ * Cursor harness: `acp` runs the CLI's ACP server (`agent acp`); `sdk` runs
+ * `@cursor/sdk`'s local runtime. Fixed per provider instance: moving a thread
+ * between harnesses is a switch between two Cursor instances.
+ */
+export const CursorHarness = Schema.Literals(["acp", "sdk"]);
+export type CursorHarness = typeof CursorHarness.Type;
+
 export const CursorSettings = Schema.Struct({
+  harness: CursorHarness.pipe(Schema.withDecodingDefault(() => "acp" as const)),
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   binaryPath: makeBinaryPathSetting("agent"),
   apiEndpoint: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
@@ -224,7 +233,9 @@ export const ANTIGRAVITY_EXPOSED_AUTH_METHODS = [
 ] as const satisfies ReadonlyArray<AntigravityAuthMethod>;
 
 export const AntigravitySettings = Schema.Struct({
-  enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  // On by default like the other built-ins. Status checks only read local files, so nothing is
+  // installed or started until the user clicks Install and signs in.
+  enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   customModels: Schema.Array(CustomModelSetting).pipe(Schema.withDecodingDefault(() => [])),
   nativeCompaction: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   authMethod: AntigravityAuthMethod.pipe(
@@ -799,6 +810,7 @@ const ClaudeSettingsPatch = Schema.Struct({
 });
 
 const CursorSettingsPatch = Schema.Struct({
+  harness: Schema.optionalKey(CursorHarness),
   enabled: Schema.optionalKey(Schema.Boolean),
   binaryPath: Schema.optionalKey(Schema.String),
   apiEndpoint: Schema.optionalKey(Schema.String),

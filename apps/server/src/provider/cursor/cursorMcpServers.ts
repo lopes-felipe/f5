@@ -1,0 +1,183 @@
+/**
+ * MCP servers F5 passes to a Cursor session.
+ *
+ * Precedence: F5's automation servers (reserved names) first, then the
+ * project's F5 MCP servers. Cursor's own `mcp.json` files are left to Cursor,
+ * which applies its own approval to them; F5 never passes `--approve-mcps`
+ * and never writes Cursor's config. Every omitted project server is reported
+ * once, so a missing tool is never silent.
+ */
+import { constants as fsConstants } from "node:fs";
+import * as nodeFs from "node:fs/promises";
+import * as nodePath from "node:path";
+
+import type { McpProjectServersConfig } from "@t3tools/contracts";
+import { filterEnabledMcpServers } from "@t3tools/shared/mcpTranslation";
+import type * as EffectAcpSchema from "effect-acp/schema";
+
+export interface CursorMcpOmission {
+  readonly name: string;
+  readonly reason: string;
+}
+
+export interface ResolvedCursorMcpServers {
+  readonly servers: ReadonlyArray<EffectAcpSchema.McpServer>;
+  readonly omitted: ReadonlyArray<CursorMcpOmission>;
+  /** Project servers F5 passed and therefore owns; reattached in full on resume. */
+  readonly ownedNames: ReadonlyArray<string>;
+}
+
+const RESERVED_PREFIX = "f5_";
+
+const records = (value: Record<string, string> | undefined) =>
+  Object.entries(value ?? {}).map(([name, entryValue]) => ({ name, value: entryValue }));
+
+export function resolveCursorMcpServers(input: {
+  readonly automationServers: ReadonlyArray<EffectAcpSchema.McpServer>;
+  readonly projectServers: McpProjectServersConfig | null | undefined;
+  /** Server names already defined in Cursor's own user or project `mcp.json`. */
+  readonly cursorConfigNames: ReadonlySet<string>;
+  readonly capabilities: { readonly http: boolean; readonly sse: boolean };
+  readonly environment?: NodeJS.ProcessEnv;
+}): ResolvedCursorMcpServers {
+  const servers: EffectAcpSchema.McpServer[] = [...input.automationServers];
+  const reserved = new Set(input.automationServers.map((server) => server.name));
+  const omitted: CursorMcpOmission[] = [];
+  const ownedNames: string[] = [];
+  for (const [name, definition] of Object.entries(filterEnabledMcpServers(input.projectServers))) {
+    if (reserved.has(name) || name.toLowerCase().startsWith(RESERVED_PREFIX)) {
+      omitted.push({ name, reason: "uses a name reserved for F5's own tools" });
+      continue;
+    }
+    if (input.cursorConfigNames.has(name)) {
+      omitted.push({
+        name,
+        reason: "is already defined in Cursor's mcp.json, which Cursor applies",
+      });
+      continue;
+    }
+    if (definition.type === "stdio") {
+      omitted.push({ name, reason: "is a stdio server, which F5 does not forward to Cursor ACP" });
+      continue;
+    }
+    const url = definition.url?.trim();
+    if (!url) {
+      omitted.push({ name, reason: "has no URL" });
+      continue;
+    }
+    if (definition.type === "http" ? !input.capabilities.http : !input.capabilities.sse) {
+      omitted.push({
+        name,
+        reason: `needs ${definition.type.toUpperCase()} MCP, which this Cursor CLI does not offer`,
+      });
+      continue;
+    }
+    const headers = { ...definition.headers };
+    const bearerVariable = definition.bearerTokenEnvVar?.trim();
+    const bearer = bearerVariable ? input.environment?.[bearerVariable]?.trim() : undefined;
+    if (bearer && !Object.keys(headers).some((key) => key.toLowerCase() === "authorization"))
+      headers.Authorization = `Bearer ${bearer}`;
+    servers.push({ type: definition.type, name, url, headers: records(headers) });
+    ownedNames.push(name);
+    reserved.add(name);
+  }
+  return { servers, omitted, ownedNames };
+}
+
+/**
+ * Values a forwarded project server carries that must never reach logs or
+ * durable diagnostics: every header value, URL userinfo, and the query and
+ * fragment (as a whole and per value), plus the raw URL when it has any of
+ * those. Header values and per-parameter values shorter than 8 characters are
+ * left to the structural redactors, so ordinary words are not masked
+ * everywhere; the raw URL and its query string are always registered.
+ */
+export function cursorMcpServerSecrets(
+  servers: ReadonlyArray<EffectAcpSchema.McpServer>,
+  ownedNames: ReadonlyArray<string>,
+): ReadonlyArray<string> {
+  const owned = new Set(ownedNames);
+  const secrets = new Set<string>();
+  const add = (value: string, minimum = 8) => {
+    if (value.length >= minimum) secrets.add(value);
+  };
+  for (const server of servers) {
+    // Only remote (http/sse) servers are forwarded; stdio entries have no URL.
+    if (!owned.has(server.name) || !("url" in server)) continue;
+    for (const header of server.headers) {
+      // An authentication header is an explicit credential however short; other header
+      // values keep the length threshold.
+      const minimum = /^(proxy-)?authorization$/i.test(header.name) ? 1 : 8;
+      add(header.value, minimum);
+      // An agent can echo just the token of `<scheme> <token>` (`Bearer abc…`).
+      const token = /^[A-Za-z][\w.-]*\s+(\S.*)$/.exec(header.value)?.[1];
+      if (token) add(token, minimum);
+    }
+    try {
+      const url = new URL(server.url);
+      const sensitive = Boolean(url.username || url.password || url.search || url.hash);
+      if (sensitive) add(server.url, 1);
+      if (url.search) add(url.search, 2);
+      if (url.hash) add(url.hash, 2);
+      if (url.username) add(decodeURIComponent(url.username), 4);
+      if (url.password) add(decodeURIComponent(url.password), 4);
+      for (const value of url.searchParams.values()) add(value);
+    } catch {
+      add(server.url, 1);
+    }
+  }
+  return [...secrets];
+}
+
+export function describeCursorMcpOmissions(
+  omitted: ReadonlyArray<CursorMcpOmission>,
+): { readonly summary: string; readonly details: string } | undefined {
+  if (omitted.length === 0) return undefined;
+  return {
+    summary:
+      omitted.length === 1
+        ? `F5 did not pass MCP server ${omitted[0]!.name} to Cursor.`
+        : `F5 did not pass ${omitted.length} MCP servers to Cursor.`,
+    details: omitted.map((entry) => `${entry.name} ${entry.reason}.`).join("\n"),
+  };
+}
+
+const MAX_CURSOR_MCP_CONFIG_BYTES = 1_000_000;
+
+/**
+ * Reads server names from one `mcp.json`. Only a regular file within the size
+ * limit is read, through a non-blocking open, so a FIFO, device or oversized
+ * file cannot stall or exhaust a session start.
+ */
+async function readServerNames(file: string): Promise<ReadonlyArray<string>> {
+  let handle: nodeFs.FileHandle | undefined;
+  try {
+    handle = await nodeFs.open(file, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size > MAX_CURSOR_MCP_CONFIG_BYTES) return [];
+    const buffer = Buffer.alloc(stat.size);
+    const { bytesRead } = await handle.read(buffer, 0, stat.size, 0);
+    const parsed = JSON.parse(buffer.subarray(0, bytesRead).toString("utf8")) as {
+      mcpServers?: unknown;
+    };
+    return parsed.mcpServers && typeof parsed.mcpServers === "object"
+      ? Object.keys(parsed.mcpServers)
+      : [];
+  } catch {
+    return [];
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
+/** Names in Cursor's user (`~/.cursor/mcp.json`) and project (`.cursor/mcp.json`) config. */
+export async function readCursorMcpConfigNames(input: {
+  readonly configDir: string;
+  readonly cwd: string;
+}): Promise<ReadonlySet<string>> {
+  const [user, project] = await Promise.all([
+    readServerNames(nodePath.join(input.configDir, "mcp.json")),
+    readServerNames(nodePath.join(input.cwd, ".cursor", "mcp.json")),
+  ]);
+  return new Set([...user, ...project]);
+}

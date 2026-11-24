@@ -15,7 +15,33 @@ type TokenLines = ReadonlyArray<ReadonlyArray<SyntaxToken>>;
 
 const NO_EMBEDDED_SCRIPTS: ReadonlyArray<EmbeddedScript> = [];
 
-function syntaxTokenStyle(token: SyntaxToken): CSSProperties {
+export type { SyntaxToken };
+
+/**
+ * `code` tokenized for `theme`, one entry per line with its key and line
+ * ending. Suspends while the grammar loads; wrap callers in Suspense.
+ */
+export function useSyntaxTokenLines(
+  code: string,
+  language: string,
+  theme: "light" | "dark",
+  embedded: ReadonlyArray<EmbeddedScript> = NO_EMBEDDED_SCRIPTS,
+) {
+  const highlighter = use(getSyntaxHighlighterPromise(language));
+  // Every grammar loads into the same shared highlighter.
+  for (const script of embedded) use(getSyntaxHighlighterPromise(script.language));
+  return useMemo(() => {
+    const themeName = resolveDiffThemeName(theme);
+    const tokenize = (text: string, lang: string) =>
+      highlighter.codeToTokens(text, { lang, theme: themeName }).tokens;
+    return keyedLines(
+      code,
+      withEmbeddedScripts(code, tokenize(code, language), embedded, tokenize),
+    );
+  }, [code, embedded, highlighter, language, theme]);
+}
+
+export function syntaxTokenStyle(token: SyntaxToken): CSSProperties {
   const fontStyle = token.fontStyle ?? 0;
   return {
     ...(token.color ? { color: token.color } : {}),
@@ -45,18 +71,7 @@ export function HighlightedTokens({
   theme: "light" | "dark";
   wordClassName?: string;
 }) {
-  const highlighter = use(getSyntaxHighlighterPromise(language));
-  // Every grammar loads into the same shared highlighter.
-  for (const script of embedded) use(getSyntaxHighlighterPromise(script.language));
-  const lines = useMemo(() => {
-    const themeName = resolveDiffThemeName(theme);
-    const tokenize = (text: string, lang: string) =>
-      highlighter.codeToTokens(text, { lang, theme: themeName }).tokens;
-    return keyedLines(
-      code,
-      withEmbeddedScripts(code, tokenize(code, language), embedded, tokenize),
-    );
-  }, [code, embedded, highlighter, language, theme]);
+  const lines = useSyntaxTokenLines(code, language, theme, embedded);
 
   return lines.map(({ key, tokens, ending }) => (
     <span key={key}>

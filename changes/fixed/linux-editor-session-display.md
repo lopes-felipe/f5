@@ -1,1 +1,0 @@
-- Open in Editor and Reveal in File Manager can reach the Linux desktop session when the server starts at boot before you log in.

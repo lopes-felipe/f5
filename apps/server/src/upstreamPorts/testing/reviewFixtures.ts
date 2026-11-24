@@ -104,9 +104,11 @@ export function reviewWorkflow(completed = false) {
     reviewPrompt: "Review " + REVIEW_PR,
     branch: null,
     createdAt: REVIEW_NOW,
-    reviewThreadIdA: ThreadId.makeUnsafe("reviewer-a"),
-    reviewThreadIdB: ThreadId.makeUnsafe("reviewer-b"),
-    ...REVIEW_SLOTS,
+    reviewers: [
+      { slot: REVIEW_SLOTS.reviewerA, threadId: ThreadId.makeUnsafe("reviewer-a") },
+      { slot: REVIEW_SLOTS.reviewerB, threadId: ThreadId.makeUnsafe("reviewer-b") },
+    ],
+    consolidation: REVIEW_SLOTS.consolidation,
   });
   return completed
     ? {

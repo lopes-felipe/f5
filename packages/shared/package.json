@@ -264,6 +264,18 @@
       "types": "./src/workflowArchive.ts",
       "import": "./src/workflowArchive.ts"
     },
+    "./workflowProviders": {
+      "types": "./src/workflowProviders.ts",
+      "import": "./src/workflowProviders.ts"
+    },
+    "./workflowParticipants": {
+      "types": "./src/workflowParticipants.ts",
+      "import": "./src/workflowParticipants.ts"
+    },
+    "./workflowStatus": {
+      "types": "./src/workflowStatus.ts",
+      "import": "./src/workflowStatus.ts"
+    },
     "./workflowThreads": {
       "types": "./src/workflowThreads.ts",
       "import": "./src/workflowThreads.ts"
@@ -339,6 +351,10 @@
     "./runtimeMode": {
       "types": "./src/runtimeMode.ts",
       "import": "./src/runtimeMode.ts"
+    },
+    "./cursorHarness": {
+      "types": "./src/cursorHarness.ts",
+      "import": "./src/cursorHarness.ts"
     },
     "./threadEnvMode": {
       "types": "./src/threadEnvMode.ts",
@@ -419,6 +435,10 @@
     "./cliRelease": {
       "types": "./src/cliRelease.ts",
       "import": "./src/cliRelease.ts"
+    },
+    "./vmBackendPin": {
+      "types": "./src/vmBackendPin.ts",
+      "import": "./src/vmBackendPin.ts"
     },
     "./hostRuntime": {
       "types": "./src/hostRuntime.ts",

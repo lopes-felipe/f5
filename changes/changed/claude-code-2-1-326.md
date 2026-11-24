@@ -1,3 +1,0 @@
-- Update the bundled Claude runtime to Claude Code 2.1.326 (Agent SDK 0.3.326). In Full access, commands that contain your signed-in account email (for example a request header your team's tooling requires) no longer stop for an approval. Claude Code now refuses only calls that send the address as a client's identity, such as a User-Agent, and tells Claude to try again without it.
-- Claude MCP servers' environment variables and headers now reach the bundled runtime over its input instead of its command line. Custom Claude executables older than 2.1.326 keep F5's earlier private setup path.
-- Claude approval cards offer **Always allow this session** only when accepting it would actually save something. Otherwise only one-time approval is offered.

@@ -6,16 +6,22 @@ function preserveCodexVendorSignature(file) {
 }
 exports.preserveCodexVendorSignature = preserveCodexVendorSignature;
 
+// Bundled executables signed with their own entitlements instead of the app's.
+const PER_FILE_ENTITLEMENTS = {
+  "/Contents/Resources/native/f5-computer-helper": "entitlements.computer-helper.plist",
+  // Lima boots Linux VM profiles with Virtualization.framework.
+  "/Contents/Resources/native/lima/bin/limactl": "entitlements.lima.plist",
+};
+exports.PER_FILE_ENTITLEMENTS = PER_FILE_ENTITLEMENTS;
+
 function perFileOptions(options, file) {
   const inherited = options.optionsForFile?.(file) ?? {};
-  if (!file.replaceAll("\\", "/").endsWith("/Contents/Resources/native/f5-computer-helper"))
-    return inherited;
+  const normalized = file.replaceAll("\\", "/");
+  const suffix = Object.keys(PER_FILE_ENTITLEMENTS).find((path) => normalized.endsWith(path));
+  if (!suffix) return inherited;
   return {
     ...inherited,
-    entitlements: resolve(
-      __dirname,
-      "../apps/desktop/resources/entitlements.computer-helper.plist",
-    ),
+    entitlements: resolve(__dirname, "../apps/desktop/resources", PER_FILE_ENTITLEMENTS[suffix]),
     hardenedRuntime: true,
   };
 }

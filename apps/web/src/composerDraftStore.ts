@@ -23,6 +23,7 @@ import {
 } from "./composer-editor-mentions";
 import {
   DEFAULT_REASONING_EFFORT_BY_PROVIDER,
+  isKnownProviderKind,
   isRuntimeMode,
   ProjectId,
   ProviderInstanceId,
@@ -515,6 +516,8 @@ interface PersistedDraftThreadState extends WorktreeCreationOptions {
   interactionMode: ProviderInteractionMode;
   branch: string | null;
   worktreePath: string | null;
+  sharedFilesystemConfirmed?: boolean;
+  plainWorktreeOptIn?: true;
   envMode: DraftThreadEnvMode;
 }
 
@@ -599,6 +602,12 @@ export interface DraftThreadState extends WorktreeCreationOptions {
   branch: string | null;
   worktreePath: string | null;
   sharedFilesystemConfirmed?: boolean;
+  /**
+   * The user picked "New worktree" for a project folder that is not a git
+   * repository but holds repositories. Such folders ignore `envMode` and run
+   * in the project folder unless this is set.
+   */
+  plainWorktreeOptIn?: true;
   envMode: DraftThreadEnvMode;
 }
 
@@ -773,6 +782,7 @@ interface ComposerDraftStoreState {
     threadId: ThreadId,
     options: {
       sharedFilesystemConfirmed?: boolean;
+      plainWorktreeOptIn?: boolean;
       promoting?: boolean | "accepted";
       branch?: string | null;
       worktreePath?: string | null;
@@ -1188,13 +1198,7 @@ function reauthorizePromptStashFilePaths(input: {
 }
 
 function normalizeProviderKind(value: unknown): ProviderKind | null {
-  return value === "codex" ||
-    value === "claudeAgent" ||
-    value === "cursor" ||
-    value === "opencode" ||
-    value === "grok"
-    ? value
-    : null;
+  return isKnownProviderKind(value) ? value : null;
 }
 
 function normalizeProviderInstanceId(value: unknown): ProviderInstanceId | null {
@@ -1505,6 +1509,9 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
         worktreePath: normalizedWorktreePath,
         ...(candidateDraftThread.sharedFilesystemConfirmed === true
           ? { sharedFilesystemConfirmed: true }
+          : {}),
+        ...(candidateDraftThread.plainWorktreeOptIn === true
+          ? { plainWorktreeOptIn: true as const }
           : {}),
         envMode: normalizeDraftThreadEnvMode(candidateDraftThread.envMode, normalizedWorktreePath),
         worktreeBranchName:
@@ -1971,6 +1978,9 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
               DEFAULT_INTERACTION_MODE,
             ...resolveDraftWorkspace(projectId, existingThread, options),
             ...resolveDraftWorktreeOptions(existingThread, options),
+            ...(existingThread?.projectId === projectId && existingThread.plainWorktreeOptIn
+              ? { plainWorktreeOptIn: true as const }
+              : {}),
           };
           const nextProjectDraftKey = keyForDraftThread(nextDraftThread);
           const previousThreadIdForProjectKey =
@@ -1986,7 +1996,8 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
             existingThread.worktreePath === nextDraftThread.worktreePath &&
             existingThread.envMode === nextDraftThread.envMode &&
             existingThread.worktreeBranchName === nextDraftThread.worktreeBranchName &&
-            existingThread.runSetupScript === nextDraftThread.runSetupScript;
+            existingThread.runSetupScript === nextDraftThread.runSetupScript &&
+            existingThread.plainWorktreeOptIn === nextDraftThread.plainWorktreeOptIn;
           if (hasSameProjectMapping && hasSameDraftThread) {
             return state;
           }
@@ -2097,6 +2108,10 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
               existing.sharedFilesystemConfirmed))
               ? { sharedFilesystemConfirmed: true }
               : {}),
+            ...((options.plainWorktreeOptIn ??
+            (nextProjectId === existing.projectId && existing.plainWorktreeOptIn))
+              ? { plainWorktreeOptIn: true as const }
+              : {}),
           };
           const isUnchanged =
             nextDraftThread.promoting === existing.promoting &&
@@ -2109,7 +2124,8 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
             nextDraftThread.envMode === existing.envMode &&
             nextDraftThread.worktreeBranchName === existing.worktreeBranchName &&
             nextDraftThread.runSetupScript === existing.runSetupScript &&
-            nextDraftThread.sharedFilesystemConfirmed === existing.sharedFilesystemConfirmed;
+            nextDraftThread.sharedFilesystemConfirmed === existing.sharedFilesystemConfirmed &&
+            nextDraftThread.plainWorktreeOptIn === existing.plainWorktreeOptIn;
           if (isUnchanged) {
             return state;
           }

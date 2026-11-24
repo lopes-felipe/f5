@@ -1,1 +1,0 @@
-- Grok commit, PR, branch and title generation no longer inherits always-approve settings. Grok, custom ACP and Antigravity metadata generation deny tool approval requests.

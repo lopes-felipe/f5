@@ -239,7 +239,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
           .resolve()
           .then((executable) => executable.version ?? null)
           .catch(() => null);
-      /** Private-format readers run only on runtime versions certified for them. */
+      /** Private-format readers run only on runtimes at or above the supported floor. */
       const nativeReadersCertified = () =>
         runtimeVersion().then((version) => antigravityPrivateFormatGate(version).enabled);
       /** The persisted catalog identity, when it matches this revision and runtime version. */

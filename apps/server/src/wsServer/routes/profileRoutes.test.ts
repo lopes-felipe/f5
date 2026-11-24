@@ -23,7 +23,7 @@ const record = (id: ProfileId, name: string): ProfileRecord => ({
   createdAt: "2026-11-14T00:00:00.000Z",
 });
 
-const makeRoutes = () => {
+const makeRoutes = (mutationRefusal?: string) => {
   const calls: Array<ReadonlyArray<unknown>> = [];
   const routes = profileRoutes({
     store: {
@@ -43,6 +43,7 @@ const makeRoutes = () => {
     list: async () => ({ profiles: ["every profile"] }),
     defaultStateDir,
     activeProfileId: activeId,
+    ...(mutationRefusal ? { mutationRefusal } : {}),
   });
   const answer = (body: RouteBody) => {
     if (!tableAnswers(routes, body)) throw new Error(`${body._tag} is not a profile route`);
@@ -115,4 +116,20 @@ it("deletes the profile it was asked to, and answers a refusal with its message"
   expect(refused).toMatchObject({
     error: { _tag: "RouteRequestError", message: "The running profile cannot be deleted." },
   });
+});
+
+it("only lists profiles when changes are refused (a Linux VM guest), never touching the store", async () => {
+  const { calls, answer } = makeRoutes("Profiles are managed from a host profile.");
+  await expect(answer({ _tag: WS_METHODS.profilesList })).resolves.toEqual({
+    value: { profiles: ["every profile"] },
+  });
+  for (const body of [
+    { _tag: WS_METHODS.profilesCreate, name: "Side" },
+    { _tag: WS_METHODS.profilesUpdate, profileId: otherId, name: "Renamed" },
+    { _tag: WS_METHODS.profilesDelete, profileId: otherId },
+  ] as const)
+    await expect(answer(body)).resolves.toMatchObject({
+      error: { _tag: "RouteRequestError", message: "Profiles are managed from a host profile." },
+    });
+  expect(calls).toEqual([]);
 });
