@@ -242,6 +242,7 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
     | SqlClient.SqlClient
     | GitCore
     | ServerConfig
+    | ServerSettingsService
   >();
   const config = yield* ServerConfig;
   const settingsService = yield* ServerSettingsService;

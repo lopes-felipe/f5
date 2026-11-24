@@ -7298,14 +7298,8 @@ describe("ChatView timeline (full app)", () => {
       );
 
       const composerEditor = await waitForComposerEditor();
-      composerEditor.focus();
-      const paragraph = composerEditor.lastElementChild!;
-      const caret = document.createRange();
-      caret.selectNodeContents(paragraph);
-      caret.collapse(false);
-      window.getSelection()!.removeAllRanges();
-      window.getSelection()!.addRange(caret);
-      await userEvent.keyboard("{Backspace}");
+      await userEvent.click(composerEditor);
+      await userEvent.keyboard("{End}{Backspace}");
 
       await vi.waitFor(
         () => {
@@ -8054,9 +8048,9 @@ describe("ChatView timeline (full app)", () => {
       try {
         const editor = await waitForComposerEditor();
         editor.focus();
+        await waitForLayout();
         const text = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT).nextNode()!;
         window.getSelection()!.setBaseAndExtent(text, start, text, end);
-        await waitForLayout();
         if (windowFocus) {
           window.dispatchEvent(new Event("focus"));
           await waitForLayout();

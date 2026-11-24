@@ -353,6 +353,7 @@ export const ProjectIssueAssetUrlResult = Schema.Array(
         ),
       ),
       expiresAt: Schema.Number,
+      fileRevision: Schema.optional(Schema.String),
       width: Schema.optional(Schema.Number),
       height: Schema.optional(Schema.Number),
     }),

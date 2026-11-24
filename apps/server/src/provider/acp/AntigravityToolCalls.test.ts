@@ -1,6 +1,7 @@
 import * as NodePath from "node:path";
 
 import { describe, expect, it } from "vitest";
+import type { AntigravityPreWriteFile } from "./AntigravityEditLocation.ts";
 import { makeAntigravityToolNormalizer } from "./AntigravityToolCalls.ts";
 import { acpFileChanges } from "./AcpFileChanges.ts";
 
@@ -165,6 +166,100 @@ describe("Antigravity native tools", () => {
     const [first, second] = acpFileChanges(tool.data.content);
     expect(first?.diff).toContain("+one line 0\n");
     expect(second).toEqual({ path: "/repo/src/two.ts", type: "update" });
+  });
+
+  describe("whole-file writes against the pre-write snapshot", () => {
+    const setup = (files: Record<string, string>, unknown: ReadonlyArray<string> = []) => {
+      const reads: string[] = [];
+      const normalize = makeAntigravityToolNormalizer(
+        () => undefined,
+        [],
+        (path): AntigravityPreWriteFile => {
+          reads.push(path);
+          if (unknown.includes(path)) return { state: "unknown" };
+          return path in files ? { state: "text", text: files[path]! } : { state: "missing" };
+        },
+      );
+      // Antigravity marks every write as an overwrite, new files included.
+      const announce = (toolCallId: string, path: string, content: string) => {
+        const rawInput = { Path: path, Content: content, Overwrite: true };
+        for (const status of ["inProgress", "pending", "inProgress"] as const)
+          normalize({
+            toolCallId,
+            title: `File ${path}`,
+            kind: "edit",
+            status,
+            data: { rawInput, content: [] },
+          });
+      };
+      const finish = (
+        toolCallId: string,
+        path: string,
+        content: string,
+        status: "completed" | "failed" = "completed",
+        diffPath = path,
+      ) => {
+        files[path] = content;
+        return acpFileChanges(
+          normalize({
+            toolCallId,
+            title: `File ${path}`,
+            kind: "edit",
+            status,
+            data: {
+              rawInput: { Path: path, Content: content, Overwrite: true },
+              content: [{ type: "diff", path: diffPath, newText: content }],
+            },
+          }).data.content,
+        );
+      };
+      const write = (toolCallId: string, path: string, content: string) => {
+        announce(toolCallId, path, content);
+        return finish(toolCallId, path, content);
+      };
+      return { reads, announce, finish, write };
+    };
+
+    it("diffs a new file against /dev/null and an existing one against its old text", () => {
+      const { write } = setup({ "/repo/src/old.ts": "export const a = 1;\n" });
+      const [created] = write("write-new", "/repo/src/new.ts", "x\n");
+      expect(created?.diff).toContain("--- /dev/null\n+++ b//repo/src/new.ts\n@@ -0,0 +1,1 @@\n+x");
+      const [replaced] = write("write-old", "/repo/src/old.ts", "export const a = 2;\n");
+      expect(replaced?.diff).toContain("-export const a = 1;\n+export const a = 2;\n");
+      expect(replaced?.diff).not.toContain("/dev/null");
+    });
+
+    it("keeps the path when the snapshot is unknown, already matches, or names another file", () => {
+      const { announce, finish, write } = setup(
+        { "/repo/src/same.ts": "same\n", "/repo/src/a.ts": "a\n" },
+        ["/repo/big.bin"],
+      );
+      const pathOnly = (path: string) => [{ path, type: "update" }];
+      expect(write("unknown", "/repo/big.bin", "x\n")).toEqual(pathOnly("/repo/big.bin"));
+      expect(write("same", "/repo/src/same.ts", "same\n")).toEqual(pathOnly("/repo/src/same.ts"));
+      announce("moved", "/repo/src/a.ts", "b\n");
+      expect(finish("moved", "/repo/src/a.ts", "b\n", "completed", "/repo/src/b.ts")).toEqual(
+        pathOnly("/repo/src/b.ts"),
+      );
+    });
+
+    it("snapshots once per call, again after a failure, and evicts beyond 32 calls", () => {
+      const { reads, announce, finish } = setup({ "/repo/src/a.ts": "a\n" });
+      announce("reused", "/repo/src/a.ts", "b\n");
+      expect(reads).toEqual(["/repo/src/a.ts"]);
+      finish("reused", "/repo/src/a.ts", "b\n", "failed");
+      // A reused id after a failure takes a fresh snapshot rather than the stale one.
+      announce("reused", "/repo/src/a.ts", "c\n");
+      expect(reads).toHaveLength(2);
+      expect(finish("reused", "/repo/src/a.ts", "c\n")[0]?.diff).toContain("-b\n+c\n");
+
+      announce("evicted", "/repo/src/a.ts", "d\n");
+      for (let index = 0; index < 32; index++)
+        announce(`other-${index}`, `/repo/src/other-${index}.ts`, "x\n");
+      expect(finish("evicted", "/repo/src/a.ts", "d\n")).toEqual([
+        { path: "/repo/src/a.ts", type: "update" },
+      ]);
+    });
   });
 
   it("shows a new-file write as an addition and an overwrite as a path-only change", () => {

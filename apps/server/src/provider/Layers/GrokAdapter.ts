@@ -24,6 +24,10 @@ import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapa
 import { AntigravityTasks } from "../acp/AntigravityTasks.ts";
 import { makeAntigravityToolNormalizer } from "../acp/AntigravityToolCalls.ts";
 import {
+  ANTIGRAVITY_PRE_WRITE_UNKNOWN,
+  readAntigravityPreWriteFile,
+} from "../acp/AntigravityEditLocation.ts";
+import {
   AntigravityPlanArtifactTracker,
   antigravityBrainRoots,
   readAntigravityPlanArtifact,
@@ -1727,7 +1731,14 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             stopped: false,
             backgroundTasks: new Map(),
             antigravityTasks: new AntigravityTasks(),
-            normalizeAntigravityTool: makeAntigravityToolNormalizer(undefined, brainRoots),
+            // Write targets are snapshotted only while a prompt runs, so a replayed or
+            // between-turn update is never diffed against the file as it is now.
+            // `activeTurnId` outlives its turn; `promptsInFlight` does not.
+            normalizeAntigravityTool: makeAntigravityToolNormalizer(undefined, brainRoots, (path) =>
+              ctx.activeTurnId && ctx.promptsInFlight > 0
+                ? readAntigravityPreWriteFile(path, cwd)
+                : ANTIGRAVITY_PRE_WRITE_UNKNOWN,
+            ),
             nativeChildrenPolling: false,
             antigravityMode: antigravityStartMode,
             antigravityAutoUnavailable,
