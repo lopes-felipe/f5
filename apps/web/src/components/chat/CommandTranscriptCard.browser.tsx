@@ -562,6 +562,45 @@ describe("CommandTranscriptCard", () => {
     }
   });
 
+  it("numbers grep -n over a revision's range from the file and does not link it", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <CommandTranscriptCard
+        execution={makeExecution({
+          command: "git show origin/main:src/a.ts | sed -n 40,80p | grep -n useTheme",
+          output: "1:const t = useTheme();\n5:useTheme()\n",
+        })}
+        expanded
+        timestampFormat="locale"
+        workspaceRoot="/repo"
+        onToggle={() => {}}
+        onExpandedBodyResize={() => {}}
+      />,
+      host,
+    );
+
+    try {
+      const body = await vi.waitFor(() => {
+        const element = host.querySelector<HTMLElement>("[data-output-kind='search']");
+        expect(element).not.toBeNull();
+        return element!;
+      });
+      expect(
+        [...body.querySelectorAll("[data-line-number]")].map((element) =>
+          element.getAttribute("data-line-number"),
+        ),
+      ).toEqual(["40", "44"]);
+      expect(body.textContent).toContain("origin/main:src/a.ts");
+      // The revision's text may differ from the file on disk: no header or line buttons.
+      expect(body.querySelector("[data-testid='command-output-body'] button")).toBeNull();
+      expect(body.querySelectorAll("mark")).toHaveLength(2);
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("drops line numbers and marks counts partial for server-compacted output", async () => {
     const marker = "\n\n[... output compacted; 99999 bytes in total ...]\n\n";
     const host = document.createElement("div");

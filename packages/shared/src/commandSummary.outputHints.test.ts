@@ -182,6 +182,7 @@ describe("parseSearchOutputCommand", () => {
       targets: ["ChatView.tsx"],
       revisions: [],
       revisionsKnown: false,
+      stdin: null,
       cwdOffset: "src",
       cwdKnown: true,
       followedByOtherStatements: true,
@@ -192,6 +193,9 @@ describe("parseSearchOutputCommand", () => {
       noFileName: false,
       recursive: false,
       lineNumbers: true,
+      withFileName: false,
+      invertMatch: false,
+      beforeContext: false,
     });
   });
 
@@ -390,6 +394,254 @@ describe("parseOutputStatements", () => {
   it("is null for commands that cannot be split", () => {
     expect(parseOutputStatements("cat a.ts > b.ts")).toBeNull();
     expect(parseOutputStatements("cd src")).toBeNull();
+  });
+});
+
+describe("statement splitting", () => {
+  const kinds = (command: string) =>
+    parseOutputStatements(command)?.map((statement) => statement.kind);
+
+  it("keeps statements before one it cannot follow, then ends with it", () => {
+    expect(kinds("cat a.ts; foo || bar; cat b.ts")).toEqual(["read", "other"]);
+    expect(kinds('cat a.ts; echo "$(date)"; cat b.ts')).toEqual(["read", "other"]);
+    expect(kinds("cat a.ts; cat <<EOF\nhi\nEOF")).toEqual(["read", "other"]);
+    expect(kinds("cat a.ts; for f in a b; do cat $f; done")).toEqual(["read", "other"]);
+    expect(kinds("cat a.ts; f(){ cat b.ts; }; f")).toEqual(["read", "other"]);
+    expect(kinds("cat a.ts; (cd x && ls)")).toEqual(["read", "other"]);
+    expect(kinds("cat a.ts; sleep 1 &")).toEqual(["read", "other"]);
+    expect(kinds("cat a.ts; echo x >&2")).toEqual(["read", "other"]);
+    // The single-purpose parsers still want the whole command.
+    expect(parseFileReadSegments("cat a.ts; foo || bar")).toBeNull();
+    expect(parseSearchOutputCommand("grep -n x a.ts; foo || bar")).toBeNull();
+    expect(isDiffCommand("git diff; foo || bar")).toBe(false);
+  });
+
+  it("reads `|| true` as the statement before it", () => {
+    expect(parseFileReadSegments("cat a.ts 2>/dev/null || true")?.segments).toHaveLength(1);
+    expect(parseFileReadSegments("cat a.ts || :")?.segments).toHaveLength(1);
+    expect(isDiffCommand("git diff || true")).toBe(true);
+  });
+
+  it("knows file lists and counts print no numbered lines", () => {
+    const lineNumbers = (command: string) => parseSearchOutputCommand(command)?.lineNumbers;
+    expect(lineNumbers("grep -rn x src")).toBe(true);
+    expect(lineNumbers("grep -rln x src")).toBe(false);
+    expect(lineNumbers("rg -n --files-with-matches x")).toBe(false);
+    expect(lineNumbers("git grep -n -c x")).toBe(false);
+    expect(lineNumbers("grep -nL x a.ts")).toBe(false);
+    // ripgrep's `-L` follows symlinks.
+    expect(lineNumbers("rg -nL x src")).toBe(true);
+    expect(lineNumbers("rg -n --files-without-match x")).toBe(false);
+  });
+
+  it("records flags that change which rows a search prints", () => {
+    const search = (command: string) => parseSearchOutputCommand(command);
+    expect(search("grep -nH x a.ts")?.withFileName).toBe(true);
+    expect(search("git grep -n x")?.withFileName).toBe(true);
+    expect(search("grep -vn x a.ts")?.invertMatch).toBe(true);
+    for (const command of ["grep -n -B1 x a.ts", "rg -n -C 2 x", "grep -n -2 x a.ts"]) {
+      expect(search(command)?.beforeContext).toBe(true);
+    }
+    expect(search("grep -n -A3 x a.ts")?.beforeContext).toBe(false);
+  });
+
+  it("treats escaped backticks and dollars in double quotes as literal", () => {
+    expect(kinds('git grep -n "run \\`bun fmt\\`" -- docs; cat a.ts')).toEqual(["search", "read"]);
+    expect(parseSearchOutputCommand('grep -n x a.ts | grep -v "\\$HOME"')).not.toBeNull();
+    expect(kinds('grep -n "a\\\\" a.ts; cat b.ts')).toEqual(["search", "read"]);
+    // An escaped backslash leaves the substitution after it live.
+    expect(kinds('grep -n "a\\\\$(x)" a.ts; cat b.ts')).toEqual(["other"]);
+    expect(kinds('grep -n "`x`" a.ts; cat b.ts')).toEqual(["other"]);
+  });
+
+  it("fills in literal variables", () => {
+    const filePath = (command: string) => parseFileReadSegments(command)?.segments[0]?.filePath;
+    expect(filePath("F=src/a.ts; cat $F")).toBe("src/a.ts");
+    expect(filePath("D=src; cat ${D}/a.ts")).toBe("src/a.ts");
+    expect(filePath('D=src; cat "$D/a b.ts"')).toBe("src/a b.ts");
+    expect(filePath("D='src'; export E=\"$D/x\"; cat $E/a.ts")).toBe("src/x/a.ts");
+    expect(filePath("F=a.ts; F=b.ts; cat $F")).toBe("b.ts");
+    expect(
+      parseFileReadSegments("H=abc; git show ${H}:a.ts | sed -n 5,9p")?.segments[0],
+    ).toMatchObject({ revision: "abc", filePath: "a.ts", startLine: 5 });
+    // zsh reads `$H:a…` as `$H` with its `:a` modifier, so it is not followed.
+    expect(parseFileReadSegments("H=abc; git show $H:apps/a.ts")).toBeNull();
+    expect(parseOutputStatements("echo lint=$?; cat a.ts")?.[0]).toMatchObject({
+      kind: "lines",
+      count: 1,
+    });
+    // Single quotes keep `$` literal; patterns keep their anchors.
+    expect(parseSearchOutputCommand("X=1; grep -n 'a$X' a.ts")?.patterns).toEqual(["a$X"]);
+    // Unknown or computed values leave the path unresolved, so not a read.
+    expect(parseFileReadSegments("cat $F")).toBeNull();
+    expect(parseFileReadSegments("F=$(ls | head -1); cat $F")).toBeNull();
+    expect(parseFileReadSegments("F=a.ts; unset F; cat $F")).toBeNull();
+    // A value with spaces would split when unquoted.
+    expect(parseFileReadSegments('F="a b"; cat $F')).toBeNull();
+    expect(kinds("H=$(git rev-parse HEAD); echo hi; cat a.ts")).toEqual(["lines", "read"]);
+  });
+
+  it("skips statements that print nothing", () => {
+    expect(kinds("set -euo pipefail; X=1; export Y=2; unset Z; true; :; cat a.ts")).toEqual([
+      "read",
+    ]);
+    expect(kinds("ls >> /tmp/out.txt 2>&1; cat a.ts")).toEqual(["read"]);
+    expect(kinds("npm test &> /tmp/log; cat a.ts")).toEqual(["read"]);
+    expect(kinds("npm test > /tmp/log 2>/dev/null; cat a.ts")).toEqual(["read"]);
+    // Only stderr goes elsewhere, so stdout still shows.
+    expect(kinds("ls 2>/tmp/err; cat a.ts")).toEqual(["other", "read"]);
+    expect(parseFileReadSegments("FOO=1 cat a.ts")?.segments[0]?.filePath).toBe("a.ts");
+  });
+
+  it("keeps statements that may still print", () => {
+    // Stdout goes to the file, but stderr still shows (`2>&1` came first).
+    expect(kinds("npm test > /tmp/out.txt; sed -n 1,40p /tmp/out.txt")).toEqual(["other", "read"]);
+    expect(kinds("ls 2>&1 > /tmp/out.txt; cat a.ts")).toEqual(["other", "read"]);
+    expect(parseFileReadSegments("npm test > /tmp/out.txt; sed -n 1,40p /tmp/out.txt")).toBeNull();
+    // A read's stderr can only be its own error, which the card recognizes.
+    expect(kinds("git show A:a.ts > /tmp/a.ts; cat b.ts")).toEqual(["read"]);
+    // Bare `set` lists variables, `set -o` the options; `-x` traces commands.
+    expect(kinds("set; cat a.ts")).toEqual(["other", "read"]);
+    expect(kinds("set -o; cat a.ts")).toEqual(["other", "read"]);
+    expect(kinds("set -x; cat a.ts")).toEqual(["other", "read"]);
+    expect(kinds("set -o xtrace; cat a.ts")).toEqual(["other", "read"]);
+    // Bare `export` lists the environment.
+    expect(kinds("export; sed -n 1,5p a.ts")).toEqual(["other", "read"]);
+    expect(kinds("export -p; sed -n 1,5p a.ts")).toEqual(["other", "read"]);
+  });
+
+  it("does not trust what a command that may have failed set up", () => {
+    const read = (command: string) => parseFileReadSegments(command)?.segments[0];
+    // A failed `cd` leaves the shell where it was.
+    expect(read("cd missing 2>/dev/null || true && cat a.ts")).toMatchObject({
+      cwdOffset: "missing",
+      cwdKnown: false,
+    });
+    // `false && F=b.ts` skips the assignment; later statements see the old value.
+    expect(read("F=a.ts; false && F=b.ts; cat $F")).toBeUndefined();
+    expect(read("F=a.ts; true && F=b.ts; cat $F")?.filePath).toBe("b.ts");
+    expect(read("cd src && F=b.ts; cat $F")?.filePath).toBe("b.ts");
+    // Within the chain, the assignment surely ran.
+    expect(read("test -f b.ts && F=b.ts && cat $F")?.filePath).toBeUndefined();
+    expect(parseOutputStatements("test -f b.ts && F=b.ts && cat $F")?.[1]).toMatchObject({
+      kind: "read",
+      read: { filePath: "b.ts" },
+      afterAnd: true,
+    });
+  });
+
+  it("keeps a filled-in value an argument, even one that looks like syntax", () => {
+    expect(parseFileReadSegments("F='2>&1'; cat $F")?.segments[0]?.filePath).toBe("2>&1");
+    expect(parseFileReadSegments("F='a|b'; cat $F")?.segments[0]?.filePath).toBe("a|b");
+  });
+
+  it("reads a quoted () as an argument, not a function definition", () => {
+    expect(parseSearchOutputCommand('grep -nF "useTheme()" src/a.ts')?.patterns).toEqual([
+      "useTheme()",
+    ]);
+    expect(parseSearchOutputCommand('rg -n "fn main()" src')?.patterns).toEqual(["fn main()"]);
+    expect(parseFileReadSegments('cat "foo().ts"')?.segments[0]?.filePath).toBe("foo().ts");
+    expect(kinds("cat a.ts; f(){ cat b.ts; }; f")).toEqual(["read", "other"]);
+    expect(kinds("cat a.ts; f () { cat b.ts; }")).toEqual(["read", "other"]);
+  });
+
+  it("reads a file written from a whole-file read as its source", () => {
+    expect(
+      parseFileReadSegments("git show A:src/x.ts > /tmp/x.ts; F=/tmp/x.ts; sed -n 80,130p $F")
+        ?.segments[0],
+    ).toMatchObject({ filePath: "src/x.ts", revision: "A", startLine: 80, lineLimit: 51 });
+    expect(
+      parseFileReadSegments("cd src && cat a.ts > /tmp/a; cd /; head -n 5 /tmp/a")?.segments[0],
+    ).toMatchObject({ filePath: "a.ts", revision: null, cwdOffset: "src", cwdKnown: true });
+    // Appending or narrowing does not copy the file.
+    expect(
+      parseFileReadSegments("git show A:x.ts >> /tmp/x.ts; cat /tmp/x.ts")?.segments[0],
+    ).toMatchObject({ filePath: "/tmp/x.ts", revision: null });
+    expect(
+      parseFileReadSegments("git show A:x.ts | head -n 5 > /tmp/x.ts; cat /tmp/x.ts")?.segments[0],
+    ).toMatchObject({ filePath: "/tmp/x.ts", revision: null });
+  });
+
+  it("forgets a written file's source when it may be another file", () => {
+    const read = (command: string) => parseFileReadSegments(command)?.segments[0];
+    // A relative path names a different file after `cd`.
+    expect(read("git show HEAD:a.ts > tmp && cd sub && cat tmp")).toMatchObject({
+      filePath: "tmp",
+      revision: null,
+      cwdOffset: "sub",
+    });
+    expect(read("cat a.ts > out.ts && cat out.ts")).toMatchObject({ filePath: "a.ts" });
+    // An absolute one does not.
+    expect(read("git show A:a.ts > /tmp/t && cd sub && cat /tmp/t")).toMatchObject({
+      filePath: "a.ts",
+      revision: "A",
+    });
+    // Any other command may overwrite it.
+    expect(
+      parseOutputStatements(
+        "git show A:a.ts > /tmp/t; cp b.ts /tmp/t >/dev/null 2>&1; cat /tmp/t",
+      )?.map((statement) => (statement.kind === "read" ? statement.read.filePath : statement.kind)),
+    ).toEqual(["/tmp/t"]);
+    // A write that a failed command skipped never happened.
+    expect(read("test -f x && git show A:a.ts > /tmp/t; cat /tmp/t")).toBeUndefined();
+    expect(
+      parseOutputStatements("test -f x && git show A:a.ts > /tmp/t; cat /tmp/t")?.[1],
+    ).toMatchObject({ read: { filePath: "/tmp/t", revision: null } });
+  });
+
+  it("counts lines that echo and wc print", () => {
+    const counts = (command: string) =>
+      parseOutputStatements(command)?.map((statement) =>
+        statement.kind === "lines" ? statement.count : statement.kind,
+      );
+    expect(counts('echo "== a"; echo; cat a.ts')).toEqual([1, 1, "read"]);
+    expect(counts("wc -l a.ts; wc -l a.ts b.ts c.ts; wc -l < a.ts")).toEqual([1, 4, 1]);
+    expect(counts("git show A:a.ts | wc -l")).toEqual([1]);
+    // `-n` joins the next output, escapes and unknowns may break lines.
+    expect(counts("echo -n x; echo 'a\\nb'; echo \"$X\"")).toEqual(["other", "other", "other"]);
+    expect(counts("echo $X")).toEqual(["other"]);
+    expect(counts("echo '-n' 'label: '; X=a; echo \"x $X\"")).toEqual(["other", 1]);
+    expect(counts("wc -l src/*.ts")).toEqual(["other"]);
+  });
+
+  it("reads a search over piped or redirected input as a search of that file", () => {
+    const stdin = (command: string) => parseSearchOutputCommand(command)?.stdin;
+    expect(stdin('git show A:src/a.ts | grep -n "x\\|y" | head')).toEqual({
+      filePath: "src/a.ts",
+      revision: "A",
+      cwdOffset: null,
+      cwdKnown: true,
+      lineOffset: 0,
+    });
+    expect(stdin("cat a.ts | grep -n -A2 foo")).toMatchObject({ filePath: "a.ts", lineOffset: 0 });
+    expect(stdin("sed -n 40,80p a.ts | rg -n foo")).toMatchObject({ lineOffset: 39 });
+    expect(stdin("git show A:a.ts | sed -n 10,20p | grep -n x")).toMatchObject({
+      revision: "A",
+      lineOffset: 9,
+    });
+    expect(stdin("tail -n +30 a.ts | grep -n x")).toMatchObject({ lineOffset: 29 });
+    expect(stdin("cd src && grep -n x < a.ts")).toMatchObject({
+      filePath: "a.ts",
+      cwdOffset: "src",
+      lineOffset: 0,
+    });
+    expect(stdin("git show A:p > /tmp/p 2>/dev/null; grep -n x /tmp/p")).toMatchObject({
+      filePath: "p",
+      revision: "A",
+    });
+    // Unknown starting lines, added numbers and file arguments.
+    expect(parseSearchOutputCommand("tail -n 5 a.ts | grep -n x")).toBeNull();
+    expect(parseSearchOutputCommand("nl -ba a.ts | grep -n x")).toBeNull();
+    expect(parseSearchOutputCommand("cat a.ts | grep -n x b.ts")).toBeNull();
+    expect(parseSearchOutputCommand("cat a.ts | git grep -n x")).toBeNull();
+  });
+
+  it("reads several sed ranges without a start line", () => {
+    expect(parseFileReadSegments("sed -n '296,350p;560,740p' a.ts")?.segments[0]).toMatchObject({
+      startLine: null,
+      lineLimit: 236,
+    });
+    expect(parseFileReadSegments("sed -n '1,5p;9,$p' a.ts")?.segments[0]?.lineLimit).toBeNull();
   });
 });
 

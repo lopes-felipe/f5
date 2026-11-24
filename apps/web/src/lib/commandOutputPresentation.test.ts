@@ -645,6 +645,286 @@ describe("classifyCommandOutput: compound commands", () => {
   });
 });
 
+describe("classifyCommandOutput: more command shapes", () => {
+  it("reads grep -n over a revision's file as results in that file", () => {
+    const result = classify({
+      command: 'git show origin/main:src/a.ts | grep -n "useTheme\\|sendTurn" | head',
+      output: "12:const t = useTheme();\n40:  sendTurn();\n",
+    });
+    expect(result).toMatchObject({
+      kind: "search",
+      matchCount: 2,
+      segments: [
+        {
+          type: "group",
+          displayPath: "origin/main:src/a.ts",
+          filePath: null,
+          language: "typescript",
+          lines: [
+            { lineNumber: 12, matches: [[10, 18]] },
+            { lineNumber: 40, matches: [[2, 10]] },
+          ],
+        },
+      ],
+    });
+  });
+
+  it("shifts grep -n numbers by where a range read started", () => {
+    const result = classify({
+      command: "sed -n 40,80p src/a.ts | grep -n foo",
+      output: "1:foo()\n3:  foo\n",
+    });
+    expect(result).toMatchObject({
+      kind: "search",
+      segments: [
+        {
+          displayPath: "src/a.ts",
+          filePath: "/repo/src/a.ts",
+          lines: [{ lineNumber: 40 }, { lineNumber: 42 }],
+        },
+      ],
+    });
+  });
+
+  it("keeps echo labels as plain lines between results", () => {
+    const result = classify({
+      command: 'H=c61e736d; echo "== adapters"; git grep -n foo $H -- p',
+      output: "== adapters\nc61e736d:p/a.ts:3:foo\n",
+    });
+    expect(result).toMatchObject({
+      kind: "sections",
+      sections: [
+        { type: "plain", text: "== adapters" },
+        {
+          type: "search",
+          segments: [
+            { displayPath: "c61e736d:p/a.ts", filePath: null, lines: [{ lineNumber: 3 }] },
+          ],
+        },
+      ],
+    });
+  });
+
+  it("takes wc -l output before a read", () => {
+    const result = classify({
+      command: "wc -l a.tsx; sed -n 1,2p a.tsx",
+      output: "     320 a.tsx\nconst a = 1;\nconst b = 2;\n",
+    });
+    expect(result).toMatchObject({
+      kind: "sections",
+      sections: [
+        { type: "plain", text: "     320 a.tsx" },
+        // The last statement takes the rest, so its end is known.
+        { type: "file", filePath: "/repo/a.tsx", code: "const a = 1;\nconst b = 2;" },
+      ],
+    });
+  });
+
+  it("names a read of a file written from a revision after its source", () => {
+    const result = classify({
+      command: "git show A:src/x.ts > /tmp/x.ts; F=/tmp/x.ts; sed -n 80,81p $F",
+      output: "const a = 1;\nconst b = 2;\n",
+    });
+    expect(result).toMatchObject({
+      kind: "file",
+      file: { displayPath: "A:src/x.ts", filePath: null },
+      language: "typescript",
+      lineNumbers: [80, 81],
+    });
+  });
+
+  it("numbers a read after a variable from its range", () => {
+    const result = classify({
+      command: "H=abc; git show ${H}:a.ts | sed -n 5,6p",
+      output: "x\ny\n",
+    });
+    expect(result).toMatchObject({ kind: "file", lineNumbers: [5, 6] });
+  });
+
+  it("stays plain for unresolved paths and output it cannot bound", () => {
+    expect(classify({ command: "sed -n 1,2p $F", output: "a\nb\n" }).kind).toBe("plain");
+    expect(
+      classify({ command: "git status; foo || bar; cat a.ts", output: "On branch x\nhi\n" }).kind,
+    ).toBe("plain");
+  });
+
+  it("skips a search that found nothing and goes on with the next statement", () => {
+    const result = classify({
+      command: "rg -n nothing a.ts; rg -n foo src",
+      output: "src/x.ts:3:foo\nsrc/y.ts:9:foo()\n",
+    });
+    expect(result).toMatchObject({
+      kind: "sections",
+      sections: [{ type: "search", matchCount: 2 }],
+    });
+    // A file list is output, not an empty search.
+    expect(
+      classify({ command: "grep -rln foo src; sed -n 1,1p a.ts", output: "src/x.ts\nx\n" }).kind,
+    ).toBe("plain");
+    // An error from the empty search could belong to either statement.
+    expect(
+      classify({
+        command: "grep -n foo missing.ts; sed -n 1,1p a.ts",
+        output: "grep: missing.ts: No such file or directory\nx\n",
+      }).kind,
+    ).toBe("plain");
+  });
+
+  it("ends a whole-file read at the next search's first match", () => {
+    const result = classify({
+      command: "cat a.ts; grep -rn usage src",
+      output: "const a = 1;\n// 12:30 usage notes\nsrc/x.ts:4:usage()\n",
+    });
+    expect(result).toMatchObject({
+      kind: "sections",
+      sections: [
+        {
+          type: "file",
+          filePath: "/repo/a.ts",
+          code: "const a = 1;\n// 12:30 usage notes",
+        },
+        { type: "search", segments: [{ displayPath: "src/x.ts", lines: [{ lineNumber: 4 }] }] },
+      ],
+    });
+  });
+
+  it("does not take a file line that looks like a match for the search's first row", () => {
+    const result = classify({
+      command: "cat a.txt; grep -n foo b.txt",
+      output: "intro\n12:foo\nmore\n20:foo\n",
+    });
+    expect(result).toMatchObject({
+      kind: "sections",
+      sections: [
+        { type: "file", code: "intro\n12:foo\nmore" },
+        { type: "search", segments: [{ displayPath: "b.txt", lines: [{ lineNumber: 20 }] }] },
+      ],
+    });
+  });
+
+  it("keeps leading context and inverted rows with the search after a whole-file read", () => {
+    expect(
+      classify({
+        command: "cat a.txt; grep -n -B 1 foo b.txt",
+        output: "intro\n2-before\n3:foo\n",
+      }),
+    ).toMatchObject({
+      kind: "sections",
+      sections: [
+        { type: "file", code: "intro" },
+        { type: "search", segments: [{ lines: [{ lineNumber: 2 }, { lineNumber: 3 }] }] },
+      ],
+    });
+    expect(
+      classify({ command: "cat a.ts; grep -vn TODO b.ts", output: "const a = 1;\n1:x\n3:y\n" }),
+    ).toMatchObject({
+      kind: "sections",
+      sections: [
+        { type: "file", code: "const a = 1;" },
+        { type: "search", matchCount: 2 },
+      ],
+    });
+  });
+
+  it("reads -H rows as results in the named file", () => {
+    const result = classify({
+      command: "grep -nH foo a.ts; cat b.ts",
+      output: "a.ts:2:foo()\nx\n",
+    });
+    expect(result).toMatchObject({
+      kind: "sections",
+      sections: [
+        { type: "search", segments: [{ displayPath: "a.ts", lines: [{ lineNumber: 2 }] }] },
+        { type: "file", displayPath: "b.ts", code: "x" },
+      ],
+    });
+  });
+
+  it("does not skip an empty search before a statement it stopped", () => {
+    expect(
+      classify({ command: "grep -n foo a.ts && sed -n 1,5p b.ts; echo done", output: "done\n" })
+        .kind,
+    ).toBe("plain");
+  });
+
+  it("keeps a leading search before a statement it cannot follow", () => {
+    expect(
+      classify({
+        command: "grep -n x a.ts; printf 'tail\\n' || printf 'fallback\\n'",
+        output: "3:x\ntail\n",
+      }),
+    ).toMatchObject({
+      kind: "sections",
+      sections: [{ type: "search" }, { type: "plain", text: "tail" }],
+    });
+  });
+
+  it("stays plain when an error took the place of a file's lines", () => {
+    expect(
+      classify({
+        command: "git show A:a.ts > /tmp/a.ts; sed -n 1,2p /tmp/a.ts",
+        output: "fatal: path 'a.ts' does not exist in 'A'\n",
+      }).kind,
+    ).toBe("plain");
+    expect(
+      classify({
+        command: "npm test > /tmp/out.txt; sed -n 1,2p /tmp/out.txt",
+        output: "warn: deprecated\nline 1\nline 2\n",
+      }).kind,
+    ).toBe("plain");
+  });
+
+  it("splits revision reads before a search over another revision", () => {
+    const result = classify({
+      command: "git show A:a.ts; git show B:b.ts | grep -n bar",
+      output: "const a = 1;\n7:bar()\n",
+    });
+    expect(result).toMatchObject({
+      kind: "sections",
+      sections: [
+        { type: "file", displayPath: "A:a.ts", filePath: null, code: "const a = 1;" },
+        { type: "search", segments: [{ displayPath: "B:b.ts", lines: [{ lineNumber: 7 }] }] },
+      ],
+    });
+  });
+
+  it("gives a whole-file read everything when the search after it printed nothing", () => {
+    expect(classify({ command: "cat a.ts; grep -rn nothing src", output: "x\ny\n" })).toMatchObject(
+      { kind: "sections", sections: [{ type: "file", code: "x\ny" }] },
+    );
+    expect(
+      classify({
+        command: "cat a.ts; grep -n x b.ts",
+        output: "x\ny\ngrep: b.ts: No such file or directory\n",
+      }),
+    ).toMatchObject({
+      kind: "sections",
+      sections: [
+        { type: "file", code: "x\ny" },
+        { type: "plain", text: "grep: b.ts: No such file or directory" },
+      ],
+    });
+    // Not when another statement follows: its output could be anywhere.
+    expect(
+      classify({ command: "cat a.ts; grep -rn nothing src; ls", output: "x\ny\nsrc\n" }).kind,
+    ).toBe("plain");
+  });
+
+  it("keeps a read before a statement it cannot follow", () => {
+    const result = classify({
+      command: "sed -n 1,2p a.ts; foo || bar",
+      output: "a\nb\nfoo output\n",
+    });
+    expect(result).toMatchObject({
+      kind: "sections",
+      sections: [
+        { type: "file", displayPath: "a.ts", filePath: null, code: "a\nb" },
+        { type: "plain", text: "foo output" },
+      ],
+    });
+  });
+});
+
 describe("classifyCommandOutput: diffs", () => {
   const diff = [
     "diff --git a/src/a.ts b/src/a.ts",

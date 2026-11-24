@@ -538,8 +538,17 @@ function parseSedFileReadCommand(command: string): FileReadCommandMatch | null {
   };
 }
 
+const SED_RANGE_SOURCE = String.raw`(?:\d+|\$)(?:,(?:\d+|\$))?p`;
+const SED_SINGLE_RANGE_PATTERN = new RegExp(`^${SED_RANGE_SOURCE}$`, "i");
+/** `10,20p;40,50p`: several print ranges, as the output presentation reads them. */
+const SED_RANGES_PATTERN = new RegExp(
+  `^${SED_RANGE_SOURCE}(?:\\s*;\\s*${SED_RANGE_SOURCE})*;?$`,
+  "i",
+);
+
 function parseSedPrintCommandArgs(
   args: ReadonlyArray<string>,
+  options: { readonly multipleRanges?: boolean } = {},
 ): { script: string; trailingArgs: string[]; quiet: boolean } | null {
   let script: string | null = null;
   let quiet = false;
@@ -611,7 +620,8 @@ function parseSedPrintCommandArgs(
   }
 
   const normalizedScript = script.trim();
-  if (!/^(?:\d+|\$)(?:,(?:\d+|\$))?p$/i.test(normalizedScript)) {
+  const pattern = options.multipleRanges ? SED_RANGES_PATTERN : SED_SINGLE_RANGE_PATTERN;
+  if (!pattern.test(normalizedScript)) {
     return null;
   }
 
@@ -2141,83 +2151,472 @@ export function deriveCommandExecutionLabel(command: string): string | null {
 // parser returns null for anything it does not fully understand.
 
 interface CommandStatement {
-  /** The pipeline's stages, each a list of words. */
+  /** The pipeline's stages, each a list of words, with known variables filled in. */
   readonly stages: ReadonlyArray<ReadonlyArray<string>>;
   /** Joined to the previous statement by `&&`, so it runs only if that succeeded. */
   readonly afterAnd: boolean;
+  /**
+   * Ends in `|| true` or `|| :`, so what comes next runs even when it
+   * failed: a `cd` may not have happened.
+   */
+  readonly guarded: boolean;
+  /**
+   * A shell builtin that prints nothing and only changes shell state: a
+   * variable assignment, `export`/`unset` with names, `true`, `:`, or `set`
+   * with options that do not trace.
+   */
+  readonly builtin: boolean;
+  /**
+   * The statement prints nothing: a `builtin`, or a command whose stdout and
+   * stderr both go elsewhere (`> f 2>&1`, `&> f`, `> f 2>/dev/null`).
+   */
+  readonly silent: boolean;
+  /** Where stdout went (`> path`, `>> path`), if to a file. */
+  readonly stdoutFile: { readonly path: string; readonly append: boolean } | null;
+  /** Stdout went to a file but stderr still prints (`> f`, `2>&1 > f`). */
+  readonly stderrShown: boolean;
+  /** Where stdin came from (`< path`). */
+  readonly stdinFile: string | null;
+  /**
+   * The splitter could not follow this statement (`a || b`, `$(…)`, a
+   * heredoc, control flow, a background job). It is always the last one:
+   * neither its output nor that of anything after it can be told apart.
+   */
+  readonly opaque: boolean;
 }
 
 /** Pipelines joined by `&&`, `;` or newlines. */
 type CommandStatements = ReadonlyArray<CommandStatement>;
 
+const SHELL_CONTROL_WORDS = new Set([
+  "for",
+  "while",
+  "until",
+  "if",
+  "then",
+  "else",
+  "elif",
+  "fi",
+  "do",
+  "done",
+  "case",
+  "esac",
+  "select",
+  "function",
+  "{",
+  "}",
+  "!",
+]);
+const STDOUT_REDIRECTS = new Set([">", ">>", "1>", "1>>", "&>", "&>>"]);
+const STDERR_REDIRECTS = new Set(["2>", "2>>"]);
+const ASSIGNMENT_PATTERN = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s;
+const VARIABLE_PATTERN = /^\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/;
+/** A value that stays one word, unchanged, when substituted unquoted. */
+const PLAIN_VALUE_PATTERN = /^[^\s*?[\]{}'"\\$`]*$/;
+
+/**
+ * Scans a word's characters with their quoting: `visit` gets each character
+ * outside single quotes and whether it is inside double quotes, and returns
+ * how many characters it consumed (0 to keep scanning normally).
+ */
+function scanShellWord(
+  word: string,
+  visit: (index: number, inDoubleQuotes: boolean) => number | "stop",
+): void {
+  let quote: "'" | '"' | null = null;
+  for (let index = 0; index < word.length; index += 1) {
+    const char = word[index];
+    if (quote === "'") {
+      if (char === "'") quote = null;
+      continue;
+    }
+    // A backslash escapes the next character unquoted, and `$`, `` ` ``, `"`
+    // and `\` inside double quotes (`"queued\`"` holds no substitution).
+    if (char === "\\" && (quote === null || /[$`"\\\n]/.test(word[index + 1] ?? ""))) {
+      index += 1;
+      continue;
+    }
+    if (char === "'" && quote === null) {
+      quote = "'";
+      continue;
+    }
+    if (char === '"') {
+      quote = quote === '"' ? null : '"';
+      continue;
+    }
+    const consumed = visit(index, quote === '"');
+    if (consumed === "stop") return;
+    if (consumed > 0) index += consumed - 1;
+  }
+}
+
+/** `$(…)` or backticks outside single quotes. */
+function hasCommandSubstitution(word: string): boolean {
+  let found = false;
+  scanShellWord(word, (index) => {
+    if (word[index] === "`" || word.startsWith("$(", index)) {
+      found = true;
+      return "stop";
+    }
+    return 0;
+  });
+  return found;
+}
+
+/** A parameter expansion (`$X`, `${X}`) left unresolved outside single quotes. */
+function hasUnresolvedExpansion(word: string, onlyInDoubleQuotes = false): boolean {
+  let found = false;
+  scanShellWord(word, (index, inDoubleQuotes) => {
+    if (word[index] === "$" && /[A-Za-z_{@*#?!$0-9-]/.test(word[index + 1] ?? "")) {
+      if (!onlyInDoubleQuotes || inDoubleQuotes) {
+        found = true;
+        return "stop";
+      }
+    }
+    return 0;
+  });
+  return found;
+}
+
+/** Fills in known variables outside single quotes; unknown ones stay as written. */
+function substituteVariables(word: string, variables: ReadonlyMap<string, string>): string {
+  if (!word.includes("$") || variables.size === 0) return word;
+  let result = "";
+  let copied = 0;
+  scanShellWord(word, (index, inDoubleQuotes) => {
+    if (word[index] !== "$") return 0;
+    const match = VARIABLE_PATTERN.exec(word.slice(index));
+    const name = match?.[1] ?? match?.[2];
+    const value = name === undefined ? undefined : variables.get(name);
+    // Unquoted, a value with spaces or globs would split or expand. zsh reads
+    // `$H:a…` as `$H` with the `:a` modifier (`git show $H:apps/x.ts` turns
+    // into an absolute path), so only `${H}:…` is followed.
+    const modified = match?.[2] !== undefined && word[index + match[0].length] === ":";
+    if (
+      !match ||
+      value === undefined ||
+      modified ||
+      (!inDoubleQuotes && !PLAIN_VALUE_PATTERN.test(value))
+    ) {
+      return 0;
+    }
+    result += word.slice(copied, index) + value;
+    copied = index + match[0].length;
+    return match[0].length;
+  });
+  return copied === 0 ? word : result + word.slice(copied);
+}
+
+/** A literal assignment value, unquoted; null when the shell would compute it. */
+function literalAssignmentValue(value: string): string | null {
+  if (hasCommandSubstitution(value) || hasUnresolvedExpansion(value)) return null;
+  if (/^'[^']*'$/.test(value) || /^"[^"\\]*"$/.test(value)) return value.slice(1, -1);
+  return /^[^'"\\\s]*$/.test(value) ? value : null;
+}
+
+/** Drops `NAME=value` words that only set the environment of the command after them. */
+function stripEnvironmentPrefix(words: ReadonlyArray<string>): ReadonlyArray<string> {
+  let index = 0;
+  while (index < words.length - 1 && ASSIGNMENT_PATTERN.test(words[index] ?? "")) index += 1;
+  return index === 0 ? words : words.slice(index);
+}
+
+function opaqueStatement(afterAnd: boolean): CommandStatement {
+  return {
+    stages: [],
+    afterAnd,
+    guarded: false,
+    builtin: false,
+    silent: false,
+    stdoutFile: null,
+    stderrShown: false,
+    stdinFile: null,
+    opaque: true,
+  };
+}
+
+function builtinStatement(
+  words: ReadonlyArray<string>,
+  afterAnd: boolean,
+  guarded: boolean,
+): CommandStatement {
+  return {
+    stages: [words],
+    afterAnd,
+    guarded,
+    builtin: true,
+    silent: true,
+    stdoutFile: null,
+    stderrShown: false,
+    stdinFile: null,
+    opaque: false,
+  };
+}
+
+/**
+ * Control flow, grouping, function definitions (`f()`, `f ()`) and command
+ * substitutions. A quoted `"foo()"` is an ordinary argument.
+ */
+function isOpaqueWord(word: string, index: number, words: ReadonlyArray<string>): boolean {
+  const first = index === 0;
+  if (first && (SHELL_CONTROL_WORDS.has(word) || word.startsWith("(") || word.startsWith("{"))) {
+    return true;
+  }
+  if (first && /^[\w.:-]+\(\)/.test(word)) return true;
+  if (index === 1 && word === "()" && /^[\w.:-]+$/.test(words[0] ?? "")) return true;
+  // An unquoted `)` closes a subshell (`(cd x && ls)`).
+  const closesGroup = /^[^'"]*[^\\]\)$/.test(word);
+  return closesGroup || hasCommandSubstitution(word);
+}
+
+/**
+ * Whether a command in the `&&` chain the next statement joins may have
+ * failed and skipped it. Builtins always succeed; a failed `cd` is left to
+ * the cwd tracker, which stops trusting the directory once the chain ends.
+ */
+function chainMayFail(previous: ReadonlyArray<CommandStatement>): boolean {
+  for (let index = previous.length - 1; index >= 0; index -= 1) {
+    const statement = previous[index]!;
+    if (!statement.builtin && cdStatementTarget(statement.stages) === null) return true;
+    if (!statement.afterAnd) return false;
+  }
+  return false;
+}
+
+/**
+ * `set` with options that print nothing (`set -e`, `set -euo pipefail`).
+ * Bare `set` lists every variable, `set -o` lists the options, and `-x` or
+ * `-v` trace commands to stderr.
+ */
+function isQuietSetCommand(args: ReadonlyArray<string>): boolean {
+  if (args.length === 0) return false;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = maybeUnquoteShellToken(args[index] ?? "");
+    if (!/^[-+][A-Za-z]+$/.test(arg) || /[xv]/.test(arg)) return false;
+    if (arg.includes("o")) {
+      const name = maybeUnquoteShellToken(args[index + 1] ?? "");
+      if (!/^[a-z]+$/.test(name) || name === "xtrace" || name === "verbose") return false;
+      index += 1;
+    }
+  }
+  return true;
+}
+
+/**
+ * The statements of a command joined by `&&`, `;` or newlines, in order.
+ * Known variables are filled in, redirections are taken out, and the first
+ * statement the splitter cannot follow ends the list as an opaque one.
+ */
 function splitCommandStatements(command: string): CommandStatements | null {
   const displayCommand = displayCommandExecutionCommand(command).trim();
   if (displayCommand.length === 0) return null;
   const tokens = lexShellCommand(displayCommand);
-  const statements: CommandStatement[] = [];
-  let stages: Array<ReadonlyArray<string>> = [];
+
+  // Group words into statements; heredocs and background jobs end the scan.
+  const raw: Array<{ words: string[]; afterAnd: boolean; opaque: boolean }> = [];
   let words: string[] = [];
   let afterAnd = false;
-  const endStage = (): boolean => {
-    if (words.length === 0) return false;
-    stages.push(words);
+  const endStatement = (nextAfterAnd: boolean) => {
+    if (words.length > 0) raw.push({ words, afterAnd, opaque: false });
     words = [];
-    return true;
-  };
-  const endStatement = (nextAfterAnd: boolean): boolean => {
-    const ended = endStage();
-    if (!ended && stages.length > 0) return false;
-    if (stages.length > 0) statements.push({ stages, afterAnd });
-    else if (nextAfterAnd) return false;
-    stages = [];
     afterAnd = nextAfterAnd;
-    return true;
   };
-  for (let index = 0; index < tokens.length; index += 1) {
-    const token = tokens[index] ?? "";
+  for (const token of tokens) {
     if (token.trim().length === 0) {
-      if (token.includes("\n") && !endStatement(false)) return null;
+      if (token.includes("\n")) endStatement(false);
       continue;
     }
     if (token === "&&" || token === ";") {
-      if (!endStatement(token === "&&")) return null;
+      endStatement(token === "&&");
       continue;
     }
-    if (token === "|") {
-      if (!endStage()) return null;
-      continue;
+    if (token === "<<" || token === "&") {
+      raw.push({ words, afterAnd, opaque: true });
+      words = [];
+      break;
     }
-    if (token === "2>&1") continue;
-    if (token === "2>") {
-      let next = index + 1;
-      while ((tokens[next] ?? "x").trim().length === 0 && next < tokens.length) next += 1;
-      if (tokens[next] !== "/dev/null") return null;
-      index = next;
-      continue;
-    }
-    if (isShellOperatorToken(token) || isCommandSubstitutionToken(token)) return null;
     words.push(token);
   }
-  if (!endStatement(false)) return null;
+  endStatement(false);
+
+  const variables = new Map<string, string>();
+  // Names set by a statement that ran only if a command before it in the
+  // same `&&` chain succeeded (`false && F=b.ts`). Once the chain ends, they
+  // may or may not hold the new value.
+  const chainWrites = new Set<string>();
+  const statements: CommandStatement[] = [];
+  for (const statement of raw) {
+    let { words: statementWords } = statement;
+    if (statement.opaque) {
+      statements.push(opaqueStatement(statement.afterAnd));
+      break;
+    }
+    if (!statement.afterAnd) {
+      for (const name of chainWrites) variables.delete(name);
+      chainWrites.clear();
+    }
+    const conditional = statement.afterAnd && chainMayFail(statements);
+    const setVariable = (name: string, value: string | null) => {
+      if (value !== null) variables.set(name, value);
+      else variables.delete(name);
+      if (conditional) chainWrites.add(name);
+    };
+    // `cmd || true` prints what `cmd` prints; any other `||` cannot be told.
+    const last = statementWords[statementWords.length - 1];
+    const guarded =
+      statementWords.length >= 3 &&
+      statementWords[statementWords.length - 2] === "||" &&
+      (last === "true" || last === ":");
+    if (guarded) statementWords = statementWords.slice(0, -2);
+    if (statementWords.includes("||")) {
+      statements.push(opaqueStatement(statement.afterAnd));
+      break;
+    }
+
+    // `H=$(git rev-parse HEAD)` splits into several words; it prints nothing
+    // and leaves `H` unknown.
+    const computed = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=\$\(/.exec(statementWords.join(" "));
+    if (computed && statementWords.length > 1) {
+      const joined = statementWords.join(" ");
+      const balanced = joined.split("(").length === joined.split(")").length;
+      if (balanced && joined.endsWith(")")) {
+        setVariable(computed[1]!, null);
+        statements.push(builtinStatement(statementWords, statement.afterAnd, guarded));
+        continue;
+      }
+    }
+
+    // `NAME=value`, `export NAME=value`, `unset NAME`: silent, and they set
+    // what later words see. A computed value leaves the name unknown. Bare
+    // `export` (or `export -p`) lists the environment instead.
+    const [first, ...rest] = statementWords;
+    const assignmentWords = first === "export" ? rest : statementWords;
+    const isAssignment =
+      first === "unset"
+        ? rest.length > 0 && rest.every((word) => /^-?\w+$/.test(word))
+        : assignmentWords.length > 0 &&
+          assignmentWords.every(
+            (word) => ASSIGNMENT_PATTERN.test(word) || (first === "export" && /^\w+$/.test(word)),
+          );
+    if (isAssignment) {
+      for (const word of first === "unset" ? rest : assignmentWords) {
+        if (word.startsWith("-")) continue;
+        const match = ASSIGNMENT_PATTERN.exec(word);
+        if (!match && first !== "unset") continue;
+        const value =
+          match && first !== "unset"
+            ? literalAssignmentValue(substituteVariables(match[2]!, variables))
+            : null;
+        setVariable(match?.[1] ?? word, value);
+      }
+      statements.push(builtinStatement(statementWords, statement.afterAnd, guarded));
+      continue;
+    }
+
+    // Operators and redirections are read from the words as written: a
+    // value filled in (`F='2>&1'; cat $F`) is always an argument.
+    const substituted = statementWords.map((word) =>
+      isShellOperatorToken(word) ? word : substituteVariables(word, variables),
+    );
+    if (substituted.some((word, index) => isOpaqueWord(word, index, substituted))) {
+      statements.push(opaqueStatement(statement.afterAnd));
+      break;
+    }
+
+    // Pipeline stages and redirections, in order: `> f 2>&1` sends both
+    // streams to the file, `2>&1 > f` leaves stderr in the output.
+    const stages: Array<ReadonlyArray<string>> = [];
+    let stageWords: string[] = [];
+    let stdoutFile: CommandStatement["stdoutFile"] = null;
+    let stderrShown = true;
+    let stdinFile: string | null = null;
+    let opaque = false;
+    for (let index = 0; index < substituted.length && !opaque; index += 1) {
+      const written = statementWords[index]!;
+      const word = substituted[index]!;
+      if (written === "|") {
+        if (stageWords.length === 0 || stdoutFile) opaque = true;
+        stages.push(stageWords);
+        stageWords = [];
+        continue;
+      }
+      if (written === "2>&1") {
+        stderrShown = stdoutFile === null;
+        continue;
+      }
+      const target = statementWords[index + 1];
+      if (STDERR_REDIRECTS.has(written) || STDOUT_REDIRECTS.has(written) || written === "<") {
+        // `>&2` sends stdout on to stderr, which shows in the output too.
+        if (target === undefined || target === "&" || isShellOperatorToken(target)) {
+          opaque = true;
+          continue;
+        }
+        const path = maybeUnquoteShellToken(substituted[index + 1]!);
+        index += 1;
+        if (STDOUT_REDIRECTS.has(written)) {
+          stdoutFile = { path, append: written.endsWith(">>") };
+          if (written.startsWith("&")) stderrShown = false;
+        } else if (written === "<") {
+          if (stages.length > 0) opaque = true;
+          stdinFile = path;
+        } else {
+          stderrShown = false;
+        }
+        continue;
+      }
+      if (isShellOperatorToken(written)) {
+        opaque = true;
+        continue;
+      }
+      stageWords.push(word);
+    }
+    if (stageWords.length === 0) opaque = true;
+    stages.push(stageWords);
+    if (opaque) {
+      statements.push(opaqueStatement(statement.afterAnd));
+      break;
+    }
+    const programStages = stages.map(stripEnvironmentPrefix);
+    const program = stageProgram(programStages[0]!);
+    const builtin =
+      programStages.length === 1 &&
+      stdoutFile === null &&
+      (program === "true" ||
+        program === ":" ||
+        (program === "set" && isQuietSetCommand(programStages[0]!.slice(1))));
+    statements.push({
+      stages: programStages,
+      afterAnd: statement.afterAnd,
+      guarded,
+      builtin,
+      silent: builtin || (stdoutFile !== null && !stderrShown),
+      stdoutFile,
+      stderrShown: stdoutFile !== null && stderrShown,
+      stdinFile,
+      opaque: false,
+    });
+  }
   return statements.length > 0 ? statements : null;
 }
 
 /**
  * Follows `cd` statements to know where later statements ran. A statement
  * joined by `;` or a newline runs even when an earlier `cd` failed, so after a
- * `cd` the directory is only known along an unbroken `&&` chain.
+ * `cd` the directory is only known along an unbroken `&&` chain, and not at
+ * all after `cd x || true`, which goes on whether or not it moved.
  */
 function createCwdTracker() {
   let offset: string | null = null;
   let changed = false;
   let known = true;
   return {
-    advance(stages: CommandStatement["stages"], afterAnd: boolean): void {
-      if (changed && !afterAnd) known = false;
-      const target = cdStatementTarget(stages);
+    advance(statement: Pick<CommandStatement, "stages" | "afterAnd" | "guarded">): void {
+      if (changed && !statement.afterAnd) known = false;
+      const target = cdStatementTarget(statement.stages);
       if (target !== null) {
         offset = joinCwdOffset(offset, target);
         changed = true;
+        if (statement.guarded) known = false;
       }
     },
     offset: () => offset,
@@ -2284,6 +2683,17 @@ function sedPrintStartLine(script: string): number | null {
 }
 
 function sedPrintLineLimit(script: string): number | null {
+  const ranges = script.split(";").filter((range) => range.trim().length > 0);
+  if (ranges.length > 1) {
+    // Several ranges print one after another; overlapping ones print twice.
+    let total = 0;
+    for (const range of ranges) {
+      const limit = sedPrintLineLimit(range);
+      if (limit === null) return null;
+      total += limit;
+    }
+    return total;
+  }
   const match = SED_PRINT_RANGE_PATTERN.exec(script.trim());
   if (!match?.[1]) return null;
   if (match[2] === undefined || match[1] === "$") return 1;
@@ -2371,7 +2781,7 @@ function parseSingleStageFileRead(stage: ReadonlyArray<string>): FileRead | null
   if (program === "sed") {
     // Without quiet mode sed prints the whole file plus the range again, so
     // the output is not the range and its lines cannot be numbered.
-    const sed = parseSedPrintCommandArgs(args);
+    const sed = parseSedPrintCommandArgs(args, { multipleRanges: true });
     if (!sed?.quiet || sed.trailingArgs.length !== 1) return null;
     const filePath = sed.trailingArgs[0]?.trim() ?? "";
     if (filePath.length === 0) return null;
@@ -2427,7 +2837,7 @@ function parseFileReadPipeline(stages: ReadonlyArray<ReadonlyArray<string>>): Fi
   if (!source || source.startLine !== 1 || source.lineLimit !== null) return null;
   const narrowing = stageProgram(second);
   if (narrowing === "sed") {
-    const sed = parseSedPrintCommandArgs(second.slice(1));
+    const sed = parseSedPrintCommandArgs(second.slice(1), { multipleRanges: true });
     if (!sed?.quiet || sed.trailingArgs.length > 0) return null;
     return {
       ...source,
@@ -2444,22 +2854,198 @@ function parseFileReadPipeline(stages: ReadonlyArray<ReadonlyArray<string>>): Fi
   return null;
 }
 
+/** Unresolved `$X` left in a path once known variables are filled in. */
+function hasUnresolvedPath(path: string): boolean {
+  return /\$[A-Za-z_{]|`/.test(path);
+}
+
+/** A whole-file read written to a file, so later reads of that file show the source. */
+interface ReadAlias {
+  readonly filePath: string;
+  readonly revision: string | null;
+  readonly cwdOffset: string | null;
+  readonly cwdKnown: boolean;
+}
+
+/** A statement that prints something, as the presentation parsers see it. */
+type AnalyzedStatement =
+  | { readonly kind: "opaque"; readonly afterAnd: boolean }
+  | {
+      readonly kind: "command";
+      /**
+       * Joined by `&&` to the statement that printed before it, so it ran
+       * only if that one succeeded.
+       */
+      readonly afterAnd: boolean;
+      readonly stages: CommandStatement["stages"];
+      readonly read: FileReadSegment | null;
+      readonly search: SearchOutputCommand | null;
+      /** Lines a fixed-size statement prints (`echo`, `wc`); null otherwise. */
+      readonly lines: number | null;
+    };
+
+/**
+ * A read whose stdout went to a file. Its stderr can only hold the tool's
+ * own error (`fatal: …`, `cat: …`), which the presentation recognizes, so it
+ * counts as printing nothing.
+ */
+function redirectedRead(statement: CommandStatement): FileRead | null {
+  if (!statement.stdoutFile || statement.stdinFile) return null;
+  return parseFileReadPipeline(statement.stages);
+}
+
+/**
+ * The statements of a command that print, in order, each read as a file
+ * read, a search, a fixed number of lines, or neither. `cd`, variable
+ * assignments and other silent statements are followed but not listed. A
+ * command whose stdout went to a file still prints its stderr, so it is
+ * listed as neither, unless it is a read. A whole-file read written to a
+ * file (`git show A:a.ts > /tmp/a.ts`) makes later reads of that file reads
+ * of the source, until a command that might change the file runs.
+ */
+function analyzeCommand(command: string): ReadonlyArray<AnalyzedStatement> | null {
+  const statements = splitCommandStatements(command);
+  if (!statements) return null;
+  const cwd = createCwdTracker();
+  // Keyed by the path as resolved where it was written; a relative path in
+  // an unknown directory has no key.
+  const aliases = new Map<string, ReadAlias>();
+  const conditionalAliases = new Set<string>();
+  const aliasKey = (path: string): string | null =>
+    isAbsoluteShellPath(path) ? path : cwd.known() ? joinCwdOffset(cwd.offset(), path) : null;
+  const resolveRead = (read: Omit<FileReadSegment, "cwdOffset" | "cwdKnown">) => {
+    if (hasUnresolvedPath(read.filePath) || hasUnresolvedPath(read.revision ?? "")) return null;
+    const key = read.revision === null ? aliasKey(read.filePath) : null;
+    const alias = key === null ? undefined : aliases.get(key);
+    return alias
+      ? { ...read, ...alias }
+      : { ...read, cwdOffset: cwd.offset(), cwdKnown: cwd.known() };
+  };
+  const printing = statements.filter(
+    (statement) =>
+      statement.opaque ||
+      (!statement.silent &&
+        cdStatementTarget(statement.stages) === null &&
+        redirectedRead(statement) === null),
+  );
+  const lastPrinting = printing[printing.length - 1];
+  const result: AnalyzedStatement[] = [];
+  // Every statement since the last printing one was joined by `&&`.
+  let chained = true;
+  for (const [index, statement] of statements.entries()) {
+    chained = chained && statement.afterAnd;
+    if (statement.opaque) {
+      result.push({ kind: "opaque", afterAnd: chained });
+      break;
+    }
+    if (!statement.afterAnd) {
+      // An alias written inside an `&&` chain that has ended may not exist.
+      for (const key of conditionalAliases) aliases.delete(key);
+      conditionalAliases.clear();
+    }
+    cwd.advance(statement);
+    if (cdStatementTarget(statement.stages) !== null || statement.builtin) continue;
+    const { stdoutFile } = statement;
+    const redirected = redirectedRead(statement);
+    if (stdoutFile) {
+      const target = aliasKey(stdoutFile.path);
+      const read = redirected ? resolveRead(redirected) : null;
+      const whole = read && !stdoutFile.append && read.startLine === 1 && read.lineLimit === null;
+      if (redirected === null) {
+        // Any other command may write anywhere (`cp b.ts /tmp/t > /dev/null`).
+        aliases.clear();
+      } else if (target !== null && whole && !read.numberedOutput) {
+        aliases.set(target, {
+          filePath: read.filePath,
+          revision: read.revision,
+          cwdOffset: read.cwdOffset,
+          cwdKnown: read.cwdKnown,
+        });
+        if (statement.afterAnd && chainMayFail(statements.slice(0, index))) {
+          conditionalAliases.add(target);
+        }
+      } else if (target !== null) {
+        aliases.delete(target);
+      } else {
+        aliases.clear();
+      }
+      if (statement.silent || redirected) continue;
+    } else if (statement.silent) {
+      aliases.clear();
+      continue;
+    }
+    const source =
+      stdoutFile || statement.stdinFile ? null : parseFileReadPipeline(statement.stages);
+    const read = source ? resolveRead(source) : null;
+    const search =
+      read || stdoutFile
+        ? null
+        : parseSearchStatement(statement.stages, {
+            cwdOffset: cwd.offset(),
+            cwdKnown: cwd.known(),
+            followedByOtherStatements: statement !== lastPrinting,
+            stdinFile: statement.stdinFile,
+            resolveRead,
+          });
+    const lines = read || search || stdoutFile ? null : fixedLineCount(statement);
+    // A command the analyzer does not know may change any file.
+    if (!read && !search && lines === null) aliases.clear();
+    result.push({
+      kind: "command",
+      afterAnd: chained,
+      stages: statement.stages,
+      read,
+      search,
+      lines,
+    });
+    chained = true;
+  }
+  return result.length > 0 ? result : null;
+}
+
+/** Lines that `echo` or `wc` print, which do not depend on any file's content. */
+function fixedLineCount(statement: CommandStatement): number | null {
+  const { stages } = statement;
+  const lastStage = stages[stages.length - 1]!;
+  const program = stageProgram(lastStage);
+  if (program === "echo" && stages.length === 1) {
+    const args = lastStage.slice(1);
+    // `-n` (quoted or not) joins the next output to this line, `-e` (and
+    // zsh's echo) turn `\n` into line breaks, and an unknown `$X` may hold
+    // several lines (zsh does not split it) or be an option.
+    if (args[0] !== undefined && maybeUnquoteShellToken(args[0]).startsWith("-")) return null;
+    if (args.some((arg) => arg.includes("\\") || arg.includes("\n"))) return null;
+    // `$?`, `$#`, `$$` and `$!` are numbers.
+    if (args.some((arg) => hasUnresolvedExpansion(arg.replace(/\$[?#$!]/g, "")))) return null;
+    return 1;
+  }
+  if (program === "wc") {
+    const args = lastStage.slice(1).map(maybeUnquoteShellToken);
+    const flags = args.filter((arg) => arg.startsWith("-"));
+    const files = args.filter((arg) => !arg.startsWith("-"));
+    if (!flags.every((flag) => /^-[lcwmL]+$/.test(flag))) return null;
+    // Reading stdin (a pipe, `< file`) it prints one line.
+    if (files.length === 0) return 1;
+    if (stages.length > 1 || statement.stdinFile) return null;
+    if (files.some((file) => hasUnresolvedPath(file) || /[*?[]/.test(file))) return null;
+    // One line per file, and a total line for several.
+    return files.length + (files.length > 1 ? 1 : 0);
+  }
+  return null;
+}
+
 /**
  * The file reads a command is made of, such as `sed -n 10,20p a.ts` or
  * `cd src && cat a.ts; head -n 5 b.ts`, in output order. Null when any
- * statement is something other than a read or a `cd`.
+ * statement that prints is something other than a read.
  */
 export function parseFileReadSegments(command: string): FileReadSegments | null {
-  const statements = splitCommandStatements(command);
+  const statements = analyzeCommand(command);
   if (!statements) return null;
   const segments: FileReadSegment[] = [];
-  const cwd = createCwdTracker();
-  for (const { stages, afterAnd } of statements) {
-    cwd.advance(stages, afterAnd);
-    if (cdStatementTarget(stages) !== null) continue;
-    const read = parseFileReadPipeline(stages);
-    if (!read) return null;
-    segments.push({ ...read, cwdOffset: cwd.offset(), cwdKnown: cwd.known() });
+  for (const statement of statements) {
+    if (statement.kind !== "command" || !statement.read) return null;
+    segments.push(statement.read);
   }
   return segments.length > 0 ? { segments } : null;
 }
@@ -2477,6 +3063,18 @@ export interface SearchOutputCommand {
   readonly revisions: ReadonlyArray<string>;
   /** The `revisions` came before `--`, so they surely are trees. */
   readonly revisionsKnown: boolean;
+  /**
+   * The one file a search reading stdin went through: `grep -n x < a.ts`,
+   * `git show A:a.ts | grep -n x`. Its output lines are `12:text`, numbered
+   * from the first line it read, which is file line `lineOffset + 1`.
+   */
+  readonly stdin: {
+    readonly filePath: string;
+    readonly revision: string | null;
+    readonly cwdOffset: string | null;
+    readonly cwdKnown: boolean;
+    readonly lineOffset: number;
+  } | null;
   readonly cwdOffset: string | null;
   /**
    * False when result paths may not be relative to `cwdOffset`: a `cd`
@@ -2497,6 +3095,12 @@ export interface SearchOutputCommand {
   readonly recursive: boolean;
   /** Output lines carry line numbers (`-n`, `--vimgrep`). */
   readonly lineNumbers: boolean;
+  /** Output lines name the file even for a single one (`-H`, `git grep`). */
+  readonly withFileName: boolean;
+  /** Prints the lines that do not match (`-v`). */
+  readonly invertMatch: boolean;
+  /** Prints context rows before each match (`-B`, `-C`, `-2`). */
+  readonly beforeContext: boolean;
 }
 
 const GREP_VALUE_FLAG_LETTERS = new Set(["A", "B", "C", "e", "f", "m", "d", "D"]);
@@ -2560,11 +3164,11 @@ function collectSearchFlags(
     if (!arg.startsWith("-") || arg === "-") continue;
     for (let offset = 1; offset < arg.length; offset += 1) {
       const letter = arg[offset] ?? "";
+      letters.add(letter);
       if (valueLetters.has(letter)) {
         if (offset === arg.length - 1) index += 1;
         break;
       }
-      letters.add(letter);
     }
   }
   return { letters, longFlags };
@@ -2601,9 +3205,10 @@ const FILTER_RG_LONG_FLAGS = new Set([
  */
 function isExpandableShellWord(token: string): boolean {
   if (/^'[^']*'$/.test(token)) return false;
-  // A `$` before a quote or at the end stays literal (`"test$"` anchors).
-  if (/`|\$[\w{(@*#?$!-]/.test(token)) return true;
-  if (/^"[^"]*"$/.test(token)) return false;
+  // A `$` before a quote or at the end stays literal (`"test$"` anchors), and
+  // so does an escaped `\$` or `` \` `` inside double quotes.
+  if (hasCommandSubstitution(token) || hasUnresolvedExpansion(token)) return true;
+  if (/^"(?:[^"\\]|\\.)*"$/.test(token)) return false;
   return /[*?[{~\\'"]/.test(token);
 }
 
@@ -2685,33 +3290,96 @@ function isLineFilterStage(stage: ReadonlyArray<string>): boolean {
  * after the matches, and can look like a match) out of the results.
  */
 export function parseSearchOutputCommand(command: string): SearchOutputCommand | null {
-  const statements = splitCommandStatements(command);
-  if (!statements) return null;
-  const cwd = createCwdTracker();
-  let index = 0;
-  for (; index < statements.length; index += 1) {
-    const statement = statements[index]!;
-    cwd.advance(statement.stages, statement.afterAnd);
-    if (cdStatementTarget(statement.stages) === null) break;
-  }
-  const statement = statements[index];
-  if (!statement) return null;
-  return parseSearchStatement(statement.stages, {
-    cwdOffset: cwd.offset(),
-    cwdKnown: cwd.known(),
-    followedByOtherStatements: index < statements.length - 1,
+  const statements = analyzeCommand(command);
+  if (!statements || statements.some((statement) => statement.kind === "opaque")) return null;
+  const [first] = statements;
+  return first?.kind === "command" ? first.search : null;
+}
+
+interface SearchStatementContext extends Pick<
+  SearchOutputCommand,
+  "cwdOffset" | "cwdKnown" | "followedByOtherStatements"
+> {
+  readonly stdinFile: string | null;
+  readonly resolveRead: (
+    read: Omit<FileReadSegment, "cwdOffset" | "cwdKnown">,
+  ) => FileReadSegment | null;
+}
+
+/** A whole file on disk (or the source a temp file was written from) as a search's input. */
+function wholeFileSource(
+  path: string,
+  context: SearchStatementContext,
+): NonNullable<SearchOutputCommand["stdin"]> | null {
+  const read = context.resolveRead({
+    filePath: path,
+    startLine: 1,
+    numberedOutput: false,
+    revision: null,
+    lineLimit: null,
   });
+  if (!read) return null;
+  return {
+    filePath: read.filePath,
+    revision: read.revision,
+    cwdOffset: read.cwdOffset,
+    cwdKnown: read.cwdKnown,
+    lineOffset: 0,
+  };
+}
+
+/**
+ * Where a search reading stdin gets its lines from: `< file`, or a read
+ * piped into it (`git show A:a.ts | grep -n x`, `sed -n 40,80p a.ts | grep
+ * -n x`). Null when its line numbers cannot be mapped back to the file.
+ */
+function parseSearchStdin(
+  stages: CommandStatement["stages"],
+  context: SearchStatementContext,
+): { stdin: NonNullable<SearchOutputCommand["stdin"]>; searchIndex: number } | null {
+  if (context.stdinFile) {
+    const stdin = wholeFileSource(context.stdinFile, context);
+    return stdin ? { stdin, searchIndex: 0 } : null;
+  }
+  for (const searchIndex of [2, 1]) {
+    if (stages.length <= searchIndex) continue;
+    const source = parseFileReadPipeline(stages.slice(0, searchIndex));
+    const read = source ? context.resolveRead(source) : null;
+    // `tail -n 5` starts at an unknown line; `nl -ba` adds its own numbers.
+    if (!read || read.startLine === null || read.numberedOutput) continue;
+    return {
+      stdin: {
+        filePath: read.filePath,
+        revision: read.revision,
+        cwdOffset: read.cwdOffset,
+        cwdKnown: read.cwdKnown,
+        lineOffset: read.startLine - 1,
+      },
+      searchIndex,
+    };
+  }
+  return null;
 }
 
 function parseSearchStatement(
-  stages: CommandStatement["stages"],
-  context: Pick<SearchOutputCommand, "cwdOffset" | "cwdKnown" | "followedByOtherStatements">,
+  allStages: CommandStatement["stages"],
+  context: SearchStatementContext,
 ): SearchOutputCommand | null {
+  const leading = stageProgram(allStages[0] ?? []);
+  const leadsWithSearch =
+    isSearchToolName(leading) ||
+    (leading === "git" && parseGitStage(allStages[0]!)?.subcommand === "grep");
+  // With `< file`, or after other stages, the search reads stdin.
+  const readsStdin = context.stdinFile !== null || !leadsWithSearch;
+  const fromStdin = readsStdin ? parseSearchStdin(allStages, context) : null;
+  if (readsStdin && !fromStdin) return null;
+  const stages = fromStdin ? allStages.slice(fromStdin.searchIndex) : allStages;
   const [stage, ...rest] = stages;
   if (!stage || !rest.every(isLineFilterStage)) return null;
   const program = stageProgram(stage);
   const git = program === "git" ? parseGitStage(stage) : null;
-  if (git ? git.subcommand !== "grep" : !isSearchToolName(program)) return null;
+  // `git grep` never reads stdin.
+  if (git ? git.subcommand !== "grep" || fromStdin : !isSearchToolName(program)) return null;
   const tool = git ? "git" : program === "rg" || program === "ripgrep" ? "rg" : "grep";
   const args = git ? git.args : stage.slice(1);
   const parsed = parseSearchCommandArgs(
@@ -2760,12 +3428,36 @@ function parseSearchStatement(
     revisionsKnown = dash !== -1;
     if (dash !== -1) targets = paths;
   }
+  // A search given files reads them, not stdin.
+  if (fromStdin && targets.length > 0) return null;
+  // An unresolved `$X` in a path or tree could link anywhere.
+  if ([...targets, ...revisions].some(hasUnresolvedPath)) return null;
+  const recursive =
+    tool !== "grep" || has("r", "--recursive") || has("R", "--dereference-recursive");
+  // One file written earlier from another (`git show A:a.ts > /tmp/a.ts;
+  // grep -n x /tmp/a.ts`) prints `12:text` like stdin, and is the source.
+  let stdin = fromStdin?.stdin ?? null;
+  const [onlyTarget] = targets;
+  if (
+    !stdin &&
+    targets.length === 1 &&
+    onlyTarget &&
+    tool !== "git" &&
+    (tool === "rg" || !recursive)
+  ) {
+    const source = wholeFileSource(onlyTarget, context);
+    if (source && (source.filePath !== onlyTarget || source.revision !== null)) {
+      stdin = source;
+      targets = [];
+    }
+  }
   return {
     tool,
     patterns: parsed.patterns,
     targets,
     revisions,
     revisionsKnown,
+    stdin,
     // `git -C dir grep` prints paths relative to `dir`.
     cwdOffset: git?.directory ? joinCwdOffset(context.cwdOffset, git.directory) : context.cwdOffset,
     // `--full-name` prints paths from the repository root, which is unknown.
@@ -2776,51 +3468,65 @@ function parseSearchStatement(
     extendedRegex: tool === "rg" || has("E", "--extended-regexp") || has("P", "--perl-regexp"),
     perlRegex: has("P", tool === "rg" ? "--pcre2" : "--perl-regexp"),
     noFileName: has("h", "--no-filename"),
-    recursive: tool !== "grep" || has("r", "--recursive") || has("R", "--dereference-recursive"),
+    recursive,
     // Without a TTY these tools number lines only when asked to. `--vimgrep`
     // and `--column` add a column (`path:3:7:text`), a format not parsed here.
+    // File lists and counts print no lines at all, even with `-n`.
     lineNumbers:
       has("n", "--line-number") &&
       !(tool === "rg" && has("N", "--no-line-number")) &&
+      !has("l", "--files-with-matches") &&
+      // ripgrep's `-L` follows symlinks.
+      !(tool === "rg"
+        ? longFlags.has("--files-without-match")
+        : has("L", "--files-without-match")) &&
+      !has("c", "--count") &&
       !longFlags.has("--vimgrep") &&
       !longFlags.has("--column"),
+    // `git grep` always names the file.
+    withFileName: tool === "git" || has("H", "--with-filename"),
+    invertMatch: has("v", "--invert-match"),
+    // `-B 2`, `-C 2`, `--context=2`, grep's `-2`.
+    beforeContext:
+      has("B", "--before-context") ||
+      has("C", "--context") ||
+      [...letters].some((letter) => /\d/.test(letter)),
   };
 }
 
-export type OutputStatement =
+export type OutputStatement = (
   | { readonly kind: "read"; readonly read: FileReadSegment }
   | { readonly kind: "search"; readonly search: SearchOutputCommand }
-  | { readonly kind: "other" };
+  /** Prints exactly `count` lines whatever the files hold (`echo`, `wc`). */
+  | { readonly kind: "lines"; readonly count: number }
+  | { readonly kind: "other" }
+) & {
+  /**
+   * Joined by `&&` to the statement that printed before it: it ran only if
+   * that one succeeded (a `grep` that found nothing stops the chain).
+   */
+  readonly afterAnd: boolean;
+};
 
 /**
- * Each statement of a compound command, past `cd` statements, in the order
- * their output appears: a file read, a search, or something else. Null when
- * the command cannot be split into statements (redirections, substitutions).
+ * Each statement of a compound command that prints to stdout, in the order
+ * their output appears: a file read, a search, a fixed number of lines, or
+ * something else. `cd`, variable assignments and statements writing to a
+ * file print nothing and are left out. A statement the splitter cannot
+ * follow (`a || b`, `$(…)`, a loop) is the last, as `other`. Null when no
+ * statement prints.
  */
 export function parseOutputStatements(command: string): ReadonlyArray<OutputStatement> | null {
-  const statements = splitCommandStatements(command);
+  const statements = analyzeCommand(command);
   if (!statements) return null;
-  const cwd = createCwdTracker();
-  const result: OutputStatement[] = [];
-  statements.forEach(({ stages, afterAnd }, index) => {
-    cwd.advance(stages, afterAnd);
-    if (cdStatementTarget(stages) !== null) return;
-    const read = parseFileReadPipeline(stages);
-    if (read) {
-      result.push({
-        kind: "read",
-        read: { ...read, cwdOffset: cwd.offset(), cwdKnown: cwd.known() },
-      });
-      return;
-    }
-    const search = parseSearchStatement(stages, {
-      cwdOffset: cwd.offset(),
-      cwdKnown: cwd.known(),
-      followedByOtherStatements: index < statements.length - 1,
-    });
-    result.push(search ? { kind: "search", search } : { kind: "other" });
+  return statements.map((statement): OutputStatement => {
+    const { afterAnd } = statement;
+    if (statement.kind === "opaque") return { kind: "other", afterAnd };
+    if (statement.read) return { kind: "read", read: statement.read, afterAnd };
+    if (statement.search) return { kind: "search", search: statement.search, afterAnd };
+    if (statement.lines !== null) return { kind: "lines", count: statement.lines, afterAnd };
+    return { kind: "other", afterAnd };
   });
-  return result.length > 0 ? result : null;
 }
 
 const GIT_OPTIONS_WITH_VALUE = new Set(["-C", "-c", "--git-dir", "--work-tree"]);
@@ -2855,14 +3561,9 @@ function isDiffStage(stage: ReadonlyArray<string>): boolean {
 
 /** Whether a command prints a unified diff: `git diff`, `git show`, `diff -u`, ... */
 export function isDiffCommand(command: string): boolean {
-  const statements = splitCommandStatements(command);
-  if (!statements) return false;
-  let index = 0;
-  while (index < statements.length && cdStatementTarget(statements[index]!.stages) !== null) {
-    index += 1;
-  }
-  const statement = statements[index];
-  if (!statement || index !== statements.length - 1) return false;
+  const statements = analyzeCommand(command);
+  const [statement] = statements ?? [];
+  if (statements?.length !== 1 || statement?.kind !== "command") return false;
   const [stage, ...rest] = statement.stages;
   if (!stage || rest.length > 1 || (rest[0] && !parseHeadStage(rest[0]))) return false;
   return isDiffStage(stage);

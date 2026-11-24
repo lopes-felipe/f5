@@ -239,6 +239,9 @@ function classifyFileRead(input: ClassifyCommandOutputInput): CommandOutputPrese
   const language = [...languages][0]!;
   const single = parsed.segments.length === 1;
   const lines = outputLines(input.output);
+  // A read that failed, or one written to a file earlier (`git show A:a.ts >
+  // /tmp/a.ts; …`) whose error still printed: its lines are not the file's.
+  if (TOOL_ERROR_PATTERN.test(lines[0] ?? "")) return null;
 
   let code = input.output;
   let lineNumbers: number[] | null = null;
@@ -479,6 +482,10 @@ const PATH_LINE_PATTERN = /^((?:[A-Za-z]:)?[^:\n]+):(\d+)([:-])(.*)$/;
 const NUMBER_LINE_PATTERN = /^(\d+)([:-])(.*)$/;
 
 function searchesSingleFile(search: SearchOutputCommand): boolean {
+  // Lines read from stdin carry no path.
+  if (search.stdin) return true;
+  // `-H` names the file on every line.
+  if (search.withFileName) return false;
   const [target] = search.targets;
   if (search.targets.length !== 1 || !target) return false;
   // `git grep` always prints the path.
@@ -591,7 +598,28 @@ function readSearchResults(
   cwd: string | null | undefined,
   stopAtOtherOutput: boolean,
 ): SearchResults {
-  const singleFile = searchesSingleFile(search) ? search.targets[0]! : null;
+  // A search over stdin (`git show A:a.ts | grep -n x`, `sed -n 40,80p a.ts |
+  // grep -n x`) numbers lines from where its input started.
+  const { stdin } = search;
+  const singleFile = stdin
+    ? stdin.revision === null
+      ? stdin.filePath
+      : `${stdin.revision}:${stdin.filePath}`
+    : searchesSingleFile(search)
+      ? search.targets[0]!
+      : null;
+  const lineOffset = stdin?.lineOffset ?? 0;
+  const linkFor = (displayPath: string, fromRevision: boolean): string | null => {
+    if (stdin) {
+      return stdin.revision === null && stdin.cwdKnown
+        ? resolveCommandPath(stdin.filePath, cwd, stdin.cwdOffset)
+        : null;
+    }
+    // A revision's text may differ from the file on disk.
+    return displayPath.length > 0 && search.cwdKnown && !fromRevision
+      ? resolveCommandPath(displayPath, cwd, search.cwdOffset)
+      : null;
+  };
   const matcher = buildSearchMatcher(search);
   const segments: SearchSegment[] = [];
   const paths = new Set<string>();
@@ -613,12 +641,8 @@ function readSearchResults(
     segments.push({
       type: "group",
       displayPath: group.displayPath,
-      // A revision's text may differ from the file on disk.
-      filePath:
-        group.displayPath.length > 0 && search.cwdKnown && !group.fromRevision
-          ? resolveCommandPath(group.displayPath, cwd, search.cwdOffset)
-          : null,
-      language: languageForPath(group.displayPath),
+      filePath: linkFor(group.displayPath, group.fromRevision),
+      language: languageForPath(stdin?.filePath ?? group.displayPath),
       showHeader: group.key !== state.lastGroupKey,
       lines: group.lines,
     });
@@ -668,7 +692,7 @@ function readSearchResults(
     if (parsed.isMatch) matchCount += 1;
     if (displayPath) paths.add(displayPath);
     group.lines.push({
-      lineNumber: parsed.lineNumber,
+      lineNumber: parsed.lineNumber + lineOffset,
       text: parsed.text,
       isMatch: parsed.isMatch,
       matches:
@@ -710,17 +734,78 @@ function classifySearch(input: ClassifyCommandOutputInput): CommandOutputPresent
  * A tool's error message where a read's output was expected. Only the forms
  * the read tools print, since a file may well start with `Usage:` or `error:`.
  */
-const TOOL_ERROR_PATTERN = /^fatal: |^(?:git|sed|cat|head|tail|nl): /;
+const TOOL_ERROR_PATTERN = /^fatal: |^(?:git|sed|cat|head|tail|nl|grep|ggrep|ugrep|rg): /;
+
+const searchMatchers = new WeakMap<SearchOutputCommand, RegExp | null>();
+
+/** Whether `line` is shaped like a row a search prints: a match, context, or `--`. */
+function isSearchRow(line: string, search: SearchOutputCommand): boolean {
+  if (line === "--") return true;
+  const stripped = stripRevisionPrefix(line, search).line;
+  if (searchesSingleFile(search) || search.noFileName) return NUMBER_LINE_PATTERN.test(stripped);
+  return PATH_LINE_PATTERN.test(stripped) || /^[^:\n]+-\d+-/.test(stripped);
+}
 
 /**
- * Whether `line` can be the first line a search prints: a match row. Used
- * to find where the read before it ended, so context rows (`path-3-text`) and
- * other text never qualify.
+ * Whether `line` can be the first line a search prints. Used to find where
+ * the read before it ended. With `-B`/`-C` that is any row; with `-v` a match
+ * row of any text. Otherwise it is a match row whose text holds the pattern,
+ * so context rows (`path-3-text`), and file lines that merely look like a
+ * row (`12:30 standup`), do not qualify. Without a usable matcher (PCRE,
+ * risky patterns) the row's shape alone decides.
  */
-function isSearchMatchLine(line: string, search: SearchOutputCommand): boolean {
+function isSearchStartLine(line: string, search: SearchOutputCommand): boolean {
+  if (line === "--") return false;
+  if (search.beforeContext) return isSearchRow(line, search);
   const stripped = stripRevisionPrefix(line, search).line;
-  if (searchesSingleFile(search) || search.noFileName) return /^\d+:/.test(stripped);
-  return PATH_LINE_PATTERN.exec(stripped)?.[3] === ":";
+  let text: string | null;
+  if (searchesSingleFile(search) || search.noFileName) {
+    text = /^\d+:(.*)$/.exec(stripped)?.[1] ?? null;
+  } else {
+    const match = PATH_LINE_PATTERN.exec(stripped);
+    text = match?.[3] === ":" ? match[4]! : null;
+  }
+  if (text === null) return false;
+  if (search.invertMatch) return true;
+  if (!searchMatchers.has(search)) searchMatchers.set(search, buildSearchMatcher(search));
+  const matcher = searchMatchers.get(search) ?? null;
+  return matcher === null || findMatchRanges(text, matcher).length > 0;
+}
+
+/**
+ * Where a read that starts at `start` ends when a search follows it: at the
+ * search's first line within `[start, limit)`. When the search is the last
+ * statement, everything from there on must be its rows (or its trailing
+ * errors), so a file line that looks like a match (`12:foo`) is not taken
+ * for one. `found` is false when no such line exists; `printedNothing` then
+ * tells whether the search printed nothing at all, in which case the read
+ * took all the output up to `rowsEnd`.
+ */
+function findSearchStart(
+  lines: ReadonlyArray<string>,
+  start: number,
+  limit: number,
+  search: SearchOutputCommand,
+  searchIsLast: boolean,
+): { found: boolean; index: number; printedNothing: boolean; rowsEnd: number } {
+  let rowsEnd = lines.length;
+  let rowsFrom = start;
+  if (searchIsLast) {
+    while (rowsEnd > start && TOOL_ERROR_PATTERN.test(lines[rowsEnd - 1]!)) rowsEnd -= 1;
+    rowsFrom = rowsEnd;
+    while (rowsFrom > start && isSearchRow(lines[rowsFrom - 1]!, search)) rowsFrom -= 1;
+  }
+  for (let index = Math.max(start, rowsFrom); index < Math.min(limit, rowsEnd); index += 1) {
+    if (isSearchStartLine(lines[index]!, search)) {
+      return { found: true, index, printedNothing: false, rowsEnd };
+    }
+  }
+  return {
+    found: false,
+    index: limit,
+    printedNothing: searchIsLast && rowsFrom === rowsEnd,
+    rowsEnd,
+  };
 }
 
 /** `nl -ba` / `cat -n` lines up to where the numbers stop following on. */
@@ -771,15 +856,42 @@ function classifySections(input: ClassifyCommandOutputInput): CommandOutputPrese
   if (!statements || statements.length < 2 || statements[0]!.kind === "other") return null;
   const lines = outputLines(input.output);
   const sections: OutputSection[] = [];
+  const pushPlain = (text: string) => {
+    const previous = sections[sections.length - 1];
+    if (previous?.type === "plain") {
+      sections[sections.length - 1] = { type: "plain", text: `${previous.text}\n${text}` };
+    } else {
+      sections.push({ type: "plain", text });
+    }
+  };
+  // Statement index of each search section, by section index.
+  const structuredFrom = new Map<number, number>();
   let position = 0;
   for (const [index, statement] of statements.entries()) {
     if (position >= lines.length || statement.kind === "other") break;
     const last = index === statements.length - 1;
+    if (statement.kind === "lines") {
+      // `echo "== label"`, `wc -l a.ts`: as many lines as they always print.
+      const end = Math.min(lines.length, position + statement.count);
+      pushPlain(lines.slice(position, end).join("\n"));
+      position = end;
+      continue;
+    }
     if (statement.kind === "search") {
       const { search } = statement;
       if (!search.lineNumbers) break;
       const results = readSearchResults(lines.slice(position), search, input.cwd, !last);
-      if (!results.segments.some((segment) => segment.type === "group")) break;
+      if (!results.segments.some((segment) => segment.type === "group")) {
+        // A search that found nothing printed nothing; the next statement's
+        // output starts here. An error line could be either, so stop. A
+        // statement after `&&` did not run at all, so whose output follows
+        // is unknown.
+        const next = statements[index + 1];
+        const empty = results.end === 0 && !TOOL_ERROR_PATTERN.test(lines[position]!);
+        if (empty && next && !next.afterAnd) continue;
+        break;
+      }
+      structuredFrom.set(sections.length, index);
       sections.push({
         type: "search",
         segments: results.segments,
@@ -790,22 +902,39 @@ function classifySections(input: ClassifyCommandOutputInput): CommandOutputPrese
       continue;
     }
     const { read } = statement;
-    // Numbered output shows where it ends; other unbounded reads cannot.
-    if (read.lineLimit === null && !last && !read.numberedOutput) break;
+    const next = statements[index + 1];
+    const nextSearch = next?.kind === "search" && next.search.lineNumbers ? next.search : null;
+    const searchIsLast = index + 1 === statements.length - 1;
+    // Numbered output shows where it ends, and a search that is the last
+    // statement ends it where its rows start; other unbounded reads cannot
+    // be bounded.
+    const unbounded = read.lineLimit === null && !last && !read.numberedOutput;
+    if (unbounded && !(nextSearch && searchIsLast)) break;
     if (TOOL_ERROR_PATTERN.test(lines[position]!)) break;
     let end =
       last || read.lineLimit === null
         ? lines.length
         : Math.min(lines.length, position + read.lineLimit);
     let confirmed = last;
-    const next = statements[index + 1];
-    if (next?.kind === "search" && next.search.lineNumbers) {
-      const firstMatch = lines
-        .slice(position, end)
-        .findIndex((line) => isSearchMatchLine(line, next.search));
-      if (firstMatch !== -1) end = position + firstMatch;
-      confirmed =
-        firstMatch !== -1 || (end < lines.length && isSearchMatchLine(lines[end]!, next.search));
+    if (nextSearch) {
+      const start = findSearchStart(lines, position, end, nextSearch, searchIsLast);
+      if (start.found) {
+        end = start.index;
+        confirmed = true;
+      } else if (unbounded) {
+        // The read took everything only if the search printed nothing; its
+        // errors (`grep: x: No such file or directory`) stay after it.
+        if (!start.printedNothing) break;
+        end = start.rowsEnd;
+        confirmed = true;
+      } else {
+        confirmed =
+          end < lines.length &&
+          end < start.rowsEnd &&
+          isSearchStartLine(lines[end]!, nextSearch) &&
+          (!searchIsLast ||
+            lines.slice(end, start.rowsEnd).every((line) => isSearchRow(line, nextSearch)));
+      }
     }
     let code = lines.slice(position, end);
     let lineNumbers: number[] | null = null;
@@ -831,14 +960,17 @@ function classifySections(input: ClassifyCommandOutputInput): CommandOutputPrese
     });
     position += code.length;
   }
-  if (position < lines.length) {
-    sections.push({ type: "plain", text: lines.slice(position).join("\n") });
-  }
+  if (position < lines.length) pushPlain(lines.slice(position).join("\n"));
   // A search that comes first and alone, then other output, is a search
-  // presentation (after an empty read it is not, so it stays a section).
+  // presentation (after an empty read or search it is not, so it stays a
+  // section), when that presentation can take the command: it cannot after
+  // a statement the splitter could not follow.
   const structured = sections.filter((section) => section.type !== "plain");
   const leadingSearchOnly =
-    structured.length === 1 && structured[0]!.type === "search" && statements[0]!.kind === "search";
+    structured.length === 1 &&
+    structured[0]!.type === "search" &&
+    structuredFrom.get(sections.indexOf(structured[0]!)) === 0 &&
+    parseSearchOutputCommand(input.command) !== null;
   if (structured.length === 0 || leadingSearchOnly) return null;
   return {
     kind: "sections",
