@@ -7298,14 +7298,8 @@ describe("ChatView timeline (full app)", () => {
       );
 
       const composerEditor = await waitForComposerEditor();
-      composerEditor.focus();
-      composerEditor.dispatchEvent(
-        new KeyboardEvent("keydown", {
-          key: "Backspace",
-          bubbles: true,
-          cancelable: true,
-        }),
-      );
+      await userEvent.click(composerEditor);
+      await userEvent.keyboard("{End}{Backspace}");
 
       await vi.waitFor(
         () => {
