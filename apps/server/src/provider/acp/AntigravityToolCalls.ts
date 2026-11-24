@@ -61,6 +61,14 @@ export function makeAntigravityToolNormalizer(readFile = readAntigravityPreEditF
         : tool.kind;
     const command = raw.CommandLine ?? raw.command_line ?? raw.command;
     if (typeof command === "string") data.command = command;
+    // Antigravity's own one-line summary ("Inspect repository top-level layout") becomes the
+    // card header; F5 otherwise derives a generic label from the command. Commands only: other
+    // tools' `input.description` already titles subagent and task cards.
+    const summary =
+      kind === "execute" && typeof raw.toolSummary === "string" ? raw.toolSummary.trim() : "";
+    const input = record(data.input);
+    if (summary && typeof input.description !== "string")
+      data.input = { ...input, description: summary };
     if (kind === "edit") {
       const content = Array.isArray(data.content) ? data.content : [];
       data.content = content.map((item, index) => {

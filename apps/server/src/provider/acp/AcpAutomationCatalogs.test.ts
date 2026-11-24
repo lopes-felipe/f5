@@ -308,6 +308,28 @@ it.each([
 });
 
 describe("launch credential scrubbing", () => {
+  it("reports how much trailing text could begin a redacted credential", async () => {
+    const key = "AIzaSyHoldbackFixture000";
+    const scope = await Effect.runPromise(Scope.make());
+    try {
+      const catalogs = await Effect.runPromise(
+        prepareAcpAutomationCatalogs({
+          threadId,
+          provider: "antigravity",
+          scope,
+          ordinarySession: true,
+          readOnlyWorkflow: false,
+          credentials: [key],
+        }),
+      );
+      expect(catalogs.credentialPrefixHoldback("export KEY=AIzaSy")).toBe(6);
+      expect(catalogs.credentialPrefixHoldback(`export KEY=${key}`)).toBe(0);
+      expect(catalogs.credentialPrefixHoldback("no secret here")).toBe(0);
+    } finally {
+      await Effect.runPromise(Scope.close(scope, Exit.void));
+    }
+  });
+
   it("redacts a credential echoed as a property name as well as a value", async () => {
     const key = "AIzaSyPropertyNameFixture000";
     const scope = await Effect.runPromise(Scope.make());

@@ -18,7 +18,7 @@ import { GitCore } from "../../git/Services/GitCore.ts";
 import { assertMcpRuntimeConfig, mcpConfigErrorMessage } from "@t3tools/shared/mcpValidation";
 import { readCodexMcpOAuthCallbackConfig } from "@t3tools/shared/mcpTranslation";
 import { resolveClaudeLaunchAppendSystemPrompt } from "../claudeAppendSystemPrompt.ts";
-import { DeliveryAttemptContext } from "../deliveryAttemptContext";
+import { DeliveryAttemptContext, TurnAcceptanceSignal } from "../deliveryAttemptContext";
 import { automationEventSanitizer } from "@t3tools/shared/automationActivitySanitizer";
 import { ComputerAutomationBroker } from "../../computer/ComputerAutomationBroker";
 import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts";
@@ -79,6 +79,7 @@ import {
   type ProviderSession,
   type ProviderSessionAction,
   type ServerProvider,
+  type ProviderTurnStartResult,
   type McpReloadResult,
   type McpSessionReloadOutcome,
   type McpSessionSummary,
@@ -96,6 +97,7 @@ import {
   Duration,
   Deferred,
   Effect,
+  Exit,
   Fiber,
   Layer,
   Option,
@@ -2579,10 +2581,98 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                 ),
               )
             : admit;
+          // Adapters whose send lasts the whole turn report acceptance early through this.
+          // The write runs on its own fiber so the agent's event stream never waits on it,
+          // and is joined once the send settles: the call after a successful send is the
+          // fallback whenever the early write did not commit, and a late write can never
+          // land after the send's outcome was decided.
+          let acceptanceClosed = false;
+          let earlyAcceptance:
+            | {
+                readonly receipt: ProviderTurnStartResult;
+                readonly write: Fiber.Fiber<void, unknown>;
+              }
+            | undefined;
+          const acceptanceSignal = deliveryAttempt
+            ? {
+                accept: (receipt: ProviderTurnStartResult) =>
+                  Effect.suspend(() => {
+                    if (acceptanceClosed || earlyAcceptance) return Effect.void;
+                    return deliveryAttempt
+                      .accepted(receipt, { runtimeGeneration: generation, nativeHistoryIdentity })
+                      .pipe(
+                        Effect.forkDetach,
+                        Effect.flatMap((write) =>
+                          Effect.sync(() => {
+                            earlyAcceptance = { receipt, write };
+                          }),
+                        ),
+                      );
+                  }),
+              }
+            : null;
+          /** Whether the early acceptance write committed. Closes the signal first. */
+          const settleEarlyAcceptance = Effect.suspend(() => {
+            acceptanceClosed = true;
+            const early = earlyAcceptance;
+            if (!early) return Effect.succeed(false);
+            return Fiber.await(early.write).pipe(
+              Effect.flatMap((exit) =>
+                Exit.isSuccess(exit)
+                  ? Effect.succeed(true)
+                  : Effect.logWarning("early turn acceptance failed", {
+                      threadId: input.threadId,
+                      cause: Cause.pretty(exit.cause),
+                    }).pipe(Effect.as(false)),
+              ),
+            );
+          });
+          /**
+           * A send that fails after its delivery was accepted is a failed turn, not a
+           * rejected delivery: the agent already started on the message, so it must not be
+           * sent again. The turn is settled here, with its usage limit, as any provider
+           * reports a turn that fails mid-way.
+           */
+          const failAcceptedTurn = (
+            receipt: ProviderTurnStartResult,
+            cause: Cause.Cause<unknown>,
+          ) =>
+            Effect.gen(function* () {
+              if (Cause.hasInterruptsOnly(cause)) return;
+              const error = Cause.squash(cause);
+              const usageLimit =
+                (Schema.is(ProviderTurnDeliveryError)(error) && error.usageLimit) ||
+                (Schema.is(ProviderAdapterRequestError)(error) && error.usageLimit) ||
+                undefined;
+              const message =
+                (error instanceof Error && error.message.trim()) ||
+                "The provider stopped this turn with an error.";
+              const stamp = () => ({
+                eventId: EventId.makeUnsafe(timeOrderedUuid()),
+                provider: routed.adapter.provider,
+                threadId: input.threadId,
+                turnId: receipt.turnId,
+                createdAt: new Date().toISOString(),
+              });
+              yield* publishRuntimeEvent({
+                ...stamp(),
+                type: "runtime.error",
+                payload: {
+                  class: "provider_error",
+                  message,
+                  ...(usageLimit ? { usageLimit } : {}),
+                },
+              });
+              yield* publishRuntimeEvent({
+                ...stamp(),
+                type: "turn.completed",
+                payload: { state: "failed", errorMessage: message, stopReason: null },
+              });
+            });
           const send = Effect.gen(function* () {
             yield* requireProjectProvider(deliveryBinding.value);
             yield* ensureAccepting;
-            const turn = yield* (
+            const sent = yield* (
               input.expectedTurnId !== undefined
                 ? routed.adapter.steerTurn!({
                     ...input,
@@ -2607,14 +2697,29 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                     })
                   : error,
               ),
+              Effect.provideService(TurnAcceptanceSignal, acceptanceSignal),
+              Effect.exit,
             );
-            if (deliveryAttempt)
+            const earlyCommitted = yield* settleEarlyAcceptance;
+            if (Exit.isFailure(sent)) {
+              if (earlyCommitted && earlyAcceptance)
+                yield* failAcceptedTurn(earlyAcceptance.receipt, sent.cause);
+              return yield* Effect.failCause(sent.cause);
+            }
+            const turn = sent.value;
+            if (deliveryAttempt && !earlyCommitted)
               yield* deliveryAttempt.accepted(turn, {
                 runtimeGeneration: generation,
                 nativeHistoryIdentity,
               });
             return turn;
-          });
+          }).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                acceptanceClosed = true;
+              }),
+            ),
+          );
           const turn = yield* send;
           return yield* withProviderThreadAccess(
             input.threadId,

@@ -1,7 +1,7 @@
 import { writeAcpWrapper } from "../../testUtils/cli.ts";
 import * as os from "node:os";
 import * as path from "node:path";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createModelSelection } from "@t3tools/shared/model";
 import { fileURLToPath } from "node:url";
 
@@ -14,6 +14,7 @@ import {
   ProviderInstanceId,
   type ProviderRuntimeEvent,
   ThreadId,
+  type TurnId,
 } from "@t3tools/contracts";
 import { Cause, Effect, Fiber, Layer, Schema, ServiceMap, Stream } from "effect";
 
@@ -22,6 +23,7 @@ import * as GrokAcpSupport from "../acp/GrokAcpSupport.ts";
 import { ServerConfig } from "../../config.ts";
 import type { GrokAdapterShape } from "../Services/GrokAdapter.ts";
 import { makeGrokAdapter } from "./GrokAdapter.ts";
+import { TurnAcceptanceSignal } from "../deliveryAttemptContext.ts";
 
 class GrokAdapter extends ServiceMap.Service<GrokAdapter, GrokAdapterShape>()(
   "t3/provider/Layers/GrokAdapter.test/GrokAdapter",
@@ -755,6 +757,150 @@ rootIt.layer(
       assert.include(selected, "allow-once");
       assert.notInclude(selected, "allow-always");
       yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("appends a command's output to its transcript before the command completes", () =>
+    Effect.gen(function* () {
+      const { adapter, events } = yield* antigravityProfileAdapter({
+        env: { T3_ACP_EMIT_TOOL_CALLS: "1" },
+      });
+      const threadId = ThreadId.make("agy-command-output");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId, input: "Read it", attachments: [] });
+      const forTool = events.filter(
+        (event) =>
+          event.itemId === "tool-call-1" &&
+          (event.type === "content.delta" || event.type === "item.completed"),
+      );
+      const outputs = forTool.flatMap((event) =>
+        event.type === "content.delta" && event.payload.streamKind === "command_output"
+          ? [event.payload.delta]
+          : [],
+      );
+      assert.deepEqual(outputs, ['{ "name": "t3" }']);
+      assert.equal(forTool.at(-1)?.type, "item.completed");
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("reports the delivery accepted on the agent's first progress, mid-turn", () =>
+    Effect.gen(function* () {
+      const { adapter } = yield* antigravityProfileAdapter({
+        env: { T3_ACP_EMIT_TOOL_CALLS: "1", T3_ACP_WAIT_AFTER_PERMISSION: "1" },
+      });
+      const threadId = ThreadId.make("agy-early-acceptance");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      const accepted: Array<string> = [];
+      const turn = yield* adapter.sendTurn({ threadId, input: "Read it", attachments: [] }).pipe(
+        Effect.provideService(TurnAcceptanceSignal, {
+          accept: (receipt) => Effect.sync(() => accepted.push(String(receipt.turnId))),
+        }),
+        Effect.forkChild,
+      );
+      // The agent asked to run a command and now waits; the prompt has not returned.
+      yield* Effect.promise(() =>
+        vi.waitFor(() => {
+          if (accepted.length === 0) throw new Error("not accepted yet");
+        }),
+      );
+      assert.isUndefined(turn.pollUnsafe());
+      yield* adapter.interruptTurn(threadId);
+      const result = yield* Fiber.join(turn);
+      assert.deepEqual(accepted, [String(result.turnId)]);
+      // Stopping an Antigravity turn may end its session already.
+      yield* adapter.stopSession(threadId).pipe(Effect.ignore);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "keeps the turn's acceptance when a steer arrives before the agent's first progress",
+    () =>
+      Effect.gen(function* () {
+        const gateDir = yield* Effect.acquireRelease(
+          Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "agy-steer-gate-"))),
+          (directory) => Effect.promise(() => rm(directory, { recursive: true, force: true })),
+        );
+        const gate = path.join(gateDir, "go");
+        const { adapter } = yield* antigravityProfileAdapter({
+          env: { T3_ACP_PROMPT_GATE_PATH: gate },
+        });
+        const threadId = ThreadId.make("agy-steer-before-progress");
+        yield* adapter.startSession({
+          threadId,
+          provider: "antigravity",
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+        const accepted: Array<string> = [];
+        const turn = yield* adapter.sendTurn({ threadId, input: "Start", attachments: [] }).pipe(
+          Effect.provideService(TurnAcceptanceSignal, {
+            accept: (receipt) => Effect.sync(() => accepted.push(String(receipt.turnId))),
+          }),
+          Effect.forkChild,
+        );
+        let activeTurnId: TurnId | undefined;
+        yield* Effect.promise(() =>
+          vi.waitFor(async () => {
+            const sessions = await Effect.runPromise(adapter.listSessions());
+            activeTurnId = sessions.find((session) => session.threadId === threadId)?.activeTurnId;
+            if (!activeTurnId) throw new Error("no running turn yet");
+          }),
+        );
+        // The steer runs with a signal too; a steer never reports acceptance itself.
+        const steer = yield* adapter
+          .sendTurn({ threadId, input: "Also this", attachments: [], expectedTurnId: activeTurnId })
+          .pipe(
+            Effect.provideService(TurnAcceptanceSignal, {
+              accept: () => Effect.sync(() => accepted.push("steer")),
+            }),
+            Effect.forkChild,
+          );
+        yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 50)));
+        yield* Effect.promise(() => writeFile(gate, ""));
+        yield* Effect.promise(() =>
+          vi.waitFor(() => {
+            if (accepted.length === 0) throw new Error("not accepted yet");
+          }),
+        );
+        const result = yield* Fiber.join(turn);
+        yield* Fiber.join(steer).pipe(Effect.ignore);
+        assert.deepEqual(accepted, [String(result.turnId)]);
+        yield* adapter.stopSession(threadId).pipe(Effect.ignore);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("does not report acceptance when the prompt fails before any progress", () =>
+    Effect.gen(function* () {
+      const { adapter } = yield* antigravityProfileAdapter({
+        env: { T3_ACP_FAIL_PROMPT_TRANSPORT: "exit" },
+      });
+      const threadId = ThreadId.make("agy-no-acceptance");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      const accepted: Array<string> = [];
+      const exit = yield* adapter.sendTurn({ threadId, input: "Hi", attachments: [] }).pipe(
+        Effect.provideService(TurnAcceptanceSignal, {
+          accept: (receipt) => Effect.sync(() => accepted.push(String(receipt.turnId))),
+        }),
+        Effect.exit,
+      );
+      assert.equal(exit._tag, "Failure");
+      assert.deepEqual(accepted, []);
     }).pipe(Effect.scoped),
   );
 
