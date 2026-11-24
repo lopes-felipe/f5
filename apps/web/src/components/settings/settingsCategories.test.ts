@@ -100,6 +100,10 @@ describe("settings item descriptors", () => {
     );
     expect(filterSettingsItems("merge method")[0]?.id).toBe("git.merge-method");
     expect(filterSettingsItems("manage worktrees")[0]?.id).toBe("git.manage-worktrees");
+    expect(filterSettingsItems("doctor support bundle")[0]?.id).toBe("general.doctor");
+    expect(filterSettingsItems("F5_AUTH_TOKEN")[0]?.id).toBe("general.doctor");
+    expect(filterSettingsItems("providers pi")[0]?.id).toBe("providers.instances");
+    expect(filterSettingsItems("providers antigravity")[0]?.id).toBe("providers.instances");
   });
 
   it("limits search to the items the current scope renders", () => {

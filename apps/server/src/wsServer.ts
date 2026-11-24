@@ -395,6 +395,7 @@ import {
   SLOW_RPC_ROUTE_MS,
   startEventLoopDelayMonitor,
 } from "./observability/serverHealth.ts";
+import { runDoctorDiagnostics } from "./diagnostics/doctor.ts";
 import {
   type BootstrapThreadDisposition,
   dispatchBootstrapTurnStart,
@@ -6927,6 +6928,93 @@ export const createServer = Effect.fn(function* (
 
       case WS_METHODS.serverGetHealth:
         return readServerHealth();
+
+      case WS_METHODS.serverGetDoctorReport: {
+        const providers = yield* providerAdvisoryProjection.getProviders;
+        const quickRows = yield* sql<{ readonly quick_check?: string }>`PRAGMA quick_check(5)`.pipe(
+          Effect.catch(() =>
+            Effect.succeed([] as ReadonlyArray<{ readonly quick_check?: string }>),
+          ),
+        );
+        const pageSizeRows = yield* sql<{ readonly page_size?: number }>`PRAGMA page_size`.pipe(
+          Effect.catch(() => Effect.succeed([] as ReadonlyArray<{ readonly page_size?: number }>)),
+        );
+        const pageCountRows = yield* sql<{ readonly page_count?: number }>`PRAGMA page_count`.pipe(
+          Effect.catch(() => Effect.succeed([] as ReadonlyArray<{ readonly page_count?: number }>)),
+        );
+        const freelistRows = yield* sql<{
+          readonly freelist_count?: number;
+        }>`PRAGMA freelist_count`.pipe(
+          Effect.catch(() =>
+            Effect.succeed([] as ReadonlyArray<{ readonly freelist_count?: number }>),
+          ),
+        );
+        const autoVacuumRows = yield* sql<{
+          readonly auto_vacuum?: number;
+        }>`PRAGMA auto_vacuum`.pipe(
+          Effect.catch(() =>
+            Effect.succeed([] as ReadonlyArray<{ readonly auto_vacuum?: number }>),
+          ),
+        );
+        const journalRows = yield* sql<{
+          readonly journal_mode?: string;
+        }>`PRAGMA journal_mode`.pipe(
+          Effect.catch(() =>
+            Effect.succeed([] as ReadonlyArray<{ readonly journal_mode?: string }>),
+          ),
+        );
+        const migrationRows = yield* sql<{
+          readonly count?: number;
+          readonly latest?: number | null;
+        }>`SELECT COUNT(*) AS count, MAX(migration_id) AS latest FROM effect_sql_migrations`.pipe(
+          Effect.catch(() =>
+            Effect.succeed(
+              [] as ReadonlyArray<{ readonly count?: number; readonly latest?: number | null }>,
+            ),
+          ),
+        );
+        const sqliteSnapshot =
+          quickRows.length > 0
+            ? {
+                quickCheck: quickRows
+                  .map((row) => String(row.quick_check ?? ""))
+                  .filter((line) => line.length > 0),
+                pageSize: Number(pageSizeRows[0]?.page_size ?? 0),
+                pageCount: Number(pageCountRows[0]?.page_count ?? 0),
+                freelistCount: Number(freelistRows[0]?.freelist_count ?? 0),
+                autoVacuum: Number(autoVacuumRows[0]?.auto_vacuum ?? 0),
+                journalMode: String(journalRows[0]?.journal_mode ?? "unknown"),
+                migrationCount:
+                  typeof migrationRows[0]?.count === "number" ? migrationRows[0].count : null,
+                latestMigrationId:
+                  typeof migrationRows[0]?.latest === "number" ? migrationRows[0].latest : null,
+              }
+            : null;
+        return yield* Effect.promise(() =>
+          runDoctorDiagnostics({
+            mode: serverConfig.mode,
+            stateDir: serverConfig.stateDir,
+            dbPath: serverConfig.dbPath,
+            worktreesDir: serverConfig.worktreesDir,
+            logsDir: serverConfig.logsDir,
+            attachmentsDir: serverConfig.attachmentsDir,
+            ...(serverConfig.profilesRoot ? { profilesRoot: serverConfig.profilesRoot } : {}),
+            ...(serverConfig.profile
+              ? {
+                  profileSlug: serverConfig.profile.slug,
+                  profileName: serverConfig.profile.name,
+                  isDefaultProfile: serverConfig.profile.isDefault,
+                }
+              : {}),
+            ...(serverConfig.host !== undefined ? { host: serverConfig.host } : {}),
+            port: serverConfig.port,
+            authEnabled: Boolean(serverConfig.authToken),
+            trustedProxyCount: serverConfig.trustedProxies?.length ?? 0,
+            liveProviders: providers,
+            inspectSqlite: async () => sqliteSnapshot,
+          }),
+        );
+      }
 
       case WS_METHODS.serverGetConfig:
         const keybindingsConfig = yield* keybindingsManager.loadConfigState;

@@ -63,6 +63,7 @@ import {
   ServerConfigUpdatedPayload,
   type ServerConfig,
   ServerConfigForwardCompatibleFields,
+  ServerDoctorReport,
   ServerHealth,
   ServerKeybindingMutationResult,
   type DiskSpaceStatus,
@@ -147,6 +148,7 @@ const decodeKeybindingMutationResult = Schema.decodeUnknownSync(ServerKeybinding
 // version can answer in another shape. The card reads nested fields; a shape it
 // does not know must fail the request, not the render.
 const decodeServerHealth = Schema.decodeUnknownSync(ServerHealth);
+const decodeServerDoctorReport = Schema.decodeUnknownSync(ServerDoctorReport);
 
 function decodeServerConfig(result: unknown): ServerConfig {
   return {
@@ -885,6 +887,8 @@ export function createWsNativeApi(): NativeApi {
         decodeServerConfig(await transport.request(WS_METHODS.serverGetConfig)),
       getHealth: async () =>
         decodeServerHealth(await transport.request(WS_METHODS.serverGetHealth)),
+      getDoctorReport: async () =>
+        decodeServerDoctorReport(await transport.request(WS_METHODS.serverGetDoctorReport)),
       getProjectSettings: requestMethod(WS_METHODS.serverGetProjectSettings),
       migrateClientSetting: (input) =>
         transport.request(WS_METHODS.serverMigrateClientSetting, input),

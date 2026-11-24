@@ -1,4 +1,9 @@
 import { summarizeTraceFile } from "./observability/traceSummary.ts";
+import {
+  buildRedactedSupportBundle,
+  formatDoctorReportText,
+  runDoctorDiagnostics,
+} from "./diagnostics/doctor.ts";
 import { registerShutdown, ServerShutdown, ServerShutdownLive } from "./shutdown.ts";
 import { terminateRunningProcesses } from "./processRunner.ts";
 import { ProfileGithubAccount } from "./git/ProfileGithubAccount";
@@ -329,8 +334,9 @@ const ServerConfigLive = (input: CliInput) => {
       const noBrowser = resolveBooleanFlag(input.noBrowser, env.noBrowser ?? mode === "desktop");
       const authToken = trimToUndefined(Option.getOrUndefined(input.authToken) ?? env.authToken);
       // ServerConfig holds the token from here on. Many spawn sites pass `process.env` straight
-      // through (Git and its hooks, setup scripts, maintenance workers), so drop the variable
-      // from this process instead of relying on each of them to filter it.
+      // through (Git and its hooks, setup scripts, maintenance workers), so drop the variables
+      // from this process instead of relying on each of them to filter them.
+      delete process.env[PRIMARY_SERVER_AUTH_TOKEN_ENV];
       delete process.env[SERVER_AUTH_TOKEN_ENV];
       const autoBootstrapProjectFromCwd = resolveBooleanFlag(
         input.autoBootstrapProjectFromCwd,
@@ -347,7 +353,7 @@ const ServerConfigLive = (input: CliInput) => {
         return yield* new StartupError({
           message:
             `Refusing to bind F5 to non-loopback host '${host}' without authentication. ` +
-            "Set --auth-token (or T3CODE_AUTH_TOKEN), or bind to 127.0.0.1/localhost.",
+            "Set --auth-token (or F5_AUTH_TOKEN / T3CODE_AUTH_TOKEN), or bind to 127.0.0.1/localhost.",
         });
       }
       if (
@@ -928,6 +934,102 @@ const appCommand = Command.make("app", {
   ),
 );
 
+const doctorCommand = Command.make("doctor", {
+  json: Flag.boolean("json").pipe(
+    Flag.withDescription("Emit the diagnostic report as machine-readable JSON."),
+    Flag.withDefault(false),
+  ),
+  bundle: Flag.string("bundle").pipe(
+    Flag.withDescription("Write a redacted JSON support bundle to the specified path."),
+    Flag.optional,
+  ),
+}).pipe(
+  Command.withDescription(
+    "Inspect F5 environment, SQLite health, provider CLIs, and storage without modifying state.",
+  ),
+  Command.withHandler(({ json, bundle }) =>
+    Effect.gen(function* () {
+      const parent = yield* t3Base;
+      const path = yield* Path.Path;
+      const explicitStateDir =
+        optionStringToTrimmedUndefined(parent.stateDir) ??
+        trimToUndefined(process.env.F5_STATE_DIR) ??
+        trimToUndefined(process.env.T3CODE_STATE_DIR);
+      const resolvedStateDir =
+        explicitStateDir !== undefined ? yield* resolveStateDir(explicitStateDir) : undefined;
+      const baseDir =
+        resolvedStateDir !== undefined
+          ? path.dirname(resolvedStateDir)
+          : yield* resolveBaseDir(
+              optionStringToTrimmedUndefined(parent.t3Home) ??
+                trimToUndefined(process.env.F5_HOME) ??
+                trimToUndefined(process.env.T3CODE_HOME),
+            );
+      const defaultStateDir = resolvedStateDir ?? path.join(baseDir, "userdata");
+      const profileRef =
+        optionStringToTrimmedUndefined(parent.profile) ?? trimToUndefined(process.env.F5_PROFILE);
+      const registryStore = new ProfileRegistryStore(defaultStateDir);
+      const read = yield* Effect.promise(() => registryStore.read());
+      const records = read.ok ? read.registry.profiles : [fallbackDefaultProfile(defaultStateDir)];
+      const profile =
+        records.find((record) => record.slug === (profileRef ?? "default")) ??
+        records.find((record) => record.id === profileRef);
+      if (!profile) {
+        return yield* new StartupError({ message: `Unknown F5 profile '${profileRef}'.` });
+      }
+      const vmRefusal = hostExecutionRefusal(profile);
+      if (vmRefusal) return yield* new StartupError({ message: vmRefusal });
+      const paths = yield* deriveServerPaths({ baseDir, defaultStateDir, profile });
+      const report = yield* Effect.promise(() =>
+        runDoctorDiagnostics({
+          mode: "cli",
+          stateDir: paths.stateDir,
+          dbPath: paths.dbPath,
+          worktreesDir: paths.worktreesDir,
+          logsDir: paths.logsDir,
+          attachmentsDir: paths.attachmentsDir,
+          profilesRoot: registryStore.root,
+          profileSlug: profile.slug,
+          profileName: profile.name,
+          isDefaultProfile: profile.isDefault,
+        }),
+      );
+      const bundlePath = optionStringToTrimmedUndefined(bundle);
+      if (bundlePath) {
+        const payload = buildRedactedSupportBundle({ report });
+        yield* Effect.tryPromise({
+          try: () =>
+            ProfileFS.writeFile(bundlePath, `${JSON.stringify(payload, null, 2)}\n`, {
+              mode: 0o600,
+            }),
+          catch: (cause) =>
+            new StartupError({
+              message: `Failed to write support bundle to '${bundlePath}': ${cause instanceof Error ? cause.message : String(cause)}`,
+            }),
+        });
+      }
+      if (json) {
+        process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+      } else {
+        process.stdout.write(formatDoctorReportText(report));
+        if (bundlePath) {
+          process.stdout.write(`Redacted support bundle written to ${bundlePath}\n`);
+        }
+      }
+      if (report.overallStatus === "error") {
+        process.exitCode = 1;
+      }
+    }).pipe(
+      Effect.catchTag("StartupError", (error) =>
+        Effect.sync(() => {
+          process.stderr.write(`${error.message}\n`);
+          process.exitCode = 1;
+        }),
+      ),
+    ),
+  ),
+);
+
 export const t3Cli = t3Base.pipe(
   Command.withDescription("Run the F5 server."),
   Command.withHandler((input) => Effect.scoped(makeServerProgram(input))),
@@ -937,5 +1039,6 @@ export const t3Cli = t3Base.pipe(
     makeThreadCommand(resolveCliProfileStateDir),
     traceCommand,
     appCommand,
+    doctorCommand,
   ]),
 );

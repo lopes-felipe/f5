@@ -366,6 +366,7 @@ export const RPC_METHOD_POLICY = {
   "server.checkProviderUpdates": MUTATION,
   "server.getClaudeTranscriptRepair": READ_RT,
   "server.getConfig": READ,
+  "server.getDoctorReport": READ,
   "server.getHealth": READ,
   "server.getProjectSettings": READ,
   "server.getProviderInventory": READ,

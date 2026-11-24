@@ -12,6 +12,7 @@ import {
   ORCHESTRATION_WS_METHODS,
   ProfileId,
   ProjectId,
+  ServerDoctorReport,
   ServerHealth,
   ThreadId,
   UPSTREAM_PORTS_WS_METHODS,
@@ -1600,6 +1601,22 @@ describe("WebSocket Server", () => {
     } finally {
       resetServerHealthForTest();
     }
+  });
+
+  it("answers server.getDoctorReport with a schema-valid redacted diagnostic report", async () => {
+    h.server = await createTestServer();
+    const address = h.server.address();
+    if (!address || typeof address === "string") throw new Error("No server address");
+    const [ws] = await connectAndAwaitWelcome(address.port);
+    connections.push(ws);
+
+    const response = await sendRequest(ws, WS_METHODS.serverGetDoctorReport);
+    expect(response.error).toBeUndefined();
+    const report = Schema.decodeUnknownSync(ServerDoctorReport)(response.result);
+    expect(report.runtime.mode).toBe("web");
+    expect(report.checks.some((check) => check.id === "env.git")).toBe(true);
+    expect(report.checks.some((check) => check.id === "db.integrity")).toBe(true);
+    expect(report.counts.ok + report.counts.warn + report.counts.error).toBe(report.checks.length);
   });
 
   it("reports runtime readiness in the welcome and the probe once the runtime is ready", async () => {

@@ -963,4 +963,40 @@ it.layer(testLayer)("profile startup selection", (it) => {
       assert.equal(resolvedConfig?.observabilityEnabled, true);
     }),
   );
+  it.effect(
+    "runs `doctor --json` and writes a redacted support bundle without starting the server",
+    () =>
+      Effect.gen(function* () {
+        const root = FS.mkdtempSync(Path.join(OS.tmpdir(), "f5-doctor-cli-"));
+        const stateDir = Path.join(root, "userdata");
+        const bundlePath = Path.join(root, "support-bundle.json");
+        FS.mkdirSync(stateDir, { recursive: true });
+        const written: string[] = [];
+        const stdout = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+          written.push(String(chunk));
+          return true;
+        });
+        try {
+          yield* runCli(["--state-dir", stateDir, "doctor", "--json", "--bundle", bundlePath]);
+          const parsed = JSON.parse(written.join("")) as {
+            runtime: { mode: string; profileSlug: string };
+            checks: ReadonlyArray<{ id: string }>;
+          };
+          assert.equal(parsed.runtime.mode, "cli");
+          assert.equal(parsed.runtime.profileSlug, "default");
+          assert.ok(parsed.checks.some((check) => check.id === "env.git"));
+          assert.equal(start.mock.calls.length, 0);
+
+          const bundle = JSON.parse(FS.readFileSync(bundlePath, "utf8")) as {
+            schemaVersion: number;
+            doctor: { runtime: { mode: string } };
+          };
+          assert.equal(bundle.schemaVersion, 1);
+          assert.equal(bundle.doctor.runtime.mode, "cli");
+        } finally {
+          stdout.mockRestore();
+          FS.rmSync(root, { recursive: true, force: true });
+        }
+      }),
+  );
 });
