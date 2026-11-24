@@ -4,7 +4,7 @@
     file with its real line numbers.
   - Chains that print labels or counts (`echo "== x"`, `wc -l a.ts`) keep highlighting the reads and
     searches around them.
-  - Commands that use shell variables (`H=abc123; git show $H:a.ts`) or `|| true` are followed.
+  - Commands that use shell variables (`H=abc123; git show ${H}:a.ts`) or `|| true` are followed.
   - Reads of a file written earlier in the same command show the original file's name, as in
     `git show A:a.ts > /tmp/a.ts` followed by `sed -n 1,9p /tmp/a.ts`.
   - A whole-file read followed by a search (`cat a.ts; grep -rn x src`), a search that finds
