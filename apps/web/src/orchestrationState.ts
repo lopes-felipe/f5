@@ -83,13 +83,7 @@ export function inferProviderForThreadModel(input: {
   readonly model: string;
   readonly sessionProviderName: string | null;
 }): ProviderKind {
-  if (
-    input.sessionProviderName === "codex" ||
-    input.sessionProviderName === "claudeAgent" ||
-    input.sessionProviderName === "cursor" ||
-    input.sessionProviderName === "opencode" ||
-    input.sessionProviderName === "grok"
-  ) {
+  if (isKnownProviderKind(input.sessionProviderName)) {
     return input.sessionProviderName;
   }
   return inferProviderForModel(input.model);

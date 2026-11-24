@@ -1956,6 +1956,59 @@ describe("composerDraftStore providers beyond the original whitelist", () => {
       modelOptions: { antigravity: { thinking: "xhigh" } },
     });
   });
+
+  it("keeps the Antigravity provider and thinking level through a prompt stash", async () => {
+    const projectId = ProjectId.makeUnsafe("project-extra-providers");
+    setComposerDraftBaseStorageForTesting(createMockStorage());
+    useComposerDraftStore.setState({ promptStashes: [] });
+    try {
+      const store = useComposerDraftStore.getState();
+      store.setPrompt(threadId, "Plan the migration");
+      store.setProvider(threadId, "antigravity");
+      store.setProviderModelOptions(threadId, ProviderDriverKind.make("antigravity"), [
+        { id: "thinking", value: "xhigh" },
+      ]);
+
+      const saved = await store.stashPromptDraft({
+        threadId,
+        projectId,
+        workspaceRoot: "/repo",
+      });
+      expect(saved.status).toBe("stored");
+      expect(useComposerDraftStore.getState().promptStashes[0]?.draft).toMatchObject({
+        provider: "antigravity",
+        modelOptions: { antigravity: { thinking: "xhigh" } },
+      });
+
+      // Round-trip through persistence so the stash parser runs too.
+      const persistOptions = useComposerDraftStore.persist.getOptions();
+      useComposerDraftStore.setState(
+        persistOptions.merge!(
+          persistOptions.partialize!(useComposerDraftStore.getState()),
+          useComposerDraftStore.getInitialState(),
+        ),
+      );
+      store.setProvider(threadId, "codex");
+      store.setModelOptions(threadId, null);
+
+      const stashId = useComposerDraftStore.getState().promptStashes[0]!.id;
+      expect(
+        await useComposerDraftStore.getState().restorePromptStash({
+          stashId,
+          threadId,
+          projectId,
+          workspaceRoots: ["/repo"],
+        }),
+      ).toMatchObject({ status: "restored" });
+      expect(useComposerDraftStore.getState().draftsByThreadId[threadId]).toMatchObject({
+        prompt: "Plan the migration",
+        provider: "antigravity",
+        modelOptions: { antigravity: { thinking: "xhigh" } },
+      });
+    } finally {
+      resetComposerDraftBaseStorageForTesting();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

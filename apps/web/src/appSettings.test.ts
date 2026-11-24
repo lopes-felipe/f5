@@ -363,6 +363,21 @@ describe("parsePersistedAppSettings", () => {
     ]);
   });
 
+  it("keeps favorites for every known provider kind and drops unknown ones", () => {
+    expect(
+      normalizeFavoriteModels([
+        { providerKind: "antigravity", modelId: "gemini-4-neon" },
+        { providerKind: "pi", modelId: "pi-model" },
+        { providerKind: "muse", modelId: "muse-model" },
+        { providerKind: "not-a-provider", modelId: "model" },
+      ]),
+    ).toEqual([
+      { providerKind: "antigravity", modelId: "gemini-4-neon" },
+      { providerKind: "pi", modelId: "pi-model" },
+      { providerKind: "muse", modelId: "muse-model" },
+    ]);
+  });
+
   it("drops favorite model ids that exceed the maximum stored model length", () => {
     expect(
       normalizeFavoriteModels([
