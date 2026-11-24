@@ -44,6 +44,12 @@ export interface GitHubApiResponse {
 export const GITHUB_CLI_LOGS_UNSUPPORTED =
   "The installed GitHub CLI (`gh`) is too old to print job logs.";
 
+/** Reported while a credential GitHub answered with 401 is suspended. */
+export const GITHUB_CREDENTIAL_SUSPENDED =
+  "GitHub rejected the credential. F5 will check it again shortly; reconnect in Settings > Integrations if this keeps happening.";
+const CREDENTIAL_SUSPENSION_INITIAL_MS = 60_000;
+const CREDENTIAL_SUSPENSION_MAX_MS = 15 * 60_000;
+
 export interface GitHubApiRequest {
   readonly cwd: string;
   readonly context: GitHubCredentialContext;
@@ -251,7 +257,57 @@ export function makeGitHubApi(
   ) => Effect.Effect<string, GitHubCliError> = () => Effect.succeed(""),
   options: { readonly invalidateToken?: (host: string) => void } = {},
 ) {
-  const rejectedCredentials = new Map<string, string>();
+  /**
+   * Per host, a credential GitHub answered with 401. It is suspended until `retryAt`, then
+   * one request (or verification) probes it: a 401 doubles the window, any other answer from
+   * GitHub below 500 lifts it. A 401 can be transient, so the suspension must never be final.
+   */
+  const rejectedCredentials = new Map<
+    string,
+    { fingerprint: string; retryAt: number; backoffMs: number; armed: number }
+  >();
+  /**
+   * Increases each time a suspension is armed or probed. A request remembers the value it
+   * was admitted under: one admitted before the current arming answers for an earlier moment
+   * (it was already queued or in flight), so its outcome neither extends nor lifts it.
+   */
+  let suspensionSequence = 0;
+  const suspension = (host: string, fingerprint: string): "blocked" | "expired" | null => {
+    const entry = rejectedCredentials.get(host);
+    if (!entry || entry.fingerprint !== fingerprint) return null;
+    return Date.now() < entry.retryAt ? "blocked" : "expired";
+  };
+  /** Claims the single probe of an expired suspension; concurrent callers stay blocked. */
+  const claimProbe = (host: string) => {
+    const entry = rejectedCredentials.get(host);
+    if (!entry) return;
+    rejectedCredentials.set(host, {
+      ...entry,
+      retryAt: Date.now() + entry.backoffMs,
+      armed: ++suspensionSequence,
+    });
+  };
+  /** Records a 401 and returns the new suspension window, or null for a stale answer. */
+  const recordRejected = (host: string, fingerprint: string, admitted: number): number | null => {
+    const entry = rejectedCredentials.get(host);
+    const same = entry?.fingerprint === fingerprint;
+    if (same && admitted < entry.armed) return null;
+    const backoffMs = same
+      ? Math.min(entry.backoffMs * 2, CREDENTIAL_SUSPENSION_MAX_MS)
+      : CREDENTIAL_SUSPENSION_INITIAL_MS;
+    rejectedCredentials.set(host, {
+      fingerprint,
+      retryAt: Date.now() + backoffMs,
+      backoffMs,
+      armed: ++suspensionSequence,
+    });
+    return backoffMs;
+  };
+  const recordAccepted = (host: string, fingerprint: string, admitted: number) => {
+    const entry = rejectedCredentials.get(host);
+    if (entry?.fingerprint === fingerprint && admitted >= entry.armed)
+      rejectedCredentials.delete(host);
+  };
   /** Per host, the fingerprint of a credential that verified through the GraphQL viewer. */
   const viewerOnlyCredentials = new Map<string, string>();
   const accounts = new Map<string, GitHubCredentialContext>();
@@ -262,10 +318,14 @@ export function makeGitHubApi(
       host: string;
       token: string;
       expectedGeneration?: string;
+      /** Account verification has already checked (and possibly claimed) the suspension. */
+      verification?: boolean;
     },
   ): Effect.Effect<GitHubApiResponse, GitHubCliError> =>
     Effect.suspend(() => {
       let dispatched = false;
+      /** The suspension sequence this request was admitted under; see `suspensionSequence`. */
+      let admitted = suspensionSequence;
       return Effect.gen(function* () {
         const prepared = yield* Effect.try({
           try: () => {
@@ -345,16 +405,10 @@ export function makeGitHubApi(
                 : "rest";
         const isGraphql = input.endpoint.replace(/^\//, "") === "graphql";
         const searchPages = document.match(/\bsearch\s*\(/g)?.length ?? 1;
+        const fingerprint = createHash("sha256").update(input.token).digest("hex");
         const perform = Effect.gen(function* () {
-          if (
-            rejectedCredentials.get(input.host) ===
-            createHash("sha256").update(input.token).digest("hex")
-          )
-            return yield* new GitHubCliError({
-              operation: "request",
-              kind: "unauthenticated",
-              detail: "The GitHub credential was rejected. Change credentials before retrying.",
-            });
+          // The write's account check runs first: when the suspension has expired, it is the
+          // verification that probes the credential, and it lifts the suspension on success.
           if (resource === "write" && input.expectedGeneration) {
             const current = yield* getCredentialContext({ cwd: input.cwd, host: input.host });
             if (current.generation !== input.expectedGeneration)
@@ -364,6 +418,17 @@ export function makeGitHubApi(
                 detail: "The GitHub account changed before the write. Nothing was sent.",
               });
           }
+          if (!input.verification) {
+            const state = suspension(input.host, fingerprint);
+            if (state === "blocked")
+              return yield* new GitHubCliError({
+                operation: "request",
+                kind: "unauthenticated",
+                detail: GITHUB_CREDENTIAL_SUSPENDED,
+              });
+            if (state === "expired") claimProbe(input.host);
+          }
+          admitted = suspensionSequence;
           const result = yield* enforceGitHubRequestPolicy(
             Effect.suspend(() => {
               dispatched = true;
@@ -445,12 +510,24 @@ export function makeGitHubApi(
         });
         const recorded = perform.pipe(
           Effect.tap((response) =>
-            Effect.sync(() => {
-              if (response.status === 401)
-                rejectedCredentials.set(
-                  input.host,
-                  createHash("sha256").update(input.token).digest("hex"),
-                );
+            Effect.gen(function* () {
+              // A job log is answered by third-party storage after GitHub's redirect, so its
+              // 401 says nothing about the GitHub credential.
+              if (response.status === 401 && !input.terminalText) {
+                const backoffMs = recordRejected(input.host, fingerprint, admitted);
+                if (backoffMs !== null)
+                  yield* Effect.logWarning("GitHub rejected the credential; suspending it", {
+                    host: input.host,
+                    method: input.method,
+                    endpoint: input.endpoint,
+                    resource,
+                    backoffMs,
+                  });
+              } else if (response.status !== 401 && response.status < 500) {
+                // Any other answer below 500, including 403 and 404, means GitHub
+                // authenticated the credential. A 5xx proves nothing either way.
+                recordAccepted(input.host, fingerprint, admitted);
+              }
               const body = response.body as { data?: { rateLimit?: { cost?: number } } } | null;
               scheduler.record(
                 input.host,
@@ -570,16 +647,21 @@ export function makeGitHubApi(
           }),
         );
       const fingerprint = createHash("sha256").update(token).digest("hex");
-      if (rejectedCredentials.get(host) === fingerprint)
+      const suspended = suspension(host, fingerprint);
+      // A suspension whose window has passed is lifted only by verifying the credential
+      // again, so an expired one bypasses the cached identity and becomes the probe.
+      if (suspended === "blocked" || (suspended === "expired" && input.cacheOnly))
         return yield* new GitHubCliError({
           operation: "credentials",
           kind: "unauthenticated",
-          detail: "The GitHub credential was rejected. Change credentials before retrying.",
+          detail: GITHUB_CREDENTIAL_SUSPENDED,
         });
+      if (suspended === "expired") claimProbe(host);
       // Always resolve the current token, including before writes, but a matching
       // credential need not spend another REST request proving the same identity.
       const cached = accounts.get(host);
       if (
+        suspended === null &&
         cached &&
         credentials.get(cached)?.fingerprint === fingerprint &&
         Date.now() - (verifiedAt.get(host) ?? 0) < 60_000
@@ -598,6 +680,7 @@ export function makeGitHubApi(
         cwd: input.cwd,
         host,
         token,
+        verification: true,
         method: "POST",
         endpoint: "graphql",
         body: { query: "query { viewer { databaseId login } }" },
@@ -616,7 +699,14 @@ export function makeGitHubApi(
       let viaViewer = viewerOnlyCredentials.get(host) === fingerprint;
       let verified = viaViewer
         ? yield* readViewer
-        : yield* requestCaptured({ cwd: input.cwd, host, token, method: "GET", endpoint: "user" });
+        : yield* requestCaptured({
+            cwd: input.cwd,
+            host,
+            token,
+            verification: true,
+            method: "GET",
+            endpoint: "user",
+          });
       if (!viaViewer && verified.status === 403 && !isRateLimitedResponse(verified)) {
         verified = yield* readViewer;
         viaViewer = true;
@@ -633,8 +723,9 @@ export function makeGitHubApi(
         : verified.graphqlErrors.length === 0 && viewerNode
           ? { id: viewerNode.databaseId, login: viewerNode.login }
           : null;
+      // The verification requests themselves suspend a 401 credential and lift the
+      // suspension on success; see the response tap in `requestCaptured`.
       if (verified.status !== 200 || rateLimited) {
-        if (verified.status === 401) rejectedCredentials.set(host, fingerprint);
         return yield* Effect.fail(
           new GitHubCliError({
             operation: "credentials",
@@ -670,7 +761,6 @@ export function makeGitHubApi(
           }),
         );
       }
-      rejectedCredentials.delete(host);
       if (viaViewer) viewerOnlyCredentials.set(host, fingerprint);
       else viewerOnlyCredentials.delete(host);
       const previous = accounts.get(host);

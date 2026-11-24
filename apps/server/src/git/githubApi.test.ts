@@ -1,10 +1,10 @@
 import { makeGitHubRequestScheduler } from "./githubRequestScheduler.ts";
 import { Effect, Exit, Logger } from "effect";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GitHubCliError } from "./Errors.ts";
 import { GitHubRequestPolicy } from "./githubRequestPolicy.ts";
 import type { GitHubCliShape } from "./Services/GitHubCli.ts";
-import { makeGitHubApi, parseGitHubApiResponse } from "./githubApi.ts";
+import { GITHUB_CREDENTIAL_SUSPENDED, makeGitHubApi, parseGitHubApiResponse } from "./githubApi.ts";
 
 afterEach(() => vi.unstubAllEnvs());
 
@@ -17,22 +17,27 @@ function harness(scheduler = makeGitHubRequestScheduler()) {
     vi.stubEnv(name, "");
   let token = "credential-one";
   let response = wire({ ok: true });
+  let userResponse: string | null = null;
+  let gate: Promise<void> | null = null;
   let code = 0;
   let stderr = "";
-  const execute = vi.fn<GitHubCliShape["execute"]>((input) =>
-    Effect.sync(() => ({
+  const execute = vi.fn<GitHubCliShape["execute"]>((input) => {
+    const result = Effect.sync(() => ({
       stdout:
         input.args[0] === "auth"
           ? token
           : input.args[1] === "user"
-            ? wire({ id: token === "credential-one" ? 1 : 2, login: "same-login" })
+            ? (userResponse ??
+              wire({ id: token === "credential-one" ? 1 : 2, login: "same-login" }))
             : response,
       stderr,
       code,
       signal: null,
       timedOut: false,
-    })),
-  );
+    }));
+    const held = gate;
+    return held ? Effect.promise(() => held).pipe(Effect.andThen(result)) : result;
+  });
   return {
     api: makeGitHubApi(execute, scheduler, (host) =>
       Effect.succeed(host === "github.com" ? token : "enterprise-credential"),
@@ -45,6 +50,20 @@ function harness(scheduler = makeGitHubRequestScheduler()) {
       stderr = nextStderr;
       response = next;
       code = nextCode;
+    },
+    respondUser: (next: string | null) => {
+      userResponse = next;
+    },
+    /** Holds every later CLI call until the returned function is called. */
+    hold: () => {
+      let release!: () => void;
+      gate = new Promise((resolve) => {
+        release = resolve;
+      });
+      return () => {
+        gate = null;
+        release();
+      };
     },
   };
 }
@@ -567,6 +586,172 @@ describe("credential-bound GitHub requests", () => {
       ),
     ).toBe(true);
     expect(h.execute).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("credential suspension after a 401", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+  const advance = (ms: number) => vi.setSystemTime(Date.now() + ms);
+
+  /** A verified credential whose first read GitHub answered with 401. */
+  async function suspended() {
+    // The scheduler reads the faked clock, and a fixed jitter makes its 5xx block 30s.
+    const h = harness(
+      makeGitHubRequestScheduler(
+        () => Date.now(),
+        () => 0.5,
+      ),
+    );
+    const context = await Effect.runPromise(
+      h.api.getCredentialContext({ cwd: "/repo", host: "github.com" }),
+    );
+    const read = () =>
+      Effect.runPromise(
+        h.api.request({ cwd: "/repo", context, method: "GET", endpoint: "repos/o/r" }),
+      );
+    const rejected = async () => {
+      const before = sent();
+      const error = await Effect.runPromise(
+        h.api
+          .request({ cwd: "/repo", context, method: "GET", endpoint: "repos/o/r" })
+          .pipe(Effect.flip),
+      );
+      expect(error).toMatchObject({
+        kind: "unauthenticated",
+        detail: GITHUB_CREDENTIAL_SUSPENDED,
+        requestDispatched: false,
+      });
+      expect(sent()).toBe(before);
+    };
+    const sent = () =>
+      h.execute.mock.calls.filter(([input]) => input.args[1] === "repos/o/r").length;
+    const verifications = () =>
+      h.execute.mock.calls.filter(([input]) => input.args[1] === "user").length;
+    h.respond(wire({}, 401));
+    expect((await read()).status).toBe(401);
+    return { ...h, context, read, rejected, sent, verifications };
+  }
+
+  it("probes the credential once the window passes and lifts the suspension on success", async () => {
+    const h = await suspended();
+    await h.rejected();
+    advance(59_000);
+    await h.rejected();
+    advance(2_000);
+    h.respond(wire({}, 200));
+    const before = h.sent();
+    expect((await h.read()).status).toBe(200);
+    expect((await h.read()).status).toBe(200);
+    expect(h.sent()).toBe(before + 2);
+  });
+
+  it("doubles the window while the probe is still rejected, up to 15 minutes", async () => {
+    const h = await suspended();
+    for (const seconds of [60, 120, 240, 480, 900, 900]) {
+      advance(seconds * 1000 - 1000);
+      await h.rejected();
+      advance(2000);
+      expect((await h.read()).status).toBe(401);
+    }
+  });
+
+  it("verifies the credential again after the window instead of refusing it forever", async () => {
+    const h = await suspended();
+    const verify = () =>
+      Effect.runPromise(h.api.getCredentialContext({ cwd: "/repo", host: "github.com" }));
+    const verifyError = () =>
+      Effect.runPromise(
+        h.api.getCredentialContext({ cwd: "/repo", host: "github.com" }).pipe(Effect.flip),
+      );
+    const verified = h.verifications();
+    // Within the window, verification refuses without asking GitHub.
+    expect(await verifyError()).toMatchObject({
+      kind: "unauthenticated",
+      detail: GITHUB_CREDENTIAL_SUSPENDED,
+    });
+    expect(h.verifications()).toBe(verified);
+
+    // After it, a still-rejected credential is checked once and suspended again.
+    advance(61_000);
+    h.respondUser(wire({ message: "Bad credentials" }, 401));
+    expect(await verifyError()).toMatchObject({ kind: "unauthenticated" });
+    expect(h.verifications()).toBe(verified + 1);
+    expect(await verifyError()).toMatchObject({ detail: GITHUB_CREDENTIAL_SUSPENDED });
+    expect(h.verifications()).toBe(verified + 1);
+
+    // A credential GitHub accepts again verifies, bypassing the cached identity, and works.
+    advance(121_000);
+    h.respondUser(null);
+    expect(await verify()).toMatchObject({ viewerId: h.context.viewerId });
+    expect(h.verifications()).toBe(verified + 2);
+    h.respond(wire({}, 200));
+    expect((await h.read()).status).toBe(200);
+  });
+
+  it("admits a single probe while concurrent requests stay suspended", async () => {
+    const h = await suspended();
+    advance(61_000);
+    h.respond(wire({}, 200));
+    const before = h.sent();
+    const release = h.hold();
+    const results = [h.read(), h.read(), h.read()].map((pending) =>
+      pending.then(
+        (response) => response.status,
+        (error: GitHubCliError) => error.detail,
+      ),
+    );
+    await vi.waitFor(() => expect(h.sent()).toBe(before + 1));
+    release();
+    expect((await Promise.all(results)).toSorted()).toEqual(
+      [200, GITHUB_CREDENTIAL_SUSPENDED, GITHUB_CREDENTIAL_SUSPENDED].toSorted(),
+    );
+    expect(h.sent()).toBe(before + 1);
+  });
+
+  it("keeps the suspension through a 5xx probe and lifts it on a 404", async () => {
+    const h = await suspended();
+    advance(61_000);
+    h.respond(wire({}, 503));
+    expect((await h.read()).status).toBe(503);
+    // Past the scheduler's 30s network block, the credential is still suspended.
+    advance(40_000);
+    await h.rejected();
+    advance(21_000);
+    h.respond(wire({ message: "Not Found" }, 404));
+    expect((await h.read()).status).toBe(404);
+    h.respond(wire({}, 200));
+    expect((await h.read()).status).toBe(200);
+  });
+
+  it("does not suspend the credential for a 401 from job-log storage", async () => {
+    const h = harness(makeGitHubRequestScheduler(() => Date.now()));
+    const context = await Effect.runPromise(
+      h.api.getCredentialContext({ cwd: "/repo", host: "github.com" }),
+    );
+    h.respond(wire({ message: "storage denied" }, 401));
+    const log = await Effect.runPromise(
+      h.api.request({
+        cwd: "/repo",
+        context,
+        method: "GET",
+        endpoint: "repos/o/r/actions/jobs/1/logs",
+        terminalText: true,
+      }),
+    );
+    expect(log.status).toBe(401);
+    h.respond(wire({}, 200));
+    expect(
+      (
+        await Effect.runPromise(
+          h.api.request({ cwd: "/repo", context, method: "GET", endpoint: "repos/o/r" }),
+        )
+      ).status,
+    ).toBe(200);
   });
 });
 
