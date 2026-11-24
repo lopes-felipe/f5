@@ -3539,6 +3539,12 @@ const make = Effect.gen(function* () {
   const finalizeAssistantMessage = (input: {
     event: ProviderRuntimeEvent;
     threadId: ThreadId;
+    /** The thread's messages as this event saw them, to tell a closed message apart. */
+    threadMessages: ReadonlyArray<{
+      readonly id: MessageId;
+      readonly role: string;
+      readonly streaming: boolean;
+    }>;
     messageId: MessageId;
     turnId?: TurnId;
     createdAt: string;
@@ -3559,8 +3565,29 @@ const make = Effect.gen(function* () {
                 : (input.fallbackText?.trim().length ?? 0)) > 0
             ? input.fallbackText!
             : "";
+      // Same rationale as the content-delta guard: a closed message drops late deltas, and
+      // the decider's empty result would fail this event and fence the thread's history.
+      const alreadyComplete = input.threadMessages.some(
+        (message) =>
+          message.id === input.messageId &&
+          message.role === "assistant" &&
+          message.streaming === false,
+      );
+      if (alreadyComplete && (text.length > 0 || bufferedReasoningText.length > 0)) {
+        yield* Effect.logWarning(
+          "provider runtime ingestion dropped late assistant finalization on completed message",
+          {
+            threadId: input.threadId,
+            messageId: input.messageId,
+            deltaLength: text.length,
+            reasoningDeltaLength: bufferedReasoningText.length,
+            eventId: input.event.eventId,
+          },
+        );
+      }
 
       yield* Effect.gen(function* () {
+        if (alreadyComplete) return;
         if (text.length > 0) {
           yield* orchestrationEngine.dispatch({
             type: "thread.message.assistant.delta",
@@ -3605,7 +3632,7 @@ const make = Effect.gen(function* () {
               ),
         ),
       );
-      if (bufferedReasoningText.length > 0 && input.turnId) {
+      if (!alreadyComplete && bufferedReasoningText.length > 0 && input.turnId) {
         yield* noteReasoningRecipient({
           event: input.event,
           threadId: input.threadId,
@@ -4746,6 +4773,7 @@ const make = Effect.gen(function* () {
               yield* finalizeAssistantMessage({
                 event,
                 threadId: thread.id,
+                threadMessages: thread.messages,
                 messageId,
                 turnId,
                 createdAt: event.createdAt,
@@ -6068,6 +6096,7 @@ const make = Effect.gen(function* () {
         yield* finalizeAssistantMessage({
           event,
           threadId: thread.id,
+          threadMessages: thread.messages,
           messageId: assistantMessageId,
           ...(turnId ? { turnId } : {}),
           createdAt: now,
@@ -6178,6 +6207,7 @@ const make = Effect.gen(function* () {
               finalizeAssistantMessage({
                 event,
                 threadId: thread.id,
+                threadMessages: thread.messages,
                 messageId: assistantMessageId,
                 turnId,
                 createdAt: now,
@@ -6255,6 +6285,7 @@ const make = Effect.gen(function* () {
           yield* finalizeAssistantMessage({
             event,
             threadId: thread.id,
+            threadMessages: thread.messages,
             messageId,
             ...(turnId ? { turnId } : {}),
             createdAt: now,

@@ -3,6 +3,7 @@ import type {
   CodexCollaborationTool,
   CompactSubagentState,
   RuntimeItemStatus,
+  TurnId,
 } from "@t3tools/contracts";
 
 import { classifyCompactCommand } from "@t3tools/shared/commandSummary";
@@ -341,6 +342,28 @@ export function isFileChangeWorkEntry(
   }
   const normalizedLabel = normalizedWorkEntryHeading(workEntry).toLowerCase();
   return normalizedLabel === "file change" || normalizedLabel === "write file";
+}
+
+/** How many file changes the server recorded per turn. */
+export function countFileChangesByTurn(
+  summaries: Readonly<Record<string, { readonly turnId: TurnId }>>,
+): Record<TurnId, number> {
+  const counts: Record<TurnId, number> = {};
+  for (const summary of Object.values(summaries)) {
+    counts[summary.turnId] = (counts[summary.turnId] ?? 0) + 1;
+  }
+  return counts;
+}
+
+/**
+ * Whether a file-change row without its own file list may borrow the turn's checkpoint files.
+ * Only a turn's sole file change may: with several, each would claim every file of the turn.
+ */
+export function allowsTurnFileFallback(
+  turnId: TurnId | null | undefined,
+  fileChangeCountByTurnId: Readonly<Record<TurnId, number>> | undefined,
+): boolean {
+  return !turnId || (fileChangeCountByTurnId?.[turnId] ?? 0) <= 1;
 }
 
 type WorkSummaryBucket = "edit" | "read" | "search" | "command" | "agent" | "tool" | "error";

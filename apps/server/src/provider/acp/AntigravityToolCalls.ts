@@ -1,3 +1,5 @@
+import { formatPatch, OMIT_HEADERS, structuredPatch } from "diff";
+
 import type { AcpToolCallState } from "./AcpRuntimeModel.ts";
 import {
   ANTIGRAVITY_EDIT_DIFF_OMITTED,
@@ -43,6 +45,74 @@ export function sanitizeAntigravityToolPayload(value: unknown): unknown {
   return visit(value, 0);
 }
 
+const OMITTED_PATCH = { format: "omitted" } as const;
+const FULL_TEXT_PATCH_LIMIT = 64 * 1024;
+
+/** How one diff entry is shown: its patch, plus the change kind when it adds a file. */
+interface DiffResolution {
+  readonly patch?: unknown;
+  readonly changes?: ReadonlyArray<Record<string, unknown>>;
+}
+
+const editKind = (tool: AcpToolCallState) => {
+  if (tool.kind !== "other" && tool.kind) return tool.kind;
+  const title = tool.title ?? "";
+  return /(?:replace_file_content|write_to_file)/.test(title)
+    ? "edit"
+    : /(?:view_file|read_file)/.test(title)
+      ? "read"
+      : /(?:run_command|command_status)/.test(title)
+        ? "execute"
+        : tool.kind;
+};
+
+/** The replaced snippets an edit names, in any casing the runtime accepts. */
+function snippetTargets(rawInput: unknown): ReadonlyArray<string> {
+  const raw = record(rawInput);
+  const chunks = [raw.ReplacementChunks, raw.replacement_chunks].flatMap((value) =>
+    Array.isArray(value) ? value.map(record) : [],
+  );
+  return [raw, ...chunks].flatMap((chunk) =>
+    [chunk.TargetContent, chunk.target_content, chunk.Target].filter(
+      (value): value is string => typeof value === "string",
+    ),
+  );
+}
+
+/** Hunks only; `acpFileChanges` adds the file headers. Undefined when nothing changed. */
+function hunkPatch(path: string, oldText: string, newText: string): unknown {
+  if (oldText === newText) return undefined;
+  const patch = structuredPatch(path, path, oldText, newText, undefined, undefined, {
+    context: 3,
+    maxEditLength: 100_000,
+    timeout: 100,
+  });
+  if (!patch) return OMITTED_PATCH;
+  if (patch.hunks.length === 0) return undefined;
+  const text = formatPatch(patch, OMIT_HEADERS);
+  return text.length > FULL_TEXT_PATCH_LIMIT ? OMITTED_PATCH : { text };
+}
+
+/**
+ * Current releases complete an edit with the whole file before and after it, and a write with
+ * the whole new file. Older releases sent the replaced snippet as `oldText`; those, and any
+ * entry without full text, return undefined and keep the snippet path.
+ */
+function fullTextDiff(
+  entry: Record<string, unknown>,
+  rawInput: unknown,
+): DiffResolution | undefined {
+  const { path, oldText, newText } = entry;
+  if (typeof path !== "string" || typeof newText !== "string") return undefined;
+  const snippets = snippetTargets(rawInput);
+  if (typeof oldText === "string")
+    return snippets.includes(oldText) ? undefined : { patch: hunkPatch(path, oldText, newText) };
+  if (oldText != null || snippets.length > 0) return undefined;
+  // An overwrite replaced content this update does not carry; the checkpoint diff shows it.
+  if (record(rawInput).Overwrite === true) return { patch: OMITTED_PATCH };
+  return { patch: hunkPatch(path, "", newText), changes: [{ path, operation: "add" }] };
+}
+
 /**
  * Retain pending diff locations before native edits change the source file.
  * Writes into the brain directories under `brainRoots` are Antigravity's own
@@ -53,6 +123,12 @@ export function makeAntigravityToolNormalizer(
   brainRoots: ReadonlyArray<string> = [],
 ) {
   const patches = new Map<string, unknown>();
+  const resolutions = new Map<string, DiffResolution>();
+  const remember = (key: string, resolution: DiffResolution) => {
+    resolutions.set(key, resolution);
+    if (resolutions.size > 256) resolutions.delete(resolutions.keys().next().value!);
+    return resolution;
+  };
   return (tool: AcpToolCallState): AcpToolCallState => {
     const artifact = antigravityArtifactWrite(tool, brainRoots);
     if (artifact) {
@@ -72,19 +148,34 @@ export function makeAntigravityToolNormalizer(
         },
       };
     }
-    const data = record(sanitizeAntigravityToolPayload(tool.data));
+    const kind = editKind(tool);
+    // Full before/after texts become a patch before sanitizing, which keeps only each string's
+    // last 8000 characters; the texts themselves are dropped, never stored cut.
+    const fullText = new Map<number, DiffResolution>();
+    let source: unknown = tool.data;
+    if (kind === "edit" && Array.isArray(tool.data.content)) {
+      const rawContent = tool.data.content;
+      source = {
+        ...tool.data,
+        content: rawContent.map((item, index) => {
+          const entry = record(item);
+          if (entry.type !== "diff" || typeof entry.path !== "string") return item;
+          const key = tool.toolCallId + ":" + index;
+          const resolution =
+            resolutions.get(key) ??
+            (() => {
+              const resolved = fullTextDiff(entry, tool.data.rawInput);
+              return resolved ? remember(key, resolved) : undefined;
+            })();
+          if (!resolution) return item;
+          fullText.set(index, resolution);
+          const { oldText: _oldText, newText: _newText, ...rest } = entry;
+          return rest;
+        }),
+      };
+    }
+    const data = record(sanitizeAntigravityToolPayload(source));
     const raw = record(data.rawInput);
-    const title = tool.title ?? "";
-    const kind =
-      tool.kind === "other" || !tool.kind
-        ? /(?:replace_file_content|write_to_file)/.test(title)
-          ? "edit"
-          : /(?:view_file|read_file)/.test(title)
-            ? "read"
-            : /(?:run_command|command_status)/.test(title)
-              ? "execute"
-              : tool.kind
-        : tool.kind;
     const command = raw.CommandLine ?? raw.command_line ?? raw.command;
     if (typeof command === "string") data.command = command;
     // Antigravity's own one-line summary ("Inspect repository top-level layout") becomes the
@@ -100,6 +191,15 @@ export function makeAntigravityToolNormalizer(
       data.content = content.map((item, index) => {
         const entry = record(item);
         if (entry.type !== "diff" || typeof entry.path !== "string") return item;
+        const exact = fullText.get(index);
+        if (exact) {
+          const { patch: _patch, ...rest } = entry;
+          return {
+            ...rest,
+            ...(exact.patch ? { patch: exact.patch } : {}),
+            ...(exact.changes ? { changes: exact.changes } : {}),
+          };
+        }
         const key = tool.toolCallId + ":" + index;
         let patch = patches.get(key) ?? entry.patch;
         if (!patch) {
