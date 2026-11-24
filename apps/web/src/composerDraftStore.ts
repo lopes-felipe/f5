@@ -23,6 +23,7 @@ import {
 } from "./composer-editor-mentions";
 import {
   DEFAULT_REASONING_EFFORT_BY_PROVIDER,
+  isKnownProviderKind,
   isRuntimeMode,
   ProjectId,
   ProviderInstanceId,
@@ -1197,13 +1198,7 @@ function reauthorizePromptStashFilePaths(input: {
 }
 
 function normalizeProviderKind(value: unknown): ProviderKind | null {
-  return value === "codex" ||
-    value === "claudeAgent" ||
-    value === "cursor" ||
-    value === "opencode" ||
-    value === "grok"
-    ? value
-    : null;
+  return isKnownProviderKind(value) ? value : null;
 }
 
 function normalizeProviderInstanceId(value: unknown): ProviderInstanceId | null {

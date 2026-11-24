@@ -16,7 +16,7 @@ vi.mock("./lib/serverHttpOrigin", () => ({ getServerHttpOrigin: () => "http://lo
 import { resetProtocolStateForTests, setServerBootstrap } from "./protocolState";
 import { createComposerMention } from "./composer-editor-mentions";
 import { serverBootstrapFixture } from "./test/serverBootstrap";
-import { ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import { ProjectId, ProviderDriverKind, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -1892,6 +1892,122 @@ describe("composerDraftStore setModelOptions", () => {
     const secondDraft = useComposerDraftStore.getState().draftsByThreadId[threadId];
 
     expect(secondDraft).toBe(firstDraft);
+  });
+});
+
+describe("composerDraftStore providers beyond the original whitelist", () => {
+  const threadId = ThreadId.makeUnsafe("thread-extra-providers");
+
+  beforeEach(() => {
+    useComposerDraftStore.setState({
+      draftsByThreadId: {},
+      draftThreadsByThreadId: {},
+      projectDraftThreadIdByProjectId: {},
+    });
+  });
+
+  it.each([
+    { provider: "antigravity", id: "thinking", first: "xhigh", second: "low" },
+    { provider: "pi", id: "thinking", first: "high", second: "low" },
+    { provider: "muse", id: "reasoningEffort", first: "high", second: "low" },
+  ] as const)(
+    "stores and updates the $provider $id selection",
+    ({ provider, id, first, second }) => {
+      const store = useComposerDraftStore.getState();
+      const driver = ProviderDriverKind.make(provider);
+
+      store.setProviderModelOptions(threadId, driver, [{ id, value: first }]);
+      expect(useComposerDraftStore.getState().draftsByThreadId[threadId]?.modelOptions).toEqual({
+        [provider]: { [id]: first },
+      });
+
+      store.setProviderModelOptions(threadId, driver, [{ id, value: second }]);
+      expect(useComposerDraftStore.getState().draftsByThreadId[threadId]?.modelOptions).toEqual({
+        [provider]: { [id]: second },
+      });
+    },
+  );
+
+  it("keeps an Antigravity provider selection", () => {
+    useComposerDraftStore.getState().setProvider(threadId, "antigravity");
+
+    expect(useComposerDraftStore.getState().draftsByThreadId[threadId]?.provider).toBe(
+      "antigravity",
+    );
+  });
+
+  it("keeps the Antigravity provider and thinking level across hydration", () => {
+    const merged = useComposerDraftStore.persist.getOptions().merge!(
+      {
+        draftsByThreadId: {
+          [threadId]: {
+            prompt: "keep draft",
+            provider: "antigravity",
+            model: "gemini-4-neon",
+            modelOptions: { antigravity: { thinking: "xhigh" } },
+          },
+        },
+      },
+      useComposerDraftStore.getInitialState(),
+    );
+
+    expect(merged.draftsByThreadId[threadId]).toMatchObject({
+      provider: "antigravity",
+      modelOptions: { antigravity: { thinking: "xhigh" } },
+    });
+  });
+
+  it("keeps the Antigravity provider and thinking level through a prompt stash", async () => {
+    const projectId = ProjectId.makeUnsafe("project-extra-providers");
+    setComposerDraftBaseStorageForTesting(createMockStorage());
+    useComposerDraftStore.setState({ promptStashes: [] });
+    try {
+      const store = useComposerDraftStore.getState();
+      store.setPrompt(threadId, "Plan the migration");
+      store.setProvider(threadId, "antigravity");
+      store.setProviderModelOptions(threadId, ProviderDriverKind.make("antigravity"), [
+        { id: "thinking", value: "xhigh" },
+      ]);
+
+      const saved = await store.stashPromptDraft({
+        threadId,
+        projectId,
+        workspaceRoot: "/repo",
+      });
+      expect(saved.status).toBe("stored");
+      expect(useComposerDraftStore.getState().promptStashes[0]?.draft).toMatchObject({
+        provider: "antigravity",
+        modelOptions: { antigravity: { thinking: "xhigh" } },
+      });
+
+      // Round-trip through persistence so the stash parser runs too.
+      const persistOptions = useComposerDraftStore.persist.getOptions();
+      useComposerDraftStore.setState(
+        persistOptions.merge!(
+          persistOptions.partialize!(useComposerDraftStore.getState()),
+          useComposerDraftStore.getInitialState(),
+        ),
+      );
+      store.setProvider(threadId, "codex");
+      store.setModelOptions(threadId, null);
+
+      const stashId = useComposerDraftStore.getState().promptStashes[0]!.id;
+      expect(
+        await useComposerDraftStore.getState().restorePromptStash({
+          stashId,
+          threadId,
+          projectId,
+          workspaceRoots: ["/repo"],
+        }),
+      ).toMatchObject({ status: "restored" });
+      expect(useComposerDraftStore.getState().draftsByThreadId[threadId]).toMatchObject({
+        prompt: "Plan the migration",
+        provider: "antigravity",
+        modelOptions: { antigravity: { thinking: "xhigh" } },
+      });
+    } finally {
+      resetComposerDraftBaseStorageForTesting();
+    }
   });
 });
 
