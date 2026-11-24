@@ -5,7 +5,11 @@ import { useProfileState } from "../profileState";
 import { ProfileAvatar } from "./profiles/ProfileAvatar";
 import { ProfileLaunchCommandButton } from "./profiles/ProfileLaunchCommandButton";
 import { ProfileOpenButton } from "./profiles/ProfileOpenButton";
-import { profileLocationLabel, profileStatusPresentation } from "./profiles/profileStatus";
+import {
+  isLinuxVmGuestWindow,
+  profileLocationLabel,
+  profileStatusPresentation,
+} from "./profiles/profileStatus";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "./ui/alert";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
@@ -103,10 +107,12 @@ export function ProfileSwitcher() {
           >
             Manage profiles
           </Button>
-          <Button size="xs" render={<Link to="/settings" search={{ category: "accounts" }} />}>
-            <PlusIcon className="size-3" />
-            New profile
-          </Button>
+          {isLinuxVmGuestWindow(active) ? null : (
+            <Button size="xs" render={<Link to="/settings" search={{ category: "accounts" }} />}>
+              <PlusIcon className="size-3" />
+              New profile
+            </Button>
+          )}
         </div>
       </PopoverPopup>
     </Popover>

@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   PROFILE_STATUS_STYLES,
+  hasProfileLaunchCommand,
+  isLinuxVmGuestWindow,
   isProfileEditable,
   orderProfiles,
   previewProfileSlug,
@@ -28,6 +30,18 @@ const makeProfile = (overrides: Partial<ProfileSummary> = {}): ProfileSummary =>
     providerAccounts: [],
     ...overrides,
   }) as ProfileSummary;
+
+describe("Linux VM profiles", () => {
+  it("have no launch command, and an active one means the guest window", () => {
+    const vm = makeProfile({ executionEnvironment: "linux-vm", isDefault: false });
+    expect(hasProfileLaunchCommand(vm)).toBe(false);
+    expect(hasProfileLaunchCommand(makeProfile())).toBe(true);
+    expect(hasProfileLaunchCommand(makeProfile({ executionEnvironment: "host" }))).toBe(true);
+    expect(isLinuxVmGuestWindow(vm)).toBe(true);
+    expect(isLinuxVmGuestWindow(makeProfile())).toBe(false);
+    expect(isLinuxVmGuestWindow(null)).toBe(false);
+  });
+});
 
 describe("profile status styles", () => {
   it("covers every lifecycle status in the contract", () => {

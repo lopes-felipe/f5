@@ -1,4 +1,4 @@
-import { ProfileId, type ProfileSummary } from "@t3tools/contracts";
+import { ProfileId, type ProfileListResult, type ProfileSummary } from "@t3tools/contracts";
 import { Schema } from "effect";
 
 /** `F5_EXECUTION_ENVIRONMENT` as the VM guest launcher (`f5-guest launch`) sets it. */
@@ -37,29 +37,40 @@ export function resolveGuestProfileIdentity(env: {
 }
 
 /**
- * The profile list a guest backend answers: its own active profile, reported as the host's
- * VM profile. The guest's other records (only its Default) never leave the guest, and the
- * host's other profiles aren't visible from here.
+ * The guest's active profile as the host's VM profile. The guest's slug, name and Default
+ * flag are replaced. `sharedRepositories` compares records of the guest registry, so it's
+ * dropped. `stateDir`, `invalidDirectories` and `providerAccounts` describe this profile's
+ * real storage, projects and accounts inside the VM, so they stay.
  */
-export function guestProfileSnapshot<
-  T extends { readonly profiles: ReadonlyArray<ProfileSummary> },
->(snapshot: T, profileId: ProfileId, port: number): T {
-  const active = snapshot.profiles.find((profile) => profile.isActive);
+export function guestActiveProfile(
+  profile: ProfileSummary,
+  profileId: ProfileId,
+  port: number,
+): ProfileSummary {
+  const { sharedRepositories: _guestRegistryOnly, ...rest } = profile;
   return {
-    ...snapshot,
-    profiles: active
-      ? [
-          {
-            ...active,
-            id: profileId,
-            slug: "linux-vm",
-            name: GUEST_PROFILE_NAME,
-            isDefault: false,
-            executionEnvironment: "linux-vm",
-            // 0 asks the OS for a port; the record's own port stays the valid one then.
-            port: port > 0 ? port : active.port,
-          },
-        ]
-      : [],
+    ...rest,
+    id: profileId,
+    slug: "linux-vm",
+    name: GUEST_PROFILE_NAME,
+    isDefault: false,
+    executionEnvironment: "linux-vm",
+    // The welcome schema rejects port 0, which a listener bound to an OS-assigned port reports
+    // (tests do this; `f5-guest` always passes a fixed port).
+    port: port > 0 ? port : profile.port,
   };
+}
+
+/**
+ * The profile list a guest backend answers: only its active profile, reported as the host's
+ * VM profile. The guest registry's diagnostic is dropped too: it describes a file the host
+ * window can't repair, and profile changes are refused here anyway.
+ */
+export function guestProfileSnapshot(
+  snapshot: typeof ProfileListResult.Type,
+  profileId: ProfileId,
+  port: number,
+): typeof ProfileListResult.Type {
+  const active = snapshot.profiles.find((profile) => profile.isActive);
+  return { profiles: active ? [guestActiveProfile(active, profileId, port)] : [] };
 }

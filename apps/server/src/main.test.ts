@@ -884,14 +884,27 @@ it.layer(testLayer)("profile startup selection", (it) => {
             }),
           );
           assert.equal(result._tag, "Failure");
+          assert.equal(process.exitCode, 78);
         }
         assert.equal(start.mock.calls.length, 0);
-        // A host backend ignores a stray profile id.
-        yield* runCli(["--state-dir", stateDir], {
-          T3CODE_NO_BROWSER: "true",
-          F5_DESKTOP_PROFILE_ID: "a".repeat(32),
-        });
-        assert.equal(resolvedConfig?.guestProfileId, undefined);
+        // It fails before the registry is touched: no registry, no error file.
+        assert.equal(FS.existsSync(`${stateDir}-profiles`), false);
+        assert.equal(FS.existsSync(stateDir), false);
+        // A host backend ignores a stray profile id, and a near-miss environment is a host.
+        for (const environment of [{}, { F5_EXECUTION_ENVIRONMENT: "linux-vm" }]) {
+          resolvedConfig = null;
+          yield* runCli(["--state-dir", stateDir], {
+            T3CODE_NO_BROWSER: "true",
+            F5_DESKTOP_PROFILE_ID: "a".repeat(32),
+            ...environment,
+          });
+          // `runCli` sets it; TypeScript can't see that through the reset above.
+          const config = resolvedConfig as ServerConfigShape | null;
+          assert.notEqual(config, null);
+          assert.equal(config?.guestProfileId, undefined);
+          assert.equal(config?.profile?.isDefault, true);
+        }
+        assert.equal(start.mock.calls.length, 2);
       } finally {
         FS.rmSync(root, { recursive: true, force: true });
       }

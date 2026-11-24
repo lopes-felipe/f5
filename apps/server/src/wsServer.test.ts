@@ -1,6 +1,8 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { currentDesktopBootstrapToken } from "@t3tools/shared/desktopBootstrapToken";
+import { profileRegistryPath } from "@t3tools/shared/profilePaths";
+import { fallbackDefaultProfile } from "@t3tools/shared/profileIdentity";
 import {
   DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_PROVIDER_INTERACTION_MODE,
@@ -255,21 +257,74 @@ describe("WebSocket Server", () => {
 
   it("welcomes as the host's VM profile from a Linux VM guest, and refuses profile changes", async () => {
     const hostProfileId = Schema.decodeUnknownSync(ProfileId)("3f4e411d2db24ee2929521c467030696");
-    h.server = await createTestServer({ cwd: "/test/project", guestProfileId: hostProfileId });
+    const stateDir = makeTempDir("f5-guest-identity-");
+    h.server = await createTestServer({
+      stateDir,
+      profilesRoot: path.dirname(profileRegistryPath(stateDir)),
+      guestProfileId: hostProfileId,
+    });
+    const addr = h.server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const [ws, welcome] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+
+    const served = {
+      id: hostProfileId,
+      slug: "linux-vm",
+      name: "Linux VM",
+      isDefault: false,
+      executionEnvironment: "linux-vm",
+      isActive: true,
+    };
+    expect(welcome.data).toMatchObject({ profile: served });
+    const listed = await sendRequest(ws, WS_METHODS.profilesList, {});
+    expect(listed.error).toBeUndefined();
+    expect(listed.result).toEqual({ profiles: [expect.objectContaining(served)] });
+    const created = await sendRequest(ws, WS_METHODS.profilesCreate, { name: "Side" });
+    expect(created.error?.message).toMatch(/managed from a host profile/);
+
+    // A registry change pushes the same rewrite, without the guest registry's diagnostic.
+    const pushed = waitForPush(ws, WS_CHANNELS.profilesUpdated);
+    fs.writeFileSync(profileRegistryPath(stateDir), "{ not json");
+    expect((await pushed).data).toEqual({ profiles: [expect.objectContaining(served)] });
+  });
+
+  it("rewrites the fallback welcome profile in a Linux VM guest", async () => {
+    const hostProfileId = Schema.decodeUnknownSync(ProfileId)("3f4e411d2db24ee2929521c467030696");
+    const stateDir = makeTempDir("f5-guest-fallback-");
+    // The fallback reports the configured port, and the welcome schema rejects 0.
+    const probe = Http.createServer();
+    await new Promise<void>((resolve) => probe.listen({ host: "127.0.0.1", port: 0 }, resolve));
+    const probeAddress = probe.address();
+    await new Promise<void>((resolve) => probe.close(() => resolve()));
+    h.server = await createTestServer({
+      stateDir,
+      port: typeof probeAddress === "object" && probeAddress ? probeAddress.port : 0,
+      guestProfileId: hostProfileId,
+      // A served profile the guest registry doesn't hold, so no record is active.
+      profile: {
+        ...fallbackDefaultProfile(stateDir),
+        id: Schema.decodeUnknownSync(ProfileId)("b".repeat(32)),
+      },
+    });
     const addr = h.server.address();
     const port = typeof addr === "object" && addr !== null ? addr.port : 0;
     const [ws, welcome] = await connectAndAwaitWelcome(port);
     connections.push(ws);
 
     expect(welcome.data).toMatchObject({
-      profile: { id: hostProfileId, isDefault: false, isActive: true, slug: "linux-vm" },
+      profile: {
+        id: hostProfileId,
+        slug: "linux-vm",
+        name: "Linux VM",
+        isDefault: false,
+        executionEnvironment: "linux-vm",
+        isActive: true,
+        port,
+      },
     });
     const listed = await sendRequest(ws, WS_METHODS.profilesList, {});
-    expect(listed.error).toBeUndefined();
-    const profiles = (listed.result as { profiles: Array<{ id: string }> }).profiles;
-    expect(profiles.map((profile) => profile.id)).toEqual([hostProfileId]);
-    const created = await sendRequest(ws, WS_METHODS.profilesCreate, { name: "Side" });
-    expect(created.error?.message).toMatch(/managed from a host profile/);
+    expect(listed.result).toEqual({ profiles: [] });
   });
 
   it("answers a method that lives in a route table rather than the switch", async () => {

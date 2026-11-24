@@ -231,6 +231,14 @@ const ServerConfigLive = (input: CliInput) => {
           : yield* resolveBaseDir(explicitHomeDir);
       const defaultStateDir =
         resolvedExplicitStateDir ?? path.join(baseDir, devUrl ? "dev" : "userdata");
+      // Before the registry is touched: a guest that can't say which profile it serves must not
+      // create or migrate guest state either. No error file is written; the host sees exit 78.
+      const guestIdentity = resolveGuestProfileIdentity(env);
+      if (!guestIdentity.ok) {
+        process.exitCode = 78;
+        return yield* new StartupError({ message: guestIdentity.message });
+      }
+      const guestProfileId = guestIdentity.profileId;
       const registryStore = new ProfileRegistryStore(
         defaultStateDir,
         DEFAULT_PORT + (devUrl ? 1000 : 0),
@@ -278,9 +286,6 @@ const ServerConfigLive = (input: CliInput) => {
         );
       const vmRefusal = hostExecutionRefusal(profile);
       if (vmRefusal) return yield* startupFailure(vmRefusal, profile.id);
-      const guestIdentity = resolveGuestProfileIdentity(env);
-      if (!guestIdentity.ok) return yield* startupFailure(guestIdentity.message, profile.id);
-      const guestProfileId = guestIdentity.profileId;
       startupErrorPath = path.join(registryStore.root, `last-startup-error-${profile.id}.json`);
       yield* Effect.tryPromise({
         try: () => assertProfileDirectory(defaultStateDir, profile),

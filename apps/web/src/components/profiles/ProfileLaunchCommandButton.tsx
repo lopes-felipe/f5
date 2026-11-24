@@ -4,13 +4,18 @@ import { CheckIcon, CopyIcon } from "lucide-react";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { profileLaunchCommand } from "./profileStatus";
+import { hasProfileLaunchCommand, profileLaunchCommand } from "./profileStatus";
 
 /**
  * Copies `t3 --profile <slug>` with visible confirmation. The old inline
- * button wrote to the clipboard and said nothing at all.
+ * button wrote to the clipboard and said nothing at all. Renders nothing for a
+ * profile without a launch command (Linux VM).
  */
 export function ProfileLaunchCommandButton({ profile }: { readonly profile: ProfileSummary }) {
+  return hasProfileLaunchCommand(profile) ? <LaunchCommandButton profile={profile} /> : null;
+}
+
+function LaunchCommandButton({ profile }: { readonly profile: ProfileSummary }) {
   const { copyToClipboard, isCopied } = useCopyToClipboard();
   const command = profileLaunchCommand(profile);
 

@@ -205,6 +205,7 @@ import { integrationUnavailableDetail } from "@t3tools/shared/providerIntegratio
 import { ProfileRegistryStore, fallbackDefaultProfile } from "./profiles/ProfileRegistryStore";
 import {
   GUEST_PROFILE_MUTATION_REFUSAL,
+  guestActiveProfile,
   guestProfileSnapshot,
 } from "./profiles/guestProfileIdentity.ts";
 import { ProviderAccountService } from "./profiles/ProviderAccountService";
@@ -245,6 +246,7 @@ import {
   PR_HUB_WS_CHANNELS,
   PR_HUB_WS_METHODS,
   ProjectId,
+  type ProfileSummary,
   ThreadId,
   ProviderInstanceId,
   WS_CHANNELS,
@@ -1338,6 +1340,20 @@ export const createServer = Effect.fn(function* (
     return serverConfig.guestProfileId
       ? guestProfileSnapshot(enriched, serverConfig.guestProfileId, serverConfig.port)
       : enriched;
+  };
+  /** The welcome's profile when the registry has no active record (e.g. it can't be read). */
+  const welcomeFallback = (): ProfileSummary => {
+    const profile: ProfileSummary = {
+      ...fallbackDefaultProfile(defaultProfileStateDir),
+      ...activeProfile,
+      port,
+      stateDir: serverConfig.stateDir,
+      isActive: true,
+      providerAccounts: [],
+    };
+    return serverConfig.guestProfileId
+      ? guestActiveProfile(profile, serverConfig.guestProfileId, port)
+      : profile;
   };
   let profileReadCache: { expires: number; value: ReturnType<typeof computeProfiles> } | undefined;
   const readProfiles = () => {
@@ -8415,17 +8431,7 @@ export const createServer = Effect.fn(function* (
           pushBus.publishClient(ws, WS_CHANNELS.serverWelcome, {
             ...welcomeData,
             runtime: (welcomeRuntime = currentRuntimeReadiness()),
-            profile: snapshot.profiles.find((profile) => profile.isActive) ?? {
-              ...fallbackDefaultProfile(defaultProfileStateDir),
-              ...activeProfile,
-              ...(serverConfig.guestProfileId
-                ? { id: serverConfig.guestProfileId, isDefault: false }
-                : {}),
-              port,
-              stateDir: serverConfig.stateDir,
-              isActive: true,
-              providerAccounts: [],
-            },
+            profile: snapshot.profiles.find((profile) => profile.isActive) ?? welcomeFallback(),
             ...(snapshot.diagnostic ? { profileDiagnostic: snapshot.diagnostic } : {}),
             ...(getDatabaseDamage() ? { databaseDamage: getDatabaseDamage()! } : {}),
           }),
