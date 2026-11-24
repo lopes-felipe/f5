@@ -116,6 +116,7 @@ import {
   buildRevisionPrompt,
 } from "../workflowPrompts.ts";
 import {
+  allocateArtifactCharBudget,
   getFinishedConsumableLatestTurn,
   getFinishedConsumableTurn,
   formatAssistantFeedback,
@@ -123,6 +124,7 @@ import {
   reviewFeedbackForPinnedTurn,
   slotLabel,
   type WorkflowFitThread,
+  WORKFLOW_FAN_IN_MIN_ARTIFACT_CHARS,
   WORKFLOW_MAX_ACTIVE_REVIEW_TURNS,
   WORKFLOW_MIN_PLAN_CHAR_BUDGET,
   WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT,
@@ -7511,51 +7513,60 @@ export const makeWorkflowService = Effect.gen(function* () {
       // A failed plan-review delivery takes a review slot like any launch. Resends start now
       // while slots are free; the rest are requeued, and the launcher resends each delivery when
       // it admits that review. Legacy branch-level review errors keep the direct resend.
+      // Slots are counted from a fresh read inside the launcher gate, and the resends go out
+      // before it is released: a resent delivery holds its slot from then on, so a launcher pass
+      // that runs meanwhile can't fill the same slot.
       const requeuedReviewDeliveries = new Set<ThreadId>();
-      {
-        const allReviews = planningBranches(workflow).flatMap((branch) => branch.reviews);
-        const resendCandidates = planningBranches(workflow)
-          .filter(
-            (branch) => !(planningWorkflowBranchFailureStage(branch) === "reviews" && branch.error),
-          )
-          .flatMap((branch) => branch.reviews)
-          .filter(
-            (review) =>
-              failedThreadIds.has(review.threadId) && deliveryMode(review.threadId) === "retry",
-          )
-          .map((review) => review.threadId);
-        const idempotentStageSetup = resolveWorkflowBehavior({
-          runKind: "planning",
-          templateId: workflow.templateId,
-          templateVersion: workflow.templateVersion,
-        }).idempotentStageSetup;
-        let activeReviews = 0;
-        for (const review of allReviews) {
-          if (resendCandidates.includes(review.threadId)) continue;
-          if (yield* planReviewHoldsSlot(review, snapshot, idempotentStageSetup)) {
-            activeReviews += 1;
+      yield* reviewLaunchGate.withPermits(1)(
+        Effect.gen(function* () {
+          const fresh = yield* orchestrationEngine.getReadModel();
+          const current =
+            fresh.planningWorkflows.find((entry) => entry.id === workflow.id) ?? workflow;
+          const allReviews = planningBranches(current).flatMap((branch) => branch.reviews);
+          const resendCandidates = planningBranches(workflow)
+            .filter(
+              (branch) =>
+                !(planningWorkflowBranchFailureStage(branch) === "reviews" && branch.error),
+            )
+            .flatMap((branch) => branch.reviews)
+            .filter(
+              (review) =>
+                failedThreadIds.has(review.threadId) && deliveryMode(review.threadId) === "retry",
+            )
+            .map((review) => review.threadId);
+          const idempotentStageSetup = resolveWorkflowBehavior({
+            runKind: "planning",
+            templateId: workflow.templateId,
+            templateVersion: workflow.templateVersion,
+          }).idempotentStageSetup;
+          let activeReviews = 0;
+          for (const review of allReviews) {
+            if (resendCandidates.includes(review.threadId)) continue;
+            if (yield* planReviewHoldsSlot(review, fresh, idempotentStageSetup)) {
+              activeReviews += 1;
+            }
           }
-        }
-        for (const threadId of resendCandidates) {
-          if (activeReviews < WORKFLOW_MAX_ACTIVE_REVIEW_TURNS) activeReviews += 1;
-          else requeuedReviewDeliveries.add(threadId);
-        }
-      }
+          for (const threadId of resendCandidates) {
+            if (activeReviews < WORKFLOW_MAX_ACTIVE_REVIEW_TURNS) activeReviews += 1;
+            else requeuedReviewDeliveries.add(threadId);
+          }
 
-      if (providerTurnDeliveryWorker._tag === "Some") {
-        yield* Effect.forEach(
-          [...failedThreadIds].filter(
-            (threadId) =>
-              deliveryMode(threadId) === "retry" && !requeuedReviewDeliveries.has(threadId),
-          ),
-          (threadId) =>
-            providerTurnDeliveryWorker.value.retry({
-              threadId,
-              allowPossibleDuplicate: input.allowPossibleDuplicate ?? false,
-            }),
-          { discard: true },
-        );
-      }
+          if (providerTurnDeliveryWorker._tag === "Some") {
+            yield* Effect.forEach(
+              [...failedThreadIds].filter(
+                (threadId) =>
+                  deliveryMode(threadId) === "retry" && !requeuedReviewDeliveries.has(threadId),
+              ),
+              (threadId) =>
+                providerTurnDeliveryWorker.value.retry({
+                  threadId,
+                  allowPossibleDuplicate: input.allowPossibleDuplicate ?? false,
+                }),
+              { discard: true },
+            );
+          }
+        }),
+      );
 
       const preserveLegacyReviewError = (
         current: PlanningWorkflow,
@@ -8177,6 +8188,40 @@ function buildWorkflowMergePrompt(
   });
 }
 
+/** Room each revision excerpt note may take, and slack for envelope escaping. */
+const REVISION_EXCERPT_NOTE_RESERVE_CHARS = 200;
+const REVISION_EXCERPT_MARGIN_CHARS = 1_000;
+
+/**
+ * Shares `room` (the rendered limit minus the revision prompt with empty reviews) among the
+ * reviews with `allocateArtifactCharBudget`; a review that does not fit whole is cut and marked.
+ * `smallestExcerpt` is the smallest share an excerpted review got (`null` when all fit).
+ */
+function excerptRevisionReviews<
+  T extends { readonly reviewerLabel: string; readonly reviewMarkdown: string },
+>(
+  reviews: ReadonlyArray<T>,
+  room: number,
+): { readonly reviews: ReadonlyArray<T>; readonly smallestExcerpt: number | null } {
+  const { allowances, smallestExcerpt } = allocateArtifactCharBudget(
+    reviews.map((review) => review.reviewMarkdown.length),
+    room - REVISION_EXCERPT_MARGIN_CHARS - REVISION_EXCERPT_NOTE_RESERVE_CHARS * reviews.length,
+  );
+  return {
+    reviews: reviews.map((review, index) => {
+      const allowance = allowances[index]!;
+      const total = review.reviewMarkdown.length;
+      return allowance >= total
+        ? review
+        : {
+            ...review,
+            reviewMarkdown: `${review.reviewMarkdown.slice(0, allowance)}\n\n[Excerpt: the first ${allowance} of ${total} characters of the ${review.reviewerLabel} review. The rest is not available to you.]`,
+          };
+    }),
+    smallestExcerpt,
+  };
+}
+
 /**
  * Per-plan length limit on runs with more than two authors, so every revised plan fits in the
  * merge prompt: the rendered limit minus the merge prompt with empty plans and a 1,000-character
@@ -8465,7 +8510,7 @@ function startReviewTurn({
   });
 }
 
-function prepareRevisionTurn({
+export function prepareRevisionTurn({
   workflow,
   branch,
   originalPlanMarkdown,
@@ -8504,23 +8549,48 @@ function prepareRevisionTurn({
     !!thread?.compaction &&
     thread.compaction.createdAt > originalPlanCreatedAt;
   const documentType = planningWorkflowDocumentType(workflow);
-  const prompt = (documentType ? buildDocumentRevisionPrompt : buildRevisionPrompt)({
-    documentType: documentType ?? "custom",
-    requirementPrompt: workflow.requirementPrompt,
-    originalPlan: {
-      markdown: originalPlanMarkdown,
-      source: {
-        workflowId: workflow.id,
-        stage: `author-${branch.branchId}`,
-        ...(branch.planTurnId ? { turnId: branch.planTurnId } : {}),
+  const renderRevisionPrompt = (promptReviews: typeof reviews) =>
+    (documentType ? buildDocumentRevisionPrompt : buildRevisionPrompt)({
+      documentType: documentType ?? "custom",
+      requirementPrompt: workflow.requirementPrompt,
+      originalPlan: {
+        markdown: originalPlanMarkdown,
+        source: {
+          workflowId: workflow.id,
+          stage: `author-${branch.branchId}`,
+          ...(branch.planTurnId ? { turnId: branch.planTurnId } : {}),
+        },
       },
-    },
-    reviews,
-    targetSlot: branch.authorSlot,
-    retry,
-    includeOriginalPlan,
-    maxPlanChars: workflowPlanCharBudget(workflow),
-  });
+      reviews: promptReviews,
+      targetSlot: branch.authorSlot,
+      retry,
+      includeOriginalPlan,
+      maxPlanChars: workflowPlanCharBudget(workflow),
+    });
+  let prompt = renderRevisionPrompt(reviews);
+  let renderedReviews = reviews;
+  if (
+    workflowUsesMesh(planningBranches(workflow).length) &&
+    prompt.length > WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT
+  ) {
+    // With three or more authors each revision carries up to four reviews; a retry can't shrink
+    // paid reviews, so they share the message and the longest ones are excerpted.
+    const budgeted = excerptRevisionReviews(
+      reviews,
+      WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT -
+        renderRevisionPrompt(reviews.map((review) => ({ ...review, reviewMarkdown: "" }))).length,
+    );
+    if (
+      budgeted.smallestExcerpt !== null &&
+      budgeted.smallestExcerpt < WORKFLOW_FAN_IN_MIN_ARTIFACT_CHARS
+    ) {
+      return {
+        rejection: `The reviews for Branch ${branch.branchId.toUpperCase()} leave ${budgeted.smallestExcerpt.toLocaleString("en-US")} characters per review in the revision message. Revise it manually in that thread, or restart the workflow with fewer authors.`,
+      };
+    }
+    renderedReviews = budgeted.reviews;
+    prompt = renderRevisionPrompt(renderedReviews);
+  }
   if (includeOriginalPlan && prompt.length > WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT) {
     // Compacting again can't shrink this: the plan itself has to travel in the message.
     return {
@@ -8530,7 +8600,7 @@ function prepareRevisionTurn({
   const promptError = workflowPromptInvariant({
     workflow,
     prompt,
-    artifacts: [originalPlanMarkdown, ...reviews.map((review) => review.reviewMarkdown)],
+    artifacts: [originalPlanMarkdown, ...renderedReviews.map((review) => review.reviewMarkdown)],
     targetSlot: branch.authorSlot,
     artifactLabel: "Revision inputs",
     artifactBudgetRecovery: `Compact the Branch ${branch.branchId.toUpperCase()} author conversation, then retry.`,

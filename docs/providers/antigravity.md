@@ -80,6 +80,11 @@ On a certified version, F5 keeps every workflow turn read-only:
   deletes, moves, commands, computer use, MCP tools, and any request without a recognised kind.
   Each denial appears in the thread.
 - Unattended stages decline Antigravity's questions; attended stages ask you as usual.
+- Fetch stays allowed in every stage, including unattended reviews, so a reviewer can read the
+  documentation a change depends on. This matches how Codex and Claude plan mode treat web
+  reads. The risk is the same as for those providers: text planted in the code under review
+  could get the model to put repository content into a URL it fetches. Don't run workflows on
+  code you don't trust with secrets in the workspace.
 
 ### Certifying a version
 
@@ -93,11 +98,13 @@ On a certified version, F5 keeps every workflow turn read-only:
    appears. If the run shows a tool kind
    that is labelled wrongly, remove that kind from `ANTIGRAVITY_READ_ONLY_WORKFLOW_TOOL_KINDS` in
    `apps/server/src/provider/acp/AntigravityAcpSupport.ts`.
-5. Add `{ version, platform }` to `ANTIGRAVITY_READ_ONLY_WORKFLOW_CERTIFIED_RUNTIMES` in
-   `packages/shared/src/workflowProviders.ts`.
+5. Add `{ version, target }` to `ANTIGRAVITY_READ_ONLY_WORKFLOW_CERTIFIED_RUNTIMES` in
+   `packages/shared/src/workflowProviders.ts`. The target is the platform and architecture, such
+   as `darwin-arm64`: each architecture is a separate build and needs its own run.
 
 The opt-in live test runs steps 2 to 4 against a signed-in instance. It admits the version it
-launches even though that version isn't on the list yet, and prints it for step 5. It spends
+launches even though that version isn't on the list yet, and prints the version and target for
+step 5. It spends
 account quota. Set `F5_ANTIGRAVITY_LIVE_INSTANCE` to the id of the instance you signed in to in
 step 1 (it defaults to `antigravity`), and name the MCP tool and its marker file; the test fails
 without them, and requires the tool call to reach F5 as a refused permission request:

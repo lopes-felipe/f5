@@ -1042,7 +1042,10 @@ const program = Effect.gen(function* () {
                   type: "content",
                   content: {
                     type: "text",
-                    text: `Not in allowlist: ${command}`,
+                    text: `Not in allowlist: ${command}${"x".repeat(
+                      Number.parseInt(process.env.T3_ACP_PERMISSION_CONTENT_PAD_CHARS ?? "0", 10) ||
+                        0,
+                    )}`,
                   },
                 },
               ],

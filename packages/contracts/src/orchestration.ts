@@ -30,7 +30,10 @@ import {
   WorkflowModelSlot,
   AdditionalWorkflowModelSlots,
 } from "./planningWorkflow";
-import { WORKFLOW_MAX_ADDITIONAL_PARTICIPANTS } from "./workflowParticipants";
+import {
+  CODE_REVIEW_PROMPT_MAX_CHARS,
+  WORKFLOW_MAX_ADDITIONAL_PARTICIPANTS,
+} from "./workflowParticipants";
 import { ProviderInstanceId } from "./providerInstance";
 import { ProviderSessionCapabilities, ProviderExtensionStatuses } from "./sessionCapabilities";
 import { ProviderStartOptions } from "./providerStartOptions";
@@ -1263,7 +1266,7 @@ const ProjectCodeReviewWorkflowCreateCommand = Schema.Struct({
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
   slug: TrimmedNonEmptyString,
-  reviewPrompt: TrimmedNonEmptyString.check(Schema.isMaxLength(80_000)),
+  reviewPrompt: TrimmedNonEmptyString.check(Schema.isMaxLength(CODE_REVIEW_PROMPT_MAX_CHARS)),
   templateId: Schema.optional(TrimmedNonEmptyString).pipe(
     Schema.withDecodingDefault(() => "builtin.code-review.dual"),
   ),
@@ -3525,7 +3528,7 @@ export type OrchestrationCreateWorkflowResult = typeof OrchestrationCreateWorkfl
 export const OrchestrationCreateCodeReviewWorkflowInput = Schema.Struct({
   projectId: ProjectId,
   title: Schema.optional(TrimmedNonEmptyString),
-  reviewPrompt: TrimmedNonEmptyString.check(Schema.isMaxLength(80_000)),
+  reviewPrompt: TrimmedNonEmptyString.check(Schema.isMaxLength(CODE_REVIEW_PROMPT_MAX_CHARS)),
   templateId: Schema.optional(TrimmedNonEmptyString),
   templateVersion: Schema.optional(Schema.Int),
   titleGenerationModel: Schema.optional(TrimmedNonEmptyString),

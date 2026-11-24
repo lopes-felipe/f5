@@ -6,7 +6,7 @@ import {
   type ProviderSessionCapabilities,
 } from "@t3tools/contracts";
 import { providerMaxImages } from "./attachmentLimits";
-import { driverSupportsReadOnlyWorkflowTurns } from "./workflowProviders";
+import { driverSupportsReadOnlyWorkflowTurns, runtimeBuildTarget } from "./workflowProviders";
 
 export function supportsCodexAsyncQuestions(version: string | null | undefined): boolean {
   const match = version?.match(/(?:^|\s)v?(\d+)\.(\d+)\.(\d+)/);
@@ -46,7 +46,7 @@ export function providerRuntimeCapabilities(
   driver: string,
   version?: string | null,
   variant?: string | null,
-  platform: string | undefined = globalThis.process?.platform,
+  buildTarget: string | undefined = runtimeBuildTarget(),
 ): ProviderRuntimeCapabilities {
   if (driver === "cursor" && variant === "sdk") return cursorSdkRuntimeCapabilities();
   const rollback =
@@ -88,7 +88,7 @@ export function providerRuntimeCapabilities(
       driver === "antigravity",
     instanceInventory: driver === "claudeAgent" || driver === "codex",
     nativeSessionCleanup: driver === "claudeAgent",
-    readOnlyWorkflowTurns: driverSupportsReadOnlyWorkflowTurns(driver, version, platform),
+    readOnlyWorkflowTurns: driverSupportsReadOnlyWorkflowTurns(driver, version, buildTarget),
   };
 }
 

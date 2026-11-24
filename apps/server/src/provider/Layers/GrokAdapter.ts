@@ -2,6 +2,7 @@ import { acpPdfDocuments } from "../pdfDocuments.ts";
 import {
   driverSupportsReadOnlyWorkflowTurns,
   READ_ONLY_WORKFLOW_UNCERTIFIED_ANTIGRAVITY_MESSAGE,
+  runtimeBuildTarget,
 } from "@t3tools/shared/workflowProviders";
 import type { ProviderAdapterSessionStartInput } from "../Services/ProviderAdapter.ts";
 import {
@@ -1109,7 +1110,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 driverSupportsReadOnlyWorkflowTurns(
                   "antigravity",
                   launchedVersion,
-                  process.platform,
+                  runtimeBuildTarget(),
                 ));
             if (!certified)
               return yield* new ProviderAdapterValidationError({
@@ -1378,6 +1379,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     if (allowOnce !== undefined)
                       return { outcome: { outcome: "selected" as const, optionId: allowOnce } };
                     const deniedRequest = parsePermissionRequest(params);
+                    // Persisted like an asked request, so a large `rawOutput` or `content` is
+                    // bounded the same way.
+                    const deniedParams = boundPermissionRequestPayload(params);
                     const deniedRequestId = RuntimeRequestId.make(yield* Random.nextUUIDv4);
                     yield* offerRuntimeEvent(
                       makeAcpRequestOpenedEvent({
@@ -1390,12 +1394,12 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                         detail: computerRequest
                           ? "Tool inputs hidden while computer control is enabled"
                           : (deniedRequest.detail ??
-                            encodeJsonStringForDiagnostics(params)?.slice(0, 2000) ??
+                            encodeJsonStringForDiagnostics(deniedParams)?.slice(0, 2000) ??
                             "[unserializable params]"),
-                        args: params,
+                        args: deniedParams,
                         source: "acp.jsonrpc",
                         method: "session/request_permission",
-                        rawPayload: params,
+                        rawPayload: deniedParams,
                       }),
                     );
                     yield* offerRuntimeEvent(

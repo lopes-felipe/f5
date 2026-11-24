@@ -18,3 +18,8 @@ export const WORKFLOW_REVIEW_MAX_PARTICIPANTS = 6;
 /** Actors beyond the stored A/B pair, for the largest type. */
 export const WORKFLOW_MAX_ADDITIONAL_PARTICIPANTS =
   WORKFLOW_REVIEW_MAX_PARTICIPANTS - WORKFLOW_MIN_PARTICIPANTS;
+/**
+ * Longest Code Review instructions. Every report in a six-reviewer consolidation must still get
+ * its minimum share next to them; a server test pins that, so raise this only with it.
+ */
+export const CODE_REVIEW_PROMPT_MAX_CHARS = 80_000;

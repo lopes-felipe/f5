@@ -1185,6 +1185,52 @@ rootIt.layer(
       }).pipe(Effect.scoped),
     );
 
+  it.effect("bounds the published payload of a request a workflow turn denies", () =>
+    Effect.gen(function* () {
+      const { adapter, events } = yield* antigravityProfileAdapter({
+        env: { T3_ACP_EMIT_TOOL_CALLS: "1", T3_ACP_PERMISSION_CONTENT_PAD_CHARS: "200000" },
+        options: () => ({
+          antigravity: {
+            accountRevision: Effect.succeed(0),
+            nativeReaders: () => Effect.succeed(false),
+            readOnlyWorkflowCertified: () => true,
+          },
+        }),
+      });
+      const threadId = ThreadId.make("agy-denied-oversized");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "unattended-readonly",
+      });
+      yield* adapter
+        .sendTurn({
+          threadId,
+          input: "Review it",
+          attachments: [],
+          workflowExecutionProfile: "unattended-readonly",
+        })
+        .pipe(Effect.timeout("20 seconds"));
+      const opened = events.find((event) => event.type === "request.opened");
+      assert.ok(opened?.type === "request.opened");
+      // The command is refused without asking, and the 200k-character request is not
+      // republished whole.
+      assert.ok(
+        events.some(
+          (event) =>
+            event.type === "request.resolved" &&
+            event.requestId === opened.requestId &&
+            event.payload.decision === "cancel",
+        ),
+      );
+      assert.isBelow(JSON.stringify(opened.payload.args).length, 50_000);
+      assert.isBelow(JSON.stringify(opened.raw?.payload).length, 50_000);
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("honors a thread grant from a Default turn for the same command in Plan", () =>
     Effect.gen(function* () {
       const { adapter, events } = yield* antigravityProfileAdapter({

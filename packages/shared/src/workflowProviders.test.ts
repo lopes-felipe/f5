@@ -5,6 +5,7 @@ import {
   driverSupportsReadOnlyWorkflowTurns,
   providerSupportsReadOnlyWorkflow,
   readOnlyWorkflowUnsupportedReason,
+  runtimeBuildTarget,
   type WorkflowProviderSnapshot,
 } from "./workflowProviders";
 
@@ -19,11 +20,17 @@ const antigravity = (readOnlyWorkflowTurns: boolean | undefined): WorkflowProvid
 
 describe("read-only workflow providers", () => {
   it("never certifies Grok or Muse, and certifies no Antigravity version yet", () => {
-    expect(driverSupportsReadOnlyWorkflowTurns("grok", "1.0.0", "darwin")).toBe(false);
-    expect(driverSupportsReadOnlyWorkflowTurns("muse", "1.0.0", "darwin")).toBe(false);
-    expect(driverSupportsReadOnlyWorkflowTurns("antigravity", "1.5.15", "darwin")).toBe(false);
-    expect(driverSupportsReadOnlyWorkflowTurns("antigravity", null, "darwin")).toBe(false);
+    expect(driverSupportsReadOnlyWorkflowTurns("grok", "1.0.0", "darwin-arm64")).toBe(false);
+    expect(driverSupportsReadOnlyWorkflowTurns("muse", "1.0.0", "darwin-arm64")).toBe(false);
+    expect(driverSupportsReadOnlyWorkflowTurns("antigravity", "1.5.15", "darwin-arm64")).toBe(
+      false,
+    );
+    expect(driverSupportsReadOnlyWorkflowTurns("antigravity", null, "darwin-arm64")).toBe(false);
     expect(driverSupportsReadOnlyWorkflowTurns("codex", null, undefined)).toBe(true);
+  });
+
+  it("keys certification on platform and architecture", () => {
+    expect(runtimeBuildTarget()).toBe(`${process.platform}-${process.arch}`);
   });
 
   it("follows the Antigravity instance's reported capability", () => {

@@ -699,8 +699,10 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
   const withWorkflowWriteLock = workflowWriteLock.withPermits(1);
   /**
    * How each manually retried reviewer that was queued for a free slot starts when admitted:
-   * a new turn that names its earlier failure, or a resend of its failed delivery. In memory
-   * only; after a restart a queued reviewer starts as an ordinary reused-thread retry.
+   * a new turn on its thread, or a resend of its failed delivery (with the user's duplicate-risk
+   * confirmation). In memory only; after a restart a queued reviewer whose saved delivery is
+   * still rejected or ambiguous is resent without that confirmation (`persistedDeliveryRetry`),
+   * and any other starts a new turn. Reviewer prompts don't render the earlier failure.
    */
   const queuedReviewerRetries = new Map<
     ThreadId,
@@ -1110,11 +1112,6 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
     });
 
   /**
-   * Starts pending reviewers in roster order while fewer than
-   * `WORKFLOW_MAX_ACTIVE_REVIEW_TURNS` are running. Called again whenever a reviewer
-   * completes or fails, so a large run drains its queue. Callers hold the write lock.
-   */
-  /**
    * The resend a queued reviewer still owes after a restart dropped `queuedReviewerRetries`: a
    * pending reviewer keeps the dispatch of its failed delivery, and while that delivery is still
    * rejected or ambiguous it is resent rather than replaced. Duplicate-risk confirmation isn't
@@ -1137,6 +1134,11 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
         : undefined;
     });
 
+  /**
+   * Starts pending reviewers in roster order while fewer than
+   * `WORKFLOW_MAX_ACTIVE_REVIEW_TURNS` are running. Called again whenever a reviewer
+   * completes or fails, so a large run drains its queue. Callers hold the write lock.
+   */
   const startPendingReviewers = (workflow: CodeReviewWorkflow, updatedAt: string) =>
     Effect.gen(function* () {
       if (isDeletedWorkflow(workflow) || isArchivedWorkflow(workflow)) return;
@@ -1178,13 +1180,14 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
             (yield* persistedDeliveryRetry(reviewer));
           if (queued?.kind === "delivery" && providerTurnDeliveryWorker._tag === "Some") {
             const deliveryWorker = providerTurnDeliveryWorker.value;
-            // Saved before the resend; until it is known, startup judges the reviewer by the
-            // thread's latest delivery, which is the resent one.
+            // Saved before the resend. A resend reuses the delivery's command id, so the
+            // reviewer keeps that identity throughout: a restart before the resend still
+            // judges it by that delivery, never by an older turn on the thread.
             current = updateCodeReviewReviewer(current, reviewerId, (entry) => ({
               ...entry,
               status: "running",
               error: null,
-              dispatchCommandId: null,
+              dispatchCommandId: queued.deliveryId ?? null,
               updatedAt,
             }));
             yield* upsertWorkflow(orchestrationEngine, current, updatedAt);

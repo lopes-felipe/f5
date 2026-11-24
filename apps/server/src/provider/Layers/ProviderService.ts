@@ -1,4 +1,7 @@
-import { driverSupportsReadOnlyWorkflowTurns } from "@t3tools/shared/workflowProviders";
+import {
+  driverSupportsReadOnlyWorkflowTurns,
+  runtimeBuildTarget,
+} from "@t3tools/shared/workflowProviders";
 import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { MCP_APP_PROVIDERS } from "@t3tools/shared/mcpApp";
@@ -757,7 +760,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       Effect.gen(function* () {
         if (!profile?.endsWith("readonly")) return;
         const version = (yield* readProviderSnapshot(instanceId))?.version ?? undefined;
-        if (driverSupportsReadOnlyWorkflowTurns(provider, version, process.platform)) return;
+        if (driverSupportsReadOnlyWorkflowTurns(provider, version, runtimeBuildTarget())) return;
         return yield* toValidationError(
           operation,
           `${PROVIDER_DISPLAY_NAMES[provider]} cannot enforce read-only workflow turns.`,

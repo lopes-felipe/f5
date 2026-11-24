@@ -78,8 +78,15 @@ import {
   markPolishRequested,
   markReaderPassError,
 } from "../documentReaderPass.ts";
-import { reviewFeedbackForPinnedTurn } from "../workflowSharedUtils.ts";
-import { WorkflowServiceLive, workflowPlanMergeChars } from "./WorkflowService.ts";
+import {
+  reviewFeedbackForPinnedTurn,
+  WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT,
+} from "../workflowSharedUtils.ts";
+import {
+  prepareRevisionTurn,
+  WorkflowServiceLive,
+  workflowPlanMergeChars,
+} from "./WorkflowService.ts";
 
 const NOW = "2026-03-26T12:00:00.000Z";
 
@@ -9751,6 +9758,45 @@ describe("WorkflowService", () => {
     ).toBe(false);
   });
 
+  it("excerpts long reviews to fit a four-author revision, and keeps short ones whole", () => {
+    const { workflow } = meshSavedPlans(["c", "d"]);
+    const review = (label: string, text: string) => ({
+      reviewerLabel: label,
+      reviewMarkdown: text,
+      source: { workflowId: workflow.id, stage: `review-${label}` },
+    });
+    const prepare = (reviews: ReadonlyArray<ReturnType<typeof review>>) =>
+      prepareRevisionTurn({
+        workflow,
+        branch: workflow.branchA,
+        originalPlanMarkdown: "PLAN_A",
+        reviews,
+        createdAt: "2026-08-31T17:05:00.000Z",
+      });
+
+    // Three cross-reviews and the self-review, each 40k characters: 160k in full.
+    const long = ["B", "C", "D", "Self"].map((label) =>
+      review(`Reviewer ${label}`, `${label}:${"x".repeat(40_000)}`),
+    );
+    const excerpted = prepare(long);
+    if (!("command" in excerpted)) throw new Error(excerpted.rejection);
+    const text = excerpted.command.message.text;
+    expect(text.length).toBeLessThanOrEqual(WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT);
+    for (const label of ["B", "C", "D", "Self"]) {
+      expect(text).toContain(`${label}:xxx`);
+      expect(text).toMatch(
+        new RegExp(
+          `\\[Excerpt: the first \\d+ of ${40_000 + label.length + 1} characters of the Reviewer ${label} review\\.`,
+        ),
+      );
+    }
+
+    // Reviews that fit are sent unchanged.
+    const short = prepare(long.map((entry) => ({ ...entry, reviewMarkdown: "short review" })));
+    if (!("command" in short)) throw new Error(short.rejection);
+    expect(short.command.message.text).not.toContain("[Excerpt:");
+  });
+
   it("queues sixteen reviews for four authors with self-review and runs at most four", async () => {
     const fixture = meshSavedPlans(["c", "d"]);
     harness = await createHarness(
@@ -10029,6 +10075,119 @@ describe("WorkflowService", () => {
       );
     },
   );
+
+  it("keeps a launcher pass out of the slots a manual retry is resending into", async () => {
+    // Three authors: Branch A's two cross-reviews failed with a rejected delivery, and the other
+    // seven reviews wait for a slot.
+    const fixture = meshSavedPlans();
+    const at = "2026-08-31T17:05:00.000Z";
+    const edges = {
+      a: [
+        ["cross", "b"],
+        ["cross", "c"],
+        ["self", "a"],
+      ],
+      b: [
+        ["cross", "a"],
+        ["cross", "c"],
+        ["self", "b"],
+      ],
+      c: [
+        ["cross", "a"],
+        ["cross", "b"],
+        ["self", "c"],
+      ],
+    } as const;
+    const failedThreadIds = new Set([
+      ThreadId.makeUnsafe("review-a-b"),
+      ThreadId.makeUnsafe("review-a-c"),
+    ]);
+    const queuedBranch = (
+      branch: PlanningWorkflow["branchA"],
+      id: keyof typeof edges,
+    ): PlanningWorkflow["branchA"] => ({
+      ...branch,
+      status: "reviews_requested",
+      reviews: edges[id].map(([slot, reviewerBranchId]) => {
+        const threadId = ThreadId.makeUnsafe(`review-${id}-${reviewerBranchId}`);
+        const failed = failedThreadIds.has(threadId);
+        return {
+          slot,
+          reviewerBranchId,
+          threadId,
+          outputFilePath: null,
+          status: failed ? ("error" as const) : ("pending" as const),
+          error: failed ? "Provider rejected the turn." : null,
+          retryCount: 0,
+          lastRetryAt: null,
+          updatedAt: at,
+        };
+      }),
+    });
+    const workflow: PlanningWorkflow = {
+      ...fixture.workflow,
+      branchA: queuedBranch(fixture.workflow.branchA, "a"),
+      branchB: queuedBranch(fixture.workflow.branchB, "b"),
+      additionalBranches: [queuedBranch(fixture.workflow.additionalBranches![0]!, "c")],
+    };
+    const reviewThreadIds = [workflow.branchA, workflow.branchB, ...workflow.additionalBranches!]
+      .flatMap((branch) => branch.reviews.map((review) => review.threadId))
+      .filter((threadId) => threadId !== null);
+    const deliveryStates = new Map<ThreadId, ProviderTurnDelivery["state"]>(
+      [...failedThreadIds].map((threadId) => [threadId, "rejected"]),
+    );
+    let releaseResend!: () => void;
+    const resendPaused = new Promise<void>((resolve) => {
+      releaseResend = resolve;
+    });
+    let resends = 0;
+    const retryDelivery = vi.fn<ProviderTurnDeliveryWorkerShape["retry"]>((input) =>
+      Effect.promise(async () => {
+        resends += 1;
+        // The first resend stalls after the retry has counted the free slots.
+        if (resends === 1) await resendPaused;
+        deliveryStates.set(input.threadId, "pending");
+        return makeProviderTurnDelivery(input.threadId, "pending");
+      }),
+    );
+    const delivery = (threadId: ThreadId) => {
+      const state = deliveryStates.get(threadId);
+      return Effect.succeed(state ? makeProviderTurnDelivery(threadId, state) : null);
+    };
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          ...fixture.threads,
+          ...reviewThreadIds.map((threadId) => makeThread({ id: threadId })),
+        ],
+      }),
+      { recheckDelivery: delivery, getLatestDelivery: delivery, retryDelivery },
+    );
+    const reviewTurnStarts = () =>
+      harness!.dispatched.filter(
+        (command) =>
+          command.type === "thread.turn.start" &&
+          reviewThreadIds.includes(command.threadId) &&
+          !failedThreadIds.has(command.threadId),
+      );
+
+    const retried = Effect.runPromise(harness.service.retryWorkflow({ workflowId: workflow.id }));
+    await waitFor(() => retryDelivery.mock.calls.length === 1);
+    // A launcher pass starts while the retry is between counting and resending.
+    const started = harness.start();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(reviewTurnStarts()).toHaveLength(0);
+
+    releaseResend();
+    await retried;
+    await started;
+    await waitFor(() => reviewTurnStarts().length === 2);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    // Two resends and two new turns: never more than four reviews in flight.
+    expect(retryDelivery).toHaveBeenCalledTimes(2);
+    expect(reviewTurnStarts()).toHaveLength(2);
+  });
 
   it("records a merge error instead of starting a merge whose inputs can't fit", async () => {
     const revisedAt = "2026-08-31T17:20:00.000Z";

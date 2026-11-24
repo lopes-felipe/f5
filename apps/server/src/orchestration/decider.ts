@@ -55,6 +55,8 @@ import {
   resolveWorkflowBehavior,
   documentWorkflowCreateInvariant,
   newRunStageRequiresReadOnlyProvider,
+  READ_ONLY_WORKFLOW_LEGACY_TEMPLATE_MESSAGE,
+  readOnlyStageLacksExecutionProfile,
   type WorkflowBehaviorStage,
   type WorkflowRunKind,
 } from "./workflowBehavior.ts";
@@ -190,7 +192,12 @@ function readOnlyWorkflowSlotMessage(input: {
     if (!slot) continue;
     if (!input.document && (!behavior || !newRunStageRequiresReadOnlyProvider(behavior, stage)))
       continue;
-    if (providerSupportsReadOnlyWorkflow(slot.provider, input.providerInstances)) continue;
+    if (providerSupportsReadOnlyWorkflow(slot.provider, input.providerInstances)) {
+      if (behavior && readOnlyStageLacksExecutionProfile(behavior, stage, slot.provider)) {
+        return READ_ONLY_WORKFLOW_LEGACY_TEMPLATE_MESSAGE;
+      }
+      continue;
+    }
     return `${PROVIDER_DISPLAY_NAMES[slot.provider]} cannot enforce read-only ${
       input.document ? "document" : "workflow"
     } turns.`;

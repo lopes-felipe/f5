@@ -9,13 +9,20 @@ import {
  * Antigravity runtimes whose read-only workflow confinement passed the live certification in
  * `docs/providers/antigravity.md` (it sits beside the native-readers version floor in
  * `apps/server/src/provider/antigravityPrivateFormats.ts`). A run is certified for one exact
- * version on one platform. Add an entry only with the evidence from that procedure: a turn that
- * executes a write without asking can never be certified.
+ * version on one build target (`runtimeBuildTarget`, such as `darwin-arm64`): each architecture
+ * is a separately distributed build. Add an entry only with the evidence from that procedure: a
+ * turn that executes a write without asking can never be certified.
  */
 export const ANTIGRAVITY_READ_ONLY_WORKFLOW_CERTIFIED_RUNTIMES: ReadonlyArray<{
   readonly version: string;
-  readonly platform: string;
+  readonly target: string;
 }> = [];
+
+/** This process's build target, `<platform>-<arch>` (such as `linux-x64`), when known. */
+export function runtimeBuildTarget(): string | undefined {
+  const runtime = globalThis.process;
+  return runtime?.platform && runtime.arch ? `${runtime.platform}-${runtime.arch}` : undefined;
+}
 
 /** Providers that can never be confined to read-only workflow turns. */
 const READ_ONLY_WORKFLOW_UNSUPPORTED_DRIVERS: ReadonlySet<string> = new Set(["grok", "muse"]);
@@ -25,23 +32,26 @@ export const READ_ONLY_WORKFLOW_UNCERTIFIED_ANTIGRAVITY_MESSAGE =
 
 export function antigravityReadOnlyWorkflowCertified(
   version: string | null | undefined,
-  platform: string | undefined,
+  target: string | undefined,
 ): boolean {
   const trimmed = version?.trim();
-  if (!trimmed || !platform) return false;
+  if (!trimmed || !target) return false;
   return ANTIGRAVITY_READ_ONLY_WORKFLOW_CERTIFIED_RUNTIMES.some(
-    (entry) => entry.version === trimmed && entry.platform === platform,
+    (entry) => entry.version === trimmed && entry.target === target,
   );
 }
 
-/** Runtime-capability fact for one driver at one installed version. */
+/**
+ * Runtime-capability fact for one driver at one installed version on one build target
+ * (`runtimeBuildTarget`).
+ */
 export function driverSupportsReadOnlyWorkflowTurns(
   driver: string,
   version: string | null | undefined,
-  platform: string | undefined,
+  target: string | undefined,
 ): boolean {
   if (READ_ONLY_WORKFLOW_UNSUPPORTED_DRIVERS.has(driver)) return false;
-  if (driver === "antigravity") return antigravityReadOnlyWorkflowCertified(version, platform);
+  if (driver === "antigravity") return antigravityReadOnlyWorkflowCertified(version, target);
   return true;
 }
 

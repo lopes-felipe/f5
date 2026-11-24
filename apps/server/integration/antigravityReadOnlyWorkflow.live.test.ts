@@ -9,6 +9,7 @@ import {
   ThreadId,
   type ProviderRuntimeEvent,
 } from "@t3tools/contracts";
+import { runtimeBuildTarget } from "@t3tools/shared/workflowProviders";
 import { describe, expect, it } from "vitest";
 import { ServerConfig } from "../src/config";
 import { makeGrokAdapter } from "../src/provider/Layers/GrokAdapter";
@@ -186,6 +187,8 @@ describe.skipIf(!live || !stateDir)("live Antigravity read-only workflow turns",
     expect(await exists(mcpMarker!), "the MCP tool did not run").toBe(false);
     expect(launchedVersions.length, "the certification gate ran").toBeGreaterThan(0);
     expect(new Set(launchedVersions).size, "one executable served every round").toBe(1);
-    console.info(`Certified candidate Antigravity version: ${launchedVersions[0]}`);
+    console.info(
+      `Certified candidate Antigravity runtime: { version: "${launchedVersions[0]}", target: "${runtimeBuildTarget()}" }`,
+    );
   }, 720_000);
 });

@@ -52,11 +52,13 @@ export class UnsupportedWorkflowProviderError extends Error {
   constructor(
     readonly provider: ProviderKind,
     readonly stage: WorkflowBehaviorStage,
+    message?: string,
   ) {
     super(
-      provider === "antigravity"
-        ? READ_ONLY_WORKFLOW_UNCERTIFIED_ANTIGRAVITY_MESSAGE
-        : `Provider '${provider}' cannot enforce the read-only workflow profile for '${stage}'.`,
+      message ??
+        (provider === "antigravity"
+          ? READ_ONLY_WORKFLOW_UNCERTIFIED_ANTIGRAVITY_MESSAGE
+          : `Provider '${provider}' cannot enforce the read-only workflow profile for '${stage}'.`),
     );
   }
 }
@@ -210,6 +212,26 @@ export function newRunStageRequiresReadOnlyProvider(
   return latest.executionProfileForStage(stage) !== undefined;
 }
 
+export const READ_ONLY_WORKFLOW_LEGACY_TEMPLATE_MESSAGE =
+  "Antigravity runs read-only workflow turns only on the current workflow template version.";
+
+/**
+ * Whether a provider that confines a turn only through its workflow execution profile
+ * (Antigravity) is refused for this stage: the stage must be read-only, but this template
+ * version dispatches it without a profile (version 1).
+ */
+export function readOnlyStageLacksExecutionProfile(
+  behavior: WorkflowBehavior,
+  stage: WorkflowBehaviorStage,
+  provider: ProviderKind,
+): boolean {
+  return (
+    provider === "antigravity" &&
+    behavior.executionProfileForStage(stage) === undefined &&
+    newRunStageRequiresReadOnlyProvider(behavior, stage)
+  );
+}
+
 export function assertWorkflowStageProviderSupported(input: {
   readonly behavior: WorkflowBehavior;
   readonly stage: WorkflowBehaviorStage;
@@ -222,6 +244,13 @@ export function assertWorkflowStageProviderSupported(input: {
     !providerSupportsReadOnlyWorkflow(input.provider, input.providers)
   ) {
     throw new UnsupportedWorkflowProviderError(input.provider, input.stage);
+  }
+  if (readOnlyStageLacksExecutionProfile(input.behavior, input.stage, input.provider)) {
+    throw new UnsupportedWorkflowProviderError(
+      input.provider,
+      input.stage,
+      READ_ONLY_WORKFLOW_LEGACY_TEMPLATE_MESSAGE,
+    );
   }
   if (
     (input.stage === "author" || input.stage === "revision" || input.stage === "merge") &&

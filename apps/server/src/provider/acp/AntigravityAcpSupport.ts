@@ -755,7 +755,11 @@ const writeAntigravitySessionMode = <E>(input: {
 
 // ── Read-only workflow turns ─────────────────────────────────────────────────
 
-/** Tool kinds a read-only workflow turn may run; everything else is denied. */
+/**
+ * Tool kinds a read-only workflow turn may run; everything else is denied. `fetch` is allowed in
+ * unattended stages too, matching other providers' plan mode; the exfiltration risk this leaves
+ * is recorded in `docs/providers/antigravity.md`.
+ */
 export const ANTIGRAVITY_READ_ONLY_WORKFLOW_TOOL_KINDS: ReadonlySet<string> = new Set([
   "read",
   "search",

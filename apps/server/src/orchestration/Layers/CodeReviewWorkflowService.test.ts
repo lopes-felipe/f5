@@ -3452,6 +3452,62 @@ describe("CodeReviewWorkflowService stage dispatch correlation", () => {
     expect(reviewerA?.dispatchCommandId).toBe(DISPATCH_A);
   });
 
+  it("keeps a queued resend's delivery across a restart before the resend runs", async () => {
+    const workflow = makeWorkflow({
+      reviewerA: {
+        ...makeWorkflow().reviewerA,
+        status: "pending",
+        error: null,
+        dispatchCommandId: DISPATCH_A,
+      },
+      reviewerB: {
+        ...makeWorkflow().reviewerB,
+        status: "completed",
+        pinnedTurnId: "turn-b",
+        pinnedAssistantMessageId: "assistant-b",
+      },
+    });
+    const rejected = (threadId: ThreadId) =>
+      makeProviderTurnDelivery(threadId, "rejected", {
+        deliveryId: DISPATCH_A,
+        commandId: DISPATCH_A,
+      });
+    const options = (retry: ProviderTurnDeliveryWorkerShape["retry"]) => ({
+      getDeliveryByCommandId: (commandId: CommandId) =>
+        Effect.succeed(commandId === DISPATCH_A ? rejected(workflow.reviewerA.threadId) : null),
+      providerTurnDeliveryWorker: makeDeliveryWorker({
+        recheck: (threadId, deliveryId) =>
+          Effect.succeed(deliveryId === DISPATCH_A ? rejected(threadId) : null),
+        retry,
+      }),
+    });
+    // Startup owes reviewer A the resend of its rejected delivery; the process stops after the
+    // admission is saved and before the resend returns.
+    harness = await createHarness(
+      snapshotWithReviewerATurn(workflow, "earlier"),
+      options(() => Effect.never),
+    );
+    void harness.start().catch(() => undefined);
+    await waitFor(
+      () => harness!.getSnapshot().codeReviewWorkflows[0]?.reviewerA.status === "running",
+    );
+    const admitted = harness.getSnapshot();
+    expect(admitted.codeReviewWorkflows[0]?.reviewerA.dispatchCommandId).toBe(DISPATCH_A);
+    await harness.dispose();
+
+    // After the restart the reviewer is judged by its own still-rejected delivery, not
+    // completed from the earlier finished turn on its thread.
+    harness = await createHarness(
+      admitted,
+      options(() => Effect.fail(new Error("not resent"))),
+    );
+    await harness.start();
+    await settle();
+
+    expect(reviewerACompletions()).toHaveLength(0);
+    expect(harness.getSnapshot().codeReviewWorkflows[0]?.reviewerA.status).toBe("error");
+  });
+
   it("keeps the any-finished-turn rule for stages recorded without a dispatch", async () => {
     const workflow = runningReviewerWorkflow();
     const getDeliveryByCommandId = vi.fn<ProviderTurnDeliveryRepositoryShape["getByCommandId"]>(
