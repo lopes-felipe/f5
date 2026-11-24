@@ -648,6 +648,17 @@ export interface SettingsSearch {
   readonly category: SettingsCategory;
   readonly item?: string;
   readonly project?: ProjectId;
+  /** With item `providers.instances`: the provider instance to open at its hooks. */
+  readonly instance?: string;
+  /** With `instance`: the project whose project-scoped hooks the inventory lists first. */
+  readonly instanceProject?: string;
+}
+
+const PROVIDER_INSTANCES_ITEM = "providers.instances";
+
+function boundedSearchString(search: unknown, field: "instance" | "instanceProject") {
+  const raw = (search as Record<string, unknown> | null | undefined)?.[field];
+  return typeof raw === "string" && raw.length > 0 && raw.length <= 256 ? raw : undefined;
 }
 
 /**
@@ -662,10 +673,15 @@ export function resolveSettingsSearch(search: unknown): SettingsSearch {
   if (item) {
     const itemScope = item.scope ?? "global";
     if (itemScope === "project" && !project) return { category: "projects" };
+    const instance =
+      item.id === PROVIDER_INSTANCES_ITEM ? boundedSearchString(search, "instance") : undefined;
+    const instanceProject = instance ? boundedSearchString(search, "instanceProject") : undefined;
     return {
       category: item.category,
       item: item.id,
       ...(project && itemScope !== "global" ? { project } : {}),
+      ...(instance ? { instance } : {}),
+      ...(instanceProject ? { instanceProject } : {}),
     };
   }
 
