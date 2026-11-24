@@ -506,6 +506,62 @@ describe("CommandTranscriptCard", () => {
     }
   });
 
+  it("splits a compound command's output into file sections, results and plain text", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const navigate = vi.fn(() => true);
+    const output = [
+      "     4\tconst a = 1;",
+      "     5\tconst b = 2;",
+      "origin/main:web/api.ts:12:export const nativeApi = 1;",
+      "",
+    ].join("\n");
+    const screen = await renderWithQueryClient(
+      <FileNavigationProvider value={navigate}>
+        <CommandTranscriptCard
+          execution={makeExecution({
+            command:
+              'nl -ba src/a.ts | sed -n 4,5p; git grep -n "nativeApi" origin/main -- web/api.ts',
+            output,
+          })}
+          expanded
+          timestampFormat="locale"
+          workspaceRoot="/repo"
+          onToggle={() => {}}
+          onExpandedBodyResize={() => {}}
+        />
+      </FileNavigationProvider>,
+      host,
+    );
+
+    try {
+      const body = await vi.waitFor(() => {
+        const element = host.querySelector<HTMLElement>("[data-output-kind='sections']");
+        expect(element).not.toBeNull();
+        return element!;
+      });
+      expect(body.querySelector("[data-testid='command-output-chip']")?.textContent).toBe(
+        "a.ts1 match",
+      );
+      const file = body.querySelector<HTMLElement>("[data-testid='command-output-file-section']");
+      expect(
+        [...file!.querySelectorAll("[data-line-number]")].map((element) =>
+          element.getAttribute("data-line-number"),
+        ),
+      ).toEqual(["4", "5"]);
+      expect(body.querySelectorAll("mark")).toHaveLength(1);
+      // The revision's results name the file but do not open the one on disk.
+      expect(body.textContent).toContain("origin/main:web/api.ts");
+      expect(body.querySelector("[data-testid='command-output-search-group'] button")).toBeNull();
+
+      await page.getByRole("button", { name: "Open a.ts at line 5" }).click();
+      expect(navigate).toHaveBeenLastCalledWith("/repo/src/a.ts:5", undefined);
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("drops line numbers and marks counts partial for server-compacted output", async () => {
     const marker = "\n\n[... output compacted; 99999 bytes in total ...]\n\n";
     const host = document.createElement("div");

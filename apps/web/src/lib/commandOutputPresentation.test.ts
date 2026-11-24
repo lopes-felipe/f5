@@ -364,6 +364,287 @@ describe("buildSearchMatcher", () => {
   });
 });
 
+describe("classifyCommandOutput: git show reads", () => {
+  it("numbers a revision's range but does not link the file on disk", () => {
+    const result = classify({
+      command: "git show origin/main:src/a.ts | sed -n 2800,2802p",
+      output: "const a = 1;\nconst b = 2;\nconst c = 3;\n",
+    });
+    expect(result).toMatchObject({
+      kind: "file",
+      file: { displayPath: "origin/main:src/a.ts", filePath: null },
+      language: "typescript",
+      lineNumbers: [2800, 2801, 2802],
+    });
+  });
+
+  it("is not read as a diff, even when the file holds one", () => {
+    const patch = "diff --git a/x.ts b/x.ts\n--- a/x.ts\n+++ b/x.ts\n@@ -1 +1 @@\n-a\n+b\n";
+    expect(classify({ command: "git show HEAD:notes.md", output: patch })).toMatchObject({
+      kind: "file",
+      file: { displayPath: "HEAD:notes.md" },
+    });
+    expect(classify({ command: "git show HEAD:fix.patch", output: patch })).toMatchObject({
+      kind: "file",
+      lineNumbers: [1, 2, 3, 4, 5, 6],
+    });
+    // A file on disk that holds a diff still renders as one.
+    expect(classify({ command: "cat fix.patch", output: patch }).kind).toBe("diff");
+  });
+});
+
+describe("classifyCommandOutput: compound commands", () => {
+  it("highlights a bounded read and keeps later statements' output plain", () => {
+    const result = classify({
+      command: `cd /wt && git show origin/main:apps/web/src/a.ts | sed -n 1,3p; ps -axo pid,command | grep -v grep | head -3; echo "env here: \${X:-unset}"`,
+      output: 'import a from "a";\n\nexport {};\n123 /Applications/F5.app\nenv here: unset\n',
+    });
+    expect(result).toMatchObject({
+      kind: "sections",
+      matchCount: 0,
+      sections: [
+        {
+          type: "file",
+          displayPath: "origin/main:apps/web/src/a.ts",
+          filePath: null,
+          language: "typescript",
+          code: 'import a from "a";\n\nexport {};',
+          lineNumbers: null,
+        },
+        { type: "plain", text: "123 /Applications/F5.app\nenv here: unset" },
+      ],
+    });
+  });
+
+  it("splits reads and a git grep over a revision", () => {
+    const result = classify({
+      command:
+        'cd /wt && git show origin/main:main.ts | sed -n 2800,2801p; git show origin/main:ws.ts | sed -n 558,559p; git grep -n "nativeApi" origin/main -- web/nativeApi.ts | head',
+      output: [
+        "  {",
+        '    label: "View",',
+        "export function a() {",
+        "  return 1;",
+        "origin/main:web/nativeApi.ts:12:export const nativeApi = 1;",
+        "origin/main:web/nativeApi.ts:40:  nativeApi.call();",
+        "",
+      ].join("\n"),
+    });
+    expect(result.kind).toBe("sections");
+    if (result.kind !== "sections") return;
+    expect(result.matchCount).toBe(2);
+    expect(result.sections).toMatchObject([
+      { type: "file", displayPath: "origin/main:main.ts", code: '  {\n    label: "View",' },
+      {
+        type: "file",
+        displayPath: "origin/main:ws.ts",
+        code: "export function a() {\n  return 1;",
+      },
+      {
+        type: "search",
+        fileCount: 1,
+        segments: [
+          {
+            type: "group",
+            displayPath: "origin/main:web/nativeApi.ts",
+            // The revision's text may differ from the file on disk.
+            filePath: null,
+            lines: [
+              { lineNumber: 12, matches: [[13, 22]] },
+              { lineNumber: 40, matches: [[2, 11]] },
+            ],
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("takes nl -ba numbers into the gutter and ends a read at its last numbered line", () => {
+    const result = classify({
+      command: "nl -ba a.ts | sed -n 1,5p; nl -ba b.py | sed -n 7,8p",
+      output: "     1\tconst a = 1;\n     2\tconst b = 2;\n     7\tx = 1\n     8\ty = 2\n",
+    });
+    expect(result).toMatchObject({
+      kind: "sections",
+      sections: [
+        {
+          type: "file",
+          filePath: "/repo/a.ts",
+          code: "const a = 1;\nconst b = 2;",
+          lineNumbers: [1, 2],
+        },
+        { type: "file", filePath: "/repo/b.py", language: "python", lineNumbers: [7, 8] },
+      ],
+    });
+  });
+
+  it("ends a short read at the next search's first match", () => {
+    // `a.ts` has 2 lines, not the 11 the range allows.
+    const result = classify({
+      command: "sed -n 100,110p a.ts; git grep -n foo",
+      output: "const a = 1;\nconst b = 2;\nsrc/x.ts:3:foo()\nsrc/y.ts:9:foo\n",
+    });
+    expect(result).toMatchObject({
+      kind: "sections",
+      matchCount: 2,
+      sections: [
+        { type: "file", filePath: "/repo/a.ts", code: "const a = 1;\nconst b = 2;" },
+        { type: "search", fileCount: 2 },
+      ],
+    });
+  });
+
+  it("skips an empty read before a search", () => {
+    const result = classify({
+      command: "git show HEAD:package.json | sed -n 10000,10001p; git grep -n foo",
+      output: "src/x.ts:3:foo()\nsrc/y.ts:9:foo\n",
+    });
+    expect(result).toMatchObject({
+      kind: "sections",
+      matchCount: 2,
+      sections: [{ type: "search", fileCount: 2 }],
+    });
+  });
+
+  it("names but does not link a read whose end cannot be confirmed", () => {
+    // `a.ts` may have printed fewer than 2 lines, leaving `ls` output in its block.
+    const result = classify({ command: "sed -n 1,2p a.ts; ls", output: "a\nb\nsrc\n" });
+    expect(result).toMatchObject({
+      kind: "sections",
+      sections: [
+        { type: "file", displayPath: "a.ts", filePath: null, code: "a\nb" },
+        { type: "plain", text: "src" },
+      ],
+    });
+    // A full window followed by the next search's first match is confirmed.
+    expect(
+      classify({ command: "sed -n 1,1p a.ts; grep -rn foo src", output: "a\nsrc/x.ts:1:foo\n" }),
+    ).toMatchObject({ sections: [{ type: "file", filePath: "/repo/a.ts" }, { type: "search" }] });
+  });
+
+  it("gives reads of several files in one language a section each", () => {
+    const result = classify({
+      command: "nl -ba a.ts | sed -n 1,5p; nl -ba b.ts | sed -n 7,8p",
+      output: "     1\tconst a = 1;\n     2\t\n     7\tx;\n     8\ty;\n",
+    });
+    expect(result).toMatchObject({
+      kind: "sections",
+      sections: [
+        { type: "file", filePath: "/repo/a.ts", code: "const a = 1;\n", lineNumbers: [1, 2] },
+        { type: "file", filePath: "/repo/b.ts", lineNumbers: [7, 8] },
+      ],
+    });
+    // Unbounded reads cannot be told apart and stay one block.
+    expect(classify({ command: "cat a.ts; cat b.ts", output: "x\ny" }).kind).toBe("file");
+  });
+
+  it("keeps a file that starts like a usage message", () => {
+    const result = classify({
+      command: "head -n 2 cli.md; head -n 1 b.ts",
+      output: "Usage: f5 [options]\nerror: is a word\nconst b = 1;\n",
+    });
+    expect(result).toMatchObject({
+      kind: "sections",
+      sections: [{ type: "file", code: "Usage: f5 [options]\nerror: is a word" }, { type: "file" }],
+    });
+  });
+
+  it("drops an empty head -n 0 read", () => {
+    const result = classify({ command: "head -n 0 a.ts; head -n 1 b.ts", output: "x\n" });
+    expect(result).toMatchObject({
+      kind: "sections",
+      sections: [{ type: "file", displayPath: "b.ts", code: "x" }],
+    });
+  });
+
+  it("highlights reads in different languages separately", () => {
+    const result = classify({
+      command: "head -n 1 a.ts; head -n 1 b.py",
+      output: "const a = 1;\nx = 1\n",
+    });
+    expect(result).toMatchObject({
+      kind: "sections",
+      sections: [
+        { type: "file", language: "typescript", code: "const a = 1;" },
+        { type: "file", language: "python", code: "x = 1" },
+      ],
+    });
+  });
+
+  it("stays plain when the boundaries cannot be known", () => {
+    // An unbounded read before another statement.
+    expect(classify({ command: "cat a.ts; ls", output: "a\nb\n" }).kind).toBe("plain");
+    // Output that starts with another statement's.
+    expect(classify({ command: "ls; sed -n 1,2p a.ts", output: "a\nb\n" }).kind).toBe("plain");
+    // A read that failed.
+    expect(
+      classify({
+        command: "git show HEAD:gone.ts | sed -n 1,2p; ls",
+        output: "fatal: path 'gone.ts' does not exist in 'HEAD'\nsrc\n",
+      }).kind,
+    ).toBe("plain");
+    // Lines missing from the middle.
+    expect(
+      classify({ command: "sed -n 1,2p a.ts; ls", output: "a\nb\nc\n", shortened: true }).kind,
+    ).toBe("plain");
+  });
+
+  it("strips revisions from git grep context lines", () => {
+    const result = classify({
+      command: "git grep -n -C1 foo HEAD -- src/a.ts",
+      output: "HEAD:src/a.ts-2-before\nHEAD:src/a.ts:3:foo\n",
+    });
+    expect(result).toMatchObject({
+      kind: "search",
+      segments: [
+        {
+          type: "group",
+          displayPath: "HEAD:src/a.ts",
+          filePath: null,
+          lines: [
+            { lineNumber: 2, isMatch: false },
+            { lineNumber: 3, isMatch: true },
+          ],
+        },
+      ],
+    });
+  });
+
+  it("strips a one-letter revision named before --", () => {
+    const result = classify({
+      command: "git grep -n foo A -- src/a.ts",
+      output: "A:src/a.ts:12:foo\n",
+    });
+    expect(result).toMatchObject({
+      kind: "search",
+      segments: [{ displayPath: "A:src/a.ts", filePath: null, lines: [{ lineNumber: 12 }] }],
+    });
+  });
+
+  it("links git -C results relative to the directory, but not --full-name ones", () => {
+    const relative = classify({
+      command: "git -C apps/web grep -n useTheme -- src",
+      output: "src/a.ts:3:useTheme()\n",
+    });
+    expect(relative).toMatchObject({
+      segments: [{ displayPath: "src/a.ts", filePath: "/repo/apps/web/src/a.ts" }],
+    });
+    const fullName = classify({
+      command: "git -C apps/web grep -n --full-name useTheme -- src",
+      output: "apps/web/src/a.ts:3:useTheme()\n",
+    });
+    expect(fullName).toMatchObject({
+      segments: [{ displayPath: "apps/web/src/a.ts", filePath: null }],
+    });
+  });
+
+  it("leaves a lone search followed by other output to the search presentation", () => {
+    expect(classify({ command: "grep -n foo a.ts; ls", output: "3:foo\nsrc\n" }).kind).toBe(
+      "search",
+    );
+  });
+});
+
 describe("classifyCommandOutput: diffs", () => {
   const diff = [
     "diff --git a/src/a.ts b/src/a.ts",

@@ -2258,17 +2258,89 @@ export interface FileReadSegment {
   readonly startLine: number | null;
   /** Output lines carry an `nl -ba` / `cat -n` number prefix. */
   readonly numberedOutput: boolean;
+  /**
+   * The revision a `git show <rev>:<path>` read came from (`""` for the
+   * index), or null for a file on disk. Such a path is relative to the
+   * repository root, and its text may differ from the file on disk.
+   */
+  readonly revision: string | null;
+  /** The most lines the read can print (`sed -n 5,9p` prints 5); null when unbounded. */
+  readonly lineLimit: number | null;
 }
 
 export interface FileReadSegments {
   readonly segments: ReadonlyArray<FileReadSegment>;
 }
 
+type FileRead = Omit<FileReadSegment, "cwdOffset" | "cwdKnown">;
+
+const SED_PRINT_RANGE_PATTERN = /^(\d+|\$)(?:,(\d+|\$))?p$/i;
+
 function sedPrintStartLine(script: string): number | null {
-  const match = /^(\d+|\$)(?:,(?:\d+|\$))?p$/i.exec(script.trim());
+  const match = SED_PRINT_RANGE_PATTERN.exec(script.trim());
   if (!match?.[1] || match[1] === "$") return null;
   const start = Number.parseInt(match[1], 10);
   return start > 0 ? start : null;
+}
+
+function sedPrintLineLimit(script: string): number | null {
+  const match = SED_PRINT_RANGE_PATTERN.exec(script.trim());
+  if (!match?.[1]) return null;
+  if (match[2] === undefined || match[1] === "$") return 1;
+  if (match[2] === "$") return null;
+  const start = Number.parseInt(match[1], 10);
+  const end = Number.parseInt(match[2], 10);
+  // `sed -n 9,5p` prints line 9 alone.
+  return end >= start ? end - start + 1 : 1;
+}
+
+/** `head`/`tail` print 10 lines without a count; `tail -n +N` has no limit. */
+function lineCountLimit(count: string | null): number | null {
+  if (count === null) return 10;
+  return count.startsWith("+") ? null : Number.parseInt(count, 10);
+}
+
+/** A `git` stage's subcommand and its arguments, past global options such as `-C dir`. */
+function parseGitStage(
+  stage: ReadonlyArray<string>,
+): { subcommand: string; args: ReadonlyArray<string>; directory: string | null } | null {
+  if (stageProgram(stage) !== "git") return null;
+  const words = stage.slice(1).map(maybeUnquoteShellToken);
+  let directory: string | null = null;
+  let index = 0;
+  while (index < words.length && (words[index] ?? "").startsWith("-")) {
+    const word = words[index] ?? "";
+    if (word === "-C") directory = joinCwdOffset(directory, words[index + 1] ?? "");
+    index += GIT_OPTIONS_WITH_VALUE.has(word) ? 2 : 1;
+  }
+  const subcommand = words[index];
+  if (!subcommand) return null;
+  return { subcommand, args: words.slice(index + 1), directory };
+}
+
+/**
+ * `<rev>:<path>` naming one blob, or `:<path>` / `:<stage>:<path>` in the
+ * index. Not `:/message` (a commit found by message) or a revision with
+ * `@{…}`, `^{…}` or spaces, which name commits.
+ */
+const GIT_BLOB_PATTERN = /^(?:([^:\s{}-][^:\s{}]*)|(:[0-3])?):([^\s/:][^\s:]*)$/;
+
+/** `git show <rev>:<path>`: one blob, printed whole. */
+function parseGitShowFileRead(stage: ReadonlyArray<string>): FileRead | null {
+  const git = parseGitStage(stage);
+  if (!git || git.subcommand !== "show" || git.args.length !== 1) return null;
+  const match = GIT_BLOB_PATTERN.exec(git.args[0] ?? "");
+  if (!match) return null;
+  // `HEAD:./a.ts` is relative to the cwd, `HEAD:a.ts` to the repository root.
+  const filePath = match[3]!.replace(/^\.\//, "");
+  if (filePath.length === 0 || filePath.endsWith("/")) return null;
+  return {
+    filePath,
+    startLine: 1,
+    numberedOutput: false,
+    revision: match[1] ?? match[2] ?? "",
+    lineLimit: null,
+  };
 }
 
 function singleFileArgument(args: ReadonlyArray<string>): string | null {
@@ -2292,11 +2364,10 @@ function parseLineCountArgs(
   return { count: null, rest: args };
 }
 
-function parseSingleStageFileRead(
-  stage: ReadonlyArray<string>,
-): Omit<FileReadSegment, "cwdOffset" | "cwdKnown"> | null {
+function parseSingleStageFileRead(stage: ReadonlyArray<string>): FileRead | null {
   const program = stageProgram(stage);
   const args = stage.slice(1);
+  const onDisk = { revision: null, numberedOutput: false } as const;
   if (program === "sed") {
     // Without quiet mode sed prints the whole file plus the range again, so
     // the output is not the range and its lines cannot be numbered.
@@ -2304,48 +2375,73 @@ function parseSingleStageFileRead(
     if (!sed?.quiet || sed.trailingArgs.length !== 1) return null;
     const filePath = sed.trailingArgs[0]?.trim() ?? "";
     if (filePath.length === 0) return null;
-    return { filePath, startLine: sedPrintStartLine(sed.script), numberedOutput: false };
+    return {
+      ...onDisk,
+      filePath,
+      startLine: sedPrintStartLine(sed.script),
+      lineLimit: sedPrintLineLimit(sed.script),
+    };
   }
   if (program === "cat") {
     const numbered = args[0] === "-n";
     const filePath = singleFileArgument(numbered ? args.slice(1) : args);
-    return filePath ? { filePath, startLine: 1, numberedOutput: numbered } : null;
+    return filePath
+      ? { ...onDisk, filePath, startLine: 1, numberedOutput: numbered, lineLimit: null }
+      : null;
   }
   if (program === "head" || program === "tail") {
     const parsed = parseLineCountArgs(args);
     const filePath = parsed ? singleFileArgument(parsed.rest) : null;
     if (!parsed || !filePath) return null;
     if (parsed.count !== null && !/^\+?\d+$/.test(parsed.count)) return null;
-    if (program === "head") return { filePath, startLine: 1, numberedOutput: false };
+    const lineLimit = lineCountLimit(parsed.count);
+    if (program === "head") return { ...onDisk, filePath, startLine: 1, lineLimit };
     const fromLine = parsed.count?.startsWith("+")
       ? Number.parseInt(parsed.count.slice(1), 10)
       : null;
     return {
+      ...onDisk,
       filePath,
       startLine: fromLine !== null && fromLine > 0 ? fromLine : null,
-      numberedOutput: false,
+      lineLimit,
     };
   }
   if (program === "nl") {
     const filePath = parseNlBodyNumberingAllFilePath(stage);
-    return filePath ? { filePath, startLine: 1, numberedOutput: true } : null;
+    return filePath
+      ? { ...onDisk, filePath, startLine: 1, numberedOutput: true, lineLimit: null }
+      : null;
   }
+  if (program === "git") return parseGitShowFileRead(stage);
   return null;
 }
 
-function parseFileReadPipeline(
-  stages: ReadonlyArray<ReadonlyArray<string>>,
-): Omit<FileReadSegment, "cwdOffset" | "cwdKnown"> | null {
+function parseFileReadPipeline(stages: ReadonlyArray<ReadonlyArray<string>>): FileRead | null {
   const [first, second] = stages;
   if (!first) return null;
   if (stages.length === 1) return parseSingleStageFileRead(first);
   if (stages.length !== 2 || !second) return null;
-  // `nl -ba file | sed -n 10,20p` and `cat -n file | sed -n 10,20p`
+  // A whole file narrowed by a second stage: `nl -ba a.ts | sed -n 10,20p`,
+  // `git show HEAD:a.ts | sed -n 10,20p`, `cat a.ts | head -n 40`.
   const source = parseSingleStageFileRead(first);
-  if (!source?.numberedOutput || stageProgram(second) !== "sed") return null;
-  const sed = parseSedPrintCommandArgs(second.slice(1));
-  if (!sed?.quiet || sed.trailingArgs.length > 0) return null;
-  return { ...source, startLine: sedPrintStartLine(sed.script) };
+  if (!source || source.startLine !== 1 || source.lineLimit !== null) return null;
+  const narrowing = stageProgram(second);
+  if (narrowing === "sed") {
+    const sed = parseSedPrintCommandArgs(second.slice(1));
+    if (!sed?.quiet || sed.trailingArgs.length > 0) return null;
+    return {
+      ...source,
+      startLine: sedPrintStartLine(sed.script),
+      lineLimit: sedPrintLineLimit(sed.script),
+    };
+  }
+  if (narrowing === "head") {
+    const parsed = parseLineCountArgs(second.slice(1).map(maybeUnquoteShellToken));
+    if (!parsed || parsed.rest.length > 0) return null;
+    if (parsed.count !== null && !/^\d+$/.test(parsed.count)) return null;
+    return { ...source, lineLimit: lineCountLimit(parsed.count) };
+  }
+  return null;
 }
 
 /**
@@ -2369,12 +2465,24 @@ export function parseFileReadSegments(command: string): FileReadSegments | null 
 }
 
 export interface SearchOutputCommand {
-  readonly tool: "grep" | "rg";
+  readonly tool: "grep" | "rg" | "git";
   readonly patterns: ReadonlyArray<string>;
   /** Paths given on the command line; empty when it searched the cwd. */
   readonly targets: ReadonlyArray<string>;
+  /**
+   * `git grep` trees that may prefix result lines as `<rev>:path:line:text`.
+   * Without `--` an argument may be a path instead, so a prefix only applies
+   * when the line does not parse without it.
+   */
+  readonly revisions: ReadonlyArray<string>;
+  /** The `revisions` came before `--`, so they surely are trees. */
+  readonly revisionsKnown: boolean;
   readonly cwdOffset: string | null;
-  /** False when a `cd` before the search may have failed (`cd x; rg …`). */
+  /**
+   * False when result paths may not be relative to `cwdOffset`: a `cd`
+   * before the search may have failed (`cd x; rg …`), or `git grep
+   * --full-name` printed them from the repository root.
+   */
   readonly cwdKnown: boolean;
   /** Statements after the search print output of their own after its matches. */
   readonly followedByOtherStatements: boolean;
@@ -2408,14 +2516,38 @@ const RG_VALUE_FLAG_LETTERS = new Set([
   "r",
 ]);
 
+const GIT_GREP_VALUE_FLAG_LETTERS = new Set(["A", "B", "C", "e", "f", "m", "O"]);
+const GIT_GREP_OUTPUT_FLAGS_WITH_VALUE = new Set([
+  ...GIT_GREP_FLAGS_WITH_VALUE,
+  "-A",
+  "-B",
+  "-m",
+  "-O",
+  "--context",
+  "--after-context",
+  "--before-context",
+  "--max-count",
+  "--threads",
+]);
+
 function collectSearchFlags(
   args: ReadonlyArray<string>,
-  tool: "grep" | "rg",
+  tool: SearchOutputCommand["tool"],
 ): { letters: Set<string>; longFlags: Set<string> } {
   const letters = new Set<string>();
   const longFlags = new Set<string>();
-  const valueLetters = tool === "rg" ? RG_VALUE_FLAG_LETTERS : GREP_VALUE_FLAG_LETTERS;
-  const longValueFlags = tool === "rg" ? RG_FLAGS_WITH_VALUE : GREP_FLAGS_WITH_VALUE;
+  const valueLetters =
+    tool === "rg"
+      ? RG_VALUE_FLAG_LETTERS
+      : tool === "git"
+        ? GIT_GREP_VALUE_FLAG_LETTERS
+        : GREP_VALUE_FLAG_LETTERS;
+  const longValueFlags =
+    tool === "rg"
+      ? RG_FLAGS_WITH_VALUE
+      : tool === "git"
+        ? GIT_GREP_OUTPUT_FLAGS_WITH_VALUE
+        : GREP_FLAGS_WITH_VALUE;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index] ?? "";
     if (arg === "--") break;
@@ -2564,12 +2696,24 @@ export function parseSearchOutputCommand(command: string): SearchOutputCommand |
   }
   const statement = statements[index];
   if (!statement) return null;
-  const [stage, ...rest] = statement.stages;
+  return parseSearchStatement(statement.stages, {
+    cwdOffset: cwd.offset(),
+    cwdKnown: cwd.known(),
+    followedByOtherStatements: index < statements.length - 1,
+  });
+}
+
+function parseSearchStatement(
+  stages: CommandStatement["stages"],
+  context: Pick<SearchOutputCommand, "cwdOffset" | "cwdKnown" | "followedByOtherStatements">,
+): SearchOutputCommand | null {
+  const [stage, ...rest] = stages;
   if (!stage || !rest.every(isLineFilterStage)) return null;
   const program = stageProgram(stage);
-  if (!isSearchToolName(program)) return null;
-  const tool = program === "rg" || program === "ripgrep" ? "rg" : "grep";
-  const args = stage.slice(1);
+  const git = program === "git" ? parseGitStage(stage) : null;
+  if (git ? git.subcommand !== "grep" : !isSearchToolName(program)) return null;
+  const tool = git ? "git" : program === "rg" || program === "ripgrep" ? "rg" : "grep";
+  const args = git ? git.args : stage.slice(1);
   const parsed = parseSearchCommandArgs(
     args,
     tool === "rg"
@@ -2578,11 +2722,17 @@ export function parseSearchOutputCommand(command: string): SearchOutputCommand |
           patternFlags: RG_PATTERN_FLAGS,
           rejectFlags: RG_REJECT_FLAGS,
         }
-      : {
-          flagsWithValue: GREP_FLAGS_WITH_VALUE,
-          patternFlags: GREP_PATTERN_FLAGS,
-          rejectFlags: GREP_REJECT_FLAGS,
-        },
+      : tool === "git"
+        ? {
+            flagsWithValue: GIT_GREP_OUTPUT_FLAGS_WITH_VALUE,
+            patternFlags: GIT_GREP_PATTERN_FLAGS,
+            rejectFlags: GIT_GREP_REJECT_FLAGS,
+          }
+        : {
+            flagsWithValue: GREP_FLAGS_WITH_VALUE,
+            patternFlags: GREP_PATTERN_FLAGS,
+            rejectFlags: GREP_REJECT_FLAGS,
+          },
   );
   if (!parsed) return null;
   const { letters, longFlags } = collectSearchFlags(args, tool);
@@ -2592,26 +2742,42 @@ export function parseSearchOutputCommand(command: string): SearchOutputCommand |
     tool === "rg" &&
     has("S", "--smart-case") &&
     parsed.patterns.every((pattern) => pattern === pattern.toLowerCase());
+  // parseSearchCommandArgs reports a search without paths as "workspace".
+  let targets =
+    parsed.targets.length === 1 &&
+    parsed.targets[0] === "workspace" &&
+    !args.some((arg) => maybeUnquoteShellToken(arg) === "workspace")
+      ? []
+      : parsed.targets;
+  let revisions: ReadonlyArray<string> = [];
+  let revisionsKnown = false;
+  if (tool === "git") {
+    // `git grep <pattern> [<tree>...] [--] [<path>...]`: words before `--`
+    // are trees; without `--` each may be a tree or a path.
+    const dash = args.indexOf("--");
+    const paths = dash === -1 ? [] : args.slice(dash + 1).map(maybeUnquoteShellToken);
+    revisions = targets.filter((target) => !paths.includes(target));
+    revisionsKnown = dash !== -1;
+    if (dash !== -1) targets = paths;
+  }
   return {
     tool,
     patterns: parsed.patterns,
-    // parseSearchCommandArgs reports a search without paths as "workspace".
-    targets:
-      parsed.targets.length === 1 &&
-      parsed.targets[0] === "workspace" &&
-      !args.some((arg) => maybeUnquoteShellToken(arg) === "workspace")
-        ? []
-        : parsed.targets,
-    cwdOffset: cwd.offset(),
-    cwdKnown: cwd.known(),
-    followedByOtherStatements: index < statements.length - 1,
+    targets,
+    revisions,
+    revisionsKnown,
+    // `git -C dir grep` prints paths relative to `dir`.
+    cwdOffset: git?.directory ? joinCwdOffset(context.cwdOffset, git.directory) : context.cwdOffset,
+    // `--full-name` prints paths from the repository root, which is unknown.
+    cwdKnown: context.cwdKnown && !(tool === "git" && longFlags.has("--full-name")),
+    followedByOtherStatements: context.followedByOtherStatements,
     fixedStrings: has("F", "--fixed-strings"),
     ignoreCase: has("i", "--ignore-case") || smartCase,
     extendedRegex: tool === "rg" || has("E", "--extended-regexp") || has("P", "--perl-regexp"),
     perlRegex: has("P", tool === "rg" ? "--pcre2" : "--perl-regexp"),
     noFileName: has("h", "--no-filename"),
-    recursive: tool === "rg" || has("r", "--recursive") || has("R", "--dereference-recursive"),
-    // Without a TTY neither tool numbers lines unless asked to. `--vimgrep`
+    recursive: tool !== "grep" || has("r", "--recursive") || has("R", "--dereference-recursive"),
+    // Without a TTY these tools number lines only when asked to. `--vimgrep`
     // and `--column` add a column (`path:3:7:text`), a format not parsed here.
     lineNumbers:
       has("n", "--line-number") &&
@@ -2619,6 +2785,42 @@ export function parseSearchOutputCommand(command: string): SearchOutputCommand |
       !longFlags.has("--vimgrep") &&
       !longFlags.has("--column"),
   };
+}
+
+export type OutputStatement =
+  | { readonly kind: "read"; readonly read: FileReadSegment }
+  | { readonly kind: "search"; readonly search: SearchOutputCommand }
+  | { readonly kind: "other" };
+
+/**
+ * Each statement of a compound command, past `cd` statements, in the order
+ * their output appears: a file read, a search, or something else. Null when
+ * the command cannot be split into statements (redirections, substitutions).
+ */
+export function parseOutputStatements(command: string): ReadonlyArray<OutputStatement> | null {
+  const statements = splitCommandStatements(command);
+  if (!statements) return null;
+  const cwd = createCwdTracker();
+  const result: OutputStatement[] = [];
+  statements.forEach(({ stages, afterAnd }, index) => {
+    cwd.advance(stages, afterAnd);
+    if (cdStatementTarget(stages) !== null) return;
+    const read = parseFileReadPipeline(stages);
+    if (read) {
+      result.push({
+        kind: "read",
+        read: { ...read, cwdOffset: cwd.offset(), cwdKnown: cwd.known() },
+      });
+      return;
+    }
+    const search = parseSearchStatement(stages, {
+      cwdOffset: cwd.offset(),
+      cwdKnown: cwd.known(),
+      followedByOtherStatements: index < statements.length - 1,
+    });
+    result.push(search ? { kind: "search", search } : { kind: "other" });
+  });
+  return result.length > 0 ? result : null;
 }
 
 const GIT_OPTIONS_WITH_VALUE = new Set(["-C", "-c", "--git-dir", "--work-tree"]);
@@ -2639,6 +2841,8 @@ function isDiffStage(stage: ReadonlyArray<string>): boolean {
   const subcommand = words[index];
   const rest = words.slice(index + 1);
   const patch = rest.some((word) => word === "-p" || word === "--patch" || word === "-u");
+  // `git show <rev>:<path>` prints a file, not a patch.
+  if (subcommand === "show" && parseGitShowFileRead(stage) !== null) return false;
   if (subcommand === "diff" || subcommand === "show") {
     return !rest.some((word) =>
       ["--stat", "--name-only", "--name-status", "--shortstat", "--numstat"].includes(word),

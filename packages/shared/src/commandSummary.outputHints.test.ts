@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { isDiffCommand, parseFileReadSegments, parseSearchOutputCommand } from "./commandSummary";
+import {
+  isDiffCommand,
+  parseFileReadSegments,
+  parseOutputStatements,
+  parseSearchOutputCommand,
+} from "./commandSummary";
 
 describe("parseFileReadSegments", () => {
   it("reads a sed print range with its start line", () => {
@@ -12,6 +17,8 @@ describe("parseFileReadSegments", () => {
           cwdKnown: true,
           startLine: 750,
           numberedOutput: false,
+          revision: null,
+          lineLimit: 21,
         },
       ],
     });
@@ -30,6 +37,8 @@ describe("parseFileReadSegments", () => {
           cwdKnown: true,
           startLine: 750,
           numberedOutput: false,
+          revision: null,
+          lineLimit: 21,
         },
         {
           filePath: "a.tsx",
@@ -38,6 +47,8 @@ describe("parseFileReadSegments", () => {
           cwdKnown: false,
           startLine: 850,
           numberedOutput: false,
+          revision: null,
+          lineLimit: 16,
         },
       ],
     });
@@ -57,8 +68,57 @@ describe("parseFileReadSegments", () => {
         cwdKnown: true,
         startLine: 1,
         numberedOutput: false,
+        revision: null,
+        lineLimit: 20,
       },
     ]);
+  });
+
+  it("reads a revision's file with git show", () => {
+    const first = (command: string) => parseFileReadSegments(command)?.segments[0];
+    expect(first("git show origin/main:apps/web/src/a.ts | sed -n 1,60p")).toMatchObject({
+      filePath: "apps/web/src/a.ts",
+      revision: "origin/main",
+      startLine: 1,
+      lineLimit: 60,
+    });
+    expect(first("git --no-pager show HEAD~1:a.ts")).toMatchObject({
+      filePath: "a.ts",
+      revision: "HEAD~1",
+      startLine: 1,
+      lineLimit: null,
+    });
+    expect(first("git show :./src/a.ts | head -n 5")).toMatchObject({
+      filePath: "src/a.ts",
+      revision: "",
+      lineLimit: 5,
+    });
+    expect(first("git show HEAD:a.ts | sed -n 2800,2812p")).toMatchObject({
+      startLine: 2800,
+      lineLimit: 13,
+    });
+    expect(first("git show :2:src/a.ts")).toMatchObject({ filePath: "src/a.ts", revision: ":2" });
+    // Commits, several objects and directories are not file reads.
+    expect(parseFileReadSegments("git show HEAD")).toBeNull();
+    expect(parseFileReadSegments("git show ':/fix typo'")).toBeNull();
+    expect(parseFileReadSegments("git show :/fix")).toBeNull();
+    expect(parseFileReadSegments("git show 'main@{10:00}'")).toBeNull();
+    expect(parseFileReadSegments("git show HEAD:a.ts HEAD:b.ts")).toBeNull();
+    expect(parseFileReadSegments("git show HEAD:src/")).toBeNull();
+    expect(parseFileReadSegments("git show --stat HEAD:a.ts")).toBeNull();
+  });
+
+  it("knows how many lines a read can print", () => {
+    const limit = (command: string) => parseFileReadSegments(command)?.segments[0]?.lineLimit;
+    expect(limit("sed -n 5p a.ts")).toBe(1);
+    expect(limit("sed -n 5,$p a.ts")).toBeNull();
+    expect(limit("sed -n 9,5p a.ts")).toBe(1);
+    expect(limit("head a.ts")).toBe(10);
+    expect(limit("tail -n 3 a.ts")).toBe(3);
+    expect(limit("tail -n +3 a.ts")).toBeNull();
+    expect(limit("cat a.ts")).toBeNull();
+    expect(limit("cat a.ts | head -n 7")).toBe(7);
+    expect(limit("nl -ba a.ts | sed -n 20,29p")).toBe(10);
   });
 
   it("knows where head, tail, cat and nl output starts", () => {
@@ -120,6 +180,8 @@ describe("parseSearchOutputCommand", () => {
       tool: "grep",
       patterns: ["plainDraft\\|isLocal ="],
       targets: ["ChatView.tsx"],
+      revisions: [],
+      revisionsKnown: false,
       cwdOffset: "src",
       cwdKnown: true,
       followedByOtherStatements: true,
@@ -130,6 +192,45 @@ describe("parseSearchOutputCommand", () => {
       noFileName: false,
       recursive: false,
       lineNumbers: true,
+    });
+  });
+
+  it("reads git grep trees, paths and flags", () => {
+    expect(
+      parseSearchOutputCommand(
+        `git grep -n "window.nativeApi\\|globalThis.*nativeApi" origin/main -- apps/web/src/nativeApi.ts | head`,
+      ),
+    ).toMatchObject({
+      tool: "git",
+      patterns: ["window.nativeApi\\|globalThis.*nativeApi"],
+      targets: ["apps/web/src/nativeApi.ts"],
+      revisions: ["origin/main"],
+      recursive: true,
+      lineNumbers: true,
+    });
+    // Without `--` a word may be a tree or a path.
+    expect(parseSearchOutputCommand("git grep -n foo HEAD src")).toMatchObject({
+      targets: ["HEAD", "src"],
+      revisions: ["HEAD", "src"],
+    });
+    expect(parseSearchOutputCommand("git -C apps grep -niE 'a|b'")).toMatchObject({
+      cwdOffset: "apps",
+      ignoreCase: true,
+      extendedRegex: true,
+      revisions: [],
+    });
+    expect(parseSearchOutputCommand("git grep -A 2 -n foo")?.patterns).toEqual(["foo"]);
+    expect(parseSearchOutputCommand("git grep foo")?.lineNumbers).toBe(false);
+    expect(parseSearchOutputCommand("git log --grep foo")).toBeNull();
+    expect(parseSearchOutputCommand("git grep -n foo A -- a.ts")).toMatchObject({
+      revisions: ["A"],
+      revisionsKnown: true,
+    });
+    expect(parseSearchOutputCommand("git grep -n foo A")?.revisionsKnown).toBe(false);
+    // `--full-name` paths start at the repository root, wherever it ran.
+    expect(parseSearchOutputCommand("git -C apps grep -n --full-name foo")).toMatchObject({
+      cwdOffset: "apps",
+      cwdKnown: false,
     });
   });
 
@@ -267,6 +368,31 @@ describe("parseSearchOutputCommand", () => {
   });
 });
 
+describe("parseOutputStatements", () => {
+  it("describes each statement past cd in output order", () => {
+    const statements = parseOutputStatements(
+      `cd /repo && git show origin/main:a.ts | sed -n 1,60p; ps -axo pid,command | grep -E "F5( |$)" | grep -v grep | head -3; echo "env: \${X:-unset}"`,
+    );
+    expect(statements?.map((statement) => statement.kind)).toEqual(["read", "other", "other"]);
+    expect(statements?.[0]).toMatchObject({
+      read: { filePath: "a.ts", revision: "origin/main", lineLimit: 60, cwdOffset: "/repo" },
+    });
+
+    const mixed = parseOutputStatements(
+      "git show A:a.ts | sed -n 1,3p; git show B:b.ts | sed -n 5,6p; git grep -n foo B -- c.ts | head",
+    );
+    expect(mixed?.map((statement) => statement.kind)).toEqual(["read", "read", "search"]);
+    expect(mixed?.[2]).toMatchObject({
+      search: { tool: "git", revisions: ["B"], followedByOtherStatements: false },
+    });
+  });
+
+  it("is null for commands that cannot be split", () => {
+    expect(parseOutputStatements("cat a.ts > b.ts")).toBeNull();
+    expect(parseOutputStatements("cd src")).toBeNull();
+  });
+});
+
 describe("isDiffCommand", () => {
   it.each([
     "git diff",
@@ -277,14 +403,22 @@ describe("isDiffCommand", () => {
     "git log -p -3",
     "git stash show -p",
     "diff -u a b",
+    // Commits named by message or date, and colon pathspecs after `--`.
+    "git show ':/fix typo'",
+    "git show 'main@{2026-11-01 10:00}'",
+    "git show abc123 -- ':(glob)src/*.ts'",
   ])("accepts %s", (command) => {
     expect(isDiffCommand(command)).toBe(true);
   });
 
-  it.each(["git diff --stat", "git log", "git status", "diff a b", "git diff && echo done"])(
-    "rejects %s",
-    (command) => {
-      expect(isDiffCommand(command)).toBe(false);
-    },
-  );
+  it.each([
+    "git diff --stat",
+    "git log",
+    "git status",
+    "diff a b",
+    "git diff && echo done",
+    "git show origin/main:a.ts",
+  ])("rejects %s", (command) => {
+    expect(isDiffCommand(command)).toBe(false);
+  });
 });
