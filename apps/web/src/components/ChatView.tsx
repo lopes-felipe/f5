@@ -1,9 +1,22 @@
 import { ThreadFindBar } from "./chat/ThreadFindBar";
+import {
+  codeReviewReviewers,
+  findPlanningBranch,
+  investigationCrossReviews,
+  investigationInvestigators,
+  planningBranches,
+  planReviewReviewerBranchId,
+  requireInvestigator,
+} from "@t3tools/shared/workflowParticipants";
 import { attachmentSources } from "../lib/attachmentUploadQueue";
 import { composerModelMentionItems } from "./chat/composerModelMentions";
 import { formatComposerModelMention } from "@t3tools/shared/composerModelMentions";
 import { useFreshSessionStore } from "../freshSessionStore";
-import { isDiffSearchEditingKey, isEventInFindScope } from "../lib/keyboardFocus";
+import {
+  shouldOfferComposerFocus,
+  isDiffSearchEditingKey,
+  isEventInFindScope,
+} from "../lib/keyboardFocus";
 import { ThreadTokenUsageProvider } from "./chat/MessageTokenUsage";
 import { withTimelineApprovals, createTimelineApprovalCache } from "./chat/timelineApprovals";
 import { usePublishComposerSelection } from "../activeComposerSelection";
@@ -74,6 +87,7 @@ import { partitionDroppedAttachments } from "../lib/droppedAttachments";
 import { composerAttachmentStatus } from "../lib/attachmentValidation";
 import { foldedPasteFile } from "../lib/textPaste";
 import { ensureComposerUpload, persistComposerAttachment } from "../composerDraftStore";
+import { useLocalDraftErrorStore } from "../localDraftErrorStore";
 import { defaultDraftRuntimeMode } from "../lib/draftSettingsDefaults";
 import { RepositoryLinks, repositoryLinksForThread } from "../repositoryLinkContext";
 import { AssistantQuoteToolbar } from "./chat/AssistantQuoteToolbar";
@@ -88,6 +102,7 @@ import { isMacPlatform } from "../lib/utils";
 import { shouldSubmitComposer } from "./chat/composer/sendShortcut";
 import { useComposerState } from "./chat/composer/useComposerState";
 import { useComposerDraft } from "./chat/composer/useComposerDraft";
+import { useInitialComposerFocus } from "../hooks/useInitialComposerFocus";
 import {
   selectModelCatalogSettings,
   useComposerDispatchSettings,
@@ -139,7 +154,11 @@ import {
   getThreadReferenceLimitIssue,
 } from "@t3tools/shared/providerInput";
 import { formatByteSize } from "@t3tools/shared/byteSize";
-import { createModelSelection, resolveSelectableModel } from "@t3tools/shared/model";
+import {
+  createModelSelection,
+  inferProviderForModel,
+  resolveSelectableModel,
+} from "@t3tools/shared/model";
 import {
   latestMcpStatusActivities,
   readRuntimeConfiguredPayload,
@@ -161,7 +180,12 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useDebouncedValue } from "@tanstack/react-pacer";
 import { useNavigate, useRouter } from "@tanstack/react-router";
-import { gitBranchesQueryOptions, gitStatusQueryOptions } from "~/lib/gitReactQuery";
+import {
+  gitBranchesQueryOptions,
+  gitStatusQueryOptions,
+  selectChatRepositoryStatus,
+  selectGitWorkingTree,
+} from "~/lib/gitReactQuery";
 import { projectSearchEntriesQueryOptions } from "~/lib/projectReactQuery";
 import { providerQueryKeys } from "~/lib/providerReactQuery";
 import { serverConfigQueryOptions } from "~/lib/serverReactQuery";
@@ -220,7 +244,12 @@ import {
   formatElapsed,
   PROVIDER_OPTIONS,
 } from "../session-logic";
-import { areUnknownEqual } from "../orchestrationState";
+import {
+  notifyComposerModelPick,
+  pendingComposerModelPick,
+  queueComposerModelPick,
+  subscribeComposerModelPicks,
+} from "../composerModelPicks";
 import { type LegendListRef } from "@legendapp/list/react";
 import { Debouncer } from "@tanstack/react-pacer";
 import {
@@ -320,9 +349,11 @@ import {
   useFavoritePresetShortcuts,
 } from "./chat/useFavoritePresetShortcuts";
 import { useWsConnectionState } from "../wsConnectionState";
-import BranchToolbar from "./BranchToolbar";
+import BranchToolbar, { BranchToolbarRow } from "./BranchToolbar";
 import {
+  PlainGroupWorkspacePicker,
   projectRepositoriesQueryOptions,
+  resolveWorktreeRepositorySelection,
   useWorktreeRepositoryChoices,
   WorktreeRepositoryPicker,
 } from "./RepositoryPicker";
@@ -551,26 +582,20 @@ function resolvePlanningWorkflowThreadSlot(
     workflow.readerPass?.previousReaderThreadIds?.includes(threadId)
   )
     return workflow.readerSlot ?? null;
-  if (workflow.branchA.authorThreadId === threadId) {
-    return workflow.branchA.authorSlot;
-  }
-  if (workflow.branchB.authorThreadId === threadId) {
-    return workflow.branchB.authorSlot;
+  const branches = planningBranches(workflow);
+  const author = branches.find((branch) => branch.authorThreadId === threadId);
+  if (author) {
+    return author.authorSlot;
   }
   if (workflow.merge.threadId === threadId) {
     return workflow.merge.mergeSlot;
   }
-  const branchAReview = workflow.branchA.reviews.find((review) => review.threadId === threadId);
-  if (branchAReview) {
-    return branchAReview.slot === "cross"
-      ? workflow.branchB.authorSlot
-      : workflow.branchA.authorSlot;
-  }
-  const branchBReview = workflow.branchB.reviews.find((review) => review.threadId === threadId);
-  if (branchBReview) {
-    return branchBReview.slot === "cross"
-      ? workflow.branchA.authorSlot
-      : workflow.branchB.authorSlot;
+  for (const branch of branches) {
+    const review = branch.reviews.find((entry) => entry.threadId === threadId);
+    if (review) {
+      const reviewerId = planReviewReviewerBranchId(workflow, branch.branchId, review);
+      return findPlanningBranch(workflow, reviewerId)?.authorSlot ?? null;
+    }
   }
   if (workflow.implementation?.threadId === threadId) {
     return workflow.implementation.implementationSlot;
@@ -585,11 +610,11 @@ function resolveCodeReviewWorkflowThreadSlot(
   workflow: CodeReviewWorkflow,
   threadId: ThreadId,
 ): WorkflowModelSlot | null {
-  if (workflow.reviewerA.threadId === threadId) {
-    return workflow.reviewerA.slot;
-  }
-  if (workflow.reviewerB.threadId === threadId) {
-    return workflow.reviewerB.slot;
+  const reviewer = codeReviewReviewers(workflow).find(
+    (entry) => entry.reviewer.threadId === threadId,
+  );
+  if (reviewer) {
+    return reviewer.reviewer.slot;
   }
   if (workflow.consolidation.threadId === threadId) {
     return workflow.consolidation.slot;
@@ -601,23 +626,19 @@ function resolveInvestigationWorkflowThreadSlot(
   workflow: InvestigationWorkflow,
   threadId: ThreadId,
 ): WorkflowModelSlot | null {
-  if (workflow.investigatorA.investigationThreadId === threadId) {
-    return workflow.investigatorA.slot;
+  const investigator = investigationInvestigators(workflow).find(
+    ({ investigator: entry }) =>
+      entry.investigationThreadId === threadId || entry.selfReviewThreadId === threadId,
+  );
+  if (investigator) {
+    return investigator.investigator.slot;
   }
-  if (workflow.investigatorB.investigationThreadId === threadId) {
-    return workflow.investigatorB.slot;
-  }
-  if (workflow.investigatorA.crossReviewThreadId === threadId) {
-    return workflow.investigatorA.slot;
-  }
-  if (workflow.investigatorB.crossReviewThreadId === threadId) {
-    return workflow.investigatorB.slot;
-  }
-  if (workflow.investigatorA.selfReviewThreadId === threadId) {
-    return workflow.investigatorA.slot;
-  }
-  if (workflow.investigatorB.selfReviewThreadId === threadId) {
-    return workflow.investigatorB.slot;
+  // A cross-review runs on its reviewer's model.
+  const crossReview = investigationCrossReviews(workflow).find(
+    (view) => view.threadId === threadId,
+  );
+  if (crossReview) {
+    return requireInvestigator(workflow, crossReview.reviewerId).slot;
   }
   if (workflow.synthesis.threadId === threadId) {
     return workflow.synthesis.slot;
@@ -658,11 +679,17 @@ type ChatHeaderPanelStateProp = "diffState" | "filesState" | "agentsState" | "pr
 // Subscribes to the header's panel toggle states here, so opening or closing a panel re-renders
 // the header without re-rendering ChatView and the composer.
 function ChatHeaderWithPanelState(
-  props: Omit<ComponentProps<typeof ChatHeader>, ChatHeaderPanelStateProp> & {
+  props: Omit<ComponentProps<typeof ChatHeader>, ChatHeaderPanelStateProp | "workingTree"> & {
     panelThreadId: ThreadId;
+    repositoryQueryOptions: ReturnType<typeof gitStatusQueryOptions>;
   },
 ) {
-  const { panelThreadId, ...headerProps } = props;
+  const { panelThreadId, repositoryQueryOptions, ...headerProps } = props;
+  const { data: workingTree } = useQuery({
+    ...repositoryQueryOptions,
+    enabled: false,
+    select: selectGitWorkingTree,
+  });
   const panelState =
     (surfaceId: string) => (store: ReturnType<typeof useRightPanelStore.getState>) =>
       selectSurfaceHeaderState(
@@ -676,6 +703,7 @@ function ChatHeaderWithPanelState(
   return (
     <ChatHeader
       {...headerProps}
+      workingTree={workingTree}
       diffState={diffState}
       filesState={filesState}
       agentsState={agentsState}
@@ -944,6 +972,8 @@ export default memo(function ChatView({
   // The tail when the reader left the end. The pill mounts after a debounce,
   // so it compares against this rather than the tail at mount.
   const latestTimelineTailRef = useRef<ReturnType<typeof timelineTailSnapshot> | null>(null);
+  // Scopes the selection quote actions to this chat when another one is open beside it.
+  const quoteRootRef = useRef<HTMLDivElement>(null);
   const [leftEndTail, setLeftEndTail] = useState<ReturnType<typeof timelineTailSnapshot> | null>(
     null,
   );
@@ -961,9 +991,8 @@ export default memo(function ChatView({
   optimisticUserMessagesRef.current = optimisticUserMessages;
   const composerFilePathsRef = useRef<string[]>(composerFilePaths);
   const composerTerminalContextsRef = useRef<TerminalContextDraft[]>(composerTerminalContexts);
-  const [localDraftErrorsByThreadId, setLocalDraftErrorsByThreadId] = useState<
-    Record<ThreadId, string | null>
-  >({});
+  const localDraftErrorsByThreadId = useLocalDraftErrorStore((store) => store.errorsByThreadId);
+  const setLocalDraftError = useLocalDraftErrorStore((store) => store.setError);
   const pendingTurnDispatch = usePendingTurnDispatchStore(
     (store) => store.pendingByThreadId[threadId] ?? null,
   );
@@ -2831,13 +2860,15 @@ export default memo(function ChatView({
   const effectivePathQuery = pathTriggerQuery.length > 0 ? debouncedPathQuery : "";
   const gitAutoRefreshIntervalMs = settings.gitStatusAutoRefreshIntervalSeconds * 1000;
   const gitAutoRefreshEnabled = settings.gitStatusAutoRefreshIntervalSeconds > 0;
-  const repositoryStatus = useQuery(
-    gitStatusQueryOptions({
-      cwd: gitCwd ?? null,
-      autoRefresh: gitAutoRefreshEnabled,
-      refetchIntervalMs: gitAutoRefreshIntervalMs,
-    }),
-  );
+  const repositoryQueryOptions = gitStatusQueryOptions({
+    cwd: gitCwd ?? null,
+    autoRefresh: gitAutoRefreshEnabled,
+    refetchIntervalMs: gitAutoRefreshIntervalMs,
+  });
+  const repositoryStatus = useQuery({
+    ...repositoryQueryOptions,
+    select: selectChatRepositoryStatus,
+  });
   const repositoryLinks = useMemo(
     () =>
       repositoryLinksForThread(
@@ -3185,17 +3216,9 @@ export default memo(function ChatView({
         setStoreThreadError(targetThreadId, nextError);
         return;
       }
-      setLocalDraftErrorsByThreadId((existing) => {
-        if ((existing[targetThreadId] ?? null) === nextError) {
-          return existing;
-        }
-        return {
-          ...existing,
-          [targetThreadId]: nextError,
-        };
-      });
+      setLocalDraftError(targetThreadId, nextError);
     },
-    [setStoreThreadError],
+    [setLocalDraftError, setStoreThreadError],
   );
 
   const focusComposer = useCallback(() => {
@@ -3227,26 +3250,7 @@ export default memo(function ChatView({
     )
       return;
     const frame = requestAnimationFrame(() => {
-      const active = document.activeElement;
-      const popupOpen = [
-        ...document.querySelectorAll<HTMLElement>(
-          '[role="dialog"],[role="alertdialog"],[data-popup-open]',
-        ),
-      ].some(
-        (element) =>
-          element.getAttribute("aria-hidden") !== "true" &&
-          element.getAttribute("data-state") !== "closed" &&
-          element.getClientRects().length > 0 &&
-          getComputedStyle(element).visibility !== "hidden",
-      );
-      if (
-        document.hidden ||
-        popupOpen ||
-        window.getSelection()?.toString() ||
-        (active instanceof HTMLElement &&
-          (active.isContentEditable || active.matches("input,textarea,select,iframe")))
-      )
-        return;
+      if (!shouldOfferComposerFocus()) return;
       focusComposer();
     });
     return () => cancelAnimationFrame(frame);
@@ -3642,59 +3646,59 @@ export default memo(function ChatView({
     planSidebarDismissedForTurnRef.current = null;
     useRightPanelStore.getState().open(threadId, "plan");
   }, [activePlan?.turnId, activeProposedPlan?.turnId, planSidebarOpen, threadId]);
-  const persistThreadSettingsForNextTurn = useCallback(
-    async (input: {
-      threadId: ThreadId;
-      createdAt: string;
-      model?: string;
-      modelSelection?: ModelSelection;
-      runtimeMode: RuntimeMode;
-      interactionMode: ProviderInteractionMode;
-    }) => {
-      if (!serverThread) {
-        return;
-      }
-      const api = readNativeApi();
-      if (!api) {
-        return;
-      }
-
-      const modelChanged = input.model !== undefined && input.model !== serverThread.model;
-      const modelSelectionChanged =
-        input.modelSelection !== undefined &&
-        !areUnknownEqual(input.modelSelection, serverThread.modelSelection ?? null);
-      if (modelChanged || modelSelectionChanged) {
-        await api.orchestration.dispatchCommand({
-          type: "thread.meta.update",
-          commandId: newCommandId(),
-          threadId: input.threadId,
-          ...(modelChanged ? { model: input.model } : {}),
-          ...(modelSelectionChanged ? { modelSelection: input.modelSelection } : {}),
-        });
-      }
-
-      if (input.runtimeMode !== serverThread.runtimeMode) {
-        await api.orchestration.dispatchCommand({
-          type: "thread.runtime-mode.set",
-          commandId: newCommandId(),
-          threadId: input.threadId,
-          runtimeMode: input.runtimeMode,
-          createdAt: input.createdAt,
-        });
-      }
-
-      if (input.interactionMode !== serverThread.interactionMode) {
-        await api.orchestration.dispatchCommand({
-          type: "thread.interaction-mode.set",
-          commandId: newCommandId(),
-          threadId: input.threadId,
-          interactionMode: input.interactionMode,
-          createdAt: input.createdAt,
-        });
-      }
-    },
-    [serverThread],
+  // Persist only explicit choices. Draft hydration, provider discovery and defaults also
+  // change the resolved selection, but must not overwrite the server thread's settings.
+  const [modelPick, setModelPick] = useState<{ threadId: ThreadId } | null>(null);
+  const savedModelPick = useRef<typeof modelPick>(null);
+  useLayoutEffect(
+    () =>
+      subscribeComposerModelPicks((pickedThreadId) => {
+        if (pickedThreadId === threadId && isServerThread) setModelPick({ threadId });
+      }),
+    [threadId, isServerThread],
   );
+  useLayoutEffect(() => {
+    if (modelPick?.threadId !== threadId || savedModelPick.current === modelPick || !serverThread)
+      return;
+    savedModelPick.current = modelPick;
+    const api = readNativeApi();
+    if (
+      !api ||
+      noProviderAvailable ||
+      selectedModelSelectionForDispatch.instanceId !==
+        (serverThread.session?.providerInstanceId ??
+          serverThread.modelSelection?.instanceId ??
+          defaultInstanceIdForDriver(
+            ProviderDriverKind.make(
+              serverThread.session?.provider ?? inferProviderForModel(serverThread.model, "codex"),
+            ),
+          ))
+    )
+      return;
+    void queueComposerModelPick(threadId, () =>
+      api.orchestration.dispatchCommand({
+        type: "thread.meta.update",
+        commandId: newCommandId(),
+        threadId,
+        model: selectedModel,
+        modelSelection: selectedModelSelectionForDispatch,
+        deferModelSwitch: true,
+      }),
+    ).catch((error: unknown) => {
+      toastManager.add({
+        type: "error",
+        title: "Could not save model selection",
+        description: error instanceof Error ? error.message : undefined,
+      });
+    });
+  }, [
+    modelPick,
+    noProviderAvailable,
+    selectedModel,
+    selectedModelSelectionForDispatch,
+    serverThread,
+    threadId,
+  ]);
 
   // LegendList owns scroll state now; we keep a footer-resize observer only
   // to drive the compact composer footer layout (no scroll side effects).
@@ -3765,15 +3769,7 @@ export default memo(function ChatView({
     if (api) ensureRewindUiSubscription(api);
   }, []);
 
-  useEffect(() => {
-    if (!activeThread?.id || terminalState.terminalOpen) return;
-    const frame = window.requestAnimationFrame(() => {
-      focusComposer();
-    });
-    return () => {
-      window.cancelAnimationFrame(frame);
-    };
-  }, [activeThread?.id, focusComposer, terminalState.terminalOpen]);
+  useInitialComposerFocus(activeThread?.id, terminalState.terminalOpen, focusComposer);
 
   useEffect(() => {
     composerImagesRef.current = composerImages;
@@ -3921,11 +3917,6 @@ export default memo(function ChatView({
   }, []);
 
   const activeWorktreePath = activeThread?.worktreePath;
-  const envMode: DraftThreadEnvMode = activeWorktreePath
-    ? "worktree"
-    : isLocalDraftThread
-      ? (draftThread?.envMode ?? "local")
-      : "local";
   const worktreeRepositoriesQuery = useQuery(
     projectRepositoriesQueryOptions(isLocalDraftThread ? (activeProject?.id ?? null) : null),
   );
@@ -3942,6 +3933,39 @@ export default memo(function ChatView({
     isLocalDraftThread &&
     worktreeRepositories.length > 0 &&
     !worktreeRepositoriesQuery.data?.some((repository) => repository.relativePath === ".");
+  // A project folder that is not a git repository runs in place unless the
+  // user explicitly picks a worktree of its repositories; the thread-mode
+  // default only applies to git projects.
+  const isNonGitProject =
+    !isScratchProject(activeProject) &&
+    branchesQuery.data?.isRepo === false &&
+    !branchesQuery.data.worktreeMissing;
+  // The opt-in is only ever set on such a folder; a git project ignores it.
+  const plainWorktreeOptIn =
+    isLocalDraftThread &&
+    draftThread?.plainWorktreeOptIn === true &&
+    !isScratchProject(activeProject) &&
+    branchesQuery.data?.isRepo !== true;
+  // A restored worktree choice whose repositories are still being listed (or
+  // could not be listed) stays a worktree: falling back to the project folder
+  // would run an isolated thread in the real checkout.
+  const plainWorktreePending = plainWorktreeOptIn && !worktreeRepositoriesQuery.isSuccess;
+  const envMode: DraftThreadEnvMode = activeWorktreePath
+    ? "worktree"
+    : isLocalDraftThread
+      ? plainWorktreePending
+        ? "worktree"
+        : isNonGitProject || plainWorktreeDraft
+          ? plainWorktreeDraft && plainWorktreeOptIn
+            ? "worktree"
+            : "local"
+          : (draftThread?.envMode ?? "local")
+      : "local";
+  const plainWorktreeSelection = resolveWorktreeRepositorySelection(
+    worktreeRepositories,
+    worktreeRepositoryPaths,
+    true,
+  );
   const [plainWorktreeBase, setPlainWorktreeBase] = useState("");
   const activeProjectName = activeProject?.name ?? null;
   const activeThreadBranch = activeThread?.branch ?? null;
@@ -4158,6 +4182,7 @@ export default memo(function ChatView({
       }
 
       try {
+        await pendingComposerModelPick(input.command.threadId);
         if (!input.command.bootstrap) {
           useNextTurnQueueStore.getState().addOptimistic({
             submissionId: input.command.commandId,
@@ -5752,11 +5777,32 @@ export default memo(function ChatView({
     // In worktree mode, require an explicit base branch so we don't silently
     // fall back to local execution when branch selection is missing.
     const shouldCreateWorktree = !sideChatCommand && isFirstMessage && envMode === "worktree";
-    if (shouldCreateWorktree && !baseBranchForWorktree) {
-      setStoreThreadError(
+    // setThreadError, not the store setter: these fire before a draft has a
+    // server thread, and the store drops errors for threads it does not know.
+    if (shouldCreateWorktree && plainWorktreePending) {
+      setThreadError(
         threadIdForSend,
-        "Select a base branch before sending in New worktree mode.",
+        worktreeRepositoriesQuery.isError
+          ? "This folder's repositories could not be listed. Pick Project folder in the workspace picker, or try again later."
+          : "Still finding this folder's repositories. Try again in a moment.",
       );
+      sendInFlightRef.current = false;
+      return;
+    }
+    if (shouldCreateWorktree && !baseBranchForWorktree) {
+      setThreadError(
+        threadIdForSend,
+        // Until branches load, a non-git folder still shows the thread default.
+        branchesQuery.isLoading
+          ? "Still loading this project's workspace. Try again in a moment."
+          : "Select a base branch before sending in New worktree mode.",
+      );
+      sendInFlightRef.current = false;
+      return;
+    }
+    // The server rejects an empty group; say so before anything is dispatched.
+    if (shouldCreateWorktree && plainWorktreeDraft && plainWorktreeSelection.length === 0) {
+      setThreadError(threadIdForSend, "Select at least one repository for the new worktree.");
       sendInFlightRef.current = false;
       return;
     }
@@ -6008,8 +6054,12 @@ export default memo(function ChatView({
       ) {
         restoreComposerRollback(failureRollback);
       }
-      if (isLocalDraftThread) restoreFailedBootstrapDraft(threadIdForSend, message, error);
-      else toastManager.add({ type: "error", title: message });
+      if (isLocalDraftThread) {
+        // The draft (possibly rekeyed) keeps the error, so recovery notices such as
+        // "Send in Local" can offer a fix; the toast alone leaves nothing to act on.
+        const retryThreadId = restoreFailedBootstrapDraft(threadIdForSend, message, error);
+        setThreadError(retryThreadId, message);
+      } else toastManager.add({ type: "error", title: message });
     };
 
     try {
@@ -6563,7 +6613,6 @@ export default memo(function ChatView({
       isConnecting,
       isServerThread,
       composerNativeSlashCommands,
-      persistThreadSettingsForNextTurn,
       removeOptimisticMessage,
       restoreComposerRollback,
       runtimeMode,
@@ -6868,6 +6917,7 @@ export default memo(function ChatView({
       setComposerDraftProviderInstance(activeThread.id, instanceId);
       setComposerDraftModel(activeThread.id, pickerResolvedModel);
       recordModelSelection(provider, pickerResolvedModel, composerDraft.modelOptions);
+      notifyComposerModelPick(activeThread.id);
       scheduleComposerFocus();
       return pickerResolvedModel;
     },
@@ -7063,10 +7113,8 @@ export default memo(function ChatView({
   }) => {
     if (!input.baseBranch) {
       if (composerMatchesClearedState()) restoreComposerRollback(input.rollback);
-      setStoreThreadError(
-        input.draftThreadId,
-        "Select a base branch before sending to several models.",
-      );
+      // The store drops errors for drafts the server does not know yet.
+      setThreadError(input.draftThreadId, "Select a base branch before sending to several models.");
       return;
     }
     const baseBranch = input.baseBranch;
@@ -7187,12 +7235,19 @@ export default memo(function ChatView({
         return;
       }
       if (isLocalDraftThread) {
-        setDraftThreadContext(threadId, { envMode: mode });
+        // A non-git folder reads its mode from the opt-in, not `envMode`
+        // (the "Send in Local" recovery goes through here).
+        setDraftThreadContext(threadId, {
+          envMode: mode,
+          plainWorktreeOptIn: mode === "worktree" && (isNonGitProject || plainWorktreeDraft),
+        });
       }
       scheduleComposerFocus();
     },
     [
       isLocalDraftThread,
+      isNonGitProject,
+      plainWorktreeDraft,
       isPendingTurnDispatchBlocked,
       scheduleComposerFocus,
       setDraftThreadContext,
@@ -8178,6 +8233,11 @@ export default memo(function ChatView({
           failure={activeAuthFailure}
           providerLabel={PROVIDER_DISPLAY_NAMES[activeThread.session.provider]}
           driver={activeThread.session.provider}
+          authType={
+            serverConfigQuery.data?.providers?.find(
+              (provider) => provider.instanceId === activeAuthFailure.providerInstanceId,
+            )?.auth.type
+          }
           error={activeThread.error}
           onDismiss={dismissActiveThreadError}
         />
@@ -8394,6 +8454,7 @@ export default memo(function ChatView({
     showInteractionModeToggle,
     toggleInteractionMode,
     runtimeMode,
+    availableRuntimeModes: selectedProviderSnapshot?.availableRuntimeModes,
     handleRuntimeModeChange,
     activePlan,
     activeProposedPlan,
@@ -8491,6 +8552,7 @@ export default memo(function ChatView({
           </DialogPopup>
         </Dialog>
         <div
+          ref={quoteRootRef}
           className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-background"
           data-chat-view-thread-id={threadId}
           {...testRenderCountProps}
@@ -8504,12 +8566,13 @@ export default memo(function ChatView({
             currentLength={prompt.length}
             maxLength={isConnecting ? 0 : getServerSendLimits().maxInputChars}
             onInsert={insertAssistantQuote}
+            rootRef={quoteRootRef}
           />
           {/* Top bar */}
           <AppTitlebar className={isElectron ? undefined : "sm:px-4"}>
             <ChatHeaderWithPanelState
               panelThreadId={threadId}
-              workingTree={repositoryStatus.data?.workingTree}
+              repositoryQueryOptions={repositoryQueryOptions}
               navigationHostRef={setNavigationHost}
               isServerThread={isServerThread}
               activeThreadId={activeThread.id}
@@ -9022,43 +9085,45 @@ export default memo(function ChatView({
                         {...(canCheckoutPullRequestIntoThread
                           ? { onCheckoutPullRequestRequest: openPullRequestDialog }
                           : {})}
+                        {...(isLocalDraftThread && envMode === "worktree"
+                          ? {
+                              trailing: (
+                                <WorktreeRepositoryPicker
+                                  repositories={worktreeRepositories}
+                                  selected={worktreeRepositoryPaths}
+                                  onChange={repositoryChoices.select}
+                                  disabled={isPendingTurnDispatchBlocked}
+                                />
+                              ),
+                            }
+                          : {})}
                       />
                     )}
-                    {plainWorktreeDraft && (
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          className="rounded border px-2 py-1 text-xs"
-                          onClick={() =>
-                            onEnvModeChange(envMode === "worktree" ? "local" : "worktree")
-                          }
-                        >
-                          {envMode === "worktree" ? "Use project folder" : "New worktree"}
-                        </button>
-                        {envMode === "worktree" && (
-                          <>
-                            <input
-                              aria-label="Base branch"
-                              placeholder="Default branch"
-                              value={plainWorktreeBase}
-                              onChange={(event) => setPlainWorktreeBase(event.target.value)}
-                              className="rounded border bg-transparent px-2 py-1 text-xs"
-                            />
-                            <span className="text-xs text-muted-foreground">
-                              Files outside repositories link to the original project folder.
-                            </span>
-                          </>
-                        )}
-                      </div>
-                    )}
-                    {isLocalDraftThread && envMode === "worktree" && (
-                      <WorktreeRepositoryPicker
-                        plain={plainWorktreeDraft}
-                        repositories={worktreeRepositories}
-                        selected={worktreeRepositoryPaths}
-                        onChange={repositoryChoices.select}
-                      />
-                    )}
+                    {(plainWorktreeDraft || (plainWorktreePending && isNonGitProject)) &&
+                      activeProject && (
+                        <BranchToolbarRow>
+                          <PlainGroupWorkspacePicker
+                            projectCwd={activeProject.cwd}
+                            repositoriesStatus={
+                              plainWorktreePending
+                                ? worktreeRepositoriesQuery.isError
+                                  ? "error"
+                                  : "loading"
+                                : "ready"
+                            }
+                            worktree={envMode === "worktree"}
+                            onWorktreeChange={(worktree) =>
+                              setDraftThreadContext(threadId, { plainWorktreeOptIn: worktree })
+                            }
+                            repositories={worktreeRepositories}
+                            selected={worktreeRepositoryPaths}
+                            onSelectedChange={repositoryChoices.select}
+                            baseBranch={plainWorktreeBase}
+                            onBaseBranchChange={setPlainWorktreeBase}
+                            disabled={isPendingTurnDispatchBlocked}
+                          />
+                        </BranchToolbarRow>
+                      )}
                   </ComposerDockColumn>
                 </ComposerDock>
               </div>

@@ -4,6 +4,7 @@ import {
   CLAUDE_SUBAGENT_EFFORT_OPTIONS,
   type ClaudeSubagentEffort,
   DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER,
+  isKnownProviderKind,
   PROJECT_LIST_ENTRIES_DEFAULT_LIMIT,
   PROJECT_LIST_ENTRIES_MAX_LIMIT,
   ProviderInstanceId,
@@ -844,13 +845,7 @@ function normalizeClaudeProjectSettingsRecord(
 }
 
 function normalizeFavoriteProviderKind(value: unknown): ProviderKind | null {
-  return value === "codex" ||
-    value === "claudeAgent" ||
-    value === "cursor" ||
-    value === "opencode" ||
-    value === "grok"
-    ? value
-    : null;
+  return isKnownProviderKind(value) ? value : null;
 }
 
 export function normalizeFavoriteModels(value: unknown): FavoriteModel[] {

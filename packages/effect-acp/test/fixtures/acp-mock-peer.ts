@@ -58,7 +58,7 @@ const program = Effect.gen(function* () {
 
   yield* agent.handlePrompt(() =>
     Effect.gen(function* () {
-      yield* agent.client.requestPermission({
+      const permissionRequest = {
         sessionId,
         options: [
           {
@@ -71,7 +71,26 @@ const program = Effect.gen(function* () {
           toolCallId: "tool-1",
           title: "Read project files",
         },
-      });
+      } as const;
+      if (process.env.ACP_MOCK_PERMISSION_RAW_INPUT === "1") {
+        // Sent raw so this peer's own encoder can't touch `rawInput` before the client sees it.
+        const response = yield* agent.raw.request("session/request_permission", {
+          ...permissionRequest,
+          toolCall: {
+            ...permissionRequest.toolCall,
+            kind: "execute",
+            rawInput: { CommandLine: "find .", WaitMsBeforeAsync: 5000 },
+            rawOutput: "pending",
+          },
+        });
+        if (
+          JSON.stringify(response) !==
+          JSON.stringify({ outcome: { outcome: "selected", optionId: "allow" } })
+        )
+          throw new Error("Unexpected permission response");
+      } else {
+        yield* agent.client.requestPermission(permissionRequest);
+      }
 
       const elicitationRequest = {
         sessionId,

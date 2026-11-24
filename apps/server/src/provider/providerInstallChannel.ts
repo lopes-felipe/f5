@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { accessSync, constants, existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import * as Path from "node:path";
@@ -9,6 +10,12 @@ import type {
 } from "@t3tools/contracts";
 import { buildProviderChildProcessEnv } from "../providerProcessEnv.ts";
 import { resolveExecutable, resolveInvocation } from "../spawn/resolveCommand.ts";
+import { runProcess } from "../processRunner.ts";
+import {
+  detectMiseProviderInstall,
+  isMiseWrapper,
+  MISE_PROVIDER_TOOLS,
+} from "./miseProviderInstall.ts";
 import { isDefaultClaudeBinary, resolveBundledClaudeExecutable } from "./claudeSdkExecutable.ts";
 import { isDefaultCodexBinary, resolveBundledCodexExecutable } from "./codexExecutable.ts";
 
@@ -46,6 +53,7 @@ function withoutForeignHomeVariables(
 
 export type ProviderLatestSource =
   | { readonly kind: "npm"; readonly pkg: string; readonly tag: "latest" | "stable" }
+  | { readonly kind: "mise"; readonly executable: string; readonly tool: string }
   | { readonly kind: "brew-api-formula"; readonly name: string }
   | { readonly kind: "brew-api-cask"; readonly token: string }
   | {
@@ -56,7 +64,14 @@ export type ProviderLatestSource =
     };
 
 export interface ProviderInstallTarget {
-  readonly channel: "bundled" | "npm" | "homebrew" | "self-update" | "unmanaged" | "remote";
+  readonly channel:
+    | "bundled"
+    | "npm"
+    | "homebrew"
+    | "mise"
+    | "self-update"
+    | "unmanaged"
+    | "remote";
   readonly executablePath: string;
   readonly realPath: string;
   readonly updateEnvironment: NodeJS.ProcessEnv;
@@ -95,9 +110,11 @@ export interface InstallTargetDependencies {
   readonly bundledCodexExecutable: () => string;
   readonly homeDir: string;
   readonly platform: NodeJS.Platform;
+  readonly runProcess: typeof runProcess;
+  readonly isMiseWrapper: typeof isMiseWrapper;
 }
 
-/** Classification has no process side effects. Registry ownership is checked privately by the advisor. */
+/** Inspect installer ownership before offering an update. */
 export async function detectProviderInstallTarget(
   input: DetectProviderInstallTargetInput,
   dependencies: Partial<InstallTargetDependencies> = {},
@@ -120,6 +137,8 @@ export async function detectProviderInstallTarget(
     bundledCodexExecutable: resolveBundledCodexExecutable,
     homeDir: homedir(),
     platform: process.platform,
+    runProcess,
+    isMiseWrapper,
     ...dependencies,
   };
   const path = deps.platform === "win32" ? Path.win32 : Path.posix;
@@ -210,6 +229,43 @@ export async function detectProviderInstallTarget(
       { blockedReason: "unsupported_source" },
     );
   }
+  const miseEnvironment = filterProviderUpdateEnvironment(input.updateEnvironment, "mise");
+  const mise = await detectMiseProviderInstall({
+    tool: MISE_PROVIDER_TOOLS[input.driver],
+    executable,
+    realPath: resolved,
+    environment: miseEnvironment,
+    dependencies: deps,
+  });
+  if (mise) {
+    // The mise registry follows OpenCode into 2.x, which this adapter cannot run.
+    const source =
+      mise.upgrade && input.driver !== "opencode"
+        ? { kind: "mise" as const, ...mise.upgrade }
+        : null;
+    const environmentKey = createHash("sha256")
+      .update(
+        JSON.stringify(Object.entries(miseEnvironment).sort(([a], [b]) => a.localeCompare(b))),
+      )
+      .digest("hex");
+    return make(
+      "mise",
+      executable,
+      mise.realPath,
+      "mise:" + mise.key,
+      source,
+      source
+        ? "Update using the mise installation that owns this executable."
+        : input.driver === "opencode"
+          ? "Manage OpenCode in mise and keep it on the supported 1.x release line."
+          : "Manage this provider in mise, then refresh and verify.",
+      source
+        ? { sourceKey: JSON.stringify([source, mise.key, environmentKey]) }
+        : {
+            blockedReason: "unsupported_source",
+          },
+    );
+  }
   if (input.driver === "pi")
     return make(
       "self-update",
@@ -236,6 +292,29 @@ export async function detectProviderInstallTarget(
       npmSource,
       "Update with Grok's built-in updater: grok update.",
       { selfUpdateArgs: ["update"] },
+    );
+  // Cursor's CLI installer lays out `cursor-agent/versions/<version>/cursor-agent`
+  // and `agent update` installs the next version beside it. Any other layout
+  // (a wrapper script, a package manager) falls through to normal detection.
+  // There is no latest-version source, so the advisor shows this as manual
+  // guidance rather than an in-app update.
+  if (
+    input.driver === "cursor" &&
+    /\/cursor-agent\/versions\/[^/]+\/cursor-agent(?:\.exe)?$/i.test(resolved.replaceAll("\\", "/"))
+  )
+    return make(
+      "self-update",
+      executable,
+      resolved,
+      `cursor-self-update:${resolved}`,
+      npmSource,
+      "Update with Cursor's built-in updater: agent update.",
+      {
+        selfUpdateArgs: ["update"],
+        ...(!deps.canWrite(path.dirname(path.dirname(resolved)))
+          ? { blockedReason: "permissions" as const }
+          : {}),
+      },
     );
   const unmanaged = (
     guidance = "Update this CLI using its original installer, then refresh and verify.",
@@ -413,6 +492,20 @@ export function filterProviderUpdateEnvironment(
     "REQUESTS_CA_BUNDLE",
     "NONINTERACTIVE",
   ]);
+  const miseSettings = new Set([
+    "MISE_DATA_DIR",
+    "MISE_CONFIG_DIR",
+    "MISE_CACHE_DIR",
+    "MISE_STATE_DIR",
+    "MISE_GLOBAL_CONFIG_FILE",
+    "MISE_DEFAULT_CONFIG_FILENAME",
+    "MISE_ENV",
+    "MISE_MINIMUM_RELEASE_AGE",
+    "XDG_DATA_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_CACHE_HOME",
+    "XDG_STATE_HOME",
+  ]);
   const result: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(environment)) {
     const upper = key.toUpperCase();
@@ -422,6 +515,7 @@ export function filterProviderUpdateEnvironment(
       upper.startsWith("LC_") ||
       ((channel === undefined || channel === "npm") && upper.startsWith("NPM_CONFIG_")) ||
       ((channel === undefined || channel === "homebrew") && upper.startsWith("HOMEBREW_")) ||
+      ((channel === undefined || channel === "mise") && miseSettings.has(upper)) ||
       ((channel === undefined || channel === "self-update") &&
         (SELF_UPDATE_HOME_VARIABLES as ReadonlyArray<string>).includes(upper))
     )
@@ -432,12 +526,13 @@ export function filterProviderUpdateEnvironment(
 
 export function makeInstanceInstallTargetResolver(
   input: Omit<DetectProviderInstallTargetInput, "updateEnvironment"> & {
+    readonly miseOnly?: boolean;
     readonly instanceEnvironment: ProviderInstanceEnvironment;
     readonly claudeConfigDir?: string | undefined;
   },
   dependencies: Partial<InstallTargetDependencies> = {},
 ): () => Promise<ProviderInstallTarget | null> {
-  return () => {
+  return async () => {
     const base = { ...process.env };
     for (const key of Object.keys(base))
       if (key.toUpperCase() === "F5_PROFILE_ISOLATED") delete base[key];
@@ -452,7 +547,8 @@ export function makeInstanceInstallTargetResolver(
     if (input.claudeConfigDir) updateEnvironment.CLAUDE_CONFIG_DIR = input.claudeConfigDir;
     for (const key of Object.keys(updateEnvironment))
       if (key.toUpperCase() === "F5_PROFILE_ISOLATED") delete updateEnvironment[key];
-    return detectProviderInstallTarget({ ...input, updateEnvironment }, dependencies);
+    const target = await detectProviderInstallTarget({ ...input, updateEnvironment }, dependencies);
+    return input.miseOnly && target?.channel !== "mise" ? null : target;
   };
 }
 
@@ -483,6 +579,18 @@ export function buildProviderUpdateCommand(
       executable: target.brew.executable,
       args: ["upgrade", ...(target.brew.cask ? ["--cask"] : []), target.brew.ref],
       channel: "homebrew",
+      shell,
+    };
+  if (target.channel === "mise" && target.latestSource?.kind === "mise" && latestVersion)
+    return {
+      executable: target.latestSource.executable,
+      args: ["upgrade", target.latestSource.tool],
+      env: Object.fromEntries(
+        Object.entries(target.updateEnvironment).filter(
+          ([key, value]) => key.startsWith("MISE_") && value !== undefined,
+        ),
+      ) as Record<string, string>,
+      channel: "mise",
       shell,
     };
   if (target.channel === "self-update" && target.selfUpdateArgs) {
@@ -516,6 +624,7 @@ export function canRunInApp(
     !target.blockedReason &&
     (target.channel === "npm" ||
       target.channel === "homebrew" ||
+      (target.channel === "mise" && target.latestSource?.kind === "mise") ||
       (target.channel === "self-update" && !!target.selfUpdateArgs))
   );
 }

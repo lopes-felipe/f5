@@ -23,7 +23,11 @@ import {
   worktreeSetupGatesTurn,
   WorkspaceTransitionSnapshot,
 } from "@t3tools/contracts";
-import { Effect, Exit, Option, Schema, Scope } from "effect";
+import { Clock, Effect, Exit, Option, Schema, Scope } from "effect";
+import {
+  autoResumeUsageLimitEnabled,
+  usageLimitResumeCandidate,
+} from "../nextTurnQueue/usageLimitResume.ts";
 
 import { GitCore, type GitCoreShape, type RegisteredWorktree } from "../git/Services/GitCore.ts";
 import { canonicalWorktreePath } from "../git/worktreePaths.ts";
@@ -563,29 +567,24 @@ const worktreeHasUsageLimitRecovery = Effect.fn("worktreeHasUsageLimitRecovery")
       claims.threadIds.includes(thread.id) &&
       !thread.archivedAt &&
       !thread.settledAt &&
-      thread.session?.usageLimit?.resetsAt,
+      thread.session?.usageLimit,
   );
   if (waiting.length === 0) return false;
   const settingsService = yield* Effect.serviceOption(ServerSettingsService);
   const settings = Option.isSome(settingsService)
     ? yield* settingsService.value.getSettings.pipe(Effect.orElseSucceed(() => null))
     : null;
-  const now = Date.now();
+  const now = yield* Clock.currentTimeMillis;
   const queue = yield* NextTurnQueueStore;
   for (const thread of waiting) {
-    const limit = thread.session?.usageLimit;
-    if (!limit?.resetsAt) continue;
-    const future = Date.parse(limit.resetsAt) > now;
+    const resetsAt = thread.session?.usageLimit?.resetsAt;
+    const future = !!resetsAt && Date.parse(resetsAt) > now;
     if (future && thread.snoozedUntil && Date.parse(thread.snoozedUntil) > now) return true;
-    const enabled =
-      settings?.projectSettingsOverrides[thread.projectId]?.autoResumeUsageLimitedThreads ??
-      settings?.autoResumeUsageLimitedThreads ??
-      true;
+    const limit = usageLimitResumeCandidate(thread);
     if (
-      !enabled ||
-      !limit.turnId ||
-      limit.deliveryId ||
-      !canResumeAtUsageReset(limit.resetsAt, now)
+      !limit ||
+      (settings && !autoResumeUsageLimitEnabled(settings, thread.projectId)) ||
+      (resetsAt && !canResumeAtUsageReset(resetsAt, now))
     )
       continue;
     const ledger = yield* queue.getUsageResumeLedger(thread.id).pipe(Effect.result);
@@ -595,7 +594,7 @@ const worktreeHasUsageLimitRecovery = Effect.fn("worktreeHasUsageLimitRecovery")
     // reset it requires an existing entry for this failure to schedule a retry.
     if (current && current.limitKey === usageLimitFailureKey(limit)) {
       if (usageResumeAllowsAuto(current)) return true;
-    } else if (future) {
+    } else if (future || !resetsAt) {
       return true;
     }
   }
@@ -1213,23 +1212,13 @@ export const removeWorktreeSafely = Effect.fn("removeWorktreeSafely")(function* 
               return checked;
             }
           }
-          // Session usage limits and thread snoozes are committed through the
-          // orchestration worker, which takes the shared side of this lock.
-          // Freeze those writes only for the final check and removal.
-          const maintenanceGate =
-            input.policy.kind === "autoCleanup" || isStorageCleanupPolicy(input.policy)
-              ? yield* engine.acquireMaintenanceLock()
-              : null;
+          const maintenanceGate = isStorageCleanupPolicy(input.policy)
+            ? yield* engine.acquireMaintenanceLock()
+            : null;
           if (maintenanceGate)
             yield* Effect.addFinalizer(() => Scope.close(maintenanceGate, Exit.void));
           const finalModel = yield* engine.getReadModel();
           const claims = yield* readWorktreeClaims(input.path);
-          if (
-            input.policy.kind === "autoCleanup" &&
-            checked.blockedReasons.length === 0 &&
-            (yield* worktreeHasUsageLimitRecovery(finalModel.threads, claims))
-          )
-            checked.blockedReasons.push(USAGE_LIMIT_CLEANUP_BLOCK);
           if (isStorageCleanupPolicy(input.policy)) {
             if (
               finalModel.threads.some(
@@ -1319,6 +1308,23 @@ export const removeWorktreeSafely = Effect.fn("removeWorktreeSafely")(function* 
             if (input.isCancelled?.()) {
               checked.blockedReasons.push("Cleanup was cancelled.");
               return checked;
+            }
+            // Grouped automatic removals are rejected by evaluateWorktreeRemoval.
+            // For ordinary automatic cleanup, serialize the last projection read
+            // with orchestration commits. Git removal keeps the workspace locks.
+            if (input.policy.kind === "autoCleanup") {
+              const waiting = yield* Effect.acquireUseRelease(
+                engine.acquireMaintenanceLock(),
+                () =>
+                  Effect.flatMap(engine.getReadModel(), (model) =>
+                    worktreeHasUsageLimitRecovery(model.threads, claims),
+                  ),
+                (gate) => Scope.close(gate, Exit.void),
+              );
+              if (waiting) {
+                checked.blockedReasons.push(USAGE_LIMIT_CLEANUP_BLOCK);
+                return checked;
+              }
             }
             yield* git.removeWorktree({
               ...(input.layoutRemove ? { layoutRemove: input.layoutRemove } : {}),

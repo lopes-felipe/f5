@@ -22,6 +22,34 @@ export interface CaptureCheckpointInput {
   readonly excludePaths?: ReadonlyArray<string>;
 }
 
+export interface CaptureCheckpointResult {
+  /** The commit the checkpoint ref now points at. */
+  readonly commitOid: string;
+  /**
+   * False when a workspace fingerprint cannot stand in for this capture, because the
+   * checkpoint does not follow the worktree alone (sparse checkouts, ignored workspaces).
+   */
+  readonly reusable: boolean;
+}
+
+export interface FingerprintWorkspaceInput {
+  readonly cwd: string;
+  readonly excludePaths?: ReadonlyArray<string>;
+  /**
+   * A checkpoint commit the workspace must still describe: the fingerprint is null unless
+   * the commit changes exactly the paths the workspace listing shows as changed.
+   */
+  readonly commitOid?: string;
+}
+
+export interface ReuseCheckpointInput {
+  readonly cwd: string;
+  /** The ref whose commit is reused. It must still point at `sourceOid`. */
+  readonly sourceRef: CheckpointRef;
+  readonly sourceOid: string;
+  readonly targetRef: CheckpointRef;
+}
+
 export interface RestoreCheckpointInput {
   readonly cwd: string;
   readonly checkpointRef: CheckpointRef;
@@ -75,7 +103,25 @@ export interface CheckpointStoreShape {
    */
   readonly captureCheckpoint: (
     input: CaptureCheckpointInput,
-  ) => Effect.Effect<void, CheckpointStoreError>;
+  ) => Effect.Effect<CaptureCheckpointResult, CheckpointStoreError>;
+
+  /**
+   * A cheap digest of the workspace state a capture would record, or null when the
+   * workspace cannot be fingerprinted reliably (unborn HEAD, conflicts, collapsed
+   * untracked directories, too many changes, or a Git failure). Equal digests taken at
+   * two times mean a capture at either time records the same tree and parent.
+   */
+  readonly fingerprintWorkspace: (
+    input: FingerprintWorkspaceInput,
+  ) => Effect.Effect<string | null, CheckpointStoreError>;
+
+  /**
+   * Point `targetRef` at the commit `sourceRef` holds, in one ref transaction that first
+   * verifies `sourceRef` still points at `sourceOid`. Returns false when it does not.
+   */
+  readonly reuseCheckpoint: (
+    input: ReuseCheckpointInput,
+  ) => Effect.Effect<boolean, CheckpointStoreError>;
 
   /**
    * Check whether a checkpoint ref exists.

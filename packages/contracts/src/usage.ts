@@ -3,6 +3,7 @@ import { Schema } from "effect";
 import {
   IsoDateTime,
   NonNegativeInt,
+  PositiveInt,
   ProjectId,
   ThreadId,
   TrimmedNonEmptyString,
@@ -395,6 +396,8 @@ export const ProviderUsageWindow = Schema.Struct({
   label: TrimmedNonEmptyString,
   usedPercent: NonNegativeNumber,
   resetsAt: Schema.NullOr(IsoDateTime),
+  /** Window length, when the provider reports one; enables the pace tick. */
+  durationMinutes: Schema.optional(Schema.NullOr(PositiveInt)),
 });
 export type ProviderUsageWindow = typeof ProviderUsageWindow.Type;
 export const UsageResetCredits = Schema.Struct({

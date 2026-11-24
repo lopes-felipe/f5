@@ -1,8 +1,21 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserOpenAuthority, type BrowserOpenPrompt } from "./BrowserOpenAuthority";
-import { getSafeBrowserLoginUrl, getSafeExternalUrl } from "./externalUrl";
+import { getSafeBrowserLoginUrl, getSafeExternalUrl, getSafeShellExternalUrl } from "./externalUrl";
 
 afterEach(() => vi.useRealTimers());
+
+it("accepts editor file deep links in the desktop shell", () => {
+  expect(getSafeShellExternalUrl("CURSOR://file/Users/me/My%20File.ts:186:2")).toBe(
+    "cursor://file/Users/me/My%20File.ts:186:2",
+  );
+  expect(getSafeShellExternalUrl("vscode://file/C:/repo/file.ts:6")).toBe(
+    "vscode://file/C:/repo/file.ts:6",
+  );
+  expect(getSafeShellExternalUrl("vscode://extension/anything")).toBeNull();
+  expect(getSafeShellExternalUrl("cursor://user@file/Users/me/file.ts")).toBeNull();
+  expect(getSafeShellExternalUrl("cursor://file/%2Fremote/share.ts")).toBeNull();
+  expect(getSafeBrowserLoginUrl("vscode://file/C:/repo/file.ts:6")).toBeNull();
+});
 
 describe("browser login validation", () => {
   it.each([

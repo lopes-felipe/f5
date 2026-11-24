@@ -5,6 +5,12 @@ import type {
   WorkflowStepStatus,
 } from "@t3tools/contracts";
 import {
+  investigationCrossReviews,
+  investigationInvestigators,
+  workflowParticipantLabel,
+  workflowUsesMesh,
+} from "@t3tools/shared/workflowParticipants";
+import {
   threadLabelsFromPhases,
   type WorkflowTimelinePhase as TimelinePhase,
   type WorkflowTimelinePhaseState as PhaseState,
@@ -52,80 +58,58 @@ function combineStepStates(states: ReadonlyArray<StepState>): PhaseState {
 }
 
 function deriveInvestigationPhase(workflow: InvestigationWorkflow): TimelinePhase {
-  const aState = workflowStepState(workflow.investigatorA.investigationStatus);
-  const bState = workflowStepState(workflow.investigatorB.investigationStatus);
+  const steps = investigationInvestigators(workflow).map(({ id, investigator }) => ({
+    key: `investigator-${id}`,
+    label: investigator.label,
+    threadId: investigator.investigationThreadId,
+    state: workflowStepState(investigator.investigationStatus),
+    modelSlot: investigator.slot,
+  }));
   return {
     id: "investigation",
     label: "Investigation",
-    state: combineStepStates([aState, bState]),
-    steps: [
-      {
-        key: "investigator-a",
-        label: workflow.investigatorA.label,
-        threadId: workflow.investigatorA.investigationThreadId,
-        state: aState,
-        modelSlot: workflow.investigatorA.slot,
-      },
-      {
-        key: "investigator-b",
-        label: workflow.investigatorB.label,
-        threadId: workflow.investigatorB.investigationThreadId,
-        state: bState,
-        modelSlot: workflow.investigatorB.slot,
-      },
-    ],
+    state: combineStepStates(steps.map((step) => step.state)),
+    steps,
   };
 }
 
 function deriveCrossReviewPhase(workflow: InvestigationWorkflow): TimelinePhase {
-  const aState = investigationPhaseStepState(workflow.investigatorA.crossReviewStatus);
-  const bState = investigationPhaseStepState(workflow.investigatorB.crossReviewStatus);
+  const mesh = workflowUsesMesh(investigationInvestigators(workflow).length);
+  // One step per expected edge, so queued reviews show as placeholders.
+  const steps = investigationCrossReviews(workflow).map((view) => {
+    const reviewer = workflowParticipantLabel(view.reviewerId);
+    const reviewee = workflowParticipantLabel(view.revieweeId);
+    return {
+      key: mesh
+        ? `cross-review-${view.reviewerId}-on-${view.revieweeId}`
+        : `cross-review-${view.reviewerId}`,
+      label: mesh ? `Cross-review ${reviewer} on ${reviewee}` : `Cross-review ${reviewer}`,
+      threadId: view.threadId,
+      state: investigationPhaseStepState(view.status),
+      modelSlot: null,
+    };
+  });
   return {
     id: "cross-review",
     label: "Cross-review",
-    state: combineStepStates([aState, bState]),
-    steps: [
-      {
-        key: "cross-review-a",
-        label: "Cross-review A",
-        threadId: workflow.investigatorA.crossReviewThreadId,
-        state: aState,
-        modelSlot: null,
-      },
-      {
-        key: "cross-review-b",
-        label: "Cross-review B",
-        threadId: workflow.investigatorB.crossReviewThreadId,
-        state: bState,
-        modelSlot: null,
-      },
-    ],
+    state: combineStepStates(steps.map((step) => step.state)),
+    steps,
   };
 }
 
 function deriveSelfReviewPhase(workflow: InvestigationWorkflow): TimelinePhase {
-  const aState = investigationPhaseStepState(workflow.investigatorA.selfReviewStatus);
-  const bState = investigationPhaseStepState(workflow.investigatorB.selfReviewStatus);
+  const steps = investigationInvestigators(workflow).map(({ id, investigator }) => ({
+    key: `own-model-review-${id}`,
+    label: `Own-model review ${workflowParticipantLabel(id)}`,
+    threadId: investigator.selfReviewThreadId,
+    state: investigationPhaseStepState(investigator.selfReviewStatus),
+    modelSlot: null,
+  }));
   return {
     id: "own-model-review",
     label: "Own-model review",
-    state: combineStepStates([aState, bState]),
-    steps: [
-      {
-        key: "own-model-review-a",
-        label: "Own-model review A",
-        threadId: workflow.investigatorA.selfReviewThreadId,
-        state: aState,
-        modelSlot: null,
-      },
-      {
-        key: "own-model-review-b",
-        label: "Own-model review B",
-        threadId: workflow.investigatorB.selfReviewThreadId,
-        state: bState,
-        modelSlot: null,
-      },
-    ],
+    state: combineStepStates(steps.map((step) => step.state)),
+    steps,
   };
 }
 

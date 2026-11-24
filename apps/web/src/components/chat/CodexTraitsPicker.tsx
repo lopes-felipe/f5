@@ -13,6 +13,7 @@ import {
   resolveModelCapabilities,
 } from "@t3tools/shared/model";
 import { getProviderModelCapabilities } from "../../providerModels";
+import { notifyComposerModelPick } from "../../composerModelPicks";
 import { defaultComposerEffort } from "./composerModelDefaults";
 import { memo, useState } from "react";
 import { ChevronDownIcon } from "lucide-react";
@@ -106,6 +107,7 @@ function CodexTraitsMenuContentImpl(props: {
     // `model.switchRecent` keeps the fresh options attached to the codex
     // model the user is actively editing.
     recordModelSelection("codex", props.model, nextProviderModelOptions);
+    notifyComposerModelPick(props.threadId);
   };
 
   return (

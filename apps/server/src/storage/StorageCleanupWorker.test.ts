@@ -55,8 +55,11 @@ interface UsageRecoveryScenario {
   enabled?: boolean;
   override?: boolean;
   past?: boolean;
+  unknownReset?: boolean;
+  late?: boolean;
+  ledgerUnavailable?: boolean;
   snoozed?: boolean;
-  state?: "revoked" | "cancelled";
+  state?: "revoked" | "cancelled" | "scheduled";
   protect?: boolean;
 }
 
@@ -459,6 +462,22 @@ describe("StorageCleanupWorker", { timeout: 60_000 }, () => {
 
   it.each([
     { name: "automatic resume", enabled: true, protect: true },
+    { name: "unknown reset", enabled: true, unknownReset: true, protect: true },
+    {
+      name: "limit arrives at final check",
+      enabled: true,
+      unknownReset: true,
+      late: true,
+      protect: true,
+    },
+    { name: "scheduled recovery", enabled: true, past: true, state: "scheduled", protect: true },
+    {
+      name: "ledger read fails",
+      enabled: true,
+      past: true,
+      ledgerUnavailable: true,
+      protect: true,
+    },
     { name: "snooze", snoozed: true, protect: true },
     { name: "expired snooze", past: true, snoozed: true },
     { name: "automatic resume disabled" },
@@ -506,9 +525,11 @@ describe("StorageCleanupWorker", { timeout: 60_000 }, () => {
           ({ worker, world, worktreePath }) =>
             Effect.gen(function* () {
               const nextHour = new Date(Date.now() + HOUR_MS).toISOString();
-              const resetsAt = scenario.past
-                ? new Date(Date.now() - HOUR_MS).toISOString()
-                : nextHour;
+              const resetsAt = scenario.unknownReset
+                ? null
+                : scenario.past
+                  ? new Date(Date.now() - HOUR_MS).toISOString()
+                  : nextHour;
               const waitingThread = thread({
                 id: "waiting-thread",
                 projectId: "project-1",
@@ -518,6 +539,7 @@ describe("StorageCleanupWorker", { timeout: 60_000 }, () => {
               });
               const providerInstanceId = ProviderInstanceId.makeUnsafe("codex");
               const turnId = TurnId.makeUnsafe("interrupted-turn");
+              if (scenario.ledgerUnavailable) world.usageResumeLedgerUnavailable = true;
               if (scenario.state) {
                 world.usageResumeLedgers.set(waitingThread.id, {
                   limitKey: usageLimitFailureKey({ providerInstanceId, turnId })!,
@@ -529,7 +551,7 @@ describe("StorageCleanupWorker", { timeout: 60_000 }, () => {
                   notBefore: null,
                 });
               }
-              world.threads.push({
+              const limitedThread: typeof waitingThread = {
                 ...waitingThread,
                 snoozedUntil: scenario.snoozed ? nextHour : null,
                 session: {
@@ -554,9 +576,15 @@ describe("StorageCleanupWorker", { timeout: 60_000 }, () => {
                     windows: [],
                   },
                 },
-              });
+              };
+              world.threads.push(scenario.late ? waitingThread : limitedThread);
+              if (scenario.late) {
+                world.beforeMaintenanceLock = () => {
+                  world.threads[1] = limitedThread;
+                };
+              }
               const dryRun = yield* worker.dryRun;
-              if (!scenario.protect) {
+              if (!scenario.protect || scenario.late) {
                 expect(dryRun.targets.map(({ action }) => action)).toEqual(["remove", "remove"]);
               } else {
                 expect(dryRun.targets).toHaveLength(2);
@@ -565,7 +593,11 @@ describe("StorageCleanupWorker", { timeout: 60_000 }, () => {
                     reason.includes("waiting to resume after a usage limit"),
                   ),
                 ).toBe(true);
-                expect((yield* worker.runOnce).every(({ action }) => action === "skip")).toBe(true);
+              }
+              if (scenario.protect) {
+                const results = yield* worker.runOnce;
+                expect(results).toHaveLength(2);
+                expect(results.every(({ action }) => action === "skip")).toBe(true);
                 expect(yield* Effect.promise(() => exists(worktreePath))).toBe(true);
               }
             }),

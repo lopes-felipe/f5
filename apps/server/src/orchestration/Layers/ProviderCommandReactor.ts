@@ -903,12 +903,14 @@ const make = Effect.gen(function* () {
     readonly threadId: ThreadId;
     readonly session: OrchestrationSession;
     readonly createdAt: string;
+    readonly rebindLiveSession?: boolean;
   }) =>
     orchestrationEngine.dispatch({
       type: "thread.session.set",
       commandId: serverCommandId("provider-session-set"),
       threadId: input.threadId,
       session: input.session,
+      ...(input.rebindLiveSession ? { rebindLiveSession: true } : {}),
       createdAt: input.createdAt,
     });
 
@@ -1034,6 +1036,8 @@ const make = Effect.gen(function* () {
     readonly desiredModel?: string;
     readonly instructionContext: Partial<SharedInstructionInput>;
     readonly freshCompactionLaunch?: boolean;
+    /** The session is the one the thread already runs, not a started or replaced one. */
+    readonly rebind?: boolean;
   }) =>
     Effect.promise(() =>
       estimateProviderInstructionTokens({
@@ -1105,6 +1109,9 @@ const make = Effect.gen(function* () {
           Effect.flatMap((tokenUsage) =>
             setThreadSession({
               threadId: input.thread.id,
+              // Only a re-bind of the live session may keep its running turn;
+              // the decider checks current state at write time.
+              ...(input.rebind ? { rebindLiveSession: true } : {}),
               session: {
                 threadId: input.thread.id,
                 status: mapProviderSessionStatusToOrchestrationStatus(input.session.status),
@@ -1507,13 +1514,22 @@ const make = Effect.gen(function* () {
         }).pipe(Effect.withSpan("provider.start-session"));
       };
 
-      const bindSessionToThread = (session: ProviderSession, freshCompactionLaunch = false) =>
+      /**
+       * `start`: a started or replaced session. `fresh-compaction`: a session
+       * launched to continue from a compaction. `rebind`: the live session the
+       * thread already runs, which may keep its running turn.
+       */
+      const bindSessionToThread = (
+        session: ProviderSession,
+        mode: "start" | "fresh-compaction" | "rebind" = "start",
+      ) =>
         bindSessionToThreadWithContext({
           thread,
           session,
           createdAt,
           desiredRuntimeMode,
-          freshCompactionLaunch,
+          freshCompactionLaunch: mode === "fresh-compaction",
+          rebind: mode === "rebind",
           ...(desiredModel ? { desiredModel } : {}),
           instructionContext: {
             ...instructionContext,
@@ -1548,7 +1564,7 @@ const make = Effect.gen(function* () {
             carriesHandoff: true,
             discardResumeCursor: true,
           });
-          yield* bindSessionToThread(started, true);
+          yield* bindSessionToThread(started, "fresh-compaction");
           yield* sqlOption.value.unsafe(
             "UPDATE thread_context_boundaries SET prepared = 1 WHERE thread_id = ?",
             [threadId],
@@ -1972,7 +1988,7 @@ const make = Effect.gen(function* () {
           !shouldRestartForWorkflowExecutionProfileChange
         ) {
           if (activeSession) {
-            yield* bindSessionToThread(activeSession);
+            yield* bindSessionToThread(activeSession, "rebind");
           }
           yield* recordEffectiveStartConfig();
           yield* Effect.annotateCurrentSpan({
@@ -2125,7 +2141,10 @@ const make = Effect.gen(function* () {
           : {}),
         ...(startCarriesHandoff ? { carriesHandoff: true } : {}),
       });
-      yield* bindSessionToThread(startedSession, freshCompactionLaunch);
+      yield* bindSessionToThread(
+        startedSession,
+        freshCompactionLaunch ? "fresh-compaction" : "start",
+      );
       yield* recordEffectiveStartConfig();
       if (
         resumeCursorForStoppedSession === undefined &&
@@ -2185,11 +2204,11 @@ const make = Effect.gen(function* () {
       const live = (yield* providerService.listSessions()).find(
         (session) => session.threadId === input.threadId && session.status !== "closed",
       );
+      // A native wake belongs to an existing session. Its adapter validates the
+      // request's generation, while the thread model may be a pick for a later turn.
       if (
         !live ||
         live.runtimeMode !== thread.runtimeMode ||
-        (live.model !== undefined &&
-          live.model !== (thread.modelSelection?.model ?? thread.model)) ||
         (thread.modelSelection && thread.modelSelection.instanceId !== live.providerInstanceId)
       )
         return yield* new ProviderTurnDeliveryError({
@@ -2203,8 +2222,6 @@ const make = Effect.gen(function* () {
         input: input.providerInput,
         ...(input.deliveryId ? { deliveryId: input.deliveryId } : {}),
         submissionSource: "automation",
-        ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
-        ...(input.model ? { model: input.model } : {}),
         ...(input.interactionMode ? { interactionMode: input.interactionMode } : {}),
         ...(input.workflowExecutionProfile
           ? { workflowExecutionProfile: input.workflowExecutionProfile }
@@ -4146,9 +4163,9 @@ const make = Effect.gen(function* () {
           // Titles and observed checkout branches do not change the provider
           // launch context. Re-reading its stale session would erase turn errors.
           if (
-            event.payload.model === undefined &&
-            event.payload.modelSelection === undefined &&
-            event.payload.worktreePath === undefined
+            event.payload.worktreePath === undefined &&
+            (event.payload.deferModelSwitch ||
+              (event.payload.model === undefined && event.payload.modelSelection === undefined))
           )
             return;
           if (!thread?.session || thread.session.status === "stopped") {

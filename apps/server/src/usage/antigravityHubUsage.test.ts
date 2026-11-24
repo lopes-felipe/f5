@@ -330,6 +330,7 @@ describe("Antigravity hub quotas", () => {
         label: "Gemini · 5-hour",
         usedPercent: 70,
         resetsAt: "2026-11-03T00:00:00.000Z",
+        durationMinutes: 300,
       },
       {
         id: "custom",

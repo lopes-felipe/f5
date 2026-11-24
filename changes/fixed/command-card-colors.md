@@ -1,0 +1,1 @@
+- Commands on command cards keep the same syntax colors when a card is expanded or collapsed.

@@ -3,6 +3,8 @@ import {
   MessageId,
   type OrchestrationSession,
   type OrchestrationThread,
+  type ProjectId,
+  type ServerSettings,
   type ThreadId,
 } from "@t3tools/contracts";
 import { holdsAutomaticResume } from "@t3tools/shared/pendingUserInputs";
@@ -13,7 +15,7 @@ import {
 } from "@t3tools/shared/usageLimit";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { executionProviderFingerprintFor } from "../provider/providerConfigurationFingerprint.ts";
-import { Effect, Option } from "effect";
+import { Clock, Effect, Option } from "effect";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { NextTurnQueueStore } from "./Services/NextTurnQueueStore.ts";
 import { toNextTurnQueueStorageError } from "./Errors.ts";
@@ -33,6 +35,20 @@ export function usageLimitKey(
   return usageLimitFailureKey(session?.usageLimit);
 }
 
+export function usageLimitResumeCandidate(thread: OrchestrationThread | undefined) {
+  const limit = thread?.session?.usageLimit;
+  return thread && !thread.deletedAt && !thread.archivedAt && limit?.turnId && !limit.deliveryId
+    ? limit
+    : null;
+}
+
+export function autoResumeUsageLimitEnabled(settings: ServerSettings, projectId: ProjectId) {
+  return (
+    settings.projectSettingsOverrides[projectId]?.autoResumeUsageLimitedThreads ??
+    settings.autoResumeUsageLimitedThreads
+  );
+}
+
 export function normalizeTarget(ms: number): string | null {
   return Number.isFinite(ms) && Math.abs(ms) < 8.64e15 ? new Date(ms).toISOString() : null;
 }
@@ -50,9 +66,9 @@ export const scheduleUsageLimitResumeFor = (input: {
     const thread =
       input.thread ??
       (yield* engine.getReadModel()).threads.find((entry) => entry.id === input.threadId);
-    const limit = thread?.session?.usageLimit;
-    const key = usageLimitKey(thread?.session);
-    if (!thread || thread.deletedAt || thread.archivedAt || !limit || !key || limit.deliveryId)
+    const limit = usageLimitResumeCandidate(thread);
+    const key = usageLimitFailureKey(limit);
+    if (!thread || !limit || !key)
       return {
         kind: "ineligible" as const,
         reason: "No interrupted usage-limited turn to continue.",
@@ -69,7 +85,7 @@ export const scheduleUsageLimitResumeFor = (input: {
       thread.pendingUserInputs?.some(holdsAutomaticResume)
     )
       return { kind: "transient" as const, reason: "The thread is still busy." };
-    const now = Date.now();
+    const now = yield* Clock.currentTimeMillis;
     const ledger = yield* store.getUsageResumeLedger(input.threadId);
     let target = input.notBefore
       ? Date.parse(input.notBefore)

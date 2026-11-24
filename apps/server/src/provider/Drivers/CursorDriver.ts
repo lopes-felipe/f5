@@ -5,9 +5,11 @@ import { makeProviderLimits } from "../../usage/providerLimits.ts";
 /**
  * CursorDriver — `ProviderDriver` for the Cursor Agent (`agent`) runtime.
  *
- * Cursor exposes an ACP-based CLI. Status refreshes intentionally stay
- * passive (`agent about` only) because ACP authentication can open Cursor's
- * browser login flow.
+ * Cursor exposes an ACP-based CLI. Status refreshes run only `agent about`,
+ * because ACP authentication can open Cursor's browser login flow. The account's
+ * model catalog is fetched in the background with `initialize` and
+ * `cursor/list_available_models` alone, which never authenticate or open a
+ * session (see `cursorModelCatalogCache`).
  *
  * Text generation is supported via the ACP runtime — `makeCursorTextGeneration`
  * drives `runtime.prompt` with a structured-output schema and collects the
@@ -26,7 +28,13 @@ import { makeCursorAdapter } from "../Layers/CursorAdapter.ts";
 import {
   buildInitialCursorProviderSnapshot,
   checkCursorProviderStatus,
+  fetchCursorModelCatalog,
 } from "../Layers/CursorProvider.ts";
+import {
+  makeCursorModelCatalogCache,
+  seedCursorModelCatalog,
+} from "../cursor/cursorModelCatalogCache.ts";
+import { readProviderStatusCache, resolveProviderStatusCachePath } from "../providerStatusCache.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import {
@@ -36,6 +44,9 @@ import {
 } from "../ProviderDriver.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
+import { cursorScratchDir } from "../cursor/CursorNativeSessions.ts";
+import { discoverCursorSkills } from "../acp/CursorSkills.ts";
+import { makeInstanceInstallTargetResolver } from "../providerInstallChannel.ts";
 
 const DRIVER_KIND = ProviderDriverKind.make("cursor");
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
@@ -58,6 +69,7 @@ const withInstanceIdentity =
     ...snapshot,
     instanceId: input.instanceId,
     driver: DRIVER_KIND,
+    harnessVariant: "acp",
     ...(input.displayName ? { displayName: input.displayName } : {}),
     ...(input.accentColor ? { accentColor: input.accentColor } : {}),
     continuation: { groupKey: input.continuationGroupKey },
@@ -73,6 +85,15 @@ export const CursorDriver: ProviderDriver<CursorSettings, CursorDriverEnv> = {
   defaultConfig: (): CursorSettings => Schema.decodeSync(CursorSettings)({}),
   create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
     Effect.gen(function* () {
+      // The registry reports SDK instances unavailable until the host passes
+      // the SDK gates. This build ships only the ACP harness, so an SDK
+      // config never falls back to ACP.
+      if (config.harness === "sdk")
+        return yield* new ProviderDriverError({
+          driver: DRIVER_KIND,
+          instanceId,
+          detail: "The Cursor SDK harness is not available in this build.",
+        });
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -109,10 +130,44 @@ export const CursorDriver: ProviderDriver<CursorSettings, CursorDriverEnv> = {
         environment: processEnv,
         apiEndpoint: effectiveConfig.apiEndpoint,
       });
-      const textGeneration = yield* makeCursorTextGeneration(effectiveConfig, processEnv);
+      const serverConfig = yield* ServerConfig;
+      const textGeneration = yield* makeCursorTextGeneration(effectiveConfig, processEnv, {
+        scratchDir: cursorScratchDir(serverConfig.stateDir),
+      });
+
+      // The catalog the previous process published stays visible until a fresh one arrives.
+      const persisted = yield* resolveProviderStatusCachePath({
+        cacheDir:
+          serverConfig.providerStatusCacheDir ??
+          path.join(serverConfig.stateDir, "provider-status-cache"),
+        instanceId,
+      }).pipe(
+        Effect.flatMap(readProviderStatusCache),
+        Effect.map((cached) =>
+          cached?.instanceId === instanceId && cached.driver === DRIVER_KIND ? cached : undefined,
+        ),
+        Effect.orElseSucceed(() => undefined),
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+      );
+      const modelCatalog = yield* makeCursorModelCatalogCache({
+        settings: effectiveConfig,
+        seed: seedCursorModelCatalog(persisted),
+        fetch: fetchCursorModelCatalog(effectiveConfig, processEnv).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        ),
+      });
 
       const checkProvider = checkCursorProviderStatus(effectiveConfig, processEnv).pipe(
+        // User and Cursor-installed skills are workspace-independent; project
+        // skills join per session.
+        Effect.flatMap((draft) =>
+          discoverCursorSkills(null, processEnv).pipe(
+            Effect.map((skills) => ({ ...draft, skills })),
+          ),
+        ),
         Effect.map(stampIdentity),
+        Effect.flatMap(modelCatalog.applyCached),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),
@@ -124,6 +179,7 @@ export const CursorDriver: ProviderDriver<CursorSettings, CursorDriverEnv> = {
         haveSettingsChanged: () => false,
         initialSnapshot: (settings) => stampIdentity(buildInitialCursorProviderSnapshot(settings)),
         checkProvider,
+        enrichSnapshot: modelCatalog.enrich,
         refreshInterval: SNAPSHOT_REFRESH_INTERVAL,
       }).pipe(
         Effect.mapError(
@@ -140,6 +196,13 @@ export const CursorDriver: ProviderDriver<CursorSettings, CursorDriverEnv> = {
       return {
         instanceId,
         driverKind: DRIVER_KIND,
+        resolveInstallTarget: makeInstanceInstallTargetResolver({
+          driver: DRIVER_KIND,
+          binaryPath: effectiveConfig.binaryPath,
+          resolutionEnvironment: processEnv,
+          instanceEnvironment: environment,
+          instanceId,
+        }),
         continuationIdentity,
         displayName,
         accentColor,

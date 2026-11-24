@@ -135,7 +135,7 @@ import {
 } from "./browser/BrowserOpenPrompt";
 import { registerBrowserOpenIpc } from "./browser/registerBrowserOpenIpc";
 import { appMainFrameProfile } from "./appRendererCaller";
-import { getSafeExternalUrl } from "./browser/externalUrl";
+import { getSafeExternalUrl, getSafeShellExternalUrl } from "./browser/externalUrl";
 import { ChromeProcessSupervisor } from "./computer/ChromeProcessSupervisor";
 import { isIntegrationCertified } from "@t3tools/shared/providerIntegrationCertification";
 import { registerComputerIpc } from "./computer/registerComputerIpc";
@@ -390,6 +390,8 @@ interface BackendRuntime {
    * none is sent before it: a VM's port stays free until its forward is up.
    */
   backendReachable: boolean;
+  /** When this incarnation's startup last reported progress (epoch ms, 0 for never). */
+  startupProgressAt: number;
   recoveryWindow: BrowserWindow | null;
   startupFailure: BackendStartupFailure | null;
 }
@@ -406,6 +408,7 @@ const makeBackendRuntime = (profile: ProfileRecord): BackendRuntime => ({
   outputTail: new BackendOutputTail(),
   startupReady: false,
   backendReachable: false,
+  startupProgressAt: 0,
   recoveryWindow: null,
   startupFailure: null,
 });
@@ -423,6 +426,7 @@ const vmLaunchAssets = resolveVmLaunchAssets({
   arch: process.arch,
   resourcesPath: process.resourcesPath ?? "",
   packaged: app.isPackaged,
+  appVersion: app.getVersion(),
 });
 if (!vmLaunchAssets.ok && process.env.F5_EXPERIMENTAL_LINUX_VM === "1")
   console.warn(`[desktop] Linux VM profiles unavailable: ${vmLaunchAssets.reason}`);
@@ -3375,6 +3379,10 @@ function startBackend(runtime: BackendRuntime = defaultBackend): void {
   const backendIncarnation = Crypto.randomUUID();
   runtime.outputTail = new BackendOutputTail();
   runtime.startupReady = false;
+  runtime.startupProgressAt = 0;
+  // Progress arrives asynchronously, so `launched` is set by then; a superseded
+  // incarnation's progress is ignored.
+  let launched: ChildProcess.ChildProcess | null = null;
   let launch: BackendLaunch;
   try {
     launch = resolved.launcher.launch({
@@ -3387,6 +3395,10 @@ function startBackend(runtime: BackendRuntime = defaultBackend): void {
       profileStateDir: profileStateDir(STATE_DIR, runtime.profile),
       port: runtime.backendPort,
       authToken: runtime.backendAuthToken,
+      onStartupProgress: () => {
+        if (launched !== null && runtime.backendProcess === launched)
+          runtime.startupProgressAt = Date.now();
+      },
     });
   } catch (error) {
     runtime.stopped = true;
@@ -3394,6 +3406,7 @@ function startBackend(runtime: BackendRuntime = defaultBackend): void {
     return;
   }
   const child = launch.process;
+  launched = child;
   runtime.backendProcess = child;
   runtime.backendReachable = launch.reachable === undefined;
   void launch.reachable?.then(
@@ -3427,6 +3440,7 @@ function startBackend(runtime: BackendRuntime = defaultBackend): void {
       runtime.recoveryWindow = null;
     },
     startupTimeoutMs: resolved.launcher.readinessTimeoutMs,
+    lastStartupProgressAt: () => runtime.startupProgressAt,
     onStartupTimeout: () =>
       showStartupRecovery(runtime, "The server started but did not become ready in time."),
     onSustainedHealth: () => {
@@ -3727,6 +3741,7 @@ async function ensureProfileBackendWithSlot(
         () => !isQuitting && !runtime.stopped && isProfileBackendRunning(runtime),
         () => checkBackendReady(runtime),
         requireProfileBackendLauncher(runtime.profile, backendLaunchers).readinessTimeoutMs,
+        () => runtime.startupProgressAt,
       ),
   });
 }
@@ -4188,7 +4203,7 @@ function registerIpcHandlers(): void {
 
   ipcMain.removeHandler(OPEN_EXTERNAL_CHANNEL);
   ipcMain.handle(OPEN_EXTERNAL_CHANNEL, async (_event, rawUrl: unknown) => {
-    const externalUrl = getSafeExternalUrl(rawUrl);
+    const externalUrl = getSafeShellExternalUrl(rawUrl);
     if (!externalUrl) {
       return false;
     }

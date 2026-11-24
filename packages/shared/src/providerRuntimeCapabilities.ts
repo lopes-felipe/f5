@@ -6,6 +6,7 @@ import {
   type ProviderSessionCapabilities,
 } from "@t3tools/contracts";
 import { providerMaxImages } from "./attachmentLimits";
+import { driverSupportsReadOnlyWorkflowTurns, runtimeBuildTarget } from "./workflowProviders";
 
 export function supportsCodexAsyncQuestions(version: string | null | undefined): boolean {
   const match = version?.match(/(?:^|\s)v?(\d+)\.(\d+)\.(\d+)/);
@@ -35,10 +36,19 @@ export function supportsCodexRelease6(version: string | null | undefined): boole
   return codexVersionAtLeast(version, "0.170.0");
 }
 
+/**
+ * The single source of runtime capabilities. `variant` names the harness of a
+ * driver with more than one (Cursor `acp` or `sdk`); absent means the
+ * driver's legacy harness. A capability of a gated harness stays false until
+ * its live gate passes.
+ */
 export function providerRuntimeCapabilities(
   driver: string,
   version?: string | null,
+  variant?: string | null,
+  buildTarget: string | undefined = runtimeBuildTarget(),
 ): ProviderRuntimeCapabilities {
+  if (driver === "cursor" && variant === "sdk") return cursorSdkRuntimeCapabilities();
   const rollback =
     driver === "codex" || driver === "claudeAgent" || driver === "opencode" || driver === "pi";
   const codexNative = driver === "codex" && supportsCodexNativeOperations(version);
@@ -66,15 +76,48 @@ export function providerRuntimeCapabilities(
       driver === "codex" ||
       driver === "muse" ||
       driver === "acp" ||
-      driver === "pi",
+      driver === "pi" ||
+      // Antigravity sessions report each model's `thought_level` option.
+      driver === "antigravity",
     sessionCommandCatalog:
       driver === "claudeAgent" ||
       driver === "codex" ||
       driver === "grok" ||
       driver === "acp" ||
-      driver === "pi",
+      driver === "pi" ||
+      driver === "antigravity",
     instanceInventory: driver === "claudeAgent" || driver === "codex",
     nativeSessionCleanup: driver === "claudeAgent",
+    readOnlyWorkflowTurns: driverSupportsReadOnlyWorkflowTurns(driver, version, buildTarget),
+  };
+}
+
+/**
+ * Cursor SDK harness. Steering, compaction, rewind and subagent inspection
+ * each wait on their own live gate, so none is claimed yet.
+ */
+function cursorSdkRuntimeCapabilities(): ProviderRuntimeCapabilities {
+  return {
+    nativeReview: false,
+    nativeCompaction: false,
+    nativeFork: false,
+    nativeGoals: false,
+    nativeAttachments: false,
+    childTaskInspection: false,
+    childTaskStop: false,
+    fileCheckpointing: false,
+    turnSteering: false,
+    conversationRollback: false,
+    rollbackReadback: false,
+    rollbackAffectsFiles: false,
+    asyncQuestions: false,
+    maxImagesPerTurn: providerMaxImages("cursor"),
+    reportedModels: true,
+    sessionCommandCatalog: false,
+    instanceInventory: false,
+    nativeSessionCleanup: false,
+    // Not certified until the SDK harness passes its gates.
+    readOnlyWorkflowTurns: false,
   };
 }
 

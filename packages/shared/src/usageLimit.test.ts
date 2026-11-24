@@ -1,9 +1,12 @@
+import { type AccountUsageSection, ProviderUsageWindow } from "@t3tools/contracts";
+import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 import {
   canResumeAtUsageReset,
   claudeQuotaWindowDurationMinutes,
   quotaPace,
   quotaPaceLabel,
+  quotaWindowsFromSection,
   USAGE_RESUME_MAX_HORIZON_MS,
 } from "./usageLimit";
 
@@ -85,5 +88,39 @@ describe("quotaPace", () => {
       observedAt,
     })!;
     expect(pace.elapsedPercent).toBe(0);
+  });
+});
+
+describe("quotaWindowsFromSection provider limits", () => {
+  const section = (windows: ReadonlyArray<unknown>) =>
+    ({
+      kind: "provider-limits",
+      snapshot: { fetchedAt: "2026-11-24T00:00:00.000Z", data: { windows } },
+    }) as unknown as AccountUsageSection;
+
+  it("passes a reported window length through, so the meter can show pace", () => {
+    const windows = quotaWindowsFromSection(
+      section([
+        {
+          id: "gemini-5h",
+          label: "Gemini · 5-hour",
+          usedPercent: 2,
+          resetsAt: null,
+          durationMinutes: 300,
+        },
+        { id: "monthly", label: "Monthly", usedPercent: 10, resetsAt: null },
+      ]),
+    );
+    expect(windows.map((window) => window.durationMinutes)).toEqual([300, null]);
+  });
+
+  it("still decodes cached windows saved without a length", () => {
+    const decoded = Schema.decodeUnknownSync(ProviderUsageWindow)({
+      id: "weekly",
+      label: "Weekly",
+      usedPercent: 0,
+      resetsAt: null,
+    });
+    expect(decoded.durationMinutes).toBeUndefined();
   });
 });

@@ -68,6 +68,21 @@ export interface GuestImageProgress {
   readonly totalBytes: number;
 }
 
+/**
+ * What a pinned download is: the cached file's extension and the name used in messages.
+ * The guest image and the linux-arm64 backend archive share the same download path.
+ */
+export interface PinnedDownloadKind {
+  readonly extension: string;
+  readonly label: string;
+}
+
+export const GUEST_IMAGE: PinnedDownloadKind = { extension: ".qcow2", label: "guest image" };
+export const BACKEND_ARCHIVE: PinnedDownloadKind = {
+  extension: ".tar.gz",
+  label: "F5 backend archive",
+};
+
 export interface EnsureGuestImageOptions {
   readonly pin: GuestImagePin;
   readonly cacheDir: string;
@@ -78,8 +93,15 @@ export interface EnsureGuestImageOptions {
   readonly lock?: AcquireLock;
 }
 
+export interface EnsurePinnedDownloadOptions extends EnsureGuestImageOptions {
+  readonly kind: PinnedDownloadKind;
+}
+
+export const pinnedDownloadPath = (cacheDir: string, sha256: string, kind: PinnedDownloadKind) =>
+  Path.join(cacheDir, `${sha256}${kind.extension}`);
+
 export const guestImagePath = (cacheDir: string, sha256: string) =>
-  Path.join(cacheDir, `${sha256}.qcow2`);
+  pinnedDownloadPath(cacheDir, sha256, GUEST_IMAGE);
 
 async function hashFile(path: string, hash: Crypto.Hash): Promise<number> {
   let bytes = 0;
@@ -100,21 +122,25 @@ function cachedImage(finalPath: string, pin: GuestImagePin): boolean {
   }
 }
 
+/** The local path of the pinned guest image, downloading it if needed. */
+export const ensureGuestImage = (options: EnsureGuestImageOptions): Promise<string> =>
+  ensurePinnedDownload({ ...options, kind: GUEST_IMAGE });
+
 /**
- * The local path of the pinned image, downloading it if needed.
+ * The local path of a pinned file (guest image or backend archive), downloading it if needed.
  *
  * Every VM profile's supervisor shares the cache, so one process at a time owns a digest's
- * download, from resume through rename, under `<digest>.qcow2.lock`; the others wait for
- * it and then find the finished file. Outside the lock the cache is only read; a file of
+ * download, from resume through rename, under `<digest><extension>.lock`; the others wait
+ * for it and then find the finished file. Outside the lock the cache is only read; a file of
  * the wrong size is removed under it. A partial download resumes with a Range request; the
  * bytes already on disk are hashed again first, so a resumed file is verified end to end.
  * Only a file whose size and SHA-256 match the pin is renamed into place. The rename is
  * atomic and the cache sits in F5's own state directory, so a cached file with the pinned
  * size is trusted by name.
  */
-export async function ensureGuestImage(options: EnsureGuestImageOptions): Promise<string> {
+export async function ensurePinnedDownload(options: EnsurePinnedDownloadOptions): Promise<string> {
   const { pin, cacheDir } = options;
-  const finalPath = guestImagePath(cacheDir, pin.sha256);
+  const finalPath = pinnedDownloadPath(cacheDir, pin.sha256, options.kind);
   if (cachedImage(finalPath, pin)) return finalPath;
   await FSP.mkdir(cacheDir, { recursive: true, mode: 0o700 });
   const release = await (options.lock ?? acquireFileLock)(
@@ -131,22 +157,67 @@ export async function ensureGuestImage(options: EnsureGuestImageOptions): Promis
   }
 }
 
+/** A pinned file held under its digest's lock, so no pruner removes it while it is used. */
+export interface PinnedDownloadLease {
+  readonly path: string;
+  /** Idempotent. */
+  release(): void;
+}
+
+/** True when the cached file's SHA-256 matches the pin; size is checked first. */
+async function verifiedCache(finalPath: string, pin: GuestImagePin): Promise<boolean> {
+  if (!cachedImage(finalPath, pin)) return false;
+  const hash = Crypto.createHash("sha256");
+  await hashFile(finalPath, hash);
+  return hash.digest("hex") === pin.sha256;
+}
+
+/**
+ * The pinned file for a caller about to hand it to Lima, under its digest's lock until the
+ * caller releases it. `prunePinnedDownloads` skips a held digest, so another F5 build
+ * sharing the cache can't remove the file mid-use. A cached file is hashed again first: a
+ * file of the right size but wrong content (disk corruption, a foreign write) is replaced
+ * instead of failing every retry at the guest's own digest check.
+ */
+export async function leasePinnedDownload(
+  options: EnsurePinnedDownloadOptions,
+): Promise<PinnedDownloadLease> {
+  const { pin, cacheDir } = options;
+  const finalPath = pinnedDownloadPath(cacheDir, pin.sha256, options.kind);
+  await FSP.mkdir(cacheDir, { recursive: true, mode: 0o700 });
+  const release = await (options.lock ?? acquireFileLock)(
+    `${finalPath}.lock`,
+    options.signal ?? new AbortController().signal,
+  );
+  try {
+    if (!(await verifiedCache(finalPath, pin))) {
+      await FSP.rm(finalPath, { force: true });
+      await downloadLocked(options, finalPath);
+    }
+    return { path: finalPath, release };
+  } catch (error) {
+    release();
+    throw error;
+  }
+}
+
 /** Writes all of `chunk`: a single write may store only part of it. */
-async function writeFully(file: FSP.FileHandle, chunk: Uint8Array): Promise<void> {
+async function writeFully(file: FSP.FileHandle, chunk: Uint8Array, label: string): Promise<void> {
   let offset = 0;
   while (offset < chunk.byteLength) {
     const { bytesWritten } = await file.write(chunk, offset, chunk.byteLength - offset);
-    if (bytesWritten <= 0) throw new GuestImageError("Writing the guest image made no progress.");
+    if (bytesWritten <= 0) throw new GuestImageError(`Writing the ${label} made no progress.`);
     offset += bytesWritten;
   }
 }
 
 /** The download itself; the caller holds the digest's lock. */
 async function downloadLocked(
-  options: EnsureGuestImageOptions,
+  options: EnsurePinnedDownloadOptions,
   finalPath: string,
 ): Promise<string> {
   const { pin } = options;
+  const { label } = options.kind;
   const fetchImpl = options.fetch ?? fetch;
   const partPath = `${finalPath}.part`;
 
@@ -181,7 +252,7 @@ async function downloadLocked(
       resumed = range !== null && Number(range[1]) === offset;
     }
     if (!response.ok || !response.body)
-      throw new GuestImageError(`The guest image download failed (HTTP ${response.status}).`);
+      throw new GuestImageError(`The ${label} download failed (HTTP ${response.status}).`);
     if (!resumed && offset > 0) {
       // The server ignored the range: start over from the first byte.
       hash.destroy();
@@ -195,8 +266,8 @@ async function downloadLocked(
       for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
         received += chunk.byteLength;
         if (received > pin.size)
-          throw new GuestImageError("The guest image download is larger than its pin.");
-        await writeFully(file, chunk);
+          throw new GuestImageError(`The ${label} download is larger than its pin.`);
+        await writeFully(file, chunk, label);
         hash.update(chunk);
         options.onProgress?.({ receivedBytes: received, totalBytes: pin.size });
       }
@@ -205,26 +276,35 @@ async function downloadLocked(
       await file.close();
     }
     if (received !== pin.size)
-      throw new GuestImageError("The guest image download ended early; it will resume.");
+      throw new GuestImageError(`The ${label} download ended early; it will resume.`);
   }
 
   const digest = hash.digest("hex");
   if (digest !== pin.sha256) {
     await FSP.rm(partPath, { force: true });
-    throw new GuestImageError("The guest image failed digest verification and was discarded.");
+    throw new GuestImageError(`The ${label} failed digest verification and was discarded.`);
   }
   await FSP.rename(partPath, finalPath);
   return finalPath;
 }
 
-/**
- * Removes cached images other than `keepSha256`, and abandoned partial downloads of them.
- * Each digest's files go only under its lock, taken without waiting: a digest someone is
- * downloading right now (another F5 build sharing the cache) is skipped.
- */
-export async function pruneGuestImages(
+/** Removes cached guest images other than `keepSha256`; see `prunePinnedDownloads`. */
+export const pruneGuestImages = (
   cacheDir: string,
   keepSha256: string,
+  lock: AcquireLock = acquireFileLock,
+): Promise<void> => prunePinnedDownloads(cacheDir, keepSha256, GUEST_IMAGE, lock);
+
+/**
+ * Removes cached files of `kind` other than `keepSha256`, and abandoned partial downloads
+ * of them. Each digest's files go only under its lock, taken without waiting: a digest
+ * someone is downloading or leasing right now (another F5 build sharing the cache) is
+ * skipped.
+ */
+export async function prunePinnedDownloads(
+  cacheDir: string,
+  keepSha256: string,
+  kind: PinnedDownloadKind,
   lock: AcquireLock = acquireFileLock,
 ): Promise<void> {
   let names: string[];
@@ -233,13 +313,15 @@ export async function pruneGuestImages(
   } catch {
     return;
   }
+  const extension = kind.extension.replaceAll(".", "\\.");
+  const pattern = new RegExp(`^([0-9a-f]{64})${extension}(\\.part)?$`);
   const digests = new Set(
     names
-      .map((name) => /^([0-9a-f]{64})\.qcow2(\.part)?$/.exec(name)?.[1])
+      .map((name) => pattern.exec(name)?.[1])
       .filter((digest): digest is string => digest !== undefined && digest !== keepSha256),
   );
   for (const digest of digests) {
-    const finalPath = guestImagePath(cacheDir, digest);
+    const finalPath = pinnedDownloadPath(cacheDir, digest, kind);
     let release: () => void;
     try {
       release = await lock(`${finalPath}.lock`, new AbortController().signal, { waitMs: 0 });

@@ -2,6 +2,7 @@ import { MessageId, ThreadId, TurnId } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 
 import {
+  allocateArtifactCharBudget,
   getFinishedConsumableLatestTurn,
   latestAssistantFeedback,
   latestAssistantText,
@@ -396,4 +397,38 @@ describe("workflowArtifactFit", () => {
       ).toEqual({ fits: false, estimatedTokens: 8_735, availableTokens: 7_746 });
     },
   );
+});
+
+describe("allocateArtifactCharBudget", () => {
+  it("keeps every artifact whole when they all fit", () => {
+    expect(allocateArtifactCharBudget([100, 200, 300], 1_000)).toEqual({
+      allowances: [100, 200, 300],
+      smallestExcerpt: null,
+    });
+  });
+
+  it("gives the space small artifacts leave to the one that is too long", () => {
+    expect(allocateArtifactCharBudget([100, 5_000, 200], 1_000)).toEqual({
+      allowances: [100, 700, 200],
+      smallestExcerpt: 700,
+    });
+  });
+
+  it("splits the budget evenly when every artifact is too long", () => {
+    expect(allocateArtifactCharBudget([2_000, 3_000, 4_000], 900)).toEqual({
+      allowances: [300, 300, 300],
+      smallestExcerpt: 300,
+    });
+  });
+
+  it("handles no artifacts and no budget", () => {
+    expect(allocateArtifactCharBudget([], 1_000)).toEqual({
+      allowances: [],
+      smallestExcerpt: null,
+    });
+    expect(allocateArtifactCharBudget([10, 0], 0)).toEqual({
+      allowances: [0, 0],
+      smallestExcerpt: 0,
+    });
+  });
 });

@@ -127,8 +127,15 @@ const decodeArgs =
       ),
     );
 
-export function supportsSupervisedTurns(driver: string): boolean {
-  return isKnownProviderKind(driver) && runtimeModeCapabilities(driver).has("approval-required");
+/** Snapshot-aware: a Cursor SDK instance cannot ask, so it never runs supervised turns. */
+export function supportsSupervisedTurns(
+  provider: Pick<ServerProvider, "driver" | "harnessVariant">,
+): boolean {
+  if (provider.driver === "cursor" && provider.harnessVariant === "sdk") return false;
+  return (
+    isKnownProviderKind(provider.driver) &&
+    runtimeModeCapabilities(provider.driver).has("approval-required")
+  );
 }
 
 const providerLabel = (provider: ServerProvider) => provider.displayName ?? provider.instanceId;
@@ -335,7 +342,7 @@ export const resolveBridgeProvider = (
           `${providerLabel(requestedProvider)} is not ready in F5 (not installed, not signed in, or failing its health check).`,
         );
       provider = requestedProvider;
-      if (options.supervisedOnly !== false && !supportsSupervisedTurns(provider.driver))
+      if (options.supervisedOnly !== false && !supportsSupervisedTurns(provider))
         return yield* toolError(
           `${providerLabel(provider)} cannot run supervised turns, so the Agent Bridge cannot use it.`,
         );
@@ -344,11 +351,9 @@ export const resolveBridgeProvider = (
         usable.find(
           (entry) =>
             entry.instanceId === textDefault.instanceId &&
-            (options.supervisedOnly === false || supportsSupervisedTurns(entry.driver)),
+            (options.supervisedOnly === false || supportsSupervisedTurns(entry)),
         ) ??
-        usable.find(
-          (entry) => options.supervisedOnly === false || supportsSupervisedTurns(entry.driver),
-        );
+        usable.find((entry) => options.supervisedOnly === false || supportsSupervisedTurns(entry));
       if (!provider)
         return yield* toolError(
           options.supervisedOnly === false
@@ -852,7 +857,7 @@ export function makeThreadTools(deps: ThreadToolsDeps): ReadonlyArray<AgentBridg
               driver: provider.driver,
               displayName: providerLabel(provider),
               available: isProviderUsable(provider),
-              supportsSupervised: supportsSupervisedTurns(provider.driver),
+              supportsSupervised: supportsSupervisedTurns(provider),
               models: provider.models
                 .filter(isListedModel)
                 .map((model) => ({ slug: model.slug, name: model.name })),

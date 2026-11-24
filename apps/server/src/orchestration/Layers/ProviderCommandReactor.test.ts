@@ -1051,6 +1051,15 @@ describe("ProviderCommandReactor", () => {
         const index = runtimeSessions.findIndex((session) => session.threadId === threadId);
         if (index >= 0) runtimeSessions.splice(index, 1);
       },
+      /** Rewrites the adapter's live session record, as a running turn would. */
+      replaceLiveSession: (
+        threadId: ThreadId,
+        update: (session: ProviderSession) => ProviderSession,
+      ) => {
+        const index = runtimeSessions.findIndex((session) => session.threadId === threadId);
+        if (index < 0) throw new Error(`No live session for ${threadId}`);
+        runtimeSessions[index] = update(runtimeSessions[index]!);
+      },
       drain,
     };
   }
@@ -2575,6 +2584,125 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.modelContextWindowTokens).toBe(258_400);
     expect(thread?.session?.tokenUsageSource).toBe("provider");
     expect(harness.startSession.mock.calls.length).toBe(1);
+  });
+
+  /**
+   * A projected running turn `turn-1` on a live session whose adapter record
+   * lags: it reports `running` without the turn id, with an older `updatedAt`.
+   */
+  async function runningTurnFixture(input: { readonly adapterKeepsCwd: boolean }) {
+    const harness = await createHarness();
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    // A restart binds the resolved instance, so the live session uses it too.
+    const codexInstance = ProviderInstanceId.makeUnsafe("codex");
+    const now = new Date().toISOString();
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.makeUnsafe("cmd-turn-start-rebind-running"),
+        threadId,
+        message: {
+          messageId: asMessageId("user-message-rebind-running"),
+          role: "user",
+          text: "run",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await harness.drain();
+
+    // Without a cwd the adapter record cannot trigger a cwd restart, so a
+    // worktree change re-binds the live session instead.
+    harness.replaceLiveSession(threadId, ({ cwd, activeTurnId: _turn, ...session }) => ({
+      ...session,
+      ...(input.adapterKeepsCwd && cwd !== undefined ? { cwd } : {}),
+      providerInstanceId: codexInstance,
+      status: "running",
+      updatedAt: "2020-01-01T00:00:00.000Z",
+    }));
+    const readThread = async () =>
+      (await Effect.runPromise(harness.engine.getReadModel())).threads.find(
+        (entry) => entry.id === threadId,
+      );
+    const bound = (await readThread())?.session;
+    if (!bound) throw new Error("Missing bound session");
+    const projectedAt = new Date().toISOString();
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.makeUnsafe("cmd-session-set-rebind-running"),
+        threadId,
+        session: {
+          ...bound,
+          providerInstanceId: codexInstance,
+          status: "running",
+          activeTurnId: asTurnId("turn-1"),
+          updatedAt: projectedAt,
+        },
+        createdAt: projectedAt,
+      }),
+    );
+    await waitFor(async () => (await readThread())?.session?.activeTurnId === "turn-1");
+
+    const rebindCount = async () =>
+      (await Effect.runPromise(Stream.runCollect(harness.engine.readEvents(0)))).filter(
+        (event) =>
+          event.type === "thread.session-set" &&
+          event.commandId?.startsWith("server:provider-session-set") === true,
+      ).length;
+    const changeWorktree = async () => {
+      const rebindsBefore = await rebindCount();
+      const nextCwd = path.join(harness.workspaceRoot, "worktree-rebind-running");
+      fs.mkdirSync(nextCwd);
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.makeUnsafe("cmd-worktree-rebind-running"),
+          threadId,
+          worktreePath: nextCwd,
+        }),
+      );
+      await waitFor(async () => (await rebindCount()) > rebindsBefore);
+      await harness.drain();
+      return (await readThread()) ?? null;
+    };
+    return { harness, projectedAt, changeWorktree };
+  }
+
+  it("keeps the running turn when a worktree change re-binds the live session", async () => {
+    const { harness, projectedAt, changeWorktree } = await runningTurnFixture({
+      adapterKeepsCwd: false,
+    });
+
+    const thread = await changeWorktree();
+
+    expect(harness.startSession.mock.calls.length).toBe(1);
+    expect(thread?.session?.status).toBe("running");
+    expect(thread?.session?.activeTurnId).toBe("turn-1");
+    expect(thread?.session?.updatedAt).toBe(projectedAt);
+    expect(thread?.latestTurn).toMatchObject({ turnId: "turn-1", state: "running" });
+  });
+
+  it("starts a restarted session without the previous turn even when it reports running", async () => {
+    const { harness, changeWorktree } = await runningTurnFixture({ adapterKeepsCwd: true });
+    const start = harness.startSession.getMockImplementation();
+    if (!start) throw new Error("Missing startSession implementation");
+    harness.startSession.mockImplementationOnce((threadId, input) =>
+      start(threadId, input).pipe(
+        Effect.map((session) => ({ ...session, status: "running" as const })),
+      ),
+    );
+
+    const thread = await changeWorktree();
+
+    expect(harness.startSession.mock.calls.length).toBe(2);
+    expect(thread?.session?.status).toBe("running");
+    expect(thread?.session?.activeTurnId).toBeNull();
   });
 
   it("starts a fresh session when only projected session state exists", async () => {
@@ -6066,6 +6194,35 @@ describe("ProviderCommandReactor", () => {
       if (!intent || intent.type !== "thread.turn-start-requested")
         throw new Error("Missing native intent.");
       expect(intent.payload.continuationRequestId).toBe("owned-wake");
+      if (live) {
+        await Effect.runPromise(
+          harness.engine.dispatch({
+            type: "thread.session.set",
+            commandId: CommandId.make("pi-wake-live-session"),
+            threadId,
+            session: {
+              threadId,
+              status: "ready",
+              providerName: "pi",
+              runtimeMode: "approval-required",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: createdAt,
+            },
+            createdAt,
+          }),
+        );
+      }
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.make("future-pi-model"),
+          threadId,
+          model: "another-pi-model",
+          deferModelSwitch: true,
+        }),
+      );
+      await harness.drain();
       const result = await Effect.runPromise(
         harness.reactor.deliverTurnStart(intent).pipe(Effect.result, Effect.scoped),
       );
@@ -6082,6 +6239,7 @@ describe("ProviderCommandReactor", () => {
       else expect(harness.sendTurn).not.toHaveBeenCalled();
       expect(harness.startSession).not.toHaveBeenCalled();
       expect(harness.ensureWorktree).not.toHaveBeenCalled();
+      if (live) expect(harness.runtimeSessions[0]?.model).toBe("default");
     },
   );
 

@@ -1404,15 +1404,22 @@ export function makeForgeSourceControlProvider(options: {
         : kind === "forgejo"
           ? Effect.gen(function* () {
               const pr = detail ?? (yield* getDetail(ref));
-              // Forgejo returns the full assignee list on every page.
-              const users = yield* request(ref, undefined, "/assignees");
+              // Reviewer eligibility includes read-only collaborators. Older
+              // servers may only have the unpaginated assignee endpoint.
+              const users = yield* request(ref, undefined, "/reviewers").pipe(
+                Effect.catch((cause) =>
+                  cause.kind === "not_found"
+                    ? request(ref, undefined, "/assignees")
+                    : Effect.fail(cause),
+                ),
+              );
               if (!Array.isArray(users))
                 return yield* error(
                   "reviewer-candidates",
-                  "Invalid Forgejo assignee list.",
+                  "Invalid Forgejo reviewer list.",
                   "invalid_response",
                 );
-              const seen = new Set([text(object(pr.raw.user).login).toLowerCase()]);
+              const seen = new Set(["", text(object(pr.raw.user).login).trim().toLowerCase()]);
               return users.filter((user) => {
                 const login = text(object(user).login).trim().toLowerCase();
                 if (seen.has(login)) return false;
@@ -1420,7 +1427,11 @@ export function makeForgeSourceControlProvider(options: {
                 return true;
               });
             })
-          : request(ref, undefined, kind === "gitlab" ? "/members/all" : "/default-reviewers"),
+          : kind === "gitlab"
+            ? request(ref, undefined, "/members/all")
+            : kind === "bitbucket"
+              ? request(ref, undefined, "/default-reviewers")
+              : unsupported("reviewer-candidates"),
     completions: (ref, input) => {
       if (kind !== "gitlab" && kind !== "forgejo") return Effect.succeed([]);
       if (kind === "forgejo" && input.sigil !== "@") return Effect.succeed([]);

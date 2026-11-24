@@ -92,6 +92,29 @@ function fixture() {
 }
 
 describe("orchestration event router", () => {
+  it.each(["warm", "cached"])(
+    "replays missed events from a %s basis before live pushes",
+    async (basis) => {
+      const f = fixture();
+      if (basis === "warm") await f.router.syncSnapshot();
+      const replay = deferred<RouterSnapshot>();
+      f.readSnapshot.mockReturnValueOnce(replay.promise);
+      const merge = vi.fn(basis === "cached" ? f.snapshot(1).merge : () => {});
+      f.router.invalidateSnapshot();
+      const recovery = f.router.syncSnapshot();
+      f.router.receive(event(3));
+      f.router.receive(event(4));
+      replay.resolve({ ...f.snapshot(3), merge, replay: [event(2), event(3)] });
+      await recovery;
+
+      expect(f.actions.applyBatch).toHaveBeenCalledExactlyOnceWith([event(2), event(3)]);
+      expect(merge).toHaveBeenCalledBefore(f.actions.applyBatch);
+      expect(f.actions.applyEvent).toHaveBeenCalledExactlyOnceWith(event(4));
+      expect(f.router.committedSequence).toBe(4);
+      expect(f.actions.onSynchronized).toHaveBeenCalledTimes(basis === "warm" ? 2 : 1);
+    },
+  );
+
   it("immediately replaces a snapshot invalidated by a welcome without retry backoff", async () => {
     const f = fixture(),
       pending = deferred<RouterSnapshot>();

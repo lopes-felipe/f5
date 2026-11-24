@@ -85,14 +85,22 @@ export function WorkspaceMediaView({
     queryFn: async () => {
       const api = readNativeApi();
       if (!api) throw new Error("Disconnected from server");
-      const results = await api.projects.issueAssetUrl({
-        identity: assetIdentity,
-        files: [{ relativePath, grant: kind === "html" ? "html-document" : "file" }],
-      });
-      if (!results[0]) return null;
+      const issueAsset = () =>
+        api.projects.issueAssetUrl({
+          identity: assetIdentity,
+          files: [{ relativePath, grant: kind === "html" ? "html-document" : "file" }],
+        });
+      let [asset] = await issueAsset();
+      if (pdf && !asset) {
+        // Atomic replacement and transient per-file read failures can briefly
+        // make an open PDF unavailable. Confirm before replacing the frame.
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        [asset] = await issueAsset();
+      }
+      if (!asset) return null;
       return {
-        url: `${getServerHttpOrigin()}${results[0].url}`,
-        fileRevision: results[0].fileRevision,
+        url: `${getServerHttpOrigin()}${asset.url}`,
+        fileRevision: asset.fileRevision,
       };
     },
     staleTime: 25 * 60 * 1000,

@@ -13,6 +13,8 @@ import {
   type CodeReviewReviewer,
   type CodeReviewWorkflow,
   type OrchestrationEvent,
+  WORKFLOW_REVIEW_MAX_PARTICIPANTS,
+  type WorkflowParticipantId,
 } from "@t3tools/contracts";
 import { Cause, Effect, Layer, Option, Scope, Semaphore, Stream } from "effect";
 import {
@@ -43,9 +45,17 @@ import { makeBackgroundWorker } from "../../backgroundWorker.ts";
 import { TextGeneration } from "../../git/Services/TextGeneration.ts";
 import { buildFallbackTitle, resolveBestEffortGeneratedTitle } from "../../threadTitle.ts";
 import {
+  buildBudgetedCodeReviewConsolidationPrompt,
   buildCodeReviewConsolidationPrompt,
   buildCodeReviewReviewerPrompt,
 } from "../codeReviewWorkflowPrompts.ts";
+import {
+  codeReviewReviewers,
+  requireCodeReviewReviewer,
+  updateCodeReviewReviewer,
+  workflowParticipantLabel,
+  workflowUsesMesh,
+} from "@t3tools/shared/workflowParticipants";
 import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
@@ -65,13 +75,18 @@ import {
   nextWorkflowSlug,
   reviewFeedbackForPinnedTurn,
   workflowArtifactFit,
+  WORKFLOW_FAN_IN_MIN_ARTIFACT_CHARS,
+  WORKFLOW_MAX_ACTIVE_REVIEW_TURNS,
   WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT,
 } from "../workflowSharedUtils.ts";
 import {
   ProviderTurnDeliveryWorker,
   type ProviderTurnDeliveryOutcome,
 } from "../Services/ProviderTurnDeliveryWorker.ts";
-import type { ProviderTurnDelivery } from "../Services/ProviderTurnDeliveryRepository.ts";
+import {
+  ProviderTurnDeliveryRepository,
+  type ProviderTurnDelivery,
+} from "../Services/ProviderTurnDeliveryRepository.ts";
 import { OrchestrationCommandInvariantError } from "../Errors.ts";
 import { applyWorkflowTurnCost, workflowBudgetError } from "../workflowBudget.ts";
 import {
@@ -88,7 +103,12 @@ import {
   UnsupportedWorkflowTemplateError,
   workflowTurnBehaviorFields,
 } from "../workflowBehavior.ts";
-import { buildCodeReviewWorkflowRecord } from "../workflowRecordBuilders.ts";
+import {
+  buildCodeReviewWorkflowRecord,
+  codeReviewCommandReviewerFields,
+  codeReviewInputReviewerFields,
+  codeReviewInputReviewerSlots,
+} from "../workflowRecordBuilders.ts";
 import type { WorkflowRetryContext } from "../workflowPromptFragments.ts";
 import {
   makeWorkflowStageDispatchResolver,
@@ -167,15 +187,18 @@ function acceptedDeliveryMatchesCurrentTurn(
 
 function updateReviewer(
   workflow: CodeReviewWorkflow,
-  reviewerKey: "reviewerA" | "reviewerB",
+  reviewerId: WorkflowParticipantId,
   reviewer: CodeReviewReviewer,
   updatedAt: string,
 ): CodeReviewWorkflow {
   return {
-    ...workflow,
-    [reviewerKey]: reviewer,
+    ...updateCodeReviewReviewer(workflow, reviewerId, () => reviewer),
     updatedAt,
   };
+}
+
+function allReviewersCompleted(workflow: CodeReviewWorkflow): boolean {
+  return codeReviewReviewers(workflow).every(({ reviewer }) => reviewer.status === "completed");
 }
 
 function readCodeReviewWorkflow(
@@ -223,25 +246,20 @@ function resetConsolidationAfterReviewerUpdate(
 function reviewerMatch(
   workflow: CodeReviewWorkflow,
   threadId: ThreadId,
-): { reviewerKey: "reviewerA" | "reviewerB"; reviewer: CodeReviewReviewer } | null {
-  if (workflow.reviewerA.threadId === threadId) {
-    return { reviewerKey: "reviewerA", reviewer: workflow.reviewerA };
-  }
-  if (workflow.reviewerB.threadId === threadId) {
-    return { reviewerKey: "reviewerB", reviewer: workflow.reviewerB };
-  }
-  return null;
+): { reviewerId: WorkflowParticipantId; reviewer: CodeReviewReviewer } | null {
+  const match = codeReviewReviewers(workflow).find(
+    ({ reviewer }) => reviewer.threadId === threadId,
+  );
+  return match ? { reviewerId: match.id, reviewer: match.reviewer } : null;
 }
 
 function labelForThread(
   workflow: CodeReviewWorkflow,
   threadId: ThreadId,
 ): { workflow: CodeReviewWorkflow; label: string } | null {
-  if (workflow.reviewerA.threadId === threadId) {
-    return { workflow, label: "Reviewer A" };
-  }
-  if (workflow.reviewerB.threadId === threadId) {
-    return { workflow, label: "Reviewer B" };
+  const reviewer = reviewerMatch(workflow, threadId);
+  if (reviewer) {
+    return { workflow, label: `Reviewer ${workflowParticipantLabel(reviewer.reviewerId)}` };
   }
   if (workflow.consolidation.threadId === threadId) {
     return { workflow, label: "Merge" };
@@ -254,42 +272,31 @@ function withReviewerRunning(
   updatedAt: string,
   dispatchCommandIds: ReadonlyMap<ThreadId, CommandId>,
 ): CodeReviewWorkflow {
-  return {
-    ...workflow,
-    reviewerA:
-      workflow.reviewerA.status === "pending"
-        ? {
-            ...workflow.reviewerA,
-            status: "running",
-            error: null,
-            dispatchCommandId: dispatchCommandIds.get(workflow.reviewerA.threadId) ?? null,
-            updatedAt,
-          }
-        : workflow.reviewerA,
-    reviewerB:
-      workflow.reviewerB.status === "pending"
-        ? {
-            ...workflow.reviewerB,
-            status: "running",
-            error: null,
-            dispatchCommandId: dispatchCommandIds.get(workflow.reviewerB.threadId) ?? null,
-            updatedAt,
-          }
-        : workflow.reviewerB,
-    updatedAt,
-  };
+  let next = workflow;
+  for (const { id, reviewer } of codeReviewReviewers(workflow)) {
+    const dispatchCommandId = dispatchCommandIds.get(reviewer.threadId);
+    if (reviewer.status !== "pending" || dispatchCommandId === undefined) continue;
+    next = updateCodeReviewReviewer(next, id, (current) => ({
+      ...current,
+      status: "running",
+      error: null,
+      dispatchCommandId,
+      updatedAt,
+    }));
+  }
+  return { ...next, updatedAt };
 }
 
 function withReviewerRetryRunning(
   workflow: CodeReviewWorkflow,
-  reviewerKey: "reviewerA" | "reviewerB",
+  reviewerId: WorkflowParticipantId,
   updatedAt: string,
   dispatchCommandId: CommandId | null,
 ): CodeReviewWorkflow {
-  const reviewer = workflow[reviewerKey];
+  const reviewer = requireCodeReviewReviewer(workflow, reviewerId);
   return updateReviewer(
     workflow,
-    reviewerKey,
+    reviewerId,
     {
       ...reviewer,
       status: "running",
@@ -306,12 +313,12 @@ function withReviewerRetryRunning(
 
 function withCompletedReviewer(input: {
   workflow: CodeReviewWorkflow;
-  reviewerKey: "reviewerA" | "reviewerB";
+  reviewerId: WorkflowParticipantId;
   turnId: string | null;
   assistantMessageId: string | null;
   updatedAt: string;
 }): CodeReviewWorkflow {
-  const current = input.workflow[input.reviewerKey];
+  const current = requireCodeReviewReviewer(input.workflow, input.reviewerId);
   if (
     current.status === "completed" &&
     current.pinnedTurnId === input.turnId &&
@@ -321,7 +328,7 @@ function withCompletedReviewer(input: {
   }
   return updateReviewer(
     input.workflow,
-    input.reviewerKey,
+    input.reviewerId,
     {
       ...current,
       status: "completed",
@@ -336,14 +343,14 @@ function withCompletedReviewer(input: {
 
 function withReviewerError(input: {
   workflow: CodeReviewWorkflow;
-  reviewerKey: "reviewerA" | "reviewerB";
+  reviewerId: WorkflowParticipantId;
   error: string;
   updatedAt: string;
 }): CodeReviewWorkflow {
-  const current = input.workflow[input.reviewerKey];
+  const current = requireCodeReviewReviewer(input.workflow, input.reviewerId);
   return updateReviewer(
     input.workflow,
-    input.reviewerKey,
+    input.reviewerId,
     {
       ...current,
       status: "error",
@@ -509,7 +516,14 @@ function startReviewerTurn(input: {
     workflowId: input.workflow.id,
     reviewPrompt: input.workflow.reviewPrompt,
     reviewerLabel: input.reviewer.label,
-    lensBranch: input.reviewer.threadId === input.workflow.reviewerA.threadId ? "a" : "b",
+    lensBranch:
+      codeReviewReviewers(input.workflow).findIndex(
+        ({ reviewer }) => reviewer.threadId === input.reviewer.threadId,
+      ) %
+        2 ===
+      1
+        ? "b"
+        : "a",
     branch: input.workflow.branch,
     reviewerSlot: input.reviewer.slot,
     pullRequest: input.workflow.pullRequest,
@@ -567,47 +581,84 @@ function createConsolidationThread(input: {
   });
 }
 
-function startConsolidationTurn(input: {
-  orchestrationEngine: OrchestrationEngineShape;
+/**
+ * The consolidation prompt, or why it can't be sent. Checked before the merge is saved as
+ * running, so a merge that can never fit fails visibly instead of sitting `running`.
+ */
+function prepareConsolidationPrompt(input: {
   workflow: CodeReviewWorkflow;
   reviews: ReadonlyArray<{ readonly label: string; readonly text: string }>;
-  commandId: CommandId;
-  createdAt: string;
   retry: WorkflowRetryContext;
-}) {
+}): { readonly prompt: string } | { readonly error: Error } {
   const budgetError = workflowBudgetError(input.workflow);
-  if (budgetError) return Effect.fail(budgetError);
-  const prompt = buildCodeReviewConsolidationPrompt({
+  if (budgetError) return { error: budgetError };
+  const promptInput = {
     workflowId: input.workflow.id,
     reviewPrompt: input.workflow.reviewPrompt,
     reviews: input.reviews,
     consolidationSlot: input.workflow.consolidation.slot,
     pullRequest: input.workflow.pullRequest,
     retry: input.retry,
-  });
+  };
+  let prompt: string;
+  let artifacts: ReadonlyArray<string> = input.reviews.map((review) => review.text);
+  if (workflowUsesMesh(input.reviews.length)) {
+    // Runs with more than two reviewers share the prompt among the reports: a retry cannot
+    // shrink six paid reports, so they are excerpted instead of failing on size.
+    const budgeted = buildBudgetedCodeReviewConsolidationPrompt({
+      ...promptInput,
+      maxRenderedChars: WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT,
+    });
+    if (
+      budgeted.smallestExcerpt !== null &&
+      budgeted.smallestExcerpt < WORKFLOW_FAN_IN_MIN_ARTIFACT_CHARS
+    ) {
+      return {
+        error: new OrchestrationCommandInvariantError({
+          commandType: "workflow.turn.start",
+          detail: `${input.reviews.length} reviewers leave ${budgeted.smallestExcerpt} characters per report; start a new code review with fewer reviewers.`,
+        }),
+      };
+    }
+    prompt = budgeted.prompt;
+    artifacts = budgeted.reviewTexts;
+  } else {
+    prompt = buildCodeReviewConsolidationPrompt(promptInput);
+  }
   const behavior = resolveWorkflowBehavior({
     runKind: "codeReview",
     templateId: input.workflow.templateId,
     templateVersion: input.workflow.templateVersion,
   });
   const fit = workflowArtifactFit({
-    artifacts: input.reviews.map((review) => review.text),
+    artifacts,
     targetSlot: input.workflow.consolidation.slot,
   });
   if (
     prompt.length > WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT ||
     (behavior.loudAuthoritativeArtifactLimit && !fit.fits)
   ) {
-    return Effect.fail(
-      new OrchestrationCommandInvariantError({
+    return {
+      error: new OrchestrationCommandInvariantError({
         commandType: "workflow.turn.start",
         detail:
           prompt.length > WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT
             ? `Consolidation prompt is ${prompt.length} characters; maximum is ${WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT}.`
             : `Consolidation reviews require an estimated ${fit.estimatedTokens} tokens; only ${fit.availableTokens} are available.`,
       }),
-    );
+    };
   }
+  return { prompt };
+}
+
+/** Sends the consolidation prompt that `prepareConsolidationPrompt` already checked. */
+function startConsolidationTurn(input: {
+  orchestrationEngine: OrchestrationEngineShape;
+  workflow: CodeReviewWorkflow;
+  prompt: string;
+  commandId: CommandId;
+  createdAt: string;
+}) {
   return input.orchestrationEngine.dispatch({
     type: "thread.turn.start",
     commandId: input.commandId,
@@ -615,7 +666,7 @@ function startConsolidationTurn(input: {
     message: {
       messageId: MessageId.makeUnsafe(crypto.randomUUID()),
       role: "user",
-      text: prompt,
+      text: input.prompt,
       attachments: [],
     },
     ...workflowTurnProviderFields(input.workflow.consolidation.slot),
@@ -637,12 +688,31 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
   const textGeneration = yield* TextGeneration;
   const providerRegistry = yield* Effect.serviceOption(ProviderRegistry);
   const providerTurnDeliveryWorker = yield* Effect.serviceOption(ProviderTurnDeliveryWorker);
+  const providerTurnDeliveryRepository = yield* Effect.serviceOption(
+    ProviderTurnDeliveryRepository,
+  );
   const prHubFederation = Option.getOrNull(yield* Effect.serviceOption(PrHubFederation));
   const gitCore = Option.getOrNull(yield* Effect.serviceOption(GitCore));
   // Serializes workflow read-modify-write between the event fiber and the post
   // worker, so a post result never overwrites a stage transition or vice versa.
   const workflowWriteLock = yield* Semaphore.make(1);
   const withWorkflowWriteLock = workflowWriteLock.withPermits(1);
+  /**
+   * How each manually retried reviewer that was queued for a free slot starts when admitted:
+   * a new turn on its thread, or a resend of its failed delivery (with the user's duplicate-risk
+   * confirmation). In memory only; after a restart a queued reviewer whose saved delivery is
+   * still rejected or ambiguous is resent without that confirmation (`persistedDeliveryRetry`),
+   * and any other starts a new turn. Reviewer prompts don't render the earlier failure.
+   */
+  const queuedReviewerRetries = new Map<
+    ThreadId,
+    | { readonly kind: "turn"; readonly retry: WorkflowRetryContext }
+    | {
+        readonly kind: "delivery";
+        readonly deliveryId: CommandId | undefined;
+        readonly allowPossibleDuplicate: boolean;
+      }
+  >();
   const resolveStageDispatch = yield* makeWorkflowStageDispatchResolver;
   // Only running stages are gated on their dispatch; skip the lookup otherwise.
   const resolveRunningStageDispatch = (stage: CodeReviewStage) =>
@@ -889,8 +959,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
       if (
         isDeletedWorkflow(workflow) ||
         isArchivedWorkflow(workflow) ||
-        workflow.reviewerA.status !== "completed" ||
-        workflow.reviewerB.status !== "completed" ||
+        !allReviewersCompleted(workflow) ||
         (workflow.consolidation.status === "pending_start" && !resumePendingStart) ||
         workflow.consolidation.status === "running" ||
         workflow.consolidation.status === "completed"
@@ -910,50 +979,76 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
       }
 
       const snapshot = snapshotAtCall ?? (yield* orchestrationEngine.getReadModel());
-      const reviewerInputs = [pendingWorkflow.reviewerA, pendingWorkflow.reviewerB].map(
-        (reviewer) => {
-          const thread = snapshot.threads.find((entry) => entry.id === reviewer.threadId);
-          // A reviewer that submitted its report as a plan (for example via
-          // ExitPlanMode) often ends with only a short summary message, so a
-          // longer plan captured for the pinned turn wins over that message.
-          // The latestAssistantFeedback fallback only applies to stages with
-          // no pinned message id and no assistant message on the pinned turn
-          // (legacy or recovered stages). It keeps the previous behavior of
-          // using the thread's latest assistant message from any turn.
-          const text = thread
-            ? ((
-                reviewFeedbackForPinnedTurn(
-                  thread,
-                  reviewer.pinnedTurnId,
-                  reviewer.pinnedAssistantMessageId,
-                ) ?? latestAssistantFeedback(thread, reviewer.pinnedAssistantMessageId)
-              )?.text ?? null)
-            : null;
-          return {
-            label: reviewer.label,
-            text,
-            ...(reviewer.pinnedTurnId ? { turnId: reviewer.pinnedTurnId } : {}),
-            ...(reviewer.pinnedAssistantMessageId
-              ? { messageId: reviewer.pinnedAssistantMessageId }
-              : {}),
-          };
-        },
-      );
+      const reviewerInputs = codeReviewReviewers(pendingWorkflow).map(({ reviewer }) => {
+        const thread = snapshot.threads.find((entry) => entry.id === reviewer.threadId);
+        // A reviewer that submitted its report as a plan (for example via
+        // ExitPlanMode) often ends with only a short summary message, so a
+        // longer plan captured for the pinned turn wins over that message.
+        // The latestAssistantFeedback fallback only applies to stages with
+        // no pinned message id and no assistant message on the pinned turn
+        // (legacy or recovered stages). It keeps the previous behavior of
+        // using the thread's latest assistant message from any turn.
+        const text = thread
+          ? ((
+              reviewFeedbackForPinnedTurn(
+                thread,
+                reviewer.pinnedTurnId,
+                reviewer.pinnedAssistantMessageId,
+              ) ?? latestAssistantFeedback(thread, reviewer.pinnedAssistantMessageId)
+            )?.text ?? null)
+          : null;
+        return {
+          label: reviewer.label,
+          text,
+          ...(reviewer.pinnedTurnId ? { turnId: reviewer.pinnedTurnId } : {}),
+          ...(reviewer.pinnedAssistantMessageId
+            ? { messageId: reviewer.pinnedAssistantMessageId }
+            : {}),
+        };
+      });
 
+      // An error before the merge thread exists drops the thread id this pass reserved, so a
+      // retry takes the no-thread path instead of recovering a thread that was never created.
+      const consolidationThreadExists = snapshot.threads.some(
+        (thread) => thread.id === consolidationThreadId,
+      );
+      const errorBeforeThread = (message: string) =>
+        withConsolidationError(
+          consolidationThreadExists
+            ? pendingWorkflow
+            : {
+                ...pendingWorkflow,
+                consolidation: { ...pendingWorkflow.consolidation, threadId: null },
+              },
+          message,
+          updatedAt,
+        );
       if (reviewerInputs.some((review) => !review.text || review.text.trim().length === 0)) {
         yield* upsertWorkflow(
           orchestrationEngine,
-          withConsolidationError(
-            pendingWorkflow,
-            "Reviewer output not found for consolidation.",
-            updatedAt,
-          ),
+          errorBeforeThread("Reviewer output not found for consolidation."),
           updatedAt,
         );
         return;
       }
 
-      if (!snapshot.threads.some((thread) => thread.id === consolidationThreadId)) {
+      // Before the merge thread or the running state: a merge that can never be sent records
+      // its error directly.
+      const prepared = prepareConsolidationPrompt({
+        workflow: pendingWorkflow,
+        reviews: reviewerInputs.map((review) => ({ label: review.label, text: review.text! })),
+        retry: retry ?? { kind: "none" },
+      });
+      if ("error" in prepared) {
+        yield* upsertWorkflow(
+          orchestrationEngine,
+          errorBeforeThread(prepared.error.message),
+          updatedAt,
+        );
+        return yield* Effect.fail(prepared.error);
+      }
+
+      if (!consolidationThreadExists) {
         const createOutcome = yield* Effect.exit(
           createConsolidationThread({
             orchestrationEngine,
@@ -993,14 +1088,8 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
           orchestrationEngine,
           workflow: runningWorkflow,
           commandId: dispatchCommandId,
-          reviews: reviewerInputs.map((review) => ({
-            label: review.label,
-            text: review.text!,
-            ...(review.turnId ? { turnId: review.turnId } : {}),
-            ...(review.messageId ? { messageId: review.messageId } : {}),
-          })),
+          prompt: prepared.prompt,
           createdAt: updatedAt,
-          retry: retry ?? { kind: "none" },
         }),
       );
       if (consolidationOutcome._tag === "Failure") {
@@ -1022,56 +1111,182 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
       }
     });
 
+  /**
+   * The resend a queued reviewer still owes after a restart dropped `queuedReviewerRetries`: a
+   * pending reviewer keeps the dispatch of its failed delivery, and while that delivery is still
+   * rejected or ambiguous it is resent rather than replaced. Duplicate-risk confirmation isn't
+   * kept, so an ambiguous one fails the resend and asks the user to confirm again.
+   */
+  const persistedDeliveryRetry = (reviewer: CodeReviewReviewer) =>
+    Effect.gen(function* () {
+      if (!reviewer.dispatchCommandId || providerTurnDeliveryWorker._tag === "None") {
+        return undefined;
+      }
+      const delivery = yield* providerTurnDeliveryWorker.value
+        .recheck(reviewer.threadId, reviewer.dispatchCommandId)
+        .pipe(Effect.catchCause(() => Effect.succeed(null)));
+      return delivery?.state === "rejected" || delivery?.state === "ambiguous"
+        ? {
+            kind: "delivery" as const,
+            deliveryId: reviewer.dispatchCommandId,
+            allowPossibleDuplicate: false,
+          }
+        : undefined;
+    });
+
+  /**
+   * Starts pending reviewers in roster order while fewer than
+   * `WORKFLOW_MAX_ACTIVE_REVIEW_TURNS` are running. Called again whenever a reviewer
+   * completes or fails, so a large run drains its queue. Callers hold the write lock.
+   */
   const startPendingReviewers = (workflow: CodeReviewWorkflow, updatedAt: string) =>
     Effect.gen(function* () {
-      if (isArchivedWorkflow(workflow)) return;
-      const pendingReviewers = [workflow.reviewerA, workflow.reviewerB].filter(
-        (reviewer) => reviewer.status === "pending",
-      );
-      if (pendingReviewers.length === 0) {
-        return;
-      }
-      const snapshot = yield* orchestrationEngine.getReadModel();
-      let nextWorkflow = workflow;
-      const dispatchCommandIds = new Map<ThreadId, CommandId>();
-      for (const reviewer of pendingReviewers) {
-        const reviewerThread = snapshot.threads.find((thread) => thread.id === reviewer.threadId);
-        const commandId = CommandId.makeUnsafe(timeOrderedUuid());
-        const outcome = yield* Effect.exit(
-          startReviewerTurn({
-            orchestrationEngine,
-            workflow,
-            reviewer,
-            commandId,
-            createdAt: updatedAt,
-            retry: hasPriorThreadWork(reviewerThread)
-              ? { kind: "retry", reusedThread: true }
-              : { kind: "none" },
-          }),
-        );
-        if (outcome._tag === "Failure") {
-          yield* Effect.logError("Code-review reviewer turn dispatch failed", {
-            workflowId: workflow.id,
-            threadId: reviewer.threadId,
-            cause: Cause.pretty(outcome.cause),
-          });
-          nextWorkflow = withReviewerError({
-            workflow: nextWorkflow,
-            reviewerKey:
-              reviewer.threadId === workflow.reviewerA.threadId ? "reviewerA" : "reviewerB",
-            error: userFacingCauseMessage(outcome.cause, "Could not start the reviewer."),
+      if (isDeletedWorkflow(workflow) || isArchivedWorkflow(workflow)) return;
+      let current = workflow;
+      // Each pass fills the free slots; a reviewer that fails to start frees its slot
+      // for the next one in line, so passes repeat until no failure is left to backfill.
+      while (true) {
+        const reviewers = codeReviewReviewers(current);
+        const running = reviewers.filter(({ reviewer }) => reviewer.status === "running").length;
+        const pendingReviewers = reviewers
+          .filter(({ reviewer }) => reviewer.status === "pending")
+          .slice(0, Math.max(0, WORKFLOW_MAX_ACTIVE_REVIEW_TURNS - running));
+        if (pendingReviewers.length === 0) {
+          return;
+        }
+        // A completion can reach the cost limit while reviewers wait. Nothing starts past it,
+        // neither a fresh turn nor a resend: waiting reviewers fail visibly with the limit, as
+        // planning reviews do, and keep their dispatch id for a later retry.
+        const budgetError = workflowBudgetError(current);
+        if (budgetError) {
+          for (const { id: reviewerId, reviewer } of reviewers) {
+            if (reviewer.status !== "pending") continue;
+            current = withReviewerError({
+              workflow: current,
+              reviewerId,
+              error: budgetError.detail,
+              updatedAt,
+            });
+          }
+          yield* upsertWorkflow(orchestrationEngine, current, updatedAt);
+          return;
+        }
+        const snapshot = yield* orchestrationEngine.getReadModel();
+        let failures = 0;
+        for (const { id: reviewerId, reviewer } of pendingReviewers) {
+          const reviewerThread = snapshot.threads.find((thread) => thread.id === reviewer.threadId);
+          const queued =
+            queuedReviewerRetries.get(reviewer.threadId) ??
+            (yield* persistedDeliveryRetry(reviewer));
+          if (queued?.kind === "delivery" && providerTurnDeliveryWorker._tag === "Some") {
+            const deliveryWorker = providerTurnDeliveryWorker.value;
+            // Saved before the resend. A resend reuses the delivery's command id, so the
+            // reviewer keeps that identity throughout: a restart before the resend still
+            // judges it by that delivery, never by an older turn on the thread.
+            current = updateCodeReviewReviewer(current, reviewerId, (entry) => ({
+              ...entry,
+              status: "running",
+              error: null,
+              dispatchCommandId: queued.deliveryId ?? null,
+              updatedAt,
+            }));
+            yield* upsertWorkflow(orchestrationEngine, current, updatedAt);
+            // Dropped only once the admission is saved, so a failed write keeps the resend.
+            queuedReviewerRetries.delete(reviewer.threadId);
+            const resent = yield* Effect.exit(
+              deliveryWorker.retry({
+                threadId: reviewer.threadId,
+                allowPossibleDuplicate: queued.allowPossibleDuplicate,
+                deliveryId: queued.deliveryId,
+              }),
+            );
+            if (resent._tag === "Success") {
+              current = updateCodeReviewReviewer(current, reviewerId, (entry) => ({
+                ...entry,
+                dispatchCommandId: resent.value.commandId,
+              }));
+              yield* upsertWorkflow(orchestrationEngine, current, updatedAt);
+              continue;
+            }
+            current = withReviewerError({
+              workflow: current,
+              reviewerId,
+              error: userFacingCauseMessage(resent.cause, "Could not resend the reviewer turn."),
+              updatedAt,
+            });
+            yield* upsertWorkflow(orchestrationEngine, current, updatedAt);
+            failures += 1;
+            continue;
+          }
+          const commandId = CommandId.makeUnsafe(timeOrderedUuid());
+          // Record the attempt before dispatching it: after a crash in between, startup
+          // judges this reviewer by its own delivery instead of dispatching it again.
+          current = withReviewerRunning(
+            current,
             updatedAt,
-          });
-          yield* upsertWorkflow(orchestrationEngine, nextWorkflow, updatedAt);
-        } else {
-          dispatchCommandIds.set(reviewer.threadId, commandId);
+            new Map([[reviewer.threadId, commandId]]),
+          );
+          yield* upsertWorkflow(orchestrationEngine, current, updatedAt);
+          queuedReviewerRetries.delete(reviewer.threadId);
+          const outcome = yield* Effect.exit(
+            startReviewerTurn({
+              orchestrationEngine,
+              workflow: current,
+              reviewer,
+              commandId,
+              createdAt: updatedAt,
+              retry:
+                queued?.kind === "turn"
+                  ? queued.retry
+                  : hasPriorThreadWork(reviewerThread)
+                    ? { kind: "retry", reusedThread: true }
+                    : { kind: "none" },
+            }),
+          );
+          if (outcome._tag === "Failure") {
+            yield* Effect.logError("Code-review reviewer turn dispatch failed", {
+              workflowId: current.id,
+              threadId: reviewer.threadId,
+              cause: Cause.pretty(outcome.cause),
+            });
+            current = withReviewerError({
+              workflow: current,
+              reviewerId,
+              error: userFacingCauseMessage(outcome.cause, "Could not start the reviewer."),
+              updatedAt,
+            });
+            yield* upsertWorkflow(orchestrationEngine, current, updatedAt);
+            failures += 1;
+          }
+        }
+        if (failures === 0) {
+          return;
         }
       }
-      yield* upsertWorkflow(
-        orchestrationEngine,
-        withReviewerRunning(nextWorkflow, updatedAt, dispatchCommandIds),
-        updatedAt,
-      );
+    });
+
+  /**
+   * Creation-time admission. Completions and failures admit reviewers under the write lock from
+   * the persisted roster, so creation takes the same lock and re-reads the roster: otherwise a
+   * fast completion and creation could both admit the same pending reviewer.
+   */
+  const startPendingReviewersLocked = (workflowId: CodeReviewWorkflowId) =>
+    withWorkflowWriteLock(
+      Effect.gen(function* () {
+        const current = yield* readCodeReviewWorkflow(orchestrationEngine, workflowId);
+        if (current) yield* startPendingReviewers(current, new Date().toISOString());
+      }),
+    );
+
+  /** After a stage completes: start queued reviewers, or consolidate once all are done. */
+  const continueAfterStageAdvance = (
+    workflow: CodeReviewWorkflow,
+    snapshot: OrchestrationReadModel,
+    updatedAt: string,
+  ) =>
+    Effect.gen(function* () {
+      yield* startPendingReviewers(workflow, updatedAt);
+      yield* maybeStartConsolidation(workflow, snapshot, updatedAt);
     });
 
   const maybeAdvanceWorkflowFromCompletedThread = (
@@ -1099,7 +1314,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
         const nextWorkflow = resetConsolidationAfterReviewerUpdate(
           withCompletedReviewer({
             workflow,
-            reviewerKey: reviewer.reviewerKey,
+            reviewerId: reviewer.reviewerId,
             turnId: completedTurn.turnId,
             assistantMessageId: completedTurn.assistantMessageId,
             updatedAt,
@@ -1169,8 +1384,8 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
 
   const ensureReviewerThreads = (workflow: CodeReviewWorkflow, snapshot: OrchestrationReadModel) =>
     Effect.forEach(
-      [workflow.reviewerA, workflow.reviewerB],
-      (reviewer) =>
+      codeReviewReviewers(workflow),
+      ({ reviewer }) =>
         reviewer.status !== "pending" ||
         reviewer.dispatchCommandId ||
         snapshot.threads.some((thread) => thread.id === reviewer.threadId)
@@ -1196,7 +1411,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
       let reconciledWorkflow = workflow;
 
       yield* Effect.forEach(
-        [workflow.reviewerA, workflow.reviewerB, workflow.consolidation],
+        [...codeReviewReviewers(workflow).map(({ reviewer }) => reviewer), workflow.consolidation],
         (stage) =>
           stage.threadId
             ? promoteFinishedStageDispatch(
@@ -1207,8 +1422,8 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
         { discard: true },
       );
 
-      for (const reviewerKey of ["reviewerA", "reviewerB"] as const) {
-        const reviewer = reconciledWorkflow[reviewerKey];
+      for (const { id: reviewerId } of codeReviewReviewers(workflow)) {
+        const reviewer = requireCodeReviewReviewer(reconciledWorkflow, reviewerId);
         const advancedWorkflow = yield* maybeAdvanceWorkflowFromCompletedThread(
           reconciledWorkflow,
           snapshot,
@@ -1255,18 +1470,69 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
         return;
       }
 
+      // Reviewers that lost their turn across the restart are failed first, so queued
+      // reviewers do not wait behind them. One whose recorded dispatch never happened (a crash
+      // between saving the attempt and sending it) goes back in the queue instead.
+      const failLostRunningReviewers = (current: CodeReviewWorkflow) =>
+        Effect.gen(function* () {
+          let next = current;
+          for (const { id: reviewerId, reviewer } of codeReviewReviewers(current)) {
+            if (reviewer.status !== "running") {
+              continue;
+            }
+            const thread = snapshot.threads.find((entry) => entry.id === reviewer.threadId);
+            if (
+              reviewer.dispatchCommandId &&
+              thread &&
+              !hasActiveRunningTurn(thread) &&
+              providerTurnDeliveryRepository._tag === "Some"
+            ) {
+              const dispatched = yield* providerTurnDeliveryRepository.value
+                .getByCommandId(reviewer.dispatchCommandId)
+                .pipe(
+                  Effect.map((delivery) => delivery !== null),
+                  // Unknown is not proof that nothing was sent; judge it as before.
+                  Effect.catchCause(() => Effect.succeed(true)),
+                );
+              if (!dispatched) {
+                next = updateCodeReviewReviewer(next, reviewerId, (entry) => ({
+                  ...entry,
+                  status: "pending",
+                  error: null,
+                  dispatchCommandId: null,
+                  updatedAt,
+                }));
+                yield* upsertWorkflow(orchestrationEngine, next, updatedAt);
+                continue;
+              }
+            }
+            const error = yield* runningStageReconciliationError(
+              reviewer.threadId,
+              thread,
+              reviewer.label,
+              reviewer.dispatchCommandId,
+            );
+            if (error) {
+              next = withReviewerError({ workflow: next, reviewerId, error, updatedAt });
+              yield* upsertWorkflow(orchestrationEngine, next, next.updatedAt);
+            }
+          }
+          return next;
+        });
+
       if (
-        reconciledWorkflow.reviewerA.status === "pending" ||
-        reconciledWorkflow.reviewerB.status === "pending"
+        codeReviewReviewers(reconciledWorkflow).some(
+          ({ reviewer }) => reviewer.status === "pending",
+        )
       ) {
+        reconciledWorkflow = yield* failLostRunningReviewers(reconciledWorkflow);
         yield* startPendingReviewers(reconciledWorkflow, updatedAt);
         return;
       }
 
       if (
         shouldRetryConsolidationAfterReviewerUpdate(reconciledWorkflow) &&
-        reconciledWorkflow.reviewerA.status === "completed" &&
-        reconciledWorkflow.reviewerB.status === "completed"
+        allReviewersCompleted(reconciledWorkflow)
       ) {
         const retriableWorkflow = resetConsolidationAfterReviewerUpdate(
           reconciledWorkflow,
@@ -1282,38 +1548,20 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
 
       if (
         reconciledWorkflow.consolidation.status === "not_started" &&
-        reconciledWorkflow.reviewerA.status === "completed" &&
-        reconciledWorkflow.reviewerB.status === "completed"
+        allReviewersCompleted(reconciledWorkflow)
       ) {
         yield* maybeStartConsolidation(reconciledWorkflow, snapshot, updatedAt);
         return;
       }
 
-      for (const reviewerKey of ["reviewerA", "reviewerB"] as const) {
-        const reviewer = reconciledWorkflow[reviewerKey];
-        if (reviewer.status !== "running") {
-          continue;
-        }
-        const thread = snapshot.threads.find((entry) => entry.id === reviewer.threadId);
-        const error = yield* runningStageReconciliationError(
-          reviewer.threadId,
-          thread,
-          reviewer.label,
-          reviewer.dispatchCommandId,
-        );
-        if (error) {
-          reconciledWorkflow = withReviewerError({
-            workflow: reconciledWorkflow,
-            reviewerKey,
-            error,
-            updatedAt,
-          });
-          yield* upsertWorkflow(
-            orchestrationEngine,
-            reconciledWorkflow,
-            reconciledWorkflow.updatedAt,
-          );
-        }
+      reconciledWorkflow = yield* failLostRunningReviewers(reconciledWorkflow);
+      if (
+        codeReviewReviewers(reconciledWorkflow).some(
+          ({ reviewer }) => reviewer.status === "pending",
+        )
+      ) {
+        yield* startPendingReviewers(reconciledWorkflow, updatedAt);
+        return;
       }
 
       if (reconciledWorkflow.consolidation.status === "running") {
@@ -1383,7 +1631,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
             event.occurredAt,
           );
           if (nextWorkflow !== workflow) {
-            yield* maybeStartConsolidation(nextWorkflow, readModel, event.occurredAt);
+            yield* continueAfterStageAdvance(nextWorkflow, readModel, event.occurredAt);
           }
           return;
         }
@@ -1415,7 +1663,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
               ) {
                 const retryWorkflow = updateReviewer(
                   workflow,
-                  match.reviewerKey,
+                  match.reviewerId,
                   {
                     ...match.reviewer,
                     status: "pending",
@@ -1429,16 +1677,14 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
                 yield* startPendingReviewers(retryWorkflow, event.occurredAt);
                 return;
               }
-              yield* upsertWorkflow(
-                orchestrationEngine,
-                withReviewerError({
-                  workflow,
-                  reviewerKey: match.reviewerKey,
-                  error: event.payload.session.lastError ?? "Reviewer failed.",
-                  updatedAt: event.occurredAt,
-                }),
-                event.occurredAt,
-              );
+              const failedWorkflow = withReviewerError({
+                workflow,
+                reviewerId: match.reviewerId,
+                error: event.payload.session.lastError ?? "Reviewer failed.",
+                updatedAt: event.occurredAt,
+              });
+              yield* upsertWorkflow(orchestrationEngine, failedWorkflow, event.occurredAt);
+              yield* startPendingReviewers(failedWorkflow, event.occurredAt);
               return;
             }
             if (
@@ -1452,7 +1698,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
                 event.occurredAt,
               );
               if (nextWorkflow !== workflow) {
-                yield* maybeStartConsolidation(nextWorkflow, readModel, event.occurredAt);
+                yield* continueAfterStageAdvance(nextWorkflow, readModel, event.occurredAt);
               }
             }
             return;
@@ -1557,8 +1803,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
       const workflow = readModel.codeReviewWorkflows.find(
         (entry) =>
           !isDeletedWorkflow(entry) &&
-          (isRunningDispatch(entry.reviewerA) ||
-            isRunningDispatch(entry.reviewerB) ||
+          (codeReviewReviewers(entry).some(({ reviewer }) => isRunningDispatch(reviewer)) ||
             isRunningDispatch(entry.consolidation)),
       );
       if (!workflow) {
@@ -1572,7 +1817,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
         updatedAt,
       );
       if (nextWorkflow !== workflow) {
-        yield* maybeStartConsolidation(nextWorkflow, readModel, updatedAt);
+        yield* continueAfterStageAdvance(nextWorkflow, readModel, updatedAt);
       }
     }).pipe(
       Effect.catchCause((cause) =>
@@ -1637,7 +1882,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
             return yield* Effect.fail(new Error("Code review workflow " + id + " was deleted."));
           if (!isArchivedWorkflow(existing)) {
             yield* ensureReviewerThreads(existing, snapshot);
-            yield* startPendingReviewers(existing, new Date().toISOString());
+            yield* startPendingReviewersLocked(existing.id);
           }
           return id;
         }
@@ -1689,10 +1934,20 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
   ) =>
     Effect.gen(function* () {
       const providers = yield* getWorkflowProviders;
+      const requestedReviewerSlots = codeReviewInputReviewerSlots(rawInput);
+      if (requestedReviewerSlots.length > WORKFLOW_REVIEW_MAX_PARTICIPANTS) {
+        return yield* Effect.fail(
+          new Error(
+            `Code review workflows support up to ${WORKFLOW_REVIEW_MAX_PARTICIPANTS} reviewers.`,
+          ),
+        );
+      }
+      const reviewerSlots = requestedReviewerSlots.map((slot) =>
+        resolveAvailableWorkflowModelSlot(slot, providers),
+      );
       const input = {
         ...rawInput,
-        reviewerA: resolveAvailableWorkflowModelSlot(rawInput.reviewerA, providers),
-        reviewerB: resolveAvailableWorkflowModelSlot(rawInput.reviewerB, providers),
+        ...codeReviewInputReviewerFields(reviewerSlots),
         consolidation: resolveAvailableWorkflowModelSlot(rawInput.consolidation, providers),
       };
       const behavior = yield* Effect.try({
@@ -1711,20 +1966,19 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
       });
       yield* Effect.try({
         try: () => {
-          assertWorkflowStageProviderSupported({
-            behavior,
-            stage: "standalone-review",
-            provider: input.reviewerA.provider,
-          });
-          assertWorkflowStageProviderSupported({
-            behavior,
-            stage: "standalone-review",
-            provider: input.reviewerB.provider,
-          });
+          for (const slot of reviewerSlots) {
+            assertWorkflowStageProviderSupported({
+              behavior,
+              stage: "standalone-review",
+              provider: slot.provider,
+              providers,
+            });
+          }
           assertWorkflowStageProviderSupported({
             behavior,
             stage: "consolidation",
             provider: input.consolidation.provider,
+            providers,
           });
         },
         catch: (error) => error as UnsupportedWorkflowProviderError,
@@ -1752,8 +2006,10 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
       );
       const now = new Date().toISOString();
       const workflowId = id ?? CodeReviewWorkflowId.makeUnsafe(crypto.randomUUID());
-      const reviewThreadIdA = ThreadId.makeUnsafe(crypto.randomUUID());
-      const reviewThreadIdB = ThreadId.makeUnsafe(crypto.randomUUID());
+      const reviewers = reviewerSlots.map((slot) => ({
+        slot,
+        threadId: ThreadId.makeUnsafe(crypto.randomUUID()),
+      }));
       const titleSourceText = input.branch
         ? `Branch: ${input.branch}\n\n${input.reviewPrompt}`
         : input.reviewPrompt;
@@ -1775,10 +2031,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
         reviewPrompt: input.reviewPrompt,
         branch: input.branch ?? null,
         createdAt: now,
-        reviewThreadIdA,
-        reviewThreadIdB,
-        reviewerA: input.reviewerA,
-        reviewerB: input.reviewerB,
+        reviewers,
         consolidation: input.consolidation,
         maxCostUsd: input.maxCostUsd,
         pullRequest,
@@ -1796,35 +2049,26 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
         templateVersion: behavior.templateVersion,
         reviewPrompt: input.reviewPrompt,
         branch: input.branch ?? null,
-        reviewerA: input.reviewerA,
-        reviewerB: input.reviewerB,
+        ...codeReviewCommandReviewerFields(reviewers),
         consolidation: input.consolidation,
         maxCostUsd: input.maxCostUsd ?? null,
         pullRequest,
         autoPost,
-        reviewerThreadIdA: reviewThreadIdA,
-        reviewerThreadIdB: reviewThreadIdB,
         createdAt: now,
       });
 
-      yield* Effect.all([
-        createReviewerThread({
-          orchestrationEngine,
-          workflow,
-          threadId: reviewThreadIdA,
-          reviewer: workflow.reviewerA,
-          title: "Reviewer A",
-          createdAt: now,
-        }),
-        createReviewerThread({
-          orchestrationEngine,
-          workflow,
-          threadId: reviewThreadIdB,
-          reviewer: workflow.reviewerB,
-          title: "Reviewer B",
-          createdAt: now,
-        }),
-      ]).pipe(
+      yield* Effect.all(
+        codeReviewReviewers(workflow).map(({ id, reviewer }) =>
+          createReviewerThread({
+            orchestrationEngine,
+            workflow,
+            threadId: reviewer.threadId,
+            reviewer,
+            title: `Reviewer ${workflowParticipantLabel(id)}`,
+            createdAt: now,
+          }),
+        ),
+      ).pipe(
         Effect.catchCause((cause) =>
           dispatchWorkflowDeleteCompensation({
             orchestrationEngine,
@@ -1838,7 +2082,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
         ),
       );
 
-      yield* startPendingReviewers(workflow, new Date().toISOString());
+      yield* startPendingReviewersLocked(workflowId);
       if (input.title === undefined) {
         yield* titleGenerationWorker.enqueue({
           workflowId,
@@ -1888,11 +2132,16 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
     changeWorkflowArchive.archive(workflowId);
 
   const unarchiveWorkflow: CodeReviewWorkflowServiceShape["unarchiveWorkflow"] = (workflowId) =>
-    changeWorkflowArchive.unarchive(workflowId, (snapshot) =>
-      Effect.gen(function* () {
-        const workflow = snapshot.codeReviewWorkflows.find((entry) => entry.id === workflowId);
-        if (workflow) yield* withWorkflowWriteLock(reconcileStuckWorkflow(workflow, snapshot));
-      }),
+    changeWorkflowArchive.unarchive(workflowId, () =>
+      // Read under the lock: a launch that ran while this waited must not be reconciled from a
+      // stale record and written over.
+      withWorkflowWriteLock(
+        Effect.gen(function* () {
+          const snapshot = yield* orchestrationEngine.getReadModel();
+          const workflow = snapshot.codeReviewWorkflows.find((entry) => entry.id === workflowId);
+          if (workflow) yield* reconcileStuckWorkflow(workflow, snapshot);
+        }),
+      ),
     );
 
   // Under the write lock: retry upserts whole records and can complete a merge,
@@ -1915,11 +2164,11 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
         const snapshot = yield* orchestrationEngine.getReadModel();
         let nextWorkflow = workflow;
 
-        for (const reviewerKey of ["reviewerA", "reviewerB"] as const) {
+        for (const { reviewer } of codeReviewReviewers(workflow)) {
           nextWorkflow = yield* maybeAdvanceWorkflowFromCompletedThread(
             nextWorkflow,
             snapshot,
-            nextWorkflow[reviewerKey].threadId,
+            reviewer.threadId,
             updatedAt,
           );
         }
@@ -1935,20 +2184,16 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
           (yield* readCodeReviewWorkflow(orchestrationEngine, input.workflowId)) ?? nextWorkflow;
 
         const scope = input.scope ?? "failed";
-        if (
-          scope === "consolidation" &&
-          (nextWorkflow.reviewerA.status !== "completed" ||
-            nextWorkflow.reviewerB.status !== "completed")
-        ) {
+        if (scope === "consolidation" && !allReviewersCompleted(nextWorkflow)) {
           return yield* Effect.fail(
-            new Error("Both reviewers must be completed before retrying consolidation."),
+            new Error("All reviewers must be completed before retrying consolidation."),
           );
         }
 
         type RetryTarget =
           | {
               readonly kind: "reviewer";
-              readonly reviewerKey: "reviewerA" | "reviewerB";
+              readonly reviewerId: WorkflowParticipantId;
               readonly threadId: ThreadId;
               readonly error: string | null;
               readonly expectedStatus: CodeReviewReviewer["status"];
@@ -1963,17 +2208,25 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
               readonly updatedAt: string;
               readonly dispatchCommandId: CommandId | null;
             };
-        const reviewerTargets = (["reviewerA", "reviewerB"] as const)
-          .filter((reviewerKey) => nextWorkflow[reviewerKey].status !== "completed")
+        // Queued reviewers are not failures: the launcher starts them as slots free up.
+        const reviewerTargets = codeReviewReviewers(nextWorkflow)
+          .filter(
+            ({ reviewer }) =>
+              reviewer.status !== "completed" &&
+              !(
+                reviewer.status === "pending" &&
+                workflowUsesMesh(codeReviewReviewers(nextWorkflow).length)
+              ),
+          )
           .map(
-            (reviewerKey): RetryTarget => ({
+            ({ id, reviewer }): RetryTarget => ({
               kind: "reviewer",
-              reviewerKey,
-              threadId: nextWorkflow[reviewerKey].threadId,
-              error: nextWorkflow[reviewerKey].error,
-              expectedStatus: nextWorkflow[reviewerKey].status,
-              updatedAt: nextWorkflow[reviewerKey].updatedAt,
-              dispatchCommandId: nextWorkflow[reviewerKey].dispatchCommandId ?? null,
+              reviewerId: id,
+              threadId: reviewer.threadId,
+              error: reviewer.error,
+              expectedStatus: reviewer.status,
+              updatedAt: reviewer.updatedAt,
+              dispatchCommandId: reviewer.dispatchCommandId ?? null,
             }),
           );
         const targets: RetryTarget[] =
@@ -1997,8 +2250,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
               : (nextWorkflow.consolidation.status === "error" ||
                     nextWorkflow.consolidation.status === "running") &&
                   nextWorkflow.consolidation.threadId !== null &&
-                  nextWorkflow.reviewerA.status === "completed" &&
-                  nextWorkflow.reviewerB.status === "completed"
+                  allReviewersCompleted(nextWorkflow)
                 ? [
                     {
                       kind: "consolidation",
@@ -2012,9 +2264,14 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
                 : [];
 
         if (targets.length === 0) {
+          // Settling finished turns above can free slots for queued reviewers; their own
+          // completion events have already been handled, so nothing else would admit them.
+          if (!allReviewersCompleted(nextWorkflow)) {
+            yield* startPendingReviewers(nextWorkflow, updatedAt);
+            return { status: "started" as const };
+          }
           if (
-            nextWorkflow.reviewerA.status === "completed" &&
-            nextWorkflow.reviewerB.status === "completed" &&
+            allReviewersCompleted(nextWorkflow) &&
             nextWorkflow.consolidation.status !== "running" &&
             nextWorkflow.consolidation.status !== "pending_start" &&
             nextWorkflow.consolidation.status !== "completed"
@@ -2049,7 +2306,9 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
           target: RetryTarget,
         ): boolean => {
           const stage =
-            target.kind === "reviewer" ? candidate[target.reviewerKey] : candidate.consolidation;
+            target.kind === "reviewer"
+              ? requireCodeReviewReviewer(candidate, target.reviewerId)
+              : candidate.consolidation;
           return (
             stage.status === target.expectedStatus &&
             stage.updatedAt === target.updatedAt &&
@@ -2121,126 +2380,234 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
           };
         }
 
-        for (const target of targets) {
-          const mode = retryModes.get(target.threadId) ?? "fresh";
-          const currentWorkflow = yield* readCodeReviewWorkflow(
-            orchestrationEngine,
-            input.workflowId,
-          );
-          if (!currentWorkflow || !targetStillCurrent(currentWorkflow, target)) {
-            if (currentWorkflow) {
-              nextWorkflow = currentWorkflow;
-            }
-            continue;
-          }
-          if (mode === "fresh" || mode === "retry" || mode === "ambiguous") {
-            const budgetError = workflowBudgetError(currentWorkflow);
-            if (budgetError) {
-              return yield* budgetError;
-            }
-          }
-
-          // "active" resumes a turn with no known delivery, so it stays ungated.
-          let dispatchCommandId: CommandId | null =
-            mode === "active" ? null : (resumedDispatchCommandIds.get(target.threadId) ?? null);
-          if (target.kind === "reviewer") {
-            const reviewer = currentWorkflow[target.reviewerKey];
-            if (mode === "retry" || mode === "ambiguous") {
-              if (providerTurnDeliveryWorker._tag === "None") {
-                return yield* Effect.fail(new Error("Provider delivery retry is unavailable."));
-              }
-              const retried = yield* providerTurnDeliveryWorker.value.retry({
-                threadId: target.threadId,
-                allowPossibleDuplicate: input.allowPossibleDuplicate ?? false,
-                deliveryId: target.dispatchCommandId ?? undefined,
-              });
-              dispatchCommandId = retried.commandId;
-            } else if (mode === "fresh") {
-              dispatchCommandId = CommandId.makeUnsafe(timeOrderedUuid());
-              yield* startReviewerTurn({
+        // A target that fails part-way must not strand reviewers this pass already queued:
+        // with none of them running, no completion would admit them.
+        const applied = yield* Effect.exit(
+          Effect.gen(function* () {
+            for (const target of targets) {
+              const mode = retryModes.get(target.threadId) ?? "fresh";
+              const currentWorkflow = yield* readCodeReviewWorkflow(
                 orchestrationEngine,
-                workflow: currentWorkflow,
-                reviewer,
-                commandId: dispatchCommandId,
-                createdAt: updatedAt,
-                retry: {
-                  kind: "retry",
-                  reusedThread: true,
-                  priorFailure: target.error ?? undefined,
+                input.workflowId,
+              );
+              if (!currentWorkflow || !targetStillCurrent(currentWorkflow, target)) {
+                if (currentWorkflow) {
+                  nextWorkflow = currentWorkflow;
+                }
+                continue;
+              }
+              if (mode === "fresh" || mode === "retry" || mode === "ambiguous") {
+                const budgetError = workflowBudgetError(currentWorkflow);
+                if (budgetError) {
+                  return yield* budgetError;
+                }
+              }
+
+              // "active" resumes a turn with no known delivery, so it stays ungated.
+              let dispatchCommandId: CommandId | null =
+                mode === "active" ? null : (resumedDispatchCommandIds.get(target.threadId) ?? null);
+              if (target.kind === "reviewer") {
+                const reviewer = requireCodeReviewReviewer(currentWorkflow, target.reviewerId);
+                const mesh = workflowUsesMesh(codeReviewReviewers(currentWorkflow).length);
+                const reviewSlotFree =
+                  codeReviewReviewers(currentWorkflow).filter(
+                    (entry) => entry.reviewer.status === "running",
+                  ).length < WORKFLOW_MAX_ACTIVE_REVIEW_TURNS;
+                if ((mode === "retry" || mode === "ambiguous") && (!mesh || reviewSlotFree)) {
+                  if (providerTurnDeliveryWorker._tag === "None") {
+                    return yield* Effect.fail(new Error("Provider delivery retry is unavailable."));
+                  }
+                  const retried = yield* providerTurnDeliveryWorker.value.retry({
+                    threadId: target.threadId,
+                    allowPossibleDuplicate: input.allowPossibleDuplicate ?? false,
+                    deliveryId: target.dispatchCommandId ?? undefined,
+                  });
+                  dispatchCommandId = retried.commandId;
+                } else if (mesh && (mode === "fresh" || mode === "retry" || mode === "ambiguous")) {
+                  // Larger runs queue the fresh retry (and a delivery retry with no free slot),
+                  // so the launcher keeps at most WORKFLOW_MAX_ACTIVE_REVIEW_TURNS running.
+                  const latestWorkflow = yield* readCodeReviewWorkflow(
+                    orchestrationEngine,
+                    input.workflowId,
+                  );
+                  if (latestWorkflow && targetStillCurrent(latestWorkflow, target)) {
+                    queuedReviewerRetries.set(
+                      target.threadId,
+                      mode === "fresh"
+                        ? {
+                            kind: "turn",
+                            retry: {
+                              kind: "retry",
+                              reusedThread: true,
+                              priorFailure: target.error ?? undefined,
+                            },
+                          }
+                        : {
+                            kind: "delivery",
+                            deliveryId: target.dispatchCommandId ?? undefined,
+                            allowPossibleDuplicate: input.allowPossibleDuplicate ?? false,
+                          },
+                    );
+                    nextWorkflow = updateReviewer(
+                      latestWorkflow,
+                      target.reviewerId,
+                      {
+                        ...requireCodeReviewReviewer(latestWorkflow, target.reviewerId),
+                        status: "pending",
+                        pinnedTurnId: null,
+                        pinnedAssistantMessageId: null,
+                        error: null,
+                        retryCount: 0,
+                        // A delivery retry keeps the failed delivery it will resend, so the resend
+                        // survives a restart (see `persistedDeliveryRetry`).
+                        dispatchCommandId:
+                          mode === "fresh"
+                            ? null
+                            : (target.dispatchCommandId ??
+                              resumedDispatchCommandIds.get(target.threadId) ??
+                              null),
+                        updatedAt,
+                      },
+                      updatedAt,
+                    );
+                    yield* upsertWorkflow(orchestrationEngine, nextWorkflow, updatedAt);
+                  } else if (latestWorkflow) {
+                    nextWorkflow = latestWorkflow;
+                  }
+                  continue;
+                } else if (mode === "fresh") {
+                  const freshCommandId = CommandId.makeUnsafe(timeOrderedUuid());
+                  // Saved before dispatching, so a crash in between leaves a running reviewer that
+                  // startup judges by this attempt's delivery rather than one dispatched twice.
+                  const runningWorkflow = withReviewerRetryRunning(
+                    currentWorkflow,
+                    target.reviewerId,
+                    updatedAt,
+                    freshCommandId,
+                  );
+                  yield* upsertWorkflow(orchestrationEngine, runningWorkflow, updatedAt);
+                  nextWorkflow = runningWorkflow;
+                  const started = yield* Effect.exit(
+                    startReviewerTurn({
+                      orchestrationEngine,
+                      workflow: runningWorkflow,
+                      reviewer,
+                      commandId: freshCommandId,
+                      createdAt: updatedAt,
+                      retry: {
+                        kind: "retry",
+                        reusedThread: true,
+                        priorFailure: target.error ?? undefined,
+                      },
+                    }),
+                  );
+                  if (started._tag === "Failure") {
+                    // The retry never started: the reviewer keeps the failure it had.
+                    nextWorkflow = updateReviewer(
+                      runningWorkflow,
+                      target.reviewerId,
+                      reviewer,
+                      updatedAt,
+                    );
+                    yield* upsertWorkflow(orchestrationEngine, nextWorkflow, updatedAt);
+                    return yield* Effect.failCause(started.cause);
+                  }
+                  continue;
+                }
+                const latestWorkflow = yield* readCodeReviewWorkflow(
+                  orchestrationEngine,
+                  input.workflowId,
+                );
+                if (latestWorkflow && targetStillCurrent(latestWorkflow, target)) {
+                  nextWorkflow = withReviewerRetryRunning(
+                    latestWorkflow,
+                    target.reviewerId,
+                    updatedAt,
+                    dispatchCommandId,
+                  );
+                  yield* upsertWorkflow(orchestrationEngine, nextWorkflow, updatedAt);
+                } else if (latestWorkflow) {
+                  nextWorkflow = latestWorkflow;
+                }
+                continue;
+              }
+
+              if (mode === "retry" || mode === "ambiguous") {
+                if (providerTurnDeliveryWorker._tag === "None") {
+                  return yield* Effect.fail(new Error("Provider delivery retry is unavailable."));
+                }
+                const retried = yield* providerTurnDeliveryWorker.value.retry({
+                  threadId: target.threadId,
+                  allowPossibleDuplicate: input.allowPossibleDuplicate ?? false,
+                  deliveryId: target.dispatchCommandId ?? undefined,
+                });
+                dispatchCommandId = retried.commandId;
+              }
+              if (mode !== "fresh") {
+                const latestWorkflow = yield* readCodeReviewWorkflow(
+                  orchestrationEngine,
+                  input.workflowId,
+                );
+                if (latestWorkflow && targetStillCurrent(latestWorkflow, target)) {
+                  nextWorkflow = withConsolidationRunning(
+                    latestWorkflow,
+                    target.threadId,
+                    updatedAt,
+                    dispatchCommandId,
+                  );
+                  yield* upsertWorkflow(orchestrationEngine, nextWorkflow, updatedAt);
+                } else if (latestWorkflow) {
+                  nextWorkflow = latestWorkflow;
+                }
+                continue;
+              }
+
+              const retryableWorkflow: CodeReviewWorkflow = {
+                ...currentWorkflow,
+                consolidation: {
+                  ...currentWorkflow.consolidation,
+                  threadId: null,
+                  status: "not_started",
+                  pinnedTurnId: null,
+                  pinnedAssistantMessageId: null,
+                  error: null,
+                  retryCount: 0,
+                  updatedAt,
                 },
+                updatedAt,
+              };
+              nextWorkflow = retryableWorkflow;
+              const latestSnapshot = yield* orchestrationEngine.getReadModel();
+              yield* maybeStartConsolidation(retryableWorkflow, latestSnapshot, updatedAt, {
+                kind: "retry",
+                reusedThread: false,
+                priorFailure: target.error ?? undefined,
               });
             }
-            const latestWorkflow = yield* readCodeReviewWorkflow(
+          }),
+        );
+
+        // Admission runs either way. When both fail, the target's failure stays the primary
+        // cause and the admission failure is added to it.
+        const admitted = yield* Effect.exit(
+          Effect.gen(function* () {
+            const settledWorkflow = yield* readCodeReviewWorkflow(
               orchestrationEngine,
               input.workflowId,
             );
-            if (latestWorkflow && targetStillCurrent(latestWorkflow, target)) {
-              nextWorkflow = withReviewerRetryRunning(
-                latestWorkflow,
-                target.reviewerKey,
-                updatedAt,
-                dispatchCommandId,
-              );
-              yield* upsertWorkflow(orchestrationEngine, nextWorkflow, updatedAt);
-            } else if (latestWorkflow) {
-              nextWorkflow = latestWorkflow;
+            if (settledWorkflow) {
+              yield* startPendingReviewers(settledWorkflow, updatedAt);
             }
-            continue;
-          }
-
-          if (mode === "retry" || mode === "ambiguous") {
-            if (providerTurnDeliveryWorker._tag === "None") {
-              return yield* Effect.fail(new Error("Provider delivery retry is unavailable."));
-            }
-            const retried = yield* providerTurnDeliveryWorker.value.retry({
-              threadId: target.threadId,
-              allowPossibleDuplicate: input.allowPossibleDuplicate ?? false,
-              deliveryId: target.dispatchCommandId ?? undefined,
-            });
-            dispatchCommandId = retried.commandId;
-          }
-          if (mode !== "fresh") {
-            const latestWorkflow = yield* readCodeReviewWorkflow(
-              orchestrationEngine,
-              input.workflowId,
-            );
-            if (latestWorkflow && targetStillCurrent(latestWorkflow, target)) {
-              nextWorkflow = withConsolidationRunning(
-                latestWorkflow,
-                target.threadId,
-                updatedAt,
-                dispatchCommandId,
-              );
-              yield* upsertWorkflow(orchestrationEngine, nextWorkflow, updatedAt);
-            } else if (latestWorkflow) {
-              nextWorkflow = latestWorkflow;
-            }
-            continue;
-          }
-
-          const retryableWorkflow: CodeReviewWorkflow = {
-            ...currentWorkflow,
-            consolidation: {
-              ...currentWorkflow.consolidation,
-              threadId: null,
-              status: "not_started",
-              pinnedTurnId: null,
-              pinnedAssistantMessageId: null,
-              error: null,
-              retryCount: 0,
-              updatedAt,
-            },
-            updatedAt,
-          };
-          nextWorkflow = retryableWorkflow;
-          const latestSnapshot = yield* orchestrationEngine.getReadModel();
-          yield* maybeStartConsolidation(retryableWorkflow, latestSnapshot, updatedAt, {
-            kind: "retry",
-            reusedThread: false,
-            priorFailure: target.error ?? undefined,
-          });
+          }),
+        );
+        if (applied._tag === "Failure") {
+          return yield* Effect.failCause(
+            admitted._tag === "Failure"
+              ? Cause.combine(applied.cause, admitted.cause)
+              : applied.cause,
+          );
         }
-
+        if (admitted._tag === "Failure") return yield* Effect.failCause(admitted.cause);
         return { status: "started" as const };
       }),
     );

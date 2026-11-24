@@ -18,6 +18,11 @@ export interface BackendLaunchRequest {
   /** The loopback port main reserved; the backend must answer on host 127.0.0.1 here. */
   readonly port: number;
   readonly authToken: string;
+  /**
+   * Called while startup makes progress that can legitimately outlast the readiness window
+   * (a VM downloading its image or backend); main restarts the window each time.
+   */
+  readonly onStartupProgress?: () => void;
 }
 
 export interface BackendLaunch {
@@ -41,7 +46,10 @@ export interface BackendLaunch {
 /** Starts one backend incarnation for a profile in its execution environment. */
 export interface ProfileBackendLauncher {
   readonly environment: ProfileExecutionEnvironment;
-  /** How long a new incarnation may take to answer readiness before recovery is offered. */
+  /**
+   * How long a new incarnation may take to answer readiness before recovery is offered,
+   * counted from launch or its latest startup progress.
+   */
   readonly readinessTimeoutMs: number;
   /**
    * How long main lets a stopping backend process exit on its own before force-killing its

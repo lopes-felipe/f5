@@ -278,6 +278,11 @@ export function onPrHubAdvisoriesUpdated(
   };
 }
 
+export function resetWsNativeApiForTests(): void {
+  instance?.transport.dispose();
+  instance = null;
+}
+
 export function createWsNativeApi(): NativeApi {
   if (instance) return instance.api;
 
@@ -893,6 +898,7 @@ export function createWsNativeApi(): NativeApi {
         transport.request(WS_METHODS.serverGetProviderInventory, input),
       saveProviderFeedback: (input) =>
         transport.request(WS_METHODS.serverSaveProviderFeedback, input),
+      trustProviderHooks: (input) => transport.request(WS_METHODS.serverTrustProviderHooks, input),
       validateHarnesses: requestMethod(WS_METHODS.serverValidateHarnesses),
       upsertKeybinding: requestKeybindingMutation(WS_METHODS.serverUpsertKeybinding),
       addKeybinding: requestKeybindingMutation(WS_METHODS.serverAddKeybinding),
@@ -1237,7 +1243,8 @@ export function createWsNativeApi(): NativeApi {
       onAdvisoriesUpdated: (callback) => onPrHubAdvisoriesUpdated(callback),
     },
     orchestration: {
-      getLatestSequence: () => transport.request(ORCHESTRATION_WS_METHODS.getLatestSequence),
+      getLatestSequence: (input) =>
+        transport.request(ORCHESTRATION_WS_METHODS.getLatestSequence, input),
       getSnapshot: () => transport.request(ORCHESTRATION_WS_METHODS.getSnapshot),
       getStartupSnapshot: (input) =>
         transport.request(ORCHESTRATION_WS_METHODS.getStartupSnapshot, input),

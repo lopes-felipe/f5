@@ -6,6 +6,288 @@ Unreleased entries now live as one file each under [`changes/`](changes/README.m
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-11-23
+
+### Added
+
+- Claude threads warn, once per session, when the Claude login may end within 7 days. Claude's reported end date can be up to 3 days late, so the warning gives the earliest date.
+- When Claude refuses to start because one of its config files is not valid JSON, F5 names the file and, when Claude found one, the backup to check before restoring it.
+- Full access for Claude stays off while a managed policy source on this machine (a macOS profile, the Windows registry policy or the managed settings file) fails to load, and F5 says which one.
+- The composer's usage limits popover shows the same pace marker as the Usage page: each limit bar marks how much of the window has elapsed, and the reset line says whether usage is on pace, ahead of it or under it.
+- Add opt-in Codex audio attachments for models reporting audio input support and opt-in animated image generation; preserve generated GIF files.
+- Configure Codex gateways, Bedrock and Vertex AI from provider settings, choose a native provider for new conversations, and sign in to gateways with browser or device authorization.
+- Display Codex account security setup notices without changing account security.
+- Antigravity usage limits can read Gemini and shared Claude/GPT subscription quotas directly from the signed-in CLI account, without a separate usage hub.
+- Expanded timeline commands highlight shell syntax and embedded scripts, including Python heredocs and PowerShell commands.
+- Use Cmd+F or Ctrl+F in workspace and pull-request diffs to search virtualized lines. Navigating to a match opens its collapsed file.
+- The model picker separates current and legacy models using a bundled manifest. An opt-in remote refresh keeps classification current, with an on-disk fallback when offline.
+- Signed macOS builds with the required entitlements support Touch ID and system passkeys in preview tabs, with an account picker when a site offers multiple credentials.
+- The welcome screen now links to agent setup and lets you discover projects from configured Codex and Claude homes, with optional recent-thread history import. Imports preserve profile isolation, approval settings, and existing conversations.
+- Configure OpenAI-compatible or Anthropic text generators in Providers settings to write titles, commit messages, pull request text, and structured text without launching an agent. API keys stay in the server secret store.
+- Claude models offer an independent Ultracode toggle that preserves the selected effort level.
+- Type @ and part of a model or provider name to name a model for the agent. Model references appear as provider-icon chips in the composer and messages.
+- /clear arms a fresh provider session for the next message in the same conversation. Earlier messages stay visible, with a New session divider.
+- Conversation-bound scheduled tasks can start each run with fresh context; this option is off by default.
+- GitLab merge request reviews can request changes, with server refusals reported instead of claiming success.
+- Agents can preview and publish HTML from a local file path in full-access conversations, without copying the page into tool arguments.
+- Pi extension status messages appear above the composer, update by key, and clear when the provider session stops.
+- Pi models that advertise service tiers offer Standard, Fast, and Ultrafast speeds independently of thinking effort.
+- Add pull request comments to chat as context without asking the agent to fix them. Use the adjacent composer, select a linked conversation, or create a conversation in a local project.
+- Scheduled tasks can be moved to another conversation in the same project from the task editor.
+- New and existing tasks can target an existing conversation. Changing projects clears the destination, and moving a task cancels runs still waiting for its previous conversation.
+- Claude's model picker includes models reported by Claude Code gateways, preserving their selectable IDs, context-window variants and supported reasoning efforts. Gateway discovery can finish in the background after a model probe.
+- Complete user mentions and issue or pull request references with a keyboard-accessible suggestion list in PR composers. GitLab also supports merge request references beginning with an exclamation mark.
+- Pin favorite projects from project rows, the command palette, or Settings → Projects. Pinned projects come first in project pickers. Archive projects to hide them from pickers, and restore them from Settings.
+- Open a side chat with its own composer in a right-panel tab using /side, /btw, or Add. Side chats copy the current conversation context while the main thread keeps running, and stay out of the main thread lists.
+- When a Claude or Codex turn fails because the account's login expired, the thread now offers **Sign in again**. It runs the provider's sign-in in place. Once the login succeeds, it resends the message with its original settings, but only if the turn hadn't started working yet.
+- Choose Standard or a Daybreak Cyber Access program in Codex model traits when the model advertises support.
+- Managed Antigravity can update from Google's CLI release channel without waiting for an F5 release. Fresh installations use F5's pinned checksum; later updates trust Google's HTTPS manifest and check downloads against its SHA-512 checksum, rather than an independently signed manifest.
+- Enable “Keep usage limits visible” in Conversation settings to keep provider limit windows and thread context usage above the composer.
+- Enable “Keep the server awake while agents work” in Threads settings for standalone servers, with a one-minute grace period after runs finish. Linux also inhibits manual suspend while active. Desktop servers keep using their existing Keep Awake controls and safeguards.
+- Drop folders from your file manager onto the desktop sidebar to open them as projects and start a thread. Existing projects are reused.
+- Press Cmd+Shift+B on macOS or Ctrl+Shift+B on Windows and Linux to toggle the Agents panel
+  in the main thread view. The default shortcut is inactive in terminals and dialogs, and
+  your custom keybindings take priority.
+- On Node-based servers with tracing enabled, traces show significant heap growth on individual
+  operations and list likely contributing operations when the server heap spikes.
+- An opt-in Appearance setting renders LaTeX equations in chat, with lazy-loaded typesetting and copyable TeX source.
+- Claude approvals explain whether an ask rule or a provider safety check prompted for approval in Full access.
+- Pull request change totals show a breakdown of code, tests, mocks, generated files, and documentation on hover or keyboard focus.
+- Startup failures now show reload and update actions, terminal debugging guidance, and copyable crash details with a link to report the problem.
+- Projects discover Git repositories inside their folder. Use the repository picker to review and
+  commit changes in each repository, and review turn changes across the whole project.
+- Choose which repositories to include in a new thread worktree, including when the project root
+  is a plain folder. Files outside repositories in a plain-folder worktree link back to the
+  original project folder. You can also add an external repository in Project Settings.
+- Review and approve repository-defined worktree layout commands in Project Settings.
+- Agents can read pull requests and CI on the thread's forge and make changes in the thread's repository through F5's forge sign-in, including re-running jobs and merging GitHub stacks.
+- Settings can unassign an individual default keyboard shortcut while keeping the action's other shortcuts.
+- Set usageHistoryRetentionDays in settings.json to keep imported Muse usage history for a custom number of days or indefinitely. The 182-day default preserves both periods in the 90-day comparison.
+- Antigravity can sign in with a Gemini API key as well as a Google account. The key is kept in
+  F5's secret store, threads start only after a successful Connect, and the Usage page shows
+  "Billed per token" for it.
+- The Antigravity provider card shows the runtime version and source, model catalog freshness,
+  the kind of the last discovery failure, and whether F5's native readers are on. Quota,
+  turn-failure details and native child work now run only on Antigravity versions F5 has
+  certified.
+- Antigravity models show a Thinking control with the levels each Gemini model supports, and the
+  composer's context meter now works for Antigravity threads.
+- Antigravity supports Auto-accept edits, the composer's Plan toggle, and Auto when the installed
+  version offers its own reviewer.
+
+### Changed
+
+- Update the bundled Claude runtime to Claude Code 2.1.326 (Agent SDK 0.3.326). In Full access, commands that contain your signed-in account email (for example a request header your team's tooling requires) no longer stop for an approval. Claude Code now refuses only calls that send the address as a client's identity, such as a User-Agent, and tells Claude to try again without it.
+- Claude MCP servers' environment variables and headers now reach the bundled runtime over its input instead of its command line. Custom Claude executables older than 2.1.326 keep F5's earlier private setup path.
+- Claude approval cards offer **Always allow this session** only when accepting it would actually save something. Otherwise only one-time approval is offered.
+- Upgrade bundled Codex from 0.166.0 to 0.170.0, including upstream OAuth, reconnect, sandbox inheritance and Windows fixes. Custom executable paths remain supported.
+- Update the managed Antigravity runtime to the supported 1.5 CLI, surface quota errors as failed turns, show native child work in the Agents panel, and preserve native file reads and diff edits without creating a workflow skill in the project. Updates remain explicit in Settings.
+- The context meter shows used tokens against the model limit, warns at 80% and 90%, and marks Claude's configured auto-compaction point when available. Context remains separate from provider Usage limits.
+- Copy a thread link separately from its raw ID, or use the copy-reference shortcut to copy its PR link when available and its thread link otherwise. Pasting a thread link inserts a context chip at the cursor or replaces the selection.
+- Images and videos appear above message text, and multiple images share a collage. Files sent on their own appear as file cards, pasted text is labeled “Pasted text”, audio attachments have playback controls, snapshots retain their aspect ratio, and pending file sends show “Sending…”.
+- The composer's reasoning chip shows only what differs from the defaults: "High" instead of "High · Ultracode Off", with icons for Fast mode and Ultracode when on.
+- The context meter is now just the ring. Hovering it shows the percentage inside the ring and the exact token counts in the popup.
+- Projects are pinned and unpinned from their actions menu. The always-visible pin button in the sidebar header is gone; pinned projects show a small pin next to their name.
+- Pending approvals appear on their timeline row with the full request and approval actions, keeping the composer free of approval banners.
+- When you reference another thread in a message, F5 gives the agent the exact arguments for
+  `thread_read`, even when long titles fill the reference context.
+- Find in thread highlights matches across nearby messages and plans as you scroll, including
+  matches deeper in long messages. The count still includes the whole thread, and the selected
+  match stays highlighted while its row is rendered.
+- Sidebar titles shimmer as they regenerate.
+- Hover or focus the conversation header's Diff button to see how the working tree's changes break down across code, tests, mocks, generated files, and docs.
+- Searching for "Gemini" or "Google" in Add provider and the model picker finds Antigravity, and
+  the separate Gemini "coming soon" entry is gone.
+- Antigravity lists Orchestrator first, uses a light Gemini model for titles and commit messages,
+  and reads `skills.json` and plugin skills.
+- Each Antigravity instance now reads your `~/.gemini/AGENTS.md` and `GEMINI.md`, as Antigravity
+  does outside F5. Files and links of your own in the instance profile are kept.
+- Changing Antigravity's sign-in method, key or Google account starts fresh native sessions on the
+  next message instead of resuming the previous account's session.
+- Switching provider in Home or the workflow Implement dialog now keeps the access mode when the
+  new provider offers it, narrows it when it doesn't, and never widens it to Full access. When only
+  wider modes remain, you pick one before starting.
+- ACP providers (Grok and custom ACP agents included) now apply configuration changes the agent
+  reports on its own, such as a model or mode it switched itself.
+- Updating Git file counts refreshes the chat header without re-rendering the conversation and composer.
+- Switching conversations is smoother in sidebars with many threads.
+- Antigravity is now listed in Settings → Providers and turned on by default, like the other
+  built-in providers. F5 still installs it only when you click **Install Antigravity**, and nothing
+  starts until you sign in. Switch it off there if you don't use it.
+- In Antigravity plan mode, commands and read-only tools follow the thread's access mode: Full
+  access runs them without asking, and Supervised asks and offers "Allow for this thread". File
+  edits and unrecognized tools still always ask in plan mode.
+- Expanded command cards present output by what it contains: file reads show their file's syntax
+  colors and, when known, its line numbers; `grep -n`/`rg -n` results are grouped by file with
+  matches marked; diffs are tinted; JSON is highlighted; and terminal colors show instead of escape
+  codes. When the output names a file and line, clicking it opens the file there. Very long output
+  stays plain text.
+
+### Performance
+
+- F5's HTTP MCP catalogs advertise smaller input schemas while keeping full validation when tools run, reducing tool context for HTTP MCP clients. Claude's in-process catalogs keep their existing schemas.
+- Agent instructions no longer encourage routine exploration and verification subagents, and use less context for HTML tool guidance.
+- Pull request queues render the first rows sooner. Hovering or using the keyboard to rest on a
+  row warms any available cached detail without contacting the forge.
+- Pull request link previews show known titles and status immediately. After a reload, recently
+  opened timelines, checks, and diffs can show cached data while they refresh.
+- Clearing PR Hub data, removing a forge account, or disconnecting GitHub also clears saved
+  pull request reads in the browser.
+- Codex can start tool calls while a detailed reasoning summary is still being generated. Reasoning summaries appear one section at a time.
+- F5 stays responsive on Windows while looking up executables for providers, terminals, and editors.
+- Repeated checks for missing Windows commands are faster. F5 reuses unchanged PATH directory listings across command checks and launches.
+- Reconnect faster on unreliable networks and catch up on recent thread changes without reloading the thread list.
+- Keep large thread and settings updates moving on slow connections.
+- The desktop thread list can reuse a recent snapshot from the same server on startup. Remote connections reload larger sync gaps over compressed HTTP.
+
+### Fixed
+
+- Reloading MCP servers in a running Claude thread no longer disconnects F5's own thread, preview and computer tools.
+- When an agent waits for its turn at the computer (because you are using the app or another agent holds it), the wait now shows as a step in the **Used the computer** card, with an hourglass and the result, instead of a separate MCP row that split the card in two.
+- OpenCode native slash commands receive only the arguments you typed. Images, plain-text files and PDFs are still attached; other file types are omitted from native commands.
+- Agent Bridge's list_scheduled_tasks tool now honors scheduledTaskId within the projects shared with the caller.
+- Apply Reviews recognizes the implementation worktree’s automatic branch rename and can retry
+  a failed context recovery without sending an already delivered review turn again.
+- Apply Reviews keeps recovered context when Claude resumes, reports later session resets, and
+  preserves completed workflows when older revision history cannot be verified.
+- Apply Reviews can recover context on the implementation thread when the saved reviews do not
+  fit. It sends both reviews in full and waits for the revision turn to finish before marking the
+  workflow complete.
+- A Codex command with large output no longer stops the turn with "notification admission was
+  exhausted" when the next command starts. If that error still happens, the turn now finishes
+  instead of leaving the conversation stuck on "Waiting for the active turn to finish". Stop works
+  on such a conversation too, and on the next app start F5 clears a stuck turn it can still
+  identify from its saved session state.
+- Preserve other assistant items when moderation replaces one item, and sanitize native child-task inspection output.
+- Keep ordinary audio files usable when optional native-audio configuration reads fail.
+- Restart gateway sign-in polling for each attempt and bound how long configuration reads wait for dispatch.
+- Require a fresh one-time decision for Codex human-required commands, regardless of session allowances.
+- Keep MCP app resource reads tied to their originating Codex call and connector account.
+- Replace provisional Codex answer text when the final native presentation hides or blocks the response, including history and child transcript reads.
+- Apply the selected native Codex provider through managed process options for conversations and auxiliary title, branch, commit and PR generation.
+- Resolve startup service tiers after Codex opens the conversation's native provider, preventing recovery from applying another provider's tier.
+- Preserve ordinary audio-file attachments when native audio is disabled or unsupported, and validate the exact model sent with a recording.
+- Replace moderated text and reasoning in current and earlier turns, including one-off summaries and persisted conversation views.
+- Keep gateway sign-in polling and cancellation available while inspecting other providers, and isolate successive OAuth attempts.
+- Keep native provider settings recoverable after an unavailable provider selection and avoid duplicate gateway creation after refresh errors.
+- Reject invalid MCP account targets and refresh provider catalogs after configuration changes.
+- Preview tabs restored before entitlement checks finish gain passkey support when the check completes. Set F5_DISABLE_PREVIEW_PASSKEYS=1 before starting the desktop to disable F5's passkey integration.
+- Stopped desktop profiles no longer cause repeated synchronous IPC on every URL lookup.
+- History imports advance one thread at a time with visible progress, and active multi-project imports keep their scan alive. Projects with large Codex instruction records can be discovered, and import toasts use the correct singular form.
+- Model lists ignore caches from a different manifest source. Expanding another command can retry a failed highlighting download, and large commands use bounded coloring without loading the full renderer.
+- Turning off online model classification restores the bundled lists. Model refreshes finish pending cache writes before the backend shuts down.
+- Newly reported models keep their normal picker placement instead of being labelled legacy merely because they are absent from the bundled catalog. Optional manifest updates come from F5 and update connected pickers immediately.
+- Diff cards show both paths for renamed files and fold when their header is clicked. App navigation shortcuts remain available while diff search has focus.
+- Importing CLI history limits message and thread text, reports shortened history, and consistently resumes Claude sessions by their transcript filename. Leaving a failed import restores the previous onboarding state.
+- Expanded commands retain lightweight coloring while full highlighting loads or fails, including a bounded preview for large commands. Failed embedded-script downloads can be retried.
+- Desktop startup no longer waits for macOS passkey entitlement inspection; passkeys become available once the signed entitlement check finishes.
+- Find in workspace diffs now receives Cmd+F/Ctrl+F beside the chat, and typing in diff search keeps conflicting text-editing shortcuts from interrupting it. Unchanged files retain their render versions, and collapsed headers keep their theme without highlighting file contents.
+- Antigravity usage preserves partial quotas when an endpoint stalls and returns within the usage refresh deadline.
+- Project history imports avoid checkpoint snapshots and clean up unclaimed bindings after a rejected import. Syntax highlighting can retry a failed grammar download.
+- Timeline command rows show the script inside simple Windows cmd launchers, matching existing PowerShell launcher handling.
+- Fresh sessions recover safely after failed starts; model mentions keep files first, Pi speeds survive optionless turns, and extension banners clear when switching providers.
+- Canceling API text generation cancels its HTTP request. Stored API keys no longer follow a changed endpoint origin or API type, and plaintext endpoints are limited to loopback hosts.
+- Fresh sessions exclude earlier plans, task lists and recovery summaries, including immediately after a clear. Pi extension status updates are coalesced.
+- Review guides can select API text generators. Clearing a replacement key field keeps the stored key, generator ids cannot shadow provider ids, and unreadable HTML paths show actionable errors.
+- Terminal output containing URLs such as `redis://`, `postgres://`, and `s3://` no longer shows broken editor links.
+- Open in Editor and Reveal in File Manager can reach the Linux desktop session when the server starts at boot before you log in.
+- Reveal in File Explorer selects files from links with forward-slash paths, including paths with spaces.
+- Stopping the server during Windows startup also stops the background PowerShell PATH probe.
+- Windows startup can read PATH through PowerShell 7 if Windows PowerShell fails to run the probe.
+- Typing into a search box or combobox with computer control no longer pauses the thread with
+  **Needs recovery** when the typed text moves focus to a list option. If focus really moves
+  partway through the text, typing stops and the agent is told how much was sent and why.
+- Claude's removal safety checks in Full access mode return their warning and safe-rewrite guidance to the agent instead of asking you to override the check. Explicit approval rules still ask for your decision.
+- Project picker options keep their project names for assistive technology and keyboard selection when pin buttons are shown.
+- Planning revisions use the context window reported by the authoring provider. If a revision runs out of room, its branch shows how to recover while the other branch can continue. Retrying reuses the saved reviews.
+- The Claude Ultracode switch now stays on when turned on, in the composer and in workflow model slots.
+- The Profiles card no longer lists every removed thread worktree as an unavailable project folder. It checks only live project folders and groups several into one collapsible warning.
+- ACP providers show session notices separately from the assistant's reply, including warnings about skipped skills.
+- Server keep-awake preserves Linux screen locking and prevents Windows host sleep when F5 runs in WSL.
+- Approval requests respect the typing guard, retain timeline row reuse, and avoid empty composer-header spacing.
+- Desktop activation and sidebar folder-drop handling load on demand, keeping the initial bundle within its budget and thread file-drop targets visible.
+- Antigravity update output reports the installed version and avoids oversized free-space estimates.
+- Cyber Access defaults to Standard and drops choices unavailable on the selected model.
+- Pending approvals retain provider explanations and paths, with a composer shortcut to reach off-screen requests.
+- Managed Antigravity recovers from missing active releases and serializes release selection across server processes.
+- Startup ACP notices retain their titles and details, and persistent usage shows short-term limits and stale-data warnings.
+- HTTP MCP schemas preserve each action variant's required fields and keep nullable-only inputs valid.
+- Atomic saves of settings and other app state preserve existing file permissions on macOS and Linux and give new files owner-only access. Settings and keybinding saves also sync to disk to reduce data loss after a crash.
+- Math rendering preserves shell variables, prices, escaped dollars and table columns; copying or quoting equations keeps their TeX source.
+- PR change breakdowns reuse cached statistics without downloading GitHub patch bodies, and queue hovers wait for intent before loading.
+- Startup recovery avoids a theme flash, preserves useful stack locations in copied reports, and only offers verified terminal commands.
+- Keep multiline equations and rich clipboard formatting intact, and leave shell variables beside links as prose.
+- Redact URL credentials from startup reports while retaining useful stack locations.
+- Verify the revision behind PR change breakdowns, avoid changing saved PRs when reading statistics, and preserve queue keyboard navigation.
+- Link shell-created PRs only from unambiguous successful create commands and known forge hosts; explain organization-managed Claude approval rules.
+- An opt-in Git setting links merge requests created with GitLab's shell CLI to the thread. Shell PR detection now ignores quoted examples, comments, and ambiguous output.
+- Dragging with a mouse or pen to select conversation text now works across the turn rails and minimap without opening a turn preview or unexpectedly extending the selection.
+- Claude’s context meter shows the auto-compaction point from Claude’s own settings when F5 has no override.
+  An explicit F5 override also takes precedence over Claude’s environment variable for the compaction window.
+- Claude’s context meter uses the context window reported by Claude for models outside F5’s catalog.
+- Commands that are still running when Codex closes their thread show as interrupted.
+- Images embedded in Codex tool output appear inline in the conversation.
+- Side chats started with /side or /btw carry along the first message's attachments and context. If the send fails, the original draft stays in the main chat.
+- Cancelling a command while F5 is looking up its executable prevents the process from starting.
+- Cursor and VS Code links to local files open the named editor at the specified line and column when clicked in chat.
+- F5 checks and updates supported mise-managed providers through mise. Version-pinned installs and OpenCode 1.x stay manual.
+- Model and reasoning-option picks on the current provider instance are saved for the next turn. Switching provider instances takes effect when you send. Answers to pending questions stay with the running session.
+- Pi keeps other extensions’ system prompt changes when adding F5’s orchestration guidance.
+- Antigravity shows as signed in after a Google sign-in with Antigravity 1.5.x, which keeps the
+  sign-in in a file F5 didn't read. Usage limits read it too, and sign-out removes it.
+- Turn checkpoints work in a separate profile that has no Git author set. They failed with
+  "Checkpoint capture failed … Author identity unknown", which removed per-turn diffs and undo.
+  Your own commits still need the profile's Git author in Settings → Integrations.
+- Antigravity updates no longer turn off subscription quota, turn-failure details and sub-agent
+  work. F5 now reads them on any Antigravity from 1.5.13 up instead of only on versions it listed,
+  and it reads the new way 1.5.15 records sub-agent launches.
+- The chat header's View PR, Git action and project action buttons keep their dropdown chevron
+  inside the button group instead of pushing it past the group's edge.
+- Prevent unrelated terminal state and slow macOS test setup from blocking beta release checks.
+- ACP permission requests that include the tool's input, such as Antigravity asking before a
+  command in plan mode, now show an approval card instead of failing and ending the turn with no
+  output.
+- Antigravity approval cards show the command being approved instead of `run_command`.
+- Switching threads after opening a search result, a "Replying to" card or an Agents panel item no
+  longer shows "That message is no longer available." on every thread you open next.
+- "Quote reply" now appears as soon as you finish selecting assistant text, including keyboard
+  and touch selections, instead of only after copying it. Escape closes it, Back from the comment
+  keeps the selection, and adding a quote keeps the composer's cursor.
+- Sent messages no longer show extra blank lines between a quoted response card and the text
+  around it.
+- New threads in a project folder that is not a git repository but holds repositories start in the
+  project folder again instead of failing on the first message. A worktree of selected repositories
+  is now a choice in a searchable workspace picker under the composer.
+- Keep focus in project search and preserve the composer's caret or selection when a thread finishes loading.
+- Preserve selected draft text when the app window regains focus so pasting replaces the selection.
+- Keep automatic composer focus after thread navigation without letting closing popups or hovered tooltips block typing.
+- The experimental Linux VM profiles (`F5_EXPERIMENTAL_LINUX_VM=1`) can start from the released
+  Apple silicon app: it now ships Lima, signed for virtualization, and downloads the matching
+  Linux backend from its own release the first time a VM needs it. A slow download no longer
+  trips the startup timeout while it keeps making progress.
+- macOS and Windows packages no longer carry a second, unused copy of the native helper inside
+  the app archive.
+
+### Security
+
+- Grok commit, PR, branch and title generation no longer inherits always-approve settings. Grok, custom ACP and Antigravity metadata generation deny tool approval requests.
+- Other websites can no longer embed the F5 web app in a frame to disguise approval or thread actions.
+- Preview, computer, thread, and integration MCP endpoints now refuse browser requests with 403 before checking credentials, including preflight requests.
+- Desktop connection tokens rotate every 12 hours. Reconnecting windows obtain a fresh token, including after a backend restart or a long sleep.
+- A profile recorded as running in a Linux VM now refuses to start on the host, from desktop,
+  server and CLI profile selection alike, and shows why. The profile registry is written in its
+  newer format only while such a profile exists, so installations without one stay readable by
+  older F5 builds.
+- The desktop preview requires a trusted click to attach an element annotation. Page scripts and
+  F5 browser automation cannot submit a pick. Start picking after the preview page finishes loading.
+  Leaving the tab or leaving a pick idle for a minute cancels it.
+- The desktop preview asks before a local app can access your location and remembers your choice for that origin until F5 restarts.
+  The choice follows the origin, including its port. Permission queries report denied until an app
+  requests location directly and you allow it.
+- Antigravity no longer inherits Google application-default credentials or Google Cloud project
+  settings from the server environment, and Full access approves each action once instead of
+  switching the agent to its own unattended mode.
+
 ## [0.1.10] - 2026-11-17
 
 ### Added

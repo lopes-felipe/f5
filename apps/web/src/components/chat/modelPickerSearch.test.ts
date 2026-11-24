@@ -34,6 +34,18 @@ describe("scoreModelPickerSearch", () => {
     expect(scoreModelPickerSearch(claude, "claude")).not.toBeNull();
   });
 
+  it("finds Antigravity models by Gemini and Google", () => {
+    const neon = {
+      providerKind: "antigravity" as const,
+      modelId: "gemini-4-neon",
+      name: "Neon",
+      shortName: "Neon",
+    };
+    expect(scoreModelPickerSearch({ ...neon, modelId: "neon" }, "gemini")).not.toBeNull();
+    expect(scoreModelPickerSearch({ ...neon, modelId: "neon" }, "google")).not.toBeNull();
+    expect(scoreModelPickerSearch(codex, "gemini")).toBeNull();
+  });
+
   it("boosts favorite results without changing no-query ordering", () => {
     const favoriteScore = scoreModelPickerSearch({ ...claude, isFavorite: true }, "sonnet");
     const plainScore = scoreModelPickerSearch(claude, "sonnet");

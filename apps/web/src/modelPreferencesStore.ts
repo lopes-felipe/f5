@@ -1,10 +1,8 @@
-import type {
-  ClaudeModelOptions,
-  CodexModelOptions,
-  CursorModelOptions,
-  OpenCodeModelOptions,
-  ProviderKind,
-  ProviderModelOptions,
+import {
+  isKnownProviderKind,
+  KNOWN_PROVIDER_KINDS,
+  type ProviderKind,
+  type ProviderModelOptions,
 } from "@t3tools/contracts";
 import { areProviderModelOptionsEqual } from "@t3tools/shared/providerOptions";
 import { create } from "zustand";
@@ -23,13 +21,7 @@ export type WorkflowCreatePreferenceSlot = "branchA" | "branchB" | "merge";
 export interface RecentModelSelection {
   provider: ProviderKind;
   model: string;
-  options:
-    | CodexModelOptions
-    | ClaudeModelOptions
-    | CursorModelOptions
-    | OpenCodeModelOptions
-    | NonNullable<ProviderModelOptions["grok"]>
-    | null;
+  options: NonNullable<ProviderModelOptions[ProviderKind]> | null;
 }
 
 /**
@@ -96,13 +88,7 @@ function getModelPreferencesStorage() {
 }
 
 function normalizeProviderKind(value: unknown): ProviderKind | null {
-  return value === "codex" ||
-    value === "claudeAgent" ||
-    value === "cursor" ||
-    value === "opencode" ||
-    value === "grok"
-    ? value
-    : null;
+  return isKnownProviderKind(value) ? value : null;
 }
 
 function normalizePersistedModel(value: unknown): string | null {
@@ -120,32 +106,12 @@ function normalizePersistedModelMap(value: unknown): ModelPreferencesState["last
 
   const candidate = value as Record<string, unknown>;
   const next: ModelPreferencesState["lastModelByProvider"] = {};
-
-  const codexModel = normalizePersistedModel(candidate.codex);
-  if (codexModel) {
-    next.codex = codexModel;
+  for (const provider of KNOWN_PROVIDER_KINDS) {
+    const model = normalizePersistedModel(candidate[provider]);
+    if (model) {
+      next[provider] = model;
+    }
   }
-
-  const claudeModel = normalizePersistedModel(candidate.claudeAgent);
-  if (claudeModel) {
-    next.claudeAgent = claudeModel;
-  }
-
-  const cursorModel = normalizePersistedModel(candidate.cursor);
-  if (cursorModel) {
-    next.cursor = cursorModel;
-  }
-
-  const openCodeModel = normalizePersistedModel(candidate.opencode);
-  if (openCodeModel) {
-    next.opencode = openCodeModel;
-  }
-
-  const grokModel = normalizePersistedModel(candidate.grok);
-  if (grokModel) {
-    next.grok = grokModel;
-  }
-
   return next;
 }
 

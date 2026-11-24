@@ -38,6 +38,7 @@ export const isBuiltInProviderDriver = (driver: ProviderDriverKind): boolean =>
   driver === "claudeAgent" ||
   driver === "cursor" ||
   driver === "opencode" ||
+  driver === "muse" ||
   driver === "pi" ||
   driver === "grok";
 
@@ -186,6 +187,32 @@ export const lookupLatestVersion = (
   } = {},
 ): Effect.Effect<LatestVersionLookupResult, never, HttpClient.HttpClient> => {
   if (source.kind === "npm") return lookupNpmLatestVersion(source);
+  if (source.kind === "mise")
+    return Effect.tryPromise(async (signal) => {
+      const result = await (options.runProcess ?? runProcess)(
+        source.executable,
+        ["latest", source.tool],
+        {
+          env: options.environment ?? {},
+          cwd: options.cwd,
+          signal,
+          timeoutMs: 30_000,
+          allowNonZeroExit: true,
+          maxBufferBytes: 256 * 1024,
+        },
+      );
+      if (result.code !== 0 || result.timedOut) throw new Error("mise latest failed");
+      const version = extractProviderVersion(
+        ProviderDriverKind.make(source.tool),
+        result.stdout.trim(),
+      );
+      if (!version || /\s/.test(result.stdout.trim())) throw new Error("Invalid mise version");
+      return { _tag: "success", latestVersion: version } satisfies LatestVersionLookupResult;
+    }).pipe(
+      Effect.catch((cause) =>
+        Effect.succeed({ _tag: "failure", failure: { _tag: "parse", cause } } as const),
+      ),
+    );
   if (source.kind === "brew-local")
     return Effect.tryPromise(async () => {
       const result = await (options.runProcess ?? runProcess)(

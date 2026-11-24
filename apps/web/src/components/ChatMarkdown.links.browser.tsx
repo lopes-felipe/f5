@@ -111,6 +111,19 @@ function contextMenu(link: HTMLElement, clientX = 0, clientY = 0) {
   );
 }
 
+it.each(["cursor", "vscode"])("opens %s editor file links from chat", async (scheme) => {
+  const href = scheme + "://file/Users/me/src/main.ts:186";
+  const view = await render(<ChatMarkdown text={"[Open in editor](" + href + ")"} cwd="/repo" />);
+  try {
+    const link = view.getByRole("link", { name: "Open in editor" });
+    await expect.element(link).toHaveAttribute("href", href);
+    await link.click();
+    expect(openLink).toHaveBeenCalledWith(href, undefined);
+  } finally {
+    await view.unmount();
+  }
+});
+
 it("opens an Option/Alt-clicked chat link in the system browser", async () => {
   const href = "https://example.com/docs";
   const view = await render(<ChatMarkdown text={`[docs](${href})`} cwd={undefined} />);

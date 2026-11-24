@@ -2835,6 +2835,23 @@ describe("Thread sidebar", () => {
       );
       expect(mounted.router.state.location.search.timelineEntryId).toBe("message-search-match");
       expect(input.value).toBe("");
+
+      // The deep-linked message belongs to that thread only: switching threads
+      // without a search must not carry it along and report it unavailable.
+      await mounted.router.navigate({ to: "/$threadId", params: { threadId: retryThreadId } });
+      await waitForPath(
+        mounted.router,
+        (pathname) => pathname.endsWith(`/${retryThreadId}`),
+        "Plain thread navigation should open the other thread.",
+      );
+      expect(mounted.router.state.location.search.timelineEntryId).toBeUndefined();
+      expect(mounted.router.state.location.search.timelineEntryKind).toBeUndefined();
+      await new Promise((resolve) => window.setTimeout(resolve, 300));
+      expect(
+        document.querySelector(
+          '[data-slot="timeline-navigation-status"][data-status="unavailable"]',
+        ),
+      ).toBeNull();
     } finally {
       await mounted.cleanup();
     }
@@ -6003,6 +6020,36 @@ describe("Thread sidebar", () => {
       await mounted.cleanup();
     }
   });
+  it("keeps unrelated sidebar rows rendered when switching threads", async () => {
+    const nextId = ThreadId.makeUnsafe("route-next");
+    const otherId = ThreadId.makeUnsafe("route-other");
+    const mounted = await mountApp({
+      width: 1400,
+      initialEntries: ["/" + THREAD_ID],
+      configureFixture: (next) => {
+        next.snapshot = createSnapshot([
+          createSnapshotThread({ id: THREAD_ID, title: "Initial thread" }),
+          createSnapshotThread({ id: nextId, title: "Next thread" }),
+          createSnapshotThread({ id: otherId, title: "Unrelated thread" }),
+        ]);
+      },
+    });
+    try {
+      await waitForSidebarThreadRow("Initial thread");
+      const row = await waitForSidebarThreadRow("Unrelated thread");
+      await waitForLayout();
+      const before = row.getAttribute("data-render-count");
+      expect(before).toBeTruthy();
+      await mounted.router.navigate({ to: "/$threadId", params: { threadId: nextId } });
+      await waitForLayout();
+      expect(
+        querySidebarThreadRowByTitle("Unrelated thread")?.getAttribute("data-render-count"),
+      ).toBe(before);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("isolates terminal updates from the sidebar and another thread's chat", async () => {
     const otherId = ThreadId.makeUnsafe("background-terminal");
     const mounted = await mountApp({

@@ -25,6 +25,7 @@ import {
   NextTurnQueueStore,
   type UsageResumeLedger,
 } from "../nextTurnQueue/Services/NextTurnQueueStore.ts";
+import { NextTurnQueueStorageError } from "../nextTurnQueue/Errors.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import { ProjectionTurnRepository } from "../persistence/Services/ProjectionTurns.ts";
@@ -48,6 +49,8 @@ export interface AutomationWorld {
   sessions: Array<{ threadId: string; cwd: string; status: string }>;
   queuedThreadIds: Set<string>;
   usageResumeLedgers: Map<string, UsageResumeLedger>;
+  usageResumeLedgerUnavailable?: boolean;
+  beforeMaintenanceLock?: () => void;
   queueStates: Map<
     string,
     {
@@ -211,7 +214,10 @@ export function automationLayer(
         return { sequence: 1 };
       }),
     streamDomainEvents: Stream.empty,
-    acquireMaintenanceLock: () => Scope.make("sequential"),
+    acquireMaintenanceLock: () =>
+      Effect.sync(() => world.beforeMaintenanceLock?.()).pipe(
+        Effect.andThen(Scope.make("sequential")),
+      ),
   } as never);
   const terminals = Layer.succeed(TerminalManager, {
     listSessions: Effect.sync(() => world.terminals),
@@ -266,7 +272,11 @@ export function automationLayer(
         })),
       ),
     getUsageResumeLedger: (threadId: ThreadId) =>
-      Effect.sync(() => world.usageResumeLedgers.get(threadId) ?? null),
+      Effect.suspend(() =>
+        world.usageResumeLedgerUnavailable
+          ? Effect.fail(new NextTurnQueueStorageError({ message: "Ledger unavailable" }))
+          : Effect.succeed(world.usageResumeLedgers.get(threadId) ?? null),
+      ),
     listByThread: (threadId: string) =>
       Effect.sync(() => ({
         items: world.queuedThreadIds.has(threadId) ? [{}] : [],

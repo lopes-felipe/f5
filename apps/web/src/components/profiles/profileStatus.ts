@@ -124,6 +124,25 @@ export function profileLocationLabel(profile: ProfileSummary): string {
   return `localhost:${profile.port}`;
 }
 
+/**
+ * A Linux VM profile starts only through the desktop app, and `t3 --profile` refuses it, so it
+ * has no launch command to copy.
+ */
+export function hasProfileLaunchCommand(profile: ProfileSummary): boolean {
+  return profile.executionEnvironment !== "linux-vm";
+}
+
+/**
+ * True in a window served by a Linux VM guest backend. A host backend never serves a Linux VM
+ * profile, so an active Linux VM profile means the guest, which refuses profile changes.
+ */
+export function isLinuxVmGuestWindow(active: ProfileSummary | null | undefined): boolean {
+  return active?.executionEnvironment === "linux-vm";
+}
+
+export const LINUX_VM_GUEST_PROFILES_NOTICE =
+  "Profiles are managed from a host profile. Open a host profile to create, rename or remove profiles.";
+
 export const PROFILE_LAUNCH_COMMAND_PREFIX = "t3 --profile";
 
 export function profileLaunchCommand(profile: ProfileSummary): string {

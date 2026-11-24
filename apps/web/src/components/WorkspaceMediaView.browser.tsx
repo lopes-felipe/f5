@@ -63,8 +63,10 @@ it("keeps the same PDF document on grant renewal and reloads after an edit", asy
   issueAssetUrl
     .mockResolvedValueOnce([{ url: original, fileRevision: "one" }])
     .mockRejectedValueOnce(new Error("Disconnected"))
+    .mockResolvedValueOnce([null])
     .mockResolvedValueOnce([{ url: renewed, fileRevision: "one" }])
     .mockResolvedValueOnce([{ url: edited, fileRevision: "two" }])
+    .mockResolvedValueOnce([null])
     .mockResolvedValueOnce([null]);
   const view = await render(
     <QueryClientProvider client={client}>

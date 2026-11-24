@@ -1,1 +1,0 @@
-- Cancelling a command while F5 is looking up its executable prevents the process from starting.

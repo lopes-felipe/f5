@@ -99,7 +99,20 @@ export interface ProviderInstance {
   >;
   readonly invalidateAccountStatus?: Effect.Effect<void>;
   readonly invalidateModelCatalog?: Effect.Effect<void>;
+  /**
+   * Explicit user refresh only (Settings → Providers → Refresh, which sends `discoverModels`):
+   * run an expensive catalog discovery on the next status check. Never called by startup,
+   * periodic refreshes, health banners or session restarts.
+   */
+  readonly requestModelDiscovery?: Effect.Effect<void>;
   readonly updateModelCatalog?: (models: ReadonlyArray<ServerProviderModel>) => Effect.Effect<void>;
+  /**
+   * Boot only: the models from this instance's cached status snapshot, offered before the first
+   * live probe is published, so a restart can restore a catalog the live probe cannot rebuild.
+   */
+  readonly hydrateModelCatalog?: (
+    models: ReadonlyArray<ServerProviderModel>,
+  ) => Effect.Effect<void>;
   /**
    * Read-only hooks/plugins/connectors/agents inventory for this instance.
    * `projectRoot` is resolved by the server from a project id, never taken
@@ -109,6 +122,18 @@ export interface ProviderInstance {
   readonly inventory?: (input: {
     readonly projectRoot?: string | undefined;
   }) => Effect.Effect<ProviderInstanceInventoryEntries, ProviderDriverError>;
+  /**
+   * Approve the named hooks through the provider's own API, each only while
+   * the inventory token it carries still matches its current contents. Keys
+   * that are unknown, managed or already trusted are skipped.
+   */
+  readonly trustHooks?: (input: {
+    readonly projectRoot?: string | undefined;
+    readonly hooks: ReadonlyArray<{ readonly key: string; readonly token: string }>;
+  }) => Effect.Effect<
+    import("@t3tools/contracts").ServerTrustProviderHooksResult,
+    ProviderDriverError
+  >;
   readonly saveFeedback?: () => Effect.Effect<{ path: string }, ProviderDriverError>;
   readonly codexConfiguration?: (
     action: import("@t3tools/contracts").CodexConfigurationAction,

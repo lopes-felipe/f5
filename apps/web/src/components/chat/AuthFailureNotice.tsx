@@ -31,9 +31,12 @@ export function AuthFailureNotice(props: {
   readonly failure: OrchestrationAuthFailure;
   readonly providerLabel: string;
   readonly driver: string;
+  /** The instance's sign-in kind; an Antigravity API key reconnects with Connect, not Sign in. */
+  readonly authType?: string | undefined;
   readonly error: string;
   readonly onDismiss: () => void;
 }) {
+  const keyConnect = props.driver === "antigravity" && props.authType === "gemini-api-key";
   const [open, setOpen] = useState(false);
   const [resending, setResending] = useState(false);
   // One resend per failure, however many times the login reports success.
@@ -106,7 +109,7 @@ export function AuthFailureNotice(props: {
             disabled={resending}
             onClick={() => setOpen(true)}
           >
-            Sign in again
+            {keyConnect ? "Connect again" : "Sign in again"}
           </Button>
           <button
             type="button"
@@ -121,10 +124,13 @@ export function AuthFailureNotice(props: {
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogPopup className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>Sign in to {props.providerLabel}</DialogTitle>
+            <DialogTitle>
+              {keyConnect ? "Connect" : "Sign in to"} {props.providerLabel}
+            </DialogTitle>
             <DialogDescription>
-              Finish signing in below. If the turn never started, your message is sent again as soon
-              as the login succeeds.
+              {keyConnect
+                ? "Connect the Gemini API key below. If the turn never started, your message is sent again as soon as Antigravity accepts the key."
+                : "Finish signing in below. If the turn never started, your message is sent again as soon as the login succeeds."}
             </DialogDescription>
           </DialogHeader>
           <DialogPanel>
@@ -132,6 +138,7 @@ export function AuthFailureNotice(props: {
               <ProviderAccountPanel
                 instanceId={props.failure.providerInstanceId}
                 driver={props.driver}
+                authType={props.authType}
                 status="unauthenticated"
                 autoStart
                 cancelOnUnmount

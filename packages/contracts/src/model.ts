@@ -79,13 +79,19 @@ export const PiModelOptions = Schema.Struct({
 });
 export type PiModelOptions = typeof PiModelOptions.Type;
 
+/** Antigravity thinking level: a value the selected model lists in its `thought_level` option. */
+export const AntigravityModelOptions = Schema.Struct({
+  thinking: Schema.optional(TrimmedNonEmptyString),
+});
+export type AntigravityModelOptions = typeof AntigravityModelOptions.Type;
+
 export const ProviderModelOptions = Schema.Struct({
   codex: Schema.optional(CodexModelOptions),
   claudeAgent: Schema.optional(ClaudeModelOptions),
   cursor: Schema.optional(CursorModelOptions),
   opencode: Schema.optional(OpenCodeModelOptions),
   grok: Schema.optional(Schema.Struct({})),
-  antigravity: Schema.optional(Schema.Struct({})),
+  antigravity: Schema.optional(AntigravityModelOptions),
   muse: Schema.optional(MuseModelOptions),
   acp: Schema.optional(Schema.Struct({})),
   pi: Schema.optional(PiModelOptions),
@@ -260,14 +266,9 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
     { slug: "claude-haiku-5-5", name: "Claude Haiku 5.5" },
     { slug: "claude-haiku-4-5", name: "Claude Haiku 4.5" },
   ],
-  cursor: [
-    { slug: "auto", name: "Auto" },
-    { slug: "composer-2", name: "Composer 2" },
-    { slug: "composer-1.5", name: "Composer 1.5" },
-    { slug: "claude-opus-4-6", name: "Claude Opus 4.6" },
-    { slug: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
-    { slug: "claude-opus-4-5", name: "Claude Opus 4.5" },
-  ],
+  // The server publishes the account's catalog from Cursor; Auto is all that is known
+  // without it.
+  cursor: [{ slug: "auto", name: "Auto" }],
   opencode: [{ slug: "openai/gpt-5", name: "OpenAI GPT-5" }],
   grok: [{ slug: "grok-build", name: "Grok Build" }],
   antigravity: [{ slug: "antigravity-default", name: "Antigravity Default" }],
@@ -302,7 +303,7 @@ export const DEFAULT_PR_ADVISORY_MODEL = "gpt-5.6-sol" as const;
 export const DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER = {
   codex: DEFAULT_GIT_TEXT_GENERATION_MODEL,
   claudeAgent: "claude-haiku-5-5",
-  cursor: "composer-2",
+  cursor: "auto",
   opencode: "openai/gpt-5",
   grok: "grok-build",
   antigravity: "antigravity-default",
@@ -314,7 +315,7 @@ export const DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER = {
 export const DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER = {
   codex: DEFAULT_GIT_TEXT_GENERATION_MODEL,
   claudeAgent: "claude-haiku-5-5",
-  cursor: "composer-2",
+  cursor: "auto",
   opencode: "openai/gpt-5",
   grok: "grok-build",
   antigravity: "antigravity-default",

@@ -1,3 +1,4 @@
+import type { WorkflowProviderSnapshot } from "@t3tools/shared/workflowProviders";
 import {
   CommandId,
   MessageId,
@@ -76,6 +77,35 @@ describe("document workflow decider", () => {
       await expect(h.apply({ ...create, ...patch })).rejects.toThrow();
       expect(h.get().threads).toHaveLength(0);
     }
+  });
+  it("accepts up to four distinct document authors and rejects more or a repeat", async () => {
+    const extra = (model: string, thread: string) => ({
+      authorSlot: { provider: "codex" as const, model },
+      authorThreadId: ThreadId.makeUnsafe(thread),
+    });
+    const accepted = await setup();
+    await accepted.apply({
+      ...create,
+      additionalBranches: [extra("gpt-5.5", "c"), extra("gpt-5.4", "d")],
+    });
+    const stored = accepted.get().planningWorkflows[0]!;
+    expect(stored.additionalBranches?.map((branch) => branch.branchId)).toEqual(["c", "d"]);
+    expect(stored.additionalBranches?.map((branch) => branch.authorThreadId)).toEqual(["c", "d"]);
+
+    const tooMany = await setup();
+    await expect(
+      tooMany.apply({
+        ...create,
+        additionalBranches: [extra("gpt-5.5", "c"), extra("gpt-5.4", "d"), extra("o3", "e")],
+      }),
+    ).rejects.toThrow("Document workflows support up to 4 authors.");
+    expect(tooMany.get().threads).toHaveLength(0);
+
+    const repeated = await setup();
+    await expect(
+      repeated.apply({ ...create, additionalBranches: [extra(slot.model, "c")] }),
+    ).rejects.toThrow("Document workflows need a different model for every author.");
+    expect(repeated.get().threads).toHaveLength(0);
   });
   it("persists document fields and enforces read-only follow-ups in every document thread", async () => {
     const h = await setup();
@@ -166,15 +196,37 @@ describe("document workflow decider", () => {
           )?.payload,
         ).toMatchObject({ workflowExecutionProfile: profile ?? "attended-readonly" });
       }
-      for (const [instanceName, driver, reject] of [
-        ["custom-research", "grok", true],
-        ["grok-named-codex", "codex", false],
+      for (const [instanceName, driver, reject, readOnlyWorkflowTurns] of [
+        ["custom-research", "grok", true, undefined],
+        ["grok-named-codex", "codex", false, undefined],
+        // A selected Antigravity instance is judged by its own reported certification.
+        ["antigravity-uncertified", "antigravity", true, false],
+        ["antigravity-certified", "antigravity", false, true],
       ] as const) {
         const instanceId = ProviderInstanceId.makeUnsafe(instanceName);
         const decision = Effect.runPromise(
           decideOrchestrationCommand({
             readModel: h.get(),
-            providerInstances: [{ instanceId, driver: ProviderDriverKind.make(driver) }],
+            providerInstances: [
+              // A default Antigravity instance whose certification disagrees comes first, so a
+              // default-or-first lookup would decide the opposite of the selected instance.
+              ...(driver === "antigravity"
+                ? [
+                    {
+                      instanceId: ProviderInstanceId.makeUnsafe("antigravity"),
+                      driver: ProviderDriverKind.make("antigravity"),
+                      runtimeCapabilities: { readOnlyWorkflowTurns: !readOnlyWorkflowTurns },
+                    } as WorkflowProviderSnapshot,
+                  ]
+                : []),
+              {
+                instanceId,
+                driver: ProviderDriverKind.make(driver),
+                ...(readOnlyWorkflowTurns === undefined
+                  ? {}
+                  : { runtimeCapabilities: { readOnlyWorkflowTurns } }),
+              } as WorkflowProviderSnapshot,
+            ],
             command: {
               type: "thread.turn.start",
               commandId: CommandId.makeUnsafe(`instance-${id}-${driver}`),
