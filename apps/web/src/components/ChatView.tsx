@@ -1,4 +1,13 @@
 import { ThreadFindBar } from "./chat/ThreadFindBar";
+import {
+  codeReviewReviewers,
+  findPlanningBranch,
+  investigationCrossReviews,
+  investigationInvestigators,
+  planningBranches,
+  planReviewReviewerBranchId,
+  requireInvestigator,
+} from "@t3tools/shared/workflowParticipants";
 import { attachmentSources } from "../lib/attachmentUploadQueue";
 import { composerModelMentionItems } from "./chat/composerModelMentions";
 import { formatComposerModelMention } from "@t3tools/shared/composerModelMentions";
@@ -573,26 +582,20 @@ function resolvePlanningWorkflowThreadSlot(
     workflow.readerPass?.previousReaderThreadIds?.includes(threadId)
   )
     return workflow.readerSlot ?? null;
-  if (workflow.branchA.authorThreadId === threadId) {
-    return workflow.branchA.authorSlot;
-  }
-  if (workflow.branchB.authorThreadId === threadId) {
-    return workflow.branchB.authorSlot;
+  const branches = planningBranches(workflow);
+  const author = branches.find((branch) => branch.authorThreadId === threadId);
+  if (author) {
+    return author.authorSlot;
   }
   if (workflow.merge.threadId === threadId) {
     return workflow.merge.mergeSlot;
   }
-  const branchAReview = workflow.branchA.reviews.find((review) => review.threadId === threadId);
-  if (branchAReview) {
-    return branchAReview.slot === "cross"
-      ? workflow.branchB.authorSlot
-      : workflow.branchA.authorSlot;
-  }
-  const branchBReview = workflow.branchB.reviews.find((review) => review.threadId === threadId);
-  if (branchBReview) {
-    return branchBReview.slot === "cross"
-      ? workflow.branchA.authorSlot
-      : workflow.branchB.authorSlot;
+  for (const branch of branches) {
+    const review = branch.reviews.find((entry) => entry.threadId === threadId);
+    if (review) {
+      const reviewerId = planReviewReviewerBranchId(workflow, branch.branchId, review);
+      return findPlanningBranch(workflow, reviewerId)?.authorSlot ?? null;
+    }
   }
   if (workflow.implementation?.threadId === threadId) {
     return workflow.implementation.implementationSlot;
@@ -607,11 +610,11 @@ function resolveCodeReviewWorkflowThreadSlot(
   workflow: CodeReviewWorkflow,
   threadId: ThreadId,
 ): WorkflowModelSlot | null {
-  if (workflow.reviewerA.threadId === threadId) {
-    return workflow.reviewerA.slot;
-  }
-  if (workflow.reviewerB.threadId === threadId) {
-    return workflow.reviewerB.slot;
+  const reviewer = codeReviewReviewers(workflow).find(
+    (entry) => entry.reviewer.threadId === threadId,
+  );
+  if (reviewer) {
+    return reviewer.reviewer.slot;
   }
   if (workflow.consolidation.threadId === threadId) {
     return workflow.consolidation.slot;
@@ -623,23 +626,19 @@ function resolveInvestigationWorkflowThreadSlot(
   workflow: InvestigationWorkflow,
   threadId: ThreadId,
 ): WorkflowModelSlot | null {
-  if (workflow.investigatorA.investigationThreadId === threadId) {
-    return workflow.investigatorA.slot;
+  const investigator = investigationInvestigators(workflow).find(
+    ({ investigator: entry }) =>
+      entry.investigationThreadId === threadId || entry.selfReviewThreadId === threadId,
+  );
+  if (investigator) {
+    return investigator.investigator.slot;
   }
-  if (workflow.investigatorB.investigationThreadId === threadId) {
-    return workflow.investigatorB.slot;
-  }
-  if (workflow.investigatorA.crossReviewThreadId === threadId) {
-    return workflow.investigatorA.slot;
-  }
-  if (workflow.investigatorB.crossReviewThreadId === threadId) {
-    return workflow.investigatorB.slot;
-  }
-  if (workflow.investigatorA.selfReviewThreadId === threadId) {
-    return workflow.investigatorA.slot;
-  }
-  if (workflow.investigatorB.selfReviewThreadId === threadId) {
-    return workflow.investigatorB.slot;
+  // A cross-review runs on its reviewer's model.
+  const crossReview = investigationCrossReviews(workflow).find(
+    (view) => view.threadId === threadId,
+  );
+  if (crossReview) {
+    return requireInvestigator(workflow, crossReview.reviewerId).slot;
   }
   if (workflow.synthesis.threadId === threadId) {
     return workflow.synthesis.slot;

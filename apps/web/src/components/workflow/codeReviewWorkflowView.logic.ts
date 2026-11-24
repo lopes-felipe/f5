@@ -1,11 +1,14 @@
-import {
-  deriveCodeReviewWorkflowStatus,
-  type CodeReviewWorkflowSummary as CodeReviewWorkflow,
-} from "@t3tools/contracts";
+import { type CodeReviewWorkflowSummary as CodeReviewWorkflow } from "@t3tools/contracts";
+import { deriveCodeReviewWorkflowStatus } from "@t3tools/shared/workflowStatus";
 import { isGitHubCodeReviewPullRequest } from "@t3tools/shared/codeReviewPullRequest";
+import {
+  codeReviewReviewers,
+  workflowParticipantLabel,
+} from "@t3tools/shared/workflowParticipants";
 
 export interface CodeReviewWorkflowError {
-  readonly key: "reviewerA" | "reviewerB" | "consolidation" | "post";
+  /** `reviewerA`, `reviewerB`, … for a reviewer; otherwise the stage. */
+  readonly key: `reviewer${string}` | "consolidation" | "post";
   readonly step: string;
   readonly message: string;
 }
@@ -14,18 +17,12 @@ export function collectCodeReviewWorkflowErrors(
   workflow: CodeReviewWorkflow,
 ): readonly CodeReviewWorkflowError[] {
   const errors: CodeReviewWorkflowError[] = [];
-  if (workflow.reviewerA.status === "error") {
+  for (const { id, reviewer } of codeReviewReviewers(workflow)) {
+    if (reviewer.status !== "error") continue;
     errors.push({
-      key: "reviewerA",
-      step: workflow.reviewerA.label,
-      message: workflow.reviewerA.error ?? "Reviewer failed.",
-    });
-  }
-  if (workflow.reviewerB.status === "error") {
-    errors.push({
-      key: "reviewerB",
-      step: workflow.reviewerB.label,
-      message: workflow.reviewerB.error ?? "Reviewer failed.",
+      key: `reviewer${workflowParticipantLabel(id)}`,
+      step: reviewer.label,
+      message: reviewer.error ?? "Reviewer failed.",
     });
   }
   if (workflow.consolidation.status === "error") {
@@ -106,13 +103,12 @@ export function statusLabel(workflow: CodeReviewWorkflow): string {
 }
 
 export function canRetryFailedReviewers(workflow: CodeReviewWorkflow): boolean {
-  return workflow.reviewerA.status === "error" || workflow.reviewerB.status === "error";
+  return codeReviewReviewers(workflow).some(({ reviewer }) => reviewer.status === "error");
 }
 
 export function canRetryConsolidation(workflow: CodeReviewWorkflow): boolean {
   return (
-    workflow.reviewerA.status === "completed" &&
-    workflow.reviewerB.status === "completed" &&
+    codeReviewReviewers(workflow).every(({ reviewer }) => reviewer.status === "completed") &&
     workflow.consolidation.status === "error"
   );
 }

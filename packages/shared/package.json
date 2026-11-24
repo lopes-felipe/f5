@@ -264,6 +264,18 @@
       "types": "./src/workflowArchive.ts",
       "import": "./src/workflowArchive.ts"
     },
+    "./workflowProviders": {
+      "types": "./src/workflowProviders.ts",
+      "import": "./src/workflowProviders.ts"
+    },
+    "./workflowParticipants": {
+      "types": "./src/workflowParticipants.ts",
+      "import": "./src/workflowParticipants.ts"
+    },
+    "./workflowStatus": {
+      "types": "./src/workflowStatus.ts",
+      "import": "./src/workflowStatus.ts"
+    },
     "./workflowThreads": {
       "types": "./src/workflowThreads.ts",
       "import": "./src/workflowThreads.ts"

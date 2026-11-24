@@ -4,6 +4,7 @@ import {
   documentWorkflowCreateInvariant,
   latestWorkflowTemplateVersion,
   assertWorkflowStageProviderSupported,
+  READ_ONLY_WORKFLOW_LEGACY_TEMPLATE_MESSAGE,
   resolveWorkflowBehavior,
   UnsupportedWorkflowProviderError,
   workflowTurnBehaviorFields,
@@ -98,7 +99,79 @@ describe("workflowBehavior", () => {
     });
     const behavior = resolveWorkflowBehavior({ runKind: "planning", templateVersion: 2 });
     expect(() =>
-      assertWorkflowStageProviderSupported({ behavior, stage: "author", provider: "grok" }),
+      assertWorkflowStageProviderSupported({
+        behavior,
+        stage: "author",
+        provider: "grok",
+        providers: [],
+      }),
     ).toThrow(UnsupportedWorkflowProviderError);
+    // Antigravity needs a runtime certified for read-only workflow turns.
+    expect(() =>
+      assertWorkflowStageProviderSupported({
+        behavior,
+        stage: "author",
+        provider: "antigravity",
+        providers: [],
+      }),
+    ).toThrow("Read-only workflow turns are not certified for this Antigravity version.");
+    expect(() =>
+      assertWorkflowStageProviderSupported({
+        behavior,
+        stage: "author",
+        provider: "antigravity",
+        providers: [
+          {
+            instanceId: "antigravity" as never,
+            driver: "antigravity" as never,
+            runtimeCapabilities: { readOnlyWorkflowTurns: true } as never,
+          },
+        ],
+      }),
+    ).not.toThrow();
+  });
+
+  it("refuses even a certified Antigravity for a v1 stage that dispatches without a profile", () => {
+    const certified = [
+      {
+        instanceId: "antigravity" as never,
+        driver: "antigravity" as never,
+        runtimeCapabilities: { readOnlyWorkflowTurns: true } as never,
+      },
+    ];
+    const stages = {
+      planning: "plan-review",
+      codeReview: "standalone-review",
+      investigation: "investigation-review",
+    } as const;
+    for (const [runKind, stage] of Object.entries(stages) as Array<
+      [keyof typeof stages, (typeof stages)[keyof typeof stages]]
+    >) {
+      expect(() =>
+        assertWorkflowStageProviderSupported({
+          behavior: resolveWorkflowBehavior({ runKind, templateVersion: 1 }),
+          stage,
+          provider: "antigravity",
+          providers: certified,
+        }),
+      ).toThrow(READ_ONLY_WORKFLOW_LEGACY_TEMPLATE_MESSAGE);
+      expect(() =>
+        assertWorkflowStageProviderSupported({
+          behavior: resolveWorkflowBehavior({ runKind, templateVersion: 1 }),
+          stage,
+          provider: "codex",
+          providers: certified,
+        }),
+      ).not.toThrow();
+    }
+    // Stages that are not read-only stay open to it on any version.
+    expect(() =>
+      assertWorkflowStageProviderSupported({
+        behavior: resolveWorkflowBehavior({ runKind: "planning", templateVersion: 1 }),
+        stage: "implementation",
+        provider: "antigravity",
+        providers: certified,
+      }),
+    ).not.toThrow();
   });
 });
