@@ -1,1 +1,0 @@
-- History imports advance one thread at a time with visible progress, and active multi-project imports keep their scan alive. Projects with large Codex instruction records can be discovered, and import toasts use the correct singular form.

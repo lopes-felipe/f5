@@ -1,1 +1,0 @@
-- Update the managed Antigravity runtime to the supported 1.5 CLI, surface quota errors as failed turns, show native child work in the Agents panel, and preserve native file reads and diff edits without creating a workflow skill in the project. Updates remain explicit in Settings.

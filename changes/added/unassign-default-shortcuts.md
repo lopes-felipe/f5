@@ -1,1 +1,0 @@
-- Settings can unassign an individual default keyboard shortcut while keeping the action's other shortcuts.

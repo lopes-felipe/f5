@@ -1,1 +1,0 @@
-- Claude's removal safety checks in Full access mode return their warning and safe-rewrite guidance to the agent instead of asking you to override the check. Explicit approval rules still ask for your decision.

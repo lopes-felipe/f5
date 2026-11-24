@@ -1,1 +1,0 @@
-- Copy a thread link separately from its raw ID, or use the copy-reference shortcut to copy its PR link when available and its thread link otherwise. Pasting a thread link inserts a context chip at the cursor or replaces the selection.

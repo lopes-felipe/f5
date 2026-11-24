@@ -1,1 +1,0 @@
-- Desktop connection tokens rotate every 12 hours. Reconnecting windows obtain a fresh token, including after a backend restart or a long sleep.

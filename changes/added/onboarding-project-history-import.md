@@ -1,1 +1,0 @@
-- The welcome screen now links to agent setup and lets you discover projects from configured Codex and Claude homes, with optional recent-thread history import. Imports preserve profile isolation, approval settings, and existing conversations.

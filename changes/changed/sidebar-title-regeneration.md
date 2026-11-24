@@ -1,1 +1,0 @@
-- Sidebar titles shimmer as they regenerate.
