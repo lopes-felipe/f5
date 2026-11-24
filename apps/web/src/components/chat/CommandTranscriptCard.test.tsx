@@ -6,6 +6,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import { CommandTranscriptCard } from "./CommandTranscriptCard";
+import { HighlightedCommandText } from "./HighlightedCommandText";
 
 function makeExecution(
   overrides: Partial<OrchestrationCommandExecution> = {},
@@ -380,17 +381,26 @@ describe("CommandTranscriptCard", () => {
     expect(markup.match(/Command<\/p>/g)).toBeNull();
   });
 
-  it("renders lightweight syntax highlighting spans for displayed commands", () => {
-    const markup = renderCard(
-      <CommandTranscriptCard
-        execution={makeExecution({
-          command: "/bin/zsh -lc 'FOO=bar bun --watch $HOME ./script.sh $(pwd) 42'",
-        })}
-        expanded
-        timestampFormat="locale"
-        onToggle={() => {}}
-        onExpandedBodyResize={() => {}}
-      />,
+  it("renders a small command as plain text until the grammar loads", () => {
+    for (const expanded of [false, true]) {
+      const markup = renderCard(
+        <CommandTranscriptCard
+          execution={makeExecution({ command: "/bin/zsh -lc 'bun --watch ./script.sh'" })}
+          expanded={expanded}
+          timestampFormat="locale"
+          onToggle={() => {}}
+          onExpandedBodyResize={() => {}}
+        />,
+      );
+      expect(markup).toContain("bun --watch ./script.sh");
+      // No lightweight palette first, so loading Shiki never swaps one palette for another.
+      expect(markup).not.toContain('<span class="text-info-foreground">bun</span>');
+    }
+  });
+
+  it("renders lightweight syntax highlighting spans with semantic tokens", () => {
+    const markup = renderToStaticMarkup(
+      <HighlightedCommandText command="FOO=bar bun --watch $HOME ./script.sh $(pwd) 42" />,
     );
 
     // Syntax colours come from the semantic tokens so themes recolour them.

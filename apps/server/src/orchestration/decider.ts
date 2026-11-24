@@ -16,6 +16,7 @@ import {
 } from "@t3tools/contracts";
 import { Effect } from "effect";
 import { withEventBase } from "./eventBase.ts";
+import { resolveRebindSessionTurn } from "./sessionRebind.ts";
 import {
   decideWorkflowArchive,
   decideWorkflowDelete,
@@ -2333,6 +2334,9 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
         command,
         threadId: command.threadId,
       });
+      const session = command.rebindLiveSession
+        ? resolveRebindSessionTurn(previous, command.session)
+        : command.session;
       return {
         ...withEventBase({
           aggregateKind: "thread",
@@ -2345,16 +2349,16 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
         payload: {
           threadId: command.threadId,
           session: {
-            ...command.session,
+            ...session,
             usageLimit:
-              command.session.usageLimit !== undefined
-                ? command.session.usageLimit
-                : previous.session?.lastErrorId === command.session.lastErrorId &&
-                    (!command.session.activeTurnId ||
-                      command.session.activeTurnId === previous.session?.usageLimit?.turnId)
+              session.usageLimit !== undefined
+                ? session.usageLimit
+                : previous.session?.lastErrorId === session.lastErrorId &&
+                    (!session.activeTurnId ||
+                      session.activeTurnId === previous.session?.usageLimit?.turnId)
                   ? (previous.session?.usageLimit ?? null)
                   : null,
-            authFailure: carryAuthFailure(command.session, previous.session),
+            authFailure: carryAuthFailure(session, previous.session),
           },
           ...(command.settledTurnId !== undefined ? { settledTurnId: command.settledTurnId } : {}),
           ...(command.usageFact !== undefined ? { usageFact: command.usageFact } : {}),

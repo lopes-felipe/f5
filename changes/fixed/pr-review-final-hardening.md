@@ -1,4 +1,0 @@
-- Keep multiline equations and rich clipboard formatting intact, and leave shell variables beside links as prose.
-- Redact URL credentials from startup reports while retaining useful stack locations.
-- Verify the revision behind PR change breakdowns, avoid changing saved PRs when reading statistics, and preserve queue keyboard navigation.
-- Link shell-created PRs only from unambiguous successful create commands and known forge hosts; explain organization-managed Claude approval rules.

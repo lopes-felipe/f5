@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 
 import * as Effect from "effect/Effect";
 
@@ -152,6 +152,8 @@ const saveMode = () => {
 };
 let currentModelId = "default";
 let parameterizedModelPicker = true;
+/** MCP servers the client passed to `session/new`. */
+let sessionMcpServerNames: ReadonlyArray<string> = [];
 let currentReasoning = "medium";
 let currentContext = "272k";
 let currentFast = false;
@@ -382,6 +384,9 @@ const program = Effect.gen(function* () {
         agentCapabilities: {
           loadSession: true,
           ...(process.env.ACP_MOCK_MCP_HTTP === "1" ? { mcpCapabilities: { http: true } } : {}),
+          ...(process.env.ACP_MOCK_SYSTEM_PROMPT_APPEND === "1"
+            ? { _meta: { antigravity: { systemPrompt: { append: true } } } }
+            : {}),
         },
       };
     }),
@@ -393,8 +398,9 @@ const program = Effect.gen(function* () {
       : Effect.succeed({}),
   );
 
-  yield* agent.handleCreateSession(() =>
+  yield* agent.handleCreateSession((request) =>
     Effect.gen(function* () {
+      sessionMcpServerNames = (request.mcpServers ?? []).map((server) => server.name);
       if (process.env.ACP_MOCK_NEW_HANG === "1") return yield* Effect.never;
       if (process.env.ACP_MOCK_NEW_FAIL === "1")
         return yield* AcpError.AcpRequestError.internalError("Mock session failed");
@@ -715,6 +721,8 @@ const program = Effect.gen(function* () {
 
       const promptGate = process.env.T3_ACP_PROMPT_GATE_PATH;
       while (promptGate && !existsSync(promptGate)) yield* Effect.sleep("5 millis");
+      if (process.env.T3_ACP_FAIL_PROMPT_AFTER_GATE === "1")
+        return yield* AcpError.AcpRequestError.internalError("Mock prompt failure");
       if (promptDelayMs > 0) {
         yield* Effect.sleep(`${promptDelayMs} millis`);
       }
@@ -885,6 +893,84 @@ const program = Effect.gen(function* () {
           },
         });
       }
+
+      // Antigravity asks permission for every MCP call, F5's question tool included.
+      const interactionServer = sessionMcpServerNames.find((name) =>
+        name.startsWith("f5_interaction_"),
+      );
+      if (process.env.F5_ACP_ANTIGRAVITY_INTERACTION_PERMISSION === "1" && interactionServer) {
+        const toolName = `mcp_${interactionServer}_ask_user_question`;
+        const permission = yield* agent.client.requestPermission({
+          sessionId: requestedSessionId,
+          toolCall: {
+            toolCallId: "interaction-tool-1",
+            title: `Run ${toolName}`,
+            kind: "other",
+            status: "pending",
+            rawInput: { questions: [], toolSummary: "Ask the user" },
+          },
+          options: [
+            { optionId: "allow", name: "Allow", kind: "allow_once" },
+            { optionId: "deny", name: "Deny", kind: "reject_once" },
+          ],
+        });
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: {
+              type: "text",
+              text: `permission:${permission.outcome.outcome === "selected" ? permission.outcome.optionId : "cancelled"}`,
+            },
+          },
+        });
+      }
+
+      // Antigravity writes its plan as a brain artifact: `<root>/<sessionId>/<name>`.
+      const planArtifactRoot = process.env.F5_ACP_ANTIGRAVITY_PLAN_ARTIFACT_ROOT;
+      if (planArtifactRoot) {
+        const directory = `${planArtifactRoot}/${requestedSessionId}`;
+        const artifactPath = `${directory}/implementation_plan.md`;
+        const content = `# Plan\n\n${"- step\n".repeat(2_000)}\nEnd of plan.\n`;
+        mkdirSync(directory, { recursive: true });
+        writeFileSync(artifactPath, content);
+        const feedback = process.env.F5_ACP_ANTIGRAVITY_PLAN_FEEDBACK !== "0";
+        const rawInput = {
+          ArtifactMetadata:
+            process.env.F5_ACP_ANTIGRAVITY_PLAN_METADATA_STRING === "1"
+              ? `{'RequestFeedback': ${feedback ? "True" : "False"}, 'Summary': 'The plan'}`
+              : { RequestFeedback: feedback, Summary: "The plan", UserFacing: true },
+          Content: content,
+          Overwrite: true,
+          Path: artifactPath,
+        };
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "plan-artifact-1",
+            title: "File implementation_plan.md",
+            kind: "edit",
+            status: "in_progress",
+            locations: [{ path: artifactPath }],
+            rawInput,
+          },
+        });
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "plan-artifact-1",
+            title: "File implementation_plan.md",
+            kind: "edit",
+            status: "completed",
+            locations: [{ path: artifactPath }],
+            rawInput,
+            content: [{ type: "diff", path: artifactPath, oldText: null, newText: content }],
+          },
+        });
+      }
+
       if (process.env.F5_ACP_ANTIGRAVITY_QUESTION === "1") {
         yield* agent.client.requestPermission({
           sessionId: requestedSessionId,
@@ -1234,6 +1320,17 @@ const program = Effect.gen(function* () {
   );
 
   yield* agent.handleUnknownExtRequest((method, params) => {
+    // Cursor's account model catalog: a JSON response, or method-not-found like older CLIs.
+    if (method === "cursor/list_available_models") {
+      const catalog = process.env.T3_ACP_CURSOR_MODEL_CATALOG;
+      if (catalog?.startsWith("error:"))
+        return Effect.fail(
+          new AcpError.AcpRequestError({ code: -32603, errorMessage: catalog.slice(6) }),
+        );
+      return catalog && catalog !== "unsupported"
+        ? Effect.succeed(JSON.parse(catalog) as unknown)
+        : Effect.fail(AcpError.AcpRequestError.methodNotFound(method));
+    }
     if (method !== "session/mode/set" && method !== "session/set_mode") {
       return Effect.fail(AcpError.AcpRequestError.methodNotFound(method));
     }

@@ -8,6 +8,7 @@
 import {
   isDiffCommand,
   parseFileReadSegments,
+  parseOutputStatements,
   parseSearchOutputCommand,
   type SearchOutputCommand,
 } from "@t3tools/shared/commandSummary";
@@ -78,8 +79,34 @@ export interface DiffFileSection {
   readonly rows: ReadonlyArray<DiffRow>;
 }
 
+/** One statement's output within a compound command's output. */
+export type OutputSection =
+  | {
+      readonly type: "file";
+      /** The path as written; `rev:path` for `git show rev:path`. */
+      readonly displayPath: string;
+      /** Null when where it ran is unknown, or for a revision's text. */
+      readonly filePath: string | null;
+      readonly language: string;
+      readonly code: string;
+      /** From `nl -ba` / `cat -n` prefixes; null otherwise. */
+      readonly lineNumbers: ReadonlyArray<number> | null;
+    }
+  | {
+      readonly type: "search";
+      readonly segments: ReadonlyArray<SearchSegment>;
+      readonly matchCount: number;
+      readonly fileCount: number;
+    }
+  | { readonly type: "plain"; readonly text: string };
+
 export type CommandOutputPresentation =
   | { readonly kind: "plain"; readonly text: string }
+  | {
+      readonly kind: "sections";
+      readonly sections: ReadonlyArray<OutputSection>;
+      readonly matchCount: number;
+    }
   | { readonly kind: "json"; readonly text: string }
   | {
       readonly kind: "ansi";
@@ -193,6 +220,18 @@ const NUMBERED_LINE_PATTERN = /^\s*(\d+)\t(.*)$/;
 function classifyFileRead(input: ClassifyCommandOutputInput): CommandOutputPresentation | null {
   const parsed = parseFileReadSegments(input.command);
   if (!parsed) return null;
+  // Reads of several files that can be told apart get a section each, with
+  // their own names and links, rather than one merged block.
+  const separable = parsed.segments
+    .slice(0, -1)
+    .every((segment) => segment.lineLimit !== null || segment.numberedOutput);
+  const files = new Set(
+    parsed.segments.map((segment) => `${segment.revision}\0${segment.filePath}`),
+  );
+  if (separable && files.size > 1) {
+    const sections = classifySections(input);
+    if (sections) return sections;
+  }
   const languages = new Set(parsed.segments.map((segment) => languageForPath(segment.filePath)));
   if (languages.size !== 1) return null;
   const [first] = parsed.segments;
@@ -200,6 +239,9 @@ function classifyFileRead(input: ClassifyCommandOutputInput): CommandOutputPrese
   const language = [...languages][0]!;
   const single = parsed.segments.length === 1;
   const lines = outputLines(input.output);
+  // A read that failed, or one written to a file earlier (`git show A:a.ts >
+  // /tmp/a.ts; …`) whose error still printed: its lines are not the file's.
+  if (TOOL_ERROR_PATTERN.test(lines[0] ?? "")) return null;
 
   let code = input.output;
   let lineNumbers: number[] | null = null;
@@ -234,22 +276,27 @@ function classifyFileRead(input: ClassifyCommandOutputInput): CommandOutputPrese
 
   // Reads of different files in one language are highlighted together, but
   // no single file can be named or opened for them. A read after `cd x;` may
-  // have run in either directory, so it is named but cannot be opened.
+  // have run in either directory, and `git show rev:path` prints a revision's
+  // text, so those are named but cannot be opened.
+  const displayPathOf = (segment: (typeof parsed.segments)[number]) =>
+    segment.revision === null ? segment.filePath : `${segment.revision}:${segment.filePath}`;
   const filePaths = new Set(
     parsed.segments.map((segment) =>
       resolveCommandPath(segment.filePath, input.cwd, segment.cwdOffset),
     ),
   );
-  const displayPaths = new Set(parsed.segments.map((segment) => segment.filePath));
-  const cwdKnown = parsed.segments.every((segment) => segment.cwdKnown);
+  const displayPaths = new Set(parsed.segments.map(displayPathOf));
+  const openable = parsed.segments.every(
+    (segment) => segment.cwdKnown && segment.revision === null,
+  );
   const file =
-    filePaths.size === 1 && cwdKnown
+    filePaths.size === 1 && displayPaths.size === 1 && openable
       ? {
           displayPath: first.filePath,
           filePath: resolveCommandPath(first.filePath, input.cwd, first.cwdOffset),
         }
       : displayPaths.size === 1
-        ? { displayPath: first.filePath, filePath: null }
+        ? { displayPath: displayPathOf(first), filePath: null }
         : null;
   return {
     kind: "file",
@@ -435,8 +482,14 @@ const PATH_LINE_PATTERN = /^((?:[A-Za-z]:)?[^:\n]+):(\d+)([:-])(.*)$/;
 const NUMBER_LINE_PATTERN = /^(\d+)([:-])(.*)$/;
 
 function searchesSingleFile(search: SearchOutputCommand): boolean {
+  // Lines read from stdin carry no path.
+  if (search.stdin) return true;
+  // `-H` names the file on every line.
+  if (search.withFileName) return false;
   const [target] = search.targets;
   if (search.targets.length !== 1 || !target) return false;
+  // `git grep` always prints the path.
+  if (search.tool === "git") return false;
   if (search.tool === "grep") return !search.recursive;
   // ripgrep prints no path for a lone file argument; guess files by extension.
   return /\.[A-Za-z0-9]+$/.test(basename(target));
@@ -502,21 +555,80 @@ function parseContextLine(line: string, matchPaths: ReadonlySet<string>): Parsed
   return null;
 }
 
-function classifySearch(input: ClassifyCommandOutputInput): CommandOutputPresentation | null {
-  const search = parseSearchOutputCommand(input.command);
-  // Without line numbers a leading `2026-11-23` or `12:` in the matched text
-  // would be read as one, so unnumbered output stays plain.
-  if (!search?.lineNumbers || input.output.length === 0) return null;
-  const singleFile = searchesSingleFile(search) ? search.targets[0]! : null;
+/**
+ * `git grep pattern origin/main` prints `origin/main:path:12:text`. A prefix
+ * is dropped only when the line does not parse as a result without it, since
+ * without `--` a "revision" may be a path (`a.ts:12:text`).
+ */
+function stripRevisionPrefix(
+  line: string,
+  search: Pick<SearchOutputCommand, "revisions" | "revisionsKnown">,
+): { line: string; revision: string | null } {
+  const { revisions } = search;
+  // Trees named before `--` always prefix the line, even one that would
+  // parse without it (`A:src/a.ts:12:x` looks like a Windows path).
+  if (revisions.length > 0 && (search.revisionsKnown || !PATH_LINE_PATTERN.test(line))) {
+    for (const revision of revisions) {
+      if (line.startsWith(`${revision}:`)) {
+        return { line: line.slice(revision.length + 1), revision };
+      }
+    }
+  }
+  return { line, revision: null };
+}
+
+interface SearchResults {
+  readonly segments: ReadonlyArray<SearchSegment>;
+  readonly matchCount: number;
+  readonly fileCount: number;
+  /** Index of the first line that is not part of the results. */
+  readonly end: number;
+}
+
+/**
+ * Reads search results from `rawLines`. When `stopAtOtherOutput` is set,
+ * output of later statements follows the results: the first line that is not
+ * a result, or whose file's line numbers stop increasing, ends them (even one
+ * shaped like `12: build complete`). Otherwise such lines stay in place as
+ * plain segments.
+ */
+function readSearchResults(
+  rawLines: ReadonlyArray<string>,
+  search: SearchOutputCommand,
+  cwd: string | null | undefined,
+  stopAtOtherOutput: boolean,
+): SearchResults {
+  // A search over stdin (`git show A:a.ts | grep -n x`, `sed -n 40,80p a.ts |
+  // grep -n x`) numbers lines from where its input started.
+  const { stdin } = search;
+  const singleFile = stdin
+    ? stdin.revision === null
+      ? stdin.filePath
+      : `${stdin.revision}:${stdin.filePath}`
+    : searchesSingleFile(search)
+      ? search.targets[0]!
+      : null;
+  const lineOffset = stdin?.lineOffset ?? 0;
+  const linkFor = (displayPath: string, fromRevision: boolean): string | null => {
+    if (stdin) {
+      return stdin.revision === null && stdin.cwdKnown
+        ? resolveCommandPath(stdin.filePath, cwd, stdin.cwdOffset)
+        : null;
+    }
+    // A revision's text may differ from the file on disk.
+    return displayPath.length > 0 && search.cwdKnown && !fromRevision
+      ? resolveCommandPath(displayPath, cwd, search.cwdOffset)
+      : null;
+  };
   const matcher = buildSearchMatcher(search);
   const segments: SearchSegment[] = [];
   const paths = new Set<string>();
   let matchCount = 0;
   const state: {
-    group: { displayPath: string; lines: SearchLine[] } | null;
-    lastGroupPath: string | null;
+    group: { key: string; displayPath: string; fromRevision: boolean; lines: SearchLine[] } | null;
+    lastGroupKey: string | null;
     plainLines: string[];
-  } = { group: null, lastGroupPath: null, plainLines: [] };
+  } = { group: null, lastGroupKey: null, plainLines: [] };
 
   const flushPlain = () => {
     if (state.plainLines.length === 0) return;
@@ -529,34 +641,24 @@ function classifySearch(input: ClassifyCommandOutputInput): CommandOutputPresent
     segments.push({
       type: "group",
       displayPath: group.displayPath,
-      filePath:
-        group.displayPath.length > 0 && search.cwdKnown
-          ? resolveCommandPath(group.displayPath, input.cwd, search.cwdOffset)
-          : null,
-      language: languageForPath(group.displayPath),
-      showHeader: group.displayPath !== state.lastGroupPath,
+      filePath: linkFor(group.displayPath, group.fromRevision),
+      language: languageForPath(stdin?.filePath ?? group.displayPath),
+      showHeader: group.key !== state.lastGroupKey,
       lines: group.lines,
     });
-    state.lastGroupPath = group.displayPath;
+    state.lastGroupKey = group.key;
     state.group = null;
   };
 
-  const lines = outputLines(input.output);
+  const lines = rawLines.map((line) => stripRevisionPrefix(line, search));
   const matchPaths = new Set<string>();
-  for (const line of lines) {
+  for (const { line } of lines) {
     const match = PATH_LINE_PATTERN.exec(line);
     if (match?.[3] === ":") matchPaths.add(match[1]!);
   }
-  // Output of statements after the search follows its matches. Once a line
-  // is not a result, or a file's line numbers stop increasing, every later
-  // line is that output, even one shaped like `12: build complete`.
-  let searchEnded = false;
-  const lastLineByPath = new Map<string, number>();
-  for (const line of lines) {
-    if (searchEnded) {
-      state.plainLines.push(line);
-      continue;
-    }
+  const lastLineByKey = new Map<string, number>();
+  let end = lines.length;
+  for (const [index, { line, revision }] of lines.entries()) {
     if (line === "--") {
       flushGroup();
       flushPlain();
@@ -564,24 +666,33 @@ function classifySearch(input: ClassifyCommandOutputInput): CommandOutputPresent
       continue;
     }
     const parsed = parseSearchLine(line, search, singleFile, matchPaths);
-    const displayPath = parsed?.path ?? "";
+    const path = parsed?.path ?? "";
+    const displayPath = revision !== null && path ? `${revision}:${path}` : path;
     const outOfOrder =
-      parsed !== null && parsed.lineNumber <= (lastLineByPath.get(displayPath) ?? 0);
-    if (!parsed || (search.followedByOtherStatements && outOfOrder)) {
+      parsed !== null && parsed.lineNumber <= (lastLineByKey.get(displayPath) ?? 0);
+    if (!parsed || (stopAtOtherOutput && outOfOrder)) {
+      if (stopAtOtherOutput) {
+        end = index;
+        break;
+      }
       flushGroup();
-      state.plainLines.push(line);
-      searchEnded = search.followedByOtherStatements;
+      state.plainLines.push(rawLines[index]!);
       continue;
     }
-    lastLineByPath.set(displayPath, parsed.lineNumber);
+    lastLineByKey.set(displayPath, parsed.lineNumber);
     flushPlain();
-    if (state.group && state.group.displayPath !== displayPath) flushGroup();
-    const group = state.group ?? { displayPath, lines: [] };
+    if (state.group && state.group.key !== displayPath) flushGroup();
+    const group = state.group ?? {
+      key: displayPath,
+      displayPath,
+      fromRevision: revision !== null,
+      lines: [],
+    };
     state.group = group;
     if (parsed.isMatch) matchCount += 1;
     if (displayPath) paths.add(displayPath);
     group.lines.push({
-      lineNumber: parsed.lineNumber,
+      lineNumber: parsed.lineNumber + lineOffset,
       text: parsed.text,
       isMatch: parsed.isMatch,
       matches:
@@ -592,13 +703,282 @@ function classifySearch(input: ClassifyCommandOutputInput): CommandOutputPresent
   }
   flushGroup();
   flushPlain();
-  if (!segments.some((segment) => segment.type === "group")) return null;
+  return { segments, matchCount, fileCount: paths.size, end };
+}
+
+function classifySearch(input: ClassifyCommandOutputInput): CommandOutputPresentation | null {
+  const search = parseSearchOutputCommand(input.command);
+  // Without line numbers a leading `2026-11-23` or `12:` in the matched text
+  // would be read as one, so unnumbered output stays plain.
+  if (!search?.lineNumbers || input.output.length === 0) return null;
+  const lines = outputLines(input.output);
+  const results = readSearchResults(lines, search, input.cwd, search.followedByOtherStatements);
+  if (!results.segments.some((segment) => segment.type === "group")) return null;
+  const segments = [...results.segments];
+  if (results.end < lines.length) {
+    segments.push({ type: "plain", text: lines.slice(results.end).join("\n") });
+  }
   return {
     kind: "search",
     segments,
-    matchCount,
-    fileCount: paths.size,
+    matchCount: results.matchCount,
+    fileCount: results.fileCount,
     partial: input.shortened === true,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Compound commands
+
+/**
+ * A tool's error message where a read's output was expected. Only the forms
+ * the read tools print, since a file may well start with `Usage:` or `error:`.
+ */
+const TOOL_ERROR_PATTERN = /^fatal: |^(?:git|sed|cat|head|tail|nl|grep|ggrep|ugrep|rg): /;
+
+const searchMatchers = new WeakMap<SearchOutputCommand, RegExp | null>();
+
+/** Whether `line` is shaped like a row a search prints: a match, context, or `--`. */
+function isSearchRow(line: string, search: SearchOutputCommand): boolean {
+  if (line === "--") return true;
+  const stripped = stripRevisionPrefix(line, search).line;
+  if (searchesSingleFile(search) || search.noFileName) return NUMBER_LINE_PATTERN.test(stripped);
+  return PATH_LINE_PATTERN.test(stripped) || /^[^:\n]+-\d+-/.test(stripped);
+}
+
+/**
+ * Whether `line` can be the first line a search prints. Used to find where
+ * the read before it ended. With `-B`/`-C` that is any row; with `-v` a match
+ * row of any text. Otherwise it is a match row whose text holds the pattern,
+ * so context rows (`path-3-text`), and file lines that merely look like a
+ * row (`12:30 standup`), do not qualify. Without a usable matcher (PCRE,
+ * risky patterns) the row's shape alone decides.
+ */
+function isSearchStartLine(line: string, search: SearchOutputCommand): boolean {
+  if (line === "--") return false;
+  if (search.beforeContext) return isSearchRow(line, search);
+  const stripped = stripRevisionPrefix(line, search).line;
+  let text: string | null;
+  if (searchesSingleFile(search) || search.noFileName) {
+    text = /^\d+:(.*)$/.exec(stripped)?.[1] ?? null;
+  } else {
+    const match = PATH_LINE_PATTERN.exec(stripped);
+    text = match?.[3] === ":" ? match[4]! : null;
+  }
+  if (text === null) return false;
+  if (search.invertMatch) return true;
+  if (!searchMatchers.has(search)) searchMatchers.set(search, buildSearchMatcher(search));
+  const matcher = searchMatchers.get(search) ?? null;
+  return matcher === null || findMatchRanges(text, matcher).length > 0;
+}
+
+/**
+ * Where a read that starts at `start` ends when a search follows it: at the
+ * search's first line within `[start, limit)`. When the search is the last
+ * statement, everything from there on must be its rows (or its trailing
+ * errors), so a file line that looks like a match (`12:foo`) is not taken
+ * for one. `found` is false when no such line exists; `printedNothing` then
+ * tells whether the search printed nothing at all, in which case the read
+ * took all the output up to `rowsEnd`.
+ */
+function findSearchStart(
+  lines: ReadonlyArray<string>,
+  start: number,
+  limit: number,
+  search: SearchOutputCommand,
+  searchIsLast: boolean,
+): { found: boolean; index: number; printedNothing: boolean; rowsEnd: number } {
+  let rowsEnd = lines.length;
+  let rowsFrom = start;
+  if (searchIsLast) {
+    while (rowsEnd > start && TOOL_ERROR_PATTERN.test(lines[rowsEnd - 1]!)) rowsEnd -= 1;
+    rowsFrom = rowsEnd;
+    while (rowsFrom > start && isSearchRow(lines[rowsFrom - 1]!, search)) rowsFrom -= 1;
+  }
+  for (let index = Math.max(start, rowsFrom); index < Math.min(limit, rowsEnd); index += 1) {
+    if (isSearchStartLine(lines[index]!, search)) {
+      return { found: true, index, printedNothing: false, rowsEnd };
+    }
+  }
+  return {
+    found: false,
+    index: limit,
+    printedNothing: searchIsLast && rowsFrom === rowsEnd,
+    rowsEnd,
+  };
+}
+
+/** `nl -ba` / `cat -n` lines up to where the numbers stop following on. */
+function readNumberedLines(
+  lines: ReadonlyArray<string>,
+): { texts: string[]; numbers: number[] } | null {
+  const numbers: number[] = [];
+  const texts: string[] = [];
+  let unnumberedTail = 0;
+  for (const line of lines) {
+    const previous = numbers[numbers.length - 1];
+    // A blank line without a number continues the count, as in a whole read.
+    if (line.trim().length === 0) {
+      numbers.push(previous !== undefined ? previous + 1 : 1);
+      texts.push(line);
+      unnumberedTail += 1;
+      continue;
+    }
+    const match = NUMBERED_LINE_PATTERN.exec(line);
+    const number = match ? Number.parseInt(match[1]!, 10) : null;
+    if (number === null || (previous !== undefined && number !== previous + 1)) break;
+    numbers.push(number);
+    texts.push(match![2]!);
+    unnumberedTail = 0;
+  }
+  // Unnumbered blank lines at the end are more likely the next statement's.
+  texts.splice(texts.length - unnumberedTail);
+  numbers.splice(numbers.length - unnumberedTail);
+  return texts.length > 0 ? { texts, numbers } : null;
+}
+
+/**
+ * `git show A:a.ts | sed -n 10,20p; git grep -n foo; ps …`: the output of each
+ * statement in turn. A search takes lines while they are results. A read
+ * takes up to as many lines as it can print, but a file shorter than its
+ * range prints fewer, so it also ends where the next search's first match
+ * appears, or where `nl -ba` numbers stop following on. When neither confirms
+ * where a read ended, its section is named but not linked, since it may hold
+ * the next statement's output. The first statement whose output cannot be
+ * bounded at all (an unbounded read before others, anything else) makes the
+ * rest plain. Reads without number prefixes get no gutter: a short read would
+ * shift every later number.
+ */
+function classifySections(input: ClassifyCommandOutputInput): CommandOutputPresentation | null {
+  // Lines missing from the middle would shift every boundary.
+  if (input.shortened) return null;
+  const statements = parseOutputStatements(input.command);
+  if (!statements || statements.length < 2 || statements[0]!.kind === "other") return null;
+  const lines = outputLines(input.output);
+  const sections: OutputSection[] = [];
+  const pushPlain = (text: string) => {
+    const previous = sections[sections.length - 1];
+    if (previous?.type === "plain") {
+      sections[sections.length - 1] = { type: "plain", text: `${previous.text}\n${text}` };
+    } else {
+      sections.push({ type: "plain", text });
+    }
+  };
+  // Statement index of each search section, by section index.
+  const structuredFrom = new Map<number, number>();
+  let position = 0;
+  for (const [index, statement] of statements.entries()) {
+    if (position >= lines.length || statement.kind === "other") break;
+    const last = index === statements.length - 1;
+    if (statement.kind === "lines") {
+      // `echo "== label"`, `wc -l a.ts`: as many lines as they always print.
+      const end = Math.min(lines.length, position + statement.count);
+      pushPlain(lines.slice(position, end).join("\n"));
+      position = end;
+      continue;
+    }
+    if (statement.kind === "search") {
+      const { search } = statement;
+      if (!search.lineNumbers) break;
+      const results = readSearchResults(lines.slice(position), search, input.cwd, !last);
+      if (!results.segments.some((segment) => segment.type === "group")) {
+        // A search that found nothing printed nothing; the next statement's
+        // output starts here. An error line could be either, so stop. A
+        // statement after `&&` did not run at all, so whose output follows
+        // is unknown.
+        const next = statements[index + 1];
+        const empty = results.end === 0 && !TOOL_ERROR_PATTERN.test(lines[position]!);
+        if (empty && next && !next.afterAnd) continue;
+        break;
+      }
+      structuredFrom.set(sections.length, index);
+      sections.push({
+        type: "search",
+        segments: results.segments,
+        matchCount: results.matchCount,
+        fileCount: results.fileCount,
+      });
+      position += results.end;
+      continue;
+    }
+    const { read } = statement;
+    const next = statements[index + 1];
+    const nextSearch = next?.kind === "search" && next.search.lineNumbers ? next.search : null;
+    const searchIsLast = index + 1 === statements.length - 1;
+    // Numbered output shows where it ends, and a search that is the last
+    // statement ends it where its rows start; other unbounded reads cannot
+    // be bounded.
+    const unbounded = read.lineLimit === null && !last && !read.numberedOutput;
+    if (unbounded && !(nextSearch && searchIsLast)) break;
+    if (TOOL_ERROR_PATTERN.test(lines[position]!)) break;
+    let end =
+      last || read.lineLimit === null
+        ? lines.length
+        : Math.min(lines.length, position + read.lineLimit);
+    let confirmed = last;
+    if (nextSearch) {
+      const start = findSearchStart(lines, position, end, nextSearch, searchIsLast);
+      if (start.found) {
+        end = start.index;
+        confirmed = true;
+      } else if (unbounded) {
+        // The read took everything only if the search printed nothing; its
+        // errors (`grep: x: No such file or directory`) stay after it.
+        if (!start.printedNothing) break;
+        end = start.rowsEnd;
+        confirmed = true;
+      } else {
+        confirmed =
+          end < lines.length &&
+          end < start.rowsEnd &&
+          isSearchStartLine(lines[end]!, nextSearch) &&
+          (!searchIsLast ||
+            lines.slice(end, start.rowsEnd).every((line) => isSearchRow(line, nextSearch)));
+      }
+    }
+    let code = lines.slice(position, end);
+    let lineNumbers: number[] | null = null;
+    if (read.numberedOutput && code.length > 0) {
+      const numbered = readNumberedLines(code);
+      if (!numbered) break;
+      code = numbered.texts;
+      lineNumbers = numbered.numbers;
+      confirmed = true;
+    }
+    // An empty file, a range past its end, `head -n 0`.
+    if (code.length === 0) continue;
+    sections.push({
+      type: "file",
+      displayPath: read.revision === null ? read.filePath : `${read.revision}:${read.filePath}`,
+      filePath:
+        confirmed && read.revision === null && read.cwdKnown
+          ? resolveCommandPath(read.filePath, input.cwd, read.cwdOffset)
+          : null,
+      language: languageForPath(read.filePath),
+      code: code.join("\n"),
+      lineNumbers,
+    });
+    position += code.length;
+  }
+  if (position < lines.length) pushPlain(lines.slice(position).join("\n"));
+  // A search that comes first and alone, then other output, is a search
+  // presentation (after an empty read or search it is not, so it stays a
+  // section), when that presentation can take the command: it cannot after
+  // a statement the splitter could not follow.
+  const structured = sections.filter((section) => section.type !== "plain");
+  const leadingSearchOnly =
+    structured.length === 1 &&
+    structured[0]!.type === "search" &&
+    structuredFrom.get(sections.indexOf(structured[0]!)) === 0 &&
+    parseSearchOutputCommand(input.command) !== null;
+  if (structured.length === 0 || leadingSearchOnly) return null;
+  return {
+    kind: "sections",
+    sections,
+    matchCount: sections.reduce(
+      (count, section) => count + (section.type === "search" ? section.matchCount : 0),
+      0,
+    ),
   };
 }
 
@@ -769,9 +1149,16 @@ export function classifyCommandOutput(
     const differed = input.exitCode === 1 && isDiffCommand(input.command);
     return (differed ? classifyDiff(input) : null) ?? { kind: "plain", text: output };
   }
+  // `git show HEAD:a.patch` prints a file that happens to hold a diff; keep its
+  // name and line numbers rather than reading the hunks.
+  const blobRead =
+    parseFileReadSegments(input.command)?.segments.every((segment) => segment.revision !== null) ??
+    false;
   return (
+    (blobRead ? classifyFileRead(input) : null) ??
     classifyDiff(input) ??
     classifyFileRead(input) ??
+    classifySections(input) ??
     classifySearch(input) ??
     classifyJson(output) ?? { kind: "plain", text: output }
   );

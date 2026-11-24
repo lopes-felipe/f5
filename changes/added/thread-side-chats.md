@@ -1,1 +1,0 @@
-- Open a side chat with its own composer in a right-panel tab using /side, /btw, or Add. Side chats copy the current conversation context while the main thread keeps running, and stay out of the main thread lists.

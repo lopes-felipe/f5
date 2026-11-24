@@ -1,1 +1,0 @@
-- Commands that are still running when Codex closes their thread show as interrupted.

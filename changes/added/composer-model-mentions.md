@@ -1,1 +1,0 @@
-- Type @ and part of a model or provider name to name a model for the agent. Model references appear as provider-icon chips in the composer and messages.

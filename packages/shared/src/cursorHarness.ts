@@ -29,7 +29,8 @@ export interface CursorAcpGates {
 export const CURSOR_ACP_GATES: CursorAcpGates = {
   planReplyOutcome: undefined,
   autoReviewMinimumVersion: undefined,
-  catalogWithoutSession: false,
+  // Observed on CLI 2026.11.22-e9042b2 (docs/reviews/cursor-live-gates.md).
+  catalogWithoutSession: true,
 };
 
 export type CursorSdkGateFeature =

@@ -238,6 +238,24 @@ describe("provider limits", () => {
       { id: "gemini-4-hydrogen-5h", label: "Gemini · 5-hour", usedPercent: 0 },
     ]);
   });
+  it("reports Antigravity window lengths so the meters can show pace", () => {
+    const windows = normalizeProviderLimits(
+      "antigravity",
+      {
+        buckets: [
+          { bucketId: "gemini-5h", remainingFraction: 0.9, window: "5h" },
+          { bucketId: "gemini-weekly", remainingFraction: 0.9, window: "weekly" },
+          { bucketId: "gemini-other", remainingFraction: 0.9, displayName: "Daily" },
+        ],
+      },
+      Date.parse("2026-11-22T00:00:00Z"),
+    );
+    expect(windows.map(({ id, durationMinutes }) => ({ id, durationMinutes }))).toEqual([
+      { id: "gemini-5h", durationMinutes: 300 },
+      { id: "gemini-weekly", durationMinutes: 10_080 },
+      { id: "gemini-other", durationMinutes: undefined },
+    ]);
+  });
   it("keeps main and Spark windows separate and distinguishes omitted reset credits", () => {
     const limits = normalizeRateLimits({
       rateLimits: { limitId: "spark", primary: { usedPercent: 90 } },

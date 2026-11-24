@@ -5,7 +5,28 @@ import {
   type OrchestrationSession,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
-import { mapSessionFromReadModel, mapMessageAttachmentsFromReadModel } from "./orchestrationState";
+import {
+  inferProviderForThreadModel,
+  mapSessionFromReadModel,
+  mapMessageAttachmentsFromReadModel,
+} from "./orchestrationState";
+
+describe("inferProviderForThreadModel", () => {
+  it.each(["antigravity", "pi", "muse"] as const)(
+    "uses the %s session provider instead of guessing from the model",
+    (provider) => {
+      expect(
+        inferProviderForThreadModel({ model: "gpt-5.3-codex", sessionProviderName: provider }),
+      ).toBe(provider);
+    },
+  );
+
+  it("falls back to the model when the session provider is unknown", () => {
+    expect(
+      inferProviderForThreadModel({ model: "gpt-5.3-codex", sessionProviderName: "codex_work" }),
+    ).toBe("codex");
+  });
+});
 
 it("retains attachment provenance across hydration and invalidates changed sources", () => {
   const image = {

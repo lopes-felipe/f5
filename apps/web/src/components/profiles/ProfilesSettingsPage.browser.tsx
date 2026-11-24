@@ -157,6 +157,30 @@ describe("create", () => {
     await expect.element(page.getByText("Profile registry unavailable")).toBeVisible();
     await expect.element(page.getByRole("button", { name: "New profile" })).toBeDisabled();
   });
+
+  it("offers no profile management or guest-only paths in a Linux VM window", async () => {
+    list.mockResolvedValue({
+      profiles: [
+        {
+          ...active,
+          slug: "linux-vm",
+          name: "Linux VM",
+          isDefault: false,
+          executionEnvironment: "linux-vm",
+          stateDir: "/var/lib/f5/state",
+        },
+      ],
+    });
+    await mount();
+
+    await expect.element(page.getByText(/managed from a host profile/)).toBeVisible();
+    await expect.element(page.getByRole("button", { name: "New profile" })).toBeDisabled();
+    await expect.element(page.getByText("This profile's data, inside the Linux VM")).toBeVisible();
+    await expect.element(page.getByText("Removed profiles")).not.toBeInTheDocument();
+    await expect
+      .element(page.getByRole("button", { name: /Copy launch command/ }))
+      .not.toBeInTheDocument();
+  });
 });
 
 describe("accounts", () => {

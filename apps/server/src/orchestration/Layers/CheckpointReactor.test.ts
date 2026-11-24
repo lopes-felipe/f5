@@ -59,6 +59,7 @@ import {
   type ProviderServiceShape,
 } from "../../provider/Services/ProviderService.ts";
 import { checkpointRefForThreadTurn } from "../../checkpointing/Utils.ts";
+import { scopedCheckpointRef } from "../../checkpointing/checkpointRepositories.ts";
 import { ServerConfig } from "../../config.ts";
 
 const asProjectId = (value: string): ProjectId => ProjectId.makeUnsafe(value);
@@ -184,6 +185,22 @@ async function waitForEvent(
 type WorkspaceSnapshot = ReadonlyMap<string, string>;
 
 const fakeCheckpointSnapshots = new Map<string, Map<string, WorkspaceSnapshot>>();
+const fakeCheckpointOids = new Map<string, Map<string, string>>();
+let fakeCommitCounter = 0;
+
+/** The workspace a capture records: everything but the nested repositories it excludes. */
+function snapshotCapturedWorkspace(
+  cwd: string,
+  excludePaths: ReadonlyArray<string> = [],
+): WorkspaceSnapshot {
+  const excluded = excludePaths.map((entry) => entry.replace(/\/$/, ""));
+  return new Map(
+    [...snapshotWorkspace(cwd)].filter(([file]) => {
+      const portable = file.split(path.sep).join("/");
+      return !excluded.some((entry) => portable === entry || portable.startsWith(`${entry}/`));
+    }),
+  );
+}
 
 function snapshotWorkspace(cwd: string): WorkspaceSnapshot {
   const snapshot = new Map<string, string>();
@@ -247,12 +264,20 @@ function createUnifiedDiff(before: WorkspaceSnapshot, after: WorkspaceSnapshot):
 
 const fakeCheckpointStore: CheckpointStoreShape = {
   isGitRepository: (cwd) => Effect.succeed(fs.existsSync(path.join(cwd, ".git"))),
-  captureCheckpoint: ({ cwd, checkpointRef }) =>
+  captureCheckpoint: ({ cwd, checkpointRef, excludePaths }) =>
     Effect.sync(() => {
       const snapshots = fakeCheckpointSnapshots.get(cwd) ?? new Map();
-      snapshots.set(checkpointRef, snapshotWorkspace(cwd));
+      snapshots.set(checkpointRef, snapshotCapturedWorkspace(cwd, excludePaths));
       fakeCheckpointSnapshots.set(cwd, snapshots);
+      const commitOid = (++fakeCommitCounter).toString(16).padStart(40, "0");
+      const oids = fakeCheckpointOids.get(cwd) ?? new Map();
+      oids.set(checkpointRef, commitOid);
+      fakeCheckpointOids.set(cwd, oids);
+      return { commitOid, reusable: true };
     }),
+  // Without a fingerprint every capture is a full one, as before the fast path.
+  fingerprintWorkspace: () => Effect.succeed(null),
+  reuseCheckpoint: () => Effect.succeed(false),
   hasCheckpointRef: ({ cwd, checkpointRef }) =>
     Effect.succeed(fakeCheckpointSnapshots.get(cwd)?.has(checkpointRef) ?? false),
   restoreCheckpoint: ({ cwd, checkpointRef }) =>
@@ -283,7 +308,28 @@ const fakeCheckpointStore: CheckpointStoreShape = {
       const snapshots = fakeCheckpointSnapshots.get(cwd);
       for (const checkpointRef of checkpointRefs) {
         snapshots?.delete(checkpointRef);
+        fakeCheckpointOids.get(cwd)?.delete(checkpointRef);
       }
+    }),
+};
+
+/** Fingerprints a workspace by its captured contents and reuses commits like the live store. */
+const fingerprintingCheckpointStore: CheckpointStoreShape = {
+  ...fakeCheckpointStore,
+  // Capturing clearly outlasts listing, as in a repository with fsmonitor, so the reactor
+  // keeps fingerprinting however fast the machine is.
+  captureCheckpoint: (input) =>
+    Effect.sleep("50 millis").pipe(Effect.andThen(fakeCheckpointStore.captureCheckpoint(input))),
+  fingerprintWorkspace: ({ cwd, excludePaths }) =>
+    Effect.sync(() => JSON.stringify([...snapshotCapturedWorkspace(cwd, excludePaths)].toSorted())),
+  reuseCheckpoint: ({ cwd, sourceRef, sourceOid, targetRef }) =>
+    Effect.sync(() => {
+      const oids = fakeCheckpointOids.get(cwd);
+      const snapshot = fakeCheckpointSnapshots.get(cwd)?.get(sourceRef);
+      if (oids?.get(sourceRef) !== sourceOid || snapshot === undefined) return false;
+      fakeCheckpointSnapshots.get(cwd)!.set(targetRef, snapshot);
+      oids.set(targetRef, sourceOid);
+      return true;
     }),
 };
 
@@ -723,6 +769,156 @@ describe("CheckpointReactor", () => {
         "README.md",
       ),
     ).toBe("v2\n");
+  });
+
+  it("reuses unchanged repositories' checkpoints and diffs only the changed ones", async () => {
+    const captureCheckpoint = vi.fn(fingerprintingCheckpointStore.captureCheckpoint);
+    const reuseCheckpoint = vi.fn(fingerprintingCheckpointStore.reuseCheckpoint);
+    const diffCheckpoints = vi.fn(fingerprintingCheckpointStore.diffCheckpoints);
+    const harness = await createHarness({
+      seedFilesystemCheckpoints: false,
+      checkpointStore: {
+        ...fingerprintingCheckpointStore,
+        captureCheckpoint,
+        reuseCheckpoint,
+        diffCheckpoints,
+      },
+    });
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    const repositories = {
+      root: { path: harness.cwd, relativePath: "." },
+      a: { path: path.join(harness.cwd, "a"), relativePath: "a" },
+      b: { path: path.join(harness.cwd, "b"), relativePath: "b" },
+    };
+    for (const name of ["a", "b"] as const) {
+      fs.mkdirSync(path.join(repositories[name].path, ".git"), { recursive: true });
+      fs.writeFileSync(path.join(repositories[name].path, "file.txt"), "v1\n", "utf8");
+    }
+    const refFor = (name: keyof typeof repositories, turnCount: number) =>
+      scopedCheckpointRef(checkpointRefForThreadTurn(threadId, turnCount), repositories[name]);
+    const nameOf = (cwd: string) =>
+      (Object.keys(repositories) as Array<keyof typeof repositories>).find(
+        (name) => repositories[name].path === cwd,
+      );
+    const capturedAt = (turnCount: number) =>
+      captureCheckpoint.mock.calls
+        .map(([input]) => input)
+        .filter((input) => input.checkpointRef === refFor(nameOf(input.cwd)!, turnCount))
+        .map((input) => nameOf(input.cwd))
+        .toSorted();
+    const runTurn = async (turn: number) => {
+      const turnId = asTurnId(`turn-${turn}`);
+      harness.provider.emit({
+        type: "turn.started",
+        eventId: EventId.makeUnsafe(`evt-reuse-started-${turn}`),
+        provider: "codex",
+        createdAt: new Date().toISOString(),
+        threadId,
+        turnId,
+      });
+      await harness.drain();
+      return () => {
+        harness.provider.emit({
+          type: "turn.completed",
+          eventId: EventId.makeUnsafe(`evt-reuse-completed-${turn}`),
+          provider: "codex",
+          createdAt: new Date().toISOString(),
+          threadId,
+          turnId,
+          payload: { state: "completed" },
+        });
+        return waitForThread(
+          harness.engine,
+          (entry) =>
+            entry.latestTurn?.turnId === turnId &&
+            entry.latestTurn.processingQuiescedAt !== null &&
+            entry.checkpoints.length === turn,
+        );
+      };
+    };
+
+    // The baseline has nothing to reuse: every repository gets a full capture.
+    const completeFirst = await runTurn(1);
+    expect(capturedAt(0)).toEqual(["a", "b", "root"]);
+    fs.writeFileSync(path.join(repositories.a.path, "file.txt"), "v2\n", "utf8");
+    const first = await completeFirst();
+
+    expect(capturedAt(1)).toEqual(["a"]);
+    expect(reuseCheckpoint.mock.calls.map(([input]) => nameOf(input.cwd)).toSorted()).toEqual([
+      "b",
+      "root",
+    ]);
+    expect(fakeCheckpointOids.get(repositories.b.path)?.get(refFor("b", 1))).toBe(
+      fakeCheckpointOids.get(repositories.b.path)?.get(refFor("b", 0)),
+    );
+    expect(diffCheckpoints.mock.calls.map(([input]) => nameOf(input.cwd))).toEqual(["a"]);
+    expect(first.checkpoints[0]?.files).toEqual([
+      expect.objectContaining({ path: "file.txt", repositoryPath: "a" }),
+    ]);
+
+    // An already-dirty file edited again is captured; a moved source ref is not reused.
+    fakeCheckpointOids.get(repositories.b.path)!.set(refFor("b", 1), "f".repeat(40));
+    reuseCheckpoint.mockClear();
+    const completeSecond = await runTurn(2);
+    fs.writeFileSync(path.join(repositories.a.path, "file.txt"), "v3\n", "utf8");
+    const second = await completeSecond();
+
+    expect(capturedAt(2)).toEqual(["a", "b"]);
+    expect(reuseCheckpoint.mock.calls.map(([input]) => nameOf(input.cwd)).toSorted()).toEqual([
+      "b",
+      "root",
+    ]);
+    expect(second.checkpoints.find((entry) => entry.checkpointTurnCount === 2)?.files).toEqual([
+      expect.objectContaining({ path: "file.txt", repositoryPath: "a" }),
+    ]);
+  });
+
+  it("stops fingerprinting a repository where listing costs about as much as capturing", async () => {
+    const listings: Array<string | undefined> = [];
+    const captureCheckpoint = vi.fn(fingerprintingCheckpointStore.captureCheckpoint);
+    const harness = await createHarness({
+      seedFilesystemCheckpoints: false,
+      checkpointStore: {
+        ...fingerprintingCheckpointStore,
+        captureCheckpoint,
+        fingerprintWorkspace: (input) =>
+          Effect.sync(() => void listings.push(input.commitOid)).pipe(
+            Effect.andThen(Effect.sleep("200 millis")),
+            Effect.andThen(fingerprintingCheckpointStore.fingerprintWorkspace(input)),
+          ),
+      },
+    });
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    const turnId = asTurnId("turn-costly");
+    harness.provider.emit({
+      type: "turn.started",
+      eventId: EventId.makeUnsafe("evt-costly-started"),
+      provider: "codex",
+      createdAt: new Date().toISOString(),
+      threadId,
+      turnId,
+    });
+    await harness.drain();
+    // The baseline measured a listing slower than its capture.
+    expect(listings).toHaveLength(2);
+    fs.writeFileSync(path.join(harness.cwd, "README.md"), "v2\n", "utf8");
+    harness.provider.emit({
+      type: "turn.completed",
+      eventId: EventId.makeUnsafe("evt-costly-completed"),
+      provider: "codex",
+      createdAt: new Date().toISOString(),
+      threadId,
+      turnId,
+      payload: { state: "completed" },
+    });
+    await waitForThread(
+      harness.engine,
+      (entry) =>
+        entry.latestTurn?.turnId === turnId && entry.latestTurn.processingQuiescedAt !== null,
+    );
+    await harness.drain();
+    expect(listings).toHaveLength(2);
+    expect(captureCheckpoint).toHaveBeenCalledTimes(2);
   });
 
   it("captures and quiesces from the durable domain completion path without turn.completed", async () => {

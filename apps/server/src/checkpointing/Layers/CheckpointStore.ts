@@ -10,7 +10,8 @@ import { gitConfigArgs } from "@t3tools/shared/git";
  *
  * @module CheckpointStoreLive
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { lstat } from "node:fs/promises";
 
 import { Effect, Layer, FileSystem, Path, Schedule } from "effect";
 
@@ -29,6 +30,74 @@ const AUTHORED_PATHS_MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
 export const AUTHORED_PATHS_MAX_COMMITS = 200;
 const AUTHORED_PATHS_TIMEOUT_MS = 5_000;
 const AUTHORED_PATHS_CACHE_SIZE = 64;
+
+const FINGERPRINT_MAX_OUTPUT_BYTES = 1024 * 1024;
+const FINGERPRINT_MAX_ENTRIES = 2_000;
+
+/** The first `count` space-separated fields of a status record, then the rest (its path). */
+function splitStatusFields(record: string, count: number): string[] | null {
+  const parts: string[] = [];
+  let start = 0;
+  for (let index = 0; index < count; index++) {
+    const end = record.indexOf(" ", start);
+    if (end < 0) return null;
+    parts.push(record.slice(start, end));
+    start = end + 1;
+  }
+  parts.push(record.slice(start));
+  return parts;
+}
+
+/**
+ * Parses `git status --porcelain=v2 -z --branch` output for a workspace fingerprint, or
+ * returns null when the listing cannot describe what a capture would record: an unborn
+ * HEAD, a conflict, a submodule entry, a collapsed untracked directory (its own stat does
+ * not change when a file deep inside it does), a name that is not valid UTF-8, or more
+ * than {@link FINGERPRINT_MAX_ENTRIES} entries. Paths are relative to the repository root.
+ */
+export function parseFingerprintStatus(stdout: string): {
+  readonly head: string;
+  readonly records: ReadonlyArray<string>;
+  readonly paths: ReadonlyArray<string>;
+} | null {
+  const fields = stdout.split("\0");
+  let head: string | null = null;
+  const records: string[] = [];
+  const paths: string[] = [];
+  for (let index = 0; index < fields.length; index++) {
+    const field = fields[index]!;
+    if (field.length === 0) continue;
+    if (field.includes("�")) return null;
+    if (field.startsWith("# ")) {
+      if (field.startsWith("# branch.oid ")) head = field.slice("# branch.oid ".length);
+      continue;
+    }
+    if (field.startsWith("? ")) {
+      const entry = field.slice(2);
+      if (entry.endsWith("/")) return null;
+      records.push(field);
+      paths.push(entry);
+    } else if (field.startsWith("1 ") || field.startsWith("2 ")) {
+      const renamed = field.startsWith("2 ");
+      const parts = splitStatusFields(field, renamed ? 9 : 8);
+      if (parts === null || !parts[2]!.startsWith("N")) return null;
+      paths.push(parts.at(-1)!);
+      if (renamed) {
+        const original = fields[++index];
+        if (original === undefined || original.includes("�")) return null;
+        records.push(`${field}\0${original}`);
+        paths.push(original);
+      } else {
+        records.push(field);
+      }
+    } else {
+      return null;
+    }
+    if (records.length > FINGERPRINT_MAX_ENTRIES) return null;
+  }
+  if (head === null || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(head)) return null;
+  return { head, records: records.toSorted(), paths };
+}
 
 function isSafeCheckpointRef(ref: string): boolean {
   if (!ref.startsWith("refs/") || /\s/.test(ref)) return false;
@@ -169,7 +238,7 @@ const makeCheckpointStore = Effect.fn("makeCheckpointStore")(function* (platform
         ["sparse.expectFilesOutsideOfPatterns", "false"],
       ]);
 
-      yield* Effect.acquireUseRelease(
+      return yield* Effect.acquireUseRelease(
         fs.makeTempDirectory({ prefix: "t3-fs-checkpoint-" }),
         (tempDir) =>
           Effect.gen(function* () {
@@ -258,6 +327,10 @@ const makeCheckpointStore = Effect.fn("makeCheckpointStore")(function* (platform
               allowNonZeroExit: true,
             });
             const sparse = sparseResult.stdout.trim() === "true";
+            // `git status` never inspects assume-unchanged or skip-worktree entries, so a
+            // fingerprint can stand in for this capture only once the index is known to
+            // have none.
+            let indexFlagsClean = false;
             if (headExists) {
               const reused = yield* Effect.gen(function* () {
                 const source = yield* executeCapture({
@@ -320,6 +393,7 @@ const makeCheckpointStore = Effect.fn("makeCheckpointStore")(function* (platform
                     }
                   },
                 });
+                indexFlagsClean = !specialFlags;
                 if (specialFlags) return false;
                 if (sparse && skipped.length > 0) {
                   let hasSelected = false;
@@ -530,6 +604,10 @@ const makeCheckpointStore = Effect.fn("makeCheckpointStore")(function* (platform
               cwd: input.cwd,
               args: [...durableWrite, "update-ref", "--", input.checkpointRef, commitOid],
             });
+            return {
+              commitOid,
+              reusable: !sparse && !workspaceIgnored && indexFlagsClean,
+            } as const;
           }),
         (tempDir) => fs.remove(tempDir, { recursive: true }),
       ).pipe(
@@ -550,6 +628,134 @@ const makeCheckpointStore = Effect.fn("makeCheckpointStore")(function* (platform
     resolveCheckpointCommit(input.cwd, input.checkpointRef).pipe(
       Effect.map((commit) => commit !== null),
     );
+
+  const fingerprintWorkspace: CheckpointStoreShape["fingerprintWorkspace"] = (input) =>
+    Effect.gen(function* () {
+      const operation = "CheckpointStore.fingerprintWorkspace";
+      const excludePaths = [...(input.excludePaths ?? [])].toSorted();
+      const pathspecs = ["--", ".", ...excludePaths.map((entry) => ":(exclude,literal)" + entry)];
+      // Never takes the index lock: this runs beside the user's own Git.
+      const env = { GIT_OPTIONAL_LOCKS: "0", LC_ALL: "C", LANGUAGE: "C" };
+      const [locations, fsmonitor] = yield* Effect.all(
+        [
+          git.execute({
+            operation,
+            cwd: input.cwd,
+            args: ["rev-parse", "--show-toplevel", "--path-format=absolute", "--git-path", "index"],
+            env,
+          }),
+          // A non-boolean value names a hook script, which F5 must not run on its own.
+          git.execute({
+            operation,
+            cwd: input.cwd,
+            args: ["config", "--type=bool", "--get", "core.fsmonitor"],
+            env,
+            allowNonZeroExit: true,
+          }),
+        ],
+        { concurrency: 2 },
+      );
+      const [root = "", indexPath = ""] = locations.stdout.split(/\r?\n/);
+      if (root.length === 0 || indexPath.length === 0) return null;
+      // Unlike a capture's scratch index, the listing trusts the repository's own built-in
+      // fsmonitor daemon and untracked cache, as the user's `git status` does. A daemon
+      // that misses an event hides that edit from reuse until a later change is seen.
+      const status = yield* git.execute({
+        operation,
+        cwd: input.cwd,
+        args: [
+          ...(fsmonitor.code > 1 ? gitConfigArgs([["core.fsmonitor", "false"]]) : []),
+          "status",
+          "--porcelain=v2",
+          "-z",
+          "--branch",
+          "--untracked-files=normal",
+          // A capture records a submodule's commit, never its worktree.
+          "--ignore-submodules=dirty",
+          ...pathspecs,
+        ],
+        env,
+        maxOutputBytes: FINGERPRINT_MAX_OUTPUT_BYTES,
+      });
+      const parsed = parseFingerprintStatus(status.stdout);
+      if (parsed === null) return null;
+      if (input.commitOid !== undefined) {
+        // The commit must change exactly the paths the listing shows as changed, so an
+        // edit made and undone while it was captured cannot pass for this state.
+        const committed = yield* git.execute({
+          operation,
+          cwd: input.cwd,
+          args: [
+            "diff",
+            "--name-only",
+            "-z",
+            "--no-renames",
+            "--no-ext-diff",
+            "--ignore-submodules=dirty",
+            parsed.head,
+            input.commitOid,
+            ...pathspecs,
+          ],
+          env,
+          maxOutputBytes: FINGERPRINT_MAX_OUTPUT_BYTES,
+        });
+        const changed = new Set(committed.stdout.split("\0").filter((entry) => entry.length > 0));
+        const listed = new Set(parsed.paths);
+        if (changed.size !== listed.size || [...listed].some((entry) => !changed.has(entry)))
+          return null;
+      }
+      const signature = (target: string, label: string) =>
+        lstat(target, { bigint: true }).then(
+          (stat) =>
+            `${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.ino}:${stat.mode}:${label}`,
+          () => `absent:${label}`,
+        );
+      const [indexSignature, ...signatures] = yield* Effect.tryPromise(() =>
+        Promise.all([
+          // Setting assume-unchanged or skip-worktree rewrites the index, which `git
+          // status` would otherwise not notice.
+          signature(indexPath, "index"),
+          ...parsed.paths.map((entry) => signature(path.join(root, entry), entry)),
+        ]),
+      );
+      return createHash("sha256")
+        .update(
+          JSON.stringify([
+            parsed.head,
+            parsed.records,
+            indexSignature,
+            signatures.toSorted(),
+            excludePaths,
+          ]),
+        )
+        .digest("hex");
+    }).pipe(Effect.orElseSucceed(() => null));
+
+  const reuseCheckpoint: CheckpointStoreShape["reuseCheckpoint"] = (input) =>
+    Effect.gen(function* () {
+      const operation = "CheckpointStore.reuseCheckpoint";
+      if (
+        !isSafeCheckpointRef(input.sourceRef) ||
+        !isSafeCheckpointRef(input.targetRef) ||
+        !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(input.sourceOid)
+      )
+        return yield* new CheckpointInvariantError({
+          operation,
+          detail: "Invalid checkpoint ref or object id for reuse.",
+        });
+      const result = yield* executeCapture({
+        operation,
+        cwd: input.cwd,
+        args: [...durableWrite, "update-ref", "--stdin"],
+        stdin:
+          "start\n" +
+          `verify ${input.sourceRef} ${input.sourceOid}\n` +
+          `update ${input.targetRef} ${input.sourceOid}\n` +
+          "prepare\ncommit\n",
+        allowNonZeroExit: true,
+      });
+      return result.code === 0;
+    });
 
   const readCheckpointRefs: CheckpointStoreShape["readCheckpointRefs"] = (input) =>
     Effect.gen(function* () {
@@ -856,6 +1062,8 @@ const makeCheckpointStore = Effect.fn("makeCheckpointStore")(function* (platform
   return {
     isGitRepository,
     captureCheckpoint,
+    fingerprintWorkspace,
+    reuseCheckpoint,
     hasCheckpointRef,
     readCheckpointRefs,
     restoreCheckpoint,

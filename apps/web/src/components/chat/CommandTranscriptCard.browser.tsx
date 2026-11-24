@@ -506,6 +506,101 @@ describe("CommandTranscriptCard", () => {
     }
   });
 
+  it("splits a compound command's output into file sections, results and plain text", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const navigate = vi.fn(() => true);
+    const output = [
+      "     4\tconst a = 1;",
+      "     5\tconst b = 2;",
+      "origin/main:web/api.ts:12:export const nativeApi = 1;",
+      "",
+    ].join("\n");
+    const screen = await renderWithQueryClient(
+      <FileNavigationProvider value={navigate}>
+        <CommandTranscriptCard
+          execution={makeExecution({
+            command:
+              'nl -ba src/a.ts | sed -n 4,5p; git grep -n "nativeApi" origin/main -- web/api.ts',
+            output,
+          })}
+          expanded
+          timestampFormat="locale"
+          workspaceRoot="/repo"
+          onToggle={() => {}}
+          onExpandedBodyResize={() => {}}
+        />
+      </FileNavigationProvider>,
+      host,
+    );
+
+    try {
+      const body = await vi.waitFor(() => {
+        const element = host.querySelector<HTMLElement>("[data-output-kind='sections']");
+        expect(element).not.toBeNull();
+        return element!;
+      });
+      expect(body.querySelector("[data-testid='command-output-chip']")?.textContent).toBe(
+        "a.ts1 match",
+      );
+      const file = body.querySelector<HTMLElement>("[data-testid='command-output-file-section']");
+      expect(
+        [...file!.querySelectorAll("[data-line-number]")].map((element) =>
+          element.getAttribute("data-line-number"),
+        ),
+      ).toEqual(["4", "5"]);
+      expect(body.querySelectorAll("mark")).toHaveLength(1);
+      // The revision's results name the file but do not open the one on disk.
+      expect(body.textContent).toContain("origin/main:web/api.ts");
+      expect(body.querySelector("[data-testid='command-output-search-group'] button")).toBeNull();
+
+      await page.getByRole("button", { name: "Open a.ts at line 5" }).click();
+      expect(navigate).toHaveBeenLastCalledWith("/repo/src/a.ts:5", undefined);
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("numbers grep -n over a revision's range from the file and does not link it", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <CommandTranscriptCard
+        execution={makeExecution({
+          command: "git show origin/main:src/a.ts | sed -n 40,80p | grep -n useTheme",
+          output: "1:const t = useTheme();\n5:useTheme()\n",
+        })}
+        expanded
+        timestampFormat="locale"
+        workspaceRoot="/repo"
+        onToggle={() => {}}
+        onExpandedBodyResize={() => {}}
+      />,
+      host,
+    );
+
+    try {
+      const body = await vi.waitFor(() => {
+        const element = host.querySelector<HTMLElement>("[data-output-kind='search']");
+        expect(element).not.toBeNull();
+        return element!;
+      });
+      expect(
+        [...body.querySelectorAll("[data-line-number]")].map((element) =>
+          element.getAttribute("data-line-number"),
+        ),
+      ).toEqual(["40", "44"]);
+      expect(body.textContent).toContain("origin/main:src/a.ts");
+      // The revision's text may differ from the file on disk: no header or line buttons.
+      expect(body.querySelector("[data-testid='command-output-body'] button")).toBeNull();
+      expect(body.querySelectorAll("mark")).toHaveLength(2);
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("drops line numbers and marks counts partial for server-compacted output", async () => {
     const marker = "\n\n[... output compacted; 99999 bytes in total ...]\n\n";
     const host = document.createElement("div");
@@ -768,6 +863,47 @@ describe("CommandTranscriptCard", () => {
       await screen.unmount();
       host.remove();
     }
+  });
+
+  it("colors a command the same way collapsed and expanded", async () => {
+    const command = 'node --version && echo "done" 2>/dev/null || true';
+    const tokenColors = async (expanded: boolean, oversized = false) => {
+      const host = document.createElement("div");
+      document.body.append(host);
+      const text = oversized ? `${command}\n${"# pad\n".repeat(500)}` : command;
+      const screen = await renderWithQueryClient(
+        <CommandTranscriptCard
+          execution={makeExecution({ command: text, output: "" })}
+          expanded={expanded}
+          timestampFormat="locale"
+          onToggle={() => {}}
+          onExpandedBodyResize={() => {}}
+        />,
+        host,
+      );
+      try {
+        const code = () => host.querySelector("button[aria-expanded] code");
+        if (!oversized)
+          await vi.waitFor(() => expect(code()?.querySelector("span[style]")).not.toBeNull(), {
+            timeout: 10_000,
+          });
+        return [...(code()?.querySelectorAll("span[style], span[class]") ?? [])]
+          .filter((span) => span.childElementCount === 0 && span.textContent?.trim())
+          .slice(0, 20)
+          .map((span) => `${span.textContent}|${getComputedStyle(span).color}`);
+      } finally {
+        await screen.unmount();
+        host.remove();
+      }
+    };
+
+    const collapsed = await tokenColors(false);
+    expect(collapsed.length).toBeGreaterThan(0);
+    expect(await tokenColors(true)).toEqual(collapsed);
+    // Too big for inline highlighting: the lightweight palette, again in both states.
+    const collapsedLarge = await tokenColors(false, true);
+    expect(collapsedLarge.length).toBeGreaterThan(0);
+    expect(await tokenColors(true, true)).toEqual(collapsedLarge);
   });
 
   it("copies the command instead of a distinct summary title", async () => {

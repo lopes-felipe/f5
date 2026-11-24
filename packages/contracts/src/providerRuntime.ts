@@ -39,6 +39,9 @@ const RuntimeEventRawSource = Schema.Literals([
   "acp.jsonrpc",
   "acp.cursor.extension",
   "acp.grok.extension",
+  /** Antigravity output F5 reads outside the protocol: a plan artifact, a question tool. */
+  "acp.antigravity.artifact",
+  "acp.antigravity.mcp",
   "opencode.sdk.event",
   "msp.jsonrpc",
 ]);

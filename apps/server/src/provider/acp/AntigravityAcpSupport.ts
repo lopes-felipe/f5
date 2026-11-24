@@ -293,6 +293,7 @@ export const makeAntigravityAcpRuntime = (input: {
   accountSetup?: boolean;
   onAuthorizationUrl?: (url: string) => void;
   mcpServers?: AcpSessionRuntimeOptions["mcpServers"];
+  sessionMeta?: AcpSessionRuntimeOptions["sessionMeta"];
   requestLogger?: AcpSessionRuntimeOptions["requestLogger"];
   logWritersRedact?: AcpSessionRuntimeOptions["logWritersRedact"];
   protocolLogging?: AcpSessionRuntimeOptions["protocolLogging"];
@@ -337,6 +338,7 @@ export const makeAntigravityAcpRuntime = (input: {
           ? { hasSensitiveConfiguration: input.hasSensitiveConfiguration }
           : {}),
         ...(input.mcpServers ? { mcpServers: input.mcpServers } : {}),
+        ...(input.sessionMeta ? { sessionMeta: input.sessionMeta } : {}),
         ...(input.logWritersRedact ? { logWritersRedact: true } : {}),
         ...(input.requestLogger ? { requestLogger: input.requestLogger } : {}),
         ...(input.protocolLogging ? { protocolLogging: input.protocolLogging } : {}),

@@ -5,6 +5,7 @@ import {
   isAntigravitySnippetPatch,
   readAntigravityPreEditFile,
 } from "./AntigravityEditLocation.ts";
+import { antigravityArtifactWrite } from "./AntigravityPlanArtifacts.ts";
 
 const CUT = "[Earlier output truncated]\n\n";
 export const boundAntigravityToolText = (text: string) =>
@@ -42,10 +43,35 @@ export function sanitizeAntigravityToolPayload(value: unknown): unknown {
   return visit(value, 0);
 }
 
-/** Retain pending diff locations before native edits change the source file. */
-export function makeAntigravityToolNormalizer(readFile = readAntigravityPreEditFile) {
+/**
+ * Retain pending diff locations before native edits change the source file.
+ * Writes into the brain directories under `brainRoots` are Antigravity's own
+ * artifacts, not workspace changes.
+ */
+export function makeAntigravityToolNormalizer(
+  readFile = readAntigravityPreEditFile,
+  brainRoots: ReadonlyArray<string> = [],
+) {
   const patches = new Map<string, unknown>();
   return (tool: AcpToolCallState): AcpToolCallState => {
+    const artifact = antigravityArtifactWrite(tool, brainRoots);
+    if (artifact) {
+      const raw = record(tool.data.rawInput);
+      const summary = record(raw.ArtifactMetadata).Summary;
+      return {
+        ...tool,
+        kind: "other",
+        title: `${artifact.requestsFeedback ? "Updated plan artifact" : "Updated artifact"} ${artifact.basename}`,
+        data: {
+          rawInput: {
+            Path: artifact.path,
+            ...(typeof summary === "string" && summary.trim()
+              ? { summary: boundAntigravityToolText(summary.trim()) }
+              : {}),
+          },
+        },
+      };
+    }
     const data = record(sanitizeAntigravityToolPayload(tool.data));
     const raw = record(data.rawInput);
     const title = tool.title ?? "";
@@ -61,6 +87,14 @@ export function makeAntigravityToolNormalizer(readFile = readAntigravityPreEditF
         : tool.kind;
     const command = raw.CommandLine ?? raw.command_line ?? raw.command;
     if (typeof command === "string") data.command = command;
+    // Antigravity's own one-line summary ("Inspect repository top-level layout") becomes the
+    // card header; F5 otherwise derives a generic label from the command. Commands only: other
+    // tools' `input.description` already titles subagent and task cards.
+    const summary =
+      kind === "execute" && typeof raw.toolSummary === "string" ? raw.toolSummary.trim() : "";
+    const input = record(data.input);
+    if (summary && typeof input.description !== "string")
+      data.input = { ...input, description: summary };
     if (kind === "edit") {
       const content = Array.isArray(data.content) ? data.content : [];
       data.content = content.map((item, index) => {

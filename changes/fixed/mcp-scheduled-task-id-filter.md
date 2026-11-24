@@ -1,1 +1,0 @@
-- Agent Bridge's list_scheduled_tasks tool now honors scheduledTaskId within the projects shared with the caller.

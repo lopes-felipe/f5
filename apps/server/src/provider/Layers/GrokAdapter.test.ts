@@ -1,7 +1,7 @@
 import { writeAcpWrapper } from "../../testUtils/cli.ts";
 import * as os from "node:os";
 import * as path from "node:path";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createModelSelection } from "@t3tools/shared/model";
 import { READ_ONLY_WORKFLOW_UNCERTIFIED_ANTIGRAVITY_MESSAGE } from "@t3tools/shared/workflowProviders";
 import { fileURLToPath } from "node:url";
@@ -15,6 +15,7 @@ import {
   ProviderInstanceId,
   type ProviderRuntimeEvent,
   ThreadId,
+  type TurnId,
 } from "@t3tools/contracts";
 import { Cause, Effect, Fiber, Layer, Schema, ServiceMap, Stream } from "effect";
 
@@ -22,7 +23,10 @@ import { vi } from "vitest";
 import * as GrokAcpSupport from "../acp/GrokAcpSupport.ts";
 import { ServerConfig } from "../../config.ts";
 import type { GrokAdapterShape } from "../Services/GrokAdapter.ts";
-import { makeGrokAdapter } from "./GrokAdapter.ts";
+import { makeGrokAdapter, type GrokAdapterLiveOptions } from "./GrokAdapter.ts";
+import { TurnAcceptanceSignal } from "../deliveryAttemptContext.ts";
+import type { InteractionSession } from "../../mcp/interactionMcpTools.ts";
+import type { PreviewMcpHttpServerShape } from "../../mcp/PreviewMcpHttpServer.ts";
 
 class GrokAdapter extends ServiceMap.Service<GrokAdapter, GrokAdapterShape>()(
   "t3/provider/Layers/GrokAdapter.test/GrokAdapter",
@@ -625,10 +629,11 @@ it.layer(AntigravityAdapterTestLayer)("Antigravity native questions", (it) => {
 });
 
 const antigravityProfileAdapter = (input: {
-  readonly env?: Record<string, string>;
+  readonly env?: Record<string, string> | ((dir: string) => Record<string, string>);
   readonly accountRevision?: number;
   readonly credentials?: ReadonlyArray<string>;
   readonly staleAccount?: () => string | undefined;
+  readonly options?: (dir: string) => Partial<GrokAdapterLiveOptions>;
 }) =>
   Effect.gen(function* () {
     // Removed when the test's scope closes, also after a failed setup or assertion.
@@ -641,7 +646,7 @@ const antigravityProfileAdapter = (input: {
       env: {
         F5_ACP_ANTIGRAVITY_PROFILE: "1",
         T3_ACP_REQUEST_LOG_PATH: requestLogPath,
-        ...input.env,
+        ...(typeof input.env === "function" ? input.env(dir) : input.env),
       },
     });
     const adapter = yield* makeGrokAdapter(
@@ -653,7 +658,9 @@ const antigravityProfileAdapter = (input: {
           accountRevision: Effect.succeed(input.accountRevision ?? 0),
           ...(input.credentials ? { credentials: input.credentials } : {}),
           ...(input.staleAccount ? { staleAccount: Effect.sync(input.staleAccount) } : {}),
+          nativeReaders: () => Effect.succeed(false),
         },
+        ...input.options?.(dir),
       },
     );
     const requests = () =>
@@ -883,6 +890,150 @@ rootIt.layer(
       assert.include(selected, "allow-once");
       assert.notInclude(selected, "allow-always");
       yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("appends a command's output to its transcript before the command completes", () =>
+    Effect.gen(function* () {
+      const { adapter, events } = yield* antigravityProfileAdapter({
+        env: { T3_ACP_EMIT_TOOL_CALLS: "1" },
+      });
+      const threadId = ThreadId.make("agy-command-output");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId, input: "Read it", attachments: [] });
+      const forTool = events.filter(
+        (event) =>
+          event.itemId === "tool-call-1" &&
+          (event.type === "content.delta" || event.type === "item.completed"),
+      );
+      const outputs = forTool.flatMap((event) =>
+        event.type === "content.delta" && event.payload.streamKind === "command_output"
+          ? [event.payload.delta]
+          : [],
+      );
+      assert.deepEqual(outputs, ['{ "name": "t3" }']);
+      assert.equal(forTool.at(-1)?.type, "item.completed");
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("reports the delivery accepted on the agent's first progress, mid-turn", () =>
+    Effect.gen(function* () {
+      const { adapter } = yield* antigravityProfileAdapter({
+        env: { T3_ACP_EMIT_TOOL_CALLS: "1", T3_ACP_WAIT_AFTER_PERMISSION: "1" },
+      });
+      const threadId = ThreadId.make("agy-early-acceptance");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      const accepted: Array<string> = [];
+      const turn = yield* adapter.sendTurn({ threadId, input: "Read it", attachments: [] }).pipe(
+        Effect.provideService(TurnAcceptanceSignal, {
+          accept: (receipt) => Effect.sync(() => accepted.push(String(receipt.turnId))),
+        }),
+        Effect.forkChild,
+      );
+      // The agent asked to run a command and now waits; the prompt has not returned.
+      yield* Effect.promise(() =>
+        vi.waitFor(() => {
+          if (accepted.length === 0) throw new Error("not accepted yet");
+        }),
+      );
+      assert.isUndefined(turn.pollUnsafe());
+      yield* adapter.interruptTurn(threadId);
+      const result = yield* Fiber.join(turn);
+      assert.deepEqual(accepted, [String(result.turnId)]);
+      // Stopping an Antigravity turn may end its session already.
+      yield* adapter.stopSession(threadId).pipe(Effect.ignore);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "keeps the turn's acceptance when a steer arrives before the agent's first progress",
+    () =>
+      Effect.gen(function* () {
+        const gateDir = yield* Effect.acquireRelease(
+          Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "agy-steer-gate-"))),
+          (directory) => Effect.promise(() => rm(directory, { recursive: true, force: true })),
+        );
+        const gate = path.join(gateDir, "go");
+        const { adapter } = yield* antigravityProfileAdapter({
+          env: { T3_ACP_PROMPT_GATE_PATH: gate },
+        });
+        const threadId = ThreadId.make("agy-steer-before-progress");
+        yield* adapter.startSession({
+          threadId,
+          provider: "antigravity",
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+        const accepted: Array<string> = [];
+        const turn = yield* adapter.sendTurn({ threadId, input: "Start", attachments: [] }).pipe(
+          Effect.provideService(TurnAcceptanceSignal, {
+            accept: (receipt) => Effect.sync(() => accepted.push(String(receipt.turnId))),
+          }),
+          Effect.forkChild,
+        );
+        let activeTurnId: TurnId | undefined;
+        yield* Effect.promise(() =>
+          vi.waitFor(async () => {
+            const sessions = await Effect.runPromise(adapter.listSessions());
+            activeTurnId = sessions.find((session) => session.threadId === threadId)?.activeTurnId;
+            if (!activeTurnId) throw new Error("no running turn yet");
+          }),
+        );
+        // The steer runs with a signal too; a steer never reports acceptance itself.
+        const steer = yield* adapter
+          .sendTurn({ threadId, input: "Also this", attachments: [], expectedTurnId: activeTurnId })
+          .pipe(
+            Effect.provideService(TurnAcceptanceSignal, {
+              accept: () => Effect.sync(() => accepted.push("steer")),
+            }),
+            Effect.forkChild,
+          );
+        yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 50)));
+        yield* Effect.promise(() => writeFile(gate, ""));
+        yield* Effect.promise(() =>
+          vi.waitFor(() => {
+            if (accepted.length === 0) throw new Error("not accepted yet");
+          }),
+        );
+        const result = yield* Fiber.join(turn);
+        yield* Fiber.join(steer).pipe(Effect.ignore);
+        assert.deepEqual(accepted, [String(result.turnId)]);
+        yield* adapter.stopSession(threadId).pipe(Effect.ignore);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("does not report acceptance when the prompt fails before any progress", () =>
+    Effect.gen(function* () {
+      const { adapter } = yield* antigravityProfileAdapter({
+        env: { T3_ACP_FAIL_PROMPT_TRANSPORT: "exit" },
+      });
+      const threadId = ThreadId.make("agy-no-acceptance");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      const accepted: Array<string> = [];
+      const exit = yield* adapter.sendTurn({ threadId, input: "Hi", attachments: [] }).pipe(
+        Effect.provideService(TurnAcceptanceSignal, {
+          accept: (receipt) => Effect.sync(() => accepted.push(String(receipt.turnId))),
+        }),
+        Effect.exit,
+      );
+      assert.equal(exit._tag, "Failure");
+      assert.deepEqual(accepted, []);
     }).pipe(Effect.scoped),
   );
 
@@ -1247,3 +1398,426 @@ it.layer(grokApprovalTestLayer({ T3_ACP_SECOND_PERMISSION_COMMAND: "rm -rf build
     );
   },
 );
+
+/** Records the interaction session F5 hands its MCP catalog, so a test can call the tool. */
+const fakeInteractionPreview = () => {
+  const sessions: InteractionSession[] = [];
+  const preview: PreviewMcpHttpServerShape = {
+    getUrl: () => "http://127.0.0.1:1/mcp/preview",
+    createSessionConfig: (input) => {
+      if (input.interaction) sessions.push(input.interaction);
+      return {
+        serverName: input.serverName ?? "f5_test",
+        serverDefinition: {
+          type: "http",
+          url: `http://127.0.0.1:1/mcp/${input.catalog ?? "preview"}`,
+          enabled: true,
+          bearerTokenEnvVar: "F5_TEST_TOKEN",
+        },
+        env: { F5_TEST_TOKEN: "interaction-token-secret" },
+        dispose: () => {},
+      };
+    },
+  };
+  return { preview, sessions };
+};
+
+const STDIO_LAUNCH = { command: "/opt/f5/f5", args: ["entry.mjs", "mcp-session-stdio"], env: {} };
+
+const QUESTIONS = [
+  {
+    question: "Which database?",
+    header: "Database",
+    options: [
+      { label: "Postgres", description: "Relational" },
+      { label: "SQLite", description: "Embedded" },
+    ],
+    multiSelect: false,
+  },
+];
+
+rootIt.layer(
+  ServerConfig.layerTest(process.cwd(), { prefix: "f5-agy-plan-test-" }).pipe(
+    Layer.provideMerge(NodeServices.layer),
+  ),
+)("Antigravity Plan mode", (it) => {
+  const planAdapter = (env: Record<string, string> = {}) =>
+    antigravityProfileAdapter({
+      env: (dir) => ({
+        F5_ACP_ANTIGRAVITY_PLAN_ARTIFACT_ROOT: path.join(
+          dir,
+          "profile",
+          "antigravity-acp",
+          "brain",
+        ),
+        ...env,
+      }),
+      options: (dir) => ({ antigravityProfileDirectory: path.join(dir, "profile") }),
+    });
+  const proposed = (events: ReadonlyArray<ProviderRuntimeEvent>) =>
+    events.filter((event) => event.type === "turn.proposed.completed");
+
+  it.effect("shows a Plan turn's feedback artifact, in full, as the proposed plan", () =>
+    Effect.gen(function* () {
+      const { adapter, events } = yield* planAdapter();
+      const threadId = ThreadId.make("agy-plan-card");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "Plan it",
+        attachments: [],
+        interactionMode: "plan",
+      });
+      const plans = proposed(events);
+      assert.equal(plans.length, 1);
+      const plan = plans[0]!;
+      const markdown = plan.type === "turn.proposed.completed" ? plan.payload.planMarkdown : "";
+      // Longer than the 8,000 characters tool payloads are trimmed to.
+      assert.isAbove(markdown.length, 8_000);
+      assert.match(markdown, /^# Plan/);
+      assert.match(markdown, /End of plan\.\n$/);
+      const completedIndex = events.findIndex((event) => event.type === "turn.completed");
+      assert.isBelow(events.indexOf(plan), completedIndex);
+
+      const artifactItems = events.filter(
+        (event) => event.type === "item.completed" && event.itemId === "plan-artifact-1",
+      );
+      assert.isAbove(artifactItems.length, 0);
+      for (const item of artifactItems)
+        if (item.type === "item.completed") {
+          assert.equal(item.payload.itemType, "dynamic_tool_call");
+          assert.equal(item.payload.title, "Updated plan artifact implementation_plan.md");
+          assert.notProperty(item.payload.data ?? {}, "changes");
+        }
+
+      // A default-mode turn that writes the same artifact proposes nothing.
+      yield* adapter.sendTurn({ threadId, input: "Implement it", attachments: [] });
+      assert.equal(proposed(events).length, 1);
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("reads Python-style artifact metadata", () =>
+    Effect.gen(function* () {
+      const { adapter, events } = yield* planAdapter({
+        F5_ACP_ANTIGRAVITY_PLAN_METADATA_STRING: "1",
+      });
+      const threadId = ThreadId.make("agy-plan-python-metadata");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "Plan it",
+        attachments: [],
+        interactionMode: "plan",
+      });
+      assert.equal(proposed(events).length, 1);
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("proposes nothing for an artifact that does not request feedback", () =>
+    Effect.gen(function* () {
+      const { adapter, events } = yield* planAdapter({ F5_ACP_ANTIGRAVITY_PLAN_FEEDBACK: "0" });
+      const threadId = ThreadId.make("agy-plan-no-feedback");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "Plan it",
+        attachments: [],
+        interactionMode: "plan",
+      });
+      assert.equal(proposed(events).length, 0);
+      const titles = events.flatMap((event) =>
+        event.type === "item.completed" && event.itemId === "plan-artifact-1"
+          ? [event.payload.title]
+          : [],
+      );
+      assert.include(titles, "Updated artifact implementation_plan.md");
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("treats an edit outside the brain directory as a file change", () =>
+    Effect.gen(function* () {
+      const { adapter, events } = yield* antigravityProfileAdapter({
+        env: (dir) => ({ F5_ACP_ANTIGRAVITY_PLAN_ARTIFACT_ROOT: path.join(dir, "workspace") }),
+        options: (dir) => ({ antigravityProfileDirectory: path.join(dir, "profile") }),
+      });
+      const threadId = ThreadId.make("agy-plan-outside");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "Plan it",
+        attachments: [],
+        interactionMode: "plan",
+      });
+      assert.equal(proposed(events).length, 0);
+      const item = events.find(
+        (event) => event.type === "item.completed" && event.itemId === "plan-artifact-1",
+      );
+      assert.equal(
+        item?.type === "item.completed" ? item.payload.itemType : undefined,
+        "file_change",
+      );
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped),
+  );
+});
+
+rootIt.layer(
+  ServerConfig.layerTest(process.cwd(), { prefix: "f5-agy-interaction-test-" }).pipe(
+    Layer.provideMerge(NodeServices.layer),
+  ),
+)("Antigravity questions through F5's MCP tool", (it) => {
+  const interactionAdapter = (env: Record<string, string> = {}) =>
+    Effect.gen(function* () {
+      const fake = fakeInteractionPreview();
+      const harness = yield* antigravityProfileAdapter({
+        env,
+        options: () => ({
+          previewMcpHttpServer: fake.preview,
+          mcpSessionStdioLaunch: STDIO_LAUNCH,
+        }),
+      });
+      return { ...harness, sessions: fake.sessions };
+    });
+
+  it.effect(
+    "offers the question tool over stdio and appends the guidance to the system prompt",
+    () =>
+      Effect.gen(function* () {
+        const { adapter, requests } = yield* interactionAdapter({
+          ACP_MOCK_SYSTEM_PROMPT_APPEND: "1",
+        });
+        const threadId = ThreadId.make("agy-interaction-catalog");
+        yield* adapter.startSession({
+          threadId,
+          provider: "antigravity",
+          cwd: process.cwd(),
+          runtimeMode: "approval-required",
+        });
+        const created = (yield* requests()).find((request) => request.method === "session/new");
+        const servers = created?.params?.mcpServers as ReadonlyArray<Record<string, unknown>>;
+        const interaction = servers.find((server) =>
+          String(server.name).startsWith("f5_interaction_"),
+        );
+        assert.ok(interaction);
+        assert.match(String(interaction.name), /^f5_interaction_[0-9a-f]{8}$/);
+        assert.equal(interaction.command, "/opt/f5/f5");
+        assert.deepEqual(interaction.args, ["entry.mjs", "mcp-session-stdio"]);
+        assert.deepEqual(interaction.env, [
+          { name: "F5_MCP_URL", value: "http://127.0.0.1:1/mcp/interaction" },
+          { name: "F5_MCP_TOKEN", value: "interaction-token-secret" },
+        ]);
+        const meta = created?.params?._meta as
+          | { antigravity?: { systemPrompt?: { append?: string } } }
+          | undefined;
+        assert.include(meta?.antigravity?.systemPrompt?.append ?? "", "ask_user_question");
+        yield* adapter.stopSession(threadId);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("sends no system prompt guidance to an agent that does not advertise it", () =>
+    Effect.gen(function* () {
+      const { adapter, requests } = yield* interactionAdapter();
+      const threadId = ThreadId.make("agy-interaction-no-append");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      const created = (yield* requests()).find((request) => request.method === "session/new");
+      assert.notProperty(created?.params ?? {}, "_meta");
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("allows the question tool once, even in Plan mode under approval-required", () =>
+    Effect.gen(function* () {
+      const { adapter, events } = yield* interactionAdapter({
+        F5_ACP_ANTIGRAVITY_INTERACTION_PERMISSION: "1",
+      });
+      const threadId = ThreadId.make("agy-interaction-permission");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "Plan it",
+        attachments: [],
+        interactionMode: "plan",
+      });
+      assert.equal(
+        events.some((event) => event.type === "request.opened"),
+        false,
+      );
+      const text = events
+        .flatMap((event) => (event.type === "content.delta" ? [event.payload.delta] : []))
+        .join("");
+      assert.include(text, "permission:allow");
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped),
+  );
+
+  /** An Antigravity session whose prompt runs until the test opens its gate. */
+  const gatedInteraction = (threadName: string, env: Record<string, string> = {}) =>
+    Effect.gen(function* () {
+      const gateDir = yield* Effect.acquireRelease(
+        Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "agy-gate-"))),
+        (dir) => Effect.promise(() => rm(dir, { recursive: true, force: true })),
+      );
+      const gate = path.join(gateDir, "open");
+      const harness = yield* interactionAdapter({ T3_ACP_PROMPT_GATE_PATH: gate, ...env });
+      const threadId = ThreadId.make(threadName);
+      yield* harness.adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      const session = harness.sessions[0]!;
+      const turn = yield* harness.adapter
+        .sendTurn({ threadId, input: "Ask me", attachments: [] })
+        .pipe(Effect.exit, Effect.forkChild);
+      yield* Effect.promise(() =>
+        vi.waitFor(async () =>
+          assert.ok(
+            (await Effect.runPromise(harness.requests())).some(
+              (request) => request.method === "session/prompt",
+            ),
+          ),
+        ),
+      );
+      const ask = () =>
+        Effect.gen(function* () {
+          const opened = yield* Effect.promise(() => session.openQuestion(QUESTIONS));
+          assert.ok("questionId" in opened);
+          const outcome = session.questionOutcome(opened.questionId);
+          assert.ok(outcome);
+          const request = yield* Effect.promise(() =>
+            vi.waitFor(() => {
+              const found = harness.events.find(
+                (event) =>
+                  event.type === "user-input.requested" && event.requestId === opened.questionId,
+              );
+              assert.ok(found?.type === "user-input.requested");
+              return found;
+            }),
+          );
+          return { questionId: opened.questionId, outcome, request };
+        });
+      const openGate = Effect.promise(() => writeFile(gate, ""));
+      return { ...harness, threadId, session, turn, ask, openGate };
+    });
+
+  it.effect("shows the questions as a card and returns the answers", () =>
+    Effect.gen(function* () {
+      const { adapter, events, threadId, turn, ask, openGate } =
+        yield* gatedInteraction("agy-interaction-answer");
+      const { questionId, outcome, request } = yield* ask();
+      assert.deepEqual(request.payload.questions, [
+        {
+          id: "Which database?",
+          header: "Database",
+          question: "Which database?",
+          multiSelect: false,
+          options: [
+            { label: "Postgres", description: "Relational" },
+            { label: "SQLite", description: "Embedded" },
+          ],
+        },
+      ]);
+      assert.ok(request.turnId);
+      yield* adapter.respondToUserInput(threadId, ApprovalRequestId.make(questionId), {
+        "Which database?": "SQLite",
+      });
+      assert.deepEqual(yield* Effect.promise(() => outcome), {
+        answers: { "Which database?": "SQLite" },
+      });
+      assert.equal(events.filter((event) => event.type === "user-input.resolved").length, 1);
+
+      // Dismissing the card answers nothing.
+      const dismissed = yield* ask();
+      yield* adapter.respondToUserInput(threadId, ApprovalRequestId.make(dismissed.questionId), {});
+      assert.deepEqual(yield* Effect.promise(() => dismissed.outcome), { cancelled: true });
+      yield* openGate;
+      yield* Fiber.join(turn);
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("closes the card before the turn that asked completes", () =>
+    Effect.gen(function* () {
+      const { adapter, events, threadId, session, turn, ask, openGate } = yield* gatedInteraction(
+        "agy-interaction-turn-end",
+      );
+      const { questionId, outcome, request } = yield* ask();
+      yield* openGate;
+      const exit = yield* Fiber.join(turn);
+      assert.equal(exit._tag, "Success");
+      assert.deepEqual(yield* Effect.promise(() => outcome), { cancelled: true });
+      const resolvedAt = events.findIndex(
+        (event) => event.type === "user-input.resolved" && event.requestId === questionId,
+      );
+      const completedAt = events.findIndex((event) => event.type === "turn.completed");
+      assert.ok(resolvedAt >= 0 && resolvedAt < completedAt);
+      const warning = events.find((event) => event.type === "runtime.warning");
+      assert.ok(warning?.type === "runtime.warning");
+      assert.include(warning.payload.message, "finished its turn");
+      assert.equal(warning.turnId, request.turnId);
+      // Between turns, nobody waits for an answer: no card opens.
+      assert.deepEqual(yield* Effect.promise(() => session.openQuestion(QUESTIONS)), {
+        cancelled: true,
+      });
+      yield* adapter.stopSession(threadId);
+      assert.deepEqual(yield* Effect.promise(() => session.openQuestion(QUESTIONS)), {
+        cancelled: true,
+      });
+      assert.equal(events.filter((event) => event.type === "user-input.requested").length, 1);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("closes the card when the prompt that asked fails", () =>
+    Effect.gen(function* () {
+      const { adapter, events, threadId, turn, ask, openGate } = yield* gatedInteraction(
+        "agy-interaction-prompt-failure",
+        { T3_ACP_FAIL_PROMPT_AFTER_GATE: "1" },
+      );
+      const { questionId, outcome } = yield* ask();
+      yield* openGate;
+      const exit = yield* Fiber.join(turn);
+      assert.equal(exit._tag, "Failure");
+      assert.deepEqual(yield* Effect.promise(() => outcome), { cancelled: true });
+      assert.ok(
+        events.some(
+          (event) => event.type === "user-input.resolved" && event.requestId === questionId,
+        ),
+      );
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped),
+  );
+});

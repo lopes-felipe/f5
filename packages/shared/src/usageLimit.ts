@@ -144,7 +144,7 @@ export function quotaWindowsFromSection(section: AccountUsageSection): Array<Quo
         label: window.label,
         usedPercent: window.usedPercent,
         resetsAt: window.resetsAt,
-        durationMinutes: null,
+        durationMinutes: window.durationMinutes ?? null,
       }));
     case "claude-usage":
       if (!section.snapshot.data.limitsAvailable) return [];

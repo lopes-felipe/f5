@@ -85,6 +85,7 @@ function antigravitySummaryWindows(
           label: `${family} · ${label}`,
           usedPercent: Math.max(0, Math.min(100, (1 - remaining) * 100)),
           resetsAt: untouched ? null : reset,
+          ...(durationMs !== null ? { durationMinutes: durationMs / 60_000 } : {}),
         },
       ];
     }),

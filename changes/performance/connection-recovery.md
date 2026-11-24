@@ -1,2 +1,0 @@
-- Reconnect faster on unreliable networks and catch up on recent thread changes without reloading the thread list.
-- Keep large thread and settings updates moving on slow connections.

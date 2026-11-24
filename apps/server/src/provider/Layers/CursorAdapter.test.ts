@@ -22,6 +22,7 @@ import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import type { CursorAdapterShape } from "../Services/CursorAdapter.ts";
 import { makeCursorAdapter } from "./CursorAdapter.ts";
+import { TurnAcceptanceSignal } from "../deliveryAttemptContext.ts";
 
 // Test-local service tag so the rest of the file can keep using `yield* CursorAdapter`.
 class CursorAdapter extends ServiceMap.Service<CursorAdapter, CursorAdapterShape>()(
@@ -177,7 +178,11 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         assert.equal(sent.threadId, threadId);
         const events = Array.from(yield* Fiber.join(eventsFiber));
         if (hasCommentary) {
-          const deltas = events.filter((event) => event.type === "content.delta");
+          const deltas = events.flatMap((event) =>
+            event.type === "content.delta" && event.payload.streamKind !== "command_output"
+              ? [event]
+              : [],
+          );
           assert.deepEqual(
             deltas.map((event) => event.payload.delta),
             ["before tool", diagnostic],
@@ -551,7 +556,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
             if (
               event.type === "turn.completed" ||
               (event.type === "item.completed" && event.payload.itemType === "command_execution") ||
-              event.type === "content.delta"
+              (event.type === "content.delta" && event.payload.streamKind !== "command_output")
             ) {
               settledEventTypes.add(event.type);
               if (settledEventTypes.size === 3) {
@@ -654,13 +659,22 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
             assert.equal(String(toolCompleted.itemId), "tool-call-1");
           }
 
-          const contentDelta = turnEvents.find((event) => event.type === "content.delta");
+          const contentDelta = turnEvents.find(
+            (event) =>
+              event.type === "content.delta" && event.payload.streamKind !== "command_output",
+          );
           assert.isDefined(contentDelta);
           if (contentDelta?.type === "content.delta") {
             assert.equal(String(contentDelta.turnId), String(turn.turnId));
             assert.equal(contentDelta.payload.delta, "hello from mock");
             assert.equal(String(contentDelta.itemId), "assistant:mock-session-1:segment:0");
           }
+          const commandOutput = turnEvents.flatMap((event) =>
+            event.type === "content.delta" && event.payload.streamKind === "command_output"
+              ? [[String(event.itemId), event.payload.delta]]
+              : [],
+          );
+          assert.deepEqual(commandOutput, [["tool-call-1", '{ "name": "t3" }']]);
         });
 
         yield* program.pipe(
@@ -726,7 +740,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
             if (
               event.type === "turn.completed" ||
               (event.type === "item.completed" && event.payload.itemType === "command_execution") ||
-              event.type === "content.delta"
+              (event.type === "content.delta" && event.payload.streamKind !== "command_output")
             ) {
               settledEventTypes.add(event.type);
               if (settledEventTypes.size === 3) {
@@ -814,7 +828,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
             return;
           }
           if (
-            event.type === "content.delta" ||
+            (event.type === "content.delta" && event.payload.streamKind !== "command_output") ||
             (event.type === "item.completed" && event.payload.itemType === "command_execution") ||
             event.type === "turn.completed"
           ) {
@@ -901,7 +915,9 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       const assistantStarts = turnEvents.filter(
         (event) => event.type === "item.started" && event.payload.itemType === "assistant_message",
       );
-      const assistantDeltas = turnEvents.filter((event) => event.type === "content.delta");
+      const assistantDeltas = turnEvents.filter(
+        (event) => event.type === "content.delta" && event.payload.streamKind !== "command_output",
+      );
       assert.lengthOf(assistantStarts, 2);
       assert.lengthOf(assistantDeltas, 2);
       if (
@@ -1005,6 +1021,32 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         ),
       );
 
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+  it.effect("reports the delivery accepted once Cursor works on the prompt", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const serverSettings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("cursor-early-acceptance");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockAgentWrapper({ T3_ACP_EMIT_TOOL_CALLS: "1" }),
+      );
+      yield* serverSettings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+      });
+      const accepted: Array<string> = [];
+      const turn = yield* adapter.sendTurn({ threadId, input: "read it", attachments: [] }).pipe(
+        Effect.provideService(TurnAcceptanceSignal, {
+          accept: (receipt) => Effect.sync(() => accepted.push(String(receipt.turnId))),
+        }),
+      );
+      assert.deepEqual(accepted, [String(turn.turnId)]);
       yield* adapter.stopSession(threadId);
     }),
   );
