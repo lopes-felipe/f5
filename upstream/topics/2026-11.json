@@ -94982,12 +94982,14 @@
     },
     {
       "createdAt": "2026-11-23T11:12:01.132Z",
+      "decidedAt": "2026-11-24T00:03:28.996Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-41242",
       "relatedTopics": [
         "pr-39526"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers",
