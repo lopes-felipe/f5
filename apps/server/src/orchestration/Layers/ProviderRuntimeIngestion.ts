@@ -3541,6 +3541,12 @@ const make = Effect.gen(function* () {
   const finalizeAssistantMessage = (input: {
     event: ProviderRuntimeEvent;
     threadId: ThreadId;
+    /** The thread's messages as this event saw them, to tell a closed message apart. */
+    threadMessages: ReadonlyArray<{
+      readonly id: MessageId;
+      readonly role: string;
+      readonly streaming: boolean;
+    }>;
     messageId: MessageId;
     turnId?: TurnId;
     createdAt: string;
@@ -3561,6 +3567,40 @@ const make = Effect.gen(function* () {
                 : (input.fallbackText?.trim().length ?? 0)) > 0
             ? input.fallbackText!
             : "";
+      // Same rationale as the content-delta guard: a closed message drops late deltas, and
+      // the decider's empty result would fail this event and fence the thread's history.
+      const alreadyComplete = input.threadMessages.some(
+        (message) =>
+          message.id === input.messageId &&
+          message.role === "assistant" &&
+          message.streaming === false,
+      );
+      if (alreadyComplete) {
+        if (text.length > 0) {
+          yield* Effect.logWarning(
+            "provider runtime ingestion dropped late assistant finalization on completed message",
+            {
+              threadId: input.threadId,
+              messageId: input.messageId,
+              deltaLength: text.length,
+              eventId: input.event.eventId,
+            },
+          );
+        }
+        // Completing it again would move the message into this turn and restamp it. The
+        // turn's buffered reasoning may belong to another message still streaming: keep it.
+        if (turnKey && bufferedReasoningText.length > 0) {
+          yield* restoreBufferedReasoningText(turnKey, bufferedReasoningText);
+        }
+        yield* flushDeferredReasoningTokens({
+          event: input.event,
+          threadId: input.threadId,
+          messageId: input.messageId,
+        });
+        streamingDeltas.forgetMessage(input.threadId, input.messageId);
+        yield* clearAssistantMessageState(input.messageId);
+        return;
+      }
 
       yield* Effect.gen(function* () {
         if (text.length > 0) {
@@ -4748,6 +4788,7 @@ const make = Effect.gen(function* () {
               yield* finalizeAssistantMessage({
                 event,
                 threadId: thread.id,
+                threadMessages: thread.messages,
                 messageId,
                 turnId,
                 createdAt: event.createdAt,
@@ -6070,6 +6111,7 @@ const make = Effect.gen(function* () {
         yield* finalizeAssistantMessage({
           event,
           threadId: thread.id,
+          threadMessages: thread.messages,
           messageId: assistantMessageId,
           ...(turnId ? { turnId } : {}),
           createdAt: now,
@@ -6180,6 +6222,7 @@ const make = Effect.gen(function* () {
               finalizeAssistantMessage({
                 event,
                 threadId: thread.id,
+                threadMessages: thread.messages,
                 messageId: assistantMessageId,
                 turnId,
                 createdAt: now,
@@ -6257,6 +6300,7 @@ const make = Effect.gen(function* () {
           yield* finalizeAssistantMessage({
             event,
             threadId: thread.id,
+            threadMessages: thread.messages,
             messageId,
             ...(turnId ? { turnId } : {}),
             createdAt: now,

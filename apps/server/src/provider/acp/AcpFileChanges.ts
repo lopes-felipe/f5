@@ -13,16 +13,18 @@ export function acpFileChanges(content: unknown): ReadonlyArray<Record<string, u
     const diff = record(entry);
     if (diff?.type !== "diff") return [];
     const patch = record(diff.patch);
-    if (patch?.format === "omitted") return [];
+    const changes = Array.isArray(diff.changes) ? diff.changes : [];
+    const first = record(changes[0]);
+    const path =
+      typeof first?.path === "string"
+        ? first.path
+        : typeof diff.path === "string"
+          ? diff.path
+          : undefined;
+    // Without a patch the file still changed: keep its path so the row names it, and let the
+    // turn's checkpoint diff show the content.
+    if (patch?.format === "omitted") return path ? [{ path, type: "update" }] : [];
     if (typeof patch?.text === "string") {
-      const changes = Array.isArray(diff.changes) ? diff.changes : [];
-      const first = record(changes[0]);
-      const path =
-        typeof first?.path === "string"
-          ? first.path
-          : typeof diff.path === "string"
-            ? diff.path
-            : undefined;
       if (!path) return [];
       const oldPath = typeof first?.oldPath === "string" ? first.oldPath : path;
       const before = first?.operation === "add" ? "/dev/null" : "a/" + oldPath;

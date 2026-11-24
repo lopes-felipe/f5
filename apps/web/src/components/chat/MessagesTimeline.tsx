@@ -140,6 +140,8 @@ import {
   type DynamicToolIconKind,
   findNearestMinimapMarkerIndex,
   formatWorkingLabel,
+  allowsTurnFileFallback,
+  countFileChangeEntriesByTurn,
   isFileChangeWorkEntry,
   isFileReadWorkEntry,
   isSearchWorkEntry,
@@ -467,6 +469,8 @@ export interface ChatDiffContext {
   inferredCheckpointTurnCountByTurnId: Record<TurnId, number>;
   expandedFileChangeDiffs: Record<string, boolean>;
   fileChangeSummariesById: Record<string, OrchestrationFileChangeSummary>;
+  /** Derived from `fileChangeSummariesById` for the rows; callers need not pass it. */
+  fileChangeCountByTurnId?: Record<TurnId, number>;
   onToggleFileChangeDiff: (workEntryId: string) => void;
   onOpenFileChangeDiff: (fileChangeId: OrchestrationFileChangeId, filePath?: string) => void;
 }
@@ -489,6 +493,7 @@ const EMPTY_CHAT_DIFF_CONTEXT: ChatDiffContext = {
   inferredCheckpointTurnCountByTurnId: {},
   expandedFileChangeDiffs: {},
   fileChangeSummariesById: {},
+  fileChangeCountByTurnId: {},
   onToggleFileChangeDiff: () => {},
   onOpenFileChangeDiff: () => {},
 };
@@ -1488,13 +1493,25 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     }),
     [],
   );
+  // Counted from the rows, not the exact summaries, which stay empty while inline diffs are
+  // off or still loading. Kept stable while the counts are unchanged.
+  const fileChangeCountRef = useRef<Readonly<Record<TurnId, number>>>({});
+  const fileChangeCountByTurnId = useMemo(() => {
+    const counts = countFileChangeEntriesByTurn(
+      timelineEntries.flatMap((entry) => (entry.kind === "work" ? [entry.entry] : [])),
+      fileChangeCountRef.current,
+    );
+    fileChangeCountRef.current = counts;
+    return counts;
+  }, [timelineEntries]);
   const rowChatDiffContext = useMemo<ChatDiffContext>(
     () => ({
       ...chatDiffContext,
+      fileChangeCountByTurnId,
       onToggleFileChangeDiff: rowActions.onToggleFileChangeDiff,
       onOpenFileChangeDiff: rowActions.onOpenFileChangeDiff,
     }),
-    [chatDiffContext, rowActions],
+    [chatDiffContext, fileChangeCountByTurnId, rowActions],
   );
   const timelineRowContext = useMemo<TimelineRowContextValue>(
     () => ({
@@ -2774,6 +2791,8 @@ export function changedFilesForPreview(
   workEntry: Pick<TimelineWorkEntry, "cwd" | "turnId" | "changedFiles">,
   turnDiffSummaryByTurnId: Map<TurnId, TurnDiffSummary>,
   workspaceRoot: string | undefined,
+  /** False when the turn has other file changes, which would each claim all its files. */
+  allowTurnFallback = true,
 ): WorkEntryChangedFilePreview[] | undefined {
   const directChangedFiles = workEntry.changedFiles;
   if (directChangedFiles && directChangedFiles.length > 0) {
@@ -2781,7 +2800,7 @@ export function changedFilesForPreview(
       resolveWorkEntryFilePreview(filePath, workEntry.cwd, workspaceRoot),
     );
   }
-  if (!workEntry.turnId) {
+  if (!workEntry.turnId || !allowTurnFallback) {
     return undefined;
   }
   const turnSummary = turnDiffSummaryByTurnId.get(workEntry.turnId);
@@ -3054,13 +3073,19 @@ function resolveInlineFilePreview(
   >,
   turnDiffSummaryByTurnId: Map<TurnId, TurnDiffSummary>,
   workspaceRoot: string | undefined,
+  allowTurnFallback = true,
 ): InlineFilePreview | null {
   const normalizedReadPreview = workEntryInlineFilePreview(workEntry, workEntry.cwd, workspaceRoot);
   if (normalizedReadPreview) {
     return normalizedReadPreview;
   }
 
-  const changedFiles = changedFilesForPreview(workEntry, turnDiffSummaryByTurnId, workspaceRoot);
+  const changedFiles = changedFilesForPreview(
+    workEntry,
+    turnDiffSummaryByTurnId,
+    workspaceRoot,
+    allowTurnFallback,
+  );
   const fileReadEntry = isFileReadWorkEntry(workEntry);
   const fileChangeEntry = isFileChangeWorkEntry(workEntry);
   if (
@@ -3146,6 +3171,7 @@ function workEntryPreview(
   >,
   turnDiffSummaryByTurnId: Map<TurnId, TurnDiffSummary>,
   workspaceRoot: string | undefined,
+  allowTurnFallback = true,
 ) {
   const searchSummary = normalizedSearchSummary(workEntry);
   if (searchSummary) {
@@ -3157,7 +3183,7 @@ function workEntryPreview(
   if (workEntry.itemType === "mcp_tool_call") return undefined;
 
   const changedFilesPreview = formatChangedFilesPreview(
-    changedFilesForPreview(workEntry, turnDiffSummaryByTurnId, workspaceRoot),
+    changedFilesForPreview(workEntry, turnDiffSummaryByTurnId, workspaceRoot, allowTurnFallback),
   );
   const isFileChangeRow =
     workEntry.requestKind === "file-change" ||
@@ -3346,12 +3372,27 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const iconConfig = workToneIcon(workEntry.tone);
   const EntryIcon = workEntryIcon(workEntry);
   const heading = toolWorkEntryHeading(workEntry);
-  const preview = workEntryPreview(workEntry, turnDiffSummaryByTurnId, workspaceRoot);
+  const allowTurnFallback = allowsTurnFileFallback(
+    workEntry,
+    chatDiffContext.fileChangeCountByTurnId,
+  );
+  const preview = workEntryPreview(
+    workEntry,
+    turnDiffSummaryByTurnId,
+    workspaceRoot,
+    allowTurnFallback,
+  );
   const handleFileNavigation = useFileNavigation();
   const fileChangeEntry = isFileChangeWorkEntry(workEntry);
   const inlineFilePreview = useMemo(
-    () => resolveInlineFilePreview(workEntry, turnDiffSummaryByTurnId, workspaceRoot),
-    [turnDiffSummaryByTurnId, workEntry, workspaceRoot],
+    () =>
+      resolveInlineFilePreview(
+        workEntry,
+        turnDiffSummaryByTurnId,
+        workspaceRoot,
+        allowTurnFallback,
+      ),
+    [allowTurnFallback, turnDiffSummaryByTurnId, workEntry, workspaceRoot],
   );
   const commandReadFiles = useMemo(
     () => workEntryReadFilesForPreview(workEntry, workEntry.cwd, workspaceRoot),
@@ -3361,10 +3402,15 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
     if (!fileChangeEntry) {
       return [];
     }
-    return (changedFilesForPreview(workEntry, turnDiffSummaryByTurnId, workspaceRoot) ?? []).filter(
-      (file) => file.targetPath.length > 0,
-    );
-  }, [fileChangeEntry, turnDiffSummaryByTurnId, workEntry, workspaceRoot]);
+    return (
+      changedFilesForPreview(
+        workEntry,
+        turnDiffSummaryByTurnId,
+        workspaceRoot,
+        allowTurnFallback,
+      ) ?? []
+    ).filter((file) => file.targetPath.length > 0);
+  }, [allowTurnFallback, fileChangeEntry, turnDiffSummaryByTurnId, workEntry, workspaceRoot]);
   const fileChangeFiles = useMemo(() => {
     if (!fileChangeEntry) {
       return [];
@@ -3414,11 +3460,11 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
     workEntry.id,
     chatDiffContext.expandedFileChangeDiffs,
   );
+  // An empty list means unknown, not zero files.
   const inlineDiffFileCount =
-    exactFileChangeSummary?.changedFiles.length ??
-    fileChangeFiles.length ??
-    workEntry.changedFiles?.length ??
-    0;
+    [exactFileChangeSummary?.changedFiles, fileChangeFiles, workEntry.changedFiles].find(
+      (files) => (files?.length ?? 0) > 0,
+    )?.length ?? 0;
   const previewIsChangedFiles =
     hasChangedFiles &&
     !workEntry.command &&
@@ -5981,10 +6027,16 @@ function describeTimelineRowExternals(
         const fileChangeSummary = entry.fileChangeId
           ? chatDiffContext.fileChangeSummariesById[entry.fileChangeId]
           : undefined;
+        // Whether the row may borrow the turn's files depends on its sibling file changes.
+        const allowTurnFallback = allowsTurnFileFallback(
+          entry,
+          chatDiffContext.fileChangeCountByTurnId,
+        );
         return [
           timelineObjectVersion(turnSummary),
           inferredCheckpointTurnCount,
           timelineObjectVersion(fileChangeSummary),
+          allowTurnFallback ? "fallback" : "own",
           isInlineFileChangeDiffExpanded(entry.id, chatDiffContext.expandedFileChangeDiffs)
             ? "expanded"
             : "collapsed",

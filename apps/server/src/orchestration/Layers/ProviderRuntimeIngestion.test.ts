@@ -1,6 +1,7 @@
 import { backgroundWorkSessionIdentity } from "../../provider/backgroundWorkIdentity.ts";
 import { withProviderThreadAccess } from "../../provider/providerThreadAccess.ts";
 import { makeOrphanedSessionExitedEvent } from "../../provider/orphanedTurnRecovery.ts";
+import { acpFileChanges } from "../../provider/acp/AcpFileChanges.ts";
 import { CodexMcpEventBus } from "../../codex/CodexMcpEventBus.ts";
 import { CodexAppServerManager } from "../../codexAppServerManager.ts";
 import { makeCodexAdapter } from "../../provider/Layers/CodexAdapter.ts";
@@ -6101,6 +6102,122 @@ describe("ProviderRuntimeIngestion", () => {
     expect(message?.streaming).toBe(false);
   });
 
+  it("finalizing an already completed message never fences history", async () => {
+    const harness = await createHarness();
+    const reconciliations: Array<ProviderRuntimeEvent> = [];
+    Object.assign(harness.providerService, {
+      requireHistoryReconciliation: (event: ProviderRuntimeEvent) =>
+        Effect.sync(() => {
+          reconciliations.push(event);
+        }),
+    });
+    const now = new Date().toISOString();
+    const itemId = asItemId("assistant:session-1:segment:0");
+    const messageId = "assistant:assistant:session-1:segment:0";
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-reused-item-turn-1"),
+      provider: "antigravity",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reused-item-1"),
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-reused-item-delta-1"),
+      provider: "antigravity",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reused-item-1"),
+      itemId,
+      payload: { streamKind: "assistant_text", delta: "first answer" },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-reused-item-completed-1"),
+      provider: "antigravity",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reused-item-1"),
+      itemId,
+      payload: { itemType: "assistant_message", status: "completed" },
+    });
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-reused-item-turn-1-completed"),
+      provider: "antigravity",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reused-item-1"),
+      payload: { state: "completed" },
+    });
+    await waitForThread(harness.engine, (thread) =>
+      thread.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === messageId && !message.streaming && message.text === "first answer",
+      ),
+    );
+    const before = (await Effect.runPromise(harness.engine.getReadModel())).threads
+      .find((entry) => entry.id === asThreadId("thread-1"))
+      ?.messages.find((entry: ProviderRuntimeTestMessage) => entry.id === messageId);
+    expect(before?.turnId).toBe("turn-reused-item-1");
+    const later = new Date(Date.parse(now) + 60_000).toISOString();
+
+    // A resumed runtime that reuses the item id: its reasoning and text arrive for a message
+    // that is already closed, and so does its completion.
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-reused-item-turn-2"),
+      provider: "antigravity",
+      createdAt: later,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reused-item-2"),
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-reused-item-reasoning-2"),
+      provider: "antigravity",
+      createdAt: later,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reused-item-2"),
+      itemId,
+      payload: { streamKind: "reasoning_text", delta: "thinking" },
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-reused-item-delta-2"),
+      provider: "antigravity",
+      createdAt: later,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reused-item-2"),
+      itemId,
+      payload: { streamKind: "assistant_text", delta: "second answer" },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-reused-item-completed-2"),
+      provider: "antigravity",
+      createdAt: later,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reused-item-2"),
+      itemId,
+      payload: { itemType: "assistant_message", status: "completed" },
+    });
+    await harness.drain();
+
+    expect(reconciliations).toEqual([]);
+    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const message = readModel.threads
+      .find((entry) => entry.id === asThreadId("thread-1"))
+      ?.messages.find((entry: ProviderRuntimeTestMessage) => entry.id === messageId);
+    expect(message?.text).toBe("first answer");
+    expect(message?.streaming).toBe(false);
+    // Not moved into the later turn, nor restamped.
+    expect(message?.turnId).toBe("turn-reused-item-1");
+    expect(message?.updatedAt).toBe(before?.updatedAt);
+  });
+
   it("keeps computer approvals answerable through sanitized runtime ingestion", async () => {
     const harness = await createHarness();
     const threadId = asThreadId("thread-1");
@@ -9054,6 +9171,52 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(exact.fileChange?.patch).toContain("new file mode 100644");
     expect(exact.fileChange?.patch).toContain("+This is a harmless scratch file.");
+  });
+
+  it("records the edited path of an ACP file change whose patch was omitted", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    const content = [{ type: "diff", path: "src/omitted.ts", patch: { format: "omitted" } }];
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-acp-omitted-turn-started"),
+      provider: "antigravity",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-acp-omitted"),
+      payload: {},
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-acp-omitted-completed"),
+      provider: "antigravity",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-acp-omitted"),
+      itemId: asItemId("item-acp-omitted"),
+      payload: {
+        itemType: "file_change",
+        status: "completed",
+        title: "File src/omitted.ts",
+        // As makeAcpToolCallEvent attaches it.
+        data: { content, changes: acpFileChanges(content) },
+      },
+    });
+
+    await harness.drain();
+
+    const summaries = await Effect.runPromise(
+      harness.threadFileChangeQuery.getThreadFileChanges({
+        threadId: asThreadId("thread-1"),
+      }),
+    );
+    expect(summaries.fileChanges).toHaveLength(1);
+    expect(summaries.fileChanges[0]).toMatchObject({
+      status: "completed",
+      changedFiles: ["src/omitted.ts"],
+      hasPatch: false,
+    });
   });
 
   it("preserves existing unified diff file headers without duplicating them", async () => {
