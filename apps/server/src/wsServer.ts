@@ -6,7 +6,11 @@ import {
 } from "./project/AgentSessionImporter";
 import { desktopBusyThreadCount } from "./orchestration/sessionBusy.ts";
 import { startKeepAwake } from "./background/KeepAwake";
-import { DESKTOP_ACTIVITY_PATH, type DesktopBackendActivity } from "@t3tools/shared/backendPaths";
+import {
+  DESKTOP_ACTIVITY_PATH,
+  ORCHESTRATION_STARTUP_SNAPSHOT_PATH,
+  type DesktopBackendActivity,
+} from "@t3tools/shared/backendPaths";
 import { bindSubmissionTurnIds } from "./nextTurnQueue/submissionStatus.ts";
 import { cancelQueuedSubmission } from "./nextTurnQueue/cancelSubmission.ts";
 import { makeScheduledNotificationDelivery } from "./scheduledTasks/notificationDelivery.ts";
@@ -204,6 +208,11 @@ import {
 import { makeServerSecretStore } from "./auth/Layers/ServerSecretStore";
 import { integrationUnavailableDetail } from "@t3tools/shared/providerIntegrationCertification";
 import { ProfileRegistryStore, fallbackDefaultProfile } from "./profiles/ProfileRegistryStore";
+import {
+  GUEST_PROFILE_MUTATION_REFUSAL,
+  guestActiveProfile,
+  guestProfileSnapshot,
+} from "./profiles/guestProfileIdentity.ts";
 import { ProviderAccountService } from "./profiles/ProviderAccountService";
 /**
  * Server - HTTP/WebSocket server service interface.
@@ -215,6 +224,8 @@ import { ProviderAccountService } from "./profiles/ProviderAccountService";
  */
 import http from "node:http";
 import { createHash, randomUUID } from "node:crypto";
+import { promisify } from "node:util";
+import { gzip } from "node:zlib";
 import fsPromises from "node:fs/promises";
 import type { Duplex } from "node:stream";
 
@@ -236,9 +247,11 @@ import {
   type OrchestrationEvent,
   ORCHESTRATION_WS_CHANNELS,
   ORCHESTRATION_WS_METHODS,
+  type OrchestrationGetStartupSnapshotInput,
   PR_HUB_WS_CHANNELS,
   PR_HUB_WS_METHODS,
   ProjectId,
+  type ProfileSummary,
   ThreadId,
   ProviderInstanceId,
   WS_CHANNELS,
@@ -462,6 +475,7 @@ import { PreviewAutomationBroker } from "./mcp/PreviewAutomationBroker.ts";
 import { computerUseLease } from "./provider/computerUseLease.ts";
 import { PrHubAdvisoryService } from "./prHub/Services/PrHubAdvisoryService.ts";
 import { PrHubService } from "./prHub/Services/PrHubService.ts";
+import { cursorSdkHarnessHostAvailability } from "./provider/cursor/cursorHarnessDescriptor.ts";
 
 /**
  * ServerShape - Service API for server lifecycle control.
@@ -496,6 +510,9 @@ type SubmissionSource = "human" | "automation";
 
 const clientDiagnosticsReporter = makeClientDiagnosticsReporter();
 const BACKEND_INCARNATION = process.env.F5_DESKTOP_BACKEND_INCARNATION || crypto.randomUUID();
+const MAX_RECONNECT_REPLAY_EVENTS = 128;
+const MAX_RECONNECT_REPLAY_BYTES = 512 * 1024;
+const gzipSnapshot = promisify(gzip);
 
 const DESKTOP_RENDERER_ORIGIN = "t3://app";
 const PRIVATE_CORS_METHODS = new Set(["GET", "POST"]);
@@ -1127,7 +1144,7 @@ export const createServer = Effect.fn(function* (
     ],
     ...(serverConfig.trustedProxies ? { trustedProxies: serverConfig.trustedProxies } : {}),
   });
-  const availableEditors = resolveAvailableEditors();
+  const availableEditors = yield* Effect.promise(() => resolveAvailableEditors());
 
   const gitManager = yield* GitManager;
   const terminalManager = yield* TerminalManager;
@@ -1311,7 +1328,7 @@ export const createServer = Effect.fn(function* (
     const invalidDirectories = await invalidExecutionDirectories(serverConfig.stateDir).catch(
       () => [],
     );
-    return {
+    const enriched = {
       ...snapshot,
       profiles: snapshot.profiles.map((profile) =>
         profile.isActive
@@ -1324,6 +1341,24 @@ export const createServer = Effect.fn(function* (
           : profile,
       ),
     };
+    // A Linux VM guest reports the host's VM profile, never its own Default.
+    return serverConfig.guestProfileId
+      ? guestProfileSnapshot(enriched, serverConfig.guestProfileId, serverConfig.port)
+      : enriched;
+  };
+  /** The welcome's profile when the registry has no active record (e.g. it can't be read). */
+  const welcomeFallback = (): ProfileSummary => {
+    const profile: ProfileSummary = {
+      ...fallbackDefaultProfile(defaultProfileStateDir),
+      ...activeProfile,
+      port,
+      stateDir: serverConfig.stateDir,
+      isActive: true,
+      providerAccounts: [],
+    };
+    return serverConfig.guestProfileId
+      ? guestActiveProfile(profile, serverConfig.guestProfileId, port)
+      : profile;
   };
   let profileReadCache: { expires: number; value: ReturnType<typeof computeProfiles> } | undefined;
   const readProfiles = () => {
@@ -2311,7 +2346,8 @@ export const createServer = Effect.fn(function* (
           return;
         }
         if (
-          (url.pathname.startsWith("/api/storage/") ||
+          (url.pathname === ORCHESTRATION_STARTUP_SNAPSHOT_PATH ||
+            url.pathname.startsWith("/api/storage/") ||
             url.pathname.startsWith("/api/attachments/")) &&
           !serverAuth.isWebSocketOriginAllowed(req)
         ) {
@@ -2404,6 +2440,50 @@ export const createServer = Effect.fn(function* (
             { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" },
             JSON.stringify(SERVER_BOOTSTRAP),
           );
+          return;
+        }
+        if (url.pathname === ORCHESTRATION_STARTUP_SNAPSHOT_PATH) {
+          const headers = {
+            "Cache-Control": "no-store",
+            "Content-Type": "application/json; charset=utf-8",
+            Vary: "Origin, Accept-Encoding",
+          };
+          if (req.method !== "GET") {
+            respond(405, { ...headers, Allow: "GET" });
+            return;
+          }
+          if (url.searchParams.get("incarnation") !== BACKEND_INCARNATION) {
+            respond(409, headers);
+            return;
+          }
+          const detailThreadId = url.searchParams.get("detailThreadId");
+          const parsedDetailThreadId =
+            detailThreadId === null
+              ? Option.none()
+              : Schema.decodeUnknownOption(ThreadId)(detailThreadId);
+          if (detailThreadId !== null && Option.isNone(parsedDetailThreadId)) {
+            respond(400, headers);
+            return;
+          }
+          yield* awaitOrchestrationRuntimeForRoute;
+          const snapshot = yield* readStartupSnapshot(
+            Option.isSome(parsedDetailThreadId)
+              ? { detailThreadId: parsedDetailThreadId.value }
+              : {},
+            "http",
+          );
+          const json = JSON.stringify(snapshot);
+          const acceptGzip = req.headers["accept-encoding"]
+            ?.split(",")
+            .some((encoding) =>
+              /^\s*gzip\s*(?:;\s*q=(?:1(?:\.0*)?|0\.\d*[1-9]\d*))?\s*$/i.test(encoding),
+            );
+          if (acceptGzip) {
+            const body = yield* Effect.tryPromise(() => gzipSnapshot(json));
+            respond(200, { ...headers, "Content-Encoding": "gzip" }, body);
+          } else {
+            respond(200, headers, json);
+          }
           return;
         }
 
@@ -3725,6 +3805,16 @@ export const createServer = Effect.fn(function* (
         ),
     }),
   );
+  /** Provider inventory routes: a project id to its workspace root; paths never come from the browser. */
+  const resolveProviderInventoryProjectRoot = (projectId: string | undefined) =>
+    Effect.gen(function* () {
+      if (!projectId) return undefined;
+      const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+      const model = yield* orchestrationEngine.getReadModel();
+      const project = model.projects.find((p) => p.id === projectId && p.deletedAt === null);
+      if (!project) return yield* new RouteRequestError({ message: "Project not found." });
+      return project.workspaceRoot;
+    });
   const withTerminalThreadAccess = <A>(threadId: string, action: Effect.Effect<A, TerminalError>) =>
     Effect.gen(function* () {
       const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
@@ -4224,6 +4314,30 @@ export const createServer = Effect.fn(function* (
       });
     });
 
+  const readStartupSnapshot = (
+    body: OrchestrationGetStartupSnapshotInput,
+    transport: "ws" | "http",
+  ) =>
+    withWsThreadOpenTiming({
+      method: ORCHESTRATION_WS_METHODS.getStartupSnapshot,
+      threadId: body.detailThreadId ?? null,
+      effect: Effect.gen(function* () {
+        if (body.detailThreadId) {
+          yield* reconcileThreadSnapshotsInBackground({
+            threadId: body.detailThreadId,
+            reason: transport + ":getStartupSnapshot",
+          });
+        }
+        return yield* projectionReadModelQuery.getStartupSnapshot(body);
+      }),
+      summarize: (result) => ({
+        snapshotSequence: result.snapshot.snapshotSequence,
+        threadCount: result.snapshot.threads.length,
+        bundledTailMessages: result.threadTailDetails?.messages.length ?? 0,
+        bundledTailCheckpoints: result.threadTailDetails?.checkpoints.length ?? 0,
+      }),
+    });
+
   const resolveMcpAccount = async <
     T extends {
       binaryPath?: string | undefined;
@@ -4497,6 +4611,7 @@ export const createServer = Effect.fn(function* (
         list: readProfiles,
         defaultStateDir: defaultProfileStateDir,
         activeProfileId: activeProfile.id,
+        ...(serverConfig.guestProfileId ? { mutationRefusal: GUEST_PROFILE_MUTATION_REFUSAL } : {}),
       }),
     )
     .and(
@@ -5044,38 +5159,39 @@ export const createServer = Effect.fn(function* (
 
       case ORCHESTRATION_WS_METHODS.getLatestSequence: {
         const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
-        return {
+        const response = {
           latestSequence: (yield* orchestrationEngine.getReadModel()).snapshotSequence,
           backendIncarnation: BACKEND_INCARNATION,
         };
+        const resume = request.body.resume;
+        if (resume?.backendIncarnation !== BACKEND_INCARNATION) return response;
+        const snapshotRequired = { ...response, snapshotRequired: true as const };
+        const gap = response.latestSequence - resume.afterSequence;
+        if (gap < 0 || gap > MAX_RECONNECT_REPLAY_EVENTS) return snapshotRequired;
+        if (gap === 0) return { ...response, events: [] };
+
+        const events = yield* orchestrationEngine
+          .readEvents(resume.afterSequence, { limit: gap })
+          .pipe(
+            Stream.runCollect,
+            Effect.orElseSucceed(() => []),
+          );
+        if (events.length !== gap) return snapshotRequired;
+        let bytes = 0;
+        for (const [index, event] of events.entries()) {
+          if (event.sequence !== resume.afterSequence + index + 1) return snapshotRequired;
+          bytes += Buffer.byteLength(JSON.stringify(event));
+          if (bytes > MAX_RECONNECT_REPLAY_BYTES) return snapshotRequired;
+        }
+        return { ...response, events };
       }
       case ORCHESTRATION_WS_METHODS.getSnapshot: {
         const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
         return yield* orchestrationEngine.getReadModel();
       }
 
-      case ORCHESTRATION_WS_METHODS.getStartupSnapshot: {
-        const body = stripRequestTag(request.body);
-        return yield* withWsThreadOpenTiming({
-          method: ORCHESTRATION_WS_METHODS.getStartupSnapshot,
-          threadId: body?.detailThreadId ?? null,
-          effect: Effect.gen(function* () {
-            if (body?.detailThreadId) {
-              yield* reconcileThreadSnapshotsInBackground({
-                threadId: body.detailThreadId,
-                reason: "ws:getStartupSnapshot",
-              });
-            }
-            return yield* projectionReadModelQuery.getStartupSnapshot(body);
-          }),
-          summarize: (result) => ({
-            snapshotSequence: result.snapshot.snapshotSequence,
-            threadCount: result.snapshot.threads.length,
-            bundledTailMessages: result.threadTailDetails?.messages.length ?? 0,
-            bundledTailCheckpoints: result.threadTailDetails?.checkpoints.length ?? 0,
-          }),
-        });
-      }
+      case ORCHESTRATION_WS_METHODS.getStartupSnapshot:
+        return yield* readStartupSnapshot(stripRequestTag(request.body), "ws");
 
       case ORCHESTRATION_WS_METHODS.getRewindDrafts: {
         const body = stripRequestTag(request.body);
@@ -7003,6 +7119,7 @@ export const createServer = Effect.fn(function* (
           diagnostics: publicOtlpConfiguration(
             resolveOtlpConfiguration(settings.observability, process.env),
           ),
+          cursorSdkHarness: cursorSdkHarnessHostAvailability(serverConfig),
         };
 
       case WS_METHODS.serverGetProjectSettings: {
@@ -7072,7 +7189,14 @@ export const createServer = Effect.fn(function* (
       }
 
       case WS_METHODS.serverRefreshProviders: {
-        const { instanceId } = stripRequestTag(request.body);
+        const { instanceId, discoverModels } = stripRequestTag(request.body);
+        // Only the Settings refresh asks for it: drivers with an expensive catalog discovery
+        // (Antigravity) run it then, never for health checks, session restarts, startup or
+        // periodic refreshes.
+        if (discoverModels === true)
+          for (const instance of yield* providerInstanceRegistry.listInstances)
+            if (instanceId === undefined || instance.instanceId === instanceId)
+              yield* instance.requestModelDiscovery ?? Effect.void;
         if (instanceId) yield* providerRegistry.refreshInstance(instanceId);
         else yield* providerRegistry.refresh();
         const providers = yield* providerAdvisoryProjection.getProviders;
@@ -7131,16 +7255,7 @@ export const createServer = Effect.fn(function* (
         if (!instance) {
           return yield* new RouteRequestError({ message: "Provider instance not found." });
         }
-        let projectRoot: string | undefined;
-        if (body.projectId) {
-          const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
-          const model = yield* orchestrationEngine.getReadModel();
-          const project = model.projects.find(
-            (p) => p.id === body.projectId && p.deletedAt === null,
-          );
-          if (!project) return yield* new RouteRequestError({ message: "Project not found." });
-          projectRoot = project.workspaceRoot;
-        }
+        const projectRoot = yield* resolveProviderInventoryProjectRoot(body.projectId);
         const entries = instance.inventory
           ? yield* instance
               .inventory({ projectRoot })
@@ -7163,6 +7278,22 @@ export const createServer = Effect.fn(function* (
           ...(body.projectId ? { projectId: body.projectId } : {}),
           ...entries,
         };
+      }
+      case WS_METHODS.serverTrustProviderHooks: {
+        const body = stripRequestTag(request.body);
+        const instance = yield* providerInstanceRegistry.getInstance(body.instanceId);
+        if (!instance || instance.driverKind !== "codex" || !instance.trustHooks)
+          return yield* new RouteRequestError({
+            message: "Hook approval is only available for a configured Codex provider.",
+          });
+        const projectRoot = yield* resolveProviderInventoryProjectRoot(body.projectId);
+        return yield* instance
+          .trustHooks({ projectRoot, hooks: body.hooks })
+          .pipe(
+            Effect.mapError(
+              (error) => new RouteRequestError({ message: error.detail ?? error.message }),
+            ),
+          );
       }
 
       case WS_METHODS.serverValidateHarnesses: {
@@ -8444,6 +8575,7 @@ export const createServer = Effect.fn(function* (
   });
 
   wss.on("connection", (ws) => {
+    let disconnectRecorded = false;
     socketLiveness.add(ws);
     logger.info("websocket transport negotiated", {
       runtime: webSocketRuntimeName(),
@@ -8481,14 +8613,7 @@ export const createServer = Effect.fn(function* (
           pushBus.publishClient(ws, WS_CHANNELS.serverWelcome, {
             ...welcomeData,
             runtime: (welcomeRuntime = currentRuntimeReadiness()),
-            profile: snapshot.profiles.find((profile) => profile.isActive) ?? {
-              ...fallbackDefaultProfile(defaultProfileStateDir),
-              ...activeProfile,
-              port,
-              stateDir: serverConfig.stateDir,
-              isActive: true,
-              providerAccounts: [],
-            },
+            profile: snapshot.profiles.find((profile) => profile.isActive) ?? welcomeFallback(),
             ...(snapshot.diagnostic ? { profileDiagnostic: snapshot.diagnostic } : {}),
             ...(getDatabaseDamage() ? { databaseDamage: getDatabaseDamage()! } : {}),
           }),
@@ -8500,7 +8625,16 @@ export const createServer = Effect.fn(function* (
         ),
         Effect.flatMap((delivered) =>
           delivered
-            ? Ref.update(clients, (clients) => clients.add(ws)).pipe(
+            ? Ref.modify(clients, (clients) =>
+                ws.readyState === ws.OPEN && !disconnectRecorded
+                  ? [true, clients.add(ws)]
+                  : [false, clients],
+              )
+            : Effect.succeed(false),
+        ),
+        Effect.flatMap((joined) =>
+          joined
+            ? Effect.void.pipe(
                 // Readiness that changed between the welcome and joining the
                 // broadcast set would otherwise be lost for this client.
                 Effect.andThen(
@@ -8567,7 +8701,6 @@ export const createServer = Effect.fn(function* (
       void runPromise(handleMessage(ws, raw).pipe(Effect.ignoreCause({ log: true })));
     });
 
-    let disconnectRecorded = false;
     const recordDisconnect = () => {
       if (disconnectRecorded) {
         return;

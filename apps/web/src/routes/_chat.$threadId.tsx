@@ -1018,9 +1018,9 @@ export const Route = createFileRoute("/_chat/$threadId")({
   validateSearch: (search) => parseDiffRouteSearch(search),
   search: {
     middlewares: [
+      // timelineEntryId/timelineEntryKind are one-shot deep links and must not
+      // be retained: a message id from one thread is unavailable in the next.
       retainSearchParams<DiffRouteSearch>([
-        "timelineEntryId",
-        "timelineEntryKind",
         "diff",
         "diffTurnId",
         "diffFileChangeId",

@@ -242,6 +242,7 @@ export function ComposerFooterControls(props: {
           showInteractionModeToggle={mode.showInteractionModeToggle}
           planSidebarOpen={mode.planSidebarOpen}
           provider={model.selectedProvider}
+          availableRuntimeModes={mode.availableRuntimeModes}
           runtimeMode={mode.runtimeMode}
           contextSummary={props.contextSummary}
           traitsMenuContent={
@@ -297,6 +298,7 @@ export function ComposerFooterControls(props: {
           <RuntimeModePicker
             disabled={isPendingTurnDispatchBlocked}
             provider={model.selectedProvider}
+            availableRuntimeModes={mode.availableRuntimeModes}
             value={mode.runtimeMode}
             onValueChange={mode.handleRuntimeModeChange}
           />

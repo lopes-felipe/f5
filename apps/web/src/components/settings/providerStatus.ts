@@ -142,6 +142,8 @@ export function formatProviderInstallChannel(
       return "npm";
     case "homebrew":
       return "Homebrew";
+    case "mise":
+      return "mise";
     case "self-update":
       return "built-in updater";
     case "bundled":

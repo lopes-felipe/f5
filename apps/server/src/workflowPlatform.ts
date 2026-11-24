@@ -1,13 +1,26 @@
-import { DOCUMENT_WORKFLOW_TEMPLATE_ID } from "@t3tools/contracts";
+import { DOCUMENT_WORKFLOW_TEMPLATE_ID, type WorkflowParticipantId } from "@t3tools/contracts";
+import {
+  codeReviewReviewers,
+  investigationCrossReviews,
+  investigationInvestigators,
+  planningBranches,
+  planningBranchIds,
+  workflowParticipantIds,
+  workflowParticipantLabel,
+  workflowUsesMesh,
+} from "@t3tools/shared/workflowParticipants";
 import { isDocumentWorkflow } from "@t3tools/shared/documentWorkflow";
 import {
   deriveCodeReviewWorkflowStatus,
   deriveInvestigationWorkflowStatus,
+} from "@t3tools/shared/workflowStatus";
+import {
   type CodeReviewWorkflow,
   type InvestigationWorkflow,
   type OrchestrationReadModel,
   type PlanningWorkflow,
   type ThreadId,
+  type WorkflowBranch,
   type WorkflowModelSlot,
   type WorkflowBranchStatus,
   type WorkflowImplementationStatus,
@@ -61,69 +74,149 @@ function node(
   };
 }
 
-const V1_WORKFLOW_TEMPLATES: ReadonlyArray<WorkflowTemplate> = [
-  {
-    id: "builtin.planning.dual",
-    version: 1,
-    runKind: "planning",
-    title: "Dual-model planning",
-    description:
-      "Parallel plans, cross/self review, synthesis, approval, implementation, and gates.",
-    nodes: [
-      node("author-a", "Plan A", "parallel-agent", [], ["branchA"], "proposed-plan"),
-      node("author-b", "Plan B", "parallel-agent", [], ["branchB"], "proposed-plan"),
+type ParticipantIds = ReadonlyArray<WorkflowParticipantId>;
+
+const TWO_ACTORS: ParticipantIds = workflowParticipantIds(2);
+const L = workflowParticipantLabel;
+
+function otherIds(ids: ParticipantIds, id: WorkflowParticipantId): WorkflowParticipantId[] {
+  return ids.filter((candidate) => candidate !== id);
+}
+
+/** Cross-review node ids of plan X: `cross-review-x` for two authors, else one per reviewer. */
+function planCrossReviewNodeIds(ids: ParticipantIds, reviewedId: WorkflowParticipantId): string[] {
+  return workflowUsesMesh(ids.length)
+    ? otherIds(ids, reviewedId).map((reviewerId) => `cross-review-${reviewedId}-by-${reviewerId}`)
+    : [`cross-review-${reviewedId}`];
+}
+
+/** Cross-review node ids written by investigator X: `cross-review-x`, else one per reviewee. */
+function investigationCrossReviewNodeIds(
+  ids: ParticipantIds,
+  reviewerId: WorkflowParticipantId,
+): string[] {
+  return workflowUsesMesh(ids.length)
+    ? otherIds(ids, reviewerId).map((revieweeId) => `cross-review-${reviewerId}-on-${revieweeId}`)
+    : [`cross-review-${reviewerId}`];
+}
+
+interface PlanningNodeStyle {
+  readonly authorLabel: (label: string) => string;
+  readonly revisionLabel: (label: string) => string;
+  readonly mergeLabel: string;
+  readonly draftArtifact: string;
+  readonly mergeArtifact: string;
+}
+
+const PLAN_STYLE: PlanningNodeStyle = {
+  authorLabel: (label) => `Plan ${label}`,
+  revisionLabel: (label) => `Revise plan ${label}`,
+  mergeLabel: "Synthesize plan",
+  draftArtifact: "proposed-plan",
+  mergeArtifact: "merged-plan",
+};
+
+const DOCUMENT_STYLE: PlanningNodeStyle = {
+  authorLabel: (label) => `Draft ${label}`,
+  revisionLabel: (label) => `Revise draft ${label}`,
+  mergeLabel: "Merge document",
+  draftArtifact: "document-draft",
+  mergeArtifact: "document-draft",
+};
+
+/** Authoring, cross/self review, revision and merge nodes for the given authors. */
+function planningAuthoringNodes(
+  ids: ParticipantIds,
+  style: PlanningNodeStyle,
+): WorkflowNodeDefinition[] {
+  const authorNodeIds = ids.map((id) => `author-${id}`);
+  const mesh = workflowUsesMesh(ids.length);
+  return [
+    ...ids.map((id) =>
       node(
-        "cross-review-a",
-        "Cross-review A",
+        `author-${id}`,
+        style.authorLabel(L(id)),
+        "parallel-agent",
+        [],
+        [`branch${L(id)}`],
+        style.draftArtifact,
+      ),
+    ),
+    ...ids.flatMap((reviewedId) =>
+      mesh
+        ? otherIds(ids, reviewedId).map((reviewerId) =>
+            node(
+              `cross-review-${reviewedId}-by-${reviewerId}`,
+              `Cross-review ${L(reviewedId)} by ${L(reviewerId)}`,
+              "review",
+              authorNodeIds,
+              [`branch${L(reviewerId)}`],
+              "review",
+            ),
+          )
+        : [
+            node(
+              `cross-review-${reviewedId}`,
+              `Cross-review ${L(reviewedId)}`,
+              "review",
+              authorNodeIds,
+              [`branch${L(otherIds(ids, reviewedId)[0]!)}`],
+              "review",
+            ),
+          ],
+    ),
+    ...ids.map((id) =>
+      node(
+        `self-review-${id}`,
+        `Self-review ${L(id)}`,
         "review",
-        ["author-a", "author-b"],
-        ["branchB"],
+        [`author-${id}`],
+        [`branch${L(id)}`],
         "review",
-      ),
-      node(
-        "cross-review-b",
-        "Cross-review B",
-        "review",
-        ["author-a", "author-b"],
-        ["branchA"],
-        "review",
-      ),
-      node("self-review-a", "Self-review A", "review", ["author-a"], ["branchA"], "review", true),
-      node("self-review-b", "Self-review B", "review", ["author-b"], ["branchB"], "review", true),
-      node(
-        "revision-a",
-        "Revise plan A",
-        "agent",
-        ["cross-review-a"],
-        ["branchA"],
-        "proposed-plan",
-      ),
-      node(
-        "revision-b",
-        "Revise plan B",
-        "agent",
-        ["cross-review-b"],
-        ["branchB"],
-        "proposed-plan",
-      ),
-      node(
-        "merge",
-        "Synthesize plan",
-        "synthesis",
-        ["revision-a", "revision-b"],
-        ["merge"],
-        "merged-plan",
-      ),
-      node("approval", "Approve merged plan", "manual-approval", ["merge"], [], "approval"),
-      node(
-        "implementation",
-        "Implement",
-        "agent",
-        ["approval"],
-        ["implementation"],
-        "code-change",
         true,
       ),
+    ),
+    ...ids.map((id) =>
+      node(
+        `revision-${id}`,
+        style.revisionLabel(L(id)),
+        "agent",
+        planCrossReviewNodeIds(ids, id),
+        [`branch${L(id)}`],
+        style.draftArtifact,
+      ),
+    ),
+    node(
+      "merge",
+      style.mergeLabel,
+      "synthesis",
+      ids.map((id) => `revision-${id}`),
+      ["merge"],
+      style.mergeArtifact,
+    ),
+  ];
+}
+
+export function planningTemplateNodes(
+  ids: ParticipantIds,
+  version: 1 | 2,
+): WorkflowNodeDefinition[] {
+  const head = [
+    ...planningAuthoringNodes(ids, PLAN_STYLE),
+    node("approval", "Approve merged plan", "manual-approval", ["merge"], [], "approval"),
+    node(
+      "implementation",
+      "Implement",
+      "agent",
+      ["approval"],
+      ["implementation"],
+      "code-change",
+      true,
+    ),
+  ];
+  if (version === 1) {
+    return [
+      ...head,
       node(
         "quality-gates",
         "Project quality gates",
@@ -138,368 +231,420 @@ const V1_WORKFLOW_TEMPLATES: ReadonlyArray<WorkflowTemplate> = [
         "Review implementation",
         "review",
         ["quality-gates"],
-        ["branchA", "branchB"],
+        ids.map((id) => `branch${L(id)}`),
         "review",
         true,
       ),
-    ],
-    form: [
-      {
-        id: "requirementPrompt",
-        label: "Requirement",
-        type: "prompt",
-        required: true,
-        description: null,
-      },
-      { id: "branchA", label: "Planner A", type: "model-slot", required: true, description: null },
-      { id: "branchB", label: "Planner B", type: "model-slot", required: true, description: null },
-      {
-        id: "merge",
-        label: "Synthesis model",
-        type: "model-slot",
-        required: true,
-        description: null,
-      },
-      {
-        id: "selfReviewEnabled",
-        label: "Self review",
-        type: "boolean",
-        required: false,
-        description: null,
-      },
-      {
-        id: "maxCostUsd",
-        label: "Cost limit (USD)",
-        type: "number",
-        required: false,
-        description: "Stops before launching the next node.",
-      },
-    ],
-  },
-  {
-    id: "builtin.code-review.dual",
-    version: 1,
-    runKind: "codeReview",
-    title: "Dual-model code review",
-    description: "Parallel independent reviews followed by a consolidated report.",
-    nodes: [
-      node("reviewer-a", "Reviewer A", "parallel-agent", [], ["reviewerA"], "review"),
-      node("reviewer-b", "Reviewer B", "parallel-agent", [], ["reviewerB"], "review"),
-      node(
-        "consolidation",
-        "Consolidate reviews",
-        "synthesis",
-        ["reviewer-a", "reviewer-b"],
-        ["consolidation"],
-        "review-report",
-      ),
-    ],
-    form: [
-      {
-        id: "reviewPrompt",
-        label: "Review scope",
-        type: "prompt",
-        required: true,
-        description: null,
-      },
-      { id: "branch", label: "Branch", type: "branch", required: false, description: null },
-      {
-        id: "autoPost",
-        label: "Post merged review to the PR",
-        type: "boolean",
-        required: false,
-        description:
-          "Posts the merged review to the detected GitHub pull request when it finishes.",
-      },
-      {
-        id: "reviewerA",
-        label: "Reviewer A",
-        type: "model-slot",
-        required: true,
-        description: null,
-      },
-      {
-        id: "reviewerB",
-        label: "Reviewer B",
-        type: "model-slot",
-        required: true,
-        description: null,
-      },
-      {
-        id: "consolidation",
-        label: "Consolidator",
-        type: "model-slot",
-        required: true,
-        description: null,
-      },
-      {
-        id: "maxCostUsd",
-        label: "Cost limit (USD)",
-        type: "number",
-        required: false,
-        description: "Stops before launching the next node.",
-      },
-    ],
-  },
-  {
-    id: "builtin.investigation.dual",
-    version: 1,
-    runKind: "investigation",
-    title: "Dual-model investigation",
-    description: "Parallel investigation, reciprocal review, optional self-review, and synthesis.",
-    nodes: [
-      node(
-        "investigator-a",
-        "Investigator A",
-        "parallel-agent",
-        [],
-        ["investigatorA"],
-        "investigation",
-      ),
-      node(
-        "investigator-b",
-        "Investigator B",
-        "parallel-agent",
-        [],
-        ["investigatorB"],
-        "investigation",
-      ),
-      node(
-        "cross-review-a",
-        "Cross-review A",
-        "review",
-        ["investigator-a", "investigator-b"],
-        ["investigatorA"],
-        "review",
-      ),
-      node(
-        "cross-review-b",
-        "Cross-review B",
-        "review",
-        ["investigator-a", "investigator-b"],
-        ["investigatorB"],
-        "review",
-      ),
-      node(
-        "self-review-a",
-        "Self-review A",
-        "review",
-        ["investigator-a"],
-        ["investigatorA"],
-        "review",
-        true,
-      ),
-      node(
-        "self-review-b",
-        "Self-review B",
-        "review",
-        ["investigator-b"],
-        ["investigatorB"],
-        "review",
-        true,
-      ),
-      node(
-        "synthesis",
-        "Synthesize findings",
-        "synthesis",
-        ["cross-review-a", "cross-review-b"],
-        ["synthesis"],
-        "investigation-report",
-      ),
-    ],
-    form: [
-      { id: "problemPrompt", label: "Problem", type: "prompt", required: true, description: null },
-      { id: "branch", label: "Branch", type: "branch", required: false, description: null },
-      {
-        id: "investigatorA",
-        label: "Investigator A",
-        type: "model-slot",
-        required: true,
-        description: null,
-      },
-      {
-        id: "investigatorB",
-        label: "Investigator B",
-        type: "model-slot",
-        required: true,
-        description: null,
-      },
-      {
-        id: "synthesis",
-        label: "Synthesis model",
-        type: "model-slot",
-        required: true,
-        description: null,
-      },
-      {
-        id: "selfReviewEnabled",
-        label: "Self review",
-        type: "boolean",
-        required: false,
-        description: null,
-      },
-      {
-        id: "maxCostUsd",
-        label: "Cost limit (USD)",
-        type: "number",
-        required: false,
-        description: "Stops before launching the next node.",
-      },
-    ],
-  },
-];
-
-function v2Template(template: WorkflowTemplate): WorkflowTemplate {
-  if (template.runKind !== "planning") {
-    return { ...template, version: 2 };
+    ];
   }
+  return [
+    ...head,
+    ...ids.map((id) =>
+      node(
+        `implementation-review-${id}`,
+        `Implementation review ${L(id)}`,
+        "review",
+        ["implementation"],
+        [`branch${L(id)}`],
+        "review",
+        true,
+      ),
+    ),
+    node(
+      "apply-feedback",
+      "Apply review feedback",
+      "agent",
+      ids.map((id) => `implementation-review-${id}`),
+      ["implementation"],
+      "code-change",
+      true,
+    ),
+  ];
+}
+
+export function documentTemplateNodes(ids: ParticipantIds): WorkflowNodeDefinition[] {
+  return [
+    ...planningAuthoringNodes(ids, DOCUMENT_STYLE),
+    node("reader-review", "Reader review", "review", ["merge"], ["reader"], "reader-report", true),
+    node("polish", "Polish", "agent", ["reader-review"], ["merge"], "document", true),
+  ];
+}
+
+export function codeReviewTemplateNodes(ids: ParticipantIds): WorkflowNodeDefinition[] {
+  return [
+    ...ids.map((id) =>
+      node(
+        `reviewer-${id}`,
+        `Reviewer ${L(id)}`,
+        "parallel-agent",
+        [],
+        [`reviewer${L(id)}`],
+        "review",
+      ),
+    ),
+    node(
+      "consolidation",
+      "Consolidate reviews",
+      "synthesis",
+      ids.map((id) => `reviewer-${id}`),
+      ["consolidation"],
+      "review-report",
+    ),
+  ];
+}
+
+export function investigationTemplateNodes(ids: ParticipantIds): WorkflowNodeDefinition[] {
+  const investigatorNodeIds = ids.map((id) => `investigator-${id}`);
+  const mesh = workflowUsesMesh(ids.length);
+  return [
+    ...ids.map((id) =>
+      node(
+        `investigator-${id}`,
+        `Investigator ${L(id)}`,
+        "parallel-agent",
+        [],
+        [`investigator${L(id)}`],
+        "investigation",
+      ),
+    ),
+    ...ids.flatMap((reviewerId) =>
+      investigationCrossReviewNodeIds(ids, reviewerId).map((nodeId, index) =>
+        node(
+          nodeId,
+          mesh
+            ? `Cross-review ${L(reviewerId)} on ${L(otherIds(ids, reviewerId)[index]!)}`
+            : `Cross-review ${L(reviewerId)}`,
+          "review",
+          investigatorNodeIds,
+          [`investigator${L(reviewerId)}`],
+          "review",
+        ),
+      ),
+    ),
+    ...ids.map((id) =>
+      node(
+        `self-review-${id}`,
+        `Self-review ${L(id)}`,
+        "review",
+        [`investigator-${id}`],
+        [`investigator${L(id)}`],
+        "review",
+        true,
+      ),
+    ),
+    node(
+      "synthesis",
+      "Synthesize findings",
+      "synthesis",
+      ids.flatMap((id) => investigationCrossReviewNodeIds(ids, id)),
+      ["synthesis"],
+      "investigation-report",
+    ),
+  ];
+}
+
+type WorkflowTemplateShell = Omit<WorkflowTemplate, "nodes" | "version"> & {
+  readonly nodesFor: (ids: ParticipantIds, version: 1 | 2) => WorkflowNodeDefinition[];
+};
+
+const PLANNING_TEMPLATE_SHELL: WorkflowTemplateShell = {
+  id: "builtin.planning.dual",
+  runKind: "planning",
+  title: "Dual-model planning",
+  description: "Parallel plans, cross/self review, synthesis, approval, implementation, and gates.",
+  nodesFor: planningTemplateNodes,
+  form: [
+    {
+      id: "requirementPrompt",
+      label: "Requirement",
+      type: "prompt",
+      required: true,
+      description: null,
+    },
+    { id: "branchA", label: "Planner A", type: "model-slot", required: true, description: null },
+    { id: "branchB", label: "Planner B", type: "model-slot", required: true, description: null },
+    {
+      id: "merge",
+      label: "Synthesis model",
+      type: "model-slot",
+      required: true,
+      description: null,
+    },
+    {
+      id: "selfReviewEnabled",
+      label: "Self review",
+      type: "boolean",
+      required: false,
+      description: null,
+    },
+    {
+      id: "maxCostUsd",
+      label: "Cost limit (USD)",
+      type: "number",
+      required: false,
+      description: "Stops before launching the next node.",
+    },
+  ],
+};
+
+const CODE_REVIEW_TEMPLATE_SHELL: WorkflowTemplateShell = {
+  id: "builtin.code-review.dual",
+  runKind: "codeReview",
+  title: "Dual-model code review",
+  description: "Parallel independent reviews followed by a consolidated report.",
+  nodesFor: (ids) => codeReviewTemplateNodes(ids),
+  form: [
+    {
+      id: "reviewPrompt",
+      label: "Review scope",
+      type: "prompt",
+      required: true,
+      description: null,
+    },
+    { id: "branch", label: "Branch", type: "branch", required: false, description: null },
+    {
+      id: "autoPost",
+      label: "Post merged review to the PR",
+      type: "boolean",
+      required: false,
+      description: "Posts the merged review to the detected GitHub pull request when it finishes.",
+    },
+    {
+      id: "reviewerA",
+      label: "Reviewer A",
+      type: "model-slot",
+      required: true,
+      description: null,
+    },
+    {
+      id: "reviewerB",
+      label: "Reviewer B",
+      type: "model-slot",
+      required: true,
+      description: null,
+    },
+    {
+      id: "consolidation",
+      label: "Consolidator",
+      type: "model-slot",
+      required: true,
+      description: null,
+    },
+    {
+      id: "maxCostUsd",
+      label: "Cost limit (USD)",
+      type: "number",
+      required: false,
+      description: "Stops before launching the next node.",
+    },
+  ],
+};
+
+const INVESTIGATION_TEMPLATE_SHELL: WorkflowTemplateShell = {
+  id: "builtin.investigation.dual",
+  runKind: "investigation",
+  title: "Dual-model investigation",
+  description: "Parallel investigation, reciprocal review, optional self-review, and synthesis.",
+  nodesFor: (ids) => investigationTemplateNodes(ids),
+  form: [
+    { id: "problemPrompt", label: "Problem", type: "prompt", required: true, description: null },
+    { id: "branch", label: "Branch", type: "branch", required: false, description: null },
+    {
+      id: "investigatorA",
+      label: "Investigator A",
+      type: "model-slot",
+      required: true,
+      description: null,
+    },
+    {
+      id: "investigatorB",
+      label: "Investigator B",
+      type: "model-slot",
+      required: true,
+      description: null,
+    },
+    {
+      id: "synthesis",
+      label: "Synthesis model",
+      type: "model-slot",
+      required: true,
+      description: null,
+    },
+    {
+      id: "selfReviewEnabled",
+      label: "Self review",
+      type: "boolean",
+      required: false,
+      description: null,
+    },
+    {
+      id: "maxCostUsd",
+      label: "Cost limit (USD)",
+      type: "number",
+      required: false,
+      description: "Stops before launching the next node.",
+    },
+  ],
+};
+
+const DOCUMENT_TEMPLATE_SHELL: WorkflowTemplateShell = {
+  id: DOCUMENT_WORKFLOW_TEMPLATE_ID,
+  runKind: "planning",
+  title: "Document",
+  description: "Dual-model drafting, cross/self review, merge, audience review and polish.",
+  nodesFor: (ids) => documentTemplateNodes(ids),
+  form: [
+    {
+      id: "requirementPrompt",
+      label: "Brief",
+      type: "prompt",
+      required: true,
+      description: null,
+    },
+    {
+      id: "documentType",
+      label: "Document type",
+      type: "text",
+      required: true,
+      description: "rfc, one-pager, adr, prd, runbook, postmortem, explainer, custom",
+    },
+    ...(
+      [
+        ["branchA", "Author A"],
+        ["branchB", "Author B"],
+        ["merge", "Merge model"],
+        ["reader", "Reader model"],
+      ] as const
+    ).map(([id, label]) => ({
+      id,
+      label,
+      type: "model-slot" as const,
+      required: id !== "reader",
+      description: null,
+    })),
+    {
+      id: "selfReviewEnabled",
+      label: "Own-model review",
+      type: "boolean",
+      required: false,
+      description: null,
+    },
+    {
+      id: "readerReviewEnabled",
+      label: "Reader review",
+      type: "boolean",
+      required: false,
+      description: null,
+    },
+    {
+      id: "readerPersona",
+      label: "Reader persona",
+      type: "text",
+      required: false,
+      description: null,
+    },
+    { id: "maxCostUsd", label: "Cost limit", type: "number", required: false, description: null },
+  ],
+};
+
+const V2_PLANNING_DESCRIPTION =
+  "Parallel plans, evidence-backed review and synthesis, approval, implementation, dual review, and apply-feedback.";
+
+/** The template for one version, expanded for the given actors. */
+function expandTemplate(
+  shell: WorkflowTemplateShell,
+  version: 1 | 2,
+  ids: ParticipantIds,
+): WorkflowTemplate {
+  const { nodesFor, ...rest } = shell;
   return {
-    ...template,
-    version: 2,
-    description:
-      "Parallel plans, evidence-backed review and synthesis, approval, implementation, dual review, and apply-feedback.",
-    nodes: [
-      ...template.nodes.filter(
-        (candidate) => candidate.id !== "quality-gates" && candidate.id !== "code-review",
-      ),
-      node(
-        "implementation-review-a",
-        "Implementation review A",
-        "review",
-        ["implementation"],
-        ["branchA"],
-        "review",
-        true,
-      ),
-      node(
-        "implementation-review-b",
-        "Implementation review B",
-        "review",
-        ["implementation"],
-        ["branchB"],
-        "review",
-        true,
-      ),
-      node(
-        "apply-feedback",
-        "Apply review feedback",
-        "agent",
-        ["implementation-review-a", "implementation-review-b"],
-        ["implementation"],
-        "code-change",
-        true,
-      ),
-    ],
+    ...rest,
+    version,
+    ...(shell.id === "builtin.planning.dual" && version === 2
+      ? { description: V2_PLANNING_DESCRIPTION }
+      : {}),
+    nodes: nodesFor(ids, version),
   };
 }
 
-export const DOCUMENT_WORKFLOW_TEMPLATES: ReadonlyArray<WorkflowTemplate> = [
-  {
-    id: DOCUMENT_WORKFLOW_TEMPLATE_ID,
-    version: 2,
-    runKind: "planning",
-    title: "Document",
-    description: "Dual-model drafting, cross/self review, merge, audience review and polish.",
-    nodes: [
-      ...V1_WORKFLOW_TEMPLATES[0]!.nodes
-        .filter((entry) =>
-          [
-            "author-a",
-            "author-b",
-            "cross-review-a",
-            "cross-review-b",
-            "self-review-a",
-            "self-review-b",
-            "revision-a",
-            "revision-b",
-            "merge",
-          ].includes(entry.id),
-        )
-        .map((entry) => ({
-          ...entry,
-          label: entry.id.startsWith("author-")
-            ? `Draft ${entry.id.endsWith("a") ? "A" : "B"}`
-            : entry.id.startsWith("revision-")
-              ? `Revise draft ${entry.id.endsWith("a") ? "A" : "B"}`
-              : entry.id === "merge"
-                ? "Merge document"
-                : entry.label,
-          artifactType: entry.kind === "review" ? "review" : "document-draft",
-        })),
-      node(
-        "reader-review",
-        "Reader review",
-        "review",
-        ["merge"],
-        ["reader"],
-        "reader-report",
-        true,
-      ),
-      node("polish", "Polish", "agent", ["reader-review"], ["merge"], "document", true),
-    ],
-    form: [
-      {
-        id: "requirementPrompt",
-        label: "Brief",
-        type: "prompt",
-        required: true,
-        description: null,
-      },
-      {
-        id: "documentType",
-        label: "Document type",
-        type: "text",
-        required: true,
-        description: "rfc, one-pager, adr, prd, runbook, postmortem, explainer, custom",
-      },
-      ...(
-        [
-          ["branchA", "Author A"],
-          ["branchB", "Author B"],
-          ["merge", "Merge model"],
-          ["reader", "Reader model"],
-        ] as const
-      ).map(([id, label]) => ({
-        id,
-        label,
-        type: "model-slot" as const,
-        required: id !== "reader",
-        description: null,
-      })),
-      {
-        id: "selfReviewEnabled",
-        label: "Own-model review",
-        type: "boolean",
-        required: false,
-        description: null,
-      },
-      {
-        id: "readerReviewEnabled",
-        label: "Reader review",
-        type: "boolean",
-        required: false,
-        description: null,
-      },
-      {
-        id: "readerPersona",
-        label: "Reader persona",
-        type: "text",
-        required: false,
-        description: null,
-      },
-      { id: "maxCostUsd", label: "Cost limit", type: "number", required: false, description: null },
-    ],
-  },
+const TEMPLATE_SHELLS: ReadonlyArray<{
+  readonly shell: WorkflowTemplateShell;
+  readonly versions: ReadonlyArray<1 | 2>;
+}> = [
+  { shell: PLANNING_TEMPLATE_SHELL, versions: [1, 2] },
+  { shell: CODE_REVIEW_TEMPLATE_SHELL, versions: [1, 2] },
+  { shell: INVESTIGATION_TEMPLATE_SHELL, versions: [1, 2] },
+  { shell: DOCUMENT_TEMPLATE_SHELL, versions: [2] },
 ];
 
-export const BUILTIN_WORKFLOW_TEMPLATES: ReadonlyArray<WorkflowTemplate> = [
-  ...V1_WORKFLOW_TEMPLATES,
-  ...V1_WORKFLOW_TEMPLATES.map(v2Template),
+/** A registered template expanded for `ids` actors, or undefined when it is not registered. */
+export function expandWorkflowTemplate(
+  templateId: string,
+  version: number,
+  ids: ParticipantIds,
+): WorkflowTemplate | undefined {
+  const entry = TEMPLATE_SHELLS.find(
+    (candidate) =>
+      candidate.shell.id === templateId && candidate.versions.includes(version as 1 | 2),
+  );
+  return entry ? expandTemplate(entry.shell, version as 1 | 2, ids) : undefined;
+}
+
+export const DOCUMENT_WORKFLOW_TEMPLATES: ReadonlyArray<WorkflowTemplate> = [
+  expandTemplate(DOCUMENT_TEMPLATE_SHELL, 2, TWO_ACTORS),
+];
+
+const ORDERED_TWO_ACTOR_TEMPLATES: ReadonlyArray<WorkflowTemplate> = [
+  ...([1, 2] as const).flatMap((version) =>
+    [PLANNING_TEMPLATE_SHELL, CODE_REVIEW_TEMPLATE_SHELL, INVESTIGATION_TEMPLATE_SHELL].map(
+      (shell) => expandTemplate(shell, version, TWO_ACTORS),
+    ),
+  ),
   ...DOCUMENT_WORKFLOW_TEMPLATES,
 ];
 
+export const BUILTIN_WORKFLOW_TEMPLATES: ReadonlyArray<WorkflowTemplate> =
+  ORDERED_TWO_ACTOR_TEMPLATES;
+
 export class WorkflowTemplateRegistryError extends Error {
   override readonly name = "WorkflowTemplateRegistryError";
+}
+
+/** Unique node ids, existing dependencies and no cycle; throws on the first violation. */
+export function validateWorkflowTemplateStructure(template: WorkflowTemplate): void {
+  const key = `${template.id}@${template.version}`;
+  const nodeIds = new Set<string>();
+  for (const definition of template.nodes) {
+    if (nodeIds.has(definition.id)) {
+      throw new WorkflowTemplateRegistryError(
+        `Template '${key}' has duplicate node '${definition.id}'.`,
+      );
+    }
+    nodeIds.add(definition.id);
+  }
+  for (const definition of template.nodes) {
+    for (const dependency of definition.dependsOn) {
+      if (!nodeIds.has(dependency)) {
+        throw new WorkflowTemplateRegistryError(
+          `Template '${key}' node '${definition.id}' depends on missing node '${dependency}'.`,
+        );
+      }
+    }
+  }
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const visit = (nodeId: string): void => {
+    if (visiting.has(nodeId)) {
+      throw new WorkflowTemplateRegistryError(`Template '${key}' contains a dependency cycle.`);
+    }
+    if (visited.has(nodeId)) return;
+    visiting.add(nodeId);
+    const definition = template.nodes.find((candidate) => candidate.id === nodeId)!;
+    for (const dependency of definition.dependsOn) visit(dependency);
+    visiting.delete(nodeId);
+    visited.add(nodeId);
+  };
+  for (const nodeId of nodeIds) visit(nodeId);
 }
 
 export function validateWorkflowTemplateRegistry(templates: ReadonlyArray<WorkflowTemplate>): void {
@@ -509,39 +654,8 @@ export function validateWorkflowTemplateRegistry(templates: ReadonlyArray<Workfl
     const key = `${template.id}@${template.version}`;
     if (keys.has(key)) throw new WorkflowTemplateRegistryError(`Duplicate template '${key}'.`);
     keys.add(key);
-    const nodeIds = new Set<string>();
-    for (const definition of template.nodes) {
-      if (nodeIds.has(definition.id)) {
-        throw new WorkflowTemplateRegistryError(
-          `Template '${key}' has duplicate node '${definition.id}'.`,
-        );
-      }
-      nodeIds.add(definition.id);
-      observedKinds.add(definition.kind);
-    }
-    for (const definition of template.nodes) {
-      for (const dependency of definition.dependsOn) {
-        if (!nodeIds.has(dependency)) {
-          throw new WorkflowTemplateRegistryError(
-            `Template '${key}' node '${definition.id}' depends on missing node '${dependency}'.`,
-          );
-        }
-      }
-    }
-    const visiting = new Set<string>();
-    const visited = new Set<string>();
-    const visit = (nodeId: string): void => {
-      if (visiting.has(nodeId)) {
-        throw new WorkflowTemplateRegistryError(`Template '${key}' contains a dependency cycle.`);
-      }
-      if (visited.has(nodeId)) return;
-      visiting.add(nodeId);
-      const definition = template.nodes.find((candidate) => candidate.id === nodeId)!;
-      for (const dependency of definition.dependsOn) visit(dependency);
-      visiting.delete(nodeId);
-      visited.add(nodeId);
-    };
-    for (const nodeId of nodeIds) visit(nodeId);
+    validateWorkflowTemplateStructure(template);
+    for (const definition of template.nodes) observedKinds.add(definition.kind);
     const matchingBehavior = resolveWorkflowBehavior({
       runKind: template.runKind,
       templateId: template.id,
@@ -783,70 +897,68 @@ function planningNodes(
   snapshot: OrchestrationReadModel,
   template: WorkflowTemplate,
 ): WorkflowRunNodeInspection[] {
-  const review = (branch: PlanningWorkflow["branchA"], slot: "cross" | "self") =>
-    branch.reviews.find((candidate) => candidate.slot === slot) ?? null;
+  const ids = planningBranchIds(workflow);
+  const branches = planningBranches(workflow);
+  const mesh = workflowUsesMesh(ids.length);
+  const branchFor = (id: WorkflowParticipantId) => branches[ids.indexOf(id)]!;
+  const review = (
+    branch: WorkflowBranch,
+    slot: "cross" | "self",
+    reviewerBranchId?: WorkflowParticipantId,
+  ) =>
+    branch.reviews.find(
+      (candidate) =>
+        candidate.slot === slot &&
+        (reviewerBranchId === undefined || candidate.reviewerBranchId === reviewerBranchId),
+    ) ?? null;
   const implementation = workflow.implementation;
   return [
-    inspectionNode({
-      definition: definition(template, "author-a"),
-      status: workflow.branchA.status,
-      threadId: workflow.branchA.authorThreadId,
-      slot: workflow.branchA.authorSlot,
-      snapshot,
-    }),
-    inspectionNode({
-      definition: definition(template, "author-b"),
-      status: workflow.branchB.status,
-      threadId: workflow.branchB.authorThreadId,
-      slot: workflow.branchB.authorSlot,
-      snapshot,
-    }),
-    inspectionNode({
-      definition: definition(template, "cross-review-a"),
-      status: review(workflow.branchA, "cross")?.status ?? "not_started",
-      threadId: review(workflow.branchA, "cross")?.threadId ?? null,
-      slot: workflow.branchB.authorSlot,
-      snapshot,
-    }),
-    inspectionNode({
-      definition: definition(template, "cross-review-b"),
-      status: review(workflow.branchB, "cross")?.status ?? "not_started",
-      threadId: review(workflow.branchB, "cross")?.threadId ?? null,
-      slot: workflow.branchA.authorSlot,
-      snapshot,
-    }),
-    inspectionNode({
-      definition: definition(template, "self-review-a"),
-      status:
-        review(workflow.branchA, "self")?.status ??
-        (workflow.selfReviewEnabled ? "not_started" : "skipped"),
-      threadId: review(workflow.branchA, "self")?.threadId ?? null,
-      slot: workflow.branchA.authorSlot,
-      snapshot,
-    }),
-    inspectionNode({
-      definition: definition(template, "self-review-b"),
-      status:
-        review(workflow.branchB, "self")?.status ??
-        (workflow.selfReviewEnabled ? "not_started" : "skipped"),
-      threadId: review(workflow.branchB, "self")?.threadId ?? null,
-      slot: workflow.branchB.authorSlot,
-      snapshot,
-    }),
-    inspectionNode({
-      definition: definition(template, "revision-a"),
-      status: workflow.branchA.revisionTurnId ? "completed" : "not_started",
-      threadId: workflow.branchA.authorThreadId,
-      slot: workflow.branchA.authorSlot,
-      snapshot,
-    }),
-    inspectionNode({
-      definition: definition(template, "revision-b"),
-      status: workflow.branchB.revisionTurnId ? "completed" : "not_started",
-      threadId: workflow.branchB.authorThreadId,
-      slot: workflow.branchB.authorSlot,
-      snapshot,
-    }),
+    ...ids.map((id) =>
+      inspectionNode({
+        definition: definition(template, `author-${id}`),
+        status: branchFor(id).status,
+        threadId: branchFor(id).authorThreadId,
+        slot: branchFor(id).authorSlot,
+        snapshot,
+      }),
+    ),
+    ...ids.flatMap((reviewedId) =>
+      ids
+        .filter((reviewerId) => reviewerId !== reviewedId)
+        .map((reviewerId) => {
+          const record = review(branchFor(reviewedId), "cross", mesh ? reviewerId : undefined);
+          return inspectionNode({
+            definition: definition(
+              template,
+              mesh ? `cross-review-${reviewedId}-by-${reviewerId}` : `cross-review-${reviewedId}`,
+            ),
+            status: record?.status ?? "not_started",
+            threadId: record?.threadId ?? null,
+            slot: branchFor(reviewerId).authorSlot,
+            snapshot,
+          });
+        }),
+    ),
+    ...ids.map((id) =>
+      inspectionNode({
+        definition: definition(template, `self-review-${id}`),
+        status:
+          review(branchFor(id), "self")?.status ??
+          (workflow.selfReviewEnabled ? "not_started" : "skipped"),
+        threadId: review(branchFor(id), "self")?.threadId ?? null,
+        slot: branchFor(id).authorSlot,
+        snapshot,
+      }),
+    ),
+    ...ids.map((id) =>
+      inspectionNode({
+        definition: definition(template, `revision-${id}`),
+        status: branchFor(id).revisionTurnId ? "completed" : "not_started",
+        threadId: branchFor(id).authorThreadId,
+        slot: branchFor(id).authorSlot,
+        snapshot,
+      }),
+    ),
     inspectionNode({
       definition: definition(template, "merge"),
       status:
@@ -901,13 +1013,10 @@ function planningNodes(
                 }),
               ]
             : [
-                ...([0, 1] as const).map((index) => {
+                ...ids.map((id, index) => {
                   const review = implementation?.codeReviews[index] ?? null;
                   return inspectionNode({
-                    definition: definition(
-                      template,
-                      `implementation-review-${index === 0 ? "a" : "b"}`,
-                    ),
+                    definition: definition(template, `implementation-review-${id}`),
                     status:
                       review?.status ??
                       (implementation?.errorStage === "review-setup"
@@ -948,20 +1057,15 @@ function codeReviewNodes(
   template: WorkflowTemplate,
 ): WorkflowRunNodeInspection[] {
   return [
-    inspectionNode({
-      definition: definition(template, "reviewer-a"),
-      status: workflow.reviewerA.status,
-      threadId: workflow.reviewerA.threadId,
-      slot: workflow.reviewerA.slot,
-      snapshot,
-    }),
-    inspectionNode({
-      definition: definition(template, "reviewer-b"),
-      status: workflow.reviewerB.status,
-      threadId: workflow.reviewerB.threadId,
-      slot: workflow.reviewerB.slot,
-      snapshot,
-    }),
+    ...codeReviewReviewers(workflow).map(({ id, reviewer }) =>
+      inspectionNode({
+        definition: definition(template, `reviewer-${id}`),
+        status: reviewer.status,
+        threadId: reviewer.threadId,
+        slot: reviewer.slot,
+        snapshot,
+      }),
+    ),
     inspectionNode({
       definition: definition(template, "consolidation"),
       status: workflow.consolidation.status,
@@ -977,38 +1081,43 @@ function investigationNodes(
   snapshot: OrchestrationReadModel,
   template: WorkflowTemplate,
 ): WorkflowRunNodeInspection[] {
-  const investigator = (
-    key: "investigatorA" | "investigatorB",
-    suffix: "a" | "b",
-  ): WorkflowRunNodeInspection[] => {
-    const value = workflow[key];
-    return [
-      inspectionNode({
-        definition: definition(template, `investigator-${suffix}`),
-        status: value.investigationStatus,
-        threadId: value.investigationThreadId,
-        slot: value.slot,
-        snapshot,
-      }),
-      inspectionNode({
-        definition: definition(template, `cross-review-${suffix}`),
-        status: value.crossReviewStatus,
-        threadId: value.crossReviewThreadId,
-        slot: value.slot,
-        snapshot,
-      }),
-      inspectionNode({
-        definition: definition(template, `self-review-${suffix}`),
-        status: workflow.selfReviewEnabled ? value.selfReviewStatus : "skipped",
-        threadId: value.selfReviewThreadId,
-        slot: value.slot,
-        snapshot,
-      }),
-    ];
-  };
+  const investigators = investigationInvestigators(workflow);
+  const mesh = workflowUsesMesh(investigators.length);
+  const crossReviews = investigationCrossReviews(workflow);
   return [
-    ...investigator("investigatorA", "a"),
-    ...investigator("investigatorB", "b"),
+    ...investigators.flatMap(({ id, investigator }) => [
+      inspectionNode({
+        definition: definition(template, `investigator-${id}`),
+        status: investigator.investigationStatus,
+        threadId: investigator.investigationThreadId,
+        slot: investigator.slot,
+        snapshot,
+      }),
+      ...investigators
+        .filter((peer) => peer.id !== id)
+        .map(({ id: revieweeId }) => {
+          const view = crossReviews.find(
+            (entry) => entry.reviewerId === id && entry.revieweeId === revieweeId,
+          );
+          return inspectionNode({
+            definition: definition(
+              template,
+              mesh ? `cross-review-${id}-on-${revieweeId}` : `cross-review-${id}`,
+            ),
+            status: view?.status ?? "not_started",
+            threadId: view?.threadId ?? null,
+            slot: investigator.slot,
+            snapshot,
+          });
+        }),
+      inspectionNode({
+        definition: definition(template, `self-review-${id}`),
+        status: workflow.selfReviewEnabled ? investigator.selfReviewStatus : "skipped",
+        threadId: investigator.selfReviewThreadId,
+        slot: investigator.slot,
+        snapshot,
+      }),
+    ]),
     inspectionNode({
       definition: definition(template, "synthesis"),
       status: workflow.synthesis.status,
@@ -1027,10 +1136,9 @@ function planningStatus(workflow: PlanningWorkflow): string {
   }
   if (workflow.implementation) return workflow.implementation.status;
   if (workflow.merge.status !== "not_started") return workflow.merge.status;
-  if (workflow.branchA.status === "error" || workflow.branchB.status === "error") return "error";
-  return workflow.branchA.status === "pending" && workflow.branchB.status === "pending"
-    ? "pending"
-    : "running";
+  const branches = planningBranches(workflow);
+  if (branches.some((branch) => branch.status === "error")) return "error";
+  return branches.every((branch) => branch.status === "pending") ? "pending" : "running";
 }
 
 export function inspectWorkflowPlatformRun(
@@ -1093,6 +1201,20 @@ export function inspectWorkflowPlatformRun(
   };
 }
 
+function workflowActorCount(
+  workflow: PlanningWorkflow | CodeReviewWorkflow | InvestigationWorkflow,
+  runKind: "planning" | "codeReview" | "investigation",
+): number {
+  switch (runKind) {
+    case "planning":
+      return planningBranches(workflow as PlanningWorkflow).length;
+    case "codeReview":
+      return codeReviewReviewers(workflow as CodeReviewWorkflow).length;
+    case "investigation":
+      return investigationInvestigators(workflow as InvestigationWorkflow).length;
+  }
+}
+
 function templateForWorkflow(
   workflow: PlanningWorkflow | CodeReviewWorkflow | InvestigationWorkflow,
   runKind: "planning" | "codeReview" | "investigation",
@@ -1102,9 +1224,10 @@ function templateForWorkflow(
     templateId: workflow.templateId,
     templateVersion: workflow.templateVersion,
   });
-  const template = BUILTIN_WORKFLOW_TEMPLATES.find(
-    (candidate) =>
-      candidate.id === behavior.templateId && candidate.version === behavior.templateVersion,
+  const template = expandWorkflowTemplate(
+    behavior.templateId,
+    behavior.templateVersion,
+    workflowParticipantIds(workflowActorCount(workflow, runKind)),
   );
   if (!template) {
     throw new WorkflowTemplateRegistryError(

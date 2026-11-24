@@ -37,7 +37,12 @@ POLICY_SUMS = "/opt/f5/policy.sha256"
 IMAGE_INFO = "/opt/f5/image.json"
 BACKEND_ROOT = DATA + "/backend"
 STATE_DIR = DATA + "/state"
+# The server keeps its profile registry next to its state dir (`<state>-profiles`), and f5
+# can't create entries in the root-owned DATA, so the launcher makes it too.
+PROFILES_DIR = STATE_DIR + "-profiles"
 HOME = DATA + "/home"
+# Every directory the backend needs directly under DATA, created and owned for f5.
+GUEST_DIRS = (STATE_DIR, PROFILES_DIR, HOME)
 GUEST_USER = "f5"
 KEEP_BACKENDS = 2
 # Membership in any of these is a route to root, or to raw disks and other users' files.
@@ -305,7 +310,7 @@ def command_launch(args):
     ensure_data_disk()
     user, gids = check_policy()
     _root, executable = check_backend(version, sha256)
-    for path in (STATE_DIR, HOME):
+    for path in GUEST_DIRS:
         os.makedirs(path, mode=0o700, exist_ok=True)
         os.chown(path, user.pw_uid, user.pw_gid)
 

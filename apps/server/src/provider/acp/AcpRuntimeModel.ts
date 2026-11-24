@@ -64,6 +64,12 @@ export type AcpParsedSessionEvent =
       readonly modeId: string;
     }
   | {
+      /** Context-window sample (`usage_update`); not a billable fact. */
+      readonly _tag: "UsageUpdated";
+      readonly used: number;
+      readonly size: number;
+    }
+  | {
       readonly _tag: "AssistantItemStarted";
       readonly itemId: string;
     }
@@ -79,6 +85,12 @@ export type AcpParsedSessionEvent =
   | {
       readonly _tag: "ToolCallUpdated";
       readonly toolCall: AcpToolCallState;
+      readonly rawPayload: unknown;
+    }
+  | {
+      /** `session_info_update`: the agent's own title for the session. */
+      readonly _tag: "SessionInfoUpdated";
+      readonly title: string;
       readonly rawPayload: unknown;
     }
   | {
@@ -237,22 +249,27 @@ function extractCommandFromTitle(title: string | undefined): string | undefined 
   return match?.[1]?.trim() || undefined;
 }
 
-function extractToolCallCommand(rawInput: unknown, title: string | undefined): string | undefined {
-  if (isRecord(rawInput)) {
-    const directCommand = normalizeCommandValue(rawInput.command);
-    if (directCommand) {
-      return directCommand;
-    }
-    const executable = typeof rawInput.executable === "string" ? rawInput.executable.trim() : "";
-    const args = normalizeCommandValue(rawInput.args);
-    if (executable && args) {
-      return `${executable} ${args}`;
-    }
-    if (executable) {
-      return executable;
-    }
+/** The command a tool call's raw input carries, by the fields every ACP adapter recognises. */
+export function toolCallRawInputCommand(rawInput: unknown): string | undefined {
+  if (!isRecord(rawInput)) return undefined;
+  // Antigravity sends `CommandLine` with a generic `run_command` title, so without it an
+  // approval card would show the tool name instead of the command being approved.
+  const directCommand = normalizeCommandValue(
+    rawInput.command ?? rawInput.CommandLine ?? rawInput.command_line ?? rawInput.commandLine,
+  );
+  if (directCommand) {
+    return directCommand;
   }
-  return extractCommandFromTitle(title);
+  const executable = typeof rawInput.executable === "string" ? rawInput.executable.trim() : "";
+  const args = normalizeCommandValue(rawInput.args);
+  if (executable && args) {
+    return `${executable} ${args}`;
+  }
+  return executable || undefined;
+}
+
+function extractToolCallCommand(rawInput: unknown, title: string | undefined): string | undefined {
+  return toolCallRawInputCommand(rawInput) ?? extractCommandFromTitle(title);
 }
 
 // Some ACP agents (observed with Grok's CLI) resend the ENTIRE accumulated tool-call
@@ -675,6 +692,32 @@ function boundToolCallRawPayload(
   };
 }
 
+/**
+ * A permission request with its `rawOutput` and text `content` bounded like tool-call updates,
+ * for logging and publishing. Decide on the original request; persist this one.
+ */
+export function boundPermissionRequestPayload(
+  params: EffectAcpSchema.RequestPermissionRequest,
+): EffectAcpSchema.RequestPermissionRequest {
+  const toolCall = params.toolCall;
+  const rawOutput =
+    toolCall.rawOutput === undefined ? undefined : boundToolCallRawOutput(toolCall.rawOutput);
+  const content = Array.isArray(toolCall.content)
+    ? (extractTextContentFromToolCallContent(toolCall.content).content ?? toolCall.content)
+    : toolCall.content;
+  const rawOutputBounded = rawOutput !== toolCall.rawOutput;
+  const contentBounded = content !== toolCall.content;
+  if (!rawOutputBounded && !contentBounded) return params;
+  return {
+    ...params,
+    toolCall: {
+      ...toolCall,
+      ...(rawOutputBounded ? { rawOutput } : {}),
+      ...(contentBounded ? { content } : {}),
+    },
+  };
+}
+
 export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotification): {
   readonly modeId?: string;
   readonly events: ReadonlyArray<AcpParsedSessionEvent>;
@@ -747,6 +790,21 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
       }
       break;
     }
+    case "usage_update": {
+      // Decoded tolerantly: finite nonnegative usage and a positive window, else ignored.
+      const used: unknown = (upd as { used?: unknown }).used;
+      const size: unknown = (upd as { size?: unknown }).size;
+      if (
+        typeof used === "number" &&
+        typeof size === "number" &&
+        Number.isFinite(used) &&
+        Number.isFinite(size) &&
+        used >= 0 &&
+        size > 0
+      )
+        events.push({ _tag: "UsageUpdated", used: Math.round(used), size: Math.round(size) });
+      break;
+    }
     case "available_commands_update": {
       events.push({
         _tag: "SlashCommandsUpdated",
@@ -756,6 +814,11 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
           ...(command.input?.hint ? { argumentHint: command.input.hint } : {}),
         })),
       });
+      break;
+    }
+    case "session_info_update": {
+      const title = upd.title?.trim().slice(0, 256);
+      if (title) events.push({ _tag: "SessionInfoUpdated", title, rawPayload: params });
       break;
     }
     case "agent_thought_chunk":

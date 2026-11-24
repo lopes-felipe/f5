@@ -1,2 +1,0 @@
-- Fresh sessions exclude earlier plans, task lists and recovery summaries, including immediately after a clear. Pi extension status updates are coalesced.
-- Review guides can select API text generators. Clearing a replacement key field keeps the stored key, generator ids cannot shadow provider ids, and unreadable HTML paths show actionable errors.

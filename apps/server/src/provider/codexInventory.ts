@@ -2,16 +2,20 @@
  * Read-only inventory of one Codex instance through a short-lived app-server
  * control client: `hooks/list`, `plugin/list` (installed, local marketplaces
  * only), `app/list`, and MCP servers from the `config/read` layers. The client runs with the instance's own CODEX_HOME,
- * so entries never come from another profile. F5 never edits them.
+ * so entries never come from another profile. F5 never edits them; approving a
+ * hook's current contents goes through Codex's own API (see `codexHookTrust`).
  *
  * @module provider/codexInventory
  */
 import type {
   ProviderInventoryConnector,
   ProviderInventoryHook,
+  ProviderInventoryHookTrustStatus,
   ProviderInventoryPlugin,
   ProviderInventorySource,
 } from "@t3tools/contracts";
+
+import { createHmac, randomBytes } from "node:crypto";
 
 import {
   CodexControlClient,
@@ -73,8 +77,53 @@ export function codexInventorySource(value: unknown): ProviderInventorySource {
   }
 }
 
+/** `HookTrustStatus`, or undefined for CLIs that predate hook trust (or a new value). */
+export function codexHookTrustStatus(value: unknown): ProviderInventoryHookTrustStatus | undefined {
+  return value === "managed" || value === "trusted" || value === "modified" || value === "untrusted"
+    ? value
+    : undefined;
+}
+
+/**
+ * The `currentHash` a `hooks/list` row would be approved with, or undefined
+ * when it is not approvable (managed, already trusted, or no hash reported).
+ */
+export function codexHookApprovalHash(hook: unknown): string | undefined {
+  if (!isRecord(hook) || typeof hook.key !== "string" || hook.isManaged === true) return undefined;
+  const status = codexHookTrustStatus(hook.trustStatus);
+  if (status !== "modified" && status !== "untrusted") return undefined;
+  return typeof hook.currentHash === "string" && hook.currentHash.length > 0
+    ? hook.currentHash
+    : undefined;
+}
+
+// Per process: tokens never outlive the server that issued them.
+const TRUST_TOKEN_SECRET = randomBytes(32);
+
+/**
+ * Opaque token binding an approval to the hook contents the user was shown:
+ * an HMAC over the scope (instance and project), key and current hash, so the
+ * hash itself never reaches the browser and a changed hook no longer matches.
+ */
+export function codexHookTrustToken(scope: string, key: string, hash: string): string {
+  return createHmac("sha256", TRUST_TOKEN_SECRET)
+    .update(`${scope}\0${key}\0${hash}`)
+    .digest("base64url");
+}
+
+/** Token scope for one instance, optionally narrowed to a project root. */
+export function codexHookTrustScope(instanceId: string, projectRoot: string | undefined): string {
+  return `${instanceId}\0${projectRoot ?? ""}`;
+}
+
+/**
+ * Inventory rows from `hooks/list`. `currentHash` is deliberately not copied:
+ * hooks that need approval carry an opaque `trustToken` instead (when a token
+ * scope is given), and the server re-reads the hash at write time.
+ */
 export function parseCodexHooks(
   entries: ReadonlyArray<unknown>,
+  trustTokenScope?: string,
 ): ReadonlyArray<ProviderInventoryHook> {
   const seen = new Set<string>();
   const result: ProviderInventoryHook[] = [];
@@ -84,11 +133,19 @@ export function parseCodexHooks(
       if (!isRecord(hook)) continue;
       const event = bounded(hook.eventName);
       if (!event) continue;
-      const key = typeof hook.key === "string" ? hook.key : undefined;
-      if (key) {
-        if (seen.has(key)) continue;
-        seen.add(key);
+      const rawKey = typeof hook.key === "string" ? hook.key : undefined;
+      if (rawKey) {
+        if (seen.has(rawKey)) continue;
+        seen.add(rawKey);
       }
+      // Only keys that round-trip unchanged through a trust request are exposed.
+      const key = rawKey && bounded(rawKey) === rawKey ? rawKey : undefined;
+      const trustStatus = codexHookTrustStatus(hook.trustStatus);
+      const approvalHash = key ? codexHookApprovalHash(hook) : undefined;
+      const trustToken =
+        key && approvalHash !== undefined && trustTokenScope !== undefined
+          ? codexHookTrustToken(trustTokenScope, key, approvalHash)
+          : undefined;
       const matcher = bounded(hook.matcher);
       const handlerType = bounded(hook.handlerType);
       const program = hookProgramName(hook.command);
@@ -107,6 +164,9 @@ export function parseCodexHooks(
         ...(sourcePath ? { sourcePath } : {}),
         ...(typeof hook.enabled === "boolean" ? { enabled: hook.enabled } : {}),
         ...(pluginId ? { pluginId } : {}),
+        ...(key ? { key } : {}),
+        ...(trustStatus ? { trustStatus } : {}),
+        ...(trustToken ? { trustToken } : {}),
       });
     }
   }
@@ -263,7 +323,11 @@ async function attempt<T>(
  */
 export async function readCodexInventory(
   environment: CodexControlEnvironmentConfig,
-  input: { readonly projectRoot?: string | undefined },
+  input: {
+    readonly projectRoot?: string | undefined;
+    /** Issues trust tokens for hooks that need approval (see `codexHookTrustScope`). */
+    readonly trustTokenScope?: string | undefined;
+  },
   timeoutMs = CODEX_INVENTORY_TIMEOUT_MS,
 ): Promise<CodexInventory> {
   const signal = AbortSignal.timeout(timeoutMs);
@@ -296,7 +360,7 @@ export async function readCodexInventory(
         feedbackSupported: supportsCodexRelease5(opened.cliVersion),
         ...(account ? { account } : {}),
         ...(accountWorkspaces ? { accountWorkspaces } : {}),
-        hooks: parseCodexHooks(hooks ?? []),
+        hooks: parseCodexHooks(hooks ?? [], input.trustTokenScope),
         plugins: parseCodexPlugins(plugins),
         connectors: [
           ...parseCodexMcpServersFromLayers(config?.layers),

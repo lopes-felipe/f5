@@ -1,6 +1,7 @@
 import { createHmac, randomBytes } from "node:crypto";
 
 import type { ProviderDriverKind, ProviderInstanceEnvironment } from "@t3tools/contracts";
+import { providerInstanceSecretField } from "@t3tools/shared/serverSettings";
 
 // A process-local key keeps sensitive values useful for change detection while
 // ensuring fingerprints persisted to SQLite or the provider-status cache
@@ -33,15 +34,22 @@ export function fingerprintableProviderConfig(
   config: unknown,
   key?: Uint8Array,
 ): unknown {
-  if (driver !== "opencode" || !config || typeof config !== "object" || Array.isArray(config)) {
-    return config;
+  if (!config || typeof config !== "object" || Array.isArray(config)) return config;
+  let record = config as Record<string, unknown>;
+  // The Cursor harness pin writes `harness: "acp"`, the behavior every Cursor
+  // instance had before the field existed. Leaving it out keeps fingerprints
+  // stored before the pin (queued resumes, MCP account identities) matching.
+  if (driver === "cursor" && record.harness === "acp") {
+    const { harness: _pinned, ...rest } = record;
+    record = rest;
   }
-  const record = config as Record<string, unknown>;
-  const serverPassword = record.serverPassword;
+  const secret = providerInstanceSecretField(driver);
+  if (!secret) return record === config ? config : record;
+  const value = record[secret.field];
   return {
     ...record,
-    ...(typeof serverPassword === "string" && serverPassword.length > 0
-      ? { serverPassword: sensitiveValueFingerprint(serverPassword, key) }
+    ...(typeof value === "string" && value.length > 0
+      ? { [secret.field]: sensitiveValueFingerprint(value, key) }
       : {}),
   };
 }

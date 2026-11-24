@@ -1,1 +1,0 @@
-- Reveal in File Explorer selects files from links with forward-slash paths, including paths with spaces.

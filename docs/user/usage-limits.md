@@ -147,6 +147,9 @@ identity and discard unrelated CLI activity.
 `https://hub.example/cliproxy/management.html` is also accepted. Do not include the API path
 `/v0/management`: F5 appends it to the base URL when requesting accounts and quotas.
 
+An Antigravity instance that signs in with a Gemini API key has no subscription quota. Its card
+shows "Billed per token" and F5 doesn't read quotas for it.
+
 </details>
 
 ## Related

@@ -2,25 +2,24 @@ import { writeAcpWrapper, waitForAgentExit } from "../../testUtils/cli.ts";
 import * as NodeOS from "node:os";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Effect, FileSystem, Layer, Path } from "effect";
+import { Effect, FileSystem, Layer, Path, Schedule } from "effect";
 import { describe, expect, it } from "vitest";
 import type * as EffectAcpSchema from "effect-acp/schema";
-import {
-  ProviderInstanceId,
-  type CursorSettings,
-  type ServerProviderModel,
-} from "@t3tools/contracts";
+import { ProviderInstanceId, type CursorSettings } from "@t3tools/contracts";
 import { createModelCapabilities } from "@t3tools/shared/model";
 
 import { ServerConfig } from "../../config.ts";
 import { CursorDriver } from "../Drivers/CursorDriver.ts";
 import {
+  resolveProviderStatusCachePath,
+  writeProviderStatusCache,
+} from "../providerStatusCache.ts";
+import {
   buildCursorProviderSnapshot,
   buildCursorCapabilitiesFromConfigOptions,
-  buildCursorDiscoveredModelsFromConfigOptions,
   checkCursorProviderStatus,
-  discoverCursorModelCapabilitiesViaAcp,
-  discoverCursorModelsViaAcp,
+  cursorModelsFromCatalog,
+  fetchCursorModelCatalog,
   getCursorFallbackModels,
   getCursorParameterizedModelPickerUnsupportedMessage,
   parseCursorAboutOutput,
@@ -28,6 +27,7 @@ import {
   parseCursorVersionDate,
   resolveCursorAcpBaseModelId,
   resolveCursorAcpConfigUpdates,
+  resolveCursorAcpModelValue,
 } from "./CursorProvider.ts";
 import { NoOpProviderEventLoggers, ProviderEventLoggers } from "./ProviderEventLoggers.ts";
 
@@ -65,19 +65,6 @@ function booleanDescriptor(id: string, label: string, currentValue?: boolean) {
   };
 }
 
-const makeMockAgentWrapper = Effect.fn("makeMockAgentWrapper")(function* (
-  extraEnv?: Record<string, string>,
-) {
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const agent = yield* resolveMockAgentPath();
-  const dir = yield* fs.makeTempDirectory({
-    directory: NodeOS.tmpdir(),
-    prefix: "cursor-provider-mock-",
-  });
-  return writeAcpWrapper(path.join(dir, "fake-agent"), agent, { env: extraEnv });
-});
-
 const makeMockAgentWithAboutWrapper = Effect.fn("makeMockAgentWithAboutWrapper")(function* (
   extraEnv?: Record<string, string>,
 ) {
@@ -111,22 +98,6 @@ const makeProviderStatusEnvFixture = Effect.fn("makeProviderStatusEnvFixture")(f
     requestLogPath,
     wrapperPath: yield* makeMockAgentWithAboutWrapper({
       T3_ACP_REQUEST_LOG_PATH: requestLogPath,
-    }),
-  };
-});
-
-const makeExitLogFixture = Effect.fn("makeExitLogFixture")(function* (prefix: string) {
-  const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const tempDir = yield* fileSystem.makeTempDirectory({
-    directory: NodeOS.tmpdir(),
-    prefix,
-  });
-  const exitLogPath = path.join(tempDir, "exit.log");
-  return {
-    exitLogPath,
-    wrapperPath: yield* makeMockAgentWrapper({
-      T3_ACP_EXIT_LOG_PATH: exitLogPath,
     }),
   };
 });
@@ -266,49 +237,78 @@ const parameterizedClaudeModelOptionConfigOptions = [
   },
 ] satisfies ReadonlyArray<EffectAcpSchema.SessionConfigOption>;
 
-const sessionNewCursorConfigOptions = [
-  {
-    type: "select",
-    currentValue: "agent",
-    options: [
-      { name: "Agent", value: "agent", description: "Full agent capabilities with tool access" },
-    ],
-    category: "mode",
-    id: "mode",
-    name: "Mode",
-    description: "Controls how the agent executes tasks",
-  },
-  {
-    type: "select",
-    currentValue: "composer-2",
-    options: [
-      { name: "Auto", value: "default" },
-      { name: "Composer 2", value: "composer-2" },
-      { name: "GPT-5.4", value: "gpt-5.4" },
-      { name: "Sonnet 4.6", value: "claude-sonnet-4-6" },
-      { name: "Opus 4.6", value: "claude-opus-4-6" },
-      { name: "Codex 5.3 Spark", value: "gpt-5.3-codex-spark" },
-    ],
-    category: "model",
-    id: "model",
-    name: "Model",
-    description: "Controls which model is used for responses",
-  },
-  {
-    type: "select",
-    currentValue: "true",
-    options: [
-      { name: "Off", value: "false" },
-      { name: "Fast", value: "true" },
-    ],
-    category: "model_config",
-    id: "fast",
-    name: "Fast",
-    description: "Faster speeds.",
-  },
-] satisfies ReadonlyArray<EffectAcpSchema.SessionConfigOption>;
+const selectOption = (
+  id: string,
+  name: string,
+  category: string,
+  currentValue: string,
+  values: ReadonlyArray<readonly [string, string]>,
+) => ({
+  type: "select" as const,
+  id,
+  name,
+  category,
+  currentValue,
+  options: values.map(([value, label]) => ({ value, name: label })),
+});
+
+/** Shaped like Cursor CLI 2026.11.22's `cursor/list_available_models` response. */
+const cursorModelCatalog = {
+  models: [
+    {
+      value: "auto-smart",
+      name: "Auto",
+      configOptions: [
+        selectOption("optimize_for", "Optimize For", "model_config", "balanced", [
+          ["balanced", "Balanced"],
+          ["speed", "Speed"],
+        ]),
+      ],
+    },
+    {
+      value: "gemini-4-neon",
+      name: "Gemini 4 Neon",
+      configOptions: [
+        selectOption("reasoning_effort", "Reasoning Effort", "thought_level", "high", [
+          ["low", "Low"],
+          ["medium", "Medium"],
+          ["high", "High"],
+          ["xhigh", "Extra High"],
+        ]),
+        selectOption("context", "Context", "model_config", "300k", [
+          ["300k", "300K"],
+          ["1m", "1M"],
+        ]),
+      ],
+    },
+    {
+      value: "claude-opus-4-7",
+      name: "Opus 4.7",
+      configOptions: [
+        selectOption("thinking", "Thinking", "thought_level", "true", [
+          ["false", "Off"],
+          ["true", "On"],
+        ]),
+        selectOption("effort", "Effort", "thought_level", "max", [
+          ["none", "None"],
+          ["low", "Low"],
+          ["max", "Max"],
+        ]),
+        selectOption("fast", "Fast", "model_config", "false", [
+          ["false", "Off"],
+          ["true", "Fast"],
+        ]),
+        { type: "select", id: "broken" },
+      ],
+    },
+    { value: "gemini-4-neon", name: "Duplicate", configOptions: [] },
+    { value: 5, name: "Malformed" },
+    { value: "  ", name: "Blank" },
+  ],
+};
 
 const baseCursorSettings: CursorSettings = {
+  harness: "acp",
   enabled: true,
   binaryPath: "agent",
   apiEndpoint: "",
@@ -404,6 +404,7 @@ describe("buildCursorCapabilitiesFromConfigOptions", () => {
       createModelCapabilities({
         optionDescriptors: [
           selectDescriptor("reasoning", "Reasoning", [
+            { id: "none", label: "None" },
             { id: "low", label: "Low" },
             { id: "medium", label: "Medium", isDefault: true },
             { id: "high", label: "High" },
@@ -454,48 +455,168 @@ describe("buildCursorCapabilitiesFromConfigOptions", () => {
   });
 });
 
-describe("buildCursorDiscoveredModelsFromConfigOptions", () => {
-  it("publishes ACP model choices immediately from session/new config options", () => {
-    expect(buildCursorDiscoveredModelsFromConfigOptions(sessionNewCursorConfigOptions)).toEqual([
+describe("cursorModelsFromCatalog", () => {
+  it("maps each catalog model with the options Cursor offers for it", () => {
+    expect(cursorModelsFromCatalog(cursorModelCatalog)).toEqual([
+      // Cursor's Auto is F5's default `auto`. Its optimize_for has no F5 control, so Auto
+      // runs with Cursor's default.
+      { slug: "auto", name: "Auto", isCustom: false, capabilities: emptyCapabilities },
       {
-        slug: "default",
-        name: "Auto",
-        isCustom: false,
-        capabilities: emptyCapabilities,
-      },
-      {
-        slug: "composer-2",
-        name: "Composer 2",
+        slug: "gemini-4-neon",
+        name: "Gemini 4 Neon",
         isCustom: false,
         capabilities: createModelCapabilities({
-          optionDescriptors: [booleanDescriptor("fastMode", "Fast", true)],
+          optionDescriptors: [
+            selectDescriptor("reasoning", "Reasoning Effort", [
+              { id: "low", label: "Low" },
+              { id: "medium", label: "Medium" },
+              { id: "high", label: "High", isDefault: true },
+              { id: "xhigh", label: "Extra High" },
+            ]),
+            selectDescriptor("contextWindow", "Context", [
+              { id: "300k", label: "300K", isDefault: true },
+              { id: "1m", label: "1M" },
+            ]),
+          ],
         }),
       },
       {
-        slug: "gpt-5.4",
-        name: "GPT-5.4",
+        slug: "claude-opus-4-7",
+        name: "Opus 4.7",
         isCustom: false,
-        capabilities: emptyCapabilities,
-      },
-      {
-        slug: "claude-sonnet-4-6",
-        name: "Sonnet 4.6",
-        isCustom: false,
-        capabilities: emptyCapabilities,
-      },
-      {
-        slug: "claude-opus-4-6",
-        name: "Opus 4.6",
-        isCustom: false,
-        capabilities: emptyCapabilities,
-      },
-      {
-        slug: "gpt-5.3-codex-spark",
-        name: "Codex 5.3 Spark",
-        isCustom: false,
-        capabilities: emptyCapabilities,
+        capabilities: createModelCapabilities({
+          optionDescriptors: [
+            selectDescriptor("reasoning", "Effort", [
+              { id: "none", label: "None" },
+              { id: "low", label: "Low" },
+              { id: "max", label: "Max", isDefault: true },
+            ]),
+            booleanDescriptor("fastMode", "Fast", false),
+            booleanDescriptor("thinking", "Thinking", true),
+          ],
+        }),
       },
     ]);
+  });
+
+  it("reads nothing from a response without a model list", () => {
+    expect(cursorModelsFromCatalog({ items: [] })).toEqual([]);
+    expect(cursorModelsFromCatalog(null)).toEqual([]);
+  });
+
+  it("writes catalog option picks back to the matching session option ids", () => {
+    const configOptionsFor = (slug: string) =>
+      cursorModelCatalog.models.find((model) => model.value === slug)!
+        .configOptions as ReadonlyArray<EffectAcpSchema.SessionConfigOption>;
+    expect(
+      resolveCursorAcpConfigUpdates(configOptionsFor("gemini-4-neon"), [
+        { id: "reasoning", value: "xhigh" },
+        { id: "contextWindow", value: "1m" },
+      ]),
+    ).toEqual([
+      { configId: "reasoning_effort", value: "xhigh" },
+      { configId: "context", value: "1m" },
+    ]);
+    expect(
+      resolveCursorAcpConfigUpdates(configOptionsFor("claude-opus-4-7").slice(0, 3), [
+        { id: "reasoning", value: "none" },
+        { id: "fastMode", value: true },
+        { id: "thinking", value: false },
+      ]),
+    ).toEqual([
+      { configId: "effort", value: "none" },
+      { configId: "fast", value: "true" },
+      { configId: "thinking", value: "false" },
+    ]);
+  });
+});
+
+const makeCatalogFixture = Effect.fn("makeCatalogFixture")(function* (catalog: string | undefined) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const tempDir = yield* fileSystem.makeTempDirectory({
+    directory: NodeOS.tmpdir(),
+    prefix: "cursor-provider-catalog-",
+  });
+  const requestLogPath = path.join(tempDir, "requests.ndjson");
+  const exitLogPath = path.join(tempDir, "exit.log");
+  return {
+    requestLogPath,
+    exitLogPath,
+    wrapperPath: yield* makeMockAgentWithAboutWrapper({
+      T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+      T3_ACP_EXIT_LOG_PATH: exitLogPath,
+      ...(catalog === undefined ? {} : { T3_ACP_CURSOR_MODEL_CATALOG: catalog }),
+    }),
+  };
+});
+
+const requestedMethods = async (requestLogPath: string) =>
+  (await runNode(readFileIfPresent(requestLogPath)))
+    .split("\n")
+    .filter((line) => line.trim().length > 0)
+    .map((line) => (JSON.parse(line) as { method?: string }).method)
+    .filter((method) => method !== undefined);
+
+describe("fetchCursorModelCatalog", () => {
+  it("reads the catalog without authenticating or opening a session", async () => {
+    const { requestLogPath, exitLogPath, wrapperPath } = await runNode(
+      makeCatalogFixture(JSON.stringify(cursorModelCatalog)),
+    );
+
+    const result = await Effect.runPromise(
+      fetchCursorModelCatalog({ ...baseCursorSettings, binaryPath: wrapperPath }).pipe(
+        Effect.provide(NodeServices.layer),
+      ),
+    );
+
+    expect(result._tag).toBe("ok");
+    expect(result._tag === "ok" ? result.models.map((model) => model.slug) : []).toEqual([
+      "auto",
+      "gemini-4-neon",
+      "claude-opus-4-7",
+    ]);
+    await expect(requestedMethods(requestLogPath)).resolves.toEqual([
+      "initialize",
+      "cursor/list_available_models",
+    ]);
+    await waitForAgentExit(exitLogPath);
+  });
+
+  it("reports a CLI without the catalog request as unsupported", async () => {
+    const { wrapperPath } = await runNode(makeCatalogFixture("unsupported"));
+    await expect(
+      Effect.runPromise(
+        fetchCursorModelCatalog({ ...baseCursorSettings, binaryPath: wrapperPath }).pipe(
+          Effect.provide(NodeServices.layer),
+        ),
+      ),
+    ).resolves.toEqual({ _tag: "unsupported" });
+  });
+
+  it("redacts credentials from a failed fetch's detail", async () => {
+    const { wrapperPath } = await runNode(
+      makeCatalogFixture("error:upstream rejected Authorization: Bearer secret-token-123"),
+    );
+    const result = await Effect.runPromise(
+      fetchCursorModelCatalog({ ...baseCursorSettings, binaryPath: wrapperPath }).pipe(
+        Effect.provide(NodeServices.layer),
+      ),
+    );
+    expect(result._tag).toBe("failed");
+    const detail = result._tag === "failed" ? result.detail : "";
+    expect(detail).toContain("upstream rejected");
+    expect(detail).not.toContain("secret-token-123");
+  });
+
+  it("reports a CLI that cannot start as a failed fetch", async () => {
+    const result = await Effect.runPromise(
+      fetchCursorModelCatalog(
+        { ...baseCursorSettings, binaryPath: "/definitely/missing/f5-cursor-agent" },
+        { PATH: "" },
+      ).pipe(Effect.provide(NodeServices.layer)),
+    );
+    expect(result._tag).toBe("failed");
   });
 });
 
@@ -504,6 +625,7 @@ describe("checkCursorProviderStatus", () => {
     const provider = await Effect.runPromise(
       checkCursorProviderStatus(
         {
+          harness: "acp",
           enabled: true,
           binaryPath: "/definitely/missing/f5-cursor-agent",
           apiEndpoint: "",
@@ -523,6 +645,7 @@ describe("checkCursorProviderStatus", () => {
 
     const provider = await Effect.runPromise(
       checkCursorProviderStatus({
+        harness: "acp",
         enabled: true,
         binaryPath: wrapperPath,
         apiEndpoint: "",
@@ -537,10 +660,12 @@ describe("checkCursorProviderStatus", () => {
     await expect(runNode(readFileIfPresent(requestLogPath))).resolves.toBe("");
   });
 
-  it("keeps CursorDriver snapshot refresh passive", async () => {
-    const { requestLogPath, wrapperPath } = await runNode(makeProviderStatusEnvFixture());
+  it("publishes the account catalog after a passive CursorDriver refresh", async () => {
+    const { requestLogPath, wrapperPath } = await runNode(
+      makeCatalogFixture(JSON.stringify(cursorModelCatalog)),
+    );
     const testLayer = ServerConfig.layerTest(process.cwd(), {
-      prefix: "cursor-driver-passive-",
+      prefix: "cursor-driver-catalog-",
     }).pipe(
       Layer.provideMerge(NodeServices.layer),
       Layer.provideMerge(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
@@ -555,100 +680,104 @@ describe("checkCursorProviderStatus", () => {
             accentColor: undefined,
             environment: [],
             enabled: true,
-            config: {
-              enabled: true,
-              binaryPath: wrapperPath,
-              apiEndpoint: "",
-              customModels: [],
-            },
+            config: { ...baseCursorSettings, binaryPath: wrapperPath, customModels: ["mine"] },
           });
-          const snapshot = yield* instance.snapshot.refresh;
-          expect(snapshot.status).toBe("ready");
-          expect(snapshot.models.map((model) => model.slug)).toEqual([]);
+          const refreshed = yield* instance.snapshot.refresh;
+          expect(refreshed.status).toBe("ready");
+          // The status check itself only runs `agent about`; the catalog follows.
+          expect(refreshed.models.map((model) => model.slug)).toEqual(["mine"]);
+          const enriched = yield* instance.snapshot.getSnapshot.pipe(
+            Effect.flatMap((snapshot) =>
+              snapshot.models.length > 1
+                ? Effect.succeed(snapshot)
+                : Effect.fail("catalog not published yet" as const),
+            ),
+            Effect.retry(Schedule.spaced("50 millis")),
+            Effect.timeout("15 seconds"),
+          );
+          expect(enriched.models.map((model) => model.slug)).toEqual([
+            "auto",
+            "gemini-4-neon",
+            "claude-opus-4-7",
+            "mine",
+          ]);
+          // A later refresh keeps the cached catalog without asking Cursor again.
+          const again = yield* instance.snapshot.refresh;
+          expect(again.models.map((model) => model.slug)).toEqual(
+            enriched.models.map((model) => model.slug),
+          );
         }),
       ).pipe(Effect.provide(testLayer)),
     );
 
-    await expect(runNode(readFileIfPresent(requestLogPath))).resolves.toBe("");
-  });
-});
-
-describe("discoverCursorModelsViaAcp", () => {
-  it("keeps the ACP probe runtime alive long enough to discover models", async () => {
-    const wrapperPath = await runNode(makeMockAgentWrapper());
-
-    const models = await Effect.runPromise(
-      discoverCursorModelsViaAcp({
-        enabled: true,
-        binaryPath: wrapperPath,
-        apiEndpoint: "",
-        customModels: [],
-      }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
-    );
-
-    expect(models.map((model) => model.slug)).toEqual([
-      "default",
-      "composer-2",
-      "gpt-5.4",
-      "claude-opus-4-6",
+    await expect(requestedMethods(requestLogPath)).resolves.toEqual([
+      "initialize",
+      "cursor/list_available_models",
     ]);
   });
 
-  it("closes the ACP probe runtime after discovery completes", async () => {
-    const { exitLogPath, wrapperPath } = await runNode(
-      makeExitLogFixture("cursor-provider-exit-log-"),
+  it("keeps the persisted catalog after a restart whose catalog fetch fails", async () => {
+    const working = await runNode(makeCatalogFixture(JSON.stringify(cursorModelCatalog)));
+    const failing = await runNode(makeCatalogFixture("error:catalog unavailable"));
+    const testLayer = ServerConfig.layerTest(process.cwd(), {
+      prefix: "cursor-driver-restart-",
+    }).pipe(
+      Layer.provideMerge(NodeServices.layer),
+      Layer.provideMerge(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
     );
+    const create = (binaryPath: string) =>
+      CursorDriver.create({
+        instanceId: ProviderInstanceId.make("cursor"),
+        displayName: undefined,
+        accentColor: undefined,
+        environment: [],
+        enabled: true,
+        config: { ...baseCursorSettings, binaryPath },
+      });
+    const waitForCatalog = (instance: Effect.Success<ReturnType<typeof create>>) =>
+      instance.snapshot.getSnapshot.pipe(
+        Effect.flatMap((snapshot) =>
+          snapshot.models.length > 1
+            ? Effect.succeed(snapshot)
+            : Effect.fail("catalog not published yet" as const),
+        ),
+        Effect.retry(Schedule.spaced("50 millis")),
+        Effect.timeout("15 seconds"),
+      );
 
     await Effect.runPromise(
-      discoverCursorModelsViaAcp({
-        enabled: true,
-        binaryPath: wrapperPath,
-        apiEndpoint: "",
-        customModels: [],
-      }).pipe(Effect.provide(NodeServices.layer)),
+      Effect.gen(function* () {
+        const config = yield* ServerConfig;
+        const cacheDir = config.providerStatusCacheDir!;
+        // The first process publishes the catalog, which the registry persists.
+        const published = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const instance = yield* create(working.wrapperPath);
+            yield* instance.snapshot.refresh;
+            return yield* waitForCatalog(instance);
+          }),
+        );
+        yield* writeProviderStatusCache({
+          filePath: yield* resolveProviderStatusCachePath({
+            cacheDir,
+            instanceId: ProviderInstanceId.make("cursor"),
+          }),
+          provider: published,
+        });
+        // After a restart the fetch fails, and the last catalog is still shown.
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const instance = yield* create(failing.wrapperPath);
+            const refreshed = yield* instance.snapshot.refresh;
+            expect(refreshed.models.map((model) => model.slug)).toEqual([
+              "auto",
+              "gemini-4-neon",
+              "claude-opus-4-7",
+            ]);
+          }),
+        );
+      }).pipe(Effect.provide(testLayer)),
     );
-
-    await waitForAgentExit(exitLogPath);
-  });
-});
-
-describe("discoverCursorModelCapabilitiesViaAcp", () => {
-  it("closes all ACP probe runtimes after capability enrichment completes", async () => {
-    const { exitLogPath, wrapperPath } = await runNode(
-      makeExitLogFixture("cursor-capabilities-exit-log-"),
-    );
-    const existingModels: ReadonlyArray<ServerProviderModel> = [
-      { slug: "default", name: "Auto", isCustom: false, capabilities: emptyCapabilities },
-      { slug: "composer-2", name: "Composer 2", isCustom: false, capabilities: emptyCapabilities },
-      { slug: "gpt-5.4", name: "GPT-5.4", isCustom: false, capabilities: emptyCapabilities },
-      {
-        slug: "claude-opus-4-6",
-        name: "Opus 4.6",
-        isCustom: false,
-        capabilities: emptyCapabilities,
-      },
-    ];
-
-    const models = await Effect.runPromise(
-      discoverCursorModelCapabilitiesViaAcp(
-        {
-          enabled: true,
-          binaryPath: wrapperPath,
-          apiEndpoint: "",
-          customModels: [],
-        },
-        existingModels,
-      ).pipe(Effect.provide(NodeServices.layer)),
-    );
-
-    expect(models.map((model) => model.slug)).toEqual([
-      "default",
-      "composer-2",
-      "gpt-5.4",
-      "claude-opus-4-6",
-    ]);
-
-    await waitForAgentExit(exitLogPath, 4);
   });
 });
 
@@ -792,6 +921,34 @@ describe("resolveCursorAcpBaseModelId", () => {
     );
     expect(resolveCursorAcpBaseModelId("composer-2")).toBe("composer-2");
     expect(resolveCursorAcpBaseModelId("auto")).toBe("default");
+  });
+});
+
+describe("resolveCursorAcpModelValue", () => {
+  const modelOption = (values: ReadonlyArray<string>) => [
+    selectOption(
+      "model",
+      "Model",
+      "model",
+      values[0]!,
+      values.map((value) => [value, value] as const),
+    ),
+  ];
+
+  it("resolves Auto to whichever auto value the session offers", () => {
+    expect(resolveCursorAcpModelValue("auto", modelOption(["auto-smart", "gemini-4-neon"]))).toBe(
+      "auto-smart",
+    );
+    expect(resolveCursorAcpModelValue("auto", modelOption(["default", "composer-2"]))).toBe(
+      "default",
+    );
+    expect(resolveCursorAcpModelValue("auto", [])).toBe("default");
+  });
+
+  it("passes every other model id through", () => {
+    expect(
+      resolveCursorAcpModelValue("gemini-4-neon", modelOption(["auto-smart", "gemini-4-neon"])),
+    ).toBe("gemini-4-neon");
   });
 });
 

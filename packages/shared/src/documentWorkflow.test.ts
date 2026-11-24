@@ -37,8 +37,11 @@ describe("document artifacts", () => {
   it("defaults the reader to an author different from merge", () => {
     const a = { provider: "codex" as const, model: "a" };
     const b = { provider: "claudeAgent" as const, model: "b" };
-    expect(defaultDocumentReaderSlot({ branchA: a, branchB: b, merge: a })).toBe(b);
-    expect(defaultDocumentReaderSlot({ branchA: a, branchB: b, merge: b })).toBe(a);
+    const c = { provider: "antigravity" as const, model: "c" };
+    expect(defaultDocumentReaderSlot([a, b], a)).toBe(b);
+    expect(defaultDocumentReaderSlot([a, b], b)).toBe(a);
+    expect(defaultDocumentReaderSlot([a, a, c], a)).toBe(c);
+    expect(defaultDocumentReaderSlot([a, a], a)).toBe(a);
   });
   it("normalizes short preambles, CRLF and genuine wrappers idempotently", () => {
     for (const input of [

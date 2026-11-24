@@ -5,8 +5,34 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import { runProcess, terminateRunningProcesses } from "./processRunner";
+import * as commandResolution from "./spawn/resolveCommand";
+
+vi.mock("node:child_process", { spy: true });
 
 describe("runProcess", () => {
+  it("does not spawn when cancelled during command resolution", async () => {
+    const controller = new AbortController();
+    const started = Promise.withResolvers<void>();
+    const lookup = Promise.withResolvers<commandResolution.ResolvedCliInvocation>();
+    using resolve = vi.spyOn(commandResolution, "resolveInvocation").mockImplementationOnce(() => {
+      started.resolve();
+      return lookup.promise;
+    });
+    vi.mocked(spawn).mockClear();
+
+    const run = runProcess(process.execPath, ["--version"], {
+      env: process.env,
+      signal: controller.signal,
+    });
+    await started.promise;
+    controller.abort();
+    lookup.resolve({ file: process.execPath, args: ["--version"], kind: "native" });
+
+    await expect(run).resolves.toMatchObject({ aborted: true, code: null, timedOut: false });
+    expect(resolve).toHaveBeenCalledOnce();
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
   it("preserves fast Git command output with explicitly empty stdin", async () => {
     const results = await Promise.all(
       Array.from({ length: 16 }, () =>

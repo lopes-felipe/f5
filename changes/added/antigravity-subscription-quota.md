@@ -1,1 +1,0 @@
-- Antigravity usage limits can read Gemini and shared Claude/GPT subscription quotas directly from the signed-in CLI account, without a separate usage hub.

@@ -15,3 +15,13 @@ export const DeliveryAttemptContext = ServiceMap.Reference<{
     snapshot: ProviderThreadSnapshot | null,
   ) => Effect.Effect<void, ProviderServiceError>;
 } | null>("f5/provider/DeliveryAttemptContext", { defaultValue: () => null });
+
+/**
+ * Lets an adapter whose `sendTurn` lasts the whole turn (ACP `session/prompt`) report the
+ * delivery accepted once the agent shows it is working on the prompt, instead of when the
+ * turn ends. Calls after the first are ignored, and a failure is logged rather than raised:
+ * acceptance after `sendTurn` returns remains the fallback. `null` outside a delivery.
+ */
+export const TurnAcceptanceSignal = ServiceMap.Reference<{
+  readonly accept: (receipt: ProviderTurnStartResult) => Effect.Effect<void>;
+} | null>("f5/provider/TurnAcceptanceSignal", { defaultValue: () => null });

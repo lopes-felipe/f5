@@ -306,3 +306,222 @@ it.each([
     await Effect.runPromise(Scope.close(scope, Exit.void));
   }
 });
+
+describe("launch credential scrubbing", () => {
+  it("reports how much trailing text could begin a redacted credential", async () => {
+    const key = "AIzaSyHoldbackFixture000";
+    const scope = await Effect.runPromise(Scope.make());
+    try {
+      const catalogs = await Effect.runPromise(
+        prepareAcpAutomationCatalogs({
+          threadId,
+          provider: "antigravity",
+          scope,
+          ordinarySession: true,
+          readOnlyWorkflow: false,
+          credentials: [key],
+        }),
+      );
+      expect(catalogs.credentialPrefixHoldback("export KEY=AIzaSy")).toBe(6);
+      expect(catalogs.credentialPrefixHoldback(`export KEY=${key}`)).toBe(0);
+      expect(catalogs.credentialPrefixHoldback("no secret here")).toBe(0);
+    } finally {
+      await Effect.runPromise(Scope.close(scope, Exit.void));
+    }
+  });
+
+  it("redacts a credential echoed as a property name as well as a value", async () => {
+    const key = "AIzaSyPropertyNameFixture000";
+    const scope = await Effect.runPromise(Scope.make());
+    try {
+      const catalogs = await Effect.runPromise(
+        prepareAcpAutomationCatalogs({
+          threadId,
+          provider: "antigravity",
+          scope,
+          ordinarySession: true,
+          readOnlyWorkflow: false,
+          credentials: [key],
+        }),
+      );
+      const event = {
+        type: "item.updated",
+        eventId: "evt-1",
+        provider: "antigravity",
+        threadId,
+        createdAt: new Date(0).toISOString(),
+        itemId: "item-1",
+        payload: { itemType: "dynamic_tool_call", data: { [key]: `value ${key}`, plain: "ok" } },
+      } as unknown as Parameters<typeof catalogs.sanitizeEvent>[0];
+      const published = JSON.stringify(catalogs.sanitizeEvent(event));
+      expect(published).not.toContain(key);
+      expect(published).toContain('"[redacted]":"value [redacted]"');
+      // Schema field names are left as they are.
+      expect(published).toContain('"plain":"ok"');
+      expect(published).toContain('"itemType":"dynamic_tool_call"');
+    } finally {
+      await Effect.runPromise(Scope.close(scope, Exit.void));
+    }
+  });
+
+  it("redacts forwarded MCP credentials echoed in content and raw payloads", async () => {
+    const scope = await Effect.runPromise(Scope.make());
+    try {
+      const catalogs = await Effect.runPromise(
+        prepareAcpAutomationCatalogs({
+          threadId,
+          provider: "cursor",
+          scope,
+          ordinarySession: true,
+          readOnlyWorkflow: false,
+        }),
+      );
+      catalogs.registerForwardedCredentials([
+        "Bearer forwarded-token-value",
+        "forwarded-token-value",
+        "https://mcp.example/x?key=query-secret-value",
+        "query-secret-value",
+      ]);
+      const event = {
+        type: "content.delta",
+        eventId: "evt-2",
+        provider: "cursor",
+        threadId,
+        createdAt: new Date(0).toISOString(),
+        payload: { streamKind: "assistant_text", delta: "token is forwarded-token-value" },
+        raw: {
+          source: "acp.jsonrpc",
+          payload: { url: "https://mcp.example/x?key=query-secret-value" },
+        },
+      } as unknown as Parameters<typeof catalogs.sanitizeEvent>[0];
+      const published = JSON.stringify(catalogs.sanitizeEvent(event));
+      expect(published).not.toContain("forwarded-token-value");
+      expect(published).not.toContain("query-secret-value");
+      expect(published).toContain("token is [redacted]");
+      expect(published).toContain('"url":"[redacted]"');
+    } finally {
+      await Effect.runPromise(Scope.close(scope, Exit.void));
+    }
+  });
+});
+
+describe("interaction catalog", () => {
+  const interaction = {
+    openQuestion: async () => ({ cancelled: true as const }),
+    questionOutcome: () => undefined,
+  };
+  const launch = { command: "/opt/f5/f5", args: ["entry.mjs", "mcp-session-stdio"], env: {} };
+  const preview = () => {
+    const createSessionConfig = vi.fn((input: { catalog?: string; serverName?: string }) => ({
+      serverName: input.serverName ?? `f5_${input.catalog}`,
+      env: { TOKEN: `${input.catalog}-private-token` },
+      serverDefinition: {
+        type: "http",
+        url: `http://127.0.0.1:1234/mcp/${input.catalog}`,
+        bearerTokenEnvVar: "TOKEN",
+      },
+      dispose: vi.fn(),
+    }));
+    return {
+      createSessionConfig,
+      shape: {
+        supportsThreadCatalog: false,
+        createSessionConfig,
+      } as unknown as PreviewMcpHttpServerShape,
+    };
+  };
+  const prepare = (
+    input: Partial<Parameters<typeof prepareAcpAutomationCatalogs>[0]>,
+    scope: Scope.Closeable,
+  ) =>
+    Effect.runPromise(
+      prepareAcpAutomationCatalogs({
+        threadId,
+        provider: "antigravity",
+        scope,
+        ordinarySession: true,
+        readOnlyWorkflow: false,
+        stdioLaunch: launch,
+        ...input,
+      }),
+    );
+
+  it("reaches an agent without HTTP MCP over the stdio relay, with its token scrubbed", async () => {
+    const scope = await Effect.runPromise(Scope.make());
+    try {
+      const { shape } = preview();
+      const catalogs = await prepare({ preview: shape, interaction }, scope);
+      const servers = catalogs.mcpServers({ protocolVersion: 1, agentCapabilities: {} });
+      expect(servers).toHaveLength(1);
+      const server = servers[0] as unknown as Record<string, unknown>;
+      expect(server.name).toMatch(/^f5_interaction_[0-9a-f]{8}$/);
+      expect(catalogs.interactionServerName()).toBe(server.name);
+      expect(server).toMatchObject({
+        command: "/opt/f5/f5",
+        args: ["entry.mjs", "mcp-session-stdio"],
+        env: [
+          { name: "F5_MCP_URL", value: "http://127.0.0.1:1234/mcp/interaction" },
+          { name: "F5_MCP_TOKEN", value: "interaction-private-token" },
+        ],
+      });
+      expect(catalogs.scrubDiagnostic("token interaction-private-token")).not.toContain(
+        "interaction-private-token",
+      );
+      // An agent echoing its MCP configuration never publishes the token.
+      const echoed = {
+        type: "content.delta",
+        eventId: "evt-echo",
+        provider: "antigravity",
+        threadId: ThreadId.make("thread-interaction"),
+        createdAt: new Date(0).toISOString(),
+        payload: { streamKind: "assistant_text", delta: "F5_MCP_TOKEN=interaction-private-token" },
+      } as unknown as Parameters<typeof catalogs.sanitizeEvent>[0];
+      expect(JSON.stringify(catalogs.sanitizeEvent(echoed))).not.toContain(
+        "interaction-private-token",
+      );
+      expect(catalogs.hasSensitiveConfiguration()).toBe(true);
+    } finally {
+      await Effect.runPromise(Scope.close(scope, Exit.void));
+    }
+  });
+
+  it("uses HTTP when the agent advertises it", async () => {
+    const scope = await Effect.runPromise(Scope.make());
+    try {
+      const { shape } = preview();
+      const catalogs = await prepare(
+        { preview: shape, interaction, verification: { preview: false, computer: false } },
+        scope,
+      );
+      const servers = catalogs.mcpServers(init);
+      expect(servers).toEqual([
+        {
+          type: "http",
+          name: catalogs.interactionServerName(),
+          url: "http://127.0.0.1:1234/mcp/interaction",
+          headers: [{ name: "Authorization", value: "Bearer interaction-private-token" }],
+        },
+      ]);
+    } finally {
+      await Effect.runPromise(Scope.close(scope, Exit.void));
+    }
+  });
+
+  it.each([
+    ["without a question session", {}],
+    ["in a read-only workflow", { interaction, readOnlyWorkflow: true }],
+    ["for a one-off session", { interaction, ordinarySession: false, threadSession: false }],
+    ["with no way to reach the agent", { interaction, stdioLaunch: undefined }],
+  ])("offers no question tool %s", async (_name, input) => {
+    const scope = await Effect.runPromise(Scope.make());
+    try {
+      const { shape, createSessionConfig } = preview();
+      const catalogs = await prepare({ preview: shape, ...input }, scope);
+      expect(catalogs.mcpServers({ protocolVersion: 1, agentCapabilities: {} })).toEqual([]);
+      expect(createSessionConfig).not.toHaveBeenCalled();
+      expect(catalogs.interactionServerName()).toBeUndefined();
+    } finally {
+      await Effect.runPromise(Scope.close(scope, Exit.void));
+    }
+  });
+});

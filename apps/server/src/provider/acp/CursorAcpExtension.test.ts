@@ -1,10 +1,56 @@
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
+import type { RequestPermissionRequest } from "effect-acp/schema";
+
 import {
+  cursorAskQuestionOutcome,
+  cursorCreatePlanReply,
+  cursorFallbackQuestionReply,
+  cursorGeneratedImagePath,
+  cursorQuestionFallbackBaseId,
+  cursorQuestionFallbackReply,
   extractAskQuestions,
   extractPlanMarkdown,
   extractTodosAsPlan,
+  resolveCursorGeneratedImage,
 } from "./CursorAcpExtension.ts";
+
+const question = {
+  toolCallId: "ask-1",
+  questions: [
+    {
+      id: "scope",
+      prompt: "Which scope?",
+      options: [
+        { id: "a", label: "Same" },
+        { id: "b", label: "Same" },
+      ],
+    },
+    {
+      id: "langs",
+      prompt: "Which languages?",
+      allowMultiple: true,
+      options: [
+        { id: "ts", label: "TypeScript" },
+        { id: "rs", label: "Rust" },
+      ],
+    },
+  ],
+};
+
+const fallback = (overrides: Partial<RequestPermissionRequest["toolCall"]> = {}) =>
+  ({
+    sessionId: "s",
+    toolCall: { toolCallId: "ask-1_q0", kind: "other", title: "Which scope?", ...overrides },
+    options: [
+      { optionId: "allow-once", name: "Allow", kind: "allow_once" },
+      { optionId: "reject-once", name: "Skip", kind: "reject_once" },
+    ],
+  }) satisfies RequestPermissionRequest;
 
 describe("CursorAcpExtension", () => {
   it("extracts ask-question prompts from the real Cursor ACP payload shape", () => {
@@ -30,9 +76,10 @@ describe("CursorAcpExtension", () => {
         header: "Question",
         question: "Which language should I use?",
         multiSelect: false,
+        allowCustomAnswer: false,
         options: [
-          { label: "TypeScript", description: "TypeScript" },
-          { label: "Rust", description: "Rust" },
+          { label: "TypeScript", description: "TypeScript", value: "ts" },
+          { label: "Rust", description: "Rust", value: "rs" },
         ],
       },
     ]);
@@ -59,9 +106,10 @@ describe("CursorAcpExtension", () => {
         header: "Question",
         question: "Which mode should I use?",
         multiSelect: false,
+        allowCustomAnswer: false,
         options: [
-          { label: "Agent", description: "Agent" },
-          { label: "Plan", description: "Plan" },
+          { label: "Agent", description: "Agent", value: "agent" },
+          { label: "Plan", description: "Plan", value: "plan" },
         ],
       },
     ]);
@@ -104,5 +152,233 @@ describe("CursorAcpExtension", () => {
         { step: "Unknown status", status: "pending" },
       ],
     });
+  });
+
+  it("answers by option id so duplicate labels stay distinct", () => {
+    expect(cursorAskQuestionOutcome(question, { scope: "b", langs: ["ts", "rs"] })).toEqual({
+      outcome: "answered",
+      answers: [
+        { questionId: "scope", selectedOptionIds: ["b"] },
+        { questionId: "langs", selectedOptionIds: ["ts", "rs"] },
+      ],
+    });
+  });
+
+  it("keeps option ids that differ only in whitespace distinct", () => {
+    const spaced = {
+      toolCallId: "ask-2",
+      questions: [
+        {
+          id: "pick",
+          prompt: "Pick",
+          options: [
+            { id: " a ", label: "Padded" },
+            { id: "a", label: "Plain" },
+          ],
+        },
+      ],
+    };
+    expect(extractAskQuestions(spaced)[0]?.options.map((option) => option.value)).toEqual([
+      " a ",
+      "a",
+    ]);
+    expect(cursorAskQuestionOutcome(spaced, { pick: " a " })).toEqual({
+      outcome: "answered",
+      answers: [{ questionId: "pick", selectedOptionIds: [" a "] }],
+    });
+  });
+
+  it("keeps single-select questions to one option and accepts legacy label answers", () => {
+    expect(cursorAskQuestionOutcome(question, { scope: ["Same", "b"] })).toEqual({
+      outcome: "answered",
+      answers: [
+        { questionId: "scope", selectedOptionIds: ["a"] },
+        { questionId: "langs", selectedOptionIds: [] },
+      ],
+    });
+  });
+
+  it("treats a dismissed card as skipped", () => {
+    expect(cursorAskQuestionOutcome(question, {}).outcome).toBe("skipped");
+    expect(cursorAskQuestionOutcome(question, { scope: "unknown" }).outcome).toBe("skipped");
+  });
+
+  it("recognises only the question fallback permission shape", () => {
+    expect(cursorQuestionFallbackBaseId(fallback())).toBe("ask-1");
+    expect(cursorQuestionFallbackBaseId(fallback({ kind: "execute" }))).toBeUndefined();
+    expect(cursorQuestionFallbackBaseId(fallback({ toolCallId: "ask-1" }))).toBeUndefined();
+    expect(
+      cursorQuestionFallbackBaseId({
+        ...fallback(),
+        options: [{ optionId: "always", name: "Always", kind: "allow_always" }],
+      }),
+    ).toBeUndefined();
+  });
+
+  it("maps a settled question onto the fallback's options", () => {
+    const allowRust = {
+      ...fallback(),
+      options: [
+        { optionId: "allow-once", name: "Rust", kind: "allow_once" },
+        { optionId: "reject-once", name: "Skip", kind: "reject_once" },
+      ],
+    } satisfies RequestPermissionRequest;
+    // A single-question request, with the outcome derived the way the adapter derives it.
+    const single = { toolCallId: "ask-1", questions: [question.questions[1]!] };
+    expect(
+      cursorQuestionFallbackReply(
+        allowRust,
+        cursorAskQuestionOutcome(single, { langs: "rs" }),
+        single,
+      ),
+    ).toEqual({ outcome: { outcome: "selected", optionId: "allow-once" } });
+    // Two native choices share the permission's name: it cannot identify the pick.
+    const twins = {
+      toolCallId: "ask-1",
+      questions: [question.questions[0]!],
+    };
+    expect(
+      cursorQuestionFallbackReply(
+        { ...allowRust, options: [{ optionId: "allow-once", name: "Same", kind: "allow_once" }] },
+        cursorAskQuestionOutcome(twins, { scope: "a" }),
+        twins,
+      ),
+    ).toBeUndefined();
+    expect(cursorQuestionFallbackReply(fallback(), { outcome: "skipped" }, question)).toEqual({
+      outcome: { outcome: "selected", optionId: "reject-once" },
+    });
+    expect(cursorQuestionFallbackReply(fallback(), { outcome: "cancelled" }, question)).toEqual({
+      outcome: { outcome: "cancelled" },
+    });
+  });
+
+  it("re-asks instead of guessing when a settled answer is ambiguous", () => {
+    // Several questions: which one `_q<n>` re-asks, and whether it was the
+    // skipped one, is not recorded, so nothing is replayed.
+    expect(
+      cursorQuestionFallbackReply(
+        fallback(),
+        {
+          outcome: "answered",
+          answers: [
+            { questionId: "scope", selectedOptionIds: [] },
+            { questionId: "langs", selectedOptionIds: ["rs"] },
+          ],
+        },
+        question,
+      ),
+    ).toBeUndefined();
+    // The chosen label differs from the `allow_once` option's name: the
+    // option may stand for a choice the user rejected.
+    expect(
+      cursorQuestionFallbackReply(
+        fallback(),
+        { outcome: "answered", answers: [{ questionId: "langs", selectedOptionIds: ["rs"] }] },
+        question,
+      ),
+    ).toBeUndefined();
+    // A multi-select answer never maps onto one option.
+    expect(
+      cursorQuestionFallbackReply(
+        {
+          ...fallback(),
+          options: [
+            { optionId: "allow-once", name: "Rust", kind: "allow_once" },
+            { optionId: "reject-once", name: "Skip", kind: "reject_once" },
+          ],
+        },
+        {
+          outcome: "answered",
+          answers: [{ questionId: "langs", selectedOptionIds: ["ts", "rs"] }],
+        },
+        question,
+      ),
+    ).toBeUndefined();
+    // One `allow_once` option per choice: the pick cannot be mapped.
+    expect(
+      cursorQuestionFallbackReply(
+        {
+          ...fallback(),
+          options: [
+            { optionId: "first", name: "TypeScript", kind: "allow_once" },
+            { optionId: "second", name: "Rust", kind: "allow_once" },
+            { optionId: "reject-once", name: "Skip", kind: "reject_once" },
+          ],
+        },
+        { outcome: "answered", answers: [{ questionId: "langs", selectedOptionIds: ["rs"] }] },
+        question,
+      ),
+    ).toBeUndefined();
+    // Without the original question there is no label to match.
+    expect(
+      cursorQuestionFallbackReply(
+        fallback(),
+        { outcome: "answered", answers: [{ questionId: "scope", selectedOptionIds: ["a"] }] },
+        undefined,
+      ),
+    ).toBeUndefined();
+  });
+
+  it("answers an unknown fallback from its own question card", () => {
+    expect(cursorFallbackQuestionReply(fallback(), { "ask-1_q0": "allow-once" })).toEqual({
+      outcome: { outcome: "selected", optionId: "allow-once" },
+    });
+    expect(cursorFallbackQuestionReply(fallback(), {})).toEqual({
+      outcome: { outcome: "selected", optionId: "reject-once" },
+    });
+    expect(cursorFallbackQuestionReply(fallback(), "cancelled")).toEqual({
+      outcome: { outcome: "cancelled" },
+    });
+  });
+
+  it("keeps the legacy plan reply until the live gate certifies an outcome", () => {
+    expect(cursorCreatePlanReply(undefined)).toEqual({ accepted: true });
+    expect(cursorCreatePlanReply("cancelled")).toEqual({ outcome: { outcome: "cancelled" } });
+    expect(cursorCreatePlanReply("rejected")).toMatchObject({ outcome: { outcome: "rejected" } });
+  });
+
+  it("shows generated images only from the workspace or attachments directory", () => {
+    // Resolved like the code does, so Windows drive letters and separators match.
+    expect(cursorGeneratedImagePath("out/a.png", "/work", "/state/attachments")).toBe(
+      resolve("/work/out/a.png"),
+    );
+    expect(
+      cursorGeneratedImagePath("/state/attachments/b.webp", "/work", "/state/attachments"),
+    ).toBe(resolve("/state/attachments/b.webp"));
+    expect(
+      cursorGeneratedImagePath("../escape.png", "/work", "/state/attachments"),
+    ).toBeUndefined();
+    expect(cursorGeneratedImagePath("/etc/passwd", "/work", "/state/attachments")).toBeUndefined();
+    expect(cursorGeneratedImagePath("notes.txt", "/work", "/state/attachments")).toBeUndefined();
+    // A name that merely starts with `..` is not a parent segment.
+    expect(cursorGeneratedImagePath("..diagram.png", "/work", "/state/attachments")).toBe(
+      resolve("/work/..diagram.png"),
+    );
+  });
+
+  it("rejects a workspace image reached through a link that points outside", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "cursor-image-")));
+    try {
+      const workspace = join(root, "workspace");
+      const outside = join(root, "outside");
+      await mkdir(workspace);
+      await mkdir(outside);
+      await writeFile(join(workspace, "real.png"), "");
+      await writeFile(join(outside, "secret.png"), "");
+      // A directory junction on Windows needs no symlink privilege; elsewhere it is a symlink.
+      await symlink(outside, join(workspace, "linked"), "junction");
+      const attachments = join(root, "attachments");
+      expect(await resolveCursorGeneratedImage("real.png", workspace, attachments)).toBe(
+        join(workspace, "real.png"),
+      );
+      expect(
+        await resolveCursorGeneratedImage(join("linked", "secret.png"), workspace, attachments),
+      ).toBeUndefined();
+      expect(
+        await resolveCursorGeneratedImage("missing.png", workspace, attachments),
+      ).toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

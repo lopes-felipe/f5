@@ -124,7 +124,7 @@ function makeHarness(
       snapshot: {} as ProviderInstance["snapshot"],
       adapter: {} as ProviderInstance["adapter"],
       textGeneration: {} as ProviderInstance["textGeneration"],
-      resolveInstallTarget: () => {
+      resolveInstallTarget: async () => {
         state.targetReads++;
         return state.targets.get(instanceId) ?? null;
       },
@@ -327,8 +327,9 @@ describe("provider update advisor", () => {
           state.registryResult = null;
           state.instances = state.instances.map((instance) => ({ ...instance }));
           yield* advisor.noteRegistryChanged;
-          yield* Effect.yieldNow;
-          expect(state.registryCalls.length).toBeGreaterThan(calls);
+          yield* Effect.promise(() =>
+            vi.waitFor(() => expect(state.registryCalls.length).toBeGreaterThan(calls)),
+          );
           yield* advisor.refreshAdvisories({ mode: "explicit" });
           expect((yield* advisory()).canRunUpdate).toBe(true);
         }),
@@ -399,7 +400,7 @@ describe("provider update advisor", () => {
       yield* Effect.promise(() => pending.ready);
       state.instances = [
         ...state.instances,
-        { ...state.instances[0]!, instanceId: otherId, resolveInstallTarget: () => target },
+        { ...state.instances[0]!, instanceId: otherId, resolveInstallTarget: async () => target },
       ];
       state.snapshots = [
         ...state.snapshots,

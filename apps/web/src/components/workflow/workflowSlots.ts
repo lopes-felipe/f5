@@ -53,7 +53,10 @@ export function getSingleProviderModelOptions(
       return modelOptions?.cursor ? { cursor: modelOptions.cursor } : undefined;
     case "opencode":
       return modelOptions?.opencode ? { opencode: modelOptions.opencode } : undefined;
-    case "grok":
+    case "antigravity":
+      // Keeps a Gemini row's thinking level.
+      return modelOptions?.antigravity ? { antigravity: modelOptions.antigravity } : undefined;
+    default:
       return undefined;
   }
 }
@@ -75,7 +78,20 @@ export function getWorkflowSlotDefaults(
   providers: Parameters<typeof resolveComposerPickerModel>[0]["providers"],
 ): SlotDefaults {
   const preferences = getModelPreferences();
-  const provider = preferences.lastWorkflowProviderBySlot[slot] ?? fallbackProvider;
+  return getWorkflowSlotDefaultsForProvider(
+    preferences.lastWorkflowProviderBySlot[slot] ?? fallbackProvider,
+    modelOptionsByProvider,
+    providers,
+  );
+}
+
+/** The remembered model and options for one provider, resolved against the picker options. */
+export function getWorkflowSlotDefaultsForProvider(
+  provider: ProviderKind,
+  modelOptionsByProvider: ModelOptionsByProvider,
+  providers: Parameters<typeof resolveComposerPickerModel>[0]["providers"],
+): SlotDefaults {
+  const preferences = getModelPreferences();
   const preferredModel = preferences.lastModelByProvider[provider] ?? getDefaultModel(provider);
   const model = resolveComposerPickerModel({
     provider,

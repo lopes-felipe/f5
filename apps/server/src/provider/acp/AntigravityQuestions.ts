@@ -54,13 +54,21 @@ export function antigravityQuestionResponse(
   return option ? { outcome: { outcome: "selected", optionId: option.optionId } } : undefined;
 }
 
+/**
+ * Approval buttons from Antigravity's own choices. With `allowThreadGrants: false` (Plan mode,
+ * computer consent) "Allow for this thread" is not offered, so no persistent native grant can be
+ * chosen there.
+ */
 export function antigravityApprovalOptions(
   request: RequestPermissionRequest,
+  { allowThreadGrants = true }: { readonly allowThreadGrants?: boolean } = {},
 ): ProviderApprovalOption[] {
   const choices: ProviderApprovalOption[] = [];
   if (request.options.some((option) => option.kind === "allow_once"))
     choices.push({ decision: "accept", label: "Allow once" });
-  const always = request.options.find((option) => option.kind === "allow_always");
+  const always = allowThreadGrants
+    ? request.options.find((option) => option.kind === "allow_always")
+    : undefined;
   if (always) {
     const value = always._meta?.["agy.security.warning"];
     const warning =

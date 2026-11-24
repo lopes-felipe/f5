@@ -216,6 +216,7 @@ import {
   OrchestrationGetThreadPeeksInput,
   OrchestrationGetSnapshotInput,
   OrchestrationGetStartupSnapshotInput,
+  OrchestrationGetLatestSequenceInput,
   OrchestrationGetThreadCommandExecutionInput,
   OrchestrationGetThreadCommandExecutionsInput,
   OrchestrationGetThreadDetailsInput,
@@ -304,11 +305,13 @@ import {
 import {
   ServerGetProviderInventoryInput,
   ServerSaveProviderFeedbackInput,
+  ServerTrustProviderHooksInput,
 } from "./providerInventory";
 import { ReviewPreviewDiffInput } from "./review";
 import {
   ServerAddKeybindingInput,
   ServerCheckProviderUpdatesInput,
+  ServerRefreshProvidersInput,
   ServerRemoveKeybindingInput,
   ServerResetKeybindingsInput,
   ServerRunProviderUpdateInput,
@@ -445,7 +448,7 @@ const WebSocketRequestBody = Schema.Union([
     ORCHESTRATION_WS_METHODS.dispatchCommand,
     Schema.Struct({ command: ClientOrchestrationCommand }),
   ),
-  tagRequestBody(ORCHESTRATION_WS_METHODS.getLatestSequence, Schema.Struct({})),
+  tagRequestBody(ORCHESTRATION_WS_METHODS.getLatestSequence, OrchestrationGetLatestSequenceInput),
   tagRequestBody(ORCHESTRATION_WS_METHODS.getSnapshot, OrchestrationGetSnapshotInput),
   tagRequestBody(ORCHESTRATION_WS_METHODS.getStartupSnapshot, OrchestrationGetStartupSnapshotInput),
   tagRequestBody(
@@ -646,13 +649,14 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.serverGetProjectSettings, Schema.Struct({ projectId: ProjectId })),
   tagRequestBody(WS_METHODS.serverMigrateClientSetting, MigrateClientSettingInput.members[0]),
   tagRequestBody(WS_METHODS.serverMigrateClientSetting, MigrateClientSettingInput.members[1]),
-  tagRequestBody(WS_METHODS.serverRefreshProviders, ServerCheckProviderUpdatesInput),
+  tagRequestBody(WS_METHODS.serverRefreshProviders, ServerRefreshProvidersInput),
   tagRequestBody(WS_METHODS.serverCheckProviderUpdates, ServerCheckProviderUpdatesInput),
   tagRequestBody(WS_METHODS.serverRunProviderUpdate, ServerRunProviderUpdateInput),
   tagRequestBody(WS_METHODS.serverValidateHarnesses, ServerValidateHarnessesInput),
   tagRequestBody(WS_METHODS.serverGetProviderInventory, ServerGetProviderInventoryInput),
   tagRequestBody(WS_METHODS.serverCodexConfiguration, ServerCodexConfigurationInput),
   tagRequestBody(WS_METHODS.serverSaveProviderFeedback, ServerSaveProviderFeedbackInput),
+  tagRequestBody(WS_METHODS.serverTrustProviderHooks, ServerTrustProviderHooksInput),
   tagRequestBody(WS_METHODS.serverUpsertKeybinding, KeybindingRule),
   tagRequestBody(WS_METHODS.serverAddKeybinding, ServerAddKeybindingInput),
   tagRequestBody(WS_METHODS.serverUpdateKeybinding, ServerUpdateKeybindingInput),

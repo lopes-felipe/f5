@@ -1,7 +1,7 @@
 import { writeAcpWrapper, waitForAgentExit } from "../../testUtils/cli.ts";
 import * as path from "node:path";
 import * as os from "node:os";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -22,6 +22,7 @@ import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import type { CursorAdapterShape } from "../Services/CursorAdapter.ts";
 import { makeCursorAdapter } from "./CursorAdapter.ts";
+import { TurnAcceptanceSignal } from "../deliveryAttemptContext.ts";
 
 // Test-local service tag so the rest of the file can keep using `yield* CursorAdapter`.
 class CursorAdapter extends ServiceMap.Service<CursorAdapter, CursorAdapterShape>()(
@@ -30,6 +31,13 @@ class CursorAdapter extends ServiceMap.Service<CursorAdapter, CursorAdapterShape
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const mockAgentPath = path.join(__dirname, "../../../scripts/acp-mock-agent.ts");
+
+/** A temp directory removed when the test's scope closes, including after a failure. */
+const scopedTempDir = (prefix: string) =>
+  Effect.acquireRelease(
+    Effect.promise(() => mkdtemp(path.join(os.tmpdir(), prefix))),
+    (dir) => Effect.promise(() => rm(dir, { recursive: true, force: true })),
+  );
 
 async function makeMockAgentWrapper(
   extraEnv?: Record<string, string>,
@@ -127,43 +135,68 @@ const cursorAdapterTestLayer = it.layer(
 );
 
 cursorAdapterTestLayer("CursorAdapterLive", (it) => {
-  it.effect("fails a turn containing only a transport diagnostic", () =>
-    Effect.gen(function* () {
-      const adapter = yield* CursorAdapter;
-      const settings = yield* ServerSettingsService;
-      const threadId = ThreadId.make("cursor-transport-failure");
-      const diagnostic = "Error: ConnectError: [unavailable] connection lost";
-      const wrapperPath = yield* Effect.promise(() =>
-        makeMockAgentWrapper({
-          T3_ACP_PROMPT_RESPONSE_TEXT: diagnostic,
-        }),
-      );
-      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
-      const startup = yield* adapter
-        .startSession({
-          threadId,
-          provider: ProviderDriverKind.make("cursor"),
-          cwd: process.cwd(),
-          runtimeMode: "full-access",
-        })
-        .pipe(Effect.forkChild);
-      yield* Fiber.join(startup);
-      const eventsFiber = yield* adapter.streamEvents.pipe(
-        Stream.takeUntil((event) => event.type === "turn.completed"),
-        Stream.runCollect,
-        Effect.forkChild,
-      );
-      const sent = yield* adapter.sendTurn({ threadId, input: "hello", attachments: [] });
-      assert.equal(sent.threadId, threadId);
-      const events = Array.from(yield* Fiber.join(eventsFiber));
-      const completed = events.find((event) => event.type === "turn.completed");
-      assert.isDefined(completed);
-      if (completed?.type === "turn.completed") {
-        assert.equal(completed.payload.state, "failed");
-        assert.equal(completed.payload.errorMessage, diagnostic);
-      }
-      yield* adapter.stopSession(threadId);
-    }),
+  it.effect.each([
+    {
+      label: "as the only assistant message",
+      diagnostic: "Error: ConnectError: [unavailable] connection lost",
+      hasCommentary: false,
+    },
+    {
+      label: "after commentary and a tool call",
+      diagnostic: "Error: RetriableError: WritableIterable is closed",
+      hasCommentary: true,
+    },
+  ])(
+    "fails a turn with a standalone transport diagnostic $label",
+    ({ diagnostic, hasCommentary }) =>
+      Effect.gen(function* () {
+        const adapter = yield* CursorAdapter;
+        const settings = yield* ServerSettingsService;
+        const threadId = ThreadId.make("cursor-transport-failure");
+        const wrapperPath = yield* Effect.promise(() =>
+          makeMockAgentWrapper({
+            T3_ACP_PROMPT_RESPONSE_TEXT: diagnostic,
+            T3_ACP_EMIT_INTERLEAVED_ASSISTANT_TOOL_CALLS: hasCommentary ? "1" : "0",
+          }),
+        );
+        yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+        const startup = yield* adapter
+          .startSession({
+            threadId,
+            provider: ProviderDriverKind.make("cursor"),
+            cwd: process.cwd(),
+            runtimeMode: "full-access",
+          })
+          .pipe(Effect.forkChild);
+        yield* Fiber.join(startup);
+        const eventsFiber = yield* adapter.streamEvents.pipe(
+          Stream.takeUntil((event) => event.type === "turn.completed"),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        const sent = yield* adapter.sendTurn({ threadId, input: "hello", attachments: [] });
+        assert.equal(sent.threadId, threadId);
+        const events = Array.from(yield* Fiber.join(eventsFiber));
+        if (hasCommentary) {
+          const deltas = events.flatMap((event) =>
+            event.type === "content.delta" && event.payload.streamKind !== "command_output"
+              ? [event]
+              : [],
+          );
+          assert.deepEqual(
+            deltas.map((event) => event.payload.delta),
+            ["before tool", diagnostic],
+          );
+          assert.notEqual(deltas[0]?.itemId, deltas[1]?.itemId);
+        }
+        const completed = events.find((event) => event.type === "turn.completed");
+        assert.isDefined(completed);
+        if (completed?.type === "turn.completed") {
+          assert.equal(completed.payload.state, "failed");
+          assert.equal(completed.payload.errorMessage, diagnostic);
+        }
+        yield* adapter.stopSession(threadId);
+      }),
   );
 
   it.effect("starts a session and maps mock ACP prompt flow to runtime events", () =>
@@ -523,7 +556,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
             if (
               event.type === "turn.completed" ||
               (event.type === "item.completed" && event.payload.itemType === "command_execution") ||
-              event.type === "content.delta"
+              (event.type === "content.delta" && event.payload.streamKind !== "command_output")
             ) {
               settledEventTypes.add(event.type);
               if (settledEventTypes.size === 3) {
@@ -626,13 +659,22 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
             assert.equal(String(toolCompleted.itemId), "tool-call-1");
           }
 
-          const contentDelta = turnEvents.find((event) => event.type === "content.delta");
+          const contentDelta = turnEvents.find(
+            (event) =>
+              event.type === "content.delta" && event.payload.streamKind !== "command_output",
+          );
           assert.isDefined(contentDelta);
           if (contentDelta?.type === "content.delta") {
             assert.equal(String(contentDelta.turnId), String(turn.turnId));
             assert.equal(contentDelta.payload.delta, "hello from mock");
             assert.equal(String(contentDelta.itemId), "assistant:mock-session-1:segment:0");
           }
+          const commandOutput = turnEvents.flatMap((event) =>
+            event.type === "content.delta" && event.payload.streamKind === "command_output"
+              ? [[String(event.itemId), event.payload.delta]]
+              : [],
+          );
+          assert.deepEqual(commandOutput, [["tool-call-1", '{ "name": "t3" }']]);
         });
 
         yield* program.pipe(
@@ -698,7 +740,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
             if (
               event.type === "turn.completed" ||
               (event.type === "item.completed" && event.payload.itemType === "command_execution") ||
-              event.type === "content.delta"
+              (event.type === "content.delta" && event.payload.streamKind !== "command_output")
             ) {
               settledEventTypes.add(event.type);
               if (settledEventTypes.size === 3) {
@@ -786,7 +828,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
             return;
           }
           if (
-            event.type === "content.delta" ||
+            (event.type === "content.delta" && event.payload.streamKind !== "command_output") ||
             (event.type === "item.completed" && event.payload.itemType === "command_execution") ||
             event.type === "turn.completed"
           ) {
@@ -873,7 +915,9 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       const assistantStarts = turnEvents.filter(
         (event) => event.type === "item.started" && event.payload.itemType === "assistant_message",
       );
-      const assistantDeltas = turnEvents.filter((event) => event.type === "content.delta");
+      const assistantDeltas = turnEvents.filter(
+        (event) => event.type === "content.delta" && event.payload.streamKind !== "command_output",
+      );
       assert.lengthOf(assistantStarts, 2);
       assert.lengthOf(assistantDeltas, 2);
       if (
@@ -977,6 +1021,32 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         ),
       );
 
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+  it.effect("reports the delivery accepted once Cursor works on the prompt", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const serverSettings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("cursor-early-acceptance");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockAgentWrapper({ T3_ACP_EMIT_TOOL_CALLS: "1" }),
+      );
+      yield* serverSettings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+      });
+      const accepted: Array<string> = [];
+      const turn = yield* adapter.sendTurn({ threadId, input: "read it", attachments: [] }).pipe(
+        Effect.provideService(TurnAcceptanceSignal, {
+          accept: (receipt) => Effect.sync(() => accepted.push(String(receipt.turnId))),
+        }),
+      );
+      assert.deepEqual(accepted, [String(turn.turnId)]);
       yield* adapter.stopSession(threadId);
     }),
   );
@@ -1671,6 +1741,398 @@ cursorAdapterHardeningTestLayer("CursorAdapterLive ACP hardening", (it) => {
       // A dead session must not stay registered, or every later send reuses it.
       assert.isFalse(yield* adapter.hasSession(threadId));
       yield* Fiber.interrupt(eventFiber);
+    }),
+  );
+
+  const collectThreadEvents = (threadId: ThreadId) =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const events: ProviderRuntimeEvent[] = [];
+      const fiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          if (String(event.threadId) === String(threadId)) events.push(event);
+        }),
+      ).pipe(Effect.forkScoped);
+      return { events, fiber };
+    });
+
+  const responsesFor = (lines: ReadonlyArray<Record<string, unknown>>) =>
+    lines.filter((line) => "result" in line && !("method" in line));
+
+  it.effect("replies to cursor/ask_question with an answered outcome keyed by option id", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("cursor-ask-question-outcome");
+      const tempDir = yield* scopedTempDir("cursor-ask-outcome-");
+      const requestLogPath = path.join(tempDir, "requests.ndjson");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockAgentWrapper({
+          T3_ACP_EMIT_ASK_QUESTION: "1",
+          T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+        }),
+      );
+      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      const { events, fiber } = yield* collectThreadEvents(threadId);
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      const sendFiber = yield* adapter
+        .sendTurn({ threadId, input: "ask", attachments: [] })
+        .pipe(Effect.forkChild);
+      for (
+        let attempt = 0;
+        attempt < 200 && !events.some((event) => event.type === "user-input.requested");
+        attempt += 1
+      )
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 10)));
+      const requested = events.find((event) => event.type === "user-input.requested");
+      assert.isDefined(requested);
+      if (requested?.type !== "user-input.requested") return;
+      assert.deepEqual(
+        requested.payload.questions[0]?.options.map((option) => option.value),
+        ["workspace", "session"],
+      );
+      yield* adapter.respondToUserInput(
+        threadId,
+        ApprovalRequestId.make(String(requested.requestId)),
+        { scope: "session" },
+      );
+      yield* Fiber.join(sendFiber);
+      const responses = responsesFor(yield* Effect.promise(() => readJsonLines(requestLogPath)));
+      assert.deepInclude(
+        responses.map((line) => line.result),
+        {
+          outcome: {
+            outcome: "answered",
+            answers: [{ questionId: "scope", selectedOptionIds: ["session"] }],
+          },
+        },
+      );
+      yield* Fiber.interrupt(fiber);
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect(
+    "never auto-approves a question fallback and answers it from the settled question",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* CursorAdapter;
+        const settings = yield* ServerSettingsService;
+        const threadId = ThreadId.make("cursor-question-fallback");
+        const tempDir = yield* scopedTempDir("cursor-question-fallback-");
+        const requestLogPath = path.join(tempDir, "requests.ndjson");
+        const wrapperPath = yield* Effect.promise(() =>
+          makeMockAgentWrapper({
+            T3_ACP_EMIT_ASK_QUESTION: "1",
+            T3_ACP_EMIT_QUESTION_FALLBACK: "1",
+            T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+          }),
+        );
+        yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+        const { events, fiber } = yield* collectThreadEvents(threadId);
+        yield* adapter.startSession({
+          threadId,
+          provider: ProviderDriverKind.make("cursor"),
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+        const sendFiber = yield* adapter
+          .sendTurn({ threadId, input: "ask", attachments: [] })
+          .pipe(Effect.forkChild);
+        for (
+          let attempt = 0;
+          attempt < 200 && !events.some((event) => event.type === "user-input.requested");
+          attempt += 1
+        )
+          yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 10)));
+        const requested = events.find((event) => event.type === "user-input.requested");
+        assert.isDefined(requested);
+        // Skip (an empty answer) must reach Cursor as `skipped`, and the
+        // fallback must be rejected rather than auto-approved in Full access.
+        yield* adapter.respondToUserInput(
+          threadId,
+          ApprovalRequestId.make(String(requested!.requestId)),
+          {},
+        );
+        yield* Fiber.join(sendFiber);
+        const results = responsesFor(
+          yield* Effect.promise(() => readJsonLines(requestLogPath)),
+        ).map((line) => line.result as { outcome?: { outcome?: string; optionId?: string } });
+        assert.isTrue(results.some((result) => result.outcome?.outcome === "skipped"));
+        assert.isTrue(
+          results.some(
+            (result) =>
+              result.outcome?.outcome === "selected" && result.outcome.optionId === "reject-once",
+          ),
+        );
+        assert.isFalse(results.some((result) => result.outcome?.optionId === "allow-once"));
+        assert.equal(events.filter((event) => event.type === "user-input.requested").length, 1);
+        yield* Fiber.interrupt(fiber);
+        yield* adapter.stopSession(threadId);
+      }),
+  );
+
+  it.effect("stopping a turn settles a pending question as cancelled", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("cursor-question-cancelled");
+      const tempDir = yield* scopedTempDir("cursor-question-cancel-");
+      const requestLogPath = path.join(tempDir, "requests.ndjson");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockAgentWrapper({
+          T3_ACP_EMIT_ASK_QUESTION: "1",
+          T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+        }),
+      );
+      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      const { events, fiber } = yield* collectThreadEvents(threadId);
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      const sendFiber = yield* adapter
+        .sendTurn({ threadId, input: "ask", attachments: [] })
+        .pipe(Effect.forkChild);
+      for (
+        let attempt = 0;
+        attempt < 200 && !events.some((event) => event.type === "user-input.requested");
+        attempt += 1
+      )
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 10)));
+      yield* adapter.interruptTurn(threadId);
+      yield* Fiber.join(sendFiber).pipe(Effect.ignore);
+      const results = responsesFor(yield* Effect.promise(() => readJsonLines(requestLogPath))).map(
+        (line) => line.result as { outcome?: { outcome?: string } },
+      );
+      assert.isTrue(results.some((result) => result.outcome?.outcome === "cancelled"));
+      yield* Fiber.interrupt(fiber);
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("handles todos, subagent tasks and generated images sent as requests", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("cursor-extension-requests");
+      const tempDir = yield* scopedTempDir("cursor-extension-requests-");
+      // Only an image that exists inside the workspace is embedded.
+      yield* Effect.promise(() => writeFile(path.join(tempDir, "diagram.png"), ""));
+      const requestLogPath = path.join(tempDir, "requests.ndjson");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockAgentWrapper({
+          T3_ACP_EMIT_CURSOR_EXTENSION_REQUESTS: "1",
+          T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+        }),
+      );
+      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      const { events, fiber } = yield* collectThreadEvents(threadId);
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: tempDir,
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId, input: "work", attachments: [] });
+
+      const plans = events.filter((event) => event.type === "turn.plan.updated");
+      const lastPlan = plans.at(-1);
+      assert.isDefined(lastPlan);
+      if (lastPlan?.type === "turn.plan.updated")
+        assert.deepEqual(lastPlan.payload.plan, [
+          { step: "First step", status: "completed" },
+          { step: "Second step", status: "pending" },
+        ]);
+
+      const taskEvents = events.filter((event) => event.type.startsWith("task."));
+      assert.deepEqual(
+        taskEvents.map((event) => [
+          event.type,
+          String((event.payload as { taskId: string }).taskId),
+        ]),
+        [
+          ["task.started", "task-1"],
+          ["task.started", "task-2"],
+          ["task.completed", "task-2"],
+          ["task.completed", "task-1"],
+        ],
+      );
+
+      const deltas = events.filter((event) => event.type === "content.delta");
+      const imageDeltas = deltas.filter((event) =>
+        String((event.payload as { delta: string }).delta).includes("diagram.png"),
+      );
+      assert.equal(imageDeltas.length, 1);
+      assert.isFalse(
+        deltas.some((event) =>
+          String((event.payload as { delta: string }).delta).includes("outside.png"),
+        ),
+      );
+
+      const results = responsesFor(yield* Effect.promise(() => readJsonLines(requestLogPath))).map(
+        (line) => line.result as { outcome?: { outcome?: string } },
+      );
+      assert.deepEqual(
+        results.map((result) => result.outcome?.outcome).filter((outcome) => outcome !== undefined),
+        ["accepted", "accepted", "completed", "completed", "generated", "generated"],
+      );
+      yield* Fiber.interrupt(fiber);
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("keeps a tool open across a normally completed turn until it reports", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("cursor-tool-spanning-turns");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockAgentWrapper({ T3_ACP_EMIT_TOOL_SPANNING_TURNS: "1" }),
+      );
+      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      const { events, fiber } = yield* collectThreadEvents(threadId);
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      const first = yield* adapter.sendTurn({ threadId, input: "start", attachments: [] });
+      yield* adapter.sendTurn({ threadId, input: "continue", attachments: [] });
+
+      const toolEvents = events.filter(
+        (event) =>
+          (event.type === "item.updated" || event.type === "item.completed") &&
+          String(event.itemId) === "spanning-1",
+      );
+      assert.deepEqual(
+        toolEvents.map((event) => (event.payload as { status?: string }).status),
+        ["inProgress", "completed"],
+      );
+      // The completion belongs to the turn that started the command, not the one active when it
+      // finished.
+      assert.deepEqual(
+        toolEvents.map((event) => String(event.turnId)),
+        [String(first.turnId), String(first.turnId)],
+      );
+      yield* Fiber.interrupt(fiber);
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("closes a failed prompt's tools and releases the turn", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("cursor-prompt-error-tools");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockAgentWrapper({ T3_ACP_FAIL_PROMPT_WITH_OPEN_TOOL: "1" }),
+      );
+      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      const { events, fiber } = yield* collectThreadEvents(threadId);
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      const result = yield* adapter
+        .sendTurn({ threadId, input: "fail", attachments: [] })
+        .pipe(Effect.exit);
+      assert.equal(result._tag, "Failure");
+      const statuses = events
+        .filter(
+          (event) =>
+            (event.type === "item.updated" || event.type === "item.completed") &&
+            String(event.itemId) === "failing-turn-tool",
+        )
+        .map((event) => (event.payload as { status?: string }).status);
+      assert.deepEqual(statuses, ["inProgress", "failed"]);
+      // The session stays usable: the next turn is not refused as overlapping.
+      const sessions = yield* adapter.listSessions();
+      assert.isUndefined(sessions.find((session) => session.threadId === threadId)?.activeTurnId);
+      yield* Fiber.interrupt(fiber);
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("merges to-dos across turns and ignores a late update for a closed subagent", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("cursor-extensions-across-turns");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockAgentWrapper({ T3_ACP_EMIT_EXTENSIONS_ACROSS_TURNS: "1" }),
+      );
+      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      const { events, fiber } = yield* collectThreadEvents(threadId);
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId, input: "plan", attachments: [] });
+      yield* adapter.sendTurn({ threadId, input: "continue", attachments: [] });
+
+      const lastPlan = events.filter((event) => event.type === "turn.plan.updated").at(-1);
+      assert.isDefined(lastPlan);
+      if (lastPlan?.type === "turn.plan.updated")
+        assert.deepEqual(lastPlan.payload.plan, [
+          { step: "First step", status: "completed" },
+          { step: "Second step", status: "pending" },
+        ]);
+      assert.deepEqual(
+        events
+          .filter((event) => event.type.startsWith("task."))
+          .map((event) => [event.type, String((event.payload as { taskId: string }).taskId)]),
+        [
+          ["task.started", "late-task"],
+          ["task.completed", "late-task"],
+        ],
+      );
+      yield* Fiber.interrupt(fiber);
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("refuses runtime modes Cursor cannot enforce before spawning", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const settings = yield* ServerSettingsService;
+      // The mock logs every request it receives, so a launch would leave this file behind.
+      const tempDir = yield* scopedTempDir("cursor-unsupported-mode-");
+      const requestLogPath = path.join(tempDir, "requests.ndjson");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockAgentWrapper({ T3_ACP_REQUEST_LOG_PATH: requestLogPath }),
+      );
+      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      const result = yield* adapter
+        .startSession({
+          threadId: ThreadId.make("cursor-auto-accept-edits"),
+          provider: ProviderDriverKind.make("cursor"),
+          cwd: process.cwd(),
+          runtimeMode: "auto-accept-edits",
+        })
+        .pipe(Effect.exit);
+      assert.equal(result._tag, "Failure");
+      assert.isFalse(yield* adapter.hasSession(ThreadId.make("cursor-auto-accept-edits")));
+      const launched = yield* Effect.promise(() =>
+        readFile(requestLogPath, "utf8").then(
+          () => true,
+          () => false,
+        ),
+      );
+      assert.isFalse(launched);
+      assert.isTrue(adapter.capabilities.enforcesReadOnlyWorkflow === true);
     }),
   );
 });

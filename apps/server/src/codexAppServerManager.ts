@@ -1388,7 +1388,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
           }),
         );
       }
-      const invocation = resolveInvocation(
+      const invocation = await resolveInvocation(
         codexBinaryPath,
         appServerCommand.argv,
         childEnvironment,

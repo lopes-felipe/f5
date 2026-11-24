@@ -24,7 +24,7 @@ send a message with it.
 | Cursor      | Cursor CLI, so `agent` is on your PATH                                            | `agent login`                                                                                |
 | OpenCode    | `opencode` on your PATH, or an external server URL                                | OpenCode's own provider setup                                                                |
 | Grok        | Grok CLI, so `grok` is on your PATH                                               | `grok login`                                                                                 |
-| Antigravity | **Install Antigravity** in Settings (off by default)                              | **Sign in** with Google in Settings                                                          |
+| Antigravity | **Install Antigravity** in Settings (F5 never installs it on its own)             | **Sign in** with Google, or enter a Gemini API key and **Connect**, in Settings              |
 | Muse Code   | `curl -fsSL https://dev.meta.ai/install.sh \| bash` (F5 never runs the installer) | Run `muse`, `muse auth set`, or set `META_API_KEY`                                           |
 
 Cursor, Grok and Muse Code are Early Access. Provider pages: [Codex](providers/codex.md),

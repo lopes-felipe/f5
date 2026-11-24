@@ -1,1 +1,0 @@
-- Agent instructions no longer encourage routine exploration and verification subagents, and use less context for HTML tool guidance.

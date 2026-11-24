@@ -8,6 +8,7 @@ import {
   findModelConfigOption,
   decideToolCallUpdateEmission,
   mergeToolCallState,
+  boundPermissionRequestPayload,
   parsePermissionRequest,
   withTrackedPermissionToolCall,
   parseSessionModeState,
@@ -39,6 +40,20 @@ describe("AcpRuntimeModel", () => {
       }).events,
     ).toEqual([]);
   });
+  it("parses session titles and ignores blank ones", () => {
+    expect(
+      parseSessionUpdateEvent({
+        sessionId: "s",
+        update: { sessionUpdate: "session_info_update", title: "  Fix the parser  " },
+      }).events,
+    ).toMatchObject([{ _tag: "SessionInfoUpdated", title: "Fix the parser" }]);
+    expect(
+      parseSessionUpdateEvent({
+        sessionId: "s",
+        update: { sessionUpdate: "session_info_update", title: " " },
+      }).events,
+    ).toEqual([]);
+  });
   it("recovers a title-only command from an actually parsed tracked call", () => {
     const parsed = parseSessionUpdateEvent({
       sessionId: "s",
@@ -66,6 +81,44 @@ describe("AcpRuntimeModel", () => {
         ),
       ),
     ).toMatchObject({ kind: "execute", detail: "git status" });
+  });
+  it("bounds a permission request's rawOutput and text content for publishing", () => {
+    const huge = "x".repeat(50_000);
+    const request = {
+      sessionId: "s",
+      toolCall: {
+        toolCallId: "big",
+        rawInput: { command: "cat big.log" },
+        rawOutput: { output: huge, exitCode: 0 },
+        content: [{ type: "content" as const, content: { type: "text" as const, text: huge } }],
+      },
+      options: [],
+    };
+    const bounded = boundPermissionRequestPayload(request);
+    expect(JSON.stringify(bounded).length).toBeLessThan(20_000);
+    expect(bounded.toolCall.rawInput).toEqual({ command: "cat big.log" });
+    expect((bounded.toolCall.rawOutput as { exitCode: number }).exitCode).toBe(0);
+    // The original stays whole for the policy decision.
+    expect(request.toolCall.rawOutput.output).toHaveLength(50_000);
+    // Small payloads pass through by reference.
+    const small = { ...request, toolCall: { toolCallId: "small", rawOutput: "ok" } };
+    expect(boundPermissionRequestPayload(small)).toBe(small);
+  });
+  it("takes approval detail from Antigravity's CommandLine over a generic tool name", () => {
+    for (const key of ["CommandLine", "command_line", "commandLine"])
+      expect(
+        parsePermissionRequest({
+          sessionId: "s",
+          toolCall: {
+            toolCallId: "agy",
+            kind: "execute",
+            title: "run_command",
+            rawInput: { [key]: "rm -rf build", WaitMsBeforeAsync: 5000 },
+          },
+          options: [],
+        }),
+        key,
+      ).toMatchObject({ kind: "execute", detail: "rm -rf build" });
   });
   it("fills ID-only approvals but preserves explicit clears and non-execution kinds", () => {
     const tracked = {
@@ -356,6 +409,26 @@ describe("AcpRuntimeModel", () => {
         modeId: "code",
       },
     ]);
+  });
+
+  it("projects usage_update as a context sample and ignores malformed frames", () => {
+    const parse = (update: Record<string, unknown>) =>
+      parseSessionUpdateEvent({
+        sessionId: "session-1",
+        update: { sessionUpdate: "usage_update", ...update },
+      } as unknown as EffectAcpSchema.SessionNotification).events;
+
+    expect(parse({ used: 51_234.4, size: 1_048_576 })).toEqual([
+      { _tag: "UsageUpdated", used: 51_234, size: 1_048_576 },
+    ]);
+    for (const malformed of [
+      { used: -1, size: 100 },
+      { used: 1, size: 0 },
+      { used: "1", size: 100 },
+      { used: 1, size: Number.POSITIVE_INFINITY },
+      { size: 100 },
+    ])
+      expect(parse(malformed), JSON.stringify(malformed)).toEqual([]);
   });
 
   it("projects typed ACP plan and content updates", () => {

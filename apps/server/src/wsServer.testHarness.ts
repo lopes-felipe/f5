@@ -1,6 +1,8 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { MigrationError } from "@effect/sql-sqlite-bun/SqliteMigrator";
 import type {
+  ActiveProfile,
+  ProfileId,
   TerminalClearInput,
   TerminalCloseInput,
   TerminalEvent,
@@ -888,6 +890,11 @@ export function createWsServerTestHarness() {
       observabilityEnabled?: boolean;
       createServerFactory?: typeof createServer;
       computerAccess?: boolean;
+      guestProfileId?: ProfileId;
+      /** Served profile; one the registry doesn't hold makes the welcome use its fallback. */
+      profile?: ActiveProfile;
+      /** Enables the profile registry init and watch (`profiles.updated` pushes). */
+      profilesRoot?: string;
     } = {},
   ): Promise<Http.Server> {
     if (serverScope) {
@@ -922,6 +929,9 @@ export function createWsServerTestHarness() {
       makePreviewAutomationBroker(),
     );
     const serverConfigLayer = Layer.succeed(ServerConfig, {
+      ...(options.guestProfileId ? { guestProfileId: options.guestProfileId } : {}),
+      ...(options.profile ? { profile: options.profile } : {}),
+      ...(options.profilesRoot ? { profilesRoot: options.profilesRoot } : {}),
       mode: options.mode ?? "web",
       port: options.port ?? 0,
       // Match the client's address family. On macOS an IPv6 wildcard listener

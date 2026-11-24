@@ -7,7 +7,7 @@ import { NodePtyAdapterLive } from "./NodePTY";
 const { spawn } = vi.hoisted(() => ({ spawn: vi.fn(() => ({ pid: 42 })) }));
 vi.mock("node-pty", () => ({ spawn }));
 vi.mock("../resolvePtyShell.ts", () => ({
-  resolvePtyShell: () => "fake-shell",
+  resolvePtyShell: async () => "fake-shell",
   isPtyShellNotFoundError: () => false,
 }));
 afterEach(() => {

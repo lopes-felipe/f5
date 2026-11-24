@@ -225,6 +225,12 @@ type AcpStartState =
 interface AcpAssistantSegmentState {
   readonly nextSegmentIndex: number;
   readonly activeItemId?: string;
+  /**
+   * Set when this runtime resumes a session without replay (`session/resume`). The session id
+   * is unchanged and the counter restarts at 0, so ids without it would name earlier, finished
+   * messages. New and loaded sessions keep the plain ids their replay depends on.
+   */
+  readonly epoch?: string;
 }
 
 interface EnsureActiveAssistantSegmentResult {
@@ -334,7 +340,12 @@ const makeAcpSessionRuntime = (
     // Recently shown tool calls. A late update to a finished call is not a new
     // boundary in the answer, although its progress state is gone.
     const shownToolCallIds = new Set<string>();
-    const assistantSegmentRef = yield* Ref.make<AcpAssistantSegmentState>({ nextSegmentIndex: 0 });
+    const assistantSegmentRef = yield* Ref.make<AcpAssistantSegmentState>({
+      nextSegmentIndex: 0,
+      ...(options.resumeSessionId && options.resumeMethod === "resume"
+        ? { epoch: crypto.randomUUID().slice(0, 8) }
+        : {}),
+    });
     const configOptionsRef = yield* Ref.make(sessionConfigOptionsFromSetup(undefined));
     const startStateRef = yield* Ref.make<AcpStartState>({ _tag: "NotStarted" });
     const acceptedSessionIdRef = yield* Ref.make<string | null>(
@@ -468,6 +479,9 @@ const makeAcpSessionRuntime = (
     );
     const startupCommands = new Map<string, EffectAcpSchema.SessionNotification>();
     const startupNotices: EffectAcpSchema.SessionNotification[] = [];
+    // The latest context sample per native session that arrived before the session was
+    // adopted (a resume can report usage before it returns).
+    const startupUsage = new Map<string, EffectAcpSchema.SessionNotification>();
     yield* acp.handleSessionUpdate((notification) =>
       Effect.gen(function* () {
         if (hardeningEnabled) {
@@ -487,6 +501,13 @@ const makeAcpSessionRuntime = (
               JSON.stringify(notification).length <= 16_384
             )
               startupNotices.push(notification);
+            if (
+              acceptedSessionId === null &&
+              notification.update.sessionUpdate === "usage_update" &&
+              (startupUsage.size < 4 || startupUsage.has(String(notification.sessionId))) &&
+              JSON.stringify(notification).length <= 4_096
+            )
+              startupUsage.set(String(notification.sessionId), notification);
             return;
           }
         }
@@ -497,6 +518,9 @@ const makeAcpSessionRuntime = (
           if (hardeningEnabled) yield* recordReplayActivity;
           return;
         }
+        // The agent changed its own options (a model switch resets the thinking level, say).
+        if (normalized.update.sessionUpdate === "config_option_update")
+          yield* updateConfigOptions({ configOptions: normalized.update.configOptions });
         if (
           /^(agent_message|agent_thought|tool_call|terminal_|plan|compaction_)/.test(
             normalized.update.sessionUpdate,
@@ -946,9 +970,12 @@ const makeAcpSessionRuntime = (
 
       const commands = startupCommands.get(sessionId);
       startupCommands.clear();
+      const usage = startupUsage.get(sessionId);
+      startupUsage.clear();
       const startupUpdates = [
         ...(commands ? [commands] : []),
         ...startupNotices.filter((notice) => String(notice.sessionId) === sessionId),
+        ...(usage ? [usage] : []),
       ];
       startupNotices.length = 0;
       for (const update of startupUpdates) {
@@ -1323,8 +1350,13 @@ function updateModeState(modeState: AcpSessionModeState, nextModeId: string): Ac
     : modeState;
 }
 
-const assistantItemId = (sessionId: string, segmentIndex: number) =>
-  `assistant:${sessionId}:segment:${segmentIndex}`;
+const assistantItemId = (sessionId: string, segmentIndex: number, epoch: string | undefined) =>
+  epoch === undefined
+    ? `assistant:${sessionId}:segment:${segmentIndex}`
+    : `assistant:${sessionId}:r${epoch}:segment:${segmentIndex}`;
+
+const withEpoch = (current: AcpAssistantSegmentState) =>
+  current.epoch === undefined ? {} : { epoch: current.epoch };
 
 const ensureActiveAssistantSegment = ({
   queue,
@@ -1341,7 +1373,7 @@ const ensureActiveAssistantSegment = ({
       if (current.activeItemId) {
         return [{ itemId: current.activeItemId }, current] as const;
       }
-      const itemId = assistantItemId(sessionId, current.nextSegmentIndex);
+      const itemId = assistantItemId(sessionId, current.nextSegmentIndex, current.epoch);
       return [
         {
           itemId,
@@ -1353,6 +1385,7 @@ const ensureActiveAssistantSegment = ({
         {
           nextSegmentIndex: current.nextSegmentIndex + 1,
           activeItemId: itemId,
+          ...withEpoch(current),
         } satisfies AcpAssistantSegmentState,
       ] as const;
     },
@@ -1382,6 +1415,7 @@ const closeActiveAssistantSegment = ({
       } satisfies AcpParsedSessionEvent,
       {
         nextSegmentIndex: current.nextSegmentIndex,
+        ...withEpoch(current),
       } satisfies AcpAssistantSegmentState,
     ] as const;
   }).pipe(Effect.flatMap((event) => (event ? Queue.offer(queue, event) : Effect.void)));

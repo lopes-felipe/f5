@@ -1,5 +1,8 @@
 import { writePullRequestReferenceDrag } from "../lib/pullRequestReference";
-import { assistantResponseContextMatches } from "@t3tools/shared/assistantResponseContext";
+import {
+  assistantResponseContextMatches,
+  serializeAssistantResponseContext,
+} from "@t3tools/shared/assistantResponseContext";
 
 function quotedAssistantText(prompt: string) {
   return assistantResponseContextMatches(prompt)
@@ -13,6 +16,8 @@ import { waitForTimelineLayout } from "../test/timeline";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
 import { resetProtocolStateForTests, setServerBootstrap } from "../protocolState";
+import { resetNativeApiForTests } from "../nativeApi";
+import { resetWsConnectionStateForTests } from "../wsConnectionState";
 import { serverBootstrapFixture as baseServerBootstrapFixture } from "../test/serverBootstrap";
 // Production CSS is part of the behavior under test because row height depends on it.
 import "../index.css";
@@ -20,6 +25,7 @@ import "../index.css";
 import {
   AGENTS_WS_METHODS,
   BOOTSTRAP_THREAD_DELETED_ERROR_CODE,
+  BOOTSTRAP_THREAD_NOT_CREATED_ERROR_CODE,
   NATIVE_OPERATION_WS_METHODS,
   USAGE_WS_METHODS,
   CommandId,
@@ -96,6 +102,7 @@ import {
 import { createComposerMention } from "../composer-editor-mentions";
 import { useComposerMentionHistoryStore } from "../composerMentionHistoryStore";
 import { usePendingUserInputDraftStore } from "../pendingUserInputDraftStore";
+import { useLocalDraftErrorStore } from "../localDraftErrorStore";
 import { requestComposerFocus, useComposerFocusRequestStore } from "../composerFocusRequestStore";
 
 vi.mock("./DiffWorkerPoolProvider", () => ({
@@ -2391,6 +2398,65 @@ describe("ChatView timeline (full app)", () => {
       }
     },
   );
+  it.each(["sidebar row", "New thread", "palette"] as const)(
+    "focuses the composer after navigating with $0 and accepts typing",
+    async (source) => {
+      const destination = ThreadId.makeUnsafe("focus-destination");
+      const snapshot = addThreadToSnapshot(
+        createSnapshotForTargetUser({
+          targetMessageId: MessageId.makeUnsafe("focus-navigation"),
+          targetText: "Navigation focus",
+        }),
+        destination,
+      );
+      const mounted = await mountChatView({
+        viewport: { ...DEFAULT_VIEWPORT, width: 1600 },
+        snapshot: {
+          ...snapshot,
+          threads: snapshot.threads.map((thread) =>
+            thread.id === destination
+              ? {
+                  ...thread,
+                  title: "Focus destination",
+                  lastInteractionAt: new Date().toISOString(),
+                }
+              : thread,
+          ),
+        },
+      });
+      try {
+        await waitForComposerEditor();
+        if (source === "sidebar row") {
+          await page.getByText("Focus destination", { exact: true }).click();
+        } else if (source === "New thread") {
+          await page.getByTestId("sidebar-new-thread").click();
+        } else {
+          useCommandPaletteStore.getState().setOpen(true);
+          await page.getByRole("option", { name: /Focus destination/ }).click();
+        }
+        await waitForURL(
+          mounted.router,
+          source === "New thread"
+            ? (path) => UUID_ROUTE_RE.test(path)
+            : (path) => path === "/focus-destination",
+          "Thread navigation should finish.",
+        );
+        const editor = await waitForComposerEditor();
+        await expect.element(page.elementLocator(editor)).toHaveFocus();
+        await userEvent.keyboard("Typed after navigation");
+        await vi.waitFor(() =>
+          expect(
+            useComposerDraftStore.getState().draftsByThreadId[
+              mounted.router.state.location.pathname.slice(1) as ThreadId
+            ]?.prompt,
+          ).toBe("Typed after navigation"),
+        );
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
+
   it("focuses search when the add-project intent opens the real palette submenu", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
@@ -2711,6 +2777,7 @@ describe("ChatView timeline (full app)", () => {
     setServerBootstrap(serverBootstrapFixture);
     await setViewport(DEFAULT_VIEWPORT);
     localStorage.clear();
+    useLocalDraftErrorStore.getState().reset();
     useComposerMentionHistoryStore.setState({ entries: [] });
     usePendingUserInputDraftStore.setState({
       answersByThreadId: {},
@@ -2744,6 +2811,10 @@ describe("ChatView timeline (full app)", () => {
       openIntent: null,
     });
     useRightPanelStore.setState({ byThreadId: {} });
+    // Clearing localStorage does not reset the persisted store's in-memory
+    // state. A terminal opened by an earlier fixture can otherwise mount and
+    // take focus in an unrelated test using the same thread ID.
+    useTerminalStateStore.setState({ terminalStateByThreadId: {} });
     useNextTurnQueueStore.setState({ byThreadId: {}, summary: { threads: [] } });
     clearAllPendingTurnDispatchArtifacts();
     useStore.setState({
@@ -2770,6 +2841,8 @@ describe("ChatView timeline (full app)", () => {
   });
 
   afterEach(() => {
+    resetNativeApiForTests();
+    resetWsConnectionStateForTests();
     useRightPanelStore.setState({ byThreadId: {} });
     document.body.innerHTML = "";
   });
@@ -6307,6 +6380,260 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
+  describe("project folders that are not git repositories", () => {
+    const nestedRepositories = (count: number) =>
+      Array.from({ length: count }, (_, index) => {
+        const relativePath = `repo-${String(index).padStart(3, "0")}`;
+        return { path: `/repo/project/${relativePath}`, relativePath };
+      });
+
+    const mountNonGitDraft = (
+      repositoryCount: number,
+      options: {
+        optedIn?: boolean;
+        repositories?: () => MaybePromise<WsRequestResolution>;
+        dispatch?: () => WsRequestResolution | null;
+      } = {},
+    ) => {
+      // The thread-mode default is a worktree; it must not apply here.
+      useComposerDraftStore.setState({
+        draftThreadsByThreadId: {
+          [THREAD_ID]: {
+            projectId: PROJECT_ID,
+            createdAt: NOW_ISO,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            envMode: "worktree",
+            ...(options.optedIn ? { plainWorktreeOptIn: true as const } : {}),
+          },
+        },
+        projectDraftThreadIdByProjectId: { [PROJECT_ID]: THREAD_ID },
+      });
+      return mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: createDraftOnlySnapshot(),
+        configureFixture: (next) => {
+          next.resolveWsRequest = (body) => {
+            if (body._tag === WS_METHODS.gitListBranches)
+              return {
+                type: "result",
+                result: { isRepo: false, hasOriginRemote: false, branches: [] },
+              };
+            if (body._tag === WS_METHODS.projectsListRepositories)
+              return (
+                options.repositories?.() ?? {
+                  type: "result",
+                  result: nestedRepositories(repositoryCount),
+                }
+              );
+            if (
+              body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand ||
+              body._tag === WS_METHODS.nextTurnQueueSubmit
+            )
+              return options.dispatch?.() ?? null;
+            return null;
+          };
+        },
+      });
+    };
+
+    const sendPrompt = async (text: string) => {
+      useComposerDraftStore.getState().setPrompt(THREAD_ID, text);
+      const sendButton = await waitForSendButton();
+      await vi.waitFor(() => expect(sendButton.disabled).toBe(false), {
+        timeout: 8_000,
+        interval: 16,
+      });
+      sendButton.click();
+    };
+
+    const firstBootstrap = () =>
+      (
+        getDispatchCommandRequests()[0]?.command as
+          | { bootstrap?: { prepareWorktree?: Record<string, unknown> } }
+          | undefined
+      )?.bootstrap;
+
+    it("starts a folder of repositories in the project folder despite a worktree default", async () => {
+      const mounted = await mountNonGitDraft(109);
+      try {
+        await waitForComposerEditor();
+        await expect
+          .element(page.getByLabelText("Workspace: Local", { exact: true }))
+          .toBeVisible();
+        expect(page.getByRole("button", { name: "Use project folder" }).elements()).toHaveLength(0);
+
+        await sendPrompt("Run in place");
+        await vi.waitFor(
+          () => {
+            expect(getDispatchCommandRequests()).toHaveLength(1);
+            expect(firstBootstrap()?.prepareWorktree).toBeUndefined();
+          },
+          { timeout: 8_000, interval: 16 },
+        );
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("blocks a worktree with no repositories, then sends the picked ones", async () => {
+      const mounted = await mountNonGitDraft(109);
+      try {
+        await waitForComposerEditor();
+        await page.getByLabelText("Workspace: Local", { exact: true }).click();
+        await page.getByRole("radio", { name: "New worktree" }).click();
+        await expect
+          .element(
+            page.getByLabelText("Workspace: New worktree · pick repositories", { exact: true }),
+          )
+          .toBeVisible();
+        await userEvent.keyboard("{Escape}");
+
+        await sendPrompt("Needs repositories");
+        await expect
+          .element(page.getByText("Select at least one repository for the new worktree."))
+          .toBeVisible();
+        expect(getDispatchCommandRequests()).toHaveLength(0);
+
+        await page
+          .getByLabelText("Workspace: New worktree · pick repositories", { exact: true })
+          .click();
+        const repositories = page.getByRole("group", { name: "Repositories" });
+        await repositories.getByText("repo-003").click();
+        await repositories.getByText("repo-042").click();
+        await expect
+          .element(page.getByLabelText("Workspace: New worktree · 2 repos", { exact: true }))
+          .toBeVisible();
+        await userEvent.keyboard("{Escape}");
+
+        await sendPrompt("Now with repositories");
+        await vi.waitFor(
+          () => {
+            expect(getDispatchCommandRequests()).toHaveLength(1);
+            expect(firstBootstrap()?.prepareWorktree).toMatchObject({
+              projectCwd: "/repo/project",
+              baseBranch: "HEAD",
+              repositoryPaths: ["repo-003", "repo-042"],
+            });
+          },
+          { timeout: 8_000, interval: 16 },
+        );
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("keeps a restored worktree choice while the folder's repositories are still listed", async () => {
+      let release: (() => void) | undefined;
+      const listed = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const mounted = await mountNonGitDraft(3, {
+        optedIn: true,
+        repositories: async () => {
+          await listed;
+          return { type: "result", result: nestedRepositories(3) };
+        },
+      });
+      try {
+        await waitForComposerEditor();
+        await expect
+          .element(
+            page.getByLabelText("Workspace: New worktree · finding repositories", {
+              exact: true,
+            }),
+          )
+          .toBeVisible();
+
+        await sendPrompt("Isolated run");
+        await expect
+          .element(
+            page.getByText("Still finding this folder's repositories. Try again in a moment."),
+          )
+          .toBeVisible();
+        expect(getDispatchCommandRequests()).toHaveLength(0);
+
+        release?.();
+        await expect
+          .element(page.getByLabelText("Workspace: New worktree · 3 repos", { exact: true }))
+          .toBeVisible();
+        await sendPrompt("Isolated run");
+        await vi.waitFor(
+          () => {
+            expect(getDispatchCommandRequests()).toHaveLength(1);
+            // No saved choice and three repositories: the server includes all of them.
+            expect(firstBootstrap()?.prepareWorktree).toMatchObject({ baseBranch: "HEAD" });
+          },
+          { timeout: 8_000, interval: 16 },
+        );
+      } finally {
+        release?.();
+        await mounted.cleanup();
+      }
+    });
+
+    it("offers Send in Local when worktree isolation is unavailable, and sends in the folder", async () => {
+      let attempts = 0;
+      const mounted = await mountNonGitDraft(2, {
+        optedIn: true,
+        dispatch: () =>
+          ++attempts === 1
+            ? {
+                type: "error",
+                message: "Worktree isolation unavailable: unsupported",
+                code: BOOTSTRAP_THREAD_NOT_CREATED_ERROR_CODE,
+              }
+            : null,
+      });
+      try {
+        await waitForComposerEditor();
+        await expect
+          .element(page.getByLabelText("Workspace: New worktree · 2 repos", { exact: true }))
+          .toBeVisible();
+        await sendPrompt("Try a worktree");
+        const fallback = page.getByRole("button", { name: "Send in Local" });
+        await expect.element(fallback).toBeVisible();
+        await fallback.click();
+        await vi.waitFor(
+          () => {
+            const requests = getDispatchCommandRequests();
+            expect(requests).toHaveLength(2);
+            const retried = requests[1]?.command as
+              | { bootstrap?: { prepareWorktree?: unknown } }
+              | undefined;
+            expect(retried?.bootstrap?.prepareWorktree).toBeUndefined();
+          },
+          { timeout: 8_000, interval: 16 },
+        );
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("runs a plain folder without repositories in place with no workspace control", async () => {
+      const mounted = await mountNonGitDraft(0);
+      try {
+        await waitForComposerEditor();
+        await sendPrompt("Plain folder");
+        await vi.waitFor(
+          () => {
+            expect(getDispatchCommandRequests()).toHaveLength(1);
+            expect(firstBootstrap()?.prepareWorktree).toBeUndefined();
+          },
+          { timeout: 8_000, interval: 16 },
+        );
+        expect(page.getByLabelText(/^Workspace:/).elements()).toHaveLength(0);
+        expect(
+          page.getByText("Select a base branch before sending in New worktree mode.").elements(),
+        ).toHaveLength(0);
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+  });
+
   it.each([
     {
       alias: "opus-5[1m]",
@@ -7158,6 +7485,18 @@ describe("ChatView timeline (full app)", () => {
           useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.modelOptions?.codex,
         ).toMatchObject({ reasoningEffort: "medium", fastMode: true }),
       );
+      await vi.waitFor(() =>
+        expect(getDispatchCommandRequests("thread.meta.update")).toContainEqual(
+          expect.objectContaining({
+            command: expect.objectContaining({
+              threadId: THREAD_ID,
+              modelSelection: expect.objectContaining({
+                options: expect.arrayContaining([{ id: "reasoningEffort", value: "medium" }]),
+              }),
+            }),
+          }),
+        ),
+      );
       editor.dispatchEvent(
         new KeyboardEvent("keydown", {
           key: "ArrowUp",
@@ -7685,51 +8024,61 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
-  it.each([
-    { name: "in the middle", start: 6, end: 6, expected: "Before [Thread](LINK) selected After" },
-    {
-      name: "over a forward selection",
-      start: 7,
-      end: 15,
-      expected: "Before [Thread](LINK) After",
-    },
-    {
-      name: "over a backward selection",
-      start: 15,
-      end: 7,
-      expected: "Before [Thread](LINK) After",
-    },
-  ])("pastes a thread link $name", async ({ start, end, expected }) => {
-    useComposerDraftStore.getState().setPrompt(THREAD_ID, "Before selected After");
-    const mounted = await mountChatView({
-      viewport: DEFAULT_VIEWPORT,
-      snapshot: createSnapshotForTargetUser({
-        targetMessageId: "msg-link-selection" as MessageId,
-        targetText: "Target",
-      }),
-    });
-    try {
-      const editor = await waitForComposerEditor();
-      editor.focus();
-      await waitForLayout();
-      const text = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT).nextNode()!;
-      window.getSelection()!.setBaseAndExtent(text, start, text, end);
-      const transfer = new DataTransfer();
-      const link = `${promptLinkScheme}://thread/source-a`;
-      transfer.setData("text/plain", link);
-      editor.dispatchEvent(
-        new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: transfer }),
-      );
-      await vi.waitFor(() => {
-        expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
-          expected.replace("LINK", link),
-        );
-        expect(document.querySelectorAll("[data-composer-thread-reference]")).toHaveLength(1);
+  it.each(
+    [
+      { name: "in the middle", start: 6, end: 6, expected: "Before [Thread](LINK) selected After" },
+      {
+        name: "over a forward selection",
+        start: 7,
+        end: 15,
+        expected: "Before [Thread](LINK) After",
+      },
+      {
+        name: "over a backward selection",
+        start: 15,
+        end: 7,
+        expected: "Before [Thread](LINK) After",
+      },
+    ].flatMap((testCase) => [false, true].map((windowFocus) => ({ ...testCase, windowFocus }))),
+  )(
+    "pastes a thread link $name (window focus=$windowFocus)",
+    async ({ start, end, expected, windowFocus }) => {
+      useComposerDraftStore.getState().setPrompt(THREAD_ID, "Before selected After");
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: createSnapshotForTargetUser({
+          targetMessageId: "msg-link-selection" as MessageId,
+          targetText: "Target",
+        }),
       });
-    } finally {
-      await mounted.cleanup();
-    }
-  });
+      try {
+        const editor = await waitForComposerEditor();
+        editor.focus();
+        await waitForLayout();
+        const text = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT).nextNode()!;
+        window.getSelection()!.setBaseAndExtent(text, start, text, end);
+        if (windowFocus) {
+          await waitForLayout();
+          window.dispatchEvent(new Event("focus"));
+          await waitForLayout();
+        }
+        const transfer = new DataTransfer();
+        const link = `${promptLinkScheme}://thread/source-a`;
+        transfer.setData("text/plain", link);
+        editor.dispatchEvent(
+          new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: transfer }),
+        );
+        await vi.waitFor(() => {
+          expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
+            expected.replace("LINK", link),
+          );
+          expect(document.querySelectorAll("[data-composer-thread-reference]")).toHaveLength(1);
+        });
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
 
   it("counts thread references after replacing the selected draft", async () => {
     const links = Array.from(
@@ -11265,6 +11614,52 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
+  it.each([true, false])(
+    "keeps only the card margin around a sent quote card (rich text %s)",
+    async (composerRichTextEnabled) => {
+      persistAppSettings({ composerRichTextEnabled });
+      const card = serializeAssistantResponseContext({
+        version: 1,
+        kind: "quote",
+        threadId: THREAD_ID,
+        messageId: "msg-assistant-0" as MessageId,
+        text: "assistant filler 0",
+      });
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: createSnapshotForTargetUser({
+          targetMessageId: "msg-user-quote-card" as MessageId,
+          targetText: `Intro\n\n${card}\n\nPlease explain.`,
+          fillerPairCount: 2,
+          targetPairIndex: 1,
+        }),
+      });
+      try {
+        const textRect = (node: Node) => {
+          const range = document.createRange();
+          range.selectNodeContents(node);
+          return range.getClientRects()[0]!;
+        };
+        await vi.waitFor(() => {
+          const link = document.querySelector(
+            '[data-message-id="msg-user-quote-card"] [aria-label="Go to quoted response"]',
+          );
+          expect(link).not.toBeNull();
+          const before = link!.previousSibling!;
+          const after = link!.nextSibling!;
+          expect(before.textContent).toBe("Intro");
+          expect(after.textContent).toBe("Please explain.");
+          const lineHeight = Number.parseFloat(getComputedStyle(link!.parentElement!).lineHeight);
+          const cardRect = link!.getBoundingClientRect();
+          expect(cardRect.top - textRect(before).bottom).toBeLessThan(lineHeight);
+          expect(textRect(after).top - cardRect.bottom).toBeLessThan(lineHeight);
+        });
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
+
   it("does not submit a selected pending answer when sending a quote", async () => {
     const snapshot = createSnapshotWithRichAssistantTarget();
     const question = createThreadActivity({
@@ -11416,6 +11811,11 @@ describe("ChatView timeline (full app)", () => {
             expect(quotedAssistantText(prompt)).toBe(text);
             expect(prompt).toContain("Please explain.");
           });
+          // The composer keeps the caret it placed after the quote.
+          const composer = await waitForComposerEditor();
+          await vi.waitFor(() =>
+            expect(composer.contains(document.getSelection()?.anchorNode ?? null)).toBe(true),
+          );
           const send = await waitForSendButton();
           await vi.waitFor(() => expect(send.disabled).toBe(false));
           send.click();
@@ -11430,6 +11830,20 @@ describe("ChatView timeline (full app)", () => {
                 quotedAssistantText(prompt) === text && prompt.includes("Please explain."),
             ),
           ).toBe(true);
+        });
+        // The sent bubble's card margin is the only gap before the comment.
+        await vi.waitFor(() => {
+          const card = [
+            ...document.querySelectorAll<HTMLElement>('[aria-label="Go to quoted response"]'),
+          ].at(-1);
+          expect(card).toBeTruthy();
+          const comment = card!.nextSibling;
+          expect(comment?.textContent?.startsWith("Please explain.")).toBe(true);
+          const range = document.createRange();
+          range.selectNodeContents(comment!);
+          const gap = range.getClientRects()[0]!.top - card!.getBoundingClientRect().bottom;
+          const lineHeight = Number.parseFloat(getComputedStyle(card!.parentElement!).lineHeight);
+          expect(gap).toBeLessThan(lineHeight);
         });
         await expect
           .element(page.getByRole("textbox", { name: "Quote comment" }))
@@ -11548,45 +11962,55 @@ describe("ChatView timeline (full app)", () => {
       }
     });
 
-    it("keeps a backward selection and the editor scroll across click and keyboard toggles", async () => {
-      const lines = Array.from({ length: 60 }, (_, index) => `Draft line ${index}`).join("\n");
-      const { mounted, editor, form } = await mountComposer({ prompt: lines });
-      try {
-        await vi.waitFor(() => expect(toggle()).not.toBeNull());
-        editor.focus();
-        const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
-        walker.nextNode();
-        const text = walker.nextNode() ?? walker.currentNode;
-        const selection = window.getSelection()!;
-        selection.setBaseAndExtent(text, 8, text, 2);
-        editor.scrollTop = 120;
-        await waitForLayout();
-        const before = {
-          anchor: selection.anchorOffset,
-          focus: selection.focusOffset,
-          text: selection.toString(),
-        };
+    it.each([false, true])(
+      "keeps a backward selection and the editor scroll across click and keyboard toggles (terminal open=%s)",
+      async (terminalOpen) => {
+        useTerminalStateStore.getState().setTerminalOpen(THREAD_ID, terminalOpen);
+        const lines = Array.from({ length: 60 }, (_, index) => `Draft line ${index}`).join("\n");
+        const { mounted, editor, form } = await mountComposer({ prompt: lines });
+        try {
+          if (terminalOpen) {
+            await expect
+              .element(page.getByRole("textbox", { name: "Terminal input" }))
+              .toBeInTheDocument();
+            await waitForLayout();
+          }
+          await vi.waitFor(() => expect(toggle()).not.toBeNull());
+          editor.focus();
+          const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+          walker.nextNode();
+          const text = walker.nextNode() ?? walker.currentNode;
+          const selection = window.getSelection()!;
+          selection.setBaseAndExtent(text, 8, text, 2);
+          editor.scrollTop = 120;
+          await waitForLayout();
+          const before = {
+            anchor: selection.anchorOffset,
+            focus: selection.focusOffset,
+            text: selection.toString(),
+          };
 
-        await page.elementLocator(toggle()!).click();
-        await vi.waitFor(() => expect(form.getAttribute("data-composer-expanded")).toBe("true"));
-        await waitForLayout();
-        expect(document.activeElement).toBe(editor);
-        expect(selection.anchorOffset).toBe(before.anchor);
-        expect(selection.focusOffset).toBe(before.focus);
-        expect(selection.toString()).toBe(before.text);
-        expect(editor.scrollTop).toBe(120);
+          await page.elementLocator(toggle()!).click();
+          await vi.waitFor(() => expect(form.getAttribute("data-composer-expanded")).toBe("true"));
+          await waitForLayout();
+          expect(document.activeElement).toBe(editor);
+          expect(selection.anchorOffset).toBe(before.anchor);
+          expect(selection.focusOffset).toBe(before.focus);
+          expect(selection.toString()).toBe(before.text);
+          expect(editor.scrollTop).toBe(120);
 
-        toggle()!.focus();
-        await userEvent.keyboard("{Enter}");
-        await vi.waitFor(() => expect(form.hasAttribute("data-composer-expanded")).toBe(false));
-        await waitForLayout();
-        expect(document.activeElement).toBe(editor);
-        expect(selection.toString()).toBe(before.text);
-        expect(selection.anchorOffset).toBe(before.anchor);
-      } finally {
-        await mounted.cleanup();
-      }
-    });
+          toggle()!.focus();
+          await userEvent.keyboard("{Enter}");
+          await vi.waitFor(() => expect(form.hasAttribute("data-composer-expanded")).toBe(false));
+          await waitForLayout();
+          expect(document.activeElement).toBe(editor);
+          expect(selection.toString()).toBe(before.text);
+          expect(selection.anchorOffset).toBe(before.anchor);
+        } finally {
+          await mounted.cleanup();
+        }
+      },
+    );
 
     it("keeps the historical reading position when expanding", async () => {
       const { mounted, form } = await mountComposer({
@@ -11877,7 +12301,9 @@ describe("ChatView timeline (full app)", () => {
       );
     }
 
-    async function mountIsolatedChatView(options: { projectScripts?: ProjectScript[] } = {}) {
+    async function mountIsolatedChatView(
+      options: { projectScripts?: ProjectScript[]; viewport?: ViewportSpec } = {},
+    ) {
       let connectedClient: TestWsClient | null = null;
       const baseSnapshot = addThreadToSnapshot(
         createSnapshotForTargetUser({
@@ -11899,7 +12325,7 @@ describe("ChatView timeline (full app)", () => {
           })
         : baseSnapshot;
       const mounted = await mountChatView({
-        viewport: DEFAULT_VIEWPORT,
+        viewport: options.viewport ?? DEFAULT_VIEWPORT,
         snapshot,
         configureFixture: (next) => {
           next.resolveWsRequest = (_body, client) => {
@@ -12113,7 +12539,11 @@ describe("ChatView timeline (full app)", () => {
     });
 
     it("does not commit the timeline or composer when the right panel toggles", async () => {
-      const { mounted } = await mountIsolatedChatView();
+      // Keep the composer above its compact-footer breakpoint with the files
+      // panel open. Crossing that breakpoint legitimately commits a new layout.
+      const { mounted } = await mountIsolatedChatView({
+        viewport: { ...DEFAULT_VIEWPORT, width: 2560 },
+      });
       try {
         resetRenderCommits();
         // Not the plan panel: the composer shows whether that one is open.

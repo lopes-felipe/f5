@@ -110,12 +110,12 @@ export function resolveBundledClaudeExecutable(
   );
 }
 
-export function resolveClaudeSdkExecutableOptions(
+export async function resolveClaudeSdkExecutableOptions(
   binaryPath: string | null | undefined,
   environment: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
   cwd?: string,
-): ClaudeSdkExecutableOptions {
+): Promise<ClaudeSdkExecutableOptions> {
   // Keep the configured default identity for profile certification, but give
   // the SDK a physical path: its require.resolve result can live inside ASAR.
   if (isDefaultClaudeBinary(binaryPath)) {
@@ -128,7 +128,7 @@ export function resolveClaudeSdkExecutableOptions(
       ? { pathToClaudeCodeExecutable: command, executable: "node" }
       : { pathToClaudeCodeExecutable: resolveAsarExecutablePath(command) };
   }
-  const resolved = resolveExecutable(
+  const resolved = await resolveExecutable(
     NODE_SCRIPT_EXTENSIONS.has(NodePath.win32.extname(command).toLowerCase())
       ? command
       : resolveAsarExecutablePath(command),
@@ -150,19 +150,19 @@ export function resolveClaudeSdkExecutableOptions(
   return { pathToClaudeCodeExecutable: resolveAsarExecutablePath(resolved) };
 }
 
-export function resolveClaudeCliInvocation(
+export async function resolveClaudeCliInvocation(
   binaryPath: string | null | undefined,
   args: ReadonlyArray<string>,
   environment: NodeJS.ProcessEnv = process.env,
   options: CommandResolutionOptions = {},
-): ResolvedCliInvocation {
+): Promise<ResolvedCliInvocation> {
   const platform = options.platform ?? process.platform;
   if (isDefaultClaudeBinary(binaryPath)) {
     const bundled = resolveBundledClaudeExecutable(platform);
     return resolveInvocation(bundled, args, environment, options);
   }
 
-  const sdkOptions = resolveClaudeSdkExecutableOptions(
+  const sdkOptions = await resolveClaudeSdkExecutableOptions(
     binaryPath,
     environment,
     platform,
@@ -172,7 +172,9 @@ export function resolveClaudeCliInvocation(
   if (!executable) throw new CommandNotFoundError(binaryPath ?? DEFAULT_CLAUDE_BINARY);
   if (sdkOptions.executable === "node") {
     const node =
-      platform === "win32" ? resolveExecutable("node", environment) : javascriptRuntimeExecutable();
+      platform === "win32"
+        ? await resolveExecutable("node", environment, { platform })
+        : javascriptRuntimeExecutable();
     if (!node) {
       throw new CommandNotFoundError(
         binaryPath ?? DEFAULT_CLAUDE_BINARY,

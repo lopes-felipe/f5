@@ -19,6 +19,11 @@ export interface ProfileRouteDependencies {
   readonly defaultStateDir: string;
   /** The profile this server runs as. */
   readonly activeProfileId: string;
+  /**
+   * Set when this server may only list profiles (a Linux VM guest): creating, changing and
+   * deleting fail with this message, before the store is touched.
+   */
+  readonly mutationRefusal?: string;
 }
 
 /** The profiles on this machine: listing them, and creating, changing and deleting one. */
@@ -27,7 +32,12 @@ export const profileRoutes = ({
   list,
   defaultStateDir,
   activeProfileId,
+  mutationRefusal,
 }: ProfileRouteDependencies): RouteTable<ProfileMethod> => {
+  const mutate = <A>(run: () => Promise<A>) =>
+    routePromise(() =>
+      mutationRefusal === undefined ? run() : Promise.reject(new Error(mutationRefusal)),
+    );
   // A created or changed profile is answered without its provider accounts:
   // only the server running as a profile can read them, and the list fills
   // them in for the active one.
@@ -40,9 +50,9 @@ export const profileRoutes = ({
   return {
     [WS_METHODS.profilesList]: () => routePromise(list),
     [WS_METHODS.profilesCreate]: (body) =>
-      routePromise(() => store.create(Struct.omit(body, ["_tag"]))).pipe(Effect.map(answer)),
+      mutate(() => store.create(Struct.omit(body, ["_tag"]))).pipe(Effect.map(answer)),
     [WS_METHODS.profilesUpdate]: (body) =>
-      routePromise(() => store.update(Struct.omit(body, ["_tag"]))).pipe(Effect.map(answer)),
-    [WS_METHODS.profilesDelete]: ({ profileId }) => routePromise(() => store.remove(profileId)),
+      mutate(() => store.update(Struct.omit(body, ["_tag"]))).pipe(Effect.map(answer)),
+    [WS_METHODS.profilesDelete]: ({ profileId }) => mutate(() => store.remove(profileId)),
   };
 };

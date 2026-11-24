@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 import { GitCommandError } from "../../git/Errors.ts";
 import { GitService, type ExecuteGitInput } from "../../git/Services/GitService.ts";
 import { copiedIndexTimestampSeconds } from "../../git/copiedIndex.ts";
+import type { CheckpointStoreError } from "../Errors.ts";
 import { CheckpointStore } from "../Services/CheckpointStore.ts";
 import {
   checkpointWorkspaceRepositories,
@@ -24,6 +25,7 @@ import {
   CheckpointStoreLiveWithGitService,
   CheckpointStoreLiveWithoutCredentials,
   makeCheckpointStoreLayer,
+  parseFingerprintStatus,
 } from "./CheckpointStore.ts";
 
 function makeLayer(calls: ExecuteGitInput[], refOutput = "") {
@@ -933,5 +935,230 @@ describe("CheckpointStoreLive", () => {
     expect(diffCall?.args).not.toContain("--ignore-all-space");
     expect(diffCall?.args).not.toContain("--ignore-blank-lines");
     expect(diffCall?.args).not.toContain("--ignore-space-change");
+  });
+});
+
+describe("unchanged-workspace fingerprints", () => {
+  const liveStore = CheckpointStoreLiveWithoutCredentials.pipe(
+    Layer.provideMerge(NodeServices.layer),
+  );
+  const run = <A>(
+    effect: (store: typeof CheckpointStore.Service) => Effect.Effect<A, CheckpointStoreError>,
+  ) =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        return yield* effect(yield* CheckpointStore);
+      }).pipe(Effect.provide(liveStore)),
+    );
+  const withRepo = async (
+    body: (repo: {
+      readonly cwd: string;
+      readonly git: (...args: string[]) => string;
+      readonly write: (file: string, content: string) => void;
+    }) => Promise<void>,
+    options?: { readonly unborn?: boolean },
+  ) => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), "f5-checkpoint-fingerprint-"));
+    const git = (...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" });
+    const write = (file: string, content: string) => {
+      mkdirSync(path.dirname(path.join(cwd, file)), { recursive: true });
+      writeFileSync(path.join(cwd, file), content);
+    };
+    try {
+      git("init", "-q", "-b", "main");
+      git("config", "user.email", "test@example.com");
+      git("config", "user.name", "Test");
+      write("tracked.txt", "base\n");
+      write("dir/other.txt", "other\n");
+      git("add", ".");
+      if (!options?.unborn) git("commit", "-q", "-m", "base");
+      await body({ cwd, git, write });
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  };
+  const fingerprint = (cwd: string, excludePaths?: ReadonlyArray<string>) =>
+    run((store) => store.fingerprintWorkspace({ cwd, ...(excludePaths ? { excludePaths } : {}) }));
+
+  it("is stable for an unchanged workspace and changes with every capturable edit", async () => {
+    await withRepo(async ({ cwd, git, write }) => {
+      const clean = await fingerprint(cwd);
+      expect(clean).toMatch(/^[a-f0-9]{64}$/);
+      expect(await fingerprint(cwd)).toBe(clean);
+
+      write("tracked.txt", "edited\n");
+      const dirty = await fingerprint(cwd);
+      expect(dirty).not.toBe(clean);
+      expect(await fingerprint(cwd)).toBe(dirty);
+
+      // Same status line, new content: only the file's stat tells them apart.
+      write("tracked.txt", "edited again\n");
+      const dirtyAgain = await fingerprint(cwd);
+      expect(dirtyAgain).not.toBe(dirty);
+
+      write("new.txt", "new\n");
+      const untracked = await fingerprint(cwd);
+      expect(untracked).not.toBe(dirtyAgain);
+      rmSync(path.join(cwd, "new.txt"));
+      expect(await fingerprint(cwd)).toBe(dirtyAgain);
+
+      git("commit", "-q", "-am", "move head");
+      const moved = await fingerprint(cwd);
+      expect(moved).not.toBe(dirtyAgain);
+      expect(moved).not.toBe(clean);
+
+      expect(await fingerprint(cwd, ["dir"])).not.toBe(moved);
+    });
+  });
+
+  it("refuses workspaces whose listing cannot describe a capture", async () => {
+    await withRepo(async ({ cwd, write }) => {
+      write("untracked-dir/deep/file.txt", "x\n");
+      expect(await fingerprint(cwd)).toBeNull();
+    });
+    await withRepo(
+      async ({ cwd }) => {
+        expect(await fingerprint(cwd)).toBeNull();
+      },
+      { unborn: true },
+    );
+    await withRepo(async ({ cwd, git, write }) => {
+      git("switch", "-q", "-c", "other");
+      write("tracked.txt", "other\n");
+      git("commit", "-q", "-am", "other");
+      git("switch", "-q", "main");
+      write("tracked.txt", "main\n");
+      git("commit", "-q", "-am", "main");
+      try {
+        git("merge", "-q", "other");
+      } catch {
+        // The conflict is the point.
+      }
+      expect(await fingerprint(cwd)).toBeNull();
+    });
+  });
+
+  it("parses renames and rejects submodule entries", () => {
+    const head = "a".repeat(40);
+    const oid = "b".repeat(40);
+    const renamed = `2 R. N... 100644 100644 100644 ${oid} ${oid} R100 new name.txt`;
+    expect(
+      parseFingerprintStatus(`# branch.oid ${head}\0# branch.head main\0${renamed}\0old.txt\0`),
+    ).toEqual({ head, records: [`${renamed}\0old.txt`], paths: ["new name.txt", "old.txt"] });
+    expect(
+      parseFingerprintStatus(
+        `# branch.oid ${head}\0` + `1 .M SC.. 160000 160000 160000 ${oid} ${oid} module\0`,
+      ),
+    ).toBeNull();
+    expect(parseFingerprintStatus("# branch.oid (initial)\0")).toBeNull();
+  });
+
+  it.each(["--assume-unchanged", "--skip-worktree"])(
+    "never lets a fingerprint stand in for edits hidden by %s",
+    async (flag) => {
+      await withRepo(async ({ cwd, git, write }) => {
+        const first = CheckpointRef.makeUnsafe("refs/t3/checkpoints/flags/0");
+        const second = CheckpointRef.makeUnsafe("refs/t3/checkpoints/flags/1");
+        const before = await fingerprint(cwd);
+        expect(
+          (await run((store) => store.captureCheckpoint({ cwd, checkpointRef: first }))).reusable,
+        ).toBe(true);
+
+        // Flagging a file between turns rewrites the index, so the fingerprint moves even
+        // though `git status` no longer reports the hidden edit.
+        git("update-index", flag, "tracked.txt");
+        write("tracked.txt", "hidden edit\n");
+        expect(git("status", "--porcelain")).toBe("");
+        expect(await fingerprint(cwd)).not.toBe(before);
+
+        const captured = await run((store) =>
+          store.captureCheckpoint({ cwd, checkpointRef: second }),
+        );
+        expect(captured.reusable).toBe(false);
+        expect(git("show", `${second}:tracked.txt`)).toBe("hidden edit\n");
+      });
+    },
+  );
+
+  it("refuses a commit that does not match the workspace it is confirmed against", async () => {
+    await withRepo(async ({ cwd, write }) => {
+      const clean = await fingerprint(cwd);
+      // An edit made while the capture ran and undone before the next listing.
+      write("tracked.txt", "transient\n");
+      const transient = await run((store) =>
+        store.captureCheckpoint({
+          cwd,
+          checkpointRef: CheckpointRef.makeUnsafe("refs/t3/checkpoints/transient/0"),
+        }),
+      );
+      write("tracked.txt", "base\n");
+      expect(await fingerprint(cwd)).toBe(clean);
+      await expect(
+        run((store) => store.fingerprintWorkspace({ cwd, commitOid: transient.commitOid })),
+      ).resolves.toBeNull();
+
+      write("new.txt", "new\n");
+      const settled = await run((store) =>
+        store.captureCheckpoint({
+          cwd,
+          checkpointRef: CheckpointRef.makeUnsafe("refs/t3/checkpoints/transient/1"),
+        }),
+      );
+      await expect(
+        run((store) => store.fingerprintWorkspace({ cwd, commitOid: settled.commitOid })),
+      ).resolves.toBe(await fingerprint(cwd));
+    });
+  });
+
+  it("does not run an fsmonitor hook script named in the repository config", async () => {
+    await withRepo(async ({ cwd, git }) => {
+      const marker = path.join(cwd, "..", `${path.basename(cwd)}-hook-ran`);
+      const hook = path.join(cwd, ".git", "fsmonitor-hook.sh");
+      writeFileSync(hook, `#!/bin/sh\ntouch "${marker}"\nexit 1\n`, { mode: 0o755 });
+      git("config", "core.fsmonitor", hook);
+      try {
+        expect(await fingerprint(cwd)).toMatch(/^[a-f0-9]{64}$/);
+        expect(existsSync(marker)).toBe(false);
+      } finally {
+        rmSync(marker, { force: true });
+      }
+    });
+  });
+
+  it("reuses a checkpoint commit only while its source ref is unchanged", async () => {
+    await withRepo(async ({ cwd, git, write }) => {
+      const source = CheckpointRef.makeUnsafe("refs/t3/checkpoints/reuse/0");
+      const target = CheckpointRef.makeUnsafe("refs/t3/checkpoints/reuse/1");
+      const captured = await run((store) =>
+        store.captureCheckpoint({ cwd, checkpointRef: source }),
+      );
+      expect(captured.reusable).toBe(true);
+      expect(captured.commitOid).toBe(git("rev-parse", source).trim());
+
+      const reused = await run((store) =>
+        store.reuseCheckpoint({
+          cwd,
+          sourceRef: source,
+          sourceOid: captured.commitOid,
+          targetRef: target,
+        }),
+      );
+      expect(reused).toBe(true);
+      expect(git("rev-parse", target).trim()).toBe(captured.commitOid);
+
+      write("tracked.txt", "moved\n");
+      await run((store) => store.captureCheckpoint({ cwd, checkpointRef: source }));
+      const stale = CheckpointRef.makeUnsafe("refs/t3/checkpoints/reuse/2");
+      const refused = await run((store) =>
+        store.reuseCheckpoint({
+          cwd,
+          sourceRef: source,
+          sourceOid: captured.commitOid,
+          targetRef: stale,
+        }),
+      );
+      expect(refused).toBe(false);
+      expect(git("for-each-ref", "--format=%(refname)", stale)).toBe("");
+    });
   });
 });

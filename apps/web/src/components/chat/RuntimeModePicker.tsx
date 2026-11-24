@@ -11,10 +11,12 @@ import { RUNTIME_MODE_PRESENTATION } from "./runtimeModePresentation";
 export function RuntimeModeMenuItems(props: {
   readonly disabled?: boolean | undefined;
   readonly provider: ProviderKind;
+  /** The selected instance's own support, when its snapshot narrows the per-driver default. */
+  readonly availableRuntimeModes?: ReadonlyArray<RuntimeMode> | undefined;
   readonly value: RuntimeMode;
   readonly onValueChange: (value: RuntimeMode) => void;
 }) {
-  const capabilities = runtimeModeCapabilities(props.provider);
+  const capabilities = runtimeModeCapabilities(props.provider, props.availableRuntimeModes);
   return (
     <MenuRadioGroup
       value={props.value}
@@ -28,7 +30,11 @@ export function RuntimeModeMenuItems(props: {
       {RUNTIME_MODE_VALUES.map((runtimeMode) => {
         const presentation = RUNTIME_MODE_PRESENTATION[runtimeMode];
         const Icon = presentation.icon;
-        const unsupportedReason = runtimeModeUnsupportedReason(props.provider, runtimeMode);
+        const unsupportedReason = runtimeModeUnsupportedReason(
+          props.provider,
+          runtimeMode,
+          props.availableRuntimeModes,
+        );
         return (
           <MenuRadioItem
             key={runtimeMode}
@@ -53,6 +59,7 @@ export function RuntimeModeMenuItems(props: {
 export function RuntimeModePicker(props: {
   readonly disabled?: boolean | undefined;
   readonly provider: ProviderKind;
+  readonly availableRuntimeModes?: ReadonlyArray<RuntimeMode> | undefined;
   readonly value: RuntimeMode;
   readonly onValueChange: (value: RuntimeMode) => void;
 }) {

@@ -1,5 +1,5 @@
-import { ProjectId } from "@t3tools/contracts";
-import { QueryClient } from "@tanstack/react-query";
+import { ProjectId, type GitStatusResult } from "@t3tools/contracts";
+import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
 
 const listBranches = vi.hoisted(() => vi.fn());
@@ -18,8 +18,39 @@ import {
   invalidateGitQueries,
   applyTurnGitStatus,
   refreshCheckedOutGitBranch,
+  selectChatRepositoryStatus,
+  selectGitWorkingTree,
 } from "./gitReactQuery";
 import { rpcQueryContext } from "./rpcQueryContext";
+
+it("publishes working-tree counts to the header without changing the chat selection", () => {
+  const client = new QueryClient();
+  const queryKey = gitQueryKeys.status("/repo");
+  const initial = { pr: null, workingTree: { insertions: 1 } };
+  client.setQueryData(queryKey, initial);
+  const chat = new QueryObserver(client, {
+    queryKey,
+    queryFn: async () => initial as GitStatusResult,
+    enabled: false,
+    select: selectChatRepositoryStatus,
+  });
+  const header = new QueryObserver(client, {
+    queryKey,
+    queryFn: async () => initial as GitStatusResult,
+    enabled: false,
+    select: selectGitWorkingTree,
+  });
+  const previous = chat.getCurrentResult().data;
+  const unsubscribeChat = chat.subscribe(vi.fn());
+  const unsubscribeHeader = header.subscribe(vi.fn());
+  client.setQueryData(queryKey, { ...initial, workingTree: { insertions: 2 } });
+  expect(chat.getCurrentResult().data).toBe(previous);
+  expect(header.getCurrentResult().data).toMatchObject({ insertions: 2 });
+  client.setQueryData(queryKey, { ...initial, pr: { url: "https://github.com/test/repo/pull/1" } });
+  expect(chat.getCurrentResult().data).not.toBe(previous);
+  unsubscribeChat();
+  unsubscribeHeader();
+});
 
 describe("gitMutationKeys", () => {
   it("refreshes divergence in both caches without fetching or losing PR metadata", () => {

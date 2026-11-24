@@ -21,7 +21,7 @@ vi.mock("../codexAppServerManager.ts", () => ({
   killChildTree: (child: ChildProcessWithoutNullStreams) => child.kill(),
 }));
 vi.mock("../spawn/resolveCommand.ts", () => ({
-  resolveInvocation: (command: string, args: string[]) => ({ command, args }),
+  resolveInvocation: async (file: string, args: string[]) => ({ file, args, kind: "native" }),
 }));
 
 function processHarness(

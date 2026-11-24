@@ -21,6 +21,7 @@ import type { PiCatalog } from "../pi/PiMetadata.ts";
 import { PiRpcError } from "../pi/PiRpc.ts";
 import { defaultProviderContinuationIdentity, type ProviderDriver } from "../ProviderDriver.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
+import { makeInstanceInstallTargetResolver } from "../providerInstallChannel.ts";
 
 const driverKind = ProviderDriverKind.make("pi");
 export type PiDriverEnv =
@@ -183,6 +184,14 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
       return {
         instanceId,
         driverKind,
+        resolveInstallTarget: makeInstanceInstallTargetResolver({
+          miseOnly: true,
+          driver: driverKind,
+          binaryPath: settings.binaryPath,
+          instanceId,
+          resolutionEnvironment: processEnv,
+          instanceEnvironment: environment,
+        }),
         continuationIdentity,
         displayName,
         accentColor,

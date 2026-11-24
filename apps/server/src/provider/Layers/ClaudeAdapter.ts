@@ -3489,14 +3489,16 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             eligibility: "recovery-required" as const,
             reason: "Browser control from an earlier session hasn't stopped yet.",
           };
-        let executablePath: string | undefined;
-        try {
-          executablePath = resolveClaudeSdkExecutableOptions(
-            options?.oneOffProviderOptions?.binaryPath,
-            environment,
-            process.platform,
-          ).pathToClaudeCodeExecutable;
-        } catch {
+        const executableOptions = yield* Effect.option(
+          Effect.tryPromise(() =>
+            resolveClaudeSdkExecutableOptions(
+              options?.oneOffProviderOptions?.binaryPath,
+              environment,
+              process.platform,
+            ),
+          ),
+        );
+        if (Option.isNone(executableOptions)) {
           return {
             eligibility: "unavailable" as const,
             reason: "F5 couldn't resolve this agent's Claude executable.",
@@ -3504,7 +3506,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         }
         const availability = yield* Effect.promise(() =>
           claudeChromeAvailability({
-            executablePath,
+            executablePath: executableOptions.value.pathToClaudeCodeExecutable,
             resolveDefaultExecutable: resolveBundledClaudeExecutable,
             ...claudeChromeAvailabilityInput(environment, serverConfig.stateDir),
           }),
@@ -7432,8 +7434,15 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         // bypass permissions, we keep the explicit tool-deny gate active here.
 
         const queryRuntime = yield* Effect.tryPromise({
-          try: (signal) =>
-            createQuery(
+          try: async (signal) => {
+            const executableOptions = await resolveClaudeSdkExecutableOptions(
+              providerOptions?.binaryPath,
+              queryEnvironment,
+              process.platform,
+              input.cwd,
+            );
+            signal.throwIfAborted();
+            return createQuery(
               {
                 prompt,
                 options: {
@@ -7445,12 +7454,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                       : {}),
                   ...(traits?.effectiveEffort ? { effort: traits.effectiveEffort } : {}),
                   ...(Object.keys(settings).length > 0 ? { settings } : {}),
-                  ...resolveClaudeSdkExecutableOptions(
-                    providerOptions?.binaryPath,
-                    queryEnvironment,
-                    process.platform,
-                    input.cwd,
-                  ),
+                  ...executableOptions,
                   settingSources: [...CLAUDE_SETTING_SOURCES],
                   ...(permissionMode ? { permissionMode } : {}),
                   ...(thinkingResolution.thinking ? { thinking: thinkingResolution.thinking } : {}),
@@ -7475,7 +7479,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 } satisfies ClaudeQueryOptions,
               },
               signal,
-            ),
+            );
+          },
           catch: (cause) =>
             new ProviderAdapterProcessError({
               provider: PROVIDER,
@@ -8816,7 +8821,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           workflowExecutionProfile: input.workflowExecutionProfile,
         });
 
-        const sdkExecutableOptions = yield* Effect.try({
+        const sdkExecutableOptions = yield* Effect.tryPromise({
           try: () =>
             resolveClaudeSdkExecutableOptions(
               providerOptions?.binaryPath,
@@ -10835,6 +10840,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       capabilities: {
         sessionModelSwitch: "in-session",
         runtimeCapabilities: providerRuntimeCapabilities(PROVIDER),
+        enforcesReadOnlyWorkflow: true,
       },
       mcpApps,
       executeNativeOperation,

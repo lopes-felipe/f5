@@ -277,10 +277,16 @@ export class CodexControlClient extends EventEmitter<{
         droppedTokenCount: appServerCommand.dropped.length,
       });
     }
-    const invocation = resolveInvocation(binaryPath, appServerCommand.argv, childEnvironment, {
-      cwd: environment.cwd,
-    });
+    const invocation = await resolveInvocation(
+      binaryPath,
+      appServerCommand.argv,
+      childEnvironment,
+      {
+        cwd: environment.cwd,
+      },
+    );
 
+    signal?.throwIfAborted();
     const child = spawn(invocation.file, [...invocation.args], {
       cwd: environment.cwd,
       env: childEnvironment,

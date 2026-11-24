@@ -114,7 +114,7 @@ export const NodePtyAdapterLive = Layer.effect(
     return {
       spawn: Effect.fn(function* (input) {
         yield* ensureNodePtySpawnHelperExecutableCached;
-        const shell = resolvePtyShell(input);
+        const shell = yield* Effect.promise(() => resolvePtyShell(input));
         if (!shell) {
           return yield* new PtySpawnError({
             adapter: "node-pty",

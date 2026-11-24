@@ -20,6 +20,42 @@ process.stdin.on("end", () => {
 `;
 const shellQuote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
 
+/** The Git subcommand, after any leading `-c key=value` or `-C dir` options. */
+function gitSubcommand(args: readonly string[]): string | undefined {
+  for (let index = 0; index < args.length; index++) {
+    const argument = args[index]!;
+    if (argument === "-c" || argument === "-C") index++;
+    else if (!argument.startsWith("-")) return argument;
+  }
+  return undefined;
+}
+
+const IDENTITY_KEYS = [
+  "GIT_AUTHOR_NAME",
+  "GIT_AUTHOR_EMAIL",
+  "GIT_COMMITTER_NAME",
+  "GIT_COMMITTER_EMAIL",
+] as const;
+
+/**
+ * The caller's complete identity for a `commit-tree`, or undefined. Only that plumbing command
+ * may bring its own identity: it writes an object without moving any branch, which is how F5
+ * records checkpoints. Porcelain commits keep using the profile author.
+ */
+function internalCommitIdentity(
+  args: readonly string[],
+  overrides: NodeJS.ProcessEnv | undefined,
+): Record<(typeof IDENTITY_KEYS)[number], string> | undefined {
+  if (gitSubcommand(args) !== "commit-tree") return undefined;
+  const identity = {} as Record<(typeof IDENTITY_KEYS)[number], string>;
+  for (const key of IDENTITY_KEYS) {
+    const value = overrides?.[key]?.trim();
+    if (!value || /[\r\n\0]/.test(value)) return undefined;
+    identity[key] = value;
+  }
+  return identity;
+}
+
 async function resolveNetworkRemote(
   cwd: string,
   args: readonly string[],
@@ -161,9 +197,14 @@ export async function profileGitEnvironment(input: {
     ["credential.helper", ""],
     ["http.extraHeader", ""],
   ];
+  const internalIdentity = internalCommitIdentity(input.args, input.overrides);
   if (input.authorName && input.authorEmail) {
     environment.GIT_AUTHOR_NAME = environment.GIT_COMMITTER_NAME = input.authorName;
     environment.GIT_AUTHOR_EMAIL = environment.GIT_COMMITTER_EMAIL = input.authorEmail;
+  } else if (internalIdentity) {
+    // F5's own plumbing commits (checkpoint snapshots) carry a fixed identity. They are never
+    // the user's commits, so they don't need the profile author that `commit` requires.
+    Object.assign(environment, internalIdentity);
   } else if (isolated && input.args[0] === "commit")
     throw new Error(
       "Set this profile's Git author name and email in Settings > Integrations before committing.",

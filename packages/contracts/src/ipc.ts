@@ -226,6 +226,7 @@ import type {
   ServerKeybindingMutationResult,
   ServerProviderUpdatedPayload,
   ServerCheckProviderUpdatesInput,
+  ServerRefreshProvidersInput,
   ServerRunProviderUpdateInput,
   ServerRunProviderUpdateResult,
   ServerRemoveKeybindingInput,
@@ -507,6 +508,7 @@ import type {
   OrchestrationGetStartupSnapshotInput,
   OrchestrationGetStartupSnapshotResult,
   OrchestrationGetLatestSequenceResult,
+  OrchestrationGetLatestSequenceInput,
   OrchestrationGetThreadCommandExecutionInput,
   OrchestrationGetThreadCommandExecutionResult,
   OrchestrationGetThreadCommandExecutionsInput,
@@ -1264,7 +1266,7 @@ export interface NativeApi {
     getProjectSettings: (input: { projectId: ProjectId }) => Promise<ProjectSettingsResult>;
     migrateClientSetting: (input: MigrateClientSettingInput) => Promise<MigrateClientSettingResult>;
     refreshProviders: (
-      input?: ServerCheckProviderUpdatesInput,
+      input?: ServerRefreshProvidersInput,
     ) => Promise<ServerProviderUpdatedPayload>;
     checkProviderUpdates: (
       input?: ServerCheckProviderUpdatesInput,
@@ -1284,6 +1286,9 @@ export interface NativeApi {
     saveProviderFeedback?: (
       input: import("./providerInventory").ServerSaveProviderFeedbackInput,
     ) => Promise<{ path: string }>;
+    trustProviderHooks?: (
+      input: import("./providerInventory").ServerTrustProviderHooksInput,
+    ) => Promise<import("./providerInventory").ServerTrustProviderHooksResult>;
     upsertKeybinding: (input: ServerUpsertKeybindingInput) => Promise<ServerUpsertKeybindingResult>;
     addKeybinding: (input: ServerAddKeybindingInput) => Promise<ServerKeybindingMutationResult>;
     updateKeybinding: (
@@ -1628,7 +1633,9 @@ export interface NativeApi {
   };
   orchestration: {
     searchThread: (input: ThreadSearchInput) => Promise<ThreadSearchResult>;
-    getLatestSequence: () => Promise<OrchestrationGetLatestSequenceResult>;
+    getLatestSequence: (
+      input?: OrchestrationGetLatestSequenceInput,
+    ) => Promise<OrchestrationGetLatestSequenceResult>;
     getSnapshot: () => Promise<OrchestrationReadModel>;
     getStartupSnapshot: (
       input?: OrchestrationGetStartupSnapshotInput,

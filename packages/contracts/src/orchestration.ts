@@ -28,7 +28,12 @@ import {
   PlanningWorkflow,
   PlanningWorkflowId,
   WorkflowModelSlot,
+  AdditionalWorkflowModelSlots,
 } from "./planningWorkflow";
+import {
+  CODE_REVIEW_PROMPT_MAX_CHARS,
+  WORKFLOW_MAX_ADDITIONAL_PARTICIPANTS,
+} from "./workflowParticipants";
 import { ProviderInstanceId } from "./providerInstance";
 import { ProviderSessionCapabilities, ProviderExtensionStatuses } from "./sessionCapabilities";
 import { ProviderStartOptions } from "./providerStartOptions";
@@ -1234,6 +1239,12 @@ const ProjectWorkflowCreateCommand = Schema.Struct({
   selfReviewEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   branchA: WorkflowModelSlot,
   branchB: WorkflowModelSlot,
+  /** Authors beyond A and B, in roster order, each with its pre-minted thread. */
+  additionalBranches: Schema.optional(
+    Schema.Array(Schema.Struct({ authorSlot: WorkflowModelSlot, authorThreadId: ThreadId })).check(
+      Schema.isMaxLength(WORKFLOW_MAX_ADDITIONAL_PARTICIPANTS),
+    ),
+  ),
   merge: WorkflowModelSlot,
   maxCostUsd: Schema.optional(Schema.NullOr(Schema.Number)),
   createdAt: IsoDateTime,
@@ -1255,7 +1266,7 @@ const ProjectCodeReviewWorkflowCreateCommand = Schema.Struct({
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
   slug: TrimmedNonEmptyString,
-  reviewPrompt: TrimmedNonEmptyString.check(Schema.isMaxLength(80_000)),
+  reviewPrompt: TrimmedNonEmptyString.check(Schema.isMaxLength(CODE_REVIEW_PROMPT_MAX_CHARS)),
   templateId: Schema.optional(TrimmedNonEmptyString).pipe(
     Schema.withDecodingDefault(() => "builtin.code-review.dual"),
   ),
@@ -1269,6 +1280,12 @@ const ProjectCodeReviewWorkflowCreateCommand = Schema.Struct({
   autoPost: Schema.optional(Schema.Boolean),
   reviewerThreadIdA: ThreadId,
   reviewerThreadIdB: ThreadId,
+  /** Reviewers beyond A and B, in roster order, each with its pre-minted thread. */
+  additionalReviewers: Schema.optional(
+    Schema.Array(Schema.Struct({ slot: WorkflowModelSlot, threadId: ThreadId })).check(
+      Schema.isMaxLength(WORKFLOW_MAX_ADDITIONAL_PARTICIPANTS),
+    ),
+  ),
   createdAt: IsoDateTime,
 });
 
@@ -1309,6 +1326,12 @@ const ProjectInvestigationWorkflowCreateCommand = Schema.Struct({
   maxCostUsd: Schema.optional(Schema.NullOr(Schema.Number)),
   investigationThreadIdA: ThreadId,
   investigationThreadIdB: ThreadId,
+  /** Investigators beyond A and B, in roster order, each with its pre-minted thread. */
+  additionalInvestigators: Schema.optional(
+    Schema.Array(Schema.Struct({ slot: WorkflowModelSlot, investigationThreadId: ThreadId })).check(
+      Schema.isMaxLength(WORKFLOW_MAX_ADDITIONAL_PARTICIPANTS),
+    ),
+  ),
   createdAt: IsoDateTime,
 });
 
@@ -1454,6 +1477,8 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   regenerateTitle: Schema.optional(Schema.Literal(true)),
   model: Schema.optional(TrimmedNonEmptyString),
   modelSelection: Schema.optional(ModelSelection),
+  /** Save the composer's next-turn choice without refreshing the live session. */
+  deferModelSwitch: Schema.optional(Schema.Literal(true)),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(FilesystemPath)),
   expectedArchivedAt: Schema.optional(IsoDateTime),
@@ -1807,6 +1832,11 @@ const ThreadSessionSetCommand = Schema.Struct({
   session: OrchestrationSession,
   settledTurnId: Schema.optional(TurnId),
   usageFact: Schema.optional(UsageTurnFact),
+  /**
+   * Re-binds the session the thread already runs. The decider keeps the turn
+   * the current state still has running, so a refresh mid-turn does not drop it.
+   */
+  rebindLiveSession: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
 });
 
@@ -2433,6 +2463,7 @@ export const ThreadMetaUpdatedPayload = Schema.Struct({
   titleRegeneration: Schema.optional(Schema.NullOr(ThreadTitleRegeneration)),
   model: Schema.optional(TrimmedNonEmptyString),
   modelSelection: Schema.optional(ModelSelection),
+  deferModelSwitch: Schema.optional(Schema.Literal(true)),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(FilesystemPath)),
   updatedAt: IsoDateTime,
@@ -3453,6 +3484,8 @@ const PlanningWorkflowCreateFields = {
   selfReviewEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   branchA: WorkflowModelSlot,
   branchB: WorkflowModelSlot,
+  /** Authors beyond A and B, in roster order. */
+  additionalBranches: Schema.optional(AdditionalWorkflowModelSlots),
   merge: WorkflowModelSlot,
   maxCostUsd: Schema.optional(Schema.Number.check(Schema.isGreaterThan(0))),
 };
@@ -3495,13 +3528,15 @@ export type OrchestrationCreateWorkflowResult = typeof OrchestrationCreateWorkfl
 export const OrchestrationCreateCodeReviewWorkflowInput = Schema.Struct({
   projectId: ProjectId,
   title: Schema.optional(TrimmedNonEmptyString),
-  reviewPrompt: TrimmedNonEmptyString.check(Schema.isMaxLength(80_000)),
+  reviewPrompt: TrimmedNonEmptyString.check(Schema.isMaxLength(CODE_REVIEW_PROMPT_MAX_CHARS)),
   templateId: Schema.optional(TrimmedNonEmptyString),
   templateVersion: Schema.optional(Schema.Int),
   titleGenerationModel: Schema.optional(TrimmedNonEmptyString),
   branch: Schema.optional(TrimmedNonEmptyString),
   reviewerA: WorkflowModelSlot,
   reviewerB: WorkflowModelSlot,
+  /** Reviewers beyond A and B, in roster order. */
+  additionalReviewers: Schema.optional(AdditionalWorkflowModelSlots),
   consolidation: WorkflowModelSlot,
   maxCostUsd: Schema.optional(Schema.Number.check(Schema.isGreaterThan(0))),
   /** Post the merged review to the detected GitHub pull request when it finishes. */
@@ -3527,6 +3562,8 @@ export const OrchestrationCreateInvestigationWorkflowInput = Schema.Struct({
   selfReviewEnabled: Schema.optional(Schema.Boolean).pipe(Schema.withDecodingDefault(() => false)),
   investigatorA: WorkflowModelSlot,
   investigatorB: WorkflowModelSlot,
+  /** Investigators beyond A and B, in roster order. */
+  additionalInvestigators: Schema.optional(AdditionalWorkflowModelSlots),
   synthesis: WorkflowModelSlot,
   maxCostUsd: Schema.optional(Schema.Number.check(Schema.isGreaterThan(0))),
 });
@@ -3666,15 +3703,28 @@ export const OrchestrationStartImplementationInput = Schema.Struct({
 export type OrchestrationStartImplementationInput =
   typeof OrchestrationStartImplementationInput.Type;
 
+export const OrchestrationGetLatestSequenceInput = Schema.Struct({
+  resume: Schema.optional(
+    Schema.Struct({
+      afterSequence: NonNegativeInt,
+      backendIncarnation: Schema.String,
+    }),
+  ),
+});
+export type OrchestrationGetLatestSequenceInput = typeof OrchestrationGetLatestSequenceInput.Type;
+
 export const OrchestrationGetLatestSequenceResult = Schema.Struct({
   latestSequence: NonNegativeInt,
   backendIncarnation: Schema.String,
+  /** Present when the entire requested range can be replayed, including an empty range. */
+  events: Schema.optional(Schema.Array(OrchestrationEvent)),
+  /** A matched backend could not replay this gap. Read the shell snapshot over HTTP. */
+  snapshotRequired: Schema.optional(Schema.Literal(true)),
 });
 export type OrchestrationGetLatestSequenceResult = typeof OrchestrationGetLatestSequenceResult.Type;
 
-export const OrchestrationRpcSchemas = {
+const orchestrationRpcSchemas = {
   searchThread: { input: ThreadSearchInput, output: ThreadSearchResult },
-  getLatestSequence: { input: Schema.Struct({}), output: OrchestrationGetLatestSequenceResult },
   getSnapshot: {
     input: OrchestrationGetSnapshotInput,
     output: OrchestrationGetSnapshotResult,
@@ -3808,3 +3858,18 @@ export const OrchestrationRpcSchemas = {
     output: Schema.Void,
   },
 } as const;
+
+// Refer to the replay schema by name rather than expanding its event union
+// into the already large declaration for the table.
+export const OrchestrationRpcSchemas: typeof orchestrationRpcSchemas & {
+  readonly getLatestSequence: {
+    readonly input: typeof OrchestrationGetLatestSequenceInput;
+    readonly output: typeof OrchestrationGetLatestSequenceResult;
+  };
+} = {
+  ...orchestrationRpcSchemas,
+  getLatestSequence: {
+    input: OrchestrationGetLatestSequenceInput,
+    output: OrchestrationGetLatestSequenceResult,
+  },
+};

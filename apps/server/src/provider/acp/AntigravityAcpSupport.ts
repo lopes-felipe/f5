@@ -3,22 +3,121 @@ import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { Deferred, Effect, Layer, Scope } from "effect";
+import { Deferred, Duration, Effect, Layer, Scope } from "effect";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import * as AcpErrors from "effect-acp/errors";
+import type * as EffectAcpSchema from "effect-acp/schema";
+import type { RuntimeMode } from "@t3tools/contracts";
 import {
   AcpSessionRuntime,
   type AcpSessionRuntimeOptions,
   type AcpSessionRuntimeShape,
 } from "./AcpSessionRuntime.ts";
+import { findModelConfigOption, type AcpSessionModeState } from "./AcpRuntimeModel.ts";
+import { antigravityEditTargetsInWorkspace } from "./AntigravityEditLocation.ts";
 import { AntigravityInstallation } from "../AntigravityInstallation.ts";
+import {
+  ANTIGRAVITY_PERSONAL_AUTH,
+  antigravityLaunchEnvironment,
+  antigravityProfileSettings,
+  antigravityReadiness,
+  redactAntigravityKey,
+  type AntigravityAuthConfig,
+} from "../antigravityAuthSupport.ts";
 
-export function antigravitySessionMeta(version: string | undefined) {
-  const match = /^1\.4\.([2-5])(?:$|[.-])/.test(version ?? "");
-  return match ? { antigravity: { disabledTools: ["run_workflow"] } } : undefined;
+const hasErrorCode = (error: unknown, codes: readonly string[]) =>
+  error !== null &&
+  typeof error === "object" &&
+  "code" in error &&
+  codes.includes(String(error.code));
+
+/** User-level instruction and skill-config files shared into each profile. */
+const USER_CONFIG_FILES = [["AGENTS.md"], ["GEMINI.md"], ["config", "skills.json"]] as const;
+
+/**
+ * Share `~/.gemini/AGENTS.md`, `GEMINI.md` and `config/skills.json` into the profile, so an
+ * instance reads the same user instructions Antigravity would read outside F5. Nothing F5 did
+ * not create is touched: a regular file in the profile is user content and stays, and a link is
+ * removed or replaced only when it points at the managed source. Windows copies (file symlinks
+ * need elevation) and refreshes or removes only a copy whose bytes match one F5 published.
+ */
+export async function linkAntigravityUserConfigFiles(
+  home: string,
+  userHome: string,
+  platform: NodeJS.Platform = process.platform,
+): Promise<void> {
+  for (const segments of USER_CONFIG_FILES) {
+    const source = path.join(userHome, ".gemini", ...segments);
+    const target = path.join(home, ...segments);
+    const marker = `${target}.f5-copy`;
+    try {
+      const sourceStat = await fs.stat(source).catch((error: unknown) => {
+        if (hasErrorCode(error, ["ENOENT", "ENOTDIR"])) return undefined;
+        throw error;
+      });
+      const existing = await fs.lstat(target).catch((error: unknown) => {
+        if (hasErrorCode(error, ["ENOENT"])) return undefined;
+        throw error;
+      });
+      // The marker lists the hashes of copies F5 published, one per line. A target edited since
+      // matches none of them and is left alone, never refreshed or removed.
+      const publishedHashes = await fs.readFile(marker, "utf8").then(
+        (text) =>
+          new Set(
+            text
+              .split("\n")
+              .map((line) => line.trim())
+              .filter(Boolean),
+          ),
+        () => new Set<string>(),
+      );
+      const targetHash =
+        existing?.isFile() === true ? sha256(await fs.readFile(target)) : undefined;
+      const ownsCopy = targetHash !== undefined && publishedHashes.has(targetHash);
+      const managedLink =
+        existing?.isSymbolicLink() === true &&
+        path.resolve(path.dirname(target), await fs.readlink(target)) === source;
+      if (!sourceStat?.isFile()) {
+        if (managedLink) await fs.unlink(target);
+        else if (existing && ownsCopy) {
+          await fs.rm(target, { force: true });
+          await fs.rm(marker, { force: true });
+        }
+        continue;
+      }
+      await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+      if (platform === "win32") {
+        if (existing && !ownsCopy) continue;
+        const contents = await fs.readFile(source);
+        const nextHash = sha256(contents);
+        if (targetHash === nextHash) continue;
+        // Both the old and the new copy count as F5's while the file is replaced, so a failed
+        // marker write after the swap can't make F5's own copy look user-edited.
+        await fs.writeFile(marker, [targetHash, nextHash].filter(Boolean).join("\n"));
+        await publishProfileFile(target, contents);
+        await fs.writeFile(marker, nextHash);
+        continue;
+      }
+      // Already linked, or a file or link the user made (one pointing elsewhere): left as it is.
+      if (existing) continue;
+      await fs.symlink(source, target, "file").catch((error: unknown) => {
+        if (!hasErrorCode(error, ["EEXIST"])) throw error;
+      });
+    } catch (error) {
+      await Effect.runPromise(
+        Effect.logWarning("Antigravity user configuration is not linked into the profile.", {
+          source,
+          target,
+          error,
+        }),
+      );
+    }
+  }
 }
 
-async function publishProfileFile(file: string, contents: string): Promise<void> {
+const sha256 = (contents: Buffer) => createHash("sha256").update(contents).digest("hex");
+
+async function publishProfileFile(file: string, contents: string | Buffer): Promise<void> {
   const temporary = `${file}.${randomUUID()}.tmp`;
   try {
     const handle = await fs.open(temporary, "wx", 0o600);
@@ -45,12 +144,7 @@ export function antigravityProfileDirectory(stateDir: string, instanceId: string
 }
 
 export async function linkAntigravityUserSkills(home: string, userHome: string): Promise<void> {
-  const hasCode = (error: unknown, codes: readonly string[]) =>
-    error !== null &&
-    typeof error === "object" &&
-    "code" in error &&
-    codes.includes(String(error.code));
-
+  const hasCode = hasErrorCode;
   for (const directory of ["config", "antigravity-cli"]) {
     const source = path.join(userHome, ".gemini", directory, "skills");
     const target = path.join(home, directory, "skills");
@@ -105,24 +199,15 @@ export async function linkAntigravityUserSkills(home: string, userHome: string):
   }
 }
 
-const credentialVariables =
-  /^(GEMINI_API_KEY|GOOGLE_API_KEY|GOOGLE_GENAI_USE_VERTEXAI|GOOGLE_OAUTH_ACCESS_TOKEN|AGY_ACP_.*|GEMINI_HOME|ANTIGRAVITY_HARNESS_PATH|BROWSER|ELECTRON_RUN_AS_NODE)$/i;
+/** Kept for call sites that predate per-method auth; defaults to the Google account method. */
 export function antigravityEnvironment(
   base: NodeJS.ProcessEnv,
   home: string,
   harness: string | undefined,
   browserCommand: string,
+  auth: AntigravityAuthConfig = ANTIGRAVITY_PERSONAL_AUTH,
 ): NodeJS.ProcessEnv {
-  return {
-    ...Object.fromEntries(Object.entries(base).filter(([key]) => !credentialVariables.test(key))),
-    GEMINI_HOME: home,
-    AGY_ACP_FORCE_FILE_STORAGE: "1",
-    ...(harness ? { ANTIGRAVITY_HARNESS_PATH: harness } : {}),
-    SSH_CONNECTION: base.SSH_CONNECTION || "127.0.0.1 0 127.0.0.1 0",
-    AGY_CLI_DISABLE_AUTO_UPDATE: "1",
-    BROWSER: browserCommand,
-    PYTHONUNBUFFERED: "1",
-  };
+  return antigravityLaunchEnvironment({ base, home, harness, browserCommand, auth });
 }
 
 export function antigravityAuthorizationUrl(value: string): string | undefined {
@@ -154,25 +239,31 @@ export async function prepareAntigravityProfile(input: {
   instanceId: string;
   environment: NodeJS.ProcessEnv;
   accountSetup?: boolean;
+  auth?: AntigravityAuthConfig;
 }) {
+  const auth = input.auth ?? ANTIGRAVITY_PERSONAL_AUTH;
   const executable = await new AntigravityInstallation(input.stateDir).resolve();
   const home = antigravityProfileDirectory(input.stateDir, input.instanceId);
   await fs.mkdir(path.join(home, "antigravity-acp"), { recursive: true, mode: 0o700 });
+  // Ordinary sessions, metadata and discovery need the same readiness the status shows: a key
+  // must have passed Connect for exactly this method and key. Only account jobs skip it.
   if (!input.accountSetup) {
-    const token = await fs.lstat(path.join(home, "antigravity-acp", "acp_token.json"));
-    if (!token.isFile() || token.size === 0)
-      throw new Error("Sign in to Antigravity in Settings first.");
+    const readiness = await antigravityReadiness({ profileDirectory: home, auth });
+    if (!readiness.ready)
+      throw new Error(readiness.message ?? "Sign in to Antigravity in Settings first.");
   }
+  // Rewritten on every spawn so a method change never inherits the previous method's type.
   await publishProfileFile(
     path.join(home, "antigravity-acp", "settings.json"),
-    JSON.stringify({ auth: { type: "oauth-personal" } }),
+    antigravityProfileSettings(auth),
   );
   const userHome =
     process.platform === "win32"
       ? input.environment.USERPROFILE || os.homedir()
       : input.environment.HOME || os.homedir();
-  // Share only user skill directories. MCP, hooks and credentials remain private.
+  // Share only user skills and instructions. MCP, hooks and credentials remain private.
   await linkAntigravityUserSkills(home, userHome);
+  await linkAntigravityUserConfigFiles(home, userHome);
   // A helper handles browser requests without opening a browser in the server account.
   const helper = path.join(home, "browser.cjs");
   await publishProfileFile(
@@ -202,13 +293,16 @@ export const makeAntigravityAcpRuntime = (input: {
   accountSetup?: boolean;
   onAuthorizationUrl?: (url: string) => void;
   mcpServers?: AcpSessionRuntimeOptions["mcpServers"];
+  sessionMeta?: AcpSessionRuntimeOptions["sessionMeta"];
   requestLogger?: AcpSessionRuntimeOptions["requestLogger"];
   logWritersRedact?: AcpSessionRuntimeOptions["logWritersRedact"];
   protocolLogging?: AcpSessionRuntimeOptions["protocolLogging"];
   sanitizeStderr?: AcpSessionRuntimeOptions["sanitizeStderr"];
   hasSensitiveConfiguration?: AcpSessionRuntimeOptions["hasSensitiveConfiguration"];
+  auth?: AntigravityAuthConfig;
 }): Effect.Effect<AcpSessionRuntimeShape, AcpErrors.AcpError, Scope.Scope> =>
   Effect.gen(function* () {
+    const auth = input.auth ?? ANTIGRAVITY_PERSONAL_AUTH;
     const prepared = yield* Effect.tryPromise({
       try: () => prepareAntigravityProfile(input),
       catch: (cause) =>
@@ -244,14 +338,14 @@ export const makeAntigravityAcpRuntime = (input: {
           ? { hasSensitiveConfiguration: input.hasSensitiveConfiguration }
           : {}),
         ...(input.mcpServers ? { mcpServers: input.mcpServers } : {}),
+        ...(input.sessionMeta ? { sessionMeta: input.sessionMeta } : {}),
         ...(input.logWritersRedact ? { logWritersRedact: true } : {}),
         ...(input.requestLogger ? { requestLogger: input.requestLogger } : {}),
         ...(input.protocolLogging ? { protocolLogging: input.protocolLogging } : {}),
         ...(input.resumeSessionId ? { resumeSessionId: input.resumeSessionId } : {}),
         resumeMethod: "resume",
-        authMethodId: "oauth-personal",
+        authMethodId: auth.authMethod,
         clientInfo: { name: "f5", version: "1" },
-        sessionMeta: (init) => antigravitySessionMeta(init.agentInfo?.version),
         hardening: { enabled: true, provider: "antigravity" },
         clientCapabilities: {
           elicitation: { form: {} },
@@ -268,6 +362,7 @@ export const makeAntigravityAcpRuntime = (input: {
               prepared.home,
               prepared.executable.harnessPath,
               prepared.browser,
+              auth,
             ),
             TMPDIR: tempDirectory,
             TMP: tempDirectory,
@@ -284,7 +379,10 @@ export const makeAntigravityAcpRuntime = (input: {
           return line;
         },
         sanitizeStderr: (text) =>
-          (input.sanitizeStderr?.(text) ?? text).replace(/https:\/\/[^\s"<>]+/g, "[URL redacted]"),
+          redactAntigravityKey(input.sanitizeStderr?.(text) ?? text, auth.apiKey).replace(
+            /https:\/\/[^\s"<>]+/g,
+            "[URL redacted]",
+          ),
         onStderr: (chunk) => {
           stderr = (stderr + chunk).slice(-32_768);
           let newline: number;
@@ -312,7 +410,7 @@ export const makeAntigravityAcpRuntime = (input: {
       ),
     );
     const runtime = yield* Effect.service(AcpSessionRuntime).pipe(Effect.provide(context));
-    return {
+    const shaped: AcpSessionRuntimeShape = {
       ...runtime,
       start: () =>
         Effect.raceFirst(
@@ -330,4 +428,560 @@ export const makeAntigravityAcpRuntime = (input: {
         ),
       setSessionModel: (model) => runtime.setModel(model).pipe(Effect.as({})),
     };
+    antigravityLaunchedVersions.set(shaped, prepared.executable.version ?? null);
+    return shaped;
+  });
+
+/**
+ * The Antigravity version each runtime was spawned from. Checks that depend on the version (the
+ * private-format gate) read it here instead of resolving the installation again, which could
+ * name an update that became active after the launch.
+ */
+const antigravityLaunchedVersions = new WeakMap<object, string | null>();
+export const antigravityLaunchedVersion = (runtime: object): string | null | undefined =>
+  antigravityLaunchedVersions.get(runtime);
+
+// ── Models and thinking levels (R2) ─────────────────────────────────────────
+
+export const ANTIGRAVITY_DEFAULT_MODEL = "antigravity-default";
+
+type SelectConfigOption = Extract<EffectAcpSchema.SessionConfigOption, { readonly type: "select" }>;
+
+const selectValues = (option: SelectConfigOption | undefined) =>
+  (option?.options ?? []).flatMap((entry) =>
+    "value" in entry ? [entry] : entry.options.map((choice) => choice),
+  );
+
+/** The per-model thinking control: the select whose category is `thought_level`. */
+export function antigravityThinkingOption(
+  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> | null | undefined,
+): SelectConfigOption | undefined {
+  return (configOptions ?? []).find(
+    (option): option is SelectConfigOption =>
+      option.type === "select" && option.category === "thought_level",
+  );
+}
+
+export interface AntigravityThinkingLevels {
+  readonly levels: ReadonlyArray<{ readonly value: string; readonly name: string }>;
+  readonly defaultLevel: string | undefined;
+}
+
+/** Levels the current model lists, or null when it has no thinking control (Orchestrator). */
+export function antigravityThinkingLevels(
+  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> | null | undefined,
+): AntigravityThinkingLevels | null {
+  const option = antigravityThinkingOption(configOptions);
+  if (!option) return null;
+  return {
+    levels: selectValues(option).map((entry) => ({ value: entry.value, name: entry.name })),
+    defaultLevel: option.currentValue || undefined,
+  };
+}
+
+/** Per-session record of the level a model had before F5 wrote one. */
+export interface AntigravitySelectionState {
+  baseline?: { readonly model: string; readonly level: string | undefined };
+  readonly warnedLevels: Set<string>;
+}
+
+export const makeAntigravitySelectionState = (): AntigravitySelectionState => ({
+  warnedLevels: new Set(),
+});
+
+export interface AntigravitySelectionResult {
+  readonly model: string | undefined;
+  readonly thinking: string | undefined;
+  /** One warning per model and level when the level is unavailable and the default is used. */
+  readonly warning?: string;
+}
+
+export class AntigravityModelUnavailableError extends Error {}
+
+/**
+ * The single selection path for sessions and text generation:
+ * set the model, re-read config options, then write the level only if that model lists it.
+ *
+ * - No level selected restores the value seen right after `setModel` if F5 had changed it.
+ * - A legacy effort-suffixed ID (`gemini-3.8-flash-high`) translates only when the advertised base
+ *   model and level both match; an explicit level wins over the suffix.
+ * - An unavailable model fails before anything is sent; an unavailable level falls back to the
+ *   model default with one warning.
+ */
+export const applyAntigravityModelSelection = <E>(input: {
+  readonly runtime: Pick<
+    AcpSessionRuntimeShape,
+    "getConfigOptions" | "setConfigOption" | "setModel"
+  >;
+  readonly requestedModel: string | null | undefined;
+  readonly requestedThinking: string | null | undefined;
+  readonly customModels?: ReadonlyArray<string>;
+  readonly state: AntigravitySelectionState;
+  readonly mapError: (cause: AcpErrors.AcpError | AntigravityModelUnavailableError) => E;
+}): Effect.Effect<AntigravitySelectionResult, E> =>
+  Effect.gen(function* () {
+    const read = input.runtime.getConfigOptions;
+    const lift = <A>(effect: Effect.Effect<A, AcpErrors.AcpError>) =>
+      effect.pipe(Effect.mapError(input.mapError));
+    const options = yield* read;
+    const modelOption = findModelConfigOption(options);
+    const current = modelOption?.currentValue || undefined;
+    const offered = modelOption ? selectValues(modelOption).map((entry) => entry.value) : undefined;
+    const requested =
+      input.requestedModel && input.requestedModel !== ANTIGRAVITY_DEFAULT_MODEL
+        ? input.requestedModel
+        : undefined;
+    let explicitLevel = input.requestedThinking?.trim() || undefined;
+    let target = requested;
+    let switched = false;
+    if (
+      target &&
+      offered !== undefined &&
+      !offered.includes(target) &&
+      !(input.customModels ?? []).includes(target)
+    ) {
+      const base = offered
+        .filter((value) => target!.startsWith(`${value}-`))
+        .toSorted((left, right) => right.length - left.length)[0];
+      const suffix = base ? target.slice(base.length + 1) : undefined;
+      let translated = false;
+      if (base && suffix) {
+        const priorLevel = antigravityThinkingOption(options)?.currentValue || undefined;
+        if (base !== current) yield* lift(input.runtime.setModel(base));
+        const levels = antigravityThinkingLevels(yield* read);
+        if (levels?.levels.some((level) => level.value === suffix)) {
+          translated = true;
+          switched = base !== current;
+          explicitLevel ??= suffix;
+          target = base;
+        } else if (base !== current && current) {
+          // A rejected translation leaves the model and level that were active before it.
+          yield* lift(input.runtime.setModel(current));
+          const restored = antigravityThinkingOption(yield* read);
+          if (
+            priorLevel &&
+            restored &&
+            restored.currentValue !== priorLevel &&
+            selectValues(restored).some((entry) => entry.value === priorLevel)
+          )
+            yield* lift(input.runtime.setConfigOption(restored.id, priorLevel));
+        }
+      }
+      if (!translated)
+        return yield* Effect.fail(
+          input.mapError(
+            new AntigravityModelUnavailableError(
+              `Antigravity model '${requested}' is unavailable for this account. Select an available model.`,
+            ),
+          ),
+        );
+    }
+    if (target && target !== current && !switched) {
+      yield* lift(input.runtime.setModel(target));
+      switched = true;
+    }
+    const model = target ?? current;
+    const afterModel = yield* read;
+    const thought = antigravityThinkingOption(afterModel);
+    // The value seen right after the model was (re)selected is the model's own default.
+    if (switched || input.state.baseline?.model !== model)
+      input.state.baseline = { model: model ?? "", level: thought?.currentValue || undefined };
+    const levels = selectValues(thought).map((entry) => entry.value);
+    let warning: string | undefined;
+    let level = explicitLevel;
+    if (level && thought && !levels.includes(level)) level = undefined;
+    if (explicitLevel && (!thought || level === undefined)) {
+      const key = `${model ?? ""}\0${explicitLevel}`;
+      if (!input.state.warnedLevels.has(key)) {
+        input.state.warnedLevels.add(key);
+        warning = `Thinking level '${explicitLevel}' is not available for ${model ?? "this model"}; using the model default.`;
+      }
+    }
+    const desired = level ?? input.state.baseline?.level;
+    if (thought && desired && thought.currentValue !== desired && levels.includes(desired))
+      yield* lift(input.runtime.setConfigOption(thought.id, desired));
+    return {
+      model,
+      thinking: thought ? (desired ?? (thought.currentValue || undefined)) : undefined,
+      ...(warning ? { warning } : {}),
+    };
+  });
+
+// ── Session modes and approvals (R3) ────────────────────────────────────────
+
+export type AntigravitySessionMode = "default" | "plan" | "auto";
+
+/** Modes the session advertises, through session mode state or a `mode` config option. */
+export function antigravityAdvertisedModes(
+  modeState: AcpSessionModeState | undefined,
+  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> | null | undefined,
+): {
+  readonly surface: "session-mode" | "config-option" | "none";
+  readonly modes: ReadonlyArray<string>;
+  readonly current: string | undefined;
+  readonly configId?: string;
+} {
+  if (modeState)
+    return {
+      surface: "session-mode",
+      modes: modeState.availableModes.map((mode) => mode.id),
+      current: modeState.currentModeId,
+    };
+  const option = (configOptions ?? []).find(
+    (candidate): candidate is SelectConfigOption =>
+      candidate.type === "select" && (candidate.category === "mode" || candidate.id === "mode"),
+  );
+  if (option)
+    return {
+      surface: "config-option",
+      modes: selectValues(option).map((entry) => entry.value),
+      current: option.currentValue,
+      configId: option.id,
+    };
+  return { surface: "none", modes: [], current: undefined };
+}
+
+/**
+ * The one owner of the native mode. `plan` while the plan toggle is on, native `auto` for Auto
+ * when advertised, and `default` otherwise: F5 enforces Supervised, Auto-accept edits and Full
+ * access itself by answering `default`'s permission requests.
+ */
+export function antigravityTargetMode(input: {
+  readonly runtimeMode: RuntimeMode;
+  readonly plan: boolean;
+  readonly advertised: ReadonlyArray<string>;
+}): AntigravitySessionMode {
+  if (input.plan) return "plan";
+  if (input.runtimeMode === "auto" && input.advertised.includes("auto")) return "auto";
+  return "default";
+}
+
+export class AntigravityModeUnavailableError extends Error {}
+
+/**
+ * Writes the target mode through exactly one surface: `session/set_mode` when the session
+ * advertises mode state, otherwise the `mode` config option. Skips the write when the tracked
+ * mode already matches. A mode the session does not advertise fails before any prompt, and so
+ * does failing to enter or leave Plan. A rejected `auto` write falls back to `default` (F5 then
+ * asks like Supervised) and reports one warning through `onAutoFallback`.
+ */
+export const applyAntigravitySessionMode = <E>(input: {
+  readonly runtime: Pick<
+    AcpSessionRuntimeShape,
+    "getModeState" | "getConfigOptions" | "setNativeMode" | "setConfigOption"
+  >;
+  readonly target: AntigravitySessionMode;
+  readonly mapError: (cause: AcpErrors.AcpError | AntigravityModeUnavailableError) => E;
+  readonly onAutoFallback?: (warning: string) => void;
+}): Effect.Effect<string, E> =>
+  input.target !== "auto"
+    ? writeAntigravitySessionMode(input)
+    : writeAntigravitySessionMode({ ...input, mapError: (cause) => cause }).pipe(
+        Effect.catch(() =>
+          // The fallback is recorded only once the session is really in `default`: a failed
+          // switch stops the turn and leaves Auto to be tried again next time.
+          writeAntigravitySessionMode({ ...input, target: "default" }).pipe(
+            Effect.tap(() =>
+              Effect.sync(() =>
+                input.onAutoFallback?.(
+                  "Antigravity did not accept native Auto, so this session runs as Supervised and asks before acting.",
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
+const writeAntigravitySessionMode = <E>(input: {
+  readonly runtime: Pick<
+    AcpSessionRuntimeShape,
+    "getModeState" | "getConfigOptions" | "setNativeMode" | "setConfigOption"
+  >;
+  readonly target: AntigravitySessionMode;
+  readonly mapError: (cause: AcpErrors.AcpError | AntigravityModeUnavailableError) => E;
+}): Effect.Effect<string, E> =>
+  Effect.gen(function* () {
+    const advertised = antigravityAdvertisedModes(
+      yield* input.runtime.getModeState,
+      yield* input.runtime.getConfigOptions,
+    );
+    if (advertised.current === input.target) return input.target;
+    if (!advertised.modes.includes(input.target)) {
+      // A session that names no `default` mode keeps its own; F5 still answers its requests.
+      // Staying in Plan or native Auto is never silent: in Plan the turn would run under Plan's
+      // rules, and in Auto Antigravity's own reviewer would approve what F5 never sees.
+      if (
+        input.target === "default" &&
+        advertised.current !== "plan" &&
+        advertised.current !== "auto"
+      )
+        return advertised.current ?? input.target;
+      return yield* Effect.fail(
+        input.mapError(
+          new AntigravityModeUnavailableError(
+            input.target === "plan"
+              ? "This Antigravity runtime does not offer Plan mode. Update Antigravity in Settings, or turn Plan off."
+              : advertised.current === "plan"
+                ? "This Antigravity session could not leave Plan mode. Start a new session to continue."
+                : advertised.current === "auto"
+                  ? "This Antigravity session could not leave native Auto, so F5 cannot enforce the selected access mode. Start a new session to continue."
+                  : `This Antigravity session does not offer the '${input.target}' mode.`,
+          ),
+        ),
+      );
+    }
+    if (advertised.surface === "session-mode")
+      yield* input.runtime.setNativeMode(input.target).pipe(Effect.mapError(input.mapError));
+    else
+      yield* input.runtime
+        .setConfigOption(advertised.configId ?? "mode", input.target)
+        .pipe(Effect.mapError(input.mapError));
+    // A write the agent accepts but does not apply must not pass for a switch: a turn meant for
+    // Plan would otherwise run under the access mode's rules.
+    const effective = antigravityAdvertisedModes(
+      yield* input.runtime.getModeState,
+      yield* input.runtime.getConfigOptions,
+    ).current;
+    if (effective !== undefined && effective !== input.target)
+      return yield* Effect.fail(
+        input.mapError(
+          new AntigravityModeUnavailableError(
+            `Antigravity accepted the switch to '${input.target}' but stayed in '${effective}'. Start a new session to continue.`,
+          ),
+        ),
+      );
+    return input.target;
+  });
+
+// ── Read-only workflow turns ─────────────────────────────────────────────────
+
+/**
+ * Tool kinds a read-only workflow turn may run; everything else is denied. `fetch` is allowed in
+ * unattended stages too, matching other providers' plan mode; the exfiltration risk this leaves
+ * is recorded in `docs/providers/antigravity.md`.
+ */
+export const ANTIGRAVITY_READ_ONLY_WORKFLOW_TOOL_KINDS: ReadonlySet<string> = new Set([
+  "read",
+  "search",
+  "think",
+  "fetch",
+]);
+
+/** A tool call that names an MCP server. Read-only workflow sessions install no MCP catalog. */
+function antigravityMcpToolCall(toolCall: {
+  readonly title?: string | null | undefined;
+  readonly rawInput?: unknown;
+}): boolean {
+  if (/\bmcp(?:__|[_:/.])/i.test(toolCall.title ?? "")) return true;
+  const raw = toolCall.rawInput;
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return false;
+  return ["server", "serverName", "server_name", "mcpServer", "mcp_server"].some(
+    (key) => key in raw,
+  );
+}
+
+/**
+ * Permission policy for a read-only workflow turn. It runs before the access-mode policy, saved
+ * thread grants and Full access, and never opens an approval prompt: read, search, think and
+ * fetch tools run once; edits, deletes, moves, commands, computer control, MCP tools and
+ * requests with an unknown or missing kind are denied.
+ */
+export function antigravityReadOnlyWorkflowDecision(input: {
+  readonly toolCall: {
+    readonly kind?: string | null | undefined;
+    readonly title?: string | null | undefined;
+    readonly rawInput?: unknown;
+  };
+  readonly computerRequest: boolean;
+}): "allow" | "deny" {
+  if (input.computerRequest) return "deny";
+  const kind = input.toolCall.kind;
+  if (!kind || !ANTIGRAVITY_READ_ONLY_WORKFLOW_TOOL_KINDS.has(kind)) return "deny";
+  return antigravityMcpToolCall(input.toolCall) ? "deny" : "allow";
+}
+
+/** Read-only workflow sessions never run with native auto-approval, whatever the thread says. */
+export function antigravityWorkflowRuntimeMode(
+  runtimeMode: RuntimeMode,
+  workflowExecutionProfile: string | undefined,
+): RuntimeMode {
+  return workflowExecutionProfile ? "approval-required" : runtimeMode;
+}
+
+/**
+ * Enters Plan before a workflow prompt and confirms the session reports it. A runtime without
+ * Plan, or one that reports any other mode afterwards, fails the turn before anything is sent.
+ */
+export const enterAntigravityWorkflowPlanMode = <E>(input: {
+  readonly runtime: Pick<
+    AcpSessionRuntimeShape,
+    "getModeState" | "getConfigOptions" | "setNativeMode" | "setConfigOption"
+  >;
+  readonly mapError: (cause: AcpErrors.AcpError | AntigravityModeUnavailableError) => E;
+}): Effect.Effect<string, E> =>
+  Effect.gen(function* () {
+    yield* writeAntigravitySessionMode({ ...input, target: "plan" });
+    const effective = antigravityAdvertisedModes(
+      yield* input.runtime.getModeState,
+      yield* input.runtime.getConfigOptions,
+    ).current;
+    if (effective !== "plan")
+      return yield* Effect.fail(
+        input.mapError(
+          new AntigravityModeUnavailableError(
+            "Antigravity could not confirm Plan mode, so F5 cannot keep this workflow turn read-only. Start a new session to continue.",
+          ),
+        ),
+      );
+    return effective;
+  });
+
+/**
+ * ACP tool kinds that follow the thread's access mode in Plan. `kind` comes from the agent and
+ * may be missing, `other` or new, so this is an allowlist: anything else asks.
+ */
+const ANTIGRAVITY_PLAN_ACCESS_MODE_KINDS: ReadonlySet<string> = new Set([
+  "execute",
+  "read",
+  "search",
+  "think",
+]);
+
+export type AntigravityApprovalDecision =
+  | { readonly kind: "ask"; readonly applyThreadGrants: boolean }
+  | { readonly kind: "allow" };
+
+/**
+ * Per-request policy from the start-time runtime mode and the tracked session mode. Questions,
+ * forms and computer consent are handled (always asked) before this is consulted.
+ */
+export function antigravityApprovalDecision(input: {
+  readonly runtimeMode: RuntimeMode;
+  readonly sessionMode: string | undefined;
+  /** The active turn asked for Plan, whatever the native mode reports. */
+  readonly planRequested?: boolean;
+  readonly computerRequest: boolean;
+  readonly toolCall: Parameters<typeof antigravityEditTargetsInWorkspace>[0];
+  readonly workspaceRoot: string;
+}): AntigravityApprovalDecision {
+  if (input.computerRequest) return { kind: "ask", applyThreadGrants: false };
+  // In Plan, commands and read-only tools follow the thread's access mode as outside Plan, so
+  // thread grants apply there too. Everything else (edits, deletes, moves, `other`, a missing or
+  // unknown kind) always asks, without thread grants, even under Full access. Commands can still
+  // change files; that is the access mode's call. The turn's own request counts as well as the
+  // native mode, so a lagging mode can't widen a Plan turn.
+  if (
+    (input.sessionMode === "plan" || input.planRequested === true) &&
+    !ANTIGRAVITY_PLAN_ACCESS_MODE_KINDS.has(input.toolCall.kind ?? "")
+  )
+    return { kind: "ask", applyThreadGrants: false };
+  switch (input.runtimeMode) {
+    case "full-access":
+      return { kind: "allow" };
+    case "auto-accept-edits":
+      return antigravityEditTargetsInWorkspace(input.toolCall, input.workspaceRoot)
+        ? { kind: "allow" }
+        : { kind: "ask", applyThreadGrants: true };
+    case "auto":
+    case "approval-required":
+      return { kind: "ask", applyThreadGrants: true };
+  }
+}
+
+/**
+ * Titles, branch names and commit messages should not spend Neon quota: with no explicit model,
+ * prefer Hydrogen, then any Flash model, then the account default, at the lowest listed level.
+ */
+export function antigravityTextGenerationModel(
+  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> | null | undefined,
+): string | undefined {
+  const values = selectValues(findModelConfigOption(configOptions)).map((entry) => entry.value);
+  return (
+    values.find((value) => value.toLowerCase().includes("hydrogen")) ??
+    values.find((value) => value.toLowerCase().includes("flash"))
+  );
+}
+
+/** Known thinking levels from least to most effort; unknown names rank after them. */
+const THINKING_LEVEL_ORDER = ["none", "off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/** The least-effort level by name, never by the agent's listing order. */
+export function lowestAntigravityThinkingLevel(
+  levels: ReadonlyArray<{ readonly value: string }>,
+): string | undefined {
+  const rank = (value: string) => {
+    const index = THINKING_LEVEL_ORDER.indexOf(value.toLowerCase());
+    return index === -1 ? THINKING_LEVEL_ORDER.length : index;
+  };
+  return levels
+    .map((level, index) => ({ value: level.value, index }))
+    .toSorted((left, right) => rank(left.value) - rank(right.value) || left.index - right.index)[0]
+    ?.value;
+}
+
+/**
+ * Text generation runs in the user's profile, where a model switch may persist as the account
+ * default. With no explicit model it uses a light model at its lowest level; an explicit model
+ * keeps the requested level (or one from a legacy suffix), or the model's default. Returns an
+ * effect that restores the model and level that were active before, to run after the prompt.
+ */
+export const applyAntigravityTextGenerationSelection = (input: {
+  readonly runtime: Pick<
+    AcpSessionRuntimeShape,
+    "getConfigOptions" | "setConfigOption" | "setModel"
+  >;
+  readonly model: string;
+  readonly thinking: string | undefined;
+  readonly customModels?: ReadonlyArray<string>;
+}): Effect.Effect<Effect.Effect<void>, AcpErrors.AcpError | AntigravityModelUnavailableError> =>
+  Effect.gen(function* () {
+    const before = yield* input.runtime.getConfigOptions;
+    const originalModel = findModelConfigOption(before)?.currentValue || undefined;
+    const originalLevel = antigravityThinkingOption(before)?.currentValue || undefined;
+    const explicit = input.model !== ANTIGRAVITY_DEFAULT_MODEL;
+    const model = explicit ? input.model : antigravityTextGenerationModel(before);
+    // Defined before the first write and driven by what the session reports now, so a setup
+    // that switched the model and then failed on the level restores too.
+    const restore = Effect.gen(function* () {
+      const currentModel = findModelConfigOption(
+        yield* input.runtime.getConfigOptions,
+      )?.currentValue;
+      if (originalModel && currentModel !== originalModel)
+        yield* input.runtime.setModel(originalModel);
+      const thought = antigravityThinkingOption(yield* input.runtime.getConfigOptions);
+      if (
+        originalLevel &&
+        thought &&
+        thought.currentValue !== originalLevel &&
+        selectValues(thought).some((entry) => entry.value === originalLevel)
+      )
+        yield* input.runtime.setConfigOption(thought.id, originalLevel);
+    }).pipe(
+      Effect.timeout(Duration.seconds(10)),
+      Effect.catchCause(() =>
+        Effect.logWarning("Antigravity text generation could not restore the model selection."),
+      ),
+    );
+    yield* Effect.gen(function* () {
+      yield* applyAntigravityModelSelection({
+        runtime: input.runtime,
+        requestedModel: model,
+        requestedThinking: explicit ? input.thinking : undefined,
+        ...(input.customModels ? { customModels: input.customModels } : {}),
+        state: makeAntigravitySelectionState(),
+        mapError: (cause) => cause,
+      });
+      if (!explicit) {
+        const options = yield* input.runtime.getConfigOptions;
+        const lowest = lowestAntigravityThinkingLevel(
+          antigravityThinkingLevels(options)?.levels ?? [],
+        );
+        const thought = antigravityThinkingOption(options);
+        if (lowest && thought && thought.currentValue !== lowest)
+          yield* input.runtime.setConfigOption(thought.id, lowest);
+      }
+      // A failed or interrupted setup restores right here, while the runtime is still open; the
+      // caller runs the returned restore once the prompt completes.
+    }).pipe(Effect.onExit((exit) => (exit._tag === "Success" ? Effect.void : restore)));
+    return restore;
   });

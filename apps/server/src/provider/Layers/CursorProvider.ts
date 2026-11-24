@@ -4,16 +4,16 @@ import type {
   CursorSettings,
   ModelCapabilities,
   ProviderOptionSelection,
-  ServerProvider,
   ServerProviderAuth,
   ServerProviderModel,
   ServerProviderState,
 } from "@t3tools/contracts";
 import { ProviderDriverKind } from "@t3tools/contracts";
-import type * as EffectAcpSchema from "effect-acp/schema";
-import { Cause, Effect, FileSystem, Layer, Option, Path, Result } from "effect";
+import * as EffectAcpSchema from "effect-acp/schema";
+import { Effect, FileSystem, Layer, Option, Path, Result, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { resolveInvocationEffect } from "../../spawn/resolveCommand.ts";
+import { CURSOR_ACP_CLIENT_INFO } from "../cursor/cursorAcpClientInfo.ts";
 import {
   createModelCapabilities,
   getProviderOptionBooleanSelectionValue,
@@ -31,6 +31,7 @@ import {
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
 import { findModelConfigOption } from "../acp/AcpRuntimeModel.ts";
+import { redactProviderFailureText } from "../failureText.ts";
 import { AcpSessionRuntime } from "../acp/AcpSessionRuntime.ts";
 
 const PROVIDER = ProviderDriverKind.make("cursor");
@@ -43,8 +44,6 @@ const EMPTY_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [],
 });
 
-const CURSOR_ACP_MODEL_CAPABILITY_TIMEOUT = "4 seconds";
-const CURSOR_ACP_MODEL_DISCOVERY_CONCURRENCY = 4;
 const CURSOR_AUTH_UNKNOWN_MESSAGE = "Could not verify Cursor Agent authentication status.";
 const CURSOR_ACP_MODEL_DISCOVERY_EMPTY_MESSAGE =
   "Cursor ACP model discovery returned no built-in models.";
@@ -54,26 +53,6 @@ export const CURSOR_PARAMETERIZED_MODEL_PICKER_CAPABILITIES = {
     parameterizedModelPicker: true,
   },
 } satisfies NonNullable<EffectAcpSchema.InitializeRequest["clientCapabilities"]>;
-
-type CursorCapabilityProbeResult =
-  | {
-      readonly _tag: "success";
-      readonly modelSlug: string;
-      readonly capabilities: ModelCapabilities;
-    }
-  | {
-      readonly _tag: "failure";
-      readonly modelSlug: string;
-      readonly detail: string;
-    };
-
-function summarizeCursorCapabilityProbeCause(cause: Parameters<typeof Cause.pretty>[0]): string {
-  const pretty = Cause.pretty(cause);
-  if (pretty.includes("TimeoutError")) {
-    return `Timed out after ${CURSOR_ACP_MODEL_CAPABILITY_TIMEOUT}`;
-  }
-  return pretty.split("\n")[0]?.trim() || "Unknown ACP probe failure";
-}
 
 export function buildInitialCursorProviderSnapshot(
   cursorSettings: CursorSettings,
@@ -92,7 +71,7 @@ export function buildInitialCursorProviderSnapshot(
         version: null,
         status: "warning",
         auth: { status: "unknown" },
-        message: "Cursor is disabled in T3 Code settings.",
+        message: "Cursor is disabled in F5 settings.",
       },
     });
   }
@@ -150,6 +129,7 @@ function flattenSessionConfigSelectOptions(
 function normalizeCursorReasoningValue(value: string | null | undefined): string | undefined {
   const normalized = value?.trim().toLowerCase();
   switch (normalized) {
+    case "none":
     case "low":
     case "medium":
     case "high":
@@ -164,13 +144,6 @@ function normalizeCursorReasoningValue(value: string | null | undefined): string
   }
 }
 
-// Probe the same option that runtime.setModel writes at session start.
-function findCursorModelConfigOption(
-  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>,
-): EffectAcpSchema.SessionConfigOption | undefined {
-  return findModelConfigOption(configOptions);
-}
-
 function getCursorConfigOptionCategory(option: EffectAcpSchema.SessionConfigOption): string {
   return option.category?.trim().toLowerCase() ?? "";
 }
@@ -181,6 +154,7 @@ function isCursorEffortConfigOption(option: EffectAcpSchema.SessionConfigOption)
   return (
     id === "effort" ||
     id === "reasoning" ||
+    id === "reasoning_effort" ||
     name === "effort" ||
     name === "reasoning" ||
     name.includes("effort") ||
@@ -218,6 +192,18 @@ function isCursorThinkingConfigOption(option: EffectAcpSchema.SessionConfigOptio
   const id = option.id.trim().toLowerCase();
   const name = option.name.trim().toLowerCase();
   return id === "thinking" || name.includes("thinking");
+}
+
+// Cursor files thinking under `thought_level` in its model catalog and under
+// `model_config` in older sessions.
+function findCursorThinkingConfigOption(
+  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>,
+): EffectAcpSchema.SessionConfigOption | undefined {
+  return configOptions.find(
+    (option) =>
+      (option.category === "model_config" || option.category === "thought_level") &&
+      isCursorThinkingConfigOption(option),
+  );
 }
 
 function isBooleanLikeConfigOption(option: EffectAcpSchema.SessionConfigOption): boolean {
@@ -305,9 +291,7 @@ export function buildCursorCapabilitiesFromConfigOptions(
   const fastOption = configOptions.find(
     (option) => option.category === "model_config" && isCursorFastConfigOption(option),
   );
-  const thinkingOption = configOptions.find(
-    (option) => option.category === "model_config" && isCursorThinkingConfigOption(option),
-  );
+  const thinkingOption = findCursorThinkingConfigOption(configOptions);
   const fastCurrentValue = getBooleanCurrentValue(fastOption);
   const thinkingCurrentValue = getBooleanCurrentValue(thinkingOption);
   const optionDescriptors = [
@@ -384,39 +368,6 @@ function buildCursorDiscoveredModels(
   });
 }
 
-function hasCursorModelCapabilities(model: Pick<ServerProviderModel, "capabilities">): boolean {
-  return (model.capabilities?.optionDescriptors?.length ?? 0) > 0;
-}
-
-export function buildCursorDiscoveredModelsFromConfigOptions(
-  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> | null | undefined,
-): ReadonlyArray<ServerProviderModel> {
-  if (!configOptions || configOptions.length === 0) {
-    return [];
-  }
-
-  const modelOption = findCursorModelConfigOption(configOptions);
-  const modelChoices = flattenSessionConfigSelectOptions(modelOption);
-  if (!modelOption || modelChoices.length === 0) {
-    return [];
-  }
-
-  const currentModelValue =
-    modelOption.type === "select" ? modelOption.currentValue?.trim() || undefined : undefined;
-  const currentModelCapabilities = buildCursorCapabilitiesFromConfigOptions(configOptions);
-
-  return buildCursorDiscoveredModels(
-    modelChoices.map((modelChoice) => ({
-      slug: modelChoice.value.trim(),
-      name: modelChoice.name.trim(),
-      capabilities:
-        currentModelValue === modelChoice.value.trim()
-          ? currentModelCapabilities
-          : EMPTY_CAPABILITIES,
-    })),
-  );
-}
-
 const makeCursorAcpProbeRuntime = (
   cursorSettings: CursorSettings,
   environment: NodeJS.ProcessEnv = process.env,
@@ -435,23 +386,13 @@ const makeCursorAcpProbeRuntime = (
           env: environment,
         },
         cwd: process.cwd(),
-        clientInfo: { name: "t3-code-provider-probe", version: "0.0.0" },
+        clientInfo: CURSOR_ACP_CLIENT_INFO,
         authMethodId: "cursor_login",
         clientCapabilities: CURSOR_PARAMETERIZED_MODEL_PICKER_CAPABILITIES,
       }).pipe(Layer.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner))),
     );
     return yield* Effect.service(AcpSessionRuntime).pipe(Effect.provide(acpContext));
   });
-
-const withCursorAcpProbeRuntime = <A, E, R>(
-  cursorSettings: CursorSettings,
-  useRuntime: (acp: AcpSessionRuntime["Service"]) => Effect.Effect<A, E, R>,
-  environment: NodeJS.ProcessEnv = process.env,
-) =>
-  makeCursorAcpProbeRuntime(cursorSettings, environment).pipe(
-    Effect.flatMap(useRuntime),
-    Effect.scoped,
-  );
 
 function normalizeCursorConfigOptionToken(value: string | null | undefined): string {
   return (
@@ -492,6 +433,28 @@ export function resolveCursorAcpBaseModelId(model: string | null | undefined): s
     return "default";
   }
   return base.includes("[") ? base.slice(0, base.indexOf("[")) : base;
+}
+
+/**
+ * The value to write to the session's model option. F5's Auto is `default` on older
+ * CLIs and an `auto-…` value (`auto-smart`) on current ones, so Auto resolves against
+ * the values the session offers. Every other model id passes through.
+ */
+export function resolveCursorAcpModelValue(
+  model: string | null | undefined,
+  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> | null | undefined,
+): string {
+  const base = resolveCursorAcpBaseModelId(model);
+  if (base !== "default") return base;
+  const values = flattenSessionConfigSelectOptions(findModelConfigOption(configOptions ?? [])).map(
+    (option) => option.value,
+  );
+  if (values.length === 0 || values.includes(base)) return base;
+  return (
+    values.find((value) => value === "auto") ??
+    values.find((value) => value.startsWith("auto-")) ??
+    base
+  );
 }
 
 export function resolveCursorAcpConfigUpdates(
@@ -554,9 +517,7 @@ export function resolveCursorAcpConfigUpdates(
     }
   }
 
-  const thinkingOption = configOptions.find(
-    (option) => option.category === "model_config" && isCursorThinkingConfigOption(option),
-  );
+  const thinkingOption = findCursorThinkingConfigOption(configOptions);
   const requestedThinking = getProviderOptionBooleanSelectionValue(selections, "thinking");
   if (thinkingOption && typeof requestedThinking === "boolean") {
     const value = findCursorBooleanConfigValue(thinkingOption, requestedThinking);
@@ -568,154 +529,142 @@ export function resolveCursorAcpConfigUpdates(
   return updates;
 }
 
-export const discoverCursorModelsViaAcp = (
-  cursorSettings: CursorSettings,
-  environment: NodeJS.ProcessEnv = process.env,
-) =>
-  withCursorAcpProbeRuntime(
-    cursorSettings,
-    (acp) =>
-      Effect.map(acp.start(), (started) =>
-        buildCursorDiscoveredModelsFromConfigOptions(
-          started.sessionSetupResult.configOptions ?? [],
-        ),
-      ),
-    environment,
+const CURSOR_MODEL_CATALOG_METHOD = "cursor/list_available_models";
+const CURSOR_MODEL_CATALOG_TIMEOUT_MS = 30_000;
+const JSON_RPC_METHOD_NOT_FOUND = -32601;
+
+const CursorModelCatalogResponse = Schema.Struct({ models: Schema.Array(Schema.Unknown) });
+const CursorModelCatalogEntry = Schema.Struct({
+  value: Schema.String,
+  name: Schema.String,
+  configOptions: Schema.optional(Schema.NullOr(Schema.Array(Schema.Unknown))),
+});
+const decodeCatalogResponse = Schema.decodeUnknownOption(CursorModelCatalogResponse);
+const decodeCatalogEntry = Schema.decodeUnknownOption(CursorModelCatalogEntry);
+const decodeSessionConfigOption = Schema.decodeUnknownOption(EffectAcpSchema.SessionConfigOption);
+
+export type CursorModelCatalogResult =
+  | { readonly _tag: "ok"; readonly models: ReadonlyArray<ServerProviderModel> }
+  /** The CLI predates the catalog request. */
+  | { readonly _tag: "unsupported" }
+  | { readonly _tag: "failed"; readonly detail: string };
+
+/**
+ * Maps a `cursor/list_available_models` response to provider models, each with the
+ * options Cursor offers for it. Malformed entries and options are skipped, and the
+ * first entry wins for a repeated id.
+ */
+export function cursorModelsFromCatalog(response: unknown): ReadonlyArray<ServerProviderModel> {
+  const decoded = decodeCatalogResponse(response);
+  if (Option.isNone(decoded)) return [];
+  let autoListed = false;
+  return buildCursorDiscoveredModels(
+    decoded.value.models.flatMap((raw) => {
+      const entry = decodeCatalogEntry(raw);
+      if (Option.isNone(entry)) return [];
+      const value = entry.value.value.trim();
+      const name = entry.value.name.trim();
+      if (value.length === 0) return [];
+      // Cursor's Auto (`default` on older CLIs, `auto-smart` on current ones) is F5's
+      // `auto`, the default model; resolveCursorAcpModelValue maps it back.
+      const isAuto =
+        !autoListed && (value === "default" || value === "auto" || value.startsWith("auto-"));
+      if (isAuto) autoListed = true;
+      const slug = isAuto ? "auto" : value;
+      const configOptions = (entry.value.configOptions ?? []).flatMap((option) =>
+        Option.toArray(decodeSessionConfigOption(option)),
+      );
+      return [
+        {
+          slug,
+          name: name.length > 0 ? name : slug,
+          capabilities: buildCursorCapabilitiesFromConfigOptions(configOptions),
+        },
+      ];
+    }),
   );
+}
 
-export const discoverCursorModelCapabilitiesViaAcp = (
+/**
+ * Reads the models the signed-in Cursor account can use. Sends only `initialize` and
+ * the catalog request: no `authenticate` (which can open Cursor's browser login) and no
+ * `session/new` (which leaves a native session behind). A signed-out CLI answers with an
+ * error instead of prompting. The scope closes the child process.
+ */
+export const fetchCursorModelCatalog = (
   cursorSettings: CursorSettings,
-  existingModels: ReadonlyArray<ServerProviderModel>,
   environment: NodeJS.ProcessEnv = process.env,
-) =>
-  withCursorAcpProbeRuntime(
-    cursorSettings,
-    (acp) =>
-      Effect.gen(function* () {
-        const started = yield* acp.start();
-        const initialConfigOptions = started.sessionSetupResult.configOptions ?? [];
-        const modelOption = findCursorModelConfigOption(initialConfigOptions);
-        const modelChoices = flattenSessionConfigSelectOptions(modelOption);
-        if (!modelOption || modelChoices.length === 0) {
-          return [];
-        }
-
-        const currentModelValue =
-          modelOption.type === "select" ? modelOption.currentValue?.trim() || undefined : undefined;
-        const capabilitiesBySlug = new Map<string, ModelCapabilities>();
-        if (currentModelValue) {
-          capabilitiesBySlug.set(
-            currentModelValue,
-            buildCursorCapabilitiesFromConfigOptions(initialConfigOptions),
-          );
-        }
-
-        const targetModelSlugs = new Set(
-          existingModels
-            .filter((model) => !model.isCustom && !hasCursorModelCapabilities(model))
-            .map((model) => model.slug),
-        );
-        if (targetModelSlugs.size === 0) {
-          return buildCursorDiscoveredModels(
-            modelChoices.map((modelChoice) => ({
-              slug: modelChoice.value.trim(),
-              name: modelChoice.name.trim(),
-              capabilities: capabilitiesBySlug.get(modelChoice.value.trim()) ?? EMPTY_CAPABILITIES,
-            })),
-          );
-        }
-
-        const probedCapabilities = yield* Effect.forEach(
-          modelChoices,
-          (modelChoice) => {
-            const modelSlug = modelChoice.value.trim();
-            if (
-              !modelSlug ||
-              !targetModelSlugs.has(modelSlug) ||
-              capabilitiesBySlug.has(modelSlug)
-            ) {
-              return Effect.void.pipe(
-                Effect.as<CursorCapabilityProbeResult | undefined>(undefined),
-              );
-            }
-
-            return withCursorAcpProbeRuntime(
-              cursorSettings,
-              (probeAcp) =>
-                Effect.gen(function* () {
-                  const probeStarted = yield* probeAcp.start();
-                  const probeConfigOptions = probeStarted.sessionSetupResult.configOptions ?? [];
-                  const probeModelOption = findCursorModelConfigOption(probeConfigOptions);
-                  const probeCurrentModelValue =
-                    probeModelOption?.type === "select"
-                      ? probeModelOption.currentValue?.trim() || undefined
-                      : undefined;
-                  yield* Effect.annotateCurrentSpan({
-                    "cursor.acp.model.value": modelSlug,
-                    "cursor.acp.model.currentValue": probeCurrentModelValue,
-                    "cursor.acp.config_option_id": probeModelOption?.id ?? modelOption.id,
-                  });
-                  const nextConfigOptions =
-                    probeCurrentModelValue === modelSlug
-                      ? probeConfigOptions
-                      : yield* probeAcp
-                          .setConfigOption(probeModelOption?.id ?? modelOption.id, modelSlug)
-                          .pipe(
-                            Effect.map((response) => response.configOptions ?? probeConfigOptions),
-                          );
-                  return {
-                    _tag: "success",
-                    modelSlug,
-                    capabilities: buildCursorCapabilitiesFromConfigOptions(nextConfigOptions),
-                  } as const;
-                }),
-              environment,
-            ).pipe(
-              Effect.timeout(CURSOR_ACP_MODEL_CAPABILITY_TIMEOUT),
-              Effect.retry({ times: 3 }),
-              Effect.withSpan("cursor-acp-model-capability-probe"),
-              Effect.catchCause((cause) =>
-                Effect.succeed({
-                  _tag: "failure",
-                  modelSlug,
-                  detail: summarizeCursorCapabilityProbeCause(cause),
-                } as const),
-              ),
-            );
+): Effect.Effect<CursorModelCatalogResult, never, ChildProcessSpawner.ChildProcessSpawner> =>
+  makeCursorAcpProbeRuntime(cursorSettings, environment).pipe(
+    Effect.flatMap((acp) =>
+      acp
+        .request("initialize", {
+          protocolVersion: 1,
+          clientCapabilities: {
+            fs: { readTextFile: false, writeTextFile: false },
+            terminal: false,
+            ...CURSOR_PARAMETERIZED_MODEL_PICKER_CAPABILITIES,
           },
-          { concurrency: CURSOR_ACP_MODEL_DISCOVERY_CONCURRENCY },
-        );
-
-        const failedProbeDetails = new Map<string, string>();
-        for (const entry of probedCapabilities) {
-          if (!entry) {
-            continue;
-          }
-          if (entry._tag === "failure") {
-            failedProbeDetails.set(entry.modelSlug, entry.detail);
-            continue;
-          }
-          capabilitiesBySlug.set(entry.modelSlug, entry.capabilities);
-        }
-
-        if (failedProbeDetails.size > 0) {
-          yield* Effect.logWarning("Cursor ACP capability enrichment skipped some models", {
-            modelSlugs: Array.from(failedProbeDetails.keys()),
-            failureCount: failedProbeDetails.size,
-            firstFailure: Array.from(failedProbeDetails.values())[0],
-          });
-        }
-
-        return buildCursorDiscoveredModels(
-          modelChoices.map((modelChoice) => ({
-            slug: modelChoice.value.trim(),
-            name: modelChoice.name.trim(),
-            capabilities: capabilitiesBySlug.get(modelChoice.value.trim()) ?? EMPTY_CAPABILITIES,
-          })),
-        );
-      }).pipe(Effect.withSpan("cursor-acp-model-capability-discovery", {})),
-    environment,
+          clientInfo: CURSOR_ACP_CLIENT_INFO,
+        } satisfies EffectAcpSchema.InitializeRequest)
+        .pipe(Effect.andThen(acp.request(CURSOR_MODEL_CATALOG_METHOD, {}))),
+    ),
+    Effect.map((response): CursorModelCatalogResult => {
+      if (Option.isNone(decodeCatalogResponse(response)))
+        return { _tag: "failed", detail: "Cursor returned an unreadable model catalog." };
+      return { _tag: "ok", models: cursorModelsFromCatalog(response) };
+    }),
+    Effect.timeoutOption(CURSOR_MODEL_CATALOG_TIMEOUT_MS),
+    Effect.map((result) =>
+      Option.getOrElse(
+        result,
+        (): CursorModelCatalogResult => ({
+          _tag: "failed",
+          detail: "Cursor did not return its model catalog in time.",
+        }),
+      ),
+    ),
+    Effect.catch(
+      (error): Effect.Effect<CursorModelCatalogResult> =>
+        Effect.succeed(
+          error._tag === "AcpRequestError" && error.code === JSON_RPC_METHOD_NOT_FOUND
+            ? { _tag: "unsupported" }
+            : { _tag: "failed", detail: redactProviderFailureText(error.message) },
+        ),
+    ),
+    Effect.scoped,
   );
+
+/**
+ * What a CLI without `cursor/list_available_models` is offered: the built-in list F5
+ * shipped before the account catalog, so slugs saved on those CLIs stay selectable.
+ */
+export const CURSOR_LEGACY_MODELS: ReadonlyArray<ServerProviderModel> = [
+  ["auto", "Auto"],
+  ["composer-2", "Composer 2"],
+  ["composer-1.5", "Composer 1.5"],
+  ["claude-opus-4-6", "Claude Opus 4.6"],
+  ["claude-sonnet-4-6", "Claude Sonnet 4.6"],
+  ["claude-opus-4-5", "Claude Opus 4.5"],
+].map(([slug, name]) => ({
+  slug: slug!,
+  name: name!,
+  isCustom: false,
+  capabilities: EMPTY_CAPABILITIES,
+}));
+
+/** The provider's models: the account's catalog first, then the user's custom models. */
+export function cursorProviderModels(
+  cursorSettings: Pick<CursorSettings, "customModels">,
+  catalogModels: ReadonlyArray<ServerProviderModel>,
+): ReadonlyArray<ServerProviderModel> {
+  return providerModelsFromSettings(
+    catalogModels,
+    PROVIDER,
+    cursorSettings.customModels,
+    EMPTY_CAPABILITIES,
+  );
+}
 
 export function getCursorFallbackModels(
   cursorSettings: Pick<CursorSettings, "customModels">,
@@ -1132,7 +1081,7 @@ export const checkCursorProviderStatus = Effect.fn("checkCursorProviderStatus")(
         version: null,
         status: "warning",
         auth: { status: "unknown" },
-        message: "Cursor is disabled in T3 Code settings.",
+        message: "Cursor is disabled in F5 settings.",
       },
     });
   }
@@ -1209,60 +1158,3 @@ export const checkCursorProviderStatus = Effect.fn("checkCursorProviderStatus")(
     parsed,
   });
 });
-
-export function hasUncapturedCursorModels(snapshot: Pick<ServerProvider, "models">): boolean {
-  return snapshot.models.some((model) => !model.isCustom && !hasCursorModelCapabilities(model));
-}
-
-/**
- * Explicit capability enrichment for a Cursor snapshot.
- *
- * This starts Cursor ACP and therefore may trigger Cursor's browser login
- * flow. Keep it out of automatic startup/status refreshes; it is reserved for
- * a future explicit user-initiated model refresh. Skips the probe when the
- * provider is disabled, unauthenticated, or has no uncaptured models. Keeps
- * `EMPTY_CAPABILITIES` and the `PROVIDER` literal private to this module.
- */
-export const enrichCursorSnapshot = (input: {
-  readonly settings: CursorSettings;
-  readonly environment?: NodeJS.ProcessEnv;
-  readonly snapshot: ServerProvider;
-  readonly publishSnapshot: (snapshot: ServerProvider) => Effect.Effect<void>;
-  readonly stampIdentity?: (snapshot: ServerProvider) => ServerProvider;
-}): Effect.Effect<void, never, ChildProcessSpawner.ChildProcessSpawner> => {
-  const { settings, snapshot, publishSnapshot } = input;
-  const stampIdentity = input.stampIdentity ?? ((value) => value);
-
-  if (
-    !settings.enabled ||
-    snapshot.auth.status === "unauthenticated" ||
-    !hasUncapturedCursorModels(snapshot)
-  ) {
-    return Effect.void;
-  }
-
-  return discoverCursorModelCapabilitiesViaAcp(settings, snapshot.models, input.environment).pipe(
-    Effect.flatMap((discoveredModels) => {
-      if (discoveredModels.length === 0) {
-        return Effect.void;
-      }
-      return publishSnapshot(
-        stampIdentity({
-          ...snapshot,
-          models: providerModelsFromSettings(
-            discoveredModels,
-            PROVIDER,
-            settings.customModels,
-            EMPTY_CAPABILITIES,
-          ),
-        }),
-      );
-    }),
-    Effect.catchCause((cause) =>
-      Effect.logWarning("Cursor ACP background capability enrichment failed", {
-        models: snapshot.models.map((model) => model.slug),
-        cause: Cause.pretty(cause),
-      }).pipe(Effect.asVoid),
-    ),
-  );
-};

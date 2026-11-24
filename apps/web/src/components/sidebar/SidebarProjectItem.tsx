@@ -12,6 +12,7 @@ import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-
 import { CSS } from "@dnd-kit/utilities";
 import { ChevronRightIcon, EllipsisIcon, PinIcon, SquarePenIcon, WorkflowIcon } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 
 import type { DraftThreadState } from "../../composerDraftStore";
 import { getVisibleThreadsWithPinnedDraft, isDraftThreadId } from "../../lib/draftThreads";
@@ -381,7 +382,8 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
   ]
     .filter((thread) => thread.pinnedAt != null)
     .map((thread) => pinnedThreadSortableId(thread.id));
-  const orderedProjectThreadIds = [
+  const stabilizeThreadOrder = useShallow((ids: ReadonlyArray<ThreadId>) => ids);
+  const orderedProjectThreadIds = stabilizeThreadOrder([
     ...[...visibleActiveThreads, ...visibleOlderThreads]
       .filter((thread) => !isDraftThreadId(thread.id, draftThreadsByThreadId, persistedThreadIds))
       .map((thread) => thread.id),
@@ -390,7 +392,7 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
     ...visibleSnoozedThreads.map((thread) => thread.id),
     ...visibleSettledThreads.map((thread) => thread.id),
     ...visibleArchivedItems.flatMap((item) => (item.kind === "thread" ? [item.thread.id] : [])),
-  ];
+  ]);
   const openScheduledMenu = useScheduledFolderMenu(scheduledThreads, indicatorsForThread);
   const shelfSegments: SidebarShelfSegment[] = [
     {

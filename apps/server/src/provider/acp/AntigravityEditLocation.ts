@@ -1,10 +1,12 @@
 // @effect-diagnostics nodeBuiltinImport:off - the tool-call normalizer is synchronous
 import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
 
 import { PositiveInt } from "@t3tools/contracts";
 import { FILE_HEADERS_ONLY, formatPatch, structuredPatch, type StructuredPatchHunk } from "diff";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { toolCallRawInputCommand } from "./AcpRuntimeModel.ts";
 
 const PRE_EDIT_FILE_LIMIT = 1024 * 1024;
 // The live preview runs synchronously. One budget covers every chunk in a call: the generic
@@ -39,11 +41,14 @@ const decodeEditInput = Schema.decodeUnknownOption(
   ]),
 );
 const decodeLocations = Schema.decodeUnknownOption(Schema.Array(Schema.Struct({ line: Line })));
-// The runtime accepts edit arguments in either casing.
+// The runtime accepts edit arguments in either casing; current releases also send the short
+// `Target`/`Replacement` names.
 const PASCAL_KEYS: Readonly<Record<string, string>> = {
   replacement_chunks: "ReplacementChunks",
   target_content: "TargetContent",
   replacement_content: "ReplacementContent",
+  Target: "TargetContent",
+  Replacement: "ReplacementContent",
   start_line: "StartLine",
   end_line: "EndLine",
 };
@@ -223,4 +228,135 @@ export function antigravityEditPatch(input: {
     .filter(Boolean)
     .join("\n");
   return patch || undefined;
+}
+
+/** Antigravity's file-edit tools, matched as the whole tool name at the start of the title. */
+const EDIT_TOOL_TITLE = /^(?:replace_file_content|multi_replace_file_content|write_to_file)\b/;
+/** Any of these means the request may execute something, whatever its kind says. */
+const COMMAND_KEYS = [
+  "CommandLine",
+  "command_line",
+  "commandLine",
+  "command",
+  "Command",
+  "cmd",
+  "Cwd",
+  "cwd",
+  "executable",
+  "args",
+  "script",
+  "shell",
+];
+const TARGET_KEYS = ["TargetFile", "target_file", "AbsolutePath", "absolute_path", "FilePath"];
+
+const recordOf = (value: unknown): Record<string, unknown> | undefined =>
+  value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+
+/** A `..` segment would be applied lexically here but after links by the filesystem. */
+const hasParentSegment = (target: string) => target.split(/[\\/]+/).includes("..");
+
+/**
+ * Realpath of the nearest existing ancestor, with the missing tail appended. Only components
+ * the filesystem reports missing (`ENOENT`) are appended; any other resolution error, or a `..`
+ * segment, is ambiguous and returns `undefined` so the request is asked.
+ */
+function canonicalTarget(target: string): string | undefined {
+  if (hasParentSegment(target)) return undefined;
+  let existing = NodePath.resolve(target);
+  const tail: string[] = [];
+  for (let depth = 0; depth < 256; depth++) {
+    try {
+      const resolved = NodeFS.realpathSync.native(existing);
+      // Missing components can only be appended under a directory. Windows reports a file used
+      // as a directory as ENOENT rather than ENOTDIR, so check the type explicitly.
+      if (tail.length > 0 && !NodeFS.statSync(resolved).isDirectory()) return undefined;
+      return NodePath.join(resolved, ...tail.toReversed());
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") return undefined;
+      // A dangling link also reports ENOENT, and a write through it lands wherever it points.
+      // Only a component with no directory entry at all counts as missing.
+      try {
+        NodeFS.lstatSync(existing);
+        return undefined;
+      } catch (lstatError) {
+        if ((lstatError as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") return undefined;
+      }
+      const parent = NodePath.dirname(existing);
+      if (parent === existing) return undefined;
+      tail.push(NodePath.basename(existing));
+      existing = parent;
+    }
+  }
+  return undefined;
+}
+
+function canonicalWorkspaceRoot(root: string): string | undefined {
+  try {
+    return NodeFS.realpathSync.native(root);
+  } catch {
+    return undefined;
+  }
+}
+
+const isParentTraversal = (relative: string) =>
+  relative === ".." || relative.startsWith(`..${NodePath.sep}`);
+/**
+ * Git metadata such as hooks runs code later; edits there are always asked, in the workspace's
+ * own repository and in any nested one.
+ */
+const isGitMetadata = (relative: string) =>
+  relative.split(NodePath.sep).some((segment) => segment.toLowerCase() === ".git");
+
+/**
+ * Auto-accept edits approves a request only when it is a recognised edit with no command
+ * payload, names at least one target, and every target resolves under the canonical workspace
+ * root (links followed). Anything else is asked.
+ *
+ * Recognised means the ACP kind is `edit` and the request also has an edit's shape: an
+ * Antigravity edit tool name leading the title, or an edit target field in its input. A title or
+ * kind alone never qualifies, and any command field (including the shared ACP command fields)
+ * makes the request ambiguous, so it is asked.
+ */
+export function antigravityEditTargetsInWorkspace(
+  toolCall: {
+    readonly kind?: string | null | undefined;
+    readonly title?: string | null | undefined;
+    readonly rawInput?: unknown;
+    readonly locations?: ReadonlyArray<{ readonly path: string }> | null | undefined;
+    readonly content?: ReadonlyArray<unknown> | null | undefined;
+  },
+  workspaceRoot: string,
+): boolean {
+  if (toolCall.kind !== "edit") return false;
+  const raw = recordOf(toolCall.rawInput);
+  const hasTargetField = TARGET_KEYS.some((key) => typeof raw?.[key] === "string");
+  if (!EDIT_TOOL_TITLE.test(toolCall.title?.trim() ?? "") && !hasTargetField) return false;
+  if (raw && COMMAND_KEYS.some((key) => raw[key] !== undefined)) return false;
+  if (toolCallRawInputCommand(toolCall.rawInput) !== undefined) return false;
+  const targets = new Set<string>();
+  for (const location of toolCall.locations ?? []) targets.add(location.path);
+  for (const entry of toolCall.content ?? []) {
+    const fields = recordOf(entry);
+    if (fields?.type === "diff" && typeof fields.path === "string") targets.add(fields.path);
+  }
+  for (const key of TARGET_KEYS) if (typeof raw?.[key] === "string") targets.add(raw[key]);
+  if (targets.size === 0) return false;
+  const root = canonicalWorkspaceRoot(workspaceRoot);
+  if (!root) return false;
+  for (const target of targets) {
+    if (!target || target.includes("\0") || !NodePath.isAbsolute(target)) return false;
+    const canonical = canonicalTarget(target);
+    if (!canonical) return false;
+    const relative = NodePath.relative(root, canonical);
+    if (
+      relative === "" ||
+      isParentTraversal(relative) ||
+      NodePath.isAbsolute(relative) ||
+      isGitMetadata(relative)
+    )
+      return false;
+  }
+  return true;
 }
