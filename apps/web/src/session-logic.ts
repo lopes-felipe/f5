@@ -919,7 +919,11 @@ function dedupeProviderItemWorkLogEntries(entries: ReadonlyArray<WorkLogEntry>):
   const deduped: Array<WorkLogEntry | null> = [];
   const latestByProviderItemId = new Map<
     string,
-    { index: number; signature: string; filelessSignature?: string }
+    {
+      index: number;
+      signature: string;
+      fileless?: { looseSignature: string; detail: string | undefined };
+    }
   >();
   const terminalTieKeys = new Set<string>();
 
@@ -945,21 +949,21 @@ function dedupeProviderItemWorkLogEntries(entries: ReadonlyArray<WorkLogEntry>):
     }
 
     const signature = workEntryVisibleSignature(entry);
-    // A file change whose files arrive only with its completion (Antigravity
-    // sends the diff on `completed`) is the same row as its fileless snapshots.
-    const filelessSignature =
-      entry.itemType === "file_change" || entry.requestKind === "file-change"
-        ? workEntryVisibleSignature({ ...entry, changedFiles: [] })
-        : undefined;
+    // A file change can learn its files, and the path shown as its detail, only
+    // when it completes (Antigravity sends the diff on `completed`); any
+    // provider's fileless snapshot is the same row as the later one. A snapshot
+    // that already listed files keeps its row when the list changes.
+    const isFileChange = entry.itemType === "file_change" || entry.requestKind === "file-change";
+    const { detail: _detail, ...withoutDetail } = entry;
+    const looseSignature = isFileChange
+      ? workEntryVisibleSignature({ ...withoutDetail, changedFiles: [] })
+      : undefined;
     const previous = latestByProviderItemId.get(callKey);
-    const previousWasFileless =
-      previous?.filelessSignature !== undefined &&
-      previous.filelessSignature === previous.signature;
-    if (
-      previous &&
-      (previous.signature === signature ||
-        (previousWasFileless && previous.filelessSignature === filelessSignature))
-    ) {
+    const learnedFiles =
+      previous?.fileless !== undefined &&
+      previous.fileless.looseSignature === looseSignature &&
+      (previous.fileless.detail === undefined || previous.fileless.detail === entry.detail);
+    if (previous && (previous.signature === signature || learnedFiles)) {
       deduped[previous.index] = null;
     }
 
@@ -967,7 +971,9 @@ function dedupeProviderItemWorkLogEntries(entries: ReadonlyArray<WorkLogEntry>):
     latestByProviderItemId.set(callKey, {
       index: deduped.length - 1,
       signature,
-      ...(filelessSignature !== undefined ? { filelessSignature } : {}),
+      ...(looseSignature !== undefined && (entry.changedFiles ?? []).length === 0
+        ? { fileless: { looseSignature, detail: entry.detail } }
+        : {}),
     });
   }
 

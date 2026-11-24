@@ -1,6 +1,55 @@
-import { describe, expect, it } from "vitest";
+import * as fs from "node:fs/promises";
+import os from "node:os";
+import * as NodePath from "node:path";
 
-import { ANTIGRAVITY_EDIT_DIFF_OMITTED, antigravityEditPatch } from "./AntigravityEditLocation.ts";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+
+import {
+  ANTIGRAVITY_EDIT_DIFF_OMITTED,
+  antigravityEditPatch,
+  readAntigravityPreWriteFile,
+} from "./AntigravityEditLocation.ts";
+
+describe("readAntigravityPreWriteFile", () => {
+  let base: string;
+  let root: string;
+  beforeAll(async () => {
+    base = await fs.realpath(await fs.mkdtemp(NodePath.join(os.tmpdir(), "f5-agy-prewrite-")));
+    root = NodePath.join(base, "workspace");
+    await fs.mkdir(NodePath.join(root, ".git"), { recursive: true });
+    await fs.writeFile(NodePath.join(root, "a.ts"), "export const a = 1;\n");
+    await fs.writeFile(NodePath.join(root, "binary.bin"), Buffer.from([0x61, 0x00, 0x62]));
+    await fs.writeFile(NodePath.join(root, "latin1.txt"), Buffer.from([0x63, 0x61, 0x66, 0xe9]));
+    await fs.writeFile(NodePath.join(root, ".git", "config"), "[remote]\n");
+    await fs.writeFile(NodePath.join(base, "secret"), "token\n");
+    await fs.symlink(NodePath.join(base, "secret"), NodePath.join(root, "escape"));
+  });
+  afterAll(() => fs.rm(base, { recursive: true, force: true }));
+
+  it("reads workspace files and reports missing ones", () => {
+    expect(readAntigravityPreWriteFile(NodePath.join(root, "a.ts"), root)).toEqual({
+      state: "text",
+      text: "export const a = 1;\n",
+    });
+    expect(readAntigravityPreWriteFile(NodePath.join(root, "src", "new.ts"), root)).toEqual({
+      state: "missing",
+    });
+  });
+
+  it("never reads outside the workspace, Git metadata, relative paths or non-text files", () => {
+    for (const target of [
+      NodePath.join(base, "secret"),
+      NodePath.join(root, "escape"),
+      NodePath.join(root, "..", "secret"),
+      NodePath.join(root, ".git", "config"),
+      "a.ts",
+      NodePath.join(root, "binary.bin"),
+      NodePath.join(root, "latin1.txt"),
+      root,
+    ])
+      expect(readAntigravityPreWriteFile(target, root), target).toEqual({ state: "unknown" });
+  });
+});
 
 const path = "/workspace/app.ts";
 const file = Array.from({ length: 20 }, (_, i) =>

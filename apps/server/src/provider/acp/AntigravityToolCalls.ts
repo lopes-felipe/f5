@@ -8,8 +8,8 @@ import {
   ANTIGRAVITY_EDIT_DIFF_OMITTED,
   antigravityEditPatch,
   isAntigravitySnippetPatch,
+  ANTIGRAVITY_PRE_WRITE_UNKNOWN,
   readAntigravityPreEditFile,
-  readAntigravityPreWriteFile,
   type AntigravityPreWriteFile,
 } from "./AntigravityEditLocation.ts";
 import { antigravityArtifactWrite } from "./AntigravityPlanArtifacts.ts";
@@ -184,7 +184,10 @@ function fullTextDiff(
   // A write carries only the new text. The runtime marks new files as overwrites too, so what
   // the file held before the write decides: nothing, its old text, or unknown.
   if (before?.state === "missing") return addition(path, newText, budget);
-  if (before?.state === "text") return { patch: hunkPatch(path, before.text, newText, budget) };
+  // No change against the snapshot is ambiguous: a rewrite with the same contents, or a
+  // snapshot taken after the write ran. Keep the path rather than drop the entry.
+  if (before?.state === "text")
+    return { patch: hunkPatch(path, before.text, newText, budget) ?? OMITTED_PATCH };
   if (before === undefined && !isOverwrite(rawInput)) return addition(path, newText, budget);
   // The replaced content is unknown; the checkpoint diff shows it.
   return { patch: OMITTED_PATCH };
@@ -193,12 +196,13 @@ function fullTextDiff(
 /**
  * Retain pending diff locations before native edits change the source file.
  * Writes into the brain directories under `brainRoots` are Antigravity's own
- * artifacts, not workspace changes.
+ * artifacts, not workspace changes. `readPreWriteFile` snapshots a write's target;
+ * the adapter binds it to the session workspace, and nothing is read without it.
  */
 export function makeAntigravityToolNormalizer(
   readFile = readAntigravityPreEditFile,
   brainRoots: ReadonlyArray<string> = [],
-  readPreWriteFile: (path: string) => AntigravityPreWriteFile = readAntigravityPreWriteFile,
+  readPreWriteFile: (path: string) => AntigravityPreWriteFile = () => ANTIGRAVITY_PRE_WRITE_UNKNOWN,
 ) {
   const patches = new Map<string, unknown>();
   const resolutions = new Map<string, DiffResolution>();
