@@ -15,7 +15,7 @@ import {
 } from "@t3tools/shared/usageLimit";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { executionProviderFingerprintFor } from "../provider/providerConfigurationFingerprint.ts";
-import { Clock, Effect, Option } from "effect";
+import { Effect, Option } from "effect";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { NextTurnQueueStore } from "./Services/NextTurnQueueStore.ts";
 import { toNextTurnQueueStorageError } from "./Errors.ts";
@@ -85,7 +85,7 @@ export const scheduleUsageLimitResumeFor = (input: {
       thread.pendingUserInputs?.some(holdsAutomaticResume)
     )
       return { kind: "transient" as const, reason: "The thread is still busy." };
-    const now = yield* Clock.currentTimeMillis;
+    const now = Date.now();
     const ledger = yield* store.getUsageResumeLedger(input.threadId);
     let target = input.notBefore
       ? Date.parse(input.notBefore)
