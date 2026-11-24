@@ -8054,9 +8054,9 @@ describe("ChatView timeline (full app)", () => {
       try {
         const editor = await waitForComposerEditor();
         editor.focus();
+        await waitForLayout();
         const text = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT).nextNode()!;
         window.getSelection()!.setBaseAndExtent(text, start, text, end);
-        await waitForLayout();
         if (windowFocus) {
           window.dispatchEvent(new Event("focus"));
           await waitForLayout();
