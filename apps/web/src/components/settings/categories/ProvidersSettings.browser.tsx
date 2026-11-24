@@ -8,7 +8,11 @@ import type { ProviderInstanceCard } from "../ProviderInstanceCard";
 import type { ComponentProps } from "react";
 import { ProvidersSettings } from "./ProvidersSettings";
 
-const mocks = vi.hoisted(() => ({ update: vi.fn(), confirm: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  update: vi.fn(),
+  confirm: vi.fn(),
+  focus: { instance: null as string | null, project: null as string | null },
+}));
 const initialSettings = (): UnifiedSettings => ({
   ...DEFAULT_UNIFIED_SETTINGS,
   providerInstances: {
@@ -29,7 +33,13 @@ vi.mock("../../../hooks/useSettings", () => ({
   useUpdateSettings: () => ({ updateSettings: mocks.update }),
 }));
 vi.mock("../SettingsRouteContext", () => ({
-  useSettingsRouteContext: () => ({ settings: {}, defaults: {}, updateSettings: vi.fn() }),
+  useSettingsRouteContext: () => ({
+    settings: {},
+    defaults: {},
+    updateSettings: vi.fn(),
+    focusedProviderInstanceId: mocks.focus.instance,
+    focusedProviderInstanceProjectId: mocks.focus.project,
+  }),
 }));
 vi.mock("../../../nativeApi", () => ({
   ensureNativeApi: () => ({ dialogs: { confirm: mocks.confirm } }),
@@ -40,6 +50,11 @@ vi.mock("../ProviderInstanceCard", () => ({
       {props.headerAction}
       {props.onDelete && <button onClick={props.onDelete}>Delete {props.instanceId}</button>}
       <output data-favorites={props.instanceId}>{props.favoriteModels.join(",")}</output>
+      <output data-focus={props.instanceId}>
+        {`expanded=${props.isExpanded} hooks=${props.focusHooks ?? false} project=${
+          props.focusHooksProjectId ?? ""
+        }`}
+      </output>
       <button
         onClick={() =>
           props.onFavoriteModelsChange(
@@ -60,6 +75,22 @@ beforeEach(() => {
   settings = initialSettings();
   mocks.update.mockReset();
   mocks.confirm.mockReset().mockResolvedValue(false);
+  mocks.focus = { instance: null, project: null };
+});
+
+it("opens the linked instance's card at its hooks for the linked project", async () => {
+  mocks.focus = { instance: "custom", project: "project-1" };
+  const screen = await render(
+    <QueryClientProvider client={new QueryClient()}>
+      <ProvidersSettings />
+    </QueryClientProvider>,
+  );
+  const focus = (instanceId: string) =>
+    screen.container.querySelector(`[data-focus="${instanceId}"]`)?.textContent;
+  await vi.waitFor(() =>
+    expect(focus("custom")).toBe("expanded=true hooks=true project=project-1"),
+  );
+  expect(focus("codex")).toBe("expanded=false hooks=false project=");
 });
 
 it.each(["Reset Codex provider settings", "Delete custom"])(
