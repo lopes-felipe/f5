@@ -148,7 +148,9 @@ beforeAll(async () => {
 
   const { preloadInlineDiffComponents } = await import("./MessagesTimeline");
   await preloadInlineDiffComponents();
-});
+  // This cold import includes the timeline and diff module graphs; hosted
+  // macOS runners can need longer than the default 10s while workers start.
+}, 30_000);
 
 function extractMessageRowMarkup(markup: string, messageId: string): string {
   const marker = `data-message-id="${messageId}"`;
@@ -3813,6 +3815,205 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain('data-testid="inline-file-diff"');
     expect(markup).toContain("fromFallback = true");
+  });
+
+  it("never gives one of several file changes the whole turn's files", async () => {
+    setPersistedAppSettings({ showFileChangeDiffsInline: true });
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const threadId = ThreadId.makeUnsafe("thread-inline-several");
+    const turnId = TurnId.makeUnsafe("turn-inline-several");
+    const queryClient = makeQueryClient();
+    preloadTurnDiff({
+      queryClient,
+      threadId,
+      turnId,
+      checkpointTurnCount: 2,
+      diff: [
+        "diff --git a/AGENTS.md b/AGENTS.md",
+        "--- a/AGENTS.md",
+        "+++ b/AGENTS.md",
+        "@@ -1 +1 @@",
+        "-old",
+        "+wholeTurnDiff",
+      ].join("\n"),
+    });
+    const summary = (id: string, changedFiles: ReadonlyArray<string>) => ({
+      id: OrchestrationFileChangeId.makeUnsafe(id),
+      threadId,
+      turnId,
+      providerItemId: ProviderItemId.makeUnsafe(`provider-${id}`),
+      title: "File change",
+      detail: null,
+      status: "completed" as const,
+      changedFiles,
+      startedAt: "2026-03-17T19:12:28.000Z",
+      completedAt: "2026-03-17T19:12:29.000Z",
+      updatedAt: "2026-03-17T19:12:29.000Z",
+      startedSequence: 10,
+      lastUpdatedSequence: 11,
+      hasPatch: false,
+    });
+    const entry = (id: string, changedFiles?: ReadonlyArray<string>) => ({
+      id: `entry-${id}`,
+      kind: "work" as const,
+      createdAt: "2026-03-17T19:12:28.000Z",
+      entry: {
+        id: `work-${id}`,
+        createdAt: "2026-03-17T19:12:28.000Z",
+        turnId,
+        label: "File change",
+        tone: "tool" as const,
+        itemType: "file_change" as const,
+        status: "completed" as const,
+        fileChangeId: OrchestrationFileChangeId.makeUnsafe(id),
+        ...(changedFiles ? { changedFiles } : {}),
+      },
+    });
+    const markup = renderToStaticMarkup(
+      <QueryClientProvider client={queryClient}>
+        <MessagesTimeline
+          hasMessages
+          isWorking={false}
+          activeTurnStartedAt={null}
+          listRef={{ current: null }}
+          onIsAtEndChange={() => {}}
+          timelineEntries={[entry("change-1"), entry("change-2", ["src/own.ts"])]}
+          completionDividerBeforeEntryId={null}
+          completionSummary={null}
+          turnDiffSummaryByAssistantMessageId={new Map()}
+          turnDiffSummaryByTurnId={
+            new Map([
+              [
+                turnId,
+                {
+                  turnId,
+                  completedAt: "2026-03-17T19:12:30.000Z",
+                  checkpointTurnCount: 2,
+                  files: [
+                    { path: "AGENTS.md", additions: 1, deletions: 1 },
+                    { path: "src/other.ts", additions: 1, deletions: 0 },
+                    { path: "src/own.ts", additions: 1, deletions: 0 },
+                  ],
+                },
+              ],
+            ])
+          }
+          expandedWorkGroups={{}}
+          onToggleWorkGroup={() => {}}
+          onOpenTurnDiff={() => {}}
+          revertTurnCountByUserMessageId={new Map()}
+          onRevertUserMessage={() => {}}
+          isRevertingCheckpoint={false}
+          onImageExpand={() => {}}
+          markdownCwd={undefined}
+          resolvedTheme="light"
+          timestampFormat="locale"
+          workspaceRoot="/repo/project"
+          expandedCommandExecutions={{}}
+          onToggleCommandExecution={() => {}}
+          allDirectoriesExpanded={true}
+          onToggleAllDirectories={() => {}}
+          chatDiffContext={{
+            ...DEFAULT_CHAT_DIFF_CONTEXT,
+            threadId,
+            expandedFileChangeDiffs: { "work-change-1": true, "work-change-2": true },
+            inferredCheckpointTurnCountByTurnId: { [turnId]: 2 },
+            fileChangeSummariesById: {
+              "change-1": summary("change-1", []),
+              "change-2": summary("change-2", []),
+            },
+          }}
+        />
+      </QueryClientProvider>,
+    );
+
+    // Neither row claims the turn's other files.
+    expect(markup).not.toContain("+2 more");
+    expect(markup).not.toContain("AGENTS.md");
+    // The row with its own file counts that file, not the empty exact summary.
+    expect(markup).toContain("src/own.ts");
+    expect(markup).toContain("1 file");
+    expect(markup).not.toContain("0 files");
+  });
+
+  it("decides the turn fallback from the rows, with inline diffs off and no summaries", async () => {
+    setPersistedAppSettings({ showFileChangeDiffsInline: false });
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const turnId = TurnId.makeUnsafe("turn-rows-only");
+    const work = (id: string, entry: Record<string, unknown>) => ({
+      id: `entry-${id}`,
+      kind: "work" as const,
+      createdAt: "2026-03-17T19:12:28.000Z",
+      entry: {
+        id: `work-${id}`,
+        createdAt: "2026-03-17T19:12:28.000Z",
+        turnId,
+        tone: "tool" as const,
+        status: "completed" as const,
+        label: "File change",
+        ...entry,
+      },
+    });
+    const render = (timelineEntries: ReadonlyArray<ReturnType<typeof work>>) =>
+      renderToStaticMarkup(
+        <MessagesTimeline
+          hasMessages
+          isWorking={false}
+          activeTurnStartedAt={null}
+          listRef={{ current: null }}
+          onIsAtEndChange={() => {}}
+          timelineEntries={timelineEntries as never}
+          completionDividerBeforeEntryId={null}
+          completionSummary={null}
+          turnDiffSummaryByAssistantMessageId={new Map()}
+          turnDiffSummaryByTurnId={
+            new Map([
+              [
+                turnId,
+                {
+                  turnId,
+                  completedAt: "2026-03-17T19:12:30.000Z",
+                  files: [
+                    { path: "AGENTS.md", additions: 1, deletions: 1 },
+                    { path: "src/other.ts", additions: 1, deletions: 0 },
+                  ],
+                },
+              ],
+            ])
+          }
+          expandedWorkGroups={{}}
+          onToggleWorkGroup={() => {}}
+          onOpenTurnDiff={() => {}}
+          revertTurnCountByUserMessageId={new Map()}
+          onRevertUserMessage={() => {}}
+          isRevertingCheckpoint={false}
+          onImageExpand={() => {}}
+          markdownCwd={undefined}
+          resolvedTheme="light"
+          timestampFormat="locale"
+          workspaceRoot="/repo/project"
+          expandedCommandExecutions={{}}
+          onToggleCommandExecution={() => {}}
+          allDirectoriesExpanded={true}
+          onToggleAllDirectories={() => {}}
+          chatDiffContext={{ ...DEFAULT_CHAT_DIFF_CONTEXT, fileChangeSummariesById: {} }}
+        />,
+      );
+
+    // Two file-change rows, no exact summaries: neither borrows the turn's files.
+    const several = render([
+      work("a", { itemType: "file_change" }),
+      work("b", { itemType: "file_change" }),
+    ]);
+    expect(several).not.toContain("AGENTS.md");
+    expect(several).not.toContain("+1 more");
+
+    // A read row never borrows the turn's changed files, even beside a sole file change.
+    const read = render([work("read", { itemType: "dynamic_tool_call", label: "Read file" })]);
+    expect(read).not.toContain("AGENTS.md");
+
+    // A turn's sole file change still does.
+    expect(render([work("only", { itemType: "file_change" })])).toContain("AGENTS.md");
   });
 
   it("does not render inline file-change diffs for non-git projects", async () => {

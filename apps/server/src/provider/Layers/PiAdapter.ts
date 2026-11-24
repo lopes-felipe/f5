@@ -1283,7 +1283,7 @@ export const makePiAdapter = (settings: PiSettings, options: PiAdapterOptions) =
       );
     const adapter: ProviderAdapterShape<ProviderAdapterError> = {
       provider: "pi",
-      capabilities: { sessionModelSwitch: "in-session" },
+      capabilities: { sessionModelSwitch: "in-session", enforcesReadOnlyWorkflow: true },
       // Mirrors sendTurn: compaction and leading `/name` commands run as commands.
       classifyTurnInput: (_threadId, text) =>
         parsePiCompactCommand(text) !== null || leadingSlashCommandName(text) !== undefined

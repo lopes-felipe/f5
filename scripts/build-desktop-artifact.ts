@@ -21,6 +21,7 @@ import {
 import { RELEASE_UPDATE_REPOSITORY, verifyAppUpdateConfig } from "./lib/app-update-config.ts";
 import { BRAND_ASSET_PATHS, PUBLISH_ICON_OVERRIDES } from "./lib/brand-assets.ts";
 import { stagedDesktopDependencies } from "./lib/desktop-stage.ts";
+import { parseVmBackendPin, VM_BACKEND_MANIFEST_NAME } from "@t3tools/shared/vmBackendPin";
 import {
   readMacProvisioningProfile,
   renderWebAuthnSigningPlist,
@@ -40,6 +41,16 @@ export const DESKTOP_ASAR_UNPACK = [
   "node_modules/@ff-labs/fff-bin-*/**/*",
   "node_modules/@anthropic-ai/claude-agent-sdk-*/**/*",
   "node_modules/@openai/codex-*/**/*",
+] as const;
+
+/**
+ * Stage directories copied into Resources through `extraResources`. Without these, the
+ * default `**\/*` would also pack them into app.asar: a second, unsigned copy of the native
+ * helper and Lima that only grows the download and the asar integrity hash.
+ */
+export const EXTRA_RESOURCE_EXCLUSIONS = [
+  "!apps/desktop/native-bin/**/*",
+  "!apps/desktop/vm-bin/**/*",
 ] as const;
 
 export function resolveMacFileExclusions(arch?: typeof BuildArch.Type): string[] {
@@ -117,6 +128,7 @@ interface BuildCliInput {
   readonly keepStage: Option.Option<boolean>;
   readonly signed: Option.Option<boolean>;
   readonly verbose: Option.Option<boolean>;
+  readonly vmBackendManifest: Option.Option<string>;
 }
 
 function detectHostBuildPlatform(hostPlatform: string): typeof BuildPlatform.Type | undefined {
@@ -205,6 +217,8 @@ interface ResolvedBuildOptions {
   readonly keepStage: boolean;
   readonly signed: boolean;
   readonly verbose: boolean;
+  /** The release run's linux-arm64 `dist:cli:archive` manifest, pinned into macOS arm64 apps. */
+  readonly vmBackendManifest: string | undefined;
 }
 
 interface StagePackageJson {
@@ -250,6 +264,7 @@ const BuildEnvConfig = Config.all({
   keepStage: Config.boolean("T3CODE_DESKTOP_KEEP_STAGE").pipe(Config.withDefault(false)),
   signed: Config.boolean("T3CODE_DESKTOP_SIGNED").pipe(Config.withDefault(false)),
   verbose: Config.boolean("T3CODE_DESKTOP_VERBOSE").pipe(Config.withDefault(false)),
+  vmBackendManifest: Config.string("F5_VM_BACKEND_MANIFEST").pipe(Config.option),
 });
 
 const resolveBooleanFlag = (flag: Option.Option<boolean>, envValue: boolean) =>
@@ -283,6 +298,9 @@ const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (input: B
   const keepStage = resolveBooleanFlag(input.keepStage, env.keepStage);
   const signed = resolveBooleanFlag(input.signed, env.signed);
   const verbose = resolveBooleanFlag(input.verbose, env.verbose);
+  const vmBackendManifest = Option.getOrUndefined(
+    Option.orElse(input.vmBackendManifest, () => env.vmBackendManifest),
+  );
 
   return {
     platform,
@@ -294,6 +312,8 @@ const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (input: B
     keepStage,
     signed,
     verbose,
+    vmBackendManifest:
+      vmBackendManifest === undefined ? undefined : path.resolve(repoRoot, vmBackendManifest),
   } satisfies ResolvedBuildOptions;
 });
 
@@ -485,7 +505,15 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   release: boolean,
   arch?: typeof BuildArch.Type,
   webAuthnSigning?: { readonly provisioningProfile: string; readonly entitlements: string },
+  /** Set when the stage carries the linux-arm64 backend pin in `apps/desktop/vm-bin`. */
+  vmBackendPin = false,
 ) {
+  // Linux VM profiles: macOS arm64 apps carry Lima (staged in native-bin) and may carry the pin.
+  const linuxVm = platform === "mac" && arch === "arm64";
+  if (vmBackendPin && !linuxVm)
+    return yield* new BuildScriptError({
+      message: "Only macOS arm64 builds carry the Linux VM backend pin.",
+    });
   const repositoryOverride = process.env.T3CODE_DESKTOP_UPDATE_REPOSITORY?.trim();
   if (release && repositoryOverride && repositoryOverride !== RELEASE_UPDATE_REPOSITORY) {
     return yield* new BuildScriptError({
@@ -510,7 +538,10 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       : {}),
     ...(platform !== "linux"
       ? {
-          extraResources: [{ from: "apps/desktop/native-bin", to: "native" }],
+          extraResources: [
+            { from: "apps/desktop/native-bin", to: "native" },
+            ...(vmBackendPin ? [{ from: "apps/desktop/vm-bin", to: "vm" }] : []),
+          ],
           ...(signed
             ? {
                 afterSign: platform === "mac" ? "notarize-mac.cjs" : "verify-computer-helper.cjs",
@@ -547,7 +578,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       });
     }
     buildConfig.mac = {
-      files: ["**/*", ...resolveMacFileExclusions(arch)],
+      files: ["**/*", ...EXTRA_RESOURCE_EXCLUSIONS, ...resolveMacFileExclusions(arch)],
       target: target === "dmg" ? [target, "zip"] : [target],
       icon: "icon.icns",
       category: "public.app-category.developer-tools",
@@ -567,7 +598,10 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
             sign: join(import.meta.dirname, "sign-mac.cjs"),
           }
         : {}),
-      binaries: ["Contents/Resources/native/f5-computer-helper"],
+      binaries: [
+        "Contents/Resources/native/f5-computer-helper",
+        ...(linuxVm ? ["Contents/Resources/native/lima/bin/limactl"] : []),
+      ],
     };
   }
 
@@ -600,6 +634,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
 
   if (platform === "win") {
     const winConfig: Record<string, unknown> = {
+      files: ["**/*", ...EXTRA_RESOURCE_EXCLUSIONS],
       target: [target],
       icon: "icon.ico",
     };
@@ -765,6 +800,46 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       yield* fs.copyFile(path.join(repoRoot, "scripts", hook), path.join(stageAppDir, hook));
   }
 
+  // Linux VM profiles (Apple silicon only): the pinned Lima, and the pin of the linux-arm64
+  // backend archive the app downloads from this version's release when a VM profile needs it.
+  const linuxVm = options.platform === "mac" && options.arch === "arm64";
+  if (linuxVm)
+    yield* runCommand(
+      ChildProcess.make(
+        process.execPath,
+        [
+          path.join(repoRoot, "scripts/stage-lima.ts"),
+          "--output",
+          path.join(stageAppDir, "apps/desktop/native-bin/lima"),
+        ],
+        { cwd: repoRoot, ...commandOutputOptions(options.verbose) },
+      ),
+    );
+  if (options.vmBackendManifest !== undefined) {
+    if (!linuxVm)
+      return yield* new BuildScriptError({
+        message: "--vm-backend-manifest applies only to macOS arm64 builds.",
+      });
+    const raw = yield* fs.readFileString(options.vmBackendManifest);
+    yield* Effect.try({
+      try: () => parseVmBackendPin(JSON.parse(raw), appVersion),
+      catch: (error) =>
+        new BuildScriptError({
+          message: `The Linux VM backend manifest ${options.vmBackendManifest} is invalid: ${error instanceof Error ? error.message : String(error)}`,
+        }),
+    });
+    yield* fs.makeDirectory(path.join(stageAppDir, "apps/desktop/vm-bin"), { recursive: true });
+    yield* fs.writeFileString(
+      path.join(stageAppDir, "apps/desktop/vm-bin", VM_BACKEND_MANIFEST_NAME),
+      raw,
+    );
+  } else if (linuxVm && options.version !== undefined) {
+    return yield* new BuildScriptError({
+      message:
+        "Versioned macOS arm64 builds pin the Linux VM backend: pass --vm-backend-manifest with the release's linux-arm64 CLI archive manifest.",
+    });
+  }
+
   yield* fs.copyFile(
     path.join(repoRoot, "scripts", "verify-claude-runtime.cjs"),
     path.join(stageAppDir, "verify-claude-runtime.cjs"),
@@ -826,6 +901,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       options.version !== undefined,
       options.arch,
       webAuthnSigning,
+      options.vmBackendManifest !== undefined,
     ),
     dependencies: stagedDependencies,
     devDependencies: {
@@ -1058,6 +1134,12 @@ const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
   ),
   verbose: Flag.boolean("verbose").pipe(
     Flag.withDescription("Stream subprocess stdout (env: T3CODE_DESKTOP_VERBOSE)."),
+    Flag.optional,
+  ),
+  vmBackendManifest: Flag.string("vm-backend-manifest").pipe(
+    Flag.withDescription(
+      "macOS arm64: the linux-arm64 CLI archive manifest to pin for Linux VM profiles; required for versioned builds (env: F5_VM_BACKEND_MANIFEST).",
+    ),
     Flag.optional,
   ),
 }).pipe(

@@ -13,6 +13,7 @@ import serverPackageJson from "../apps/server/package.json" with { type: "json" 
 import {
   createBuildConfig,
   DESKTOP_ASAR_UNPACK,
+  EXTRA_RESOURCE_EXCLUSIONS,
   resolveMacFileExclusions,
   stageProductionWebIcons,
 } from "./build-desktop-artifact.ts";
@@ -54,7 +55,11 @@ it("excludes unused Darwin natives across all packages, preserving universal bui
     const config = await Effect.runPromise(
       createBuildConfig("mac", "dmg", "F5", false, false, arch),
     );
-    expect(config.mac).toHaveProperty("files", ["**/*", ...resolveMacFileExclusions(arch)]);
+    expect(config.mac).toHaveProperty("files", [
+      "**/*",
+      ...EXTRA_RESOURCE_EXCLUSIONS,
+      ...resolveMacFileExclusions(arch),
+    ]);
     for (const pkg of ["node-pty", "objc-js"]) {
       for (const nativeArch of ["arm64", "x64"]) {
         const file = `node_modules/${pkg}/prebuilds/darwin-${nativeArch}/binary.node`;
@@ -63,6 +68,45 @@ it("excludes unused Darwin natives across all packages, preserving universal bui
         ).toBe(arch !== "universal" && arch !== nativeArch);
       }
     }
+  }
+});
+
+it("keeps the native helper, Lima and the VM pin out of app.asar", async () => {
+  const excluded = (file: string) =>
+    EXTRA_RESOURCE_EXCLUSIONS.some((glob) => matchesGlob(file, glob.slice(1)));
+  for (const file of [
+    "apps/desktop/native-bin/f5-computer-helper",
+    "apps/desktop/native-bin/f5-computer-helper.exe",
+    "apps/desktop/native-bin/lima/bin/limactl",
+    "apps/desktop/native-bin/lima/share/lima/templates/default.yaml",
+    "apps/desktop/vm-bin/linux-arm64-backend.json",
+  ])
+    expect(excluded(file), file).toBe(true);
+  expect(excluded("apps/desktop/dist-electron/main.js")).toBe(false);
+  const win = await Effect.runPromise(createBuildConfig("win", "nsis", "F5", false, false, "x64"));
+  expect(win.win).toHaveProperty("files", ["**/*", ...EXTRA_RESOURCE_EXCLUSIONS]);
+});
+
+it("signs limactl and carries the VM backend pin only in macOS arm64 builds", async () => {
+  const arm64 = (await Effect.runPromise(
+    createBuildConfig("mac", "dmg", "F5", false, false, "arm64", undefined, true),
+  )) as { mac: { binaries: string[] }; extraResources: Array<{ from: string; to: string }> };
+  expect(arm64.mac.binaries).toContain("Contents/Resources/native/lima/bin/limactl");
+  expect(arm64.extraResources).toContainEqual({ from: "apps/desktop/vm-bin", to: "vm" });
+
+  const withoutPin = (await Effect.runPromise(
+    createBuildConfig("mac", "dmg", "F5", false, false, "arm64"),
+  )) as { extraResources: Array<{ from: string }> };
+  expect(withoutPin.extraResources.map((entry) => entry.from)).toEqual(["apps/desktop/native-bin"]);
+
+  for (const arch of ["x64", "universal"] as const) {
+    const config = (await Effect.runPromise(
+      createBuildConfig("mac", "dmg", "F5", false, false, arch),
+    )) as { mac: { binaries: string[] } };
+    expect(config.mac.binaries).toEqual(["Contents/Resources/native/f5-computer-helper"]);
+    await expect(
+      Effect.runPromise(createBuildConfig("mac", "dmg", "F5", false, false, arch, undefined, true)),
+    ).rejects.toThrow(/Only macOS arm64/);
   }
 });
 

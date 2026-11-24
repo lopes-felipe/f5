@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 
 import { commandForProjectScript, primaryProjectScript } from "~/projectScripts";
 import { shortcutLabelForCommand } from "~/keybindings";
+import { HEADER_ACTION_LABEL_CLASS_NAME } from "./headerActionLabel";
 import ProjectScriptDialog, { type NewProjectScriptInput, ScriptIcon } from "./ProjectScriptDialog";
 import { Button } from "./ui/button";
 import { Group, GroupSeparator } from "./ui/group";
@@ -65,9 +66,7 @@ export default function ProjectScriptsControl({
             title={`Run ${primaryScript.name}`}
           >
             <ScriptIcon icon={primaryScript.icon} />
-            <span className="sr-only @xl/header-actions:not-sr-only @xl/header-actions:ml-0.5">
-              {primaryScript.name}
-            </span>
+            <span className={HEADER_ACTION_LABEL_CLASS_NAME}>{primaryScript.name}</span>
           </Button>
           <GroupSeparator className="hidden @xl/header-actions:block" />
           <Menu highlightItemOnHover={false}>

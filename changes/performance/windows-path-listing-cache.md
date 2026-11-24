@@ -1,1 +1,0 @@
-- Repeated checks for missing Windows commands are faster. F5 reuses unchanged PATH directory listings across command checks and launches.

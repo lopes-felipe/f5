@@ -44,7 +44,11 @@ describe("Antigravity native quota", () => {
     }
   });
   it("reads only this instance's token file and caches access tokens without writing credentials", async () => {
-    const readFile = vi.fn(async () => credentials());
+    const readFile = vi.fn(async (file: string) => {
+      if (file.endsWith("antigravity-oauth-token"))
+        throw Object.assign(new Error("missing"), { code: "ENOENT" });
+      return credentials();
+    });
     const fetch = vi.fn<(...args: Parameters<typeof globalThis.fetch>) => Promise<Response>>(
       async (url) =>
         response(
@@ -69,6 +73,43 @@ describe("Antigravity native quota", () => {
     expect(request?.[1]?.headers).toMatchObject({ Authorization: "Bearer access" });
     expect(request?.[1]?.redirect).toBe("error");
     expect(JSON.parse(String(request?.[1]?.body))).toEqual({ project: "project" });
+  });
+
+  it("uses the 1.5.x CLI's stored access token while it is valid, without refreshing", async () => {
+    let now = Date.parse("2026-11-23T12:00:00Z");
+    const cliToken = JSON.stringify({
+      token: {
+        access_token: "cli-access",
+        refresh_token: "cli-refresh",
+        expiry: "2026-11-23T12:59:00Z",
+      },
+      auth_method: "personal",
+      id_token_email: "one@example.com",
+    });
+    const readFile = vi.fn(async (file: string) => {
+      if (file.endsWith("antigravity-oauth-token")) return cliToken;
+      throw new Error("the older file must not be read");
+    });
+    const fetch = vi.fn<(...args: Parameters<typeof globalThis.fetch>) => Promise<Response>>(
+      async () => response(quota),
+    );
+    const read = makeAntigravityQuotaReader({
+      profileDirectory: "/instance",
+      readFile,
+      fetch,
+      normalize,
+      now: () => now,
+    });
+    expect((await read(new AbortController().signal))?.windows[0]?.usedPercent).toBe(25);
+    expect(fetch.mock.calls.some(([url]) => String(url).includes("/token"))).toBe(false);
+    const request = fetch.mock.calls.find(([url]) =>
+      String(url).includes("retrieveUserQuotaSummary"),
+    );
+    expect(request?.[1]?.headers).toMatchObject({ Authorization: "Bearer cli-access" });
+    expect(JSON.parse(String(request?.[1]?.body))).toEqual({});
+    // An expired access token can't be refreshed without the CLI's OAuth client.
+    now = Date.parse("2026-11-23T12:58:30Z");
+    expect(await read(new AbortController().signal)).toBeNull();
   });
 
   it("invalidates a cached token when the signed-in account changes", async () => {

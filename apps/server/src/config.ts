@@ -1,4 +1,4 @@
-import type { ActiveProfile } from "@t3tools/contracts";
+import type { ActiveProfile, ProfileId } from "@t3tools/contracts";
 import { profileStateDir, profilesRootDir } from "@t3tools/shared/profilePaths";
 import { fallbackDefaultProfile } from "@t3tools/shared/profileIdentity";
 /**
@@ -38,6 +38,12 @@ export interface ServerDerivedPaths {
  */
 export interface ServerConfigShape extends ServerDerivedPaths {
   readonly profile?: ActiveProfile;
+  /**
+   * In a Linux VM guest, the host's VM profile this backend serves (see
+   * `resolveGuestProfileIdentity`). The welcome and profile list report it, and profile
+   * changes are refused; `profile` and every path stay the guest's own.
+   */
+  readonly guestProfileId?: ProfileId;
   readonly profilesRoot?: string;
   readonly defaultStateDir?: string;
   readonly mode: RuntimeMode;

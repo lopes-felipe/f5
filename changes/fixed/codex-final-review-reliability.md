@@ -1,3 +1,0 @@
-- Preserve other assistant items when moderation replaces one item, and sanitize native child-task inspection output.
-- Keep ordinary audio files usable when optional native-audio configuration reads fail.
-- Restart gateway sign-in polling for each attempt and bound how long configuration reads wait for dispatch.

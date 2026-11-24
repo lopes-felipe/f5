@@ -1,3 +1,4 @@
+import { codeReviewReviewers } from "@t3tools/shared/workflowParticipants";
 import type {
   CodeReviewPost,
   CodeReviewWorkflow,
@@ -129,8 +130,7 @@ export function codeReviewPostBody(workflow: CodeReviewWorkflow, mergedReview: s
   return formatCodeReviewReport(mergedReview, {
     pullRequest: workflow.pullRequest,
     footer: codeReviewPostFooter({
-      reviewerA: workflow.reviewerA.slot,
-      reviewerB: workflow.reviewerB.slot,
+      reviewers: codeReviewReviewers(workflow).map((entry) => entry.reviewer.slot),
       consolidation: workflow.consolidation.slot,
     }),
   });

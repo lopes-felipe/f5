@@ -132,3 +132,7 @@ export function limaHomeFor(stateDir: string, profileId: string): string {
 /** Installation-wide cache of digest-verified guest images, shared by every VM profile. */
 export const guestImageCacheDir = (stateDir: string) =>
   Path.join(Path.resolve(stateDir), "vm", "images");
+
+/** Installation-wide cache of digest-verified linux-arm64 backend archives. */
+export const backendArchiveCacheDir = (stateDir: string) =>
+  Path.join(Path.resolve(stateDir), "vm", "backends");

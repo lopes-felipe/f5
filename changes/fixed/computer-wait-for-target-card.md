@@ -1,1 +1,0 @@
-- When an agent waits for its turn at the computer (because you are using the app or another agent holds it), the wait now shows as a step in the **Used the computer** card, with an hourglass and the result, instead of a separate MCP row that split the card in two.

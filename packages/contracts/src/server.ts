@@ -198,6 +198,8 @@ export const ProviderRuntimeCapabilities = Schema.Struct({
   instanceInventory: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   /** Deleting an F5 thread also removes the native transcript from the instance store. */
   nativeSessionCleanup: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  /** The runtime can be confined to read-only tools for workflow review turns. */
+  readOnlyWorkflowTurns: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
 });
 export type ProviderRuntimeCapabilities = typeof ProviderRuntimeCapabilities.Type;
 
@@ -205,6 +207,13 @@ export const ServerProvider = Schema.Struct({
   runtimeCapabilities: Schema.optional(ProviderRuntimeCapabilities),
   instanceId: ProviderInstanceId,
   driver: ProviderDriverKind,
+  /**
+   * Harness of a driver with more than one (Cursor `acp` or `sdk`). Absent
+   * means the driver's legacy harness, which for Cursor is ACP.
+   */
+  harnessVariant: Schema.optional(Schema.Literals(["acp", "sdk"])),
+  /** Version of the harness runtime when it differs from the CLI `version`. */
+  harnessVersion: Schema.optional(TrimmedNonEmptyString),
   displayName: Schema.optional(TrimmedNonEmptyString),
   accentColor: Schema.optional(TrimmedNonEmptyString),
   badgeLabel: Schema.optional(TrimmedNonEmptyString),
@@ -350,6 +359,16 @@ export const ServerConfig = Schema.Struct({
   availableEditors: ForwardCompatibleArray(EditorId),
   settings: Schema.optional(ServerSettings),
   diagnostics: Schema.optionalKey(DiagnosticsConfiguration),
+  /**
+   * Whether this host can run the Cursor SDK harness, so Add provider can offer
+   * or disable it before any SDK instance exists. Absent on older servers.
+   */
+  cursorSdkHarness: Schema.optionalKey(
+    Schema.Struct({
+      available: Schema.Boolean,
+      reason: Schema.optional(TrimmedNonEmptyString),
+    }),
+  ),
 });
 export type ServerConfig = typeof ServerConfig.Type;
 

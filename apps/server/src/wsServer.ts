@@ -203,6 +203,11 @@ import {
 import { makeServerSecretStore } from "./auth/Layers/ServerSecretStore";
 import { integrationUnavailableDetail } from "@t3tools/shared/providerIntegrationCertification";
 import { ProfileRegistryStore, fallbackDefaultProfile } from "./profiles/ProfileRegistryStore";
+import {
+  GUEST_PROFILE_MUTATION_REFUSAL,
+  guestActiveProfile,
+  guestProfileSnapshot,
+} from "./profiles/guestProfileIdentity.ts";
 import { ProviderAccountService } from "./profiles/ProviderAccountService";
 /**
  * Server - HTTP/WebSocket server service interface.
@@ -241,6 +246,7 @@ import {
   PR_HUB_WS_CHANNELS,
   PR_HUB_WS_METHODS,
   ProjectId,
+  type ProfileSummary,
   ThreadId,
   ProviderInstanceId,
   WS_CHANNELS,
@@ -464,6 +470,7 @@ import { PreviewAutomationBroker } from "./mcp/PreviewAutomationBroker.ts";
 import { computerUseLease } from "./provider/computerUseLease.ts";
 import { PrHubAdvisoryService } from "./prHub/Services/PrHubAdvisoryService.ts";
 import { PrHubService } from "./prHub/Services/PrHubService.ts";
+import { cursorSdkHarnessHostAvailability } from "./provider/cursor/cursorHarnessDescriptor.ts";
 
 /**
  * ServerShape - Service API for server lifecycle control.
@@ -1316,7 +1323,7 @@ export const createServer = Effect.fn(function* (
     const invalidDirectories = await invalidExecutionDirectories(serverConfig.stateDir).catch(
       () => [],
     );
-    return {
+    const enriched = {
       ...snapshot,
       profiles: snapshot.profiles.map((profile) =>
         profile.isActive
@@ -1329,6 +1336,24 @@ export const createServer = Effect.fn(function* (
           : profile,
       ),
     };
+    // A Linux VM guest reports the host's VM profile, never its own Default.
+    return serverConfig.guestProfileId
+      ? guestProfileSnapshot(enriched, serverConfig.guestProfileId, serverConfig.port)
+      : enriched;
+  };
+  /** The welcome's profile when the registry has no active record (e.g. it can't be read). */
+  const welcomeFallback = (): ProfileSummary => {
+    const profile: ProfileSummary = {
+      ...fallbackDefaultProfile(defaultProfileStateDir),
+      ...activeProfile,
+      port,
+      stateDir: serverConfig.stateDir,
+      isActive: true,
+      providerAccounts: [],
+    };
+    return serverConfig.guestProfileId
+      ? guestActiveProfile(profile, serverConfig.guestProfileId, port)
+      : profile;
   };
   let profileReadCache: { expires: number; value: ReturnType<typeof computeProfiles> } | undefined;
   const readProfiles = () => {
@@ -3624,6 +3649,16 @@ export const createServer = Effect.fn(function* (
         ),
     }),
   );
+  /** Provider inventory routes: a project id to its workspace root; paths never come from the browser. */
+  const resolveProviderInventoryProjectRoot = (projectId: string | undefined) =>
+    Effect.gen(function* () {
+      if (!projectId) return undefined;
+      const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+      const model = yield* orchestrationEngine.getReadModel();
+      const project = model.projects.find((p) => p.id === projectId && p.deletedAt === null);
+      if (!project) return yield* new RouteRequestError({ message: "Project not found." });
+      return project.workspaceRoot;
+    });
   const withTerminalThreadAccess = <A>(threadId: string, action: Effect.Effect<A, TerminalError>) =>
     Effect.gen(function* () {
       const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
@@ -4420,6 +4455,7 @@ export const createServer = Effect.fn(function* (
         list: readProfiles,
         defaultStateDir: defaultProfileStateDir,
         activeProfileId: activeProfile.id,
+        ...(serverConfig.guestProfileId ? { mutationRefusal: GUEST_PROFILE_MUTATION_REFUSAL } : {}),
       }),
     )
     .and(
@@ -6918,6 +6954,7 @@ export const createServer = Effect.fn(function* (
           diagnostics: publicOtlpConfiguration(
             resolveOtlpConfiguration(settings.observability, process.env),
           ),
+          cursorSdkHarness: cursorSdkHarnessHostAvailability(serverConfig),
         };
 
       case WS_METHODS.serverGetProjectSettings: {
@@ -7053,16 +7090,7 @@ export const createServer = Effect.fn(function* (
         if (!instance) {
           return yield* new RouteRequestError({ message: "Provider instance not found." });
         }
-        let projectRoot: string | undefined;
-        if (body.projectId) {
-          const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
-          const model = yield* orchestrationEngine.getReadModel();
-          const project = model.projects.find(
-            (p) => p.id === body.projectId && p.deletedAt === null,
-          );
-          if (!project) return yield* new RouteRequestError({ message: "Project not found." });
-          projectRoot = project.workspaceRoot;
-        }
+        const projectRoot = yield* resolveProviderInventoryProjectRoot(body.projectId);
         const entries = instance.inventory
           ? yield* instance
               .inventory({ projectRoot })
@@ -7085,6 +7113,22 @@ export const createServer = Effect.fn(function* (
           ...(body.projectId ? { projectId: body.projectId } : {}),
           ...entries,
         };
+      }
+      case WS_METHODS.serverTrustProviderHooks: {
+        const body = stripRequestTag(request.body);
+        const instance = yield* providerInstanceRegistry.getInstance(body.instanceId);
+        if (!instance || instance.driverKind !== "codex" || !instance.trustHooks)
+          return yield* new RouteRequestError({
+            message: "Hook approval is only available for a configured Codex provider.",
+          });
+        const projectRoot = yield* resolveProviderInventoryProjectRoot(body.projectId);
+        return yield* instance
+          .trustHooks({ projectRoot, hooks: body.hooks })
+          .pipe(
+            Effect.mapError(
+              (error) => new RouteRequestError({ message: error.detail ?? error.message }),
+            ),
+          );
       }
 
       case WS_METHODS.serverValidateHarnesses: {
@@ -8404,14 +8448,7 @@ export const createServer = Effect.fn(function* (
           pushBus.publishClient(ws, WS_CHANNELS.serverWelcome, {
             ...welcomeData,
             runtime: (welcomeRuntime = currentRuntimeReadiness()),
-            profile: snapshot.profiles.find((profile) => profile.isActive) ?? {
-              ...fallbackDefaultProfile(defaultProfileStateDir),
-              ...activeProfile,
-              port,
-              stateDir: serverConfig.stateDir,
-              isActive: true,
-              providerAccounts: [],
-            },
+            profile: snapshot.profiles.find((profile) => profile.isActive) ?? welcomeFallback(),
             ...(snapshot.diagnostic ? { profileDiagnostic: snapshot.diagnostic } : {}),
             ...(getDatabaseDamage() ? { databaseDamage: getDatabaseDamage()! } : {}),
           }),

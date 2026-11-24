@@ -77,6 +77,16 @@ function checkpointStatusFromRuntime(status: string | undefined): "ready" | "mis
   }
 }
 
+interface CheckpointFingerprint {
+  readonly turnCount: number;
+  readonly commitOid: string;
+  readonly fingerprint: string;
+}
+
+const CHECKPOINT_FINGERPRINT_CACHE_SIZE = 4_096;
+/** Full captures before a repository whose fingerprint was not worthwhile is measured again. */
+const CHECKPOINT_FINGERPRINT_REPROBE_AFTER = 20;
+
 const serverCommandId = (tag: string): CommandId =>
   CommandId.makeUnsafe(`server:${tag}:${timeOrderedUuid()}`);
 
@@ -286,13 +296,149 @@ const make = Effect.gen(function* () {
     return repositories;
   });
 
-  // Like a non-Git workspace, one its repository ignores gets no checkpoint
-  // instead of a capture failure on every turn.
-  const captureCheckpointIfSupported = (input: CaptureCheckpointInput) =>
-    checkpointStore.captureCheckpoint(input).pipe(
-      Effect.as(true),
-      Effect.catchTag("CheckpointUnsupportedError", () => Effect.succeed(false)),
+  /**
+   * The workspace fingerprint each thread's latest checkpoint was captured from, per
+   * repository. A later capture whose fingerprint is unchanged points its ref at that
+   * commit instead of re-scanning the worktree, which in a large repository takes
+   * seconds. Entries are only an optimization: an empty map (after a restart) or a
+   * missing entry means a full capture.
+   */
+  const checkpointFingerprints = new Map<string, CheckpointFingerprint>();
+  const rememberCheckpointFingerprint = (key: string, entry: CheckpointFingerprint | undefined) => {
+    checkpointFingerprints.delete(key);
+    if (entry === undefined) return;
+    checkpointFingerprints.set(key, entry);
+    if (checkpointFingerprints.size > CHECKPOINT_FINGERPRINT_CACHE_SIZE)
+      checkpointFingerprints.delete(checkpointFingerprints.keys().next().value!);
+  };
+  const fingerprintCheckpointWorkspace = (
+    input: Pick<CaptureCheckpointInput, "cwd" | "excludePaths"> & { readonly commitOid?: string },
+  ) =>
+    checkpointStore
+      .fingerprintWorkspace({
+        cwd: input.cwd,
+        ...(input.excludePaths ? { excludePaths: input.excludePaths } : {}),
+        ...(input.commitOid ? { commitOid: input.commitOid } : {}),
+      })
+      .pipe(Effect.orElseSucceed(() => null));
+  /** Last measured fingerprint and capture times per repository path. */
+  const checkpointCosts = new Map<
+    string,
+    { fingerprintMs: number; captureMs: number; skipped: number }
+  >();
+  const rememberCheckpointCost = (
+    repositoryPath: string,
+    measured: { readonly captureMs: number; readonly fingerprintMs?: number },
+  ) => {
+    const previous = checkpointCosts.get(repositoryPath);
+    checkpointCosts.delete(repositoryPath);
+    checkpointCosts.set(repositoryPath, {
+      captureMs: measured.captureMs,
+      fingerprintMs: measured.fingerprintMs ?? previous?.fingerprintMs ?? 0,
+      skipped: measured.fingerprintMs === undefined ? (previous?.skipped ?? 0) : 0,
+    });
+    if (checkpointCosts.size > CHECKPOINT_FINGERPRINT_CACHE_SIZE)
+      checkpointCosts.delete(checkpointCosts.keys().next().value!);
+  };
+  /** Fingerprint confirmations waiting until each thread's turn has quiesced. */
+  const pendingFingerprintSettles = new Map<ThreadId, Array<Effect.Effect<void>>>();
+  const runPendingFingerprintSettles = (threadId: ThreadId) =>
+    Effect.suspend(() => {
+      const settles = pendingFingerprintSettles.get(threadId) ?? [];
+      pendingFingerprintSettles.delete(threadId);
+      return Effect.forEach(settles, (settle) => settle, { concurrency: 4, discard: true });
+    });
+
+  /**
+   * Captures one repository's checkpoint for `turnCount`. When the workspace fingerprint
+   * matches the one recorded for this thread's previous checkpoint, the new ref reuses
+   * that commit. Like a non-Git workspace, one its repository ignores gets no checkpoint
+   * ("unsupported") instead of a capture failure on every turn.
+   */
+  const captureRepositoryCheckpoint = Effect.fnUntraced(function* (input: {
+    readonly threadId: ThreadId;
+    readonly repository: ProjectRepository;
+    readonly repositories: ReadonlyArray<ProjectRepository>;
+    readonly turnCount: number;
+  }) {
+    const key = `${input.threadId}\0${input.repository.path}`;
+    const capture = {
+      cwd: input.repository.path,
+      checkpointRef: scopedCheckpointRef(
+        checkpointRefForThreadTurn(input.threadId, input.turnCount),
+        input.repository,
+      ),
+      excludePaths: nestedCheckpointPaths(input.repository, input.repositories, "capture"),
+    };
+    // Where listing the workspace costs about as much as capturing it (no fsmonitor or
+    // untracked cache in a large repository), fingerprinting only adds time. Such a
+    // repository is captured in full and measured again every so often.
+    const cost = checkpointCosts.get(input.repository.path);
+    const fingerprintWorthwhile =
+      cost === undefined ||
+      cost.fingerprintMs * 2 <= cost.captureMs ||
+      cost.skipped >= CHECKPOINT_FINGERPRINT_REPROBE_AFTER;
+    if (!fingerprintWorthwhile) cost.skipped += 1;
+    const fingerprintStartedAt = Date.now();
+    const fingerprint = fingerprintWorthwhile
+      ? yield* fingerprintCheckpointWorkspace(capture)
+      : null;
+    const fingerprintMs = Date.now() - fingerprintStartedAt;
+    const known = checkpointFingerprints.get(key);
+    if (
+      fingerprint !== null &&
+      known !== undefined &&
+      known.turnCount === input.turnCount - 1 &&
+      known.fingerprint === fingerprint
+    ) {
+      const reused = yield* checkpointStore
+        .reuseCheckpoint({
+          cwd: capture.cwd,
+          sourceRef: scopedCheckpointRef(
+            checkpointRefForThreadTurn(input.threadId, known.turnCount),
+            input.repository,
+          ),
+          sourceOid: known.commitOid,
+          targetRef: capture.checkpointRef,
+        })
+        .pipe(Effect.orElseSucceed(() => false));
+      // The reused commit's message still names the earlier turn's ref; nothing reads it.
+      if (reused) {
+        rememberCheckpointFingerprint(key, { ...known, turnCount: input.turnCount });
+        return { outcome: "reused" as const, settle: Effect.void };
+      }
+    }
+    const captureStartedAt = Date.now();
+    const result = yield* checkpointStore.captureCheckpoint(capture).pipe(
+      Effect.map(Option.some),
+      Effect.catchTag("CheckpointUnsupportedError", () => Effect.succeed(Option.none())),
+      Effect.tapError(() => Effect.sync(() => rememberCheckpointFingerprint(key, undefined))),
     );
+    rememberCheckpointFingerprint(key, undefined);
+    if (Option.isNone(result)) return { outcome: "unsupported" as const, settle: Effect.void };
+    rememberCheckpointCost(input.repository.path, {
+      captureMs: Date.now() - captureStartedAt,
+      ...(fingerprintWorthwhile ? { fingerprintMs } : {}),
+    });
+    if (fingerprint === null || !result.value.reusable)
+      return { outcome: "captured" as const, settle: Effect.void };
+    const { commitOid } = result.value;
+    // Only decides whether the next capture may reuse this commit, so callers run it off
+    // the turn's critical path. The fingerprint is kept only when the workspace still
+    // lists the same state and the commit changes exactly the listed paths, so an edit
+    // made and undone during the capture cannot attach the wrong commit to it.
+    const settle = fingerprintCheckpointWorkspace({ ...capture, commitOid }).pipe(
+      Effect.map((settled) => {
+        if (settled === fingerprint)
+          rememberCheckpointFingerprint(key, {
+            turnCount: input.turnCount,
+            commitOid,
+            fingerprint,
+          });
+      }),
+    );
+    return { outcome: "captured" as const, settle };
+  });
 
   // Shared tail for both capture paths: creates the git checkpoint ref, diffs
   // it against the previous turn, then dispatches the domain events to update
@@ -322,37 +468,61 @@ const make = Effect.gen(function* () {
     const fromCheckpointRef = checkpointRefForThreadTurn(input.threadId, fromTurnCount);
     const targetCheckpointRef = checkpointRefForThreadTurn(input.threadId, input.turnCount);
 
-    const captured = yield* Effect.filter(
+    const startedAt = Date.now();
+    const outcomes = yield* Effect.forEach(
       input.repositories,
       (repository) =>
-        captureCheckpointIfSupported({
-          cwd: repository.path,
-          checkpointRef: scopedCheckpointRef(targetCheckpointRef, repository),
-          excludePaths: nestedCheckpointPaths(repository, input.repositories, "capture"),
-        }),
+        captureRepositoryCheckpoint({
+          threadId: input.threadId,
+          repository,
+          repositories: input.repositories,
+          turnCount: input.turnCount,
+        }).pipe(Effect.map((result) => ({ repository, ...result }))),
       { concurrency: 4 },
     );
+    // Confirmed once the turn has quiesced, so the queue does not wait on them.
+    pendingFingerprintSettles.set(
+      input.threadId,
+      outcomes.map((entry) => entry.settle),
+    );
+    const captured = outcomes
+      .filter((entry) => entry.outcome !== "unsupported")
+      .map((entry) => entry.repository);
+    // A reused checkpoint is the previous turn's commit, verified in the same ref
+    // transaction: its baseline exists and its diff is empty by construction.
+    const reused = new Set(
+      outcomes.filter((entry) => entry.outcome === "reused").map((entry) => entry.repository.path),
+    );
+    yield* Effect.logDebug("checkpoint repositories captured", {
+      threadId: input.threadId,
+      turnCount: input.turnCount,
+      reused: reused.size,
+      captured: captured.length - reused.size,
+      elapsedMs: Date.now() - startedAt,
+    });
     if (captured.length === 0) return false;
 
     const withBaseline = yield* Effect.filter(
       captured,
       (repository) =>
-        checkpointStore
-          .hasCheckpointRef({
-            cwd: repository.path,
-            checkpointRef: scopedCheckpointRef(fromCheckpointRef, repository),
-          })
-          .pipe(
-            Effect.catch((error) =>
-              Effect.logWarning("checkpoint baseline lookup failed", {
-                threadId: input.threadId,
-                checkpointRef: fromCheckpointRef,
-                repository: repository.relativePath,
-                category: error._tag,
-                detail: error.message,
-              }).pipe(Effect.as(false)),
-            ),
-          ),
+        reused.has(repository.path)
+          ? Effect.succeed(true)
+          : checkpointStore
+              .hasCheckpointRef({
+                cwd: repository.path,
+                checkpointRef: scopedCheckpointRef(fromCheckpointRef, repository),
+              })
+              .pipe(
+                Effect.catch((error) =>
+                  Effect.logWarning("checkpoint baseline lookup failed", {
+                    threadId: input.threadId,
+                    checkpointRef: fromCheckpointRef,
+                    repository: repository.relativePath,
+                    category: error._tag,
+                    detail: error.message,
+                  }).pipe(Effect.as(false)),
+                ),
+              ),
       { concurrency: 4 },
     );
     if (captured.length !== withBaseline.length) {
@@ -413,7 +583,7 @@ const make = Effect.gen(function* () {
     clearWorkspaceIndexCache(input.cwd);
 
     const files = yield* Effect.forEach(
-      withBaseline,
+      withBaseline.filter((repository) => !reused.has(repository.path)),
       (repository) =>
         checkpointStore
           .diffCheckpoints({
@@ -590,14 +760,19 @@ const make = Effect.gen(function* () {
     return supported ? nextTurnCount : undefined;
   });
 
-  const settleTerminalTurnProcessing = Effect.fnUntraced(function* (input: {
+  interface SettleTerminalTurnInput {
     readonly threadId: ThreadId;
     readonly turnId: TurnId;
     readonly createdAt: string;
     readonly status: "ready" | "missing" | "error";
     readonly checkpointProcessed?: boolean | undefined;
     readonly checkpointTurnCount?: number | undefined;
-  }) {
+  }
+  // Fingerprint confirmations run after quiescence, which is what the queue waits on.
+  const settleTerminalTurnProcessing = (input: SettleTerminalTurnInput) =>
+    quiesceTerminalTurn(input).pipe(Effect.ensuring(runPendingFingerprintSettles(input.threadId)));
+
+  const quiesceTerminalTurn = Effect.fnUntraced(function* (input: SettleTerminalTurnInput) {
     const readModel = yield* orchestrationEngine.getReadModel();
     const row = readModel.threads.find((thread) => thread.id === input.threadId)?.latestTurn;
     if (
@@ -664,10 +839,15 @@ const make = Effect.gen(function* () {
           checkpointRef: scopedCheckpointRef(checkpointRef, repository),
         };
         if (yield* checkpointStore.hasCheckpointRef(input)) return false;
-        return yield* captureCheckpointIfSupported({
-          ...input,
-          excludePaths: nestedCheckpointPaths(repository, repositories, "capture"),
+        // Also records the fingerprint, so a new thread's first turn can reuse it.
+        const { outcome, settle } = yield* captureRepositoryCheckpoint({
+          threadId,
+          repository,
+          repositories,
+          turnCount,
         });
+        yield* settle;
+        return outcome !== "unsupported";
       }),
       { concurrency: 4 },
     );

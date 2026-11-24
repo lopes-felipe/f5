@@ -1,2 +1,0 @@
-- Stopping the server during Windows startup also stops the background PowerShell PATH probe.
-- Windows startup can read PATH through PowerShell 7 if Windows PowerShell fails to run the probe.

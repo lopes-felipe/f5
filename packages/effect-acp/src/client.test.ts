@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -334,6 +335,55 @@ it.layer(NodeServices.layer)("effect-acp client", (it) => {
     }),
   );
 
+  it.effect("delivers a permission request's rawInput and rawOutput to the handler", () =>
+    Effect.gen(function* () {
+      const requests = yield* Ref.make<Array<AcpSchema.RequestPermissionRequest>>([]);
+      const handle = yield* makeHandle({ ACP_MOCK_PERMISSION_RAW_INPUT: "1" });
+      const scope = yield* Scope.make();
+      const context = yield* Layer.buildWithScope(AcpClient.layerChildProcess(handle), scope);
+
+      yield* Effect.gen(function* () {
+        const acp = yield* AcpClient.AcpClient;
+        yield* acp.handleRequestPermission((request) =>
+          Ref.update(requests, (current) => [...current, request]).pipe(
+            Effect.as({ outcome: { outcome: "selected" as const, optionId: "allow" } }),
+          ),
+        );
+        yield* acp.handleElicitation(() =>
+          Effect.succeed({ action: { action: "accept", content: { approved: true } } }),
+        );
+        yield* acp.handleExtRequest(
+          "x/typed_request",
+          Schema.Struct({ message: Schema.String }),
+          () => Effect.succeed({ ok: true }),
+        );
+
+        yield* acp.agent.initialize({
+          protocolVersion: 1,
+          clientCapabilities: {
+            fs: { readTextFile: false, writeTextFile: false },
+            terminal: false,
+          },
+          clientInfo: { name: "effect-acp-test", version: "0.0.0" },
+        });
+        yield* acp.agent.authenticate({ methodId: "cursor_login" });
+        const session = yield* acp.agent.createSession({ cwd: process.cwd(), mcpServers: [] });
+        const result = yield* acp.agent.prompt({
+          sessionId: session.sessionId,
+          prompt: [{ type: "text", text: "hello" }],
+        });
+
+        assert.equal(result.stopReason, "end_turn");
+        const [request] = yield* Ref.get(requests);
+        assert.deepEqual(request?.toolCall.rawInput, {
+          CommandLine: "find .",
+          WaitMsBeforeAsync: 5000,
+        });
+        assert.equal(request?.toolCall.rawOutput, "pending");
+      }).pipe(Effect.provide(context), Effect.ensuring(Scope.close(scope, Exit.void)));
+    }),
+  );
+
   it.effect("continues dispatching session updates after one handler fails", () =>
     Effect.gen(function* () {
       const successfulHandlers = yield* Ref.make(0);
@@ -404,6 +454,74 @@ it.layer(NodeServices.layer)("effect-acp client", (it) => {
       }).pipe(Effect.provide(context), Effect.ensuring(Scope.close(scope, Exit.void)));
     }),
   );
+
+  for (const scenario of [
+    {
+      name: "its payload fails to decode",
+      // `toolCall.toolCallId` is required, so the RPC layer rejects this before the handler.
+      toolCall: { title: "secret-command --token abc" },
+      response: { outcome: { outcome: "cancelled" } },
+      handled: 0,
+    },
+    {
+      name: "its handler's response fails to encode",
+      toolCall: { toolCallId: "tool-1", title: "secret-command --token abc" },
+      response: { outcome: { outcome: "not-an-outcome" } },
+      handled: 1,
+    },
+  ])
+    it.effect(
+      `warns, without the payload, when a core request fails because ${scenario.name}`,
+      () => {
+        const messages: Array<unknown> = [];
+        return Effect.gen(function* () {
+          const { stdio, input, output } = yield* makeInMemoryStdio();
+          const acp = yield* AcpClient.make(stdio);
+          const handled = yield* Ref.make(0);
+          yield* acp.handleRequestPermission(() =>
+            Ref.update(handled, (count) => count + 1).pipe(
+              Effect.as(scenario.response as AcpSchema.RequestPermissionResponse),
+            ),
+          );
+
+          yield* Queue.offer(
+            input,
+            new TextEncoder().encode(
+              `${JSON.stringify({
+                jsonrpc: "2.0",
+                id: 7,
+                method: "session/request_permission",
+                params: { sessionId: "session-1", options: [], toolCall: scenario.toolCall },
+              })}\n`,
+            ),
+          );
+
+          const outbound = yield* Queue.take(output);
+          const response = JSON.parse(
+            typeof outbound === "string" ? outbound : new TextDecoder().decode(outbound),
+          );
+          assert.equal(response.id, 7);
+          assert.property(response, "error");
+          assert.equal(yield* Ref.get(handled), scenario.handled);
+
+          const warning = JSON.stringify(
+            messages.find((message) =>
+              JSON.stringify(message).includes("ACP request failed outside its handler"),
+            ),
+          );
+          assert.include(warning, "session/request_permission");
+          assert.include(warning, '"requestId":"7"');
+          assert.notInclude(warning, "secret-command");
+        }).pipe(
+          Effect.scoped,
+          Effect.provide(
+            Logger.layer([Logger.make(({ message }) => messages.push(message))], {
+              mergeWithExisting: false,
+            }),
+          ),
+        );
+      },
+    );
 
   it.effect("keeps RPC ids within int32 and apart from extension ids", () =>
     Effect.gen(function* () {

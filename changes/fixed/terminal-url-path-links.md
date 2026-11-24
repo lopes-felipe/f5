@@ -1,1 +1,0 @@
-- Terminal output containing URLs such as `redis://`, `postgres://`, and `s3://` no longer shows broken editor links.

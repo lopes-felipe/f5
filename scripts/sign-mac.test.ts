@@ -40,6 +40,25 @@ it("gives the Swift helper a minimal entitlement file while preserving Electron 
   expect(main).not.toContain("disable-library-validation");
   expect(main).not.toContain("allow-unsigned-executable-memory");
 });
+it("signs the bundled limactl with hardened runtime and only the virtualization entitlement", () => {
+  const options = { optionsForFile: () => ({ entitlements: "electron-jit.plist" }) };
+  const lima = perFileOptions(options, "/F5.app/Contents/Resources/native/lima/bin/limactl") as {
+    entitlements: string;
+    hardenedRuntime?: boolean;
+  };
+  expect(lima.hardenedRuntime).toBe(true);
+  const keys = [...readFileSync(lima.entitlements, "utf8").matchAll(/<key>([^<]+)<\/key>/g)].map(
+    (match) => match[1],
+  );
+  expect(keys).toEqual(["com.apple.security.virtualization"]);
+  // Lima's other files (the Linux guest agent, templates) keep the app's defaults.
+  expect(
+    perFileOptions(
+      options,
+      "/F5.app/Contents/Resources/native/lima/share/lima/lima-guestagent.Linux-aarch64.gz",
+    ).entitlements,
+  ).toBe("electron-jit.plist");
+});
 const { signWithRetry } = require("./sign-mac.cjs") as {
   signWithRetry(
     sign: (options: object) => Promise<void>,

@@ -17,6 +17,7 @@ import {
   ANTIGRAVITY_PERSONAL_AUTH,
   advanceAntigravityRevision,
   antigravityKeyFingerprint,
+  antigravityOAuthTokenPaths,
   reconcileAntigravityAuthState,
   redactAntigravityKey,
   updateAntigravityAuthState,
@@ -185,9 +186,8 @@ export function createAntigravityAccountProcess(input: {
   const disconnect = async () => {
     if (auth.authMethod === "oauth-personal") {
       await accountRequest("logout", {});
-      await fs.rm(path.join(profileDirectory, "antigravity-acp", "acp_token.json"), {
-        force: true,
-      });
+      for (const file of antigravityOAuthTokenPaths(profileDirectory))
+        await fs.rm(file, { force: true });
     }
     // The stored key itself is cleared by the account service through settings.
     // `undefined` fields clear the merged values; JSON omits them.

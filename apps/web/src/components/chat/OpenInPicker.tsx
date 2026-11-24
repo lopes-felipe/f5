@@ -6,6 +6,7 @@ import { usePreferredEditor } from "../../editorPreferences";
 import { ChevronDownIcon, FolderClosedIcon } from "lucide-react";
 import { Button } from "../ui/button";
 import { Group, GroupSeparator } from "../ui/group";
+import { HEADER_ACTION_LABEL_CLASS_NAME } from "../headerActionLabel";
 import { Menu, MenuItem, MenuPopup, MenuShortcut, MenuTrigger } from "../ui/menu";
 import {
   AntigravityIcon,
@@ -137,9 +138,7 @@ export const OpenInPicker = memo(function OpenInPicker({
         onClick={() => openInEditor(preferredEditor)}
       >
         {primaryOption?.Icon && <primaryOption.Icon aria-hidden="true" className="size-3.5" />}
-        <span className="sr-only @xl/header-actions:not-sr-only @xl/header-actions:ml-0.5">
-          Open
-        </span>
+        <span className={HEADER_ACTION_LABEL_CLASS_NAME}>Open</span>
       </Button>
       <GroupSeparator className="hidden @xl/header-actions:block" />
       <Menu>

@@ -694,3 +694,32 @@ it("uses Pi's native self-updater and canonical executable identity", async () =
     args: ["update", "--self"],
   });
 });
+
+it("updates the Cursor CLI through `agent update`", async () => {
+  const { target } = await fixture(
+    "/home/test/.local/share/cursor-agent/versions/2026.07.09/cursor-agent",
+    {
+      driver: "cursor",
+    },
+  );
+  expect(target).toMatchObject({
+    channel: "self-update",
+    installKey:
+      "cursor-self-update:/home/test/.local/share/cursor-agent/versions/2026.07.09/cursor-agent",
+  });
+  expect(target?.blockedReason).toBeUndefined();
+  expect(buildProviderUpdateCommand(target!, "linux")).toMatchObject({
+    executable: "/bin/cli",
+    args: ["update"],
+    channel: "self-update",
+  });
+  // No latest-version source exists, so the advisor offers manual guidance.
+  expect(target?.latestSource ?? null).toBeNull();
+});
+
+it("does not offer `agent update` for a Cursor binary outside Cursor's installer layout", async () => {
+  for (const realPath of ["/usr/local/bin/agent-wrapper.sh", "/opt/homebrew/bin/cursor-agent"]) {
+    const { target } = await fixture(realPath, { driver: "cursor" });
+    expect(target?.channel).not.toBe("self-update");
+  }
+});

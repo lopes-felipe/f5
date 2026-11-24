@@ -18,7 +18,10 @@ import {
   antigravityReadiness,
   hasAntigravityOAuthToken,
 } from "../antigravityAuthSupport.ts";
-import { antigravityPrivateFormatGate } from "../antigravityPrivateFormats.ts";
+import {
+  ANTIGRAVITY_PRIVATE_FORMAT_MIN_VERSION,
+  antigravityPrivateFormatGate,
+} from "../antigravityPrivateFormats.ts";
 import { resolveAntigravityReleaseAsset } from "../antigravityRelease.ts";
 import { buildServerProvider, providerModelsFromSettings } from "../providerSnapshot.ts";
 
@@ -150,7 +153,9 @@ export function antigravityRuntimeHealthDetails(
     },
     {
       label: "Native readers",
-      value: gate.enabled ? `On, certified for ${gate.version}` : `Off. ${gate.reason}`,
+      value: gate.enabled
+        ? `On (${ANTIGRAVITY_PRIVATE_FORMAT_MIN_VERSION} or newer)`
+        : `Off. ${gate.reason}`,
     },
   ];
 }

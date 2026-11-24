@@ -1,6 +1,9 @@
 import { assert, it } from "@effect/vitest";
 import { ThreadId } from "@t3tools/contracts";
-import { Effect } from "effect";
+import { Effect, Fiber } from "effect";
+import { vi } from "vitest";
+
+import type { InteractionOutcome, InteractionSession } from "./interactionMcpTools.ts";
 
 import { DISABLED_AGENT_BROWSER_POLICY } from "./browserAccess.ts";
 import { makePreviewAutomationBroker, PreviewAutomationBroker } from "./PreviewAutomationBroker.ts";
@@ -493,6 +496,155 @@ it.effect("routes the integration catalog to its proxy session and revokes it on
         (yield* postMcpHttp(url, token, { jsonrpc: "2.0", id: 3, method: "tools/list" })).status,
         401,
       );
+    }),
+  ),
+);
+
+it.effect("serves the interaction catalog; a cancelled wait leaves the question open", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = makePreviewAutomationBroker();
+      const server = yield* makePreviewMcpHttpServer.pipe(
+        Effect.provideService(PreviewAutomationBroker, broker),
+      );
+      const outcomes = new Map<
+        string,
+        { promise: Promise<InteractionOutcome>; resolve: (outcome: InteractionOutcome) => void }
+      >();
+      const interaction: InteractionSession = {
+        openQuestion: async () => {
+          const questionId = `q${outcomes.size + 1}`;
+          let resolve!: (outcome: InteractionOutcome) => void;
+          const promise = new Promise<InteractionOutcome>((done) => (resolve = done));
+          outcomes.set(questionId, { promise, resolve });
+          if (questionId === "q1") resolve({ answers: { "Which database?": "SQLite" } });
+          return { questionId };
+        },
+        questionOutcome: (questionId) => outcomes.get(questionId)?.promise,
+      };
+      const session = server.createSessionConfig({
+        threadId: ThreadId.makeUnsafe("thread-interaction"),
+        catalog: "interaction",
+        serverName: "f5_interaction_test",
+        interaction,
+      });
+      assert.equal(session.serverDefinition.toolTimeoutSec, 210);
+      const token = Object.values(session.env)[0]!;
+      const url = server.getUrl("interaction");
+      assert.equal((yield* postMcpHttp(server.getUrl("thread"), token, {})).status, 401);
+      const init = yield* postMcpHttp(url, token, { jsonrpc: "2.0", id: 0, method: "initialize" });
+      const instructions = (init.body as { result: { instructions?: string } }).result.instructions;
+      assert.include(instructions ?? "", "wait_for_user_answer");
+      // Each connection gets its own id space.
+      assert.ok(init.sessionId);
+      const connection = { "mcp-session-id": init.sessionId! };
+      const post = (body: unknown) => postMcpHttp(url, token, body, "POST", connection);
+      const list = (yield* post({ jsonrpc: "2.0", id: 1, method: "tools/list" })).body as {
+        result: { tools: Array<{ name: string }> };
+      };
+      assert.deepEqual(
+        list.result.tools.map((tool) => tool.name),
+        ["ask_user_question", "wait_for_user_answer"],
+      );
+      const args = {
+        questions: [
+          {
+            question: "Which database?",
+            header: "Database",
+            options: [
+              { label: "Postgres", description: "Relational" },
+              { label: "SQLite", description: "Embedded" },
+            ],
+          },
+        ],
+        // Antigravity adds its own summary to every tool call.
+        toolSummary: "Ask which database",
+      };
+      const answered = (yield* post({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: { name: "ask_user_question", arguments: args },
+      })).body as { result: { structuredContent: unknown; isError?: boolean } };
+      assert.deepEqual(answered.result.structuredContent, {
+        answers: { "Which database?": "SQLite" },
+      });
+      assert.notOk(answered.result.isError);
+
+      const invalid = (yield* post({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: { name: "ask_user_question", arguments: { questions: [] } },
+      })).body as { result: { isError?: boolean } };
+      assert.equal(invalid.result.isError, true);
+      assert.equal(outcomes.size, 1);
+
+      // The client cancelling the call (Antigravity does at three minutes) only ends that wait:
+      // the result is pending, and the question stays open.
+      let finished = false;
+      const waiting = yield* post({
+        jsonrpc: "2.0",
+        id: 4,
+        method: "tools/call",
+        params: { name: "ask_user_question", arguments: args },
+      }).pipe(
+        Effect.tap(() => Effect.sync(() => (finished = true))),
+        Effect.forkChild,
+      );
+      yield* Effect.promise(() => vi.waitFor(() => assert.equal(outcomes.size, 2)));
+      // A cancel from another connection with the same request id reaches nothing.
+      const other = yield* postMcpHttp(url, token, {
+        jsonrpc: "2.0",
+        id: 0,
+        method: "initialize",
+      });
+      assert.notEqual(other.sessionId, init.sessionId);
+      yield* postMcpHttp(
+        url,
+        token,
+        { jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 4 } },
+        "POST",
+        { "mcp-session-id": other.sessionId! },
+      );
+      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 50)));
+      assert.equal(finished, false);
+      yield* post({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 4 } });
+      const pending = (yield* Fiber.join(waiting)).body as {
+        result: { structuredContent: { pending?: boolean; questionId?: string } };
+      };
+      assert.deepInclude(pending.result.structuredContent, { pending: true, questionId: "q2" });
+
+      // Waiting again by id returns the answer once the user gives it.
+      const again = yield* post({
+        jsonrpc: "2.0",
+        id: 5,
+        method: "tools/call",
+        params: { name: "wait_for_user_answer", arguments: { questionId: "q2" } },
+      }).pipe(Effect.forkChild);
+      outcomes.get("q2")!.resolve({ answers: { "Which database?": "Postgres" } });
+      const later = (yield* Fiber.join(again)).body as { result: { structuredContent: unknown } };
+      assert.deepEqual(later.result.structuredContent, {
+        answers: { "Which database?": "Postgres" },
+      });
+      const unknown = (yield* post({
+        jsonrpc: "2.0",
+        id: 6,
+        method: "tools/call",
+        params: { name: "wait_for_user_answer", arguments: { questionId: "missing" } },
+      })).body as { result: { isError?: boolean } };
+      assert.equal(unknown.result.isError, true);
+
+      // Revoking the credential ends a wait still running.
+      const revoked = yield* post({
+        jsonrpc: "2.0",
+        id: 7,
+        method: "tools/call",
+        params: { name: "ask_user_question", arguments: args },
+      }).pipe(Effect.forkChild);
+      yield* Effect.promise(() => vi.waitFor(() => assert.equal(outcomes.size, 3)));
+      session.dispose();
+      yield* Fiber.join(revoked);
     }),
   ),
 );

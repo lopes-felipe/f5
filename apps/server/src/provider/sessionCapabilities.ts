@@ -44,6 +44,8 @@ export interface BuildProviderSessionCapabilitiesInput {
   readonly driver: string;
   readonly providerInstanceId?: ProviderInstanceId | undefined;
   readonly executableVersion?: string | null | undefined;
+  /** Harness of a multi-harness driver; absent means its legacy harness. */
+  readonly harnessVariant?: string | null | undefined;
   readonly adapterCapabilities: ProviderAdapterCapabilities;
   readonly hasSteer: boolean;
   readonly hasMcpReload: boolean;
@@ -146,7 +148,11 @@ export function buildProviderSessionCapabilities(
   input: BuildProviderSessionCapabilitiesInput,
 ): ProviderSessionCapabilities {
   const executableVersion = (input.discovery?.executableVersion ?? input.executableVersion)?.trim();
-  const runtime = providerRuntimeCapabilities(input.driver, executableVersion);
+  const runtime = providerRuntimeCapabilities(
+    input.driver,
+    executableVersion,
+    input.harnessVariant,
+  );
   return {
     generation: input.generation,
     ...(input.providerInstanceId ? { providerInstanceId: input.providerInstanceId } : {}),

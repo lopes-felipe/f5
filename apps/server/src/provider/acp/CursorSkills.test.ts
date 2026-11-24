@@ -45,3 +45,28 @@ it("follows linked skill packages once, preserves the link name and prefers proj
     await rm(root, { recursive: true, force: true });
   }
 });
+
+it("discovers Cursor-installed skills after the user's own", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "f5-cursor-skills-cursor-"));
+  try {
+    const home = path.join(root, "home");
+    const writeSkill = async (directory: string, description: string) => {
+      await mkdir(directory, { recursive: true });
+      await writeFile(path.join(directory, "SKILL.md"), `---\ndescription: ${description}\n---\n`);
+    };
+    await writeSkill(path.join(home, ".cursor", "skills", "create-rule"), "user override");
+    await writeSkill(path.join(home, ".cursor", "skills-cursor", "create-rule"), "built in");
+    await writeSkill(path.join(home, ".cursor", "skills-cursor", "canvas"), "Cursor canvas");
+    const skills = await Effect.runPromise(
+      discoverCursorSkills(path.join(root, "project"), { HOME: home }).pipe(
+        Effect.provide(NodeServices.layer),
+      ),
+    );
+    expect(skills.map((skill) => [skill.name, skill.scope, skill.description])).toEqual([
+      ["canvas", "cursor", "Cursor canvas"],
+      ["create-rule", "user", "user override"],
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

@@ -22,6 +22,7 @@ import {
   useState,
 } from "react";
 import { flushSync } from "react-dom";
+import { PlusIcon, XIcon } from "lucide-react";
 import type {
   ModelSlug,
   ProjectId,
@@ -73,9 +74,23 @@ import { readNativeApi } from "../../nativeApi";
 import { useStore } from "../../store";
 import {
   getWorkflowSlotDefaults,
+  getWorkflowSlotDefaultsForProvider,
   normalizeWorkflowSlotModelOptions,
   makeWorkflowSlotBuilder,
 } from "./workflowSlots";
+import {
+  firstUsableWorkflowProvider,
+  formatWorkflowTurnEstimate,
+  pickNewWorkflowActorProvider,
+  workflowActorDuplicateIndexes,
+  workflowActorDuplicateMessage,
+  workflowActorLimitMessage,
+  workflowActorMax,
+  workflowActorRowLabel,
+  workflowAddActorLabel,
+  type WorkflowActorRow,
+} from "./workflowActorRows";
+import { readOnlyWorkflowUnsupportedReason } from "@t3tools/shared/workflowProviders";
 import { basenameOfPath } from "../../vscode-icons";
 import {
   createCachedAbsolutePathComparisonNormalizer,
@@ -122,6 +137,25 @@ const WORKFLOW_TYPE_CARD_PRESSED_BORDER_CLASS: Record<WorkflowTypeValue, string>
   investigation: "data-pressed:border-warning/50",
   document: "data-pressed:border-attention/50",
 };
+
+let actorRowKeySequence = 0;
+function nextActorRowKey(): string {
+  actorRowKeySequence += 1;
+  return `actor-${actorRowKeySequence}`;
+}
+
+function actorRow(defaults: {
+  provider: ProviderKind;
+  model: string;
+  modelOptions: ProviderModelOptions | undefined;
+}): WorkflowActorRow {
+  return {
+    key: nextActorRowKey(),
+    provider: defaults.provider,
+    model: defaults.model,
+    modelOptions: defaults.modelOptions,
+  };
+}
 
 interface WorkflowCreateDialogProps {
   open: boolean;
@@ -205,20 +239,12 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
   const projectGenerationRef = useRef(0);
   const [reviewBranch, setReviewBranch] = useState("");
   const [plansDirectory, setPlansDirectory] = useState("plans");
-  const [branchAProvider, setBranchAProvider] = useState<ProviderKind>(
-    initialBranchADefaults.provider,
-  );
-  const [branchAModel, setBranchAModel] = useState(initialBranchADefaults.model);
-  const [branchAModelOptions, setBranchAModelOptions] = useState<ProviderModelOptions | undefined>(
-    initialBranchADefaults.modelOptions,
-  );
-  const [branchBProvider, setBranchBProvider] = useState<ProviderKind>(
-    initialBranchBDefaults.provider,
-  );
-  const [branchBModel, setBranchBModel] = useState(initialBranchBDefaults.model);
-  const [branchBModelOptions, setBranchBModelOptions] = useState<ProviderModelOptions | undefined>(
-    initialBranchBDefaults.modelOptions,
-  );
+  // Every open and reset starts with two rows from the remembered A/B choices; extra rows
+  // are not remembered. Rows survive a workflow-type switch.
+  const [actors, setActors] = useState<WorkflowActorRow[]>(() => [
+    actorRow(initialBranchADefaults),
+    actorRow(initialBranchBDefaults),
+  ]);
   const [mergeProvider, setMergeProvider] = useState<ProviderKind>(initialMergeDefaults.provider);
   const [mergeModel, setMergeModel] = useState(initialMergeDefaults.model);
   const [mergeModelOptions, setMergeModelOptions] = useState<ProviderModelOptions | undefined>(
@@ -242,71 +268,79 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
       providers: serverConfigQuery.data?.providers ?? null,
     }) as ModelSlug;
 
-  const branchASelection = resolveWorkflowModelSelection(branchAProvider, branchAModel);
-  const branchBSelection = resolveWorkflowModelSelection(branchBProvider, branchBModel);
+  const actorSelections = actors.map((row) =>
+    resolveWorkflowModelSelection(row.provider, row.model),
+  );
+  // Keyed by row so a resolved selection is applied to the row it was resolved for. JSON keeps
+  // slugs that contain delimiters intact.
+  const actorSelectionsKey = JSON.stringify(
+    actors.map((row, index) => [row.key, actorSelections[index]!] as const),
+  );
   const mergeSelection = resolveWorkflowModelSelection(mergeProvider, mergeModel);
   useEffect(() => {
     if (!serverConfigQuery.data) return;
 
-    if (branchAModel !== branchASelection) {
-      const preservesOptions =
-        normalizeModelSlug(branchAModel, branchAProvider) === branchASelection;
-      setBranchAModel(branchASelection);
-      if (!preservesOptions) setBranchAModelOptions(undefined);
-    }
-    if (branchBModel !== branchBSelection) {
-      const preservesOptions =
-        normalizeModelSlug(branchBModel, branchBProvider) === branchBSelection;
-      setBranchBModel(branchBSelection);
-      if (!preservesOptions) setBranchBModelOptions(undefined);
-    }
+    const selections = new Map(
+      JSON.parse(actorSelectionsKey) as ReadonlyArray<readonly [string, string]>,
+    );
+    setActors((current) => {
+      let changed = false;
+      const next = current.map((row) => {
+        const selection = selections.get(row.key);
+        if (selection === undefined || row.model === selection) return row;
+        changed = true;
+        const preservesOptions = normalizeModelSlug(row.model, row.provider) === selection;
+        return {
+          ...row,
+          model: selection,
+          modelOptions: preservesOptions ? row.modelOptions : undefined,
+        };
+      });
+      return changed ? next : current;
+    });
     if (mergeModel !== mergeSelection) {
       const preservesOptions = normalizeModelSlug(mergeModel, mergeProvider) === mergeSelection;
       setMergeModel(mergeSelection);
       if (!preservesOptions) setMergeModelOptions(undefined);
     }
-  }, [
-    branchAModel,
-    branchAProvider,
-    branchASelection,
-    branchBModel,
-    branchBProvider,
-    branchBSelection,
-    mergeModel,
-    mergeProvider,
-    mergeSelection,
-    serverConfigQuery.data,
-  ]);
+  }, [actorSelectionsKey, mergeModel, mergeProvider, mergeSelection, serverConfigQuery.data]);
+  const actorSlots = actors.map((row, index) => ({
+    provider: row.provider,
+    model: actorSelections[index]!,
+    ...(row.modelOptions ? { modelOptions: row.modelOptions } : {}),
+  }));
+  const providers = serverConfigQuery.data?.providers ?? [];
+  const actorCount = actors.length;
+  const actorMax = workflowActorMax(workflowType);
+  const actorsOverMax = actorCount > actorMax;
+  const duplicateActorIndexes = workflowActorDuplicateIndexes(workflowType, actorSlots);
+  const actorProviderErrors = actorSlots.map((slot) =>
+    serverConfigQuery.data ? readOnlyWorkflowUnsupportedReason(slot.provider, providers) : null,
+  );
+  const workflowProviderUnavailableReason = (provider: ProviderKind) =>
+    readOnlyWorkflowUnsupportedReason(provider, providers);
   const effectiveReaderSlot =
     readerSlot ??
-    defaultDocumentReaderSlot({
-      branchA: {
-        provider: branchAProvider,
-        model: branchASelection,
-        ...(branchAModelOptions ? { modelOptions: branchAModelOptions } : {}),
-      },
-      branchB: {
-        provider: branchBProvider,
-        model: branchBSelection,
-        ...(branchBModelOptions ? { modelOptions: branchBModelOptions } : {}),
-      },
-      merge: { provider: mergeProvider, model: mergeSelection },
-    });
+    defaultDocumentReaderSlot(actorSlots, { provider: mergeProvider, model: mergeSelection });
   // Resolved like the other slots so the picker shows what gets submitted.
   const readerSelection = resolveWorkflowModelSelection(
     effectiveReaderSlot.provider,
     effectiveReaderSlot.model,
   );
-  const sameDocumentAuthors =
-    workflowType === "document" &&
-    branchAProvider === branchBProvider &&
-    branchASelection === branchBSelection;
+  // A remembered final-stage provider can lose support after it was picked; the picker only
+  // stops new picks. The Reader counts only while reader review is on.
+  const mergeProviderError = serverConfigQuery.data
+    ? readOnlyWorkflowUnsupportedReason(mergeProvider, providers)
+    : null;
+  const readerProviderError =
+    serverConfigQuery.data && workflowType === "document" && readerReviewEnabled
+      ? readOnlyWorkflowUnsupportedReason(effectiveReaderSlot.provider, providers)
+      : null;
+  const sameDocumentAuthors = workflowType === "document" && duplicateActorIndexes.size > 0;
   const titleGenerationModel = resolveThreadTitleModel(settings);
   const workspaceRoots = [project?.cwd];
   const sameInvestigationInvestigatorModel =
-    workflowType === "investigation" &&
-    branchAProvider === branchBProvider &&
-    branchASelection === branchBSelection;
+    workflowType === "investigation" && duplicateActorIndexes.size > 0;
   const reviewPullRequestTarget = useMemo(
     () =>
       workflowType === "codeReview" ? detectCodeReviewPullRequestTarget(requirementPrompt) : null,
@@ -340,12 +374,53 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
     (requirementPrompt.trim().length > 0 || attachedFilePaths.length > 0) &&
     !sameInvestigationInvestigatorModel &&
     !sameDocumentAuthors &&
+    !actorsOverMax &&
+    actorProviderErrors.every((reason) => reason === null) &&
+    mergeProviderError === null &&
+    readerProviderError === null &&
     (workflowType !== "document" || submittedBriefLength <= DOCUMENT_WORKFLOW_BRIEF_MAX_CHARS) &&
     validMaxCostUsd;
   const primaryActionShortcutLabel = useMemo(
     () => shortcutLabelForCommand(keybindings, "dialog.primaryAction"),
     [keybindings],
   );
+
+  const updateActor = (key: string, patch: Partial<Omit<WorkflowActorRow, "key">>) => {
+    setActors((current) => current.map((row) => (row.key === key ? { ...row, ...patch } : row)));
+  };
+
+  // Removing a middle row relabels the later ones; their selections are kept.
+  const removeActor = (key: string) => {
+    if (submittingRef.current) return;
+    setActors((current) =>
+      current.length > 2 ? current.filter((row, index) => index < 2 || row.key !== key) : current,
+    );
+  };
+
+  // A new row starts on the first usable provider no other row uses. Feature and Code Review
+  // may repeat a model, so they copy the last row when every provider is taken.
+  const addActor = () => {
+    if (submittingRef.current) return;
+    setActors((current) => {
+      if (current.length >= actorMax) return current;
+      const unused = pickNewWorkflowActorProvider(current, providers);
+      const last = current[current.length - 1]!;
+      if (unused === null && (workflowType === "planning" || workflowType === "codeReview")) {
+        return [...current, actorRow(last)];
+      }
+      const provider = unused ?? firstUsableWorkflowProvider(providers) ?? last.provider;
+      return [
+        ...current,
+        actorRow(
+          getWorkflowSlotDefaultsForProvider(
+            provider,
+            modelOptionsByProvider,
+            serverConfigQuery.data?.providers,
+          ),
+        ),
+      ];
+    });
+  };
 
   const focusPromptEditor = () => {
     promptEditorRef.current?.focusAtEnd();
@@ -418,12 +493,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
     setProjectChangeNote(null);
     setReviewBranch("");
     setPlansDirectory("plans");
-    setBranchAProvider(branchADefaults.provider);
-    setBranchAModel(branchADefaults.model);
-    setBranchAModelOptions(branchADefaults.modelOptions);
-    setBranchBProvider(branchBDefaults.provider);
-    setBranchBModel(branchBDefaults.model);
-    setBranchBModelOptions(branchBDefaults.modelOptions);
+    setActors([actorRow(branchADefaults), actorRow(branchBDefaults)]);
     setMergeProvider(mergeDefaults.provider);
     setMergeModel(mergeDefaults.model);
     setMergeModelOptions(mergeDefaults.modelOptions);
@@ -702,8 +772,15 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
         projectId: props.projectId,
         dispatchModelsByProvider,
       });
-      const branchASlot = buildSlot(branchAProvider, branchASelection, branchAModelOptions);
-      const branchBSlot = buildSlot(branchBProvider, branchBSelection, branchBModelOptions);
+      const [branchASlot, branchBSlot, ...extraActorSlots] = actors.map((row, index) =>
+        buildSlot(row.provider, actorSelections[index]!, row.modelOptions),
+      );
+      if (!branchASlot || !branchBSlot) throw new Error("A workflow needs at least two models.");
+      // Extras are sent only for runs with more than two actors.
+      const extras = <K extends string>(key: K) =>
+        (extraActorSlots.length > 0 ? { [key]: extraActorSlots } : {}) as Partial<
+          Record<K, WorkflowModelSlot[]>
+        >;
       const mergeSlot = buildSlot(mergeProvider, mergeSelection, mergeModelOptions);
       if (workflowType === "planning") {
         const result = await api.workflowPlatform.createRun({
@@ -717,6 +794,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
             selfReviewEnabled,
             branchA: branchASlot,
             branchB: branchBSlot,
+            ...extras("additionalBranches"),
             merge: mergeSlot,
           },
         });
@@ -746,6 +824,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
               : {}),
             branchA: branchASlot,
             branchB: branchBSlot,
+            ...extras("additionalBranches"),
             merge: mergeSlot,
           },
         });
@@ -763,13 +842,18 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
             ...(autoPostReviewEffective ? { autoPost: true } : {}),
             reviewerA: branchASlot,
             reviewerB: branchBSlot,
+            ...extras("additionalReviewers"),
             consolidation: mergeSlot,
           },
         });
         props.onWorkflowCreated?.(result.workflowId);
       } else if (workflowType === "investigation") {
         if (sameInvestigationInvestigatorModel) {
-          setError("Choose two different investigator models for Investigation workflows.");
+          setError(
+            actors.length === 2
+              ? "Choose two different investigator models for Investigation workflows."
+              : workflowActorDuplicateMessage("investigation"),
+          );
           submittingRef.current = false;
           setSubmitting(false);
           return;
@@ -785,6 +869,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
             selfReviewEnabled: investigationSelfReviewEnabled,
             investigatorA: branchASlot,
             investigatorB: branchBSlot,
+            ...extras("additionalInvestigators"),
             synthesis: mergeSlot,
           },
         });
@@ -1015,7 +1100,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                     {documentProfile.sections.map((section) => section.heading).join(" · ") ||
                       "As specified in the brief"}
                   </p>
-                  {sameDocumentAuthors ? (
+                  {sameDocumentAuthors && actorCount === 2 ? (
                     <p role="alert" className="text-ui text-destructive-foreground">
                       Document workflows need two different author models.
                     </p>
@@ -1026,86 +1111,97 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
             <div className="flex min-w-0 flex-col gap-4">
               <section aria-label="Models" className="flex flex-col gap-2">
                 <SectionLabel as="h3">Models</SectionLabel>
-                <SlotRow
-                  providers={serverConfigQuery.data?.providers}
-                  label={
-                    workflowType === "planning" || workflowType === "document"
-                      ? "Author A"
-                      : workflowType === "investigation"
-                        ? "Investigator A"
-                        : "Reviewer A"
-                  }
-                  provider={branchAProvider}
-                  model={branchASelection}
-                  modelOptions={branchAModelOptions}
-                  modelOptionsByProvider={modelOptionsByProvider}
-                  onProviderModelChange={(provider, model) => {
-                    setBranchAProvider(provider);
-                    setBranchAModel(model);
-                    setBranchAModelOptions(undefined);
-                    useModelPreferencesStore
-                      .getState()
-                      .setLastWorkflowProvider("branchA", provider);
-                    recordModelSelection(provider, model, undefined);
-                  }}
-                  onModelOptionsChange={(modelOptions) => {
-                    setBranchAModelOptions(modelOptions);
-                    recordModelSelection(
-                      branchAProvider,
-                      branchASelection,
-                      normalizeWorkflowSlotModelOptions(
-                        branchAProvider,
-                        branchASelection,
-                        modelOptions,
-                        getWorkflowModelCapabilities(
-                          serverConfigQuery.data?.providers ?? [],
-                          ProviderDriverKind.make(branchAProvider),
-                          branchASelection,
-                        ),
-                      ),
-                    );
-                  }}
-                />
-                <SlotRow
-                  providers={serverConfigQuery.data?.providers}
-                  label={
-                    workflowType === "planning" || workflowType === "document"
-                      ? "Author B"
-                      : workflowType === "investigation"
-                        ? "Investigator B"
-                        : "Reviewer B"
-                  }
-                  provider={branchBProvider}
-                  model={branchBSelection}
-                  modelOptions={branchBModelOptions}
-                  modelOptionsByProvider={modelOptionsByProvider}
-                  onProviderModelChange={(provider, model) => {
-                    setBranchBProvider(provider);
-                    setBranchBModel(model);
-                    setBranchBModelOptions(undefined);
-                    useModelPreferencesStore
-                      .getState()
-                      .setLastWorkflowProvider("branchB", provider);
-                    recordModelSelection(provider, model, undefined);
-                  }}
-                  onModelOptionsChange={(modelOptions) => {
-                    setBranchBModelOptions(modelOptions);
-                    recordModelSelection(
-                      branchBProvider,
-                      branchBSelection,
-                      normalizeWorkflowSlotModelOptions(
-                        branchBProvider,
-                        branchBSelection,
-                        modelOptions,
-                        getWorkflowModelCapabilities(
-                          serverConfigQuery.data?.providers ?? [],
-                          ProviderDriverKind.make(branchBProvider),
-                          branchBSelection,
-                        ),
-                      ),
-                    );
-                  }}
-                />
+                {actors.map((row, index) => {
+                  const selection = actorSelections[index]!;
+                  const preferenceSlot = index === 0 ? "branchA" : index === 1 ? "branchB" : null;
+                  const rowError =
+                    actorProviderErrors[index] ??
+                    (actorCount > 2 && duplicateActorIndexes.has(index)
+                      ? workflowActorDuplicateMessage(workflowType)
+                      : null);
+                  return (
+                    <SlotRow
+                      key={row.key}
+                      providers={serverConfigQuery.data?.providers}
+                      label={workflowActorRowLabel(workflowType, index)}
+                      provider={row.provider}
+                      model={selection}
+                      modelOptions={row.modelOptions}
+                      modelOptionsByProvider={modelOptionsByProvider}
+                      providerUnavailableReason={workflowProviderUnavailableReason}
+                      error={rowError}
+                      onProviderModelChange={(provider, model) => {
+                        updateActor(row.key, { provider, model, modelOptions: undefined });
+                        if (preferenceSlot) {
+                          useModelPreferencesStore
+                            .getState()
+                            .setLastWorkflowProvider(preferenceSlot, provider);
+                        }
+                        recordModelSelection(provider, model, undefined);
+                      }}
+                      onModelOptionsChange={(modelOptions) => {
+                        updateActor(row.key, { modelOptions });
+                        recordModelSelection(
+                          row.provider,
+                          selection,
+                          normalizeWorkflowSlotModelOptions(
+                            row.provider,
+                            selection,
+                            modelOptions,
+                            getWorkflowModelCapabilities(
+                              serverConfigQuery.data?.providers ?? [],
+                              ProviderDriverKind.make(row.provider),
+                              selection,
+                            ),
+                          ),
+                        );
+                      }}
+                      trailing={
+                        index >= 2 ? (
+                          <Button
+                            type="button"
+                            size="icon-sm"
+                            variant="ghost"
+                            aria-label={`Remove ${workflowActorRowLabel(workflowType, index)}`}
+                            disabled={submitting}
+                            onClick={() => removeActor(row.key)}
+                          >
+                            <XIcon aria-hidden="true" className="size-3.5" />
+                          </Button>
+                        ) : null
+                      }
+                    />
+                  );
+                })}
+                <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 ps-27">
+                  <Button
+                    type="button"
+                    size="xs"
+                    variant="ghost"
+                    disabled={submitting || actorCount >= actorMax}
+                    onClick={addActor}
+                  >
+                    <PlusIcon aria-hidden="true" className="size-3.5" />
+                    {workflowAddActorLabel(workflowType)}
+                  </Button>
+                  {actorCount > 2 ? (
+                    <p className="text-2xs text-muted-foreground">
+                      {formatWorkflowTurnEstimate(
+                        workflowType,
+                        actorCount,
+                        workflowType === "investigation"
+                          ? investigationSelfReviewEnabled
+                          : selfReviewEnabled,
+                        readerReviewEnabled,
+                      )}
+                    </p>
+                  ) : null}
+                </div>
+                {actorsOverMax ? (
+                  <p role="alert" className="text-ui text-destructive-foreground">
+                    {workflowActorLimitMessage(workflowType)}
+                  </p>
+                ) : null}
                 <SlotRow
                   providers={serverConfigQuery.data?.providers}
                   label={
@@ -1121,6 +1217,9 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                   model={mergeSelection}
                   modelOptions={mergeModelOptions}
                   modelOptionsByProvider={modelOptionsByProvider}
+                  // The merge is a read-only turn for every workflow type.
+                  providerUnavailableReason={workflowProviderUnavailableReason}
+                  error={mergeProviderError}
                   onProviderModelChange={(provider, model) => {
                     setMergeProvider(provider);
                     setMergeModel(model);
@@ -1181,6 +1280,8 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                         model={readerSelection}
                         modelOptions={effectiveReaderSlot.modelOptions}
                         modelOptionsByProvider={modelOptionsByProvider}
+                        providerUnavailableReason={workflowProviderUnavailableReason}
+                        error={readerProviderError}
                         onProviderModelChange={(provider, model) =>
                           setReaderSlot({ provider, model })
                         }
@@ -1272,7 +1373,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                   />
                 </WorkflowOptionField>
               </WorkflowOptions>
-              {sameInvestigationInvestigatorModel ? (
+              {sameInvestigationInvestigatorModel && actorCount === 2 ? (
                 <p className="text-ui text-destructive-foreground">
                   Investigation workflows require two different investigator models.
                 </p>

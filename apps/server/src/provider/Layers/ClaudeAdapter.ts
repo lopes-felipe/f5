@@ -10840,6 +10840,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       capabilities: {
         sessionModelSwitch: "in-session",
         runtimeCapabilities: providerRuntimeCapabilities(PROVIDER),
+        enforcesReadOnlyWorkflow: true,
       },
       mcpApps,
       executeNativeOperation,

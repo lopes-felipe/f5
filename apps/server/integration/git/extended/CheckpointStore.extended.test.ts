@@ -23,7 +23,7 @@ const capture = (cwd: string) =>
   Effect.runPromise(
     Effect.gen(function* () {
       const store = yield* CheckpointStore;
-      yield* store.captureCheckpoint({
+      return yield* store.captureCheckpoint({
         cwd,
         checkpointRef: CheckpointRef.makeUnsafe("refs/t3/test-checkpoint"),
       });
@@ -133,7 +133,10 @@ it("preserves sparse exclusions and captures present files outside the cone", as
     fs.mkdirSync(path.join(cwd, "outside"));
     fs.writeFileSync(path.join(cwd, "outside", "new.txt"), "new");
     fs.writeFileSync(path.join(cwd, "included", "file.txt"), "edited");
-    await capture(cwd);
+    const captured = await capture(cwd);
+    // A sparse checkpoint does not follow the worktree alone, so no fingerprint may stand in.
+    expect(captured.reusable).toBe(false);
+    expect(captured.commitOid).toBe(git(cwd, "rev-parse", "refs/t3/test-checkpoint").trim());
     expect(git(cwd, "show", "refs/t3/test-checkpoint:excluded/file.txt")).toBe("excluded");
     expect(git(cwd, "show", "refs/t3/test-checkpoint:included/file.txt")).toBe("edited");
     expect(git(cwd, "show", "refs/t3/test-checkpoint:outside/new.txt")).toBe("new");

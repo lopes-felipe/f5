@@ -1,4 +1,4 @@
-import type { PlanningWorkflow } from "@t3tools/contracts";
+import type { WorkflowBranch } from "@t3tools/contracts";
 
 export type PlanningWorkflowBranchFailureStage = "authoring" | "reviews" | "revision";
 
@@ -7,7 +7,7 @@ export type PlanningWorkflowBranchFailureStage = "authoring" | "reviews" | "revi
  * authoring/revision failures on errorStage and review failures on reviews.
  */
 export function planningWorkflowBranchFailureStage(
-  branch: PlanningWorkflow["branchA"],
+  branch: WorkflowBranch,
 ): PlanningWorkflowBranchFailureStage | null {
   if (branch.status !== "error") {
     return null;

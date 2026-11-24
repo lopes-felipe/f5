@@ -1,2 +1,0 @@
-- Scheduled tasks can be moved to another conversation in the same project from the task editor.
-- New and existing tasks can target an existing conversation. Changing projects clears the destination, and moving a task cancels runs still waiting for its previous conversation.

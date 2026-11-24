@@ -1,6 +1,18 @@
 import { isDocumentWorkflow, documentReaderPassPhase } from "@t3tools/shared/documentWorkflow";
-import type { PlanningWorkflowSummary as PlanningWorkflow, ThreadId } from "@t3tools/contracts";
+import type {
+  PlanningWorkflowSummary as PlanningWorkflow,
+  ThreadId,
+  WorkflowBranch,
+  WorkflowParticipantId,
+} from "@t3tools/contracts";
 import { planningWorkflowBranchFailureStage } from "@t3tools/shared/planningWorkflow";
+import {
+  expectedPlanReviewEdges,
+  planningBranches,
+  planReviewReviewerBranchId,
+  workflowParticipantLabel,
+  workflowUsesMesh,
+} from "@t3tools/shared/workflowParticipants";
 import {
   threadLabelsFromPhases,
   type WorkflowTimelinePhase as TimelinePhase,
@@ -43,34 +55,31 @@ const IMPL_AT_OR_AFTER_CODE_REVIEWS_SAVED = new Set([
 // Phase derivation
 // ---------------------------------------------------------------------------
 
+type PlanningBranch = WorkflowBranch;
+
 function deriveAuthoringPhase(workflow: PlanningWorkflow): TimelinePhase {
-  const aStatus = workflow.branchA.status;
-  const bStatus = workflow.branchB.status;
+  const branches = planningBranches(workflow);
 
   // A persisted plan turn proves authoring completed even when a later-stage
   // failure left the legacy branch status at `error`.
-  const aCompleted =
-    workflow.branchA.planTurnId !== null || BRANCH_AT_OR_AFTER_PLAN_SAVED.has(aStatus);
-  const bCompleted =
-    workflow.branchB.planTurnId !== null || BRANCH_AT_OR_AFTER_PLAN_SAVED.has(bStatus);
-  const aError = planningWorkflowBranchFailureStage(workflow.branchA) === "authoring";
-  const bError = planningWorkflowBranchFailureStage(workflow.branchB) === "authoring";
+  const isCompleted = (branch: PlanningBranch) =>
+    branch.planTurnId !== null || BRANCH_AT_OR_AFTER_PLAN_SAVED.has(branch.status);
+  const isError = (branch: PlanningBranch) =>
+    planningWorkflowBranchFailureStage(branch) === "authoring";
 
   let state: PhaseState;
-  if (aError || bError) {
+  if (branches.some(isError)) {
     state = "error";
-  } else if (aCompleted && bCompleted) {
+  } else if (branches.every(isCompleted)) {
     state = "completed";
   } else {
     // Authoring starts immediately — never "pending"
     state = "active";
   }
 
-  function branchStepState(branch: PlanningWorkflow["branchA"]): StepState {
-    if (planningWorkflowBranchFailureStage(branch) === "authoring") return "error";
-    if (branch.planTurnId !== null || BRANCH_AT_OR_AFTER_PLAN_SAVED.has(branch.status)) {
-      return "completed";
-    }
+  function branchStepState(branch: PlanningBranch): StepState {
+    if (isError(branch)) return "error";
+    if (isCompleted(branch)) return "completed";
     return "active";
   }
 
@@ -78,37 +87,62 @@ function deriveAuthoringPhase(workflow: PlanningWorkflow): TimelinePhase {
     id: "authoring",
     label: "Authoring",
     state,
-    steps: [
-      {
-        key: "author-a",
-        label: "Branch A",
-        threadId: workflow.branchA.authorThreadId,
-        state: branchStepState(workflow.branchA),
-        modelSlot: workflow.branchA.authorSlot,
-      },
-      {
-        key: "author-b",
-        label: "Branch B",
-        threadId: workflow.branchB.authorThreadId,
-        state: branchStepState(workflow.branchB),
-        modelSlot: workflow.branchB.authorSlot,
-      },
-    ],
+    steps: branches.map((branch) => ({
+      key: `author-${branch.branchId}`,
+      label: `Branch ${workflowParticipantLabel(branch.branchId)}`,
+      threadId: branch.authorThreadId,
+      state: branchStepState(branch),
+      modelSlot: branch.authorSlot,
+    })),
+  };
+}
+
+function reviewStepState(status: string): StepState {
+  switch (status) {
+    case "running":
+      return "active";
+    case "completed":
+      return "completed";
+    case "error":
+      return "error";
+    default:
+      return "pending";
+  }
+}
+
+/**
+ * Review step identity. Two-author runs keep `review-cross-a` / "Review A Cross"; mesh runs
+ * name the reviewer: `review-cross-a-by-b` / "Review A by B".
+ */
+function reviewStepIdentity(
+  mesh: boolean,
+  reviewedId: WorkflowParticipantId,
+  slot: "cross" | "self",
+  reviewerId: WorkflowParticipantId,
+): { key: string; label: string } {
+  const reviewed = workflowParticipantLabel(reviewedId);
+  if (mesh && slot === "cross") {
+    return {
+      key: `review-cross-${reviewedId}-by-${reviewerId}`,
+      label: `Review ${reviewed} by ${workflowParticipantLabel(reviewerId)}`,
+    };
+  }
+  return {
+    key: `review-${slot}-${reviewedId}`,
+    label: `Review ${reviewed} ${slot === "cross" ? "Cross" : "Self"}`,
   };
 }
 
 function deriveReviewsPhase(workflow: PlanningWorkflow): TimelinePhase {
-  const aStatus = workflow.branchA.status;
-  const bStatus = workflow.branchB.status;
+  const branches = planningBranches(workflow);
+  const mesh = workflowUsesMesh(branches.length);
+  const statuses = branches.map((branch) => branch.status);
 
-  const aReviewsDone = BRANCH_AT_OR_AFTER_REVIEWS_SAVED.has(aStatus);
-  const bReviewsDone = BRANCH_AT_OR_AFTER_REVIEWS_SAVED.has(bStatus);
-
-  const allReviews = [...workflow.branchA.reviews, ...workflow.branchB.reviews];
+  const allReviews = branches.flatMap((branch) => branch.reviews);
   const hasReviewError = allReviews.some((r) => r.status === "error");
-  const hasLegacyReviewError =
-    planningWorkflowBranchFailureStage(workflow.branchA) === "reviews" ||
-    planningWorkflowBranchFailureStage(workflow.branchB) === "reviews";
+  const hasLegacyReviewError = branches.some(
+    (branch) => planningWorkflowBranchFailureStage(branch) === "reviews",
+  );
 
   // Also check actual review objects — on retry, branches may be reset to
   // "pending" while completed review threads are preserved.
@@ -119,13 +153,13 @@ function deriveReviewsPhase(workflow: PlanningWorkflow): TimelinePhase {
   let state: PhaseState;
   if (hasReviewError || hasLegacyReviewError) {
     state = "error";
-  } else if ((aReviewsDone && bReviewsDone) || allReviewsCompleted) {
+  } else if (
+    statuses.every((status) => BRANCH_AT_OR_AFTER_REVIEWS_SAVED.has(status)) ||
+    allReviewsCompleted
+  ) {
     state = "completed";
   } else if (
-    aStatus === "reviews_requested" ||
-    bStatus === "reviews_requested" ||
-    aStatus === "reviews_saved" ||
-    bStatus === "reviews_saved" ||
+    statuses.some((status) => status === "reviews_requested" || status === "reviews_saved") ||
     anyReviewRunning
   ) {
     state = "active";
@@ -138,100 +172,80 @@ function deriveReviewsPhase(workflow: PlanningWorkflow): TimelinePhase {
     state = "pending";
   }
 
-  // When real reviews exist, map them; otherwise show placeholders.
-  if (allReviews.length > 0) {
-    const reviewsWithBranch = [
-      ...workflow.branchA.reviews.map((r) => ({ ...r, branch: "A" as const })),
-      ...workflow.branchB.reviews.map((r) => ({ ...r, branch: "B" as const })),
-    ].toSorted((left, right) => {
-      if (left.slot !== right.slot) return left.slot === "cross" ? -1 : 1;
-      return left.branch.localeCompare(right.branch);
-    });
-
-    const steps: TimelineStep[] = reviewsWithBranch.map((review) => {
-      let stepState: StepState;
-      switch (review.status) {
-        case "running":
-          stepState = "active";
-          break;
-        case "completed":
-          stepState = "completed";
-          break;
-        case "error":
-          stepState = "error";
-          break;
-        default:
-          stepState = "pending";
-      }
-
-      const slotLabel = review.slot === "cross" ? "Cross" : "Self";
-      return {
-        key: `review-${review.slot}-${review.branch.toLowerCase()}`,
-        label: `Review ${review.branch} ${slotLabel}`,
-        threadId: review.threadId,
-        state: stepState,
-        modelSlot: null,
-      };
-    });
-
-    return { id: "reviews", label: "Reviews", state, steps };
-  }
-
-  // Placeholders
-  const placeholder = (key: string, label: string): TimelineStep => ({
-    key,
-    label,
-    threadId: null,
-    state: "pending",
-    modelSlot: null,
+  // Real reviews where they exist; a placeholder for every other expected review.
+  const entries = branches.flatMap((branch) => {
+    const expected = expectedPlanReviewEdges(workflow, branch.branchId);
+    const stored = branch.reviews.map((review) => ({
+      reviewedId: branch.branchId,
+      slot: review.slot,
+      reviewerId: planReviewReviewerBranchId(workflow, branch.branchId, review),
+      threadId: review.threadId as ThreadId | null,
+      state: reviewStepState(review.status),
+    }));
+    // Two-author runs show placeholders only before any review exists, as before.
+    const missing =
+      !mesh && allReviews.length > 0
+        ? []
+        : expected
+            .filter(
+              (edge) =>
+                !stored.some(
+                  (review) =>
+                    review.slot === edge.slot && review.reviewerId === edge.reviewerBranchId,
+                ),
+            )
+            .map((edge) => ({
+              reviewedId: branch.branchId,
+              slot: edge.slot,
+              reviewerId: edge.reviewerBranchId,
+              threadId: null,
+              state: "pending" as StepState,
+            }));
+    return [...stored, ...missing];
   });
-  const steps: TimelineStep[] = [
-    placeholder("review-cross-a", "Review A Cross"),
-    placeholder("review-cross-b", "Review B Cross"),
-  ];
-
-  if (workflow.selfReviewEnabled) {
-    steps.push(
-      placeholder("review-self-a", "Review A Self"),
-      placeholder("review-self-b", "Review B Self"),
-    );
-  }
+  const steps: TimelineStep[] = entries
+    .toSorted((left, right) => {
+      if (left.slot !== right.slot) return left.slot === "cross" ? -1 : 1;
+      return (
+        left.reviewedId.localeCompare(right.reviewedId) ||
+        left.reviewerId.localeCompare(right.reviewerId)
+      );
+    })
+    .map((entry) => ({
+      ...reviewStepIdentity(mesh, entry.reviewedId, entry.slot, entry.reviewerId),
+      threadId: entry.threadId,
+      state: entry.state,
+      modelSlot: null,
+    }));
 
   return { id: "reviews", label: "Reviews", state, steps };
 }
 
 function deriveRevisionPhase(workflow: PlanningWorkflow): TimelinePhase {
-  const aStatus = workflow.branchA.status;
-  const bStatus = workflow.branchB.status;
-
-  const aRevised = BRANCH_AT_OR_AFTER_REVISED.has(aStatus);
-  const bRevised = BRANCH_AT_OR_AFTER_REVISED.has(bStatus);
-  const aRevising = aStatus === "revising";
-  const bRevising = bStatus === "revising";
-  const aReviewsDone = BRANCH_AT_OR_AFTER_REVIEWS_SAVED.has(aStatus);
-  const bReviewsDone = BRANCH_AT_OR_AFTER_REVIEWS_SAVED.has(bStatus);
-  const aRevisionError = planningWorkflowBranchFailureStage(workflow.branchA) === "revision";
-  const bRevisionError = planningWorkflowBranchFailureStage(workflow.branchB) === "revision";
-  const hasErrorInRevision = aRevisionError || bRevisionError;
+  const branches = planningBranches(workflow);
+  const isRevised = (branch: PlanningBranch) => BRANCH_AT_OR_AFTER_REVISED.has(branch.status);
+  const hasErrorInRevision = branches.some(
+    (branch) => planningWorkflowBranchFailureStage(branch) === "revision",
+  );
 
   let state: PhaseState;
   if (hasErrorInRevision) {
     state = "error";
-  } else if (aRevised && bRevised) {
+  } else if (branches.every(isRevised)) {
     state = "completed";
-  } else if (aRevising || bRevising) {
+  } else if (branches.some((branch) => branch.status === "revising")) {
     state = "active";
-  } else if (aReviewsDone && bReviewsDone) {
-    // Both branches finished reviews but haven't started revising yet —
+  } else if (branches.every((branch) => BRANCH_AT_OR_AFTER_REVIEWS_SAVED.has(branch.status))) {
+    // Every branch finished reviews but none started revising yet —
     // revision is the next stage, so show it as active.
     state = "active";
   } else {
     state = "pending";
   }
 
-  function branchRevisionStepState(branch: PlanningWorkflow["branchA"]): StepState {
+  function branchRevisionStepState(branch: PlanningBranch): StepState {
     if (planningWorkflowBranchFailureStage(branch) === "revision") return "error";
-    if (BRANCH_AT_OR_AFTER_REVISED.has(branch.status)) return "completed";
+    if (isRevised(branch)) return "completed";
     if (branch.status === "revising") return "active";
     return "pending";
   }
@@ -240,22 +254,13 @@ function deriveRevisionPhase(workflow: PlanningWorkflow): TimelinePhase {
     id: "revision",
     label: "Revision",
     state,
-    steps: [
-      {
-        key: "revision-a",
-        label: "Branch A",
-        threadId: workflow.branchA.authorThreadId,
-        state: branchRevisionStepState(workflow.branchA),
-        modelSlot: workflow.branchA.authorSlot,
-      },
-      {
-        key: "revision-b",
-        label: "Branch B",
-        threadId: workflow.branchB.authorThreadId,
-        state: branchRevisionStepState(workflow.branchB),
-        modelSlot: workflow.branchB.authorSlot,
-      },
-    ],
+    steps: branches.map((branch) => ({
+      key: `revision-${branch.branchId}`,
+      label: `Branch ${workflowParticipantLabel(branch.branchId)}`,
+      threadId: branch.authorThreadId,
+      state: branchRevisionStepState(branch),
+      modelSlot: branch.authorSlot,
+    })),
   };
 }
 

@@ -38,6 +38,22 @@ export class AdmissionError extends Error {
   }
 }
 
+/** An explicit empty `additionalReviewers` means the same as omitting it. */
+export function normalizePortReviewRequest<
+  R extends { readonly additionalReviewers?: ReadonlyArray<unknown> | undefined },
+>(review: R): R;
+export function normalizePortReviewRequest<
+  R extends { readonly additionalReviewers?: ReadonlyArray<unknown> | undefined },
+>(review: R | null | undefined): R | null | undefined;
+export function normalizePortReviewRequest<
+  R extends { readonly additionalReviewers?: ReadonlyArray<unknown> | undefined },
+>(review: R | null | undefined): R | null | undefined {
+  if (!review || review.additionalReviewers === undefined || review.additionalReviewers.length > 0)
+    return review;
+  const { additionalReviewers: _empty, ...rest } = review;
+  return rest as R;
+}
+
 export function portArgsHash(
   input: Pick<
     UpstreamStartPortInput,
@@ -49,7 +65,7 @@ export function portArgsHash(
     grouping: input.grouping,
     modelSelection: input.modelSelection,
     runtimeMode: input.runtimeMode,
-    ...(input.review == null ? {} : { review: input.review }),
+    ...(input.review == null ? {} : { review: normalizePortReviewRequest(input.review) }),
     ...(input.grouping === "batched"
       ? { batchSize: input.batchSize ?? UPSTREAM_PORT_BATCH_SIZE_DEFAULT }
       : {}),

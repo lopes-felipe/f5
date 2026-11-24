@@ -33,6 +33,18 @@ it("uses Codex's main weekly quota ahead of model-specific weekly limits", () =>
   ).toBe(weekly);
 });
 
+it("shows the tightest weekly pool when no account-wide weekly quota exists", () => {
+  const shared = window("3p-weekly", 60);
+  expect(
+    sidebarWeeklyUsageWindow([
+      window("gemini-weekly", 10),
+      window("gemini-5h", 95, 300),
+      shared,
+      window("unknown-weekly", null),
+    ]),
+  ).toBe(shared);
+});
+
 it("retains unknown weekly consumption and does not substitute a short-term quota", () => {
   expect(sidebarWeeklyUsageWindow([window("seven_day", null)])?.usedPercent).toBeNull();
   expect(sidebarWeeklyUsageWindow([window("five_hour", 80, 300)])).toBeUndefined();

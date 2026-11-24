@@ -303,6 +303,17 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
       });
     }),
   );
+
+  it.effect("drops a line position before opening in the file manager", () =>
+    Effect.gen(function* () {
+      const launch = yield* resolveEditorLaunch(
+        { cwd: "/tmp/workspace/src/app.ts:12:3", editor: "file-manager" },
+        "darwin",
+        NO_EDITOR_ENV,
+      );
+      assert.deepEqual(launch, { command: "open", args: ["/tmp/workspace/src/app.ts"] });
+    }),
+  );
 });
 
 it("builds platform-specific file reveal commands", () => {

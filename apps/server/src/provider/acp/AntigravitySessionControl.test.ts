@@ -14,6 +14,9 @@ import {
   applyAntigravityModelSelection,
   applyAntigravitySessionMode,
   applyAntigravityTextGenerationSelection,
+  antigravityReadOnlyWorkflowDecision,
+  antigravityWorkflowRuntimeMode,
+  enterAntigravityWorkflowPlanMode,
   lowestAntigravityThinkingLevel,
   makeAntigravitySelectionState,
 } from "./AntigravityAcpSupport.ts";
@@ -393,6 +396,70 @@ describe("Antigravity session modes", () => {
   });
 });
 
+describe("Antigravity read-only workflow turns", () => {
+  const decide = (
+    toolCall: Parameters<typeof antigravityReadOnlyWorkflowDecision>[0]["toolCall"],
+    computerRequest = false,
+  ) => antigravityReadOnlyWorkflowDecision({ toolCall, computerRequest });
+
+  it("allows read, search, think and fetch tools", () => {
+    for (const kind of ["read", "search", "think", "fetch"])
+      expect(decide({ kind, title: "view_file", rawInput: { path: "README.md" } })).toBe("allow");
+  });
+
+  it("denies edits, deletes, moves, commands and unknown or missing kinds", () => {
+    for (const kind of ["edit", "delete", "move", "execute", "switch_mode", "other", "", null])
+      expect(decide({ kind, title: "tool" })).toBe("deny");
+    expect(decide({ title: "tool" })).toBe("deny");
+  });
+
+  it("denies computer requests and MCP tools even when their kind reads as read-only", () => {
+    expect(decide({ kind: "read", title: "screenshot" }, true)).toBe("deny");
+    expect(decide({ kind: "read", title: "mcp__github__get_issue" })).toBe("deny");
+    expect(decide({ kind: "fetch", title: "fetch", rawInput: { serverName: "github" } })).toBe(
+      "deny",
+    );
+  });
+
+  it("forces approval-required only for workflow turns", () => {
+    expect(antigravityWorkflowRuntimeMode("full-access", "unattended-readonly")).toBe(
+      "approval-required",
+    );
+    expect(antigravityWorkflowRuntimeMode("auto", "attended-readonly")).toBe("approval-required");
+    expect(antigravityWorkflowRuntimeMode("full-access", undefined)).toBe("full-access");
+  });
+
+  const enterPlan = (runtime: ReturnType<typeof modeRuntime>["runtime"]) =>
+    run(enterAntigravityWorkflowPlanMode({ runtime, mapError: (cause) => cause }));
+
+  it("enters Plan before a workflow prompt and confirms it", async () => {
+    const session = modeRuntime({ modeState: modes("default", "default", "plan") });
+    await expect(enterPlan(session.runtime)).resolves.toBe("plan");
+    expect(session.writes).toEqual(["session/set_mode=plan"]);
+  });
+
+  it("fails before anything is sent when Plan is not offered", async () => {
+    const session = modeRuntime({ modeState: modes("auto", "default", "auto") });
+    await expect(enterPlan(session.runtime)).rejects.toThrow("does not offer Plan mode");
+    expect(session.writes).toEqual([]);
+  });
+
+  it("fails when the session cannot report its mode afterwards", async () => {
+    const session = modeRuntime({});
+    await expect(enterPlan(session.runtime)).rejects.toThrow();
+    const unconfirmed = modeRuntime({ modeState: modes("default", "default", "plan") });
+    let reads = 0;
+    const forgetting = {
+      ...unconfirmed.runtime,
+      getModeState: Effect.suspend(() =>
+        // The mode state disappears once the switch has been written.
+        reads++ < 2 ? unconfirmed.runtime.getModeState : Effect.succeed(undefined),
+      ),
+    };
+    await expect(enterPlan(forgetting)).rejects.toThrow("could not confirm Plan mode");
+  });
+});
+
 describe("Antigravity approval policy", () => {
   let root: string;
   let outside: string;
@@ -490,20 +557,54 @@ describe("Antigravity approval policy", () => {
       });
   });
 
-  it("allows everything under Full access except Plan and computer use", () => {
+  it("allows everything under Full access except computer use", () => {
     expect(decide("full-access", command)).toEqual({ kind: "allow" });
-    expect(decide("full-access", command, { sessionMode: "plan" })).toEqual({
-      kind: "ask",
-      applyThreadGrants: false,
-    });
+    expect(decide("full-access", edit(NodePath.join(root, "a.ts")))).toEqual({ kind: "allow" });
     expect(decide("full-access", command, { computerRequest: true })).toEqual({
       kind: "ask",
       applyThreadGrants: false,
     });
-    // A Plan turn whose native mode still reports `default` keeps Plan's rules.
-    expect(decide("full-access", command, { sessionMode: "default", planRequested: true })).toEqual(
-      { kind: "ask", applyThreadGrants: false },
-    );
+  });
+
+  it("lets Plan commands follow the access mode but asks for every other kind", () => {
+    // A Plan turn whose native mode still reports `default` gets Plan's rules too.
+    for (const plan of [{ sessionMode: "plan" }, { sessionMode: "default", planRequested: true }]) {
+      for (const kind of ["execute", "read", "search", "think"]) {
+        expect(decide("full-access", { ...command, kind }, plan), kind).toEqual({
+          kind: "allow",
+        });
+        expect(decide("approval-required", { ...command, kind }, plan), kind).toEqual({
+          kind: "ask",
+          applyThreadGrants: true,
+        });
+      }
+      // `kind` comes from the agent: a write tool reported as `other`, with no kind or with a
+      // kind F5 doesn't know still asks.
+      const writeTool = {
+        title: "write_to_file",
+        rawInput: { TargetFile: NodePath.join(root, "a.ts") },
+      };
+      for (const toolCall of [
+        ...["edit", "delete", "move", "other", "fetch", "switch_mode", "future_kind"].map(
+          (kind) => ({ ...writeTool, kind }),
+        ),
+        writeTool,
+        { ...writeTool, kind: null },
+      ])
+        expect(decide("full-access", toolCall, plan), JSON.stringify(toolCall)).toEqual({
+          kind: "ask",
+          applyThreadGrants: false,
+        });
+      // Auto-accept edits doesn't approve workspace edits in Plan either.
+      expect(decide("auto-accept-edits", edit(NodePath.join(root, "a.ts")), plan)).toEqual({
+        kind: "ask",
+        applyThreadGrants: false,
+      });
+      expect(decide("full-access", command, { ...plan, computerRequest: true })).toEqual({
+        kind: "ask",
+        applyThreadGrants: false,
+      });
+    }
   });
 
   it("requires every edit target to be inside the canonical workspace", () => {

@@ -3,13 +3,20 @@ import * as FS from "node:fs";
 // Linux VM profiles run only on macOS: every path here is POSIX.
 import { posix as Path } from "node:path";
 import { parseRelease, selectArtifact } from "@t3tools/shared/cliRelease";
+import { parseVmBackendPin, VM_BACKEND_MANIFEST_NAME } from "@t3tools/shared/vmBackendPin";
 import imageLock from "../../vm-guest/image.lock.json";
 import { isolatedBackendCommand } from "../backendComputerIsolation";
 import { streamBackendChannel, type BackendChannel } from "../computer/BackendChannel";
 import type { ProfileBackendLauncher } from "../profileBackendLauncher";
 import { parseGuestImagePin, type GuestImagePin } from "./guestImage";
-import { guestImageCacheDir, limaHomeFor } from "./limaInstanceConfig";
-import { VM_FORWARD_READY, VM_SHUTDOWN_BUDGET_MS, type VmSupervisorConfig } from "./vmSupervisor";
+import { backendArchiveCacheDir, guestImageCacheDir, limaHomeFor } from "./limaInstanceConfig";
+import {
+  VM_FORWARD_READY,
+  VM_SHUTDOWN_BUDGET_MS,
+  VM_STARTUP_PROGRESS,
+  type VmBackendAsset,
+  type VmSupervisorConfig,
+} from "./vmSupervisor";
 
 /**
  * Linux VM profiles are behind a hidden flag until the preview ships: without
@@ -17,7 +24,11 @@ import { VM_FORWARD_READY, VM_SHUTDOWN_BUDGET_MS, type VmSupervisorConfig } from
  */
 export const LINUX_VM_EXPERIMENT_ENV = "F5_EXPERIMENTAL_LINUX_VM";
 
-/** First start downloads the image, provisions the VM and installs the backend. */
+/**
+ * First start downloads the image, provisions the VM and installs the backend. Download
+ * progress restarts the window (`VM_STARTUP_PROGRESS`), so it bounds a stall, not a slow
+ * connection.
+ */
 export const VM_READINESS_TIMEOUT_MS = 15 * 60_000;
 
 /** Running VMs, within the overall backend cap. Each defaults to 4 GiB of guest memory. */
@@ -59,14 +70,16 @@ export class VmSlotReservations {
 export const VM_STOP_GRACE_MS = 10_000 + VM_SHUTDOWN_BUDGET_MS + 20_000;
 
 /**
- * Holds a supervisor channel's messages back until its `VM_FORWARD_READY` frame, the first
- * thing the supervisor writes. `reachable` resolves then: until it does, the profile's port
- * may belong to any local process, so main sends it no authenticated request. Anything else
- * before that frame breaks the protocol and closes the channel.
+ * Holds a supervisor channel's messages back until its `VM_FORWARD_READY` frame.
+ * `reachable` resolves then: until it does, the profile's port may belong to any local
+ * process, so main sends it no authenticated request. Before it, only the supervisor writes
+ * the channel, and only `VM_STARTUP_PROGRESS` frames, each reported to `onProgress`;
+ * anything else breaks the protocol and closes the channel.
  */
 export function awaitForwardReady(
   channel: BackendChannel,
   incarnation: string,
+  onProgress: () => void = () => undefined,
 ): { readonly channel: BackendChannel; readonly reachable: Promise<void> } {
   const listeners: Array<(raw: unknown) => void> = [];
   let ready = false;
@@ -81,6 +94,10 @@ export function awaitForwardReady(
       return;
     }
     const message = raw as { type?: unknown; incarnation?: unknown } | null;
+    if (message?.incarnation === incarnation && message.type === VM_STARTUP_PROGRESS) {
+      onProgress();
+      return;
+    }
     if (message?.type === VM_FORWARD_READY && message.incarnation === incarnation) {
       ready = true;
       settle.resolve();
@@ -110,20 +127,23 @@ export function awaitForwardReady(
 
 export interface VmLaunchAssets {
   readonly limactl: string;
-  readonly backend: { readonly archive: string; readonly sha256: string; readonly version: string };
+  readonly backend: VmBackendAsset;
   readonly imagePin: GuestImagePin;
 }
+
+export { VM_BACKEND_MANIFEST_NAME };
 
 export type VmLaunchAssetsResolution =
   | { readonly ok: true; readonly assets: VmLaunchAssets }
   | { readonly ok: false; readonly reason: string };
 
 /**
- * The bundled Lima, linux-arm64 backend archive and pinned guest image. Development builds
- * may point at their own with F5_VM_LIMACTL, F5_VM_BACKEND_ARCHIVE (the archive's manifest
- * JSON sits next to it, as `dist:cli:archive` writes it) and F5_VM_IMAGE_URL,
+ * The bundled Lima, the linux-arm64 backend pin and the pinned guest image. Development
+ * builds may point at their own with F5_VM_LIMACTL, F5_VM_BACKEND_ARCHIVE (a local archive;
+ * its manifest JSON sits next to it, as `dist:cli:archive` writes it) and F5_VM_IMAGE_URL,
  * F5_VM_IMAGE_SHA256 and F5_VM_IMAGE_SIZE. Packaged builds ignore them: they use only the
- * bundled Lima and archive and an image pinned to this repository's releases.
+ * bundled Lima, a backend pinned to this build's own release asset, and an image pinned to
+ * this repository's releases.
  */
 export function resolveVmLaunchAssets(input: {
   readonly env: NodeJS.ProcessEnv;
@@ -131,10 +151,11 @@ export function resolveVmLaunchAssets(input: {
   readonly arch: string;
   readonly resourcesPath: string;
   readonly packaged: boolean;
+  /** The app's version; a bundled backend pin must be for exactly this release. */
+  readonly appVersion: string;
   readonly lock?: unknown;
   readonly exists?: (path: string) => boolean;
   readonly readFile?: (path: string) => string;
-  readonly readDir?: (path: string) => string[];
 }): VmLaunchAssetsResolution {
   const exists = input.exists ?? FS.existsSync;
   const readFile = input.readFile ?? ((path: string) => FS.readFileSync(path, "utf8"));
@@ -150,31 +171,11 @@ export function resolveVmLaunchAssets(input: {
   if (!Path.isAbsolute(limactl) || !exists(limactl))
     return { ok: false, reason: `Lima is missing (${limactl}).` };
 
-  const vmDir = Path.join(input.resourcesPath, "vm");
-  let archive: string | null | undefined = override("F5_VM_BACKEND_ARCHIVE");
-  try {
-    archive ??= findBundledArchive(vmDir, exists, input.readDir ?? FS.readdirSync);
-  } catch (error) {
-    return {
-      ok: false,
-      reason: `The bundled VM assets could not be read: ${error instanceof Error ? error.message : String(error)}`,
-    };
-  }
-  if (!archive || !Path.isAbsolute(archive) || !exists(archive))
-    return { ok: false, reason: "The linux-arm64 backend archive is missing." };
-  let backend: VmLaunchAssets["backend"];
-  try {
-    const release = parseRelease(JSON.parse(readFile(archive.replace(/\.tar\.gz$/, ".json"))));
-    const artifact = selectArtifact(release, "linux-arm64");
-    if (Path.basename(new URL(artifact.url).pathname) !== Path.basename(archive))
-      throw new Error("The manifest names a different archive.");
-    backend = { archive, sha256: artifact.sha256, version: release.version };
-  } catch (error) {
-    return {
-      ok: false,
-      reason: `The linux-arm64 backend manifest is invalid: ${error instanceof Error ? error.message : String(error)}`,
-    };
-  }
+  const archive = override("F5_VM_BACKEND_ARCHIVE");
+  const backend = archive
+    ? localBackend(archive, exists, readFile)
+    : bundledBackend(Path.join(input.resourcesPath, "vm"), input.appVersion, exists, readFile);
+  if (!backend.ok) return backend;
 
   let imagePin: GuestImagePin | null;
   try {
@@ -195,19 +196,66 @@ export function resolveVmLaunchAssets(input: {
     return { ok: false, reason: error instanceof Error ? error.message : String(error) };
   }
   if (!imagePin) return { ok: false, reason: "This build has no pinned guest image." };
-  return { ok: true, assets: { limactl, backend, imagePin } };
+  return { ok: true, assets: { limactl, backend: backend.asset, imagePin } };
 }
 
-function findBundledArchive(
-  vmDir: string,
+type BackendResolution =
+  | { readonly ok: true; readonly asset: VmBackendAsset }
+  | { readonly ok: false; readonly reason: string };
+
+const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+/** Development: a local archive with its `dist:cli:archive` manifest next to it. */
+function localBackend(
+  archive: string,
   exists: (path: string) => boolean,
-  readDir: (path: string) => string[],
-): string | null {
-  if (!exists(vmDir)) return null;
-  const archives = readDir(vmDir).filter((name) =>
-    /^f5-[0-9A-Za-z.+-]+-linux-arm64\.tar\.gz$/.test(name),
-  );
-  return archives.length === 1 ? Path.join(vmDir, archives[0]!) : null;
+  readFile: (path: string) => string,
+): BackendResolution {
+  if (!Path.isAbsolute(archive) || !exists(archive))
+    return { ok: false, reason: "The linux-arm64 backend archive is missing." };
+  try {
+    const release = parseRelease(JSON.parse(readFile(archive.replace(/\.tar\.gz$/, ".json"))));
+    const artifact = selectArtifact(release, "linux-arm64");
+    if (Path.basename(new URL(artifact.url).pathname) !== Path.basename(archive))
+      throw new Error("The manifest names a different archive.");
+    return { ok: true, asset: { archive, sha256: artifact.sha256, version: release.version } };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: `The linux-arm64 backend manifest is invalid: ${errorText(error)}`,
+    };
+  }
+}
+
+/**
+ * A packaged build's backend: the pin bundled at build time, for exactly this app version,
+ * downloaded only from this version's release asset.
+ */
+function bundledBackend(
+  vmDir: string,
+  appVersion: string,
+  exists: (path: string) => boolean,
+  readFile: (path: string) => string,
+): BackendResolution {
+  const manifest = Path.join(vmDir, VM_BACKEND_MANIFEST_NAME);
+  if (!exists(manifest))
+    return { ok: false, reason: "This build has no pinned linux-arm64 backend." };
+  try {
+    const pin = parseVmBackendPin(JSON.parse(readFile(manifest)), appVersion);
+    return {
+      ok: true,
+      asset: {
+        version: pin.version,
+        sha256: pin.sha256,
+        download: { url: pin.url, size: pin.size },
+      },
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: `The bundled linux-arm64 backend pin is invalid: ${errorText(error)}`,
+    };
+  }
 }
 
 type Spawn = (
@@ -247,6 +295,7 @@ export function vmBackendLauncher(options: {
         imageCacheDir: guestImageCacheDir(options.stateDir),
         imagePin: options.assets.imagePin,
         backend: options.assets.backend,
+        backendCacheDir: backendArchiveCacheDir(options.stateDir),
         startupErrorPath: options.startupErrorPath(request.profileId),
       };
       const isolated = isolatedBackendCommand(
@@ -278,6 +327,7 @@ export function vmBackendLauncher(options: {
       const { channel, reachable } = awaitForwardReady(
         streamBackendChannel({ input: child.stdout!, output: child.stdin! }),
         request.incarnation,
+        () => request.onStartupProgress?.(),
       );
       return { process: child, channel, reachable, stdoutIsLog: false };
     },

@@ -68,6 +68,13 @@ import {
 } from "@t3tools/shared/serverSettings";
 import { ServerSecretStoreLive } from "./auth/Layers/ServerSecretStore.ts";
 import { ServerSecretStore } from "./auth/Services/ServerSecretStore.ts";
+import { cursorSdkHarnessHostAvailability } from "./provider/cursor/cursorHarnessDescriptor.ts";
+import {
+  CURSOR_HARNESS_PINNED_MIGRATION,
+  keepCursorHarnessPin,
+  pinCursorHarnessInDocument,
+  pinCursorHarnessInPatch,
+} from "./provider/cursor/cursorHarnessSettings.ts";
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -478,7 +485,9 @@ const makeServerSettings = Effect.gen(function* () {
       parsed.value &&
       typeof parsed.value === "object" &&
       !Array.isArray(parsed.value)
-        ? migrateComputerDefaults(parsed.value as Record<string, unknown>)
+        ? pinCursorHarnessInDocument(
+            migrateComputerDefaults(parsed.value as Record<string, unknown>),
+          )
         : undefined;
     const decoded = document
       ? Schema.decodeUnknownExit(ServerSettings)(document)
@@ -710,8 +719,8 @@ const makeServerSettings = Effect.gen(function* () {
         });
       }
       const unknownFields = yield* Ref.get(unknownFieldsRef);
-      const sparseSettings =
-        stripDefaultServerSettings(
+      const sparseSettings = keepCursorHarnessPin(
+        (stripDefaultServerSettings(
           {
             ...settings,
             clientSettingMigrations: {
@@ -719,10 +728,15 @@ const makeServerSettings = Effect.gen(function* () {
               [COMPUTER_DEFAULTS_MIGRATION]:
                 settings.clientSettingMigrations[COMPUTER_DEFAULTS_MIGRATION] ??
                 new Date().toISOString(),
+              [CURSOR_HARNESS_PINNED_MIGRATION]:
+                settings.clientSettingMigrations[CURSOR_HARNESS_PINNED_MIGRATION] ??
+                new Date().toISOString(),
             },
           },
           DEFAULT_SERVER_SETTINGS,
-        ) ?? {};
+        ) ?? {}) as Record<string, unknown>,
+        settings.providers.cursor.harness,
+      );
 
       return yield* writeFileStringAtomically({
         filePath: settingsPath,
@@ -997,6 +1011,17 @@ const makeServerSettings = Effect.gen(function* () {
                 }),
             });
           }
+          const harnessPinned = pinCursorHarnessInPatch(
+            current,
+            patch,
+            cursorSdkHarnessHostAvailability(serverConfig),
+          );
+          if (!harnessPinned.ok)
+            return yield* new ServerSettingsError({
+              settingsPath: serverConfig.settingsPath ?? "<memory>",
+              detail: harnessPinned.issue,
+            });
+          patch = harnessPinned.patch;
           const providerIds = new Set([
             ...Object.keys(current.providerInstances),
             ...Object.keys(patch.providerInstances ?? {}),

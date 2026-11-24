@@ -1,1 +1,0 @@
-- Add pull request comments to chat as context without asking the agent to fix them. Use the adjacent composer, select a linked conversation, or create a conversation in a local project.
