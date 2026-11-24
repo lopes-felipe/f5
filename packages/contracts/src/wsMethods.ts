@@ -134,6 +134,7 @@ export const WS_METHODS = {
   serverGetProviderInventory: "server.getProviderInventory",
   serverCodexConfiguration: "server.codexConfiguration",
   serverSaveProviderFeedback: "server.saveProviderFeedback",
+  serverTrustProviderHooks: "server.trustProviderHooks",
   serverUpsertKeybinding: "server.upsertKeybinding",
   serverAddKeybinding: "server.addKeybinding",
   serverUpdateKeybinding: "server.updateKeybinding",

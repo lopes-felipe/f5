@@ -2,13 +2,15 @@
  * Read-only inventory of one Codex instance through a short-lived app-server
  * control client: `hooks/list`, `plugin/list` (installed, local marketplaces
  * only), `app/list`, and MCP servers from the `config/read` layers. The client runs with the instance's own CODEX_HOME,
- * so entries never come from another profile. F5 never edits them.
+ * so entries never come from another profile. F5 never edits them; approving a
+ * hook's current contents goes through Codex's own API (see `codexHookTrust`).
  *
  * @module provider/codexInventory
  */
 import type {
   ProviderInventoryConnector,
   ProviderInventoryHook,
+  ProviderInventoryHookTrustStatus,
   ProviderInventoryPlugin,
   ProviderInventorySource,
 } from "@t3tools/contracts";
@@ -73,6 +75,17 @@ export function codexInventorySource(value: unknown): ProviderInventorySource {
   }
 }
 
+/** `HookTrustStatus`, or undefined for CLIs that predate hook trust (or a new value). */
+export function codexHookTrustStatus(value: unknown): ProviderInventoryHookTrustStatus | undefined {
+  return value === "managed" || value === "trusted" || value === "modified" || value === "untrusted"
+    ? value
+    : undefined;
+}
+
+/**
+ * Inventory rows from `hooks/list`. `currentHash` is deliberately not copied:
+ * the browser names hooks by key, and the server re-reads the hash itself.
+ */
 export function parseCodexHooks(
   entries: ReadonlyArray<unknown>,
 ): ReadonlyArray<ProviderInventoryHook> {
@@ -84,11 +97,14 @@ export function parseCodexHooks(
       if (!isRecord(hook)) continue;
       const event = bounded(hook.eventName);
       if (!event) continue;
-      const key = typeof hook.key === "string" ? hook.key : undefined;
-      if (key) {
-        if (seen.has(key)) continue;
-        seen.add(key);
+      const rawKey = typeof hook.key === "string" ? hook.key : undefined;
+      if (rawKey) {
+        if (seen.has(rawKey)) continue;
+        seen.add(rawKey);
       }
+      // Only keys that round-trip unchanged through a trust request are exposed.
+      const key = rawKey && bounded(rawKey) === rawKey ? rawKey : undefined;
+      const trustStatus = codexHookTrustStatus(hook.trustStatus);
       const matcher = bounded(hook.matcher);
       const handlerType = bounded(hook.handlerType);
       const program = hookProgramName(hook.command);
@@ -107,6 +123,8 @@ export function parseCodexHooks(
         ...(sourcePath ? { sourcePath } : {}),
         ...(typeof hook.enabled === "boolean" ? { enabled: hook.enabled } : {}),
         ...(pluginId ? { pluginId } : {}),
+        ...(key ? { key } : {}),
+        ...(trustStatus ? { trustStatus } : {}),
       });
     }
   }

@@ -2,16 +2,25 @@ import type {
   ProjectId,
   ProviderInstanceId,
   ProviderInstanceInventory,
+  ProviderInventoryHook,
   ProviderInventorySource,
 } from "@t3tools/contracts";
 import { withoutScratchProjects } from "@t3tools/shared/scratchProject";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronDownIcon, RotateCwIcon } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode, type Ref } from "react";
 
 import { cn } from "../../lib/utils";
 import { ensureNativeApi } from "../../nativeApi";
 import { useStore } from "../../store";
+import {
+  AlertDialog,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogPopup,
+  AlertDialogTitle,
+} from "../ui/alert-dialog";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
@@ -46,13 +55,24 @@ function InventoryGroup(props: {
   readonly title: string;
   readonly empty: string;
   readonly children: ReadonlyArray<ReactNode>;
+  readonly action?: ReactNode;
+  readonly error?: string | null;
+  readonly groupRef?: Ref<HTMLDivElement>;
 }) {
   return (
-    <div className="space-y-1.5">
-      <h4 className="text-xs font-medium text-foreground">
-        {props.title}
-        <span className="ml-1.5 text-muted-foreground">{props.children.length}</span>
-      </h4>
+    <div className="space-y-1.5" ref={props.groupRef}>
+      <div className="flex items-center justify-between gap-2">
+        <h4 className="text-xs font-medium text-foreground">
+          {props.title}
+          <span className="ml-1.5 text-muted-foreground">{props.children.length}</span>
+        </h4>
+        {props.action}
+      </div>
+      {props.error ? (
+        <p role="alert" className="whitespace-pre-wrap break-words text-xs text-destructive">
+          {props.error}
+        </p>
+      ) : null}
       {props.children.length === 0 ? (
         <p className="text-xs text-muted-foreground">{props.empty}</p>
       ) : (
@@ -70,6 +90,8 @@ function InventoryRow(props: {
   readonly path?: string | undefined;
   readonly source: ProviderInventorySource;
   readonly disabled?: boolean;
+  readonly badge?: ReactNode;
+  readonly action?: ReactNode;
 }) {
   return (
     <li className={cn("flex items-start gap-2 px-2.5 py-1.5", props.disabled && "opacity-60")}>
@@ -84,12 +106,220 @@ function InventoryRow(props: {
           </div>
         ) : null}
       </div>
+      {props.badge}
       <SourceBadge source={props.source} />
+      {props.action}
     </li>
   );
 }
 
-function InventoryBody({ inventory }: { readonly inventory: ProviderInstanceInventory }) {
+const HOOK_EVENT_LABELS: Record<string, string> = {
+  preModelRequest: "Before model request",
+  postModelRequest: "After model request",
+};
+
+function hookEventLabel(event: string): string {
+  return HOOK_EVENT_LABELS[event] ?? event;
+}
+
+/** Hooks the provider will not run until their current contents are approved. */
+export function hookNeedsApproval(
+  hook: ProviderInventoryHook,
+): hook is ProviderInventoryHook & { key: string } {
+  return (
+    hook.key !== undefined &&
+    hook.source !== "managed" &&
+    (hook.trustStatus === "modified" || hook.trustStatus === "untrusted")
+  );
+}
+
+function HookTrustDialog(props: {
+  readonly hooks: ReadonlyArray<ProviderInventoryHook>;
+  readonly pending: boolean;
+  readonly onCancel: () => void;
+  readonly onConfirm: () => void;
+}) {
+  const count = props.hooks.length;
+  return (
+    <AlertDialog
+      open={count > 0}
+      onOpenChange={(open) => {
+        if (!open && !props.pending) props.onCancel();
+      }}
+    >
+      <AlertDialogPopup>
+        <AlertDialogHeader>
+          <AlertDialogTitle>
+            {count === 1 ? "Trust this hook?" : `Trust these ${count} hooks?`}
+          </AlertDialogTitle>
+          <AlertDialogDescription>
+            Trusted hooks run their commands on every matching event, with your permissions. Codex
+            approves their current contents; if a plugin changes them again, they need approval
+            again.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <ul className="mx-6 max-h-64 space-y-1.5 overflow-y-auto text-xs">
+          {props.hooks.map((hook) => (
+            <li key={hook.key} className="rounded-md border border-border/60 px-2.5 py-1.5">
+              <div className="text-foreground">
+                {hookEventLabel(hook.event)}
+                {hook.matcher ? (
+                  <span className="text-muted-foreground"> · {hook.matcher}</span>
+                ) : null}
+              </div>
+              <div className="text-muted-foreground">
+                {[hook.program, hook.pluginId].filter(Boolean).join(" · ") || "Unknown program"}
+              </div>
+              {hook.sourcePath ? (
+                <div className="break-all font-mono text-2xs text-faint-foreground">
+                  {hook.sourcePath}
+                </div>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+        <AlertDialogFooter>
+          <Button variant="outline" disabled={props.pending} onClick={props.onCancel}>
+            Cancel
+          </Button>
+          <Button disabled={props.pending} onClick={props.onConfirm}>
+            {props.pending ? <Spinner className="size-3" /> : null}
+            {count === 1 ? "Trust hook" : `Trust ${count} hooks`}
+          </Button>
+        </AlertDialogFooter>
+      </AlertDialogPopup>
+    </AlertDialog>
+  );
+}
+
+function HooksGroup(props: {
+  readonly inventory: ProviderInstanceInventory;
+  readonly focusHooks: boolean;
+}) {
+  const { inventory } = props;
+  const queryClient = useQueryClient();
+  const [confirming, setConfirming] = useState<ReadonlyArray<ProviderInventoryHook>>([]);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const groupRef = useRef<HTMLDivElement>(null);
+  const trust = ensureNativeApi().server.trustProviderHooks;
+  const approvable = trust ? inventory.hooks.filter(hookNeedsApproval) : [];
+
+  useEffect(() => {
+    if (props.focusHooks) groupRef.current?.scrollIntoView({ block: "start" });
+  }, [props.focusHooks]);
+
+  const confirm = () => {
+    if (!trust) return;
+    const keys = confirming.flatMap((hook) => (hook.key ? [hook.key] : []));
+    setPending(true);
+    setError(null);
+    void trust({
+      instanceId: inventory.instanceId,
+      ...(inventory.projectId ? { projectId: inventory.projectId } : {}),
+      keys,
+    })
+      .then(() => {
+        setConfirming([]);
+        return queryClient.invalidateQueries({
+          queryKey: providerInventoryQueryKey(inventory.instanceId, inventory.projectId),
+        });
+      })
+      .catch((cause: unknown) => {
+        setConfirming([]);
+        setError(cause instanceof Error ? cause.message : String(cause));
+      })
+      .finally(() => setPending(false));
+  };
+
+  return (
+    <>
+      <InventoryGroup
+        title="Hooks"
+        empty="No hooks configured."
+        groupRef={groupRef}
+        error={error}
+        action={
+          approvable.length > 0 ? (
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={pending}
+              onClick={() => setConfirming(approvable)}
+            >
+              Trust all ({approvable.length})
+            </Button>
+          ) : null
+        }
+      >
+        {inventory.hooks.map((hook, index) => {
+          const needsApproval = trust !== undefined && hookNeedsApproval(hook);
+          return (
+            <InventoryRow
+              key={hook.key ?? `${hook.sourcePath ?? hook.source}:${hook.event}:${index}`}
+              title={
+                <>
+                  {hookEventLabel(hook.event)}
+                  {hook.environmentId ? " · Environment (managed)" : ""}
+                  {hook.matcher ? (
+                    <span className="text-muted-foreground"> · {hook.matcher}</span>
+                  ) : null}
+                </>
+              }
+              detail={[hook.handlerType, hook.program, hook.pluginId].filter(Boolean).join(" · ")}
+              path={hook.sourcePath}
+              source={hook.source}
+              disabled={hook.enabled === false}
+              badge={
+                hookNeedsApproval(hook) ? (
+                  <Badge
+                    variant="warning"
+                    size="sm"
+                    className="shrink-0"
+                    title={
+                      hook.trustStatus === "modified"
+                        ? "Its contents changed since you approved it. Codex will not run it."
+                        : "Not reviewed yet. Codex will not run it."
+                    }
+                  >
+                    Needs approval
+                  </Badge>
+                ) : null
+              }
+              action={
+                needsApproval ? (
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    className="shrink-0"
+                    disabled={pending}
+                    onClick={() => setConfirming([hook])}
+                  >
+                    Trust
+                  </Button>
+                ) : null
+              }
+            />
+          );
+        })}
+      </InventoryGroup>
+      <HookTrustDialog
+        hooks={confirming}
+        pending={pending}
+        onCancel={() => setConfirming([])}
+        onConfirm={confirm}
+      />
+    </>
+  );
+}
+
+function InventoryBody({
+  inventory,
+  focusHooks,
+}: {
+  readonly inventory: ProviderInstanceInventory;
+  readonly focusHooks: boolean;
+}) {
   const hasAgents = inventory.driver === "claudeAgent";
   return (
     <div className="space-y-3">
@@ -118,31 +348,7 @@ function InventoryBody({ inventory }: { readonly inventory: ProviderInstanceInve
           ))}
         </InventoryGroup>
       )}
-      <InventoryGroup title="Hooks" empty="No hooks configured.">
-        {inventory.hooks.map((hook, index) => (
-          <InventoryRow
-            key={`${hook.sourcePath ?? hook.source}:${hook.event}:${index}`}
-            title={
-              <>
-                {(
-                  {
-                    preModelRequest: "Before model request",
-                    postModelRequest: "After model request",
-                  } as Record<string, string>
-                )[hook.event] ?? hook.event}
-                {hook.environmentId ? " · Environment (managed)" : ""}
-                {hook.matcher ? (
-                  <span className="text-muted-foreground"> · {hook.matcher}</span>
-                ) : null}
-              </>
-            }
-            detail={[hook.handlerType, hook.program, hook.pluginId].filter(Boolean).join(" · ")}
-            path={hook.sourcePath}
-            source={hook.source}
-            disabled={hook.enabled === false}
-          />
-        ))}
-      </InventoryGroup>
+      <HooksGroup inventory={inventory} focusHooks={focusHooks} />
       <InventoryGroup title="Plugins" empty="No plugins installed.">
         {inventory.plugins.map((plugin) => (
           <InventoryRow
@@ -206,15 +412,25 @@ function InventoryBody({ inventory }: { readonly inventory: ProviderInstanceInve
 /**
  * Read-only view of what the instance has configured. F5 does not install,
  * remove or edit hooks, plugins, connectors or agents; this only lists them
- * with the place they come from.
+ * with the place they come from. The one exception is trust: hooks Codex will
+ * not run until their current contents are approved can be trusted here,
+ * through Codex's own API.
  */
 export function ProviderInventorySection({
   instanceId,
+  focusHooks = false,
 }: {
   readonly instanceId: ProviderInstanceId;
+  /** Open on mount (and when it turns true) scrolled to the hooks. */
+  readonly focusHooks?: boolean;
 }) {
   const projects = useStore((store) => store.projects);
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(focusHooks);
+  const [focusedOpen, setFocusedOpen] = useState(focusHooks);
+  if (focusHooks !== focusedOpen) {
+    setFocusedOpen(focusHooks);
+    if (focusHooks) setOpen(true);
+  }
   const [projectId, setProjectId] = useState<ProjectId | undefined>(undefined);
   const [feedbackPath, setFeedbackPath] = useState<string | null>(null);
   const [feedbackError, setFeedbackError] = useState<string | null>(null);
@@ -239,7 +455,8 @@ export function ProviderInventorySection({
               Hooks, plugins and connectors
             </span>
             <span className="block text-xs text-muted-foreground">
-              Read-only. Manage these with the provider's own tools.
+              Read-only, except approving changed hooks. Manage the rest with the provider's own
+              tools.
             </span>
           </span>
           <ChevronDownIcon
@@ -327,7 +544,7 @@ export function ProviderInventorySection({
                 {query.error instanceof Error ? query.error.message : String(query.error)}
               </p>
             ) : query.data ? (
-              <InventoryBody inventory={query.data} />
+              <InventoryBody inventory={query.data} focusHooks={focusHooks} />
             ) : (
               <p className="text-xs text-muted-foreground">Loading…</p>
             )}

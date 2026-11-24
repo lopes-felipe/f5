@@ -1113,6 +1113,100 @@ describe("hasActionableProposedPlan", () => {
   });
 });
 
+describe("hook approval failures", () => {
+  const turnId = "turn-hooks";
+  const failure = (
+    id: string,
+    hookEvent: string,
+    sourcePath: string,
+    output = "plugin contents changed; hook approval required",
+    sequence = 1,
+  ) =>
+    makeActivity({
+      id,
+      turnId,
+      kind: "hook.completed",
+      tone: "error",
+      summary: `${hookEvent} hook (failed)`,
+      createdAt: `2026-11-23T10:00:0${sequence}.000Z`,
+      sequence,
+      payload: {
+        hookId: id,
+        hookEvent,
+        outcome: "error",
+        rawStatus: "failed",
+        source: "plugin",
+        sourcePath,
+        output,
+      },
+    });
+  const core = "/Users/me/.codex/plugins/cache/workspace-directory/core/5.3.2279/hooks/hooks.json";
+  const geordie = "/Users/me/.codex/plugins/cache/geordie-ai-local/geordie-ai/0.3.0/hooks.json";
+
+  it("collapses a turn's approval-required failures into one row with deduplicated plugins", () => {
+    const entries = deriveWorkLogEntries(
+      [
+        failure("start-core", "sessionStart", core, undefined, 1),
+        failure("start-geordie", "sessionStart", geordie, undefined, 2),
+        failure("prompt-core", "userPromptSubmit", core, undefined, 3),
+        failure("broken", "stop", core, "exit status 1: boom", 4),
+      ],
+      TurnId.makeUnsafe(turnId),
+    );
+    expect(entries.map((entry) => entry.id)).toEqual(["hook-approval:start-core", "broken"]);
+    const [collapsed, other] = entries;
+    expect(collapsed).toMatchObject({
+      label:
+        "3 hooks need approval after a plugin changed (core@workspace-directory, geordie-ai@geordie-ai-local)",
+      category: "hook",
+      isIssue: true,
+      turnId,
+    });
+    expect(collapsed?.diagnostic).toBeUndefined();
+    expect(collapsed?.hookApproval?.plugins).toEqual([
+      "core@workspace-directory",
+      "geordie-ai@geordie-ai-local",
+    ]);
+    expect(collapsed?.hookApproval?.entries.map((entry) => entry.id)).toEqual([
+      "start-core",
+      "start-geordie",
+      "prompt-core",
+    ]);
+    // Other failed hooks render exactly as before.
+    expect(other?.diagnostic).toMatchObject({ type: "hook", status: "failed" });
+
+    const timeline = deriveTimelineEntries([], [], entries);
+    expect(timeline.map((row) => row.id)).toEqual(["hook-approval:start-core", "broken"]);
+  });
+
+  it("keeps one row per turn, a stable row object, and the singular label", () => {
+    const first = failure("only", "stop", "/tmp/custom/hooks.json");
+    const second = makeActivity({
+      id: "next-turn",
+      turnId: "turn-next",
+      kind: "hook.completed",
+      tone: "error",
+      createdAt: "2026-11-23T10:00:05.000Z",
+      sequence: 2,
+      payload: {
+        hookId: "next-turn",
+        hookEvent: "stop",
+        outcome: "error",
+        rawStatus: "failed",
+        output: "plugin contents changed; hook approval required",
+      },
+    });
+    const activities = [first, second];
+    const entries = deriveWorkLogEntries(activities, TurnId.makeUnsafe("turn-next"));
+    const labels = entries.map((entry) => entry.label);
+    expect(labels).toContain("1 hook needs approval after a plugin changed");
+    const again = deriveWorkLogEntries(activities, TurnId.makeUnsafe("turn-next"));
+    expect(again.find((entry) => entry.id === "hook-approval:next-turn")).toBe(
+      entries.find((entry) => entry.id === "hook-approval:next-turn"),
+    );
+  });
+});
+
 describe("deriveWorkLogEntries", () => {
   it("retains aside answers across later turns without treating them as messages", () => {
     const activity: OrchestrationThreadActivity = {

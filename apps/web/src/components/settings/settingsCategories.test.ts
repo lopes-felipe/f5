@@ -189,6 +189,25 @@ describe("resolveSettingsCategoryFromSearch", () => {
 });
 
 describe("resolveSettingsSearch", () => {
+  it("keeps a provider instance focus only on the instances item", () => {
+    expect(
+      resolveSettingsSearch({
+        category: "providers",
+        item: "providers.instances",
+        instance: "codex_work",
+      }),
+    ).toEqual({ category: "providers", item: "providers.instances", instance: "codex_work" });
+    expect(
+      resolveSettingsSearch({ category: "providers", item: "providers.updates", instance: "x" }),
+    ).toEqual({ category: "providers", item: "providers.updates" });
+    expect(resolveSettingsSearch({ category: "providers", instance: "codex_work" })).toEqual({
+      category: "providers",
+    });
+    expect(
+      resolveSettingsSearch({ item: "providers.instances", instance: "x".repeat(300) }),
+    ).toEqual({ category: "providers", item: "providers.instances" });
+  });
+
   it("rewrites legacy item deep links to the new page", () => {
     expect(
       resolveSettingsSearch({ category: "integrations", item: "integrations.keybindings" }),

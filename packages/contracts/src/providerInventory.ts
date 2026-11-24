@@ -21,6 +21,19 @@ export type ProviderInventorySource = typeof ProviderInventorySource.Type;
 
 const BoundedText = TrimmedNonEmptyString.check(Schema.isMaxLength(512));
 
+/**
+ * Codex hook trust (`HookTrustStatus`). `modified` and `untrusted` hooks do not
+ * run until the user approves their current contents; `managed` hooks come from
+ * administrator policy and never need approval.
+ */
+export const ProviderInventoryHookTrustStatus = Schema.Literals([
+  "managed",
+  "trusted",
+  "modified",
+  "untrusted",
+]);
+export type ProviderInventoryHookTrustStatus = typeof ProviderInventoryHookTrustStatus.Type;
+
 export const ProviderInventoryHook = Schema.Struct({
   environmentId: Schema.optional(BoundedText),
   event: BoundedText,
@@ -32,6 +45,10 @@ export const ProviderInventoryHook = Schema.Struct({
   sourcePath: Schema.optional(BoundedText),
   enabled: Schema.optional(Schema.Boolean),
   pluginId: Schema.optional(BoundedText),
+  /** Provider-assigned hook identity; the handle a trust request names. */
+  key: Schema.optional(BoundedText),
+  /** Absent when the provider does not report trust (older Codex CLIs, Claude). */
+  trustStatus: Schema.optional(ProviderInventoryHookTrustStatus),
 });
 export type ProviderInventoryHook = typeof ProviderInventoryHook.Type;
 
@@ -112,3 +129,27 @@ export type ServerGetProviderInventoryInput = typeof ServerGetProviderInventoryI
 
 export const ServerSaveProviderFeedbackInput = Schema.Struct({ instanceId: ProviderInstanceId });
 export type ServerSaveProviderFeedbackInput = typeof ServerSaveProviderFeedbackInput.Type;
+
+export const MAX_TRUST_PROVIDER_HOOK_KEYS = 64;
+
+export const ServerTrustProviderHooksInput = Schema.Struct({
+  instanceId: ProviderInstanceId,
+  /** Resolved server-side to the project's workspace root; paths are never accepted. */
+  projectId: Schema.optional(ProjectId),
+  /**
+   * Hook keys from the inventory. Hashes are never accepted: the server trusts
+   * what the provider reports for each key at the moment of the write.
+   */
+  keys: Schema.Array(BoundedText).check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(MAX_TRUST_PROVIDER_HOOK_KEYS),
+  ),
+});
+export type ServerTrustProviderHooksInput = typeof ServerTrustProviderHooksInput.Type;
+
+export const ServerTrustProviderHooksResult = Schema.Struct({
+  trusted: Schema.Array(BoundedText),
+  /** Requested keys that were unknown, managed, or already trusted. */
+  skipped: Schema.Array(BoundedText),
+});
+export type ServerTrustProviderHooksResult = typeof ServerTrustProviderHooksResult.Type;

@@ -648,6 +648,15 @@ export interface SettingsSearch {
   readonly category: SettingsCategory;
   readonly item?: string;
   readonly project?: ProjectId;
+  /** With item `providers.instances`: the provider instance to open at its hooks. */
+  readonly instance?: string;
+}
+
+const PROVIDER_INSTANCES_ITEM = "providers.instances";
+
+function resolveSettingsInstanceFromSearch(search: unknown): string | undefined {
+  const raw = (search as { instance?: unknown } | null | undefined)?.instance;
+  return typeof raw === "string" && raw.length > 0 && raw.length <= 256 ? raw : undefined;
 }
 
 /**
@@ -662,10 +671,13 @@ export function resolveSettingsSearch(search: unknown): SettingsSearch {
   if (item) {
     const itemScope = item.scope ?? "global";
     if (itemScope === "project" && !project) return { category: "projects" };
+    const instance =
+      item.id === PROVIDER_INSTANCES_ITEM ? resolveSettingsInstanceFromSearch(search) : undefined;
     return {
       category: item.category,
       item: item.id,
       ...(project && itemScope !== "global" ? { project } : {}),
+      ...(instance ? { instance } : {}),
     };
   }
 
