@@ -5,9 +5,11 @@ import { makeProviderLimits } from "../../usage/providerLimits.ts";
 /**
  * CursorDriver — `ProviderDriver` for the Cursor Agent (`agent`) runtime.
  *
- * Cursor exposes an ACP-based CLI. Status refreshes intentionally stay
- * passive (`agent about` only) because ACP authentication can open Cursor's
- * browser login flow.
+ * Cursor exposes an ACP-based CLI. Status refreshes run only `agent about`,
+ * because ACP authentication can open Cursor's browser login flow. The account's
+ * model catalog is fetched in the background with `initialize` and
+ * `cursor/list_available_models` alone, which never authenticate or open a
+ * session (see `cursorModelCatalogCache`).
  *
  * Text generation is supported via the ACP runtime — `makeCursorTextGeneration`
  * drives `runtime.prompt` with a structured-output schema and collects the
@@ -26,7 +28,13 @@ import { makeCursorAdapter } from "../Layers/CursorAdapter.ts";
 import {
   buildInitialCursorProviderSnapshot,
   checkCursorProviderStatus,
+  fetchCursorModelCatalog,
 } from "../Layers/CursorProvider.ts";
+import {
+  makeCursorModelCatalogCache,
+  seedCursorModelCatalog,
+} from "../cursor/cursorModelCatalogCache.ts";
+import { readProviderStatusCache, resolveProviderStatusCachePath } from "../providerStatusCache.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import {
@@ -127,6 +135,29 @@ export const CursorDriver: ProviderDriver<CursorSettings, CursorDriverEnv> = {
         scratchDir: cursorScratchDir(serverConfig.stateDir),
       });
 
+      // The catalog the previous process published stays visible until a fresh one arrives.
+      const persisted = yield* resolveProviderStatusCachePath({
+        cacheDir:
+          serverConfig.providerStatusCacheDir ??
+          path.join(serverConfig.stateDir, "provider-status-cache"),
+        instanceId,
+      }).pipe(
+        Effect.flatMap(readProviderStatusCache),
+        Effect.map((cached) =>
+          cached?.instanceId === instanceId && cached.driver === DRIVER_KIND ? cached : undefined,
+        ),
+        Effect.orElseSucceed(() => undefined),
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+      );
+      const modelCatalog = yield* makeCursorModelCatalogCache({
+        settings: effectiveConfig,
+        seed: seedCursorModelCatalog(persisted),
+        fetch: fetchCursorModelCatalog(effectiveConfig, processEnv).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        ),
+      });
+
       const checkProvider = checkCursorProviderStatus(effectiveConfig, processEnv).pipe(
         // User and Cursor-installed skills are workspace-independent; project
         // skills join per session.
@@ -136,6 +167,7 @@ export const CursorDriver: ProviderDriver<CursorSettings, CursorDriverEnv> = {
           ),
         ),
         Effect.map(stampIdentity),
+        Effect.flatMap(modelCatalog.applyCached),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),
@@ -147,6 +179,7 @@ export const CursorDriver: ProviderDriver<CursorSettings, CursorDriverEnv> = {
         haveSettingsChanged: () => false,
         initialSnapshot: (settings) => stampIdentity(buildInitialCursorProviderSnapshot(settings)),
         checkProvider,
+        enrichSnapshot: modelCatalog.enrich,
         refreshInterval: SNAPSHOT_REFRESH_INTERVAL,
       }).pipe(
         Effect.mapError(

@@ -1308,6 +1308,17 @@ const program = Effect.gen(function* () {
   );
 
   yield* agent.handleUnknownExtRequest((method, params) => {
+    // Cursor's account model catalog: a JSON response, or method-not-found like older CLIs.
+    if (method === "cursor/list_available_models") {
+      const catalog = process.env.T3_ACP_CURSOR_MODEL_CATALOG;
+      if (catalog?.startsWith("error:"))
+        return Effect.fail(
+          new AcpError.AcpRequestError({ code: -32603, errorMessage: catalog.slice(6) }),
+        );
+      return catalog && catalog !== "unsupported"
+        ? Effect.succeed(JSON.parse(catalog) as unknown)
+        : Effect.fail(AcpError.AcpRequestError.methodNotFound(method));
+    }
     if (method !== "session/mode/set" && method !== "session/set_mode") {
       return Effect.fail(AcpError.AcpRequestError.methodNotFound(method));
     }

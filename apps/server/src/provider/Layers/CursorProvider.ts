@@ -9,8 +9,8 @@ import type {
   ServerProviderState,
 } from "@t3tools/contracts";
 import { ProviderDriverKind } from "@t3tools/contracts";
-import type * as EffectAcpSchema from "effect-acp/schema";
-import { Effect, FileSystem, Layer, Option, Path, Result } from "effect";
+import * as EffectAcpSchema from "effect-acp/schema";
+import { Effect, FileSystem, Layer, Option, Path, Result, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { resolveInvocationEffect } from "../../spawn/resolveCommand.ts";
 import { CURSOR_ACP_CLIENT_INFO } from "../cursor/cursorAcpClientInfo.ts";
@@ -31,6 +31,7 @@ import {
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
 import { findModelConfigOption } from "../acp/AcpRuntimeModel.ts";
+import { redactProviderFailureText } from "../failureText.ts";
 import { AcpSessionRuntime } from "../acp/AcpSessionRuntime.ts";
 
 const PROVIDER = ProviderDriverKind.make("cursor");
@@ -128,6 +129,7 @@ function flattenSessionConfigSelectOptions(
 function normalizeCursorReasoningValue(value: string | null | undefined): string | undefined {
   const normalized = value?.trim().toLowerCase();
   switch (normalized) {
+    case "none":
     case "low":
     case "medium":
     case "high":
@@ -142,13 +144,6 @@ function normalizeCursorReasoningValue(value: string | null | undefined): string
   }
 }
 
-// Probe the same option that runtime.setModel writes at session start.
-function findCursorModelConfigOption(
-  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>,
-): EffectAcpSchema.SessionConfigOption | undefined {
-  return findModelConfigOption(configOptions);
-}
-
 function getCursorConfigOptionCategory(option: EffectAcpSchema.SessionConfigOption): string {
   return option.category?.trim().toLowerCase() ?? "";
 }
@@ -159,6 +154,7 @@ function isCursorEffortConfigOption(option: EffectAcpSchema.SessionConfigOption)
   return (
     id === "effort" ||
     id === "reasoning" ||
+    id === "reasoning_effort" ||
     name === "effort" ||
     name === "reasoning" ||
     name.includes("effort") ||
@@ -196,6 +192,18 @@ function isCursorThinkingConfigOption(option: EffectAcpSchema.SessionConfigOptio
   const id = option.id.trim().toLowerCase();
   const name = option.name.trim().toLowerCase();
   return id === "thinking" || name.includes("thinking");
+}
+
+// Cursor files thinking under `thought_level` in its model catalog and under
+// `model_config` in older sessions.
+function findCursorThinkingConfigOption(
+  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>,
+): EffectAcpSchema.SessionConfigOption | undefined {
+  return configOptions.find(
+    (option) =>
+      (option.category === "model_config" || option.category === "thought_level") &&
+      isCursorThinkingConfigOption(option),
+  );
 }
 
 function isBooleanLikeConfigOption(option: EffectAcpSchema.SessionConfigOption): boolean {
@@ -283,9 +291,7 @@ export function buildCursorCapabilitiesFromConfigOptions(
   const fastOption = configOptions.find(
     (option) => option.category === "model_config" && isCursorFastConfigOption(option),
   );
-  const thinkingOption = configOptions.find(
-    (option) => option.category === "model_config" && isCursorThinkingConfigOption(option),
-  );
+  const thinkingOption = findCursorThinkingConfigOption(configOptions);
   const fastCurrentValue = getBooleanCurrentValue(fastOption);
   const thinkingCurrentValue = getBooleanCurrentValue(thinkingOption);
   const optionDescriptors = [
@@ -362,35 +368,6 @@ function buildCursorDiscoveredModels(
   });
 }
 
-export function buildCursorDiscoveredModelsFromConfigOptions(
-  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> | null | undefined,
-): ReadonlyArray<ServerProviderModel> {
-  if (!configOptions || configOptions.length === 0) {
-    return [];
-  }
-
-  const modelOption = findCursorModelConfigOption(configOptions);
-  const modelChoices = flattenSessionConfigSelectOptions(modelOption);
-  if (!modelOption || modelChoices.length === 0) {
-    return [];
-  }
-
-  const currentModelValue =
-    modelOption.type === "select" ? modelOption.currentValue?.trim() || undefined : undefined;
-  const currentModelCapabilities = buildCursorCapabilitiesFromConfigOptions(configOptions);
-
-  return buildCursorDiscoveredModels(
-    modelChoices.map((modelChoice) => ({
-      slug: modelChoice.value.trim(),
-      name: modelChoice.name.trim(),
-      capabilities:
-        currentModelValue === modelChoice.value.trim()
-          ? currentModelCapabilities
-          : EMPTY_CAPABILITIES,
-    })),
-  );
-}
-
 const makeCursorAcpProbeRuntime = (
   cursorSettings: CursorSettings,
   environment: NodeJS.ProcessEnv = process.env,
@@ -416,16 +393,6 @@ const makeCursorAcpProbeRuntime = (
     );
     return yield* Effect.service(AcpSessionRuntime).pipe(Effect.provide(acpContext));
   });
-
-const withCursorAcpProbeRuntime = <A, E, R>(
-  cursorSettings: CursorSettings,
-  useRuntime: (acp: AcpSessionRuntime["Service"]) => Effect.Effect<A, E, R>,
-  environment: NodeJS.ProcessEnv = process.env,
-) =>
-  makeCursorAcpProbeRuntime(cursorSettings, environment).pipe(
-    Effect.flatMap(useRuntime),
-    Effect.scoped,
-  );
 
 function normalizeCursorConfigOptionToken(value: string | null | undefined): string {
   return (
@@ -466,6 +433,28 @@ export function resolveCursorAcpBaseModelId(model: string | null | undefined): s
     return "default";
   }
   return base.includes("[") ? base.slice(0, base.indexOf("[")) : base;
+}
+
+/**
+ * The value to write to the session's model option. F5's Auto is `default` on older
+ * CLIs and an `auto-…` value (`auto-smart`) on current ones, so Auto resolves against
+ * the values the session offers. Every other model id passes through.
+ */
+export function resolveCursorAcpModelValue(
+  model: string | null | undefined,
+  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> | null | undefined,
+): string {
+  const base = resolveCursorAcpBaseModelId(model);
+  if (base !== "default") return base;
+  const values = flattenSessionConfigSelectOptions(findModelConfigOption(configOptions ?? [])).map(
+    (option) => option.value,
+  );
+  if (values.length === 0 || values.includes(base)) return base;
+  return (
+    values.find((value) => value === "auto") ??
+    values.find((value) => value.startsWith("auto-")) ??
+    base
+  );
 }
 
 export function resolveCursorAcpConfigUpdates(
@@ -528,9 +517,7 @@ export function resolveCursorAcpConfigUpdates(
     }
   }
 
-  const thinkingOption = configOptions.find(
-    (option) => option.category === "model_config" && isCursorThinkingConfigOption(option),
-  );
+  const thinkingOption = findCursorThinkingConfigOption(configOptions);
   const requestedThinking = getProviderOptionBooleanSelectionValue(selections, "thinking");
   if (thinkingOption && typeof requestedThinking === "boolean") {
     const value = findCursorBooleanConfigValue(thinkingOption, requestedThinking);
@@ -542,20 +529,142 @@ export function resolveCursorAcpConfigUpdates(
   return updates;
 }
 
-export const discoverCursorModelsViaAcp = (
+const CURSOR_MODEL_CATALOG_METHOD = "cursor/list_available_models";
+const CURSOR_MODEL_CATALOG_TIMEOUT_MS = 30_000;
+const JSON_RPC_METHOD_NOT_FOUND = -32601;
+
+const CursorModelCatalogResponse = Schema.Struct({ models: Schema.Array(Schema.Unknown) });
+const CursorModelCatalogEntry = Schema.Struct({
+  value: Schema.String,
+  name: Schema.String,
+  configOptions: Schema.optional(Schema.NullOr(Schema.Array(Schema.Unknown))),
+});
+const decodeCatalogResponse = Schema.decodeUnknownOption(CursorModelCatalogResponse);
+const decodeCatalogEntry = Schema.decodeUnknownOption(CursorModelCatalogEntry);
+const decodeSessionConfigOption = Schema.decodeUnknownOption(EffectAcpSchema.SessionConfigOption);
+
+export type CursorModelCatalogResult =
+  | { readonly _tag: "ok"; readonly models: ReadonlyArray<ServerProviderModel> }
+  /** The CLI predates the catalog request. */
+  | { readonly _tag: "unsupported" }
+  | { readonly _tag: "failed"; readonly detail: string };
+
+/**
+ * Maps a `cursor/list_available_models` response to provider models, each with the
+ * options Cursor offers for it. Malformed entries and options are skipped, and the
+ * first entry wins for a repeated id.
+ */
+export function cursorModelsFromCatalog(response: unknown): ReadonlyArray<ServerProviderModel> {
+  const decoded = decodeCatalogResponse(response);
+  if (Option.isNone(decoded)) return [];
+  let autoListed = false;
+  return buildCursorDiscoveredModels(
+    decoded.value.models.flatMap((raw) => {
+      const entry = decodeCatalogEntry(raw);
+      if (Option.isNone(entry)) return [];
+      const value = entry.value.value.trim();
+      const name = entry.value.name.trim();
+      if (value.length === 0) return [];
+      // Cursor's Auto (`default` on older CLIs, `auto-smart` on current ones) is F5's
+      // `auto`, the default model; resolveCursorAcpModelValue maps it back.
+      const isAuto =
+        !autoListed && (value === "default" || value === "auto" || value.startsWith("auto-"));
+      if (isAuto) autoListed = true;
+      const slug = isAuto ? "auto" : value;
+      const configOptions = (entry.value.configOptions ?? []).flatMap((option) =>
+        Option.toArray(decodeSessionConfigOption(option)),
+      );
+      return [
+        {
+          slug,
+          name: name.length > 0 ? name : slug,
+          capabilities: buildCursorCapabilitiesFromConfigOptions(configOptions),
+        },
+      ];
+    }),
+  );
+}
+
+/**
+ * Reads the models the signed-in Cursor account can use. Sends only `initialize` and
+ * the catalog request: no `authenticate` (which can open Cursor's browser login) and no
+ * `session/new` (which leaves a native session behind). A signed-out CLI answers with an
+ * error instead of prompting. The scope closes the child process.
+ */
+export const fetchCursorModelCatalog = (
   cursorSettings: CursorSettings,
   environment: NodeJS.ProcessEnv = process.env,
-) =>
-  withCursorAcpProbeRuntime(
-    cursorSettings,
-    (acp) =>
-      Effect.map(acp.start(), (started) =>
-        buildCursorDiscoveredModelsFromConfigOptions(
-          started.sessionSetupResult.configOptions ?? [],
-        ),
+): Effect.Effect<CursorModelCatalogResult, never, ChildProcessSpawner.ChildProcessSpawner> =>
+  makeCursorAcpProbeRuntime(cursorSettings, environment).pipe(
+    Effect.flatMap((acp) =>
+      acp
+        .request("initialize", {
+          protocolVersion: 1,
+          clientCapabilities: {
+            fs: { readTextFile: false, writeTextFile: false },
+            terminal: false,
+            ...CURSOR_PARAMETERIZED_MODEL_PICKER_CAPABILITIES,
+          },
+          clientInfo: CURSOR_ACP_CLIENT_INFO,
+        } satisfies EffectAcpSchema.InitializeRequest)
+        .pipe(Effect.andThen(acp.request(CURSOR_MODEL_CATALOG_METHOD, {}))),
+    ),
+    Effect.map((response): CursorModelCatalogResult => {
+      if (Option.isNone(decodeCatalogResponse(response)))
+        return { _tag: "failed", detail: "Cursor returned an unreadable model catalog." };
+      return { _tag: "ok", models: cursorModelsFromCatalog(response) };
+    }),
+    Effect.timeoutOption(CURSOR_MODEL_CATALOG_TIMEOUT_MS),
+    Effect.map((result) =>
+      Option.getOrElse(
+        result,
+        (): CursorModelCatalogResult => ({
+          _tag: "failed",
+          detail: "Cursor did not return its model catalog in time.",
+        }),
       ),
-    environment,
+    ),
+    Effect.catch(
+      (error): Effect.Effect<CursorModelCatalogResult> =>
+        Effect.succeed(
+          error._tag === "AcpRequestError" && error.code === JSON_RPC_METHOD_NOT_FOUND
+            ? { _tag: "unsupported" }
+            : { _tag: "failed", detail: redactProviderFailureText(error.message) },
+        ),
+    ),
+    Effect.scoped,
   );
+
+/**
+ * What a CLI without `cursor/list_available_models` is offered: the built-in list F5
+ * shipped before the account catalog, so slugs saved on those CLIs stay selectable.
+ */
+export const CURSOR_LEGACY_MODELS: ReadonlyArray<ServerProviderModel> = [
+  ["auto", "Auto"],
+  ["composer-2", "Composer 2"],
+  ["composer-1.5", "Composer 1.5"],
+  ["claude-opus-4-6", "Claude Opus 4.6"],
+  ["claude-sonnet-4-6", "Claude Sonnet 4.6"],
+  ["claude-opus-4-5", "Claude Opus 4.5"],
+].map(([slug, name]) => ({
+  slug: slug!,
+  name: name!,
+  isCustom: false,
+  capabilities: EMPTY_CAPABILITIES,
+}));
+
+/** The provider's models: the account's catalog first, then the user's custom models. */
+export function cursorProviderModels(
+  cursorSettings: Pick<CursorSettings, "customModels">,
+  catalogModels: ReadonlyArray<ServerProviderModel>,
+): ReadonlyArray<ServerProviderModel> {
+  return providerModelsFromSettings(
+    catalogModels,
+    PROVIDER,
+    cursorSettings.customModels,
+    EMPTY_CAPABILITIES,
+  );
+}
 
 export function getCursorFallbackModels(
   cursorSettings: Pick<CursorSettings, "customModels">,
