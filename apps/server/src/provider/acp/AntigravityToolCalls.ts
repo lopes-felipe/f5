@@ -121,9 +121,10 @@ function fullTextKind(
   if (typeof path !== "string" || typeof newText !== "string") return undefined;
   const snippets = snippetTargets(rawInput);
   if (typeof oldText === "string") {
-    if (snippets.length === 0 || snippets.includes(oldText)) return undefined;
     const file = normalizeEol(oldText);
-    return snippets.every((snippet) => file.includes(normalizeEol(snippet))) ? "edit" : undefined;
+    const targets = snippets.map(normalizeEol);
+    if (targets.length === 0 || targets.includes(file)) return undefined;
+    return targets.every((target) => file.includes(target)) ? "edit" : undefined;
   }
   if (oldText != null || snippets.length > 0) return undefined;
   const raw = record(rawInput);
@@ -143,7 +144,8 @@ function fullTextDiff(
   if (kind === "overwrite" || !completed) return { patch: OMITTED_PATCH };
   if (kind === "add")
     return {
-      patch: hunkPatch(path, "", newText, budget),
+      // An empty new file has no hunks; keep its path rather than drop the entry.
+      patch: hunkPatch(path, "", newText, budget) ?? OMITTED_PATCH,
       changes: [{ path, operation: "add" }],
     };
   return { patch: hunkPatch(path, entry.oldText as string, newText, budget) };

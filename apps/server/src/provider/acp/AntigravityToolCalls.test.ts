@@ -120,6 +120,18 @@ describe("Antigravity native tools", () => {
   });
 
   it("keeps snippet-shaped texts off the full-file path", () => {
+    // A CRLF snippet equal to the LF target is still a snippet.
+    const crlf = makeAntigravityToolNormalizer(() => undefined)({
+      toolCallId: "edit-crlf-snippet",
+      title: "File src/a.ts",
+      kind: "edit",
+      status: "completed",
+      data: {
+        rawInput: { Path: "/repo/src/a.ts", Target: "old\n", Replacement: "new\n" },
+        content: [{ type: "diff", path: "/repo/src/a.ts", oldText: "old\r\n", newText: "new\r\n" }],
+      },
+    });
+    expect(acpFileChanges(crlf.data.content)).toEqual([{ path: "/repo/src/a.ts", type: "update" }]);
     const tool = makeAntigravityToolNormalizer(() => undefined)({
       toolCallId: "edit-unknown-target",
       title: "File src/a.ts",
@@ -176,6 +188,20 @@ describe("Antigravity native tools", () => {
     expect(added?.diff).toContain("--- /dev/null\n+++ b//repo/src/new.ts\n@@ -0,0 +1,1 @@");
     expect(acpFileChanges(write("write-over", true).data.content)).toEqual([
       { path: "/repo/src/new.ts", type: "update" },
+    ]);
+    // An empty new file still names its path.
+    const empty = normalize({
+      toolCallId: "write-empty",
+      title: "File src/empty.ts",
+      kind: "edit",
+      status: "completed",
+      data: {
+        rawInput: { Path: "/repo/src/empty.ts", Content: "" },
+        content: [{ type: "diff", path: "/repo/src/empty.ts", newText: "" }],
+      },
+    });
+    expect(acpFileChanges(empty.data.content)).toEqual([
+      { path: "/repo/src/empty.ts", type: "update" },
     ]);
     // The runtime accepts the snake-case flag too.
     const snake = normalize({
