@@ -18,6 +18,19 @@ import { makeAutomationRuntimeEventPreparer } from "../prepareAutomationRuntimeE
 import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
 import { AntigravityTasks } from "../acp/AntigravityTasks.ts";
 import { makeAntigravityToolNormalizer } from "../acp/AntigravityToolCalls.ts";
+import {
+  AntigravityPlanArtifactTracker,
+  antigravityBrainRoots,
+  readAntigravityPlanArtifact,
+} from "../acp/AntigravityPlanArtifacts.ts";
+import {
+  antigravityInteractionAnswers,
+  antigravityInteractionQuestions,
+  antigravityInteractionSessionMeta,
+  isAntigravityInteractionToolCall,
+} from "../acp/AntigravityInteraction.ts";
+import type { InteractionOutcome, InteractionSession } from "../../mcp/interactionMcpTools.ts";
+import type { McpSessionStdioLaunch } from "../../mcp/sessionStdioShim.ts";
 import { watchAntigravityPromptOutcome } from "../acp/AntigravityTurnOutcome.ts";
 import { readAntigravityChildrenAtWork } from "../acp/AntigravityChildWork.ts";
 import { PromptInactivityDeadline } from "../acp/PromptInactivityDeadline";
@@ -163,6 +176,8 @@ export interface GrokAdapterLiveOptions {
   readonly promptInactivityTimeoutMs?: number;
   /** Certification/test seam; production drivers leave this unset. */
   readonly automationCatalogVerification?: { preview?: boolean; computer?: boolean };
+  /** Test seam: how the stdio MCP relay starts; null offers no stdio catalogs. */
+  readonly mcpSessionStdioLaunch?: McpSessionStdioLaunch | null;
   readonly previewMcpHttpServer?: PreviewMcpHttpServerShape;
   readonly computerAutomationBroker?: ComputerAutomationBrokerRuntime;
   readonly provider?: ProviderKind;
@@ -228,6 +243,8 @@ type PendingUserInputResolution =
 interface PendingUserInput {
   readonly validate?: (answers: ProviderUserInputAnswers) => boolean;
   readonly resolution: Deferred.Deferred<PendingUserInputResolution>;
+  /** Asked through F5's MCP question tool, which nothing ends but F5 or the user. */
+  readonly viaInteractionTool?: true;
 }
 
 interface GrokSessionContext {
@@ -264,6 +281,8 @@ interface GrokSessionContext {
   antigravityAutoUnavailable: boolean;
   /** Antigravity: the latest turn asked for Plan; its requests keep Plan's rules. */
   antigravityPlanRequested: boolean;
+  /** Antigravity: the plan artifact the current turn wrote, for the proposed-plan card. */
+  readonly antigravityPlanArtifacts: AntigravityPlanArtifactTracker;
   /** Antigravity: a mode warning not yet published, kept until a turn starts. */
   antigravityPendingWarning: string | undefined;
   /** Antigravity: private-format readers are certified for the runtime this session launched. */
@@ -841,6 +860,92 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             (PROVIDER !== "antigravity" || parsedResume.accountRevision === accountRevision)
               ? parsedResume.sessionId
               : undefined;
+          const brainRoots =
+            PROVIDER === "antigravity" && options?.antigravityProfileDirectory
+              ? antigravityBrainRoots(options.antigravityProfileDirectory)
+              : [];
+          // Antigravity has no question channel F5 can show; it asks through F5's MCP tool.
+          const askThroughCard = (
+            questions: Parameters<InteractionSession["askUserQuestion"]>[0],
+            signal: AbortSignal,
+          ): Effect.Effect<InteractionOutcome> =>
+            Effect.gen(function* () {
+              const live = sessions.get(input.threadId);
+              if (!live || live.stopped || live.pendingUserInputs !== pendingUserInputs)
+                return { cancelled: true } as const;
+              const requestId = ApprovalRequestId.make(yield* Random.nextUUIDv4);
+              const runtimeRequestId = RuntimeRequestId.make(requestId);
+              const resolution = yield* Deferred.make<PendingUserInputResolution>();
+              pendingUserInputs.set(requestId, { resolution, viaInteractionTool: true });
+              const abandon = () => {
+                Effect.runSync(
+                  Deferred.succeed(resolution, { _tag: "cancelled" }).pipe(Effect.ignore),
+                );
+              };
+              signal.addEventListener("abort", abandon, { once: true });
+              if (signal.aborted) abandon();
+              const turnId = live.activeTurnId;
+              const raw = {
+                source: "acp.antigravity.mcp" as const,
+                method: "tools/call",
+                payload: { questions },
+              };
+              yield* offerRuntimeEvent({
+                type: "user-input.requested",
+                ...(yield* makeEventStamp(live)),
+                provider: PROVIDER,
+                threadId: input.threadId,
+                turnId,
+                requestId: runtimeRequestId,
+                payload: { questions: antigravityInteractionQuestions(questions) },
+                raw,
+              });
+              const resolved = yield* Deferred.await(resolution).pipe(
+                Effect.ensuring(
+                  Effect.sync(() => {
+                    signal.removeEventListener("abort", abandon);
+                    pendingUserInputs.delete(requestId);
+                  }),
+                ),
+              );
+              yield* offerRuntimeEvent({
+                type: "user-input.resolved",
+                ...(yield* makeEventStamp(live)),
+                provider: PROVIDER,
+                threadId: input.threadId,
+                turnId,
+                requestId: runtimeRequestId,
+                payload: { answers: resolved._tag === "answered" ? resolved.answers : {} },
+                raw,
+              });
+              if (resolved._tag === "answered") {
+                const answers = antigravityInteractionAnswers(questions, resolved.answers);
+                // Dismissing the card answers nothing.
+                return Object.keys(answers).length > 0
+                  ? { answers }
+                  : ({ cancelled: true } as const);
+              }
+              // Antigravity gave up on the question, or its turn ended, while the session lives.
+              if (!live.stopped)
+                yield* offerRuntimeEvent({
+                  type: "runtime.warning",
+                  ...(yield* makeEventStamp(live)),
+                  provider: PROVIDER,
+                  threadId: input.threadId,
+                  turnId,
+                  payload: {
+                    message: `${providerLabel} stopped waiting for an answer. Reply in the composer instead.`,
+                  },
+                });
+              return { cancelled: true } as const;
+            });
+          const interaction: InteractionSession | undefined =
+            PROVIDER === "antigravity"
+              ? {
+                  askUserQuestion: (questions, signal) =>
+                    Effect.runPromise(askThroughCard(questions, signal)),
+                }
+              : undefined;
           const catalogs = yield* prepareAcpAutomationCatalogs({
             threadId: input.threadId,
             provider: PROVIDER as "cursor" | "grok" | "antigravity" | "acp",
@@ -854,6 +959,10 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               : {}),
             ...(options?.antigravity?.credentials
               ? { credentials: options.antigravity.credentials }
+              : {}),
+            ...(interaction ? { interaction } : {}),
+            ...(options?.mcpSessionStdioLaunch !== undefined
+              ? { stdioLaunch: options.mcpSessionStdioLaunch ?? undefined }
               : {}),
             readOnlyWorkflow: !!input.workflowExecutionProfile,
             threadSession:
@@ -897,6 +1006,15 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             },
             ...acpNativeLoggers,
             mcpServers: catalogs.mcpServers,
+            // Runs after `mcpServers`, so the guidance is sent only with the tool it names.
+            ...(PROVIDER === "antigravity"
+              ? {
+                  sessionMeta: (init: EffectAcpSchema.InitializeResponse) =>
+                    catalogs.interactionServerName()
+                      ? antigravityInteractionSessionMeta(init)
+                      : undefined,
+                }
+              : {}),
             sanitizeStderr: catalogs.scrubDiagnostic,
             hasSensitiveConfiguration: catalogs.hasSensitiveConfiguration,
           }).pipe(
@@ -1046,6 +1164,18 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     "session/request_permission",
                     boundPermissionRequestPayload(params),
                   );
+                  // F5's own question tool changes nothing, so every mode allows it, once.
+                  if (
+                    PROVIDER === "antigravity" &&
+                    isAntigravityInteractionToolCall(
+                      params.toolCall,
+                      catalogs.interactionServerName(),
+                    )
+                  ) {
+                    const allowOnce = selectPermissionOptionId(params, "accept");
+                    if (allowOnce !== undefined)
+                      return { outcome: { outcome: "selected" as const, optionId: allowOnce } };
+                  }
                   const computerRequest = catalogs.classify(params.toolCall);
                   const approvalKey = computerRequest ? undefined : sessionApprovalKey(params);
                   if (computerRequest)
@@ -1408,11 +1538,12 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             stopped: false,
             backgroundTasks: new Map(),
             antigravityTasks: new AntigravityTasks(),
-            normalizeAntigravityTool: makeAntigravityToolNormalizer(),
+            normalizeAntigravityTool: makeAntigravityToolNormalizer(undefined, brainRoots),
             nativeChildrenPolling: false,
             antigravityMode: antigravityStartMode,
             antigravityAutoUnavailable,
             antigravityPlanRequested: false,
+            antigravityPlanArtifacts: new AntigravityPlanArtifactTracker(brainRoots),
             antigravityPendingWarning: undefined,
             antigravityNativeReaders,
             antigravityStepLayoutVerified:
@@ -1572,6 +1703,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                       });
                     }
                     yield* logNative(ctx.threadId, "session/update", event.rawPayload);
+                    // Seen before sanitization, which trims the plan's text.
+                    if (!computerCall && PROVIDER === "antigravity" && ctx.activeTurnId)
+                      ctx.antigravityPlanArtifacts.observe(event.toolCall, ctx.acpSessionId);
                     const toolCall =
                       PROVIDER === "antigravity"
                         ? ctx.normalizeAntigravityTool(event.toolCall)
@@ -1596,7 +1730,14 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                         provider: PROVIDER,
                         threadId: ctx.threadId,
                         turnId: ctx.activeTurnId,
-                        toolCall,
+                        toolCall:
+                          PROVIDER === "antigravity" &&
+                          isAntigravityInteractionToolCall(
+                            event.toolCall,
+                            catalogs.interactionServerName(),
+                          )
+                            ? { ...toolCall, title: "Asked a question" }
+                            : toolCall,
                         rawPayload: event.rawPayload,
                       }),
                     );
@@ -1972,6 +2113,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               ctx.activeTurnId = turnId;
               if (steeringTurnId === undefined) {
                 ctx.lastPlanFingerprint = undefined;
+                ctx.antigravityPlanArtifacts.reset();
               }
               ctx.session = {
                 ...ctx.session,
@@ -2213,6 +2355,38 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   );
                 }
                 yield* settleElicitationsForTurn(input.threadId, prepared.turnId);
+                // A question asked through the MCP tool cannot outlive the turn that asked it.
+                yield* settlePendingUserInputsAsCancelled(
+                  new Map(
+                    [...ctx.pendingUserInputs].filter(([, pending]) => pending.viaInteractionTool),
+                  ),
+                );
+                const turnState = nativeFailure
+                  ? "failed"
+                  : result.stopReason === "cancelled"
+                    ? "cancelled"
+                    : "completed";
+                const planArtifact = ctx.antigravityPlanArtifacts.take();
+                const planMarkdown =
+                  PROVIDER === "antigravity" &&
+                  turnState === "completed" &&
+                  ctx.antigravityPlanRequested &&
+                  planArtifact
+                    ? yield* Effect.promise(() => readAntigravityPlanArtifact(planArtifact))
+                    : undefined;
+                if (planArtifact && planMarkdown?.trim())
+                  yield* offerRuntimeEvent({
+                    type: "turn.proposed.completed",
+                    ...(yield* makeEventStamp(ctx)),
+                    provider: PROVIDER,
+                    threadId: input.threadId,
+                    turnId: prepared.turnId,
+                    payload: { planMarkdown },
+                    raw: {
+                      source: "acp.antigravity.artifact",
+                      payload: { path: planArtifact.path },
+                    },
+                  });
                 ctx.completedTurnId = prepared.turnId;
                 if (nativeFailure)
                   yield* offerRuntimeEvent({
@@ -2243,11 +2417,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   threadId: input.threadId,
                   turnId: prepared.turnId,
                   payload: {
-                    state: nativeFailure
-                      ? "failed"
-                      : result.stopReason === "cancelled"
-                        ? "cancelled"
-                        : "completed",
+                    state: turnState,
                     ...(nativeFailure ? { errorMessage: nativeFailure.message } : {}),
                     stopReason: result.stopReason ?? null,
                   },

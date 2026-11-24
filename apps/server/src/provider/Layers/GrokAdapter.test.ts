@@ -22,8 +22,10 @@ import { vi } from "vitest";
 import * as GrokAcpSupport from "../acp/GrokAcpSupport.ts";
 import { ServerConfig } from "../../config.ts";
 import type { GrokAdapterShape } from "../Services/GrokAdapter.ts";
-import { makeGrokAdapter } from "./GrokAdapter.ts";
+import { makeGrokAdapter, type GrokAdapterLiveOptions } from "./GrokAdapter.ts";
 import { TurnAcceptanceSignal } from "../deliveryAttemptContext.ts";
+import type { InteractionSession } from "../../mcp/interactionMcpTools.ts";
+import type { PreviewMcpHttpServerShape } from "../../mcp/PreviewMcpHttpServer.ts";
 
 class GrokAdapter extends ServiceMap.Service<GrokAdapter, GrokAdapterShape>()(
   "t3/provider/Layers/GrokAdapter.test/GrokAdapter",
@@ -499,10 +501,11 @@ it.layer(AntigravityAdapterTestLayer)("Antigravity native questions", (it) => {
 });
 
 const antigravityProfileAdapter = (input: {
-  readonly env?: Record<string, string>;
+  readonly env?: Record<string, string> | ((dir: string) => Record<string, string>);
   readonly accountRevision?: number;
   readonly credentials?: ReadonlyArray<string>;
   readonly staleAccount?: () => string | undefined;
+  readonly options?: (dir: string) => Partial<GrokAdapterLiveOptions>;
 }) =>
   Effect.gen(function* () {
     // Removed when the test's scope closes, also after a failed setup or assertion.
@@ -515,7 +518,7 @@ const antigravityProfileAdapter = (input: {
       env: {
         F5_ACP_ANTIGRAVITY_PROFILE: "1",
         T3_ACP_REQUEST_LOG_PATH: requestLogPath,
-        ...input.env,
+        ...(typeof input.env === "function" ? input.env(dir) : input.env),
       },
     });
     const adapter = yield* makeGrokAdapter(
@@ -527,7 +530,9 @@ const antigravityProfileAdapter = (input: {
           accountRevision: Effect.succeed(input.accountRevision ?? 0),
           ...(input.credentials ? { credentials: input.credentials } : {}),
           ...(input.staleAccount ? { staleAccount: Effect.sync(input.staleAccount) } : {}),
+          nativeReaders: () => Effect.succeed(false),
         },
+        ...input.options?.(dir),
       },
     );
     const requests = () =>
@@ -1265,3 +1270,375 @@ it.layer(grokApprovalTestLayer({ T3_ACP_SECOND_PERMISSION_COMMAND: "rm -rf build
     );
   },
 );
+
+/** Records the interaction session F5 hands its MCP catalog, so a test can call the tool. */
+const fakeInteractionPreview = () => {
+  const sessions: InteractionSession[] = [];
+  const preview: PreviewMcpHttpServerShape = {
+    getUrl: () => "http://127.0.0.1:1/mcp/preview",
+    createSessionConfig: (input) => {
+      if (input.interaction) sessions.push(input.interaction);
+      return {
+        serverName: input.serverName ?? "f5_test",
+        serverDefinition: {
+          type: "http",
+          url: `http://127.0.0.1:1/mcp/${input.catalog ?? "preview"}`,
+          enabled: true,
+          bearerTokenEnvVar: "F5_TEST_TOKEN",
+        },
+        env: { F5_TEST_TOKEN: "interaction-token-secret" },
+        dispose: () => {},
+      };
+    },
+  };
+  return { preview, sessions };
+};
+
+const STDIO_LAUNCH = { command: "/opt/f5/f5", args: ["entry.mjs", "mcp-session-stdio"], env: {} };
+
+const QUESTIONS = [
+  {
+    question: "Which database?",
+    header: "Database",
+    options: [
+      { label: "Postgres", description: "Relational" },
+      { label: "SQLite", description: "Embedded" },
+    ],
+    multiSelect: false,
+  },
+];
+
+rootIt.layer(
+  ServerConfig.layerTest(process.cwd(), { prefix: "f5-agy-plan-test-" }).pipe(
+    Layer.provideMerge(NodeServices.layer),
+  ),
+)("Antigravity Plan mode", (it) => {
+  const planAdapter = (env: Record<string, string> = {}) =>
+    antigravityProfileAdapter({
+      env: (dir) => ({
+        F5_ACP_ANTIGRAVITY_PLAN_ARTIFACT_ROOT: path.join(
+          dir,
+          "profile",
+          "antigravity-acp",
+          "brain",
+        ),
+        ...env,
+      }),
+      options: (dir) => ({ antigravityProfileDirectory: path.join(dir, "profile") }),
+    });
+  const proposed = (events: ReadonlyArray<ProviderRuntimeEvent>) =>
+    events.filter((event) => event.type === "turn.proposed.completed");
+
+  it.effect("shows a Plan turn's feedback artifact, in full, as the proposed plan", () =>
+    Effect.gen(function* () {
+      const { adapter, events } = yield* planAdapter();
+      const threadId = ThreadId.make("agy-plan-card");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "Plan it",
+        attachments: [],
+        interactionMode: "plan",
+      });
+      const plans = proposed(events);
+      assert.equal(plans.length, 1);
+      const plan = plans[0]!;
+      const markdown = plan.type === "turn.proposed.completed" ? plan.payload.planMarkdown : "";
+      // Longer than the 8,000 characters tool payloads are trimmed to.
+      assert.isAbove(markdown.length, 8_000);
+      assert.match(markdown, /^# Plan/);
+      assert.match(markdown, /End of plan\.\n$/);
+      const completedIndex = events.findIndex((event) => event.type === "turn.completed");
+      assert.isBelow(events.indexOf(plan), completedIndex);
+
+      const artifactItems = events.filter(
+        (event) => event.type === "item.completed" && event.itemId === "plan-artifact-1",
+      );
+      assert.isAbove(artifactItems.length, 0);
+      for (const item of artifactItems)
+        if (item.type === "item.completed") {
+          assert.equal(item.payload.itemType, "dynamic_tool_call");
+          assert.equal(item.payload.title, "Updated plan artifact implementation_plan.md");
+          assert.notProperty(item.payload.data ?? {}, "changes");
+        }
+
+      // A default-mode turn that writes the same artifact proposes nothing.
+      yield* adapter.sendTurn({ threadId, input: "Implement it", attachments: [] });
+      assert.equal(proposed(events).length, 1);
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("reads Python-style artifact metadata", () =>
+    Effect.gen(function* () {
+      const { adapter, events } = yield* planAdapter({
+        F5_ACP_ANTIGRAVITY_PLAN_METADATA_STRING: "1",
+      });
+      const threadId = ThreadId.make("agy-plan-python-metadata");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "Plan it",
+        attachments: [],
+        interactionMode: "plan",
+      });
+      assert.equal(proposed(events).length, 1);
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("proposes nothing for an artifact that does not request feedback", () =>
+    Effect.gen(function* () {
+      const { adapter, events } = yield* planAdapter({ F5_ACP_ANTIGRAVITY_PLAN_FEEDBACK: "0" });
+      const threadId = ThreadId.make("agy-plan-no-feedback");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "Plan it",
+        attachments: [],
+        interactionMode: "plan",
+      });
+      assert.equal(proposed(events).length, 0);
+      const titles = events.flatMap((event) =>
+        event.type === "item.completed" && event.itemId === "plan-artifact-1"
+          ? [event.payload.title]
+          : [],
+      );
+      assert.include(titles, "Updated artifact implementation_plan.md");
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("treats an edit outside the brain directory as a file change", () =>
+    Effect.gen(function* () {
+      const { adapter, events } = yield* antigravityProfileAdapter({
+        env: (dir) => ({ F5_ACP_ANTIGRAVITY_PLAN_ARTIFACT_ROOT: path.join(dir, "workspace") }),
+        options: (dir) => ({ antigravityProfileDirectory: path.join(dir, "profile") }),
+      });
+      const threadId = ThreadId.make("agy-plan-outside");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "Plan it",
+        attachments: [],
+        interactionMode: "plan",
+      });
+      assert.equal(proposed(events).length, 0);
+      const item = events.find(
+        (event) => event.type === "item.completed" && event.itemId === "plan-artifact-1",
+      );
+      assert.equal(
+        item?.type === "item.completed" ? item.payload.itemType : undefined,
+        "file_change",
+      );
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped),
+  );
+});
+
+rootIt.layer(
+  ServerConfig.layerTest(process.cwd(), { prefix: "f5-agy-interaction-test-" }).pipe(
+    Layer.provideMerge(NodeServices.layer),
+  ),
+)("Antigravity questions through F5's MCP tool", (it) => {
+  const interactionAdapter = (env: Record<string, string> = {}) =>
+    Effect.gen(function* () {
+      const fake = fakeInteractionPreview();
+      const harness = yield* antigravityProfileAdapter({
+        env,
+        options: () => ({
+          previewMcpHttpServer: fake.preview,
+          mcpSessionStdioLaunch: STDIO_LAUNCH,
+        }),
+      });
+      return { ...harness, sessions: fake.sessions };
+    });
+
+  it.effect(
+    "offers the question tool over stdio and appends the guidance to the system prompt",
+    () =>
+      Effect.gen(function* () {
+        const { adapter, requests } = yield* interactionAdapter({
+          ACP_MOCK_SYSTEM_PROMPT_APPEND: "1",
+        });
+        const threadId = ThreadId.make("agy-interaction-catalog");
+        yield* adapter.startSession({
+          threadId,
+          provider: "antigravity",
+          cwd: process.cwd(),
+          runtimeMode: "approval-required",
+        });
+        const created = (yield* requests()).find((request) => request.method === "session/new");
+        const servers = created?.params?.mcpServers as ReadonlyArray<Record<string, unknown>>;
+        const interaction = servers.find((server) =>
+          String(server.name).startsWith("f5_interaction_"),
+        );
+        assert.ok(interaction);
+        assert.match(String(interaction.name), /^f5_interaction_[0-9a-f]{8}$/);
+        assert.equal(interaction.command, "/opt/f5/f5");
+        assert.deepEqual(interaction.args, ["entry.mjs", "mcp-session-stdio"]);
+        assert.deepEqual(interaction.env, [
+          { name: "F5_MCP_URL", value: "http://127.0.0.1:1/mcp/interaction" },
+          { name: "F5_MCP_TOKEN", value: "interaction-token-secret" },
+        ]);
+        const meta = created?.params?._meta as
+          | { antigravity?: { systemPrompt?: { append?: string } } }
+          | undefined;
+        assert.include(meta?.antigravity?.systemPrompt?.append ?? "", "ask_user_question");
+        yield* adapter.stopSession(threadId);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("sends no system prompt guidance to an agent that does not advertise it", () =>
+    Effect.gen(function* () {
+      const { adapter, requests } = yield* interactionAdapter();
+      const threadId = ThreadId.make("agy-interaction-no-append");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      const created = (yield* requests()).find((request) => request.method === "session/new");
+      assert.notProperty(created?.params ?? {}, "_meta");
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("allows the question tool once, even in Plan mode under approval-required", () =>
+    Effect.gen(function* () {
+      const { adapter, events } = yield* interactionAdapter({
+        F5_ACP_ANTIGRAVITY_INTERACTION_PERMISSION: "1",
+      });
+      const threadId = ThreadId.make("agy-interaction-permission");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "Plan it",
+        attachments: [],
+        interactionMode: "plan",
+      });
+      assert.equal(
+        events.some((event) => event.type === "request.opened"),
+        false,
+      );
+      const text = events
+        .flatMap((event) => (event.type === "content.delta" ? [event.payload.delta] : []))
+        .join("");
+      assert.include(text, "permission:allow");
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("shows the questions as a card and returns the answers", () =>
+    Effect.gen(function* () {
+      const { adapter, events, sessions } = yield* interactionAdapter();
+      const threadId = ThreadId.make("agy-interaction-answer");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      const session = sessions[0]!;
+      const answer = session.askUserQuestion(QUESTIONS, new AbortController().signal);
+      yield* Effect.promise(() =>
+        vi.waitFor(() => assert.ok(events.some((event) => event.type === "user-input.requested"))),
+      );
+      const request = events.find((event) => event.type === "user-input.requested");
+      assert.ok(request?.type === "user-input.requested");
+      assert.deepEqual(request.payload.questions, [
+        {
+          id: "Which database?",
+          header: "Database",
+          question: "Which database?",
+          multiSelect: false,
+          options: [
+            { label: "Postgres", description: "Relational" },
+            { label: "SQLite", description: "Embedded" },
+          ],
+        },
+      ]);
+      yield* adapter.respondToUserInput(threadId, ApprovalRequestId.make(request.requestId!), {
+        "Which database?": "SQLite",
+      });
+      assert.deepEqual(yield* Effect.promise(() => answer), {
+        answers: { "Which database?": "SQLite" },
+      });
+      assert.equal(events.filter((event) => event.type === "user-input.resolved").length, 1);
+
+      // Dismissing the card answers nothing.
+      const dismissed = session.askUserQuestion(QUESTIONS, new AbortController().signal);
+      yield* Effect.promise(() =>
+        vi.waitFor(() =>
+          assert.equal(events.filter((event) => event.type === "user-input.requested").length, 2),
+        ),
+      );
+      const second = events.filter((event) => event.type === "user-input.requested")[1]!;
+      yield* adapter.respondToUserInput(threadId, ApprovalRequestId.make(second.requestId!), {});
+      assert.deepEqual(yield* Effect.promise(() => dismissed), { cancelled: true });
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("closes the card when Antigravity stops waiting", () =>
+    Effect.gen(function* () {
+      const { adapter, events, sessions } = yield* interactionAdapter();
+      const threadId = ThreadId.make("agy-interaction-abort");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      const controller = new AbortController();
+      const answer = sessions[0]!.askUserQuestion(QUESTIONS, controller.signal);
+      yield* Effect.promise(() =>
+        vi.waitFor(() => assert.ok(events.some((event) => event.type === "user-input.requested"))),
+      );
+      controller.abort();
+      assert.deepEqual(yield* Effect.promise(() => answer), { cancelled: true });
+      assert.equal(events.filter((event) => event.type === "user-input.resolved").length, 1);
+      assert.ok(
+        events.some(
+          (event) =>
+            event.type === "runtime.warning" &&
+            event.payload.message.includes("stopped waiting for an answer"),
+        ),
+      );
+      yield* adapter.stopSession(threadId);
+      // After the session stops, a new question is cancelled without a card.
+      assert.deepEqual(
+        yield* Effect.promise(() =>
+          sessions[0]!.askUserQuestion(QUESTIONS, new AbortController().signal),
+        ),
+        { cancelled: true },
+      );
+    }).pipe(Effect.scoped),
+  );
+});

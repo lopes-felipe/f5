@@ -1,6 +1,9 @@
 import { assert, it } from "@effect/vitest";
 import { ThreadId } from "@t3tools/contracts";
-import { Effect } from "effect";
+import { Effect, Fiber } from "effect";
+import { vi } from "vitest";
+
+import type { InteractionSession } from "./interactionMcpTools.ts";
 
 import { DISABLED_AGENT_BROWSER_POLICY } from "./browserAccess.ts";
 import { makePreviewAutomationBroker, PreviewAutomationBroker } from "./PreviewAutomationBroker.ts";
@@ -493,6 +496,119 @@ it.effect("routes the integration catalog to its proxy session and revokes it on
         (yield* postMcpHttp(url, token, { jsonrpc: "2.0", id: 3, method: "tools/list" })).status,
         401,
       );
+    }),
+  ),
+);
+
+it.effect("serves the interaction catalog and cancels a waiting question", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = makePreviewAutomationBroker();
+      const server = yield* makePreviewMcpHttpServer.pipe(
+        Effect.provideService(PreviewAutomationBroker, broker),
+      );
+      const asked: Array<{ questions: unknown; signal: AbortSignal }> = [];
+      const interaction: InteractionSession = {
+        askUserQuestion: (questions, signal) => {
+          asked.push({ questions, signal });
+          return asked.length === 1
+            ? Promise.resolve({ answers: { "Which database?": "SQLite" } })
+            : new Promise((resolve) =>
+                signal.addEventListener("abort", () => resolve({ cancelled: true }), {
+                  once: true,
+                }),
+              );
+        },
+      };
+      const session = server.createSessionConfig({
+        threadId: ThreadId.makeUnsafe("thread-interaction"),
+        catalog: "interaction",
+        serverName: "f5_interaction_test",
+        interaction,
+      });
+      assert.equal(session.serverDefinition.toolTimeoutSec, 86_400);
+      const token = Object.values(session.env)[0]!;
+      const url = server.getUrl("interaction");
+      assert.equal((yield* postMcpHttp(server.getUrl("thread"), token, {})).status, 401);
+      const init = (yield* postMcp(url, token, {
+        jsonrpc: "2.0",
+        id: 0,
+        method: "initialize",
+      })) as { result: { instructions?: string } };
+      assert.include(init.result.instructions ?? "", "ask_user_question");
+      const list = (yield* postMcp(url, token, {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/list",
+      })) as { result: { tools: Array<{ name: string }> } };
+      assert.deepEqual(
+        list.result.tools.map((tool) => tool.name),
+        ["ask_user_question"],
+      );
+      const args = {
+        questions: [
+          {
+            question: "Which database?",
+            header: "Database",
+            options: [
+              { label: "Postgres", description: "Relational" },
+              { label: "SQLite", description: "Embedded" },
+            ],
+          },
+        ],
+        // Antigravity adds its own summary to every tool call.
+        toolSummary: "Ask which database",
+      };
+      const answered = (yield* postMcp(url, token, {
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: { name: "ask_user_question", arguments: args },
+      })) as { result: { structuredContent: unknown; isError?: boolean } };
+      assert.deepEqual(answered.result.structuredContent, {
+        answers: { "Which database?": "SQLite" },
+      });
+      assert.notOk(answered.result.isError);
+
+      const invalid = (yield* postMcp(url, token, {
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: { name: "ask_user_question", arguments: { questions: [] } },
+      })) as { result: { isError?: boolean } };
+      assert.equal(invalid.result.isError, true);
+      assert.equal(asked.length, 1);
+
+      // A waiting question ends when the client cancels the call that asked it.
+      const waiting = yield* postMcp(url, token, {
+        jsonrpc: "2.0",
+        id: 4,
+        method: "tools/call",
+        params: { name: "ask_user_question", arguments: args },
+      }).pipe(Effect.forkChild);
+      yield* Effect.promise(() => vi.waitFor(() => assert.equal(asked.length, 2)));
+      yield* postMcpHttp(url, token, {
+        jsonrpc: "2.0",
+        method: "notifications/cancelled",
+        params: { requestId: 4 },
+      });
+      const cancelled = (yield* Fiber.join(waiting)) as {
+        result: { structuredContent: { cancelled?: boolean } };
+      };
+      assert.equal(cancelled.result.structuredContent.cancelled, true);
+      assert.equal(asked[1]!.signal.aborted, true);
+
+      // Revoking the credential stops a question still waiting.
+      const pending = yield* postMcpHttp(url, token, {
+        jsonrpc: "2.0",
+        id: 5,
+        method: "tools/call",
+        params: { name: "ask_user_question", arguments: args },
+      }).pipe(Effect.forkChild);
+      yield* Effect.promise(() => vi.waitFor(() => assert.equal(asked.length, 3)));
+      session.dispose();
+      yield* Fiber.join(pending);
+      assert.equal(asked[2]!.signal.aborted, true);
     }),
   ),
 );

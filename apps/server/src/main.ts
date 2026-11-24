@@ -38,6 +38,7 @@ import { applyPendingRestore } from "./backupService.ts";
 import { fixPath, resolveBaseDir, resolveStateDir } from "./os-jank";
 import { agentBridgeLocalCredentialsPath } from "./agentBridge/localCredentials.ts";
 import { runAgentBridgeStdio } from "./agentBridge/stdioShim.ts";
+import { runMcpSessionStdio } from "./mcp/sessionStdioShim.ts";
 import { makeThreadCommand } from "./threadCli/command.ts";
 import { profileStateDir } from "@t3tools/shared/profilePaths";
 import { hostExecutionRefusal } from "@t3tools/shared/profileExecution";
@@ -804,6 +805,14 @@ const agentBridgeStdioCommand = Command.make("agent-bridge-stdio", {}).pipe(
   ),
 );
 
+/** Started by F5 itself for agents that only speak stdio MCP; not for users. */
+const mcpSessionStdioCommand = Command.make("mcp-session-stdio", {}).pipe(
+  Command.withDescription("Internal: serve an F5 session's MCP tools over STDIO."),
+  Command.withHandler(() =>
+    Effect.promise(() => runMcpSessionStdio({ input: process.stdin, output: process.stdout })),
+  ),
+);
+
 const traceSummarizeCommand = Command.make("summarize", {
   file: Flag.string("file").pipe(Flag.optional),
 }).pipe(
@@ -893,6 +902,7 @@ export const t3Cli = t3Base.pipe(
   Command.withHandler((input) => Effect.scoped(makeServerProgram(input))),
   Command.withSubcommands([
     agentBridgeStdioCommand,
+    mcpSessionStdioCommand,
     makeThreadCommand(resolveCliProfileStateDir),
     traceCommand,
     appCommand,

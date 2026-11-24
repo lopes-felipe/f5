@@ -404,3 +404,109 @@ describe("launch credential scrubbing", () => {
     }
   });
 });
+
+describe("interaction catalog", () => {
+  const interaction = { askUserQuestion: async () => ({ cancelled: true as const }) };
+  const launch = { command: "/opt/f5/f5", args: ["entry.mjs", "mcp-session-stdio"], env: {} };
+  const preview = () => {
+    const createSessionConfig = vi.fn((input: { catalog?: string; serverName?: string }) => ({
+      serverName: input.serverName ?? `f5_${input.catalog}`,
+      env: { TOKEN: `${input.catalog}-private-token` },
+      serverDefinition: {
+        type: "http",
+        url: `http://127.0.0.1:1234/mcp/${input.catalog}`,
+        bearerTokenEnvVar: "TOKEN",
+      },
+      dispose: vi.fn(),
+    }));
+    return {
+      createSessionConfig,
+      shape: {
+        supportsThreadCatalog: false,
+        createSessionConfig,
+      } as unknown as PreviewMcpHttpServerShape,
+    };
+  };
+  const prepare = (
+    input: Partial<Parameters<typeof prepareAcpAutomationCatalogs>[0]>,
+    scope: Scope.Closeable,
+  ) =>
+    Effect.runPromise(
+      prepareAcpAutomationCatalogs({
+        threadId,
+        provider: "antigravity",
+        scope,
+        ordinarySession: true,
+        readOnlyWorkflow: false,
+        stdioLaunch: launch,
+        ...input,
+      }),
+    );
+
+  it("reaches an agent without HTTP MCP over the stdio relay, with its token scrubbed", async () => {
+    const scope = await Effect.runPromise(Scope.make());
+    try {
+      const { shape } = preview();
+      const catalogs = await prepare({ preview: shape, interaction }, scope);
+      const servers = catalogs.mcpServers({ protocolVersion: 1, agentCapabilities: {} });
+      expect(servers).toHaveLength(1);
+      const server = servers[0] as unknown as Record<string, unknown>;
+      expect(server.name).toMatch(/^f5_interaction_[0-9a-f]{8}$/);
+      expect(catalogs.interactionServerName()).toBe(server.name);
+      expect(server).toMatchObject({
+        command: "/opt/f5/f5",
+        args: ["entry.mjs", "mcp-session-stdio"],
+        env: [
+          { name: "F5_MCP_URL", value: "http://127.0.0.1:1234/mcp/interaction" },
+          { name: "F5_MCP_TOKEN", value: "interaction-private-token" },
+        ],
+      });
+      expect(catalogs.scrubDiagnostic("token interaction-private-token")).not.toContain(
+        "interaction-private-token",
+      );
+      expect(catalogs.hasSensitiveConfiguration()).toBe(true);
+    } finally {
+      await Effect.runPromise(Scope.close(scope, Exit.void));
+    }
+  });
+
+  it("uses HTTP when the agent advertises it", async () => {
+    const scope = await Effect.runPromise(Scope.make());
+    try {
+      const { shape } = preview();
+      const catalogs = await prepare(
+        { preview: shape, interaction, verification: { preview: false, computer: false } },
+        scope,
+      );
+      const servers = catalogs.mcpServers(init);
+      expect(servers).toEqual([
+        {
+          type: "http",
+          name: catalogs.interactionServerName(),
+          url: "http://127.0.0.1:1234/mcp/interaction",
+          headers: [{ name: "Authorization", value: "Bearer interaction-private-token" }],
+        },
+      ]);
+    } finally {
+      await Effect.runPromise(Scope.close(scope, Exit.void));
+    }
+  });
+
+  it.each([
+    ["without a question session", {}],
+    ["in a read-only workflow", { interaction, readOnlyWorkflow: true }],
+    ["for a one-off session", { interaction, ordinarySession: false, threadSession: false }],
+    ["with no way to reach the agent", { interaction, stdioLaunch: undefined }],
+  ])("offers no question tool %s", async (_name, input) => {
+    const scope = await Effect.runPromise(Scope.make());
+    try {
+      const { shape, createSessionConfig } = preview();
+      const catalogs = await prepare({ preview: shape, ...input }, scope);
+      expect(catalogs.mcpServers({ protocolVersion: 1, agentCapabilities: {} })).toEqual([]);
+      expect(createSessionConfig).not.toHaveBeenCalled();
+      expect(catalogs.interactionServerName()).toBeUndefined();
+    } finally {
+      await Effect.runPromise(Scope.close(scope, Exit.void));
+    }
+  });
+});

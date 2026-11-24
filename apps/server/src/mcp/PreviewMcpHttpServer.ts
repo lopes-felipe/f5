@@ -66,18 +66,28 @@ import {
   previewToolInputJsonSchema,
   type McpToolResult,
 } from "./previewMcpTools.ts";
+import {
+  ASK_USER_QUESTION_TOOL,
+  callInteractionTool,
+  type InteractionSession,
+} from "./interactionMcpTools.ts";
 
 const MCP_ENDPOINT_PATH = "/mcp/preview";
 const PREVIEW_MCP_SERVER_NAME = "__f5_preview";
 const PREVIEW_MCP_ENV_PREFIX = "F5_PREVIEW_MCP_TOKEN_";
 const MCP_PROTOCOL_VERSION = "2024-11-05";
+/** A question waits for the user, however long that takes. */
+const INTERACTION_TOOL_TIMEOUT_SEC = 24 * 60 * 60;
+const INTERACTION_GUIDANCE =
+  "When the user must choose between options, call ask_user_question instead of asking in prose, and wait for the answer.";
 
-type McpCatalog = "preview" | "computer" | "thread" | "integration";
+export type McpCatalog = "preview" | "computer" | "thread" | "integration" | "interaction";
 const CATALOG_PATHS: Record<McpCatalog, string> = {
   preview: MCP_ENDPOINT_PATH,
   computer: "/mcp/computer",
   thread: "/mcp/thread",
   integration: "/mcp/integration",
+  interaction: "/mcp/interaction",
 };
 
 interface PreviewMcpSessionScope {
@@ -92,6 +102,10 @@ interface PreviewMcpSessionScope {
   computerScope?: ComputerSessionScope;
   /** Provider-native integration proxied through F5's per-call admission. */
   integration?: IntegrationProxySession;
+  /** The adapter that shows this session's questions. */
+  interaction?: InteractionSession;
+  /** In-flight `ask_user_question` calls, by invocation key. */
+  readonly interactionCalls: Map<string, AbortController>;
   rpcIncarnation?: string;
 }
 
@@ -117,6 +131,8 @@ export interface PreviewMcpHttpServerShape {
     readonly threadAccess?: ThreadToolAccess;
     /** Required for the `integration` catalog; disposed with the session config. */
     readonly integration?: IntegrationProxySession;
+    /** Required for the `interaction` catalog. */
+    readonly interaction?: InteractionSession;
   }) => PreviewMcpSessionConfig;
 }
 
@@ -149,6 +165,7 @@ function makeToolCallHandler(
     rawArguments: unknown,
     invocationId?: string,
     meta?: unknown,
+    signal?: AbortSignal,
   ): Promise<McpToolResult> => {
     const scope = resolveScope(token);
     if (!scope) {
@@ -156,6 +173,13 @@ function makeToolCallHandler(
         new PreviewAutomationExecutionError({ message: "MCP credential is no longer valid." }),
       );
     }
+    if (scope.catalog === "interaction")
+      return callInteractionTool(
+        scope.interaction,
+        name,
+        rawArguments,
+        signal ?? new AbortController().signal,
+      );
     if (scope.catalog === "integration") {
       if (!scope.integration) return previewToolErrorResult(new Error("Integration unavailable."));
       // Codex's turn metadata rides in `_meta`; ChatGPT's browser runtime requires it.
@@ -214,22 +238,30 @@ function handleRpcRequest(input: {
   readonly integration?: IntegrationProxySession;
   /** Scopes a client JSON-RPC id to this MCP connection. */
   readonly invocationKey: (id: string) => string;
+  /** In-flight interaction calls by invocation key, aborted by `notifications/cancelled`. */
+  readonly interactionCalls: Map<string, AbortController>;
+  /** Aborts when the HTTP client goes away before the reply. */
+  readonly connectionSignal: AbortSignal;
   readonly callTool: (
     token: string,
     name: string,
     rawArguments: unknown,
     invocationId?: string,
     meta?: unknown,
+    signal?: AbortSignal,
   ) => Promise<McpToolResult>;
 }): Promise<JsonRpcResponse | null> {
   const { request } = input;
   if (request.id === undefined && request.method?.startsWith("notifications/")) {
     // Calls are keyed by the client's JSON-RPC id, so a client cancellation reaches the
     // proxied child (and starts the bounded drain) instead of being dropped.
-    if (input.catalog === "integration" && request.method === "notifications/cancelled") {
+    if (request.method === "notifications/cancelled") {
       const requestId = asObject(request.params).requestId;
-      if (requestId !== undefined)
-        input.integration?.cancelCall(input.invocationKey(JSON.stringify(requestId)));
+      if (requestId !== undefined) {
+        const key = input.invocationKey(JSON.stringify(requestId));
+        if (input.catalog === "integration") input.integration?.cancelCall(key);
+        if (input.catalog === "interaction") input.interactionCalls.get(key)?.abort();
+      }
     }
     return Promise.resolve(null);
   }
@@ -243,6 +275,7 @@ function handleRpcRequest(input: {
         jsonRpcSuccess(request.id, {
           protocolVersion: MCP_PROTOCOL_VERSION,
           ...(input.catalog === "computer" ? { instructions: COMPUTER_GUIDANCE } : {}),
+          ...(input.catalog === "interaction" ? { instructions: INTERACTION_GUIDANCE } : {}),
           capabilities: {
             tools: {},
           },
@@ -254,7 +287,9 @@ function handleRpcRequest(input: {
                   ? "F5 Computer"
                   : input.catalog === "integration"
                     ? "F5 Integration"
-                    : "F5 Preview",
+                    : input.catalog === "interaction"
+                      ? "F5 Interaction"
+                      : "F5 Preview",
             version: "0.0.0",
           },
         }),
@@ -273,6 +308,8 @@ function handleRpcRequest(input: {
             })),
           }),
         );
+      if (input.catalog === "interaction")
+        return Promise.resolve(jsonRpcSuccess(request.id, { tools: [ASK_USER_QUESTION_TOOL] }));
       return Promise.resolve(
         jsonRpcSuccess(request.id, {
           tools:
@@ -296,15 +333,27 @@ function handleRpcRequest(input: {
     case "tools/call": {
       const params = asObject(request.params);
       const name = typeof params.name === "string" ? params.name : "";
+      const invocationId =
+        request.id === undefined ? undefined : input.invocationKey(JSON.stringify(request.id));
+      let signal: AbortSignal | undefined;
+      let release = () => {};
+      if (input.catalog === "interaction") {
+        const controller = new AbortController();
+        const abort = () => controller.abort();
+        input.connectionSignal.addEventListener("abort", abort, { once: true });
+        if (input.connectionSignal.aborted) controller.abort();
+        if (invocationId !== undefined) input.interactionCalls.set(invocationId, controller);
+        signal = controller.signal;
+        release = () => {
+          input.connectionSignal.removeEventListener("abort", abort);
+          if (invocationId !== undefined && input.interactionCalls.get(invocationId) === controller)
+            input.interactionCalls.delete(invocationId);
+        };
+      }
       return input
-        .callTool(
-          input.token,
-          name,
-          params.arguments,
-          request.id === undefined ? undefined : input.invocationKey(JSON.stringify(request.id)),
-          params._meta,
-        )
-        .then((result) => jsonRpcSuccess(request.id, result));
+        .callTool(input.token, name, params.arguments, invocationId, params._meta, signal)
+        .then((result) => jsonRpcSuccess(request.id, result))
+        .finally(release);
     }
     case "resources/list":
       return Promise.resolve(jsonRpcSuccess(request.id, { resources: [] }));
@@ -417,6 +466,11 @@ export const makePreviewMcpHttpServer = Effect.gen(function* () {
         catalog === "integration" && typeof requestIncarnation === "string"
           ? requestIncarnation
           : (scope.rpcIncarnation ?? scope.automationSessionId);
+      // A question can wait a long time; a client that hangs up stops waiting for it.
+      const connection = new AbortController();
+      response.once("close", () => {
+        if (!response.writableFinished) connection.abort();
+      });
       const results = (
         await Promise.all(
           requests.map((entry) =>
@@ -427,6 +481,9 @@ export const makePreviewMcpHttpServer = Effect.gen(function* () {
               threadAccess: scope.threadAccess,
               ...(scope.integration ? { integration: scope.integration } : {}),
               invocationKey: (id) => `${incarnation}:${id}`,
+              // Per credential, so one session can never cancel another's call.
+              interactionCalls: scope.interactionCalls,
+              connectionSignal: connection.signal,
               callTool,
             }),
           ),
@@ -497,6 +554,8 @@ export const makePreviewMcpHttpServer = Effect.gen(function* () {
       if (catalog === "computer" && !computer) throw new Error("Computer host unavailable.");
       if (catalog === "integration" && (!input.integration || !input.serverName))
         throw new Error("Integration catalogs need a proxy session and a fixed server name.");
+      if (catalog === "interaction" && !input.interaction)
+        throw new Error("Interaction catalogs need a session that shows questions.");
       const token = nextToken();
       const envVarName =
         catalog !== "preview"
@@ -509,7 +568,9 @@ export const makePreviewMcpHttpServer = Effect.gen(function* () {
             ? "f5_thread"
             : catalog === "computer"
               ? "__f5_computer"
-              : PREVIEW_MCP_SERVER_NAME,
+              : catalog === "interaction"
+                ? "f5_interaction"
+                : PREVIEW_MCP_SERVER_NAME,
           input.existingServerNames,
         );
       const computerScope =
@@ -537,6 +598,8 @@ export const makePreviewMcpHttpServer = Effect.gen(function* () {
         geometry,
         ...(computerScope ? { computerScope } : {}),
         ...(catalog === "integration" ? { integration: input.integration! } : {}),
+        ...(catalog === "interaction" ? { interaction: input.interaction! } : {}),
+        interactionCalls: new Map(),
         issuedAt: new Date().toISOString(),
       });
       tokenByEnvVar.set(envVarName, token);
@@ -549,6 +612,9 @@ export const makePreviewMcpHttpServer = Effect.gen(function* () {
         const storedToken = tokenByEnvVar.get(envVarName);
         tokenByEnvVar.delete(envVarName);
         if (storedToken) {
+          // A revoked credential stops waiting for its questions.
+          for (const call of sessionsByToken.get(storedToken)?.interactionCalls.values() ?? [])
+            call.abort();
           sessionsByToken.delete(storedToken);
         }
         computerScope?.dispose();
@@ -570,11 +636,13 @@ export const makePreviewMcpHttpServer = Effect.gen(function* () {
           toolTimeoutSec:
             catalog === "integration"
               ? INTEGRATION_TOOL_TIMEOUT_SEC
-              : (catalog === "thread"
-                  ? THREAD_TOOL_TIMEOUT_MS
-                  : catalog === "computer"
-                    ? COMPUTER_TOOL_TIMEOUT_MS
-                    : PREVIEW_TOOL_TIMEOUT_MS) / 1000,
+              : catalog === "interaction"
+                ? INTERACTION_TOOL_TIMEOUT_SEC
+                : (catalog === "thread"
+                    ? THREAD_TOOL_TIMEOUT_MS
+                    : catalog === "computer"
+                      ? COMPUTER_TOOL_TIMEOUT_MS
+                      : PREVIEW_TOOL_TIMEOUT_MS) / 1000,
         },
         env: {
           [envVarName]: token,

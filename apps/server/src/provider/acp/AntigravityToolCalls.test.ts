@@ -61,4 +61,37 @@ describe("Antigravity native tools", () => {
     });
     expect(subagent.data.input).toBeUndefined();
   });
+
+  it("shows writes into the brain directory as artifacts, not file changes", () => {
+    const brain = "/profile/antigravity-acp/brain";
+    const normalize = makeAntigravityToolNormalizer(undefined, [brain]);
+    const artifact = (path: string, requestFeedback: boolean) =>
+      normalize({
+        toolCallId: "artifact-1",
+        title: "File plan.md",
+        kind: "edit",
+        status: "completed",
+        data: {
+          rawInput: {
+            Path: path,
+            Content: "# Plan\n".repeat(5_000),
+            ArtifactMetadata: { RequestFeedback: requestFeedback, Summary: "The plan" },
+          },
+          locations: [{ path }],
+          content: [{ type: "diff", path, oldText: null, newText: "# Plan" }],
+        },
+      });
+    const plan = artifact(`${brain}/conv-1/implementation_plan.md`, true);
+    expect(plan.kind).toBe("other");
+    expect(plan.title).toBe("Updated plan artifact implementation_plan.md");
+    expect(plan.data).toEqual({
+      rawInput: { Path: `${brain}/conv-1/implementation_plan.md`, summary: "The plan" },
+    });
+    expect(acpFileChanges(plan.data.content)).toEqual([]);
+    expect(artifact(`${brain}/conv-1/task.md`, false).title).toBe("Updated artifact task.md");
+    // Outside the brain directory an edit stays an edit.
+    const workspace = artifact("/workspace/plan.md", true);
+    expect(workspace.kind).toBe("edit");
+    expect(workspace.title).toBe("File plan.md");
+  });
 });
