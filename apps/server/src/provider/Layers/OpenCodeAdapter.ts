@@ -1480,7 +1480,7 @@ export function makeOpenCodeAdapter(
         const binaryPath = openCodeSettings.binaryPath;
         const serverUrl = openCodeSettings.serverUrl;
         const serverPassword = openCodeSettings.serverPassword;
-        if (serverUrl.trim().length > 0 && isOpenCodePasswordUnavailable(openCodeSettings)) {
+        if (isOpenCodePasswordUnavailable(openCodeSettings)) {
           return yield* new ProviderAdapterValidationError({
             provider: PROVIDER,
             operation: "startSession",
@@ -1529,6 +1529,7 @@ export function makeOpenCodeAdapter(
                 baseUrl: server.url,
                 directory,
                 ...(server.serverPassword ? { serverPassword: server.serverPassword } : {}),
+                ...(server.serverUsername ? { serverUsername: server.serverUsername } : {}),
               });
               const permission = input.workflowExecutionProfile
                 ? buildOpenCodeWorkflowPermissionRules(input.workflowExecutionProfile)

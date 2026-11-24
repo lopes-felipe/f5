@@ -246,16 +246,19 @@ it.layer(testLayer)("checkOpenCodeProviderStatus with configured server URL", (i
     }),
   );
 
-  it.effect("reports a stored password whose secret is missing instead of connecting", () =>
-    Effect.gen(function* () {
-      const snapshot = yield* checkOpenCodeProviderStatus(
-        makeOpenCodeSettings({ serverUrl: "http://127.0.0.1:9999", serverPasswordRedacted: true }),
-        process.cwd(),
-      );
+  it.effect.each(["", "http://127.0.0.1:9999"])(
+    "reports a missing saved password for server URL %j",
+    (serverUrl) =>
+      Effect.gen(function* () {
+        const snapshot = yield* checkOpenCodeProviderStatus(
+          makeOpenCodeSettings({ serverUrl, serverPasswordRedacted: true }),
+          process.cwd(),
+        );
 
-      assert.equal(snapshot.status, "error");
-      assert.equal(snapshot.message, OPENCODE_PASSWORD_UNAVAILABLE);
-    }),
+        assert.equal(snapshot.status, "error");
+        assert.equal(snapshot.message, OPENCODE_PASSWORD_UNAVAILABLE);
+        assert.equal(runtimeMock.state.closeCalls, 0);
+      }),
   );
 
   it.effect("surfaces a friendly connection error for configured servers", () =>

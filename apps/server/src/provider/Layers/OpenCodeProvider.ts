@@ -73,6 +73,9 @@ function formatOpenCodeProbeError(input: {
   readonly serverUrl: string;
 }): { readonly installed: boolean; readonly message: string } {
   const detail = normalizedErrorMessage(input.cause);
+  if (detail === OPENCODE_PASSWORD_UNAVAILABLE) {
+    return { installed: true, message: detail };
+  }
   const lower = detail?.toLowerCase() ?? "";
 
   if (input.isExternalServer) {
@@ -413,7 +416,7 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
     }
   }
 
-  if (isExternalServer && isOpenCodePasswordUnavailable(openCodeSettings)) {
+  if (isOpenCodePasswordUnavailable(openCodeSettings)) {
     return fallback(new Error(OPENCODE_PASSWORD_UNAVAILABLE), version);
   }
 
@@ -441,6 +444,7 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
               baseUrl: server.url,
               directory: cwd,
               ...(server.serverPassword ? { serverPassword: server.serverPassword } : {}),
+              ...(server.serverUsername ? { serverUsername: server.serverUsername } : {}),
             }),
           )
           .pipe(

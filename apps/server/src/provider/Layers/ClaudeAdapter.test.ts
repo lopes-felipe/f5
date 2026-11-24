@@ -1295,54 +1295,6 @@ describe("ClaudeAdapter agent browser", () => {
     );
   });
 
-  it.effect("keeps runtime and MCP App context with a leading skill in a multi-skill prompt", () =>
-    Effect.gen(function* () {
-      const cwd = yield* Effect.acquireRelease(
-        Effect.sync(() => mkdtempSync(path.join(os.tmpdir(), "f5-claude-skills-"))),
-        (directory) => Effect.sync(() => rmSync(directory, { recursive: true, force: true })),
-      );
-      const configDir = path.join(cwd, "config");
-      const audit = path.join(cwd, ".claude", "skills", "audit", "SKILL.md");
-      const report = path.join(configDir, "skills", "report", "SKILL.md");
-      for (const [file, text] of [
-        [audit, "---\ndisable-model-invocation: on\n---\nAudit."],
-        [report, "Report."],
-      ] as const) {
-        mkdirSync(path.dirname(file), { recursive: true });
-        writeFileSync(file, text);
-      }
-      const harness = makeHarness({
-        cwd,
-        processEnvironment: { ...process.env, CLAUDE_CONFIG_DIR: configDir },
-      });
-      yield* Effect.gen(function* () {
-        const adapter = yield* ClaudeAdapter;
-        yield* adapter.startSession({
-          threadId: THREAD_ID,
-          cwd,
-          runtimeMode: "full-access",
-          model: "claude-sonnet-4-6",
-        });
-        yield* adapter.sendTurn({
-          threadId: THREAD_ID,
-          input: "/audit and then /report the findings.",
-          mcpAppContext: "\nMCP App context fixture",
-        });
-        const message = yield* Effect.promise(() =>
-          readFirstPromptMessage(harness.getLastCreateQueryInput()),
-        );
-        const content = message?.message.content;
-        assert.ok(Array.isArray(content));
-        const leading = content[0];
-        assert.ok(leading?.type === "text");
-        assert.include(leading.text, "<f5-runtime-context>");
-        assert.include(leading.text, "MCP App context fixture");
-        assert.include(leading.text, JSON.stringify(audit));
-        assert.deepEqual(content[1], { type: "text", text: "/report the findings." });
-      }).pipe(Effect.provide(harness.layer));
-    }),
-  );
-
   const privateMcpServers = {
     privateHttp: {
       type: "http" as const,

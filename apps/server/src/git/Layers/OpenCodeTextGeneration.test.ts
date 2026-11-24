@@ -309,6 +309,27 @@ it.layer(OpenCodeTextGenerationTestLayer)("OpenCodeTextGenerationLive", (it) => 
 it.layer(OpenCodeTextGenerationExistingServerTestLayer)(
   "OpenCodeTextGenerationLive with configured server URL",
   (it) => {
+    it.effect("rejects missing saved passwords before making a request", () =>
+      withOpenCodeTextGeneration(
+        { ...DEFAULT_OPENCODE_SETTINGS, serverPasswordRedacted: true },
+        (textGeneration) =>
+          Effect.gen(function* () {
+            const error = yield* textGeneration
+              .generateCommitMessage({
+                cwd: process.cwd(),
+                branch: "feature/opencode-auth",
+                stagedSummary: "M README.md",
+                stagedPatch: "diff --git a/README.md b/README.md",
+                modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+              })
+              .pipe(Effect.flip);
+            expect(error.message).toContain("A stored OpenCode password is unavailable");
+            expect(runtimeMock.state.startCalls).toEqual([]);
+            expect(runtimeMock.state.promptUrls).toEqual([]);
+          }),
+      ),
+    );
+
     it.effect("reuses a configured OpenCode server URL without spawning or applying idle TTL", () =>
       withOpenCodeTextGeneration(EXISTING_SERVER_OPENCODE_SETTINGS, (textGeneration) =>
         Effect.gen(function* () {

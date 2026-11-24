@@ -1,1 +1,1 @@
-- OpenCode sessions and generated text now authenticate to password-protected OpenCode servers, including local servers that inherit a password from the environment.
+- OpenCode sessions and generated text authenticate to password-protected servers, including local servers with a custom username. A missing stored password is reported before F5 starts or connects to the server.

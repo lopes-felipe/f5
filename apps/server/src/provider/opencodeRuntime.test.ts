@@ -95,12 +95,23 @@ describe("OpenCode startup locks", () => {
 });
 
 it("resolves local passwords from the child environment and honors explicit overrides", async () => {
+  const { createServer } = await import("node:http");
+  const received = Promise.withResolvers<string | undefined>();
+  const server = createServer((request, response) => {
+    received.resolve(request.headers.authorization);
+    response.writeHead(200, { "content-type": "application/json" }).end("[]");
+  });
+  const listening = once(server, "listening");
+  server.listen(0, "127.0.0.1");
+  await listening;
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Expected TCP address");
   const directory = mkdtempSync(path.join(tmpdir(), "f5-opencode-auth-"));
   const binaryPath = writeCliScript(
     path.join(directory, "opencode"),
     [
       "if (process.env.OPENCODE_SERVER_PASSWORD !== process.env.EXPECTED_PASSWORD) process.exit(1);",
-      'console.log("opencode server listening on http://127.0.0.1:54321");',
+      'console.log("opencode server listening on " + process.env.TEST_SERVER_URL);',
       "setInterval(() => {}, 1000);",
     ].join("\n"),
   );
@@ -111,7 +122,9 @@ it("resolves local passwords from the child environment and honors explicit over
         const environment = {
           ...process.env,
           OPENCODE_SERVER_PASSWORD: "from-environment",
+          OPENCODE_SERVER_USERNAME: "custom-user",
           EXPECTED_PASSWORD: "from-environment",
+          TEST_SERVER_URL: "http://127.0.0.1:" + address.port,
         };
         const local = yield* runtime.connectToOpenCodeServer({ binaryPath, environment });
         expect(local.serverPassword).toBe("from-environment");
@@ -121,18 +134,31 @@ it("resolves local passwords from the child environment and honors explicit over
           serverPassword: "from-settings",
         });
         expect(override.serverPassword).toBe("from-settings");
+        const client = runtime.createOpenCodeSdkClient({
+          baseUrl: override.url,
+          directory,
+          ...(override.serverPassword ? { serverPassword: override.serverPassword } : {}),
+          ...(override.serverUsername ? { serverUsername: override.serverUsername } : {}),
+        });
+        yield* Effect.promise(() => client.session.list());
+        expect(yield* Effect.promise(() => received.promise)).toBe(
+          "Basic " + Buffer.from("custom-user:from-settings").toString("base64"),
+        );
         const external = yield* runtime.connectToOpenCodeServer({
           binaryPath,
           environment,
           serverUrl: "https://opencode.example.test",
         });
         expect(external.serverPassword).toBeUndefined();
+        expect(external.serverUsername).toBeUndefined();
       }).pipe(
         Effect.scoped,
         Effect.provide(OpenCodeRuntimeLive.pipe(Layer.provide(NodeServices.layer))),
       ),
     );
   } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
     rmSync(directory, { recursive: true, force: true });
   }
 });

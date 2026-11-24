@@ -167,7 +167,7 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
         exitCode: Effect.never,
       };
     }),
-  connectToOpenCodeServer: ({ serverUrl, serverPassword, environment }) =>
+  connectToOpenCodeServer: ({ serverUrl, serverPassword }) =>
     Effect.gen(function* () {
       const url = serverUrl ?? "http://127.0.0.1:4301";
       // Unconditionally register a scope finalizer for test observability —
@@ -184,13 +184,11 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
       );
       const exit = yield* Deferred.make<number>();
       runtimeMock.state.exitServer = (code) => Effect.runSync(Deferred.succeed(exit, code));
-      const password =
-        serverPassword ?? (serverUrl ? undefined : environment?.OPENCODE_SERVER_PASSWORD);
       return {
         url,
         exitCode: serverUrl ? null : Deferred.await(exit),
         external: Boolean(serverUrl),
-        ...(password ? { serverPassword: password } : {}),
+        ...(serverPassword ? { serverPassword } : {}),
       };
     }),
   runOpenCodeCommand: () => Effect.succeed({ stdout: "", stderr: "", code: 0 }),
@@ -389,6 +387,26 @@ const sleep = (ms: number) =>
   Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
 it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
+  it.effect("rejects a missing saved password before starting a local session", () =>
+    Effect.gen(function* () {
+      const adapter = yield* makeOpenCodeAdapter({
+        ...openCodeAdapterTestSettings,
+        serverUrl: "",
+        serverPassword: "",
+        serverPasswordRedacted: true,
+      });
+      const error = yield* adapter
+        .startSession({
+          threadId: asThreadId("missing-local-password"),
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.flip);
+      assert.match(error.message, /A stored OpenCode password is unavailable/);
+      assert.deepEqual(runtimeMock.state.sessionCreateUrls, []);
+      assert.deepEqual(runtimeMock.state.closeCalls, []);
+    }),
+  );
+
   it.effect("resumes the durable session after teardown and sends follow-ups to it", () =>
     Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;

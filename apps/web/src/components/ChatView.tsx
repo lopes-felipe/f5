@@ -74,6 +74,7 @@ import { partitionDroppedAttachments } from "../lib/droppedAttachments";
 import { composerAttachmentStatus } from "../lib/attachmentValidation";
 import { foldedPasteFile } from "../lib/textPaste";
 import { ensureComposerUpload, persistComposerAttachment } from "../composerDraftStore";
+import { useCommandPaletteStore } from "../commandPaletteStore";
 import { defaultDraftRuntimeMode } from "../lib/draftSettingsDefaults";
 import { RepositoryLinks, repositoryLinksForThread } from "../repositoryLinkContext";
 import { AssistantQuoteToolbar } from "./chat/AssistantQuoteToolbar";
@@ -3221,6 +3222,7 @@ export default memo(function ChatView({
   );
 
   const focusComposer = useCallback(() => {
+    if (useCommandPaletteStore.getState().open) return;
     composerEditorRef.current?.focusAtEnd();
   }, []);
   const scheduleComposerFocus = useCallback(() => {

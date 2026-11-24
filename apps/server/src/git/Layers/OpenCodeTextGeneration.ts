@@ -14,6 +14,10 @@ import { createModelSelection, getModelSelectionStringOptionValue } from "@t3too
 import { ServerConfig } from "../../config.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import {
+  isOpenCodePasswordUnavailable,
+  OPENCODE_PASSWORD_UNAVAILABLE,
+} from "../../serverSettingsSecrets.ts";
+import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
   buildPrContentPrompt,
@@ -294,6 +298,12 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
     readonly modelSelection: ModelSelection;
     readonly attachments?: ReadonlyArray<ChatAttachment> | undefined;
   }) {
+    if (isOpenCodePasswordUnavailable(openCodeSettings)) {
+      return yield* new TextGenerationError({
+        operation: input.operation,
+        detail: OPENCODE_PASSWORD_UNAVAILABLE,
+      });
+    }
     const parsedModel = parseOpenCodeModelSlug(input.modelSelection.model);
     if (!parsedModel) {
       return yield* new TextGenerationError({
@@ -308,13 +318,16 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
         resolveAttachmentPath({ attachmentsDir: serverConfig.attachmentsDir, attachment }),
     });
 
-    const runAgainstServer = (server: Pick<OpenCodeServerConnection, "url" | "serverPassword">) =>
+    const runAgainstServer = (
+      server: Pick<OpenCodeServerConnection, "url" | "serverPassword" | "serverUsername">,
+    ) =>
       Effect.tryPromise({
         try: async () => {
           const client = openCodeRuntime.createOpenCodeSdkClient({
             baseUrl: server.url,
             directory: input.cwd,
             ...(server.serverPassword ? { serverPassword: server.serverPassword } : {}),
+            ...(server.serverUsername ? { serverUsername: server.serverUsername } : {}),
           });
           const session = await client.session.create({
             title: `T3 Code ${input.operation}`,
@@ -370,28 +383,13 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
       );
 
     const rawOutput =
-      openCodeSettings.serverUrl.length > 0
-        ? yield* Effect.scoped(
-            openCodeRuntime
-              .connectToOpenCodeServer({
-                binaryPath: openCodeSettings.binaryPath,
-                serverUrl: openCodeSettings.serverUrl,
-                ...(openCodeSettings.serverPassword
-                  ? { serverPassword: openCodeSettings.serverPassword }
-                  : {}),
-              })
-              .pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new TextGenerationError({
-                      operation: input.operation,
-                      detail: openCodeRuntimeErrorDetail(cause),
-                      cause,
-                    }),
-                ),
-                Effect.flatMap(runAgainstServer),
-              ),
-          )
+      openCodeSettings.serverUrl.trim().length > 0
+        ? yield* runAgainstServer({
+            url: openCodeSettings.serverUrl.trim(),
+            ...(openCodeSettings.serverPassword
+              ? { serverPassword: openCodeSettings.serverPassword }
+              : {}),
+          })
         : yield* Effect.acquireUseRelease(
             acquireSharedServer({
               binaryPath: openCodeSettings.binaryPath,

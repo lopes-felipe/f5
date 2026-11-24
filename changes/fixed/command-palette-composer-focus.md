@@ -1,0 +1,1 @@
+- The composer no longer steals keyboard focus from the open command palette.

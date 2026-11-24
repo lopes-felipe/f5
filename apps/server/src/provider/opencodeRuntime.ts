@@ -60,6 +60,7 @@ export interface OpenCodeServerProcess {
   readonly url: string;
   readonly exitCode: Effect.Effect<number, never>;
   readonly serverPassword?: string;
+  readonly serverUsername?: string;
 }
 
 export interface OpenCodeServerConnection {
@@ -67,6 +68,7 @@ export interface OpenCodeServerConnection {
   readonly exitCode: Effect.Effect<number, never> | null;
   readonly external: boolean;
   readonly serverPassword?: string;
+  readonly serverUsername?: string;
 }
 
 const OPENCODE_RUNTIME_ERROR_TAG = "OpenCodeRuntimeError";
@@ -166,6 +168,7 @@ export interface OpenCodeRuntimeShape {
     readonly baseUrl: string;
     readonly directory: string;
     readonly serverPassword?: string;
+    readonly serverUsername?: string;
     /** Cancels every SDK fetch when this owned server/session disappears. */
     readonly signal?: AbortSignal;
   }) => OpencodeClient;
@@ -708,6 +711,9 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       return {
         url: readyOption.value,
         ...(serverPassword !== undefined ? { serverPassword } : {}),
+        ...(inheritedEnvironment.OPENCODE_SERVER_USERNAME
+          ? { serverUsername: inheritedEnvironment.OPENCODE_SERVER_USERNAME }
+          : {}),
         exitCode: child.exitCode.pipe(
           Effect.map(Number),
           Effect.orElseSucceed(() => 0),
@@ -787,7 +793,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       ...(input.serverPassword
         ? {
             headers: {
-              Authorization: `Basic ${Buffer.from(`opencode:${input.serverPassword}`, "utf8").toString("base64")}`,
+              Authorization: `Basic ${Buffer.from(`${input.serverUsername ?? "opencode"}:${input.serverPassword}`, "utf8").toString("base64")}`,
             },
           }
         : {}),
