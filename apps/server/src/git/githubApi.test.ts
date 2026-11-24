@@ -65,6 +65,10 @@ function harness(scheduler = makeGitHubRequestScheduler()) {
         release();
       };
     },
+    /** Lets later CLI calls through while the ones already held keep waiting. */
+    stopHolding: () => {
+      gate = null;
+    },
   };
 }
 
@@ -598,8 +602,8 @@ describe("credential suspension after a 401", () => {
   });
   const advance = (ms: number) => vi.setSystemTime(Date.now() + ms);
 
-  /** A verified credential whose first read GitHub answered with 401. */
-  async function suspended() {
+  /** A verified credential GitHub has not rejected yet. */
+  async function verified() {
     // The scheduler reads the faked clock, and a fixed jitter makes its 5xx block 30s.
     const h = harness(
       makeGitHubRequestScheduler(
@@ -632,10 +636,39 @@ describe("credential suspension after a 401", () => {
       h.execute.mock.calls.filter(([input]) => input.args[1] === "repos/o/r").length;
     const verifications = () =>
       h.execute.mock.calls.filter(([input]) => input.args[1] === "user").length;
-    h.respond(wire({}, 401));
-    expect((await read()).status).toBe(401);
-    return { ...h, context, read, rejected, sent, verifications };
+    const write = () =>
+      Effect.runPromise(
+        h.api
+          .request({
+            cwd: "/repo",
+            context,
+            method: "POST",
+            endpoint: "repos/o/r/issues/1/comments",
+            body: { body: "review" },
+          })
+          .pipe(Effect.result),
+      );
+    const writes = () =>
+      h.execute.mock.calls.filter(([input]) => input.args[1] === "repos/o/r/issues/1/comments")
+        .length;
+    const verifyError = () =>
+      Effect.runPromise(
+        h.api.getCredentialContext({ cwd: "/repo", host: "github.com" }).pipe(Effect.flip),
+      );
+    return { ...h, context, read, rejected, sent, verifications, write, writes, verifyError };
   }
+
+  /** A verified credential whose first read GitHub answered with 401. */
+  async function suspended() {
+    const h = await verified();
+    h.respond(wire({}, 401));
+    expect((await h.read()).status).toBe(401);
+    return h;
+  }
+
+  /** Waits until the holding harness has sent `count` calls in total. */
+  const sentCalls = (h: { execute: { mock: { calls: unknown[] } } }, count: number) =>
+    vi.waitFor(() => expect(h.execute.mock.calls.length).toBe(count));
 
   it("probes the credential once the window passes and lifts the suspension on success", async () => {
     const h = await suspended();
@@ -668,27 +701,27 @@ describe("credential suspension after a 401", () => {
       Effect.runPromise(
         h.api.getCredentialContext({ cwd: "/repo", host: "github.com" }).pipe(Effect.flip),
       );
-    const verified = h.verifications();
+    const verifiedBefore = h.verifications();
     // Within the window, verification refuses without asking GitHub.
     expect(await verifyError()).toMatchObject({
       kind: "unauthenticated",
       detail: GITHUB_CREDENTIAL_SUSPENDED,
     });
-    expect(h.verifications()).toBe(verified);
+    expect(h.verifications()).toBe(verifiedBefore);
 
     // After it, a still-rejected credential is checked once and suspended again.
     advance(61_000);
     h.respondUser(wire({ message: "Bad credentials" }, 401));
     expect(await verifyError()).toMatchObject({ kind: "unauthenticated" });
-    expect(h.verifications()).toBe(verified + 1);
+    expect(h.verifications()).toBe(verifiedBefore + 1);
     expect(await verifyError()).toMatchObject({ detail: GITHUB_CREDENTIAL_SUSPENDED });
-    expect(h.verifications()).toBe(verified + 1);
+    expect(h.verifications()).toBe(verifiedBefore + 1);
 
     // A credential GitHub accepts again verifies, bypassing the cached identity, and works.
     advance(121_000);
     h.respondUser(null);
     expect(await verify()).toMatchObject({ viewerId: h.context.viewerId });
-    expect(h.verifications()).toBe(verified + 2);
+    expect(h.verifications()).toBe(verifiedBefore + 2);
     h.respond(wire({}, 200));
     expect((await h.read()).status).toBe(200);
   });
@@ -728,16 +761,16 @@ describe("credential suspension after a 401", () => {
     expect((await h.read()).status).toBe(200);
   });
 
-  it("does not suspend the credential for a 401 from job-log storage", async () => {
-    const h = harness(makeGitHubRequestScheduler(() => Date.now()));
-    const context = await Effect.runPromise(
-      h.api.getCredentialContext({ cwd: "/repo", host: "github.com" }),
-    );
-    h.respond(wire({ message: "storage denied" }, 401));
+  it.each([
+    ["the storage GitHub redirected to", false, ""],
+    ["GitHub itself", true, "X-GitHub-Request-Id: ABCD:1234\r\n"],
+  ] as const)("a job-log 401 from %s suspends the credential: %s", async (_, suspends, headers) => {
+    const h = await verified();
+    h.respond(wire({ message: "denied" }, 401, headers));
     const log = await Effect.runPromise(
       h.api.request({
         cwd: "/repo",
-        context,
+        context: h.context,
         method: "GET",
         endpoint: "repos/o/r/actions/jobs/1/logs",
         terminalText: true,
@@ -745,13 +778,162 @@ describe("credential suspension after a 401", () => {
     );
     expect(log.status).toBe(401);
     h.respond(wire({}, 200));
-    expect(
-      (
-        await Effect.runPromise(
-          h.api.request({ cwd: "/repo", context, method: "GET", endpoint: "repos/o/r" }),
-        )
-      ).status,
-    ).toBe(200);
+    if (suspends) await h.rejected();
+    else expect((await h.read()).status).toBe(200);
+  });
+
+  describe("a retried write probes a credential whose window has passed", () => {
+    it("is sent once /user accepts the credential again", async () => {
+      const h = await suspended();
+      advance(61_000);
+      h.respond(wire({ id: 1 }, 201));
+      expect(await h.write()).toMatchObject({ _tag: "Success", success: { status: 201 } });
+      expect(h.writes()).toBe(1);
+      expect((await h.read()).status).toBe(201);
+    });
+
+    it("is not sent when /user still rejects it, and the window doubles", async () => {
+      const h = await suspended();
+      advance(61_000);
+      const verifiedBefore = h.verifications();
+      h.respondUser(wire({ message: "Bad credentials" }, 401));
+      expect(await h.write()).toMatchObject({
+        _tag: "Failure",
+        failure: { kind: "unauthenticated", requestDispatched: false },
+      });
+      expect(h.writes()).toBe(0);
+      expect(h.verifications()).toBe(verifiedBefore + 1);
+      h.respondUser(null);
+      advance(119_000);
+      await h.rejected();
+      advance(2_000);
+      h.respond(wire({}, 200));
+      expect((await h.read()).status).toBe(200);
+    });
+
+    it("is refused without asking GitHub while the credential is still suspended", async () => {
+      const h = await suspended();
+      const verifiedBefore = h.verifications();
+      expect(await h.write()).toMatchObject({
+        _tag: "Failure",
+        failure: {
+          kind: "unauthenticated",
+          detail: GITHUB_CREDENTIAL_SUSPENDED,
+          requestDispatched: false,
+        },
+      });
+      expect(h.writes()).toBe(0);
+      expect(h.verifications()).toBe(verifiedBefore);
+    });
+  });
+
+  it("ignores 401s from requests already in flight when the suspension began", async () => {
+    const h = await verified();
+    const release = h.hold();
+    h.respond(wire({}, 401));
+    const calls = h.execute.mock.calls.length;
+    const answers = [h.read(), h.read(), h.read()].map((pending) =>
+      pending.then(
+        (response) => response.status,
+        (error: GitHubCliError) => error.detail,
+      ),
+    );
+    // Two reads are in flight; the scheduler queues the third.
+    await sentCalls(h, calls + 2);
+    release();
+    expect(await Promise.all(answers)).toEqual([401, 401, GITHUB_CREDENTIAL_SUSPENDED]);
+    // Only the first 401 armed the suspension, so its window is still 60s, not 120s.
+    advance(59_000);
+    await h.rejected();
+    advance(2_000);
+    h.respond(wire({}, 200));
+    expect((await h.read()).status).toBe(200);
+  });
+
+  it("does not lift a suspension with a 200 from a request sent before it began", async () => {
+    const h = await verified();
+    const release = h.hold();
+    const calls = h.execute.mock.calls.length;
+    const late = h.read();
+    await sentCalls(h, calls + 1);
+    h.stopHolding();
+    h.respond(wire({}, 401));
+    expect((await h.read()).status).toBe(401);
+    h.respond(wire({}, 200));
+    release();
+    expect((await late).status).toBe(200);
+    await h.rejected();
+  });
+
+  it("gives the window back when the probe is never sent", async () => {
+    const h = await suspended();
+    advance(61_000);
+    const refused = await Effect.runPromise(
+      h.api
+        .request({ cwd: "/repo", context: h.context, method: "GET", endpoint: "repos/o/r" })
+        .pipe(
+          Effect.provideService(GitHubRequestPolicy, {
+            beforeSend: () =>
+              Effect.fail(
+                new GitHubCliError({
+                  operation: "policy",
+                  kind: "forbidden",
+                  detail: "Excluded while queued",
+                }),
+              ),
+            readInvalidated: Effect.never,
+          }),
+          Effect.flip,
+        ),
+    );
+    expect(refused).toMatchObject({ detail: "Excluded while queued", requestDispatched: false });
+    // The next caller probes at once instead of waiting another 60s.
+    h.respond(wire({}, 200));
+    expect((await h.read()).status).toBe(200);
+  });
+
+  it("refuses a verification queued behind the 401 that started a suspension", async () => {
+    const h = await verified();
+    // The cached identity is stale, so the next verification reads /user.
+    advance(61_000);
+    const verifiedBefore = h.verifications();
+    const release = h.hold();
+    h.respond(wire({}, 401));
+    const calls = h.execute.mock.calls.length;
+    const reads = [h.read(), h.read()].map((pending) => pending.catch(() => null));
+    await sentCalls(h, calls + 2);
+    // Both read slots are taken, so the verification's /user read waits in the queue.
+    const verification = h.verifyError();
+    release();
+    expect(await verification).toMatchObject({
+      kind: "unauthenticated",
+      detail: GITHUB_CREDENTIAL_SUSPENDED,
+    });
+    await Promise.all(reads);
+    expect(h.verifications()).toBe(verifiedBefore);
+    // The suspension kept its first 60s window.
+    advance(59_000);
+    await h.rejected();
+    advance(2_000);
+    h.respond(wire({}, 200));
+    expect((await h.read()).status).toBe(200);
+  });
+
+  it("decides a /user 403 by its GraphQL fallback, doubling the window on a 401", async () => {
+    const h = await suspended();
+    advance(61_000);
+    h.respondUser(wire({ message: "Resource not accessible by integration" }, 403));
+    h.respond(wire({ message: "Bad credentials" }, 401));
+    expect(await h.verifyError()).toMatchObject({
+      kind: "unauthenticated",
+      detail: GITHUB_CREDENTIAL_SUSPENDED,
+    });
+    expect(h.execute.mock.calls.filter(([input]) => input.args[1] === "graphql").length).toBe(1);
+    advance(119_000);
+    await h.rejected();
+    advance(2_000);
+    h.respond(wire({}, 200));
+    expect((await h.read()).status).toBe(200);
   });
 });
 

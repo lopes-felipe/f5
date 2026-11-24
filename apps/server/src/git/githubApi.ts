@@ -10,7 +10,7 @@ import {
   type GitHubResource,
 } from "./githubRequestScheduler.ts";
 import { createHash, randomUUID } from "node:crypto";
-import { Effect, Option, Semaphore, ServiceMap } from "effect";
+import { Effect, Exit, Option, Semaphore, ServiceMap } from "effect";
 import type { SourceControlRateLimit } from "@t3tools/contracts";
 
 import { GitHubCliError } from "./Errors.ts";
@@ -49,6 +49,15 @@ export const GITHUB_CREDENTIAL_SUSPENDED =
   "GitHub rejected the credential. F5 will check it again shortly; reconnect in Settings > Integrations if this keeps happening.";
 const CREDENTIAL_SUSPENSION_INITIAL_MS = 60_000;
 const CREDENTIAL_SUSPENSION_MAX_MS = 15 * 60_000;
+
+/**
+ * One account verification can send two requests (/user, then the GraphQL viewer after a
+ * 403). The first to probe a suspended credential records its claim here, so the fallback
+ * probes under the same claim instead of being refused by it.
+ */
+interface SuspensionProbe {
+  armed: number | null;
+}
 
 export interface GitHubApiRequest {
   readonly cwd: string;
@@ -277,15 +286,26 @@ export function makeGitHubApi(
     if (!entry || entry.fingerprint !== fingerprint) return null;
     return Date.now() < entry.retryAt ? "blocked" : "expired";
   };
-  /** Claims the single probe of an expired suspension; concurrent callers stay blocked. */
-  const claimProbe = (host: string) => {
-    const entry = rejectedCredentials.get(host);
-    if (!entry) return;
+  /**
+   * Claims the single probe of an expired suspension and returns the claim; concurrent
+   * callers stay blocked until the probe is answered or gives the claim back.
+   */
+  const claimProbe = (host: string, entry: { backoffMs: number }): number => {
+    const armed = ++suspensionSequence;
     rejectedCredentials.set(host, {
-      ...entry,
+      ...rejectedCredentials.get(host)!,
       retryAt: Date.now() + entry.backoffMs,
-      armed: ++suspensionSequence,
+      armed,
     });
+    return armed;
+  };
+  /**
+   * A probe that ended without an HTTP answer (refused by policy, interrupted, timed out)
+   * proved nothing, so the next caller may probe at once instead of waiting a full window.
+   */
+  const releaseProbe = (host: string, armed: number) => {
+    const entry = rejectedCredentials.get(host);
+    if (entry?.armed === armed) rejectedCredentials.set(host, { ...entry, retryAt: Date.now() });
   };
   /** Records a 401 and returns the new suspension window, or null for a stale answer. */
   const recordRejected = (host: string, fingerprint: string, admitted: number): number | null => {
@@ -318,14 +338,20 @@ export function makeGitHubApi(
       host: string;
       token: string;
       expectedGeneration?: string;
-      /** Account verification has already checked (and possibly claimed) the suspension. */
-      verification?: boolean;
+      /** Shared by one account verification's requests; see `SuspensionProbe`. */
+      probe?: SuspensionProbe;
+      /** A plain 403 decides nothing here: the GraphQL viewer fallback answers instead. */
+      fallsBackOn403?: boolean;
     },
   ): Effect.Effect<GitHubApiResponse, GitHubCliError> =>
     Effect.suspend(() => {
       let dispatched = false;
       /** The suspension sequence this request was admitted under; see `suspensionSequence`. */
       let admitted = suspensionSequence;
+      /** The probe claim this request carries, if it probes a suspended credential. */
+      let probing: number | null = null;
+      /** A job log answered by the storage GitHub redirected to, not by GitHub. */
+      let answeredByStorage = false;
       return Effect.gen(function* () {
         const prepared = yield* Effect.try({
           try: () => {
@@ -418,15 +444,21 @@ export function makeGitHubApi(
                 detail: "The GitHub account changed before the write. Nothing was sent.",
               });
           }
-          if (!input.verification) {
-            const state = suspension(input.host, fingerprint);
-            if (state === "blocked")
+          // Checked here, after the scheduler admitted the request, so a suspension that began
+          // while it was queued still applies and a probe is claimed only when it can be sent.
+          const entry = rejectedCredentials.get(input.host);
+          if (entry?.fingerprint === fingerprint) {
+            if (input.probe?.armed === entry.armed) probing = entry.armed;
+            else if (Date.now() < entry.retryAt)
               return yield* new GitHubCliError({
                 operation: "request",
                 kind: "unauthenticated",
                 detail: GITHUB_CREDENTIAL_SUSPENDED,
               });
-            if (state === "expired") claimProbe(input.host);
+            else {
+              probing = claimProbe(input.host, entry);
+              if (input.probe) input.probe.armed = probing;
+            }
           }
           admitted = suspensionSequence;
           const result = yield* enforceGitHubRequestPolicy(
@@ -452,6 +484,14 @@ export function makeGitHubApi(
                 kind: result.timedOut ? "timeout" : "invalid_json",
                 detail: "GitHub response was interrupted or truncated.",
               }),
+            );
+          }
+          if (input.terminalText) {
+            // GitHub marks every API response with a request id; the storage holding a job
+            // log does not. `--include` prints the headers of the final response.
+            const headerEnd = result.stdout.search(/\r?\n\r?\n/);
+            answeredByStorage = !/^x-github-request-id:/im.test(
+              result.stdout.slice(0, headerEnd < 0 ? 0 : headerEnd),
             );
           }
           return yield* Effect.try({
@@ -509,11 +549,18 @@ export function makeGitHubApi(
           );
         });
         const recorded = perform.pipe(
+          Effect.onExit((exit) =>
+            Effect.sync(() => {
+              if (probing !== null && Exit.isFailure(exit)) releaseProbe(input.host, probing);
+            }),
+          ),
           Effect.tap((response) =>
             Effect.gen(function* () {
-              // A job log is answered by third-party storage after GitHub's redirect, so its
-              // 401 says nothing about the GitHub credential.
-              if (response.status === 401 && !input.terminalText) {
+              if (answeredByStorage) {
+                // GitHub redirected to the storage, so it authenticated the credential;
+                // whatever the storage answers says nothing about the GitHub token.
+                recordAccepted(input.host, fingerprint, admitted);
+              } else if (response.status === 401) {
                 const backoffMs = recordRejected(input.host, fingerprint, admitted);
                 if (backoffMs !== null)
                   yield* Effect.logWarning("GitHub rejected the credential; suspending it", {
@@ -523,7 +570,10 @@ export function makeGitHubApi(
                     resource,
                     backoffMs,
                   });
-              } else if (response.status !== 401 && response.status < 500) {
+              } else if (
+                response.status < 500 &&
+                !(input.fallsBackOn403 && response.status === 403)
+              ) {
                 // Any other answer below 500, including 403 and 404, means GitHub
                 // authenticated the credential. A 5xx proves nothing either way.
                 recordAccepted(input.host, fingerprint, admitted);
@@ -649,14 +699,15 @@ export function makeGitHubApi(
       const fingerprint = createHash("sha256").update(token).digest("hex");
       const suspended = suspension(host, fingerprint);
       // A suspension whose window has passed is lifted only by verifying the credential
-      // again, so an expired one bypasses the cached identity and becomes the probe.
+      // again, so an expired one bypasses the cached identity and its verification probes
+      // (the probe is claimed when the scheduler admits the request; see `requestCaptured`).
       if (suspended === "blocked" || (suspended === "expired" && input.cacheOnly))
         return yield* new GitHubCliError({
           operation: "credentials",
           kind: "unauthenticated",
           detail: GITHUB_CREDENTIAL_SUSPENDED,
         });
-      if (suspended === "expired") claimProbe(host);
+      const probe: SuspensionProbe = { armed: null };
       // Always resolve the current token, including before writes, but a matching
       // credential need not spend another REST request proving the same identity.
       const cached = accounts.get(host);
@@ -680,7 +731,7 @@ export function makeGitHubApi(
         cwd: input.cwd,
         host,
         token,
-        verification: true,
+        probe,
         method: "POST",
         endpoint: "graphql",
         body: { query: "query { viewer { databaseId login } }" },
@@ -703,7 +754,8 @@ export function makeGitHubApi(
             cwd: input.cwd,
             host,
             token,
-            verification: true,
+            probe,
+            fallsBackOn403: true,
             method: "GET",
             endpoint: "user",
           });
@@ -724,7 +776,8 @@ export function makeGitHubApi(
           ? { id: viewerNode.databaseId, login: viewerNode.login }
           : null;
       // The verification requests themselves suspend a 401 credential and lift the
-      // suspension on success; see the response tap in `requestCaptured`.
+      // suspension on success; see the response tap in `requestCaptured`. A 401 reports the
+      // suspension it caused, so it reads the same as the requests refused after it.
       if (verified.status !== 200 || rateLimited) {
         return yield* Effect.fail(
           new GitHubCliError({
@@ -740,7 +793,9 @@ export function makeGitHubApi(
                     : "generic",
             detail: rateLimited
               ? "GitHub temporarily limited account verification requests."
-              : "GitHub account verification failed.",
+              : verified.status === 401
+                ? GITHUB_CREDENTIAL_SUSPENDED
+                : "GitHub account verification failed.",
             rateLimit: verified.rateLimit,
           }),
         );
