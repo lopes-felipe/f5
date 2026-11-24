@@ -1,1 +1,1 @@
-- Stopping a Pi turn clears queued native messages on supported Pi versions and shows which messages were cleared.
+- Stopping a Pi turn clears queued native messages on supported Pi versions and shows how many were cleared.

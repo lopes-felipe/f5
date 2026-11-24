@@ -1311,29 +1311,26 @@ export const makePiAdapter = (settings: PiSettings, options: PiAdapterOptions) =
             const result = yield* ctx.rpc
               .request({ type: "clear_queue" }, 2_000)
               .pipe(Effect.orElseSucceed(() => undefined));
-            const cleared = ["steering", "followUp"].flatMap((key) => {
+            const count = ["steering", "followUp"].reduce((count, key) => {
               const messages = piRecordField(result, key);
-              return Array.isArray(messages)
-                ? messages.filter((message): message is string => typeof message === "string")
-                : [];
-            });
+              return (
+                count +
+                (Array.isArray(messages)
+                  ? messages.filter((message) => typeof message === "string").length
+                  : 0)
+              );
+            }, 0);
             yield* ctx.eventGate.withPermit(
               Effect.gen(function* () {
                 if (ctx.closed) return;
-                if (cleared.length > 0) {
-                  const count = cleared.length;
+                if (count > 0) {
                   yield* emit(ctx, {
                     type: "runtime.warning",
                     turnId: TurnId.make(turnId),
                     payload: {
                       category: "provider",
                       detail: { noticeTitle: "Pi queue cleared" },
-                      message: [
-                        `Stop cleared ${count} queued ${count === 1 ? "message" : "messages"} Pi had not read.`,
-                        ...cleared.filter((message) => message.length > 0),
-                      ]
-                        .join("\n\n")
-                        .slice(0, 2_000),
+                      message: `Stop cleared ${count} queued ${count === 1 ? "message" : "messages"} Pi had not read.`,
                     },
                   });
                 }

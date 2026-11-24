@@ -28,7 +28,7 @@ process.stdin.on('data',chunk=>{pending+=chunk.toString('utf8');for(;;){const en
   // Simulates a slow cold start: answers only once the test opens the gate.
   const timer=setInterval(()=>{if(fs.existsSync(process.env.F5_PI_GATE)){clearInterval(timer);reply(record,{model:{provider:'one',id:'shared'},thinkingLevel:'high'});}},10);
  }
- else if(record.type==='get_state')reply(record,{model:{provider:process.env.F5_PI_ACTIVE_PROVIDER||'one',id:process.env.F5_PI_ACTIVE_MODEL||'shared'},thinkingLevel:'high'});
+ else if(record.type==='get_state')reply(record,{model:process.env.F5_PI_CASE==='empty-model-list'&&!process.env.F5_PI_ACTIVE_PROVIDER?undefined:{provider:process.env.F5_PI_ACTIVE_PROVIDER||'one',id:process.env.F5_PI_ACTIVE_MODEL||'shared'},thinkingLevel:'high'});
  else if(record.type==='get_available_models'){
   const mode=process.env.F5_PI_CASE;
   reply(record,mode==='missing-model-list'?{}:{models:mode==='empty-model-list'?[]:[{provider:'one',id:'shared',reasoning:true},{provider:'two',id:'shared',reasoning:true}]});
@@ -69,7 +69,12 @@ export const fixture = async (
         binaryPath: script,
         launchArgs: "--extension /never-loaded.ts --tools bash",
       },
-      { PATH: process.env.PATH, F5_PI_TRACE: log, F5_PI_MCP_BEARER_TOKEN: "must-be-scrubbed" },
+      {
+        PATH: process.env.PATH,
+        F5_PI_TRACE: log,
+        F5_PI_MCP_BEARER_TOKEN: "must-be-scrubbed",
+        PI_CODING_AGENT_DIR: cwd,
+      },
       async () =>
         (await readFile(log, "utf8"))
           .trim()

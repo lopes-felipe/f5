@@ -1,1 +1,1 @@
-- Pi background discovery and text generation no longer risk losing a rotated OAuth token when their short-lived Pi process exits.
+- Short-lived Pi discovery and text-generation processes skip the startup catalog refresh that could lose a rotated OAuth token.

@@ -163,6 +163,7 @@ it.each([
   { mode: "stop-legacy", abort: true, state: "cancelled" },
   { mode: "stop-timeout", abort: true, state: "cancelled" },
   { mode: "stop-settled", abort: false, state: "completed" },
+  { mode: "stop-next-turn", abort: false, state: "completed" },
   { mode: "stop-compacting", abort: false, state: "cancelled" },
 ])(
   "stops safely after requesting that Pi clear its native queue: $mode",
@@ -190,13 +191,20 @@ it.each([
               runtimeMode: "approval-required",
             });
             const turn = yield* adapter.sendTurn({ threadId, input: "Continue" });
-            yield* adapter.interruptTurn(threadId);
+            const stop = yield* adapter
+              .interruptTurn(threadId)
+              .pipe(Effect.forkScoped({ startImmediately: true }));
             expect(yield* Deferred.await(terminal).pipe(Effect.timeout("5 seconds"))).toMatchObject(
               {
                 turnId: turn.turnId,
                 payload: { state },
               },
             );
+            if (mode === "stop-next-turn") {
+              const next = yield* adapter.sendTurn({ threadId, input: "Next prompt" });
+              expect(next.turnId).not.toBe(turn.turnId);
+            }
+            yield* Fiber.join(stop);
             const commands = (yield* Effect.promise(trace)).map((record) => record.type);
             expect(
               commands.filter((command) => command === "clear_queue" || command === "abort"),
@@ -207,8 +215,7 @@ it.each([
                 {
                   turnId: turn.turnId,
                   payload: {
-                    message:
-                      "Stop cleared 3 queued messages Pi had not read.\n\nQueued steer\n\nQueued follow-up",
+                    message: "Stop cleared 3 queued messages Pi had not read.",
                   },
                 },
               ]);

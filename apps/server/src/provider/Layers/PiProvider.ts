@@ -1,6 +1,7 @@
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
+import { isAbsolute, join } from "node:path";
 import type { PiSettings, ServerProviderModel } from "@t3tools/contracts";
-import { Effect, Option, Schema } from "effect";
+import { Effect, FileSystem, Option, Schema } from "effect";
 import { runProcess } from "../../processRunner.ts";
 import { compareCliVersions } from "../cliVersion.ts";
 import {
@@ -81,6 +82,36 @@ const decodeAuthCheck = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Struct({ reason: Schema.optional(Schema.String) })),
 );
 
+const decodeModelSettings = Schema.decodeUnknownOption(
+  Schema.fromJsonString(
+    Schema.Struct({
+      defaultProvider: Schema.optional(Schema.String),
+      defaultModel: Schema.optional(Schema.String),
+    }),
+  ),
+);
+
+const readPiDefaultModel = (environment: NodeJS.ProcessEnv) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const home =
+      (process.platform === "win32" ? environment.USERPROFILE : environment.HOME) || homedir();
+    const override = environment.PI_CODING_AGENT_DIR;
+    // The RPC probe uses an isolated cwd. A relative override is workspace-specific.
+    if (override && !isAbsolute(override) && !/^~[/\\]/.test(override) && override !== "~")
+      return Option.none();
+    const agentDir = !override
+      ? join(home, ".pi", "agent")
+      : override === "~" || /^~[/\\]/.test(override)
+        ? join(home, override.slice(2))
+        : override;
+    return yield* fs
+      .readFileString(join(agentDir, "settings.json"))
+      .pipe(Effect.option, Effect.map(Option.flatMap(decodeModelSettings)));
+  });
+
+export type PiProviderStatus = ServerProviderDraft & { readonly unavailableModelProvider?: string };
+
 const describePiCatalogCredentials = (
   catalog: PiCatalog,
   settings: PiSettings,
@@ -88,29 +119,36 @@ const describePiCatalogCredentials = (
   version: string,
 ) =>
   Effect.gen(function* () {
-    if (catalog.models.length === 0)
-      return "Pi has no usable models. Run Pi in a terminal and use /login or configure an API key.";
+    const launch = resolvePiLaunchArgs(settings.launchArgs);
+    const selectionOverride =
+      launch.ok &&
+      launch.args.some((arg) => arg === "--model" || arg === "--models" || arg === "--provider");
+    const configured = selectionOverride
+      ? undefined
+      : Option.getOrUndefined(yield* readPiDefaultModel(environment));
     const active = piRecordField(catalog.state, "model");
-    const provider = piRecordString(active, "provider");
-    const id = piRecordString(active, "id");
+    const saved =
+      configured?.defaultProvider && configured.defaultModel
+        ? { provider: configured.defaultProvider, id: configured.defaultModel }
+        : undefined;
+    const provider = saved?.provider ?? piRecordString(active, "provider");
+    const id = saved?.id ?? piRecordString(active, "id");
     // An uncatalogued model can still work when its provider has credentials.
     if (!provider || !id || catalog.models.some((model) => model.subProvider === provider))
       return undefined;
-    const model = { provider, id };
-    const label = `Pi default (${model.provider}/${model.id})`;
-    const unavailable = `${label} uses ${model.provider}, which has no available models in Pi. Choose another model or check that provider's setup and the Pi launch arguments.`;
-    const launch = resolvePiLaunchArgs(settings.launchArgs);
+    const label = `Pi ${selectionOverride ? "startup model" : "default"} (${provider}/${id})`;
+    const unavailable = `${label} uses ${provider}, which has no available models in the Pi status probe. Choose another model or check that provider's setup and the Pi launch arguments.`;
     // This check cannot see extension providers or keys supplied at launch.
     if (
       compareCliVersions(version, "0.84.1") < 0 ||
       !launch.ok ||
       launch.args.includes("--api-key")
     )
-      return unavailable;
+      return { provider, message: unavailable };
     const output = yield* Effect.tryPromise((signal) =>
       runPiStatusCommand(
         settings.binaryPath,
-        ["auth", "check", "--provider", model.provider, "--json", "--no-refresh"],
+        ["auth", "check", "--provider", provider, "--json", "--no-refresh"],
         environment,
         signal,
         // Pi reports missing credentials in JSON even when it exits nonzero.
@@ -123,9 +161,12 @@ const describePiCatalogCredentials = (
       ),
       (check) => check.reason === "credentials_not_configured",
     );
-    return missingCredentials
-      ? `${label} has no credentials configured for ${model.provider}. Choose another model or run Pi in a terminal and use /login or configure its API key.`
-      : unavailable;
+    return {
+      provider,
+      message: missingCredentials
+        ? `${label} has no credentials configured for ${provider} in the Pi status probe. Choose another model or run Pi in a terminal and use /login or configure its API key.`
+        : unavailable,
+    };
   });
 
 const buildPiCatalogSnapshot = (
@@ -135,8 +176,8 @@ const buildPiCatalogSnapshot = (
   version: string,
 ) =>
   Effect.gen(function* () {
-    const message = yield* describePiCatalogCredentials(catalog, settings, environment, version);
-    return buildServerProvider({
+    const diagnosis = yield* describePiCatalogCredentials(catalog, settings, environment, version);
+    const snapshot = buildServerProvider({
       presentation,
       enabled: settings.enabled,
       checkedAt: new Date().toISOString(),
@@ -149,10 +190,13 @@ const buildPiCatalogSnapshot = (
         status: catalog.models.length > 0 ? "ready" : "warning",
         auth: { status: "unknown" },
         message:
-          message ??
-          "Pi is available. Authentication is managed by Pi; a model catalog does not prove credentials are valid.",
+          diagnosis?.message ??
+          (catalog.models.length === 0
+            ? "Pi has no usable models. Run Pi in a terminal and use /login or configure an API key."
+            : "Pi is available. Authentication is managed by Pi; a model catalog does not prove credentials are valid."),
       },
     });
+    return diagnosis ? { ...snapshot, unavailableModelProvider: diagnosis.provider } : snapshot;
   });
 
 export const readPiVersion = (binaryPath: string, environment: NodeJS.ProcessEnv) =>

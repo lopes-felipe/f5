@@ -1,4 +1,5 @@
 import { stat, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { type Duration, Effect, Fiber } from "effect";
 import * as TestClock from "effect/testing/TestClock";
 import { expect, it, vi } from "vitest";
@@ -48,6 +49,30 @@ it.each([
     );
     expect(snapshot.status).toBe("warning");
     expect(snapshot.message).toContain(message);
+  }),
+);
+it.each(["fallback", "empty-model-list"])("diagnoses a saved Pi default with %s", async (mode) =>
+  fixture(async (settings, environment, trace) => {
+    await writeFile(
+      join(environment.PI_CODING_AGENT_DIR!, "settings.json"),
+      JSON.stringify({ defaultProvider: "missing", defaultModel: "saved" }),
+    );
+    const snapshot = await run(
+      checkPiProviderStatus(
+        { ...settings, enabled: true, customModels: [] },
+        { ...environment, F5_PI_VERSION: "0.84.1", F5_PI_ACTIVE_PROVIDER: "two", F5_PI_CASE: mode },
+      ),
+    );
+    expect(snapshot.status).toBe(mode === "fallback" ? "ready" : "warning");
+    expect(snapshot.message).toContain("Pi default (missing/saved) has no credentials configured");
+    expect(
+      (await trace()).some(
+        (record) =>
+          Array.isArray(record.args) &&
+          record.args[0] === "auth" &&
+          record.args.includes("missing"),
+      ),
+    ).toBe(true);
   }),
 );
 it.each([

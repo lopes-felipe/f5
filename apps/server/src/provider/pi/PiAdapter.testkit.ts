@@ -16,11 +16,15 @@ const missingWorkspaceModels=mode==='workspace-malformed-models'&&workspace;
 const unavailableWorkspaceModel=workspace&&(missingWorkspaceModels||mode==='workspace-missing-provider');
 const emit=record=>process.stdout.write(JSON.stringify(record)+'\n');
 const reply=(record,data)=>emit({type:'response',id:record.id,command:record.type,success:true,data});
-let model={provider:'one',id:'shared'}, sessionFile=process.env.F5_PI_SESSION, leafId=null, entries=[], pending='', awaitingModel, wakeScheduled=false, compactionRaced=false;
+let model={provider:'one',id:'shared'}, sessionFile=process.env.F5_PI_SESSION, leafId=null, entries=[], pending='', awaitingModel, awaitingClear, wakeScheduled=false, compactionRaced=false;
 process.stdin.on('data',chunk=>{pending+=chunk.toString('utf8');for(;;){const end=pending.indexOf('\n');if(end<0)break;const record=JSON.parse(pending.slice(0,end));pending=pending.slice(end+1);trace(record);
 switch(record.type){
-case 'get_state':if(mode==='fork-state-failure'&&sessionFile.endsWith('.fork')){emit({type:'response',id:record.id,command:record.type,success:false});break;}reply(record,{model:unavailableWorkspaceModel?{provider:'workspace',id:'last-used'}:mode==='wrong-model-readback'?{provider:'one',id:'shared'}:model,thinkingLevel:'high',sessionFile,isStreaming:false,isCompacting:false,pendingMessageCount:0});break;
-case 'get_available_models':reply(record,missingWorkspaceModels?{}:{models:[{...model,reasoning:true}]});break;
+case 'get_state':
+ if(!workspace&&mode==='workspace-probe-pending')break;
+ if(mode==='fork-state-failure'&&sessionFile.endsWith('.fork')){emit({type:'response',id:record.id,command:record.type,success:false});break;}
+ reply(record,{model:unavailableWorkspaceModel?{provider:'workspace',id:'last-used'}:!workspace&&mode==='workspace-probe-hidden-provider'?{provider:'extension',id:'default'}:mode==='wrong-model-readback'?{provider:'one',id:'shared'}:model,thinkingLevel:'high',sessionFile,isStreaming:false,isCompacting:false,pendingMessageCount:0});
+ break;
+case 'get_available_models':reply(record,missingWorkspaceModels||(!workspace&&mode==='workspace-probe-failed')?{}:{models:[{...model,reasoning:true},...(workspace&&mode==='workspace-probe-hidden-provider'?[{provider:'extension',id:'default'}]:[])]});break;
 case 'get_commands':
  if(mode!=='hang-start')reply(record,{commands:workspace?[{name:'reload',source:'extension'}]:[]});
  if(process.env.F5_PI_CASE==='extension-status') {
@@ -56,6 +60,7 @@ case 'extension_ui_response':if(awaitingModel){reply(awaitingModel,{});awaitingM
 case 'clear_queue':
  if(mode==='stop-legacy')emit({type:'response',id:record.id,command:record.type,success:false,error:'Unknown command'});
  else if(mode==='stop-settled')emit({type:'agent_settled'});
+ else if(mode==='stop-next-turn'){awaitingClear=record;emit({type:'agent_settled'});}
  else if(mode==='stop-compacting')emit({type:'compaction_start'});
  else if(mode!=='stop-timeout')reply(record,{steering:['Queued steer'],followUp:['Queued follow-up','']});
  break;
@@ -65,7 +70,11 @@ case 'abort':
  break;
 case 'prompt':{
  if(record.message.startsWith('/f5-service-tier')){reply(record,{});break;}
- if(mode?.startsWith('stop-')){emit({type:'agent_start'});reply(record,{});break;}
+ if(mode?.startsWith('stop-')){
+  emit({type:'agent_start'});reply(record,{});
+  if(awaitingClear){reply(awaitingClear,{steering:[],followUp:[]});awaitingClear=null;}
+  break;
+ }
  if(mode==='extension-status') emit({type:'extension_ui_request',method:'setStatus',statusKey:'branch'});
  if(mode==='compaction-race'&&!compactionRaced){
   compactionRaced=true;
@@ -130,6 +139,7 @@ export const fixture = async (
           PATH: process.env.PATH,
           F5_PI_TRACE: log,
           F5_PI_SESSION: join(cwd, "session.jsonl"),
+          PI_CODING_AGENT_DIR: cwd,
         },
         cacheDir: join(cwd, "cache"),
       },
