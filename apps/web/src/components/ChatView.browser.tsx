@@ -7299,13 +7299,13 @@ describe("ChatView timeline (full app)", () => {
 
       const composerEditor = await waitForComposerEditor();
       composerEditor.focus();
-      composerEditor.dispatchEvent(
-        new KeyboardEvent("keydown", {
-          key: "Backspace",
-          bubbles: true,
-          cancelable: true,
-        }),
-      );
+      const paragraph = composerEditor.lastElementChild!;
+      const caret = document.createRange();
+      caret.selectNodeContents(paragraph);
+      caret.collapse(false);
+      window.getSelection()!.removeAllRanges();
+      window.getSelection()!.addRange(caret);
+      await userEvent.keyboard("{Backspace}");
 
       await vi.waitFor(
         () => {
