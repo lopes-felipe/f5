@@ -8188,9 +8188,12 @@ function buildWorkflowMergePrompt(
   });
 }
 
-/** Room each revision excerpt note may take, and slack for envelope escaping. */
-const REVISION_EXCERPT_NOTE_RESERVE_CHARS = 200;
+/** Slack for envelope escaping in the revision prompt. */
 const REVISION_EXCERPT_MARGIN_CHARS = 1_000;
+
+function revisionExcerptNote(label: string, shown: number, total: number): string {
+  return `\n\n[Excerpt: the first ${shown} of ${total} characters of the ${label} review. The rest is not available to you.]`;
+}
 
 /**
  * Shares `room` (the rendered limit minus the revision prompt with empty reviews) among the
@@ -8203,9 +8206,15 @@ function excerptRevisionReviews<
   reviews: ReadonlyArray<T>,
   room: number,
 ): { readonly reviews: ReadonlyArray<T>; readonly smallestExcerpt: number | null } {
+  // A note names its review's label, so its room is measured; `shown` never has more digits
+  // than `total`.
+  const noteReserve = reviews.reduce((sum, review) => {
+    const total = review.reviewMarkdown.length;
+    return sum + revisionExcerptNote(review.reviewerLabel, total, total).length;
+  }, 0);
   const { allowances, smallestExcerpt } = allocateArtifactCharBudget(
     reviews.map((review) => review.reviewMarkdown.length),
-    room - REVISION_EXCERPT_MARGIN_CHARS - REVISION_EXCERPT_NOTE_RESERVE_CHARS * reviews.length,
+    room - REVISION_EXCERPT_MARGIN_CHARS - noteReserve,
   );
   return {
     reviews: reviews.map((review, index) => {
@@ -8215,7 +8224,7 @@ function excerptRevisionReviews<
         ? review
         : {
             ...review,
-            reviewMarkdown: `${review.reviewMarkdown.slice(0, allowance)}\n\n[Excerpt: the first ${allowance} of ${total} characters of the ${review.reviewerLabel} review. The rest is not available to you.]`,
+            reviewMarkdown: `${review.reviewMarkdown.slice(0, allowance)}${revisionExcerptNote(review.reviewerLabel, allowance, total)}`,
           };
     }),
     smallestExcerpt,

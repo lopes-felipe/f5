@@ -70,11 +70,16 @@ export interface CodeReviewConsolidationPromptInput {
 
 const REVIEW_COUNT_WORDS = ["zero", "one", "two", "three", "four", "five", "six"];
 
-/** Room each excerpt note may take; real notes stay well under it. */
-const EXCERPT_NOTE_RESERVE_CHARS = 200;
-
 function excerptNote(label: string, shown: number, total: number): string {
   return `[Excerpt: the first ${shown} of ${total} characters of the ${label} report. The rest is not available to you.]`;
+}
+
+/**
+ * The most an excerpt note (and its separator) can add to a report. It names the report's label,
+ * so it is measured rather than assumed: `shown` never has more digits than `total`.
+ */
+function excerptNoteReserve(label: string, total: number): number {
+  return `\n\n${excerptNote(label, total, total)}`.length;
 }
 
 export function buildCodeReviewConsolidationPromptSections(
@@ -159,8 +164,11 @@ export function buildBudgetedCodeReviewConsolidationPrompt(
       { excerpted: true },
     ),
   ).length;
-  const budget =
-    input.maxRenderedChars - fixedLength - EXCERPT_NOTE_RESERVE_CHARS * input.reviews.length;
+  const noteReserve = input.reviews.reduce(
+    (sum, review, index) => sum + excerptNoteReserve(review.label, texts[index]!.length),
+    0,
+  );
+  const budget = input.maxRenderedChars - fixedLength - noteReserve;
   const { allowances, smallestExcerpt } = allocateArtifactCharBudget(
     texts.map((text) => text.length),
     budget,
