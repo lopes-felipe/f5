@@ -419,6 +419,23 @@ describe("statement splitting", () => {
     expect(isDiffCommand("git diff || true")).toBe(true);
   });
 
+  it("knows file lists and counts print no numbered lines", () => {
+    const lineNumbers = (command: string) => parseSearchOutputCommand(command)?.lineNumbers;
+    expect(lineNumbers("grep -rn x src")).toBe(true);
+    expect(lineNumbers("grep -rln x src")).toBe(false);
+    expect(lineNumbers("rg -n --files-with-matches x")).toBe(false);
+    expect(lineNumbers("git grep -n -c x")).toBe(false);
+  });
+
+  it("treats escaped backticks and dollars in double quotes as literal", () => {
+    expect(kinds('git grep -n "run \\`bun fmt\\`" -- docs; cat a.ts')).toEqual(["search", "read"]);
+    expect(parseSearchOutputCommand('grep -n x a.ts | grep -v "\\$HOME"')).not.toBeNull();
+    expect(kinds('grep -n "a\\\\" a.ts; cat b.ts')).toEqual(["search", "read"]);
+    // An escaped backslash leaves the substitution after it live.
+    expect(kinds('grep -n "a\\\\$(x)" a.ts; cat b.ts')).toEqual(["other"]);
+    expect(kinds('grep -n "`x`" a.ts; cat b.ts')).toEqual(["other"]);
+  });
+
   it("fills in literal variables", () => {
     const filePath = (command: string) => parseFileReadSegments(command)?.segments[0]?.filePath;
     expect(filePath("F=src/a.ts; cat $F")).toBe("src/a.ts");

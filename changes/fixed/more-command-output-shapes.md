@@ -7,5 +7,8 @@
   - Commands that use shell variables (`H=abc123; git show $H:a.ts`) or `|| true` are followed.
   - Reads of a file written earlier in the same command show the original file's name, as in
     `git show A:a.ts > /tmp/a.ts` followed by `sed -n 1,9p /tmp/a.ts`.
+  - A whole-file read followed by a search (`cat a.ts; grep -rn x src`), a search that finds
+    nothing in the middle of a chain, and patterns with escaped backticks or `$` no longer turn
+    the rest of the output plain.
   - One command the card cannot follow, such as `a || b`, no longer turns the output before it
     plain.

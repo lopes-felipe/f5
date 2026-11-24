@@ -748,6 +748,82 @@ describe("classifyCommandOutput: more command shapes", () => {
     ).toBe("plain");
   });
 
+  it("skips a search that found nothing and goes on with the next statement", () => {
+    const result = classify({
+      command: "rg -n nothing a.ts; rg -n foo src",
+      output: "src/x.ts:3:foo\nsrc/y.ts:9:foo()\n",
+    });
+    expect(result).toMatchObject({
+      kind: "sections",
+      sections: [{ type: "search", matchCount: 2 }],
+    });
+    // A file list is output, not an empty search.
+    expect(
+      classify({ command: "grep -rln foo src; sed -n 1,1p a.ts", output: "src/x.ts\nx\n" }).kind,
+    ).toBe("plain");
+    // An error from the empty search could belong to either statement.
+    expect(
+      classify({
+        command: "grep -n foo missing.ts; sed -n 1,1p a.ts",
+        output: "grep: missing.ts: No such file or directory\nx\n",
+      }).kind,
+    ).toBe("plain");
+  });
+
+  it("ends a whole-file read at the next search's first match", () => {
+    const result = classify({
+      command: "cat a.ts; grep -rn usage src",
+      output: "const a = 1;\n// 12:30 usage notes\nsrc/x.ts:4:usage()\n",
+    });
+    expect(result).toMatchObject({
+      kind: "sections",
+      sections: [
+        {
+          type: "file",
+          filePath: "/repo/a.ts",
+          code: "const a = 1;\n// 12:30 usage notes",
+        },
+        { type: "search", segments: [{ displayPath: "src/x.ts", lines: [{ lineNumber: 4 }] }] },
+      ],
+    });
+  });
+
+  it("splits revision reads before a search over another revision", () => {
+    const result = classify({
+      command: "git show A:a.ts; git show B:b.ts | grep -n bar",
+      output: "const a = 1;\n7:bar()\n",
+    });
+    expect(result).toMatchObject({
+      kind: "sections",
+      sections: [
+        { type: "file", displayPath: "A:a.ts", filePath: null, code: "const a = 1;" },
+        { type: "search", segments: [{ displayPath: "B:b.ts", lines: [{ lineNumber: 7 }] }] },
+      ],
+    });
+  });
+
+  it("gives a whole-file read everything when the search after it printed nothing", () => {
+    expect(classify({ command: "cat a.ts; grep -rn nothing src", output: "x\ny\n" })).toMatchObject(
+      { kind: "sections", sections: [{ type: "file", code: "x\ny" }] },
+    );
+    expect(
+      classify({
+        command: "cat a.ts; grep -n x b.ts",
+        output: "x\ny\ngrep: b.ts: No such file or directory\n",
+      }),
+    ).toMatchObject({
+      kind: "sections",
+      sections: [
+        { type: "file", code: "x\ny" },
+        { type: "plain", text: "grep: b.ts: No such file or directory" },
+      ],
+    });
+    // Not when another statement follows: its output could be anywhere.
+    expect(
+      classify({ command: "cat a.ts; grep -rn nothing src; ls", output: "x\ny\nsrc\n" }).kind,
+    ).toBe("plain");
+  });
+
   it("keeps a read before a statement it cannot follow", () => {
     const result = classify({
       command: "sed -n 1,2p a.ts; foo || bar",

@@ -729,17 +729,30 @@ function classifySearch(input: ClassifyCommandOutputInput): CommandOutputPresent
  * A tool's error message where a read's output was expected. Only the forms
  * the read tools print, since a file may well start with `Usage:` or `error:`.
  */
-const TOOL_ERROR_PATTERN = /^fatal: |^(?:git|sed|cat|head|tail|nl): /;
+const TOOL_ERROR_PATTERN = /^fatal: |^(?:git|sed|cat|head|tail|nl|grep|ggrep|ugrep|rg): /;
+
+const searchMatchers = new WeakMap<SearchOutputCommand, RegExp | null>();
 
 /**
- * Whether `line` can be the first line a search prints: a match row. Used
- * to find where the read before it ended, so context rows (`path-3-text`) and
- * other text never qualify.
+ * Whether `line` can be the first line a search prints: a match row whose
+ * text holds the pattern. Used to find where the read before it ended, so
+ * context rows (`path-3-text`), and file lines that merely look like a row
+ * (`12:30 standup`), never qualify. Without a usable matcher (PCRE, risky
+ * patterns) the row's shape alone decides.
  */
 function isSearchMatchLine(line: string, search: SearchOutputCommand): boolean {
   const stripped = stripRevisionPrefix(line, search).line;
-  if (searchesSingleFile(search) || search.noFileName) return /^\d+:/.test(stripped);
-  return PATH_LINE_PATTERN.exec(stripped)?.[3] === ":";
+  let text: string | null;
+  if (searchesSingleFile(search) || search.noFileName) {
+    text = /^\d+:(.*)$/.exec(stripped)?.[1] ?? null;
+  } else {
+    const match = PATH_LINE_PATTERN.exec(stripped);
+    text = match?.[3] === ":" ? match[4]! : null;
+  }
+  if (text === null) return false;
+  if (!searchMatchers.has(search)) searchMatchers.set(search, buildSearchMatcher(search));
+  const matcher = searchMatchers.get(search) ?? null;
+  return matcher === null || findMatchRanges(text, matcher).length > 0;
 }
 
 /** `nl -ba` / `cat -n` lines up to where the numbers stop following on. */
@@ -798,6 +811,8 @@ function classifySections(input: ClassifyCommandOutputInput): CommandOutputPrese
       sections.push({ type: "plain", text });
     }
   };
+  // Statement index of each search section, by section index.
+  const structuredFrom = new Map<number, number>();
   let position = 0;
   for (const [index, statement] of statements.entries()) {
     if (position >= lines.length || statement.kind === "other") break;
@@ -813,7 +828,13 @@ function classifySections(input: ClassifyCommandOutputInput): CommandOutputPrese
       const { search } = statement;
       if (!search.lineNumbers) break;
       const results = readSearchResults(lines.slice(position), search, input.cwd, !last);
-      if (!results.segments.some((segment) => segment.type === "group")) break;
+      if (!results.segments.some((segment) => segment.type === "group")) {
+        // A search that found nothing printed nothing; the next statement's
+        // output starts here. An error line could be either, so stop.
+        if (results.end === 0 && !last && !TOOL_ERROR_PATTERN.test(lines[position]!)) continue;
+        break;
+      }
+      structuredFrom.set(sections.length, index);
       sections.push({
         type: "search",
         segments: results.segments,
@@ -824,22 +845,33 @@ function classifySections(input: ClassifyCommandOutputInput): CommandOutputPrese
       continue;
     }
     const { read } = statement;
-    // Numbered output shows where it ends; other unbounded reads cannot.
-    if (read.lineLimit === null && !last && !read.numberedOutput) break;
+    const next = statements[index + 1];
+    const nextSearch = next?.kind === "search" && next.search.lineNumbers ? next.search : null;
+    // Numbered output shows where it ends, and a search after it ends it at
+    // its first match; other unbounded reads cannot be bounded.
+    const unbounded = read.lineLimit === null && !last;
+    if (unbounded && !read.numberedOutput && !nextSearch) break;
     if (TOOL_ERROR_PATTERN.test(lines[position]!)) break;
     let end =
       last || read.lineLimit === null
         ? lines.length
         : Math.min(lines.length, position + read.lineLimit);
     let confirmed = last;
-    const next = statements[index + 1];
-    if (next?.kind === "search" && next.search.lineNumbers) {
+    if (nextSearch) {
       const firstMatch = lines
         .slice(position, end)
-        .findIndex((line) => isSearchMatchLine(line, next.search));
+        .findIndex((line) => isSearchMatchLine(line, nextSearch));
       if (firstMatch !== -1) end = position + firstMatch;
       confirmed =
-        firstMatch !== -1 || (end < lines.length && isSearchMatchLine(lines[end]!, next.search));
+        firstMatch !== -1 || (end < lines.length && isSearchMatchLine(lines[end]!, nextSearch));
+      // No match row anywhere: the read took everything only if the search
+      // was the last statement and printed nothing.
+      if (unbounded && !read.numberedOutput && firstMatch === -1) {
+        if (index + 1 !== statements.length - 1) break;
+        // Its errors (`grep: x: No such file or directory`) come last.
+        while (end > position && TOOL_ERROR_PATTERN.test(lines[end - 1]!)) end -= 1;
+        confirmed = true;
+      }
     }
     let code = lines.slice(position, end);
     let lineNumbers: number[] | null = null;
@@ -867,10 +899,13 @@ function classifySections(input: ClassifyCommandOutputInput): CommandOutputPrese
   }
   if (position < lines.length) pushPlain(lines.slice(position).join("\n"));
   // A search that comes first and alone, then other output, is a search
-  // presentation (after an empty read it is not, so it stays a section).
+  // presentation (after an empty read or search it is not, so it stays a
+  // section).
   const structured = sections.filter((section) => section.type !== "plain");
   const leadingSearchOnly =
-    structured.length === 1 && structured[0]!.type === "search" && statements[0]!.kind === "search";
+    structured.length === 1 &&
+    structured[0]!.type === "search" &&
+    structuredFrom.get(sections.indexOf(structured[0]!)) === 0;
   if (structured.length === 0 || leadingSearchOnly) return null;
   return {
     kind: "sections",

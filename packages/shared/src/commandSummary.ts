@@ -2217,7 +2217,9 @@ function scanShellWord(
       if (char === "'") quote = null;
       continue;
     }
-    if (char === "\\" && quote === null) {
+    // A backslash escapes the next character unquoted, and `$`, `` ` ``, `"`
+    // and `\` inside double quotes (`"queued\`"` holds no substitution).
+    if (char === "\\" && (quote === null || /[$`"\\\n]/.test(word[index + 1] ?? ""))) {
       index += 1;
       continue;
     }
@@ -2252,7 +2254,7 @@ function hasCommandSubstitution(word: string): boolean {
 function hasUnresolvedExpansion(word: string, onlyInDoubleQuotes = false): boolean {
   let found = false;
   scanShellWord(word, (index, inDoubleQuotes) => {
-    if (word[index] === "$" && /[A-Za-z_{@*#?!0-9-]/.test(word[index + 1] ?? "")) {
+    if (word[index] === "$" && /[A-Za-z_{@*#?!$0-9-]/.test(word[index + 1] ?? "")) {
       if (!onlyInDoubleQuotes || inDoubleQuotes) {
         found = true;
         return "stop";
@@ -3041,9 +3043,10 @@ const FILTER_RG_LONG_FLAGS = new Set([
  */
 function isExpandableShellWord(token: string): boolean {
   if (/^'[^']*'$/.test(token)) return false;
-  // A `$` before a quote or at the end stays literal (`"test$"` anchors).
-  if (/`|\$[\w{(@*#?$!-]/.test(token)) return true;
-  if (/^"[^"]*"$/.test(token)) return false;
+  // A `$` before a quote or at the end stays literal (`"test$"` anchors), and
+  // so does an escaped `\$` or `` \` `` inside double quotes.
+  if (hasCommandSubstitution(token) || hasUnresolvedExpansion(token)) return true;
+  if (/^"(?:[^"\\]|\\.)*"$/.test(token)) return false;
   return /[*?[{~\\'"]/.test(token);
 }
 
@@ -3306,9 +3309,13 @@ function parseSearchStatement(
     recursive,
     // Without a TTY these tools number lines only when asked to. `--vimgrep`
     // and `--column` add a column (`path:3:7:text`), a format not parsed here.
+    // File lists and counts print no lines at all, even with `-n`.
     lineNumbers:
       has("n", "--line-number") &&
       !(tool === "rg" && has("N", "--no-line-number")) &&
+      !has("l", "--files-with-matches") &&
+      !has("L", "--files-without-match") &&
+      !has("c", "--count") &&
       !longFlags.has("--vimgrep") &&
       !longFlags.has("--column"),
   };
