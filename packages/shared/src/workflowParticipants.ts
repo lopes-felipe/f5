@@ -238,7 +238,10 @@ export function planReviewEdgesError(workflow: PlanningRoster<PlanningBranchShap
       for (const review of branch.reviews) {
         if (review.reviewerBranchId === undefined) continue;
         const sameBranch = review.reviewerBranchId === branch.branchId;
-        if (review.slot === "cross" ? sameBranch : !sameBranch) {
+        if (
+          !ids.includes(review.reviewerBranchId) ||
+          (review.slot === "cross" ? sameBranch : !sameBranch)
+        ) {
           return `Plan ${workflowParticipantLabel(branch.branchId)} has a ${review.slot} review by an invalid reviewer.`;
         }
       }

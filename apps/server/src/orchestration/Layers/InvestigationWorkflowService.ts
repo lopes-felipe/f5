@@ -1754,6 +1754,9 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
                 yield* upsertWorkflow(orchestrationEngine, next, next.updatedAt);
                 continue;
               }
+              // A delivery still waiting to send will start its turn later, whatever the
+              // previous session's status says; its outcome settles the review.
+              if (delivery?.state === "pending" || delivery?.state === "sending") continue;
             }
             if (sessionStillRunning(currentSnapshot, state.threadId)) {
               continue;
@@ -2424,11 +2427,16 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
     changeWorkflowArchive.archive(workflowId);
 
   const unarchiveWorkflow: InvestigationWorkflowServiceShape["unarchiveWorkflow"] = (workflowId) =>
-    changeWorkflowArchive.unarchive(workflowId, (snapshot) =>
-      Effect.gen(function* () {
-        const workflow = snapshot.investigationWorkflows.find((entry) => entry.id === workflowId);
-        if (workflow) yield* withWorkflowWriteLock(reconcileStuckWorkflow(workflow, snapshot));
-      }),
+    changeWorkflowArchive.unarchive(workflowId, () =>
+      // Read under the lock: a launch that ran while this waited must not be reconciled from a
+      // stale record and written over.
+      withWorkflowWriteLock(
+        Effect.gen(function* () {
+          const snapshot = yield* orchestrationEngine.getReadModel();
+          const workflow = snapshot.investigationWorkflows.find((entry) => entry.id === workflowId);
+          if (workflow) yield* reconcileStuckWorkflow(workflow, snapshot);
+        }),
+      ),
     );
 
   const retryWorkflow: InvestigationWorkflowServiceShape["retryWorkflow"] = (input) =>

@@ -159,6 +159,31 @@ describe("investigation workflow prompts with more than two investigators", () =
     expect(result.prompt).toContain("D on C");
   });
 
+  it("keeps every report whole when the whole prompt exactly fits", () => {
+    const labels = ["A", "B", "C"];
+    const input = {
+      ...base,
+      contributions: labels.map((label) => ({
+        ...contribution(
+          label,
+          labels.filter((peer) => peer !== label),
+          "r".repeat(10_000),
+        ),
+        selfReview: undefined,
+      })),
+    };
+    const whole = buildBudgetedInvestigationSynthesisPrompt({
+      ...input,
+      maxRenderedChars: 1_000_000,
+    }).prompt;
+    const result = buildBudgetedInvestigationSynthesisPrompt({
+      ...input,
+      maxRenderedChars: whole.length,
+    });
+    expect(result.smallestExcerpt).toBeNull();
+    expect(result.prompt).toBe(whole);
+  });
+
   it("computes the creation-time share per report only for mesh runs", () => {
     const labels = ["A", "B", "C", "D"];
     const input = {

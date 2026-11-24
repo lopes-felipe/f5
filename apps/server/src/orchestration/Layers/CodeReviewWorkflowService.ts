@@ -651,17 +651,14 @@ function prepareConsolidationPrompt(input: {
   return { prompt };
 }
 
+/** Sends the consolidation prompt that `prepareConsolidationPrompt` already checked. */
 function startConsolidationTurn(input: {
   orchestrationEngine: OrchestrationEngineShape;
   workflow: CodeReviewWorkflow;
-  reviews: ReadonlyArray<{ readonly label: string; readonly text: string }>;
+  prompt: string;
   commandId: CommandId;
   createdAt: string;
-  retry: WorkflowRetryContext;
 }) {
-  const prepared = prepareConsolidationPrompt(input);
-  if ("error" in prepared) return Effect.fail(prepared.error);
-  const prompt = prepared.prompt;
   return input.orchestrationEngine.dispatch({
     type: "thread.turn.start",
     commandId: input.commandId,
@@ -669,7 +666,7 @@ function startConsolidationTurn(input: {
     message: {
       messageId: MessageId.makeUnsafe(crypto.randomUUID()),
       role: "user",
-      text: prompt,
+      text: input.prompt,
       attachments: [],
     },
     ...workflowTurnProviderFields(input.workflow.consolidation.slot),
@@ -1008,14 +1005,26 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
         };
       });
 
+      // An error before the merge thread exists drops the thread id this pass reserved, so a
+      // retry takes the no-thread path instead of recovering a thread that was never created.
+      const consolidationThreadExists = snapshot.threads.some(
+        (thread) => thread.id === consolidationThreadId,
+      );
+      const errorBeforeThread = (message: string) =>
+        withConsolidationError(
+          consolidationThreadExists
+            ? pendingWorkflow
+            : {
+                ...pendingWorkflow,
+                consolidation: { ...pendingWorkflow.consolidation, threadId: null },
+              },
+          message,
+          updatedAt,
+        );
       if (reviewerInputs.some((review) => !review.text || review.text.trim().length === 0)) {
         yield* upsertWorkflow(
           orchestrationEngine,
-          withConsolidationError(
-            pendingWorkflow,
-            "Reviewer output not found for consolidation.",
-            updatedAt,
-          ),
+          errorBeforeThread("Reviewer output not found for consolidation."),
           updatedAt,
         );
         return;
@@ -1031,13 +1040,13 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
       if ("error" in prepared) {
         yield* upsertWorkflow(
           orchestrationEngine,
-          withConsolidationError(pendingWorkflow, prepared.error.message, updatedAt),
+          errorBeforeThread(prepared.error.message),
           updatedAt,
         );
         return yield* Effect.fail(prepared.error);
       }
 
-      if (!snapshot.threads.some((thread) => thread.id === consolidationThreadId)) {
+      if (!consolidationThreadExists) {
         const createOutcome = yield* Effect.exit(
           createConsolidationThread({
             orchestrationEngine,
@@ -1077,14 +1086,8 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
           orchestrationEngine,
           workflow: runningWorkflow,
           commandId: dispatchCommandId,
-          reviews: reviewerInputs.map((review) => ({
-            label: review.label,
-            text: review.text!,
-            ...(review.turnId ? { turnId: review.turnId } : {}),
-            ...(review.messageId ? { messageId: review.messageId } : {}),
-          })),
+          prompt: prepared.prompt,
           createdAt: updatedAt,
-          retry: retry ?? { kind: "none" },
         }),
       );
       if (consolidationOutcome._tag === "Failure") {
@@ -1147,6 +1150,23 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
           .filter(({ reviewer }) => reviewer.status === "pending")
           .slice(0, Math.max(0, WORKFLOW_MAX_ACTIVE_REVIEW_TURNS - running));
         if (pendingReviewers.length === 0) {
+          return;
+        }
+        // A completion can reach the cost limit while reviewers wait. Nothing starts past it,
+        // neither a fresh turn nor a resend: waiting reviewers fail visibly with the limit, as
+        // planning reviews do, and keep their dispatch id for a later retry.
+        const budgetError = workflowBudgetError(current);
+        if (budgetError) {
+          for (const { id: reviewerId, reviewer } of reviewers) {
+            if (reviewer.status !== "pending") continue;
+            current = withReviewerError({
+              workflow: current,
+              reviewerId,
+              error: budgetError.detail,
+              updatedAt,
+            });
+          }
+          yield* upsertWorkflow(orchestrationEngine, current, updatedAt);
           return;
         }
         const snapshot = yield* orchestrationEngine.getReadModel();
@@ -2109,11 +2129,16 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
     changeWorkflowArchive.archive(workflowId);
 
   const unarchiveWorkflow: CodeReviewWorkflowServiceShape["unarchiveWorkflow"] = (workflowId) =>
-    changeWorkflowArchive.unarchive(workflowId, (snapshot) =>
-      Effect.gen(function* () {
-        const workflow = snapshot.codeReviewWorkflows.find((entry) => entry.id === workflowId);
-        if (workflow) yield* withWorkflowWriteLock(reconcileStuckWorkflow(workflow, snapshot));
-      }),
+    changeWorkflowArchive.unarchive(workflowId, () =>
+      // Read under the lock: a launch that ran while this waited must not be reconciled from a
+      // stale record and written over.
+      withWorkflowWriteLock(
+        Effect.gen(function* () {
+          const snapshot = yield* orchestrationEngine.getReadModel();
+          const workflow = snapshot.codeReviewWorkflows.find((entry) => entry.id === workflowId);
+          if (workflow) yield* reconcileStuckWorkflow(workflow, snapshot);
+        }),
+      ),
     );
 
   // Under the write lock: retry upserts whole records and can complete a merge,
@@ -2559,14 +2584,27 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
           }),
         );
 
-        const settledWorkflow = yield* readCodeReviewWorkflow(
-          orchestrationEngine,
-          input.workflowId,
+        // Admission runs either way. When both fail, the target's failure stays the primary
+        // cause and the admission failure is added to it.
+        const admitted = yield* Effect.exit(
+          Effect.gen(function* () {
+            const settledWorkflow = yield* readCodeReviewWorkflow(
+              orchestrationEngine,
+              input.workflowId,
+            );
+            if (settledWorkflow) {
+              yield* startPendingReviewers(settledWorkflow, updatedAt);
+            }
+          }),
         );
-        if (settledWorkflow) {
-          yield* startPendingReviewers(settledWorkflow, updatedAt);
+        if (applied._tag === "Failure") {
+          return yield* Effect.failCause(
+            admitted._tag === "Failure"
+              ? Cause.combine(applied.cause, admitted.cause)
+              : applied.cause,
+          );
         }
-        if (applied._tag === "Failure") return yield* Effect.failCause(applied.cause);
+        if (admitted._tag === "Failure") return yield* Effect.failCause(admitted.cause);
         return { status: "started" as const };
       }),
     );

@@ -890,6 +890,63 @@ describe("InvestigationWorkflowService", () => {
     expect(threadTurnStartCommands(harness.dispatched)).toHaveLength(3);
   });
 
+  it.each(["pending", "sending"] as const)(
+    "keeps a running review whose delivery is still %s across a restart",
+    async (state) => {
+      const completed = makeCompletedInvestigationWorkflow();
+      const waiting = CommandId.makeUnsafe("cross-review-a-waiting");
+      const workflow: InvestigationWorkflow = {
+        ...completed,
+        investigatorA: {
+          ...completed.investigatorA,
+          crossReviewThreadId: ThreadId.makeUnsafe("cross-review-a"),
+          crossReviewStatus: "running",
+          crossReviewDispatchCommandId: waiting,
+        },
+      };
+      // The review thread still shows the previous attempt's stopped session; only the
+      // delivery says a turn is coming.
+      const threads = makeFullyReviewedThreads(workflow)
+        .slice(0, 2)
+        .concat(
+          makeThread({
+            id: ThreadId.makeUnsafe("cross-review-a"),
+            session: {
+              threadId: ThreadId.makeUnsafe("cross-review-a"),
+              status: "stopped",
+              providerName: "codex",
+              runtimeMode: "full-access",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: NOW,
+            },
+          }),
+        );
+      harness = await createHarness(makeReadModel({ workflow, threads }), {
+        getDeliveryByCommandId: (commandId) =>
+          Effect.succeed(
+            commandId === waiting
+              ? ({
+                  commandId,
+                  threadId: "cross-review-a",
+                  state,
+                } as unknown as ProviderTurnDelivery)
+              : null,
+          ),
+      });
+
+      await harness.start();
+      const current = harness.getSnapshot().investigationWorkflows[0]!;
+      expect(current.investigatorA.crossReviewStatus).toBe("running");
+      expect(current.investigatorA.crossReviewDispatchCommandId).toBe(waiting);
+      expect(
+        threadTurnStartCommands(harness.dispatched).some(
+          (command) => command.threadId === "cross-review-a",
+        ),
+      ).toBe(false);
+    },
+  );
+
   it("requeues a running review whose dispatch never happened before a restart", async () => {
     const completed = makeCompletedInvestigationWorkflow();
     const neverSent = CommandId.makeUnsafe("cross-review-a-never-sent");

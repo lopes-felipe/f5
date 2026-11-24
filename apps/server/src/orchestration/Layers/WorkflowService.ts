@@ -1182,6 +1182,14 @@ function reviewedPlanTurnIdForBranch(
   return null;
 }
 
+function planOverBudgetMessage(
+  workflow: PlanningWorkflow,
+  renderedChars: number,
+  maxPlanChars: number,
+): string {
+  return `The ${planningWorkflowDocumentType(workflow) ? "document" : "plan"} takes ${renderedChars.toLocaleString("en-US")} characters in the merge; this run allows at most ${maxPlanChars.toLocaleString("en-US")} characters per author so every plan fits. Submit a shorter complete version.`;
+}
+
 function validateCapturedPlanForTurn(input: {
   readonly workflow: PlanningWorkflow;
   readonly provider: WorkflowModelSlot["provider"];
@@ -1211,7 +1219,7 @@ function validateCapturedPlanForTurn(input: {
     return {
       valid: false,
       overBudget: true,
-      error: `The ${planningWorkflowDocumentType(input.workflow) ? "document" : "plan"} takes ${renderedChars.toLocaleString("en-US")} characters in the merge; this run allows at most ${input.maxPlanChars.toLocaleString("en-US")} characters per author so every plan fits. Submit a shorter complete version.`,
+      error: planOverBudgetMessage(input.workflow, renderedChars, input.maxPlanChars),
     };
   }
   const behavior = resolveWorkflowBehavior({
@@ -1905,8 +1913,31 @@ export const makeWorkflowService = Effect.gen(function* () {
     readonly turnId: TurnId;
     readonly createdAt: string;
     readonly validate?: (markdown: string) => DocumentValidationResult;
+    /**
+     * An author's capture on a run with a per-plan budget: a reply over it is not saved as a
+     * plan. `onOverBudget` receives the reason, for the caller's repair.
+     */
+    readonly budget?: {
+      readonly branchId: WorkflowBranchId;
+      readonly onOverBudget?: (error: string) => void;
+    };
   }) =>
     Effect.gen(function* () {
+      const exceedsBudget = (markdown: string) => {
+        const maxPlanChars = input.budget ? workflowPlanCharBudget(input.workflow) : null;
+        if (maxPlanChars === null || !input.budget) return false;
+        const renderedChars = workflowPlanMergeChars(
+          input.workflow,
+          input.budget.branchId,
+          markdown,
+          input.turnId,
+        );
+        if (renderedChars <= maxPlanChars) return false;
+        input.budget.onOverBudget?.(
+          planOverBudgetMessage(input.workflow, renderedChars, maxPlanChars),
+        );
+        return true;
+      };
       const behavior = resolveWorkflowBehavior({
         runKind: "planning",
         templateId: input.workflow.templateId,
@@ -1959,6 +1990,7 @@ export const makeWorkflowService = Effect.gen(function* () {
         if (hasProposedPlanForTurn(input.thread, input.turnId)) {
           return false;
         }
+        if (exceedsBudget(validation.markdown)) return false;
         yield* orchestrationEngine.dispatch({
           type: "thread.proposed-plan.upsert",
           commandId: CommandId.makeUnsafe(timeOrderedUuid()),
@@ -1994,6 +2026,7 @@ export const makeWorkflowService = Effect.gen(function* () {
         if (!validation.valid) return false;
         planMarkdown = validation.markdown;
       }
+      if (exceedsBudget(planMarkdown)) return false;
 
       yield* orchestrationEngine.dispatch({
         type: "thread.proposed-plan.upsert",
@@ -2020,6 +2053,8 @@ export const makeWorkflowService = Effect.gen(function* () {
     readonly turnId: TurnId;
     readonly branchId?: WorkflowBranchId;
     readonly createdAt: string;
+    /** Why the turn was rejected, when the caller already knows (no record to validate). */
+    readonly validationError?: string;
   }) =>
     Effect.gen(function* () {
       let workflow = input.workflow;
@@ -2047,15 +2082,18 @@ export const makeWorkflowService = Effect.gen(function* () {
       )
         return;
       const provider = branch?.authorSlot.provider ?? workflow.merge.mergeSlot.provider;
-      const validation = validateCapturedPlanForTurn({
-        workflow: workflow,
-        provider,
-        thread: input.thread,
-        turnId: input.turnId,
-        ...(branch
-          ? { maxPlanChars: workflowPlanCharBudget(workflow), branchId: branch.branchId }
-          : {}),
-      });
+      const validation =
+        input.validationError !== undefined
+          ? { valid: false as const, error: input.validationError }
+          : validateCapturedPlanForTurn({
+              workflow: workflow,
+              provider,
+              thread: input.thread,
+              turnId: input.turnId,
+              ...(branch
+                ? { maxPlanChars: workflowPlanCharBudget(workflow), branchId: branch.branchId }
+                : {}),
+            });
       if (validation.valid) return;
       // Every workflow kind records the rejected turn, so the stage evaluates it once. Planning
       // workflows record it only once the repair turn was dispatched: until then a repeated
@@ -3447,6 +3485,8 @@ export const makeWorkflowService = Effect.gen(function* () {
         });
         if (!capture.valid) {
           // An over-long plan was captured: repair it rather than synthesizing another.
+          // A reply over the per-plan budget is not saved as a plan; it takes the same repair.
+          let overBudgetError: string | undefined;
           const synthesized =
             !("overBudget" in capture) &&
             (yield* maybeSynthesizeProposedPlan({
@@ -3455,35 +3495,25 @@ export const makeWorkflowService = Effect.gen(function* () {
               thread,
               turnId,
               createdAt: updatedAt,
+              budget: {
+                branchId: authorBranchId,
+                onOverBudget: (error) => {
+                  overBudgetError = error;
+                },
+              },
             }));
-          // A plan synthesized from the reply must meet the per-plan budget too, so check the
-          // saved record; an over-long one takes the same repair path as an over-long capture.
-          let repairSnapshot = snapshot;
-          let repairThread = thread;
-          let accepted = false;
-          if (synthesized) {
-            repairSnapshot = yield* orchestrationEngine.getReadModel();
-            repairThread = repairSnapshot.threads.find((entry) => entry.id === threadId) ?? thread;
-            accepted = validateCapturedPlanForTurn({
-              workflow,
-              provider: branch.authorSlot.provider,
-              thread: repairThread,
-              turnId,
-              maxPlanChars: workflowPlanCharBudget(workflow),
-              branchId: authorBranchId,
-            }).valid;
-          }
-          if (!accepted) {
+          if (!synthesized) {
             // Valid late output can still be captured; a failed turn must not
             // trigger another provider turn to repair invalid output.
             if (branch.status === "error") return workflow;
             yield* retryOrFailInvalidPlanCapture({
               workflow,
-              snapshot: repairSnapshot,
-              thread: repairThread,
+              snapshot,
+              thread,
               turnId,
               branchId: authorBranchId,
               createdAt: updatedAt,
+              ...(overBudgetError !== undefined ? { validationError: overBudgetError } : {}),
             });
             return workflow;
           }
@@ -3514,7 +3544,10 @@ export const makeWorkflowService = Effect.gen(function* () {
           !finishedTurn ||
           (review.status === "error" &&
             (thread.latestTurn?.completedAt ?? thread.latestTurn?.requestedAt ?? "") <
-              review.updatedAt)
+              review.updatedAt) ||
+          // A requeued review is saved `running` before its new turn exists: a turn requested
+          // before that belongs to an earlier attempt, not this one.
+          (review.status === "running" && (thread.latestTurn?.requestedAt ?? "") < review.updatedAt)
         ) {
           return workflow;
         }
@@ -5702,6 +5735,8 @@ export const makeWorkflowService = Effect.gen(function* () {
                 thread: authorThread,
                 turnId: event.payload.turnId,
                 createdAt: event.occurredAt,
+                // An over-long reply is left unsaved; the capture below repairs it.
+                budget: { branchId: authorMatch.branchId },
               });
               const nextReadModel = synthesized
                 ? yield* orchestrationEngine.getReadModel()

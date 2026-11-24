@@ -179,6 +179,10 @@ describe("planning roster", () => {
     expect(planReviewEdgesError(two([{ slot: "cross", reviewerBranchId: "a" }]))).toBe(
       "Plan A has a cross review by an invalid reviewer.",
     );
+    // C is not an author of a two-author run.
+    expect(planReviewEdgesError(two([{ slot: "cross", reviewerBranchId: "c" }]))).toBe(
+      "Plan A has a cross review by an invalid reviewer.",
+    );
     expect(planReviewEdgesError(two([{ slot: "self", reviewerBranchId: "b" }]))).toBe(
       "Plan A has a self review by an invalid reviewer.",
     );

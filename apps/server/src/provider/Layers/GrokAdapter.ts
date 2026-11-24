@@ -2118,18 +2118,27 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               let antigravityTurnWarning: string | undefined;
               let antigravityModeWarning: string | undefined;
               // Checked before the steering branch too: a workflow prompt steered into an
-              // ordinary session's running turn would otherwise skip the read-only guards.
-              if (
-                PROVIDER === "antigravity" &&
-                input.workflowExecutionProfile &&
-                !ctx.antigravityWorkflowSession
-              )
-                return yield* new ProviderAdapterValidationError({
-                  provider: PROVIDER,
-                  operation: "sendTurn",
-                  issue:
-                    "This Antigravity session was not started for read-only workflow turns. Start a new session to continue.",
-                });
+              // ordinary session's running turn would otherwise skip the read-only guards. A steer
+              // keeps the running turn's profile, so one asking for another profile is refused.
+              if (PROVIDER === "antigravity" && input.workflowExecutionProfile) {
+                if (!ctx.antigravityWorkflowSession)
+                  return yield* new ProviderAdapterValidationError({
+                    provider: PROVIDER,
+                    operation: "sendTurn",
+                    issue:
+                      "This Antigravity session was not started for read-only workflow turns. Start a new session to continue.",
+                  });
+                if (
+                  steeringTurnId !== undefined &&
+                  input.workflowExecutionProfile !== ctx.antigravityWorkflowProfile
+                )
+                  return yield* new ProviderAdapterValidationError({
+                    provider: PROVIDER,
+                    operation: "sendTurn",
+                    issue:
+                      "This message needs a different workflow profile than the running Antigravity turn. Wait for the turn to finish before sending it.",
+                  });
+              }
               if (PROVIDER === "antigravity" && steeringTurnId === undefined) {
                 // Steers stay inside the running turn: no mode, model or level writes.
                 const mapTurnError = antigravityErrorMapper(input.threadId, "sendTurn");

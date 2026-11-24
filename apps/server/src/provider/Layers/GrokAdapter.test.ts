@@ -1002,6 +1002,66 @@ rootIt.layer(
       yield* adapter.stopSession(threadId).pipe(Effect.ignore);
     }).pipe(Effect.scoped),
   );
+  it.effect("refuses a steer whose workflow profile differs from the running turn's", () =>
+    Effect.gen(function* () {
+      const gateDir = yield* Effect.acquireRelease(
+        Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "agy-profile-steer-"))),
+        (directory) => Effect.promise(() => rm(directory, { recursive: true, force: true })),
+      );
+      const gate = path.join(gateDir, "go");
+      const wrapperPath = writeAcpWrapper(path.join(gateDir, "agent"), mockAgentPath, {
+        env: { F5_ACP_ANTIGRAVITY_PROFILE: "1", T3_ACP_PROMPT_GATE_PATH: gate },
+      });
+      const adapter = yield* makeGrokAdapter(
+        Schema.decodeSync(GrokSettings)({ binaryPath: wrapperPath }),
+        {
+          provider: "antigravity",
+          instanceId: ProviderInstanceId.make("antigravity"),
+          antigravity: { readOnlyWorkflowCertified: () => true },
+        },
+      );
+      const threadId = ThreadId.make("agy-profile-steer");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "attended-readonly",
+      });
+      const turn = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "Start",
+          attachments: [],
+          workflowExecutionProfile: "attended-readonly",
+        })
+        .pipe(Effect.forkChild);
+      let activeTurnId: TurnId | undefined;
+      yield* Effect.promise(() =>
+        vi.waitFor(async () => {
+          const sessions = await Effect.runPromise(adapter.listSessions());
+          activeTurnId = sessions.find((session) => session.threadId === threadId)?.activeTurnId;
+          if (!activeTurnId) throw new Error("no running turn yet");
+        }),
+      );
+      const refused = yield* Effect.flip(
+        adapter.sendTurn({
+          threadId,
+          input: "Review this",
+          attachments: [],
+          expectedTurnId: activeTurnId,
+          workflowExecutionProfile: "unattended-readonly",
+        }),
+      );
+      assert.include(
+        String(refused.message),
+        "needs a different workflow profile than the running Antigravity turn",
+      );
+      yield* Effect.promise(() => writeFile(gate, ""));
+      yield* Fiber.join(turn);
+      yield* adapter.stopSession(threadId).pipe(Effect.ignore);
+    }).pipe(Effect.scoped),
+  );
   it.effect(
     "keeps the turn's acceptance when a steer arrives before the agent's first progress",
     () =>

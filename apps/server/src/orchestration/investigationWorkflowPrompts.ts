@@ -343,6 +343,11 @@ export function buildBudgetedInvestigationSynthesisPrompt(
     for (const review of contribution.crossReviews) lengths.push(review.text.length);
     if (contribution.selfReview) lengths.push(contribution.selfReview.length);
   }
+  // Reports that fit whole are sent whole; marker space is reserved only when cutting.
+  if (lengths.every((length) => length <= UPSTREAM_REPORT_CHAR_LIMIT)) {
+    const whole = joinPromptSections(buildInvestigationSynthesisPromptSections(input));
+    if (whole.length <= input.maxRenderedChars) return { prompt: whole, smallestExcerpt: null };
+  }
   const fixedLength = synthesisFixedLength(input);
   const { allowances, smallestExcerpt } = allocateArtifactCharBudget(
     lengths,
