@@ -37,6 +37,7 @@ import {
   $isTextNode,
   $createLineBreakNode,
   $createParagraphNode,
+  $createRangeSelectionFromDom,
   $createTextNode,
   KEY_ARROW_DOWN_COMMAND,
   KEY_ARROW_LEFT_COMMAND,
@@ -1333,22 +1334,35 @@ function ComposerPromptEditorInner({
       },
       readSnapshot,
       readSelectionRange: () =>
-        editor.getEditorState().read(() => {
-          const selection = $getSelection();
-          if (!$isRangeSelection(selection)) {
-            const cursor = readSnapshot().expandedCursor;
-            return { start: cursor, end: cursor };
-          }
-          const anchor = getExpandedAbsoluteOffsetForPoint(
-            selection.anchor.getNode(),
-            selection.anchor.offset,
-          );
-          const focus = getExpandedAbsoluteOffsetForPoint(
-            selection.focus.getNode(),
-            selection.focus.offset,
-          );
-          return { start: Math.min(anchor, focus), end: Math.max(anchor, focus) };
-        }),
+        editor.getEditorState().read(
+          () => {
+            // Paste can arrive before Lexical processes the browser's selectionchange.
+            const root = editor.getRootElement();
+            const domSelection = root?.ownerDocument.getSelection();
+            const range =
+              root &&
+              domSelection &&
+              root.contains(domSelection.anchorNode) &&
+              root.contains(domSelection.focusNode)
+                ? $createRangeSelectionFromDom(domSelection, editor)
+                : null;
+            const selection = range ?? $getSelection();
+            if (!$isRangeSelection(selection)) {
+              const cursor = readSnapshot().expandedCursor;
+              return { start: cursor, end: cursor };
+            }
+            const anchor = getExpandedAbsoluteOffsetForPoint(
+              selection.anchor.getNode(),
+              selection.anchor.offset,
+            );
+            const focus = getExpandedAbsoluteOffsetForPoint(
+              selection.focus.getNode(),
+              selection.focus.offset,
+            );
+            return { start: Math.min(anchor, focus), end: Math.max(anchor, focus) };
+          },
+          { editor },
+        ),
     }),
     [editor, focusAt, readSnapshot],
   );

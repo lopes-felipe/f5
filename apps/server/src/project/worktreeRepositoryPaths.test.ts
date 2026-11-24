@@ -75,10 +75,15 @@ it("reconciles an F5-prepared group only when its live branch matches the observ
         const member = path.join(worktree.path, "service");
         run(member, "switch", "-qc", "new-topic");
         const observe = (branch: string) =>
-          git.adoptObservedWorktreeBranch!({ ...input, previousBranch: "feature", branch });
+          git.prepareObservedWorktreeBranch!({ ...input, previousBranch: "feature", branch });
         expect((yield* observe("stale-topic").pipe(Effect.result))._tag).toBe("Failure");
         expect((yield* git.readWorktreeGroup!(worktree.path))?.branch).toBe("feature");
-        yield* observe("new-topic");
+        const prepared = yield* observe("new-topic");
+        run(member, "switch", "-q", "feature");
+        expect((yield* prepared.verifyBranch.pipe(Effect.result))._tag).toBe("Failure");
+        run(member, "switch", "-q", "new-topic");
+        yield* prepared.verifyBranch;
+        yield* prepared.commit;
         expect((yield* git.readWorktreeGroup!(worktree.path))?.branch).toBe("new-topic");
         yield* assertWorktreeReady(git, {
           projectCwd: project,

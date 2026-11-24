@@ -58,6 +58,7 @@ function threadCommentEntry(
 export function groupTimelineReviewThreads(
   entries: ReadonlyArray<PrHubTimelineEntry>,
   threads: ReadonlyArray<PrHubReviewThread>,
+  includeOverviewReplies = false,
 ): ReadonlyArray<PrTimelineRow> {
   const threadByCommentId = new Map<string, PrHubReviewThread>();
   for (const thread of threads) {
@@ -67,13 +68,18 @@ export function groupTimelineReviewThreads(
   // Entries arrive newest first, so the last member seen is the thread's oldest loaded comment.
   const anchorByThread = new Map<string, PrHubTimelineComment>();
   for (const entry of entries) {
-    if (entry.type !== "comment" || loaded.has(entry.id)) continue;
+    if (
+      entry.type !== "comment" ||
+      (!includeOverviewReplies && entry.kind !== "review-comment") ||
+      loaded.has(entry.id)
+    )
+      continue;
     const thread = threadByCommentId.get(entry.id);
     if (!thread) continue;
     loaded.set(entry.id, entry);
     anchorByThread.set(thread.id, entry);
   }
-  const rowByAnchor = new Map<string, PrTimelineThreadRow>();
+  const rowByAnchor = new Map<PrHubTimelineEntry, PrTimelineThreadRow>();
   for (const thread of threads) {
     const anchor = anchorByThread.get(thread.id);
     if (!anchor) continue;
@@ -81,7 +87,7 @@ export function groupTimelineReviewThreads(
       (comment) => loaded.get(comment.id) ?? threadCommentEntry(thread, comment, anchor.createdAt),
     );
     if (!root) continue;
-    rowByAnchor.set(anchor.id, {
+    rowByAnchor.set(anchor, {
       type: "thread",
       id: thread.id,
       thread,
@@ -94,13 +100,12 @@ export function groupTimelineReviewThreads(
   }
   const rows: PrTimelineRow[] = [];
   for (const entry of entries) {
-    const threadRow = rowByAnchor.get(entry.id);
+    const threadRow = rowByAnchor.get(entry);
     if (threadRow) {
       rows.push(threadRow);
-      rowByAnchor.delete(entry.id);
       continue;
     }
-    if (entry.type === "comment" && loaded.has(entry.id)) continue;
+    if (entry.type === "comment" && loaded.get(entry.id) === entry) continue;
     rows.push({ type: "entry", entry });
   }
   return rows;

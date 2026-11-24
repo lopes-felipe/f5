@@ -1224,6 +1224,7 @@ describe("WebSocket Server", () => {
           : never;
         readonly sentTurns: Array<Parameters<ProviderServiceShape["sendTurn"]>[0]>;
         readonly startedCwds?: Array<string | undefined>;
+        readonly runtimeEvents?: Stream.Stream<ProviderRuntimeEvent>;
         readonly generateBranchName?: ProviderInstance["textGeneration"]["generateBranchName"];
       }) {
         const provider = makeTurnCapturingProviderService(options.sentTurns);
@@ -1233,6 +1234,7 @@ describe("WebSocket Server", () => {
           ...(options.persistenceLayer ? { persistenceLayer: options.persistenceLayer } : {}),
           providerLayer: Layer.succeed(ProviderService, {
             ...provider,
+            streamEvents: options.runtimeEvents ?? provider.streamEvents,
             startSession: (threadId, input) =>
               Effect.sync(() => {
                 options.startedCwds?.push(input.cwd);
@@ -1377,7 +1379,7 @@ describe("WebSocket Server", () => {
         }
       };
 
-      it("delivers the first turn in a plain project worktree group", async () => {
+      it("delivers the first turn and follows idle branch changes in a plain project worktree group", async () => {
         const repo = makeTempDir("f5-ws-plain-worktree-");
         for (const name of ["api", "web"]) {
           const member = path.join(repo, name);
@@ -1400,7 +1402,13 @@ describe("WebSocket Server", () => {
         }
         const sentTurns: Array<Parameters<ProviderServiceShape["sendTurn"]>[0]> = [];
         const startedCwds: Array<string | undefined> = [];
-        const ws = await startServer({ repo, sentTurns, startedCwds });
+        const runtimeEvents = await Effect.runPromise(PubSub.unbounded<ProviderRuntimeEvent>());
+        const ws = await startServer({
+          repo,
+          sentTurns,
+          startedCwds,
+          runtimeEvents: Stream.fromPubSub(runtimeEvents),
+        });
         await createProject(ws, repo);
         const response = await sendRequest(
           ws,
@@ -1433,6 +1441,64 @@ describe("WebSocket Server", () => {
           create: true,
         });
         expect(switched.error).toMatchObject({ code: "WorkspaceRequiresNewWorktree" });
+
+        const settings = await sendRequest(ws, WS_METHODS.serverUpdateSettings, {
+          followWorktreeBranchChanges: true,
+        });
+        expect(settings.error).toBeUndefined();
+        const observedThread = async () => {
+          const model = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot);
+          return (model.result as OrchestrationReadModel).threads.find(
+            (entry) => entry.id === "plain-worktree",
+          );
+        };
+        const runtimeTurn = {
+          provider: "codex",
+          threadId: asThreadId("plain-worktree"),
+          turnId: asTurnId("provider-plain-worktree"),
+        } as const;
+        await Effect.runPromise(
+          PubSub.publish(runtimeEvents, {
+            ...runtimeTurn,
+            type: "turn.started",
+            eventId: asEventId("plain-worktree-turn-started"),
+            createdAt: new Date().toISOString(),
+            payload: {},
+          }),
+        );
+        await expect.poll(observedThread).toMatchObject({ latestTurn: { state: "running" } });
+        for (const name of ["api", "web"]) {
+          execFileSync("git", ["switch", "-qc", "next-topic"], {
+            cwd: path.join(workspace, name),
+            stdio: "pipe",
+          });
+        }
+        const observeMember = () =>
+          sendRequest(ws, WS_METHODS.gitStatus, {
+            cwd: path.join(workspace, "api"),
+            includeRemote: false,
+            includePullRequest: false,
+          });
+        expect((await observeMember()).result).toMatchObject({ branch: "next-topic" });
+        expect(await observedThread()).toMatchObject({ branch: "f5/plain-worktree" });
+
+        await Effect.runPromise(
+          PubSub.publish(runtimeEvents, {
+            ...runtimeTurn,
+            type: "turn.completed",
+            eventId: asEventId("plain-worktree-turn-completed"),
+            createdAt: new Date().toISOString(),
+            payload: { state: "completed" },
+          }),
+        );
+        await expect.poll(observedThread).toMatchObject({
+          session: { activeTurnId: null },
+          latestTurn: { state: "completed" },
+        });
+        expect((await observeMember()).error).toBeUndefined();
+        await expect
+          .poll(observedThread)
+          .toMatchObject({ branch: "next-topic", worktreePath: workspace });
       });
 
       it("rejects a required worktree before creating the thread", async () => {

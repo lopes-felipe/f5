@@ -1869,12 +1869,14 @@ const makeGitCore = Effect.gen(function* () {
       return { ready, recoverable };
     }).pipe(Effect.mapError((error) => groupError(input.path, error.message)));
 
-  const adoptObservedWorktreeBranch: NonNullable<GitCoreShape["adoptObservedWorktreeBranch"]> = (
-    input,
-  ) =>
+  const prepareObservedWorktreeBranch: NonNullable<
+    GitCoreShape["prepareObservedWorktreeBranch"]
+  > = (input) =>
     Effect.gen(function* () {
       const path = yield* canonicalPath(input.path);
       const group = yield* preparations.getGroup(path);
+      const checkoutPaths = !group || group.root ? [path] : [];
+      const receipts: WorktreePreparationReceipt[] = [];
       if (group) {
         if (
           group.branch !== input.previousBranch ||
@@ -1893,10 +1895,9 @@ const makeGitCore = Effect.gen(function* () {
               !(receipt.phase === "checkout_created" && !receipt.runSetupScript))
           )
             return yield* groupError(member.path, "The worktree preparation changed.");
-          if (receipt.branch !== input.branch)
-            yield* preparations.update(receipt, { branch: input.branch });
+          checkoutPaths.push(member.path);
+          if (receipt.branch !== input.branch) receipts.push(receipt);
         }
-        yield* preparations.updateGroupBranch(group, input.branch);
       } else {
         const checkout = yield* inspectCheckoutIdentity(path);
         const commonDir = yield* resolveCommonDir(input.projectRoot).pipe(
@@ -1916,6 +1917,24 @@ const makeGitCore = Effect.gen(function* () {
             "The checkout no longer matches the observed worktree branch.",
           );
       }
+      const verifyBranch = Effect.gen(function* () {
+        for (const checkoutPath of checkoutPaths) {
+          const head = yield* runGitStdout("GitCore.observeWorktreeBranch", checkoutPath, [
+            "symbolic-ref",
+            "--quiet",
+            "HEAD",
+          ]);
+          if (branchNameFromHeadRef(head.trim()) !== input.branch)
+            return yield* groupError(checkoutPath, "The observed checkout branch changed.");
+        }
+      }).pipe(Effect.mapError((error) => groupError(path, error.message)));
+      const commit = Effect.gen(function* () {
+        for (const receipt of receipts) {
+          yield* preparations.update(receipt, { branch: input.branch });
+        }
+        if (group) yield* preparations.updateGroupBranch(group, input.branch);
+      }).pipe(Effect.mapError((error) => groupError(path, error.message)));
+      return { verifyBranch, commit };
     }).pipe(Effect.mapError((error) => groupError(input.path, error.message)));
 
   const materializeWorktreeGroup = (
@@ -4685,7 +4704,7 @@ const makeGitCore = Effect.gen(function* () {
     allocateWorktreePath,
     prepareWorktreeGroup,
     inspectWorktreeGroup,
-    adoptObservedWorktreeBranch,
+    prepareObservedWorktreeBranch,
     listProjectRepositoryRoots,
     setProjectRepositoryRoot,
     readWorktreeGroup: (path) =>

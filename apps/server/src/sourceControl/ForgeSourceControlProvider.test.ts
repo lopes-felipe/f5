@@ -103,8 +103,12 @@ describe("forge adapters", () => {
         {
           id: "old",
           notes: [
-            { id: 1, position: { ...refs, start_sha: "previous", new_path: "a.ts", new_line: 2 } },
-            { id: 2 },
+            {
+              id: 1,
+              position: { ...refs, start_sha: "previous", new_path: "a.ts", new_line: 2 },
+              updated_at: "2026-11-06T01:00:00Z",
+            },
+            { id: 2, updated_at: "2026-11-06T02:00:00Z" },
           ],
         },
         { id: "current", notes: [{ id: 3, position: { ...refs, new_path: "a.ts", new_line: 4 } }] },
@@ -120,13 +124,37 @@ describe("forge adapters", () => {
         id: "old",
         isOutdated: true,
         comments: [
-          { id: "1", outdated: true },
-          { id: "2", outdated: true },
+          { id: "1", outdated: true, updatedAt: "2026-11-06T01:00:00Z" },
+          { id: "2", outdated: true, updatedAt: "2026-11-06T02:00:00Z" },
         ],
       },
       { id: "current", isOutdated: false },
     ]);
     expect(calls.map(({ init }) => init.method)).toEqual(["GET", "GET"]);
+  });
+
+  it("keeps GitLab timeline notes when the edit lookup reaches its page limit", async () => {
+    const { provider, ref, calls } = fixture("gitlab", [
+      [{ notes: [{ id: 1001, body: "Late note", updated_at: "rest-update" }] }],
+      ...Array.from({ length: 10 }, (_, page) => ({
+        data: {
+          project: {
+            mergeRequest: {
+              notes: {
+                nodes: Array.from({ length: 100 }, (_, index) => ({
+                  id: "gid://gitlab/Note/" + (page * 100 + index + 1),
+                })),
+                pageInfo: { hasNextPage: true, endCursor: String(page + 1) },
+              },
+            },
+          },
+        },
+      })),
+    ]);
+    expect(forgeComments(await Effect.runPromise(provider.getComments(ref)))).toMatchObject([
+      { id: 1001, body: "Late note", updated_at: null },
+    ]);
+    expect(calls.filter(({ init }) => init.method === "POST")).toHaveLength(10);
   });
 
   it("loads review decisions and head pipeline status in one GitLab list request", async () => {
@@ -158,11 +186,44 @@ describe("forge adapters", () => {
       },
     ]);
     expect(await Effect.runPromise(provider.listPullRequests(ref))).toMatchObject([
-      { number: 7, reviewDecision: "changes_requested", checks: [{ status: "failure" }] },
-      { number: 8, reviewDecision: "review_required", checks: [{ status: "pending" }] },
+      {
+        number: 7,
+        reviewDecision: "changes_requested",
+        checks: [{ status: "failure" }],
+        checksComplete: false,
+      },
+      {
+        number: 8,
+        reviewDecision: "review_required",
+        checks: [{ status: "pending" }],
+        checksComplete: false,
+      },
     ]);
     expect(JSON.parse(String(calls[1]?.init.body)).variables.iids).toEqual(["7", "8"]);
   });
+
+  it.each([401, 429])(
+    "keeps GitLab REST reads usable when optional GraphQL returns %s",
+    async (status) => {
+      const refusal = () => new Response(null, { status });
+      const list = fixture("gitlab", [[{ iid: 7, title: "MR" }], refusal()]);
+      const timeline = fixture("gitlab", [
+        [{ notes: [{ id: 1, body: "Note", updated_at: "rest-update" }] }],
+        refusal(),
+      ]);
+      const detail = fixture("gitlab", [{ iid: 7, state: "merged" }, refusal()]);
+      expect(await Effect.runPromise(list.provider.listPullRequests(list.ref))).toMatchObject([
+        { number: 7, title: "MR" },
+      ]);
+      expect(
+        forgeComments(await Effect.runPromise(timeline.provider.getComments(timeline.ref))),
+      ).toMatchObject([{ id: 1, body: "Note", updated_at: null }]);
+      expect(
+        (await Effect.runPromise(detail.provider.getDetail(detail.ref, { branchPermission: true })))
+          .viewerCanDeleteBranch,
+      ).toBe(false);
+    },
+  );
 
   it("checks later reviewer pages on GitLab versions without changeRequesters", async () => {
     const { provider, ref, calls } = fixture("gitlab", [

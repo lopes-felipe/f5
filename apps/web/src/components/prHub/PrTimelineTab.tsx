@@ -378,7 +378,11 @@ export function PrTimelineTab({
   const entries = pages.flatMap((page) => page.entries);
   const warning = pages.find((page) => page.warning)?.warning;
   const truncated = pages.some((page) => page.pageInfo.truncated);
-  const rows = groupTimelineReviewThreads(entries, useTimelineReviewThreads(pr, active));
+  const rows = groupTimelineReviewThreads(
+    entries,
+    useTimelineReviewThreads(pr, active),
+    pr.provider === "gitlab",
+  );
 
   if (query.isPending) {
     return (

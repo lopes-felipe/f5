@@ -143,6 +143,7 @@ describe("WebSocket Server", () => {
 
     it.each([
       { managed: true, follow: true, shared: false },
+      { managed: false, follow: true, shared: false },
       { managed: false, follow: true, shared: true },
       { managed: false, follow: false, shared: false },
     ])(
@@ -230,17 +231,18 @@ describe("WebSocket Server", () => {
               (thread) => thread.id === "observed-branch",
             );
           };
-          if (managed) {
+          if (follow && !shared) {
             await expect
               .poll(observedThread)
               .toMatchObject({ branch: "next-topic", worktreePath: worktree });
-            expect(
-              db
-                .prepare(
-                  "SELECT json_extract(plan_json, '$.branch') AS branch FROM worktree_groups WHERE workspace_path = ?",
-                )
-                .get(worktree),
-            ).toMatchObject({ branch: "next-topic" });
+            if (managed)
+              expect(
+                db
+                  .prepare(
+                    "SELECT json_extract(plan_json, '$.branch') AS branch FROM worktree_groups WHERE workspace_path = ?",
+                  )
+                  .get(worktree),
+              ).toMatchObject({ branch: "next-topic" });
           } else {
             const state = await sendRequest(ws, WS_METHODS.worktreesThreadState, {
               threadId: "observed-branch",

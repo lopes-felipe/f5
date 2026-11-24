@@ -561,13 +561,7 @@ export function makeForgeSourceControlProvider(options: {
       }),
     );
   const gitLabOptional = <A>(read: Effect.Effect<A, SourceControlProviderError>, fallback: A) =>
-    read.pipe(
-      Effect.catch((cause) =>
-        cause.kind === "unauthenticated" || cause.kind === "rate_limited"
-          ? Effect.fail(cause)
-          : Effect.succeed(fallback),
-      ),
-    );
+    read.pipe(Effect.orElseSucceed(() => fallback));
   const gitLabSourceBranch = (ref: SourceControlPullRequestRef) =>
     gitLabGraphql(
       ref,
@@ -653,7 +647,7 @@ export function makeForgeSourceControlProvider(options: {
           overviewFinding,
           notes: notes.map((note, index) => ({
             ...note,
-            updated_at: edits.get(String(note.id)) ?? null,
+            updated_at: compare ? note.updated_at : (edits.get(String(note.id)) ?? null),
             overviewFinding: overviewFinding && index === 0,
             web_url:
               text(note.web_url) ||
@@ -781,7 +775,7 @@ export function makeForgeSourceControlProvider(options: {
                 ? {
                     raw: { ...detail.raw, head_pipeline: row.headPipeline },
                     checks: gitLabHeadPipelineChecks(row.headPipeline),
-                    checksComplete: true,
+                    checksComplete: row.headPipeline == null,
                   }
                 : {}),
             };
@@ -1518,6 +1512,8 @@ export function makeForgeSourceControlProvider(options: {
               if (object(source.userPermissions).removeSourceBranch !== true)
                 return yield* refused("GitLab does not allow you to delete this source branch.");
               const authoredAt = Date.parse(text(commit.authored_date));
+              // GitLab compares author dates here. A concurrent push with an older or equal
+              // author date can still move the branch between the SHA read and the delete.
               yield* request(
                 ref,
                 undefined,

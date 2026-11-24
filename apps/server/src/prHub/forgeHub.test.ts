@@ -308,6 +308,7 @@ it.layer(SqliteClient.layerMemory())("native forge hub", (it) => {
       Effect.gen(function* () {
         yield* Migration102;
         let partial = false;
+        let listOnly = true;
         const provider = makeForgeSourceControlProvider({
           kind: "gitlab",
           resolveAccount: () =>
@@ -320,6 +321,14 @@ it.layer(SqliteClient.layerMemory())("native forge hub", (it) => {
             }),
           fetch: (async (url) => {
             const path = new URL(String(url)).pathname;
+            if (path === "/api/graphql")
+              return Response.json({
+                data: {
+                  project: {
+                    mergeRequests: { nodes: [{ iid: "7", headPipeline: { status: "SUCCESS" } }] },
+                  },
+                },
+              });
             if (path.endsWith("/bridges"))
               return partial
                 ? new Response(null, { status: 403 })
@@ -329,7 +338,7 @@ it.layer(SqliteClient.layerMemory())("native forge hub", (it) => {
               return Response.json([{ ...detail, head_pipeline: undefined }]);
             return Response.json({
               ...detail,
-              head_pipeline: { id: 31, project_id: 12, status: "success" },
+              head_pipeline: listOnly ? undefined : { id: 31, project_id: 12, status: "success" },
             });
           }) as typeof fetch,
         });
@@ -372,7 +381,14 @@ it.layer(SqliteClient.layerMemory())("native forge hub", (it) => {
         );
         const first = yield* hub.refreshNow({ mode: "force" });
         const pr = first.pullRequests[0]!;
-        assert.equal(pr.checkRollup, "failure");
+        assert.equal(pr.checkRollup, "pending");
+        const cachedList = yield* hub.getDetail({
+          key: pr.key,
+          cacheOnly: true,
+          accountGeneration: account.generation,
+        });
+        assert.deepEqual(cachedList.detail.truncatedSections, ["checks"]);
+        listOnly = false;
         yield* hub.getDetail({ key: pr.key, mode: "force" });
         const polled = yield* hub.refreshNow({ mode: "force" });
         assert.equal(polled.pullRequests[0]?.checkRollup, "failure");
