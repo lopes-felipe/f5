@@ -2438,6 +2438,114 @@ function collectSearchFlags(
   return { letters, longFlags };
 }
 
+const FILTER_GREP_LETTERS = new Set(["v", "i", "E", "F", "G", "w", "x", "s"]);
+const FILTER_RG_LETTERS = new Set(["v", "i", "F", "w", "x", "s", "S"]);
+const FILTER_GREP_LONG_FLAGS = new Set([
+  "--invert-match",
+  "--ignore-case",
+  "--extended-regexp",
+  "--fixed-strings",
+  "--basic-regexp",
+  "--word-regexp",
+  "--line-regexp",
+  "--no-messages",
+]);
+const FILTER_RG_LONG_FLAGS = new Set([
+  "--invert-match",
+  "--ignore-case",
+  "--fixed-strings",
+  "--word-regexp",
+  "--line-regexp",
+  "--no-messages",
+  "--smart-case",
+  "--case-sensitive",
+]);
+
+/**
+ * Whether the shell may turn a word into something else: parameter or command
+ * substitution (outside single quotes), or a glob, tilde or brace expansion
+ * (unquoted). `grep $FILTER` could expand to `-n foo`, and `grep a*` to file
+ * names, so the stage's real arguments are unknown.
+ */
+function isExpandableShellWord(token: string): boolean {
+  if (/^'[^']*'$/.test(token)) return false;
+  // A `$` before a quote or at the end stays literal (`"test$"` anchors).
+  if (/`|\$[\w{(@*#?$!-]/.test(token)) return true;
+  if (/^"[^"]*"$/.test(token)) return false;
+  return /[*?[{~\\'"]/.test(token);
+}
+
+/**
+ * A pipeline stage that only keeps or drops whole lines of its input, so
+ * search results that pass through it still read as `path:line:text`:
+ * `head`/`tail` with a count, or a grep/rg filter over stdin
+ * (`grep -v test`, `grep -iE 'a|b'`). Flags that rewrite lines (`-n`, `-o`,
+ * `-c`, `-H`, context), file arguments (which stop it reading stdin) and
+ * words the shell would expand are rejected.
+ *
+ * Like the search stage, an rg filter is assumed to run without a TTY and
+ * without a `RIPGREP_CONFIG_PATH` that turns on line numbers; either would
+ * prefix its own numbers (`1:72:foo`).
+ */
+function isLineFilterStage(stage: ReadonlyArray<string>): boolean {
+  if (stage.slice(1).some(isExpandableShellWord)) return false;
+  const program = stageProgram(stage);
+  const args = stage.slice(1).map(maybeUnquoteShellToken);
+  if (program === "head" || program === "tail") {
+    const parsed = parseLineCountArgs(args);
+    return (
+      parsed !== null &&
+      parsed.rest.length === 0 &&
+      (parsed.count === null || /^\+?\d+$/.test(parsed.count))
+    );
+  }
+  const isRg = program === "rg" || program === "ripgrep";
+  if (!isRg && !["grep", "ggrep", "egrep", "fgrep"].includes(program)) return false;
+  const letters = isRg ? FILTER_RG_LETTERS : FILTER_GREP_LETTERS;
+  const longFlags = isRg ? FILTER_RG_LONG_FLAGS : FILTER_GREP_LONG_FLAGS;
+  let patterns = 0;
+  let positionals = 0;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (arg === "--") {
+      positionals += args.length - index - 1;
+      break;
+    }
+    if (arg === "-e" || arg === "--regexp") {
+      if (index === args.length - 1) return false;
+      patterns += 1;
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--regexp=")) {
+      patterns += 1;
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      if (!longFlags.has(arg)) return false;
+      continue;
+    }
+    if (arg.startsWith("-") && arg !== "-") {
+      const cluster = arg.slice(1);
+      const valueAt = cluster.indexOf("e");
+      const flagPart = valueAt === -1 ? cluster : cluster.slice(0, valueAt);
+      if (![...flagPart].every((letter) => letters.has(letter))) return false;
+      if (valueAt !== -1) {
+        patterns += 1;
+        // `-ve pattern` takes the next word; `-vepattern` carries it inline.
+        if (valueAt === cluster.length - 1) {
+          if (index === args.length - 1) return false;
+          index += 1;
+        }
+      }
+      continue;
+    }
+    positionals += 1;
+  }
+  // With `-e` every positional is a file; without, the first is the pattern.
+  return patterns > 0 ? positionals === 0 : positionals === 1;
+}
+
 /**
  * A grep or ripgrep search whose output can be read as `path:line:text`
  * lines. Leading `cd` statements are followed. Statements after the search
@@ -2457,7 +2565,7 @@ export function parseSearchOutputCommand(command: string): SearchOutputCommand |
   const statement = statements[index];
   if (!statement) return null;
   const [stage, ...rest] = statement.stages;
-  if (!stage || rest.length > 1 || (rest[0] && !parseHeadStage(rest[0]))) return null;
+  if (!stage || !rest.every(isLineFilterStage)) return null;
   const program = stageProgram(stage);
   if (!isSearchToolName(program)) return null;
   const tool = program === "rg" || program === "ripgrep" ? "rg" : "grep";
