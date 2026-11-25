@@ -36,8 +36,9 @@ the Plan interaction mode toggle are unavailable for Grok.
 | Supervised  | Asks before edits and shell commands        |
 | Full access | Runs tools and edits without manual prompts |
 
-- **Built-in & discovered models:** `grok-build` (**Grok Build**) is always available as a fallback,
-  and F5 discovers live models from your signed-in CLI during status checks.
+- **Built-in & discovered models:** F5 discovers live models from your signed-in CLI during status
+  checks and uses that catalog when non-empty. `grok-build` (**Grok Build**) is shown as a fallback
+  only when F5 cannot fetch models from the CLI.
 - **Skills:** F5 discovers both global and workspace Grok skills and exposes enabled skills as slash
   commands.
 - **Tools:** Preview browser MCP and computer-use automation brokers are passed to Grok ACP sessions
