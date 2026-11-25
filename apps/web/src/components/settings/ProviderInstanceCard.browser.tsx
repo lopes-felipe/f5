@@ -764,6 +764,11 @@ it("keeps a rejected Claude auto-compact window in the field and saves a valid c
       instance,
       driverOption: DRIVER_OPTIONS.find((option) => option.value === driver),
       isExpanded: true,
+      headerAction: (
+        <button onClick={() => setInstance(makeInstance({ driver }))}>
+          Reset Claude provider settings
+        </button>
+      ),
       onUpdate: (next) => {
         onUpdate(next);
         setInstance(next);
@@ -773,7 +778,8 @@ it("keeps a rejected Claude auto-compact window in the field and saves a valid c
   const screen = await renderCardContent(<ClaudeSettingsCard />);
   try {
     const input = page.getByRole("textbox", { name: /Auto-compact window/ });
-    const error = page.getByText("Enter a valid value. It was not saved.");
+    const message = "Invalid value for Auto-compact window. It was not saved.";
+    const error = page.getByText(message);
     await expect.element(input).toHaveValue("200000");
 
     for (const invalid of ["300k", "50000", "0x493e0"]) {
@@ -781,9 +787,7 @@ it("keeps a rejected Claude auto-compact window in the field and saves a valid c
       await userEvent.keyboard("{Enter}");
       await expect.element(input).toHaveValue(invalid);
       await expect.element(input).toHaveAttribute("aria-invalid", "true");
-      await expect
-        .element(input)
-        .toHaveAccessibleDescription("Enter a valid value. It was not saved.");
+      await expect.element(input).toHaveAccessibleDescription(message);
       await expect.element(error).toBeVisible();
       expect(onUpdate).not.toHaveBeenCalled();
     }
@@ -795,11 +799,21 @@ it("keeps a rejected Claude auto-compact window in the field and saves a valid c
       expect.objectContaining({ config: { autoCompactWindow: 300_000, launchArgs: "--chrome" } }),
     );
 
+    await input.fill("300k");
+    await userEvent.keyboard("{Enter}");
+    await expect.element(error).toBeVisible();
+    await page.getByRole("button", { name: "Reset Claude provider settings" }).click();
+    await expect.element(input).toHaveValue("0");
+    await expect.element(input).not.toHaveAttribute("aria-invalid");
+    await expect.element(error).not.toBeInTheDocument();
+
+    await input.fill("200000");
+    await userEvent.keyboard("{Enter}");
     await input.fill("");
     await userEvent.keyboard("{Enter}");
     await expect.element(input).toHaveValue("0");
     expect(onUpdate).toHaveBeenLastCalledWith(
-      expect.objectContaining({ config: { autoCompactWindow: 0, launchArgs: "--chrome" } }),
+      expect.objectContaining({ config: { autoCompactWindow: 0 } }),
     );
   } finally {
     await screen.unmount();
@@ -827,7 +841,9 @@ it("edits custom ACP arguments as a typed array while retaining environment and 
   });
   try {
     const args = page.getByRole("textbox", { name: "Arguments (JSON)" });
+    const help = "Each array item is one argument; shell expansion is not used.";
     await expect.element(args).toHaveValue('["--old"]');
+    await expect.element(args).toHaveAccessibleDescription(help);
     await args.fill('["--acp","one argument with spaces"]');
     await userEvent.keyboard("{Tab}");
     expect(onUpdate).toHaveBeenCalledWith(
@@ -846,7 +862,9 @@ it("edits custom ACP arguments as a typed array while retaining environment and 
     await expect.element(args).toHaveValue("[42]");
     await expect
       .element(args)
-      .toHaveAccessibleDescription("Arguments (JSON) must be a JSON array of arguments.");
+      .toHaveAccessibleDescription(
+        `${help} Arguments (JSON) must be a JSON array of arguments. It was not saved.`,
+      );
     expect(onUpdate).not.toHaveBeenCalled();
   } finally {
     await screen.unmount();

@@ -27,7 +27,7 @@ export function decodeDriverConfigField(field: DriverFieldDef, text: string): un
         : NaN
       : trimmed;
   if (Option.isNone(Schema.decodeUnknownOption(field.schema)(value))) {
-    throw new Error("Enter a valid value. It was not saved.");
+    throw new Error(`Invalid value for ${field.label}.`);
   }
   return value;
 }

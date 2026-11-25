@@ -81,7 +81,14 @@ function ProviderConfigDraftInput({
   readonly onCommit: (value: string) => string | undefined;
 }) {
   const errorId = useId();
-  const [rejected, setRejected] = useState<{ value: string; message: string }>();
+  const [rejected, setRejected] = useState<{
+    value: string;
+    message: string;
+    savedValue: string;
+  }>();
+  if (rejected && rejected.savedValue !== value) {
+    setRejected(undefined);
+  }
   return (
     <>
       <DraftInput
@@ -93,12 +100,14 @@ function ProviderConfigDraftInput({
         }
         onCommit={(next) => {
           const message = onCommit(next);
-          setRejected(message === undefined ? undefined : { value: next, message });
+          setRejected(
+            message === undefined ? undefined : { value: next, message, savedValue: value },
+          );
         }}
       />
       {rejected ? (
         <span id={errorId} role="alert" className="mt-1 block text-xs text-destructive">
-          {rejected.message}
+          {rejected.message} It was not saved.
         </span>
       ) : null}
     </>
@@ -1048,93 +1057,100 @@ export function ProviderInstanceCard({
               .filter((field) =>
                 isDriverConfigFieldVisible(instance.config, field, driverOption.fields),
               )
-              .map((field) => (
-                <div key={field.key} className="border-t border-border/60 px-4 py-3 sm:px-5">
-                  <div>
-                    <label
-                      htmlFor={`provider-instance-${instanceId}-${field.key}`}
-                      className="text-xs font-medium text-foreground"
-                    >
-                      {field.label}
-                    </label>
-                    {field.type === "select" ? (
-                      <NativeSelect
-                        id={`provider-instance-${instanceId}-${field.key}`}
-                        className="mt-1.5 w-full"
-                        value={readDriverConfigField(instance.config, field)}
-                        onChange={(event) =>
-                          updateConfigFieldWithToast(field, event.currentTarget.value)
-                        }
-                      >
-                        {(field.options ?? []).map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label}
-                          </option>
-                        ))}
-                      </NativeSelect>
-                    ) : (
-                      <ProviderConfigDraftInput
-                        id={`provider-instance-${instanceId}-${field.key}`}
-                        className="mt-1.5"
-                        type={field.type === "password" ? "password" : undefined}
-                        autoComplete={field.type === "password" ? "off" : undefined}
-                        value={readDriverConfigField(instance.config, field)}
-                        onCommit={(next) => {
-                          // Leaving a stored secret's blank field untouched keeps the secret.
-                          if (
-                            !next &&
-                            hasStoredDriverSecret(instance.config, field) &&
-                            !readDriverConfigField(instance.config, field)
-                          )
-                            return;
-                          return updateConfigField(field, next);
-                        }}
-                        placeholder={
-                          hasStoredDriverSecret(instance.config, field)
-                            ? "Stored - enter a new value to replace"
-                            : field.placeholder
-                        }
-                        disabled={
-                          field.key === "binaryPath" &&
-                          driverKind === "claudeAgent" &&
-                          isolatedProfile
-                        }
-                        spellCheck={false}
-                      />
-                    )}
-                    {hasStoredDriverSecret(instance.config, field) ? (
-                      <Button
-                        size="xs"
-                        variant="outline"
-                        className="mt-1.5"
-                        onClick={() => updateConfigFieldWithToast(field, "")}
-                      >
-                        Remove stored key
-                      </Button>
-                    ) : null}
-                    {field.key === "binaryPath" &&
-                    driverKind === "claudeAgent" &&
-                    isolatedProfile ? (
-                      <span className="mt-1 block text-xs text-muted-foreground">
-                        Isolated profiles use the bundled Claude runtime to keep keychain sign-ins
-                        separate.
-                      </span>
-                    ) : null}
-                    {field.description ? (
-                      <span className="mt-1 block text-xs text-muted-foreground">
-                        {field.description}
-                      </span>
-                    ) : null}
-                    {field.key === "binaryPath" && driverKind === "codex" ? (
-                      <span className="mt-1 block text-xs text-muted-foreground">
-                        Default binary paths now use bundled Codex {CODEX_PROTOCOL_BASELINE_VERSION}
-                        , which may be older than your PATH install. Set an absolute path to keep a
-                        newer CLI or wrapper.
-                      </span>
-                    ) : null}
+              .map((field) => {
+                const inputId = `provider-instance-${instanceId}-${field.key}`;
+                const showIsolatedNote =
+                  field.key === "binaryPath" && driverKind === "claudeAgent" && isolatedProfile;
+                const showCodexNote = field.key === "binaryPath" && driverKind === "codex";
+                const descriptionId =
+                  showIsolatedNote || field.description || showCodexNote
+                    ? `${inputId}-description`
+                    : undefined;
+                return (
+                  <div key={field.key} className="border-t border-border/60 px-4 py-3 sm:px-5">
+                    <div>
+                      <label htmlFor={inputId} className="text-xs font-medium text-foreground">
+                        {field.label}
+                      </label>
+                      {field.type === "select" ? (
+                        <NativeSelect
+                          id={inputId}
+                          aria-describedby={descriptionId}
+                          className="mt-1.5 w-full"
+                          value={readDriverConfigField(instance.config, field)}
+                          onChange={(event) =>
+                            updateConfigFieldWithToast(field, event.currentTarget.value)
+                          }
+                        >
+                          {(field.options ?? []).map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </NativeSelect>
+                      ) : (
+                        <ProviderConfigDraftInput
+                          id={inputId}
+                          aria-describedby={descriptionId}
+                          className="mt-1.5"
+                          type={field.type === "password" ? "password" : undefined}
+                          autoComplete={field.type === "password" ? "off" : undefined}
+                          value={readDriverConfigField(instance.config, field)}
+                          onCommit={(next) => {
+                            // Leaving a stored secret's blank field untouched keeps the secret.
+                            if (
+                              !next &&
+                              hasStoredDriverSecret(instance.config, field) &&
+                              !readDriverConfigField(instance.config, field)
+                            )
+                              return;
+                            return updateConfigField(field, next);
+                          }}
+                          placeholder={
+                            hasStoredDriverSecret(instance.config, field)
+                              ? "Stored - enter a new value to replace"
+                              : field.placeholder
+                          }
+                          disabled={showIsolatedNote}
+                          spellCheck={false}
+                        />
+                      )}
+                      {hasStoredDriverSecret(instance.config, field) ? (
+                        <Button
+                          size="xs"
+                          variant="outline"
+                          className="mt-1.5"
+                          onClick={() => updateConfigFieldWithToast(field, "")}
+                        >
+                          Remove stored key
+                        </Button>
+                      ) : null}
+                      {descriptionId ? (
+                        <div id={descriptionId}>
+                          {showIsolatedNote ? (
+                            <span className="mt-1 block text-xs text-muted-foreground">
+                              Isolated profiles use the bundled Claude runtime to keep keychain
+                              sign-ins separate.
+                            </span>
+                          ) : null}
+                          {field.description ? (
+                            <span className="mt-1 block text-xs text-muted-foreground">
+                              {field.description}
+                            </span>
+                          ) : null}
+                          {showCodexNote ? (
+                            <span className="mt-1 block text-xs text-muted-foreground">
+                              Default binary paths now use bundled Codex{" "}
+                              {CODEX_PROTOCOL_BASELINE_VERSION}, which may be older than your PATH
+                              install. Set an absolute path to keep a newer CLI or wrapper.
+                            </span>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
 
             {customBinary ? (
               <div className="border-t px-4 py-3">
