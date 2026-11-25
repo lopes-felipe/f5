@@ -1,4 +1,8 @@
-import { noteWsSynchronized, noteWsResynchronizing } from "./wsConnectionState";
+import {
+  noteWsSynchronized,
+  noteWsResynchronizing,
+  noteWsSynchronizationError,
+} from "./wsConnectionState";
 import { serverBootstrapFixture } from "./test/serverBootstrap";
 import { F5_PROTOCOL_VERSION, F5_UPGRADE_REQUIRED_CLOSE_CODE } from "@t3tools/contracts";
 import {
@@ -21,10 +25,12 @@ import {
   isQueryRetryable,
   jitterReconnectDelay,
   ORPHAN_RELEASE_GRACE_MS,
+  UnconfirmedSubmissionError,
   WsRequestError,
   WsTransport,
 } from "./wsTransport";
 import { readRpcDiagnostics, resetRpcDiagnosticsForTests } from "./rpcDiagnostics";
+import { RpcRequestScheduler } from "./wsRequestScheduler";
 
 type WsEventType = "open" | "message" | "close" | "error";
 type WsEvent = { data?: unknown; type?: string; code?: number };
@@ -1004,6 +1010,78 @@ it("resends a lost message at most twice", async () => {
   transport.dispose();
 });
 
+it.each(["reconnect timeout", "synchronization failure"] as const)(
+  "stops a pending resend after %s and leaves the outcome unconfirmed",
+  async (failure) => {
+    const transport = new WsTransport("ws://localhost:3020");
+    getSocket().open();
+    noteWsSynchronized();
+    const pending = transport.request(WS_METHODS.nextTurnQueueSubmit, messageSubmission, {
+      timeoutMs: null,
+    });
+    const rejected = expect(pending).rejects.toBeInstanceOf(UnconfirmedSubmissionError);
+    getSocket().close();
+    await vi.advanceTimersByTimeAsync(500);
+    const replacement = getSocket();
+    replacement.open();
+    if (failure === "reconnect timeout") {
+      await vi.advanceTimersByTimeAsync(59_500);
+    } else {
+      noteWsSynchronizationError("Synchronization failed repeatedly. Reload the app to recover.");
+    }
+    await rejected;
+    noteWsSynchronized();
+    expect(replacement.sent).toEqual([]);
+    transport.dispose();
+  },
+);
+
+it("gives a resent message a full response deadline when its first attempt was nearly expired", async () => {
+  const transport = new WsTransport("ws://localhost:3020");
+  getSocket().open();
+  noteWsSynchronized();
+  const pending = transport.request(WS_METHODS.nextTurnQueueSubmit, messageSubmission, {
+    timeoutMs: 1_000,
+  });
+  const settled = vi.fn();
+  void pending.then(settled, settled);
+  const rejected = expect(pending).rejects.toMatchObject({
+    name: "UnconfirmedSubmissionError",
+    message: "Request timed out: nextTurnQueue.submit",
+  });
+  await vi.advanceTimersByTimeAsync(999);
+  getSocket().close();
+  await vi.advanceTimersByTimeAsync(500);
+  getSocket().open();
+  noteWsSynchronized();
+  expect(getSocket().sent).toHaveLength(1);
+  await vi.advanceTimersByTimeAsync(999);
+  expect(settled).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(1);
+  await rejected;
+  transport.dispose();
+});
+
+it("leaves the outcome unconfirmed if the reconnect queue cannot admit the resend", async () => {
+  const transport = new WsTransport("ws://localhost:3020");
+  const socket = getSocket();
+  socket.open();
+  noteWsSynchronized();
+  const pending = transport.request(WS_METHODS.nextTurnQueueSubmit, messageSubmission);
+  const rejected = expect(pending).rejects.toBeInstanceOf(UnconfirmedSubmissionError);
+  vi.spyOn(RpcRequestScheduler.prototype, "enqueue").mockReturnValueOnce({
+    ok: false,
+    lane: "ordinary",
+  });
+  socket.close();
+  await rejected;
+  await vi.advanceTimersByTimeAsync(500);
+  getSocket().open();
+  noteWsSynchronized();
+  expect(getSocket().sent).toEqual([]);
+  transport.dispose();
+});
+
 it("does not replay unsent messages or other mutations on socket loss", async () => {
   const transport = new WsTransport("ws://localhost:3020");
   const socket = getSocket();
@@ -1123,6 +1201,51 @@ describe("admission-aware scheduling", () => {
     });
 
   beforeEach(() => resetRpcDiagnosticsForTests());
+
+  it("preserves the unknown outcome when a queued resend expires waiting for the runtime", async () => {
+    const { transport, socket } = connectSynchronized();
+    const pending = transport.request(WS_METHODS.nextTurnQueueSubmit, messageSubmission, {
+      timeoutMs: 100,
+    });
+    const rejected = expect(pending).rejects.toBeInstanceOf(UnconfirmedSubmissionError);
+    socket.close();
+    await vi.advanceTimersByTimeAsync(500);
+    const replacement = getSocket();
+    replacement.open();
+    replacement.serverMessage(welcome({ state: "starting", revision: 1 }));
+    noteWsSynchronized();
+    await vi.advanceTimersByTimeAsync(100);
+    await rejected;
+    replacement.serverMessage(readiness({ state: "ready", revision: 2 }));
+    expect(replacement.sent).toEqual([]);
+    transport.dispose();
+  });
+
+  it("does not spend a reconnect resend on ServerStarting retries within the same socket", async () => {
+    const { transport, socket } = connectSynchronized();
+    const pending = transport.request(WS_METHODS.nextTurnQueueSubmit, messageSubmission);
+    const frame = socket.sent[0]!;
+    const { id } = JSON.parse(frame);
+    socket.close();
+    await vi.advanceTimersByTimeAsync(500);
+    const second = getSocket();
+    second.open();
+    noteWsSynchronized();
+    second.serverMessage(
+      JSON.stringify({ id, error: { code: "ServerStarting", message: "Starting" } }),
+    );
+    second.serverMessage(readiness({ state: "ready", revision: 1 }));
+    expect(second.sent).toEqual([frame, frame]);
+    second.close();
+    await vi.advanceTimersByTimeAsync(3_000);
+    const third = getSocket();
+    third.open();
+    noteWsSynchronized();
+    expect(third.sent).toEqual([frame]);
+    respond(third, id, { result: "accepted" });
+    await expect(pending).resolves.toBe("accepted");
+    transport.dispose();
+  });
 
   it("sends at most eight ordinary requests and releases a slot per response", async () => {
     const { transport, socket } = connectSynchronized();

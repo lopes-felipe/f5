@@ -99,6 +99,14 @@ export class WsRequestError extends Error {
   }
 }
 
+/** A submission may have executed before its receipt was lost. */
+export class UnconfirmedSubmissionError extends Error {
+  constructor(message = WS_CONNECTION_CLOSED_MESSAGE) {
+    super(message);
+    this.name = "UnconfirmedSubmissionError";
+  }
+}
+
 /** Failures the transport already owns or that cannot succeed by repeating the query. */
 const NON_RETRYABLE_QUERY_CODES = new Set([
   "RpcBusy",
@@ -134,7 +142,8 @@ interface TransportRequest extends ScheduledRpc {
   /** Socket generation at enqueue or readmission of a lost submission. */
   generation: number;
   readonly createdAtMs: number;
-  /** Execution deadline from creation, or `null`. */
+  readonly timeoutMs: number | null;
+  /** Execution deadline for the current attempt, or `null`. */
   deadlineAtMs: number | null;
   /** Unsent deadline from creation, or `null`. */
   queueDeadlineAtMs: number | null;
@@ -146,7 +155,7 @@ interface TransportRequest extends ScheduledRpc {
   settled: boolean;
   lastSentGeneration: number | null;
   /** Present after a durable turn submission loses its socket before receiving a response. */
-  resend?: { remaining: number; waitingSince: number | null };
+  resend?: { remaining: number; reconnectDeadlineAtMs: number; waitingForSync: boolean };
   timer: ReturnType<typeof setTimeout> | null;
   detachAbort: (() => void) | null;
 }
@@ -168,6 +177,7 @@ export const ORPHAN_RELEASE_GRACE_MS = 30_000;
 /** Read retries after `RpcBusy`: at most three attempts in total. */
 const RPC_BUSY_BACKOFF_MS = [250, 500];
 const MAX_SUBMISSION_RESENDS = 2;
+const SUBMISSION_RECONNECT_TIMEOUT_MS = 60_000;
 const RUNTIME_PROBE_INTERVAL_MS = 1_000;
 const CONNECTION_TIMEOUT_MS = 10_000;
 const RECONNECT_DELAYS_MS = [500, 3_000, 4_000, 8_000, 16_000];
@@ -368,7 +378,16 @@ export class WsTransport {
     });
     // Mutations created during synchronization wait unsent until it finishes.
     this.unsubscribeConnectionState = subscribeWsConnectionState(() => {
-      if (getWsConnectionState().synchronized) this.flushQueue();
+      const connection = getWsConnectionState();
+      if (connection.synchronized) this.flushQueue();
+      else if (connection.synchronizationError !== null) {
+        for (const request of this.requests.values()) {
+          if (request.resend && request.state === "queued") {
+            this.scheduler.remove(request.id);
+            this.finishRequest(request, new UnconfirmedSubmissionError());
+          }
+        }
+      }
     });
     this.connect();
   }
@@ -517,6 +536,7 @@ export class WsTransport {
         requiresRuntime: rpcRequiresRuntime(body),
         generation: this.authoritativeSocketGeneration,
         createdAtMs: deadline.startedAtMs,
+        timeoutMs: deadline.timeoutMs,
         deadlineAtMs,
         queueDeadlineAtMs,
         trackLatency: options?.trackLatency ?? true,
@@ -548,7 +568,7 @@ export class WsTransport {
       this.finishRequest(
         request,
         request.resend
-          ? new Error(WS_CONNECTION_CLOSED_MESSAGE)
+          ? new UnconfirmedSubmissionError()
           : new WsRequestError(
               `WebSocket request queue is full for the ${result.lane} lane.`,
               "RpcQueueFull",
@@ -604,7 +624,6 @@ export class WsTransport {
    */
   private armTimer(request: TransportRequest): void {
     this.clearTimer(request);
-    if (request.resend?.waitingSince != null) return;
     const at =
       request.state === "queued"
         ? request.queueDeadlineAtMs
@@ -629,7 +648,11 @@ export class WsTransport {
       // response, or release it after a grace period.
       countRpcDiagnostic("rpcTimeouts");
       acknowledgeSlowRpcRequest(request.id);
-      this.settle(request, new Error(`Request timed out: ${request.method}`));
+      const message = `Request timed out: ${request.method}`;
+      this.settle(
+        request,
+        request.resend ? new UnconfirmedSubmissionError(message) : new Error(message),
+      );
       this.armTimer(request);
       return;
     }
@@ -645,7 +668,7 @@ export class WsTransport {
     this.finishRequest(
       request,
       request.resend
-        ? new Error(WS_CONNECTION_CLOSED_MESSAGE)
+        ? new UnconfirmedSubmissionError()
         : new WsRequestError(
             `Request timed out before it was sent: ${request.method}`,
             "QueueExpired",
@@ -1012,6 +1035,8 @@ export class WsTransport {
       if (connectionLost && this.requeueLostSubmission(request, now)) continue;
       this.requests.delete(request.id);
       failedIds.push(request.id);
+      // A queued mutation (including after ServerStarting) is safe to mark unsent
+      // only if there was no earlier attempt that lost its receipt.
       this.settle(
         request,
         connectionLost &&
@@ -1031,11 +1056,18 @@ export class WsTransport {
     const resend = request.resend;
     if (resend?.remaining === 0 || (!resend && request.state !== "sent")) return false;
     const deadline = request.state === "sent" ? request.deadlineAtMs : request.queueDeadlineAtMs;
-    if (resend?.waitingSince == null && deadline !== null && deadline <= now) {
-      return false;
+    if ((resend && resend.reconnectDeadlineAtMs <= now) || (deadline !== null && deadline <= now)) {
+      if (!resend) return false;
+      this.finishRequest(request, new UnconfirmedSubmissionError());
+      return true;
     }
-    request.resend ??= { remaining: MAX_SUBMISSION_RESENDS, waitingSince: now };
-    request.resend.waitingSince ??= now;
+    request.resend ??= {
+      remaining: MAX_SUBMISSION_RESENDS,
+      reconnectDeadlineAtMs: now + SUBMISSION_RECONNECT_TIMEOUT_MS,
+      waitingForSync: true,
+    };
+    request.resend.waitingForSync = true;
+    request.queueDeadlineAtMs = request.resend.reconnectDeadlineAtMs;
     this.enqueue(request);
     return true;
   }
@@ -1069,7 +1101,7 @@ export class WsTransport {
       for (const request of this.scheduler.queuedEntries())
         if (request.requiresRuntime) {
           this.scheduler.remove(request.id);
-          this.finishRequest(request, error);
+          this.finishRequest(request, request.resend ? new UnconfirmedSubmissionError() : error);
         }
     }
     this.flushQueue();
@@ -1211,7 +1243,10 @@ export class WsTransport {
     if (runtime?.state === "failed" && runtime.generation === this.authoritativeSocketGeneration) {
       // A response that raced the failed push: startup failure is final for
       // this socket, so it must not reopen the wait.
-      this.finishRequest(request, serverStartFailedError(runtime.message));
+      this.finishRequest(
+        request,
+        request.resend ? new UnconfirmedSubmissionError() : serverStartFailedError(runtime.message),
+      );
       this.flushQueue();
       return;
     }
@@ -1262,7 +1297,7 @@ export class WsTransport {
   }
 
   private isEligible(request: TransportRequest): boolean {
-    if (request.state !== "queued" || request.settled || request.resend?.waitingSince != null)
+    if (request.state !== "queued" || request.settled || request.resend?.waitingForSync)
       return false;
     if (request.kind === "mutation" && !request.control) {
       const connection = getWsConnectionState();
@@ -1298,14 +1333,14 @@ export class WsTransport {
     const synchronized = getWsConnectionState().synchronized;
     for (const request of this.scheduler.queuedEntries()) {
       const resend = request.resend;
-      if (resend && resend.waitingSince !== null) {
-        if (!synchronized) continue;
-        // Reconnection and synchronization do not spend the submission's deadline.
-        const waited = now - resend.waitingSince;
-        resend.waitingSince = null;
+      if (resend?.waitingForSync && synchronized) {
+        resend.waitingForSync = false;
         request.generation = this.authoritativeSocketGeneration;
-        if (request.deadlineAtMs !== null) request.deadlineAtMs += waited;
-        if (request.queueDeadlineAtMs !== null) request.queueDeadlineAtMs += waited;
+        if (request.timeoutMs !== null)
+          request.queueDeadlineAtMs = Math.min(
+            resend.reconnectDeadlineAtMs,
+            now + request.timeoutMs,
+          );
         this.armTimer(request);
       }
       if (request.queueDeadlineAtMs !== null && request.queueDeadlineAtMs <= now)
@@ -1327,6 +1362,7 @@ export class WsTransport {
         recordRpcQueueWait(Date.now() - request.createdAtMs);
       } else if (request.resend && request.lastSentGeneration !== request.generation) {
         request.resend.remaining--;
+        request.deadlineAtMs = request.timeoutMs === null ? null : Date.now() + request.timeoutMs;
       }
       request.lastSentGeneration = request.generation;
       this.armTimer(request);
