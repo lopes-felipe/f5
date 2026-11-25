@@ -20,6 +20,7 @@ import {
 } from "./AcpReadOnlyWorkflowPolicy.ts";
 import { antigravityEditTargetsInWorkspace } from "./AntigravityEditLocation.ts";
 import { AntigravityInstallation } from "../AntigravityInstallation.ts";
+import { READ_ONLY_WORKFLOW_ENVIRONMENT } from "../readOnlyWorkflowShell.ts";
 import {
   ANTIGRAVITY_PERSONAL_AUTH,
   antigravityLaunchEnvironment,
@@ -403,6 +404,7 @@ export const makeAntigravityAcpRuntime = (input: {
             TMPDIR: tempDirectory,
             TMP: tempDirectory,
             TEMP: tempDirectory,
+            ...(input.readOnlySandbox === true ? READ_ONLY_WORKFLOW_ENVIRONMENT : {}),
           },
           extendEnv: false,
         },
