@@ -416,7 +416,7 @@ export function ConversationSettings() {
             />
             <SettingsRow
               title="Auto-expand reasoning"
-              description="Show the model's thinking inline instead of collapsed."
+              description="Show the model's thinking inline instead of collapsed, including thoughts between tool calls."
               control={
                 <Switch
                   checked={settings.showReasoningExpanded}

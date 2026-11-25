@@ -278,6 +278,56 @@ describe("MessagesTimeline (LegendList)", () => {
     await expect.element(page.getByText("Skill: team:review", { exact: true })).toBeVisible();
   });
 
+  it("keeps a collapsed thought collapsed and unquotable once it settles into a Thought row", async () => {
+    persistAppSettings({ showReasoningExpanded: true });
+    const thought = (streaming: boolean) => {
+      const entry = makeAssistantEntry("thought-settles", "", 1);
+      if (entry.kind !== "message") throw new Error("expected a message entry");
+      return {
+        ...entry,
+        message: {
+          ...entry.message,
+          reasoningText: "Check the scroll anchor before the click.",
+          streaming,
+          ...(streaming ? { completedAt: undefined } : {}),
+        },
+      };
+    };
+    let api: TimelineHarnessApi | null = null;
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={[makeUserEntry("thought-user", "Why?", 0), thought(true)]}
+        onIsAtEndChangeSpy={vi.fn()}
+        setApi={(nextApi) => {
+          api = nextApi;
+        }}
+      />,
+      { container: host },
+    );
+    try {
+      const reasoning = page.getByText("Check the scroll anchor before the click.");
+      await expect.element(reasoning).toBeVisible();
+      await page.getByRole("button", { name: "Thinking…" }).click();
+      await expect.element(reasoning).not.toBeInTheDocument();
+
+      api!.setEntries([makeUserEntry("thought-user", "Why?", 0), thought(false)]);
+      await vi.waitFor(() => {
+        expect(host.querySelector('[data-slot="assistant-thought-row"]')).not.toBeNull();
+      });
+      await expect.element(page.getByRole("button", { name: "Thought" })).toBeVisible();
+      await expect.element(reasoning).not.toBeInTheDocument();
+
+      await page.getByRole("button", { name: "Thought" }).click();
+      await expect.element(reasoning).toBeVisible();
+      expect(reasoning.element().closest("[data-assistant-quote-exclude]")).not.toBeNull();
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("restores a thread reading position after navigating away", async () => {
     const threadId = ThreadId.makeUnsafe("remember-reading-position");
     const entries = makeOverflowEntries(40);

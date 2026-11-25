@@ -79,6 +79,7 @@ import {
   GlobeIcon,
   HammerIcon,
   ImageIcon,
+  InfoIcon,
   ListTodoIcon,
   LoaderCircleIcon,
   type LucideIcon,
@@ -160,6 +161,8 @@ import {
   summarizeWorkGroup,
   TIMELINE_TURN_RAIL_MIN_ITEMS,
   advanceRowArrivals,
+  FINISHED_WITHOUT_REPLY_LABEL,
+  isThoughtOnlyAssistantMessage,
   type RowArrivalState,
   type TimelineTurnRailItem,
   timelineIsAtEnd,
@@ -2295,6 +2298,8 @@ type TimelineRow =
       completionSummary: string | null;
       completionStartedAt?: string;
       completionCompletedAt?: string;
+      /** The turn ended on reasoning and never produced reply text. */
+      finishedWithoutReply: boolean;
     }
   | {
       kind: "proposed-plan";
@@ -5320,6 +5325,34 @@ function AssistantMessageRowContent(props: {
   const reasoningTokens = row.message.reasoningTokens ?? 0;
   const isStreamingReasoning =
     Boolean(row.message.streaming) && row.message.text.length === 0 && Boolean(reasoningText);
+  // Reasoning without a reply, such as an ACP agent's thought between tool calls.
+  const thoughtOnly = isThoughtOnlyAssistantMessage(row.message);
+  const meta = (
+    <p
+      data-slot="assistant-message-meta"
+      className="whitespace-nowrap text-2xs text-muted-foreground tabular-nums"
+    >
+      <LiveMessageMeta
+        durationStart={
+          row.showCompletionDivider
+            ? (row.completionStartedAt ?? row.durationStart)
+            : row.durationStart
+        }
+        completedAt={
+          row.showCompletionDivider
+            ? (row.completionCompletedAt ?? row.message.completedAt)
+            : row.message.completedAt
+        }
+        streaming={row.message.streaming}
+      />
+      <MessageTokenUsage
+        turnId={row.message.turnId}
+        reasoningTokens={row.message.reasoningTokens}
+        reasoningEstimated={row.message.reasoningTokensEstimated}
+        streaming={row.message.streaming}
+      />
+    </p>
+  );
   return (
     <>
       {row.showCompletionDivider && (
@@ -5347,91 +5380,102 @@ function AssistantMessageRowContent(props: {
           ) : null}
         </div>
       )}
-      <div className="group/assistant-message min-w-0 px-1 py-0.5">
+      {/* One wrapper for both shapes: a message that settles into a Thought row keeps its
+          ReasoningSection mounted, so the reader's expand or collapse choice survives. */}
+      <div
+        data-slot={thoughtOnly ? "assistant-thought-row" : undefined}
+        // A Thought row offers no quote, so its reasoning is not quotable by selection either.
+        data-assistant-quote-exclude={thoughtOnly ? "" : undefined}
+        className={cn("min-w-0 px-1", !thoughtOnly && "group/assistant-message py-0.5")}
+      >
         {reasoningText || reasoningTokens > 0 ? (
           <ReasoningSection
             reasoningText={reasoningText}
             textRevision={reasoning.revision}
             reasoningTokens={reasoningTokens}
             reasoningTokensEstimated={row.message.reasoningTokensEstimated}
-            hideTokens
+            // A meta line already reports usage, except on a Thought row without one.
+            hideTokens={!thoughtOnly || row.showCompletionDivider}
             defaultExpanded={showReasoningExpanded}
             isStreaming={isStreamingReasoning}
             cwd={markdownCwd}
+            standalone={thoughtOnly}
           />
         ) : null}
-        <div
-          data-thread-find-text={rawText ? "" : undefined}
-          className={
-            /^★ Insight(?:\s|─)/mu.test(messageText)
-              ? "[&_.chat-markdown_p]:whitespace-pre-line"
-              : undefined
-          }
-        >
-          <ChatMarkdown
-            text={messageText}
-            textRevision={messageTextRevision(row.message)}
-            cwd={markdownCwd}
-            isStreaming={Boolean(row.message.streaming)}
-            // Blocks of the turn the user is reading stay open; they fold once
-            // the user starts a new turn.
-            foldCodeBlocks={!row.message.streaming && !externals.inLatestTurn}
-            showStreamingCaret
-          />
-        </div>
-        <AssistantChangedFiles externals={externals} />
-        <div
-          data-assistant-quote-exclude
-          className="mt-1.5 flex min-h-7 items-center justify-between gap-2"
-        >
-          <div className="flex min-w-0 items-center gap-2 overflow-x-auto">
-            <p
-              data-slot="assistant-message-meta"
-              className="whitespace-nowrap text-2xs text-muted-foreground tabular-nums"
+        {thoughtOnly ? (
+          <>
+            <AssistantChangedFiles externals={externals} />
+            {row.showCompletionDivider ? (
+              <div className="mt-1 flex min-w-0 items-center gap-2 overflow-x-auto">
+                {row.finishedWithoutReply ? (
+                  <>
+                    <p className="flex shrink-0 items-center gap-1.5 text-2xs text-muted-foreground italic">
+                      <InfoIcon className="size-3.5 shrink-0 text-faint-foreground" aria-hidden />
+                      {FINISHED_WITHOUT_REPLY_LABEL}
+                    </p>
+                    <span className="text-2xs text-faint-foreground" aria-hidden>
+                      ·
+                    </span>
+                  </>
+                ) : null}
+                {meta}
+                {externals.cacheMiss ? <PromptCacheMissPill turn={externals.cacheMiss} /> : null}
+              </div>
+            ) : null}
+          </>
+        ) : (
+          <>
+            <div
+              data-thread-find-text={rawText ? "" : undefined}
+              className={
+                /^★ Insight(?:\s|─)/mu.test(messageText)
+                  ? "[&_.chat-markdown_p]:whitespace-pre-line"
+                  : undefined
+              }
             >
-              <LiveMessageMeta
-                durationStart={
-                  row.showCompletionDivider
-                    ? (row.completionStartedAt ?? row.durationStart)
-                    : row.durationStart
-                }
-                completedAt={
-                  row.showCompletionDivider
-                    ? (row.completionCompletedAt ?? row.message.completedAt)
-                    : row.message.completedAt
-                }
-                streaming={row.message.streaming}
+              <ChatMarkdown
+                text={messageText}
+                textRevision={messageTextRevision(row.message)}
+                cwd={markdownCwd}
+                isStreaming={Boolean(row.message.streaming)}
+                // Blocks of the turn the user is reading stay open; they fold once
+                // the user starts a new turn.
+                foldCodeBlocks={!row.message.streaming && !externals.inLatestTurn}
+                showStreamingCaret
               />
-              <MessageTokenUsage
-                turnId={row.message.turnId}
-                reasoningTokens={row.message.reasoningTokens}
-                reasoningEstimated={row.message.reasoningTokensEstimated}
-                streaming={row.message.streaming}
-              />
-            </p>
-            {externals.cacheMiss ? <PromptCacheMissPill turn={externals.cacheMiss} /> : null}
-          </div>
-          {/* Always laid out, only faded: hovering never shifts the row. */}
-          <div className="flex items-center gap-0.5 opacity-0 transition-opacity duration-(--duration-fast) focus-within:opacity-100 group-hover/assistant-message:opacity-100 has-[[data-popup-open]]:opacity-100 pointer-coarse:opacity-100">
-            {settledText ? <MessageCopyButton text={rawText} /> : null}
-            {settledText && canQuoteAssistantMessages ? (
-              <button
-                type="button"
-                title="Reply to response"
-                aria-label="Reply to response"
-                className="rounded px-1.5 py-1 text-xs text-muted-foreground hover:text-foreground"
-                onClick={() => actions.quoteAssistantMessage(messageId, rawText, true)}
-              >
-                Reply
-              </button>
-            ) : null}
-            {settledText && canQuoteAssistantMessages ? (
-              <AssistantMessageActions
-                onQuote={() => actions.quoteAssistantMessage(messageId, rawText)}
-              />
-            ) : null}
-          </div>
-        </div>
+            </div>
+            <AssistantChangedFiles externals={externals} />
+            <div
+              data-assistant-quote-exclude
+              className="mt-1.5 flex min-h-7 items-center justify-between gap-2"
+            >
+              <div className="flex min-w-0 items-center gap-2 overflow-x-auto">
+                {meta}
+                {externals.cacheMiss ? <PromptCacheMissPill turn={externals.cacheMiss} /> : null}
+              </div>
+              {/* Always laid out, only faded: hovering never shifts the row. */}
+              <div className="flex items-center gap-0.5 opacity-0 transition-opacity duration-(--duration-fast) focus-within:opacity-100 group-hover/assistant-message:opacity-100 has-[[data-popup-open]]:opacity-100 pointer-coarse:opacity-100">
+                {settledText ? <MessageCopyButton text={rawText} /> : null}
+                {settledText && canQuoteAssistantMessages ? (
+                  <button
+                    type="button"
+                    title="Reply to response"
+                    aria-label="Reply to response"
+                    className="rounded px-1.5 py-1 text-xs text-muted-foreground hover:text-foreground"
+                    onClick={() => actions.quoteAssistantMessage(messageId, rawText, true)}
+                  >
+                    Reply
+                  </button>
+                ) : null}
+                {settledText && canQuoteAssistantMessages ? (
+                  <AssistantMessageActions
+                    onQuote={() => actions.quoteAssistantMessage(messageId, rawText)}
+                  />
+                ) : null}
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </>
   );
@@ -5814,11 +5858,27 @@ export function buildTimelineRows(input: {
   const lastAssistantByTurn = new Map<TurnId, string>();
   const startByTurn = new Map<TurnId, string>();
   const promptStartByMessageId = new Map<string, string>();
+  // Thought-only messages with no reply text before them in their turn (or, without a
+  // turn id, since the last prompt). Only these can say the turn finished without a reply.
+  const unrepliedThoughtIds = new Set<string>();
+  const repliedTurns = new Set<TurnId>();
+  let repliedSincePrompt = false;
   let lastUserAt: string | undefined;
   for (const entry of timelineEntries) {
     if (entry.kind !== "message") continue;
     const message = entry.message;
-    if (message.role === "user") lastUserAt = message.createdAt;
+    if (message.role === "user") {
+      lastUserAt = message.createdAt;
+      repliedSincePrompt = false;
+    } else if (message.role === "assistant") {
+      if (isThoughtOnlyAssistantMessage(message)) {
+        if (!(message.turnId ? repliedTurns.has(message.turnId) : repliedSincePrompt))
+          unrepliedThoughtIds.add(entry.id);
+      } else if (/\S/.test(message.text)) {
+        repliedSincePrompt = true;
+        if (message.turnId) repliedTurns.add(message.turnId);
+      }
+    }
     if (lastUserAt) promptStartByMessageId.set(message.id, lastUserAt);
     if (!message.turnId) continue;
     if (!startByTurn.has(message.turnId) && lastUserAt) {
@@ -6001,6 +6061,7 @@ export function buildTimelineRows(input: {
         : promptStartByMessageId.has(message.id)
           ? durationStartByMessageId.get(message.id)
           : undefined;
+    const finishedWithoutReply = showCompletionDivider && unrepliedThoughtIds.has(timelineEntry.id);
     nextRows.push(
       reuse(
         timelineEntry.id,
@@ -6013,6 +6074,7 @@ export function buildTimelineRows(input: {
           completionSummary,
           completionStartedAt,
           completionCompletedAt,
+          finishedWithoutReply,
         ],
         () => ({
           kind: "message",
@@ -6025,6 +6087,7 @@ export function buildTimelineRows(input: {
           completionSummary,
           ...(elapsed != null && completionStartedAt ? { completionStartedAt } : {}),
           ...(elapsed != null && completionCompletedAt ? { completionCompletedAt } : {}),
+          finishedWithoutReply,
         }),
       ),
     );
