@@ -2860,6 +2860,26 @@ layer("upstream ports service", (it) => {
     }),
   );
 
+  it.effect("never shows or reports the credentials of a token-bearing remote URL", () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup();
+      const token = ["ghp_", "x".repeat(36)].join("");
+      fixture.repo.remotes.set(
+        "upstream",
+        `https://oauth2:${token}@github.com/someone/else.git?ref=1`,
+      );
+      const service = yield* fixture.make();
+      const overview = yield* service.getOverview(PROJECT_ID);
+      assert.strictEqual(overview.remoteStatus, "mismatch");
+      assert.strictEqual(overview.remoteUrl, "https://github.com/someone/else.git");
+      const error = yield* service
+        .run({ projectId: PROJECT_ID, kind: "upstream", triage: "rules-only" })
+        .pipe(Effect.flip);
+      assert.include(error.message, "https://github.com/someone/else.git");
+      assert.notInclude(error.message, token);
+    }),
+  );
+
   it.effect("keeps a second profile read-only until it takes over", () =>
     Effect.gen(function* () {
       const fixture = yield* setup();
