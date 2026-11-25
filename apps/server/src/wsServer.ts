@@ -42,6 +42,7 @@ import { ProjectionThreadProposedPlanRepository } from "./persistence/Services/P
 import { PrHubFederation } from "./prHub/Layers/PrHubFederation.ts";
 import { PrHubReviewGuideService } from "./prHub/Layers/PrHubReviewGuideService.ts";
 import { publicOtlpConfiguration, resolveOtlpConfiguration } from "@t3tools/shared/observability";
+import { isDoNotTrackSet } from "@t3tools/shared/doNotTrack";
 import { registerShutdown, ServerShutdown } from "./shutdown.ts";
 import { streamFileHandle } from "./assetHttp.ts";
 import { makeSocketLiveness, closeSocketsWithin } from "./wsServer/socketLiveness.ts";
@@ -386,7 +387,6 @@ import {
   prepareAttachmentIngress,
   type PreparedAttachmentIngress,
 } from "./attachmentIngress.ts";
-import { AnalyticsService } from "./telemetry/Services/AnalyticsService.ts";
 import { expandHomePath } from "./os-jank.ts";
 import {
   increment,
@@ -984,7 +984,6 @@ export type ServerRuntimeServices =
   | TerminalManager
   | Keybindings
   | Open
-  | AnalyticsService
   | NextTurnQueueStore;
 
 export class ServerLifecycleError extends Schema.TaggedErrorClass<ServerLifecycleError>()(
@@ -7129,6 +7128,7 @@ export const createServer = Effect.fn(function* (
             resolveOtlpConfiguration(settings.observability, process.env),
           ),
           cursorSdkHarness: cursorSdkHarnessHostAvailability(serverConfig),
+          privacy: { doNotTrack: isDoNotTrackSet(process.env) },
         };
 
       case WS_METHODS.serverGetProjectSettings: {
