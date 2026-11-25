@@ -170,6 +170,7 @@ function ComboboxPopup({
         sideOffset={sideOffset}
       >
         <span
+          data-slot="combobox-frame"
           className={cn(
             "relative flex max-h-full min-w-(--anchor-width) max-w-(--available-width) origin-(--transform-origin) rounded-lg border bg-popover shadow-lg/5 transition-[scale,opacity]",
             className,
