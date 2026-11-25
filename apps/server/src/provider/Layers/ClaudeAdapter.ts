@@ -22,6 +22,8 @@ import {
   type ClaudeSubagentLaunch,
 } from "../claudeSubagentSelection.ts";
 import type { ThreadMcpBroker } from "../../mcp/threadMcpTools.ts";
+import type { McpHubAttachment, McpHubShape } from "../../mcp/hub/McpHub.ts";
+import { hubEndpointsForClaude } from "../../mcp/hub/providerHubServers.ts";
 import { isF5ThreadReadTool, makeClaudeThreadMcpServer } from "./claudeThreadTools.ts";
 import {
   makeClaudeAssistantText,
@@ -623,6 +625,8 @@ interface ClaudeSessionContext {
   /** App session identity; a new MCP observation epoch invalidates approvals. */
   mcpAppIdentity?: { readonly epoch: number; readonly id: string };
   readonly internalMcpServers: NonNullable<ClaudeQueryOptions["mcpServers"]>;
+  /** This session's F5 MCP hub endpoints; absent in passthrough mode or with no servers. */
+  mcpHubAttachment?: McpHubAttachment;
   readonly turns: Array<{
     id: TurnId;
     items: Array<unknown>;
@@ -810,6 +814,10 @@ export interface ClaudeAdapterLiveOptions {
   readonly chromeRuntime?: ChromeSessionRuntime;
   /** Executable-reported model capabilities for this instance (SDK initialization). */
   readonly reportedModelCapabilities?: ClaudeReportedModelCapabilitiesLookup;
+  /** Serves F5's configured MCP servers to sessions as loopback endpoints. */
+  readonly mcpHub?: McpHubShape;
+  /** Read at each session start; true hands Claude the servers themselves (one release). */
+  readonly mcpNativePassthrough?: Effect.Effect<boolean>;
 }
 
 export interface ClaudeSessionProbeInput {
@@ -7190,6 +7198,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
         context.stopped = true;
         context.chromeActivity?.dispose();
+        // Revokes this session's hub credentials; shared connections stay up for others.
+        void context.mcpHubAttachment?.dispose();
         if (context.mcpStatusFiber) yield* Fiber.interrupt(context.mcpStatusFiber);
         if (context.forkCheckFiber) yield* Fiber.interrupt(context.forkCheckFiber);
         // Stop input immediately; retain provenance until final tool events are queued safely.
@@ -7576,6 +7586,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
     const startSessionUnlocked: ClaudeAdapterShape["startSession"] = (input) => {
       let disposeComputer: (() => void) | undefined;
+      let mcpHubAttachment: McpHubAttachment | undefined;
       return Effect.gen(function* () {
         if (input.provider !== undefined && input.provider !== PROVIDER) {
           return yield* new ProviderAdapterValidationError({
@@ -8627,9 +8638,29 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         // provider options may tune one-off prompts, but must never override a
         // session into a more permissive SDK mode.
         const permissionMode = input.workflowExecutionProfile ? "plan" : runtimePermissionMode;
-        const translatedMcpServers = translateMcpForClaudeAgent(input.providerOptions?.mcpServers, {
-          environment: queryEnvironment,
-        });
+        const configuredMcpServers = input.providerOptions?.mcpServers;
+        const passthrough = options?.mcpNativePassthrough
+          ? yield* options.mcpNativePassthrough.pipe(Effect.orElseSucceed(() => false))
+          : false;
+        if (options?.mcpHub?.available && !passthrough) {
+          // Claude connects to F5's hub endpoints; the hub runs the servers in the
+          // conversation's directory and holds their secrets and sign-ins. Attached
+          // even with no servers, so servers added mid-session also use the hub.
+          mcpHubAttachment = options.mcpHub.attach({
+            threadId,
+            projectId: input.projectId,
+            provider: PROVIDER,
+            accountKey: input.providerInstanceId ?? ProviderInstanceId.make(PROVIDER),
+            servers: configuredMcpServers,
+            environment: queryEnvironment,
+            cwd: input.cwd ?? process.cwd(),
+          });
+        }
+        const translatedMcpServers = mcpHubAttachment
+          ? translateMcpForClaudeAgent(
+              hubEndpointsForClaude(mcpHubAttachment.endpoints, configuredMcpServers),
+            )
+          : translateMcpForClaudeAgent(configuredMcpServers, { environment: queryEnvironment });
         const mcpToolFilters = buildMcpToolFilters(input.providerOptions?.mcpServers);
         // Preview tools are installed in every interactive desktop session; each
         // call checks live policy. Launch-flag capabilities read policy here.
@@ -9299,6 +9330,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ownedMcpServerNames: new Set(Object.keys(translatedMcpServers ?? {})),
           mcpToolFilters,
           internalMcpServers,
+          ...(mcpHubAttachment ? { mcpHubAttachment } : {}),
           turns: (resumeState?.turnBoundaries ?? []).map((boundary) => ({
             id: TurnId.makeUnsafe(boundary.turnId),
             items: [],
@@ -9513,7 +9545,14 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         return {
           ...session,
         };
-      }).pipe(Effect.onError(() => Effect.sync(() => disposeComputer?.())));
+      }).pipe(
+        Effect.onError(() =>
+          Effect.sync(() => {
+            disposeComputer?.();
+            void mcpHubAttachment?.dispose();
+          }),
+        ),
+      );
     };
 
     const startSession: ClaudeAdapterShape["startSession"] = (input) =>
@@ -10177,7 +10216,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             }),
         });
         const context = yield* requireSession(threadId);
-        const desired = (translateMcpForClaudeAgent(mcpServers, {
+        let desired = (translateMcpForClaudeAgent(mcpServers, {
           environment: context.processEnvironment,
         }) ?? {}) as Record<string, McpServerConfig>;
         yield* Effect.try({
@@ -10200,6 +10239,14 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               issue: mcpConfigErrorMessage(cause),
             }),
         });
+        if (context.mcpHubAttachment) {
+          // Edits and removals re-bind this session's hub endpoints; new servers get
+          // new endpoints. Unchanged entries keep their URL, so Claude keeps them connected.
+          const update = context.mcpHubAttachment.update(mcpServers, { addEndpoints: true });
+          desired = (translateMcpForClaudeAgent(
+            hubEndpointsForClaude(update.endpoints, mcpServers),
+          ) ?? {}) as Record<string, McpServerConfig>;
+        }
         const owned = context.ownedMcpServerNames;
         context.mcpObservationEpoch = (context.mcpObservationEpoch ?? 0) + 1;
         // Restrict existing and lingering servers before any provider I/O.

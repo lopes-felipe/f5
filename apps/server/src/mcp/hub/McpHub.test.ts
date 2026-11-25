@@ -279,6 +279,8 @@ describe("F5 MCP hub", () => {
         changed: [],
         removed: [],
         added: [],
+        addedEndpoints: [],
+        endpoints: [endpoint],
         omitted: [],
       });
 
@@ -291,6 +293,8 @@ describe("F5 MCP hub", () => {
         changed: ["fixture"],
         removed: [],
         added: ["later"],
+        addedEndpoints: [],
+        endpoints: [endpoint],
         omitted: [],
       });
       await expect.poll(() => changes).toBeGreaterThan(0);
@@ -302,7 +306,9 @@ describe("F5 MCP hub", () => {
       expect(hub.status(projectId)).toHaveLength(1);
 
       // A removed server lists nothing and refuses calls on the kept endpoint.
-      expect(attachment.update({}).removed).toEqual(["fixture"]);
+      const removal = attachment.update({});
+      expect(removal.removed).toEqual(["fixture"]);
+      expect(removal.endpoints).toEqual([]);
       expect((await client.listTools()).tools).toEqual([]);
       const refused = await client.callTool({ name: "echo", arguments: { text: "x" } });
       expect(refused.isError).toBe(true);
@@ -312,6 +318,20 @@ describe("F5 MCP hub", () => {
       expect(attachment.update(stdioServers()).changed).toEqual(["fixture"]);
       const echoed = await client.callTool({ name: "echo", arguments: { text: "back" } });
       expect(echoed.content).toEqual([{ type: "text", text: "echo:back" }]);
+
+      // Providers that take new servers mid-session get endpoints for them.
+      const growth = attachment.update(edited, { addEndpoints: true });
+      expect(growth.added).toEqual(["later"]);
+      expect(growth.addedEndpoints.map((entry) => entry.serverName)).toEqual(["later"]);
+      expect(growth.endpoints.map((entry) => entry.serverName)).toEqual(["fixture", "later"]);
+      expect(attachment.endpoints).toHaveLength(2);
+      const added = growth.addedEndpoints[0]!;
+      const laterClient = await connect(added.url, added.token);
+      const laterEcho = await laterClient.callTool({ name: "echo", arguments: { text: "new" } });
+      expect(laterEcho.content).toEqual([{ type: "text", text: "echo:new" }]);
+      await laterClient.close();
+      // A later update sees the added server as already present.
+      expect(attachment.update(edited, { addEndpoints: true }).added).toEqual([]);
     } finally {
       await attachment.dispose();
     }

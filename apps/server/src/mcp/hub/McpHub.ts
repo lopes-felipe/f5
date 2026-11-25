@@ -62,12 +62,20 @@ export interface McpHubAttachmentUpdate {
   readonly changed: ReadonlyArray<string>;
   /** Servers whose endpoint now lists nothing; the provider keeps the endpoint. */
   readonly removed: ReadonlyArray<string>;
-  /** Servers with no endpoint in this session; the provider must restart to get them. */
+  /**
+   * Servers with no endpoint in this session. Without `addEndpoints` the provider
+   * must restart to get them; with it, `addedEndpoints` holds their new endpoints.
+   */
   readonly added: ReadonlyArray<string>;
+  /** Endpoints created for `added` servers when `addEndpoints` was requested. */
+  readonly addedEndpoints: ReadonlyArray<McpHubEndpoint>;
+  /** The endpoints that route to a saved server after this update. */
+  readonly endpoints: ReadonlyArray<McpHubEndpoint>;
   readonly omitted: ReadonlyArray<McpHubOmission>;
 }
 
 export interface McpHubAttachment {
+  /** Every endpoint of this attachment, including ones added by `update`. */
   readonly endpoints: ReadonlyArray<McpHubEndpoint>;
   readonly omitted: ReadonlyArray<McpHubOmission>;
   /** Credentials to scrub from logs and diagnostics. */
@@ -75,8 +83,13 @@ export interface McpHubAttachment {
   /**
    * Applies saved servers to this session's endpoints without restarting the
    * provider: changed servers move to a new connection, removed ones list nothing.
+   * `addEndpoints` also creates endpoints for new servers, for providers that can
+   * take new servers mid-session (Claude's `setMcpServers`).
    */
-  readonly update: (servers: McpProjectServersConfig | null | undefined) => McpHubAttachmentUpdate;
+  readonly update: (
+    servers: McpProjectServersConfig | null | undefined,
+    options?: { readonly addEndpoints?: boolean },
+  ) => McpHubAttachmentUpdate;
   /** Revokes the endpoints and releases their upstream connections. */
   readonly dispose: () => Promise<void>;
 }
@@ -295,6 +308,8 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
           changed: [],
           removed: [],
           added: [],
+          addedEndpoints: [],
+          endpoints: [],
           omitted: Object.keys(servers ?? {}).map((name) => ({
             serverName: name,
             reason: "F5's MCP hub is unavailable in this runtime",
@@ -305,7 +320,7 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
     }
     const { wanted, omitted } = resolveServers(input, input.servers);
     const records = new Map<string, AttachedSlot>();
-    for (const [serverName, definition] of wanted) {
+    const addSlot = (serverName: string, definition: McpServerDefinition): McpHubEndpoint => {
       const entry = upstreamFor(input, serverName, definition);
       const id = randomBytes(18).toString("base64url");
       const token = randomBytes(32).toString("base64url");
@@ -320,19 +335,31 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
       const record: AttachedSlot = { slot, entry: undefined, hash: hashDefinition(definition) };
       bindEntry(input, record, entry);
       records.set(serverName, record);
-      endpoints.push({
+      const endpoint: McpHubEndpoint = {
         serverName,
         url: `${listener!.baseUrl}${MCP_HUB_PATH_PREFIX}${id}`,
         token,
         transport: definition.type,
         toolTimeoutMs: entry.upstream.toolTimeoutMs(),
-      });
-    }
+      };
+      endpoints.push(endpoint);
+      return endpoint;
+    };
+    for (const [serverName, definition] of wanted) addSlot(serverName, definition);
     let disposed = false;
     const update = (
       servers: McpProjectServersConfig | null | undefined,
+      updateOptions?: { readonly addEndpoints?: boolean },
     ): McpHubAttachmentUpdate => {
-      if (disposed || closed) return { changed: [], removed: [], added: [], omitted: [] };
+      if (disposed || closed)
+        return {
+          changed: [],
+          removed: [],
+          added: [],
+          addedEndpoints: [],
+          endpoints: [],
+          omitted: [],
+        };
       const next = resolveServers(input, servers);
       const changed: string[] = [];
       const removed: string[] = [];
@@ -364,14 +391,27 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
         }
         changed.push(serverName);
       }
-      for (const serverName of next.wanted.keys())
-        if (!records.has(serverName)) added.push(serverName);
-      return { changed, removed, added, omitted: next.omitted };
+      const addedEndpoints: McpHubEndpoint[] = [];
+      for (const [serverName, definition] of next.wanted) {
+        if (records.has(serverName)) continue;
+        added.push(serverName);
+        if (updateOptions?.addEndpoints) addedEndpoints.push(addSlot(serverName, definition));
+      }
+      return {
+        changed,
+        removed,
+        added,
+        addedEndpoints,
+        endpoints: endpoints.filter((endpoint) => records.get(endpoint.serverName)?.entry),
+        omitted: next.omitted,
+      };
     };
     return {
       endpoints,
       omitted,
-      credentials: endpoints.map((endpoint) => endpoint.token),
+      get credentials() {
+        return endpoints.map((endpoint) => endpoint.token);
+      },
       update,
       dispose: async () => {
         if (disposed) return;

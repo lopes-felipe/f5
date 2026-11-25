@@ -11,29 +11,44 @@ export function makeFakeMcpHub(options: { readonly available?: boolean } = {}) {
     available: options.available ?? true,
     attach: (input) => {
       attaches.push(input);
+      const endpointFor = (
+        name: string,
+        server: McpProjectServersConfig[string],
+      ): McpHubEndpoint => ({
+        serverName: name,
+        url: `http://127.0.0.1:9/mcp/user/${name}`,
+        token: `token-${name}`,
+        transport: server.type,
+        toolTimeoutMs: 600_000,
+      });
       const endpoints: McpHubEndpoint[] = Object.entries(input.servers ?? {})
         .filter(([name, server]) => server.enabled !== false && !input.reservedNames?.has(name))
-        .map(([name, server]) => ({
-          serverName: name,
-          url: `http://127.0.0.1:9/mcp/user/${name}`,
-          token: `token-${name}`,
-          transport: server.type,
-          toolTimeoutMs: 600_000,
-        }));
+        .map(([name, server]) => endpointFor(name, server));
       return {
         endpoints,
         omitted: [],
-        credentials: endpoints.map((endpoint) => endpoint.token),
-        update: (servers) => {
+        get credentials() {
+          return endpoints.map((endpoint) => endpoint.token);
+        },
+        update: (servers, updateOptions) => {
           updates.push(servers);
           const names = new Set(endpoints.map((endpoint) => endpoint.serverName));
           const next = Object.entries(servers ?? {}).filter(
             ([name, server]) => server.enabled !== false && !input.reservedNames?.has(name),
           );
+          const addedEntries = next.filter(([name]) => !names.has(name));
+          const addedEndpoints = updateOptions?.addEndpoints
+            ? addedEntries.map(([name, server]) => endpointFor(name, server))
+            : [];
+          endpoints.push(...addedEndpoints);
           return {
             changed: next.flatMap(([name]) => (names.has(name) ? [name] : [])),
             removed: [...names].filter((name) => !next.some(([other]) => other === name)),
-            added: next.flatMap(([name]) => (names.has(name) ? [] : [name])),
+            added: addedEntries.map(([name]) => name),
+            addedEndpoints,
+            endpoints: endpoints.filter((endpoint) =>
+              next.some(([name]) => name === endpoint.serverName),
+            ),
             omitted: [],
           };
         },

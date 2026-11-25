@@ -12,6 +12,16 @@ import {
   readCursorMcpConfigNames,
   resolveCursorMcpServers,
 } from "./cursorMcpServers.ts";
+import type { McpHubAttachmentUpdate } from "../../mcp/hub/McpHub.ts";
+
+const noUpdate = (): McpHubAttachmentUpdate => ({
+  changed: [],
+  removed: [],
+  added: [],
+  addedEndpoints: [],
+  endpoints: [],
+  omitted: [],
+});
 
 const project = {
   docs: { type: "http", url: "https://docs.example/mcp", headers: { "X-Team": "a" } },
@@ -197,6 +207,7 @@ describe("resolveCursorMcpServers", () => {
             })),
           omitted: [{ serverName: "events", reason: "could not start" }],
           credentials: [],
+          update: noUpdate,
           dispose: async () => {
             disposed = true;
           },
@@ -245,6 +256,7 @@ describe("resolveCursorMcpServers", () => {
         ],
         omitted: [],
         credentials: [],
+        update: noUpdate,
         dispose: async () => undefined,
       }),
     });

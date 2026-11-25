@@ -37,7 +37,7 @@ export function hubEndpointsForCodex(
   endpoints: ReadonlyArray<McpHubEndpoint>,
   original: McpProjectServersConfig | null | undefined,
 ): { readonly servers: McpProjectServersConfig; readonly env: Record<string, string> } {
-  const servers: McpProjectServersConfig = {};
+  const servers: Record<string, McpServerDefinition> = {};
   const env: Record<string, string> = {};
   endpoints.forEach((endpoint, index) => {
     const envVar = codexHubTokenEnvVar(index);
@@ -59,7 +59,7 @@ export function hubEndpointsForClaude(
   endpoints: ReadonlyArray<McpHubEndpoint>,
   original: McpProjectServersConfig | null | undefined,
 ): McpProjectServersConfig {
-  const servers: McpProjectServersConfig = {};
+  const servers: Record<string, McpServerDefinition> = {};
   for (const endpoint of endpoints)
     servers[endpoint.serverName] = {
       ...hubDefinition(endpoint, original?.[endpoint.serverName]),

@@ -3455,9 +3455,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             return restartRequiredMcpReload(
               `Codex gets new MCP servers when the session restarts (${update.added.join(", ")}).`,
             );
-          const desired = hubAttachment.endpoints
-            .map((endpoint) => endpoint.serverName)
-            .filter((name) => !update.removed.includes(name));
+          const desired = update.endpoints.map((endpoint) => endpoint.serverName);
           const touched = update.changed.length > 0 || update.removed.length > 0;
           // Codex re-lists tools from the same endpoints after a reload.
           const statuses = touched
