@@ -295,12 +295,16 @@ export async function preloadInlineDiffComponents(): Promise<void> {
 }
 
 function InlineExactFileChangeDiff(props: InlineExactFileChangeDiffProps) {
+  // Reads a module-level preload cache that flips from null once the chunk loads.
+  "use no memo";
   const Component = loadedInlineExactFileChangeDiff;
   if (!Component) throw loadInlineExactFileChangeDiff();
   return <Component {...props} />;
 }
 
 function InlineFileChangeDiff(props: InlineFileChangeDiffProps) {
+  // Reads a module-level preload cache that flips from null once the chunk loads.
+  "use no memo";
   const Component = loadedInlineFileChangeDiff;
   if (!Component) throw loadInlineFileChangeDiff();
   return <Component {...props} />;

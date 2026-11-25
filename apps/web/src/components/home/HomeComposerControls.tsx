@@ -21,7 +21,7 @@ import { projectProviderSnapshots } from "@t3tools/shared/serverSettings";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Schema } from "effect";
 import { FolderIcon, GitForkIcon } from "lucide-react";
-import { type Ref, useEffect, useImperativeHandle, useMemo, useState } from "react";
+import { type Ref, useEffect, useImperativeHandle, useMemo } from "react";
 
 import { useAppSettingsSelector } from "../../appSettings";
 import { useComposerDraftStore, useComposerThreadDraft } from "../../composerDraftStore";
@@ -58,6 +58,7 @@ import {
   type HomeComposerSettings,
   homeSelectionKey,
   readHomeComposerSettings,
+  useHomeComposerTextStore,
 } from "./homeComposerDraft";
 import type { HomeProjectSelection } from "./HomeProjectPickerPlaceholder";
 
@@ -181,8 +182,9 @@ export default function HomeComposerControls(props: {
     staleTime: 30_000,
   });
   // The choice lives outside the component so it survives a trip to another page.
-  const [, rerender] = useState(0);
-  const chosenEnvMode = homeComposerDraft.envMode(selectionKey);
+  const chosenEnvMode = useHomeComposerTextStore((state) =>
+    state.chosenEnvMode?.selection === selectionKey ? state.chosenEnvMode.mode : null,
+  );
   const isRepo = hasGitProject && branchesQuery.data?.isRepo === true;
   const currentBranch = branchesQuery.data?.branches.find((branch) => branch.current)?.name ?? null;
   const workspaceLoading =
@@ -320,7 +322,6 @@ export default function HomeComposerControls(props: {
 
   const onEnvModeChange = (mode: ThreadEnvMode) => {
     homeComposerDraft.setEnvMode(selectionKey, mode);
-    rerender((count) => count + 1);
   };
 
   return (
