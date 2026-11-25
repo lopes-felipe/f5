@@ -110,6 +110,8 @@ export interface SourceControlProvider {
   readonly getRepositoryCloneUrls: (input: {
     readonly cwd: string;
     readonly repository: string;
+    /** Route a PR's head repository lookup through the same forge as the PR. */
+    readonly pullRequestUrl?: string;
   }) => Effect.Effect<SourceControlRepositoryCloneUrls, SourceControlProviderError>;
   readonly createPullRequest: (input: {
     readonly cwd: string;

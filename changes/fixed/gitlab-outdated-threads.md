@@ -1,0 +1,1 @@
+- GitLab inline review threads now show as outdated when their diff revision differs from the merge request’s current revision.

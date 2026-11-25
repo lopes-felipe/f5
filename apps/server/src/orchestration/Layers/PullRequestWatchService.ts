@@ -478,7 +478,7 @@ export const makePullRequestWatchService = Effect.gen(function* () {
       const target = { key: first.key, accountGeneration: runtime.account.generation };
       const read = yield* Effect.all(
         {
-          detail: runtime.hub.getDetail({ ...target, mode: "force" }),
+          detail: runtime.hub.getDetail({ ...target, mode: "force", omitBranchPermission: true }),
           remarks: activity
             ? readPullRequestWatchRemarks({
                 hub: runtime.hub,

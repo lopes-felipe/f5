@@ -358,11 +358,11 @@ describe("UsageDashboardView", () => {
       />,
     );
     try {
-      await expect.element(page.getByText("Refreshing Muse Code history…")).toBeVisible();
+      await expect.element(page.getByText("Refreshing provider history…")).toBeVisible();
       await expect
         .element(
           page.getByText(
-            "2 native Muse model calls included. Model calls are separate from recorded turns.",
+            "2 native model calls included. Model calls are separate from recorded turns.",
           ),
         )
         .toBeVisible();
@@ -653,6 +653,37 @@ describe("UsageDashboardView", () => {
       await page.getByRole("button", { name: "Threads" }).click();
       await expect.element(page.getByText(/Showing top 2 of 14 threads/)).toBeVisible();
       expect(headers()).not.toContain("Share");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("shows server cost attribution and opens details for one model", async () => {
+    const priced = metrics({
+      providerReportedCostUsd: 6,
+      costBreakdown: {
+        byType: { input: 1, output: 4, cacheRead: 1, cacheWrite: 0, unattributed: 0 },
+        bySpeed: { standard: 0, fast: 6, ultrafast: 0, unknown: 0 },
+        speedPremiumUsd: 3,
+      },
+    });
+    const screen = await render(
+      <UsageDashboardView
+        range="7d"
+        fetching={false}
+        summary={summary({
+          metrics: priced,
+          byProvider: [{ provider: "codex", model: "gpt-5.6", metrics: priced }],
+        })}
+      />,
+    );
+    try {
+      await expect.element(page.getByText("Cost by type", { exact: true })).toBeVisible();
+      await expect.element(page.getByText("Cost by speed", { exact: true })).toBeVisible();
+      await page.getByRole("button", { name: "gpt-5.6", exact: true }).click();
+      const dialog = page.getByRole("dialog", { name: "gpt-5.6" });
+      await expect.element(dialog).toBeVisible();
+      await expect.element(dialog.getByText("Output $4.00")).toBeVisible();
     } finally {
       await screen.unmount();
     }

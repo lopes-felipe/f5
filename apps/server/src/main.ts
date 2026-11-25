@@ -4,6 +4,7 @@ import { terminateRunningProcesses } from "./processRunner.ts";
 import { ProfileGithubAccount } from "./git/ProfileGithubAccount";
 import { makeServerSecretStore } from "./auth/Layers/ServerSecretStore";
 import * as ProfileFS from "node:fs/promises";
+import * as NodePath from "node:path";
 import {
   ProfileRegistryStore,
   fallbackDefaultProfile,
@@ -51,7 +52,6 @@ import {
   shouldMigrateLegacyT3State,
   writeLegacyStateMigrationFailureSentinel,
 } from "./legacyStateMigration";
-import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery";
 import { Server } from "./wsServer";
 import { ServerLoggerLive } from "./serverLogger";
 import {
@@ -66,8 +66,6 @@ import {
   resolveAliasedBooleanEnv,
   THREAD_OPEN_TIMINGS_ENV,
 } from "./envFlags.ts";
-import { AnalyticsServiceLayerLive } from "./telemetry/Layers/AnalyticsService";
-import { AnalyticsService } from "./telemetry/Services/AnalyticsService";
 import { withStartupPhaseTiming } from "./startupTiming";
 
 export class StartupError extends Data.TaggedError("StartupError")<{
@@ -543,7 +541,6 @@ const CliRuntimeLayerLive = Layer.empty.pipe(
   Layer.provideMerge(makeServerProviderLayer()),
   Layer.provideMerge(SqlitePersistence.layerConfig),
   Layer.provideMerge(ServerLoggerLive),
-  Layer.provideMerge(AnalyticsServiceLayerLive),
 );
 
 const CliRuntimeLayerTest = Layer.empty as unknown as typeof CliRuntimeLayerLive;
@@ -574,36 +571,29 @@ export const isLoopbackHost = (host: string | undefined): boolean => {
 const formatHostForUrl = (host: string): string =>
   host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
 
-export const recordStartupHeartbeat = Effect.gen(function* () {
-  const analytics = yield* AnalyticsService;
-  const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+/**
+ * F5 no longer has product analytics. Older builds could leave a random
+ * telemetry id and a heartbeat lock behind; remove them best-effort.
+ */
+export const retiredTelemetryFiles = (
+  config: Pick<ServerConfigShape, "stateDir" | "profilesRoot">,
+): ReadonlyArray<string> => [
+  NodePath.join(config.stateDir, "anonymous-id"),
+  ...(config.profilesRoot
+    ? ["", "-wal", "-shm", "-journal"].map((suffix) =>
+        NodePath.join(config.profilesRoot!, "locks", `telemetry-heartbeat.lock.sqlite${suffix}`),
+      )
+    : []),
+];
 
-  const { threadCount, projectCount } = yield* projectionSnapshotQuery.getStartupSnapshot().pipe(
-    Effect.map(({ snapshot }) => ({
-      threadCount: snapshot.threads.length,
-      projectCount: snapshot.projects.length,
-    })),
-    Effect.catch((cause) =>
-      Effect.logWarning("failed to gather startup snapshot for telemetry", { cause }).pipe(
-        Effect.as({
-          threadCount: 0,
-          projectCount: 0,
-        }),
-      ),
+export const removeRetiredTelemetryFiles = (
+  config: Pick<ServerConfigShape, "stateDir" | "profilesRoot">,
+) =>
+  Effect.promise(() =>
+    Promise.allSettled(
+      retiredTelemetryFiles(config).map((file) => ProfileFS.rm(file, { force: true })),
     ),
-  );
-
-  yield* analytics.record("server.boot.heartbeat", {
-    threadCount,
-    projectCount,
-  });
-}).pipe(
-  Effect.withSpan("server.startup.heartbeat.record", {
-    attributes: {
-      "startup.phase": "telemetry.heartbeat.record",
-    },
-  }),
-);
+  ).pipe(Effect.asVoid);
 
 const makeServerProgram = (input: CliInput) =>
   Effect.gen(function* () {
@@ -663,10 +653,7 @@ const makeServerProgram = (input: CliInput) =>
     // This finalizer runs before the runtime layers release their resources.
     yield* Effect.addFinalizer(() => Effect.promise(() => shutdown.run()));
     if (!isTestRuntime()) {
-      yield* withStartupPhaseTiming(
-        "telemetry.heartbeat.fork",
-        Effect.forkChild(recordStartupHeartbeat.pipe(Effect.delay("1 minute"))),
-      );
+      yield* Effect.forkChild(removeRetiredTelemetryFiles(config));
     }
 
     const localUrl = `http://localhost:${config.port}`;

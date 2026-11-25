@@ -1,5 +1,6 @@
 import { FilesystemPath } from "./baseSchemas";
 import { RuntimeUsageLimit } from "./usageLimit";
+import { UsageSpeed } from "./usage";
 import { Schema } from "effect";
 import {
   EventId,
@@ -395,6 +396,7 @@ const TurnCompletedPayload = Schema.Struct({
   usage: Schema.optional(Schema.Unknown),
   modelUsage: Schema.optional(UnknownRecordSchema),
   totalCostUsd: Schema.optional(Schema.Number),
+  usageSpeed: Schema.optional(UsageSpeed),
   errorMessage: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type TurnCompletedPayload = typeof TurnCompletedPayload.Type;
@@ -474,6 +476,11 @@ const RequestOpenedPayload = Schema.Struct({
   detail: Schema.optional(TrimmedNonEmptyStringSchema),
   args: Schema.optional(Schema.Unknown),
   requestedPermissions: Schema.optional(UnknownRecordSchema),
+  /**
+   * The adapter already refused this request under a read-only workflow profile; nothing is
+   * pending and the provider was told no. Recorded so the timeline shows the attempt.
+   */
+  autoDeclined: Schema.optional(Schema.Boolean),
 });
 export type RequestOpenedPayload = typeof RequestOpenedPayload.Type;
 
