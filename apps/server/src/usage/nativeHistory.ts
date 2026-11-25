@@ -51,8 +51,10 @@ export const makeNativeHistoryCapability = <E, E2>(options: {
         if (withinRefreshWindow && !options.resolveAccount) return;
         const previous = snapshot;
         let checkedCachedAccount = false;
-        if (options.resolveAccount) snapshot = { source: null, records: [], status: "refreshing" };
-        snapshot = { ...snapshot, status: "refreshing" };
+        let refreshedSnapshot: NativeHistorySnapshot | undefined;
+        snapshot = options.resolveAccount
+          ? { source: null, records: [], status: "refreshing" }
+          : { ...previous, status: "refreshing" };
         const checked = options.resolveAccount ? yield* Deferred.make<void>() : undefined;
         accountCheck = checked;
         let phase: "discovery" | "scan" = home && !options.resolveAccount ? "scan" : "discovery";
@@ -65,7 +67,7 @@ export const makeNativeHistoryCapability = <E, E2>(options: {
             if (home === previous.source) {
               if (withinRefreshWindow) {
                 checkedCachedAccount = true;
-                snapshot = previous;
+                refreshedSnapshot = previous;
                 return;
               }
               snapshot = { ...previous, status: "refreshing" };
@@ -74,14 +76,13 @@ export const makeNativeHistoryCapability = <E, E2>(options: {
             }
           }
           home ??= yield* options.discover.pipe(Effect.timeout("5 seconds"));
-          lastRetention = retention;
           phase = "scan";
           if (checked) yield* Deferred.succeed(checked, undefined);
           const records = yield* options
             .scan(home, retention, account?.token)
             .pipe(Effect.timeout("2 minutes"));
           failures = 0;
-          snapshot = {
+          refreshedSnapshot = {
             source: home,
             records,
             status: "ready",
@@ -127,7 +128,7 @@ export const makeNativeHistoryCapability = <E, E2>(options: {
                   : timeout
                     ? `${name} history scan timed out.`
                     : `${name} history could not be read. Check your login or access to the history directory.`;
-              snapshot = {
+              refreshedSnapshot = {
                 ...(underlying instanceof Error && underlying.name === "CursorAuthenticationError"
                   ? { source: null, records: [] }
                   : snapshot),
@@ -143,11 +144,14 @@ export const makeNativeHistoryCapability = <E, E2>(options: {
           ),
           Effect.ensuring(
             Effect.gen(function* () {
+              if (!checkedCachedAccount) {
+                nextRefreshAt =
+                  (yield* Clock.currentTimeMillis) +
+                  Math.min(10 * 60_000, 30_000 * 2 ** Math.min(5, Math.max(0, failures - 1)));
+                lastRetention = retention;
+              }
+              if (refreshedSnapshot) snapshot = refreshedSnapshot;
               if (checked) yield* Deferred.succeed(checked, undefined);
-              if (checkedCachedAccount) return;
-              nextRefreshAt =
-                (yield* Clock.currentTimeMillis) +
-                Math.min(10 * 60_000, 30_000 * 2 ** Math.min(5, Math.max(0, failures - 1)));
             }),
           ),
           Effect.forkIn(scope),
