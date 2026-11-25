@@ -839,7 +839,7 @@ describe("Codex runtime-mode thread configuration", () => {
       const expected = {
         approvalPolicy: "never",
         sandbox: "read-only",
-        approvalsReviewer: "auto_review",
+        approvalsReviewer: "user",
       };
       expect(params.start).toMatchObject(expected);
       expect(params.resume).toMatchObject(expected);

@@ -69,6 +69,38 @@ describe("acpReadOnlyWorkflowDecision", () => {
         rawInput: { command: "echo mcp__f5_thread_0a1b2c3d__x > out" },
       }),
     ).toBe("deny");
+    // Antigravity's permission request: title `Run mcp_<server>_<tool>` and capitalised keys.
+    expect(
+      decideWithF5({
+        kind: "other",
+        title: "Run mcp_f5_thread_0a1b2c3d_ci_logs",
+        rawInput: { ServerName: f5ThreadServerName, ToolName: "ci_logs", Arguments: "{}" },
+      }),
+    ).toBe("allow");
+    expect(decideWithF5({ kind: "other", title: "Run mcp_f5_thread_0a1b2c3d_ci_logs" })).toBe(
+      "allow",
+    );
+    expect(
+      decideWithF5({
+        kind: "read",
+        title: "Run mcp_f5_certification_read_project_status",
+        rawInput: { ServerName: "f5_certification", ToolName: "read_project_status" },
+      }),
+    ).toBe("deny");
+    // F5's server, but a tool outside the read-only catalog.
+    expect(
+      decideWithF5({
+        kind: "other",
+        rawInput: { ServerName: f5ThreadServerName, ToolName: "pull_request_merge" },
+      }),
+    ).toBe("deny");
+    expect(decideWithF5({ title: "mcp__f5_thread_0a1b2c3d__pull_request_merge" })).toBe("deny");
+    // The F5 server named later in a title, where the model's arguments can appear.
+    expect(decideWithF5({ title: "mcp__github__create_issue (f5_thread_0a1b2c3d)" })).toBe("deny");
+    expect(decideWithF5({ title: "mcp__fs__write_file `mcp__f5_thread_0a1b2c3d__ci_logs`" })).toBe(
+      "deny",
+    );
+    expect(decideWithF5({ title: "mcp__f5_thread_0a1b2c3d__ci_logsx" })).toBe("deny");
     // Without an attached server nothing MCP is allowed.
     expect(decide({ title: "mcp__f5_thread_0a1b2c3d__pull_request_read" })).toBe("deny");
   });

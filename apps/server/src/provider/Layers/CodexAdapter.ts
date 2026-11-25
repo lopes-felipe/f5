@@ -2668,7 +2668,11 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           options?.defaultProviderOptions,
           input.providerOptions,
         );
-        const baseProviderMcpServers = providerOptions?.mcpServers;
+        // A read-only workflow stage gets only F5's read-only thread catalog. MCP tools run
+        // outside Codex's shell sandbox and Codex never asks before using them, so the user's
+        // servers, the preview server and plugins would each be a way to write.
+        const readOnlyStage = input.workflowExecutionProfile !== undefined;
+        const baseProviderMcpServers = readOnlyStage ? undefined : providerOptions?.mcpServers;
         yield* Effect.try({
           try: () => {
             assertMcpRuntimeConfig(input.providerOptions?.mcpServers, PROVIDER);
@@ -2685,7 +2689,9 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         previewMcpSessions.get(input.threadId)?.dispose();
         previewMcpSessions.delete(input.threadId);
         previewMcpSession =
-          serverConfig.mode === "desktop" && !isSyntheticOneOffThreadId(input.threadId)
+          serverConfig.mode === "desktop" &&
+          !readOnlyStage &&
+          !isSyntheticOneOffThreadId(input.threadId)
             ? options?.previewMcpHttpServer?.createSessionConfig({
                 threadId: input.threadId,
                 ...(input.providerInstanceId
@@ -2985,7 +2991,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           // Without this the stage runs with the thread's runtime mode (full access when the
           // thread is Full access) instead of Codex's read-only sandbox.
           ...(input.workflowExecutionProfile
-            ? { workflowExecutionProfile: input.workflowExecutionProfile }
+            ? { workflowExecutionProfile: input.workflowExecutionProfile, disablePlugins: true }
             : {}),
           ...(input.model !== undefined ? { model: input.model } : {}),
           ...codexServiceTierOptions(

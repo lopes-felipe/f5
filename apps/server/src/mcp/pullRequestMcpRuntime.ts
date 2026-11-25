@@ -112,7 +112,7 @@ function summarize(detail: SourceControlPullRequestSummary) {
 export function makePullRequestMcpHandler(deps: {
   readonly federation: Pick<PrHubFederationShape, "resolve" | "parseUrl">;
   readonly extensions: Extensions;
-  readonly git: Pick<GitManagerShape, "status" | "branchPullRequest">;
+  readonly git: Pick<GitManagerShape, "sourceControlIdentity" | "branchPullRequest">;
   readonly engine: Pick<OrchestrationEngineShape, "dispatch">;
 }) {
   return (
@@ -124,25 +124,28 @@ export function makePullRequestMcpHandler(deps: {
     Effect.gen(function* () {
       const { input, name } = request;
       const workspace = threadWorkspaceCwd(thread, project);
-      const homeRepository = Effect.gen(function* () {
-        if (!workspace) return undefined;
-        const identity = (yield* deps.git.status({ cwd: workspace })).sourceControl;
-        if (!identity?.host || !identity.owner || !identity.repository) return undefined;
-        return {
-          provider: identity.kind,
-          host: identity.host,
-          repository: [identity.owner, identity.repository].join("/"),
-          number: 1,
-        } satisfies SourceControlPullRequestRef;
-      });
+      // From the remotes only (never `git status`, which can fetch and update refs), and looked
+      // up at most once per call. A lookup error fails the call: treating it as "no home
+      // repository" would skip the same-host check below.
+      const homeRepository = yield* Effect.cached(
+        Effect.gen(function* () {
+          if (!workspace) return undefined;
+          const identity = yield* deps.git.sourceControlIdentity(workspace);
+          if (!identity?.host || !identity.owner || !identity.repository) return undefined;
+          return {
+            provider: identity.kind,
+            host: identity.host,
+            repository: [identity.owner, identity.repository].join("/"),
+            number: 1,
+          } satisfies SourceControlPullRequestRef;
+        }),
+      );
       /**
        * The thread's repository when it has one. Read-only tools also work without it (a project
        * root holding several repositories, say): the PR's forge host must then belong to a
        * connected account, which `resolve` enforces.
        */
-      const optionalHomeRepository = homeRepository.pipe(
-        Effect.catch(() => Effect.succeed(undefined)),
-      );
+      const optionalHomeRepository = homeRepository;
       const repositoryRef = (repository?: string) =>
         Effect.gen(function* () {
           if (!workspace) return yield* failure("This thread has no repository workspace.");

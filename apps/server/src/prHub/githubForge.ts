@@ -357,7 +357,13 @@ export function makeGitHubForge(github: GitHubCliShape, cwd: string): ForgeProvi
       }),
     readRepositoryContent: ({ ref, path, revision }) =>
       Effect.gen(function* () {
-        const encoded = path ? "/" + path.split("/").map(encodeURIComponent).join("/") : "";
+        // encodeURIComponent leaves !'()*~ alone; the endpoint check only admits encoded forms.
+        const segment = (part: string) =>
+          encodeURIComponent(part).replace(
+            /[!'()*~]/g,
+            (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
+          );
+        const encoded = path ? "/" + path.split("/").map(segment).join("/") : "";
         const query = revision ? "?" + new URLSearchParams({ ref: revision }).toString() : "";
         const raw = yield* request(ref, `/contents${encoded}${query}`);
         if (Array.isArray(raw))

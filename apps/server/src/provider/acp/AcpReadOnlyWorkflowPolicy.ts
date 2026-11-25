@@ -1,3 +1,4 @@
+import { READ_ONLY_THREAD_TOOL_NAMES } from "../../mcp/threadMcpTools.ts";
 import { classifyReadOnlyShellCommand } from "../readOnlyWorkflowShell.ts";
 
 /**
@@ -19,7 +20,28 @@ export interface AcpReadOnlyWorkflowToolCall {
   readonly rawInput?: unknown;
 }
 
-const MCP_SERVER_KEYS = ["server", "serverName", "server_name", "mcpServer", "mcp_server"] as const;
+/** Raw-input keys naming an MCP server, compared case-insensitively (Antigravity: `ServerName`). */
+const MCP_SERVER_KEYS: ReadonlySet<string> = new Set([
+  "server",
+  "servername",
+  "server_name",
+  "mcpserver",
+  "mcp_server",
+]);
+/** Raw-input keys naming the MCP tool, compared case-insensitively (Antigravity: `ToolName`). */
+const MCP_TOOL_KEYS: ReadonlySet<string> = new Set(["tool", "toolname", "tool_name"]);
+
+function rawInputRecord(rawInput: unknown): Record<string, unknown> | undefined {
+  return typeof rawInput === "object" && rawInput !== null && !Array.isArray(rawInput)
+    ? (rawInput as Record<string, unknown>)
+    : undefined;
+}
+
+function rawInputValues(record: Record<string, unknown>, keys: ReadonlySet<string>): unknown[] {
+  return Object.entries(record).flatMap(([key, value]) =>
+    keys.has(key.toLowerCase()) && value !== undefined ? [value] : [],
+  );
+}
 
 /**
  * A tool call that names an MCP server. The only MCP server a read-only workflow session gets
@@ -27,19 +49,26 @@ const MCP_SERVER_KEYS = ["server", "serverName", "server_name", "mcpServer", "mc
  */
 export function acpMcpToolCall(toolCall: AcpReadOnlyWorkflowToolCall): boolean {
   if (/\bmcp(?:__|[_:/.])/i.test(toolCall.title ?? "")) return true;
-  const raw = toolCall.rawInput;
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return false;
-  return MCP_SERVER_KEYS.some((key) => key in raw);
+  const record = rawInputRecord(toolCall.rawInput);
+  return record !== undefined && rawInputValues(record, MCP_SERVER_KEYS).length > 0;
 }
 
 /** Kinds that change things or run code; never treated as a call to F5's thread server. */
 const ACP_MUTATING_TOOL_KINDS: ReadonlySet<string> = new Set(["execute", "edit", "delete", "move"]);
 
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 /**
- * Whether an MCP tool call targets F5's read-only thread server, by its per-session generated
- * name (`f5_thread_<random hex>`): an exact server field in the raw input, or the name as a whole
- * token in the title. No user-configured server can carry that name, and the server itself only
- * serves its read-only tools.
+ * Whether an MCP tool call runs one of F5's read-only thread tools, on the session's generated
+ * server (`f5_thread_<random hex>`). No user-configured server can carry that name.
+ *
+ * - Every server field in the raw input must name that server, and any tool field must name a
+ *   read-only F5 tool.
+ * - Otherwise the title must start with a provider's qualified form for that server, followed by
+ *   a read-only F5 tool name: `mcp__<server>__<tool>` (Cursor and Claude style),
+ *   `MCP: <server> / <tool>` or `Run mcp_<server>_<tool>` (Antigravity). Anchoring at the start
+ *   matters: a title can carry arguments the model wrote, so the server name appearing later
+ *   in it proves nothing.
  */
 export function acpF5ReadOnlyThreadToolCall(
   toolCall: AcpReadOnlyWorkflowToolCall,
@@ -47,18 +76,23 @@ export function acpF5ReadOnlyThreadToolCall(
 ): boolean {
   if (!serverName) return false;
   if (toolCall.kind && ACP_MUTATING_TOOL_KINDS.has(toolCall.kind)) return false;
-  const raw = toolCall.rawInput;
-  if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
-    const record = raw as Record<string, unknown>;
-    const named = MCP_SERVER_KEYS.map((key) => record[key]).filter((value) => value !== undefined);
-    if (named.length > 0) return named.every((value) => value === serverName);
+  const record = rawInputRecord(toolCall.rawInput);
+  if (record) {
+    const servers = rawInputValues(record, MCP_SERVER_KEYS);
+    if (servers.length > 0) {
+      const tools = rawInputValues(record, MCP_TOOL_KEYS);
+      return (
+        servers.every((value) => value === serverName) &&
+        tools.every((value) => typeof value === "string" && READ_ONLY_THREAD_TOOL_NAMES.has(value))
+      );
+    }
   }
-  const title = toolCall.title ?? "";
-  const escaped = serverName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return (
-    title.includes(`mcp__${serverName}__`) ||
-    new RegExp(`(?:^|[^A-Za-z0-9_-])${escaped}(?:[^A-Za-z0-9_-]|$)`).test(title)
-  );
+  const title = (toolCall.title ?? "").trim();
+  const server = escapeRegExp(serverName);
+  const match = new RegExp(
+    `^(?:mcp__${server}__|MCP: ${server} / |(?:Run )?mcp_${server}_)([A-Za-z0-9_]+)(?![A-Za-z0-9_])`,
+  ).exec(title);
+  return match !== null && READ_ONLY_THREAD_TOOL_NAMES.has(match[1]!);
 }
 
 /**
