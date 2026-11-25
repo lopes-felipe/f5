@@ -2,7 +2,7 @@ import { makeGitHubHttpOperations } from "../git/githubHttpOperations.ts";
 import { describe, expect, it } from "vitest";
 import { Effect } from "effect";
 import { makeFakeGitHubCli } from "../git/testDoubles.ts";
-import type { GitHubApiRequest } from "../git/githubApi.ts";
+import { requestEndpoint, type GitHubApiRequest } from "../git/githubApi.ts";
 import { makeGitHubForge } from "./githubForge.ts";
 
 const ref = {
@@ -145,6 +145,30 @@ describe("typed GitHub forge", () => {
       { endpoint: "repos/team/repo/contents/logo.png", method: "GET", query: undefined },
       { endpoint: "repos/team/repo/contents/huge.json", method: "GET", query: undefined },
     ]);
+  });
+
+  it("builds content endpoints the real request layer accepts for unusual file names", async () => {
+    const names = [
+      "docs/my file.md",
+      "a#b.txt",
+      "c:d.txt",
+      "notes (1).md",
+      "it's!*~.txt",
+      "100%.txt",
+    ];
+    const { provider, calls } = fixture(
+      names.map(() => ({ type: "file", encoding: "base64", content: "", size: 0 })),
+    );
+    for (const path of names)
+      await Effect.runPromise(provider.readRepositoryContent!({ ref, path, revision: "main" }));
+    for (const call of calls) expect(() => requestEndpoint(call), call.endpoint).not.toThrow();
+    // Traversal is still refused, encoded or not.
+    for (const endpoint of [
+      "repos/team/repo/contents/../secrets",
+      "repos/team/repo/contents/%2e%2e/secrets",
+      "repos/team/repo/contents/%252e%252e/secrets",
+    ])
+      expect(() => requestEndpoint({ endpoint }), endpoint).toThrow();
   });
 
   it("sends inline comments with the verdict in one GitHub review write", async () => {

@@ -1823,6 +1823,7 @@ export const makeGitManager = Effect.gen(function* () {
   );
 
   return {
+    sourceControlIdentity: resolveSourceControlProviderIdentity,
     status,
     pullRequestStateChanges: Stream.fromPubSub(pullRequestStateChanges),
     branchPullRequest,

@@ -46,6 +46,8 @@ function fixture(
     pullRequests?: readonly Record<string, unknown>[];
     /** False for a thread whose workspace has no recognized forge repository. */
     home?: boolean;
+    /** The forge identity lookup fails with this error. */
+    identityError?: never;
     content?: (input: {
       ref: SourceControlPullRequestRef;
       path: string;
@@ -63,6 +65,7 @@ function fixture(
   const forge = options.provider ?? "github";
   let labels = ["old"];
   let checkReads = 0;
+  let identityLookups = 0;
   const runtime = {
     account: { generation: "forge-generation", login: "me" },
     provider: {
@@ -91,15 +94,25 @@ function fixture(
   const never = () => Effect.die("Unexpected call");
   const handler = makePullRequestMcpHandler({
     git: {
-      status: () =>
-        Effect.succeed({
-          sourceControl:
-            options.home === false
-              ? null
-              : { kind: forge, host: ref.host, owner: "team", repository: "repo" },
-        } as Effect.Success<
-          ReturnType<Parameters<typeof makePullRequestMcpHandler>[0]["git"]["status"]>
-        >),
+      sourceControlIdentity: () => {
+        identityLookups += 1;
+        return options.identityError
+          ? Effect.fail(options.identityError)
+          : Effect.succeed(
+              (options.home === false
+                ? undefined
+                : {
+                    kind: forge,
+                    host: ref.host,
+                    owner: "team",
+                    repository: "repo",
+                  }) as Effect.Success<
+                ReturnType<
+                  Parameters<typeof makePullRequestMcpHandler>[0]["git"]["sourceControlIdentity"]
+                >
+              >,
+            );
+      },
       branchPullRequest: never,
     },
     engine: { dispatch: never },
@@ -163,7 +176,15 @@ function fixture(
       name: "pull_request_merge",
       input: { expectedHeadSha, stack: true, method: "squash" },
     });
-  return { call, merge, prepared, resolved, contentReads, checkReads: () => checkReads };
+  return {
+    call,
+    merge,
+    prepared,
+    resolved,
+    contentReads,
+    checkReads: () => checkReads,
+    identityLookups: () => identityLookups,
+  };
 }
 
 describe("pull request MCP routing", () => {
@@ -249,6 +270,30 @@ describe("pull request MCP routing", () => {
       expect(contentReads).toEqual([
         { ref: { ...ref, number: 12 }, path: "src/a.ts", revision: "current-head" },
       ]);
+    });
+
+    it("looks the home repository up once per call, and fails the call when the lookup fails", async () => {
+      const once = fixture({
+        content: () => ({ kind: "directory", path: "", entries: [] }),
+      });
+      await once.call({
+        name: "repository_file_read",
+        input: { repository: "team/other", ref: "main" },
+      });
+      expect(once.identityLookups()).toBe(1);
+
+      const failing = fixture({
+        identityError: new SourceControlProviderError({
+          provider: "github",
+          operation: "identity",
+          kind: "generic",
+          detail: "git remote failed",
+        }) as never,
+        content: () => ({ kind: "directory", path: "", entries: [] }),
+      });
+      // Read-only tools must not fall back to "no home repository", which skips the host check.
+      await expect(failing.call({ name: "pull_request_read", input: {} })).rejects.toThrow();
+      expect(failing.resolved).toEqual([]);
     });
 
     it("lists a directory at an explicit revision of another repository on the forge", async () => {

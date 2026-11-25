@@ -794,7 +794,9 @@ export function buildCodexThreadOpenRequestParams(input: {
       ? {
           approvalPolicy: "never" as const,
           sandbox: "read-only" as const,
-          approvalsReviewer: "auto_review" as const,
+          // Same as every turn (buildCodexTurnStartParams): anything that still asks reaches
+          // F5, which refuses it in a workflow stage. Codex's auto-reviewer could approve it.
+          approvalsReviewer: "user" as const,
         }
       : mapCodexRuntimeMode(input.runtimeMode)),
   };
