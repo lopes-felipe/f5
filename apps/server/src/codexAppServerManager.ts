@@ -295,6 +295,7 @@ interface CodexSessionContext {
    * tier only then, so a tier from the user's `config.toml` is left alone.
    */
   serviceTierApplied?: boolean;
+  usageServiceTiers?: Map<TurnId, string>;
   /** Resolve a startup selection only after the opened thread's catalog is known. */
   deferredServiceTier?: string | undefined;
   childThreadIds?: Set<string>;
@@ -1868,6 +1869,17 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       throw new Error("turn/start response did not include a turn id.");
     }
     const turnId = TurnId.makeUnsafe(turnIdRaw);
+
+    const serviceTier =
+      this.readString(turn, "serviceTier") ??
+      (turnStartParams.serviceTier === null
+        ? "default"
+        : (turnStartParams.serviceTier ?? asString(context.configuredBase?.serviceTier)));
+    if (serviceTier) {
+      const tiers = (context.usageServiceTiers ??= new Map());
+      tiers.set(turnId, serviceTier);
+      if (tiers.size > 256) tiers.delete(tiers.keys().next().value!);
+    }
 
     const nextConfiguredModel = turnStartParams.model ?? context.session.model;
 
@@ -4332,6 +4344,15 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       notification.method === "item/agentMessage/delta"
         ? this.readString(notification.params, "delta")
         : undefined;
+    const completedTier =
+      notification.method === "turn/completed" && route.turnId
+        ? context.usageServiceTiers?.get(route.turnId)
+        : undefined;
+    if (
+      route.turnId &&
+      (notification.method === "turn/completed" || notification.method === "turn/aborted")
+    )
+      context.usageServiceTiers?.delete(route.turnId);
 
     this.emitEvent({
       ...context.mcpEventIdentity,
@@ -4344,8 +4365,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       turnId: route.turnId,
       itemId: route.itemId,
       textDelta,
-      payload:
-        notification.method === "turn/started" && context.nativeReviewTurnId
+      payload: completedTier
+        ? { serviceTier: completedTier, ...asObject(notification.params) }
+        : notification.method === "turn/started" && context.nativeReviewTurnId
           ? {
               ...asObject(notification.params),
               turn: {

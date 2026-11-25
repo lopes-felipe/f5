@@ -77,7 +77,8 @@ it.effect("retains the last successful scan on failure and reuses successful dis
     yield* settle(capability);
     const first = yield* capability.getSnapshot;
     assert.equal(first.status, "ready");
-    assert.equal(first.records[0]?.row.totalTokens, 120);
+    const firstRecord = first.records[0];
+    assert.equal(firstRecord && "kind" in firstRecord ? firstRecord.row.totalTokens : null, 120);
     yield* TestClock.adjust("30 seconds");
     yield* capability.refresh();
     yield* settle(capability);

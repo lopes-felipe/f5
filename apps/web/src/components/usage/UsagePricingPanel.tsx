@@ -15,6 +15,7 @@ import { Input } from "../ui/input";
 import { InputGroup, InputGroupAddon, InputGroupInput, InputGroupText } from "../ui/input-group";
 import { Label } from "../ui/label";
 import { Skeleton } from "../ui/skeleton";
+import { Switch } from "../ui/switch";
 import { providerLabel, totalCost, unpricedRecordCount } from "./format";
 import { type UsageColumn, type UsageSort, UsageSection, UsageTable } from "./kit";
 import { useUsageSettingsSave } from "./UsagePriceDialog";
@@ -486,6 +487,63 @@ function BudgetSection() {
   );
 }
 
+function UsageSourcesSection() {
+  const useListPricing = useSettings((settings) => settings.usageListPricing === true);
+  const localHistory = useSettings((settings) => settings.usageLocalProviderHistory === true);
+  const cursorHistory = useSettings((settings) => settings.usageCursorAccountHistory === true);
+  const { save, saving } = useUsageSettingsSave();
+  const [error, setError] = useState<string | null>(null);
+  const options = [
+    {
+      key: "usageListPricing",
+      label: "Use model list prices",
+      description:
+        "Fetch LiteLLM's public price table to estimate and break down costs. Saved model prices take priority.",
+      checked: useListPricing,
+    },
+    {
+      key: "usageLocalProviderHistory",
+      label: "Include local provider history",
+      description: "Read OpenCode and Antigravity history from their local stores.",
+      checked: localHistory,
+    },
+    {
+      key: "usageCursorAccountHistory",
+      label: "Include Cursor account history",
+      description:
+        "Read account usage with your Cursor CLI login. On macOS, Keychain may ask for access.",
+      checked: cursorHistory,
+    },
+  ] as const;
+  return (
+    <UsageSection title="Usage sources">
+      <div className="space-y-4">
+        {options.map(({ key, label, description, checked }) => (
+          <label key={key} className="flex items-center justify-between gap-4 text-sm">
+            <span>
+              <span className="block font-medium">{label}</span>
+              <span className="block text-xs text-muted-foreground">{description}</span>
+            </span>
+            <Switch
+              aria-label={label}
+              checked={checked}
+              disabled={saving}
+              onCheckedChange={(enabled) => {
+                void save({ [key]: enabled }, "Could not update usage sources.").then(setError);
+              }}
+            />
+          </label>
+        ))}
+        {error ? (
+          <p role="alert" className="text-xs text-destructive">
+            {error}
+          </p>
+        ) : null}
+      </div>
+    </UsageSection>
+  );
+}
+
 export function UsagePricingPanel(props: {
   readonly summary: UsageSummary | undefined;
   readonly loading: boolean;
@@ -500,6 +558,7 @@ export function UsagePricingPanel(props: {
       />
       <MappingsSection />
       <BudgetSection />
+      <UsageSourcesSection />
     </section>
   );
 }

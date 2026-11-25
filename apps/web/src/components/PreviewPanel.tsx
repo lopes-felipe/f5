@@ -53,6 +53,7 @@ import {
   XIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { flushSync } from "react-dom";
 
 import { useComposerDraftStore } from "../composerDraftStore";
 import { cn, randomUUID } from "../lib/utils";
@@ -371,6 +372,7 @@ function resolveAutomationNavigateUrl(input: PreviewAutomationNavigateInput): st
 function PreviewBrowserWebview(props: {
   readonly session: PreviewSessionSnapshot;
   readonly visible: boolean;
+  readonly awake: boolean;
   readonly config: DesktopPreviewWebviewConfig;
   readonly desktopPreview: DesktopPreviewBridge;
   readonly dimensions: PreviewViewportDimensions | null;
@@ -552,7 +554,7 @@ function PreviewBrowserWebview(props: {
           partition={tabConfig?.partition ?? props.config.partition}
           webpreferences={tabConfig?.webPreferences ?? props.config.webPreferences}
           preload={tabConfig?.preload ?? props.config.preload}
-          className="h-full w-full bg-background"
+          className={cn("h-full w-full bg-background", !props.awake && "invisible")}
         />
       ) : null}
       {props.visible ? props.overlay : null}
@@ -662,6 +664,28 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
   >({});
   const [viewportLinkedByTabId, setViewportLinkedByTabId] = useState<Record<string, boolean>>({});
   const [recordingTabId, setRecordingTabId] = useState<string | null>(null);
+  const [awakeTabIds, setAwakeTabIds] = useState<ReadonlySet<string>>(() => new Set());
+  const wakeCounts = useRef(new Map<string, number>());
+  const wakePreviewTab = useCallback(async (tabId: string) => {
+    // Thumbnail polling can start in an effect. Let React finish that commit
+    // before exposing the guest to Electron's capture or automation call.
+    await Promise.resolve();
+    const counts = wakeCounts.current;
+    const count = counts.get(tabId) ?? 0;
+    counts.set(tabId, count + 1);
+    if (count === 0) {
+      flushSync(() => setAwakeTabIds((current) => new Set([...current, tabId])));
+    }
+    return () => {
+      const remaining = counts.get(tabId)! - 1;
+      if (remaining > 0) {
+        counts.set(tabId, remaining);
+        return;
+      }
+      counts.delete(tabId);
+      setAwakeTabIds((current) => new Set([...current].filter((id) => id !== tabId)));
+    };
+  }, []);
 
   const activeSession =
     sessions.find((session) => session.tabId === activeTabId) ?? sessions.at(-1) ?? null;
@@ -743,7 +767,14 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
     const capture = () => {
       const activity = useAgentBrowserActivityStore.getState().byThreadId[String(threadId)];
       if (!isAgentBrowserActive(activity, Date.now())) return;
-      void captureThumbnail(activeTabIdForThumbnail)
+      void wakePreviewTab(activeTabIdForThumbnail)
+        .then(async (release) => {
+          try {
+            return stopped ? null : await captureThumbnail(activeTabIdForThumbnail);
+          } finally {
+            release();
+          }
+        })
         .then((thumbnail) => {
           if (!stopped) useAgentBrowserActivityStore.getState().setThumbnail(threadId, thumbnail);
         })
@@ -755,7 +786,14 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
       stopped = true;
       window.clearInterval(timer);
     };
-  }, [activeTabIdForThumbnail, agentActivitySeen, previewAutomation, threadId, visible]);
+  }, [
+    activeTabIdForThumbnail,
+    agentActivitySeen,
+    previewAutomation,
+    threadId,
+    visible,
+    wakePreviewTab,
+  ]);
 
   const automationOwnerStateRef = useRef({
     tabId: null as string | null,
@@ -1364,41 +1402,35 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
         return tabId;
       };
 
-      switch (request.operation) {
-        case "status":
-          return statusForTab(request.tabId ?? currentSession?.tabId);
-
-        case "open": {
-          const input = request.input as PreviewAutomationOpenInput;
-          let session = currentSession;
-          let createdSession = false;
-          if (!session || input.reuseExistingTab === false) {
-            const openedSession = await api.preview.open({
+      if (request.operation === "status")
+        return statusForTab(request.tabId ?? currentSession?.tabId);
+      if (request.operation === "open") {
+        const input = request.input as PreviewAutomationOpenInput;
+        let session = currentSession;
+        let createdSession = false;
+        if (!session || input.reuseExistingTab === false) {
+          const openedSession = await api.preview.open({
+            threadId,
+            colorScheme: previewSettings.previewDefaults.colorScheme,
+            ...(input.url ? { url: input.url } : {}),
+          });
+          session = openedSession;
+          createdSession = true;
+          automationOwnedTabs.current.add(openedSession.tabId);
+          await desktopPreview.createTab(openedSession.tabId);
+          setSessions((current) =>
+            applyPreviewEvent(current, {
+              type: "opened",
               threadId,
-              colorScheme: previewSettings.previewDefaults.colorScheme,
-              ...(input.url ? { url: input.url } : {}),
-            });
-            session = openedSession;
-            createdSession = true;
-            automationOwnedTabs.current.add(openedSession.tabId);
-            await desktopPreview.createTab(openedSession.tabId);
-            setSessions((current) =>
-              applyPreviewEvent(current, {
-                type: "opened",
-                threadId,
-                tabId: openedSession.tabId,
-                createdAt: openedSession.updatedAt,
-                snapshot: openedSession,
-              }),
-            );
-            setActiveTabId(openedSession.tabId);
-          }
-          if (!session) {
-            throw makePreviewAutomationError(
-              "PreviewAutomationTabNotFoundError",
-              "The preview does not have an active tab.",
-            );
-          }
+              tabId: openedSession.tabId,
+              createdAt: openedSession.updatedAt,
+              snapshot: openedSession,
+            }),
+          );
+          setActiveTabId(openedSession.tabId);
+        }
+        const release = await wakePreviewTab(session.tabId);
+        try {
           // A reused tab may come straight from the initial load, before its webview mounts.
           if (!createdSession) await waitForAttachedTab(session.tabId);
 
@@ -1429,102 +1461,113 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
               await desktopPreview.navigate(session.tabId, sessionUrl, { agent: true });
             }
           }
-
-          return createdSession ? waitForAttachedTab(session.tabId) : statusForTab(session.tabId);
+          return await (createdSession
+            ? waitForAttachedTab(session.tabId)
+            : statusForTab(session.tabId));
+        } finally {
+          release();
         }
+      }
 
-        case "navigate": {
-          const tabId = requireTabId();
-          const input = request.input as PreviewAutomationNavigateInput;
-          const url = resolveAutomationNavigateUrl(input);
-          const snapshot = await api.preview.navigate({ threadId, tabId, url });
-          setSessions((current) =>
-            applyPreviewEvent(current, {
-              type: "navigated",
-              threadId,
-              tabId: snapshot.tabId,
-              createdAt: snapshot.updatedAt,
-              snapshot,
-            }),
-          );
-          const normalizedUrl = navStatusUrl(snapshot.navStatus);
-          if (normalizedUrl) {
-            await applyNavigationPolicy(tabId);
-            await desktopPreview.navigate(tabId, normalizedUrl, { agent: true });
-          }
-          return statusForTab(tabId);
-        }
-
-        case "snapshot":
-          return previewAutomation.snapshot(
-            requireTabId(),
-            (request.input as { save?: boolean })?.save === true,
-          );
-        case "click":
-          return (
-            (await previewAutomation.click(
-              requireTabId(),
-              request.input as PreviewAutomationClickInput,
-            )) ?? null
-          );
-        case "type":
-          return (
-            (await previewAutomation.type(
-              requireTabId(),
-              request.input as PreviewAutomationTypeInput,
-            )) ?? null
-          );
-        case "press":
-          await previewAutomation.press(
-            requireTabId(),
-            request.input as PreviewAutomationPressInput,
-          );
-          return null;
-        case "scroll":
-          await previewAutomation.scroll(
-            requireTabId(),
-            request.input as PreviewAutomationScrollInput,
-          );
-          return null;
-        case "evaluate": {
-          try {
-            return await withPreviewAutomationTimeout(
-              previewAutomation.evaluate(
-                requireTabId(),
-                request.input as PreviewAutomationEvaluateInput,
-              ),
-              request.timeoutMs,
-              `Preview evaluation timed out after ${request.timeoutMs}ms.`,
+      if (request.operation === "recordingStop") {
+        return stopPreviewRecording(request.tabId ?? activeRecordingRef.current?.tabId);
+      }
+      const release = await wakePreviewTab(requireTabId());
+      try {
+        switch (request.operation) {
+          case "navigate": {
+            const tabId = requireTabId();
+            const input = request.input as PreviewAutomationNavigateInput;
+            const url = resolveAutomationNavigateUrl(input);
+            const snapshot = await api.preview.navigate({ threadId, tabId, url });
+            setSessions((current) =>
+              applyPreviewEvent(current, {
+                type: "navigated",
+                threadId,
+                tabId: snapshot.tabId,
+                createdAt: snapshot.updatedAt,
+                snapshot,
+              }),
             );
-          } catch (cause) {
-            const message = cause instanceof Error ? cause.message : String(cause);
-            if (/Preview evaluation timed out after \d+ms\./.test(message)) {
-              throw makePreviewAutomationError("PreviewAutomationTimeoutError", message);
+            const normalizedUrl = navStatusUrl(snapshot.navStatus);
+            if (normalizedUrl) {
+              await applyNavigationPolicy(tabId);
+              await desktopPreview.navigate(tabId, normalizedUrl, { agent: true });
             }
-            throw cause;
+            return statusForTab(tabId);
           }
+
+          case "snapshot":
+            return await previewAutomation.snapshot(
+              requireTabId(),
+              (request.input as { save?: boolean })?.save === true,
+            );
+          case "click":
+            return (
+              (await previewAutomation.click(
+                requireTabId(),
+                request.input as PreviewAutomationClickInput,
+              )) ?? null
+            );
+          case "type":
+            return (
+              (await previewAutomation.type(
+                requireTabId(),
+                request.input as PreviewAutomationTypeInput,
+              )) ?? null
+            );
+          case "press":
+            await previewAutomation.press(
+              requireTabId(),
+              request.input as PreviewAutomationPressInput,
+            );
+            return null;
+          case "scroll":
+            await previewAutomation.scroll(
+              requireTabId(),
+              request.input as PreviewAutomationScrollInput,
+            );
+            return null;
+          case "evaluate": {
+            try {
+              return await withPreviewAutomationTimeout(
+                previewAutomation.evaluate(
+                  requireTabId(),
+                  request.input as PreviewAutomationEvaluateInput,
+                ),
+                request.timeoutMs,
+                `Preview evaluation timed out after ${request.timeoutMs}ms.`,
+              );
+            } catch (cause) {
+              const message = cause instanceof Error ? cause.message : String(cause);
+              if (/Preview evaluation timed out after \d+ms\./.test(message)) {
+                throw makePreviewAutomationError("PreviewAutomationTimeoutError", message);
+              }
+              throw cause;
+            }
+          }
+          case "waitFor":
+            await previewAutomation.waitFor(
+              requireTabId(),
+              request.input as PreviewAutomationWaitForInput,
+            );
+            return null;
+          case "viewport": {
+            const tabId = requireTabId();
+            const input = request.input as PreviewAutomationViewportInput;
+            const dimensions = clampPreviewViewport({ requested: input, bounds: viewportBounds });
+            setRequestedViewportByTabId((current) => ({ ...current, [tabId]: dimensions }));
+            setViewportPresetByTabId((current) => ({ ...current, [tabId]: "custom" }));
+            persistViewport(tabId, dimensions, true);
+            return dimensions;
+          }
+          case "screenshot":
+            return await captureScreenshot(requireTabId());
+          case "recordingStart":
+            return await startPreviewRecording(requireTabId());
         }
-        case "waitFor":
-          await previewAutomation.waitFor(
-            requireTabId(),
-            request.input as PreviewAutomationWaitForInput,
-          );
-          return null;
-        case "viewport": {
-          const tabId = requireTabId();
-          const input = request.input as PreviewAutomationViewportInput;
-          const dimensions = clampPreviewViewport({ requested: input, bounds: viewportBounds });
-          setRequestedViewportByTabId((current) => ({ ...current, [tabId]: dimensions }));
-          setViewportPresetByTabId((current) => ({ ...current, [tabId]: "custom" }));
-          persistViewport(tabId, dimensions, true);
-          return dimensions;
-        }
-        case "screenshot":
-          return captureScreenshot(requireTabId());
-        case "recordingStart":
-          return startPreviewRecording(requireTabId());
-        case "recordingStop":
-          return stopPreviewRecording(request.tabId ?? activeRecordingRef.current?.tabId);
+      } finally {
+        release();
       }
     },
     [
@@ -1539,6 +1582,7 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
       stopPreviewRecording,
       threadId,
       viewportBounds,
+      wakePreviewTab,
     ],
   );
 
@@ -2004,7 +2048,7 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
                 left.tabId < right.tabId ? -1 : left.tabId > right.tabId ? 1 : 0,
               )
               .map((session) => {
-                const isActive = session.tabId === activeSession?.tabId;
+                const isActive = visible && session.tabId === activeSession?.tabId;
                 const requested = requestedViewportByTabId[session.tabId] ?? null;
                 const dimensions = requested
                   ? clampPreviewViewport({ requested, bounds: viewportBounds })
@@ -2014,6 +2058,9 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
                     key={session.tabId}
                     session={session}
                     visible={isActive}
+                    awake={
+                      isActive || session.tabId === recordingTabId || awakeTabIds.has(session.tabId)
+                    }
                     config={webviewConfig}
                     desktopPreview={desktopPreview}
                     dimensions={dimensions}

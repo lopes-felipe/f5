@@ -364,7 +364,12 @@ interface MessagesTimelineProps {
    * `true` keeps a prior turn's group open, `false` collapses it.
    */
   workGroupCollapseOverrides?: Readonly<Record<string, boolean>>;
-  onSetWorkGroupExpanded?: ((groupId: string, expanded: boolean) => void) | undefined;
+  onSetWorkGroupExpanded?:
+    | ((groupId: string, expanded: boolean, needsEarlierWork?: boolean) => void)
+    | undefined;
+  olderActivityBoundaryId?: string | undefined;
+  loadingEarlierWork?: boolean | undefined;
+  onLoadEarlierWork?: (() => void) | undefined;
   /** Context for the empty-thread state; omitted renders the plain hint. */
   emptyState?: MessagesTimelineEmptyState | undefined;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
@@ -537,6 +542,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onToggleWorkGroup,
   workGroupCollapseOverrides = EMPTY_WORK_GROUP_COLLAPSE_OVERRIDES,
   onSetWorkGroupExpanded,
+  olderActivityBoundaryId,
+  loadingEarlierWork = false,
+  onLoadEarlierWork,
   emptyState,
   onOpenTurnDiff,
   revertTurnCountByUserMessageId,
@@ -1418,6 +1426,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const latestRowInputs = {
     onToggleWorkGroup,
     onSetWorkGroupExpanded,
+    onLoadEarlierWork,
     onOpenTurnDiff,
     onImageExpand,
     onImageActionMenu,
@@ -1440,10 +1449,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         latestRowInputsRef.current.pinEndThroughDisclosure();
         latestRowInputsRef.current.onToggleWorkGroup(groupId, paginatedEntryCount);
       },
-      onSetWorkGroupExpanded: (groupId, expanded) => {
+      onSetWorkGroupExpanded: (groupId, expanded, needsEarlierWork) => {
         latestRowInputsRef.current.pinEndThroughDisclosure();
-        latestRowInputsRef.current.onSetWorkGroupExpanded?.(groupId, expanded);
+        latestRowInputsRef.current.onSetWorkGroupExpanded?.(groupId, expanded, needsEarlierWork);
       },
+      onLoadEarlierWork: () => latestRowInputsRef.current.onLoadEarlierWork?.(),
       onOpenTurnDiff: (turnId, filePath) =>
         latestRowInputsRef.current.onOpenTurnDiff(turnId, filePath),
       onImageExpand: (preview) => latestRowInputsRef.current.onImageExpand(preview),
@@ -1583,6 +1593,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         threadId,
         expandedWorkGroups,
         workGroupCollapseOverrides,
+        olderActivityBoundaryId,
+        loadingEarlierWork,
         turnDiffSummaryByTurnId,
         chatDiffContext: rowChatDiffContext,
         revertTurnCountByUserMessageId,
@@ -1611,7 +1623,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     changedFilesPresentationOverrides,
     expandedCommandExecutions,
     expandedWorkGroups,
+    loadingEarlierWork,
     newestTurnDiffId,
+    olderActivityBoundaryId,
     revertImpact,
     revertPopover,
     revertTurnCountByUserMessageId,
@@ -4546,6 +4560,8 @@ type TimelineRowExternals =
       kind: "work";
       expandedCount: number;
       collapseOverride: boolean | undefined;
+      containsOlderActivityBoundary: boolean;
+      loadingEarlierWork: boolean;
       turnDiffSummaryByTurnId: Map<TurnId, TurnDiffSummary>;
       chatDiffContext: ChatDiffContext;
     }
@@ -4578,7 +4594,8 @@ type TimelineRowExternalsOf<K extends TimelineRowExternals["kind"]> = Extract<
 
 interface TimelineRowActions {
   onToggleWorkGroup: (groupId: string, paginatedEntryCount: number) => void;
-  onSetWorkGroupExpanded: (groupId: string, expanded: boolean) => void;
+  onSetWorkGroupExpanded: (groupId: string, expanded: boolean, needsEarlierWork?: boolean) => void;
+  onLoadEarlierWork: () => void;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onImageActionMenu: (item: ImageAttachmentActionItem, position: { x: number; y: number }) => void;
@@ -4830,7 +4847,9 @@ function WorkGroupRowContent(props: {
         aria-expanded={false}
         data-slot="work-group-summary"
         className="flex min-h-7 w-full min-w-0 items-center gap-2 rounded-lg px-2 text-left text-ui text-muted-foreground outline-none transition-colors duration-(--duration-fast) hover:bg-accent/60 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-        onClick={() => actions.onSetWorkGroupExpanded(groupId, true)}
+        onClick={() =>
+          actions.onSetWorkGroupExpanded(groupId, true, externals.containsOlderActivityBoundary)
+        }
       >
         <ChevronRightIcon aria-hidden="true" className="size-3.5 shrink-0 text-faint-foreground" />
         <span className="min-w-0 truncate">{row.workSummary}</span>
@@ -4872,6 +4891,17 @@ function WorkGroupRowContent(props: {
         </div>
       )}
       <div className="space-y-0.5">
+        {externals.containsOlderActivityBoundary ? (
+          <Button
+            type="button"
+            size="xs"
+            variant="ghost"
+            disabled={externals.loadingEarlierWork}
+            onClick={actions.onLoadEarlierWork}
+          >
+            {externals.loadingEarlierWork ? "Loading earlier work…" : "Load earlier work"}
+          </Button>
+        ) : null}
         {groupState.visibleEntries.map((workEntry) => (
           <WorkEntryRow key={`work-row:${workEntry.id}`} workEntry={workEntry} {...entryProps} />
         ))}
@@ -5987,6 +6017,8 @@ export interface TimelineRowExternalsInputs {
   threadId: ThreadId | null;
   expandedWorkGroups: Readonly<Record<string, number>>;
   workGroupCollapseOverrides: Readonly<Record<string, boolean>>;
+  olderActivityBoundaryId?: string | undefined;
+  loadingEarlierWork?: boolean | undefined;
   turnDiffSummaryByTurnId: Map<TurnId, TurnDiffSummary>;
   chatDiffContext: ChatDiffContext;
   revertTurnCountByUserMessageId: ReadonlyMap<MessageId, number>;
@@ -6015,7 +6047,18 @@ function describeTimelineRowExternals(
   switch (row.kind) {
     case "work": {
       const expandedCount = inputs.expandedWorkGroups[row.id] ?? WORK_LOG_PAGE_SIZE;
-      const collapseOverride = inputs.workGroupCollapseOverrides[row.id];
+      // Loading an older page can prepend rows to the same group and change its first id.
+      const anchoredOverride = row.groupedEntries.find((entry) =>
+        Object.hasOwn(inputs.workGroupCollapseOverrides, entry.id),
+      );
+      const collapseOverride =
+        inputs.workGroupCollapseOverrides[row.id] ??
+        (anchoredOverride ? inputs.workGroupCollapseOverrides[anchoredOverride.id] : undefined);
+      const containsOlderActivityBoundary = row.groupedEntries.some(
+        (entry) => entry.id === inputs.olderActivityBoundaryId,
+      );
+      const loadingEarlierWork =
+        containsOlderActivityBoundary && (inputs.loadingEarlierWork ?? false);
       const { chatDiffContext } = inputs;
       const entryVersions = row.groupedEntries.map((entry) => {
         const turnSummary = entry.turnId
@@ -6047,6 +6090,8 @@ function describeTimelineRowExternals(
           "work",
           expandedCount,
           collapseOverride ?? "",
+          containsOlderActivityBoundary,
+          loadingEarlierWork,
           chatDiffContext.threadId ?? "",
           chatDiffContext.isGitRepo ? "git" : "no-git",
           ...entryVersions,
@@ -6055,6 +6100,8 @@ function describeTimelineRowExternals(
           kind: "work",
           expandedCount,
           collapseOverride,
+          containsOlderActivityBoundary,
+          loadingEarlierWork,
           turnDiffSummaryByTurnId: inputs.turnDiffSummaryByTurnId,
           chatDiffContext,
         }),

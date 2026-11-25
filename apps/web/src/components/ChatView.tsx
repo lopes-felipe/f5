@@ -318,6 +318,7 @@ import {
   fetchAndSyncThreadDetail,
   fetchThreadFileChangesDelta,
   fullThreadFileChangesQueryOptions,
+  loadOlderThreadActivitiesPage,
   loadThreadHistoryAroundMessage,
   mergeThreadFileChangesResult,
   orchestrationQueryKeys,
@@ -963,10 +964,6 @@ export default memo(function ChatView({
   const promptRef = useRef(prompt);
   const composerMentionsRef = useRef(composerDraft.mentions);
   const composerRedesign = useServerCapability("composer-redesign");
-  const getComposerTimeline = useCallback(() => {
-    const node = legendListRef.current?.getScrollableNode?.();
-    return node instanceof HTMLElement ? node : null;
-  }, []);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [isJumpingToLatest, setIsJumpingToLatest] = useState(false);
   // The tail when the reader left the end. The pill mounts after a debounce,
@@ -1035,11 +1032,6 @@ export default memo(function ChatView({
   const [workGroupCollapseOverrides, setWorkGroupCollapseOverrides] = useState<
     Readonly<Record<string, boolean>>
   >({});
-  const onSetWorkGroupExpanded = useCallback((groupId: string, expanded: boolean) => {
-    setWorkGroupCollapseOverrides((existing) =>
-      existing[groupId] === expanded ? existing : { ...existing, [groupId]: expanded },
-    );
-  }, []);
   const [expandedFileChangeDiffs, setExpandedFileChangeDiffs] = useState<Record<string, boolean>>(
     {},
   );
@@ -2695,7 +2687,7 @@ export default memo(function ChatView({
     includeCommandExecutionHistory: settings.showAgentCommandTranscripts,
   });
   const loadOlderTimelineHistory = useCallback(
-    async (signal: AbortSignal) => {
+    async (signal: AbortSignal, activityOnly = false) => {
       if (!activeThread) return;
       const scrollGeneration = endScrollGenerationRef.current;
       await preserveTimelineAnchorDuringHistoryLoad({
@@ -2704,10 +2696,12 @@ export default memo(function ChatView({
         signal,
         canRestore: () => endScrollGenerationRef.current === scrollGeneration,
         load: () =>
-          retryThreadHistoryBackfill(queryClient, activeThread.id, {
-            signal,
-            includeCommandExecutionHistory: settings.showAgentCommandTranscripts,
-          }),
+          activityOnly
+            ? loadOlderThreadActivitiesPage(activeThread.id, signal)
+            : retryThreadHistoryBackfill(queryClient, activeThread.id, {
+                signal,
+                includeCommandExecutionHistory: settings.showAgentCommandTranscripts,
+              }),
       });
     },
     [activeThread, queryClient, settings.showAgentCommandTranscripts],
@@ -2716,20 +2710,45 @@ export default memo(function ChatView({
   const historyStage = activeThreadHistory.stage;
   const olderHistoryControllerRef = useRef<AbortController | null>(null);
   useEffect(() => () => olderHistoryControllerRef.current?.abort(), [historyThreadId]);
-  const retryOlderTimelineHistory = useCallback(() => {
-    olderHistoryControllerRef.current?.abort();
-    const controller = new AbortController();
-    olderHistoryControllerRef.current = controller;
-    void loadOlderTimelineHistory(controller.signal)
-      .catch((error) => {
-        if (!controller.signal.aborted)
-          console.warn("Failed to load earlier conversation history.", error);
-      })
-      .finally(() => {
-        if (olderHistoryControllerRef.current === controller)
-          olderHistoryControllerRef.current = null;
-      });
-  }, [loadOlderTimelineHistory]);
+  const [loadingEarlierWork, setLoadingEarlierWork] = useState(false);
+  const requestOlderHistory = useCallback(
+    (activityOnly: boolean) => {
+      if (olderHistoryControllerRef.current && !olderHistoryControllerRef.current.signal.aborted)
+        return;
+      const controller = new AbortController();
+      olderHistoryControllerRef.current = controller;
+      setLoadingEarlierWork(activityOnly);
+      void loadOlderTimelineHistory(controller.signal, activityOnly)
+        .catch((error) => {
+          if (!controller.signal.aborted) {
+            console.warn("Failed to load earlier conversation history.", error);
+            if (activityOnly)
+              toastManager.add({ type: "error", title: "Earlier work could not be loaded" });
+          }
+        })
+        .finally(() => {
+          if (olderHistoryControllerRef.current === controller) {
+            olderHistoryControllerRef.current = null;
+            if (activityOnly) setLoadingEarlierWork(false);
+          }
+        });
+    },
+    [loadOlderTimelineHistory],
+  );
+  const retryOlderTimelineHistory = useCallback(
+    () => requestOlderHistory(false),
+    [requestOlderHistory],
+  );
+  const loadEarlierWork = useCallback(() => requestOlderHistory(true), [requestOlderHistory]);
+  const onSetWorkGroupExpanded = useCallback(
+    (groupId: string, expanded: boolean, needsEarlierWork?: boolean) => {
+      setWorkGroupCollapseOverrides((existing) =>
+        existing[groupId] === expanded ? existing : { ...existing, [groupId]: expanded },
+      );
+      if (expanded && needsEarlierWork) loadEarlierWork();
+    },
+    [loadEarlierWork],
+  );
   // Memoized so a ChatView render that changes nothing in the timeline (opening an image,
   // a dialog) keeps the timeline's props equal and skips its render.
   const timelineListHeaderContent = useMemo(
@@ -8765,6 +8784,13 @@ export default memo(function ChatView({
                         onToggleWorkGroup={onToggleWorkGroup}
                         workGroupCollapseOverrides={workGroupCollapseOverrides}
                         onSetWorkGroupExpanded={onSetWorkGroupExpanded}
+                        olderActivityBoundaryId={
+                          activeThreadHistory.hasOlderActivities
+                            ? activeThreadHistory.oldestLoadedActivityCursor?.activityId
+                            : undefined
+                        }
+                        loadingEarlierWork={loadingEarlierWork || historyStage === "backfilling"}
+                        onLoadEarlierWork={loadEarlierWork}
                         emptyState={timelineEmptyState}
                         onOpenTurnDiff={onOpenTurnDiff}
                         revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
@@ -9032,7 +9058,6 @@ export default memo(function ChatView({
                       onEditorFocus={typingGuard.onFocus}
                       onEditorBlur={typingGuard.onBlur}
                       redesignEnabled={composerRedesign}
-                      getTimeline={getComposerTimeline}
                       composerFormRef={composerFormRef}
                       composerEditorRef={composerEditorRef}
                       threadId={threadId}

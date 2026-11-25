@@ -1,5 +1,9 @@
 import type { ProjectId, ThreadId } from "@t3tools/contracts";
-import { threadAttachmentWorkspaceRoots } from "@t3tools/shared/threadWorkspace";
+import {
+  threadAttachmentWorkspaceRoots,
+  threadWorkspaceCwd,
+} from "@t3tools/shared/threadWorkspace";
+import { isScratchProject } from "@t3tools/shared/scratchProject";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useMemo, useState, type MouseEvent } from "react";
 
@@ -11,6 +15,7 @@ import {
 } from "../../composerDraftStore";
 import { isElectron } from "../../env";
 import { useCreateProjectBackedDraftThread } from "../../hooks/useCreateProjectBackedDraftThread";
+import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { useStartScratchThread } from "../../hooks/useStartScratchThread";
 import { useStableCallback } from "../../hooks/useStableCallback";
 import {
@@ -21,6 +26,7 @@ import {
   useThreadActionController,
 } from "../../hooks/useThreadActionController";
 import { partitionDroppedAttachments } from "../../lib/droppedAttachments";
+import { discardComposerDraft } from "../../lib/discardComposerDraft";
 import { isMacPlatform } from "../../lib/utils";
 import { readNativeApi } from "../../nativeApi";
 import { useStore } from "../../store";
@@ -81,6 +87,7 @@ export function useSidebarThreadActions(input: {
   const setSelectionAnchor = useThreadSelectionStore((s) => s.setAnchor);
   const [renamingThreadId, setRenamingThreadId] = useState<ThreadId | null>(null);
   const [contextMenuOpen, setContextMenuOpen] = useState(false);
+  const { copyToClipboard } = useCopyToClipboard();
 
   const attachDropToThread = useStableCallback((event: React.DragEvent, thread: ThreadListItem) => {
     if (!event.dataTransfer.types.includes("Files")) return;
@@ -233,6 +240,33 @@ export function useSidebarThreadActions(input: {
     [executeThreadAction, threadActionMenuItems, threads],
   );
 
+  const handleDraftContextMenu = useStableCallback(
+    async (threadId: ThreadId, position: { x: number; y: number }) => {
+      const api = readNativeApi();
+      const draft = useComposerDraftStore.getState().getDraftThread(threadId);
+      if (!api || !draft || draft.promoting) return;
+      const project = projects.find((entry) => entry.id === draft.projectId);
+      const workspacePath = threadWorkspaceCwd(draft, project);
+      const clicked = await api.contextMenu.show(
+        [
+          ...(workspacePath ? [{ id: "copy-path", label: "Copy path" }] : []),
+          ...(draft.branch ? [{ id: "copy-branch", label: "Copy branch" }] : []),
+          ...(project && !isScratchProject(project)
+            ? [{ id: "settings", label: "Project settings…" }]
+            : []),
+          { id: "discard", label: "Discard draft", destructive: true },
+        ],
+        position,
+      );
+      if (clicked === "copy-path" && workspacePath) copyToClipboard(workspacePath, undefined);
+      if (clicked === "copy-branch" && draft.branch) copyToClipboard(draft.branch, undefined);
+      if (clicked === "settings" && project) {
+        await navigate({ to: "/settings", search: { category: "project", project: project.id } });
+      }
+      if (clicked === "discard") discardComposerDraft(threadId);
+    },
+  );
+
   const togglePinThread = useStableCallback((threadId: ThreadId) => {
     const thread = threads.find((entry) => entry.id === threadId);
     if (!thread) return;
@@ -336,26 +370,30 @@ export function useSidebarThreadActions(input: {
   /** Right-click / context-menu key on a row. */
   const openThreadContextMenu = useStableCallback(
     (
-      event: React.MouseEvent<HTMLElement>,
+      event: React.MouseEvent<HTMLElement> | React.KeyboardEvent<HTMLElement>,
       threadId: ThreadId,
       options?: ThreadContextMenuOptions,
     ) => {
       event.preventDefault();
-      const position = { x: event.clientX, y: event.clientY };
+      const position =
+        "clientX" in event
+          ? { x: event.clientX, y: event.clientY }
+          : event.currentTarget.getBoundingClientRect();
       // The row's hover card stays closed while its menu is open.
       const trackMenu = (menu: Promise<void>) => {
         setContextMenuOpen(true);
         void menu.finally(() => setContextMenuOpen(false));
       };
-      if (options?.allowMultiSelect === false) {
-        trackMenu(handleThreadContextMenu(threadId, position));
-        return;
-      }
       const selectionState = useThreadSelectionStore.getState();
       if (options?.isDraft === true) {
         if (selectionState.hasSelection()) {
           clearSelection();
         }
+        trackMenu(handleDraftContextMenu(threadId, { x: position.x, y: position.y }));
+        return;
+      }
+      if (options?.allowMultiSelect === false) {
+        trackMenu(handleThreadContextMenu(threadId, position));
         return;
       }
       if (selectionState.selectedThreadIds.has(threadId)) {
@@ -429,10 +467,18 @@ export function useSidebarThreadActions(input: {
   /** Enter / Space on a focused row. */
   const handleThreadRowKeyDown = useCallback(
     (
-      event: React.KeyboardEvent,
+      event: React.KeyboardEvent<HTMLElement>,
       threadId: ThreadId,
       options?: { isDraft?: boolean; canRename?: boolean },
     ) => {
+      if (
+        options?.isDraft &&
+        (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))
+      ) {
+        event.stopPropagation();
+        openThreadContextMenu(event, threadId, { isDraft: true });
+        return;
+      }
       if (
         event.key === "F2" &&
         options?.canRename === true &&
@@ -459,7 +505,14 @@ export function useSidebarThreadActions(input: {
         params: { threadId },
       });
     },
-    [clearSelection, navigate, renamingThreadId, setSelectionAnchor, startThreadRename],
+    [
+      clearSelection,
+      navigate,
+      openThreadContextMenu,
+      renamingThreadId,
+      setSelectionAnchor,
+      startThreadRename,
+    ],
   );
 
   const handleThreadRowDoubleClick = useCallback(

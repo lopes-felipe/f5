@@ -82,6 +82,10 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
         driverKind: DRIVER_KIND,
         instanceId,
       });
+      const usageHistory = yield* makeOpenCodeUsageHistory(
+        processEnv,
+        enabled && !config.serverUrl,
+      );
       const stampIdentity = withInstanceIdentity({
         instanceId,
         displayName,
@@ -148,7 +152,9 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
         snapshot,
         adapter,
         accountUsage,
+        usageHistory,
         textGeneration,
       } satisfies ProviderInstance;
     }),
 };
+import { makeOpenCodeUsageHistory } from "../../usage/externalProviderHistory.ts";

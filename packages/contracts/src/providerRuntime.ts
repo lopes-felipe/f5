@@ -1,5 +1,6 @@
 import { FilesystemPath } from "./baseSchemas";
 import { RuntimeUsageLimit } from "./usageLimit";
+import { UsageSpeed } from "./usage";
 import { Schema } from "effect";
 import {
   EventId,
@@ -395,6 +396,7 @@ const TurnCompletedPayload = Schema.Struct({
   usage: Schema.optional(Schema.Unknown),
   modelUsage: Schema.optional(UnknownRecordSchema),
   totalCostUsd: Schema.optional(Schema.Number),
+  usageSpeed: Schema.optional(UsageSpeed),
   errorMessage: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type TurnCompletedPayload = typeof TurnCompletedPayload.Type;

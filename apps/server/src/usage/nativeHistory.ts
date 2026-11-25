@@ -1,5 +1,6 @@
 import { Cause, Clock, Effect } from "effect";
 import type { MuseHistoryRecord } from "./museHistory.ts";
+import type { ExternalHistoryProvider, NativeUsageRecord } from "./nativeUsageRecord.ts";
 import {
   DEFAULT_USAGE_HISTORY_RETENTION_DAYS,
   type UsageHistoryRetention,
@@ -8,12 +9,13 @@ import {
 export type NativeHistoryStatus = "idle" | "refreshing" | "ready" | "error";
 export interface NativeHistorySnapshot {
   readonly source: string | null;
-  readonly records: readonly MuseHistoryRecord[];
+  readonly records: readonly (MuseHistoryRecord | NativeUsageRecord)[];
   readonly status: NativeHistoryStatus;
   readonly errorMessage?: string;
   readonly refreshedAt?: number;
 }
 export interface NativeHistoryCapability {
+  readonly provider?: ExternalHistoryProvider;
   readonly refresh: (retention?: UsageHistoryRetention) => Effect.Effect<void>;
   readonly getSnapshot: Effect.Effect<NativeHistorySnapshot>;
 }
@@ -21,11 +23,13 @@ export interface NativeHistoryCapability {
 /** Requesting a refresh never waits for discovery/IO. Failures retain the last good snapshot. */
 export const makeNativeHistoryCapability = <E, E2>(options: {
   readonly enabled: boolean;
+  readonly provider?: ExternalHistoryProvider;
+  readonly displayName?: string;
   readonly discover: Effect.Effect<string, E>;
   readonly scan: (
     home: string,
     retention: UsageHistoryRetention,
-  ) => Effect.Effect<readonly MuseHistoryRecord[], E2>;
+  ) => Effect.Effect<readonly (MuseHistoryRecord | NativeUsageRecord)[], E2>;
 }) =>
   Effect.gen(function* () {
     const scope = yield* Effect.scope;
@@ -34,6 +38,7 @@ export const makeNativeHistoryCapability = <E, E2>(options: {
     let nextRefreshAt = 0;
     let failures = 0;
     let lastRetention: UsageHistoryRetention | undefined;
+    const name = options.displayName ?? "Muse";
     const refresh = (retention: UsageHistoryRetention = DEFAULT_USAGE_HISTORY_RETENTION_DAYS) =>
       Effect.gen(function* () {
         if (!options.enabled) return;
@@ -89,11 +94,11 @@ export const makeNativeHistoryCapability = <E, E2>(options: {
               const errorMessage =
                 phase === "discovery"
                   ? timeout
-                    ? "Muse home discovery timed out. Check the configured Muse CLI installation."
-                    : "Muse home discovery failed. Check that the configured CLI is installed and can initialize."
+                    ? `${name} home discovery timed out.`
+                    : `${name} home discovery failed.`
                   : timeout
-                    ? "Muse history scan timed out. Previously loaded history is retained."
-                    : "Muse history could not be read. Check access to the configured history directory.";
+                    ? `${name} history scan timed out.`
+                    : `${name} history could not be read. Check your login or access to the history directory.`;
               snapshot = {
                 ...snapshot,
                 status: "error",
@@ -116,5 +121,9 @@ export const makeNativeHistoryCapability = <E, E2>(options: {
           Effect.forkIn(scope),
         );
       });
-    return { refresh, getSnapshot: Effect.sync(() => snapshot) } satisfies NativeHistoryCapability;
+    return {
+      ...(options.provider ? { provider: options.provider } : {}),
+      refresh,
+      getSnapshot: Effect.sync(() => snapshot),
+    } satisfies NativeHistoryCapability;
   });

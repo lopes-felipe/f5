@@ -124,6 +124,7 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
   ultrathinkActive?: boolean;
   compact?: boolean;
   docked?: boolean;
+  stayOpenOnSelect?: boolean;
   disabled?: boolean;
   terminalOpen?: boolean;
   open?: boolean;
@@ -158,6 +159,7 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
   const { updateSettings } = useUpdateSettings();
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const [search, setSearch] = useState("");
+  const [showLegacy, setShowLegacy] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const isOpen = props.open ?? uncontrolledOpen;
   const entries = useMemo(
@@ -298,7 +300,26 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
     showFavorites,
     visibleEntries,
   ]);
-  const items = useMemo(() => groups.flatMap((group) => group.items), [groups]);
+  const hideLegacy = props.stayOpenOnSelect && !showFavorites && !isSearching && !showLegacy;
+  const visibleGroups = useMemo(() => {
+    if (!hideLegacy) return groups;
+    return groups.flatMap((group) => {
+      const current = group.items.filter(
+        (item) =>
+          !item.isLegacy ||
+          (item.instance.instanceId === activeInstanceId && item.slug === props.model),
+      );
+      return current.length > 0 ? [{ ...group, items: current }] : [];
+    });
+  }, [activeInstanceId, groups, hideLegacy, props.model]);
+  const hasLegacy = groups.some((group) =>
+    group.items.some(
+      (item) =>
+        item.isLegacy &&
+        (item.instance.instanceId !== activeInstanceId || item.slug !== props.model),
+    ),
+  );
+  const items = useMemo(() => visibleGroups.flatMap((group) => group.items), [visibleGroups]);
   // `mod+N` targets: favorite N on numbered preset rows, otherwise row N.
   const jumpTargets = useMemo((): ReadonlyArray<InstanceModelItem | undefined> => {
     const numbered = items.some((item) => item.presetIndex !== undefined);
@@ -358,7 +379,10 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
                 : { kind: "favorites" },
         );
       }
-      if (!open) setSearch("");
+      if (!open) {
+        setSearch("");
+        setShowLegacy(false);
+      }
     },
     [
       favoriteKeys,
@@ -403,7 +427,7 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
         item.preset,
       );
     else props.onInstanceModelChange(item.instance.instanceId, item.instance.driverKind, resolved);
-    setOpen(false);
+    if (!props.stayOpenOnSelect) setOpen(false);
   };
   // The window keydown listener reads the latest rows without resubscribing per render.
   const jumpTargetsRef = useRef({ jumpTargets, selectModel });
@@ -616,7 +640,7 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
                         : "No models found"}
                     </div>
                   ) : (
-                    groups.map((group) => (
+                    visibleGroups.map((group) => (
                       <section
                         key={group.company}
                         role="group"
@@ -728,6 +752,16 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
                       </section>
                     ))
                   )}
+                  {props.stayOpenOnSelect && !showFavorites && !isSearching && hasLegacy ? (
+                    <button
+                      type="button"
+                      aria-expanded={showLegacy}
+                      className="w-full rounded-md px-3 py-2 text-left text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+                      onClick={() => setShowLegacy((shown) => !shown)}
+                    >
+                      {showLegacy ? "Show less" : "Show more"}
+                    </button>
+                  ) : null}
                 </div>
               </div>
             </div>

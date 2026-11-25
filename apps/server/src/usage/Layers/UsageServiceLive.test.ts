@@ -19,6 +19,7 @@ import Migration0068 from "../../persistence/Migrations/068_UsageFacts.ts";
 import Migration0071 from "../../persistence/Migrations/071_UsageEventTimeIndex.ts";
 import Migration0073 from "../../persistence/Migrations/073_UsageFactRecordedAt.ts";
 import Migration0161 from "../../persistence/Migrations/161_UsageNativeIdentity.ts";
+import Migration0175 from "../../persistence/Migrations/175_UsageSpeedAndExternalIdentity.ts";
 import Migration0116 from "../../persistence/Migrations/116_UsageAccountHistory.ts";
 import Migration0101 from "../../persistence/Migrations/101_UsageResetCreditRequests.ts";
 import Migration0165 from "../../persistence/Migrations/165_UsageResetCreditGrant.ts";
@@ -50,6 +51,7 @@ it.layer(SqliteClient.layerMemory())("Muse cached native accounting", (it) => {
         yield* Migration0071;
         yield* Migration0073;
         yield* Migration0161;
+        yield* Migration0175;
         yield* Migration0116;
         yield* TestClock.setTime(Date.parse("2026-08-20T23:59:00.000Z"));
         const home = yield* Effect.acquireRelease(
@@ -159,6 +161,7 @@ it.layer(SqliteClient.layerMemory())("Muse history summary integration", (it) =>
       yield* Migration0071;
       yield* Migration0073;
       yield* Migration0161;
+      yield* Migration0175;
       yield* Migration0116;
       yield* TestClock.setTime(Date.parse("2026-08-20T23:59:00.000Z"));
       const facts = yield* UsageFactRepository;
@@ -207,6 +210,7 @@ it.layer(SqliteClient.layerMemory())("Muse history merging", (it) => {
         yield* Migration0071;
         yield* Migration0073;
         yield* Migration0161;
+        yield* Migration0175;
         yield* Migration0116;
         yield* TestClock.setTime(Date.parse("2026-08-20T23:59:00.000Z"));
         const record = parseMuseHistoryLine(
@@ -451,6 +455,7 @@ it.layer(SqliteClient.layerMemory())("UsageService thread turns", (it) => {
       yield* Migration0073;
       yield* Migration0116;
       yield* Migration0161;
+      yield* Migration0175;
       const facts = yield* UsageFactRepository;
       yield* facts.record(fact("thread-late", "2026-08-12T10:05:00.000Z", { cacheReadTokens: 70 }));
       yield* facts.record(fact("thread-early", "2026-08-12T10:00:00.000Z"));
@@ -484,6 +489,7 @@ it.layer(SqliteClient.layerMemory())("UsageService summaries", (it) => {
       yield* Migration0071;
       yield* Migration0073;
       yield* Migration0161;
+      yield* Migration0175;
       yield* Migration0116;
       const sql = yield* SqlClient.SqlClient;
       yield* sql`
@@ -533,6 +539,7 @@ it.layer(SqliteClient.layerMemory())("UsageService summaries", (it) => {
       yield* Migration0071;
       yield* Migration0073;
       yield* Migration0161;
+      yield* Migration0175;
       yield* Migration0116;
       const sql = yield* SqlClient.SqlClient;
       yield* sql`
@@ -608,6 +615,7 @@ it.layer(SqliteClient.layerMemory())("UsageService summaries", (it) => {
       yield* Migration0071;
       yield* Migration0073;
       yield* Migration0161;
+      yield* Migration0175;
       yield* Migration0116;
       const sql = yield* SqlClient.SqlClient;
       yield* sql`
@@ -636,6 +644,7 @@ it.layer(SqliteClient.layerMemory())("UsageService summaries", (it) => {
       yield* Migration0071;
       yield* Migration0073;
       yield* Migration0161;
+      yield* Migration0175;
       yield* Migration0116;
       const sql = yield* SqlClient.SqlClient;
       // Mid-day: the equal-length previous window starts around Aug 7 12:00,

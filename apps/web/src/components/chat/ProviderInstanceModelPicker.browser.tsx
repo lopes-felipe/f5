@@ -178,6 +178,41 @@ describe("ProviderInstanceModelPicker favorite presets", () => {
 });
 
 describe("ProviderInstanceModelPicker", () => {
+  it("discloses legacy models and keeps the composer picker open when a model is selected", async () => {
+    const onChange = vi.fn();
+    active = await render(
+      <TooltipProvider delay={0}>
+        <ProviderInstanceModelPicker
+          stayOpenOnSelect
+          instanceId={CLAUDE_ID}
+          model="claude-fable-5-1"
+          lockedInstanceId={CLAUDE_ID}
+          providers={PROVIDERS}
+          modelOptionsByInstance={
+            new Map([
+              [
+                CLAUDE_ID,
+                [
+                  { slug: "claude-fable-5-1", name: "Claude Fable 5.1" },
+                  { slug: "claude-sonnet-4-6", name: "Claude Sonnet 4.6", isLegacy: true },
+                ],
+              ],
+            ])
+          }
+          onInstanceModelChange={onChange}
+        />
+      </TooltipProvider>,
+    );
+    await page.getByRole("button", { name: /Claude Fable 5.1/ }).click();
+    const legacy = page.getByRole("button", { name: /^Claude Sonnet 4.6/ });
+    await expect.element(legacy).not.toBeInTheDocument();
+    await page.getByRole("button", { name: "Show more" }).click();
+    await legacy.click();
+    expect(onChange).toHaveBeenCalledWith(CLAUDE_ID, "claudeAgent", "claude-sonnet-4-6");
+    await expect.element(page.getByPlaceholder("Search models...")).toBeVisible();
+    await userEvent.keyboard("{Escape}");
+    await expect.element(page.getByPlaceholder("Search models...")).not.toBeInTheDocument();
+  });
   it("preserves capability ordering, including newly reported model versions, instead of alphabetizing names", async () => {
     const models = sortModelsForProviderInstance([
       { slug: "claude-haiku-5-5", name: "Claude Haiku 5.5" },

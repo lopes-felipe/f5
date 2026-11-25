@@ -6,7 +6,15 @@ import {
   reloadForProtocolUpgrade,
   useProtocolState,
 } from "../protocolState";
-import { type ReactNode, lazy, Suspense, useEffect, useRef, useState } from "react";
+import {
+  type ReactNode,
+  lazy,
+  Suspense,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 
 import {
   getComposerReloadStatus,
@@ -38,6 +46,19 @@ const UpgradeConnectionDialog = lazy(() =>
     return { default: UpgradeFallback };
   }),
 );
+
+const RECONNECT_WARNING_DELAY_MS = 2_000;
+
+function subscribeOnline(listener: () => void) {
+  window.addEventListener("online", listener);
+  window.addEventListener("offline", listener);
+  return () => {
+    window.removeEventListener("online", listener);
+    window.removeEventListener("offline", listener);
+  };
+}
+
+const isBrowserOnline = () => navigator.onLine;
 
 function describeSlowRequest(requests: ReadonlyArray<SlowRpcRequest>): string {
   if (requests.length > 1) {
@@ -124,9 +145,27 @@ export function WebSocketConnectionSurface({ children }: { readonly children: Re
   }, [protocol.upgradeRequired, protocol.activeUploads, drafts, imports, autoReloadAllowed]);
   const enabled = useWsDisconnectSurfaceEnabled();
   const shouldBlock = protocol.upgradeRequired;
+  const online = useSyncExternalStore(subscribeOnline, isBrowserOnline, () => true);
+  const transient =
+    enabled &&
+    online &&
+    connectionState.lastError === null &&
+    connectionState.synchronizationError === null &&
+    (connectionState.phase === "connecting" || connectionState.phase === "reconnecting");
+  const [graceElapsed, setGraceElapsed] = useState(false);
+  useEffect(() => {
+    if (!transient) {
+      setGraceElapsed(false);
+      return;
+    }
+    const timer = setTimeout(() => setGraceElapsed(true), RECONNECT_WARNING_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [transient]);
   const disconnected =
     connectionState.synchronizationError !== null ||
-    (enabled && (connectionState.phase !== "connected" || !connectionState.synchronized));
+    (enabled &&
+      (!online || connectionState.phase !== "connected" || !connectionState.synchronized) &&
+      (!transient || graceElapsed));
   const copy = protocol.upgradeRequired
     ? {
         title: F5_UPGRADE_REQUIRED_MESSAGE,
@@ -193,11 +232,14 @@ export function WebSocketConnectionSurface({ children }: { readonly children: Re
         >
           <p>
             {connectionState.synchronizationError ??
-              (connectionState.phase === "connected"
-                ? "Resynchronizing…"
-                : connectionState.phase === "connecting"
-                  ? "Connecting…"
-                  : "Connection lost. Reconnecting…")}
+              (!online
+                ? "You’re offline."
+                : connectionState.phase === "connected"
+                  ? "Resynchronizing…"
+                  : (connectionState.lastError ??
+                    (connectionState.phase === "connecting"
+                      ? "Connecting…"
+                      : "Connection lost. Reconnecting…")))}
           </p>
           <p className="text-xs text-muted-foreground">
             Reading and local drafts remain available. Server changes resume after synchronization.

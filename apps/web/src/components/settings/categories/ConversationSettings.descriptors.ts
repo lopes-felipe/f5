@@ -25,13 +25,6 @@ const CONVERSATION_CONTROL_DESCRIPTORS = (
       ["composer", "markdown", "plain text"],
     ],
     [
-      "composer-collapse",
-      "Collapse composer while scrolling",
-      "Keep the composer expanded or let timeline scrolling collapse it.",
-      "Collapse composer while scrolling",
-      ["composer", "scroll", "resting", "collapse"],
-    ],
-    [
       "compact-layout",
       "Compact chat layout",
       "Show tasks, queued turns and notices as chips above the composer.",

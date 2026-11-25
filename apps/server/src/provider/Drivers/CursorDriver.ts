@@ -103,6 +103,7 @@ export const CursorDriver: ProviderDriver<CursorSettings, CursorDriverEnv> = {
         driverKind: DRIVER_KIND,
         instanceId,
       });
+      const usageHistory = yield* makeCursorUsageHistory(processEnv, config.apiEndpoint, enabled);
       const stampIdentity = withInstanceIdentity({
         instanceId,
         displayName,
@@ -210,7 +211,9 @@ export const CursorDriver: ProviderDriver<CursorSettings, CursorDriverEnv> = {
         snapshot,
         adapter,
         accountUsage,
+        usageHistory,
         textGeneration,
       } satisfies ProviderInstance;
     }),
 };
+import { makeCursorUsageHistory } from "../../usage/externalProviderHistory.ts";

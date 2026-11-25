@@ -24,7 +24,9 @@ import { makeQuotaSampler } from "../quotaSampler.ts";
 import { UsageQueryError, UsageService, type UsageServiceShape } from "../Services/UsageService.ts";
 import type { AccountUsageErrorCode } from "@t3tools/contracts";
 import { externalMuseHistory, museHistoryBuckets, usageHistoryCutoff } from "../museHistory.ts";
-import { recordedMusePredicate } from "../museRecordedIntervals.ts";
+import { recordedExternalPredicate, recordedMusePredicate } from "../museRecordedIntervals.ts";
+import { makeListRateCache, priceUsageAggregate } from "../usagePricing.ts";
+import type { UsageAggregateRow } from "../../persistence/Services/UsageFacts.ts";
 
 const CLAUDE_USAGE_ANALYSIS_ERRORS: Partial<Record<AccountUsageErrorCode, string>> = {
   unsupported: "This Claude version cannot analyze usage.",
@@ -109,6 +111,7 @@ function shadowAccounts(unavailable: ReadonlyArray<ServerProvider>): Array<Usage
 }
 
 const make = Effect.gen(function* () {
+  const listRateCache = makeListRateCache();
   const repository = yield* UsageFactRepository;
   const historyRepository = yield* UsageAccountHistoryRepository;
   const recorder = yield* makeAccountHistoryRecorder;
@@ -231,26 +234,47 @@ const make = Effect.gen(function* () {
       const settings = yield* settingsService.getSettings.pipe(
         Effect.mapError(() => new UsageQueryError({ message: "Usage prices are unavailable." })),
       );
-      const priceOverrides = settings.usagePriceOverrides;
       const modelAliases = resolveModelAliases(settings.usageModelAliases);
+      const listRates = settings.usageListPricing
+        ? yield* Effect.promise(() => listRateCache(now.getTime()))
+        : undefined;
+      const overrides = new Map(
+        settings.usagePriceOverrides.map((price) => [
+          JSON.stringify([price.provider, price.model]),
+          price,
+        ]),
+      );
+      const priceRows = <Row extends UsageAggregateRow>(rows: readonly Row[]): Row[] =>
+        applyModelAliases(rows, modelAliases).map((row) =>
+          priceUsageAggregate(
+            row,
+            overrides.get(JSON.stringify([row.provider, row.model])),
+            listRates,
+          ),
+        );
       const filters = {
         ...(request.provider ? { provider: request.provider } : {}),
         ...(request.hiddenProviders?.length ? { hiddenProviders: request.hiddenProviders } : {}),
         ...(request.projectId ? { projectId: request.projectId } : {}),
       };
       const instances = yield* registry.listInstances;
-      const capabilities =
-        (request.provider && request.provider !== "muse") ||
-        request.hiddenProviders?.includes("muse")
-          ? []
-          : instances.flatMap((instance) =>
-              instance.enabled && instance.usageHistory ? [instance.usageHistory] : [],
-            );
+      const capabilities = instances.flatMap((instance) => {
+        const history = instance.usageHistory;
+        if (!instance.enabled || !history) return [];
+        const provider = history.provider ?? "muse";
+        if (request.provider && request.provider !== provider) return [];
+        if (request.hiddenProviders?.includes(provider)) return [];
+        if (provider === "cursor" && !settings.usageCursorAccountHistory) return [];
+        if (provider !== "muse" && provider !== "cursor" && !settings.usageLocalProviderHistory)
+          return [];
+        return [history];
+      });
       const retention = yield* (
         settingsService.getUsageHistoryRetention ??
         Effect.succeed(settings.usageHistoryRetentionDays)
       ).pipe(Effect.orElseSucceed(() => null));
       const cutoff = retention === null ? null : usageHistoryCutoff(now.getTime(), retention);
+      const cutoffMs = cutoff === null ? 0 : Date.parse(cutoff);
       if (!request.projectId && retention !== null)
         yield* Effect.forEach(capabilities, (capability) => capability.refresh(retention));
       const snapshots = yield* Effect.forEach(capabilities, (capability) => capability.getSnapshot);
@@ -262,16 +286,29 @@ const make = Effect.gen(function* () {
           sources.add(snapshot.source);
           return cutoff === null
             ? snapshot.records
-            : snapshot.records.filter((record) => record.timestamp >= cutoff);
+            : snapshot.records.filter((record) =>
+                "provider" in record ? record.timestampMs >= cutoffMs : record.timestamp >= cutoff,
+              );
         });
       // Reconcile every summary against fresh facts. A turn may have completed
       // since this snapshot was scanned, including while later refreshes fail.
-      const nativeHistory = externalMuseHistory(
-        cachedHistory,
-        recordedMusePredicate(
-          cachedHistory.length ? yield* repository.readMuseRecordedIntervals : [],
+      const intervals = cachedHistory.length ? yield* repository.readNativeRecordedIntervals : [];
+      const isExternalRecorded = recordedExternalPredicate(intervals);
+      const externalKeys = new Set<string>();
+      const externalHistory = cachedHistory.filter((record) => {
+        if (!("provider" in record) || isExternalRecorded(record)) return false;
+        if (record.dedupeKey === null) return true;
+        if (externalKeys.has(record.dedupeKey)) return false;
+        externalKeys.add(record.dedupeKey);
+        return true;
+      });
+      const nativeHistory = [
+        ...externalMuseHistory(
+          cachedHistory.filter((record) => "kind" in record),
+          recordedMusePredicate(intervals.filter(({ provider }) => provider === "muse")),
         ),
-      );
+        ...externalHistory,
+      ];
       const nativeHistoryStatus = snapshots.some((snapshot) => snapshot.status === "refreshing")
         ? ("refreshing" as const)
         : snapshots.some((snapshot) => snapshot.status === "error")
@@ -294,31 +331,22 @@ const make = Effect.gen(function* () {
           );
       // SQLite executes synchronously, so these reads run sequentially.
       const metadata = yield* repository.readUsageMetadata;
-      const rows = applyModelAliases(
-        yield* readBuckets({ buckets: plan.buckets, ...filters }),
-        modelAliases,
-      );
-      const scopeRows = applyModelAliases(
-        [
-          ...(yield* repository.summarizeByScope({
-            startedAt: plan.startedAt,
-            endedAt: plan.endedAt,
-            ...(request.provider ? { provider: request.provider } : {}),
-            ...(request.hiddenProviders?.length
-              ? { hiddenProviders: request.hiddenProviders }
-              : {}),
-          })),
-          ...museHistoryBuckets(nativeHistory, [
-            { key: "scope", startAt: plan.startedAt, endAt: plan.endedAt },
-          ]).map((row) => ({ ...row, threadId: null, projectId: null })),
-        ],
-        modelAliases,
-      );
+      const rows = priceRows(yield* readBuckets({ buckets: plan.buckets, ...filters }));
+      const scopeRows = priceRows([
+        ...(yield* repository.summarizeByScope({
+          startedAt: plan.startedAt,
+          endedAt: plan.endedAt,
+          ...(request.provider ? { provider: request.provider } : {}),
+          ...(request.hiddenProviders?.length ? { hiddenProviders: request.hiddenProviders } : {}),
+        })),
+        ...museHistoryBuckets(nativeHistory, [
+          { key: "scope", startAt: plan.startedAt, endAt: plan.endedAt },
+        ]).map((row) => ({ ...row, threadId: null, projectId: null })),
+      ]);
       const selectedProjectId = request.projectId ?? null;
       const aggregation = aggregateUsageScope({
         rows: scopeRows,
         projectId: selectedProjectId,
-        priceOverrides,
       });
       const previous = previousUsageWindow({
         plan,
@@ -327,16 +355,14 @@ const make = Effect.gen(function* () {
       });
       const previousMetrics = previous
         ? aggregateUsageMetrics(
-            applyModelAliases(
+            priceRows(
               yield* readBuckets({
                 buckets: [
                   { key: "previous", startAt: previous.startedAt, endAt: previous.endedAt },
                 ],
                 ...filters,
               }),
-              modelAliases,
             ),
-            priceOverrides,
           )
         : null;
       const previousBuckets = request.includePreviousBuckets
@@ -354,8 +380,7 @@ const make = Effect.gen(function* () {
             if (!buckets) return null;
             return buildPreviousBuckets({
               buckets,
-              rows: applyModelAliases(yield* readBuckets({ buckets, ...filters }), modelAliases),
-              priceOverrides,
+              rows: priceRows(yield* readBuckets({ buckets, ...filters })),
             });
           })
         : null;
@@ -367,7 +392,6 @@ const make = Effect.gen(function* () {
       });
       return {
         ...buildUsageSummary({
-          priceOverrides,
           request,
           now,
           coverageStartedAt: metadata.coverageStartedAt,

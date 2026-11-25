@@ -4667,6 +4667,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             ...(result?.stop_reason !== undefined ? { stopReason: result.stop_reason } : {}),
             ...(usage ? { usage } : {}),
             ...(modelUsage ? { modelUsage } : {}),
+            ...(result?.fast_mode_state
+              ? {
+                  usageSpeed:
+                    result.fast_mode_state === "on" ? ("fast" as const) : ("standard" as const),
+                }
+              : {}),
             ...turnCost,
             ...(errorMessage ? { errorMessage } : {}),
             ...(options?.usageLimit ? { usageLimit: options.usageLimit } : {}),
