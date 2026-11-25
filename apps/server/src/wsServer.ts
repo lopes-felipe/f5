@@ -318,6 +318,7 @@ import {
   searchWorkspaceEntries,
 } from "./workspaceEntries";
 import { makeProjectContentSearchManager } from "./projectContentSearch";
+import { WorkspaceSearchRestrictedError } from "./workspaceSearchRoot";
 import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
@@ -1000,6 +1001,14 @@ export class ServerLifecycleError extends Schema.TaggedErrorClass<ServerLifecycl
     cause: Schema.optional(Schema.Defect),
   },
 ) {}
+
+function workspaceSearchRouteError(cause: unknown, summary: string): RouteRequestError {
+  if (cause instanceof WorkspaceSearchRestrictedError) {
+    return new RouteRequestError({ message: cause.message, code: cause.code });
+  }
+  const detail = cause instanceof Error ? cause.message : String(cause);
+  return new RouteRequestError({ message: `${summary}: ${detail}` });
+}
 
 function toDeliveryRecoveryError(error: Error): RouteRequestError {
   return new RouteRequestError({
@@ -5944,10 +5953,7 @@ export const createServer = Effect.fn(function* (
         const body = stripRequestTag(request.body);
         return yield* Effect.tryPromise({
           try: () => listWorkspaceEntries(body),
-          catch: (cause) =>
-            new RouteRequestError({
-              message: `Failed to list workspace entries: ${String(cause)}`,
-            }),
+          catch: (cause) => workspaceSearchRouteError(cause, "Failed to list workspace entries"),
         });
       }
 
@@ -5955,10 +5961,7 @@ export const createServer = Effect.fn(function* (
         const body = stripRequestTag(request.body);
         return yield* Effect.tryPromise({
           try: () => searchWorkspaceEntries(body),
-          catch: (cause) =>
-            new RouteRequestError({
-              message: `Failed to search workspace entries: ${String(cause)}`,
-            }),
+          catch: (cause) => workspaceSearchRouteError(cause, "Failed to search workspace entries"),
         });
       }
 
@@ -6068,15 +6071,15 @@ export const createServer = Effect.fn(function* (
             }
           },
           catch: (cause) => {
-            const detail = cause instanceof Error ? cause.message : String(cause);
-            logger.warn("Project content search request failed", {
-              projectId: body.projectId,
-              threadId: body.threadId ?? null,
-              detail,
-            });
-            return new RouteRequestError({
-              message: `Project content search failed: ${detail}`,
-            });
+            const error = workspaceSearchRouteError(cause, "Project content search failed");
+            if (!(cause instanceof WorkspaceSearchRestrictedError)) {
+              logger.warn("Project content search request failed", {
+                projectId: body.projectId,
+                threadId: body.threadId ?? null,
+                detail: error.message,
+              });
+            }
+            return error;
           },
         });
       }

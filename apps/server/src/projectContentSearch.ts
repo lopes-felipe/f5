@@ -12,7 +12,10 @@ import {
 
 import { createLogger } from "./logger";
 import { PROJECT_CONTENT_SEARCH_WORKER_SOURCE } from "./projectContentSearchWorker";
-import { getWorkspaceSearchRootRestriction } from "./workspaceSearchRoot";
+import {
+  assertWorkspaceSearchRootAllowed,
+  WorkspaceSearchRestrictedError,
+} from "./workspaceSearchRoot";
 
 export const PROJECT_CONTENT_SEARCH_ACTIVE_INDEX_LIMIT = 2;
 export const PROJECT_CONTENT_SEARCH_INDEX_PATH_LIMIT = 25_000;
@@ -289,11 +292,7 @@ export function makeProjectContentSearchManager(options?: {
         { cause },
       );
     });
-    const restriction = await getWorkspaceSearchRootRestriction(rootPath);
-    if (restriction) {
-      throw new ProjectContentSearchError("invalid_workspace", restriction);
-    }
-    const stat = await fs.stat(rootPath).catch((cause) => {
+    const stat = await fs.stat(rootPath, { bigint: true }).catch((cause) => {
       throw new ProjectContentSearchError(
         "invalid_workspace",
         "Registered project workspace is unavailable.",
@@ -306,6 +305,8 @@ export function makeProjectContentSearchManager(options?: {
         "Registered project workspace is not a directory.",
       );
     }
+
+    await assertWorkspaceSearchRootAllowed(rootPath, stat);
 
     while (true) {
       if (signal.aborted) throw cancellationError();
@@ -494,7 +495,10 @@ export function makeProjectContentSearchManager(options?: {
       try {
         return await runSearch(state, workspaceRoot, request);
       } catch (cause) {
-        if (!(cause instanceof ProjectContentSearchError && cause.failure === "cancelled")) {
+        if (
+          !(cause instanceof WorkspaceSearchRestrictedError) &&
+          !(cause instanceof ProjectContentSearchError && cause.failure === "cancelled")
+        ) {
           searchLogger.warn("Project content search failed", {
             projectId: request.projectId,
             threadId: request.threadId ?? null,

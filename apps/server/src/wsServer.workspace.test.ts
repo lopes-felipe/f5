@@ -677,6 +677,15 @@ describe("WebSocket Server", () => {
       ]),
       truncated: false,
     });
+    const restricted = await sendRequest(ws, WS_METHODS.projectsSearchEntries, {
+      cwd: path.parse(workspace).root,
+      query: "comp",
+      limit: 10,
+    });
+    expect(restricted.error).toEqual({
+      code: "WorkspaceSearchRestricted",
+      message: "Workspace search is unavailable at the filesystem root.",
+    });
   });
 
   it("creates a committed project from a name in the configured projects folder", async () => {

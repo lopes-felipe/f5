@@ -80,8 +80,32 @@ describe("project content search", () => {
           workspaceRoot,
           request: request("restricted"),
         }),
-      ).rejects.toMatchObject({ failure: "invalid_workspace" });
+      ).rejects.toMatchObject({ code: "WorkspaceSearchRestricted" });
       expect(workerFactory).not.toHaveBeenCalled();
+    } finally {
+      await manager.dispose();
+    }
+  });
+
+  it("starts a worker for a workspace inside the home directory", async () => {
+    const home = makeTempDir();
+    vi.stubEnv(process.platform === "win32" ? "USERPROFILE" : "HOME", home);
+    const workspaceRoot = path.join(home, "project");
+    fs.mkdirSync(workspaceRoot);
+    const onCall = vi.fn();
+    const manager = makeProjectContentSearchManager({
+      workerFactory: () => fakeWorkerFactory({ onCall }),
+    });
+    try {
+      await manager.search({
+        requestKey: "client:subdirectory",
+        workspaceRoot,
+        request: request("subdirectory"),
+      });
+      expect(onCall).toHaveBeenCalledWith({
+        type: "initialize",
+        rootPath: fs.realpathSync(workspaceRoot),
+      });
     } finally {
       await manager.dispose();
     }

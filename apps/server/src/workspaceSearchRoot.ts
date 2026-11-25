@@ -1,27 +1,35 @@
 import fs from "node:fs/promises";
+import type { BigIntStats } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+export class WorkspaceSearchRestrictedError extends Error {
+  readonly code = "WorkspaceSearchRestricted";
+}
+
 /** Checks a canonical workspace path before starting a recursive index. */
-export async function getWorkspaceSearchRootRestriction(
+export async function assertWorkspaceSearchRootAllowed(
   rootPath: string,
-): Promise<string | undefined> {
+  workspaceStat?: BigIntStats,
+): Promise<void> {
   if (path.dirname(rootPath) === rootPath) {
-    return "Workspace search is unavailable at the filesystem root.";
+    throw new WorkspaceSearchRestrictedError(
+      "Workspace search is unavailable at the filesystem root.",
+    );
   }
 
   const home = os.homedir();
-  const realHome = await fs.realpath(home).catch(() => home);
-  if (path.relative(realHome, rootPath) !== "") {
-    // realpath can preserve the caller's casing even on a case-insensitive volume.
-    if (rootPath.toLowerCase() !== realHome.toLowerCase()) return undefined;
-    const [workspaceStat, homeStat] = await Promise.all([
-      fs.stat(rootPath, { bigint: true }),
-      fs.stat(realHome, { bigint: true }).catch(() => null),
-    ]);
-    if (!homeStat || workspaceStat.dev !== homeStat.dev || workspaceStat.ino !== homeStat.ino) {
-      return undefined;
-    }
+  // Mount aliases can share a directory's identity while realpath returns different paths.
+  const [root, homeStat] = await Promise.all([
+    workspaceStat ?? fs.stat(rootPath, { bigint: true }),
+    fs.stat(home, { bigint: true }).catch(() => null),
+  ]);
+  if (
+    path.relative(home, rootPath) === "" ||
+    (homeStat && root.dev === homeStat.dev && root.ino !== 0n && root.ino === homeStat.ino)
+  ) {
+    throw new WorkspaceSearchRestrictedError(
+      "Workspace search is unavailable in the home directory.",
+    );
   }
-  return "Workspace search is unavailable in the home directory.";
 }

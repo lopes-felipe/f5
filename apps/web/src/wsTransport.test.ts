@@ -1435,6 +1435,7 @@ describe("admission-aware scheduling", () => {
       "BackgroundShed",
       "RpcQueueFull",
       "ResponseEncodeFailed",
+      "WorkspaceSearchRestricted",
     ])
       expect(isQueryRetryable(new WsRequestError("x", code))).toBe(false);
     expect(isQueryRetryable(new DOMException("aborted", "AbortError"))).toBe(false);
