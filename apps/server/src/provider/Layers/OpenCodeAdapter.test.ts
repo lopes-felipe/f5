@@ -167,7 +167,7 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
         exitCode: Effect.never,
       };
     }),
-  connectToOpenCodeServer: ({ serverUrl }) =>
+  connectToOpenCodeServer: ({ serverUrl, serverPassword }) =>
     Effect.gen(function* () {
       const url = serverUrl ?? "http://127.0.0.1:4301";
       // Unconditionally register a scope finalizer for test observability —
@@ -188,6 +188,7 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
         url,
         exitCode: serverUrl ? null : Deferred.await(exit),
         external: Boolean(serverUrl),
+        ...(serverPassword ? { serverPassword } : {}),
       };
     }),
   runOpenCodeCommand: () => Effect.succeed({ stdout: "", stderr: "", code: 0 }),
@@ -386,6 +387,26 @@ const sleep = (ms: number) =>
   Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
 it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
+  it.effect("rejects a missing saved password before starting a local session", () =>
+    Effect.gen(function* () {
+      const adapter = yield* makeOpenCodeAdapter({
+        ...openCodeAdapterTestSettings,
+        serverUrl: "",
+        serverPassword: "",
+        serverPasswordRedacted: true,
+      });
+      const error = yield* adapter
+        .startSession({
+          threadId: asThreadId("missing-local-password"),
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.flip);
+      assert.match(error.message, /A stored OpenCode password is unavailable/);
+      assert.deepEqual(runtimeMock.state.sessionCreateUrls, []);
+      assert.deepEqual(runtimeMock.state.closeCalls, []);
+    }),
+  );
+
   it.effect("resumes the durable session after teardown and sends follow-ups to it", () =>
     Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;
@@ -838,46 +859,61 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
     }),
   );
 
-  it.effect("retains Claude's reported reset in an OpenCode session error", () =>
-    Effect.gen(function* () {
-      const adapter = yield* OpenCodeAdapter;
-      const threadId = asThreadId("claude-limit");
-      yield* adapter.startSession({ threadId, provider: "opencode", runtimeMode: "full-access" });
-      yield* adapter.sendTurn({
-        threadId,
-        input: "work",
-        attachments: [],
-        model: "anthropic/claude-sonnet-4",
-      });
-      const events = yield* adapter.streamEvents.pipe(
-        Stream.takeUntil((event) => event.type === "runtime.error"),
-        Stream.runCollect,
-        Effect.forkChild,
-      );
-      while (!runtimeMock.state.emitEvent) yield* sleep(1);
-      runtimeMock.state.emitEvent!({
-        type: "session.error",
-        properties: {
-          sessionID: "http://127.0.0.1:9999/session",
-          error: {
-            name: "UnknownError",
-            data: {
-              message:
-                "You've hit your weekly limit · resets 9pm Resets at 2026-11-02T20:00:00.000Z.",
+  it.effect.each([
+    { statusCode: 402, message: "You've hit your spending limit. Add funds.", reset: undefined },
+    { statusCode: 429, message: "Too many requests", reset: undefined },
+    {
+      statusCode: 429,
+      message: "You've hit your weekly limit · resets 9pm Resets at 2026-11-02T20:00:00.000Z.",
+      reset: "2026-11-02T20:00:00.000Z",
+    },
+  ])(
+    "classifies OpenCode API error $statusCode with message $message",
+    ({ statusCode, message, reset }) =>
+      Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const threadId = asThreadId("claude-limit");
+        yield* adapter.startSession({ threadId, provider: "opencode", runtimeMode: "full-access" });
+        yield* adapter.sendTurn({
+          threadId,
+          input: "work",
+          attachments: [],
+          model: "anthropic/claude-sonnet-4",
+        });
+        const events = yield* adapter.streamEvents.pipe(
+          Stream.takeUntil((event) => event.type === "runtime.error"),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        while (!runtimeMock.state.emitEvent) yield* sleep(1);
+        runtimeMock.state.emitEvent!({
+          type: "session.error",
+          properties: {
+            sessionID: "http://127.0.0.1:9999/session",
+            error: {
+              name: "APIError",
+              data: {
+                statusCode,
+                isRetryable: false,
+                message,
+              },
             },
           },
-        },
-      });
-      const captured = Array.from(yield* Fiber.join(events).pipe(Effect.timeout("2 seconds")));
-      for (const event of captured) {
-        if (event.type === "turn.completed" || event.type === "runtime.error") {
-          assert.ok(event.turnId);
-          assert.equal(event.payload.usageLimit?.resetsAt, "2026-11-02T20:00:00.000Z");
+        });
+        const captured = Array.from(yield* Fiber.join(events).pipe(Effect.timeout("2 seconds")));
+        for (const event of captured) {
+          if (event.type === "turn.completed" || event.type === "runtime.error") {
+            assert.ok(event.turnId);
+            assert.equal(event.payload.usageLimit !== undefined, reset !== undefined);
+            assert.equal(event.payload.usageLimit?.resetsAt, reset);
+            const displayedMessage =
+              event.type === "turn.completed" ? event.payload.errorMessage : event.payload.message;
+            assert.equal(displayedMessage, message);
+          }
         }
-      }
-      assert.ok(captured.some((event) => event.type === "turn.completed"));
-      yield* adapter.stopSession(threadId);
-    }),
+        assert.ok(captured.some((event) => event.type === "turn.completed"));
+        yield* adapter.stopSession(threadId);
+      }),
   );
 
   for (const terminal of ["idle", "error"] as const) {

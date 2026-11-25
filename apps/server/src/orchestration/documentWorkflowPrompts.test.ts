@@ -38,11 +38,14 @@ export const documentFixture = () =>
     documentType: "rfc",
     readerReviewEnabled: true,
     readerSlot: slot,
-    branchA: slot,
-    branchB: { provider: "claudeAgent", model: "claude-sonnet-4-5" },
+    authors: [
+      { slot, threadId: ThreadId.makeUnsafe("a") },
+      {
+        slot: { provider: "claudeAgent", model: "claude-sonnet-4-5" },
+        threadId: ThreadId.makeUnsafe("b"),
+      },
+    ],
     merge: slot,
-    authorThreadIdA: ThreadId.makeUnsafe("a"),
-    authorThreadIdB: ThreadId.makeUnsafe("b"),
     createdAt: "2026-04-01T00:00:00.000Z",
   });
 describe("document prompts", () => {
@@ -61,10 +64,10 @@ describe("document prompts", () => {
         }),
         buildDocumentMergePrompt({
           workflow,
-          planA: { markdown: "draft A", source },
-          planB: { markdown: "draft B", source },
-          modelA: slot,
-          modelB: workflow.branchB.authorSlot,
+          plans: [
+            { label: "A", markdown: "draft A", source, model: slot },
+            { label: "B", markdown: "draft B", source, model: workflow.branchB.authorSlot },
+          ],
           mergeSlot: slot,
         }),
         buildDocumentPolishPrompt({ workflow, report: "Unclear acronym", source }),
@@ -183,10 +186,10 @@ describe("document prompts", () => {
     const draft = "# Title\n## Summary\n" + "d".repeat(DOCUMENT_ARTIFACT_MAX_CHARS - 21);
     const prompt = buildDocumentMergePrompt({
       workflow,
-      planA: { markdown: draft, source },
-      planB: { markdown: draft, source },
-      modelA: slot,
-      modelB: workflow.branchB.authorSlot,
+      plans: [
+        { label: "A", markdown: draft, source, model: slot },
+        { label: "B", markdown: draft, source, model: workflow.branchB.authorSlot },
+      ],
       mergeSlot: slot,
     });
     expect(prompt.length).toBeLessThan(WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT);
@@ -194,10 +197,10 @@ describe("document prompts", () => {
     expect(
       buildDocumentMergePrompt({
         workflow: { ...workflow, readerReviewEnabled: false },
-        planA: { markdown: draft, source },
-        planB: { markdown: draft, source },
-        modelA: slot,
-        modelB: slot,
+        plans: [
+          { label: "A", markdown: draft, source, model: slot },
+          { label: "B", markdown: draft, source, model: slot },
+        ],
         mergeSlot: slot,
       }),
     ).toContain("If the user asks for changes later");

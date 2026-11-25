@@ -1,9 +1,11 @@
 import { stat, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { type Duration, Effect, Fiber } from "effect";
 import * as TestClock from "effect/testing/TestClock";
 import { expect, it, vi } from "vitest";
 import { PI_CATALOG_PROBE_TIMEOUT_MS, probePiCatalog } from "./PiMetadata.ts";
 import { makePiTextGeneration, runPiMetadataPrompt } from "../../git/Layers/PiTextGeneration.ts";
+import { checkPiProviderStatus } from "../Layers/PiProvider.ts";
 import { PiRpcError } from "./PiRpc.ts";
 import { fixture, run } from "./PiMetadata.testkit.ts";
 
@@ -14,14 +16,105 @@ it("probes in a disposable workspace with extensions, tools and inherited MCP cr
     expect(catalog.skills[0]?.name).toBe("review");
     expect(catalog.slashCommands[0]?.name).toBe("compact");
     const spawn = (await trace())[0]!;
-    expect((spawn.args as string[]).slice(-3)).toEqual([
+    expect((spawn.args as string[]).slice(-4)).toEqual([
       "--no-session",
+      "--offline",
       "--no-extensions",
       "--no-tools",
     ]);
     expect(spawn.privateEnvironment).toBe(false);
     await expect(stat(String(spawn.cwd))).rejects.toThrow();
   }));
+it.skipIf(process.platform !== "win32")("reports a broken Pi command shim as missing", async () =>
+  fixture(async (settings, environment) => {
+    const snapshot = await run(
+      checkPiProviderStatus(
+        { ...settings, enabled: true, customModels: [] },
+        { ...environment, F5_PI_CASE: "version-command-missing" },
+      ),
+    );
+    expect(snapshot.installed).toBe(false);
+  }),
+);
+it.each([
+  { mode: "empty-model-list", message: "Pi has no usable models" },
+  { mode: "missing-model-list", message: "Pi RPC discovery failed" },
+])("shows the right warning for $mode", async ({ mode, message }) =>
+  fixture(async (settings, environment) => {
+    const snapshot = await run(
+      checkPiProviderStatus(
+        { ...settings, enabled: true, customModels: [] },
+        { ...environment, F5_PI_CASE: mode },
+      ),
+    );
+    expect(snapshot.status).toBe("warning");
+    expect(snapshot.message).toContain(message);
+  }),
+);
+it.each(["fallback", "empty-model-list"])("diagnoses a saved Pi default with %s", async (mode) =>
+  fixture(async (settings, environment, trace) => {
+    await writeFile(
+      join(environment.PI_CODING_AGENT_DIR!, "settings.json"),
+      JSON.stringify({ defaultProvider: "missing", defaultModel: "saved" }),
+    );
+    const snapshot = await run(
+      checkPiProviderStatus(
+        { ...settings, enabled: true, customModels: [] },
+        { ...environment, F5_PI_VERSION: "0.84.1", F5_PI_ACTIVE_PROVIDER: "two", F5_PI_CASE: mode },
+      ),
+    );
+    expect(snapshot.status).toBe(mode === "fallback" ? "ready" : "warning");
+    expect(snapshot.message).toContain("Pi default (missing/saved) has no credentials configured");
+    expect(
+      (await trace()).some(
+        (record) =>
+          Array.isArray(record.args) &&
+          record.args[0] === "auth" &&
+          record.args.includes("missing"),
+      ),
+    ).toBe(true);
+  }),
+);
+it.each([
+  { version: "0.84.0", provider: "missing", launchArgs: "", check: false },
+  { version: "0.84.1", provider: "missing", launchArgs: "", check: true },
+  { version: "0.84.1", provider: "missing", launchArgs: "--api-key=example", check: false },
+  { version: "0.84.1", provider: "one", launchArgs: "", check: false },
+])("diagnoses Pi default credentials using the active provider: %j", async (scenario) =>
+  fixture(async (settings, environment, trace) => {
+    const snapshot = await run(
+      checkPiProviderStatus(
+        { ...settings, enabled: true, customModels: [], launchArgs: scenario.launchArgs },
+        {
+          ...environment,
+          F5_PI_VERSION: scenario.version,
+          F5_PI_ACTIVE_PROVIDER: scenario.provider,
+          F5_PI_ACTIVE_MODEL: "uncatalogued",
+        },
+      ),
+    );
+    expect(snapshot.status).toBe("ready");
+    expect(snapshot.models.map((model) => model.slug)).toContain("two/shared");
+    if (scenario.provider === "missing")
+      expect(snapshot.message).toContain("Pi default (missing/uncatalogued)");
+    else expect(snapshot.message).not.toContain("uncatalogued");
+    const probes = (await trace()).filter(
+      (entry) => entry.type === "spawn" && (entry.args as string[])[0] === "auth",
+    );
+    expect(probes).toHaveLength(scenario.check ? 1 : 0);
+    if (scenario.check) {
+      expect(probes[0]?.args).toEqual([
+        "auth",
+        "check",
+        "--provider",
+        "missing",
+        "--json",
+        "--no-refresh",
+      ]);
+      expect(snapshot.message).toContain("has no credentials configured for missing");
+    }
+  }),
+);
 const probeAfterSlowStart = (elapsed: Duration.Input, expected: "Success" | "Failure") =>
   fixture(async (settings, environment, trace) => {
     const gate = `${environment.F5_PI_TRACE}.gate`;
@@ -59,28 +152,34 @@ it("fails a broken catalog read instead of replacing a usable catalog with an em
     expect(result._tag).toBe("Failure");
     expect(JSON.stringify(result)).not.toContain("PRIVATE_FAILURE");
   }));
-it("uses a qualified model and preserves complete assistant output without duplicating deltas", async () =>
-  fixture(async (settings, environment, trace) => {
-    const text = await run(
-      runPiMetadataPrompt({
-        settings,
-        environment,
-        prompt: "title",
-        model: "vendor/model/variant",
-        thinking: "high",
-      }),
-    );
-    expect(JSON.parse(text)).toEqual({ title: "Inspect Pi metadata", needsRefinement: false });
-    const records = await trace();
-    expect(records.find((record) => record.type === "set_model")).toMatchObject({
-      provider: "vendor",
-      modelId: "model/variant",
-    });
-    expect(records.find((record) => record.type === "set_thinking_level")).toMatchObject({
-      level: "high",
-    });
-    expect(records.filter((record) => record.type === "prompt")).toHaveLength(1);
-  }));
+it.each(["", " --offline"])(
+  "uses a qualified model and preserves complete assistant output (launch suffix %j)",
+  async (suffix) =>
+    fixture(async (settings, environment, trace) => {
+      const text = await run(
+        runPiMetadataPrompt({
+          settings: { ...settings, launchArgs: settings.launchArgs + suffix },
+          environment,
+          prompt: "title",
+          model: "vendor/model/variant",
+          thinking: "high",
+        }),
+      );
+      expect(JSON.parse(text)).toEqual({ title: "Inspect Pi metadata", needsRefinement: false });
+      const records = await trace();
+      expect(
+        (records[0]?.args as string[] | undefined)?.filter((arg) => arg === "--offline"),
+      ).toEqual(["--offline"]);
+      expect(records.find((record) => record.type === "set_model")).toMatchObject({
+        provider: "vendor",
+        modelId: "model/variant",
+      });
+      expect(records.find((record) => record.type === "set_thinking_level")).toMatchObject({
+        level: "high",
+      });
+      expect(records.filter((record) => record.type === "prompt")).toHaveLength(1);
+    }),
+);
 it.each(["abort", "error", "tool", "oversize"])(
   "rejects unsuccessful or unsafe metadata outcomes: %s",
   async (mode) =>

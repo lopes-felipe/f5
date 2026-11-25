@@ -13,6 +13,8 @@ import {
 import { readNativeApi } from "../nativeApi";
 import { getServerHttpOrigin } from "../lib/serverHttpOrigin";
 import { downloadAsset } from "../lib/downloadAsset";
+import { providerQueryKeys } from "../lib/providerQueryKeys";
+import { useWatchedWorkspacePaths } from "../lib/workspaceWatch";
 const OfficeViewer = lazy(() => import("./files/OfficeViewer"));
 const BinaryViewer = lazy(() => import("./files/BinaryViewer"));
 const FontViewer = lazy(() => import("./files/FontViewer"));
@@ -32,18 +34,32 @@ export function workspaceMediaKind(
   return kind;
 }
 
+function WorkspacePdfFrame({ url, name }: { url: string; name: string }) {
+  const [src] = useState(url);
+  return (
+    <iframe
+      title={name}
+      src={src}
+      referrerPolicy="no-referrer"
+      className="min-h-96 flex-1 border-0"
+    />
+  );
+}
+
 export function WorkspaceMediaView({
   name,
   projectId,
   threadId,
   identity,
   relativePath = name,
+  cwd,
 }: {
   name: string;
   projectId?: ProjectId;
   identity?: ProjectIssueAssetUrlInput["identity"];
   relativePath?: string;
   threadId?: ThreadId;
+  cwd?: string | undefined;
 }) {
   const kind = workspaceMediaKind(name) ?? "binary";
   const [source, setSource] = useState(false);
@@ -53,30 +69,51 @@ export function WorkspaceMediaView({
   const [actualSize, setActualSize] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
+  const pdf = kind === "pdf";
+  const assetIdentity =
+    identity ??
+    (threadId
+      ? { kind: "thread" as const, threadId }
+      : { kind: "project" as const, projectId: projectId! });
+  const queryKey =
+    pdf && cwd
+      ? [...providerQueryKeys.fileContent({ cwd, relativePath }), "pdf-preview", assetIdentity]
+      : ["workspace-media", assetIdentity, relativePath, kind];
+  useWatchedWorkspacePaths(pdf ? cwd : undefined, [relativePath], []);
   const grant = useQuery({
-    queryKey: ["workspace-media", identity, projectId, threadId, relativePath],
+    queryKey,
     queryFn: async () => {
       const api = readNativeApi();
       if (!api) throw new Error("Disconnected from server");
-      const results = await api.projects.issueAssetUrl({
-        identity:
-          identity ??
-          (threadId ? { kind: "thread", threadId } : { kind: "project", projectId: projectId! }),
-        files: [{ relativePath, grant: kind === "html" ? "html-document" : "file" }],
-      });
-      if (!results[0]) throw new Error("File is unavailable");
-      return `${getServerHttpOrigin()}${results[0].url}`;
+      const issueAsset = () =>
+        api.projects.issueAssetUrl({
+          identity: assetIdentity,
+          files: [{ relativePath, grant: kind === "html" ? "html-document" : "file" }],
+        });
+      let [asset] = await issueAsset();
+      if (pdf && !asset) {
+        // Atomic replacement and transient per-file read failures can briefly
+        // make an open PDF unavailable. Confirm before replacing the frame.
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        [asset] = await issueAsset();
+      }
+      if (!asset) return null;
+      return {
+        url: `${getServerHttpOrigin()}${asset.url}`,
+        fileRevision: asset.fileRevision,
+      };
     },
     staleTime: 25 * 60 * 1000,
     refetchInterval: 25 * 60 * 1000,
   });
-  if (grant.isError)
+  if (grant.data === null || (grant.isError && (!pdf || !grant.data)))
     return (
       <div role="alert" className="p-4">
         Unable to open this file. <button onClick={() => void grant.refetch()}>Retry</button>
       </div>
     );
   if (!grant.data) return <div className="p-4">Loading file…</div>;
+  const { url, fileRevision } = grant.data;
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-auto p-2">
       <button
@@ -85,7 +122,7 @@ export function WorkspaceMediaView({
         onClick={() => {
           setDownloading(true);
           setActionError(null);
-          void downloadAsset(grant.data, name)
+          void downloadAsset(url, name)
             .catch((error: unknown) =>
               setActionError(error instanceof Error ? error.message : "Download failed."),
             )
@@ -95,14 +132,12 @@ export function WorkspaceMediaView({
         {downloading ? "Downloading…" : "Download " + name}
       </button>
       <Suspense fallback={<p role="status">Loading preview…</p>}>
-        {officeKind && (
-          <OfficeViewer key={grant.data} src={grant.data} name={name} kind={officeKind} />
-        )}
+        {officeKind && <OfficeViewer key={url} src={url} name={name} kind={officeKind} />}
         {(kind === "archive" || kind === "sqlite") && (
-          <BinaryViewer key={grant.data} src={grant.data} name={name} kind={kind} />
+          <BinaryViewer key={url} src={url} name={name} kind={kind} />
         )}
-        {kind === "font" && <FontViewer key={grant.data} src={grant.data} name={name} />}
-        {kind === "mermaid" && <MermaidFileViewer key={grant.data} src={grant.data} />}
+        {kind === "font" && <FontViewer key={url} src={url} name={name} />}
+        {kind === "mermaid" && <MermaidFileViewer key={url} src={url} />}
       </Suspense>
       {actionError && <p role="alert">{actionError}</p>}
       {kind === "html" && isElectron && threadId && (
@@ -141,7 +176,7 @@ export function WorkspaceMediaView({
             relativePath,
           }}
         >
-          <AssetTextView url={grant.data} name={name} markdown={isMarkdown && !source} />
+          <AssetTextView url={url} name={name} markdown={isMarkdown && !source} />
         </AssetDocumentContext.Provider>
       )}
       {kind === "binary" && !isText && (
@@ -178,12 +213,12 @@ export function WorkspaceMediaView({
           </button>
           {/\.(heic|heif|tif|tiff)$/iu.test(name) ? (
             <Suspense fallback={<p>Decoding image…</p>}>
-              <PreviewImage key={grant.data} name={name} src={grant.data} />
+              <PreviewImage key={url} name={name} src={url} />
             </Suspense>
           ) : (
             <img
               alt={name}
-              src={grant.data}
+              src={url}
               referrerPolicy="no-referrer"
               className={
                 actualSize ? "max-w-none self-start" : "max-h-full max-w-full object-contain"
@@ -192,19 +227,26 @@ export function WorkspaceMediaView({
           )}
         </>
       )}
-      {((kind === "html" && !source) || kind === "pdf") && (
+      {kind === "html" && !source && (
         <iframe
           title={name}
-          src={grant.data}
-          sandbox={kind === "html" ? "" : undefined}
+          src={url}
+          sandbox=""
           referrerPolicy="no-referrer"
           className="min-h-96 flex-1 border-0"
         />
       )}
-      {kind === "video" && (
-        <video key={name} src={grant.data} controls preload="metadata" className="max-h-full" />
+      {pdf && (
+        <WorkspacePdfFrame
+          key={JSON.stringify([queryKey, fileRevision ?? url])}
+          name={name}
+          url={url}
+        />
       )}
-      {kind === "audio" && <audio src={grant.data} controls preload="metadata" />}
+      {kind === "video" && (
+        <video key={name} src={url} controls preload="metadata" className="max-h-full" />
+      )}
+      {kind === "audio" && <audio src={url} controls preload="metadata" />}
     </div>
   );
 }

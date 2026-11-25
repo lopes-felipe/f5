@@ -59,7 +59,13 @@ import {
   MIN_REMOTE_AUTH_TOKEN_BYTES,
   PRIMARY_SERVER_AUTH_TOKEN_ENV,
   SERVER_AUTH_TOKEN_ENV,
+  SERVER_AUTH_TOKEN_ENV_NAMES,
 } from "./serverAuth";
+import {
+  PROJECTION_TIMINGS_ENV,
+  resolveAliasedBooleanEnv,
+  THREAD_OPEN_TIMINGS_ENV,
+} from "./envFlags.ts";
 import { AnalyticsServiceLayerLive } from "./telemetry/Layers/AnalyticsService";
 import { AnalyticsService } from "./telemetry/Services/AnalyticsService";
 import { withStartupPhaseTiming } from "./startupTiming";
@@ -127,13 +133,15 @@ export class CliConfig extends ServiceMap.Service<CliConfig, CliConfigShape>()(
   );
 }
 
-const optionalWithLegacy = <A>(
+export const optionalWithLegacy = <A>(
   primary: Config.Config<A>,
   legacy: Config.Config<A>,
 ): Config.Config<A | undefined> =>
-  Config.all([Config.option(primary), Config.option(legacy)]).pipe(
-    Config.map(([primaryValue, legacyValue]) =>
-      Option.getOrUndefined(Option.orElse(primaryValue, () => legacyValue)),
+  Config.make((provider) =>
+    Effect.flatMap(Config.option(primary).parse(provider), (primaryValue) =>
+      Option.isSome(primaryValue)
+        ? Effect.succeed(primaryValue.value)
+        : Effect.map(Config.option(legacy).parse(provider), Option.getOrUndefined),
     ),
   );
 
@@ -329,9 +337,11 @@ const ServerConfigLive = (input: CliInput) => {
       const noBrowser = resolveBooleanFlag(input.noBrowser, env.noBrowser ?? mode === "desktop");
       const authToken = trimToUndefined(Option.getOrUndefined(input.authToken) ?? env.authToken);
       // ServerConfig holds the token from here on. Many spawn sites pass `process.env` straight
-      // through (Git and its hooks, setup scripts, maintenance workers), so drop the variable
-      // from this process instead of relying on each of them to filter it.
-      delete process.env[SERVER_AUTH_TOKEN_ENV];
+      // through (Git and its hooks, setup scripts, maintenance workers), so drop both primary and
+      // legacy token variables from this process instead of relying on each spawn site to filter.
+      for (const envName of SERVER_AUTH_TOKEN_ENV_NAMES) {
+        delete process.env[envName];
+      }
       const autoBootstrapProjectFromCwd = resolveBooleanFlag(
         input.autoBootstrapProjectFromCwd,
         env.autoBootstrapProjectFromCwd ?? mode === "web",
@@ -611,23 +621,19 @@ const makeServerProgram = (input: CliInput) =>
         }),
       );
     }
+    const threadOpenTimings = resolveAliasedBooleanEnv(
+      THREAD_OPEN_TIMINGS_ENV.primary,
+      THREAD_OPEN_TIMINGS_ENV.legacy,
+    );
+    const projectionTimings = resolveAliasedBooleanEnv(
+      PROJECTION_TIMINGS_ENV.primary,
+      PROJECTION_TIMINGS_ENV.legacy,
+    );
     yield* Effect.logInfo("server instrumentation flags", {
-      threadOpenTimingsEnv:
-        process.env.F5_LOG_THREAD_OPEN_TIMINGS ??
-        process.env.T3CODE_LOG_THREAD_OPEN_TIMINGS ??
-        null,
-      threadOpenTimingsEnabled: (() => {
-        const value =
-          process.env.F5_LOG_THREAD_OPEN_TIMINGS ?? process.env.T3CODE_LOG_THREAD_OPEN_TIMINGS;
-        return value === "1" || value === "true";
-      })(),
-      projectionTimingsEnv:
-        process.env.F5_LOG_PROJECTION_TIMINGS ?? process.env.T3CODE_LOG_PROJECTION_TIMINGS ?? null,
-      projectionTimingsEnabled: (() => {
-        const value =
-          process.env.F5_LOG_PROJECTION_TIMINGS ?? process.env.T3CODE_LOG_PROJECTION_TIMINGS;
-        return value === "1" || value === "true";
-      })(),
+      threadOpenTimingsEnv: threadOpenTimings.raw,
+      threadOpenTimingsEnabled: threadOpenTimings.enabled,
+      projectionTimingsEnv: projectionTimings.raw,
+      projectionTimingsEnabled: projectionTimings.enabled,
     });
 
     if (!config.devUrl && !config.staticDir) {
