@@ -1,15 +1,25 @@
 import { tmpdir } from "node:os";
 import { PiSettings, ProviderInstanceId, type ThreadId } from "@t3tools/contracts";
-import { Effect, Layer, Schema } from "effect";
+import { Effect, Fiber, Layer, Option, Schema, Stream } from "effect";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { ServerConfig } from "../../config.ts";
 import { PreviewMcpHttpServer } from "../../mcp/PreviewMcpHttpServer.ts";
 import { fixture, threadId } from "../pi/PiAdapter.testkit.ts";
 import { PiDriver } from "./PiDriver.ts";
 
-it("publishes an explicit Pi instance's workspace catalog and scopes F5 thread credentials to its owned child", async () =>
+it.each([
+  "normal",
+  "workspace-malformed-models",
+  "workspace-missing-provider",
+  "workspace-probe-hidden-provider",
+  "workspace-probe-failed",
+  "workspace-probe-pending",
+])("publishes Pi workspace commands and scopes thread credentials: %s", async (mode) =>
   fixture(async ({ settings, options, trace }) => {
+    options.environment.F5_PI_CASE = mode;
+    options.environment.F5_PI_VERSION =
+      mode === "workspace-probe-hidden-provider" ? "0.84.0" : "0.84.1";
     const configs: Array<{ threadId: ThreadId; catalog?: string }> = [];
     let disposed = 0;
     const services = Layer.mergeAll(
@@ -59,6 +69,27 @@ it("publishes an explicit Pi instance's workspace catalog and scopes F5 thread c
             "different/custom",
           ]);
           expect((yield* b.snapshot.getSnapshot).status).toBe("disabled");
+          if (mode === "workspace-probe-pending") {
+            yield* Effect.promise(() =>
+              vi.waitFor(async () => {
+                expect((await trace()).some((record) => record.type === "get_state")).toBe(true);
+              }),
+            );
+          } else {
+            const before = yield* a.snapshot.refresh;
+            if (mode === "workspace-probe-hidden-provider")
+              expect(before.message).toContain("Pi default (extension/default)");
+            if (mode === "workspace-probe-failed")
+              expect(before.message).toContain("Pi RPC discovery failed");
+          }
+          const workspaceChange = yield* a.snapshot.streamChanges.pipe(
+            Stream.filter(
+              (snapshot) =>
+                snapshot.slashCommands?.some((command) => command.name === "reload") ?? false,
+            ),
+            Stream.runHead,
+            Effect.forkScoped({ startImmediately: true }),
+          );
           const session = yield* a.adapter.startSession({
             threadId,
             cwd: tmpdir(),
@@ -66,11 +97,22 @@ it("publishes an explicit Pi instance's workspace catalog and scopes F5 thread c
           });
           expect(session.providerInstanceId).toBe(instanceId);
           const snapshot = yield* a.snapshot.getSnapshot;
+          expect(
+            Option.isSome(yield* Fiber.join(workspaceChange).pipe(Effect.timeout("5 seconds"))),
+          ).toBe(true);
           expect(snapshot.driver).toBe("pi");
           expect(snapshot.displayName).toBe("Pi work");
           expect(snapshot.models.map((model) => model.slug)).toContain("one/shared");
           expect(snapshot.slashCommands?.some((command) => command.name === "reload")).toBe(true);
           expect(snapshot.auth.status).toBe("unknown");
+          expect(snapshot.status).toBe("ready");
+          expect(snapshot.message).toContain(
+            mode === "workspace-malformed-models"
+              ? "workspace catalog reported no models"
+              : "workspace catalog is available",
+          );
+          if (mode === "workspace-probe-pending") expect(snapshot.version).toBeNull();
+          expect(snapshot.message).not.toContain("workspace/last-used");
           expect(configs).toMatchObject([
             { threadId, providerInstanceId: instanceId, catalog: "thread" },
           ]);
@@ -83,10 +125,15 @@ it("publishes an explicit Pi instance's workspace catalog and scopes F5 thread c
     const records = await trace();
     expect(JSON.stringify(records)).not.toContain("PRIVATE_PI_BEARER");
     const processes = records.filter((record) => record.type === "spawn");
+    expect(processes.some((record) => (record.args as string[])[0] === "auth")).toBe(false);
     expect(processes.some((record) => record.hasMcp === true)).toBe(true);
     expect(processes.filter((record) => record.hasMcp === true)).toHaveLength(1);
-    for (const record of processes) expect(() => process.kill(Number(record.pid), 0)).toThrow();
-  }));
+    expect(processes.find((record) => record.hasMcp === true)?.args).not.toContain("--offline");
+    await vi.waitFor(() => {
+      for (const record of processes) expect(() => process.kill(Number(record.pid), 0)).toThrow();
+    });
+  }),
+);
 
 it("uses the same typed defaults as saved Pi instance configurations", () => {
   expect(PiDriver.defaultConfig()).toEqual(Schema.decodeSync(PiSettings)({}));

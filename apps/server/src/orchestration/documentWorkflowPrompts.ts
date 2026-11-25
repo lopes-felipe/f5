@@ -12,13 +12,15 @@ import {
   workflowUpstreamArtifactSection,
   type WorkflowRetryContext,
 } from "./workflowPromptFragments.ts";
-import type {
-  buildAuthorPrompt,
-  buildReviewPrompt,
-  buildRevisionPrompt,
-  buildMergePrompt,
-  WorkflowPromptArtifactSource,
+import {
+  planLengthLimitSection,
+  type buildAuthorPrompt,
+  type buildReviewPrompt,
+  type buildRevisionPrompt,
+  type buildMergePrompt,
+  type WorkflowPromptArtifactSource,
 } from "./workflowPrompts.ts";
+import { planningBranches, workflowUsesMesh } from "@t3tools/shared/workflowParticipants";
 import { joinPromptSections, providerGuidanceSection, slotLabel } from "./workflowSharedUtils.ts";
 
 function typeSection(type: WorkflowDocumentType): string {
@@ -55,11 +57,12 @@ export function buildDocumentAuthorPrompt(input: Parameters<typeof buildAuthorPr
   const label = WORKFLOW_DOCUMENT_PROFILES[type].label;
   return joinPromptSections([
     `Please write ${type === "rfc" || type === "adr" ? "an" : "a"} ${label} for the following brief:\n\n${input.workflow.requirementPrompt}`,
-    `You are Author ${input.branch.branchId.toUpperCase()} in a multi-model document workflow; your draft will be independently reviewed and merged with another author's draft. Produce the strongest standalone ${label}.`,
+    `You are Author ${input.branch.branchId.toUpperCase()} in a multi-model document workflow; your draft will be independently reviewed and merged with ${workflowUsesMesh(planningBranches(input.workflow).length) ? "the other authors' drafts" : "another author's draft"}. Produce the strongest standalone ${label}.`,
     providerGuidanceSection(input.authorSlot.provider),
     typeSection(type),
     writing(type),
     output(type),
+    planLengthLimitSection(input.maxPlanChars, "document"),
     repair(input.retry),
     workflowInterruptedRetrySection(input.retry),
   ]);
@@ -108,23 +111,21 @@ export function buildDocumentRevisionPrompt(
     `Read all reviews and verify disputed facts before changing them. Apply feedback you agree with, and keep unresolved material risks. Do not argue with rejected feedback inside the document. Produce the complete revised document as a full replacement.`,
     typeSection(input.documentType),
     output(input.documentType),
+    planLengthLimitSection(input.maxPlanChars, "document"),
     repair(input.retry),
   ]);
 }
 export function buildDocumentMergePrompt(input: Parameters<typeof buildMergePrompt>[0]): string {
   const type = planningWorkflowDocumentType(input.workflow) ?? "custom";
   return joinPromptSections([
-    `You have two independently drafted and reviewed versions of the same ${WORKFLOW_DOCUMENT_PROFILES[type].label}. Merge them into one final document.`,
+    `You have ${workflowUsesMesh(input.plans.length) ? input.plans.length : "two"} independently drafted and reviewed versions of the same ${WORKFLOW_DOCUMENT_PROFILES[type].label}. Merge them into one final document.`,
     `## Original Brief\n${input.workflow.requirementPrompt}`,
-    envelope(
-      `Draft A (${slotLabel(input.modelA)})`,
-      normalizeDocumentMarkdown(input.planA.markdown),
-      input.planA.source,
-    ),
-    envelope(
-      `Draft B (${slotLabel(input.modelB)})`,
-      normalizeDocumentMarkdown(input.planB.markdown),
-      input.planB.source,
+    ...input.plans.map((plan) =>
+      envelope(
+        `Draft ${plan.label} (${slotLabel(plan.model)})`,
+        normalizeDocumentMarkdown(plan.markdown),
+        plan.source,
+      ),
     ),
     providerGuidanceSection(input.mergeSlot.provider),
     typeSection(type),

@@ -153,8 +153,7 @@ describe("formatCodeReviewReport", () => {
 
   it("appends the footer", () => {
     const footer = codeReviewPostFooter({
-      reviewerA: { model: "gpt-5" },
-      reviewerB: { model: "claude-opus-5-5" },
+      reviewers: [{ model: "gpt-5" }, { model: "claude-opus-5-5" }],
       consolidation: { model: "claude-opus-5-5" },
     });
     expect(footer).toBe(

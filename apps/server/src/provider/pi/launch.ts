@@ -228,6 +228,7 @@ export function buildPiRpcLaunch(input: {
     | undefined;
   readonly extensionPath: string | undefined;
   readonly ephemeral?: boolean;
+  readonly shortLived?: boolean;
   readonly disableExtensions?: boolean;
   readonly disableTools?: boolean;
   readonly readOnly?: boolean;
@@ -250,6 +251,8 @@ export function buildPiRpcLaunch(input: {
     "rpc",
     ...(input.ephemeral === true ? ["--no-session"] : []),
     ...launchArgs,
+    // A startup catalog refresh could rotate an OAuth token just before F5 reaps the child.
+    ...(input.shortLived === true && !launchArgs.includes("--offline") ? ["--offline"] : []),
     // Restrictions follow user launch args so a configured --tools or
     // --extension cannot silently re-enable unattended text-generation code.
     ...(input.disableExtensions === true ? ["--no-extensions"] : []),

@@ -225,6 +225,12 @@ type AcpStartState =
 interface AcpAssistantSegmentState {
   readonly nextSegmentIndex: number;
   readonly activeItemId?: string;
+  /**
+   * Set when this runtime resumes a session without replay (`session/resume`). The session id
+   * is unchanged and the counter restarts at 0, so ids without it would name earlier, finished
+   * messages. New and loaded sessions keep the plain ids their replay depends on.
+   */
+  readonly epoch?: string;
 }
 
 interface EnsureActiveAssistantSegmentResult {
@@ -334,7 +340,12 @@ const makeAcpSessionRuntime = (
     // Recently shown tool calls. A late update to a finished call is not a new
     // boundary in the answer, although its progress state is gone.
     const shownToolCallIds = new Set<string>();
-    const assistantSegmentRef = yield* Ref.make<AcpAssistantSegmentState>({ nextSegmentIndex: 0 });
+    const assistantSegmentRef = yield* Ref.make<AcpAssistantSegmentState>({
+      nextSegmentIndex: 0,
+      ...(options.resumeSessionId && options.resumeMethod === "resume"
+        ? { epoch: crypto.randomUUID().slice(0, 8) }
+        : {}),
+    });
     const configOptionsRef = yield* Ref.make(sessionConfigOptionsFromSetup(undefined));
     const startStateRef = yield* Ref.make<AcpStartState>({ _tag: "NotStarted" });
     const acceptedSessionIdRef = yield* Ref.make<string | null>(
@@ -1339,8 +1350,13 @@ function updateModeState(modeState: AcpSessionModeState, nextModeId: string): Ac
     : modeState;
 }
 
-const assistantItemId = (sessionId: string, segmentIndex: number) =>
-  `assistant:${sessionId}:segment:${segmentIndex}`;
+const assistantItemId = (sessionId: string, segmentIndex: number, epoch: string | undefined) =>
+  epoch === undefined
+    ? `assistant:${sessionId}:segment:${segmentIndex}`
+    : `assistant:${sessionId}:r${epoch}:segment:${segmentIndex}`;
+
+const withEpoch = (current: AcpAssistantSegmentState) =>
+  current.epoch === undefined ? {} : { epoch: current.epoch };
 
 const ensureActiveAssistantSegment = ({
   queue,
@@ -1357,7 +1373,7 @@ const ensureActiveAssistantSegment = ({
       if (current.activeItemId) {
         return [{ itemId: current.activeItemId }, current] as const;
       }
-      const itemId = assistantItemId(sessionId, current.nextSegmentIndex);
+      const itemId = assistantItemId(sessionId, current.nextSegmentIndex, current.epoch);
       return [
         {
           itemId,
@@ -1369,6 +1385,7 @@ const ensureActiveAssistantSegment = ({
         {
           nextSegmentIndex: current.nextSegmentIndex + 1,
           activeItemId: itemId,
+          ...withEpoch(current),
         } satisfies AcpAssistantSegmentState,
       ] as const;
     },
@@ -1398,6 +1415,7 @@ const closeActiveAssistantSegment = ({
       } satisfies AcpParsedSessionEvent,
       {
         nextSegmentIndex: current.nextSegmentIndex,
+        ...withEpoch(current),
       } satisfies AcpAssistantSegmentState,
     ] as const;
   }).pipe(Effect.flatMap((event) => (event ? Queue.offer(queue, event) : Effect.void)));

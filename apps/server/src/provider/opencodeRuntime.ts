@@ -59,12 +59,16 @@ export function resolveOpenCodeInvocation(
 export interface OpenCodeServerProcess {
   readonly url: string;
   readonly exitCode: Effect.Effect<number, never>;
+  readonly serverPassword?: string;
+  readonly serverUsername?: string;
 }
 
 export interface OpenCodeServerConnection {
   readonly url: string;
   readonly exitCode: Effect.Effect<number, never> | null;
   readonly external: boolean;
+  readonly serverPassword?: string;
+  readonly serverUsername?: string;
 }
 
 const OPENCODE_RUNTIME_ERROR_TAG = "OpenCodeRuntimeError";
@@ -134,6 +138,7 @@ export interface OpenCodeRuntimeShape {
    */
   readonly startOpenCodeServerProcess: (input: {
     readonly binaryPath: string;
+    readonly serverPassword?: string;
     readonly environment?: NodeJS.ProcessEnv;
     readonly port?: number;
     readonly hostname?: string;
@@ -147,6 +152,7 @@ export interface OpenCodeRuntimeShape {
   readonly connectToOpenCodeServer: (input: {
     readonly binaryPath: string;
     readonly serverUrl?: string | null;
+    readonly serverPassword?: string;
     readonly environment?: NodeJS.ProcessEnv;
     readonly port?: number;
     readonly hostname?: string;
@@ -162,6 +168,7 @@ export interface OpenCodeRuntimeShape {
     readonly baseUrl: string;
     readonly directory: string;
     readonly serverPassword?: string;
+    readonly serverUsername?: string;
     /** Cancels every SDK fetch when this owned server/session disappears. */
     readonly signal?: AbortSignal;
   }) => OpencodeClient;
@@ -534,9 +541,12 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
         ));
       const timeoutMs = input.timeoutMs ?? DEFAULT_OPENCODE_SERVER_TIMEOUT_MS;
       const args = ["serve", `--hostname=${hostname}`, `--port=${port}`];
+      const inheritedEnvironment = input.environment ?? process.env;
+      const serverPassword = input.serverPassword ?? inheritedEnvironment.OPENCODE_SERVER_PASSWORD;
       const environment = {
-        ...(input.environment ?? process.env),
-        OPENCODE_CONFIG_CONTENT: (input.environment ?? process.env).OPENCODE_CONFIG_CONTENT ?? "{}",
+        ...inheritedEnvironment,
+        OPENCODE_CONFIG_CONTENT: inheritedEnvironment.OPENCODE_CONFIG_CONTENT ?? "{}",
+        ...(serverPassword !== undefined ? { OPENCODE_SERVER_PASSWORD: serverPassword } : {}),
       };
       const invocation = yield* resolveInvocationEffect(input.binaryPath, args, environment).pipe(
         Effect.mapError((cause) =>
@@ -700,6 +710,10 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
 
       return {
         url: readyOption.value,
+        ...(serverPassword !== undefined ? { serverPassword } : {}),
+        ...(inheritedEnvironment.OPENCODE_SERVER_USERNAME
+          ? { serverUsername: inheritedEnvironment.OPENCODE_SERVER_USERNAME }
+          : {}),
         exitCode: child.exitCode.pipe(
           Effect.map(Number),
           Effect.orElseSucceed(() => 0),
@@ -737,19 +751,20 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
         url: serverUrl,
         exitCode: null,
         external: true,
+        ...(input.serverPassword ? { serverPassword: input.serverPassword } : {}),
       });
     }
 
     return startOpenCodeServerProcess({
       binaryPath: input.binaryPath,
+      ...(input.serverPassword !== undefined ? { serverPassword: input.serverPassword } : {}),
       ...(input.environment !== undefined ? { environment: input.environment } : {}),
       ...(input.port !== undefined ? { port: input.port } : {}),
       ...(input.hostname !== undefined ? { hostname: input.hostname } : {}),
       ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
     }).pipe(
       Effect.map((server) => ({
-        url: server.url,
-        exitCode: server.exitCode,
+        ...server,
         external: false,
       })),
     );
@@ -778,7 +793,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       ...(input.serverPassword
         ? {
             headers: {
-              Authorization: `Basic ${Buffer.from(`opencode:${input.serverPassword}`, "utf8").toString("base64")}`,
+              Authorization: `Basic ${Buffer.from(`${input.serverUsername ?? "opencode"}:${input.serverPassword}`, "utf8").toString("base64")}`,
             },
           }
         : {}),
