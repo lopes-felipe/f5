@@ -88,7 +88,8 @@ export function useMcpHubChatServers(
   const hubProvider = isMcpHubProvider(provider, useNativeProvidersOnHub()) && projectId !== null;
   useMcpStatusUpdates(hubProvider);
   const query = useQuery(mcpHubStatusQueryOptions({ projectId, enabled: hubProvider }));
-  if (!hubProvider || !query.data) return null;
+  // A reply without a server list (an older server) means no hub status to show.
+  if (!hubProvider || !Array.isArray(query.data?.servers)) return null;
   return hubServersForChat(query.data.servers, provider, projectId);
 }
 
