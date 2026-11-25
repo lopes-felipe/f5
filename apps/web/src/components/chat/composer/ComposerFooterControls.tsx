@@ -4,20 +4,24 @@ import {
   BotIcon,
   CircleOffIcon,
   GoalIcon,
+  ListTodoIcon,
   NotebookPenIcon,
   PaperclipIcon,
   PlusIcon,
 } from "lucide-react";
 import { useRef, useState } from "react";
 
-import { ClaudeTraitsPicker } from "~/components/chat/ClaudeTraitsPicker";
-import { CodexTraitsPicker } from "~/components/chat/CodexTraitsPicker";
+import { ClaudeTraitsMenuContent, ClaudeTraitsPicker } from "~/components/chat/ClaudeTraitsPicker";
+import { CodexTraitsMenuContent, CodexTraitsPicker } from "~/components/chat/CodexTraitsPicker";
 import { CompactComposerControlsMenu } from "~/components/chat/CompactComposerControlsMenu";
 import { ProviderInstanceModelPicker } from "~/components/chat/ProviderInstanceModelPicker";
+import { RuntimeModePicker } from "~/components/chat/RuntimeModePicker";
 import { Button } from "~/components/ui/button";
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "~/components/ui/menu";
 import { Toggle, ToggleGroup } from "~/components/ui/toggle-group";
+import { cn } from "~/lib/utils";
 
+import { COMPOSER_CHIP_CLASS_NAME } from "./composerChip";
 import { ProjectPicker } from "~/components/ProjectPicker";
 import { SideChatMenuItems } from "./SideChatMenuItems";
 
@@ -75,7 +79,11 @@ export function ComposerInteractionModeToggle(props: {
   );
 }
 
-/** Attachment and context controls on the left, model and effort on the right. */
+/**
+ * Left side of the composer footer: Add menu, model and traits chips, the
+ * Agent/Plan mode switch, access mode and the plan panel toggle. Folds the
+ * secondary controls into one menu when the footer is compact.
+ */
 export function ComposerFooterControls(props: {
   threadId: ThreadId;
   compact: boolean;
@@ -104,7 +112,14 @@ export function ComposerFooterControls(props: {
   );
 
   return (
-    <div className="flex min-w-0 flex-1 items-center gap-0.5">
+    <div
+      className={cn(
+        "flex min-w-0 flex-1 items-center gap-0.5",
+        compact
+          ? "-m-1 overflow-hidden p-1"
+          : "-m-1 overflow-x-auto p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+      )}
+    >
       <input
         ref={fileInputRef}
         type="file"
@@ -118,18 +133,16 @@ export function ComposerFooterControls(props: {
           event.currentTarget.value = "";
         }}
       />
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon-sm"
-        className="shrink-0 text-muted-foreground hover:text-foreground"
-        aria-label="Attach files"
-        title="Attach files"
-        disabled={attachDisabled}
-        onClick={() => fileInputRef.current?.click()}
-      >
-        <PaperclipIcon className="size-4" />
-      </Button>
+      {props.projectPicker && !compact ? (
+        <ProjectPicker
+          projects={props.projectPicker.projects}
+          selection={props.projectPicker.selection}
+          onSelect={props.projectPicker.onSelect}
+          disabled={props.projectPicker.disabled ?? false}
+          allowNone
+          trigger="chip"
+        />
+      ) : null}
       <Menu>
         <MenuTrigger
           data-composer-control="add"
@@ -147,6 +160,10 @@ export function ComposerFooterControls(props: {
           <PlusIcon className="size-4" />
         </MenuTrigger>
         <MenuPopup align="start" side="top">
+          <MenuItem onClick={() => fileInputRef.current?.click()}>
+            <PaperclipIcon className="size-4 shrink-0" />
+            Attach files…
+          </MenuItem>
           <MenuItem onClick={props.onMentionFile}>
             <AtSignIcon className="size-4 shrink-0" />
             Mention a file
@@ -182,91 +199,127 @@ export function ComposerFooterControls(props: {
           onSubmit={nativeGoal.onSet}
         />
       ) : null}
-      {props.projectPicker && !compact ? (
-        <ProjectPicker
-          projects={props.projectPicker.projects}
-          selection={props.projectPicker.selection}
-          onSelect={props.projectPicker.onSelect}
-          disabled={props.projectPicker.disabled ?? false}
-          allowNone
-          trigger="chip"
-        />
-      ) : null}
-      {!compact && mode.showInteractionModeToggle ? (
-        <ComposerInteractionModeToggle
-          value={mode.interactionMode}
-          disabled={isPendingTurnDispatchBlocked}
-          onToggle={mode.toggleInteractionMode}
-        />
-      ) : null}
-      <CompactComposerControlsMenu
-        activePlan={showPlanControl}
-        canCompactConversation={mode.canCompactConversation}
-        compactConversationDisabled={send.isWorking || send.hasPendingTurnDispatch}
-        disabled={isPendingTurnDispatchBlocked}
-        interactionMode={mode.interactionMode}
-        showInteractionModeToggle={compact && mode.showInteractionModeToggle}
-        planSidebarOpen={mode.planSidebarOpen}
-        provider={model.selectedProvider}
-        availableRuntimeModes={mode.availableRuntimeModes}
-        runtimeMode={mode.runtimeMode}
-        contextSummary={props.contextSummary}
-        onCompactConversation={mode.onCompactConversation}
-        onToggleInteractionMode={mode.toggleInteractionMode}
-        onTogglePlanSidebar={mode.togglePlanSidebar}
-        onRuntimeModeChange={mode.handleRuntimeModeChange}
-      />
+      {/* Provider/model picker */}
       <ComposerUsageLimits threadId={props.threadId} />
-      <div className="ml-auto flex min-w-0 items-center gap-0.5">
-        {model.noProviderAvailable ? (
-          <span className="px-2 text-xs text-muted-foreground" role="status">
-            No provider available
-          </span>
-        ) : (
-          <ProviderInstanceModelPicker
-            docked
-            stayOpenOnSelect
-            compact={compact}
-            instanceId={model.selectedProviderInstanceId}
-            model={model.selectedModelForPickerWithCustomFallback}
-            lockedInstanceId={
-              (model.providerLocked ?? model.hasThreadStarted)
-                ? model.selectedProviderInstanceId
-                : null
-            }
-            modelOptionsByInstance={model.modelOptionsByInstance}
-            ultrathinkActive={model.isClaudeUltrathink}
-            providers={model.providerStatuses}
-            keybindings={model.keybindings}
-            terminalOpen={model.terminalOpen}
-            open={model.isModelPickerOpen}
-            onOpenChange={model.setIsModelPickerOpen}
-            disabled={isPendingTurnDispatchBlocked}
-            onInstanceModelChange={model.onProviderModelSelect}
-            favoritePresets
-            activePreset={model.activeFavoritePreset ?? null}
-            {...(model.fanOutModels ? { selectedModels: model.fanOutModels } : {})}
-            {...(model.onToggleFanOutModel ? { onToggleModel: model.onToggleFanOutModel } : {})}
-          />
-        )}
+      {model.noProviderAvailable ? (
+        <span className="px-2 text-xs text-muted-foreground" role="status">
+          No provider available
+        </span>
+      ) : (
+        <ProviderInstanceModelPicker
+          docked
+          compact={compact}
+          instanceId={model.selectedProviderInstanceId}
+          model={model.selectedModelForPickerWithCustomFallback}
+          lockedInstanceId={
+            (model.providerLocked ?? model.hasThreadStarted)
+              ? model.selectedProviderInstanceId
+              : null
+          }
+          modelOptionsByInstance={model.modelOptionsByInstance}
+          ultrathinkActive={model.isClaudeUltrathink}
+          providers={model.providerStatuses}
+          keybindings={model.keybindings}
+          terminalOpen={model.terminalOpen}
+          open={model.isModelPickerOpen}
+          onOpenChange={model.setIsModelPickerOpen}
+          disabled={isPendingTurnDispatchBlocked}
+          onInstanceModelChange={model.onProviderModelSelect}
+          favoritePresets
+          activePreset={model.activeFavoritePreset ?? null}
+          {...(model.fanOutModels ? { selectedModels: model.fanOutModels } : {})}
+          {...(model.onToggleFanOutModel ? { onToggleModel: model.onToggleFanOutModel } : {})}
+        />
+      )}
 
-        {model.selectedProvider === "codex" ? (
-          <CodexTraitsPicker
-            threadId={threadId}
-            model={model.selectedModel}
-            models={model.selectedProviderModels}
+      {compact ? (
+        <CompactComposerControlsMenu
+          activePlan={showPlanControl}
+          canCompactConversation={mode.canCompactConversation}
+          compactConversationDisabled={send.isWorking || send.hasPendingTurnDispatch}
+          disabled={isPendingTurnDispatchBlocked}
+          interactionMode={mode.interactionMode}
+          showInteractionModeToggle={mode.showInteractionModeToggle}
+          planSidebarOpen={mode.planSidebarOpen}
+          provider={model.selectedProvider}
+          availableRuntimeModes={mode.availableRuntimeModes}
+          runtimeMode={mode.runtimeMode}
+          contextSummary={props.contextSummary}
+          traitsMenuContent={
+            model.selectedProvider === "codex" ? (
+              <CodexTraitsMenuContent
+                threadId={threadId}
+                model={model.selectedModel}
+                models={model.selectedProviderModels}
+              />
+            ) : model.showClaudeTraitsControls ? (
+              <ClaudeTraitsMenuContent
+                threadId={threadId}
+                model={model.selectedModel}
+                models={model.selectedProviderModels}
+                modelOptions={model.selectedProviderModelOptions}
+              />
+            ) : (
+              model.genericProviderTraitsMenuContent
+            )
+          }
+          onCompactConversation={mode.onCompactConversation}
+          onToggleInteractionMode={mode.toggleInteractionMode}
+          onTogglePlanSidebar={mode.togglePlanSidebar}
+          onRuntimeModeChange={mode.handleRuntimeModeChange}
+        />
+      ) : (
+        <>
+          {model.selectedProvider === "codex" ? (
+            <CodexTraitsPicker
+              threadId={threadId}
+              model={model.selectedModel}
+              models={model.selectedProviderModels}
+            />
+          ) : model.showClaudeTraitsControls ? (
+            <ClaudeTraitsPicker
+              threadId={threadId}
+              model={model.selectedModel}
+              models={model.selectedProviderModels}
+              modelOptions={model.selectedProviderModelOptions}
+            />
+          ) : model.genericProviderTraitsPicker ? (
+            model.genericProviderTraitsPicker
+          ) : null}
+
+          {mode.showInteractionModeToggle ? (
+            <ComposerInteractionModeToggle
+              value={mode.interactionMode}
+              disabled={isPendingTurnDispatchBlocked}
+              onToggle={mode.toggleInteractionMode}
+            />
+          ) : null}
+
+          <RuntimeModePicker
+            disabled={isPendingTurnDispatchBlocked}
+            provider={model.selectedProvider}
+            availableRuntimeModes={mode.availableRuntimeModes}
+            value={mode.runtimeMode}
+            onValueChange={mode.handleRuntimeModeChange}
           />
-        ) : model.showClaudeTraitsControls ? (
-          <ClaudeTraitsPicker
-            threadId={threadId}
-            model={model.selectedModel}
-            models={model.selectedProviderModels}
-            modelOptions={model.selectedProviderModelOptions}
-          />
-        ) : model.genericProviderTraitsPicker ? (
-          model.genericProviderTraitsPicker
-        ) : null}
-      </div>
+
+          {showPlanControl ? (
+            <Button
+              variant="ghost"
+              className={cn(COMPOSER_CHIP_CLASS_NAME, mode.planSidebarOpen && "bg-accent")}
+              size="sm"
+              type="button"
+              aria-pressed={mode.planSidebarOpen}
+              onClick={mode.togglePlanSidebar}
+              disabled={isPendingTurnDispatchBlocked}
+              title={mode.planSidebarOpen ? "Hide plan panel" : "Show plan panel"}
+            >
+              <ListTodoIcon />
+              <span className="sr-only @lg/composer-footer:not-sr-only">Plan panel</span>
+            </Button>
+          ) : null}
+        </>
+      )}
     </div>
   );
 }

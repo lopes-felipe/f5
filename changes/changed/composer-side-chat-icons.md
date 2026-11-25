@@ -1,0 +1,1 @@
+- New side chat and existing side chats in the composer's + menu show icons.
