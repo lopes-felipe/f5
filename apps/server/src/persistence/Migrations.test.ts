@@ -209,6 +209,7 @@ const assertUpgrade = (version: PrecedingVersion) =>
       { migration_id: 172, name: "ThreadSideChat" },
       { migration_id: 173, name: "SessionAuthFailure" },
       { migration_id: 174, name: "WorktreeGroups" },
+      { migration_id: 175, name: "UsageSpeedAndExternalIdentity" },
     ]);
     // The queue reads linked threads by pull request; the lookup uses its own index.
     const linkLookup = yield* sql<{

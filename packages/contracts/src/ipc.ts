@@ -143,6 +143,8 @@ import type {
   AttachmentUpload,
   AttachmentUploadsInput,
   AttachmentCloneToUploadInput,
+  AttachmentMaterializeUploadsResult,
+  AttachmentDiscardMaterializedInput,
 } from "./attachmentUpload";
 import type { ProjectId } from "./baseSchemas";
 import type {
@@ -1093,6 +1095,12 @@ export interface NativeApi {
     getUploads: (input: AttachmentUploadsInput) => Promise<Array<AttachmentUpload | null>>;
     releaseUploads: (input: AttachmentUploadsInput) => Promise<{}>;
     cloneToUpload: (input: AttachmentCloneToUploadInput) => Promise<AttachmentUpload>;
+    /** Copies draft uploads to durable server storage and returns their absolute paths. */
+    materializeUploads: (
+      input: AttachmentUploadsInput,
+    ) => Promise<AttachmentMaterializeUploadsResult>;
+    /** Deletes materialized copies that nothing references any more. */
+    discardMaterialized: (input: AttachmentDiscardMaterializedInput) => Promise<{}>;
   };
   profiles?: {
     githubLoginStart: () => Promise<import("./profile").GithubLoginStatus>;

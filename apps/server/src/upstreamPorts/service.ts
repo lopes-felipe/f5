@@ -85,6 +85,7 @@ import {
 } from "@t3tools/contracts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { setupProjectScript } from "@t3tools/shared/projectScripts";
+import { stripRemoteUrlCredentials } from "@t3tools/shared/sourceControl";
 import {
   ARCHIVE_PATH,
   canonicalJson,
@@ -1022,7 +1023,11 @@ export function makeUpstreamPortsService(
           wanted !== null &&
           actual.owner.toLowerCase() === wanted.owner.toLowerCase() &&
           actual.name.toLowerCase() === wanted.name.toLowerCase();
-        return { status: match ? ("ok" as const) : ("mismatch" as const), url };
+        // The URL reaches the Upstream page and run errors; a token in it must not.
+        return {
+          status: match ? ("ok" as const) : ("mismatch" as const),
+          url: stripRemoteUrlCredentials(url),
+        };
       });
 
     // ── Runs ──
@@ -4561,7 +4566,10 @@ export function makeUpstreamPortsService(
           .remoteUrl(context.cwd, config.remote)
           .pipe(Effect.mapError(internal));
         if (existing !== null)
-          return yield* fail("conflict", `A ${config.remote} remote already exists (${existing}).`);
+          return yield* fail(
+            "conflict",
+            `A ${config.remote} remote already exists (${stripRemoteUrlCredentials(existing)}).`,
+          );
         yield* git
           .addRemote(context.cwd, config.remote, config.repository)
           .pipe(Effect.mapError(internal));

@@ -51,6 +51,9 @@ import { peekFactsFromRaw, peekIsoDate } from "./prHubPeekFacts.ts";
 import { excerptCheckLog } from "./checkLog.ts";
 import { GITHUB_CHECKS_QUERY, readGitHubChecks } from "./githubChecks.ts";
 
+const branchDeletionUrl = (ref: SourceControlPullRequestRef) =>
+  `https://${ref.host}/${ref.repository}/${ref.provider === "gitlab" ? "-/merge_requests" : "pull"}/${ref.number}`;
+
 /** Checks change while a pull request is open, so a read is reused only briefly. */
 const CHECKS_CACHE_MS = 15_000;
 const LOG_JOB_CACHE_MS = 10 * 60_000;
@@ -348,6 +351,7 @@ export const makePrHubExtensions = Effect.gen(function* () {
         supported =
           (!p.deleteBranch ||
             ((p.action === "merge" || p.action === "close") &&
+              runtime.account.provider !== "gitlab" &&
               caps.actions.includes("delete-branch") &&
               !!runtime.provider.deletePullRequestBranch)) &&
           (p.action !== "delete-branch" || !!runtime.provider.deletePullRequestBranch) &&
@@ -494,7 +498,12 @@ export const makePrHubExtensions = Effect.gen(function* () {
       const { runtime, ref } = yield* resolve(input);
       yield* validate(runtime, input);
       yield* validateItem(runtime, ref, input.payload);
-      const detail = yield* runtime.provider.getDetail(ref);
+      const deletingBranch =
+        input.payload.kind === "action" && input.payload.action === "delete-branch";
+      const detail = yield* runtime.provider.getDetail(
+        ref,
+        deletingBranch ? { branchPermission: true } : undefined,
+      );
       if (
         input.payload.kind === "action" &&
         input.payload.action === "delete-branch" &&
@@ -503,6 +512,11 @@ export const makePrHubExtensions = Effect.gen(function* () {
       )
         return yield* failure(
           "Close or merge the PR before preparing branch deletion.",
+          "forbidden",
+        );
+      if (deletingBranch && ref.provider === "gitlab" && detail.viewerCanDeleteBranch !== true)
+        return yield* failure(
+          "GitLab does not allow you to delete this source branch.",
           "forbidden",
         );
       if (!input.expectedHeadOid || detail.headRefOid !== input.expectedHeadOid)
@@ -748,11 +762,12 @@ export const makePrHubExtensions = Effect.gen(function* () {
                     const deleted = yield* dispatch(
                       runtime.provider.deletePullRequestBranch({
                         cwd: config.cwd,
-                        url: `https://${ref.host}/${ref.repository}/pull/${ref.number}`,
+                        url: branchDeletionUrl(ref),
                         expectedHeadOid: saved.operation.expectedHeadOid,
                       }),
                     );
-                    branchWarning = yield* cleanupLocalPrBranch(deleted);
+                    if (ref.provider !== "gitlab")
+                      branchWarning = yield* cleanupLocalPrBranch(deleted);
                     return null;
                   }
                   const workflowRuns = runtime.provider.workflowRuns;
@@ -815,7 +830,7 @@ export const makePrHubExtensions = Effect.gen(function* () {
                     const deleted = yield* dispatch(
                       runtime.provider.deletePullRequestBranch!({
                         cwd: config.cwd,
-                        url: `https://${ref.host}/${ref.repository}/pull/${ref.number}`,
+                        url: branchDeletionUrl(ref),
                         expectedHeadOid: saved.operation.expectedHeadOid,
                       }),
                     );
@@ -1110,7 +1125,7 @@ export const makePrHubExtensions = Effect.gen(function* () {
               } else if (primaryDone && runtime.provider.deletePullRequestBranch) {
                 const inspected = yield* runtime.provider.deletePullRequestBranch({
                   cwd: config.cwd,
-                  url: `https://${ref.host}/${ref.repository}/pull/${ref.number}`,
+                  url: branchDeletionUrl(ref),
                   expectedHeadOid: saved.operation.expectedHeadOid,
                   inspectOnly: true,
                 });
@@ -1120,7 +1135,9 @@ export const makePrHubExtensions = Effect.gen(function* () {
                     input.operationId,
                     "succeeded",
                     undefined,
-                    "Remote branch absence was verified. Local cleanup is not replayed during recovery; inspect any remaining local branch.",
+                    ref.provider === "gitlab" && p.action === "delete-branch"
+                      ? "Remote branch absence was verified."
+                      : "Remote branch absence was verified. Local cleanup is not replayed during recovery; inspect any remaining local branch.",
                   );
               }
             } else if (p.kind === "stack" && saved.progress.uuid && runtime.github) {

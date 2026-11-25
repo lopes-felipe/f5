@@ -1,0 +1,138 @@
+{
+  "baseSha": "373ec12be606753c298a3a70c89fc035c210ddae",
+  "commits": [
+    {
+      "pr": 38619,
+      "sha": "9415a2e52d0e3ec8103d8e0c6a7e5383c1e54f7c",
+      "subject": "fix(server): Claude text generation sends attached images (#38619)",
+      "topic": "pr-38619"
+    },
+    {
+      "pr": 38615,
+      "sha": "961233137d1b64b90e36403d9e02aa7b21909386",
+      "subject": "fix(server): Hermes Agent's reply after a background process finishes reaches the thread (#38615)",
+      "topic": "pr-38615"
+    },
+    {
+      "pr": 38612,
+      "sha": "3f3f7f9a766bd50ffe57030608410e657acc1acf",
+      "subject": "fix(server): preserve raw notebook cell labels in attachment text (#38612)",
+      "topic": "pr-38598"
+    },
+    {
+      "pr": 38598,
+      "sha": "7396f135ed67e52fe839c9867f78f7b2adc1d6f2",
+      "subject": "fix(server): preserve explicit document breaks in RTF attachment text (#38598)",
+      "topic": "pr-38598"
+    },
+    {
+      "pr": 37266,
+      "sha": "f4b988aeafc44b3af2462d6cc0277f4fd2f60d3f",
+      "subject": "fix(server): restart note says how to resume a cut Claude subagent (#37266)",
+      "topic": "pr-37266"
+    },
+    {
+      "pr": 37787,
+      "sha": "cb129ba2ccc117859b8171b101150f185310b62c",
+      "subject": "fix(server): a Claude command moved to the background keeps its command in Background work (#37787)",
+      "topic": "pr-37787"
+    },
+    {
+      "pr": 37406,
+      "sha": "96611412766d54098f1eba0862a426f708191f16",
+      "subject": "fix(server): server preview tabs opened at startup no longer stay loading (#37406)",
+      "topic": "pr-37406"
+    },
+    {
+      "pr": 36495,
+      "sha": "c67deb12ddd893b3771c7c6f8fdfada11654a7ec",
+      "subject": "fix(antigravity): thread sessions spawn with their T3 thread and MCP environment (#36495)",
+      "topic": "pr-36495"
+    },
+    {
+      "pr": 35006,
+      "sha": "e7fa771f6515214956485025cd587fd7766fcdb8",
+      "subject": "fix(server): integrated terminals get T3CODE_THREAD_ID like agent sessions (#35006)",
+      "topic": "pr-35006"
+    },
+    {
+      "pr": 36037,
+      "sha": "2ba4fde9a5578b7ac49f132590ac16f7160324ec",
+      "subject": "fix(server): Antigravity 1.5 asks for sign-in when it cannot open a browser (#36037)",
+      "topic": "pr-36037"
+    },
+    {
+      "pr": 36439,
+      "sha": "6c0698c0af65fbd4563b027175bc80d3718a0e87",
+      "subject": "fix(server): Antigravity turns no longer fail on a roots notification to the T3 MCP server (#36439)",
+      "topic": "pr-36439"
+    },
+    {
+      "pr": 38592,
+      "sha": "eebb6bccdf839957528a6ea5dd84419f5724fdff",
+      "subject": "test(release): release smoke refreshes the committed lockfile instead of resolving every package fresh (#38592)",
+      "topic": "pr-38592"
+    },
+    {
+      "pr": 36035,
+      "sha": "b1ca56209cc525af236cd3d4d1bb8ca2aa1479b7",
+      "subject": "fix(server): an Antigravity update refreshes every instance's model list (#36035)",
+      "topic": "pr-36035"
+    },
+    {
+      "pr": 38491,
+      "sha": "9431a9479faf0ae89a4e5cdbb061ce5f478b15c7",
+      "subject": "fix(mobile): use the shared rounded frame for issue details (#38491)",
+      "topic": "pr-38491"
+    },
+    {
+      "pr": 38582,
+      "sha": "66bc6145fe2b117a842d2172d3806474c2b16488",
+      "subject": "fix(pi): worktree handoff no longer leaves Pi threads Waiting (#38582)",
+      "topic": "pr-38582"
+    },
+    {
+      "pr": 38575,
+      "sha": "2c4622efb429dfe68c9dc1ef3cd08668803f874b",
+      "subject": "fix(server): the first message on an imported conversation sends its history once (#38575)",
+      "topic": "pr-38575"
+    },
+    {
+      "pr": 38565,
+      "sha": "759a173e1576d1d78fb04d16580fdf9641c80c30",
+      "subject": "fix(web): idle numbered terminals show their name in the app language (#38565)",
+      "topic": "pr-37893"
+    },
+    {
+      "pr": 38567,
+      "sha": "52f0f8afb8cde93389479b6bd8dd8d44a17946dd",
+      "subject": "fix(server): Cursor history on large accounts loads in pieces and keeps what was read (#38567)",
+      "topic": "pr-38567"
+    },
+    {
+      "pr": 38556,
+      "sha": "018ca6d58ec968479e287c2769bb9b2b8c44c29f",
+      "subject": "fix(acp-registry): each Mistral Vibe model shows its own thinking levels (#38556)",
+      "topic": "pr-38556"
+    },
+    {
+      "pr": 38493,
+      "sha": "6a29d58d147522f85112c0c7149f2f9032cd955f",
+      "subject": "fix(client-runtime): closed issue searches no longer build up in memory (#38493)",
+      "topic": "pr-19259"
+    },
+    {
+      "pr": 38553,
+      "sha": "5552f0aa74b1cdc0606b86374d4312c42e3b117a",
+      "subject": "fix(mobile): a retried document upload keeps its tile and shows progress (#38553)",
+      "topic": "pr-38553"
+    }
+  ],
+  "count": 21,
+  "createdAt": "2026-11-18T14:10:14.969Z",
+  "digest": "32268de478dc07d2042d377933ca13c33821bf4080db18deb664734f0bc3e9a9",
+  "interval": 36,
+  "schemaVersion": 8,
+  "selection": "first-parent",
+  "targetSha": "9415a2e52d0e3ec8103d8e0c6a7e5383c1e54f7c"
+}

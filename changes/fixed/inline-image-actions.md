@@ -1,0 +1,1 @@
+- Copy and Save work for images embedded as data URLs.

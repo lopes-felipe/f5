@@ -363,7 +363,7 @@ function SidebarThreadRowImpl(props: SidebarThreadRowProps) {
           : {})}
         {...(section !== "snoozed"
           ? {
-              onKeyDown: (event: React.KeyboardEvent) => {
+              onKeyDown: (event: React.KeyboardEvent<HTMLElement>) => {
                 // Nested controls (PR status, archive, rename input) handle
                 // their own Enter/Space.
                 if (event.target !== event.currentTarget) return;

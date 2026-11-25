@@ -11,7 +11,7 @@ import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 import type * as Statement from "effect/unstable/sql/Statement";
 
 import { toPersistenceSqlError } from "../Errors.ts";
-import { museRecordedIntervals } from "../../usage/museRecordedIntervals.ts";
+import { nativeRecordedIntervals } from "../../usage/museRecordedIntervals.ts";
 import {
   UsageFactRepository,
   type BucketUsageSummaryRow,
@@ -40,6 +40,7 @@ function usageSqlFragments(sql: SqlClient.SqlClient) {
     factAggregates: sql`
       f.provider_name AS provider,
       f.model AS model,
+      f.usage_speed AS speed,
       COUNT(*) AS "turnCount",
       SUM(CASE WHEN f.input_tokens IS NOT NULL AND f.output_tokens IS NOT NULL THEN 1 ELSE 0 END)
         AS "estimationEligibleTurnCount",
@@ -68,6 +69,7 @@ function usageSqlFragments(sql: SqlClient.SqlClient) {
     factPartitions: sql`
       f.provider_name,
       f.model,
+      f.usage_speed,
       f.provider_cost_usd IS NULL,
       f.token_provenance,
       f.input_tokens IS NOT NULL AND f.output_tokens IS NOT NULL,
@@ -206,7 +208,7 @@ const make = Effect.gen(function* () {
         completed_at,
         recorded_at,
         source_event_id
-        , native_session_id, started_at
+        , native_session_id, started_at, usage_speed
       ) VALUES (
         ${fact.turnId},
         ${fact.threadId},
@@ -225,7 +227,7 @@ const make = Effect.gen(function* () {
         ${fact.completedAt},
         strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
         ${fact.sourceEventId}
-        , ${fact.nativeSessionId ?? null}, ${fact.startedAt ?? null}
+        , ${fact.nativeSessionId ?? null}, ${fact.startedAt ?? null}, ${fact.speed ?? null}
       )
       ON CONFLICT (turn_id) DO UPDATE SET
         thread_id = excluded.thread_id,
@@ -244,7 +246,8 @@ const make = Effect.gen(function* () {
         completed_at = excluded.completed_at,
         source_event_id = excluded.source_event_id,
         native_session_id = COALESCE(excluded.native_session_id, projection_turn_usage_facts.native_session_id),
-        started_at = COALESCE(excluded.started_at, projection_turn_usage_facts.started_at)
+        started_at = COALESCE(excluded.started_at, projection_turn_usage_facts.started_at),
+        usage_speed = COALESCE(excluded.usage_speed, projection_turn_usage_facts.usage_speed)
       WHERE excluded.completed_at >= projection_turn_usage_facts.completed_at
     `,
   });
@@ -441,8 +444,8 @@ const make = Effect.gen(function* () {
 
   return {
     record,
-    readMuseRecordedIntervals: museRecordedIntervals(sql).pipe(
-      Effect.mapError(toPersistenceSqlError("UsageFactRepository.readMuseRecordedIntervals")),
+    readNativeRecordedIntervals: nativeRecordedIntervals(sql).pipe(
+      Effect.mapError(toPersistenceSqlError("UsageFactRepository.readNativeRecordedIntervals")),
     ),
     readCoverageStartedAt,
     readUsageMetadata,

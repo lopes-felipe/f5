@@ -133,7 +133,7 @@ function TimelineComment({
       </header>
 
       <PrAddCommentToChat pr={pr} body={comment.body} path={comment.path} line={comment.line} />
-      {comment.path ? (
+      {comment.path || (pr.provider === "gitlab" && comment.kind === "review-comment") ? (
         <PrSendToAgent pr={pr} body={comment.body} path={comment.path} line={comment.line} />
       ) : null}
       {showPath && comment.path ? (
@@ -230,7 +230,10 @@ function TimelineReviewThread({
   const path = thread.path ?? root.path;
 
   return (
-    <section className="space-y-2" aria-label={`Review thread on ${path ?? "a file"}`}>
+    <section
+      className="space-y-2"
+      aria-label={path ? `Review thread on ${path}` : "Overview review thread"}
+    >
       <button
         type="button"
         aria-expanded={expanded}
@@ -239,7 +242,7 @@ function TimelineReviewThread({
       >
         <FileCode2Icon aria-hidden className="size-3.5 shrink-0" />
         <span className="min-w-0 truncate font-mono">
-          {path ?? "file"}
+          {path ?? "Overview discussion"}
           {line !== null ? `:${line}` : ""}
         </span>
         {thread.isResolved ? (
@@ -375,7 +378,11 @@ export function PrTimelineTab({
   const entries = pages.flatMap((page) => page.entries);
   const warning = pages.find((page) => page.warning)?.warning;
   const truncated = pages.some((page) => page.pageInfo.truncated);
-  const rows = groupTimelineReviewThreads(entries, useTimelineReviewThreads(pr, active));
+  const rows = groupTimelineReviewThreads(
+    entries,
+    useTimelineReviewThreads(pr, active),
+    pr.provider === "gitlab",
+  );
 
   if (query.isPending) {
     return (

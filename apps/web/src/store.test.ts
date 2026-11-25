@@ -362,6 +362,15 @@ describe("unlisted thread detail hydration", () => {
     );
     expect(next.threads[0]?.title).toBe("Newer shell title");
   });
+
+  it("leaves a newly listed thread unloaded when a pre-creation read finishes", () => {
+    const state = makeState(makeThread({ detailsLoaded: false }));
+    const missing = makeThreadDetails({ thread: null, detailSequence: 0 });
+    expect(syncThreadTailDetails(state, threadId, missing)).toBe(state);
+    expect(
+      syncThreadTailDetails(state, threadId, makeThreadDetails({})).threads[0]?.detailsLoaded,
+    ).toBe(true);
+  });
 });
 
 function makeEvent<TType extends OrchestrationEvent["type"]>(
