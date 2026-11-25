@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ignoredOtlpEnvironment,
   parseOtelAttributes,
   publicOtlpConfiguration,
   resolveOtlpConfiguration,
@@ -19,8 +20,16 @@ describe("OTLP configuration", () => {
     expect(config).toMatchObject({
       traces: { url: null, source: "unset", headers: {} },
       metrics: { url: null, source: "unset", headers: {} },
-      attributes: {},
     });
+  });
+  it("names the ignored endpoint and header variables so users can be told", () => {
+    expect(ignoredOtlpEnvironment(inheritedEnv)).toEqual([
+      "OTEL_EXPORTER_OTLP_ENDPOINT",
+      "OTEL_EXPORTER_OTLP_HEADERS",
+      "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+      "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+    ]);
+    expect(ignoredOtlpEnvironment({ OTEL_EXPORTER_OTLP_ENDPOINT: " " })).toEqual([]);
   });
   it("exports only to the Settings collector, with only the Settings headers", () => {
     const config = resolveOtlpConfiguration(
@@ -42,7 +51,8 @@ describe("OTLP configuration", () => {
       url: "https://settings.test/metrics",
       protocol: "http/json",
     });
-    expect(config.attributes).toEqual({});
+    // Resource attributes label the Settings collector's data, so a masked host name holds.
+    expect(config.attributes).toEqual({ "host.name": "corp-laptop", team: "platform" });
   });
   it.each(["traces", "metrics"] as const)("honors the %s kill switch over settings", (kind) => {
     const configured = {

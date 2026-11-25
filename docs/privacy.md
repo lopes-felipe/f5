@@ -66,9 +66,10 @@ can set. F5 still passes `DO_NOT_TRACK`, which the SDK may ignore.
 ## Observability export
 
 F5 records traces and metrics locally for **Settings → Diagnostics**. It exports them only to an
-OTLP collector you enter there. `OTEL_EXPORTER_OTLP_*` endpoints, headers and resource attributes
-in the environment are ignored, so a workstation-wide collector never receives F5 data.
-`OTEL_SDK_DISABLED=true` still turns export off.
+OTLP collector you enter there. `OTEL_EXPORTER_OTLP_*` endpoints and headers in the environment
+are ignored, with a warning in the server log, so a workstation-wide collector never receives F5
+data. Exports name the host (`host.name`); set `OTEL_RESOURCE_ATTRIBUTES=host.name=<label>` to
+send another label. `OTEL_SDK_DISABLED=true` still turns export off.
 
 ## What F5 keeps on disk
 
@@ -78,8 +79,9 @@ Everything lives under the state directory (`~/.f5` by default; see
 - **Provider logs** (`logs/provider/`): each thread's raw provider events, rotated at 10 MB with
   up to 10 files per thread, and removed by storage cleanup once the thread is deleted. API keys,
   tokens, JWTs, `Bearer` and `Basic` credentials, passwords in URLs and private keys are replaced
-  with `[REDACTED]` before writing. A secret split across two streamed chunks is not caught.
-  Screenshots and other inline images are replaced with a placeholder.
+  with `[REDACTED]` before writing. A secret split across two streamed chunks is not caught, and
+  Claude's thinking text is kept verbatim because the API rejects a resumed transcript whose
+  thinking was changed. Screenshots and other inline images are replaced with a placeholder.
 - **Attachments** (`attachments/`): images and files you or an agent attach, including
   screenshots, kept with their thread.
 - **Secrets** (`secrets/`): provider API keys, forge tokens and similar values, stored as files

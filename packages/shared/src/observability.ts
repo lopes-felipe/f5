@@ -97,9 +97,22 @@ export function resolveOtlpConfiguration(
   return {
     traces: signal("traces"),
     metrics: signal("metrics"),
-    // OTEL_RESOURCE_ATTRIBUTES is a machine-wide setting meant for other exporters.
-    attributes: {},
+    // Resource attributes only label what goes to the Settings collector; they never pick a
+    // destination. Honoring them lets users mask `host.name`.
+    attributes: parseOtelAttributes(env.OTEL_RESOURCE_ATTRIBUTES),
   };
+}
+
+const IGNORED_OTLP_ENVIRONMENT =
+  /^OTEL_EXPORTER_OTLP_(?:(?:TRACES|METRICS)_)?(?:ENDPOINT|HEADERS)$/;
+
+/** Endpoint and header variables F5 ignores, so users relying on them can be told once. */
+export function ignoredOtlpEnvironment(
+  env: Readonly<Record<string, string | undefined>>,
+): ReadonlyArray<string> {
+  return Object.keys(env)
+    .filter((name) => IGNORED_OTLP_ENVIRONMENT.test(name) && env[name]?.trim())
+    .toSorted();
 }
 
 /** Safe to expose to the browser: no headers, URL credentials, query strings or resource attributes. */

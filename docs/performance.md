@@ -434,9 +434,10 @@ General settings includes a Diagnostics card for OTLP trace/metric destinations
 and collector headers. Restart F5 after editing these fields. Header values live
 in the profile secret store, and reads expose only their names and redaction
 markers. F5 exports only to the collectors set in this card: it ignores
-`OTEL_EXPORTER_OTLP_*_ENDPOINT`, `OTEL_EXPORTER_OTLP_ENDPOINT`, the `*_HEADERS`
-variables and `OTEL_RESOURCE_ATTRIBUTES`, which usually configure other tools on
-the machine. `OTEL_EXPORTER_OTLP_PROTOCOL` (or its per-signal form) still picks
+`OTEL_EXPORTER_OTLP_*_ENDPOINT`, `OTEL_EXPORTER_OTLP_ENDPOINT` and the `*_HEADERS`
+variables, which usually configure other tools on the machine, and logs a warning
+at startup when they are set. `OTEL_RESOURCE_ATTRIBUTES` still labels exported
+data, for example to replace `host.name`. `OTEL_EXPORTER_OTLP_PROTOCOL` (or its per-signal form) still picks
 JSON or protobuf over HTTP. `OTEL_SDK_DISABLED=true` disables observability, and
 `OTEL_TRACES_EXPORTER=none` / `OTEL_METRICS_EXPORTER=none` disable external export
 per signal. Export is inactive without a destination.
