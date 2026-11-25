@@ -1048,6 +1048,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   }, [listRef]);
 
   const disclosurePinsEndRef = useRef(false);
+  const expandingWorkGroupRef = useRef<string | null>(null);
+  const [workGroupExpansionSettling, setWorkGroupExpansionSettling] = useState(false);
   const endSettleFrameRef = useRef<number | null>(null);
   // A jump or scroll away from the end: stop following the tail now, and drop
   // any follow scroll or disclosure pin already queued for a later frame.
@@ -1061,21 +1063,29 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     liveFollowEnabledRef.current = false;
     setLiveFollowEnabled(false);
     disclosurePinsEndRef.current = false;
+    if (expandingWorkGroupRef.current !== null) {
+      expandingWorkGroupRef.current = null;
+      setWorkGroupExpansionSettling(false);
+    }
     if (endSettleFrameRef.current !== null) {
       window.cancelAnimationFrame(endSettleFrameRef.current);
       endSettleFrameRef.current = null;
     }
   }, [onLeaveEnd]);
 
-  // While following at the end, keep the end in view while a tool result or
-  // diff changes height. Following that resumes away from the end (a send or
-  // Jump to latest) gets there through its own scroll; this pin never jumps.
-  const pinTimelineToEnd = useCallback(() => {
-    const followingAtEnd = liveFollowEnabledRef.current && physicallyAtEndRef.current;
-    if (!followingAtEnd && !disclosurePinsEndRef.current) return;
-    const node = listRef.current?.getScrollableNode?.();
-    if (node instanceof HTMLElement) node.scrollTop = node.scrollHeight;
-  }, [listRef]);
+  // Keep the tail in view as rows change height. A streaming resize also
+  // catches up after a disclosure moved the viewport while following stayed on.
+  const pinTimelineToEnd = useCallback(
+    (streamingResize = false) => {
+      if (expandingWorkGroupRef.current !== null) return;
+      const followingAtEnd =
+        liveFollowEnabledRef.current && (physicallyAtEndRef.current || streamingResize);
+      if (!followingAtEnd && !disclosurePinsEndRef.current) return;
+      const node = listRef.current?.getScrollableNode?.();
+      if (node instanceof HTMLElement) node.scrollTop = node.scrollHeight;
+    },
+    [listRef],
+  );
 
   useEffect(() => {
     if (!hasMessages && !isWorking) {
@@ -1245,22 +1255,45 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       endSettleFrameRef.current = window.requestAnimationFrame(() => {
         pinTimelineToEnd();
         disclosurePinsEndRef.current = false;
+        if (expandingWorkGroupRef.current !== null) {
+          expandingWorkGroupRef.current = null;
+          setWorkGroupExpansionSettling(false);
+        }
         endSettleFrameRef.current = null;
         syncIsAtEndFromListState();
       });
     });
   }, [pinTimelineToEnd, syncIsAtEndFromListState]);
+  const preserveWorkGroupPosition = useCallback(
+    (groupId: string) => {
+      disclosurePinsEndRef.current = false;
+      expandingWorkGroupRef.current = groupId;
+      setWorkGroupExpansionSettling(true);
+      scheduleEndSettle();
+    },
+    [scheduleEndSettle],
+  );
   const pinEndThroughDisclosure = useCallback(() => {
     if (!isAtEndRef.current) return;
     disclosurePinsEndRef.current = true;
     scheduleEndSettle();
   }, [scheduleEndSettle]);
-  const handleItemSizeChanged = useCallback(() => {
-    refreshFindRef.current?.();
-    if (!liveFollowEnabledRef.current && !disclosurePinsEndRef.current) return;
-    queueMicrotask(pinTimelineToEnd);
-    scheduleEndSettle();
-  }, [pinTimelineToEnd, scheduleEndSettle]);
+  const handleItemSizeChanged = useCallback(
+    ({ itemData }: { itemData: TimelineRow }) => {
+      refreshFindRef.current?.();
+      if (expandingWorkGroupRef.current !== null) {
+        scheduleEndSettle();
+        return;
+      }
+      if (!liveFollowEnabledRef.current && !disclosurePinsEndRef.current) return;
+      // A streamed message may grow in place after a disclosure moved the
+      // viewport away from the physical tail while following stayed enabled.
+      const streamingResize = itemData.kind === "message" && itemData.message.streaming;
+      queueMicrotask(() => pinTimelineToEnd(streamingResize));
+      scheduleEndSettle();
+    },
+    [pinTimelineToEnd, scheduleEndSettle],
+  );
   useEffect(
     () => () => {
       if (endSettleFrameRef.current !== null) {
@@ -1437,7 +1470,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     revertPopover,
     chatDiffContext,
     pinEndThroughDisclosure,
-    leaveEnd,
+    preserveWorkGroupPosition,
     onQuoteAssistantMessage,
   };
   const latestRowInputsRef = useRef(latestRowInputs);
@@ -1451,7 +1484,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         latestRowInputsRef.current.onToggleWorkGroup(groupId, paginatedEntryCount);
       },
       onSetWorkGroupExpanded: (groupId, expanded, needsEarlierWork) => {
-        if (expanded) latestRowInputsRef.current.leaveEnd();
+        if (expanded) latestRowInputsRef.current.preserveWorkGroupPosition(groupId);
         else latestRowInputsRef.current.pinEndThroughDisclosure();
         latestRowInputsRef.current.onSetWorkGroupExpanded?.(groupId, expanded, needsEarlierWork);
       },
@@ -1831,14 +1864,21 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             // size/layout-based pinning so streaming growth at the tail continues to
             // follow when the user is already at the end.
             maintainScrollAtEnd={
-              liveFollowEnabled ? { on: { itemLayout: true, layout: true } } : false
+              liveFollowEnabled && !workGroupExpansionSettling
+                ? { on: { itemLayout: true, layout: true } }
+                : false
             }
             maintainScrollAtEndThreshold={atEndThreshold}
             // Stabilize the visible window both when rows resize and when a new user
             // turn appends data. Without `data: true`, historical work rows can drop
             // out of the rendered window during live chat updates even though the
             // row data itself is still present.
-            maintainVisibleContentPosition={{ size: true, data: true }}
+            maintainVisibleContentPosition={{
+              size: true,
+              data: true,
+              shouldRestorePosition: (row) =>
+                expandingWorkGroupRef.current === null || row.id === expandingWorkGroupRef.current,
+            }}
             onScroll={handleScroll}
             onItemSizeChanged={handleItemSizeChanged}
             onViewableItemsChanged={handleViewableItemsChanged}

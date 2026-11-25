@@ -269,10 +269,7 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
   // The server publishes the account's catalog from Cursor; Auto is all that is known
   // without it.
   cursor: [{ slug: "auto", name: "Auto" }],
-  opencode: [
-    { slug: "openai/gpt-5", name: "OpenAI GPT-5" },
-    { slug: "opencode/big-pickle", name: "Big Pickle" },
-  ],
+  opencode: [{ slug: "openai/gpt-5", name: "OpenAI GPT-5" }],
   grok: [{ slug: "grok-build", name: "Grok Build" }],
   antigravity: [{ slug: "antigravity-default", name: "Antigravity Default" }],
   muse: [{ slug: "muse-spark-1.3", name: "Muse Spark 1.3" }],

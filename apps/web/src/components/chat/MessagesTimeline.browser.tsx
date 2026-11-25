@@ -757,45 +757,86 @@ describe("MessagesTimeline (LegendList)", () => {
     }
   });
 
-  it("keeps the expanded work heading in view at the bottom of the timeline", async () => {
-    const screen = await render(
-      <TimelineHarness
-        initialHeight={300}
-        initialEntries={[
-          ...Array.from({ length: 12 }, (_, index) =>
-            makeUserEntry("context-" + index, "Earlier context", index),
-          ),
-          ...Array.from({ length: 10 }, (_, index) =>
-            makeReadWorkEntry("expand-work-" + index, "src/file-" + index + ".ts", 12 + index),
-          ),
-          makeAssistantEntry("expand-answer", "Done", 23),
-          makeUserEntry("expand-next-turn", "Next task", 24),
-        ]}
-        onIsAtEndChangeSpy={() => {}}
-      />,
-    );
-    const viewport = () =>
-      document.querySelector<HTMLElement>('[data-slot="messages-scroll-container"]')!;
-    const summary = () =>
-      document.querySelector<HTMLButtonElement>('[data-slot="work-group-summary"]');
-    try {
-      await expect.poll(summary).not.toBeNull();
-      await waitForTimelineLayout(viewport);
-      const node = viewport();
-      const distanceFromEnd = () => node.scrollHeight - node.scrollTop - node.clientHeight;
-      expect(distanceFromEnd()).toBeLessThan(3);
-      const top = summary()!.getBoundingClientRect().top;
-      const name = summary()!.textContent?.trim() ?? "";
-      await page.getByRole("button", { name, exact: true }).click();
-      const expanded = page.getByRole("button", { name, exact: true });
-      await expect.element(expanded).toHaveAttribute("aria-expanded", "true");
-      await waitForTimelineLayout(viewport);
-      expect(distanceFromEnd()).toBeGreaterThan(40);
-      expect(Math.abs(expanded.element().getBoundingClientRect().top - top)).toBeLessThan(12);
-    } finally {
-      await screen.unmount();
-    }
-  });
+  it.each(["active stream", "pending send"] as const)(
+    "preserves the work heading and tail following during a %s",
+    async (mode) => {
+      let api: TimelineHarnessApi | null = null;
+      const entries = [
+        ...Array.from({ length: 12 }, (_, index) =>
+          makeUserEntry("context-" + index, "Earlier context", index),
+        ),
+        ...Array.from({ length: 10 }, (_, index) =>
+          makeReadWorkEntry("expand-work-" + index, "src/file-" + index + ".ts", 12 + index),
+        ),
+        makeAssistantEntry("expand-answer", "Done", 23),
+        makeUserEntry("expand-next-turn", "Next task", 24),
+      ];
+      const reply = makeAssistantEntry("stream-reply", "Starting", 25);
+      if (reply.kind !== "message") throw new Error("Expected a message entry");
+      const streamingReply = { ...reply, message: { ...reply.message, streaming: true } };
+      if (mode === "active stream") entries.push(streamingReply);
+      const screen = await render(
+        <TimelineHarness
+          initialHeight={370}
+          initialEntries={entries}
+          initialIsWorking={mode === "active stream"}
+          setApi={(value) => {
+            api = value;
+          }}
+          onIsAtEndChangeSpy={() => {}}
+        />,
+      );
+      const viewport = () =>
+        document.querySelector<HTMLElement>('[data-slot="messages-scroll-container"]')!;
+      const summary = () =>
+        document.querySelector<HTMLButtonElement>('[data-slot="work-group-summary"]');
+      try {
+        await expect.poll(summary).not.toBeNull();
+        await waitForTimelineLayout(viewport);
+        const node = viewport();
+        const distanceFromEnd = () => node.scrollHeight - node.scrollTop - node.clientHeight;
+        expect(distanceFromEnd()).toBeLessThan(3);
+        if (mode === "pending send") {
+          const requestFrame = window.requestAnimationFrame.bind(window);
+          const frameSpy = vi
+            .spyOn(window, "requestAnimationFrame")
+            .mockImplementation((callback) =>
+              requestFrame((now) => {
+                if (callback.name === "scrollToEndWhenReady") summary()?.click();
+                callback(now);
+              }),
+            );
+          try {
+            api!.followNewTurn([...entries, makeUserEntry("pending-send", "Sent message", 25)]);
+            await expect.poll(summary).toBeNull();
+            await waitForTimelineLayout(viewport);
+            expect(distanceFromEnd()).toBeLessThan(3);
+          } finally {
+            frameSpy.mockRestore();
+          }
+          return;
+        }
+        const top = summary()!.getBoundingClientRect().top;
+        const name = summary()!.textContent?.trim() ?? "";
+        await page.getByRole("button", { name, exact: true }).click();
+        const expanded = page.getByRole("button", { name, exact: true });
+        await expect.element(expanded).toHaveAttribute("aria-expanded", "true");
+        await waitForTimelineLayout(viewport);
+        expect(distanceFromEnd()).toBeGreaterThan(40);
+        expect(Math.abs(expanded.element().getBoundingClientRect().top - top)).toBeLessThan(12);
+        api!.setEntries([
+          ...entries.slice(0, -1),
+          {
+            ...streamingReply,
+            message: { ...streamingReply.message, text: "More output\n\n".repeat(8) },
+          },
+        ]);
+        await expect.poll(distanceFromEnd).toBeLessThan(3);
+      } finally {
+        await screen.unmount();
+      }
+    },
+  );
 
   it("keeps a prior-turn MCP app visible while ordinary work logs collapse", async () => {
     const host = document.createElement("div");

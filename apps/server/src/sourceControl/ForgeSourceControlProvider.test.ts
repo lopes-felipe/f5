@@ -37,18 +37,21 @@ function fixture(kind: ForgeKind, responses: unknown[] = [], login = `viewer-${+
 }
 
 describe("forge adapters", () => {
-  it("routes a fork clone lookup through the pull request's Forgejo host", async () => {
+  it("keeps the checkout's Forgejo account when the PR URL has a canonical repository path", async () => {
     const calls: string[] = [];
     const provider = makeForgeSourceControlProvider({
       kind: "forgejo",
-      resolveAccount: ({ ref }) =>
-        Effect.succeed({
+      resolveAccount: ({ cwd, ref }) => {
+        expect(cwd).toBe("/work");
+        expect(ref).toBeUndefined();
+        return Effect.succeed({
           kind: "forgejo",
-          host: ref?.host ?? "codeberg.org",
-          repository: ref?.repository ?? "team/base",
+          host: "forge.example.com",
+          repository: "team/base",
           login: "clone-test",
           token: "forge-test-token",
-        }),
+        });
+      },
       fetch: (async (url: Parameters<typeof fetch>[0]) => {
         calls.push(String(url));
         return Response.json({
@@ -62,7 +65,7 @@ describe("forge adapters", () => {
         provider.getRepositoryCloneUrls({
           cwd: "/work",
           repository: "fork/repo",
-          pullRequestUrl: "https://forge.example.com/team/base/pulls/7",
+          pullRequestUrl: "https://forge.example.com/Team/Base/pulls/7",
         }),
       ),
     ).resolves.toMatchObject({ url: "https://forge.example.com/fork/repo.git" });

@@ -1923,17 +1923,9 @@ export function makeForgeSourceControlProvider(options: {
     getDefaultBranch: (input) =>
       request(undefined, input.cwd, "").pipe(Effect.map(repositoryDefaultBranch)),
     getRepositoryCloneUrls: (input) =>
-      request(
-        (input.pullRequestUrl
-          ? parseSourceControlPullRequestUrl(input.pullRequestUrl, kind)
-          : null) ?? undefined,
-        input.cwd,
-        "",
-        "GET",
-        undefined,
-        false,
-        input.repository,
-      ).pipe(
+      // PR resolution already checks the checkout host. Reuse its account routing
+      // even when the API returns a canonical URL with a different repository path.
+      request(undefined, input.cwd, "", "GET", undefined, false, input.repository).pipe(
         Effect.map((value) => {
           const v = object(value),
             clone = rows(object(v.links).clone);

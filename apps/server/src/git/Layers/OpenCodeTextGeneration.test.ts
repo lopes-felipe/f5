@@ -254,12 +254,14 @@ it.layer(OpenCodeTextGenerationTestLayer)("OpenCodeTextGenerationLive", (it) => 
     ),
   );
 
-  it.effect("parses JSON returned as plain text output", () =>
+  it.effect("parses JSON after text and a read tool call", () =>
     withOpenCodeTextGeneration(DEFAULT_OPENCODE_SETTINGS, (textGeneration) =>
       Effect.gen(function* () {
         runtimeMock.state.promptResult = {
           data: {
             parts: [
+              { type: "text", text: "I’ll read the context first." },
+              { type: "tool" },
               {
                 type: "text",
                 text: 'Here is the result:\n{"subject":"Tighten OpenCode parsing","body":"Handle JSON text output locally."}',
