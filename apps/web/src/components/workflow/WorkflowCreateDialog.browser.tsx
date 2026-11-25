@@ -595,6 +595,52 @@ describe("WorkflowCreateDialog", () => {
     }
   });
 
+  it("shows no traits for OpenCode slots, whose traits workflow turns never apply", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const opencode = providerSnapshot("opencode", [
+      {
+        slug: "openai/gpt-5",
+        name: "GPT-5",
+        capabilities: createModelCapabilities({
+          optionDescriptors: [
+            {
+              id: "variant",
+              label: "Variant",
+              type: "select",
+              options: [
+                { id: "low", label: "Low" },
+                { id: "high", label: "High", isDefault: true },
+              ],
+            },
+          ],
+        }),
+      },
+    ]);
+    const screen = await renderWithQueryClient(
+      <SlotRow
+        label="OpenCode slot"
+        provider="opencode"
+        model="openai/gpt-5"
+        modelOptions={{ opencode: { variant: "low" } }}
+        providers={[opencode]}
+        modelOptionsByInstance={EMPTY_MODEL_OPTIONS_BY_INSTANCE}
+        onProviderModelChange={() => {}}
+        onModelOptionsChange={() => {}}
+      />,
+      { container: host },
+    );
+
+    try {
+      const row = page.getByRole("group", { name: "OpenCode slot" }).element();
+      expect(row.querySelector('[data-slot="workflow-slot-divider"]')).toBeNull();
+      expect(row.querySelector("button[aria-haspopup='menu']")).toBeNull();
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("omits Ultra for Astra and normalizes persisted Ultra to Max", async () => {
     const host = document.createElement("div");
     document.body.append(host);

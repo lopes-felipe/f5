@@ -25,6 +25,7 @@ import { resolveProviderOptionsForDispatch } from "../../providerOptionsForDispa
 import { workflowProviderSnapshot } from "@t3tools/shared/workflowProviders";
 import { mapProviderKinds, resolveComposerPickerModel } from "../ChatView.logic";
 import type { ModelPickerModelOption } from "../chat/providerIconUtils";
+import type { TraitsHiddenOptions } from "../chat/TraitsPicker";
 
 export function normalizeWorkflowSlotModelOptions(
   provider: ProviderKind,
@@ -38,16 +39,51 @@ export function normalizeWorkflowSlotModelOptions(
     return codex ? { codex } : undefined;
   }
   if (provider === "claudeAgent") {
-    const claudeAgent = normalizeClaudeModelOptions(model, modelOptions?.claudeAgent, capabilities);
-    return claudeAgent ? { claudeAgent } : undefined;
+    const normalized = normalizeClaudeModelOptions(model, modelOptions?.claudeAgent, capabilities);
+    // Ultracode is hidden in workflow slots (WORKFLOW_HIDDEN_TRAITS), so it is never stored.
+    const { ultracode: _ultracode, ...claudeAgent } = normalized ?? {};
+    return Object.keys(claudeAgent).length > 0 ? { claudeAgent } : undefined;
   }
   return getSingleProviderModelOptions(provider, modelOptions);
 }
 
+/**
+ * Traits workflow slots leave out of the composer's traits control:
+ * - Prompt-keyword efforts (Claude Ultrathink), since a workflow sends no composer prompt.
+ * - Claude Ultracode, since a multi-agent run per slot multiplies a workflow's spend.
+ */
+export const WORKFLOW_HIDDEN_TRAITS: TraitsHiddenOptions = {
+  promptInjected: true,
+  descriptorIds: ["ultracode"],
+};
+
+/**
+ * Whether workflow dispatch applies a slot's traits (`modelOptions` on the turn). OpenCode and
+ * Muse read traits only from a thread's model selection, which workflow turns don't send, and
+ * Grok and ACP have none, so those slots show no traits control.
+ */
+export function workflowSlotAppliesModelOptions(provider: ProviderKind): boolean {
+  switch (provider) {
+    case "codex":
+    case "claudeAgent":
+    case "cursor":
+    case "antigravity":
+    case "pi":
+      return true;
+    case "opencode":
+    case "muse":
+    case "grok":
+    case "acp":
+      return false;
+  }
+}
+
+/** The slot's own provider entry of `modelOptions`, when workflow dispatch applies it. */
 export function getSingleProviderModelOptions(
   provider: ProviderKind,
   modelOptions: ProviderModelOptions | null | undefined,
 ): ProviderModelOptions | undefined {
+  if (!workflowSlotAppliesModelOptions(provider)) return undefined;
   switch (provider) {
     case "codex":
       return modelOptions?.codex ? { codex: modelOptions.codex } : undefined;
@@ -55,18 +91,12 @@ export function getSingleProviderModelOptions(
       return modelOptions?.claudeAgent ? { claudeAgent: modelOptions.claudeAgent } : undefined;
     case "cursor":
       return modelOptions?.cursor ? { cursor: modelOptions.cursor } : undefined;
-    case "opencode":
-      return modelOptions?.opencode ? { opencode: modelOptions.opencode } : undefined;
     case "antigravity":
       // Keeps a Gemini row's thinking level.
       return modelOptions?.antigravity ? { antigravity: modelOptions.antigravity } : undefined;
-    case "muse":
-      return modelOptions?.muse ? { muse: modelOptions.muse } : undefined;
     case "pi":
       return modelOptions?.pi ? { pi: modelOptions.pi } : undefined;
-    case "grok":
-    case "acp":
-      // No per-model options exist for these providers.
+    default:
       return undefined;
   }
 }

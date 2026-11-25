@@ -20,7 +20,12 @@ import { ProviderInstanceModelPicker } from "../chat/ProviderInstanceModelPicker
 import type { ModelPickerModelOption } from "../chat/providerIconUtils";
 import { hasProviderTraitsControls, ProviderTraitsPicker } from "../chat/ProviderTraitsPicker";
 import { fieldShellClassName } from "../ui/input";
-import { normalizeWorkflowSlotModelOptions, workflowPickerProviders } from "./workflowSlots";
+import {
+  normalizeWorkflowSlotModelOptions,
+  WORKFLOW_HIDDEN_TRAITS,
+  workflowPickerProviders,
+  workflowSlotAppliesModelOptions,
+} from "./workflowSlots";
 
 const EMPTY_PROVIDERS: ReadonlyArray<ServerProvider> = [];
 const EMPTY_MODELS: ServerProvider["models"] = [];
@@ -105,12 +110,15 @@ export function SlotRow(props: {
         : undefined,
     [providerUnavailableReason],
   );
-  const showTraits = hasProviderTraitsControls({
-    provider: props.provider,
-    model: props.model,
-    models,
-    modelOptions: displayedModelOptions,
-  });
+  const showTraits =
+    workflowSlotAppliesModelOptions(props.provider) &&
+    hasProviderTraitsControls({
+      provider: props.provider,
+      model: props.model,
+      models,
+      modelOptions: displayedModelOptions,
+      hiddenOptions: WORKFLOW_HIDDEN_TRAITS,
+    });
   const row = (
     <div
       data-slot="workflow-slot-row"
@@ -150,6 +158,7 @@ export function SlotRow(props: {
               models={models}
               model={props.model}
               modelOptions={displayedModelOptions}
+              hiddenOptions={WORKFLOW_HIDDEN_TRAITS}
               triggerClassName={TRAITS_TRIGGER_CLASS_NAME}
               onModelOptionsChange={(next) => {
                 // Codex picks stay explicit and Claude picks are clamped to what the

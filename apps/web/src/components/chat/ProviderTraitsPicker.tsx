@@ -13,13 +13,15 @@ import {
 import { getProviderModelCapabilities } from "../../providerModels";
 import { ClaudeTraitsPicker, supportsClaudeTraitsControls } from "./ClaudeTraitsPicker";
 import { CodexTraitsPicker } from "./CodexTraitsPicker";
-import { shouldRenderTraitsControls, TraitsPicker } from "./TraitsPicker";
+import { shouldRenderTraitsControls, TraitsPicker, type TraitsHiddenOptions } from "./TraitsPicker";
 
 interface ProviderTraitsInput {
   readonly provider: ProviderKind;
   readonly model: string;
   readonly models: ReadonlyArray<ServerProviderModel>;
   readonly modelOptions: ProviderModelOptions | undefined;
+  /** Descriptor traits to leave out (Claude and descriptor-driven providers). */
+  readonly hiddenOptions?: TraitsHiddenOptions | undefined;
 }
 
 /**
@@ -49,14 +51,14 @@ export function hasProviderTraitsControls(input: ProviderTraitsInput): boolean {
     models: input.models,
     model: input.model,
     modelOptions: selections,
-    hidePromptInjectedOptions: true,
+    hiddenOptions: input.hiddenOptions,
   });
 }
 
 /**
  * The composer's traits control (Codex, Claude, or the descriptor-driven one for every other
  * provider) bound to a controlled value, for surfaces without a composer thread draft such as
- * workflow slots. Prompt-keyword efforts are hidden because no composer prompt is sent.
+ * workflow slots.
  */
 export function ProviderTraitsPicker(
   props: ProviderTraitsInput & {
@@ -89,7 +91,7 @@ export function ProviderTraitsPicker(
         modelOptions={selections}
         disabled={props.disabled}
         triggerClassName={props.triggerClassName}
-        hidePromptInjectedOptions
+        hiddenOptions={props.hiddenOptions}
         onModelOptionsChange={fromSelections}
       />
     );
@@ -102,7 +104,7 @@ export function ProviderTraitsPicker(
       modelOptions={selections}
       disabled={props.disabled ?? false}
       {...(props.triggerClassName ? { triggerClassName: props.triggerClassName } : {})}
-      hidePromptInjectedOptions
+      hiddenOptions={props.hiddenOptions}
       onModelOptionsChange={fromSelections}
     />
   );

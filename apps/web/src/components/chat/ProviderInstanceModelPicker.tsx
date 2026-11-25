@@ -165,15 +165,21 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [showLegacy, setShowLegacy] = useState(false);
+  // The row Enter picks, moved with the arrow keys; null means the first selectable row.
+  const [highlightedKey, setHighlightedKey] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   const isOpen = props.open ?? uncontrolledOpen;
   const entries = useMemo(
     () => sortProviderInstanceEntries(deriveProviderInstanceEntries(props.providers)),
     [props.providers],
   );
   const activeInstanceId = props.lockedInstanceId ?? props.instanceId;
-  const selectedInstance =
-    entries.find((entry) => entry.instanceId === activeInstanceId) ?? entries[0] ?? null;
+  // The trigger describes only the instance actually selected: a selection whose instance is
+  // gone (a removed provider) shows the bare model, not another provider's icon.
+  const activeInstance = entries.find((entry) => entry.instanceId === activeInstanceId) ?? null;
+  // Where the menu opens browsing.
+  const selectedInstance = activeInstance ?? entries[0] ?? null;
   const visibleEntries = props.lockedInstanceId
     ? entries.filter((entry) => entry.instanceId === props.lockedInstanceId)
     : entries;
@@ -341,14 +347,14 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
     });
     return labels;
   }, [jumpTargets, props.keybindings]);
-  const selectedOptions = selectedInstance
-    ? (props.modelOptionsByInstance.get(selectedInstance.instanceId) ?? [])
+  const selectedOptions = activeInstance
+    ? (props.modelOptionsByInstance.get(activeInstance.instanceId) ?? [])
     : [];
   const selectedModel =
     selectedOptions.find((option) => option.slug === props.model) ??
     ({ slug: props.model, name: props.model } satisfies ModelPickerModelOption);
-  const DriverIcon = selectedInstance
-    ? PROVIDER_ICON_BY_PROVIDER[selectedInstance.driverKind]
+  const DriverIcon = activeInstance
+    ? PROVIDER_ICON_BY_PROVIDER[activeInstance.driverKind]
     : undefined;
   const sidebarItems = useMemo<ModelPickerSidebarRailItem[]>(
     () =>
@@ -387,6 +393,7 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
       if (!open) {
         setSearch("");
         setShowLegacy(false);
+        setHighlightedKey(null);
       }
     },
     [
@@ -413,6 +420,30 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
 
   const rowUnavailableReason = (instance: ProviderInstanceEntry): string | null =>
     unavailableReason(instance) ?? props.instanceUnavailableReason?.(instance) ?? null;
+
+  // Arrow keys move over the rows that can be picked, skipping disabled ones.
+  const selectableItems = items.filter((item) => rowUnavailableReason(item.instance) === null);
+  const highlightedItem =
+    selectableItems.find((item) => itemKey(item) === highlightedKey) ?? selectableItems[0] ?? null;
+  const highlightedItemKey = highlightedItem ? itemKey(highlightedItem) : null;
+  const moveHighlight = (direction: 1 | -1) => {
+    if (selectableItems.length === 0) return;
+    // Functional, so keys pressed faster than React renders still all count.
+    setHighlightedKey((previous) => {
+      const current = Math.max(
+        selectableItems.findIndex((item) => itemKey(item) === previous),
+        0,
+      );
+      const next = Math.min(Math.max(current + direction, 0), selectableItems.length - 1);
+      return itemKey(selectableItems[next]!);
+    });
+  };
+  useEffect(() => {
+    if (!highlightedKey) return;
+    listRef.current
+      ?.querySelector("[data-model-picker-row][data-highlighted]")
+      ?.scrollIntoView({ block: "nearest" });
+  }, [highlightedKey]);
 
   const selectModel = (item: InstanceModelItem, additive = false) => {
     if (props.disabled || rowUnavailableReason(item.instance) !== null) return;
@@ -498,8 +529,8 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
   }, [isOpen, props.keybindings, selectedSource, visibleEntries]);
 
   const triggerTitle = getTriggerDisplayModelName(selectedModel);
-  const triggerLabel = selectedInstance
-    ? `${selectedInstance.displayName} · ${getTriggerDisplayModelLabel(selectedModel)}`
+  const triggerLabel = activeInstance
+    ? `${activeInstance.displayName} · ${getTriggerDisplayModelLabel(selectedModel)}`
     : getTriggerDisplayModelLabel(selectedModel);
 
   return (
@@ -524,12 +555,12 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
         }
       >
         <span className="flex min-w-0 w-full items-center gap-2 overflow-hidden">
-          {DriverIcon && selectedInstance ? (
+          {DriverIcon && activeInstance ? (
             <DriverIcon
               className={cn(
                 "size-4 shrink-0",
-                providerIconClassName(selectedInstance.driverKind),
-                selectedInstance.driverKind === "claudeAgent" && props.ultrathinkActive
+                providerIconClassName(activeInstance.driverKind),
+                activeInstance.driverKind === "claudeAgent" && props.ultrathinkActive
                   ? "ultrathink-chroma"
                   : undefined,
               )}
@@ -539,8 +570,8 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
             <TooltipTrigger render={<span className="min-w-0 flex-1 truncate" />}>
               {fanOutCount > 1
                 ? `${fanOutCount} models`
-                : selectedInstance && !selectedInstance.isDefault
-                  ? `${selectedInstance.displayName} · ${triggerTitle}`
+                : activeInstance && !activeInstance.isDefault
+                  ? `${activeInstance.displayName} · ${triggerTitle}`
                   : triggerTitle}
             </TooltipTrigger>
             <TooltipPopup side="top">
@@ -566,15 +597,15 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
               props.lockedInstanceId ? "flex-col" : "flex-row",
             )}
           >
-            {props.lockedInstanceId && selectedInstance && DriverIcon ? (
+            {props.lockedInstanceId && activeInstance && DriverIcon ? (
               <div className="flex items-center gap-2 border-b px-4 py-3">
                 <DriverIcon
                   className={cn(
                     "size-5 shrink-0",
-                    providerIconClassName(selectedInstance.driverKind),
+                    providerIconClassName(activeInstance.driverKind),
                   )}
                 />
-                <span className="truncate text-sm font-medium">{selectedInstance.displayName}</span>
+                <span className="truncate text-sm font-medium">{activeInstance.displayName}</span>
               </div>
             ) : null}
 
@@ -612,7 +643,10 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
                     className="pl-8 shadow-none"
                     size="sm"
                     value={search}
-                    onChange={(event) => setSearch(event.target.value)}
+                    onChange={(event) => {
+                      setSearch(event.target.value);
+                      setHighlightedKey(null);
+                    }}
                     onKeyDown={(event) => {
                       if (isKeyboardEventComposing(event.nativeEvent)) {
                         event.stopPropagation();
@@ -624,10 +658,16 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
                         setOpen(false);
                         return;
                       }
-                      if (event.key === "Enter" && items[0]) {
+                      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
                         event.preventDefault();
                         event.stopPropagation();
-                        selectModel(items[0], event.shiftKey);
+                        moveHighlight(event.key === "ArrowDown" ? 1 : -1);
+                        return;
+                      }
+                      if (event.key === "Enter" && highlightedItem) {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        selectModel(highlightedItem, event.shiftKey);
                         return;
                       }
                       event.stopPropagation();
@@ -640,7 +680,7 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
               </div>
 
               <div className="relative min-h-0 flex-1 overflow-y-auto p-1 before:pointer-events-none before:absolute before:inset-0 before:bg-muted/40">
-                <div className="relative">
+                <div ref={listRef} className="relative">
                   {items.length === 0 ? (
                     <div className="px-3 py-8 text-center text-xs text-muted-foreground">
                       {selectedSource.kind === "favorites" && !isSearching
@@ -676,14 +716,19 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
                                 isSameFavoritePreset(item.preset, props.activePreset)
                               : item.instance.instanceId === activeInstanceId &&
                                 item.slug === props.model);
+                          const isHighlighted = key === highlightedItemKey;
                           return (
                             <div
                               key={key}
                               data-model-picker-row={key}
+                              data-highlighted={isHighlighted ? "true" : undefined}
                               className={cn(
                                 "group flex items-center gap-2 rounded-md px-2 py-1.5",
-                                reason ? "opacity-55" : "hover:bg-muted",
+                                reason ? "opacity-55" : isHighlighted && "bg-muted",
                               )}
+                              onMouseMove={
+                                reason || isHighlighted ? undefined : () => setHighlightedKey(key)
+                              }
                             >
                               <button
                                 type="button"

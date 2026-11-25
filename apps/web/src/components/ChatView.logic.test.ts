@@ -230,22 +230,31 @@ describe("getCustomModelOptionsByProvider", () => {
     providerModelPreferences: {},
   };
 
-  it("has an entry for every provider kind, including Antigravity's live models", () => {
+  it("has an entry for every provider kind, with no legacy catalog for newer drivers", () => {
     const options = getCustomModelOptionsByProvider(emptyAppSettings, [
       provider({
         provider: "antigravity",
-        models: [
-          { slug: "gemini-4-neon", name: "Gemini 4 Neon" },
-          { slug: "gemini-4-carbon", name: "Gemini 4 Carbon" },
-        ],
+        models: [{ slug: "gemini-4-neon", name: "Gemini 4 Neon" }],
       }),
     ]);
 
     expect(Object.keys(options).toSorted()).toEqual([...KNOWN_PROVIDER_KINDS].toSorted());
-    expect(options.antigravity.map((option) => option.slug).toSorted()).toEqual([
-      "gemini-4-carbon",
-      "gemini-4-neon",
-    ]);
+    // Antigravity, Muse, ACP and Pi list only what their instance reports.
+    expect(options.antigravity).toEqual([]);
+    expect(options.acp).toEqual([]);
+    expect(options.pi).toEqual([]);
+    expect(options.muse).toEqual([]);
+  });
+
+  it("offers no placeholder model for a live instance that reports none", () => {
+    const byInstance = getComposerModelOptionsByInstance(
+      emptyAppSettings,
+      DEFAULT_UNIFIED_SETTINGS,
+      [provider({ provider: "acp", models: [] }), provider({ provider: "pi", models: [] })],
+    );
+
+    expect(byInstance.get(defaultInstanceIdForDriver(ProviderDriverKind.make("acp")))).toEqual([]);
+    expect(byInstance.get(defaultInstanceIdForDriver(ProviderDriverKind.make("pi")))).toEqual([]);
   });
 
   it("builds composer picker options per instance with legacy custom models on the default", () => {

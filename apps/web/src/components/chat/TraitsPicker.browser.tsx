@@ -120,7 +120,7 @@ describe("TraitsPicker", () => {
         models={modelsWith([promptEffort])}
         model={MODEL}
         modelOptions={[{ id: "effort", value: "ultrathink" }]}
-        hidePromptInjectedOptions
+        hiddenOptions={{ promptInjected: true }}
         onModelOptionsChange={() => {}}
       />,
     );

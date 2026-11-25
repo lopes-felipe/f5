@@ -705,13 +705,28 @@ export function getCustomModelOptionsByProvider(
   serverSettings?: Pick<ServerSettings, "providers" | "providerInstances"> | null,
 ): Record<ProviderKind, ReadonlyArray<ModelPickerModelOption>> {
   return mapProviderKinds((provider) =>
-    applyPickerModelPreferences(
-      provider,
-      getUnfilteredModelOptionsByProvider(settings, providers, serverSettings, provider),
-      settings,
-    ),
+    LEGACY_CATALOG_PROVIDERS.has(provider)
+      ? applyPickerModelPreferences(
+          provider,
+          getUnfilteredModelOptionsByProvider(settings, providers, serverSettings, provider),
+          settings,
+        )
+      : [],
   );
 }
+
+/**
+ * Drivers whose default instance also lists the legacy driver-keyed catalog (app-level custom
+ * models and the static fallback). The others list only what their instance reports, so a live
+ * instance without models never offers a placeholder slug such as `acp-default`.
+ */
+const LEGACY_CATALOG_PROVIDERS: ReadonlySet<ProviderKind> = new Set([
+  "codex",
+  "claudeAgent",
+  "cursor",
+  "opencode",
+  "grok",
+]);
 
 /**
  * The model options every provider-instance picker shows (the composer and workflow slots):

@@ -20,6 +20,7 @@ import { withComposerModelDefaults } from "./composerModelDefaults";
 import {
   shouldRenderTraitsControls,
   TraitsMenuContent as DescriptorTraitsMenuContent,
+  type TraitsHiddenOptions,
 } from "./TraitsPicker";
 
 const CLAUDE_PROVIDER = ProviderDriverKind.make("claudeAgent");
@@ -68,8 +69,8 @@ type ClaudeTraitsBinding =
 
 type ClaudeTraitsProps = ClaudeTraitsInput &
   ClaudeTraitsBinding & {
-    /** Hide prompt-keyword efforts (Ultrathink) where no composer prompt is sent. */
-    hidePromptInjectedOptions?: boolean | undefined;
+    /** Traits to leave out, such as prompt-keyword efforts where no composer prompt is sent. */
+    hiddenOptions?: TraitsHiddenOptions | undefined;
   };
 
 function ClaudeTraitsMenuContentImpl(props: ClaudeTraitsProps) {
@@ -88,7 +89,7 @@ function ClaudeTraitsMenuContentImpl(props: ClaudeTraitsProps) {
       model={props.model}
       models={props.models}
       modelOptions={modelOptions}
-      hidePromptInjectedOptions={props.hidePromptInjectedOptions}
+      hiddenOptions={props.hiddenOptions}
     />
   ) : (
     <DescriptorTraitsMenuContent
@@ -97,7 +98,7 @@ function ClaudeTraitsMenuContentImpl(props: ClaudeTraitsProps) {
       model={props.model}
       models={props.models}
       modelOptions={modelOptions}
-      hidePromptInjectedOptions={props.hidePromptInjectedOptions}
+      hiddenOptions={props.hiddenOptions}
     />
   );
 }

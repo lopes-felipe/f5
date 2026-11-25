@@ -4,12 +4,15 @@ import {
   ProviderInstanceId,
   type ServerProvider,
 } from "@t3tools/contracts";
+import { createClaudeModelCapabilities } from "@t3tools/shared/model";
 import { describe, expect, it } from "vitest";
 
 import {
   getSingleProviderModelOptions,
+  normalizeWorkflowSlotModelOptions,
   workflowModelOptionsByProvider,
   workflowPickerProviders,
+  workflowSlotAppliesModelOptions,
 } from "./workflowSlots";
 
 function snapshot(driverName: string, instanceId?: string): ServerProvider {
@@ -67,17 +70,49 @@ describe("workflowModelOptionsByProvider", () => {
 });
 
 describe("getSingleProviderModelOptions", () => {
-  it("keeps Muse and Pi options so their traits survive submission", () => {
-    const modelOptions = {
-      muse: { reasoningEffort: "high" },
-      pi: { thinking: "medium" },
-    } as const;
-    expect(getSingleProviderModelOptions("muse", modelOptions)).toEqual({
-      muse: { reasoningEffort: "high" },
-    });
+  const modelOptions = {
+    muse: { reasoningEffort: "high" },
+    pi: { thinking: "medium" },
+    opencode: { variant: "high", agent: "build" },
+    antigravity: { thinking: "high" },
+  } as const;
+
+  it("keeps the options workflow dispatch applies", () => {
     expect(getSingleProviderModelOptions("pi", modelOptions)).toEqual({
       pi: { thinking: "medium" },
     });
-    expect(getSingleProviderModelOptions("grok", modelOptions)).toBeUndefined();
+    expect(getSingleProviderModelOptions("antigravity", modelOptions)).toEqual({
+      antigravity: { thinking: "high" },
+    });
+  });
+
+  it("drops OpenCode and Muse options, which workflow turns never apply", () => {
+    for (const provider of ["opencode", "muse", "grok", "acp"] as const) {
+      expect(workflowSlotAppliesModelOptions(provider)).toBe(false);
+      expect(getSingleProviderModelOptions(provider, modelOptions)).toBeUndefined();
+    }
+  });
+});
+
+describe("normalizeWorkflowSlotModelOptions", () => {
+  it("never stores Claude Ultracode, which workflow slots hide", () => {
+    const capabilities = createClaudeModelCapabilities("claude-opus-4-7");
+    expect(capabilities.optionDescriptors?.some((option) => option.id === "ultracode")).toBe(true);
+    expect(
+      normalizeWorkflowSlotModelOptions(
+        "claudeAgent",
+        "claude-opus-4-7",
+        { claudeAgent: { effort: "max", ultracode: true } },
+        capabilities,
+      ),
+    ).toEqual({ claudeAgent: { effort: "max" } });
+    expect(
+      normalizeWorkflowSlotModelOptions(
+        "claudeAgent",
+        "claude-opus-4-7",
+        { claudeAgent: { ultracode: true } },
+        capabilities,
+      ),
+    ).toBeUndefined();
   });
 });
