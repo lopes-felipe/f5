@@ -71,7 +71,11 @@ export const ANTIGRAVITY_WINDOWS_SANDBOX_MINIMUM_BUILD = 26_100;
  * in `docs/providers/antigravity.md`.
  */
 export const ANTIGRAVITY_READ_ONLY_WORKFLOW_CERTIFIED_RUNTIMES: ReadonlyArray<ReadOnlyCertificationRow> =
-  [];
+  [
+    // Live run 2026-11-25 on the F5-managed build: both rounds refused `npm --version`, the
+    // `read_project_status` MCP trap and a BypassSandbox retry; the sandboxed shell had no network.
+    { minimumVersion: "1.5.15", target: "darwin-arm64" },
+  ];
 
 /**
  * Cursor CLI builds whose native read-only sandbox (`--sandbox enabled` with a

@@ -66,7 +66,8 @@ the rest. Each model shows only the thinking levels it supports. Orchestrator ha
 [Workflow](../user/workflows.md) reviews, investigations and document stages must not change
 your project. Antigravity can run them only on a certified version; otherwise its rows in the
 workflow dialog and in upstream port review are disabled with "Read-only workflow turns are not
-certified for this Antigravity version." No version is certified yet.
+certified for this Antigravity version." Certified: 1.5.15 and later on `darwin-arm64` (Apple
+silicon Macs). Other platforms aren't certified yet.
 
 A certification covers a minimum version on one platform and architecture, such as
 `darwin-arm64`. Every later release on that target is covered too, so F5's automatic Antigravity
