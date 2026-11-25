@@ -8,7 +8,7 @@
   A desktop and web workspace for coding agents, where each step of a workflow can run on a different provider and model.
 </p>
 
-F5 runs Codex, Claude Code, Cursor, OpenCode, Grok, Antigravity, Muse Code and custom ACP agents against your
+F5 runs Codex, Claude Code, Cursor, OpenCode, Grok, Antigravity, Muse Code, Pi and custom ACP agents against your
 repositories, and chains them into multi-model workflows: competing plans, cross-reviews, merges,
 implementation and code review, with every step on the provider and model you pick.
 
@@ -42,7 +42,7 @@ See [Install F5](docs/install.md), then [Getting started](docs/user/getting-star
 
 - **Run multi-model workflows** for features, code review, investigations and documents → [Workflows](docs/user/workflows.md)
 - **Work in threads** with diffs, checkpoints, terminals and a next-turn queue → [Threads and workspaces](docs/user/threads-and-workspaces.md)
-- **Use seven providers**, several accounts each → [Provider prerequisites](docs/provider-prerequisites.md)
+- **Use eight built-in providers plus custom ACP agents**, several accounts each → [Provider prerequisites](docs/provider-prerequisites.md)
 - **Choose how much agents may do** per thread → [Runtime modes](docs/runtime-modes.md)
 - **Send one message to several models**, each in its own worktree → [Worktrees](docs/user/worktrees-and-storage-automation.md)
 - **Review pull requests** from GitHub, GitLab, Bitbucket, Azure DevOps and Forgejo → [PR Hub](docs/user/pr-hub-forges.md)

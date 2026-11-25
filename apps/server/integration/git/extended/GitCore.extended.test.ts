@@ -1,1 +1,1 @@
-import "../../../src/git/Layers/GitCore.extended.ts";
+import "../../../src/git/Layers/GitCore.extended.testkit.ts";

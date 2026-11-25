@@ -2352,9 +2352,8 @@ export const createServer = Effect.fn(function* (
           return;
         }
         if (
-          (url.pathname === ORCHESTRATION_STARTUP_SNAPSHOT_PATH ||
-            url.pathname.startsWith("/api/storage/") ||
-            url.pathname.startsWith("/api/attachments/")) &&
+          isPrivatePath &&
+          url.pathname.startsWith("/api/") &&
           !serverAuth.isWebSocketOriginAllowed(req)
         ) {
           respond(
@@ -2835,7 +2834,13 @@ export const createServer = Effect.fn(function* (
               "X-Content-Type-Options": "nosniff",
               ...(contentType === "text/html"
                 ? {
-                    "Content-Security-Policy": "frame-ancestors 'none'",
+                    // Keep `srcdoc` HTML renders and MCP app bridges working in browser/remote
+                    // mode (srcdoc inherits parent `default-src`/`script-src`) while blocking
+                    // plugin embeds, base-tag hijacking, and clickjacking.
+                    "Content-Security-Policy":
+                      "object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+                    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+                    "Referrer-Policy": "no-referrer",
                     "X-Frame-Options": "DENY",
                   }
                 : {}),

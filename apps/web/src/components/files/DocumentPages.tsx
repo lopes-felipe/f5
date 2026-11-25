@@ -1,7 +1,7 @@
 import DOMPurify from "dompurify";
 import { MinusIcon, PlusIcon, RotateCcwIcon } from "lucide-react";
 import { FileSurfaceAction } from "./fileSurfaceChrome";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTheme } from "~/hooks/useTheme";
 import { observeResize } from "~/lib/observeResize";
 
@@ -86,8 +86,12 @@ export default function DocumentPages(props: {
   const [outputHeight, setOutputHeight] = useState(0);
   const stopObserving = useRef<(() => void) | null>(null);
   useEffect(() => () => stopObserving.current?.(), []);
-  const html = sanitizeDocumentHtml(props.html);
-  const srcDoc = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><style>:root{color-scheme:${resolvedTheme}}html{background:${colors[0]};color:${colors[1]};font:${15 * zoom}px/1.65 system-ui,sans-serif}body{box-sizing:border-box;margin:${props.output ? "0" : "20px auto"};padding:${props.output ? "16px" : "32px"};width:${props.output ? "100%" : "calc(100% - 40px)"};max-width:${860 * zoom}px;min-height:${props.output ? "0" : "calc(100vh - 40px)"};display:flow-root;background:${colors[2]};overflow-wrap:anywhere}h1,h2,h3{line-height:1.25}img{max-width:100%;height:auto}table{border-collapse:collapse;min-width:100%;max-width:100%}td,th{border:1px solid ${colors[3]};padding:6px 12px;text-align:left}th{background:${colors[0]}}tr:nth-child(even){background:${colors[0]}}pre,span[data-odf-whitespace]{white-space:pre-wrap}*{scrollbar-width:thin}${props.output ? "" : "@media(max-width:420px){body{padding:20px;width:calc(100% - 24px);margin:12px auto}}"}</style></head><body>${html}</body></html>`;
+  const html = useMemo(() => sanitizeDocumentHtml(props.html), [props.html]);
+  const srcDoc = useMemo(
+    () =>
+      `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><style>:root{color-scheme:${resolvedTheme}}html{background:${colors[0]};color:${colors[1]};font:${15 * zoom}px/1.65 system-ui,sans-serif}body{box-sizing:border-box;margin:${props.output ? "0" : "20px auto"};padding:${props.output ? "16px" : "32px"};width:${props.output ? "100%" : "calc(100% - 40px)"};max-width:${860 * zoom}px;min-height:${props.output ? "0" : "calc(100vh - 40px)"};display:flow-root;background:${colors[2]};overflow-wrap:anywhere}h1,h2,h3{line-height:1.25}img{max-width:100%;height:auto}table{border-collapse:collapse;min-width:100%;max-width:100%}td,th{border:1px solid ${colors[3]};padding:6px 12px;text-align:left}th{background:${colors[0]}}tr:nth-child(even){background:${colors[0]}}pre,span[data-odf-whitespace]{white-space:pre-wrap}*{scrollbar-width:thin}${props.output ? "" : "@media(max-width:420px){body{padding:20px;width:calc(100% - 24px);margin:12px auto}}"}</style></head><body>${html}</body></html>`,
+    [html, resolvedTheme, colors, zoom, props.output],
+  );
   return (
     <>
       {!props.output ? (
