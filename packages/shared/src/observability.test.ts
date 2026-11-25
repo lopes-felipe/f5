@@ -1,45 +1,58 @@
 import { describe, expect, it } from "vitest";
 import {
+  ignoredOtlpEnvironment,
   parseOtelAttributes,
   publicOtlpConfiguration,
   resolveOtlpConfiguration,
 } from "./observability";
 
 describe("OTLP configuration", () => {
-  it("uses settings before signal environment before the shared base endpoint", () => {
-    const env = {
-      OTEL_EXPORTER_OTLP_ENDPOINT: "https://collector.test/base/",
-      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "https://traces.test/direct",
-      OTEL_EXPORTER_OTLP_HEADERS: "Authorization=Bearer%20env",
-      OTEL_EXPORTER_OTLP_METRICS_PROTOCOL: "http/json",
-    };
-    expect(resolveOtlpConfiguration({}, env)).toMatchObject({
-      traces: { url: "https://traces.test/direct", source: "environment" },
-      metrics: { url: "https://collector.test/base/v1/metrics", protocol: "http/json" },
+  const inheritedEnv = {
+    OTEL_EXPORTER_OTLP_ENDPOINT: "https://collector.test/base/",
+    OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "https://traces.test/direct",
+    OTEL_EXPORTER_OTLP_HEADERS: "Authorization=Bearer%20env",
+    OTEL_EXPORTER_OTLP_TRACES_HEADERS: "x-signal=env",
+    OTEL_RESOURCE_ATTRIBUTES: "host.name=corp-laptop,team=platform",
+    OTEL_EXPORTER_OTLP_METRICS_PROTOCOL: "http/json",
+  };
+  it("never exports to an endpoint or with headers inherited from the environment", () => {
+    const config = resolveOtlpConfiguration({}, inheritedEnv);
+    expect(config).toMatchObject({
+      traces: { url: null, source: "unset", headers: {} },
+      metrics: { url: null, source: "unset", headers: {} },
     });
-    expect(
-      resolveOtlpConfiguration(
-        {
-          otlpTracesUrl: "https://settings.test/trace",
-          otlpHeaders: [{ name: "authorization", value: "Bearer stored" }],
-        },
-        env,
-      ).traces,
-    ).toMatchObject({
+  });
+  it("names the ignored endpoint and header variables so users can be told", () => {
+    expect(ignoredOtlpEnvironment(inheritedEnv)).toEqual([
+      "OTEL_EXPORTER_OTLP_ENDPOINT",
+      "OTEL_EXPORTER_OTLP_HEADERS",
+      "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+      "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+    ]);
+    expect(ignoredOtlpEnvironment({ OTEL_EXPORTER_OTLP_ENDPOINT: " " })).toEqual([]);
+  });
+  it("exports only to the Settings collector, with only the Settings headers", () => {
+    const config = resolveOtlpConfiguration(
+      {
+        otlpTracesUrl: "https://settings.test/trace",
+        otlpMetricsUrl: "https://settings.test/metrics",
+        otlpHeaders: [{ name: "AUTHORIZATION", value: "Bearer stored" }],
+      },
+      inheritedEnv,
+    );
+    expect(config.traces).toMatchObject({
       url: "https://settings.test/trace",
       source: "settings",
       headers: { authorization: "Bearer stored" },
     });
-  });
-  it("normalizes header names before applying signal and settings precedence", () => {
-    const config = resolveOtlpConfiguration(
-      { otlpHeaders: [{ name: "AUTHORIZATION", value: "stored" }] },
-      {
-        OTEL_EXPORTER_OTLP_HEADERS: "Authorization=global",
-        OTEL_EXPORTER_OTLP_TRACES_HEADERS: "authorization=signal",
-      },
-    );
-    expect(config.traces.headers).toEqual({ authorization: "stored" });
+    expect(config.traces.headers).toEqual({ authorization: "Bearer stored" });
+    // The environment may still choose the wire format of the Settings collector.
+    expect(config.metrics).toMatchObject({
+      url: "https://settings.test/metrics",
+      protocol: "http/json",
+    });
+    // Resource attributes label the Settings collector's data, so a masked host name holds.
+    expect(config.attributes).toEqual({ "host.name": "corp-laptop", team: "platform" });
   });
   it.each(["traces", "metrics"] as const)("honors the %s kill switch over settings", (kind) => {
     const configured = {
@@ -69,10 +82,13 @@ describe("OTLP configuration", () => {
       bad: "%oops",
     });
     expect(
-      resolveOtlpConfiguration(
-        {},
-        { OTEL_EXPORTER_OTLP_HEADERS: "Host=evil,authorization=bad%0d%0aInjected%3A%20header" },
-      ).traces.headers,
+      resolveOtlpConfiguration({
+        otlpTracesUrl: "https://collector.test/traces",
+        otlpHeaders: [
+          { name: "Host", value: "evil" },
+          { name: "authorization", value: "bad\r\nInjected: header" },
+        ],
+      }).traces.headers,
     ).toEqual({});
   });
   it("never exposes header credentials or endpoint queries in public diagnostics", () => {

@@ -76,7 +76,6 @@ export function isolatedEnv(
     F5_STATE_DIR: state,
     T3CODE_STATE_DIR: state,
     T3CODE_OBSERVABILITY_ENABLED: "0",
-    T3CODE_TELEMETRY_ENABLED: "false",
     T3CODE_DISABLE_AUTO_UPDATE: "1",
     T3CODE_NO_BROWSER: "1",
     ...extra,

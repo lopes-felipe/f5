@@ -14,6 +14,10 @@ import {
   type AcpSessionRuntimeShape,
 } from "./AcpSessionRuntime.ts";
 import { findModelConfigOption, type AcpSessionModeState } from "./AcpRuntimeModel.ts";
+import {
+  acpReadOnlyWorkflowDecision,
+  type AcpReadOnlyWorkflowToolCall,
+} from "./AcpReadOnlyWorkflowPolicy.ts";
 import { antigravityEditTargetsInWorkspace } from "./AntigravityEditLocation.ts";
 import { AntigravityInstallation } from "../AntigravityInstallation.ts";
 import {
@@ -756,48 +760,15 @@ const writeAntigravitySessionMode = <E>(input: {
 // ── Read-only workflow turns ─────────────────────────────────────────────────
 
 /**
- * Tool kinds a read-only workflow turn may run; everything else is denied. `fetch` is allowed in
- * unattended stages too, matching other providers' plan mode; the exfiltration risk this leaves
- * is recorded in `docs/providers/antigravity.md`.
- */
-export const ANTIGRAVITY_READ_ONLY_WORKFLOW_TOOL_KINDS: ReadonlySet<string> = new Set([
-  "read",
-  "search",
-  "think",
-  "fetch",
-]);
-
-/** A tool call that names an MCP server. Read-only workflow sessions install no MCP catalog. */
-function antigravityMcpToolCall(toolCall: {
-  readonly title?: string | null | undefined;
-  readonly rawInput?: unknown;
-}): boolean {
-  if (/\bmcp(?:__|[_:/.])/i.test(toolCall.title ?? "")) return true;
-  const raw = toolCall.rawInput;
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return false;
-  return ["server", "serverName", "server_name", "mcpServer", "mcp_server"].some(
-    (key) => key in raw,
-  );
-}
-
-/**
  * Permission policy for a read-only workflow turn. It runs before the access-mode policy, saved
- * thread grants and Full access, and never opens an approval prompt: read, search, think and
- * fetch tools run once; edits, deletes, moves, commands, computer control, MCP tools and
- * requests with an unknown or missing kind are denied.
+ * thread grants and Full access, and never opens an approval prompt. The policy itself is shared
+ * with Cursor: see `acpReadOnlyWorkflowDecision`.
  */
 export function antigravityReadOnlyWorkflowDecision(input: {
-  readonly toolCall: {
-    readonly kind?: string | null | undefined;
-    readonly title?: string | null | undefined;
-    readonly rawInput?: unknown;
-  };
+  readonly toolCall: AcpReadOnlyWorkflowToolCall;
   readonly computerRequest: boolean;
 }): "allow" | "deny" {
-  if (input.computerRequest) return "deny";
-  const kind = input.toolCall.kind;
-  if (!kind || !ANTIGRAVITY_READ_ONLY_WORKFLOW_TOOL_KINDS.has(kind)) return "deny";
-  return antigravityMcpToolCall(input.toolCall) ? "deny" : "allow";
+  return acpReadOnlyWorkflowDecision(input);
 }
 
 /** Read-only workflow sessions never run with native auto-approval, whatever the thread says. */

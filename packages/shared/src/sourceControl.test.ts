@@ -10,9 +10,34 @@ import {
   isSshRemoteUrl,
   resolveChangeRequestWebUrl,
   sourceControlPullRequestKeysEqual,
+  stripRemoteUrlCredentials,
   toThreadPullRequestLink,
   updateThreadPullRequestLinks,
 } from "./sourceControl";
+
+describe("stripRemoteUrlCredentials", () => {
+  it.each([
+    ["https://user:tok@github.com/org/x.git?y=1#z", "https://github.com/org/x.git"],
+    ["https://x-access-token:ghs_abc@github.com/org/x.git", "https://github.com/org/x.git"],
+    ["http://token@git.example.test/org/x", "http://git.example.test/org/x"],
+    ["ssh://git:secret@host.test/org/x.git", "ssh://git@host.test/org/x.git"],
+  ])("removes credentials from %s", (url, expected) => {
+    expect(stripRemoteUrlCredentials(url)).toBe(expected);
+  });
+
+  it.each([
+    "git@github.com:org/x.git",
+    "ssh://git@github.com/org/x",
+    "github.com:org/x.git",
+    "https://github.com/org/x.git",
+    "https://github.com",
+    "/srv/git/x.git",
+    "../x",
+    "http://[broken",
+  ])("leaves %s unchanged", (url) => {
+    expect(stripRemoteUrlCredentials(url)).toBe(url);
+  });
+});
 
 it.each(["github.com", "gitlab.com", "bitbucket.org", "code.example.test"])(
   "resolves userless SSH remotes on %s",

@@ -27,15 +27,54 @@ function normalizeImageBlob(blob: Blob, fallbackMimeType: string): Blob {
   return blobMimeType === mimeType ? blob : blob.slice(0, blob.size, mimeType);
 }
 
+function readInlineImageBlob(src: string): Blob {
+  // The desktop CSP permits displaying inline images but prevents fetching them.
+  const url = src.split("#", 1)[0] ?? src;
+  const comma = url.indexOf(",");
+  try {
+    if (comma < 0) throw new Error("Missing data URL payload.");
+    const [mimeType = "", ...parameters] = url.slice("data:".length, comma).split(";");
+    const payload = url.slice(comma + 1);
+    if (parameters.at(-1)?.trim().toLowerCase() === "base64") {
+      const decoded = atob(decodeURIComponent(payload));
+      return new Blob([Uint8Array.from(decoded, (char) => char.charCodeAt(0))], {
+        type: mimeType.trim(),
+      });
+    }
+
+    // Percent escapes denote raw bytes, including bytes that are invalid UTF-8.
+    const bytes = new TextEncoder().encode(payload);
+    let written = 0;
+    for (let index = 0; index < bytes.length; index++) {
+      const byte = bytes[index]!;
+      if (byte === 37 && index + 2 < bytes.length) {
+        const hex = String.fromCharCode(bytes[index + 1]!, bytes[index + 2]!);
+        if (/^[\da-f]{2}$/i.test(hex)) {
+          bytes[written++] = Number.parseInt(hex, 16);
+          index += 2;
+          continue;
+        }
+      }
+      bytes[written++] = byte;
+    }
+    return new Blob([bytes.subarray(0, written)], { type: mimeType.trim() });
+  } catch (cause) {
+    throw imageActionError("The inline image could not be decoded.", cause);
+  }
+}
+
 export async function fetchImageAttachmentBlob(
   item: ImageAttachmentActionItem,
   options?: { signal?: AbortSignal; maxBytes?: number },
 ): Promise<Blob> {
-  if (item.sourceBlob) {
-    if (options?.maxBytes !== undefined && item.sourceBlob.size > options.maxBytes) {
+  const localBlob =
+    item.sourceBlob ?? (/^data:/i.test(item.src) ? readInlineImageBlob(item.src) : undefined);
+  if (localBlob) {
+    options?.signal?.throwIfAborted();
+    if (options?.maxBytes !== undefined && localBlob.size > options.maxBytes) {
       throw imageActionError("The image attachment exceeds the source size limit.");
     }
-    const blob = normalizeImageBlob(item.sourceBlob, item.mimeType);
+    const blob = normalizeImageBlob(localBlob, item.mimeType);
     if (blob.size === 0) {
       throw imageActionError("The image attachment is empty.");
     }

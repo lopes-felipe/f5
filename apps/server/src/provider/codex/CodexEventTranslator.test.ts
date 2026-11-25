@@ -1,16 +1,17 @@
-import { ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import { EventId, ProviderInstanceId, ThreadId, type ProviderEvent } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 
 import {
+  MAX_MERGED_DELTA_BYTES,
   codexReasoningTokensSinceBaseline,
   codexThreadTokenUsageSnapshot,
   contentStreamKindFromMethod,
   hookTargetItemId,
+  mergeContentDeltas,
   toTurnStatus,
 } from "./CodexEventTranslator.ts";
-import { mergeCodexProviderOptions, resolveCodexSelectionOptions } from "./CodexOptions.ts";
 
-describe("CodexEventTranslator & CodexOptions", () => {
+describe("CodexEventTranslator", () => {
   it("extracts token usage snapshots and computes reasoning deltas safely", () => {
     const payload = {
       tokenUsage: {
@@ -60,24 +61,23 @@ describe("CodexEventTranslator & CodexOptions", () => {
     expect(toTurnStatus("completed")).toBe("completed");
   });
 
-  it("prefers bound modelSelection options and merges codex launchArgs", () => {
-    const instanceId = ProviderInstanceId.make("codex");
-    const bound = resolveCodexSelectionOptions({
-      boundInstanceId: instanceId,
-      modelOptions: { codex: { reasoningEffort: "low", fastMode: true } },
-      modelSelection: {
-        instanceId,
-        model: "gpt-5.3-codex",
-        options: [{ id: "reasoningEffort", value: "high" }],
-      },
-    });
-    expect(bound).toEqual({ reasoningEffort: "high" });
+  it("coalesces content deltas and preserves single-part identity with 64 KiB cap constant", () => {
+    expect(MAX_MERGED_DELTA_BYTES).toBe(64 * 1024);
+    const first: ProviderEvent = {
+      id: EventId.makeUnsafe("evt-1"),
+      kind: "notification",
+      provider: "codex",
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId: ThreadId.makeUnsafe("thread-1"),
+      createdAt: "2026-04-24T12:00:00.000Z",
+      method: "item/agentMessage/delta",
+      textDelta: "hello ",
+      payload: { delta: "hello ", itemId: "item-1" },
+    };
 
-    const merged = mergeCodexProviderOptions(
-      { codex: { launchArgs: ["--a"] } },
-      { codex: { launchArgs: ["--b"] } },
-    );
-    expect(merged?.codex?.launchArgs).toEqual(["--a", "--b"]);
-    expect(ThreadId.make("thread-1")).toBe("thread-1");
+    expect(mergeContentDeltas(first, ["hello "])).toBe(first);
+    const merged = mergeContentDeltas(first, ["hello ", "world"]);
+    expect(merged.textDelta).toBe("hello world");
+    expect((merged.payload as { delta: string }).delta).toBe("hello world");
   });
 });

@@ -1520,6 +1520,8 @@ export function syncThreadTailDetails(
   threadId: ThreadId,
   details: OrchestrationThreadTailDetails,
 ): AppState {
+  // A lookup made before creation has no history to merge into the live thread.
+  if (details.thread === null && details.detailSequence === 0) return state;
   const existingThread = state.threads.find((thread) => thread.id === threadId);
   if (!existingThread) {
     const thread = details.thread;
