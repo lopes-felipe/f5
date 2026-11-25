@@ -149,6 +149,8 @@ import type {
   PreviewMcpHttpServerShape,
   PreviewMcpSessionConfig,
 } from "../../mcp/PreviewMcpHttpServer.ts";
+import type { McpHubAttachment, McpHubShape } from "../../mcp/hub/McpHub.ts";
+import { hubEndpointsForCodex } from "../../mcp/hub/providerHubServers.ts";
 import {
   writeProviderEventLog,
   type EventNdjsonLogger,
@@ -243,6 +245,10 @@ export interface CodexAdapterLiveOptions {
   readonly processEnvironment?: NodeJS.ProcessEnv;
   /** The provider instance this adapter serves; defaults to `codex`. */
   readonly instanceId?: ProviderInstanceId;
+  /** F5's MCP hub; configured servers reach Codex through its endpoints. */
+  readonly mcpHub?: McpHubShape;
+  /** True when Codex should get configured servers directly (`mcpNativePassthrough`). */
+  readonly mcpNativePassthrough?: Effect.Effect<boolean>;
 }
 
 function mergeCodexProviderOptions(
@@ -2620,6 +2626,20 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
     const computerMcpSessions = new Map<ThreadId, PreviewMcpSessionConfig>();
     const previewMcpSessions = new Map<ThreadId, PreviewMcpSessionConfig>();
     const threadMcpSessions = new Map<ThreadId, PreviewMcpSessionConfig>();
+    // Configured servers reach a session through these hub endpoints (unless passthrough).
+    const hubAttachments = new Map<ThreadId, McpHubAttachment>();
+    const disposeHubAttachment = (threadId: ThreadId) => {
+      const attachment = hubAttachments.get(threadId);
+      hubAttachments.delete(threadId);
+      if (attachment) void attachment.dispose();
+    };
+    const useMcpHub = Effect.gen(function* () {
+      if (!options?.mcpHub?.available) return false;
+      const passthrough = options.mcpNativePassthrough
+        ? yield* options.mcpNativePassthrough.pipe(Effect.orElseSucceed(() => false))
+        : false;
+      return !passthrough;
+    });
     const automationGenerations = new Map<ThreadId, number | undefined>();
     // Sessions pin F5's MCP servers with `-c mcp_servers=...` at launch, so a
     // reload cannot change that set; a different desired set needs a restart.
@@ -2663,6 +2683,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         threadMcpSessions.delete(input.threadId);
         previewMcpSession?.dispose();
         previewMcpSessions.delete(input.threadId);
+        disposeHubAttachment(input.threadId);
       };
 
       return Effect.gen(function* () {
@@ -2899,10 +2920,42 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
               })
             : undefined;
         if (threadMcpSession) threadMcpSessions.set(input.threadId, threadMcpSession);
+        // Configured servers go through F5's hub: Codex gets loopback endpoints whose
+        // credentials are environment variables, never the definitions or secrets.
+        disposeHubAttachment(input.threadId);
+        let hubEnvironment: Record<string, string> | undefined;
+        let managedMcpServers = baseProviderMcpServers;
+        if (
+          baseProviderMcpServers &&
+          Object.keys(baseProviderMcpServers).length > 0 &&
+          (yield* useMcpHub)
+        ) {
+          const attachment = options!.mcpHub!.attach({
+            threadId: input.threadId,
+            projectId: input.projectId,
+            provider: PROVIDER,
+            accountKey: boundInstanceId,
+            servers: baseProviderMcpServers,
+            environment: mcpInterpolationEnv.environment,
+            cwd: input.cwd ?? process.cwd(),
+            reservedNames: new Set(
+              [
+                previewMcpSession?.serverName,
+                computerMcpSession?.serverName,
+                threadMcpSession?.serverName,
+                chromeServer ? CODEX_CHROME_SERVER_NAME : undefined,
+              ].filter((name): name is string => Boolean(name)),
+            ),
+          });
+          hubAttachments.set(input.threadId, attachment);
+          const hubServers = hubEndpointsForCodex(attachment.endpoints, baseProviderMcpServers);
+          managedMcpServers = hubServers.servers;
+          hubEnvironment = hubServers.env;
+        }
         const providerMcpServers =
           previewMcpSession || computerMcpSession || threadMcpSession || chromeServer
             ? {
-                ...baseProviderMcpServers,
+                ...managedMcpServers,
                 ...(threadMcpSession
                   ? { [threadMcpSession.serverName]: threadMcpSession.serverDefinition }
                   : {}),
@@ -2914,7 +2967,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                   : {}),
                 ...(chromeServer ? { [CODEX_CHROME_SERVER_NAME]: chromeServer } : {}),
               }
-            : baseProviderMcpServers;
+            : managedMcpServers;
         yield* Effect.try({
           try: () =>
             assertMcpServerLimit(
@@ -2996,9 +3049,10 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           ...(providerMcpServers
             ? { mcpServers: translateMcpForCodex(providerMcpServers, mcpInterpolationEnv) ?? {} }
             : {}),
-          ...(previewMcpSession || computerMcpSession || threadMcpSession
+          ...(previewMcpSession || computerMcpSession || threadMcpSession || hubEnvironment
             ? {
                 mcpEnvironment: {
+                  ...hubEnvironment,
                   ...previewMcpSession?.env,
                   ...computerMcpSession?.env,
                   ...threadMcpSession?.env,
@@ -3033,7 +3087,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
               launchedMcpConfigKeys.set(
                 input.threadId,
                 stableMcpConfigKey(
-                  translateMcpForCodex(baseProviderMcpServers, mcpInterpolationEnv) ?? {},
+                  translateMcpForCodex(managedMcpServers, mcpInterpolationEnv) ?? {},
                 ),
               );
             }),
@@ -3324,6 +3378,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         computerDecisions.delete(threadId);
         launchedMcpConfigKeys.delete(threadId);
         manager.stopSession(threadId);
+        disposeHubAttachment(threadId);
       });
 
     const listSessions: CodexAdapterShape["listSessions"] = () =>
@@ -3391,6 +3446,42 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
               issue: mcpConfigErrorMessage(cause),
             }),
         });
+        const hubAttachment = hubAttachments.get(threadId);
+        if (hubAttachment) {
+          // Edits and removals re-bind the session's hub endpoints; only a server
+          // with no endpoint yet needs Codex to restart.
+          const update = hubAttachment.update(mcpServers);
+          if (update.added.length > 0)
+            return restartRequiredMcpReload(
+              `Codex gets new MCP servers when the session restarts (${update.added.join(", ")}).`,
+            );
+          const desired = hubAttachment.endpoints
+            .map((endpoint) => endpoint.serverName)
+            .filter((name) => !update.removed.includes(name));
+          const touched = update.changed.length > 0 || update.removed.length > 0;
+          // Codex re-lists tools from the same endpoints after a reload.
+          const statuses = touched
+            ? yield* Effect.tryPromise({
+                try: () => manager.reloadMcpConfig(threadId),
+                catch: (cause) => toRequestError(threadId, "config/mcpServer/reload", cause),
+              })
+            : undefined;
+          return summarizeMcpReload({
+            desired,
+            observed:
+              statuses === undefined
+                ? undefined
+                : observeCodexMcpServers(
+                    statuses.flatMap((status) => {
+                      const decoded = decodeCodexMcpServerStatus(status);
+                      return decoded ? [decoded] : [];
+                    }),
+                    new Set(desired),
+                    builtInMcpServerNames(threadId),
+                  ),
+            sameName: codexServerNamesMatch,
+          });
+        }
         const launched = launchedMcpConfigKeys.get(threadId);
         if (
           launched !== undefined &&
@@ -3436,6 +3527,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         computerMcpSessions.clear();
         computerDecisions.clear();
         launchedMcpConfigKeys.clear();
+        for (const threadId of [...hubAttachments.keys()]) disposeHubAttachment(threadId);
         const deadline = Option.getOrUndefined(shutdown)?.deadline ?? Date.now() + 1_800;
         if (typeof manager.shutdown === "function") await manager.shutdown(deadline);
         else manager.stopAll();

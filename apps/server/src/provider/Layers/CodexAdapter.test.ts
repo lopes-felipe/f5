@@ -46,6 +46,7 @@ import {
   type CodexAdapterLiveOptions,
 } from "./CodexAdapter.ts";
 import { CodexChromeSession } from "../codexChromeSession.ts";
+import { makeFakeMcpHub } from "../../mcp/hub/testing/fakeMcpHub.ts";
 import { normalizeTurnUsage } from "../../usage/usageMetrics.ts";
 import {
   NotificationAdmission,
@@ -416,6 +417,111 @@ const validationLayer = it.layer(
     Layer.provideMerge(NodeServices.layer),
   ),
 );
+
+const hubManager = new FakeCodexManager();
+const fakeHub = makeFakeMcpHub();
+let passthrough = false;
+const hubLayer = it.layer(
+  makeCodexAdapterLive({
+    manager: hubManager,
+    mcpHub: fakeHub.hub,
+    mcpNativePassthrough: Effect.sync(() => passthrough),
+  }).pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(providerSessionDirectoryTestLayer),
+    Layer.provideMerge(NodeServices.layer),
+  ),
+);
+
+hubLayer("CodexAdapterLive with F5's MCP hub", (it) => {
+  const launched = () =>
+    hubManager.startSessionImpl.mock.calls.at(-1)![0] as {
+      mcpServers?: Record<string, Record<string, unknown>>;
+      mcpEnvironment?: Record<string, string>;
+    };
+
+  it.effect("launches with hub endpoints whose credentials are environment variables", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const secret = "configured-secret-value";
+      yield* adapter.startSession({
+        threadId: asThreadId("hub-start"),
+        runtimeMode: "approval-required",
+        providerOptions: {
+          mcpServers: {
+            docs: {
+              type: "stdio",
+              command: "docs-server",
+              env: { TOKEN: secret },
+              supportsParallelToolCalls: true,
+            },
+          },
+        },
+      });
+      const input = launched();
+      assert.deepEqual(Object.keys(input.mcpServers ?? {}), ["docs"]);
+      assert.equal(input.mcpServers?.docs?.url, "http://127.0.0.1:9/mcp/user/docs");
+      assert.equal(input.mcpServers?.docs?.bearer_token_env_var, "F5_MCP_HUB_TOKEN_0");
+      assert.equal(input.mcpServers?.docs?.supports_parallel_tool_calls, true);
+      assert.equal(input.mcpEnvironment?.F5_MCP_HUB_TOKEN_0, "token-docs");
+      assert.ok(!JSON.stringify(input.mcpServers).includes(secret));
+      assert.equal(fakeHub.attaches.at(-1)?.provider, "codex");
+    }),
+  );
+
+  it.effect("applies edits on the hub and restarts only for added servers", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const threadId = asThreadId("hub-reload");
+      yield* adapter.startSession({
+        threadId,
+        runtimeMode: "approval-required",
+        providerOptions: { mcpServers: { docs: { type: "stdio", command: "old" } } },
+      });
+      const reload = vi.spyOn(hubManager, "reloadMcpConfig").mockResolvedValue([]);
+      try {
+        const edited = yield* adapter.reloadMcpConfig!({
+          threadId,
+          mcpServers: { docs: { type: "stdio", command: "new" } },
+        });
+        assert.equal(edited.restartRequired, false);
+        assert.deepEqual(fakeHub.updates.at(-1), { docs: { type: "stdio", command: "new" } });
+        assert.equal(reload.mock.calls.length, 1);
+
+        const added = yield* adapter.reloadMcpConfig!({
+          threadId,
+          mcpServers: {
+            docs: { type: "stdio", command: "new" },
+            more: { type: "stdio", command: "more" },
+          },
+        });
+        assert.equal(added.restartRequired, true);
+        assert.equal(reload.mock.calls.length, 1);
+      } finally {
+        reload.mockRestore();
+      }
+    }),
+  );
+
+  it.effect("keeps configured servers on Codex with mcpNativePassthrough", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const attaches = fakeHub.attaches.length;
+      passthrough = true;
+      try {
+        yield* adapter.startSession({
+          threadId: asThreadId("hub-passthrough"),
+          runtimeMode: "approval-required",
+          providerOptions: { mcpServers: { docs: { type: "stdio", command: "docs-server" } } },
+        });
+      } finally {
+        passthrough = false;
+      }
+      assert.equal(launched().mcpServers?.docs?.command, "docs-server");
+      assert.equal(fakeHub.attaches.length, attaches);
+    }),
+  );
+});
 
 validationLayer("CodexAdapterLive validation", (it) => {
   it.effect("rejects excessive MCP start and reload inputs before manager mutation", () =>
