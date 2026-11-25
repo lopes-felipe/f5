@@ -28,6 +28,7 @@ vi.mock("../../lib/prHubAccount", () => ({
   getPrHubAccountGeneration: () => "gen-1",
   getPrHubSelectedAccountId: () => undefined,
   getPrHubDraftIdentity: () => ["gitlab.example", 42],
+  usePrHubAccountSnapshot: () => ({ accountId: undefined, generation: "gen-1" }),
 }));
 const KEY = PullRequestKey.makeUnsafe("gitlab:gitlab.example/octo/repo#1");
 function makePr(): TrackedPullRequest {
