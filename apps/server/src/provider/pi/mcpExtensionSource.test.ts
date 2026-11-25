@@ -508,6 +508,59 @@ describe("Pi tool discovery permissions", () => {
   });
 });
 
+describe("Pi hub MCP servers", () => {
+  const userMcpServers = [
+    { name: "docs", url: "http://127.0.0.1/mcp/user/docs", token: "docs-token", timeoutMs: 1000 },
+    { name: "gone", url: "http://127.0.0.1/mcp/user/down", token: "x", timeoutMs: 1000 },
+  ];
+
+  it("registers each hub server's tools under its own name with its own credential", async () => {
+    const bridge = await loadMcpBridge({ modern: true, userMcpServers });
+    const names = bridge.tools.map((tool) => tool.name);
+    expect(names).toContain("mcp__docs__thread_status");
+    expect(names).toContain("mcp__f5__thread_status");
+    expect(names.some((name) => name.startsWith("mcp__gone__"))).toBe(false);
+    const tool = bridge.tools.find((entry) => entry.name === "mcp__docs__html_render")!;
+    const result = await tool.execute("call-1", { value: 1 });
+    expect(result.content).toEqual([{ type: "text", text: "browser snapshot" }]);
+    expect(bridge.transports.at(-1)).toMatchObject({
+      url: "http://127.0.0.1/mcp/user/docs",
+      authorization: "Bearer docs-token",
+    });
+    expect(bridge.requests.at(-1)).toEqual(
+      expect.objectContaining({
+        method: "tools/call",
+        params: { name: "html_render", arguments: { value: 1 } },
+      }),
+    );
+
+    const notices: string[] = [];
+    const [hubSessionStart] = bridge.allHandlers.get("session_start")! as unknown as Array<
+      (event: unknown, ctx: { ui: { notify: (message: string) => void } }) => Promise<void>
+    >;
+    await hubSessionStart!({}, { ui: { notify: (message) => notices.push(message) } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(notices).toContain("MCP servers unavailable: gone");
+  });
+
+  it("asks before running a hub tool even when it claims to be read-only", async () => {
+    const bridge = await loadMcpBridge({
+      modern: true,
+      runtimeMode: "approval-required",
+      userMcpServers,
+    });
+    const hook = bridge.handlers.get("tool_call") as unknown as (
+      event: { toolName: string; input: unknown },
+      ctx: { ui: { confirm: () => Promise<boolean> } },
+    ) => Promise<{ block: true } | undefined>;
+    const ctx = { ui: { confirm: async () => false } };
+    expect((await hook({ toolName: "mcp__docs__thread_status", input: {} }, ctx))?.block).toBe(
+      true,
+    );
+    expect(await hook({ toolName: "mcp__f5__thread_status", input: {} }, ctx)).toBeUndefined();
+  });
+});
+
 describe("Pi MCP bounds and private failures", () => {
   it("bounds concurrent HTTP requests and releases admission after responses finish", async () => {
     let release!: () => void;

@@ -8,6 +8,7 @@ import {
   F5_PI_MCP_BEARER_ENV,
   F5_PI_RUNTIME_MODE_ENV,
   F5_PI_MCP_EXTENSION_PATH_ENV,
+  F5_PI_MCP_SERVERS_ENV,
 } from "./PiEnvironment.ts";
 import { HTML_RENDER_CHART_GUIDANCE } from "../../htmlRender/htmlRenderGuide.ts";
 const F5_ORCHESTRATION_INSTRUCTIONS = `F5's MCP tools are scoped to this thread. Use thread_status to inspect it and thread_settle only when work is complete. Use thread_read to read a thread the user referenced as [title](f5://thread/<id>). PR watch tools create continuing work only when requested. Use html_preview to validate a visual before html_render publishes it in the thread. Discover available tools from the live catalog and follow their input schemas.`;
@@ -32,6 +33,7 @@ const URL_ENV = ${JSON.stringify(F5_PI_MCP_URL_ENV)};
 const TOKEN_ENV = ${JSON.stringify(F5_PI_MCP_BEARER_ENV)};
 const RUNTIME_MODE_ENV = ${JSON.stringify(F5_PI_RUNTIME_MODE_ENV)};
 const EXTENSION_PATH_ENV = ${JSON.stringify(F5_PI_MCP_EXTENSION_PATH_ENV)};
+const SERVERS_ENV = ${JSON.stringify(F5_PI_MCP_SERVERS_ENV)};
 const ORCHESTRATION_INSTRUCTIONS = ${JSON.stringify(F5_ORCHESTRATION_INSTRUCTIONS.trim())};
 const CHART_INSTRUCTIONS = ${JSON.stringify(HTML_RENDER_CHART_GUIDANCE)};
 const PROTOCOL = "2025-06-18";
@@ -60,6 +62,33 @@ type McpTool = {
 function env(name: string): string | undefined {
   const value = process.env[name];
   return value && value.length > 0 ? value : undefined;
+}
+
+type UserMcpServer = {
+  readonly name: string;
+  readonly url: string;
+  readonly token: string;
+  readonly timeoutMs: number;
+};
+
+function userMcpServers(): UserMcpServer[] {
+  const raw = env(SERVERS_ENV);
+  if (raw === undefined) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (server): server is UserMcpServer =>
+        server !== null &&
+        typeof server === "object" &&
+        typeof server.name === "string" &&
+        typeof server.url === "string" &&
+        typeof server.token === "string" &&
+        typeof server.timeoutMs === "number",
+    );
+  } catch {
+    return [];
+  }
 }
 
 function runtimeMode(): RuntimeMode {
@@ -217,7 +246,7 @@ async function readBoundedResponse(response: Response): Promise<string> {
   return new TextDecoder("utf-8", { fatal: true }).decode(joined);
 }
 
-function createMcpClient(endpoint: string, token: string) {
+function createMcpClient(endpoint: string, token: string, timeoutMs = 60_000) {
   let nextId = 1;
   let sessionId: string | undefined;
   let protocol = PROTOCOL;
@@ -246,7 +275,7 @@ function createMcpClient(endpoint: string, token: string) {
       method: "POST",
       headers: headers(),
       body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
-      signal: AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(60_000)]),
+      signal: AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(timeoutMs)]),
     });
     const nextSession = response.headers.get("mcp-session-id");
     if (nextSession) sessionId = nextSession;
@@ -423,6 +452,66 @@ export default async function f5McpExtension(pi: ExtensionAPI) {
       return { block: true, reason: \`\${event.toolName} was declined in F5.\` };
     }
   });
+
+  // Project MCP servers reach Pi through F5's hub, one endpoint per server. Their
+  // tools always ask for approval: a third-party read-only hint is not trusted.
+  const hubFailures: string[] = [];
+  const hubServers = userMcpServers();
+  const hubStarted = Promise.allSettled(
+    hubServers.map(async (server) => {
+      const client = createMcpClient(server.url, server.token, server.timeoutMs);
+      try {
+        const signal = AbortSignal.timeout(30_000);
+        await client.connect(signal);
+        const tools = await client.listTools(signal);
+        for (const tool of tools) {
+          const name = tool.name;
+          pi.registerTool({
+            name: "mcp__" + server.name + "__" + name,
+            label: name,
+            description: tool.description ?? name,
+            parameters: jsonSchemaToTypebox(tool.inputSchema),
+            async execute(_toolCallId, params, signal) {
+              const result = await client.callTool(
+                name,
+                (params ?? {}) as Record<string, unknown>,
+                signal,
+              );
+              const content = mcpModelContent(result);
+              if (isMcpToolError(result) && !content.some((part) => part.type === "text" && part.text.length > 0)) {
+                content.push({ type: "text", text: "MCP tool " + server.name + "/" + name + " returned an error" });
+              }
+              return {
+                content,
+                structuredContent: mcpScriptResult(result),
+                details: { server: server.name, tool: name },
+                ...(isMcpToolError(result) ? { isError: true } : {}),
+              };
+            },
+          });
+        }
+      } catch {
+        hubFailures.push(server.name);
+      }
+    }),
+  );
+  if (hubServers.length > 0) {
+    // Register before builtins when the hub answers quickly; slower servers join later.
+    let hubWait: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      hubStarted,
+      new Promise((resolve) => {
+        hubWait = setTimeout(resolve, 10_000);
+      }),
+    ]);
+    clearTimeout(hubWait);
+    pi.on("session_start", async (_event, ctx) => {
+      void hubStarted.then(() => {
+        if (hubFailures.length > 0)
+          ctx.ui.notify("MCP servers unavailable: " + hubFailures.join(", "), "warning");
+      });
+    });
+  }
 
   const endpoint = env(URL_ENV);
   const token = env(TOKEN_ENV);

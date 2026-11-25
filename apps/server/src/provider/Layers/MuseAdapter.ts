@@ -83,12 +83,14 @@ import {
   MSP_REQUEST_TIMEOUT_MS,
   MSP_TURN_START_TIMEOUT_MS,
   type MspHost,
+  mspHostAcceptsSessionMcp,
   mspErrorKind,
   type MuseRuntimeMode,
   openMspHost,
   verifyMusePermissionState,
 } from "../msp/MspSessionRuntime.ts";
 import { makeMspTransport } from "../msp/MspTransport.ts";
+import type { McpHubShape } from "../../mcp/hub/McpHub.ts";
 import {
   decodeMuseApproval,
   mapMuseApprovalChoices,
@@ -168,6 +170,7 @@ export interface MuseHostHandle {
 }
 
 export interface MuseAdapterOptions {
+  readonly mcpHub?: McpHubShape;
   readonly onSubscriptionUsage?: (
     usage: import("../msp/MuseUsageLimits").MuseSubscriptionUsage,
   ) => Effect.Effect<void>;
@@ -1170,6 +1173,58 @@ export function makeMuseAdapter(museSettings: MuseSettings, options?: MuseAdapte
         }),
       );
 
+    /**
+     * Gives this session the project's MCP servers as hub endpoints. Each Muse host
+     * serves one session, so its next start or resume carries them. Servers are
+     * optional, so one that fails cannot block the session.
+     */
+    const attachHubServers = (
+      input: ProviderAdapterSessionStartInput,
+      host: MspHost,
+      cwd: string,
+      sessionScope: Scope.Closeable,
+    ) =>
+      Effect.gen(function* () {
+        const hub = options?.mcpHub;
+        const servers = input.workflowExecutionProfile
+          ? undefined
+          : input.providerOptions?.mcpServers;
+        if (!hub?.available || !servers || Object.keys(servers).length === 0) return;
+        if (!mspHostAcceptsSessionMcp(host)) {
+          yield* Effect.logInfo(
+            "Skipping F5 MCP servers: this Muse Code host does not grant sessionMcp.",
+          );
+          return;
+        }
+        const attachment = hub.attach({
+          threadId: input.threadId,
+          ...(input.projectId ? { projectId: input.projectId } : {}),
+          provider: PROVIDER,
+          accountKey: boundInstanceId,
+          servers,
+          environment: options?.environment ?? process.env,
+          cwd,
+        });
+        yield* Scope.addFinalizer(
+          sessionScope,
+          Effect.promise(() => attachment.dispose()),
+        );
+        if (attachment.endpoints.length === 0) return;
+        host.connection.sessionConfig = {
+          mcpServers: Object.fromEntries(
+            attachment.endpoints.map((endpoint) => [
+              endpoint.serverName,
+              {
+                transport: "streamableHttp" as const,
+                url: endpoint.url,
+                headers: { Authorization: `Bearer ${endpoint.token}` },
+                mode: "optional" as const,
+              },
+            ]),
+          ),
+        };
+      });
+
     /** Open (or resume) the MSP session; `fresh` reports why a resume was abandoned. */
     const openSession = (input: {
       readonly handle: MuseHostHandle;
@@ -1339,6 +1394,7 @@ export function makeMuseAdapter(museSettings: MuseSettings, options?: MuseAdapte
               Queue.offerUnsafe(notifications, notification);
             });
             yield* Scope.addFinalizer(sessionScope, Effect.sync(unsubscribe));
+            yield* attachHubServers(input, handle.host, cwd, sessionScope);
 
             const opened = yield* openSession({
               handle,

@@ -452,6 +452,7 @@ import { CodexControlClientRegistry } from "./codex/CodexControlClientRegistry.t
 import { CodexMcpEventBus } from "./codex/CodexMcpEventBus.ts";
 import { ProjectMcpConfigService } from "./mcp/ProjectMcpConfigService.ts";
 import { McpRuntimeService } from "./mcp/McpRuntimeService.ts";
+import { McpHub } from "./mcp/hub/McpHub.ts";
 import { reconcileCodexThreadSnapshots } from "./orchestration/codexSnapshotReconciliation.ts";
 import { makeHistoryRecoveredSessionSet } from "./orchestration/providerTerminalLifecycle.ts";
 import { redactServerSettingsForClient, ServerSettingsService } from "./serverSettings.ts";
@@ -1161,6 +1162,7 @@ export const createServer = Effect.fn(function* (
   const serverSettings = yield* ServerSettingsService;
   const codexMcpEventBus = yield* CodexMcpEventBus;
   const mcpRuntimeService = yield* McpRuntimeService;
+  const mcpHub = Option.getOrUndefined(yield* Effect.serviceOption(McpHub));
   const projectMcpConfigService = yield* ProjectMcpConfigService;
   const previewAutomationBroker = yield* PreviewAutomationBroker;
   const computerAutomationBroker = yield* Effect.serviceOption(ComputerAutomationBroker);
@@ -8295,6 +8297,19 @@ export const createServer = Effect.fn(function* (
         const requestBody = stripRequestTag(request.body);
         const body = yield* profileCall(() => resolveMcpAccount(requestBody));
         return yield* mcpRuntimeService.getLoginStatus(body);
+      }
+
+      case WS_METHODS.mcpGetHubStatus: {
+        const body = stripRequestTag(request.body);
+        return { servers: mcpHub ? [...mcpHub.status(body.projectId)] : [] };
+      }
+
+      case WS_METHODS.mcpReconnectHubServer: {
+        const body = stripRequestTag(request.body);
+        const reconnected = mcpHub
+          ? yield* Effect.promise(() => mcpHub.reconnect(body.serverName, body.projectId))
+          : 0;
+        return { reconnected };
       }
 
       case WS_METHODS.mcpApplyToLiveSessions: {

@@ -220,6 +220,8 @@ export const WS_METHODS = {
   mcpStartLogin: "mcp.startLogin",
   mcpGetLoginStatus: "mcp.getLoginStatus",
   mcpApplyToLiveSessions: "mcp.applyToLiveSessions",
+  mcpGetHubStatus: "mcp.getHubStatus",
+  mcpReconnectHubServer: "mcp.reconnectHubServer",
 } as const;
 
 // ── Push Event Channels ──────────────────────────────────────────────

@@ -32,6 +32,19 @@ Common and project configuration is shared by Codex and Claude. Support labels i
 
 Selecting SSE shows the transport warning. If the endpoint supports streamable HTTP, choose HTTP. Authentication is provider-owned: tokens are stored by the provider for the selected account, so later sessions connect without asking. When a server needs sign-in, click **Sign in** in the conversation's sign-in row above the composer, in **Runtime details**, or on its row in a project-scoped MCP settings view (see [Sign in](#sign-in)). F5 never opens the browser on its own.
 
+### Other agents
+
+Cursor, Grok, Antigravity, custom ACP agents, OpenCode, Muse Code, and Pi reach your MCP servers through F5. F5 connects to each server and gives every session its own local endpoint with its own credential, so stdio servers work for agents that only accept HTTP, and enabled tools and disabled tools apply the same way everywhere. Tools keep the server's name (`mcp__<server>__<tool>` where the agent uses that form).
+
+- A session gets the servers saved when it starts; **Apply** does not reach these agents yet, so start a new session after saving.
+- stdio servers start once per session. HTTP and SSE servers share one connection per account, which closes five minutes after the last session leaves.
+- A server that stops is retried after 1, 2, 4, 8, and 16 seconds; after that it shows **Failed** until you click **Reconnect**. Tool calls made while it reconnects fail at once with a short explanation.
+- Headers, stored secrets, and bearer token environment variables work. Servers that need OAuth sign-in show **Needs sign-in** and are not available to these agents yet.
+- A name the agent already uses for its own server (for example in Cursor's or OpenCode's own MCP configuration) keeps the agent's server.
+- OpenCode gets servers only when F5 starts its OpenCode server; a configured external OpenCode server is shared with other clients and gets none. Muse Code needs a host that grants per-session MCP servers. Pi tools from these servers always ask for approval unless the session runs with full access.
+
+In a project's MCP settings, **Other agents** lists the connections in use, the agents and session counts using them, and any error, with **Reconnect** for a failed server.
+
 ## Saved configuration and live status
 
 **Saved: Enabled/Disabled** is the desired state. The adjacent observed badge describes the selected running conversation or configuration check. A saved disabled server can still be connected in a conversation until changes are applied. **Ready**, **Starting**, **Failed**, **Login required**, and **Unknown** describe readiness; applying a version does not guarantee readiness.

@@ -81,6 +81,8 @@ import {
   toOpenCodeQuestionAnswers,
   type OpenCodeServerConnection,
 } from "../opencodeRuntime.ts";
+import type { McpHubShape } from "../../mcp/hub/McpHub.ts";
+import { hubEndpointsToOpenCodeServers } from "../../mcp/hub/openCodeHubServers.ts";
 import { normalizeSupportedSlashCommands } from "../supportedSlashCommands.ts";
 import { openCodeTodoPlan } from "../openCodeTodos.ts";
 import { makeOperationGate } from "../operationGate.ts";
@@ -165,6 +167,7 @@ interface OpenCodeSessionContext {
 export interface OpenCodeAdapterLiveOptions {
   readonly instanceId?: ProviderInstanceId;
   readonly environment?: NodeJS.ProcessEnv;
+  readonly mcpHub?: McpHubShape;
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
 }
@@ -1475,6 +1478,58 @@ export function makeOpenCodeAdapter(
       }
     });
 
+    /**
+     * Registers the project's MCP servers as hub endpoints on an OpenCode server F5
+     * spawned for this session. An external server is shared with other clients, so
+     * it never receives them.
+     */
+    const attachHubServers = (
+      input: ProviderAdapterSessionStartInput,
+      server: OpenCodeServerConnection,
+      client: OpencodeClient,
+      sessionScope: Scope.Closeable,
+    ) =>
+      Effect.gen(function* () {
+        const hub = options?.mcpHub;
+        const servers = input.workflowExecutionProfile
+          ? undefined
+          : input.providerOptions?.mcpServers;
+        if (!hub?.available || !servers || Object.keys(servers).length === 0) return;
+        if (server.external) {
+          yield* Effect.logInfo(
+            "Skipping F5 MCP servers: an external OpenCode server does not take session-scoped servers.",
+          );
+          return;
+        }
+        const existing = yield* runOpenCodeSdk("mcp.status", (signal) =>
+          client.mcp.status(undefined, { signal }),
+        ).pipe(
+          Effect.map((result) => Object.keys(result.data ?? {})),
+          Effect.orElseSucceed((): string[] => []),
+        );
+        const attachment = hub.attach({
+          threadId: input.threadId,
+          ...(input.projectId ? { projectId: input.projectId } : {}),
+          provider: PROVIDER,
+          accountKey: boundInstanceId,
+          servers,
+          environment: options?.environment ?? process.env,
+          cwd: input.cwd ?? serverConfig.cwd,
+          reservedNames: new Set(existing),
+        });
+        yield* Scope.addFinalizer(
+          sessionScope,
+          Effect.promise(() => attachment.dispose()),
+        );
+        for (const entry of hubEndpointsToOpenCodeServers(attachment.endpoints)) {
+          yield* runOpenCodeSdk("mcp.add", (signal) => client.mcp.add(entry, { signal })).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning(`OpenCode could not add MCP server '${entry.name}'.`, error.detail),
+            ),
+          );
+        }
+      });
+
     const startSessionUnlocked: OpenCodeAdapterShape["startSession"] = Effect.fn("startSession")(
       function* (input) {
         const binaryPath = openCodeSettings.binaryPath;
@@ -1531,6 +1586,7 @@ export function makeOpenCodeAdapter(
                 ...(server.serverPassword ? { serverPassword: server.serverPassword } : {}),
                 ...(server.serverUsername ? { serverUsername: server.serverUsername } : {}),
               });
+              yield* attachHubServers(input, server, client, sessionScope);
               const permission = input.workflowExecutionProfile
                 ? buildOpenCodeWorkflowPermissionRules(input.workflowExecutionProfile)
                 : buildOpenCodePermissionRules(input.runtimeMode);

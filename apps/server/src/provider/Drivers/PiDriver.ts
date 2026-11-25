@@ -1,6 +1,7 @@
 import { ProviderNativeHistory } from "../ProviderNativeHistory.ts";
 import { PiSettings, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
 import { Duration, Effect, FileSystem, Option, Path, PubSub, Schema, Stream } from "effect";
+import { mcpHubAdapterOption } from "../../mcp/hub/McpHub.ts";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { ServerConfig } from "../../config.ts";
 import { makePiTextGeneration } from "../../git/Layers/PiTextGeneration.ts";
@@ -118,6 +119,7 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
         instanceId,
         environment: processEnv,
         cacheDir: path.join(server.stateDir, "provider-extensions", "pi"),
+        ...(yield* mcpHubAdapterOption),
         beforeLaunch,
         ...(continuations ? { offerContinuation: continuations.offer } : {}),
         ...(nativeHistory ? { reconcileNativeHistory: nativeHistory.reconcile } : {}),

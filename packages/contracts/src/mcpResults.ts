@@ -10,7 +10,12 @@ import {
   SignInUrl,
 } from "./baseSchemas";
 import { ServerProviderAuthStatus } from "./server";
-import { McpServerDefinition, McpProjectServersConfig } from "./mcpServer";
+import {
+  McpConnectionScope,
+  McpServerDefinition,
+  McpProjectServersConfig,
+  McpServerTransportType,
+} from "./mcpServer";
 import { McpConfigScope } from "./mcpConfigScope";
 
 // Responses are separate from startup request schemas so browser bundles can omit unused definitions.
@@ -123,6 +128,50 @@ export const McpCodexStatusResult = Schema.Struct({
   configVersion: Schema.optional(TrimmedNonEmptyString),
 });
 export type McpCodexStatusResult = typeof McpCodexStatusResult.Type;
+
+export const McpHubServerState = Schema.Literals([
+  "idle",
+  "connecting",
+  "ready",
+  "retrying",
+  "failed",
+  "needs-auth",
+  "stopped",
+]);
+export type McpHubServerState = typeof McpHubServerState.Type;
+
+/** One upstream connection owned by F5's MCP hub. */
+export const McpHubServerStatus = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  connectionScope: McpConnectionScope,
+  transport: McpServerTransportType,
+  state: McpHubServerState,
+  error: Schema.optional(TrimmedNonEmptyString),
+  serverInfo: Schema.optional(Schema.Struct({ name: Schema.String, version: Schema.String })),
+  protocolVersion: Schema.optional(TrimmedNonEmptyString),
+  toolCount: Schema.optional(NonNegativeInt),
+  resourceCount: Schema.optional(NonNegativeInt),
+  promptCount: Schema.optional(NonNegativeInt),
+  latencyMs: Schema.optional(NonNegativeInt),
+  lastConnectedAt: Schema.optional(IsoDateTime),
+  /** Failed connection attempts since the last success. */
+  attempts: NonNegativeInt,
+  /** Provider session endpoints currently routed to this connection. */
+  attachedSessions: NonNegativeInt,
+  projectIds: Schema.Array(ProjectId),
+  providers: Schema.Array(ProviderKind),
+});
+export type McpHubServerStatus = typeof McpHubServerStatus.Type;
+
+export const McpGetHubStatusResult = Schema.Struct({
+  servers: Schema.Array(McpHubServerStatus),
+});
+export type McpGetHubStatusResult = typeof McpGetHubStatusResult.Type;
+
+export const McpReconnectHubServerResult = Schema.Struct({
+  reconnected: NonNegativeInt,
+});
+export type McpReconnectHubServerResult = typeof McpReconnectHubServerResult.Type;
 
 export const McpApplyToLiveSessionsResult = Schema.Struct({
   scope: McpConfigScope,

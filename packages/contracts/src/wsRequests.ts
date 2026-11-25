@@ -158,6 +158,7 @@ import {
   McpApplyToLiveSessionsRequest,
   McpGetCommonConfigRequest,
   McpGetEffectiveConfigRequest,
+  McpGetHubStatusRequest,
   McpGetLoginStatusRequest,
   McpGetProjectConfigRequest,
   McpGetProviderStatusRequest,
@@ -166,6 +167,7 @@ import {
   McpProbeServerRequest,
   McpStoreSecretRequest,
   McpInspectServerRequest,
+  McpReconnectHubServerRequest,
   McpReconnectServerRequest,
   McpReplaceCommonConfigRequest,
   McpReplaceProjectConfigRequest,
@@ -776,6 +778,8 @@ const WebSocketRequestBody = Schema.Union([
   tagMcpAccountRequestBody(WS_METHODS.mcpStartLogin, McpStartLoginRequest),
   tagMcpAccountRequestBody(WS_METHODS.mcpGetLoginStatus, McpGetLoginStatusRequest),
   tagMcpAccountRequestBody(WS_METHODS.mcpApplyToLiveSessions, McpApplyToLiveSessionsRequest),
+  tagRequestBody(WS_METHODS.mcpGetHubStatus, McpGetHubStatusRequest),
+  tagRequestBody(WS_METHODS.mcpReconnectHubServer, McpReconnectHubServerRequest),
 
   // PR Hub methods
   tagRequestBody(PR_HUB_WS_METHODS.listAccounts, Schema.Struct({})),
