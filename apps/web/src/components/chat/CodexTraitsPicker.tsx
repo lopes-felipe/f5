@@ -219,6 +219,8 @@ export const CodexTraitsPicker = memo(function CodexTraitsPicker(
     models?: ReadonlyArray<ServerProviderModel>;
     disabled?: boolean | undefined;
     triggerClassName?: string | undefined;
+    /** Tint the trigger with the effort level's colour (the composer chip). Defaults to true. */
+    tint?: boolean | undefined;
   } & CodexTraitsBinding,
 ) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -251,7 +253,7 @@ export const CodexTraitsPicker = memo(function CodexTraitsPicker(
             className={cn(
               COMPOSER_CHIP_CLASS_NAME,
               "min-w-0 max-w-40 shrink justify-start overflow-hidden sm:max-w-48 [&_svg]:mx-0",
-              getEffortLevel(effort)?.chipClass,
+              props.tint === false ? undefined : getEffortLevel(effort)?.chipClass,
               props.triggerClassName,
             )}
           />
@@ -260,7 +262,8 @@ export const CodexTraitsPicker = memo(function CodexTraitsPicker(
         <span className="flex min-w-0 w-full items-center gap-2 overflow-hidden">
           {triggerLabel}
           {fastModeEnabled ? <FastModeTriggerIcon /> : null}
-          <ChevronDownIcon aria-hidden="true" className="size-3 shrink-0 opacity-60" />
+          {/* Pinned to the trailing edge when the trigger is wider than its content. */}
+          <ChevronDownIcon aria-hidden="true" className="ms-auto size-3 shrink-0 opacity-60" />
         </span>
       </MenuTrigger>
       <MenuPopup align="start">

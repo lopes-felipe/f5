@@ -514,4 +514,33 @@ describe("CodexTraitsPicker controlled value", () => {
       await screen.unmount();
     }
   });
+
+  it("tints the trigger by effort level unless tint is off", async () => {
+    const screen = await render(
+      <>
+        <CodexTraitsPicker
+          model="gpt-5.6-sol"
+          modelOptions={{ reasoningEffort: "high" }}
+          onModelOptionsChange={() => {}}
+        />
+        <CodexTraitsPicker
+          model="gpt-5.6-sol"
+          modelOptions={{ reasoningEffort: "high" }}
+          tint={false}
+          onModelOptionsChange={() => {}}
+        />
+      </>,
+    );
+    try {
+      const [tinted, neutral] = Array.from(
+        document.querySelectorAll<HTMLElement>("button[data-composer-control='effort']"),
+      );
+      expect(tinted?.className).toMatch(/bg-effort-high\//);
+      expect(neutral?.className).not.toMatch(/bg-effort-/);
+      // The level stays readable for styling and tests either way.
+      expect(neutral?.getAttribute("data-effort-level")).toBe("high");
+    } finally {
+      await screen.unmount();
+    }
+  });
 });

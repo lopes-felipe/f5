@@ -30,10 +30,12 @@ import {
 const EMPTY_PROVIDERS: ReadonlyArray<ServerProvider> = [];
 const EMPTY_MODELS: ServerProvider["models"] = [];
 
-// A minimum width keeps short effort labels ("High") in one column across slot rows while
-// longer trait labels can still grow. The selected value is a value, not a hint, so it gets
-// full contrast.
-const TRAITS_TRIGGER_CLASS_NAME = "h-7 min-w-24 justify-between gap-1 px-2 text-ui text-foreground";
+// The effort trigger fills its fixed-width field (the chevron pins to the trailing edge), so
+// every row's effort column lines up; long combined labels clip. The selected value is a
+// value, not a hint, so it gets full contrast.
+const TRAITS_TRIGGER_CLASS_NAME =
+  "h-7 w-full min-w-0 justify-start gap-1 overflow-hidden px-2 text-ui text-foreground";
+const TRAITS_FIELD_WIDTH_CLASS_NAME = "w-32 shrink-0";
 
 /**
  * A Claude slot without an effort runs at the model's own default, since workflow dispatch
@@ -77,6 +79,13 @@ export function SlotRow(props: {
   error?: string | null | undefined;
   /** Rendered after the picker, for example a Remove button. */
   trailing?: ReactNode;
+  /**
+   * Keep the effort column's width when this row has no effort control, so the model field
+   * lines up with sibling rows that do.
+   */
+  reserveTraitsColumn?: boolean | undefined;
+  /** Always render a fixed trailing cell (holding `trailing`, if any) so sibling rows align. */
+  reserveTrailing?: boolean | undefined;
   className?: string | undefined;
 }) {
   const providers = props.providers ?? EMPTY_PROVIDERS;
@@ -129,7 +138,10 @@ export function SlotRow(props: {
       <label className="w-24 shrink-0 truncate text-ui text-muted-foreground" title={props.label}>
         {props.label}
       </label>
-      <div className={cn(fieldShellClassName, "flex h-9 min-w-0 flex-1 items-center gap-0.5 px-1")}>
+      <div
+        data-slot="workflow-slot-model"
+        className={cn(fieldShellClassName, "flex h-9 min-w-0 flex-1 items-center px-1")}
+      >
         <ProviderInstanceModelPicker
           providers={pickerProviders}
           disabled={props.disabled ?? false}
@@ -141,42 +153,48 @@ export function SlotRow(props: {
           onInstanceModelChange={(_instanceId, pickedDriver, model) => {
             if (isKnownProviderKind(pickedDriver)) onProviderModelChange(pickedDriver, model);
           }}
-          // Fill the field so every row's chevron and traits picker line up; the
-          // selected model is a value, not a hint, so it gets full contrast.
-          triggerClassName="flex-1 max-w-none sm:max-w-none text-foreground"
+          // Fill the field so every row's chevron lines up; a button centers its text by
+          // default, so the label is pinned left. The selected model is a value, not a
+          // hint, so it gets full contrast.
+          triggerClassName="flex-1 max-w-none sm:max-w-none text-left text-foreground"
         />
-        {showTraits ? (
-          <>
-            <span
-              aria-hidden="true"
-              data-slot="workflow-slot-divider"
-              className="h-4 w-px shrink-0 bg-border"
-            />
-            <ProviderTraitsPicker
-              disabled={props.disabled}
-              provider={props.provider}
-              models={models}
-              model={props.model}
-              modelOptions={displayedModelOptions}
-              hiddenOptions={WORKFLOW_HIDDEN_TRAITS}
-              triggerClassName={TRAITS_TRIGGER_CLASS_NAME}
-              onModelOptionsChange={(next) => {
-                // Codex picks stay explicit and Claude picks are clamped to what the
-                // model supports, exactly as they are dispatched.
-                props.onModelOptionsChange(
-                  normalizeWorkflowSlotModelOptions(
-                    props.provider,
-                    props.model,
-                    next,
-                    capabilities,
-                  ),
-                );
-              }}
-            />
-          </>
-        ) : null}
       </div>
-      {props.trailing}
+      {showTraits ? (
+        <div
+          data-slot="workflow-slot-traits"
+          className={cn(
+            fieldShellClassName,
+            TRAITS_FIELD_WIDTH_CLASS_NAME,
+            "flex h-9 items-center px-1",
+          )}
+        >
+          <ProviderTraitsPicker
+            disabled={props.disabled}
+            provider={props.provider}
+            models={models}
+            model={props.model}
+            modelOptions={displayedModelOptions}
+            hiddenOptions={WORKFLOW_HIDDEN_TRAITS}
+            triggerClassName={TRAITS_TRIGGER_CLASS_NAME}
+            // A form field, not the composer chip: the level reads from the label alone.
+            tint={false}
+            onModelOptionsChange={(next) => {
+              // Codex picks stay explicit and Claude picks are clamped to what the
+              // model supports, exactly as they are dispatched.
+              props.onModelOptionsChange(
+                normalizeWorkflowSlotModelOptions(props.provider, props.model, next, capabilities),
+              );
+            }}
+          />
+        </div>
+      ) : props.reserveTraitsColumn ? (
+        <span aria-hidden="true" className={TRAITS_FIELD_WIDTH_CLASS_NAME} />
+      ) : null}
+      {props.reserveTrailing ? (
+        <div className="flex w-7 shrink-0 items-center justify-center">{props.trailing}</div>
+      ) : (
+        props.trailing
+      )}
     </div>
   );
   // The same tree with or without an error, so the row (and a focused picker in it) stays

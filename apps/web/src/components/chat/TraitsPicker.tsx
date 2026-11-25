@@ -391,13 +391,14 @@ export const TraitsPicker = memo(function TraitsPicker({
           <span className="flex min-w-0 w-full items-center gap-2">
             <span className="truncate">{triggerLabel}</span>
             <TraitsTriggerIcons icons={triggerIcons} />
-            <ChevronDownIcon aria-hidden="true" className="size-3 shrink-0 opacity-60" />
+            {/* Pinned to the trailing edge when the trigger is wider than its content. */}
+            <ChevronDownIcon aria-hidden="true" className="ms-auto size-3 shrink-0 opacity-60" />
           </span>
         ) : (
           <>
             <span>{triggerLabel}</span>
             <TraitsTriggerIcons icons={triggerIcons} />
-            <ChevronDownIcon aria-hidden="true" className="size-3 opacity-60" />
+            <ChevronDownIcon aria-hidden="true" className="ms-auto size-3 opacity-60" />
           </>
         )}
       </MenuTrigger>
