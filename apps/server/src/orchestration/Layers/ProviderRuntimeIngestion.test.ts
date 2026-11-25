@@ -6546,6 +6546,13 @@ describe("ProviderRuntimeIngestion", () => {
       expect(running?.session?.lastError ?? null).toBeNull();
       expect(harness.requestResponses).toEqual([]);
       expect(harness.interruptedTurns).toEqual([]);
+      // Refusals are recorded, but never as a pending approval.
+      const refusals = running?.activities.filter((activity) => activity.turnId === turnId) ?? [];
+      expect(refusals.map((activity) => activity.kind)).toEqual([
+        "approval.auto-declined",
+        "approval.auto-declined",
+      ]);
+      expect(refusals[0]?.summary).toBe("Command refused in a read-only stage");
 
       emitRequest(harness, turnId, "req-soft-3", "git push origin main", true);
       const failed = await waitForThread(
@@ -6707,6 +6714,165 @@ describe("ProviderRuntimeIngestion", () => {
       await harness.drain();
       await new Promise((resolve) => setTimeout(resolve, 250));
       expect(harness.stoppedSessions).toEqual([]);
+    });
+
+    it("does not stop a retry that started on the same thread within the grace period", async () => {
+      const harness = await createHarness({ profiledFailureStopGraceMs: 100 });
+      const turnId = asTurnId("turn-before-retry");
+      await startProfiledTurn(harness, turnId);
+
+      emitRequest(harness, turnId, "req-before-retry", "touch x", false);
+      await waitForThread(harness.engine, (thread) => thread.session?.status === "error");
+      const retryTurnId = asTurnId("turn-retry");
+      harness.emit({
+        type: "turn.started",
+        eventId: asEventId("evt-retry-started"),
+        provider: "cursor",
+        createdAt: new Date().toISOString(),
+        threadId: asThreadId("thread-1"),
+        turnId: retryTurnId,
+      });
+      await waitForThread(harness.engine, (thread) => thread.session?.activeTurnId === retryTurnId);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      expect(harness.stoppedSessions).toEqual([]);
+    });
+
+    it("does not stop a session that is already running another turn", async () => {
+      const harness = await createHarness({ profiledFailureStopGraceMs: 20 });
+      const turnId = asTurnId("turn-replaced");
+      await startProfiledTurn(harness, turnId);
+
+      emitRequest(harness, turnId, "req-replaced", "touch x", false);
+      await waitForThread(harness.engine, (thread) => thread.session?.status === "error");
+      // The provider already runs the retry, but its turn.started has not been ingested yet.
+      const now = new Date().toISOString();
+      harness.setProviderSession({
+        provider: "cursor",
+        status: "running",
+        runtimeMode: "full-access",
+        threadId: asThreadId("thread-1"),
+        activeTurnId: asTurnId("turn-replacement"),
+        createdAt: now,
+        updatedAt: now,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(harness.stoppedSessions).toEqual([]);
+    });
+
+    it.each([
+      {
+        name: "a provider error",
+        event: (turnId: TurnId) => ({
+          type: "runtime.error" as const,
+          eventId: asEventId("evt-error-after-failure"),
+          provider: "cursor" as const,
+          createdAt: new Date().toISOString(),
+          threadId: asThreadId("thread-1"),
+          turnId,
+          payload: { message: "agent crashed", class: "provider_error" as const },
+        }),
+      },
+      {
+        name: "a thread start notification",
+        event: () => ({
+          type: "thread.started" as const,
+          eventId: asEventId("evt-thread-started-after-failure"),
+          provider: "cursor" as const,
+          createdAt: new Date().toISOString(),
+          threadId: asThreadId("thread-1"),
+          payload: { providerThreadId: "provider-thread-1" },
+        }),
+      },
+      {
+        name: "a session start notification",
+        event: () => ({
+          type: "session.started" as const,
+          eventId: asEventId("evt-session-started-after-failure"),
+          provider: "cursor" as const,
+          createdAt: new Date().toISOString(),
+          threadId: asThreadId("thread-1"),
+          payload: {},
+        }),
+      },
+    ])("keeps the turn failed when $name precedes a late completion", async ({ event }) => {
+      const harness = await createHarness();
+      const turnId = asTurnId("turn-overwritten-session");
+      await startProfiledTurn(harness, turnId);
+
+      emitRequest(harness, turnId, "req-overwritten", "touch x", false);
+      await waitForThread(harness.engine, (thread) => thread.session?.status === "error");
+      harness.emit(event(turnId) as unknown as Parameters<Harness["emit"]>[0]);
+      harness.emit({
+        type: "turn.completed",
+        eventId: asEventId("evt-late-after-overwrite"),
+        provider: "cursor",
+        createdAt: new Date().toISOString(),
+        threadId: asThreadId("thread-1"),
+        turnId,
+        payload: { state: "completed", stopReason: "end_turn" },
+      });
+      await harness.drain();
+
+      const after = await readThread(harness);
+      expect(after?.session?.status).not.toBe("ready");
+      expect(after?.latestTurn?.state).not.toBe("completed");
+    });
+
+    it("forwards a profile-failed turn's cost without settling the turn", async () => {
+      const harness = await createHarness();
+      const turnId = asTurnId("turn-costed-failure");
+      await startProfiledTurn(harness, turnId);
+
+      emitRequest(harness, turnId, "req-costed", "touch x", false);
+      await waitForThread(harness.engine, (thread) => thread.session?.status === "error");
+      harness.emit({
+        type: "turn.completed",
+        eventId: asEventId("evt-costed-completion"),
+        provider: "cursor",
+        createdAt: new Date().toISOString(),
+        threadId: asThreadId("thread-1"),
+        turnId,
+        payload: { state: "completed", stopReason: "end_turn", totalCostUsd: 0.42 },
+      });
+      await harness.drain();
+
+      const events = await Effect.runPromise(
+        Stream.runCollect(harness.engine.readEvents(0)).pipe(
+          Effect.map((chunk) => Array.from(chunk)),
+        ),
+      );
+      const costed = events.filter(
+        (entry) =>
+          entry.type === "thread.session-set" && entry.payload.session.turnCostUsd === 0.42,
+      );
+      expect(costed).toHaveLength(1);
+      expect(costed[0]?.type === "thread.session-set" && costed[0].payload.session.status).toBe(
+        "error",
+      );
+      const after = await readThread(harness);
+      expect(after?.session?.status).toBe("error");
+      expect(after?.session?.lastError).toContain("read-only profile violation");
+      expect(after?.latestTurn?.state).not.toBe("completed");
+    });
+
+    it("keeps raw credentials out of the recorded violation", async () => {
+      const harness = await createHarness();
+      const turnId = asTurnId("turn-redacted");
+      await startProfiledTurn(harness, turnId);
+
+      emitRequest(
+        harness,
+        turnId,
+        "req-redacted",
+        "curl -H 'Authorization: Bearer abc123secret' https://example.com",
+        false,
+      );
+      const failed = await waitForThread(
+        harness.engine,
+        (thread) => thread.session?.status === "error",
+      );
+      expect(failed.session?.lastError).toContain("[REDACTED]");
+      expect(failed.session?.lastError).not.toContain("abc123secret");
     });
   });
 

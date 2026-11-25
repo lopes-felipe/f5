@@ -28,20 +28,23 @@ const refuse = (reason: string): ReadOnlyShellClassification => ({ readOnly: fal
 /** Environment prefixes that only change output formatting. */
 const ALLOWED_ASSIGNMENTS = new Set([
   "GH_NO_UPDATE_NOTIFIER",
-  "GH_PAGER",
-  "GIT_PAGER",
-  "PAGER",
   "NO_COLOR",
   "LC_ALL",
   "LANG",
   "TERM",
 ]);
 
-/** Programs whose every flag only reads. Arguments may carry variable expansions. */
+/** Pager variables run their value as a command, so only "no pager" and `cat` are allowed. */
+const PAGER_ASSIGNMENTS = new Set(["GH_PAGER", "GIT_PAGER", "PAGER"]);
+const ALLOWED_PAGER_VALUES = new Set(["", "cat"]);
+
+/**
+ * Programs whose every flag only reads. Arguments must still be literal: a variable such as
+ * `$GH_TOKEN` would print a secret into the model's context.
+ */
 const PLAIN_READ_PROGRAMS = new Set([
   "cat",
   "head",
-  "tail",
   "wc",
   "ls",
   "pwd",
@@ -67,7 +70,6 @@ const PLAIN_READ_PROGRAMS = new Set([
   "test",
   "[",
   "cd",
-  "jq",
   "type",
 ]);
 
@@ -88,7 +90,8 @@ const GIT_READ_SUBCOMMANDS = new Set([
   "describe",
   "merge-base",
   "shortlog",
-  "grep",
+  // Not `grep`: its `-O<cmd>` opens matches in a program and git accepts it inside a group of
+  // short flags (`-iO'cmd'`), which a flag check cannot reliably catch.
   "name-rev",
   "show-ref",
   "for-each-ref",
@@ -124,19 +127,20 @@ const GH_READ_SUBCOMMANDS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ["release", new Set(["view", "list"])],
 ]);
 
-/** `gh api` flags whose value is the next token, so it is never mistaken for the endpoint. */
-const GH_API_VALUE_FLAGS = new Set([
-  "-H",
-  "--header",
-  "-q",
-  "--jq",
-  "-t",
-  "--template",
-  "--hostname",
-  "--cache",
-  "-p",
-  "--preview",
+/**
+ * The only `gh api` flags accepted, spelled exactly. pflag groups short flags (`-iXDELETE`,
+ * `-if body=x`), so any other `-…` token is refused rather than matched by prefix.
+ */
+const GH_API_SWITCHES = new Set([
+  "-i",
+  "--include",
+  "--paginate",
+  "--slurp",
+  "--silent",
+  "--verbose",
 ]);
+const GH_API_VALUE_FLAGS = new Set(["-q", "--jq", "-t", "--template"]);
+const GH_API_ACCEPT_HEADER = /^accept\s*:/i;
 
 const SED_PRINT_SCRIPT = /^(\d+|\$)(,(\d+|\$))?p$/;
 
@@ -188,10 +192,13 @@ function classifyPipelineNode(node: PipelineNode): ReadOnlyShellClassification {
 function classifyCommand(command: Command): ReadOnlyShellClassification {
   for (const entry of command.prefix) {
     if (entry.type === "Assignment") {
-      if (!ALLOWED_ASSIGNMENTS.has(entry.name))
+      const isPager = PAGER_ASSIGNMENTS.has(entry.name);
+      if (!isPager && !ALLOWED_ASSIGNMENTS.has(entry.name))
         return refuse(`setting ${entry.name} is not allowed`);
       if (entry.value.type !== "Word" || !isStaticWord(entry.value))
         return refuse(`${entry.name} must be a literal value`);
+      if (isPager && !ALLOWED_PAGER_VALUES.has(entry.value.value))
+        return refuse(`${entry.name} may only be empty or \`cat\``);
       continue;
     }
     const verdict = classifyRedirection(entry);
@@ -209,35 +216,41 @@ function classifyCommand(command: Command): ReadOnlyShellClassification {
   const program = name.value;
   if (program.includes("/")) return refuse("programs must be named without a path");
 
-  const argWords: Word[] = [];
+  // Every argument must be literal. A substitution runs a command, a variable could expand to a
+  // flag that writes or executes, and `echo $GH_TOKEN` would put a secret in the model's context.
+  // `cmd NAME=value` is a plain argument for every allowed program.
+  const args: string[] = [];
   for (const entry of command.suffix) {
     if (entry.type === "Assignment") {
-      // `cmd NAME=value` is a plain argument for every allowed program except `env`.
-      if (program === "env") return refuse("`env` may not run or modify anything");
+      if (!(entry.value.type === "Word" && isStaticWord(entry.value)))
+        return refuse("arguments must be literal");
       continue;
     }
     if (entry.type !== "Word") continue;
-    if (!isSafeWord(entry)) return refuse("command and process substitution are not allowed");
-    argWords.push(entry);
+    if (!isStaticWord(entry))
+      return refuse("arguments must be literal: no variables or substitutions");
+    args.push(entry.value);
   }
 
   if (PLAIN_READ_PROGRAMS.has(program)) return READ_ONLY;
-
-  // The remaining programs have flags that write or execute, so every argument must be literal:
-  // a variable could expand to one of those flags.
-  if (!argWords.every(isStaticWord)) return refuse(`\`${program}\` arguments must be literal`);
-  const args = argWords.map((word) => word.value);
-  const hasAssignmentArgs = command.suffix.some((entry) => entry.type === "Assignment");
 
   switch (program) {
     case "command":
       return args.length >= 1 && (args[0] === "-v" || args[0] === "-V")
         ? READ_ONLY
         : refuse("`command` is only allowed as `command -v`");
-    case "env":
-      return args.length === 0 && !hasAssignmentArgs
-        ? READ_ONLY
-        : refuse("`env` is only allowed without arguments");
+    case "tail":
+      // `tail -f` never exits, so the turn would hang until the watchdog fails it.
+      return args.some(
+        (arg) => /^-[a-zA-Z0-9]*[fF]/.test(arg) || abbreviatesLongOption(arg, "follow"),
+      )
+        ? refuse("`tail -f` never exits")
+        : READ_ONLY;
+    case "jq":
+      // `env` and `$ENV` read the whole inherited environment, which can hold credentials.
+      return args.some((arg) => /\benv\b|\$ENV\b/.test(arg))
+        ? refuse("`jq` may not read the environment")
+        : READ_ONLY;
     case "file":
       return args.some((arg) => /^-[a-zA-Z]*C/.test(arg) || abbreviatesLongOption(arg, "compile"))
         ? refuse("`file -C` writes a file")
@@ -452,7 +465,8 @@ function classifyGh(args: ReadonlyArray<string>): ReadOnlyShellClassification {
   const [group, subcommand] = args;
   if (group === undefined) return refuse("a gh command is required");
   if (group === "auth") return refuse("`gh auth` is not allowed");
-  if (args.some((arg) => arg === "--web" || arg === "-w"))
+  // pflag groups short flags, so `-cw` is `--comments --web`.
+  if (args.some((arg) => arg === "--web" || /^-[a-zA-Z]*w/.test(arg)))
     return refuse("`gh --web` opens a browser");
   if (group === "api") return classifyGhApi(args.slice(1));
   const allowed = GH_READ_SUBCOMMANDS.get(group);
@@ -460,6 +474,8 @@ function classifyGh(args: ReadonlyArray<string>): ReadOnlyShellClassification {
     return refuse(
       `\`gh ${group}${subcommand ? ` ${subcommand}` : ""}\` is not on the read-only allowlist`,
     );
+  if (args.some((arg) => arg === "--watch" || arg.startsWith("--watch=")))
+    return refuse("`gh --watch` never exits on its own");
   return READ_ONLY;
 }
 
@@ -467,35 +483,37 @@ function classifyGhApi(args: ReadonlyArray<string>): ReadOnlyShellClassification
   let endpoint: string | undefined;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]!;
+    if (!arg.startsWith("-")) {
+      if (endpoint !== undefined) return refuse("`gh api` takes a single endpoint");
+      endpoint = arg;
+      continue;
+    }
+    if (GH_API_SWITCHES.has(arg)) continue;
     if (arg === "-X" || arg === "--method") {
-      const method = args[index + 1];
-      if (method?.toUpperCase() !== "GET") return refuse("`gh api` may only send GET requests");
+      if (args[index + 1]?.toUpperCase() !== "GET")
+        return refuse("`gh api` may only send GET requests");
       index += 1;
       continue;
     }
-    if (arg.startsWith("--method=")) {
-      if (arg.slice("--method=".length).toUpperCase() !== "GET")
-        return refuse("`gh api` may only send GET requests");
+    if (arg === "-XGET" || arg.toUpperCase() === "--METHOD=GET") continue;
+    if (arg === "-H" || arg === "--header") {
+      if (!GH_API_ACCEPT_HEADER.test(args[index + 1] ?? ""))
+        return refuse("`gh api` may only set the Accept header");
+      index += 1;
       continue;
     }
-    if (arg.startsWith("-X")) {
-      if (arg.slice(2).toUpperCase() !== "GET")
-        return refuse("`gh api` may only send GET requests");
+    if (arg.startsWith("--header=")) {
+      if (!GH_API_ACCEPT_HEADER.test(arg.slice("--header=".length)))
+        return refuse("`gh api` may only set the Accept header");
       continue;
     }
-    if (
-      arg.startsWith("-f") ||
-      arg.startsWith("-F") ||
-      arg.startsWith("--field") ||
-      arg.startsWith("--raw-field") ||
-      arg.startsWith("--input")
-    )
-      return refuse("`gh api` request bodies are not allowed");
     if (GH_API_VALUE_FLAGS.has(arg)) {
+      if (index + 1 >= args.length) return refuse(`\`gh api ${arg}\` needs a value`);
       index += 1;
       continue;
     }
-    if (!arg.startsWith("-") && endpoint === undefined) endpoint = arg;
+    if (arg.startsWith("--jq=") || arg.startsWith("--template=")) continue;
+    return refuse(`\`gh api ${arg}\` is not allowed`);
   }
   if (endpoint === undefined) return refuse("`gh api` needs an endpoint");
   if (endpoint === "graphql") return refuse("`gh api graphql` is not allowed");
@@ -516,36 +534,6 @@ function isStaticPart(part: WordPart | DoubleQuotedChild): boolean {
     case "DoubleQuoted":
     case "LocaleString":
       return part.parts.every(isStaticPart);
-    default:
-      return false;
-  }
-}
-
-/** A word that runs nothing: variable reads are fine, substitutions are not. */
-function isSafeWord(word: Word): boolean {
-  return (word.parts ?? []).every(isSafePart);
-}
-
-function isSafePart(part: WordPart | DoubleQuotedChild): boolean {
-  switch (part.type) {
-    case "Literal":
-    case "SingleQuoted":
-    case "AnsiCQuoted":
-    case "SimpleExpansion":
-      return true;
-    case "BraceExpansion":
-    case "ExtendedGlob":
-      return (part.parts ?? []).every(isSafePart);
-    case "DoubleQuoted":
-    case "LocaleString":
-      return part.parts.every(isSafePart);
-    case "ParameterExpansion": {
-      const operation = part.operation;
-      if (!operation) return part.index === undefined || isSafeWord(part.index);
-      if (operation.type !== "Default") return false;
-      if (operation.operator === "=" || operation.operator === ":=") return false;
-      return isSafeWord(operation.operand);
-    }
     default:
       return false;
   }

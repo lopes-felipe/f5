@@ -77,8 +77,10 @@ On a certified version, F5 keeps every workflow turn read-only:
   reports Plan. If it doesn't, the turn stops before anything is sent. Workflow turns never fall
   back to Auto.
 - Read, search, think and fetch tools run. So do shell commands that only read, such as
-  `gh pr view`, `gh pr diff`, `git log`/`diff`/`show`, `rg` and `cat`, joined by pipes, `&&`,
-  `||` or `;`, with output redirected to `/dev/null` at most. Cursor uses the same allowlist, in
+  `gh pr view`, `gh pr diff`, `gh api` GET requests, `git log`/`diff`/`show`, `rg` and `cat`,
+  joined by pipes, `&&`, `||` or `;`, with output redirected to `/dev/null` at most. Arguments
+  must be literal (no variables or substitutions), and commands that never exit, such as
+  `tail -f`, are refused. Cursor uses the same allowlist, in
   `apps/server/src/provider/readOnlyWorkflowShell.ts`.
 - Everything else is denied without asking you: edits, deletes, moves, other commands, computer
   use, MCP tools, and any request without a recognised kind. Each denial appears in the thread
