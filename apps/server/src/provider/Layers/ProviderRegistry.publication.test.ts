@@ -104,6 +104,73 @@ it.live("publishes a late manifest refresh without a provider or settings change
   ).pipe(Effect.provide(infra)),
 );
 
+it.live("does not fetch the remote manifest while DO_NOT_TRACK is set", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      vi.stubEnv("DO_NOT_TRACK", "1");
+      const fetch = vi.spyOn(globalThis, "fetch");
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          fetch.mockRestore();
+          vi.unstubAllEnvs();
+        }),
+      );
+      const id = ProviderInstanceId.make("codex");
+      const snapshot: ServerProvider = {
+        instanceId: id,
+        driver: ProviderDriverKind.make("codex"),
+        enabled: true,
+        installed: true,
+        version: "1",
+        status: "ready",
+        auth: { status: "authenticated" },
+        checkedAt: "2026-11-19T00:00:00Z",
+        models: [],
+        skills: [],
+        slashCommands: [],
+      };
+      const instance: ProviderInstance = {
+        instanceId: id,
+        driverKind: snapshot.driver,
+        displayName: undefined,
+        enabled: true,
+        continuationIdentity: { driverKind: snapshot.driver, continuationKey: "test" },
+        snapshot: {
+          getSnapshot: Effect.succeed(snapshot),
+          refresh: Effect.succeed(snapshot),
+          streamChanges: Stream.empty,
+        },
+        adapter: {} as ProviderInstance["adapter"],
+        textGeneration: {} as ProviderInstance["textGeneration"],
+      };
+      yield* Effect.gen(function* () {
+        const registry = yield* ProviderRegistry;
+        yield* registry.getProviders;
+        yield* Effect.sleep("50 millis");
+        yield* registry.getProviders;
+        expect(fetch).not.toHaveBeenCalled();
+      }).pipe(
+        Effect.provide(
+          ProviderRegistryLive.pipe(
+            Layer.provideMerge(
+              ServerSettingsService.layerTest({ enableRemoteModelManifest: true }),
+            ),
+          ),
+        ),
+        Effect.provideService(ProviderInstanceRegistry, {
+          listInstances: Effect.succeed([instance]),
+          getInstance: () => Effect.succeed(instance),
+          listUnavailable: Effect.succeed([]),
+          streamChanges: Stream.empty,
+          subscribeChanges: Effect.acquireRelease(PubSub.unbounded<void>(), PubSub.shutdown).pipe(
+            Effect.flatMap(PubSub.subscribe),
+          ),
+        }),
+      );
+    }),
+  ).pipe(Effect.provide(infra)),
+);
+
 it.effect("ignores a retired instance's late probe result or failure", () =>
   Effect.gen(function* () {
     for (const fails of [false, true]) {

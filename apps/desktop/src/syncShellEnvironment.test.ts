@@ -31,9 +31,26 @@ describe("syncShellEnvironment", () => {
       "SSL_CERT_FILE",
       "SSL_CERT_DIR",
       "NODE_EXTRA_CA_CERTS",
+      "DO_NOT_TRACK",
     ]);
     expect(env.PATH).toBe("/opt/homebrew/bin:/usr/bin");
     expect(env.SSH_AUTH_SOCK).toBe("/tmp/secretive.sock");
+  });
+
+  it("imports DO_NOT_TRACK from the login shell without overriding an inherited value", async () => {
+    const fromShell: NodeJS.ProcessEnv = { SHELL: "/bin/zsh" };
+    await syncShellEnvironment(fromShell, {
+      platform: "darwin",
+      readEnvironment: () => ({ PATH: "/usr/bin", DO_NOT_TRACK: "1" }),
+    });
+    expect(fromShell.DO_NOT_TRACK).toBe("1");
+
+    const inherited: NodeJS.ProcessEnv = { SHELL: "/bin/zsh", DO_NOT_TRACK: "0" };
+    await syncShellEnvironment(inherited, {
+      platform: "darwin",
+      readEnvironment: () => ({ PATH: "/usr/bin", DO_NOT_TRACK: "1" }),
+    });
+    expect(inherited.DO_NOT_TRACK).toBe("0");
   });
 
   it("imports missing CA trust variables while retaining inherited trust", async () => {

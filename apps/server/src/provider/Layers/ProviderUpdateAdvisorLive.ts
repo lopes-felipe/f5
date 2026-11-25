@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isDoNotTrackSet } from "@t3tools/shared/doNotTrack";
 import {
   PROVIDER_UPDATE_TIMEOUT_MS,
   PROVIDER_UPDATE_TIMEOUT_MESSAGE,
@@ -427,6 +428,8 @@ export const makeProviderUpdateAdvisor = (
     ) =>
       Effect.gen(function* () {
         if (!target.sourceKey || !target.latestSource) return;
+        // DO_NOT_TRACK stops background registry lookups; a check the user starts still runs.
+        if (!explicit && isDoNotTrackSet(process.env)) return;
         const now = Date.now();
         const previous = (yield* Ref.get(cacheRef)).get(target.sourceKey);
         // A queued caller shares any attempt completed since it requested this pass, including failures.

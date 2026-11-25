@@ -307,6 +307,21 @@ describe("provider update advisor", () => {
         expect(state.httpCalls).toBe(1);
       }),
   );
+  it.effect("skips automatic registry lookups under DO_NOT_TRACK but runs explicit checks", () =>
+    Effect.gen(function* () {
+      vi.stubEnv("DO_NOT_TRACK", "1");
+      try {
+        const { advisor, state } = yield* makeHarness();
+        yield* advisor.refreshAdvisories();
+        yield* TestClock.adjust("7 hours");
+        expect(state.httpCalls).toBe(0);
+        yield* advisor.refreshAdvisories({ mode: "explicit" });
+        expect(state.httpCalls).toBe(1);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    }),
+  );
   for (const failure of [
     new Error("spawn failed"),
     { ...processSuccess, code: 1 },

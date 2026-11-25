@@ -1,4 +1,5 @@
 import { projectProviderSnapshots } from "@t3tools/shared/serverSettings";
+import { isDoNotTrackSet } from "@t3tools/shared/doNotTrack";
 import { withUpdateRequiredModels } from "../updateRequiredModels.ts";
 import {
   BUNDLED_MODEL_MANIFEST,
@@ -300,7 +301,9 @@ export const ProviderRegistryLive = Layer.effect(
       Option.isSome(settingsService)
         ? settingsService.value.getSettings.pipe(
             Effect.map((settings) => {
-              manifest.refreshInBackground(settings.enableRemoteModelManifest);
+              manifest.refreshInBackground(
+                settings.enableRemoteModelManifest && !isDoNotTrackSet(process.env),
+              );
               return projectProviderSnapshots(
                 snapshots.map((provider) =>
                   classifyModelManifest(
