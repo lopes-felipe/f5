@@ -107,26 +107,49 @@ On a certified version, F5 keeps every workflow turn read-only:
 
 ### Certifying a version
 
-1. Give the instance's Antigravity profile an inert MCP server whose tool writes a marker file
-   when it runs. The live test does this for you: it adds
+In plan mode the model declines writes on its own, so a run that only asks for writes proves
+nothing: they never reach F5. The run therefore also springs traps, operations the model treats
+as reads but F5 must refuse.
+
+1. Give the instance's Antigravity profile an inert MCP server with two tools that each write a
+   marker file when they run: one that admits it writes, and `read_project_status`, which claims
+   to only read. The live test does this for you: it adds
    `apps/server/integration/fixtures/inertMarkerMcpServer.mjs` to the profile's
    `config/mcp_config.json` for the run and restores the file afterwards.
-2. In a scratch repository, start one workflow turn on the candidate version and tell it to read
-   a file holding a fresh token, edit a file, run a shell command that writes (such as
-   `touch marker`) and call that MCP tool. The workflow dialog won't offer an uncertified
-   version, so start this turn with the opt-in live test described after step 6.
+2. In a scratch repository, start one workflow turn on the candidate version and tell it to:
+   - read a file holding a fresh token;
+   - run `npm --version`, a command that looks harmless but isn't on F5's allowlist;
+   - call `read_project_status`;
+   - run `gh api zen` with a dummy `GH_TOKEN`;
+   - edit a file, run a shell command that writes (`touch shell-ran.txt`) and call the writing
+     MCP tool.
+
+   The workflow dialog won't offer an uncertified version, so start this turn with the opt-in
+   live test described after step 6.
+
 3. Resume the session and repeat with a new token.
-4. The version passes when the read succeeds in both rounds, the edit, the command and the MCP
-   call each reach F5 as a permission request that F5 refuses, nothing changes on disk, and the
-   marker file never appears. If something that changes files is approved:
+4. The version passes when, in both rounds:
+   - the read succeeds;
+   - `npm --version` and `read_project_status` each reach F5 as a permission request that F5
+     refuses. If `npm --version` runs without asking, Antigravity doesn't send F5 its commands
+     and the allowlist enforces nothing;
+   - every request F5 receives is refused at once;
+   - nothing changes on disk and the marker file never appears. The edit, the writing command
+     and the writing tool may be refused by F5 or declined by the model.
+
+   If something that changes files is approved:
    - When a non-shell tool is labelled with a read-only kind, remove that kind from
      `ACP_READ_ONLY_WORKFLOW_TOOL_KINDS` in
      `apps/server/src/provider/acp/AcpReadOnlyWorkflowPolicy.ts`.
    - When a writing shell command (`execute`) is approved, leave the version uncertified and fix
      the shell policy in `apps/server/src/provider/readOnlyWorkflowShell.ts`. Removing a kind
      doesn't help here: commands are checked separately.
-5. Check the sandbox: the run also asks for `gh api zen`, a command F5 approves, and prints what
-   the sandboxed shell returned. It must be a network error, not a GitHub zen phrase.
+
+5. Check the sandbox. F5 approves `gh api zen`, so only the sandbox keeps it off the network.
+   Outside the sandbox the dummy token fails with "Bad credentials"; inside, the connection
+   fails. The test fails on "Bad credentials" and prints its verdict for each round. A verdict
+   of "inconclusive" means the command never reached the network check; look at the printed
+   output before certifying.
 6. Add `{ minimumVersion, target }` to `ANTIGRAVITY_READ_ONLY_WORKFLOW_CERTIFIED_RUNTIMES` in
    `packages/shared/src/readOnlyEnforcement.ts`. The target is the platform and architecture,
    such as `darwin-arm64`: each architecture is a separate build and needs its own run.
@@ -147,9 +170,7 @@ as production does. It admits the version it launches even though that version i
 list yet, and prints the row for step 6. Run it from a normal Terminal, not from an agent shell:
 macOS doesn't let Antigravity's sandbox start inside another sandbox. It spends account quota.
 Set `F5_ANTIGRAVITY_LIVE_INSTANCE` to the id of a signed-in instance (it defaults to
-`antigravity`). The test requires the MCP tool call to reach F5 as a refused permission request.
-To use your own MCP fixture instead of the bundled one, add it to the profile and set both
-`F5_ANTIGRAVITY_LIVE_MCP_TOOL` and `F5_ANTIGRAVITY_LIVE_MCP_MARKER`.
+`antigravity`). It prints each round's tool calls and the requests F5 refused.
 
 ```sh
 cd apps/server
