@@ -2780,8 +2780,24 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       resumeRecoveryState.delete(threadId);
       resumeRecoveryState.set(threadId, entry);
       if (resumeRecoveryState.size > MAX_TRACKED_RESUME_RECOVERY_THREADS) {
-        const oldest = resumeRecoveryState.keys().next().value;
-        if (oldest !== undefined) resumeRecoveryState.delete(oldest);
+        // Evict zero-failure entries first so threads with active resume-failure
+        // budgets keep their retry guard under high churn.
+        let evictKey: ThreadId | undefined;
+        for (const [candidate, candidateEntry] of resumeRecoveryState) {
+          if (candidate !== threadId && candidateEntry.failures === 0) {
+            evictKey = candidate;
+            break;
+          }
+        }
+        if (evictKey === undefined) {
+          for (const candidate of resumeRecoveryState.keys()) {
+            if (candidate !== threadId) {
+              evictKey = candidate;
+              break;
+            }
+          }
+        }
+        if (evictKey !== undefined) resumeRecoveryState.delete(evictKey);
       }
     };
     const recordResumeFailure = (threadId: ThreadId): number => {
