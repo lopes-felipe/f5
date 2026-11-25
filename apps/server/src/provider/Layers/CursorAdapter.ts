@@ -142,6 +142,7 @@ import {
   makeEventNdjsonLogger,
 } from "./EventNdjsonLogger.ts";
 import { buildProviderAttachmentRuntimeContext } from "../attachmentRuntimeContext.ts";
+import { READ_ONLY_WORKFLOW_ENVIRONMENT } from "../readOnlyWorkflowShell.ts";
 
 const PROVIDER: ProviderKind = "cursor";
 const CURSOR_RESUME_VERSION = 1 as const;
@@ -972,7 +973,11 @@ export function makeCursorAdapter(
           const acp = yield* makeCursorAcpRuntime({
             cursorSettings: effectiveCursorSettings,
             runtimeMode: input.workflowExecutionProfile ? "approval-required" : input.runtimeMode,
-            ...(options?.environment ? { environment: options.environment } : {}),
+            ...(input.workflowExecutionProfile
+              ? { environment: { ...cursorEnvironment, ...READ_ONLY_WORKFLOW_ENVIRONMENT } }
+              : options?.environment
+                ? { environment: options.environment }
+                : {}),
             childProcessSpawner,
             cwd,
             ...(resumeSessionId ? { resumeSessionId } : {}),

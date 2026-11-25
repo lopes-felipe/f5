@@ -180,4 +180,80 @@ describe("classifyReadOnlyShellCommand", () => {
       reason: "`git push` is not on the read-only allowlist",
     });
   });
+
+  // zsh-only compound forms. unbash keeps a harmless first part and drops the rest, so only the
+  // parse-error check stands between these and approval.
+  it.each([
+    "{ git status; } always { rm -rf x; }",
+    "(echo a)(rm x)",
+    "{ echo a; } { rm x; }",
+    "if [ -d x ] { echo hi }",
+  ])("refuses the zsh-only form %s as unparseable", (command) => {
+    expect(classifyReadOnlyShellCommand(command)).toEqual({
+      readOnly: false,
+      reason: "command could not be parsed",
+    });
+  });
+
+  it.each([
+    ["for f in a b; do cat a; done", "For commands are not allowed"],
+    ["[[ -d x ]]", "TestCommand commands are not allowed"],
+    ["! git status", "Negation commands are not allowed"],
+    ["time git status", "Time commands are not allowed"],
+    ["if [ -d x ]; then git log & fi", "background commands are not allowed"],
+    ["{ git status; } <<EOF\nhi\nEOF", "heredocs are not allowed"],
+    ["( git status ) >| x", "`>|` redirection is not allowed"],
+    ["{ git status; } >&x", "output may only be redirected to /dev/null"],
+    ["{ git status; } 2>/dev/null >out", "output may only be redirected to /dev/null"],
+  ])("refuses %s with a reason", (command, reason) => {
+    expect(classifyReadOnlyShellCommand(command)).toEqual({ readOnly: false, reason });
+  });
+
+  const nested = (levels: number) => "( ".repeat(levels) + "git status" + " )".repeat(levels);
+  const elifChain = (clauses: number) =>
+    "if test -f a0; then cat a0; " +
+    Array.from(
+      { length: clauses - 1 },
+      (_, i) => `elif test -f a${i + 1}; then cat a${i + 1}; `,
+    ).join("") +
+    "fi";
+
+  it("allows eight levels of nesting and refuses nine", () => {
+    expect(classifyReadOnlyShellCommand(nested(8))).toEqual({ readOnly: true });
+    expect(classifyReadOnlyShellCommand(nested(9))).toEqual({
+      readOnly: false,
+      reason: "commands are nested too deeply",
+    });
+  });
+
+  it("does not count a flat elif chain as nesting", () => {
+    expect(classifyReadOnlyShellCommand(elifChain(9))).toEqual({ readOnly: true });
+    // An if seven levels deep with an elif is eight levels, not nine.
+    expect(classifyReadOnlyShellCommand("( ".repeat(7) + elifChain(2) + " )".repeat(7))).toEqual({
+      readOnly: true,
+    });
+    expect(classifyReadOnlyShellCommand("( ".repeat(8) + elifChain(2) + " )".repeat(8))).toEqual({
+      readOnly: false,
+      reason: "commands are nested too deeply",
+    });
+  });
+
+  it("refuses a write in any elif clause and caps the chain", () => {
+    expect(readOnly(elifChain(5).replace("cat a3", "rm a3"))).toBe(false);
+    expect(classifyReadOnlyShellCommand(elifChain(32))).toEqual({ readOnly: true });
+    expect(classifyReadOnlyShellCommand(elifChain(33))).toEqual({
+      readOnly: false,
+      reason: "too many `elif` clauses",
+    });
+  });
+
+  it("counts an if nested in an else as nesting", () => {
+    const elseIf = (levels: number): string =>
+      levels === 0 ? "cat a" : `if test -f a; then cat a; else ${elseIf(levels - 1)}; fi`;
+    expect(classifyReadOnlyShellCommand(elseIf(8))).toEqual({ readOnly: true });
+    expect(classifyReadOnlyShellCommand(elseIf(9))).toEqual({
+      readOnly: false,
+      reason: "commands are nested too deeply",
+    });
+  });
 });

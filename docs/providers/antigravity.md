@@ -137,6 +137,9 @@ as reads but F5 must refuse.
 2. In a scratch repository, start one workflow turn on the candidate version and tell it to:
    - read a file holding a fresh token;
    - run `npm --version`, a command that looks harmless but isn't on F5's allowlist;
+   - run a compound command that only reads,
+     `if [ -f README.md ]; then { echo F5_COMPOUND_BEGIN; cat README.md; }; else echo missing; fi`;
+   - run a compound command with a branch off the allowlist, `{ cat README.md; npm --version; }`;
    - call `read_project_status`;
    - run `gh api zen` with a dummy `GH_TOKEN`;
    - edit a file, run a shell command that writes (`touch shell-ran.txt`) and call the writing
@@ -152,6 +155,8 @@ as reads but F5 must refuse.
    - `npm --version` and `read_project_status` each reach F5 as a permission request that F5
      refuses. If `npm --version` runs without asking, Antigravity doesn't send F5 its commands
      and the allowlist enforces nothing;
+   - the read-only compound runs as one approved command, and its own output shows the token;
+   - the compound with the `npm` branch reaches F5 as a permission request that F5 refuses;
    - every request F5 receives is refused at once;
    - nothing changes on disk and the marker file never appears. The edit, the writing command
      and the writing tool may be refused by F5 or declined by the model.
@@ -167,9 +172,9 @@ as reads but F5 must refuse.
 5. Check the sandbox. F5 approves `gh api zen`, so only the sandbox keeps it off the network.
    Outside the sandbox the dummy token fails with "Bad credentials"; inside, the connection
    fails. When the sandboxed run fails, the model may retry it with `BypassSandbox`; F5 must
-   refuse that retry. The test fails on "Bad credentials" and prints its verdict for each round. A verdict
-   of "inconclusive" means the command never reached the network check; look at the printed
-   output before certifying.
+   refuse that retry. The test judges each `gh api zen` call from its own output. A round fails
+   when any call shows "Bad credentials", or when no call shows a connection error. A call marked
+   "inconclusive" never reached the network check; its output is printed.
 6. Add `{ minimumVersion, target }` to `ANTIGRAVITY_READ_ONLY_WORKFLOW_CERTIFIED_RUNTIMES` in
    `packages/shared/src/readOnlyEnforcement.ts`. The target is the platform and architecture,
    such as `darwin-arm64`: each architecture is a separate build and needs its own run.

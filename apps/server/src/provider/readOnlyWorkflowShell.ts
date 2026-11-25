@@ -4,6 +4,7 @@ import {
   type CommandNode,
   type CompoundList,
   type DoubleQuotedChild,
+  type If,
   type PipelineNode,
   type Redirection,
   type Statement,
@@ -24,6 +25,13 @@ import {
 export type ReadOnlyShellClassification =
   | { readonly readOnly: true }
   | { readonly readOnly: false; readonly reason: string };
+
+/**
+ * Added to the environment of providers whose read-only stages use this classifier. `git status`
+ * otherwise refreshes the index and holds `index.lock`, which can fail a concurrent Git command in
+ * the same worktree.
+ */
+export const READ_ONLY_WORKFLOW_ENVIRONMENT = { GIT_OPTIONAL_LOCKS: "0" } as const;
 
 const READ_ONLY: ReadOnlyShellClassification = { readOnly: true };
 const refuse = (reason: string): ReadOnlyShellClassification => ({ readOnly: false, reason });
@@ -164,8 +172,12 @@ export function classifyReadOnlyShellCommand(command: string): ReadOnlyShellClas
   return READ_ONLY;
 }
 
-/** Deeper nesting of `if`, `{ }` and `( )` is refused rather than walked. */
+/**
+ * Deeper nesting of `if`, `{ }` and `( )` is refused rather than walked. An `elif` is not nesting:
+ * it stays at its `if`'s depth and counts toward MAX_ELIF_CLAUSES instead.
+ */
 const MAX_COMPOUND_DEPTH = 8;
+const MAX_ELIF_CLAUSES = 32;
 
 function classifyStatement(statement: Statement, depth = 0): ReadOnlyShellClassification {
   if (statement.background) return refuse("background commands are not allowed");
@@ -213,24 +225,33 @@ function classifyCommandNode(node: CommandNode, depth: number): ReadOnlyShellCla
       return classifyCommandNode(node.command, depth);
     }
     case "If":
-    case "BraceGroup":
-    case "Subshell": {
       if (depth >= MAX_COMPOUND_DEPTH) return refuse("commands are nested too deeply");
-      const lists =
-        node.type === "If"
-          ? [node.clause, node.then, ...(node.else ? [node.else] : [])]
-          : [node.body];
-      for (const list of lists) {
-        const verdict =
-          list.type === "If"
-            ? classifyCommandNode(list, depth + 1)
-            : classifyCompoundList(list, depth + 1);
-        if (!verdict.readOnly) return verdict;
-      }
-      return READ_ONLY;
-    }
+      return classifyIfChain(node, depth + 1);
+    case "BraceGroup":
+    case "Subshell":
+      if (depth >= MAX_COMPOUND_DEPTH) return refuse("commands are nested too deeply");
+      return classifyCompoundList(node.body, depth + 1);
     default:
       return refuse(`${node.type} commands are not allowed`);
+  }
+}
+
+/**
+ * An `if` and its `elif` clauses, which unbash stores as an `If` in the previous clause's `else`.
+ * Walked in a loop so a flat chain neither counts as nesting nor recurses per clause.
+ */
+function classifyIfChain(node: If, depth: number): ReadOnlyShellClassification {
+  let clause: If = node;
+  for (let clauses = 1; ; clauses += 1) {
+    if (clauses > MAX_ELIF_CLAUSES) return refuse("too many `elif` clauses");
+    for (const list of [clause.clause, clause.then]) {
+      const verdict = classifyCompoundList(list, depth);
+      if (!verdict.readOnly) return verdict;
+    }
+    const rest = clause.else;
+    if (rest === undefined) return READ_ONLY;
+    if (rest.type !== "If") return classifyCompoundList(rest, depth);
+    clause = rest;
   }
 }
 
