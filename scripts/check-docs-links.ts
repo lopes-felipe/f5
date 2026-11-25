@@ -15,16 +15,18 @@ const ROOT_DOCS = [
 
 const DOCS_SUBDIRS = ["docs", "docs/user", "docs/providers", "docs/design"] as const;
 
-const DRIVER_TO_DOC_LABEL: Readonly<Record<string, string>> = {
-  CodexDriver: "Codex",
-  ClaudeDriver: "Claude Code",
-  CursorDriver: "Cursor",
-  OpenCodeDriver: "OpenCode",
-  GrokDriver: "Grok",
-  AntigravityDriver: "Antigravity",
-  MuseDriver: "Muse Code",
-  PiDriver: "Pi",
-  AcpDriver: "Custom ACP",
+const DRIVER_TO_DOC_LABEL: Readonly<
+  Record<string, { readonly label: string; readonly guide: string }>
+> = {
+  CodexDriver: { label: "Codex", guide: "docs/providers/codex.md" },
+  ClaudeDriver: { label: "Claude Code", guide: "docs/providers/claude.md" },
+  CursorDriver: { label: "Cursor", guide: "docs/providers/cursor.md" },
+  OpenCodeDriver: { label: "OpenCode", guide: "docs/providers/opencode.md" },
+  GrokDriver: { label: "Grok", guide: "docs/providers/grok.md" },
+  AntigravityDriver: { label: "Antigravity", guide: "docs/providers/antigravity.md" },
+  MuseDriver: { label: "Muse Code", guide: "docs/providers/muse.md" },
+  PiDriver: { label: "Pi", guide: "docs/providers/pi.md" },
+  AcpDriver: { label: "Custom ACP", guide: "docs/providers/acp.md" },
 };
 
 function stripCodeFences(markdown: string): string {
@@ -87,13 +89,16 @@ export function findUndocumentedBuiltInDrivers(repoRoot: string): string[] {
 
   const missing: string[] = [];
   for (const driver of drivers) {
-    const label = DRIVER_TO_DOC_LABEL[driver];
-    if (!label) {
+    const info = DRIVER_TO_DOC_LABEL[driver];
+    if (!info) {
       missing.push(`${driver}: missing DRIVER_TO_DOC_LABEL mapping in scripts/check-docs-links.ts`);
       continue;
     }
-    if (!prereqsSource.includes(`| ${label}`)) {
-      missing.push(`${driver} (${label}) missing from docs/provider-prerequisites.md`);
+    if (!prereqsSource.includes(`| ${info.label}`)) {
+      missing.push(`${driver} (${info.label}) missing from docs/provider-prerequisites.md`);
+    }
+    if (!existsSync(path.join(repoRoot, info.guide))) {
+      missing.push(`${driver} (${info.label}) missing provider guide ${info.guide}`);
     }
   }
   return missing;

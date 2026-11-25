@@ -30,8 +30,9 @@ send a message with it.
 | Custom ACP  | Any local ACP-compatible CLI command configured in **Settings → Providers**       | Managed by the configured ACP command (see [Custom ACP agents](providers/acp.md))            |
 
 Cursor, Grok, Muse Code and Pi are Early Access. Provider pages: [Codex](providers/codex.md),
-[Claude](providers/claude.md), [Antigravity](providers/antigravity.md), [Muse Code](providers/muse.md)
-and [Custom ACP agents](providers/acp.md).
+[Claude](providers/claude.md), [Cursor](providers/cursor.md), [OpenCode](providers/opencode.md),
+[Grok](providers/grok.md), [Antigravity](providers/antigravity.md), [Muse Code](providers/muse.md),
+[Pi](providers/pi.md) and [Custom ACP agents](providers/acp.md).
 
 ## Several accounts
 

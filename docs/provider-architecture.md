@@ -24,8 +24,10 @@ Every provider implements the shared `ProviderAdapter` contract (`apps/server/sr
 - **Claude Code:** `ClaudeAdapter.ts` runs sessions through `@anthropic-ai/claude-agent-sdk` and normalizes its SDK events into the shared orchestration event shapes.
 - **Cursor:** `CursorAdapter.ts` speaks the Agent Client Protocol (ACP) to `agent acp`.
 - **OpenCode:** `OpenCodeAdapter.ts` talks to a local `opencode serve` process or an external OpenCode server.
-- **Grok and Antigravity:** `GrokAdapter.ts` serves both over ACP.
+- **Grok and Antigravity:** `GrokAdapter.ts` and `AntigravityDriver.ts` run over ACP (`packages/effect-acp`).
 - **Muse Code:** `MuseAdapter.ts` speaks the Muse Session Protocol (MSP) to `muse serve` through `@muse-code/sdk`.
+- **Pi:** `PiAdapter.ts` talks to `pi --mode rpc`.
+- **Custom ACP agents:** `AcpDriver.ts` runs any local ACP-compatible CLI command over `packages/effect-acp`.
 
 Each adapter is constructed by a driver in `apps/server/src/provider/Drivers/*Driver.ts`, and every built-in driver is listed in `apps/server/src/provider/builtInDrivers.ts`. `ProviderAdapterRegistry.ts` is a lookup facade over the live instance registry, so settings changes and custom instances are visible without rebuilding the server layer, and `ProviderService.ts` routes sessions and turns to the right adapter. To add a provider, implement the `ProviderAdapter` contract, wrap it in a `ProviderDriver` and add that driver to `builtInDrivers.ts`.
 
@@ -133,3 +135,37 @@ and thought chunks batch without delaying delivery; plans, tool updates, turn
 boundaries and unknown updates await append completion. Intentional PTY restarts,
 working-directory/environment replacements and shutdown drain their source without
 publishing a tab-closing `exited` event. Natural exits still publish it.
+
+## Contributor Playbook
+
+Use these file-by-file checklists when extending F5 so contracts, scheduling, server routes, UI, and documentation stay in sync.
+
+### Adding a Provider
+
+1. **Contracts (`packages/contracts`):** Add the driver kind and settings schema in `packages/contracts/src/settings.ts` and `packages/contracts/src/model.ts` (keep `packages/contracts` schema-only).
+2. **Capabilities (`packages/shared`):** Add executable capability defaults in `packages/shared/src/providerRuntimeCapabilities.ts` and model capability metadata in `packages/shared/src/model.ts`.
+3. **Adapter & Driver (`apps/server/src/provider/`):**
+   - Implement `ProviderAdapter` in `apps/server/src/provider/Layers/<Name>Adapter.ts` (and status probe in `Layers/<Name>Provider.ts`).
+   - Wrap it in a `ProviderDriver` under `apps/server/src/provider/Drivers/<Name>Driver.ts`.
+   - Register the driver in `apps/server/src/provider/builtInDrivers.ts`.
+4. **Tests:** Add adapter/driver unit tests (covering malformed frames, child exit settlement, and disposal) alongside the driver and adapter files.
+5. **Documentation:** Add a provider row in `docs/provider-prerequisites.md`, create `docs/providers/<slug>.md`, link it from `docs/README.md`, and add its mapping in `scripts/check-docs-links.ts`.
+
+### Adding a WebSocket RPC Method
+
+1. **Contracts (`packages/contracts`):**
+   - Declare the method constant in `packages/contracts/src/wsMethods.ts`.
+   - Add the tagged request/response schemas in `packages/contracts/src/wsRequests.ts` and register the request body in the `WebSocketRequest` union.
+   - Add the typed client method on `NativeApi` in `packages/contracts/src/ipc.ts`.
+2. **Scheduling (`packages/shared`):** Classify the method's concurrency lane (`READ`, `WRITE`, or `FAST_CONTROL`) and runtime-readiness requirement in `packages/shared/src/rpcScheduling.ts`.
+3. **Server Route (`apps/server/src/wsServer/routes/`):**
+   - Add the handler to the appropriate domain route table (e.g., `serverMetaRoutes.ts`, `storageRoutes.ts`, `workflowRoutes.ts`, `prHubRoutes.ts`, `mcpRoutes.ts`, `previewRoutes.ts`, `worktreeRoutes.ts`, `gitRoutes.ts`, `terminalRoutes.ts`), or create a new `<domain>Routes.ts` table and chain it into `routeTables(...)` in `apps/server/src/wsServer.ts`.
+   - Add focused unit tests in `<domain>Routes.test.ts` (no full server startup required).
+4. **Web Client (`apps/web`):** Wire the method in `apps/web/src/wsNativeApi.ts` and call it via React Query or an action hook.
+
+### Adding a Workflow Type
+
+1. **Contracts & Persistence:** Define the workflow schemas in `packages/contracts/src/orchestration.ts` and add a new numbered migration in `apps/server/src/persistence/Migrations/<NNN>_<Name>.ts` registered in `apps/server/src/persistence/Migrations.ts` (never hand-edit `BaselineSchema.ts` without updating `BASELINE_MIGRATION_ID` and running the parity test in `Migrations.test.ts`).
+2. **Orchestration Service:** Implement the workflow service under `apps/server/src/orchestration/Services/` and `Layers/`, and wire it into `apps/server/src/serverLayers.ts`.
+3. **Routing & Platform:** Add workflow lifecycle routes in `apps/server/src/wsServer/routes/workflowRoutes.ts` and register any template metadata in `apps/server/src/workflowPlatform.ts`.
+4. **UI & Docs:** Add the creation/view UI under `apps/web/src/components/workflow/` and document the workflow in `docs/user/workflows.md`.

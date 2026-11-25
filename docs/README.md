@@ -31,9 +31,13 @@ packaged release may lag behind them.
 | [Provider prerequisites](provider-prerequisites.md) | Install, sign in to and update built-in providers and custom ACP agents |
 | [Claude](providers/claude.md)                       | Accounts, OpenRouter, Claude Code Router, presets                       |
 | [Codex](providers/codex.md)                         | Accounts, Codex homes, profiles                                         |
+| [Cursor](providers/cursor.md)                       | Cursor CLI (`agent`), ACP model discovery and skills                    |
+| [OpenCode](providers/opencode.md)                   | Managed `opencode serve` and external OpenCode servers                  |
+| [Grok](providers/grok.md)                           | Grok CLI (`grok agent stdio`), models and skills                        |
 | [Antigravity](providers/antigravity.md)             | Antigravity setup and isolation                                         |
-| [Custom ACP agents](providers/acp.md)               | Local ACP commands, models and initialization checks                    |
 | [Muse Code](providers/muse.md)                      | Muse Code setup and modes                                               |
+| [Pi](providers/pi.md)                               | Pi RPC setup, permissions, rollback and limits                          |
+| [Custom ACP agents](providers/acp.md)               | Local ACP commands, models and initialization checks                    |
 | [Runtime modes](runtime-modes.md)                   | The four permission modes and provider support                          |
 | [Project configuration](project-configuration.md)   | The checked-in `f5.json` file                                           |
 | [Profiles](profiles.md)                             | Separate F5 profiles with their own state and accounts                  |
