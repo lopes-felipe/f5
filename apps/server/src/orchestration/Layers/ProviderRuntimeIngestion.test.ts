@@ -79,7 +79,10 @@ import {
   makeTurnCompletedSessionSetCommand,
   toOrchestrationUsageLimit,
 } from "../providerTerminalLifecycle.ts";
-import { ProviderRuntimeIngestionLive } from "./ProviderRuntimeIngestion.ts";
+import {
+  ProfiledFailureStopGraceMs,
+  ProviderRuntimeIngestionLive,
+} from "./ProviderRuntimeIngestion.ts";
 import { UsageFactRepositoryLive } from "../../persistence/Layers/UsageFacts.ts";
 import { UsageFactRepository } from "../../persistence/Services/UsageFacts.ts";
 import { ThreadBackgroundWorkLive } from "./ThreadBackgroundWork.ts";
@@ -129,6 +132,7 @@ function createProviderServiceHarness() {
     { instanceId: ProviderInstanceId; generation: number }
   >();
   const interruptedTurns: Array<Parameters<ProviderServiceShape["interruptTurn"]>[0]> = [];
+  const stoppedSessions: Array<Parameters<ProviderServiceShape["stopSession"]>[0]> = [];
   const requestResponses: Array<Parameters<ProviderServiceShape["respondToRequest"]>[0]> = [];
   const userInputResponses: Array<Parameters<ProviderServiceShape["respondToUserInput"]>[0]> = [];
   const elicitationResponses: Array<Parameters<ProviderServiceShape["respondToElicitation"]>[0]> =
@@ -159,7 +163,7 @@ function createProviderServiceHarness() {
         elicitationResponses.push(input);
         return "submitted" as const;
       }),
-    stopSession: () => unsupported(),
+    stopSession: (input) => Effect.sync(() => void stoppedSessions.push(input)),
     listStartingWorkspaces: () => Effect.succeed([]),
     listSessions: () => Effect.succeed([...runtimeSessions]),
     getSessionCapabilities: () => Effect.sync(() => sessionCapabilities),
@@ -219,6 +223,7 @@ function createProviderServiceHarness() {
     clearSessions,
     setThreadSnapshot,
     interruptedTurns,
+    stoppedSessions,
     requestResponses,
     userInputResponses,
     elicitationResponses,
@@ -305,6 +310,8 @@ describe("ProviderRuntimeIngestion", () => {
     /** A transient store failure (default) or a permanent decider rejection. */
     readonly dispatchFailure?: "transient" | "rejected";
     readonly dispatchFailureCount?: number;
+    /** Overrides how long a profile-failed turn may run before its session is stopped. */
+    readonly profiledFailureStopGraceMs?: number;
   }) {
     const workspaceRoot = makeTempDir("t3-provider-project-");
     fs.mkdirSync(path.join(workspaceRoot, ".git"));
@@ -364,6 +371,11 @@ describe("ProviderRuntimeIngestion", () => {
         }),
       ),
       Layer.provide(faultyEngineLayer),
+      Layer.provide(
+        options?.profiledFailureStopGraceMs !== undefined
+          ? Layer.succeed(ProfiledFailureStopGraceMs, options.profiledFailureStopGraceMs)
+          : Layer.empty,
+      ),
       Layer.provide(ServerSettingsService.layerTest(options?.settings)),
       Layer.provide(
         options?.refreshAccount
@@ -498,6 +510,7 @@ describe("ProviderRuntimeIngestion", () => {
       clearProviderSessions: provider.clearSessions,
       setThreadSnapshot: provider.setThreadSnapshot,
       interruptedTurns: provider.interruptedTurns,
+      stoppedSessions: provider.stoppedSessions,
       requestResponses: provider.requestResponses,
       userInputResponses: provider.userInputResponses,
       elicitationResponses: provider.elicitationResponses,
@@ -6416,6 +6429,7 @@ describe("ProviderRuntimeIngestion", () => {
       (thread) => thread.session?.status === "error",
     );
     expect(failed.session?.lastError).toContain("read-only profile violation");
+    expect(failed.session?.lastError).toContain("touch forbidden.txt");
     expect(failed.session?.lastErrorRetryability).toBe("non-retryable");
     expect(harness.requestResponses).toEqual([
       expect.objectContaining({ requestId: "req-profiled-approval", decision: "decline" }),
@@ -6423,6 +6437,185 @@ describe("ProviderRuntimeIngestion", () => {
     expect(harness.interruptedTurns).toEqual([
       expect.objectContaining({ threadId: "thread-1", turnId }),
     ]);
+  });
+
+  describe("read-only workflow requests the adapter already refused", () => {
+    type Harness = Awaited<ReturnType<typeof createHarness>>;
+
+    const startProfiledTurn = async (harness: Harness, turnId: TurnId) => {
+      const now = new Date().toISOString();
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.makeUnsafe(`cmd-profiled-session-${turnId}`),
+          threadId: asThreadId("thread-1"),
+          session: {
+            threadId: asThreadId("thread-1"),
+            status: "ready",
+            providerName: "cursor",
+            runtimeMode: "full-access",
+            workflowExecutionProfile: "unattended-readonly",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: now,
+          },
+          createdAt: now,
+        }),
+      );
+      await Effect.runPromise(
+        harness.providerSessionDirectory.upsert({
+          threadId: asThreadId("thread-1"),
+          provider: "cursor",
+          status: "running",
+          runtimeMode: "full-access",
+          runtimePayload: {
+            activeTurnId: turnId,
+            instructionContext: { workflowExecutionProfile: "unattended-readonly" },
+          },
+        }),
+      );
+      harness.emit({
+        type: "turn.started",
+        eventId: asEventId(`evt-${turnId}-started`),
+        provider: "cursor",
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId,
+      });
+      await waitForThread(harness.engine, (thread) => thread.session?.status === "running");
+    };
+
+    const emitRequest = (
+      harness: Harness,
+      turnId: TurnId,
+      id: string,
+      detail: string,
+      autoDeclined: boolean,
+    ) =>
+      harness.emit({
+        type: "request.opened",
+        eventId: asEventId(`evt-${id}`),
+        provider: "cursor",
+        createdAt: new Date().toISOString(),
+        threadId: asThreadId("thread-1"),
+        turnId,
+        requestId: ApprovalRequestId.makeUnsafe(id),
+        payload: {
+          requestType: "exec_command_approval",
+          detail,
+          ...(autoDeclined ? { autoDeclined: true } : {}),
+        },
+      });
+
+    const readThread = async (harness: Harness) => {
+      const readModel = await Effect.runPromise(harness.engine.getReadModel());
+      return readModel.threads.find((thread) => thread.id === asThreadId("thread-1"));
+    };
+
+    it("keeps the turn running for refusals under the allowance and fails it at the cap", async () => {
+      const harness = await createHarness();
+      const turnId = asTurnId("turn-soft-deny");
+      await startProfiledTurn(harness, turnId);
+
+      emitRequest(harness, turnId, "req-soft-1", "gh pr diff 1 > pr.diff", true);
+      emitRequest(harness, turnId, "req-soft-2", "rm -rf build", true);
+      await harness.drain();
+      const running = await readThread(harness);
+      expect(running?.session?.status).toBe("running");
+      expect(running?.session?.lastError ?? null).toBeNull();
+      expect(harness.requestResponses).toEqual([]);
+      expect(harness.interruptedTurns).toEqual([]);
+
+      emitRequest(harness, turnId, "req-soft-3", "git push origin main", true);
+      const failed = await waitForThread(
+        harness.engine,
+        (thread) => thread.session?.status === "error",
+      );
+      expect(failed.session?.lastError).toContain("attempted 3 operations");
+      expect(failed.session?.lastError).toContain("git push origin main");
+      expect(failed.session?.lastErrorRetryability).toBe("non-retryable");
+      expect(harness.requestResponses).toEqual([]);
+      expect(harness.interruptedTurns).toEqual([
+        expect.objectContaining({ threadId: "thread-1", turnId }),
+      ]);
+    });
+
+    it("keeps the first violation instead of overwriting it with later ones", async () => {
+      const harness = await createHarness();
+      const turnId = asTurnId("turn-first-wins");
+      await startProfiledTurn(harness, turnId);
+
+      emitRequest(harness, turnId, "req-first", "gh pr view 1", false);
+      const failed = await waitForThread(
+        harness.engine,
+        (thread) => thread.session?.status === "error",
+      );
+      emitRequest(harness, turnId, "req-later", "Fetch https://example.com", false);
+      await harness.drain();
+
+      const after = await readThread(harness);
+      expect(after?.session?.lastError).toBe(failed.session?.lastError);
+      expect(after?.session?.lastError).toContain("gh pr view 1");
+      expect(after?.session?.lastErrorOccurredAt).toBe(failed.session?.lastErrorOccurredAt);
+      expect(harness.interruptedTurns).toHaveLength(1);
+    });
+
+    it("does not let a late completion revive a profile-failed turn", async () => {
+      const harness = await createHarness();
+      const turnId = asTurnId("turn-no-resurrection");
+      await startProfiledTurn(harness, turnId);
+
+      emitRequest(harness, turnId, "req-violation", "touch x", false);
+      await waitForThread(harness.engine, (thread) => thread.session?.status === "error");
+      harness.emit({
+        type: "turn.completed",
+        eventId: asEventId("evt-late-completion"),
+        provider: "cursor",
+        createdAt: new Date().toISOString(),
+        threadId: asThreadId("thread-1"),
+        turnId,
+        payload: { state: "completed", stopReason: "end_turn" },
+      });
+      await harness.drain();
+
+      const after = await readThread(harness);
+      expect(after?.session?.status).toBe("error");
+      expect(after?.session?.lastError).toContain("read-only profile violation");
+      expect(after?.latestTurn?.state).not.toBe("completed");
+    });
+
+    it("stops the session when the provider ignores the interrupt", async () => {
+      const harness = await createHarness({ profiledFailureStopGraceMs: 20 });
+      const turnId = asTurnId("turn-ignored-interrupt");
+      await startProfiledTurn(harness, turnId);
+
+      emitRequest(harness, turnId, "req-ignored", "touch x", false);
+      await waitForThread(harness.engine, (thread) => thread.session?.status === "error");
+      await vi.waitFor(() =>
+        expect(harness.stoppedSessions).toEqual([{ threadId: asThreadId("thread-1") }]),
+      );
+    });
+
+    it("leaves the session alone when the provider settles the failed turn in time", async () => {
+      const harness = await createHarness({ profiledFailureStopGraceMs: 100 });
+      const turnId = asTurnId("turn-settled-interrupt");
+      await startProfiledTurn(harness, turnId);
+
+      emitRequest(harness, turnId, "req-settled", "touch x", false);
+      await waitForThread(harness.engine, (thread) => thread.session?.status === "error");
+      harness.emit({
+        type: "turn.completed",
+        eventId: asEventId("evt-settled-completion"),
+        provider: "cursor",
+        createdAt: new Date().toISOString(),
+        threadId: asThreadId("thread-1"),
+        turnId,
+        payload: { state: "interrupted", stopReason: "cancelled" },
+      });
+      await harness.drain();
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      expect(harness.stoppedSessions).toEqual([]);
+    });
   });
 
   it("settles unattended workflow user-input requests without failing the turn", async () => {

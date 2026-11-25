@@ -1012,7 +1012,7 @@ const program = Effect.gen(function* () {
           const command =
             index > 0
               ? (process.env.T3_ACP_SECOND_PERMISSION_COMMAND ?? "cat server/package.json")
-              : "cat server/package.json";
+              : (process.env.T3_ACP_PERMISSION_COMMAND ?? "cat server/package.json");
           const permissionKind = process.env.T3_ACP_PERMISSION_KIND;
           const antigravityShaped = process.env.T3_ACP_PERMISSION_ANTIGRAVITY_SHAPE === "1";
           const permission = yield* agent.client.requestPermission({

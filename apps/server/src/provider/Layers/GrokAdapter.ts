@@ -1422,6 +1422,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                         source: "acp.jsonrpc",
                         method: "session/request_permission",
                         rawPayload: deniedParams,
+                        autoDeclined: true,
                       }),
                     );
                     yield* offerRuntimeEvent(
@@ -1432,10 +1433,15 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                         turnId: sessions.get(input.threadId)?.activeTurnId,
                         requestId: deniedRequestId,
                         permissionRequest: deniedRequest,
-                        decision: "cancel",
+                        decision: "decline",
                       }),
                     );
-                    return { outcome: { outcome: "cancelled" as const } };
+                    // `cancelled` means "the prompt turn was cancelled" in ACP; refusing this one
+                    // operation is `reject_once` whenever the agent offers it.
+                    const rejectOnce = selectPermissionOptionId(params, "decline");
+                    return rejectOnce === undefined
+                      ? { outcome: { outcome: "cancelled" as const } }
+                      : { outcome: { outcome: "selected" as const, optionId: rejectOnce } };
                   }
                   // The runtime applies mode notifications and `set_mode` responses in transport
                   // order, so its state cannot be overwritten by a stale queued `ModeChanged`.
