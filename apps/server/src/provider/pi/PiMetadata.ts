@@ -7,6 +7,7 @@ import {
 } from "./commands.ts";
 import { parsePiDiscoveredModels } from "./discovery.ts";
 import { buildPiRpcLaunch, resolvePiLaunchArgs } from "./launch.ts";
+import { piRecordField } from "./PiProtocol.ts";
 import { makePiRpcConnection, PiRpcError, type PiRpcConnection } from "./PiRpc.ts";
 
 /** A cold Pi start can take longer than 15 seconds before it answers catalog requests. */
@@ -22,13 +23,16 @@ export interface PiCatalog extends PiDiscoveredCommands {
 }
 
 /** Called on the live session for its real workspace command catalog. Failures leave the old catalog intact. */
-export const readPiCatalog = (connection: PiRpcConnection) =>
+export const readPiCatalog = (
+  connection: PiRpcConnection,
+  source: "session" | "status" = "session",
+) =>
   Effect.gen(function* () {
     const state = yield* connection.request({ type: "get_state" });
-    const models = parsePiDiscoveredModels(
-      yield* connection.request({ type: "get_available_models" }),
-      state,
-    );
+    const modelsData = yield* connection.request({ type: "get_available_models" });
+    if (source === "status" && !Array.isArray(piRecordField(modelsData, "models")))
+      return yield* new PiRpcError({ operation: "catalog", detail: "Pi returned no model list." });
+    const models = parsePiDiscoveredModels(modelsData, state);
     const commands = parsePiDiscoveredCommands(yield* connection.request({ type: "get_commands" }));
     return {
       state,
@@ -52,6 +56,7 @@ export const probePiCatalog = (settings: PiLaunchSettings, environment: NodeJS.P
         extensionPath: undefined,
         mcpSession: undefined,
         ephemeral: true,
+        shortLived: true,
         disableExtensions: true,
         disableTools: true,
       });
@@ -62,6 +67,6 @@ export const probePiCatalog = (settings: PiLaunchSettings, environment: NodeJS.P
         env: launch.env,
       });
       yield* connection.events.pipe(Stream.runDrain, Effect.ignore, Effect.forkScoped);
-      return yield* readPiCatalog(connection);
+      return yield* readPiCatalog(connection, "status");
     }),
   ).pipe(Effect.timeout(PI_CATALOG_PROBE_TIMEOUT_MS));
