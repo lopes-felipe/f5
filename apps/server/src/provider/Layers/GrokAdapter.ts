@@ -41,7 +41,12 @@ import {
 } from "../acp/AntigravityInteraction.ts";
 import type { InteractionOutcome, InteractionSession } from "../../mcp/interactionMcpTools.ts";
 import type { McpSessionStdioLaunch } from "../../mcp/sessionStdioShim.ts";
-import { watchAntigravityPromptOutcome } from "../acp/AntigravityTurnOutcome.ts";
+import {
+  ANTIGRAVITY_HARNESS_NOTICE,
+  type AntigravityTurnNotice,
+  parseAntigravityQuotaNotice,
+  watchAntigravityPromptOutcome,
+} from "../acp/AntigravityTurnOutcome.ts";
 import { readAntigravityChildrenAtWork } from "../acp/AntigravityChildWork.ts";
 import { PromptInactivityDeadline } from "../acp/PromptInactivityDeadline";
 import {
@@ -316,6 +321,11 @@ interface GrokSessionContext {
   readonly antigravityPlanArtifacts: AntigravityPlanArtifactTracker;
   /** Antigravity: a mode warning not yet published, kept until a turn starts. */
   antigravityPendingWarning: string | undefined;
+  /**
+   * Antigravity: the harness notice (`⚠ …`) the agent streamed as its latest update. Any later
+   * update clears it, so only a notice that ends the turn explains that turn's outcome.
+   */
+  antigravityTrailingNotice: (AntigravityTurnNotice & { readonly turnId: TurnId }) | undefined;
   /** Antigravity: private-format readers are certified for the runtime this session launched. */
   readonly antigravityNativeReaders: boolean;
   /** Antigravity: the launched runtime's step numbering was checked, so any error step fails. */
@@ -1749,6 +1759,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               PROVIDER === "antigravity" && input.workflowExecutionProfile !== undefined,
             antigravityPlanArtifacts: new AntigravityPlanArtifactTracker(brainRoots),
             antigravityPendingWarning: undefined,
+            antigravityTrailingNotice: undefined,
             antigravityNativeReaders,
             antigravityStepLayoutVerified:
               PROVIDER === "antigravity" &&
@@ -1789,6 +1800,21 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   event._tag === "AssistantItemStarted"
                 )
                   ctx.antigravityTasks.noteParentProgress();
+                // Only agent output after a notice clears it; usage or mode updates may follow it.
+                if (
+                  PROVIDER === "antigravity" &&
+                  (event._tag === "ContentDelta" ||
+                    event._tag === "ToolCallUpdated" ||
+                    event._tag === "PlanUpdated" ||
+                    event._tag === "AssistantItemStarted")
+                )
+                  ctx.antigravityTrailingNotice =
+                    event._tag === "ContentDelta" &&
+                    event.streamKind === undefined &&
+                    ctx.activeTurnId !== undefined &&
+                    ANTIGRAVITY_HARNESS_NOTICE.test(event.text)
+                      ? { turnId: ctx.activeTurnId, text: event.text, receivedAt: yield* nowIso }
+                      : undefined;
                 if (ctx.promptProgress.observe(event)) yield* firePendingAcceptance(ctx);
                 const computerCall =
                   event._tag === "ToolCallUpdated" && classifyAcpToolEvent(catalogs, event);
@@ -2353,6 +2379,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               ctx.currentModelId = currentModelId;
               const displayModel = currentModelId ? normalizeModel(currentModelId) : undefined;
               ctx.activeTurnId = turnId;
+              ctx.antigravityTrailingNotice = undefined;
               if (steeringTurnId === undefined) {
                 ctx.lastPlanFingerprint = undefined;
                 ctx.antigravityPlanArtifacts.reset();
@@ -2513,7 +2540,19 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 : Effect.void,
             ),
           );
-          const nativeFailure = checkOutcome ? yield* checkOutcome(result) : undefined;
+          // The notice arrives just before the prompt result; let the notification fiber see it.
+          if (PROVIDER === "antigravity") yield* prepared.acp.awaitEventBarrier;
+          const trailingNotice = prepared.context.antigravityTrailingNotice;
+          const notice =
+            trailingNotice?.turnId === prepared.turnId
+              ? { text: trailingNotice.text, receivedAt: trailingNotice.receivedAt }
+              : undefined;
+          // Without certified native readers the agent's own quota notice still explains the turn.
+          const nativeFailure = checkOutcome
+            ? yield* checkOutcome(result, notice)
+            : PROVIDER === "antigravity" && notice && result.stopReason === "end_turn"
+              ? parseAntigravityQuotaNotice(notice.text, notice.receivedAt)
+              : undefined;
           const nativeChildren = nativeProfileDirectory
             ? yield* readAntigravityChildrenAtWork({
                 profileDirectory: nativeProfileDirectory,
@@ -2647,8 +2686,12 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                             usageLimit: {
                               windows: [],
                               resetsAt: nativeFailure.resetAt ?? null,
-                              resetSource: nativeFailure.resetAt ? ("provider" as const) : null,
-                              evidence: "typed" as const,
+                              resetSource: nativeFailure.resetAt
+                                ? nativeFailure.evidence === "message"
+                                  ? ("message" as const)
+                                  : ("provider" as const)
+                                : null,
+                              evidence: nativeFailure.evidence ?? ("typed" as const),
                             },
                           }
                         : {}),

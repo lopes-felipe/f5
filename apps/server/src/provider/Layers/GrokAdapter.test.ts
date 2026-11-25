@@ -1326,6 +1326,59 @@ rootIt.layer(
     }).pipe(Effect.scoped),
   );
 
+  it.effect("fails a turn that ends on the agent's quota notice as a usage limit", () =>
+    Effect.gen(function* () {
+      const notice =
+        "\n⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 1h8m59s.\n";
+      const runTurn = (env: Record<string, string>, name: string) =>
+        Effect.gen(function* () {
+          const { adapter, events } = yield* antigravityProfileAdapter({ env });
+          const threadId = ThreadId.make(name);
+          yield* adapter.startSession({
+            threadId,
+            provider: "antigravity",
+            cwd: process.cwd(),
+            runtimeMode: "full-access",
+          });
+          yield* adapter.sendTurn({ threadId, input: "Implement it", attachments: [] });
+          yield* adapter.stopSession(threadId);
+          return {
+            errors: events.filter((event) => event.type === "runtime.error"),
+            completed: events.filter((event) => event.type === "turn.completed"),
+          };
+        });
+
+      // Usage frames after the notice are not agent output; the notice still ends the turn.
+      const limited = yield* runTurn(
+        { T3_ACP_PROMPT_RESPONSE_TEXT: notice, F5_ACP_USAGE_FRAMES: "1" },
+        "agy-quota-notice",
+      );
+      assert.equal(limited.errors.length, 1);
+      const payload = limited.errors[0]?.payload as {
+        message?: string;
+        usageLimit?: { resetsAt: string | null; resetSource: string | null; evidence: string };
+      };
+      assert.equal(payload.message, "You have reached your Antigravity quota for this period.");
+      assert.isString(payload.usageLimit?.resetsAt);
+      assert.equal(payload.usageLimit?.resetSource, "message");
+      assert.equal(payload.usageLimit?.evidence, "message");
+      assert.equal(
+        (limited.completed.at(-1)?.payload as { state?: string } | undefined)?.state,
+        "failed",
+      );
+
+      // Agent output after the notice means the notice did not end the turn.
+      const continued = yield* runTurn(
+        { T3_ACP_PROMPT_RESPONSE_TEXT: notice, F5_ACP_TRAILING_TOOL_CALL: "1" },
+        "agy-quota-notice-continued",
+      );
+      assert.equal(continued.errors.length, 0);
+      assert.equal(
+        (continued.completed.at(-1)?.payload as { state?: string } | undefined)?.state,
+        "completed",
+      );
+    }).pipe(Effect.scoped),
+  );
   it.effect("scrubs the configured Gemini key from client events", () =>
     Effect.gen(function* () {
       const key = "AIzaSyEchoedFixtureKey00000000";

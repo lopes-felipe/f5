@@ -1293,6 +1293,19 @@ const program = Effect.gen(function* () {
           content: { type: "text", text: promptResponseText ?? "hello from mock" },
         },
       });
+      // Agent output after the response text, so it no longer ends the turn.
+      if (process.env.F5_ACP_TRAILING_TOOL_CALL === "1")
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "trailing-tool",
+            title: "Read file",
+            kind: "read",
+            status: "completed",
+            rawInput: { path: "README.md" },
+          },
+        });
 
       if (emitUsageFrames) {
         usageUsed += 1200;
