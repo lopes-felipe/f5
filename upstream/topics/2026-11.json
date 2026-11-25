@@ -59052,11 +59052,23 @@
     },
     {
       "createdAt": "2026-11-12T11:14:04.510Z",
-      "decidedAt": "2026-11-25T22:16:10.877Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-25T22:20:34.206Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/web/src/components/sidebar/SidebarThreadRow.tsx:322",
+          "apps/web/src/components/sidebar/SidebarThreadRow.tsx:342",
+          "apps/web/src/components/sidebar/SidebarThreadRow.tsx:548",
+          "apps/web/src/components/sidebar/useSidebarThreadActions.ts:452"
+        ],
+        "f5Refs": [
+          "21dc05d5a7b42cef176a88ff312ea1da0f920a99"
+        ]
+      },
       "id": "pr-34929",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "sidebar",
