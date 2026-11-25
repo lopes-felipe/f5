@@ -1,7 +1,9 @@
 import {
+  KNOWN_PROVIDER_KINDS,
   ProviderDriverKind,
   type ModelCapabilities,
   type ProjectId,
+  type ProviderInstanceId,
   type ProviderKind,
   type ProviderModelOptions,
   type ServerProvider,
@@ -20,7 +22,9 @@ import {
 } from "../../modelPreferencesStore";
 import { getWorkflowModelCapabilities } from "../../providerModels";
 import { resolveProviderOptionsForDispatch } from "../../providerOptionsForDispatch";
-import { resolveComposerPickerModel } from "../ChatView.logic";
+import { workflowProviderSnapshot } from "@t3tools/shared/workflowProviders";
+import { mapProviderKinds, resolveComposerPickerModel } from "../ChatView.logic";
+import type { ModelPickerModelOption } from "../chat/providerIconUtils";
 
 export function normalizeWorkflowSlotModelOptions(
   provider: ProviderKind,
@@ -56,9 +60,42 @@ export function getSingleProviderModelOptions(
     case "antigravity":
       // Keeps a Gemini row's thinking level.
       return modelOptions?.antigravity ? { antigravity: modelOptions.antigravity } : undefined;
-    default:
+    case "muse":
+      return modelOptions?.muse ? { muse: modelOptions.muse } : undefined;
+    case "pi":
+      return modelOptions?.pi ? { pi: modelOptions.pi } : undefined;
+    case "grok":
+    case "acp":
+      // No per-model options exist for these providers.
       return undefined;
   }
+}
+
+/**
+ * The provider snapshots a workflow slot picker lists: per driver, only the instance workflow
+ * dispatch resolves a slot to (`workflowProviderSnapshot`), since slots store a driver kind.
+ */
+export function workflowPickerProviders(
+  providers: ReadonlyArray<ServerProvider>,
+): ReadonlyArray<ServerProvider> {
+  const picked = new Set(
+    KNOWN_PROVIDER_KINDS.flatMap((kind) => {
+      const snapshot = workflowProviderSnapshot(kind, providers);
+      return snapshot ? [snapshot] : [];
+    }),
+  );
+  return providers.filter((provider) => picked.has(provider));
+}
+
+/** Driver-keyed picker options for workflow slots, read from the instance each slot runs on. */
+export function workflowModelOptionsByProvider(
+  modelOptionsByInstance: ReadonlyMap<ProviderInstanceId, ReadonlyArray<ModelPickerModelOption>>,
+  providers: ReadonlyArray<ServerProvider>,
+): Record<ProviderKind, ReadonlyArray<ModelPickerModelOption>> {
+  return mapProviderKinds((kind) => {
+    const snapshot = workflowProviderSnapshot(kind, providers);
+    return (snapshot && modelOptionsByInstance.get(snapshot.instanceId)) ?? [];
+  });
 }
 
 type ModelOptionsByProvider = Record<

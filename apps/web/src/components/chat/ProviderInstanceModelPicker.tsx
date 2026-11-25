@@ -154,6 +154,11 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
   onToggleModel?:
     | ((instanceId: ProviderInstanceId, driver: ProviderDriverKind, model: ModelSlug) => void)
     | undefined;
+  /**
+   * Extra reason an available instance cannot be picked here (for example a workflow
+   * restriction). Its rows stay listed, disabled with the reason, and it stays in the rail.
+   */
+  instanceUnavailableReason?: ((instance: ProviderInstanceEntry) => string | null) | undefined;
 }) {
   const settings = useSettings(selectFavoriteSettings);
   const { updateSettings } = useUpdateSettings();
@@ -406,8 +411,11 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
     if (props.disabled && isOpen) setOpen(false);
   }, [isOpen, props.disabled, setOpen]);
 
+  const rowUnavailableReason = (instance: ProviderInstanceEntry): string | null =>
+    unavailableReason(instance) ?? props.instanceUnavailableReason?.(instance) ?? null;
+
   const selectModel = (item: InstanceModelItem, additive = false) => {
-    if (props.disabled || !isSelectableProviderInstance(item.instance)) return;
+    if (props.disabled || rowUnavailableReason(item.instance) !== null) return;
     const resolved = resolveSelectableModel(
       item.instance.driverKind,
       item.slug,
@@ -657,7 +665,7 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
                           const isFavorite = favoriteKeys.has(
                             modelKey(item.instance.instanceId, item.slug),
                           );
-                          const reason = unavailableReason(item.instance);
+                          const reason = rowUnavailableReason(item.instance);
                           const Icon = PROVIDER_ICON_BY_PROVIDER[item.instance.driverKind];
                           const jumpLabel = jumpLabelByItem.get(item) ?? null;
                           const presetEffort = item.preset?.effort;

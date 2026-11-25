@@ -1,5 +1,6 @@
 import {
   defaultInstanceIdForDriver,
+  KNOWN_PROVIDER_KINDS,
   MessageId,
   EventId,
   ProjectId,
@@ -26,6 +27,7 @@ import {
   createCachedAbsolutePathComparisonNormalizer,
   deriveComposerSendState,
   deriveProviderRuntimeInfoEntries,
+  getComposerModelOptionsByInstance,
   getCustomModelOptionsByProvider,
   getProviderDispatchModelsByProvider,
   identityAbsolutePathNormalizer,
@@ -221,6 +223,60 @@ function provider(input: {
 }
 
 describe("getCustomModelOptionsByProvider", () => {
+  const emptyAppSettings = {
+    customCodexModels: [],
+    customClaudeModels: [],
+    customGrokModels: [],
+    providerModelPreferences: {},
+  };
+
+  it("has an entry for every provider kind, including Antigravity's live models", () => {
+    const options = getCustomModelOptionsByProvider(emptyAppSettings, [
+      provider({
+        provider: "antigravity",
+        models: [
+          { slug: "gemini-4-neon", name: "Gemini 4 Neon" },
+          { slug: "gemini-4-carbon", name: "Gemini 4 Carbon" },
+        ],
+      }),
+    ]);
+
+    expect(Object.keys(options).toSorted()).toEqual([...KNOWN_PROVIDER_KINDS].toSorted());
+    expect(options.antigravity.map((option) => option.slug).toSorted()).toEqual([
+      "gemini-4-carbon",
+      "gemini-4-neon",
+    ]);
+  });
+
+  it("builds composer picker options per instance with legacy custom models on the default", () => {
+    const providers = [
+      provider({
+        provider: "codex",
+        models: [{ slug: "gpt-5-codex", name: "GPT-5 Codex" }],
+      }),
+      provider({
+        provider: "antigravity",
+        models: [{ slug: "gemini-4-neon", name: "Gemini 4 Neon" }],
+      }),
+    ];
+    const byInstance = getComposerModelOptionsByInstance(
+      { ...emptyAppSettings, customCodexModels: ["my-codex-model"] },
+      DEFAULT_UNIFIED_SETTINGS,
+      providers,
+    );
+
+    expect(
+      byInstance
+        .get(defaultInstanceIdForDriver(ProviderDriverKind.make("codex")))
+        ?.map((option) => option.slug),
+    ).toEqual(["gpt-5-codex", "my-codex-model"]);
+    expect(
+      byInstance
+        .get(defaultInstanceIdForDriver(ProviderDriverKind.make("antigravity")))
+        ?.map((option) => option.slug),
+    ).toEqual(["gemini-4-neon"]);
+  });
+
   it("keeps hidden runtime models available for non-picker dispatch settings", () => {
     const providers = [
       provider({

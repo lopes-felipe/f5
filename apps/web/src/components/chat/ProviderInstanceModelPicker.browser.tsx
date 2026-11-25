@@ -434,3 +434,40 @@ it("keeps selected and fan-out unlisted models visible and reacts while open", a
   await active.rerender(picker("listed"));
   await expect.element(page.getByText("Retired Model", { exact: true })).toBeVisible();
 });
+
+it("keeps an instance blocked by the caller in the rail with its rows disabled", async () => {
+  const isMac = /Mac/u.test(navigator.platform);
+  const onChange = vi.fn();
+  const reason = "Not allowed for this workflow stage.";
+  active = await render(
+    <TooltipProvider delay={0}>
+      <ProviderInstanceModelPicker
+        instanceId={CODEX_ID}
+        model={"gpt-5.6-sol" as ModelSlug}
+        lockedInstanceId={null}
+        providers={PROVIDERS}
+        modelOptionsByInstance={MODELS}
+        keybindings={DEFAULT_RESOLVED_KEYBINDINGS}
+        instanceUnavailableReason={(instance) =>
+          instance.instanceId === CLAUDE_ID ? reason : null
+        }
+        onInstanceModelChange={onChange}
+      />
+    </TooltipProvider>,
+  );
+  await page.getByRole("button", { name: /GPT-5.6 Sol/ }).click();
+  await page.getByRole("button", { name: "Claude", exact: true }).click();
+
+  const claudeRow = () =>
+    [...document.querySelectorAll<HTMLElement>("[data-model-picker-row]")].find((row) =>
+      row.textContent?.includes("Claude Sonnet 4.6"),
+    );
+  await expect.poll(() => claudeRow()?.textContent ?? "").toContain(reason);
+  const select = claudeRow()!.querySelectorAll("button")[1]!;
+  expect(select.disabled).toBe(true);
+
+  select.click();
+  await userEvent.keyboard("{Enter}");
+  await userEvent.keyboard(isMac ? "{Meta>}1{/Meta}" : "{Control>}1{/Control}");
+  expect(onChange).not.toHaveBeenCalled();
+});

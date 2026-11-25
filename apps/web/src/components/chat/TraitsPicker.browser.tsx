@@ -102,6 +102,38 @@ describe("TraitsPicker", () => {
     expect(document.querySelectorAll("[data-effort-filled]")).toHaveLength(0);
   });
 
+  it("hides prompt-keyword efforts when asked and drops a stored one", async () => {
+    const promptEffort: ProviderOptionDescriptor = {
+      id: "effort",
+      label: "Effort",
+      type: "select",
+      options: [
+        { id: "low", label: "Low" },
+        { id: "high", label: "High", isDefault: true },
+        { id: "ultrathink", label: "Ultrathink" },
+      ],
+      promptInjectedValues: ["ultrathink"],
+    };
+    mounted = await render(
+      <TraitsPicker
+        provider={PROVIDER}
+        models={modelsWith([promptEffort])}
+        model={MODEL}
+        modelOptions={[{ id: "effort", value: "ultrathink" }]}
+        hidePromptInjectedOptions
+        onModelOptionsChange={() => {}}
+      />,
+    );
+
+    // A stored keyword effort falls back to the default instead of showing.
+    await expect.element(page.getByRole("button")).toHaveTextContent("High");
+    await page.getByRole("button").click();
+    await vi.waitFor(() => {
+      expect(page.getByRole("menuitemradio").elements().length).toBe(2);
+    });
+    expect(document.body.textContent ?? "").not.toContain("Ultrathink");
+  });
+
   it("tints the trigger only when asked, as the composer does", async () => {
     mounted = await render(<PickerHarness models={modelsWith([KNOWN_EFFORT])} />);
     const trigger = page.getByRole("button");

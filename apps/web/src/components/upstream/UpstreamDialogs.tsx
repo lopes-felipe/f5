@@ -19,7 +19,6 @@ import { useEffect, useState } from "react";
 
 import { useSettings } from "../../hooks/useSettings";
 import { getModelPreferences } from "../../modelPreferencesStore";
-import { getCustomModelOptionsByInstance } from "../../modelSelection";
 import { useStore } from "../../store";
 import { isReadyProvider, pickedModelSelection, resolveNewThreadModelSelection } from "../chat/newThreadModelSelection";
 import { ProviderInstanceModelPicker } from "../chat/ProviderInstanceModelPicker";
@@ -48,8 +47,8 @@ import {
 } from "../ui/select";
 import { Textarea } from "../ui/textarea";
 import { portLimitError } from "./upstreamPage.logic";
-import { getCustomModelOptionsByProvider, getProviderDispatchModelsByProvider } from "../ChatView.logic";
-import { makeWorkflowSlotBuilder } from "../workflow/workflowSlots";
+import { getComposerModelOptionsByInstance, getProviderDispatchModelsByProvider } from "../ChatView.logic";
+import { makeWorkflowSlotBuilder, workflowModelOptionsByProvider } from "../workflow/workflowSlots";
 import { PortReviewOptions, portReviewDefaults, portReviewOptionsError } from "./PortReviewOptions";
 import { ensureNativeApi } from "../../nativeApi";
 
@@ -257,7 +256,9 @@ export function StartPortDialog(props: {
   const settings = useSettings(undefined, props.projectId);
   const project = useStore((s) => s.projects.find((p) => p.id === props.projectId));
   const providers = projectProviderSnapshots(props.providers, settings, props.projectId);
-  const reviewModels = getCustomModelOptionsByProvider(settings, providers);
+  // The composer's picker options, shared by the port model and the review slots.
+  const modelOptionsByInstance = getComposerModelOptionsByInstance(settings, settings, providers);
+  const reviewModels = workflowModelOptionsByProvider(modelOptionsByInstance, providers);
   const [reviewOptions, setReviewOptions] = useState(() => portReviewDefaults(props.savedReview, reviewModels, providers));
   const [lockedReview, setLockedReview] = useState<{
     review: UpstreamPortReviewRequest | null; reviewPreference: UpstreamPortReviewSettings;
@@ -472,7 +473,7 @@ export function StartPortDialog(props: {
                 model={modelSelection.model}
                 lockedInstanceId={null}
                 providers={providers}
-                modelOptionsByInstance={getCustomModelOptionsByInstance(settings, providers)}
+                modelOptionsByInstance={modelOptionsByInstance}
                 disabled={locked}
                 onInstanceModelChange={(instanceId, pickedDriver, model) =>
                   setModelSelection(pickedModelSelection(providers, instanceId, pickedDriver, model))
@@ -500,6 +501,7 @@ export function StartPortDialog(props: {
             </div>
           </div>
           <PortReviewOptions value={reviewOptions} providers={providers} modelOptionsByProvider={reviewModels}
+            modelOptionsByInstance={modelOptionsByInstance}
             locked={locked || !reviewHydrated} onChange={setReviewOptions} />
           {!reviewHydrated && <p role="status">Loading review preferences…</p>}
           {props.reviewSettingsError && <p role="status">Could not load saved review preferences. Check the review options before starting.</p>}

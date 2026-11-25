@@ -55,49 +55,73 @@ export function supportsClaudeTraitsControls(input: ClaudeTraitsInput): boolean 
   });
 }
 
-function ClaudeTraitsMenuContentImpl(props: {
-  threadId: ThreadId;
-  model: string | null | undefined;
-  models: ReadonlyArray<ServerProviderModel>;
-  modelOptions?: ReadonlyArray<ProviderOptionSelection> | null | undefined;
-}) {
+/**
+ * Where the Claude traits live: a composer thread draft, or a controlled value (workflow
+ * slots) whose owner records the change itself.
+ */
+type ClaudeTraitsBinding =
+  | { threadId: ThreadId; onModelOptionsChange?: never }
+  | {
+      threadId?: undefined;
+      onModelOptionsChange: (next: ReadonlyArray<ProviderOptionSelection> | undefined) => void;
+    };
+
+type ClaudeTraitsProps = ClaudeTraitsInput &
+  ClaudeTraitsBinding & {
+    /** Hide prompt-keyword efforts (Ultrathink) where no composer prompt is sent. */
+    hidePromptInjectedOptions?: boolean | undefined;
+  };
+
+function ClaudeTraitsMenuContentImpl(props: ClaudeTraitsProps) {
   if (!supportsClaudeTraitsControls(props)) {
     return null;
   }
+  const modelOptions = withComposerModelDefaults(
+    getProviderModelCapabilities(props.models, props.model, CLAUDE_PROVIDER),
+    props.modelOptions,
+  );
 
-  return (
+  return props.onModelOptionsChange ? (
     <DescriptorTraitsMenuContent
       provider={CLAUDE_PROVIDER}
-      draftId={props.threadId}
+      onModelOptionsChange={props.onModelOptionsChange}
       model={props.model}
       models={props.models}
-      modelOptions={withComposerModelDefaults(
-        getProviderModelCapabilities(props.models, props.model, CLAUDE_PROVIDER),
-        props.modelOptions,
-      )}
+      modelOptions={modelOptions}
+      hidePromptInjectedOptions={props.hidePromptInjectedOptions}
+    />
+  ) : (
+    <DescriptorTraitsMenuContent
+      provider={CLAUDE_PROVIDER}
+      {...(props.threadId ? { draftId: props.threadId } : {})}
+      model={props.model}
+      models={props.models}
+      modelOptions={modelOptions}
+      hidePromptInjectedOptions={props.hidePromptInjectedOptions}
     />
   );
 }
 
 const ClaudeTraitsMenuContent = memo(ClaudeTraitsMenuContentImpl);
 
-export const ClaudeTraitsPicker = memo(function ClaudeTraitsPicker(props: {
-  threadId: ThreadId;
-  model: string | null | undefined;
-  models: ReadonlyArray<ServerProviderModel>;
-  modelOptions?: ReadonlyArray<ProviderOptionSelection> | null | undefined;
-}) {
+export const ClaudeTraitsPicker = memo(function ClaudeTraitsPicker(
+  props: ClaudeTraitsProps & {
+    disabled?: boolean | undefined;
+    triggerClassName?: string | undefined;
+  },
+) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   if (!supportsClaudeTraitsControls(props)) {
     return null;
   }
   const trigger = getClaudeTriggerPresentation(props);
+  const { disabled, triggerClassName, ...menuProps } = props;
 
   return (
     <Menu
-      open={isMenuOpen}
+      open={isMenuOpen && !disabled}
       onOpenChange={(open) => {
-        setIsMenuOpen(open);
+        setIsMenuOpen(open && !disabled);
       }}
     >
       <MenuTrigger
@@ -107,7 +131,12 @@ export const ClaudeTraitsPicker = memo(function ClaudeTraitsPicker(props: {
           <Button
             size="sm"
             variant="ghost"
-            className={cn(COMPOSER_CHIP_CLASS_NAME, trigger.effortTint?.className)}
+            disabled={disabled}
+            className={cn(
+              COMPOSER_CHIP_CLASS_NAME,
+              trigger.effortTint?.className,
+              triggerClassName,
+            )}
           />
         }
       >
@@ -116,12 +145,7 @@ export const ClaudeTraitsPicker = memo(function ClaudeTraitsPicker(props: {
         <ChevronDownIcon aria-hidden="true" className="size-3 opacity-60" />
       </MenuTrigger>
       <MenuPopup align="start">
-        <ClaudeTraitsMenuContent
-          threadId={props.threadId}
-          model={props.model}
-          models={props.models}
-          modelOptions={props.modelOptions}
-        />
+        <ClaudeTraitsMenuContent {...menuProps} />
       </MenuPopup>
     </Menu>
   );

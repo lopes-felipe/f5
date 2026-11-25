@@ -76,17 +76,43 @@ function getDescriptorStringValue(
   return typeof value === "string" ? value : null;
 }
 
+/**
+ * Drops select options that only work by injecting a keyword into the prompt (Claude
+ * `ultrathink`), for surfaces that send no composer prompt. A current value among them falls
+ * back to the descriptor default.
+ */
+function omitPromptInjectedOptions(
+  descriptors: ReadonlyArray<ProviderOptionDescriptor>,
+): ReadonlyArray<ProviderOptionDescriptor> {
+  return descriptors.map((descriptor) => {
+    if (descriptor.type !== "select" || !descriptor.promptInjectedValues?.length) {
+      return descriptor;
+    }
+    const injected = new Set(descriptor.promptInjectedValues);
+    const { currentValue, promptInjectedValues: _promptInjectedValues, ...rest } = descriptor;
+    return {
+      ...rest,
+      options: descriptor.options.filter((option) => !injected.has(option.id)),
+      ...(currentValue !== undefined && !injected.has(currentValue) ? { currentValue } : {}),
+    };
+  });
+}
+
 function getSelectedTraits(
   provider: ProviderDriverKind,
   models: ReadonlyArray<ServerProviderModel>,
   model: string | null | undefined,
   modelOptions: ProviderOptions | null | undefined,
+  hidePromptInjectedOptions = false,
 ) {
   const caps = getProviderModelCapabilities(models, model, provider);
-  const descriptors = getProviderOptionDescriptors({
+  const allDescriptors = getProviderOptionDescriptors({
     caps,
     selections: modelOptions,
   });
+  const descriptors = hidePromptInjectedOptions
+    ? omitPromptInjectedOptions(allDescriptors)
+    : allDescriptors;
   const selectDescriptors = descriptors.filter(
     (descriptor): descriptor is Extract<ProviderOptionDescriptor, { type: "select" }> =>
       descriptor.type === "select",
@@ -139,8 +165,15 @@ function getTraitsSectionVisibility(input: {
   models: ReadonlyArray<ServerProviderModel>;
   model: string | null | undefined;
   modelOptions: ProviderOptions | null | undefined;
+  hidePromptInjectedOptions?: boolean | undefined;
 }) {
-  const selected = getSelectedTraits(input.provider, input.models, input.model, input.modelOptions);
+  const selected = getSelectedTraits(
+    input.provider,
+    input.models,
+    input.model,
+    input.modelOptions,
+    input.hidePromptInjectedOptions,
+  );
 
   const showEffort = selected.primarySelectDescriptor !== null;
   const showThinking = selected.thinkingDescriptor !== null;
@@ -164,6 +197,7 @@ export function shouldRenderTraitsControls(input: {
   models: ReadonlyArray<ServerProviderModel>;
   model: string | null | undefined;
   modelOptions: ProviderOptions | null | undefined;
+  hidePromptInjectedOptions?: boolean | undefined;
 }): boolean {
   return getTraitsSectionVisibility(input).hasAnyControls;
 }
@@ -177,6 +211,11 @@ export interface TraitsMenuContentProps {
   triggerClassName?: string;
   /** Tint the trigger in the selected effort's colour (composer chips only). */
   tintTrigger?: boolean;
+  /**
+   * Hide options that only work by injecting a keyword into the composer prompt (Claude
+   * Ultrathink), for surfaces such as workflow slots that send no composer prompt.
+   */
+  hidePromptInjectedOptions?: boolean | undefined;
 }
 
 export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
@@ -184,6 +223,7 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
   models,
   model,
   modelOptions,
+  hidePromptInjectedOptions,
   ...persistence
 }: TraitsMenuContentProps & TraitsPersistence) {
   const setProviderModelOptions = useComposerDraftStore((store) => store.setProviderModelOptions);
@@ -210,6 +250,7 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
       models,
       model,
       modelOptions,
+      hidePromptInjectedOptions,
     });
   const updateDescriptors = (nextDescriptors: ReadonlyArray<ProviderOptionDescriptor>) => {
     updateModelOptions(buildProviderOptionSelectionsFromDescriptors(nextDescriptors));
@@ -288,23 +329,18 @@ export const TraitsPicker = memo(function TraitsPicker({
   triggerClassName,
   tintTrigger = false,
   disabled = false,
+  hidePromptInjectedOptions,
   ...persistence
 }: TraitsMenuContentProps & TraitsPersistence & { disabled?: boolean }) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const { caps, descriptors } = getTraitsSectionVisibility({
+  const { caps, descriptors, hasAnyControls } = getTraitsSectionVisibility({
     provider,
     models,
     model,
     modelOptions,
+    hidePromptInjectedOptions,
   });
-  if (
-    !shouldRenderTraitsControls({
-      provider,
-      models,
-      model,
-      modelOptions,
-    })
-  ) {
+  if (!hasAnyControls) {
     return null;
   }
 
@@ -360,6 +396,7 @@ export const TraitsPicker = memo(function TraitsPicker({
           models={models}
           model={model}
           modelOptions={modelOptions}
+          hidePromptInjectedOptions={hidePromptInjectedOptions}
           {...persistence}
         />
       </MenuPopup>

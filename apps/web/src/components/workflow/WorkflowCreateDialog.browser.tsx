@@ -1,10 +1,12 @@
 import { useState } from "react";
 import type { ProviderModelOptions } from "@t3tools/contracts";
+import { READ_ONLY_WORKFLOW_UNCERTIFIED_ANTIGRAVITY_MESSAGE } from "@t3tools/shared/workflowProviders";
 import {
+  createClaudeModelCapabilities,
+  createModelCapabilities,
   createReportedClaudeModelCapabilities,
   createReportedCodexModelCapabilities,
 } from "@t3tools/shared/model";
-import { WorkflowReasoningPicker } from "./SlotRow";
 import "../../index.css";
 
 import type { ReactElement } from "react";
@@ -22,6 +24,7 @@ import {
   OrchestrationCreateWorkflowInput,
   ProjectId,
   ProviderDriverKind,
+  type ProviderInstanceId,
   ResolvedKeybindingsConfig,
   ServerProvider,
   WorkflowPlatformCreateRunInput,
@@ -260,33 +263,126 @@ function findProviderFieldButton(labelText: string): HTMLButtonElement {
   return button;
 }
 
-function findMenuItemRadio(text: string): HTMLElement | null {
-  return (
-    Array.from(
-      document.querySelectorAll<HTMLElement>(
-        '[role="menuitemradio"], [role="option"], [data-slot="combobox-item"]',
-      ),
-    ).find(
-      (element) =>
-        element.getAttribute("aria-label") === text || element.textContent?.trim() === text,
-    ) ?? null
+/** The select button of a model picker row whose display name is `name`. */
+function findModelRow(name: string): HTMLButtonElement | null {
+  for (const row of document.querySelectorAll<HTMLElement>("[data-model-picker-row]")) {
+    const select = row.querySelectorAll<HTMLButtonElement>("button")[1];
+    if (select?.querySelector(".truncate")?.textContent?.trim() === name) return select;
+  }
+  return null;
+}
+
+/** The model picker rail entry for a provider's default instance. */
+function findRailInstance(provider: string): HTMLElement | null {
+  return document.querySelector<HTMLElement>(
+    `[data-model-picker-provider="instance:${defaultInstanceIdForDriver(ProviderDriverKind.make(provider))}"]`,
   );
 }
 
-function findMenuItem(text: string): HTMLElement | null {
-  if (text === "Claude") {
-    const providerButton = document.querySelector<HTMLElement>(
-      '[data-model-picker-provider="claudeAgent"]',
-    );
-    if (providerButton) {
-      return providerButton;
-    }
-  }
-  return (
-    Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find(
-      (element) => element.textContent?.trim() === text,
-    ) ?? null
+function providerSnapshot(
+  provider: string,
+  models: ReadonlyArray<{
+    slug: string;
+    name: string;
+    capabilities?: ServerProvider["models"][number]["capabilities"];
+  }>,
+  overrides: Partial<ServerProvider> = {},
+): ServerProvider {
+  const driver = ProviderDriverKind.make(provider);
+  return {
+    instanceId: defaultInstanceIdForDriver(driver),
+    driver,
+    enabled: true,
+    installed: true,
+    version: "1.0.0",
+    status: "ready",
+    auth: { status: "authenticated" },
+    checkedAt: "2026-07-28T00:00:00.000Z",
+    models: models.map((model) => ({
+      slug: model.slug,
+      name: model.name,
+      isCustom: false,
+      capabilities: model.capabilities ?? null,
+    })),
+    slashCommands: [],
+    skills: [],
+    ...overrides,
+  };
+}
+
+const EMPTY_MODEL_OPTIONS_BY_INSTANCE = new Map<ProviderInstanceId, never[]>();
+
+/** An Antigravity snapshot whose Gemini row has a thinking level, as the live runtime reports. */
+function antigravityProvider(readOnlyWorkflowTurns: boolean): ServerProvider {
+  return providerSnapshot(
+    "antigravity",
+    [
+      {
+        slug: "gemini-4-neon",
+        name: "Gemini 4 Neon",
+        capabilities: createModelCapabilities({
+          optionDescriptors: [
+            {
+              id: "thinking",
+              label: "Thinking",
+              type: "select",
+              options: [
+                { id: "low", label: "Low" },
+                { id: "high", label: "High", isDefault: true },
+              ],
+            },
+          ],
+        }),
+      },
+    ],
+    {
+      displayName: "Antigravity",
+      runtimeCapabilities: {
+        nativeReview: false,
+        nativeCompaction: false,
+        nativeFork: false,
+        nativeGoals: false,
+        nativeAttachments: false,
+        childTaskInspection: false,
+        childTaskStop: false,
+        fileCheckpointing: false,
+        turnSteering: true,
+        conversationRollback: false,
+        rollbackAffectsFiles: false,
+        rollbackReadback: false,
+        asyncQuestions: false,
+        maxImagesPerTurn: 20,
+        reportedModels: true,
+        sessionCommandCatalog: true,
+        instanceInventory: false,
+        nativeSessionCleanup: false,
+        readOnlyWorkflowTurns,
+      },
+    },
   );
+}
+
+const CODEX_EFFORT_BY_LABEL: Record<string, string> = {
+  Low: "low",
+  Medium: "medium",
+  High: "high",
+  "Extra High": "xhigh",
+  Max: "max",
+  Ultra: "ultra",
+};
+
+/** Codex and Claude snapshots with the models the dialog tests pick from. */
+function defaultTestProviders(): ServerProvider[] {
+  return [
+    providerSnapshot("codex", [
+      { slug: "gpt-5-codex", name: "GPT-5 Codex" },
+      { slug: "gpt-5.4", name: "GPT-5.4" },
+    ]),
+    providerSnapshot("claudeAgent", [
+      { slug: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
+      { slug: "claude-opus-4-7", name: "Claude Opus 4.7" },
+    ]),
+  ];
 }
 
 async function seedModelPreferences(state: {
@@ -424,23 +520,13 @@ describe("WorkflowCreateDialog", () => {
     const host = document.createElement("div");
     document.body.append(host);
     const onModelOptionsChange = vi.fn();
-    const screen = await render(
+    const screen = await renderWithQueryClient(
       <SlotRow
         label="Branch A"
         provider="codex"
         model="gpt-5-codex"
         modelOptions={{ codex: { reasoningEffort: "high" } }}
-        modelOptionsByProvider={{
-          codex: [{ slug: "gpt-5-codex", name: "GPT-5 Codex" }],
-          claudeAgent: [{ slug: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" }],
-          cursor: [{ slug: "auto", name: "Auto" }],
-          opencode: [{ slug: "openai/gpt-5", name: "OpenAI GPT-5" }],
-          grok: [{ slug: "grok-build", name: "Grok Build" }],
-          antigravity: [],
-          muse: [],
-          acp: [],
-          pi: [],
-        }}
+        modelOptionsByInstance={EMPTY_MODEL_OPTIONS_BY_INSTANCE}
         onProviderModelChange={() => {}}
         onModelOptionsChange={onModelOptionsChange}
       />,
@@ -454,7 +540,7 @@ describe("WorkflowCreateDialog", () => {
         expect(document.body.textContent ?? "").toContain("Extra High");
       });
 
-      await page.getByRole("menuitemradio", { name: "Medium" }).click();
+      await page.getByRole("menuitemradio", { name: /^Medium/ }).click();
 
       await vi.waitFor(() => {
         expect(document.body.textContent ?? "").not.toContain("Extra High");
@@ -470,27 +556,16 @@ describe("WorkflowCreateDialog", () => {
   });
 
   it("divides the model and effort pickers only when reasoning controls render", async () => {
-    const modelOptionsByProvider = {
-      codex: [{ slug: "gpt-5-codex", name: "GPT-5 Codex" }],
-      claudeAgent: [{ slug: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" }],
-      cursor: [{ slug: "auto", name: "Auto" }],
-      opencode: [{ slug: "openai/gpt-5", name: "OpenAI GPT-5" }],
-      grok: [{ slug: "grok-build", name: "Grok Build" }],
-      antigravity: [],
-      muse: [],
-      acp: [],
-      pi: [],
-    };
     const host = document.createElement("div");
     document.body.append(host);
-    const screen = await render(
+    const screen = await renderWithQueryClient(
       <>
         <SlotRow
           label="With reasoning"
           provider="codex"
           model="gpt-5-codex"
           modelOptions={{ codex: { reasoningEffort: "high" } }}
-          modelOptionsByProvider={modelOptionsByProvider}
+          modelOptionsByInstance={EMPTY_MODEL_OPTIONS_BY_INSTANCE}
           onProviderModelChange={() => {}}
           onModelOptionsChange={() => {}}
         />
@@ -499,7 +574,7 @@ describe("WorkflowCreateDialog", () => {
           provider="cursor"
           model="auto"
           modelOptions={undefined}
-          modelOptionsByProvider={modelOptionsByProvider}
+          modelOptionsByInstance={EMPTY_MODEL_OPTIONS_BY_INSTANCE}
           onProviderModelChange={() => {}}
           onModelOptionsChange={() => {}}
         />
@@ -524,23 +599,13 @@ describe("WorkflowCreateDialog", () => {
     const host = document.createElement("div");
     document.body.append(host);
     const onModelOptionsChange = vi.fn();
-    const screen = await render(
+    const screen = await renderWithQueryClient(
       <SlotRow
         label="Branch A"
         provider="codex"
         model="gpt-6-astra"
         modelOptions={{ codex: { reasoningEffort: "ultra" } }}
-        modelOptionsByProvider={{
-          codex: [{ slug: "gpt-6-astra", name: "GPT-6 Astra" }],
-          claudeAgent: [{ slug: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" }],
-          cursor: [{ slug: "auto", name: "Auto" }],
-          opencode: [{ slug: "openai/gpt-5", name: "OpenAI GPT-5" }],
-          grok: [{ slug: "grok-build", name: "Grok Build" }],
-          antigravity: [],
-          muse: [],
-          acp: [],
-          pi: [],
-        }}
+        modelOptionsByInstance={EMPTY_MODEL_OPTIONS_BY_INSTANCE}
         onProviderModelChange={() => {}}
         onModelOptionsChange={onModelOptionsChange}
       />,
@@ -552,7 +617,7 @@ describe("WorkflowCreateDialog", () => {
       await vi.waitFor(() => {
         expect(document.body.textContent ?? "").not.toContain("Ultra");
       });
-      await page.getByRole("menuitemradio", { name: "Max" }).click();
+      await page.getByRole("menuitemradio", { name: /^Max/ }).click();
       expect(onModelOptionsChange).toHaveBeenCalledWith({
         codex: { reasoningEffort: "max" },
       });
@@ -566,23 +631,22 @@ describe("WorkflowCreateDialog", () => {
     const host = document.createElement("div");
     document.body.append(host);
     const onModelOptionsChange = vi.fn();
-    const screen = await render(
+    const screen = await renderWithQueryClient(
       <SlotRow
         label="Branch A"
         provider="claudeAgent"
         model="claude-opus-4-7"
         modelOptions={undefined}
-        modelOptionsByProvider={{
-          codex: [{ slug: "gpt-5-codex", name: "GPT-5 Codex" }],
-          claudeAgent: [{ slug: "claude-opus-4-7", name: "Claude Opus 4.7" }],
-          cursor: [{ slug: "auto", name: "Auto" }],
-          opencode: [{ slug: "openai/gpt-5", name: "OpenAI GPT-5" }],
-          grok: [{ slug: "grok-build", name: "Grok Build" }],
-          antigravity: [],
-          muse: [],
-          acp: [],
-          pi: [],
-        }}
+        providers={[
+          providerSnapshot("claudeAgent", [
+            {
+              slug: "claude-opus-4-7",
+              name: "Claude Opus 4.7",
+              capabilities: createClaudeModelCapabilities("claude-opus-4-7"),
+            },
+          ]),
+        ]}
+        modelOptionsByInstance={EMPTY_MODEL_OPTIONS_BY_INSTANCE}
         onProviderModelChange={() => {}}
         onModelOptionsChange={onModelOptionsChange}
       />,
@@ -599,11 +663,13 @@ describe("WorkflowCreateDialog", () => {
         expect(text).not.toContain("Ultrathink");
       });
 
-      await page.getByRole("menuitemradio", { name: "Max" }).click();
+      await page.getByRole("menuitemradio", { name: /^Max/ }).click();
 
       await vi.waitFor(() => {
+        // Like a thread, the Claude control saves its shown traits, including the default
+        // context window.
         expect(onModelOptionsChange).toHaveBeenCalledWith({
-          claudeAgent: { effort: "max" },
+          claudeAgent: { effort: "max", contextWindow: "200k" },
         });
       });
     } finally {
@@ -625,25 +691,25 @@ describe("WorkflowCreateDialog", () => {
     document.body.append(host);
     const screen = await renderWithQueryClient(
       <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
-      { container: host },
+      { container: host, providers: defaultTestProviders() },
     );
 
     try {
       findProviderFieldButton("Author A").click();
 
       await vi.waitFor(() => {
-        expect(findMenuItem("Claude")).not.toBeNull();
+        expect(findRailInstance("claudeAgent")).not.toBeNull();
       });
 
-      findMenuItem("Claude")?.click();
+      findRailInstance("claudeAgent")?.click();
 
       await vi.waitFor(() => {
-        const rememberedOption = findMenuItemRadio("Claude Opus 4.7");
+        const rememberedOption = findModelRow("Claude Opus 4.7");
         expect(rememberedOption).not.toBeNull();
         expect(rememberedOption?.textContent ?? "").not.toContain("Active");
       });
 
-      findMenuItemRadio("Claude Sonnet 4.6")?.click();
+      findModelRow("Claude Sonnet 4.6")?.click();
 
       await vi.waitFor(() => {
         expect(useModelPreferencesStore.getState().lastProvider).toBe("claudeAgent");
@@ -780,23 +846,23 @@ describe("WorkflowCreateDialog", () => {
     document.body.append(firstHost);
     const firstScreen = await renderWithQueryClient(
       <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
-      { container: firstHost },
+      { container: firstHost, providers: defaultTestProviders() },
     );
 
     try {
       findProviderFieldButton("Merge").click();
 
       await vi.waitFor(() => {
-        expect(findMenuItem("Claude")).not.toBeNull();
+        expect(findRailInstance("claudeAgent")).not.toBeNull();
       });
 
-      findMenuItem("Claude")?.click();
+      findRailInstance("claudeAgent")?.click();
 
       await vi.waitFor(() => {
-        expect(findMenuItemRadio("Claude Sonnet 4.6")).not.toBeNull();
+        expect(findModelRow("Claude Sonnet 4.6")).not.toBeNull();
       });
 
-      findMenuItemRadio("Claude Sonnet 4.6")?.click();
+      findModelRow("Claude Sonnet 4.6")?.click();
 
       await vi.waitFor(() => {
         expect(useModelPreferencesStore.getState().lastWorkflowProviderBySlot.merge).toBe(
@@ -812,7 +878,7 @@ describe("WorkflowCreateDialog", () => {
     document.body.append(secondHost);
     const secondScreen = await renderWithQueryClient(
       <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
-      { container: secondHost },
+      { container: secondHost, providers: defaultTestProviders() },
     );
 
     try {
@@ -822,6 +888,124 @@ describe("WorkflowCreateDialog", () => {
     } finally {
       await secondScreen.unmount();
       secondHost.remove();
+    }
+  });
+
+  it("lists uncertified Antigravity models disabled with the read-only reason", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+      { container: host, providers: [...defaultTestProviders(), antigravityProvider(false)] },
+    );
+
+    try {
+      findProviderFieldButton("Author A").click();
+      await vi.waitFor(() => expect(findRailInstance("antigravity")).not.toBeNull());
+      findRailInstance("antigravity")!.click();
+
+      await vi.waitFor(() => expect(findModelRow("Gemini 4 Neon")).not.toBeNull());
+      const row = findModelRow("Gemini 4 Neon")!;
+      expect(row.disabled).toBe(true);
+      expect(row.textContent).toContain(READ_ONLY_WORKFLOW_UNCERTIFIED_ANTIGRAVITY_MESSAGE);
+      expect(document.body.textContent).not.toContain("No models found");
+
+      row.click();
+      expect(findProviderFieldButton("Author A").textContent).not.toContain("Gemini");
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("picks a certified Antigravity model and submits its thinking level", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+      { container: host, providers: [...defaultTestProviders(), antigravityProvider(true)] },
+    );
+
+    try {
+      findProviderFieldButton("Author A").click();
+      await vi.waitFor(() => expect(findRailInstance("antigravity")).not.toBeNull());
+      findRailInstance("antigravity")!.click();
+      await vi.waitFor(() => expect(findModelRow("Gemini 4 Neon")?.disabled).toBe(false));
+      findModelRow("Gemini 4 Neon")!.click();
+      await vi.waitFor(() =>
+        expect(findProviderFieldButton("Author A").textContent).toContain("Gemini 4 Neon"),
+      );
+
+      const authorA = page.getByRole("group", { name: "Author A" }).element();
+      authorA.querySelector<HTMLButtonElement>("button[aria-haspopup='menu']")!.click();
+      await page.getByRole("menuitemradio", { name: /^Low/ }).click();
+
+      await typeRequirementPrompt("Plan with Gemini");
+      await page.getByRole("button", { name: /Start workflow/ }).click();
+      await vi.waitFor(() => expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(1));
+      expect(nativeApiMocks.createWorkflow.mock.calls[0]?.[0].branchA).toMatchObject({
+        provider: "antigravity",
+        model: "gemini-4-neon",
+        modelOptions: { antigravity: { thinking: "low" } },
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("lists only the instance each workflow slot runs on", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+      {
+        container: host,
+        providers: [
+          ...defaultTestProviders(),
+          providerSnapshot("codex", [{ slug: "gpt-5-codex", name: "GPT-5 Codex" }], {
+            instanceId: "codex_work" as ProviderInstanceId,
+            displayName: "Codex Work",
+          }),
+        ],
+      },
+    );
+
+    try {
+      findProviderFieldButton("Author A").click();
+      await vi.waitFor(() => expect(findRailInstance("codex")).not.toBeNull());
+      expect(
+        document.querySelector('[data-model-picker-provider="instance:codex_work"]'),
+      ).toBeNull();
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("submits the Codex effort the traits control shows when none was picked", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+      { container: host, providers: defaultTestProviders() },
+    );
+
+    try {
+      const authorA = page.getByRole("group", { name: "Author A" }).element();
+      await vi.waitFor(() =>
+        expect(authorA.querySelector("button[aria-haspopup='menu']")).not.toBeNull(),
+      );
+      const shown = authorA.querySelector("button[aria-haspopup='menu']")!.textContent!.trim();
+      await typeRequirementPrompt("Plan the default effort");
+      await page.getByRole("button", { name: /Start workflow/ }).click();
+      await vi.waitFor(() => expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(1));
+      const branchA = nativeApiMocks.createWorkflow.mock.calls[0]?.[0].branchA;
+      expect(branchA?.provider).toBe("codex");
+      expect(branchA?.modelOptions?.codex?.reasoningEffort).toBe(CODEX_EFFORT_BY_LABEL[shown]);
+    } finally {
+      await screen.unmount();
+      host.remove();
     }
   });
 
@@ -915,20 +1099,20 @@ describe("WorkflowCreateDialog", () => {
     document.body.append(host);
     const screen = await renderWithQueryClient(
       <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
-      { container: host },
+      { container: host, providers: defaultTestProviders() },
     );
     const chooseClaude = async (field: string, model: string) => {
       findProviderFieldButton(field).click();
-      await vi.waitFor(() => expect(findMenuItem("Claude")).not.toBeNull());
-      findMenuItem("Claude")!.click();
-      await vi.waitFor(() => expect(findMenuItemRadio(model)).not.toBeNull());
-      findMenuItemRadio(model)!.click();
+      await vi.waitFor(() => expect(findRailInstance("claudeAgent")).not.toBeNull());
+      findRailInstance("claudeAgent")!.click();
+      await vi.waitFor(() => expect(findModelRow(model)).not.toBeNull());
+      findModelRow(model)!.click();
       await vi.waitFor(() =>
         expect(findProviderFieldButton(field).textContent, field).toContain(
           model.replace("Claude ", ""),
         ),
       );
-      await vi.waitFor(() => expect(findMenuItem("Claude")).toBeNull());
+      await vi.waitFor(() => expect(findRailInstance("claudeAgent")).toBeNull());
     };
     try {
       await page.getByRole("button", { name: "Document", exact: true }).click();
@@ -1944,29 +2128,36 @@ describe("reported workflow capabilities", () => {
       const changes = vi.fn();
       const host = document.createElement("div");
       document.body.append(host);
+      const providers = [providerSnapshot(provider, [{ slug: model, name: model, capabilities }])];
       const Harness = () => {
         const [options, setOptions] = useState<ProviderModelOptions>();
         return (
-          <WorkflowReasoningPicker
+          <SlotRow
+            label="Branch A"
             provider={provider}
             model={model}
-            capabilities={capabilities}
+            providers={providers}
             modelOptions={options}
-            onChange={(next) => {
+            modelOptionsByInstance={EMPTY_MODEL_OPTIONS_BY_INSTANCE}
+            onProviderModelChange={() => {}}
+            onModelOptionsChange={(next) => {
               setOptions(next);
               changes(next);
             }}
           />
         );
       };
-      const screen = await render(<Harness />, { container: host });
+      const screen = await renderWithQueryClient(<Harness />, { container: host });
       try {
         const defaultEffort = provider === "codex" ? "Low" : "High";
         await page.getByRole("button", { name: defaultEffort, exact: true }).click();
         const nondefaultEffort = provider === "codex" ? "High" : "Low";
         await page.getByRole("menuitemradio", { name: nondefaultEffort, exact: true }).click();
-        await page.getByRole("button", { name: nondefaultEffort, exact: true }).click();
-        await page.getByRole("menuitemradio", { name: "On", exact: true }).click();
+        // Like the composer, the Codex menu closes after an effort pick and Claude's stays open.
+        if (provider === "codex") {
+          await page.getByRole("button", { name: nondefaultEffort, exact: true }).click();
+        }
+        await page.getByRole("menuitemcheckbox", { name: /Fast Mode/ }).click();
         expect(changes.mock.lastCall?.[0]).toEqual(
           provider === "codex"
             ? { codex: { reasoningEffort: "high", fastMode: true } }
@@ -1986,12 +2177,15 @@ it("saves a Codex pick of the built-in default when no capabilities were reporte
   const changes = vi.fn();
   const host = document.createElement("div");
   document.body.append(host);
-  const screen = await render(
-    <WorkflowReasoningPicker
+  const screen = await renderWithQueryClient(
+    <SlotRow
+      label="Branch A"
       provider="codex"
       model="gpt-6.1-sol"
       modelOptions={{ codex: { reasoningEffort: "medium" } }}
-      onChange={changes}
+      modelOptionsByInstance={EMPTY_MODEL_OPTIONS_BY_INSTANCE}
+      onProviderModelChange={() => {}}
+      onModelOptionsChange={changes}
     />,
     { container: host },
   );
@@ -2008,43 +2202,72 @@ it("saves a Codex pick of the built-in default when no capabilities were reporte
 it("walks an unsupported stored effort down, not to the default, and shows fast-only controls", async () => {
   const host = document.createElement("div");
   document.body.append(host);
+  const model = "gpt-future";
   const props = {
+    label: "Branch A",
     provider: "codex" as const,
-    model: "gpt-future",
+    model,
     modelOptions: { codex: { reasoningEffort: "ultra" as const } },
-    onChange: () => {},
+    modelOptionsByInstance: EMPTY_MODEL_OPTIONS_BY_INSTANCE,
+    onProviderModelChange: () => {},
+    onModelOptionsChange: () => {},
   };
+  const queryClient = createTestQueryClient();
   const screen = await render(
-    <WorkflowReasoningPicker
-      {...props}
-      capabilities={createReportedCodexModelCapabilities({
-        model: props.model,
-        supportedReasoningEfforts: [
-          { reasoningEffort: "max" },
-          { reasoningEffort: "high" },
-          { reasoningEffort: "low" },
-        ],
-        defaultReasoningEffort: "low",
-      })}
-    />,
+    <QueryClientProvider client={queryClient}>
+      <SlotRow
+        {...props}
+        providers={[
+          providerSnapshot("codex", [
+            {
+              slug: model,
+              name: model,
+              capabilities: createReportedCodexModelCapabilities({
+                model,
+                supportedReasoningEfforts: [
+                  { reasoningEffort: "max" },
+                  { reasoningEffort: "high" },
+                  { reasoningEffort: "low" },
+                ],
+                defaultReasoningEffort: "low",
+              }),
+            },
+          ]),
+        ]}
+      />
+    </QueryClientProvider>,
     { container: host },
   );
   try {
     // turn/start lowers Ultra to Max; Low (the default) would misstate the run.
     await expect.element(page.getByRole("button", { name: "Max", exact: true })).toBeVisible();
     await screen.rerender(
-      <WorkflowReasoningPicker
-        {...props}
-        capabilities={createReportedCodexModelCapabilities({
-          model: props.model,
-          supportedReasoningEfforts: [],
-          serviceTiers: [{ id: "priority" }],
-        })}
-      />,
+      <QueryClientProvider client={queryClient}>
+        <SlotRow
+          {...props}
+          providers={[
+            providerSnapshot("codex", [
+              {
+                slug: model,
+                name: model,
+                capabilities: createReportedCodexModelCapabilities({
+                  model,
+                  supportedReasoningEfforts: [],
+                  serviceTiers: [{ id: "priority" }],
+                }),
+              },
+            ]),
+          ]}
+        />
+      </QueryClientProvider>,
     );
-    await expect
-      .element(page.getByRole("button", { name: "Fast Mode", exact: true }))
-      .toBeVisible();
+    // A model whose only control is Fast Mode still gets the traits control.
+    const row = page.getByRole("group", { name: "Branch A" }).element();
+    await vi.waitFor(() => {
+      expect(row.querySelector('[data-slot="workflow-slot-divider"]')).not.toBeNull();
+    });
+    row.querySelector<HTMLButtonElement>("button[aria-haspopup='menu']")?.click();
+    await expect.element(page.getByRole("menuitemcheckbox", { name: /Fast Mode/ })).toBeVisible();
   } finally {
     await screen.unmount();
     host.remove();
