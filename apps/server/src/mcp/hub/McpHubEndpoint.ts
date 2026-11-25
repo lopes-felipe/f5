@@ -106,6 +106,28 @@ export class McpHubSlot {
     this.identity = mcpServerIdentity(this.serverName, definition);
   }
 
+  /** The conversation's project, for refreshing tool policy when its settings are saved. */
+  get sessionProjectId(): ProjectId | undefined {
+    return this.projectId;
+  }
+
+  /**
+   * Takes only the tool policy from a saved definition, so a save reaches a live
+   * session without Apply. Connection settings keep waiting for Apply or a restart.
+   */
+  setToolPolicy(source: Pick<McpServerDefinition, "toolPolicy" | "defaultToolPolicy">): void {
+    const {
+      toolPolicy: _toolPolicy,
+      defaultToolPolicy: _defaultToolPolicy,
+      ...rest
+    } = this.definition;
+    this.definition = {
+      ...rest,
+      ...(source.toolPolicy ? { toolPolicy: source.toolPolicy } : {}),
+      ...(source.defaultToolPolicy ? { defaultToolPolicy: source.defaultToolPolicy } : {}),
+    } as McpServerDefinition;
+  }
+
   private disabledHere(): boolean {
     return this.governance?.isServerDisabled(this.threadId, this.serverName) ?? false;
   }

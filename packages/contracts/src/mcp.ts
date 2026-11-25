@@ -127,6 +127,8 @@ export const MCP_ACTIVITY_PAGE_LIMIT = 200;
 export const McpListActivityRequest = Schema.Struct({
   serverName: Schema.optional(TrimmedNonEmptyString),
   threadId: Schema.optional(ThreadId),
+  /** Limits the stderr tail to connections serving this project. */
+  projectId: Schema.optional(ProjectId),
   limit: Schema.optional(
     Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: MCP_ACTIVITY_PAGE_LIMIT })),
   ),

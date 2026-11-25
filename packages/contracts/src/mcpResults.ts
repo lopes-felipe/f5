@@ -293,6 +293,8 @@ export type McpActivitySummary = typeof McpActivitySummary.Type;
 export const McpListActivityResult = Schema.Struct({
   calls: Schema.Array(McpToolCallRecord),
   last24h: McpActivitySummary,
+  /** Redacted stderr of the server's live stdio connections, when one server was asked for. */
+  stderrTail: Schema.optional(Schema.String),
 });
 export type McpListActivityResult = typeof McpListActivityResult.Type;
 

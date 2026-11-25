@@ -530,6 +530,12 @@ describe("F5 MCP hub", () => {
       const update = attachment.update(withFixture({ defaultToolPolicy: "ask" }));
       expect(update.changed).toEqual([]);
       expect(attachment.asksBeforeCall!("fixture", "echo")).toBe(true);
+      // A save reaches every live session of the project without Apply.
+      expect(governed.attachedProjects!()).toEqual([undefined]);
+      governed.refreshToolPolicies!(projectId, withFixture({}));
+      expect(attachment.asksBeforeCall!("fixture", "echo")).toBe(true);
+      governed.refreshToolPolicies!(undefined, withFixture({ toolPolicy: { echo: "allow" } }));
+      expect(attachment.asksBeforeCall!("fixture", "echo")).toBe(false);
     } finally {
       await attachment.dispose();
       await governed.close();

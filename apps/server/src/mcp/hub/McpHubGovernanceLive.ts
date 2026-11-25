@@ -468,7 +468,8 @@ export const makeMcpHubGovernance = Effect.gen(function* () {
 
   yield* Effect.addFinalizer(() =>
     Effect.sync(() => {
-      for (const approval of [...pending.values()]) approval.finish("cancel");
+      // Deleting the current entry while iterating a Map is safe.
+      for (const approval of pending.values()) approval.finish("cancel");
     }).pipe(Effect.andThen(Effect.promise(() => queue))),
   );
 

@@ -66,6 +66,19 @@ describe("MCP status event scoping", () => {
     expect(isMcpQueryAffected(mcpQueryKeys.hubStatus(project), saved)).toBe(false);
   });
 
+  it("refreshes tool pins and conversation toggles on hub events only, and never the call log", () => {
+    const project = ProjectId.makeUnsafe("project");
+    const hub = { scope: "common" as const, reason: "hub" as const, serverName: "docs" };
+    const applied = { scope: "project" as const, projectId: project, reason: "applied" as const };
+    const thread = ThreadId.makeUnsafe("thread");
+    expect(isMcpQueryAffected(mcpQueryKeys.toolPins("docs"), hub)).toBe(true);
+    expect(isMcpQueryAffected(mcpQueryKeys.threadServers(thread), hub)).toBe(true);
+    expect(isMcpQueryAffected(mcpQueryKeys.toolPins("docs"), applied)).toBe(false);
+    expect(isMcpQueryAffected(mcpQueryKeys.threadServers(thread), applied)).toBe(false);
+    expect(isMcpQueryAffected(mcpQueryKeys.activity("docs", null), hub)).toBe(false);
+    expect(isMcpQueryAffected(mcpQueryKeys.activity("docs", null), applied)).toBe(false);
+  });
+
   it("refreshes hub sign-in state on saves and hub events but not provider-account events", () => {
     const project = ProjectId.makeUnsafe("project");
     const hub = { scope: "common" as const, reason: "hub" as const, serverName: "docs" };

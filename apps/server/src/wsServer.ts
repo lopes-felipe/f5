@@ -8388,8 +8388,13 @@ export const createServer = Effect.fn(function* (
 
       case WS_METHODS.mcpListActivity: {
         const body = stripRequestTag(request.body);
-        if (!mcpHubGovernance) return { calls: [], last24h: { calls: 0, errors: 0 } };
-        return yield* mcpHubGovernance.listActivity(body);
+        const activity = mcpHubGovernance
+          ? yield* mcpHubGovernance.listActivity(body)
+          : { calls: [], last24h: { calls: 0, errors: 0 } };
+        const stderrTail = body.serverName
+          ? mcpHub?.readStderrTail(body.serverName, body.projectId)
+          : undefined;
+        return { ...activity, ...(stderrTail ? { stderrTail } : {}) };
       }
 
       case WS_METHODS.mcpGetThreadServers: {

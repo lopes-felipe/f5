@@ -246,6 +246,7 @@ export function makeServerProviderLayer(): Layer.Layer<
       Layer.provide(codexMcpEventBusLayer),
       Layer.provide(ServerSecretStoreLive),
       Layer.provide(mcpHubGovernanceLayer),
+      Layer.provide(projectMcpConfigServiceLayer),
     );
     // Sign-in shares the hub's token storage, so a new token reaches open connections.
     const mcpHubAuthLayer = McpHubAuthLive.pipe(

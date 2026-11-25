@@ -22,12 +22,13 @@ import {
   describeMcpInterpolationSkip,
   interpolateMcpServers,
 } from "@t3tools/shared/mcpInterpolation";
-import { Effect, Layer, Option, ServiceMap } from "effect";
+import { Effect, Layer, Option, ServiceMap, Stream } from "effect";
 
 import { CodexMcpEventBus } from "../../codex/CodexMcpEventBus.ts";
 import { ServerSecretStore } from "../../auth/Services/ServerSecretStore.ts";
 import { readBearerToken } from "../jsonRpcHttp.ts";
 import { PreviewMcpHttpServer, type PreviewMcpHttpServerShape } from "../PreviewMcpHttpServer.ts";
+import { ProjectMcpConfigService } from "../ProjectMcpConfigService.ts";
 import { McpHubSlot } from "./McpHubEndpoint.ts";
 import { McpHubGovernanceService } from "./McpHubGovernanceLive.ts";
 import type { McpHubGovernance } from "./McpHubGovernance.ts";
@@ -137,6 +138,16 @@ export interface McpHubShape {
     threadId: ThreadId,
     serverName: string,
   ) => McpHubSessionServer | undefined;
+  /** Projects with live sessions (`undefined` for sessions without a project). */
+  readonly attachedProjects?: () => ReadonlyArray<ProjectId | undefined>;
+  /**
+   * Applies saved tool policy to every live session of `projectId` (or of no project),
+   * without Apply or a restart: Ask and Allow changes take effect on the next call.
+   */
+  readonly refreshToolPolicies?: (
+    projectId: ProjectId | undefined,
+    servers: McpProjectServersConfig,
+  ) => void;
   readonly close: () => Promise<void>;
 }
 
@@ -564,6 +575,21 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
     return match;
   };
 
+  const attachedProjects = () => [
+    ...new Set([...slots.values()].map((slot) => slot.sessionProjectId)),
+  ];
+
+  const refreshToolPolicies = (
+    projectId: ProjectId | undefined,
+    servers: McpProjectServersConfig,
+  ) => {
+    for (const slot of slots.values()) {
+      if (slot.sessionProjectId !== projectId) continue;
+      const definition = servers[slot.serverName];
+      if (definition) slot.setToolPolicy(definition);
+    }
+  };
+
   return {
     available,
     attach,
@@ -573,6 +599,8 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
     oauthStorage: options.oauthStorage,
     reconnectOAuth,
     sessionServer,
+    attachedProjects,
+    refreshToolPolicies,
     close,
   };
 }
@@ -593,6 +621,37 @@ export const McpHubLive = Layer.effect(
         : {}),
     });
     yield* Effect.addFinalizer(() => Effect.promise(() => hub.close()));
+    // A saved tool policy reaches live sessions of every agent at once; connection
+    // changes still wait for Apply or the next session.
+    const configService = Option.getOrUndefined(
+      yield* Effect.serviceOption(ProjectMcpConfigService),
+    );
+    if (bus && configService) {
+      const savedServers = (projectId: ProjectId | undefined) =>
+        projectId
+          ? configService
+              .readEffectiveStoredConfig(projectId)
+              .pipe(Effect.map((config) => config.servers))
+          : configService.readCommonStoredConfig().pipe(Effect.map((config) => config.servers));
+      const refresh = (event: McpStatusUpdatedPayload) =>
+        Effect.forEach(
+          (hub.attachedProjects?.() ?? []).filter(
+            (projectId) =>
+              event.scope === "common" ||
+              (event.projectId !== undefined && projectId === event.projectId),
+          ),
+          (projectId) =>
+            savedServers(projectId).pipe(
+              Effect.map((servers) => hub.refreshToolPolicies?.(projectId, servers)),
+              Effect.catch(() => Effect.void),
+            ),
+          { discard: true },
+        );
+      yield* Stream.runForEach(
+        bus.streamStatusUpdates.pipe(Stream.filter((event) => event.reason === "updated")),
+        refresh,
+      ).pipe(Effect.forkScoped);
+    }
     return hub;
   }),
 );

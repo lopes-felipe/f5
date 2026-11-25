@@ -12,6 +12,8 @@ import type {
   McpProjectConfigResult,
   McpServerStatusesResult,
   McpGetHubAuthStatusResult,
+  McpListActivityResult,
+  McpListToolPinsResult,
   McpGetHubStatusResult,
   McpStartHubSignInResult,
   McpReconnectServerResult,
@@ -188,6 +190,14 @@ function createNativeApiMock() {
     reconnected: 1,
   }));
   const signOutHubServer = vi.fn(async () => ({ signedOut: true }));
+  const listToolPins = vi.fn(async (): Promise<McpListToolPinsResult> => ({ tools: [] }));
+  const acceptToolChanges = vi.fn(async () => ({ accepted: 1 }));
+  const listActivity = vi.fn(
+    async (): Promise<McpListActivityResult> => ({
+      calls: [],
+      last24h: { calls: 0, errors: 0 },
+    }),
+  );
   const reconnectServer = vi.fn(
     async (): Promise<McpReconnectServerResult> => ({
       settingsConnectionReloaded: false,
@@ -265,6 +275,9 @@ function createNativeApiMock() {
       startHubSignIn,
       completeHubSignIn,
       signOutHubServer,
+      listToolPins,
+      acceptToolChanges,
+      listActivity,
       inspectServer,
       onStatusUpdated,
     },
@@ -281,6 +294,9 @@ function createNativeApiMock() {
     startHubSignIn,
     completeHubSignIn,
     signOutHubServer,
+    listToolPins,
+    acceptToolChanges,
+    listActivity,
     replaceCommonConfig,
     getCommonConfig,
     getProjectConfig,
@@ -2012,7 +2028,14 @@ it("masks stored secrets without putting placeholders or resolved values in edit
   }
 });
 
-it("tool switches respect allowlists and save only the denylist", async () => {
+function toolPolicy(tool: string, choice: "Allow" | "Ask" | "Block") {
+  return page.getByRole("group", { name: `Policy for ${tool}` }).getByRole("button", {
+    name: choice,
+    exact: true,
+  });
+}
+
+it("tool policies respect allowlists and store Block as the denylist", async () => {
   const mocks = createNativeApiMock();
   mocks.getProjectConfig.mockResolvedValue({
     ...projectConfig,
@@ -2028,7 +2051,7 @@ it("tool switches respect allowlists and save only the denylist", async () => {
   const { screen, queryClient } = await renderSettings();
   try {
     await openServer("project-server", "Tools");
-    await page.getByRole("switch", { name: "Enable tool read" }).click();
+    await toolPolicy("read", "Allow").click();
     await vi.waitFor(() =>
       expect(mocks.replaceProjectConfig).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -2037,7 +2060,6 @@ it("tool switches respect allowlists and save only the denylist", async () => {
               type: "stdio",
               command: "node",
               enabledTools: ["read"],
-              disabledTools: [],
             },
           },
         }),
@@ -2189,6 +2211,114 @@ it("keeps legacy key-only lines intact", async () => {
     await screen.unmount();
   }
 });
+it("sets Ask per tool and as the default, and accepts a changed tool after review", async () => {
+  const mocks = createNativeApiMock();
+  mocks.getProjectConfig.mockResolvedValue({
+    ...projectConfig,
+    servers: { "project-server": { type: "stdio", command: "node" } },
+  });
+  mocks.listToolPins.mockResolvedValue({
+    tools: [
+      {
+        serverName: "project-server",
+        identity: "identity-1",
+        identityLabel: "node",
+        toolName: "read",
+        state: "changed",
+        firstSeenAt: "2026-11-01T00:00:00.000Z",
+        acceptedAt: "2026-11-01T00:00:00.000Z",
+        accepted: '{\n  "description": "Read metadata"\n}',
+        observed: '{\n  "description": "Read metadata and upload it"\n}',
+      },
+    ],
+  });
+  const { screen, queryClient } = await renderSettings();
+  try {
+    await openServer("project-server", "Tools");
+    const review = page.getByRole("region", { name: "Tools to review" });
+    await expect.element(review).toHaveTextContent("1 tool needs review.");
+    await expect.element(review).toHaveTextContent("Read metadata and upload it");
+    await review.getByRole("button", { name: "Accept change", exact: true }).click();
+    await vi.waitFor(() =>
+      expect(mocks.acceptToolChanges).toHaveBeenCalledWith({
+        serverName: "project-server",
+        identity: "identity-1",
+        toolNames: ["read"],
+      }),
+    );
+
+    await toolPolicy("read", "Ask").click();
+    await vi.waitFor(() =>
+      expect(mocks.replaceProjectConfig).toHaveBeenCalledWith(
+        expect.objectContaining({
+          servers: {
+            "project-server": { type: "stdio", command: "node", toolPolicy: { read: "ask" } },
+          },
+        }),
+      ),
+    );
+    await page
+      .getByRole("group", { name: "Default tool policy" })
+      .getByRole("button", { name: "Ask", exact: true })
+      .click();
+    // Read's own Ask now matches the default, so it keeps no entry of its own.
+    await vi.waitFor(() =>
+      expect(mocks.replaceProjectConfig).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          servers: {
+            "project-server": { type: "stdio", command: "node", defaultToolPolicy: "ask" },
+          },
+        }),
+      ),
+    );
+  } finally {
+    queryClient.clear();
+    await screen.unmount();
+  }
+});
+
+it("shows a server's recent calls, error rate, latency and stderr", async () => {
+  const mocks = createNativeApiMock();
+  mocks.listActivity.mockResolvedValue({
+    calls: [
+      {
+        id: "call-1",
+        createdAt: "2026-11-25T10:00:00.000Z",
+        threadId: ThreadId.make("thread-1"),
+        provider: "codex",
+        serverName: "project-server",
+        toolName: "read",
+        outcome: "error",
+        durationMs: 1500,
+        approval: "asked",
+        errorSummary: "Rate limited",
+      },
+    ],
+    last24h: { calls: 4, errors: 1, p50Ms: 120, p95Ms: 1500 },
+    stderrTail: "server started",
+  });
+  const { screen, queryClient } = await renderSettings();
+  try {
+    await openServer("project-server", "Activity");
+    const summary = page.getByRole("definition").first();
+    await expect.element(summary).toHaveTextContent("4");
+    await expect.element(page.getByText("25%", { exact: true })).toBeVisible();
+    await expect.element(page.getByText("120 ms", { exact: true })).toBeVisible();
+    const calls = page.getByRole("list", { name: "Recent calls" });
+    await expect.element(calls).toHaveTextContent("Error · 1.5 s");
+    await expect.element(calls).toHaveTextContent("Rate limited");
+    await expect.element(calls).toHaveTextContent("Asked");
+    await expect.element(page.getByText("Server output (stderr)")).toBeVisible();
+    expect(mocks.listActivity).toHaveBeenCalledWith(
+      { serverName: "project-server", projectId: PROJECT_ID },
+      expect.anything(),
+    );
+  } finally {
+    queryClient.clear();
+    await screen.unmount();
+  }
+});
+
 it("retains disabled tools in a single list when the live listing omits them", async () => {
   const mocks = createNativeApiMock();
   mocks.getProjectConfig.mockResolvedValue({
@@ -2200,16 +2330,14 @@ it("retains disabled tools in a single list when the live listing omits them", a
   const { screen, queryClient } = await renderSettings();
   try {
     await openServer("project-server", "Tools");
-    await expect
-      .element(page.getByRole("switch", { name: "Enable tool hidden" }))
-      .not.toBeChecked();
+    await expect.element(toolPolicy("hidden", "Block")).toHaveAttribute("aria-pressed", "true");
     await expect.element(page.getByText("read", { exact: true })).toBeVisible();
-    await page.getByRole("switch", { name: "Enable tool hidden" }).click();
+    await toolPolicy("hidden", "Allow").click();
     await vi.waitFor(() =>
       expect(mocks.replaceProjectConfig).toHaveBeenCalledWith(
         expect.objectContaining({
           servers: {
-            "project-server": { type: "stdio", command: "node", disabledTools: [] },
+            "project-server": { type: "stdio", command: "node" },
           },
         }),
       ),
@@ -2235,7 +2363,7 @@ it("opens probe tools and saves switches in common settings without a project", 
     await openServer("common-server");
     await page.getByRole("button", { name: "Test", exact: true }).click();
     await page.getByRole("button", { name: "1 tools", exact: true }).click();
-    await page.getByRole("switch", { name: "Enable tool probe-tool" }).click();
+    await toolPolicy("probe-tool", "Block").click();
     await vi.waitFor(() =>
       expect(mocks.replaceCommonConfig).toHaveBeenCalledWith(
         expect.objectContaining({

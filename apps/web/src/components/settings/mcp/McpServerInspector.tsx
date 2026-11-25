@@ -1,6 +1,13 @@
-import { mcpToolSwitchState, summarizeMcpTools } from "@t3tools/shared/mcpTools";
+import {
+  mcpToolPolicyChoice,
+  mcpToolSwitchState,
+  summarizeMcpTools,
+  type McpToolPolicyChoice,
+} from "@t3tools/shared/mcpTools";
 import { Switch } from "../../ui/switch";
+import { McpToolPinBadge, McpToolPolicyToggle } from "./McpToolPolicies";
 import type {
+  McpToolPinState,
   McpServerStatusesResult,
   McpSessionReloadOutcome,
   ProjectId,
@@ -24,6 +31,10 @@ export function McpServerInspector(props: {
   configuredServer?: import("@t3tools/contracts").McpServerDefinition | undefined;
   fallbackTools?: ReadonlyArray<import("@t3tools/contracts").McpToolSummary> | undefined;
   onToolToggle?: ((name: string, enabled: boolean) => Promise<void>) | undefined;
+  /** Shows Allow, Ask and Block per tool instead of the on/off switch. */
+  onToolPolicy?: ((name: string, choice: McpToolPolicyChoice) => Promise<void>) | undefined;
+  /** F5's pin state per tool (New, Changed). */
+  pinStates?: ReadonlyMap<string, McpToolPinState> | undefined;
   provider: ProviderKind;
   instanceId: ProviderInstanceId;
   projectId: ProjectId | null;
@@ -114,10 +125,13 @@ export function McpServerInspector(props: {
                   className="flex items-center justify-between gap-3 rounded border p-2"
                 >
                   <div>
-                    <p>
-                      {tool.name}
-                      {tool.readOnly ? " · read only" : ""}
-                      {tool.destructive ? " · destructive" : ""}
+                    <p className="flex flex-wrap items-center gap-1.5">
+                      <span>
+                        {tool.name}
+                        {tool.readOnly ? " · read only" : ""}
+                        {tool.destructive ? " · destructive" : ""}
+                      </span>
+                      <McpToolPinBadge state={props.pinStates?.get(tool.name)} />
                     </p>
                     {tool.description ? <p>{tool.description}</p> : null}
                     {reported ? (
@@ -136,7 +150,33 @@ export function McpServerInspector(props: {
                       </details>
                     ) : null}
                   </div>
-                  {state && props.onToolToggle ? (
+                  {state && props.onToolPolicy && props.configuredServer ? (
+                    <span
+                      title={
+                        state.excluded
+                          ? "Excluded by this server's enabled-tools list. Edit it under Advanced."
+                          : undefined
+                      }
+                    >
+                      <McpToolPolicyToggle
+                        toolName={tool.name}
+                        value={mcpToolPolicyChoice(props.configuredServer, tool.name)}
+                        excluded={state.excluded}
+                        disabled={savingTool !== null}
+                        onChange={(choice) => {
+                          setSavingTool(tool.name);
+                          setToolError(null);
+                          void props.onToolPolicy!(tool.name, choice)
+                            .catch((cause) =>
+                              setToolError(
+                                readErrorMessage(cause, "Could not save tool settings."),
+                              ),
+                            )
+                            .finally(() => setSavingTool(null));
+                        }}
+                      />
+                    </span>
+                  ) : state && props.onToolToggle ? (
                     <span
                       title={
                         state.excluded
