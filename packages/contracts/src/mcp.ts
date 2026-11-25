@@ -81,6 +81,8 @@ export const McpStatusUpdatedReason = Schema.Literals([
   "oauth-completed",
   "login-completed",
   "runtime",
+  /** An MCP hub connection changed state; only hub status queries need a refresh. */
+  "hub",
 ]);
 export type McpStatusUpdatedReason = typeof McpStatusUpdatedReason.Type;
 
@@ -91,8 +93,21 @@ export const McpStatusUpdatedPayload = Schema.Struct({
   projectId: Schema.optional(ProjectId),
   reason: McpStatusUpdatedReason,
   configVersion: Schema.optional(TrimmedNonEmptyString),
+  serverName: Schema.optional(TrimmedNonEmptyString),
 });
 export type McpStatusUpdatedPayload = typeof McpStatusUpdatedPayload.Type;
+
+export const McpGetHubStatusRequest = Schema.Struct({
+  /** Limits the result to connections serving this project. */
+  projectId: Schema.optional(ProjectId),
+});
+export type McpGetHubStatusRequest = typeof McpGetHubStatusRequest.Type;
+
+export const McpReconnectHubServerRequest = Schema.Struct({
+  serverName: TrimmedNonEmptyString,
+  projectId: Schema.optional(ProjectId),
+});
+export type McpReconnectHubServerRequest = typeof McpReconnectHubServerRequest.Type;
 
 export const McpInspectServerRequest = Schema.Struct({
   ...McpGetServerStatusesRequest.fields,

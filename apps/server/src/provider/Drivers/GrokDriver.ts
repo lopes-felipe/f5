@@ -1,5 +1,6 @@
 import { Option } from "effect";
 import { PreviewMcpHttpServer } from "../../mcp/PreviewMcpHttpServer";
+import { mcpHubAdapterOption } from "../../mcp/hub/McpHub";
 import { ComputerAutomationBroker } from "../../computer/ComputerAutomationBroker";
 import { makeProviderLimits } from "../../usage/providerLimits.ts";
 import { discoverGrokSkills, discoverGlobalGrokSkills } from "./GrokSkills.ts";
@@ -91,6 +92,7 @@ export const GrokDriver: ProviderDriver<GrokSettings, GrokDriverEnv> = {
       const adapter = yield* makeGrokAdapter(effectiveConfig, {
         environment: processEnv,
         ...(previewMcp ? { previewMcpHttpServer: previewMcp } : {}),
+        ...(yield* mcpHubAdapterOption),
         ...(computerBroker ? { computerAutomationBroker: computerBroker } : {}),
         discoverSkillCommands: (cwd) =>
           discoverGrokSkills(effectiveConfig, processEnv, cwd).pipe(

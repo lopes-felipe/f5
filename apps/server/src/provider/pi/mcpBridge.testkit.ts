@@ -53,9 +53,17 @@ export async function loadMcpBridge(
     readonly beforeToolResponse?: () => Promise<void>;
     readonly toolHttpResponse?: { readonly status: number; readonly body: string };
     readonly inputSchema?: Record<string, unknown>;
+    /** Hub endpoints passed in F5_PI_MCP_SERVERS; a URL containing "down" refuses requests. */
+    readonly userMcpServers?: ReadonlyArray<{
+      name: string;
+      url: string;
+      token: string;
+      timeoutMs: number;
+    }>;
   } = {},
 ) {
   const handlers = new Map<string, AgentStartHook>();
+  const allHandlers = new Map<string, AgentStartHook[]>();
   const tools: RegisteredTool[] = [];
   const requests: Array<{ readonly method: string; readonly params?: unknown }> = [];
   let activeTools = ["read"];
@@ -98,8 +106,13 @@ export async function loadMcpBridge(
         F5_PI_MCP_EXTENSION_PATH: "/fixture/pi-t3-extension.ts",
         F5_PI_RUNTIME_MODE: options.runtimeMode,
         F5_PI_READ_ONLY: options.readOnly ? "1" : undefined,
+        F5_PI_MCP_SERVERS: options.userMcpServers
+          ? JSON.stringify(options.userMcpServers)
+          : undefined,
       },
     },
+    setTimeout,
+    clearTimeout,
     AbortSignal,
     Uint8Array,
     TextDecoder,
@@ -110,6 +123,7 @@ export async function loadMcpBridge(
       transport: { body: string; headers: Record<string, string>; signal?: AbortSignal },
     ) => {
       transport.signal?.throwIfAborted();
+      if (url.includes("down")) return new Response("unavailable", { status: 503 });
       transports.push({
         url,
         authorization: transport.headers.authorization!,
@@ -138,7 +152,10 @@ export async function loadMcpBridge(
     },
     pi: {
       registerCommand: () => undefined,
-      on: (name: string, handler: AgentStartHook) => handlers.set(name, handler),
+      on: (name: string, handler: AgentStartHook) => {
+        handlers.set(name, handler);
+        allHandlers.set(name, [...(allHandlers.get(name) ?? []), handler]);
+      },
       registerTool: (tool: RegisteredTool) => {
         if (options.allowsTool && !options.allowsTool(tool.name)) return;
         const index = tools.findIndex((current) => current.name === tool.name);
@@ -169,6 +186,7 @@ export async function loadMcpBridge(
   });
   return {
     handlers,
+    allHandlers,
     tools,
     setBridgeSourcePath: (path: string) => {
       bridgeSourcePath = path;

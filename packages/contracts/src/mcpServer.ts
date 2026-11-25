@@ -22,6 +22,9 @@ export const McpHttpUrl = TrimmedNonEmptyString.check(
 );
 const UnsupportedMcpField = Schema.optional(Schema.Undefined);
 
+export const McpConnectionScope = Schema.Literals(["session", "shared"]);
+export type McpConnectionScope = typeof McpConnectionScope.Type;
+
 const McpCommonServerFields = {
   enabled: Schema.optional(Schema.Boolean),
   bearerTokenEnvVar: Schema.optional(TrimmedNonEmptyString),
@@ -35,6 +38,12 @@ const McpCommonServerFields = {
   oauthCallbackPort: Schema.optional(McpPort),
   oauthCallbackUrl: Schema.optional(TrimmedNonEmptyString),
   oauthResource: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * How F5's MCP hub connects: one connection per provider session (`session`,
+   * the default for stdio) or one per profile shared by sessions (`shared`, the
+   * default for remote servers).
+   */
+  connectionScope: Schema.optional(McpConnectionScope),
 };
 
 const McpStdioServerDefinition = Schema.Struct({

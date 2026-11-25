@@ -33,6 +33,7 @@ export interface MockMspHostOptions {
   readonly sandboxAvailability?: "available" | "unavailable";
   /** Approval mode the host claims to apply, regardless of the request. */
   readonly forcedApprovalMode?: string;
+  readonly grantedCapabilities?: ReadonlyArray<string>;
 }
 
 export function mspError(kind: string, message = kind, code = -32000): MockMspFailure {
@@ -183,7 +184,7 @@ function sessionRecord(host: MockMspHost, approvalMode: unknown) {
 const DEFAULT_HANDLERS: Record<string, MockMspHandler> = {
   initialize: (_params, host) => ({
     experimentalApi: false,
-    grantedCapabilities: [],
+    grantedCapabilities: [...(host.options.grantedCapabilities ?? [])],
     museHome: "/tmp/muse",
     platformFamily: "unix",
     platformOs: "macos",

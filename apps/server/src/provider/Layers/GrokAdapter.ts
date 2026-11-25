@@ -41,7 +41,9 @@ import {
   isAntigravityInteractionToolCall,
 } from "../acp/AntigravityInteraction.ts";
 import type { InteractionOutcome, InteractionSession } from "../../mcp/interactionMcpTools.ts";
-import type { McpSessionStdioLaunch } from "../../mcp/sessionStdioShim.ts";
+import { mcpSessionStdioLaunch, type McpSessionStdioLaunch } from "../../mcp/sessionStdioShim.ts";
+import type { McpHubShape } from "../../mcp/hub/McpHub.ts";
+import { hubEndpointsToAcpServers } from "../../mcp/hub/acpHubServers.ts";
 import {
   type AntigravityTurnFailure,
   type AntigravityTurnNotice,
@@ -207,6 +209,8 @@ export interface GrokAdapterLiveOptions {
   /** Test seam: how the stdio MCP relay starts; null offers no stdio catalogs. */
   readonly mcpSessionStdioLaunch?: McpSessionStdioLaunch | null;
   readonly previewMcpHttpServer?: PreviewMcpHttpServerShape;
+  /** Serves the project's MCP servers through loopback endpoints. */
+  readonly mcpHub?: McpHubShape;
   readonly computerAutomationBroker?: ComputerAutomationBrokerRuntime;
   readonly provider?: ProviderKind;
   readonly nativeCompaction?: boolean;
@@ -1084,6 +1088,51 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             threadId: input.threadId,
             redactForLog: catalogs.redactForLog,
           });
+          // The project's MCP servers reach the agent through F5's hub; read-only
+          // workflow turns never get them.
+          const projectMcpServers = input.workflowExecutionProfile
+            ? undefined
+            : input.providerOptions?.mcpServers;
+          const withHubServers =
+            (automation: typeof catalogs.mcpServers) =>
+            (
+              init: EffectAcpSchema.InitializeResponse,
+            ): ReadonlyArray<EffectAcpSchema.McpServer> => {
+              const base = automation(init);
+              const hub = options?.mcpHub;
+              if (
+                !hub?.available ||
+                !projectMcpServers ||
+                Object.keys(projectMcpServers).length === 0
+              )
+                return base;
+              const attachment = hub.attach({
+                threadId: input.threadId,
+                projectId: input.projectId,
+                provider: PROVIDER,
+                accountKey: boundInstanceId,
+                servers: projectMcpServers,
+                environment: options?.environment ?? process.env,
+                cwd,
+                reservedNames: new Set(base.map((server) => server.name)),
+              });
+              Effect.runFork(
+                Scope.addFinalizer(
+                  sessionScope,
+                  Effect.promise(() => attachment.dispose()),
+                ),
+              );
+              catalogs.registerForwardedCredentials(attachment.credentials);
+              const stdioLaunch =
+                options?.mcpSessionStdioLaunch !== undefined
+                  ? (options.mcpSessionStdioLaunch ?? undefined)
+                  : mcpSessionStdioLaunch();
+              const translated = hubEndpointsToAcpServers(attachment.endpoints, {
+                http: init.agentCapabilities?.mcpCapabilities?.http === true,
+                stdioLaunch,
+              });
+              return [...base, ...translated.servers];
+            };
 
           const acp = yield* (options?.makeRuntime ?? makeGrokAcpRuntime)({
             grokSettings,
@@ -1108,7 +1157,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               provider: PROVIDER,
             },
             ...acpNativeLoggers,
-            mcpServers: catalogs.mcpServers,
+            mcpServers: withHubServers(catalogs.mcpServers),
             // Runs after `mcpServers`, so the guidance is sent only with the tool it names.
             ...(PROVIDER === "antigravity"
               ? {

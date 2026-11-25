@@ -28,6 +28,7 @@ import { makeGrokAdapter, type GrokAdapterLiveOptions } from "./GrokAdapter.ts";
 import { TurnAcceptanceSignal } from "../deliveryAttemptContext.ts";
 import type { InteractionSession } from "../../mcp/interactionMcpTools.ts";
 import type { PreviewMcpHttpServerShape } from "../../mcp/PreviewMcpHttpServer.ts";
+import { makeFakeMcpHub } from "../../mcp/hub/testing/fakeMcpHub.ts";
 
 class GrokAdapter extends ServiceMap.Service<GrokAdapter, GrokAdapterShape>()(
   "t3/provider/Layers/GrokAdapter.test/GrokAdapter",
@@ -2046,6 +2047,51 @@ rootIt.layer(
         assert.include(meta?.antigravity?.systemPrompt?.append ?? "", "ask_user_question");
         yield* adapter.stopSession(threadId);
       }).pipe(Effect.scoped),
+  );
+
+  it.effect("passes project MCP servers as hub endpoints, over HTTP when the agent offers it", () =>
+    Effect.gen(function* () {
+      const fake = makeFakeMcpHub();
+      const mcpServers = {
+        docs: { type: "http", url: "https://docs.example/mcp" },
+        local: { type: "stdio", command: "node" },
+      } as const;
+      for (const http of [false, true]) {
+        const { adapter, requests } = yield* antigravityProfileAdapter({
+          env: http ? { ACP_MOCK_MCP_HTTP: "1" } : {},
+          options: () => ({ mcpHub: fake.hub, mcpSessionStdioLaunch: STDIO_LAUNCH }),
+        });
+        const threadId = ThreadId.make(`agy-hub-${http}`);
+        yield* adapter.startSession({
+          threadId,
+          provider: "antigravity",
+          cwd: process.cwd(),
+          runtimeMode: "approval-required",
+          providerOptions: { mcpServers },
+        });
+        const created = (yield* requests()).find((request) => request.method === "session/new");
+        const servers = created?.params?.mcpServers as ReadonlyArray<Record<string, unknown>>;
+        const local = servers.find((server) => server.name === "local");
+        assert.ok(servers.some((server) => server.name === "docs"));
+        if (http) {
+          assert.deepEqual(local, {
+            type: "http",
+            name: "local",
+            url: "http://127.0.0.1:9/mcp/user/local",
+            headers: [{ name: "Authorization", value: "Bearer token-local" }],
+          });
+        } else {
+          assert.equal(local?.command, "/opt/f5/f5");
+          assert.deepEqual(local?.env, [
+            { name: "F5_MCP_URL", value: "http://127.0.0.1:9/mcp/user/local" },
+            { name: "F5_MCP_TOKEN", value: "token-local" },
+          ]);
+        }
+        yield* adapter.stopSession(threadId);
+      }
+      assert.equal(fake.attaches.length, 2);
+      assert.equal(fake.disposed, 2);
+    }).pipe(Effect.scoped),
   );
 
   it.effect("sends no system prompt guidance to an agent that does not advertise it", () =>

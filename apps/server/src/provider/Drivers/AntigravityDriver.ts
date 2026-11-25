@@ -1,5 +1,6 @@
 import { Option } from "effect";
 import { PreviewMcpHttpServer } from "../../mcp/PreviewMcpHttpServer";
+import { mcpHubAdapterOption } from "../../mcp/hub/McpHub";
 import { ComputerAutomationBroker } from "../../computer/ComputerAutomationBroker";
 import * as NodeOS from "node:os";
 import * as NodeFSP from "node:fs/promises";
@@ -504,6 +505,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
           provider: "antigravity",
           antigravityProfileDirectory: profileDirectory,
           ...(previewMcp ? { previewMcpHttpServer: previewMcp } : {}),
+          ...(yield* mcpHubAdapterOption),
           ...(computerBroker ? { computerAutomationBroker: computerBroker } : {}),
           nativeCompaction: config.nativeCompaction,
           instanceId,
