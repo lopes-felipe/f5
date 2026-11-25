@@ -73,7 +73,6 @@ function makeServerConfig(): ServerConfigShape {
     providerLogsDir: path.join(logsDir, "provider"),
     providerEventLogPath: path.join(logsDir, "provider", "events.log"),
     terminalLogsDir: path.join(logsDir, "terminals"),
-    anonymousIdPath: path.join(stateDir, "anonymous-id"),
     staticDir: undefined,
     devUrl: undefined,
     noBrowser: true,

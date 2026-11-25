@@ -386,7 +386,6 @@ import {
   prepareAttachmentIngress,
   type PreparedAttachmentIngress,
 } from "./attachmentIngress.ts";
-import { AnalyticsService } from "./telemetry/Services/AnalyticsService.ts";
 import { expandHomePath } from "./os-jank.ts";
 import {
   increment,
@@ -984,7 +983,6 @@ export type ServerRuntimeServices =
   | TerminalManager
   | Keybindings
   | Open
-  | AnalyticsService
   | NextTurnQueueStore;
 
 export class ServerLifecycleError extends Schema.TaggedErrorClass<ServerLifecycleError>()(
