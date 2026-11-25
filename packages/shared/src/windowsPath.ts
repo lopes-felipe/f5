@@ -97,6 +97,7 @@ const readPowerShellOutput = (command: string, script: string) =>
     });
   });
 
+/** Read PATH and the saved privacy setting in one probe. Startup callers apply the setting after hydration. */
 export const readWindowsRegistryPaths: WindowsRegistryPathReader = async (environment, signal) => {
   const systemRoot =
     environmentValue(environment, "SystemRoot") ??
@@ -204,6 +205,20 @@ export interface WindowsPathHydration {
   readonly registryRead: boolean;
   /** The opt-out setting saved in the User or Machine registry scope. */
   readonly savedDoNotTrack?: string;
+}
+
+export function applySavedWindowsDoNotTrack(
+  environment: NodeJS.ProcessEnv,
+  savedDoNotTrack: string | undefined,
+): void {
+  if (
+    savedDoNotTrack?.trim() &&
+    !Object.entries(environment).some(
+      ([key, value]) => key.toUpperCase() === "DO_NOT_TRACK" && value?.trim(),
+    )
+  ) {
+    environment.DO_NOT_TRACK = savedDoNotTrack;
+  }
 }
 
 export async function hydrateWindowsPath(

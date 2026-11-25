@@ -197,6 +197,8 @@ describe("syncShellEnvironment", () => {
 
   it.each([
     [{}, { DO_NOT_TRACK: "1" }],
+    [{ DO_NOT_TRACK: "" }, { DO_NOT_TRACK: "1" }],
+    [{ DO_NOT_TRACK: "  " }, { DO_NOT_TRACK: "1" }],
     [{ DO_NOT_TRACK: "0" }, { DO_NOT_TRACK: "0" }],
     [{ do_not_track: "0" }, { do_not_track: "0" }],
   ])(
@@ -214,13 +216,16 @@ describe("syncShellEnvironment", () => {
     },
   );
 
-  it("leaves Windows preparation incomplete when the registry PATH cannot be read", async () => {
+  it.each([
+    ["is unavailable", async () => undefined],
+    ["times out", () => Promise.reject(new Error("powershell timed out"))],
+  ])("leaves Windows preparation incomplete when the registry read %s", async (_, readRegistry) => {
     const env: NodeJS.ProcessEnv = { Path: "C:\\Inherited" };
     const warn = vi.fn();
 
     const prepared = await syncShellEnvironment(env, {
       platform: "win32",
-      readWindowsRegistryPaths: () => Promise.reject(new Error("powershell timed out")),
+      readWindowsRegistryPaths: readRegistry,
       windowsPathExists: async () => false,
       warn,
     });
@@ -230,5 +235,6 @@ describe("syncShellEnvironment", () => {
       "Unable to read the Windows registry PATH; using the inherited PATH.",
     );
     expect(env.PATH).toBe("C:\\Inherited");
+    expect(env).not.toHaveProperty("DO_NOT_TRACK");
   });
 });

@@ -1,5 +1,6 @@
 import { readEnvironmentFromLoginShellAsync, ShellEnvironmentReader } from "@t3tools/shared/shell";
 import {
+  applySavedWindowsDoNotTrack,
   ensureWindowsPathHydration,
   type WindowsRegistryPathReader,
 } from "@t3tools/shared/windowsPath";
@@ -34,14 +35,7 @@ export async function syncShellEnvironment(
       ...(options.windowsPathExists ? { pathExists: options.windowsPathExists } : {}),
       warn: options.warn ?? ((message) => console.warn(`[environment] ${message}`)),
     });
-    if (
-      result.savedDoNotTrack !== undefined &&
-      !Object.entries(env).some(
-        ([key, value]) => key.toUpperCase() === "DO_NOT_TRACK" && value?.trim(),
-      )
-    ) {
-      env.DO_NOT_TRACK = result.savedDoNotTrack;
-    }
+    applySavedWindowsDoNotTrack(env, result.savedDoNotTrack);
     return result.registryRead;
   }
   if (platform !== "darwin") return Promise.resolve(false);
