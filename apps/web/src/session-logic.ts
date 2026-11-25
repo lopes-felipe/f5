@@ -1719,6 +1719,7 @@ const MODEL_PROGRESS_ACTIVITY_KINDS: ReadonlySet<string> = new Set([
   "tool.updated",
   "tool.completed",
   "approval.requested",
+  "approval.auto-declined",
   "approval.resolved",
   "user-input.requested",
   "user-input.resolved",

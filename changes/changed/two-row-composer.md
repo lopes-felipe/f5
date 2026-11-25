@@ -1,0 +1,1 @@
+- The composer keeps its editor visible while you scroll. Model, effort, and send sit together, and permissions are in the composer controls menu.

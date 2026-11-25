@@ -1,0 +1,965 @@
+{
+  "baseSha": "9415a2e52d0e3ec8103d8e0c6a7e5383c1e54f7c",
+  "commits": [
+    {
+      "pr": 39067,
+      "sha": "475ae52ac279152dd2c13a86a59227d3e1441e3d",
+      "subject": "fix(web): a corrected telemetry URL can be tested while an earlier check runs (#39067)",
+      "topic": "pr-39067"
+    },
+    {
+      "pr": 39028,
+      "sha": "67692a75491618c2282d431b93d40f2e72b6b6b9",
+      "subject": "fix(server): ACP Registry Antigravity no longer leaves unpacked temp folders (#39028)",
+      "topic": "pr-39028"
+    },
+    {
+      "pr": 39056,
+      "sha": "2f577fa397340c591ec8c43cb55e717b5981ae0c",
+      "subject": "test(server): wait for the settings watcher before restoring the directory (#39056)",
+      "topic": "pr-39056"
+    },
+    {
+      "pr": 39049,
+      "sha": "693e8c7db41e1090ada14f1cb16a91ce9886909b",
+      "subject": "fix(server): released provider sessions no longer stay on the heap (#39049)",
+      "topic": "pr-39049"
+    },
+    {
+      "pr": 39057,
+      "sha": "bc6062805db775019cf6f13cc543e694ad9e20fc",
+      "subject": "fix(web): preserve file preview selection after scrolling back (#39057)",
+      "topic": "pr-39057"
+    },
+    {
+      "pr": 39024,
+      "sha": "aced664ed93911657dc84da5b438b961e31be4ec",
+      "subject": "fix(client-runtime): prefer newer completed compaction over stale liveUsage (#39024)",
+      "topic": "pr-39024"
+    },
+    {
+      "pr": 39037,
+      "sha": "bb234221cefe1dfdc64d754ee14d0456c5d09ec6",
+      "subject": "fix(server): Antigravity refreshes no longer erase scanned folders' project skills (#39037)",
+      "topic": "pr-39037"
+    },
+    {
+      "pr": 38984,
+      "sha": "c9359f6535f8f5abdc54d2ce0b13357433b91082",
+      "subject": "fix(mobile): project picker starts a chat in an open copy, not an archived one (#38984)",
+      "topic": "pr-38984"
+    },
+    {
+      "pr": 39035,
+      "sha": "977e3d4807e0ba50dd174cb402a9175ee1b79f85",
+      "subject": "fix(mobile): localhost pages say when the environment's T3 Code is too old to tunnel (#39035)",
+      "topic": "pr-39035"
+    },
+    {
+      "pr": 39018,
+      "sha": "e8c4824b70f3ea89b4dfb6cd98b6e17adade50cf",
+      "subject": "fix(server): an unread Claude steer no longer hangs the turn or gets lost (#39018)",
+      "topic": "pr-39018"
+    },
+    {
+      "pr": 39007,
+      "sha": "047c4d7599d3349f3053673c9bba23f68ca52866",
+      "subject": "fix(pi): dev servers a Pi agent starts show under its thread (#39007)",
+      "topic": "pr-39007"
+    },
+    {
+      "pr": 38991,
+      "sha": "51e5ba694ef52a9e58112fc6a3e43ec3b72a3384",
+      "subject": "refactor(cli): commands that change state go through a running server (#38991)",
+      "topic": "pr-38974"
+    },
+    {
+      "pr": 38974,
+      "sha": "55b14ac51d2d30222d52aa8ef798b5e09a62c04a",
+      "subject": "fix(cli): `t3 auth session revoke` closes the revoked client's open connections (#38974)",
+      "topic": "pr-38974"
+    },
+    {
+      "pr": 39026,
+      "sha": "0c1cf54cd784a7d5ae19d10ce72ce7c7f90669dc",
+      "subject": "fix(mobile): the compact control no longer clips the composer's provider icon (#39026)",
+      "topic": "pr-39026"
+    },
+    {
+      "pr": 39017,
+      "sha": "5ec4f500ef36adf517c9944d1e2190aad719fb84",
+      "subject": "fix(server): cleanup refreshes the size of a kept orphan worktree (#39017)",
+      "topic": "pr-39017"
+    },
+    {
+      "pr": 38971,
+      "sha": "9b1ea43cc4b4378a5ad3cdbeaf1e570166080766",
+      "subject": "fix(relay): queued APNs jobs skip delivery when the activity recheck fails (#38971)",
+      "topic": "pr-38971"
+    },
+    {
+      "pr": 38906,
+      "sha": "f2aa99694b9e65b146dedeb4660f5ff00adce6c5",
+      "subject": "fix(server): report held recurring task occurrences (#38906)",
+      "topic": "pr-38906"
+    },
+    {
+      "pr": 39012,
+      "sha": "94b54cfa9f0e148ac0e1bba13558526dbbe87374",
+      "subject": "fix(client-runtime): file tooltips keep the size after workspace search (#39012)",
+      "topic": "pr-39012"
+    },
+    {
+      "pr": 39004,
+      "sha": "066be300053f47889e1f076c363297832633e760",
+      "subject": "fix(server): read detached Antigravity 1.5 subagent transcripts (#39004)",
+      "topic": "pr-38966"
+    },
+    {
+      "pr": 38998,
+      "sha": "17c401ddc0e0dac836eb246c5991fe9e17e1947a",
+      "subject": "fix(web): drawer drops a background terminal closed by another client (#38998)",
+      "topic": "pr-38998"
+    },
+    {
+      "pr": 38995,
+      "sha": "05e36746364bef7778ee9f2cc07dc2a3d4fe210b",
+      "subject": "fix(web): screen readers read a linked issue's key once in thread details (#38995)",
+      "topic": "pr-38160"
+    },
+    {
+      "pr": 39000,
+      "sha": "1d5ebe3f8e6ec7cec898269f14a1e054c084f280",
+      "subject": "fix(client-runtime): a failed issue refresh keeps older comments already loaded (#39000)",
+      "topic": "pr-19259"
+    },
+    {
+      "pr": 38996,
+      "sha": "26b872b46a4dd7a96dd1aaab57bc5a4fb4cef25f",
+      "subject": "fix(web): hiding a revealed email no longer flashes its placeholder (#38996)",
+      "topic": "pr-38996"
+    },
+    {
+      "pr": 38986,
+      "sha": "60e54867fcafd36a9a6340f627bd6e6e4b699635",
+      "subject": "fix(azure-devops): refreshing Issues reads each project's current finished states (#38986)",
+      "topic": "pr-19259"
+    },
+    {
+      "pr": 24683,
+      "sha": "86b5734cfc46db8e663d6d74f39b184c14101746",
+      "subject": "fix(server): Windows .cmd launchers work as the Antigravity binary path (#24683)",
+      "topic": "pr-24683"
+    },
+    {
+      "pr": 38978,
+      "sha": "b45ca716f92ded3fcf63f2acc8db94c47b7d9efc",
+      "subject": "fix(mobile): a project picked while No project opens is no longer replaced (#38978)",
+      "topic": "pr-38978"
+    },
+    {
+      "pr": 38989,
+      "sha": "a6d2bed55b8ea1b4be27c9c77fdd65e0e7d479d5",
+      "subject": "fix(provider-acp): a titleless tool_call_update keeps the tool's name (#38989)",
+      "topic": "pr-38989"
+    },
+    {
+      "pr": 38980,
+      "sha": "dcaff67177bb4e37d3b715b230fa53832fb1010e",
+      "subject": "fix(web): removing a connection withdraws its permission update notice (#38980)",
+      "topic": "pr-38980"
+    },
+    {
+      "pr": 38973,
+      "sha": "37f8a5325cdf3de37c2be860c8525ceb9742cbb5",
+      "subject": "feat(server): agents land a GitHub stack in one merge (#38973)",
+      "topic": "pr-26751"
+    },
+    {
+      "pr": 38966,
+      "sha": "43b37b6d3c0aff0025331226fc91a2affcf4ac08",
+      "subject": "fix(server): Antigravity invoke_subagent calls show as running subagents again (#38966)",
+      "topic": "pr-38966"
+    },
+    {
+      "pr": 35621,
+      "sha": "00200bd412f63d9ba2e7241b7eb60eb82baa5b10",
+      "subject": "fix(server): Antigravity native slash commands reach the composer (#35621)",
+      "topic": "pr-35621"
+    },
+    {
+      "pr": 23654,
+      "sha": "94baff19c6526a1bfa5ce2f9a2c37cbfb3703f31",
+      "subject": "fix(server): Antigravity resumes after its local harness fails (#23654)",
+      "topic": "pr-23654"
+    },
+    {
+      "pr": 38968,
+      "sha": "e0f5acd17893d7b7187fc4ff8723ad329971c668",
+      "subject": "fix(web): the command palette lists a failed thread as Failed, not Waiting (#38968)",
+      "topic": "pr-38968"
+    },
+    {
+      "pr": 38106,
+      "sha": "d530ef339b29a4644bb3d087d053ba17a51ae9a2",
+      "subject": "fix(acp): classify web search by title and omit fake filename results (#38106)",
+      "topic": "pr-38106"
+    },
+    {
+      "pr": 26752,
+      "sha": "f7041fabc8bd657510be26ad33225ef79fc4ef1a",
+      "subject": "feat(server): agents read failing CI logs and re-run checks through MCP tools (#26752)",
+      "topic": "pr-26751"
+    },
+    {
+      "pr": 26751,
+      "sha": "5d05902ddd1981d18ce0497317cd96d1a10325e1",
+      "subject": "feat(server): agents read, open, update, respond to, and merge PRs through MCP tools (#26751)",
+      "topic": "pr-26751"
+    },
+    {
+      "pr": 36289,
+      "sha": "94245bc8ecc04d748e079f54839e808d8bfbc8be",
+      "subject": "perf(server): sending to a long compacted thread skips its old prompts (#36289)",
+      "topic": "pr-36289"
+    },
+    {
+      "pr": 32213,
+      "sha": "ae3c7a68b4d430a8f763d90a24203fb14d4b4713",
+      "subject": "fix(server): archiving a thread also archives its side chats (#32213)",
+      "topic": "pr-32213"
+    },
+    {
+      "pr": 29239,
+      "sha": "23c339e8be81e7660a192f8fd11f66c5b4a0de7e",
+      "subject": "fix(server): preserve native history in busy Codex forks (#29239)",
+      "topic": "pr-29239"
+    },
+    {
+      "pr": 38960,
+      "sha": "292a8e448b3970b4ea556ff29816d09ffa76b69d",
+      "subject": "fix(server): list skills from plugins in the Antigravity instance profile (#38960)",
+      "topic": "pr-38960"
+    },
+    {
+      "pr": 38800,
+      "sha": "6b73ca9e4bef9a51e5b38c55a20ec974e36a4398",
+      "subject": "fix(server): the Claude process poll forgets jobs that have ended (#38800)",
+      "topic": "pr-38800"
+    },
+    {
+      "pr": 38943,
+      "sha": "5db8cca50a03e23dcc1cabb869962db7228652e3",
+      "subject": "fix(desktop): middle-click paste ignores the GNOME key outside GNOME (#38943)",
+      "topic": "pr-38943"
+    },
+    {
+      "pr": 38963,
+      "sha": "284d3de3ccba38a0e892c53d5a4da60473fa3fa3",
+      "subject": "fix(web): a thread that finished while you were away opens at its end (#38963)",
+      "topic": "pr-38963"
+    },
+    {
+      "pr": 38837,
+      "sha": "c4dc9ed55b35267a40857aa27525c520bf913342",
+      "subject": "fix(antigravity): keep truncated command output valid Unicode (#38837)",
+      "topic": "pr-38837"
+    },
+    {
+      "pr": 27896,
+      "sha": "0796279c1cf000a4e6de72b1858aec75e3301059",
+      "subject": "perf(server): index historical usage-limit recovery lookups (#27896)",
+      "topic": "pr-27896"
+    },
+    {
+      "pr": 35268,
+      "sha": "c1f8459153490d78c0d674b2ce5d749f31aaa4cb",
+      "subject": "fix(ssh): an SSH host that already has the matching t3 runs it instead of the portable archive (#35268)",
+      "topic": "pr-35268"
+    },
+    {
+      "pr": 38410,
+      "sha": "eac011439a4454f08b5ea31a09760ffeb0068bfc",
+      "subject": "fix(server): preview and Device Hub streams survive DPoP session renewal (#38410)",
+      "topic": "pr-38410"
+    },
+    {
+      "pr": 37936,
+      "sha": "7da0a166e1d9fa1734b50088a64fc28bea175a8d",
+      "subject": "fix(provider-core): bound status probe output while draining pipes (#37936)",
+      "topic": "pr-37936"
+    },
+    {
+      "pr": 31761,
+      "sha": "21098689802ad81b7b5e034e892ff5894054761d",
+      "subject": "feat(cli): allow Antigravity in terminal triage (#31761)",
+      "topic": "pr-31761"
+    },
+    {
+      "pr": 30909,
+      "sha": "04bb52f1082708c391e1fd3bc0f63a9c4bb88cd5",
+      "subject": "fix(aur): support ARM64 in stable and nightly packages (#30909)",
+      "topic": "pr-30909"
+    },
+    {
+      "pr": 35631,
+      "sha": "1167eb10abe3032e1070f43486306296ed970250",
+      "subject": "fix(server): bound retained VCS status snapshots (#35631)",
+      "topic": "pr-35631"
+    },
+    {
+      "pr": 23668,
+      "sha": "32f93dab3dcdfe114229fb91983e72bc2bf976ea",
+      "subject": "fix(server): shadow-home Codex instances keep bundled plugins (#23668)",
+      "topic": "pr-23668"
+    },
+    {
+      "pr": 34194,
+      "sha": "b39eb755aaf8c86fa1ce56d2447d197eabc6d9d7",
+      "subject": "fix(server): a revoked T3 Connect link can be relinked to another account (#34194)",
+      "topic": "pr-38741"
+    },
+    {
+      "pr": 34444,
+      "sha": "207fc2c48b64e6cf33c01aaea6d4333ba07a5055",
+      "subject": "fix(server): closing a terminal also stops its background jobs (#34444)",
+      "topic": "pr-34444"
+    },
+    {
+      "pr": 30824,
+      "sha": "ab43269d5598d30a2c4b283f8f384c00cd4fcc0f",
+      "subject": "fix(desktop): remove stale AppImage mounts from cached PATH (#30824)",
+      "topic": "pr-30824"
+    },
+    {
+      "pr": 26056,
+      "sha": "e26a76af86ed64f1957a693d450c590442643e76",
+      "subject": "fix(provider-cursor): retry invalid text generation once (#26056)",
+      "topic": "pr-26056"
+    },
+    {
+      "pr": 28029,
+      "sha": "5ce1bd5e142f37a4bf985688e90527e57c0d3bf4",
+      "subject": "fix(server): runs no longer stay preparing after a full disk (#28029)",
+      "topic": "pr-28029"
+    },
+    {
+      "pr": 38954,
+      "sha": "c3ece584f9e061c58985e95c4d36220d0dd77d5f",
+      "subject": "fix(server): adb-attached Android devices stay listed when avdmanager fails (#38954)",
+      "topic": "pr-38954"
+    },
+    {
+      "pr": 38955,
+      "sha": "91f166adf39ca29ef012e123a4362bf707e8e101",
+      "subject": "fix(server): Antigravity native slash commands reach the composer after a restart (#38955)",
+      "topic": "pr-38955"
+    },
+    {
+      "pr": 38867,
+      "sha": "c80d450d20d6f88f98105b9e67ae47f5b5113fde",
+      "subject": "perf(server): task follow-ups no longer read the whole parent thread (#38867)",
+      "topic": "pr-38825"
+    },
+    {
+      "pr": 38926,
+      "sha": "28d96a2a49bc8d2e215da32958082aeb36985892",
+      "subject": "fix(server): a PR watch the agent owns keeps its thread working until the PR merges (#38926)",
+      "topic": "pr-26271"
+    },
+    {
+      "pr": 38848,
+      "sha": "f2716cd7109207cd74c5b2444cc2ae75254f5ade",
+      "subject": "fix(server): keep compact Codex launch options in text generation (#38848)",
+      "topic": "pr-38848"
+    },
+    {
+      "pr": 38825,
+      "sha": "33d48867f83d3ee81036256b35507392fef501fb",
+      "subject": "fix(server): turn starts no longer rescan every attempt per ended run (#38825)",
+      "topic": "pr-38825"
+    },
+    {
+      "pr": 38917,
+      "sha": "245a1ead9224e67ed835df575aeb901912e85d72",
+      "subject": "fix(client): resume no longer sends a blank message to older servers (#38917)",
+      "topic": "pr-38847"
+    },
+    {
+      "pr": 38946,
+      "sha": "eb90b7921721217b26282ca4bab628976a00c1af",
+      "subject": "fix(client-runtime): command rows unwrap Windows pwsh -Command and cmd /c launchers (#38946)",
+      "topic": "pr-38946"
+    },
+    {
+      "pr": 26271,
+      "sha": "7dceb76f4c1416ffae3839e19dceb4d0c19c9ca2",
+      "subject": "fix(server): watched PRs wake the agent when they merge (#26271)",
+      "topic": "pr-26271"
+    },
+    {
+      "pr": 38904,
+      "sha": "447c0129cce69b4be5d594328e19f14ab4830e2e",
+      "subject": "fix(claude): a background subagent's shell shows its command in Background work details (#38904)",
+      "topic": "pr-37787"
+    },
+    {
+      "pr": 38892,
+      "sha": "6b45d90047c7592c3e5bf5624553cf0faca1cf8e",
+      "subject": "fix(connect): let remote clients with relay configuration link (#38892)",
+      "topic": "pr-37823"
+    },
+    {
+      "pr": 38944,
+      "sha": "b48a20bc858dc6129b9e82f405d1b3b8cfbe53f7",
+      "subject": "fix(web): settings search icons line up with their titles (#38944)",
+      "topic": "pr-38944"
+    },
+    {
+      "pr": 38942,
+      "sha": "082bc2cb7acdb12ce6d015f9709f648afaedbe01",
+      "subject": "fix(mobile): install Intl polyfills before crash reporting (#38942)",
+      "topic": "pr-38942"
+    },
+    {
+      "pr": 29279,
+      "sha": "1b555ccb0145747ef9c42b51e963378ee080bdb0",
+      "subject": "fix(server): Antigravity install on Windows survives a briefly locked runtime folder (#29279)",
+      "topic": "pr-29279"
+    },
+    {
+      "pr": 38890,
+      "sha": "fc6c68b773db0a3cc7292a703d337a44919164b5",
+      "subject": "perf(server): a secret or link card reads one run, not the whole thread (#38890)",
+      "topic": "pr-38890"
+    },
+    {
+      "pr": 38856,
+      "sha": "3e35e7e17c9f6d2d45baaf88c6cfe082430dea16",
+      "subject": "fix(server): pull request sync leaves a forge CLI slot for other reads (#38856)",
+      "topic": "pr-38856"
+    },
+    {
+      "pr": 38862,
+      "sha": "3a51807da05203bc2dbfbc489f976e3ba0dc609a",
+      "subject": "fix(server): checkpoints capture workspaces with files the server cannot read (#38862)",
+      "topic": "pr-38862"
+    },
+    {
+      "pr": 38657,
+      "sha": "bac1b715670000543154afb10524afd87701c0bd",
+      "subject": "fix(mobile): posting a comment works after a refresh drops a loading older page (#38657)",
+      "topic": "pr-38657"
+    },
+    {
+      "pr": 38873,
+      "sha": "8695a7e5cf12e2984a312b3035debb01e22a7e7d",
+      "subject": "fix(server): explain how to send after a pending Merge back (#38873)",
+      "topic": "pr-38873"
+    },
+    {
+      "pr": 37823,
+      "sha": "a941ab544d4b30765aaf50d8447eee12630c5486",
+      "subject": "fix(connect): restrict relay configuration and token destinations (#37823)",
+      "topic": "pr-37823"
+    },
+    {
+      "pr": 38789,
+      "sha": "669e2ea8e776410aff941897359e3c314aad231c",
+      "subject": "feat(web): usage limit rows show your pace and open the usage page (#38789)",
+      "topic": "pr-38789"
+    },
+    {
+      "pr": 38916,
+      "sha": "f9b9bc742d99cec7c658b75954fdf3c872106b16",
+      "subject": "fix(server): Antigravity threads stay working while a background command runs, and Stop ends it (#38916)",
+      "topic": "pr-38864"
+    },
+    {
+      "pr": 38844,
+      "sha": "455a60aa3cebe9263dd485cae0cfa33817334647",
+      "subject": "fix(server): a fresh send in a fork that has not run yet starts a fresh session (#38844)",
+      "topic": "pr-38844"
+    },
+    {
+      "pr": 38707,
+      "sha": "d06eaff2f488ac1640df9744659b3acf2654411b",
+      "subject": "perf(server): batch Git status path lookups (#38707)",
+      "topic": "pr-38707"
+    },
+    {
+      "pr": 38898,
+      "sha": "158394194c6ba4a3e2b0cd1c2bab28ceacdca7e1",
+      "subject": "fix(shared): html_render cards show for Antigravity's acp-mcp-call terminal fallback (#38898)",
+      "topic": "pr-38864"
+    },
+    {
+      "pr": 38636,
+      "sha": "9a26f217ac85cdb49b55283135625ada48187abf",
+      "subject": "fix(server): t3_project_read shows the default model saved in Settings (#38636)",
+      "topic": "pr-38636"
+    },
+    {
+      "pr": 38846,
+      "sha": "63bf014dc3fb35e76c32d4ca23ed0485cd5d47f7",
+      "subject": "fix(desktop): browser annotations show above page popovers and modal dialogs (#38846)",
+      "topic": "pr-38846"
+    },
+    {
+      "pr": 38852,
+      "sha": "44431935c5ec4aa675c26941f852b0a41485a66a",
+      "subject": "fix(server): SSH host aliases no longer split a repository into separate groups (#38852)",
+      "topic": "pr-38852"
+    },
+    {
+      "pr": 38849,
+      "sha": "6fd14f46d667ff4db712478e8c877a1de80a80fe",
+      "subject": "fix(server): servers on one machine no longer update a shared provider CLI at once (#38849)",
+      "topic": "pr-38849"
+    },
+    {
+      "pr": 38850,
+      "sha": "899a2433ab83ce97ba0413d8ed3c2950a4099fa6",
+      "subject": "fix(mobile): shares into T3 Code start in the last project (#38850)",
+      "topic": "pr-38850"
+    },
+    {
+      "pr": 38899,
+      "sha": "e8aa0debb3c0a400c276a07f22a635f31b233530",
+      "subject": "test(server): agy permission continuation test waits for the reply's usage_update (#38899)",
+      "topic": "pr-38899"
+    },
+    {
+      "pr": 38865,
+      "sha": "14d57b451e4eaa66ccc0b840de552826279484bd",
+      "subject": "fix(web): server browser pane reports when Chromium draws no frames (#38865)",
+      "topic": "pr-38865"
+    },
+    {
+      "pr": 38775,
+      "sha": "888fd3f3f9a249b21a1920fb4f0813b38d987467",
+      "subject": "fix(server): a gh auth token timeout no longer asks you to check gh auth status (#38775)",
+      "topic": "pr-38775"
+    },
+    {
+      "pr": 38831,
+      "sha": "f69b3a27a7945745889a4f77662e75560c9c8af4",
+      "subject": "fix(server): replay accepted steers after the target turn ends (#38831)",
+      "topic": "pr-38831"
+    },
+    {
+      "pr": 38746,
+      "sha": "c57aab6fd7815d86cdca2d49545cbe5890ea7f80",
+      "subject": "fix(gitlab): merge request and issue labels keep their colour (#38746)",
+      "topic": "pr-38746"
+    },
+    {
+      "pr": 38854,
+      "sha": "966bdc74f3ca3d96ed44a5feae6297cb58a01f89",
+      "subject": "fix(client): Linear issue links in messages open in the issue panel (#38854)",
+      "topic": "pr-19259"
+    },
+    {
+      "pr": 38893,
+      "sha": "08db5e31454233165e990265e7488ad34b5dc8f6",
+      "subject": "docs: accept PRs written by Gemini 4 Neon (#38893)",
+      "topic": "pr-38893"
+    },
+    {
+      "pr": 38847,
+      "sha": "245c5798070d2d28b10de9b50ce433e0a41ae04d",
+      "subject": "fix(server): Resume that carries a context handoff asks the agent to continue (#38847)",
+      "topic": "pr-38847"
+    },
+    {
+      "pr": 38853,
+      "sha": "99be1f6601f98bb33b04b740c49ac2e2c938efe0",
+      "subject": "fix(server): fetch failures from a broken local ref say so (#38853)",
+      "topic": "pr-38853"
+    },
+    {
+      "pr": 38663,
+      "sha": "80142c0cc313a8880ea3aeb48ac6f336018be506",
+      "subject": "fix(mobile): custom snooze date label follows the app language on Android (#38663)",
+      "topic": "pr-38651"
+    },
+    {
+      "pr": 38045,
+      "sha": "194b33205530053d7c85b7b758ce19bf1c48d4df",
+      "subject": "feat(mobile): open localhost tabs on the device, with a Safari-style browser bar (#38045)",
+      "topic": "pr-38651"
+    },
+    {
+      "pr": 38832,
+      "sha": "4c679a21e73f998832d2c32f9e16078aca28e2c5",
+      "subject": "fix(web): page scripts in inline HTML renders no longer scroll the chat (#38832)",
+      "topic": "pr-38832"
+    },
+    {
+      "pr": 38839,
+      "sha": "528687d2260ca0c132c6d634bcb15fc94c4604c6",
+      "subject": "fix(acp-registry): inherited NPM_CONFIG_PREFIX no longer overrides the managed npm prefix on Windows (#38839)",
+      "topic": "pr-38839"
+    },
+    {
+      "pr": 38864,
+      "sha": "12be92d034f3889cfecac077c6bb655632d9074c",
+      "subject": "fix(server): Antigravity threads keep going after a background command finishes (#38864)",
+      "topic": "pr-38864"
+    },
+    {
+      "pr": 38858,
+      "sha": "523a98447eaa1167ba4affe2270768e25f7565c2",
+      "subject": "fix(web): files under \"Also in this stop\" in a review guide can be commented on (#38858)",
+      "topic": "pr-38858"
+    },
+    {
+      "pr": 38860,
+      "sha": "8729bdd42c6a6d0b0ea715ed29a1760875d4ecda",
+      "subject": "feat(server): pairing-link sessions renew with the device's DPoP key (#37980) (#38860)",
+      "topic": "pr-38859"
+    },
+    {
+      "pr": 38801,
+      "sha": "5b265f8eb7db05df055b2e882d4c10d332076d6b",
+      "subject": "fix(desktop): pnpm global commands find their bin directory (#38801)",
+      "topic": "pr-38801"
+    },
+    {
+      "pr": 38845,
+      "sha": "b6d6717df6229db4eec6366135a82f0cc0684283",
+      "subject": "fix(pi): teardown returns once the Pi process group exits (#38845)",
+      "topic": "pr-38845"
+    },
+    {
+      "pr": 38659,
+      "sha": "7bae751d89c9f950b174edb7a276ba5fcbacda33",
+      "subject": "fix(server): Hermes keeps its background reply when launched through a wrapper (#38659)",
+      "topic": "pr-38615"
+    },
+    {
+      "pr": 38859,
+      "sha": "6845207825728928bc439442f10aa9df1307eb1c",
+      "subject": "feat(server): pairing-link sessions renew with the device's DPoP key (#37980) (#38859)",
+      "topic": "pr-38859"
+    },
+    {
+      "pr": 38651,
+      "sha": "38e946455a64ed3a4cc22c14679ae41d49424c54",
+      "subject": "fix(mobile): unavailable thread links are labeled in the app language (#38651)",
+      "topic": "pr-38651"
+    },
+    {
+      "pr": 38763,
+      "sha": "eb46038e3aea160fc8e21ab3f7b0aeb0fbf11773",
+      "subject": "fix(web): Background work details show a subagent as Waiting, like the line above (#38763)",
+      "topic": "pr-38763"
+    },
+    {
+      "pr": 38804,
+      "sha": "410109da5d846c17a40eadb5f92b2df6206b7f6a",
+      "subject": "fix(testing): test git commands stay out of the outer repository (#38804)",
+      "topic": "pr-38804"
+    },
+    {
+      "pr": 38824,
+      "sha": "66235c7f2a92677b8356a61ecaca6e5a7a96ebb8",
+      "subject": "fix(server): messages after a fresh session no longer return to a pre-clear session woken by background work (#38824)",
+      "topic": "pr-38824"
+    },
+    {
+      "pr": 38649,
+      "sha": "6ea01d4cbecb37ec59476aa5c87945b9fce61fad",
+      "subject": "fix(web): No project folder follows the app language (#38649)",
+      "topic": "pr-37893"
+    },
+    {
+      "pr": 38654,
+      "sha": "63899c16b959fe0c13ae5ab2b73a6c08268c145c",
+      "subject": "fix(web): retrying a failed Issues list no longer restarts another environment's read (#38654)",
+      "topic": "pr-19259"
+    },
+    {
+      "pr": 38833,
+      "sha": "e58d0e9f038dee7aef5f3ab9eb890031e1845b42",
+      "subject": "test(web): /side attachments test no longer types a key at a time (#38833)",
+      "topic": "pr-38833"
+    },
+    {
+      "pr": 38841,
+      "sha": "a7522ff02f710e8ddc5129b2b8dc432c239d0e2e",
+      "subject": "feat(server): pairing-link sessions renew with the device's DPoP key (#37980) (#38841)",
+      "topic": "pr-38841"
+    },
+    {
+      "pr": 38823,
+      "sha": "20668e8ececf8d715f1c4396427e57b45c9e3693",
+      "subject": "fix(shared): ŉ no longer splits a word in project folder names (#38823)",
+      "topic": "pr-38540"
+    },
+    {
+      "pr": 37948,
+      "sha": "0226239a41e1fd0649fdd2562421d8950db7f39c",
+      "subject": "feat(desktop): render other environments' localhost tabs locally (#37948)",
+      "topic": "pr-37947"
+    },
+    {
+      "pr": 37947,
+      "sha": "cbae97f620eaa26497679e1574deb91e408e038b",
+      "subject": "feat(server): tunnel preview traffic to an environment's loopback ports (#37947)",
+      "topic": "pr-37947"
+    },
+    {
+      "pr": 38822,
+      "sha": "685c2ebd457ac199dcab8e0d715c423bd07e8c1a",
+      "subject": "test(web): /side attachments test waits for each side chat to start (#38822)",
+      "topic": "pr-38822"
+    },
+    {
+      "pr": 38655,
+      "sha": "5d3434bab21bff6919b69cc46ab61b0ca39fad21",
+      "subject": "fix(marketing): translated \"Tolerated by\" headline is faint praise, not endurance (#38655)",
+      "topic": "pr-38655"
+    },
+    {
+      "pr": 37866,
+      "sha": "ba640037e82dde3009d1b99573a20414c0dec89b",
+      "subject": "fix(desktop): require user consent for preview actions (#37866)",
+      "topic": "pr-37866"
+    },
+    {
+      "pr": 26969,
+      "sha": "cbd8267c2d9aeb682fb2306215e442492aff3196",
+      "subject": "feat(fx): offer Full access where the installed fx supports it (#26969)",
+      "topic": "pr-26969"
+    },
+    {
+      "pr": 38812,
+      "sha": "3993cfa152b5cf10d69eddca616eb79fdec38631",
+      "subject": "docs: add SECURITY.md trust model for security audits (#38812)",
+      "topic": "pr-38812"
+    },
+    {
+      "pr": 38813,
+      "sha": "b6ac2449f1e5179b66978a3eaa0d375b7bae5044",
+      "subject": "fix(server): warn when t3 serve advertises a plain-HTTP network address (#38813)",
+      "topic": "pr-38813"
+    },
+    {
+      "pr": 29388,
+      "sha": "00c6adbdce26eda05ccc3306d616fea4311aeb7a",
+      "subject": "feat(fx): choose a backend per thread (#29388)",
+      "topic": "pr-29388"
+    },
+    {
+      "pr": 29399,
+      "sha": "3ce2145864f1e8b822cc8dff9c8cfdf39d9e450b",
+      "subject": "feat(fx): add safe CLI updates with cancellation compatibility (#29399)",
+      "topic": "pr-29399"
+    },
+    {
+      "pr": 35306,
+      "sha": "733bc8f1d06d9597cc846305779b29540e970279",
+      "subject": "feat(mobile): select, cite, and comment on assistant text (#35306)",
+      "topic": "pr-35306"
+    },
+    {
+      "pr": 29391,
+      "sha": "b4239c4b231a90866b98bb49af1eb4e140462868",
+      "subject": "feat(mobile): share a thread with a guest from the mobile app (#29391)",
+      "topic": "pr-29391"
+    },
+    {
+      "pr": 38282,
+      "sha": "2e3d9fccddd4a26ad4eed71ef2b99f47b5af7666",
+      "subject": "feat(web): show linked issues beside thread pull requests (#38282)",
+      "topic": "pr-19259"
+    },
+    {
+      "pr": 38256,
+      "sha": "c350ee7e15d0f993b406d243d2b4685b10a437e0",
+      "subject": "feat(web): filter the issues list by project (#38256)",
+      "topic": "pr-19259"
+    },
+    {
+      "pr": 38350,
+      "sha": "052ca497cf1103b001327bcd964188a71dfec213",
+      "subject": "fix(web,mobile): side chats keep your attachments and context (#38350)",
+      "topic": "pr-38350"
+    },
+    {
+      "pr": 38771,
+      "sha": "b6a0fd6d62ad52b6c3a4496eab042c85e3804cba",
+      "subject": "feat(issues): an issue shows every thread it is linked to (#38771)",
+      "topic": "pr-19259"
+    },
+    {
+      "pr": 38684,
+      "sha": "a5090a75767dfaef311932e4a466e5fe2ee2f0f2",
+      "subject": "fix(web): Default effort no longer shows as the lowest bar (#38684)",
+      "topic": "pr-38684"
+    },
+    {
+      "pr": 38772,
+      "sha": "1cefbc4051ba687035b4cca3fa4a59309a8918a9",
+      "subject": "fix(mobile): Duo rail tools no longer slide under the workspace tabs (#38772)",
+      "topic": "pr-38772"
+    },
+    {
+      "pr": 38722,
+      "sha": "6927cfe2adb0867eb098009a5eb35e42da2b13a1",
+      "subject": "fix(web): dropped folders open on this computer's server when the desktop app's own environment is off (#38722)",
+      "topic": "pr-38722"
+    },
+    {
+      "pr": 38356,
+      "sha": "39ad0c58ec3f38e89d595487c97cbf3de0e4d6fd",
+      "subject": "fix(agents): link tracked issues to their threads (#38356)",
+      "topic": "pr-19259"
+    },
+    {
+      "pr": 38294,
+      "sha": "378584a7606cd0d1c1defddcb322efd77c822a3c",
+      "subject": "feat(web): hovering an issue link shows its preview card (#38294)",
+      "topic": "pr-19259"
+    },
+    {
+      "pr": 28889,
+      "sha": "f9a3c38c50586977a375d93de77250cddfc8f039",
+      "subject": "fix(antigravity): recover threads after a lost thinking signature (#28889)",
+      "topic": "pr-28889"
+    },
+    {
+      "pr": 38683,
+      "sha": "6d1381f04c3655dfddb5ea38521a9a76bfe1184c",
+      "subject": "fix(server): a fork renamed before its first message keeps that name (#38683)",
+      "topic": "pr-38683"
+    },
+    {
+      "pr": 38544,
+      "sha": "c7ce74fce68c716c1a02051fa7c003e3802351ce",
+      "subject": "perf(server): batch provider commits without blocking unrelated writes (#38544)",
+      "topic": "pr-38544"
+    },
+    {
+      "pr": 38749,
+      "sha": "e48d6f31817ad12975af2ffd341ae2b1b961d247",
+      "subject": "fix(web): PDFs in the desktop file panel can be saved again (#38749)",
+      "topic": "pr-38749"
+    },
+    {
+      "pr": 37820,
+      "sha": "7da318e2d563b4e3c51edde06d435b5c4ec2eb9e",
+      "subject": "fix(relay): revoke the previous link when switching accounts (#37820)",
+      "topic": "pr-38741"
+    },
+    {
+      "pr": 38741,
+      "sha": "34b12bea8e7f0c1b721ad3be7c13a78b630030da",
+      "subject": "fix(relay): finish unlinking when the DNS record is already gone (#38741)",
+      "topic": "pr-38741"
+    },
+    {
+      "pr": 38740,
+      "sha": "68ea2220c12cef2fad673d87d731c828e73a6e4d",
+      "subject": "fix(server): managed Antigravity and Codex runtimes prune old versions (#38740)",
+      "topic": "pr-38740"
+    },
+    {
+      "pr": 38733,
+      "sha": "75cae42febdbedc2bd39430a1d6f017e38f6bfe0",
+      "subject": "fix(server): live-status thread lists build shells only for threads that may be live (#38733)",
+      "topic": "pr-38733"
+    },
+    {
+      "pr": 38263,
+      "sha": "f1d64aa0b6dea2c5473bd5f45d62d8ebb6d7a133",
+      "subject": "fix(azure-devops): legacy and project-less remotes list their work items (#38263)",
+      "topic": "pr-19259"
+    },
+    {
+      "pr": 38731,
+      "sha": "310baf7c99c9d5c4ac65aec63247bf450ca36544",
+      "subject": "fix(web): closing Settings or Usage with Esc returns focus to the opener (#38731)",
+      "topic": "pr-38731"
+    },
+    {
+      "sha": "cf83da75a21ac8c51494602694fb92923a95bc64",
+      "subject": "Add navidnadali to VOUCHED.td",
+      "topic": "c-cf83da75a21a"
+    },
+    {
+      "pr": 38739,
+      "sha": "89ac1b8ed1acedf7036701a19241f2aaa0b19a23",
+      "subject": "feat(server): pairing-link sessions renew with the device's DPoP key (#37980) (#38739)",
+      "topic": "pr-38739"
+    },
+    {
+      "pr": 38724,
+      "sha": "c2a7c5cbc3599f6b34873b49561250e9bae26bdf",
+      "subject": "fix(server): subagents from earlier turns keep their model after loading history (#38724)",
+      "topic": "pr-38724"
+    },
+    {
+      "pr": 37547,
+      "sha": "ad77fd88e2cf3be58c5e4c93b41d6dc705f648c3",
+      "subject": "fix(web): Enter during image compression sends once it finishes (#37547)",
+      "topic": "pr-37547"
+    },
+    {
+      "pr": 38645,
+      "sha": "18f154a2c18b31cc335e33c854ea6ff1641a59ea",
+      "subject": "fix(server): decode Mac Roman in RTF attachments (#38645)",
+      "topic": "pr-38605"
+    },
+    {
+      "pr": 37990,
+      "sha": "e396bb2e264d828977bb2dbed69b425dc272d489",
+      "subject": "feat(client-runtime): direct links pair with the device key and renew themselves (#37990)",
+      "topic": "pr-37980"
+    },
+    {
+      "pr": 37980,
+      "sha": "dd512d86c5e42c15b04d4a04aa663340aaee603f",
+      "subject": "feat(server): pairing-link sessions renew with the device's DPoP key (#37980)",
+      "topic": "pr-37980"
+    },
+    {
+      "pr": 38705,
+      "sha": "f3b168b9f661eb464ad47d986dc16813c622f8e2",
+      "subject": "fix(mobile): iPhone Duo vertical bar buttons no longer stay blurred (#38705)",
+      "topic": "pr-38705"
+    },
+    {
+      "pr": 38712,
+      "sha": "2aacea6aa5551b7df2295ed98be1b562b685c23f",
+      "subject": "perf(server): a failed scheduled run reads only its own error items (#38712)",
+      "topic": "pr-38712"
+    },
+    {
+      "pr": 38444,
+      "sha": "081afe08dcd15d745920d2d6be76c5e29d63c091",
+      "subject": "fix(mobile): PR diffs show syntax colors before the full file arrives (#38444)",
+      "topic": "pr-38444"
+    },
+    {
+      "pr": 38585,
+      "sha": "8cf97b5f06f30a872ce30ab8a888f2ff012365a2",
+      "subject": "fix(server): a finished run no longer keeps an unused file index alive (#38585)",
+      "topic": "pr-38585"
+    },
+    {
+      "pr": 38605,
+      "sha": "7e4c4294823f6507c41722cf919b597a8f9352b3",
+      "subject": "fix(server): RTF tracked deletions are left out of the extracted text (#38605)",
+      "topic": "pr-38605"
+    }
+  ],
+  "count": 159,
+  "createdAt": "2026-11-19T11:06:04.640Z",
+  "digest": "db73cb9357639ed16b5c9d2e66a62afa879598d698417ce45d1bc1804f5fdee2",
+  "interval": 37,
+  "schemaVersion": 8,
+  "selection": "first-parent",
+  "targetSha": "475ae52ac279152dd2c13a86a59227d3e1441e3d"
+}

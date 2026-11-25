@@ -76,9 +76,16 @@ On a certified version, F5 keeps every workflow turn read-only:
 - Before each workflow prompt F5 switches the session to Plan and checks that Antigravity
   reports Plan. If it doesn't, the turn stops before anything is sent. Workflow turns never fall
   back to Auto.
-- Read, search, think and fetch tools run. Everything else is denied without asking you: edits,
-  deletes, moves, commands, computer use, MCP tools, and any request without a recognised kind.
-  Each denial appears in the thread.
+- Read, search, think and fetch tools run. So do shell commands that only read, such as
+  `gh pr view`, `gh pr diff`, `gh api` GET requests, `git log`/`diff`/`show`, `rg` and `cat`,
+  joined by pipes, `&&`, `||` or `;`, with output redirected to `/dev/null` at most. Arguments
+  must be literal (no variables or substitutions), and commands that never exit, such as
+  `tail -f`, are refused. Cursor uses the same allowlist, in
+  `apps/server/src/provider/readOnlyWorkflowShell.ts`.
+- Everything else is denied without asking you: edits, deletes, moves, other commands, computer
+  use, MCP tools, and any request without a recognised kind. Each denial appears in the thread
+  and the model is told no, so it can try something else. A turn that has three operations
+  denied fails the stage.
 - Unattended stages decline Antigravity's questions; attended stages ask you as usual.
 - Fetch stays allowed in every stage, including unattended reviews, so a reviewer can read the
   documentation a change depends on. This matches how Codex and Claude plan mode treat web
@@ -91,13 +98,19 @@ On a certified version, F5 keeps every workflow turn read-only:
 1. Add an inert MCP server to the instance's Antigravity profile whose tool writes a marker file
    when it runs.
 2. In a scratch repository, start one workflow turn on the candidate version and tell it to read
-   a file holding a fresh token, edit a file, run a shell command and call that MCP tool.
+   a file holding a fresh token, edit a file, run a shell command that writes (such as
+   `touch marker`) and call that MCP tool. The workflow dialog won't offer an uncertified
+   version, so start this turn with the opt-in live test described after step 5.
 3. Resume the session and repeat with a new token.
 4. The version passes when the read succeeds in both rounds, the edit, the command and the MCP
-   call each reach F5 as a permission request that F5 refuses, nothing changes on disk, and the marker file never
-   appears. If the run shows a tool kind
-   that is labelled wrongly, remove that kind from `ANTIGRAVITY_READ_ONLY_WORKFLOW_TOOL_KINDS` in
-   `apps/server/src/provider/acp/AntigravityAcpSupport.ts`.
+   call each reach F5 as a permission request that F5 refuses, nothing changes on disk, and the
+   marker file never appears. If something that changes files is approved:
+   - When a non-shell tool is labelled with a read-only kind, remove that kind from
+     `ACP_READ_ONLY_WORKFLOW_TOOL_KINDS` in
+     `apps/server/src/provider/acp/AcpReadOnlyWorkflowPolicy.ts`.
+   - When a writing shell command (`execute`) is approved, leave the version uncertified and fix
+     the shell policy in `apps/server/src/provider/readOnlyWorkflowShell.ts`. Removing a kind
+     doesn't help here: commands are checked separately.
 5. Add `{ version, target }` to `ANTIGRAVITY_READ_ONLY_WORKFLOW_CERTIFIED_RUNTIMES` in
    `packages/shared/src/workflowProviders.ts`. The target is the platform and architecture, such
    as `darwin-arm64`: each architecture is a separate build and needs its own run.

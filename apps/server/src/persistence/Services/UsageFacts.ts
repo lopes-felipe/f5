@@ -5,6 +5,8 @@ import type {
   ThreadId,
   UsageThreadTurns,
   UsageTurnFact,
+  UsageSpeed,
+  UsageCostBreakdown,
 } from "@t3tools/contracts";
 import { ServiceMap } from "effect";
 import type { Effect } from "effect";
@@ -42,6 +44,9 @@ export interface UsageBucketSummaryInput {
 export interface UsageAggregateRow {
   readonly nativeInferenceCount?: number;
   readonly unpricedNativeInferenceCount?: number;
+  readonly cacheOutsideInput?: boolean;
+  readonly speed?: UsageSpeed | null;
+  readonly costBreakdown?: UsageCostBreakdown;
   readonly provider: string;
   readonly model: string | null;
   readonly estimationEligibleTurnCount?: number;
@@ -94,8 +99,8 @@ export interface UsageScopeTitles {
 }
 
 export interface UsageFactRepositoryShape {
-  readonly readMuseRecordedIntervals: Effect.Effect<
-    ReadonlyArray<import("../../usage/museRecordedIntervals.ts").MuseRecordedInterval>,
+  readonly readNativeRecordedIntervals: Effect.Effect<
+    ReadonlyArray<import("../../usage/museRecordedIntervals.ts").NativeRecordedInterval>,
     ProjectionRepositoryError
   >;
   readonly record: (fact: UsageTurnFact) => Effect.Effect<void, ProjectionRepositoryError>;

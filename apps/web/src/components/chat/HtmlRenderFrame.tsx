@@ -176,7 +176,7 @@ function HtmlRenderDocumentFrame(props: {
       const src: string = data.value.src;
       if (
         src.length > HTML_RENDER_MAX_PAGE_BYTES * 2 ||
-        !/^(?:https:\/\/|data:image\/(?:png|jpeg|webp|gif|avif|svg\+xml);)/i.test(src)
+        !/^(?:https:\/\/|data:image\/(?:png|jpeg|webp|gif|avif|svg\+xml)[;,])/i.test(src)
       )
         return;
       const preview = buildExpandedImagePreview(
@@ -184,7 +184,7 @@ function HtmlRenderDocumentFrame(props: {
           {
             id: current.attachmentId,
             name: String(data.value.name ?? "Rendered image").slice(0, 255),
-            mimeType: /^data:([^;]+)/.exec(src)?.[1] ?? "image/png",
+            mimeType: /^data:([^;,]+)/i.exec(src)?.[1] ?? "image/png",
             previewUrl: src,
             sourceUrl: src,
           },
