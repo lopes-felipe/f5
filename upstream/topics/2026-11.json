@@ -25803,12 +25803,14 @@
     },
     {
       "createdAt": "2026-11-19T11:06:04.640Z",
+      "decidedAt": "2026-11-25T22:17:03.157Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-29279",
       "relatedTopics": [
         "pr-38740"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers"
@@ -50282,12 +50284,14 @@
     },
     {
       "createdAt": "2026-11-23T11:12:01.132Z",
+      "decidedAt": "2026-11-25T22:17:03.157Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-33596",
       "relatedTopics": [
         "pr-39869"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers"
@@ -76060,9 +76064,11 @@
     },
     {
       "createdAt": "2026-11-20T11:12:41.766Z",
+      "decidedAt": "2026-11-25T22:17:03.157Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-37468",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers",
@@ -79008,9 +79014,11 @@
     },
     {
       "createdAt": "2026-11-17T11:07:04.371Z",
+      "decidedAt": "2026-11-25T22:17:03.157Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-37916",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers"
@@ -89663,12 +89671,14 @@
     },
     {
       "createdAt": "2026-11-22T13:13:51.143Z",
+      "decidedAt": "2026-11-25T22:17:03.157Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-39822",
       "relatedTopics": [
         "pr-39378"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers",
@@ -89741,12 +89751,14 @@
     },
     {
       "createdAt": "2026-11-22T13:13:51.143Z",
+      "decidedAt": "2026-11-25T22:17:03.157Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-39837",
       "relatedTopics": [
         "pr-39474"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "timeline",
@@ -89950,9 +89962,11 @@
     },
     {
       "createdAt": "2026-11-22T13:13:51.143Z",
+      "decidedAt": "2026-11-25T22:17:03.157Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-39869",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers"
@@ -90638,12 +90652,14 @@
     },
     {
       "createdAt": "2026-11-22T13:13:51.143Z",
+      "decidedAt": "2026-11-25T22:17:03.157Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-39989",
       "relatedTopics": [
         "pr-38864"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers",
@@ -96172,9 +96188,11 @@
     },
     {
       "createdAt": "2026-11-25T11:13:32.025Z",
+      "decidedAt": "2026-11-25T22:17:03.157Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-41210",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers",
@@ -103902,9 +103920,11 @@
     },
     {
       "createdAt": "2026-11-25T11:13:32.025Z",
+      "decidedAt": "2026-11-25T22:17:03.157Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-42339",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers",
@@ -105653,9 +105673,11 @@
     },
     {
       "createdAt": "2026-11-25T11:13:32.025Z",
+      "decidedAt": "2026-11-25T22:17:03.157Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-42594",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "providers",
