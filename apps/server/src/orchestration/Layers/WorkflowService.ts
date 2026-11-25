@@ -19,10 +19,38 @@ import {
   ThreadId,
   type ThreadTurnStartCommand,
   TurnId,
+  type WorkflowBranch,
+  type WorkflowBranchId,
+  type WorkflowModelSlot,
+  type WorkflowReview,
   type WorkflowReviewSlot,
 } from "@t3tools/contracts";
+import {
+  expectedPlanReviewEdges,
+  planningBranches,
+  planningBranchIds,
+  planReviewReviewerBranchId,
+  requirePlanningBranch,
+  updatePlanningBranch,
+  workflowMaxParticipants,
+  workflowModelSlotsHaveDuplicate,
+  workflowParticipantIndex,
+  workflowParticipantLabel,
+  workflowUsesMesh,
+} from "@t3tools/shared/workflowParticipants";
 import { createHash } from "node:crypto";
-import { Cause, Clock, Duration, Effect, Layer, Option, Scope, Stream } from "effect";
+import {
+  Cause,
+  Clock,
+  Duration,
+  Effect,
+  Exit,
+  Layer,
+  Option,
+  Scope,
+  Semaphore,
+  Stream,
+} from "effect";
 import { roughTokenEstimateFromCharacters } from "@t3tools/shared/model";
 import {
   defaultDocumentReaderSlot,
@@ -83,10 +111,12 @@ import {
   buildImplementationPrompt,
   buildImplementationRevisionPrompt,
   buildMergePrompt,
+  type MergePlanInput,
   buildReviewPrompt,
   buildRevisionPrompt,
 } from "../workflowPrompts.ts";
 import {
+  allocateArtifactCharBudget,
   getFinishedConsumableLatestTurn,
   getFinishedConsumableTurn,
   formatAssistantFeedback,
@@ -94,6 +124,9 @@ import {
   reviewFeedbackForPinnedTurn,
   slotLabel,
   type WorkflowFitThread,
+  WORKFLOW_FAN_IN_MIN_ARTIFACT_CHARS,
+  WORKFLOW_MAX_ACTIVE_REVIEW_TURNS,
+  WORKFLOW_MIN_PLAN_CHAR_BUDGET,
   WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT,
   workflowContextTarget,
   workflowPromptFitError,
@@ -130,7 +163,12 @@ import {
   UnsupportedWorkflowTemplateError,
   workflowTurnBehaviorFields,
 } from "../workflowBehavior.ts";
-import { buildPlanningWorkflowRecord } from "../workflowRecordBuilders.ts";
+import {
+  buildPlanningWorkflowRecord,
+  planningCommandAuthorFields,
+  planningInputAuthorFields,
+  planningInputAuthorSlots,
+} from "../workflowRecordBuilders.ts";
 import type { WorkflowRetryContext } from "../workflowPromptFragments.ts";
 import { prepareCodeReviewPrompt } from "../workflowReviewPrompt.ts";
 
@@ -164,7 +202,7 @@ function workflowPromptInvariant(input: {
   readonly workflow: PlanningWorkflow;
   readonly prompt: string;
   readonly artifacts: ReadonlyArray<string>;
-  readonly targetSlot: PlanningWorkflow["branchA"]["authorSlot"];
+  readonly targetSlot: WorkflowModelSlot;
   readonly artifactLabel: string;
   readonly thread?: WorkflowFitThread | null;
   readonly artifactBudgetRecovery?: string;
@@ -304,33 +342,34 @@ function getFinishedLatestTurnId(
 
 function updateAuthoringBranch(
   workflow: PlanningWorkflow,
-  branchId: "a" | "b",
+  branchId: WorkflowBranchId,
   now: string,
   outcome: { ok: true } | { ok: false; error: string },
 ): PlanningWorkflow {
-  const nextBranch =
-    branchId === "a"
-      ? {
-          ...workflow.branchA,
-          status: outcome.ok ? ("authoring" as const) : ("error" as const),
-          error: outcome.ok ? null : outcome.error,
-          errorStage: outcome.ok ? null : ("authoring" as const),
-          updatedAt: now,
-        }
-      : {
-          ...workflow.branchB,
-          status: outcome.ok ? ("authoring" as const) : ("error" as const),
-          error: outcome.ok ? null : outcome.error,
-          errorStage: outcome.ok ? null : ("authoring" as const),
-          updatedAt: now,
-        };
-
   return {
-    ...workflow,
-    branchA: branchId === "a" ? nextBranch : workflow.branchA,
-    branchB: branchId === "b" ? nextBranch : workflow.branchB,
+    ...updatePlanningBranch(workflow, branchId, (branch) => ({
+      ...branch,
+      status: outcome.ok ? ("authoring" as const) : ("error" as const),
+      error: outcome.ok ? null : outcome.error,
+      errorStage: outcome.ok ? null : ("authoring" as const),
+      updatedAt: now,
+    })),
     updatedAt: now,
   };
+}
+
+/** `Cross review` / `Self review`; on mesh runs `Cross review by Author B`. */
+function planReviewLabel(
+  workflow: PlanningWorkflow,
+  branchId: WorkflowBranchId,
+  review: WorkflowReview,
+) {
+  if (review.slot === "self" || !workflowUsesMesh(planningBranches(workflow).length)) {
+    return review.slot === "self" ? "Self review" : "Cross review";
+  }
+  return `Cross review by Author ${workflowParticipantLabel(
+    planReviewReviewerBranchId(workflow, branchId, review),
+  )}`;
 }
 
 function labelForThread(
@@ -342,20 +381,26 @@ function labelForThread(
     workflow.readerPass?.previousReaderThreadIds?.includes(threadId)
   )
     return { workflow, label: "Reader review" };
-  if (workflow.branchA.authorThreadId === threadId) {
-    return { workflow, label: "Branch A authoring" };
-  }
-  if (workflow.branchB.authorThreadId === threadId) {
-    return { workflow, label: "Branch B authoring" };
-  }
-  for (const review of workflow.branchA.reviews) {
-    if (review.threadId === threadId) {
-      return { workflow, label: `Branch A ${review.slot} review` };
+  const branches = planningBranches(workflow);
+  for (const branch of branches) {
+    if (branch.authorThreadId === threadId) {
+      return {
+        workflow,
+        label: `Branch ${workflowParticipantLabel(branch.branchId)} authoring`,
+      };
     }
   }
-  for (const review of workflow.branchB.reviews) {
-    if (review.threadId === threadId) {
-      return { workflow, label: `Branch B ${review.slot} review` };
+  for (const branch of branches) {
+    for (const review of branch.reviews) {
+      if (review.threadId === threadId) {
+        const label = workflowParticipantLabel(branch.branchId);
+        return {
+          workflow,
+          label: workflowUsesMesh(branches.length)
+            ? `Branch ${label} ${planReviewLabel(workflow, branch.branchId, review).toLowerCase()}`
+            : `Branch ${label} ${review.slot} review`,
+        };
+      }
     }
   }
   if (workflow.merge.threadId === threadId) {
@@ -375,16 +420,14 @@ function labelForThread(
 function workflowForAuthorThread(
   workflows: ReadonlyArray<PlanningWorkflow>,
   threadId: ThreadId,
-): { workflow: PlanningWorkflow; branchId: "a" | "b" } | null {
+): { workflow: PlanningWorkflow; branchId: WorkflowBranchId } | null {
   for (const workflow of workflows) {
     if (isDeletedWorkflow(workflow)) {
       continue;
     }
-    if (workflow.branchA.authorThreadId === threadId) {
-      return { workflow, branchId: "a" };
-    }
-    if (workflow.branchB.authorThreadId === threadId) {
-      return { workflow, branchId: "b" };
+    const branch = planningBranches(workflow).find((entry) => entry.authorThreadId === threadId);
+    if (branch) {
+      return { workflow, branchId: branch.branchId };
     }
   }
   return null;
@@ -392,69 +435,42 @@ function workflowForAuthorThread(
 
 function markBranchPlanSaved(
   workflow: PlanningWorkflow,
-  branchId: "a" | "b",
+  branchId: WorkflowBranchId,
   input: {
     readonly turnId: string | null;
     readonly updatedAt: string;
   },
 ): PlanningWorkflow {
-  const nextBranch =
-    branchId === "a"
-      ? {
-          ...workflow.branchA,
-          status: "plan_saved" as const,
-          planTurnId: input.turnId ?? workflow.branchA.planTurnId,
-          error: null,
-          errorStage: null,
-          updatedAt: input.updatedAt,
-        }
-      : {
-          ...workflow.branchB,
-          status: "plan_saved" as const,
-          planTurnId: input.turnId ?? workflow.branchB.planTurnId,
-          error: null,
-          errorStage: null,
-          updatedAt: input.updatedAt,
-        };
-
   return {
-    ...workflow,
-    branchA: branchId === "a" ? nextBranch : workflow.branchA,
-    branchB: branchId === "b" ? nextBranch : workflow.branchB,
+    ...updatePlanningBranch(workflow, branchId, (branch) => ({
+      ...branch,
+      status: "plan_saved" as const,
+      planTurnId: input.turnId ?? branch.planTurnId,
+      error: null,
+      errorStage: null,
+      updatedAt: input.updatedAt,
+    })),
     updatedAt: input.updatedAt,
   };
 }
 
 function markBranchError(
   workflow: PlanningWorkflow,
-  branchId: "a" | "b",
+  branchId: WorkflowBranchId,
   input: {
     readonly error: string;
     readonly stage: "authoring" | "revision";
     readonly updatedAt: string;
   },
 ): PlanningWorkflow {
-  const nextBranch =
-    branchId === "a"
-      ? {
-          ...workflow.branchA,
-          status: "error" as const,
-          error: input.error,
-          errorStage: input.stage,
-          updatedAt: input.updatedAt,
-        }
-      : {
-          ...workflow.branchB,
-          status: "error" as const,
-          error: input.error,
-          errorStage: input.stage,
-          updatedAt: input.updatedAt,
-        };
-
   return {
-    ...workflow,
-    branchA: branchId === "a" ? nextBranch : workflow.branchA,
-    branchB: branchId === "b" ? nextBranch : workflow.branchB,
+    ...updatePlanningBranch(workflow, branchId, (branch) => ({
+      ...branch,
+      status: "error" as const,
+      error: input.error,
+      errorStage: input.stage,
+      updatedAt: input.updatedAt,
+    })),
     updatedAt: input.updatedAt,
   };
 }
@@ -462,16 +478,16 @@ function markBranchError(
 function workflowForReviewThread(
   workflows: ReadonlyArray<PlanningWorkflow>,
   threadId: ThreadId,
-): { workflow: PlanningWorkflow; branchId: "a" | "b" } | null {
+): { workflow: PlanningWorkflow; branchId: WorkflowBranchId } | null {
   for (const workflow of workflows) {
     if (isDeletedWorkflow(workflow)) {
       continue;
     }
-    if (workflow.branchA.reviews.some((review) => review.threadId === threadId)) {
-      return { workflow, branchId: "a" };
-    }
-    if (workflow.branchB.reviews.some((review) => review.threadId === threadId)) {
-      return { workflow, branchId: "b" };
+    const branch = planningBranches(workflow).find((entry) =>
+      entry.reviews.some((review) => review.threadId === threadId),
+    );
+    if (branch) {
+      return { workflow, branchId: branch.branchId };
     }
   }
   return null;
@@ -522,69 +538,72 @@ function workflowForMergeThread(
   return null;
 }
 
+/**
+ * The model that writes a review of `reviewedId`'s plan. A reviewer id with no branch is an
+ * invariant error on that review; another model is never substituted.
+ */
+function planReviewerSlot(
+  workflow: PlanningWorkflow,
+  reviewedId: WorkflowBranchId,
+  review: Pick<WorkflowReview, "slot" | "reviewerBranchId">,
+): WorkflowModelSlot {
+  return requirePlanningBranch(workflow, planReviewReviewerBranchId(workflow, reviewedId, review))
+    .authorSlot;
+}
+
+/** A plan review the launcher has decided to run, before its turn is dispatched. */
+interface PlanReviewIntent {
+  readonly slot: WorkflowReviewSlot;
+  readonly threadId: ThreadId;
+  /** Persisted only on runs with more than two authors. */
+  readonly reviewerBranchId?: WorkflowBranchId | undefined;
+}
+
+/** Records every expected review as `pending` in one write, before any dispatch. */
 function markReviewsRequested(
   workflow: PlanningWorkflow,
   input: {
-    readonly branchAReviews: ReadonlyArray<{
-      readonly slot: WorkflowReviewSlot;
-      readonly threadId: ThreadId;
-    }>;
-    readonly branchBReviews: ReadonlyArray<{
-      readonly slot: WorkflowReviewSlot;
-      readonly threadId: ThreadId;
-    }>;
+    readonly reviews: ReadonlyMap<WorkflowBranchId, ReadonlyArray<PlanReviewIntent>>;
     readonly updatedAt: string;
   },
 ): PlanningWorkflow {
-  return {
-    ...workflow,
-    branchA: {
-      ...workflow.branchA,
-      reviews: input.branchAReviews.map((review) => ({
-        slot: review.slot,
-        threadId: review.threadId,
-        outputFilePath: null,
-        status: "running" as const,
-        error: null,
-        retryCount: 0,
-        lastRetryAt: null,
-        updatedAt: input.updatedAt,
-      })),
+  let next = workflow;
+  for (const branch of planningBranches(workflow)) {
+    next = updatePlanningBranch(next, branch.branchId, (current) => ({
+      ...current,
+      reviews: (input.reviews.get(branch.branchId) ?? []).map(
+        (review): WorkflowReview => ({
+          slot: review.slot,
+          ...(review.reviewerBranchId ? { reviewerBranchId: review.reviewerBranchId } : {}),
+          threadId: review.threadId,
+          outputFilePath: null,
+          status: "pending",
+          error: null,
+          retryCount: 0,
+          pinnedTurnId: null,
+          pinnedAssistantMessageId: null,
+          lastRetryAt: null,
+          updatedAt: input.updatedAt,
+        }),
+      ),
       status: "reviews_requested",
       error: null,
       errorStage: null,
       updatedAt: input.updatedAt,
-    },
-    branchB: {
-      ...workflow.branchB,
-      reviews: input.branchBReviews.map((review) => ({
-        slot: review.slot,
-        threadId: review.threadId,
-        outputFilePath: null,
-        status: "running" as const,
-        error: null,
-        retryCount: 0,
-        lastRetryAt: null,
-        updatedAt: input.updatedAt,
-      })),
-      status: "reviews_requested",
-      error: null,
-      errorStage: null,
-      updatedAt: input.updatedAt,
-    },
-    updatedAt: input.updatedAt,
-  };
+    }));
+  }
+  return { ...next, updatedAt: input.updatedAt };
 }
 
 function markReviewCompleted(
   workflow: PlanningWorkflow,
-  branchId: "a" | "b",
+  branchId: WorkflowBranchId,
   threadId: ThreadId,
   updatedAt: string,
   turnId: TurnId,
   assistantMessageId: string,
 ): PlanningWorkflow {
-  const reviewedBranch = branchId === "a" ? workflow.branchA : workflow.branchB;
+  const reviewedBranch = requirePlanningBranch(workflow, branchId);
   const review = reviewedBranch.reviews.find((entry) => entry.threadId === threadId);
   if (
     (reviewedBranch.status !== "reviews_requested" &&
@@ -594,141 +613,106 @@ function markReviewCompleted(
     return workflow;
   }
 
-  const completeReview = (review: PlanningWorkflow["branchA"]["reviews"][number]) =>
-    review.threadId === threadId
-      ? {
-          ...review,
-          status: "completed" as const,
-          error: null,
-          pinnedTurnId: turnId,
-          pinnedAssistantMessageId: assistantMessageId,
-          updatedAt,
-        }
-      : review;
-
-  const completeBranch = (branch: PlanningWorkflow["branchA"]): PlanningWorkflow["branchA"] => {
-    const reviews = branch.reviews.map(completeReview);
-    const complete = reviews.length > 0 && reviews.every((entry) => entry.status === "completed");
-    return {
-      ...branch,
-      reviews,
-      status: complete ? "reviews_saved" : "reviews_requested",
-      error: null,
-      errorStage: null,
-      updatedAt,
-    };
-  };
-
   return {
-    ...workflow,
-    branchA: branchId === "a" ? completeBranch(workflow.branchA) : workflow.branchA,
-    branchB: branchId === "b" ? completeBranch(workflow.branchB) : workflow.branchB,
+    ...updatePlanningBranch(workflow, branchId, (branch) => {
+      const reviews = branch.reviews.map((entry) =>
+        entry.threadId === threadId
+          ? {
+              ...entry,
+              status: "completed" as const,
+              error: null,
+              pinnedTurnId: turnId,
+              pinnedAssistantMessageId: assistantMessageId,
+              updatedAt,
+            }
+          : entry,
+      );
+      // Every expected review record exists from the start, so all-completed means every edge.
+      const complete = reviews.length > 0 && reviews.every((entry) => entry.status === "completed");
+      return {
+        ...branch,
+        reviews,
+        status: complete ? "reviews_saved" : "reviews_requested",
+        error: null,
+        errorStage: null,
+        updatedAt,
+      };
+    }),
     updatedAt,
   };
 }
 
 function markPlanningReviewError(
   workflow: PlanningWorkflow,
-  branchId: "a" | "b",
+  branchId: WorkflowBranchId,
   threadId: ThreadId,
   error: string,
   updatedAt: string,
 ): PlanningWorkflow {
-  const branch = branchId === "a" ? workflow.branchA : workflow.branchB;
+  const branch = requirePlanningBranch(workflow, branchId);
   const review = branch.reviews.find((entry) => entry.threadId === threadId);
+  // Only a running attempt can fail this way: a review requeued as pending hasn't started, and
+  // an error from its previous attempt must not fail it (admission failures use `writeReview`).
   if (branch.status !== "reviews_requested" || review?.status !== "running") {
     return workflow;
   }
 
-  const updatedBranch: PlanningWorkflow["branchA"] = {
-    ...branch,
-    reviews: branch.reviews.map((review) =>
-      review.threadId === threadId
-        ? {
-            ...review,
-            status: "error" as const,
-            error,
-            updatedAt,
-          }
-        : review,
-    ),
-    status: "reviews_requested",
-    error: null,
-    errorStage: null,
-    updatedAt,
-  };
-
   return {
-    ...workflow,
-    branchA: branchId === "a" ? updatedBranch : workflow.branchA,
-    branchB: branchId === "b" ? updatedBranch : workflow.branchB,
+    ...updatePlanningBranch(workflow, branchId, (current) => ({
+      ...current,
+      reviews: current.reviews.map((entry) =>
+        entry.threadId === threadId
+          ? {
+              ...entry,
+              status: "error" as const,
+              error,
+              updatedAt,
+            }
+          : entry,
+      ),
+      status: "reviews_requested",
+      error: null,
+      errorStage: null,
+      updatedAt,
+    })),
     updatedAt,
   };
 }
 
 function markBranchRevising(
   workflow: PlanningWorkflow,
-  branchId: "a" | "b",
+  branchId: WorkflowBranchId,
   updatedAt: string,
 ): PlanningWorkflow {
   return {
-    ...workflow,
-    branchA:
-      branchId === "a"
-        ? {
-            ...workflow.branchA,
-            status: "revising",
-            error: null,
-            errorStage: null,
-            updatedAt,
-          }
-        : workflow.branchA,
-    branchB:
-      branchId === "b"
-        ? {
-            ...workflow.branchB,
-            status: "revising",
-            error: null,
-            errorStage: null,
-            updatedAt,
-          }
-        : workflow.branchB,
+    ...updatePlanningBranch(workflow, branchId, (branch) => ({
+      ...branch,
+      status: "revising",
+      error: null,
+      errorStage: null,
+      updatedAt,
+    })),
     updatedAt,
   };
 }
 
 function markBranchRevised(
   workflow: PlanningWorkflow,
-  branchId: "a" | "b",
+  branchId: WorkflowBranchId,
   input: {
     readonly turnId: string | null;
     readonly updatedAt: string;
   },
 ): PlanningWorkflow {
   return {
-    ...workflow,
-    branchA:
-      branchId === "a"
-        ? {
-            ...workflow.branchA,
-            status: "revised",
-            revisionTurnId: input.turnId ?? workflow.branchA.revisionTurnId,
-            error: null,
-            errorStage: null,
-            updatedAt: input.updatedAt,
-          }
-        : workflow.branchA,
-    branchB:
-      branchId === "b"
-        ? {
-            ...workflow.branchB,
-            status: "revised",
-            revisionTurnId: input.turnId ?? workflow.branchB.revisionTurnId,
-            error: null,
-            errorStage: null,
-            updatedAt: input.updatedAt,
-          }
-        : workflow.branchB,
+    ...updatePlanningBranch(workflow, branchId, (branch) => ({
+      ...branch,
+      status: "revised",
+      revisionTurnId: input.turnId ?? branch.revisionTurnId,
+      error: null,
+      errorStage: null,
+      updatedAt: input.updatedAt,
+    })),
     updatedAt: input.updatedAt,
   };
 }
@@ -839,7 +823,7 @@ function markCodeReviewsRequested(
   workflow: PlanningWorkflow,
   reviews: ReadonlyArray<{
     readonly reviewerLabel: string;
-    readonly reviewerSlot: PlanningWorkflow["branchA"]["authorSlot"];
+    readonly reviewerSlot: WorkflowModelSlot;
     readonly threadId: ThreadId;
   }>,
   updatedAt: string,
@@ -1045,39 +1029,27 @@ function markCodeReviewError(
 
 function incrementBranchRetryCount(
   workflow: PlanningWorkflow,
-  branchId: "a" | "b",
+  branchId: WorkflowBranchId,
   updatedAt: string,
 ): PlanningWorkflow {
-  const nextBranch =
-    branchId === "a"
-      ? {
-          ...workflow.branchA,
-          retryCount: workflow.branchA.retryCount + 1,
-          lastRetryAt: updatedAt,
-          updatedAt,
-        }
-      : {
-          ...workflow.branchB,
-          retryCount: workflow.branchB.retryCount + 1,
-          lastRetryAt: updatedAt,
-          updatedAt,
-        };
-
   return {
-    ...workflow,
-    branchA: branchId === "a" ? nextBranch : workflow.branchA,
-    branchB: branchId === "b" ? nextBranch : workflow.branchB,
+    ...updatePlanningBranch(workflow, branchId, (branch) => ({
+      ...branch,
+      retryCount: branch.retryCount + 1,
+      lastRetryAt: updatedAt,
+      updatedAt,
+    })),
     updatedAt,
   };
 }
 
 function incrementPlanningReviewRetryCount(
   workflow: PlanningWorkflow,
-  branchId: "a" | "b",
+  branchId: WorkflowBranchId,
   threadId: ThreadId,
   updatedAt: string,
 ): PlanningWorkflow {
-  const updateBranch = (branch: PlanningWorkflow["branchA"]): PlanningWorkflow["branchA"] => ({
+  const updateBranch = (branch: WorkflowBranch): WorkflowBranch => ({
     ...branch,
     reviews: branch.reviews.map((review) =>
       review.threadId === threadId
@@ -1097,12 +1069,7 @@ function incrementPlanningReviewRetryCount(
     updatedAt,
   });
 
-  return {
-    ...workflow,
-    branchA: branchId === "a" ? updateBranch(workflow.branchA) : workflow.branchA,
-    branchB: branchId === "b" ? updateBranch(workflow.branchB) : workflow.branchB,
-    updatedAt,
-  };
+  return { ...updatePlanningBranch(workflow, branchId, updateBranch), updatedAt };
 }
 
 function incrementImplementationRetryCount(
@@ -1197,8 +1164,8 @@ function hasProposedPlanForTurn(
 // reviewed draft stays recoverable even if `planTurnId` was later overwritten.
 function reviewedPlanTurnIdForBranch(
   workflow: PlanningWorkflow,
-  branchId: "a" | "b",
-  branch: PlanningWorkflow["branchA"],
+  branchId: WorkflowBranchId,
+  branch: WorkflowBranch,
   snapshot: OrchestrationReadModel,
 ): TurnId | null {
   if (branch.reviews.length === 0) return null;
@@ -1209,9 +1176,7 @@ function reviewedPlanTurnIdForBranch(
     if (
       turnId &&
       branch.reviews.every(
-        (review) =>
-          review.threadId ===
-          stableWorkflowUuid("plan-review-thread", workflow.id, branchId, review.slot, turnId),
+        (review) => review.threadId === planReviewThreadId(workflow, branchId, review, turnId),
       )
     )
       return turnId;
@@ -1219,16 +1184,46 @@ function reviewedPlanTurnIdForBranch(
   return null;
 }
 
+function planOverBudgetMessage(
+  workflow: PlanningWorkflow,
+  renderedChars: number,
+  maxPlanChars: number,
+): string {
+  return `The ${planningWorkflowDocumentType(workflow) ? "document" : "plan"} takes ${renderedChars.toLocaleString("en-US")} characters in the merge; this run allows at most ${maxPlanChars.toLocaleString("en-US")} characters per author so every plan fits. Submit a shorter complete version.`;
+}
+
 function validateCapturedPlanForTurn(input: {
   readonly workflow: PlanningWorkflow;
-  readonly provider: PlanningWorkflow["branchA"]["authorSlot"]["provider"];
+  readonly provider: WorkflowModelSlot["provider"];
   readonly thread: Pick<
     OrchestrationReadModel["threads"][number],
     "latestTurn" | "messages" | "session" | "proposedPlans"
   >;
   readonly turnId: TurnId;
-}): { readonly valid: true } | { readonly valid: false; readonly error: string } {
+  /**
+   * Author and revision captures on runs with more than two authors must stay under the
+   * per-plan budget (`workflowPlanCharBudget`); merge captures pass nothing.
+   */
+  readonly maxPlanChars?: number | null | undefined;
+  /** The author whose plan is measured against `maxPlanChars` as the merge renders it. */
+  readonly branchId?: WorkflowBranchId | undefined;
+}):
+  | { readonly valid: true }
+  | { readonly valid: false; readonly error: string; readonly overBudget?: true } {
   const plan = input.thread.proposedPlans.find((candidate) => candidate.turnId === input.turnId);
+  const renderedChars =
+    input.maxPlanChars != null && plan
+      ? input.branchId
+        ? workflowPlanMergeChars(input.workflow, input.branchId, plan.planMarkdown, input.turnId)
+        : plan.planMarkdown.length
+      : null;
+  if (input.maxPlanChars != null && renderedChars !== null && renderedChars > input.maxPlanChars) {
+    return {
+      valid: false,
+      overBudget: true,
+      error: planOverBudgetMessage(input.workflow, renderedChars, input.maxPlanChars),
+    };
+  }
   const behavior = resolveWorkflowBehavior({
     runKind: "planning",
     templateId: input.workflow.templateId,
@@ -1427,14 +1422,13 @@ export const makeWorkflowService = Effect.gen(function* () {
     input: Pick<Parameters<typeof prepareRevisionTurn>[0], "workflow" | "branch" | "createdAt">,
     error: string,
   ) => {
-    const branchKey = input.branch.branchId === "a" ? "branchA" : "branchB";
-    const expected = input.workflow[branchKey];
+    const expected = requirePlanningBranch(input.workflow, input.branch.branchId);
     return withWorkflowGate(
       input.workflow.id,
       Effect.gen(function* () {
         const current = yield* readWorkflow(orchestrationEngine, input.workflow.id);
         if (!current) return input.workflow;
-        const branch = current[branchKey];
+        const branch = requirePlanningBranch(current, input.branch.branchId);
         if (
           isArchivedWorkflow(current) ||
           branch.status !== expected.status ||
@@ -1653,7 +1647,7 @@ export const makeWorkflowService = Effect.gen(function* () {
 
   const forkPlanningReviewAutoRetry = (input: {
     readonly workflowId: PlanningWorkflowId;
-    readonly branchId: "a" | "b";
+    readonly branchId: WorkflowBranchId;
     readonly threadId: ThreadId;
     readonly expectedRetryCount: number;
     readonly originalError: string;
@@ -1672,7 +1666,7 @@ export const makeWorkflowService = Effect.gen(function* () {
         return;
       }
 
-      const branch = input.branchId === "a" ? workflow.branchA : workflow.branchB;
+      const branch = requirePlanningBranch(workflow, input.branchId);
       const review = branch.reviews.find((entry) => entry.threadId === input.threadId);
       if (
         branch.status !== "reviews_requested" ||
@@ -1694,16 +1688,12 @@ export const makeWorkflowService = Effect.gen(function* () {
         branch.authorThreadId,
         branch.planTurnId,
         branch.updatedAt,
+        planReplacementFilter(workflow, branch.branchId),
       )?.planMarkdown;
       if (!planMarkdown) {
         return yield* Effect.fail(new Error("Saved plan not found for automatic review retry."));
       }
-      const reviewerSlot =
-        review.slot === "self"
-          ? branch.authorSlot
-          : input.branchId === "a"
-            ? workflow.branchB.authorSlot
-            : workflow.branchA.authorSlot;
+      const reviewerSlot = planReviewerSlot(workflow, input.branchId, review);
       yield* startReviewTurn({
         orchestrationEngine,
         workflow,
@@ -1736,7 +1726,7 @@ export const makeWorkflowService = Effect.gen(function* () {
           if (!workflow) {
             return;
           }
-          const branch = input.branchId === "a" ? workflow.branchA : workflow.branchB;
+          const branch = requirePlanningBranch(workflow, input.branchId);
           const review = branch.reviews.find((entry) => entry.threadId === input.threadId);
           if (
             branch.status !== "reviews_requested" ||
@@ -1755,6 +1745,13 @@ export const makeWorkflowService = Effect.gen(function* () {
               failedAt,
             ),
           );
+          // The failed retry frees its slot; nothing else would admit the next queued review.
+          const launchSnapshot = yield* orchestrationEngine.getReadModel();
+          const launchWorkflow =
+            launchSnapshot.planningWorkflows.find((entry) => entry.id === input.workflowId) ?? null;
+          if (launchWorkflow && !isArchivedWorkflow(launchWorkflow)) {
+            yield* maybeStartReviews(launchWorkflow, launchSnapshot, failedAt);
+          }
         }),
       ),
       Scope.provide(sources.scope),
@@ -1820,8 +1817,8 @@ export const makeWorkflowService = Effect.gen(function* () {
   );
 
   const reviewFeedbackForBranch = (
-    workflowId: PlanningWorkflow["id"],
-    branch: PlanningWorkflow["branchA"],
+    workflow: PlanningWorkflow,
+    branch: WorkflowBranch,
     snapshot: {
       readonly threads: ReadonlyArray<{
         readonly id: ThreadId;
@@ -1842,11 +1839,18 @@ export const makeWorkflowService = Effect.gen(function* () {
     },
   ) =>
     Effect.forEach(
-      branch.reviews.toSorted((left, right) => compareWorkflowReviewSlots(left.slot, right.slot)),
+      // Cross reviews by reviewer id, then the self review.
+      branch.reviews.toSorted(
+        (left, right) =>
+          compareWorkflowReviewSlots(left.slot, right.slot) ||
+          workflowParticipantIndex(planReviewReviewerBranchId(workflow, branch.branchId, left)) -
+            workflowParticipantIndex(planReviewReviewerBranchId(workflow, branch.branchId, right)),
+      ),
       (review) =>
         Effect.gen(function* () {
+          const workflowId = workflow.id;
           const thread = snapshot.threads.find((entry) => entry.id === review.threadId);
-          const reviewerLabel = `${review.slot === "cross" ? "Cross" : "Self"} review`;
+          const reviewerLabel = planReviewLabel(workflow, branch.branchId, review);
           const pinnedMessageMissing =
             review.pinnedAssistantMessageId != null &&
             !thread?.messages.some((message) => message.id === review.pinnedAssistantMessageId);
@@ -1896,7 +1900,7 @@ export const makeWorkflowService = Effect.gen(function* () {
 
   const maybeSynthesizeProposedPlan = (input: {
     readonly workflow: PlanningWorkflow;
-    readonly provider: PlanningWorkflow["branchA"]["authorSlot"]["provider"];
+    readonly provider: WorkflowModelSlot["provider"];
     readonly thread: Pick<
       OrchestrationReadModel["threads"][number],
       | "id"
@@ -1911,8 +1915,31 @@ export const makeWorkflowService = Effect.gen(function* () {
     readonly turnId: TurnId;
     readonly createdAt: string;
     readonly validate?: (markdown: string) => DocumentValidationResult;
+    /**
+     * An author's capture on a run with a per-plan budget: a reply over it is not saved as a
+     * plan. `onOverBudget` receives the reason, for the caller's repair.
+     */
+    readonly budget?: {
+      readonly branchId: WorkflowBranchId;
+      readonly onOverBudget?: (error: string) => void;
+    };
   }) =>
     Effect.gen(function* () {
+      const exceedsBudget = (markdown: string) => {
+        const maxPlanChars = input.budget ? workflowPlanCharBudget(input.workflow) : null;
+        if (maxPlanChars === null || !input.budget) return false;
+        const renderedChars = workflowPlanMergeChars(
+          input.workflow,
+          input.budget.branchId,
+          markdown,
+          input.turnId,
+        );
+        if (renderedChars <= maxPlanChars) return false;
+        input.budget.onOverBudget?.(
+          planOverBudgetMessage(input.workflow, renderedChars, maxPlanChars),
+        );
+        return true;
+      };
       const behavior = resolveWorkflowBehavior({
         runKind: "planning",
         templateId: input.workflow.templateId,
@@ -1965,6 +1992,7 @@ export const makeWorkflowService = Effect.gen(function* () {
         if (hasProposedPlanForTurn(input.thread, input.turnId)) {
           return false;
         }
+        if (exceedsBudget(validation.markdown)) return false;
         yield* orchestrationEngine.dispatch({
           type: "thread.proposed-plan.upsert",
           commandId: CommandId.makeUnsafe(timeOrderedUuid()),
@@ -2000,6 +2028,7 @@ export const makeWorkflowService = Effect.gen(function* () {
         if (!validation.valid) return false;
         planMarkdown = validation.markdown;
       }
+      if (exceedsBudget(planMarkdown)) return false;
 
       yield* orchestrationEngine.dispatch({
         type: "thread.proposed-plan.upsert",
@@ -2024,8 +2053,10 @@ export const makeWorkflowService = Effect.gen(function* () {
     readonly snapshot: OrchestrationReadModel;
     readonly thread: OrchestrationReadModel["threads"][number];
     readonly turnId: TurnId;
-    readonly branchId?: "a" | "b";
+    readonly branchId?: WorkflowBranchId;
     readonly createdAt: string;
+    /** Why the turn was rejected, when the caller already knows (no record to validate). */
+    readonly validationError?: string;
   }) =>
     Effect.gen(function* () {
       let workflow = input.workflow;
@@ -2036,11 +2067,7 @@ export const makeWorkflowService = Effect.gen(function* () {
       });
       if (!behavior.strictPlanCapture && !isDocumentWorkflow(workflow)) return;
 
-      let branch = input.branchId
-        ? input.branchId === "a"
-          ? workflow.branchA
-          : workflow.branchB
-        : null;
+      let branch = input.branchId ? requirePlanningBranch(workflow, input.branchId) : null;
       // Format repair may create a new turn only for a currently running stage.
       if (
         branch
@@ -2057,12 +2084,18 @@ export const makeWorkflowService = Effect.gen(function* () {
       )
         return;
       const provider = branch?.authorSlot.provider ?? workflow.merge.mergeSlot.provider;
-      const validation = validateCapturedPlanForTurn({
-        workflow: workflow,
-        provider,
-        thread: input.thread,
-        turnId: input.turnId,
-      });
+      const validation =
+        input.validationError !== undefined
+          ? { valid: false as const, error: input.validationError }
+          : validateCapturedPlanForTurn({
+              workflow: workflow,
+              provider,
+              thread: input.thread,
+              turnId: input.turnId,
+              ...(branch
+                ? { maxPlanChars: workflowPlanCharBudget(workflow), branchId: branch.branchId }
+                : {}),
+            });
       if (validation.valid) return;
       // Every workflow kind records the rejected turn, so the stage evaluates it once. Planning
       // workflows record it only once the repair turn was dispatched: until then a repeated
@@ -2095,7 +2128,8 @@ export const makeWorkflowService = Effect.gen(function* () {
         );
       if (branch && input.branchId) {
         branch = { ...branch, rejectedDocumentTurnId: input.turnId };
-        workflow = { ...workflow, [input.branchId === "a" ? "branchA" : "branchB"]: branch };
+        const rejectedBranch = branch;
+        workflow = updatePlanningBranch(workflow, input.branchId, () => rejectedBranch);
       } else {
         workflow = {
           ...workflow,
@@ -2143,7 +2177,7 @@ export const makeWorkflowService = Effect.gen(function* () {
         }
 
         const retryBase = deferRejection ? beforeRejection : { workflow, branch };
-        const repairedBranch: PlanningWorkflow["branchA"] = {
+        const repairedBranch: WorkflowBranch = {
           ...retryBase.branch!,
           ...(stage === "revision"
             ? { revisionFormatRepairAttempts: formatRepairAttempts + 1 }
@@ -2151,12 +2185,10 @@ export const makeWorkflowService = Effect.gen(function* () {
           updatedAt: input.createdAt,
         };
         const retryWorkflow: PlanningWorkflow = {
-          ...retryBase.workflow,
-          branchA: input.branchId === "a" ? repairedBranch : retryBase.workflow.branchA,
-          branchB: input.branchId === "b" ? repairedBranch : retryBase.workflow.branchB,
+          ...updatePlanningBranch(retryBase.workflow, input.branchId, () => repairedBranch),
           updatedAt: input.createdAt,
         };
-        const retryBranch = input.branchId === "a" ? retryWorkflow.branchA : retryWorkflow.branchB;
+        const retryBranch = requirePlanningBranch(retryWorkflow, input.branchId);
         yield* upsertWorkflow(retryWorkflow);
         const retry: WorkflowRetryContext = {
           kind: "retry",
@@ -2192,8 +2224,9 @@ export const makeWorkflowService = Effect.gen(function* () {
           branch.authorThreadId,
           branch.planTurnId,
           branch.updatedAt,
+          planReplacementFilter(workflow, branch.branchId),
         )?.planMarkdown;
-        const reviews = yield* reviewFeedbackForBranch(workflow.id, branch, input.snapshot);
+        const reviews = yield* reviewFeedbackForBranch(workflow, branch, input.snapshot);
         if (!originalPlan || reviews.length === 0) {
           yield* upsertWorkflow(
             markBranchError(retryWorkflow, input.branchId, {
@@ -2228,19 +2261,8 @@ export const makeWorkflowService = Effect.gen(function* () {
         yield* upsertWorkflow(markMergeError(workflow, error, input.createdAt));
         return;
       }
-      const planA = completedProposedPlanForTurn(
-        input.snapshot,
-        workflow.branchA.authorThreadId,
-        workflow.branchA.revisionTurnId,
-        workflow.branchA.updatedAt,
-      )?.planMarkdown;
-      const planB = completedProposedPlanForTurn(
-        input.snapshot,
-        workflow.branchB.authorThreadId,
-        workflow.branchB.revisionTurnId,
-        workflow.branchB.updatedAt,
-      )?.planMarkdown;
-      if (!planA || !planB) {
+      const mergePlans = collectMergeInputs(workflow, input.snapshot);
+      if (!mergePlans) {
         yield* upsertWorkflow(
           markMergeError(
             workflow,
@@ -2263,18 +2285,12 @@ export const makeWorkflowService = Effect.gen(function* () {
         updatedAt: input.createdAt,
       };
       yield* upsertWorkflow(retryWorkflow);
-      const reviews = [
-        ...(yield* reviewFeedbackForBranch(workflow.id, workflow.branchA, input.snapshot)),
-        ...(yield* reviewFeedbackForBranch(workflow.id, workflow.branchB, input.snapshot)),
-      ];
       const started = yield* dispatchRepair(
         startMergeTurn({
           orchestrationEngine,
           workflow: retryWorkflow,
           threadId: workflow.merge.threadId,
-          planA,
-          planB,
-          reviews,
+          plans: mergePlans,
           createdAt: input.createdAt,
           retry: { kind: "retry", formatRepair: true, reusedThread: true, priorFailure: error },
         }),
@@ -2290,7 +2306,7 @@ export const makeWorkflowService = Effect.gen(function* () {
    */
   const recordRejectedPlanTurn = (
     workflowId: PlanningWorkflow["id"],
-    branchId: "a" | "b" | undefined,
+    branchId: WorkflowBranchId | undefined,
     turnId: TurnId,
   ) =>
     Effect.gen(function* () {
@@ -2299,14 +2315,18 @@ export const makeWorkflowService = Effect.gen(function* () {
       );
       if (!current) return;
       if (branchId) {
-        const key = branchId === "a" ? "branchA" : "branchB";
-        const branch = current[key];
+        const branch = requirePlanningBranch(current, branchId);
         if (
           (branch.status !== "authoring" && branch.status !== "revising") ||
           branch.rejectedDocumentTurnId === turnId
         )
           return;
-        yield* upsertWorkflow({ ...current, [key]: { ...branch, rejectedDocumentTurnId: turnId } });
+        yield* upsertWorkflow(
+          updatePlanningBranch(current, branchId, (entry) => ({
+            ...entry,
+            rejectedDocumentTurnId: turnId,
+          })),
+        );
         return;
       }
       if (current.merge.status !== "in_progress" || current.merge.rejectedDocumentTurnId === turnId)
@@ -2317,11 +2337,17 @@ export const makeWorkflowService = Effect.gen(function* () {
       });
     });
 
+  /**
+   * The author's accepted plan: the pinned one, or a newer finished turn's plan that replaces it.
+   * A replacement that `acceptsReplacement` refuses (one over the per-plan budget) is never
+   * selected, so the accepted pin stays usable when an over-long replacement is rejected.
+   */
   const resolvePinnedAuthorPlan = (
     snapshot: OrchestrationReadModel,
     threadId: ThreadId,
     pinnedTurnId: string | null,
     replacementNotBefore?: string,
+    acceptsReplacement?: (plan: ReplacementPlanCandidate) => boolean,
   ):
     | { readonly status: "missing" | "waiting" }
     | {
@@ -2331,6 +2357,8 @@ export const makeWorkflowService = Effect.gen(function* () {
     if (!pinnedTurnId) {
       return { status: "missing" };
     }
+    const withinReplacementBudget = (plan: ReplacementPlanCandidate) =>
+      acceptsReplacement?.(plan) ?? true;
 
     const thread = snapshot.threads.find((entry) => entry.id === threadId);
     if (!thread) {
@@ -2356,6 +2384,7 @@ export const makeWorkflowService = Effect.gen(function* () {
       if (
         latestTurn.state === "completed" &&
         replacementPlan &&
+        withinReplacementBudget(replacementPlan) &&
         (replacementNotBefore === undefined || latestTurn.requestedAt > replacementNotBefore)
       ) {
         return { status: "ready", plan: replacementPlan };
@@ -2393,7 +2422,11 @@ export const makeWorkflowService = Effect.gen(function* () {
     const replacementPlan = thread.proposedPlans.find(
       (candidate) => candidate.turnId === latestTurn.turnId,
     );
-    if (latestTurn.state === "completed" && replacementPlan) {
+    if (
+      latestTurn.state === "completed" &&
+      replacementPlan &&
+      withinReplacementBudget(replacementPlan)
+    ) {
       return { status: "ready", plan: replacementPlan };
     }
 
@@ -2405,52 +2438,173 @@ export const makeWorkflowService = Effect.gen(function* () {
     threadId: ThreadId,
     expectedTurnId: string | null,
     replacementNotBefore?: string,
+    acceptsReplacement?: (plan: ReplacementPlanCandidate) => boolean,
   ): { readonly planMarkdown: string } | null => {
     const resolution = resolvePinnedAuthorPlan(
       snapshot,
       threadId,
       expectedTurnId,
       replacementNotBefore,
+      acceptsReplacement,
     );
     return resolution.status === "ready" && resolution.plan.turnId === expectedTurnId
       ? resolution.plan
       : null;
   };
 
+  /** Every branch's pinned revised plan in author order, or `null` while any is missing. */
+  const collectMergeInputs = (
+    workflow: PlanningWorkflow,
+    snapshot: OrchestrationReadModel,
+  ): string[] | null => {
+    const plans: string[] = [];
+    for (const branch of planningBranches(workflow)) {
+      const plan = completedProposedPlanForTurn(
+        snapshot,
+        branch.authorThreadId,
+        branch.revisionTurnId,
+        branch.updatedAt,
+        planReplacementFilter(workflow, branch.branchId),
+      )?.planMarkdown;
+      if (!plan) return null;
+      plans.push(plan);
+    }
+    return plans;
+  };
+
+  /** Plan review threads whose turn this process dispatched; empty again after a restart. */
+  const dispatchedPlanReviewThreads = new Set<ThreadId>();
+  /**
+   * Requeued plan reviews whose failed delivery is resent (same delivery, same duplicate-risk
+   * choice) when the launcher admits them, rather than as a new turn.
+   */
+  const requeuedPlanReviewDeliveries = new Map<
+    ThreadId,
+    { readonly allowPossibleDuplicate: boolean }
+  >();
+
+  /**
+   * The resend a requeued review still owes after a restart dropped its in-memory intent. When
+   * the thread's latest delivery is rejected or ambiguous and older than the review's current
+   * attempt, a retry requeued the review to resend it (or the resend was interrupted), so that
+   * delivery is resent rather than a new turn started. A failed delivery from the current
+   * attempt still fails the review for a manual retry. The duplicate-risk confirmation is not
+   * carried over: an ambiguous delivery then fails visibly and asks for it again.
+   */
+  const persistedPlanReviewRedelivery = (threadId: ThreadId, attemptStartedAt: string) =>
+    providerTurnDeliveryWorker._tag === "Some"
+      ? providerTurnDeliveryWorker.value.recheck(threadId).pipe(
+          Effect.map((delivery) =>
+            (delivery?.state === "rejected" || delivery?.state === "ambiguous") &&
+            delivery.createdAt < attemptStartedAt
+              ? { allowPossibleDuplicate: false }
+              : undefined,
+          ),
+          Effect.catchCause(() => Effect.succeed(undefined)),
+        )
+      : Effect.succeed(undefined);
+
+  /**
+   * Whether a plan review holds one of the `WORKFLOW_MAX_ACTIVE_REVIEW_TURNS` slots. A running
+   * review holds one once its turn or delivery exists, or this process dispatched it. A failed
+   * review whose delivery is being resent stays visibly failed, but holds a slot while that
+   * delivery or a turn on its thread is live.
+   */
+  const planReviewHoldsSlot = (
+    review: WorkflowBranch["reviews"][number],
+    snapshot: OrchestrationReadModel,
+    idempotentStageSetup: boolean,
+  ) =>
+    Effect.gen(function* () {
+      const thread = snapshot.threads.find((entry) => entry.id === review.threadId);
+      if (review.status === "error") {
+        return hasActiveRunningTurn(thread) || (yield* hasDeliveryInFlight(review.threadId));
+      }
+      if (review.status !== "running") return false;
+      // A turn requested before the review was (re)queued is an earlier attempt's. A resent
+      // delivery keeps its original row, so an unsettled one also marks the review in flight.
+      const currentTurn =
+        thread?.latestTurn != null && thread.latestTurn.requestedAt >= review.updatedAt;
+      if (currentTurn || dispatchedPlanReviewThreads.has(review.threadId)) return true;
+      const delivery = idempotentStageSetup
+        ? yield* deliveryForStage(review.threadId, review.updatedAt)
+        : null;
+      return delivery !== null || (yield* hasDeliveryInFlight(review.threadId));
+    });
+
+  /**
+   * Plan review launcher, one pass. When every plan is saved it first records every expected
+   * review as `pending` in one write; each pass then admits pending reviews (and re-dispatches
+   * running ones that never got a turn) in order, branch id, cross by reviewer id, then self,
+   * until `WORKFLOW_MAX_ACTIVE_REVIEW_TURNS` are running. Each review launches on its own, so one
+   * failure marks only that review. Results are applied by thread id onto a fresh read.
+   */
+
+  /**
+   * One launcher pass at a time. The event fiber, manual retries and reconciliation all admit
+   * reviews; each pass counts occupancy and reserves slots from a fresh read inside this gate, so
+   * two overlapping passes can't both fill the same free slot.
+   */
+  const reviewLaunchGate = yield* Semaphore.make(1);
+
+  /** Runs one launcher pass and returns the review threads it dispatched. */
   const maybeStartReviews = (
     workflow: PlanningWorkflow,
     snapshot: OrchestrationReadModel,
     updatedAt: string,
+    retries?: ReadonlyMap<ThreadId, WorkflowRetryContext>,
+  ) =>
+    reviewLaunchGate.withPermits(1)(
+      Effect.gen(function* () {
+        const fresh = yield* orchestrationEngine.getReadModel();
+        const current = fresh.planningWorkflows.find((entry) => entry.id === workflow.id);
+        if (current && (isDeletedWorkflow(current) || isArchivedWorkflow(current))) {
+          return new Set<ThreadId>();
+        }
+        return yield* maybeStartReviewsPass(current ?? workflow, fresh, updatedAt, retries);
+      }),
+    );
+
+  const maybeStartReviewsPass = (
+    workflow: PlanningWorkflow,
+    snapshot: OrchestrationReadModel,
+    updatedAt: string,
+    retries?: ReadonlyMap<ThreadId, WorkflowRetryContext>,
   ) =>
     Effect.gen(function* () {
-      const startsFresh =
-        workflow.branchA.status === "plan_saved" &&
-        workflow.branchB.status === "plan_saved" &&
-        workflow.branchA.reviews.length === 0 &&
-        workflow.branchB.reviews.length === 0;
+      const dispatched = new Set<ThreadId>();
+      const branches = planningBranches(workflow);
+      // Only running reviews need the mark; the rest of this run's entries are dropped here.
+      for (const branch of branches) {
+        for (const review of branch.reviews) {
+          if (review.status !== "running") dispatchedPlanReviewThreads.delete(review.threadId);
+          if (review.status !== "pending") requeuedPlanReviewDeliveries.delete(review.threadId);
+        }
+      }
+      const startsFresh = branches.every(
+        (branch) => branch.status === "plan_saved" && branch.reviews.length === 0,
+      );
       const resumesPersistedIntent =
-        workflow.branchA.status === "reviews_requested" &&
-        workflow.branchB.status === "reviews_requested" &&
-        workflow.branchA.reviews.length > 0 &&
-        workflow.branchB.reviews.length > 0;
+        branches.every(
+          (branch) =>
+            (branch.status === "reviews_requested" || branch.status === "reviews_saved") &&
+            branch.reviews.length > 0,
+        ) && branches.some((branch) => branch.status === "reviews_requested");
       if (!startsFresh && !resumesPersistedIntent) {
-        return;
+        return dispatched;
       }
 
-      const planA = completedProposedPlanForTurn(
-        snapshot,
-        workflow.branchA.authorThreadId,
-        workflow.branchA.planTurnId,
-        workflow.branchA.updatedAt,
-      )?.planMarkdown;
-      const planB = completedProposedPlanForTurn(
-        snapshot,
-        workflow.branchB.authorThreadId,
-        workflow.branchB.planTurnId,
-        workflow.branchB.updatedAt,
-      )?.planMarkdown;
-      if (!planA || !planB) {
-        return;
+      const plans = new Map<WorkflowBranchId, string>();
+      for (const branch of branches) {
+        const plan = completedProposedPlanForTurn(
+          snapshot,
+          branch.authorThreadId,
+          branch.planTurnId,
+          branch.updatedAt,
+          planReplacementFilter(workflow, branch.branchId),
+        )?.planMarkdown;
+        if (!plan) return dispatched;
+        plans.set(branch.branchId, plan);
       }
 
       const behavior = resolveWorkflowBehavior({
@@ -2458,147 +2612,200 @@ export const makeWorkflowService = Effect.gen(function* () {
         templateId: workflow.templateId,
         templateVersion: workflow.templateVersion,
       });
+      const mesh = workflowUsesMesh(branches.length);
       let intentWorkflow = workflow;
       if (startsFresh) {
         const budgetError = workflowBudgetError(workflow);
         if (budgetError) {
           yield* upsertWorkflow(markMergeError(workflow, budgetError.message, updatedAt));
-          return;
+          return dispatched;
         }
-        const branchAReviews = [
-          {
-            slot: "cross" as const,
-            threadId: ThreadId.makeUnsafe(
-              stableWorkflowUuid(
-                "plan-review-thread",
-                workflow.id,
-                "a",
-                "cross",
-                workflow.branchA.planTurnId,
+        const reviews = new Map<WorkflowBranchId, PlanReviewIntent[]>();
+        for (const branch of branches) {
+          reviews.set(
+            branch.branchId,
+            expectedPlanReviewEdges(workflow, branch.branchId).map((edge) => ({
+              slot: edge.slot,
+              ...(mesh ? { reviewerBranchId: edge.reviewerBranchId } : {}),
+              threadId: planReviewThreadId(
+                workflow,
+                branch.branchId,
+                edge,
+                branch.planTurnId ?? "",
               ),
-            ),
-          },
-          ...(workflow.selfReviewEnabled
-            ? [
-                {
-                  slot: "self" as const,
-                  threadId: ThreadId.makeUnsafe(
-                    stableWorkflowUuid(
-                      "plan-review-thread",
-                      workflow.id,
-                      "a",
-                      "self",
-                      workflow.branchA.planTurnId,
-                    ),
-                  ),
-                },
-              ]
-            : []),
-        ];
-        const branchBReviews = [
-          {
-            slot: "cross" as const,
-            threadId: ThreadId.makeUnsafe(
-              stableWorkflowUuid(
-                "plan-review-thread",
-                workflow.id,
-                "b",
-                "cross",
-                workflow.branchB.planTurnId,
-              ),
-            ),
-          },
-          ...(workflow.selfReviewEnabled
-            ? [
-                {
-                  slot: "self" as const,
-                  threadId: ThreadId.makeUnsafe(
-                    stableWorkflowUuid(
-                      "plan-review-thread",
-                      workflow.id,
-                      "b",
-                      "self",
-                      workflow.branchB.planTurnId,
-                    ),
-                  ),
-                },
-              ]
-            : []),
-        ];
-        intentWorkflow = markReviewsRequested(workflow, {
-          branchAReviews,
-          branchBReviews,
-          updatedAt,
-        });
+            })),
+          );
+        }
+        intentWorkflow = markReviewsRequested(workflow, { reviews, updatedAt });
         yield* upsertWorkflow(intentWorkflow);
       }
 
-      const reviews = [
-        ...intentWorkflow.branchA.reviews.map((review) => ({
-          review,
-          reviewedBranchId: "a" as const,
-          reviewerSlot:
-            review.slot === "cross"
-              ? intentWorkflow.branchB.authorSlot
-              : intentWorkflow.branchA.authorSlot,
-          planMarkdown: planA,
-          planTurnId: intentWorkflow.branchA.planTurnId,
-        })),
-        ...intentWorkflow.branchB.reviews.map((review) => ({
-          review,
-          reviewedBranchId: "b" as const,
-          reviewerSlot:
-            review.slot === "cross"
-              ? intentWorkflow.branchA.authorSlot
-              : intentWorkflow.branchB.authorSlot,
-          planMarkdown: planB,
-          planTurnId: intentWorkflow.branchB.planTurnId,
-        })),
-      ];
-
-      yield* Effect.forEach(
-        reviews,
-        ({ review, reviewedBranchId, reviewerSlot, planMarkdown, planTurnId }) =>
-          Effect.gen(function* () {
-            const reviewThread = snapshot.threads.find((thread) => thread.id === review.threadId);
-            if (!reviewThread) {
-              yield* createReviewThread({
-                orchestrationEngine,
-                workflow: intentWorkflow,
-                reviewerSlot,
-                reviewedBranchId,
-                reviewSlot: review.slot,
-                threadId: review.threadId,
-                createdAt: updatedAt,
-              });
-            }
-            const existingDelivery = behavior.idempotentStageSetup
-              ? yield* deliveryForStage(review.threadId, review.updatedAt)
-              : null;
-            const deliveryError = ensureDeliveryCanResume(
-              existingDelivery,
-              `${review.slot} plan review`,
-            );
-            if (deliveryError) return yield* Effect.fail(deliveryError);
-            const alreadyStarted =
-              reviewThread?.latestTurn !== null && reviewThread?.latestTurn !== undefined;
-            if (!existingDelivery && !alreadyStarted) {
-              yield* startReviewTurn({
-                orchestrationEngine,
-                workflow: intentWorkflow,
-                reviewerSlot,
-                reviewThreadId: review.threadId,
-                planMarkdown,
-                planTurnId,
-                reviewKind: review.slot,
-                reviewedBranchId,
-                createdAt: updatedAt,
-                attempt: review.retryCount,
-              });
-            }
-          }),
-        { discard: true },
+      // Every review record of the run, in admission order.
+      const records = planningBranches(intentWorkflow).flatMap((branch) =>
+        branch.reviews
+          .map((review) => ({
+            branch,
+            review,
+            reviewerBranchId: planReviewReviewerBranchId(intentWorkflow, branch.branchId, review),
+          }))
+          .toSorted(
+            (left, right) =>
+              compareWorkflowReviewSlots(left.review.slot, right.review.slot) ||
+              workflowParticipantIndex(left.reviewerBranchId) -
+                workflowParticipantIndex(right.reviewerBranchId),
+          ),
       );
+
+      // Running reviews that never got a turn (a restart mid-launch) are re-dispatched; the
+      // rest of the running ones are in flight and count against the cap. A review this
+      // process dispatched is in flight even before its provider reports the turn.
+      type ReviewRecord = (typeof records)[number];
+      const resumes: ReviewRecord[] = [];
+      let inFlight = 0;
+      for (const record of records) {
+        if (record.review.status !== "running" && record.review.status !== "error") continue;
+        if (yield* planReviewHoldsSlot(record.review, snapshot, behavior.idempotentStageSetup))
+          inFlight += 1;
+        else if (record.review.status === "running") resumes.push(record);
+      }
+      const pending = records.filter((record) => record.review.status === "pending");
+
+      const launch = (record: ReviewRecord) =>
+        Effect.gen(function* () {
+          const { branch, review, reviewerBranchId } = record;
+          const budgetError = workflowBudgetError(intentWorkflow);
+          if (budgetError) return yield* Effect.fail(budgetError);
+          const redelivery =
+            requeuedPlanReviewDeliveries.get(review.threadId) ??
+            (yield* persistedPlanReviewRedelivery(review.threadId, review.updatedAt));
+          if (redelivery && providerTurnDeliveryWorker._tag === "Some") {
+            requeuedPlanReviewDeliveries.delete(review.threadId);
+            yield* providerTurnDeliveryWorker.value.retry({
+              threadId: review.threadId,
+              allowPossibleDuplicate: redelivery.allowPossibleDuplicate,
+            });
+            return;
+          }
+          const reviewerSlot = requirePlanningBranch(intentWorkflow, reviewerBranchId).authorSlot;
+          const reviewThread = snapshot.threads.find((thread) => thread.id === review.threadId);
+          if (!reviewThread) {
+            yield* createReviewThread({
+              orchestrationEngine,
+              workflow: intentWorkflow,
+              reviewerSlot,
+              reviewedBranchId: branch.branchId,
+              reviewerBranchId,
+              reviewSlot: review.slot,
+              threadId: review.threadId,
+              createdAt: updatedAt,
+            });
+          }
+          const existingDelivery = behavior.idempotentStageSetup
+            ? yield* deliveryForStage(review.threadId, review.updatedAt)
+            : null;
+          const deliveryError = ensureDeliveryCanResume(
+            existingDelivery,
+            `${review.slot} plan review`,
+          );
+          if (deliveryError) return yield* Effect.fail(deliveryError);
+          // A turn requested before this review was (re)queued belongs to an earlier, failed
+          // attempt; one requested since is this attempt's turn (a restart mid-launch).
+          const latestTurn = reviewThread?.latestTurn ?? null;
+          const staleTurn = latestTurn !== null && latestTurn.requestedAt < review.updatedAt;
+          const alreadyStarted = latestTurn !== null && !staleTurn;
+          const retry =
+            retries?.get(review.threadId) ??
+            (staleTurn ? ({ kind: "retry", reusedThread: true } as const) : undefined);
+          if (!existingDelivery && !alreadyStarted) {
+            yield* startReviewTurn({
+              orchestrationEngine,
+              workflow: intentWorkflow,
+              reviewerSlot,
+              reviewThreadId: review.threadId,
+              planMarkdown: plans.get(branch.branchId)!,
+              planTurnId: branch.planTurnId,
+              reviewKind: review.slot,
+              reviewedBranchId: branch.branchId,
+              createdAt: updatedAt,
+              attempt: review.retryCount,
+              ...(retry ? { retry } : {}),
+            });
+          }
+        });
+
+      /** Applies one review's transition onto a fresh read, unless it already moved on. */
+      const writeReview = (
+        threadId: ThreadId,
+        from: ReadonlyArray<string>,
+        patch:
+          | { readonly status: "running" }
+          | { readonly status: "error"; readonly error: string },
+      ) =>
+        Effect.gen(function* () {
+          const current = yield* readWorkflow(orchestrationEngine, workflow.id);
+          if (!current || isArchivedWorkflow(current)) return false;
+          let changed = false;
+          let next = current;
+          for (const branch of planningBranches(current)) {
+            next = updatePlanningBranch(next, branch.branchId, (entry) => ({
+              ...entry,
+              reviews: entry.reviews.map((review) => {
+                if (review.threadId !== threadId || !from.includes(review.status)) return review;
+                changed = true;
+                return { ...review, ...patch, updatedAt };
+              }),
+            }));
+          }
+          if (changed) yield* upsertWorkflow({ ...next, updatedAt });
+          return changed;
+        });
+
+      const launched = new Set<ThreadId>();
+      let costLimitError: string | null = null;
+      // Backfilling: a review that fails to launch frees its slot for the next one in order, so
+      // a pass that admits reviews which all fail still starts the rest of the queue.
+      let active = inFlight;
+      for (const record of [...resumes, ...pending]) {
+        if (active >= WORKFLOW_MAX_ACTIVE_REVIEW_TURNS) break;
+        // Turns already running may finish above the limit; nothing new starts past it.
+        const budgetError = workflowBudgetError(intentWorkflow);
+        if (budgetError) {
+          costLimitError = budgetError.message;
+          break;
+        }
+        // Each admission is saved before its dispatch, so a turn that finishes (even across a
+        // restart) always finds its review running and completes it.
+        if (
+          record.review.status === "pending" &&
+          !(yield* writeReview(record.review.threadId, ["pending"], { status: "running" }))
+        ) {
+          continue;
+        }
+        launched.add(record.review.threadId);
+        // Marked before dispatching, so a concurrent pass never resends this review.
+        dispatchedPlanReviewThreads.add(record.review.threadId);
+        const exit = yield* Effect.exit(launch(record));
+        if (Exit.isSuccess(exit)) {
+          active += 1;
+          dispatched.add(record.review.threadId);
+          continue;
+        }
+        dispatchedPlanReviewThreads.delete(record.review.threadId);
+        yield* writeReview(record.review.threadId, ["pending", "running"], {
+          status: "error",
+          error: errorMessage(Cause.squash(exit.cause)),
+        });
+      }
+      if (costLimitError) {
+        for (const record of pending) {
+          if (launched.has(record.review.threadId)) continue;
+          yield* writeReview(record.review.threadId, ["pending"], {
+            status: "error",
+            error: costLimitError,
+          });
+        }
+      }
+      return dispatched;
     });
 
   const maybeStartRevisions = (
@@ -2608,9 +2815,8 @@ export const makeWorkflowService = Effect.gen(function* () {
     handledThreads?: ReadonlySet<ThreadId>,
   ) =>
     Effect.gen(function* () {
-      const startsFresh =
-        workflow.branchA.status === "reviews_saved" && workflow.branchB.status === "reviews_saved";
-      const branches = [workflow.branchA, workflow.branchB];
+      const branches = planningBranches(workflow);
+      const startsFresh = branches.every((branch) => branch.status === "reviews_saved");
       const candidates = startsFresh
         ? branches
         : branches.filter(
@@ -2628,17 +2834,20 @@ export const makeWorkflowService = Effect.gen(function* () {
       // rereads and rewrites the workflow, and must not become the baseline another
       // branch's stale failure is compared with.
       const current = startsFresh
-        ? markBranchRevising(markBranchRevising(workflow, "a", updatedAt), "b", updatedAt)
+        ? branches.reduce(
+            (next, branch) => markBranchRevising(next, branch.branchId, updatedAt),
+            workflow,
+          )
         : workflow;
 
       const inputs = yield* Effect.forEach(candidates, (candidate) =>
         Effect.gen(function* () {
-          const branch = candidate.branchId === "a" ? current.branchA : current.branchB;
+          const branch = requirePlanningBranch(current, candidate.branchId);
           const thread = snapshot.threads.find((entry) => entry.id === branch.authorThreadId);
           const originalPlanMarkdown = thread?.proposedPlans.find(
             (plan) => plan.turnId === branch.planTurnId,
           )?.planMarkdown;
-          const reviews = yield* reviewFeedbackForBranch(workflow.id, branch, snapshot);
+          const reviews = yield* reviewFeedbackForBranch(workflow, branch, snapshot);
           if (!reviews.length || (behavior.templateVersion === 2 && !originalPlanMarkdown)) {
             return null;
           }
@@ -2723,32 +2932,17 @@ export const makeWorkflowService = Effect.gen(function* () {
     retry?: WorkflowRetryContext,
   ) =>
     Effect.gen(function* () {
-      const startsFresh =
-        workflow.branchA.status === "revised" &&
-        workflow.branchB.status === "revised" &&
-        workflow.merge.status === "not_started";
+      const branches = planningBranches(workflow);
+      const allRevised = branches.every((branch) => branch.status === "revised");
+      const startsFresh = allRevised && workflow.merge.status === "not_started";
       const resumesPersistedIntent =
-        workflow.branchA.status === "revised" &&
-        workflow.branchB.status === "revised" &&
-        workflow.merge.status === "in_progress" &&
-        workflow.merge.threadId !== null;
+        allRevised && workflow.merge.status === "in_progress" && workflow.merge.threadId !== null;
       if (!startsFresh && !resumesPersistedIntent) {
         return;
       }
 
-      const planA = completedProposedPlanForTurn(
-        snapshot,
-        workflow.branchA.authorThreadId,
-        workflow.branchA.revisionTurnId,
-        workflow.branchA.updatedAt,
-      )?.planMarkdown;
-      const planB = completedProposedPlanForTurn(
-        snapshot,
-        workflow.branchB.authorThreadId,
-        workflow.branchB.revisionTurnId,
-        workflow.branchB.updatedAt,
-      )?.planMarkdown;
-      if (!planA || !planB) {
+      const plans = collectMergeInputs(workflow, snapshot);
+      if (!plans) {
         return;
       }
 
@@ -2763,11 +2957,28 @@ export const makeWorkflowService = Effect.gen(function* () {
           stableWorkflowUuid(
             "plan-merge-thread",
             workflow.id,
-            workflow.branchA.revisionTurnId,
-            workflow.branchB.revisionTurnId,
+            ...branches.map((branch) => branch.revisionTurnId),
             workflow.merge.updatedAt,
           ),
         );
+      if (startsFresh) {
+        // Checked before the start is saved: a merge whose inputs can never fit (every revised
+        // plan in one prompt) or that is over budget fails visibly, instead of sitting
+        // `in_progress` with no turn.
+        const preflightError =
+          workflowBudgetError(workflow) ??
+          workflowPromptInvariant({
+            workflow,
+            prompt: buildWorkflowMergePrompt(workflow, plans, retry),
+            artifacts: plans,
+            targetSlot: workflow.merge.mergeSlot,
+            artifactLabel: "Merge inputs",
+          });
+        if (preflightError) {
+          yield* upsertWorkflow(markMergeError(workflow, preflightError.message, updatedAt));
+          return;
+        }
+      }
       const intentWorkflow = startsFresh
         ? markMergeStarted(workflow, mergeThreadId, updatedAt)
         : workflow;
@@ -2803,17 +3014,11 @@ export const makeWorkflowService = Effect.gen(function* () {
       if (existingDelivery || alreadyStarted) {
         return;
       }
-      const mergeReviews = [
-        ...(yield* reviewFeedbackForBranch(intentWorkflow.id, intentWorkflow.branchA, snapshot)),
-        ...(yield* reviewFeedbackForBranch(intentWorkflow.id, intentWorkflow.branchB, snapshot)),
-      ];
       yield* startMergeTurn({
         orchestrationEngine,
         workflow: intentWorkflow,
         threadId: mergeThreadId,
-        planA,
-        planB,
-        reviews: mergeReviews,
+        plans,
         createdAt: updatedAt,
         ...(retry ? { retry } : {}),
       });
@@ -3142,7 +3347,7 @@ export const makeWorkflowService = Effect.gen(function* () {
   ) =>
     Effect.gen(function* () {
       if (isArchivedWorkflow(workflow)) return;
-      yield* maybeStartReviews(workflow, snapshot, updatedAt);
+      const dispatchedReviews = yield* maybeStartReviews(workflow, snapshot, updatedAt);
       const dispatchedRevisions = yield* maybeStartRevisions(
         workflow,
         snapshot,
@@ -3151,7 +3356,8 @@ export const makeWorkflowService = Effect.gen(function* () {
       );
       yield* maybeStartMerge(workflow, snapshot, updatedAt);
       yield* maybeContinueDocumentReaderPass(workflow);
-      return dispatchedRevisions;
+      // Every author and review thread this pass dispatched a turn to.
+      return new Set<ThreadId>([...dispatchedReviews, ...(dispatchedRevisions ?? [])]);
     });
 
   const maybeAdvancePlanningWorkflowFromCompletedThread = (
@@ -3179,13 +3385,10 @@ export const makeWorkflowService = Effect.gen(function* () {
         );
 
       const authorBranchId =
-        workflow.branchA.authorThreadId === threadId
-          ? ("a" as const)
-          : workflow.branchB.authorThreadId === threadId
-            ? ("b" as const)
-            : null;
+        planningBranches(workflow).find((entry) => entry.authorThreadId === threadId)?.branchId ??
+        null;
       if (authorBranchId) {
-        const branch = authorBranchId === "a" ? workflow.branchA : workflow.branchB;
+        const branch = requirePlanningBranch(workflow, authorBranchId);
         if (branch.status === "plan_saved" || branch.status === "revised") {
           const pinnedTurnId =
             branch.status === "revised" ? branch.revisionTurnId : branch.planTurnId;
@@ -3194,6 +3397,7 @@ export const makeWorkflowService = Effect.gen(function* () {
             threadId,
             pinnedTurnId,
             branch.updatedAt,
+            planReplacementFilter(workflow, branch.branchId),
           );
           if (selection.status !== "ready" || selection.plan.turnId === pinnedTurnId) {
             return workflow;
@@ -3210,6 +3414,8 @@ export const makeWorkflowService = Effect.gen(function* () {
               provider: branch.authorSlot.provider,
               thread,
               turnId: replacementTurnId,
+              maxPlanChars: workflowPlanCharBudget(workflow),
+              branchId: authorBranchId,
             }).valid
           ) {
             return workflow;
@@ -3271,20 +3477,33 @@ export const makeWorkflowService = Effect.gen(function* () {
           return workflow;
         }
 
-        const hasPlan = validateCapturedPlanForTurn({
+        const capture = validateCapturedPlanForTurn({
           workflow,
           provider: branch.authorSlot.provider,
           thread,
           turnId,
-        }).valid;
-        if (!hasPlan) {
-          const synthesized = yield* maybeSynthesizeProposedPlan({
-            workflow,
-            provider: branch.authorSlot.provider,
-            thread,
-            turnId,
-            createdAt: updatedAt,
-          });
+          maxPlanChars: workflowPlanCharBudget(workflow),
+          branchId: authorBranchId,
+        });
+        if (!capture.valid) {
+          // An over-long plan was captured: repair it rather than synthesizing another.
+          // A reply over the per-plan budget is not saved as a plan; it takes the same repair.
+          let overBudgetError: string | undefined;
+          const synthesized =
+            !("overBudget" in capture) &&
+            (yield* maybeSynthesizeProposedPlan({
+              workflow,
+              provider: branch.authorSlot.provider,
+              thread,
+              turnId,
+              createdAt: updatedAt,
+              budget: {
+                branchId: authorBranchId,
+                onOverBudget: (error) => {
+                  overBudgetError = error;
+                },
+              },
+            }));
           if (!synthesized) {
             // Valid late output can still be captured; a failed turn must not
             // trigger another provider turn to repair invalid output.
@@ -3296,6 +3515,7 @@ export const makeWorkflowService = Effect.gen(function* () {
               turnId,
               branchId: authorBranchId,
               createdAt: updatedAt,
+              ...(overBudgetError !== undefined ? { validationError: overBudgetError } : {}),
             });
             return workflow;
           }
@@ -3318,7 +3538,7 @@ export const makeWorkflowService = Effect.gen(function* () {
 
       const reviewMatch = workflowForReviewThread([workflow], threadId);
       if (reviewMatch) {
-        const branch = reviewMatch.branchId === "a" ? workflow.branchA : workflow.branchB;
+        const branch = requirePlanningBranch(workflow, reviewMatch.branchId);
         const review = branch.reviews.find((entry) => entry.threadId === threadId);
         const finishedTurn = getFinishedConsumableLatestTurn(thread);
         if (
@@ -3326,7 +3546,10 @@ export const makeWorkflowService = Effect.gen(function* () {
           !finishedTurn ||
           (review.status === "error" &&
             (thread.latestTurn?.completedAt ?? thread.latestTurn?.requestedAt ?? "") <
-              review.updatedAt)
+              review.updatedAt) ||
+          // A requeued review is saved `running` before its new turn exists: a turn requested
+          // before that belongs to an earlier attempt, not this one.
+          (review.status === "running" && (thread.latestTurn?.requestedAt ?? "") < review.updatedAt)
         ) {
           return workflow;
         }
@@ -3565,18 +3788,12 @@ export const makeWorkflowService = Effect.gen(function* () {
       if (!reviewImplementation) return;
       const requestedReviews =
         reviewImplementation.codeReviews.length === 0
-          ? [
-              {
-                reviewerSlot: workflow.branchA.authorSlot,
-                reviewerLabel: `Author A (${slotLabel(workflow.branchA.authorSlot)})`,
-                threadId: ThreadId.makeUnsafe(crypto.randomUUID()),
-              },
-              {
-                reviewerSlot: workflow.branchB.authorSlot,
-                reviewerLabel: `Author B (${slotLabel(workflow.branchB.authorSlot)})`,
-                threadId: ThreadId.makeUnsafe(crypto.randomUUID()),
-              },
-            ]
+          ? // One reviewer per author against the same saved patch.
+            planningBranches(workflow).map((branch) => ({
+              reviewerSlot: branch.authorSlot,
+              reviewerLabel: `Author ${workflowParticipantLabel(branch.branchId)} (${slotLabel(branch.authorSlot)})`,
+              threadId: ThreadId.makeUnsafe(crypto.randomUUID()),
+            }))
           : reviewImplementation.codeReviews.map((review) => ({
               reviewerSlot: review.reviewerSlot,
               reviewerLabel: review.reviewerLabel,
@@ -3622,7 +3839,7 @@ export const makeWorkflowService = Effect.gen(function* () {
             requirementPrompt: pendingWorkflow.requirementPrompt,
             reviewArtifact: promptArtifact,
             reviewerLabel: review.reviewerLabel,
-            lensBranch: index === 0 ? "a" : "b",
+            lensBranch: index % 2 === 0 ? "a" : "b",
             reviewerSlot: review.reviewerSlot,
             enforceArtifactBudget: behavior.loudAuthoritativeArtifactLimit,
             thread: reviewThread,
@@ -3670,10 +3887,7 @@ export const makeWorkflowService = Effect.gen(function* () {
                   reviewThreadId: review.threadId,
                   mergedPlanMarkdown: mergedPlan.planMarkdown,
                   reviewerLabel: review.reviewerLabel,
-                  lensBranch:
-                    pendingWorkflow.implementation?.codeReviews.at(0)?.threadId === review.threadId
-                      ? "a"
-                      : "b",
+                  lensBranch: codeReviewLensBranch(pendingWorkflow, review.threadId),
                   reviewArtifact: promptArtifact,
                   preparedPrompt: preparedPrompts.get(review.threadId),
                   createdAt: updatedAt,
@@ -4850,10 +5064,10 @@ export const makeWorkflowService = Effect.gen(function* () {
       const updatedAt = new Date().toISOString();
       let reconciledWorkflow = workflow;
       let latestSnapshot = snapshot;
-      const legacyReviewErrors = new Map<"a" | "b", string>();
+      const legacyReviewErrors = new Map<WorkflowBranchId, string>();
 
-      for (const branchId of ["a", "b"] as const) {
-        const branch = branchId === "a" ? reconciledWorkflow.branchA : reconciledWorkflow.branchB;
+      for (const branchId of planningBranchIds(workflow)) {
+        const branch = requirePlanningBranch(reconciledWorkflow, branchId);
         if (branch.status !== "error" || branch.errorStage !== null) {
           continue;
         }
@@ -4862,22 +5076,20 @@ export const makeWorkflowService = Effect.gen(function* () {
           legacyReviewErrors.set(branchId, branch.error);
           continue;
         }
-        const repairedBranch: PlanningWorkflow["branchA"] = {
+        const repairedBranch: WorkflowBranch = {
           ...branch,
           errorStage: legacyStage === "revision" ? "revision" : "authoring",
           updatedAt,
         };
         reconciledWorkflow = {
-          ...reconciledWorkflow,
-          branchA: branchId === "a" ? repairedBranch : reconciledWorkflow.branchA,
-          branchB: branchId === "b" ? repairedBranch : reconciledWorkflow.branchB,
+          ...updatePlanningBranch(reconciledWorkflow, branchId, () => repairedBranch),
           updatedAt,
         };
       }
       // A revision recorded as a fresh draft leaves `plan_saved` with completed
       // reviews of an earlier draft, which no lifecycle step can advance.
-      for (const branchId of ["a", "b"] as const) {
-        const branch = branchId === "a" ? reconciledWorkflow.branchA : reconciledWorkflow.branchB;
+      for (const branchId of planningBranchIds(workflow)) {
+        const branch = requirePlanningBranch(reconciledWorkflow, branchId);
         if (
           branch.status !== "plan_saved" ||
           branch.reviews.length === 0 ||
@@ -4907,7 +5119,7 @@ export const makeWorkflowService = Effect.gen(function* () {
           });
           continue;
         }
-        const repairedBranch: PlanningWorkflow["branchA"] = {
+        const repairedBranch: WorkflowBranch = {
           ...branch,
           status: "revised",
           planTurnId: reviewedTurnId,
@@ -4917,9 +5129,7 @@ export const makeWorkflowService = Effect.gen(function* () {
           updatedAt,
         };
         reconciledWorkflow = {
-          ...reconciledWorkflow,
-          branchA: branchId === "a" ? repairedBranch : reconciledWorkflow.branchA,
-          branchB: branchId === "b" ? repairedBranch : reconciledWorkflow.branchB,
+          ...updatePlanningBranch(reconciledWorkflow, branchId, () => repairedBranch),
           updatedAt,
         };
       }
@@ -4934,9 +5144,9 @@ export const makeWorkflowService = Effect.gen(function* () {
           reconciledWorkflow;
       });
 
-      const reconcilePendingBranch = (branchId: "a" | "b") =>
+      const reconcilePendingBranch = (branchId: WorkflowBranchId) =>
         Effect.gen(function* () {
-          const branch = branchId === "a" ? reconciledWorkflow.branchA : reconciledWorkflow.branchB;
+          const branch = requirePlanningBranch(reconciledWorkflow, branchId);
           if (branch.status !== "pending") {
             return;
           }
@@ -4962,15 +5172,16 @@ export const makeWorkflowService = Effect.gen(function* () {
           yield* upsertWorkflow(reconciledWorkflow);
         });
 
-      yield* reconcilePendingBranch("a");
-      yield* reconcilePendingBranch("b");
+      for (const branchId of planningBranchIds(reconciledWorkflow)) {
+        yield* reconcilePendingBranch(branchId);
+      }
       yield* refreshWorkflowFromSnapshot;
 
       const lifecycleThreadIds = [
-        reconciledWorkflow.branchA.authorThreadId,
-        reconciledWorkflow.branchB.authorThreadId,
-        ...reconciledWorkflow.branchA.reviews.map((review) => review.threadId),
-        ...reconciledWorkflow.branchB.reviews.map((review) => review.threadId),
+        ...planningBranches(reconciledWorkflow).map((branch) => branch.authorThreadId),
+        ...planningBranches(reconciledWorkflow).flatMap((branch) =>
+          branch.reviews.map((review) => review.threadId),
+        ),
         ...(reconciledWorkflow.merge.threadId ? [reconciledWorkflow.merge.threadId] : []),
         ...(reconciledWorkflow.readerPass ? [reconciledWorkflow.readerPass.readerThreadId] : []),
       ];
@@ -4988,9 +5199,9 @@ export const makeWorkflowService = Effect.gen(function* () {
       }
 
       for (const [branchId, legacyError] of legacyReviewErrors) {
-        const branch = branchId === "a" ? reconciledWorkflow.branchA : reconciledWorkflow.branchB;
+        const branch = requirePlanningBranch(reconciledWorkflow, branchId);
         if (branch.reviews.length === 0) {
-          const repairedBranch: PlanningWorkflow["branchA"] = {
+          const repairedBranch: WorkflowBranch = {
             ...branch,
             status: "plan_saved",
             error: null,
@@ -4998,17 +5209,17 @@ export const makeWorkflowService = Effect.gen(function* () {
             updatedAt,
           };
           reconciledWorkflow = {
-            ...reconciledWorkflow,
-            branchA: branchId === "a" ? repairedBranch : reconciledWorkflow.branchA,
-            branchB: branchId === "b" ? repairedBranch : reconciledWorkflow.branchB,
+            ...updatePlanningBranch(reconciledWorkflow, branchId, () => repairedBranch),
             updatedAt,
           };
+          // Saved now: the review launcher reads the stored record.
+          yield* upsertWorkflow(reconciledWorkflow);
           continue;
         }
         if (branch.reviews.every((review) => review.status === "completed")) {
           continue;
         }
-        const repairedBranch: PlanningWorkflow["branchA"] = {
+        const repairedBranch: WorkflowBranch = {
           ...branch,
           reviews: branch.reviews.map((review) => {
             if (review.status === "completed") {
@@ -5033,9 +5244,7 @@ export const makeWorkflowService = Effect.gen(function* () {
           updatedAt,
         };
         reconciledWorkflow = {
-          ...reconciledWorkflow,
-          branchA: branchId === "a" ? repairedBranch : reconciledWorkflow.branchA,
-          branchB: branchId === "b" ? repairedBranch : reconciledWorkflow.branchB,
+          ...updatePlanningBranch(reconciledWorkflow, branchId, () => repairedBranch),
           updatedAt,
         };
         yield* upsertWorkflow(reconciledWorkflow);
@@ -5074,9 +5283,10 @@ export const makeWorkflowService = Effect.gen(function* () {
         }
       }
 
-      for (const branchId of ["a", "b"] as const) {
-        const branch = branchId === "a" ? reconciledWorkflow.branchA : reconciledWorkflow.branchB;
-        const baselineBranch = branchId === "a" ? workflow.branchA : workflow.branchB;
+      let freedReviewSlots = false;
+      for (const branchId of planningBranchIds(workflow)) {
+        const branch = requirePlanningBranch(reconciledWorkflow, branchId);
+        const baselineBranch = requirePlanningBranch(workflow, branchId);
         const authorThread = latestSnapshot.threads.find(
           (thread) => thread.id === branch.authorThreadId,
         );
@@ -5116,8 +5326,11 @@ export const makeWorkflowService = Effect.gen(function* () {
           const baselineReview = baselineBranch.reviews.find(
             (entry) => entry.threadId === review.threadId,
           );
+          // Includes a running review startup re-dispatched (a restart mid-launch): its session
+          // may not be projected yet.
           const startedReviewThisPass =
-            (baselineReview?.status ?? null) !== "running" && review.status === "running";
+            ((baselineReview?.status ?? null) !== "running" && review.status === "running") ||
+            dispatchedRevisions?.has(review.threadId) === true;
           const reviewThread = latestSnapshot.threads.find(
             (thread) => thread.id === review.threadId,
           );
@@ -5139,8 +5352,15 @@ export const makeWorkflowService = Effect.gen(function* () {
               updatedAt,
             );
             yield* upsertWorkflow(reconciledWorkflow);
+            freedReviewSlots = true;
           }
         }
+      }
+      // The launcher above counted these lost reviews as in flight; their slots are free now.
+      if (freedReviewSlots) {
+        yield* refreshWorkflowFromSnapshot;
+        yield* maybeStartReviews(reconciledWorkflow, latestSnapshot, updatedAt);
+        yield* refreshWorkflowFromSnapshot;
       }
 
       const startedMergeThisPass =
@@ -5505,10 +5725,7 @@ export const makeWorkflowService = Effect.gen(function* () {
             const authorThread = readModel.threads.find(
               (thread) => thread.id === event.payload.threadId,
             );
-            const branch =
-              authorMatch.branchId === "a"
-                ? authorMatch.workflow.branchA
-                : authorMatch.workflow.branchB;
+            const branch = requirePlanningBranch(authorMatch.workflow, authorMatch.branchId);
             const canAdvanceAuthor =
               branch.status === "authoring" ||
               branch.status === "revising" ||
@@ -5520,6 +5737,8 @@ export const makeWorkflowService = Effect.gen(function* () {
                 thread: authorThread,
                 turnId: event.payload.turnId,
                 createdAt: event.occurredAt,
+                // An over-long reply is left unsaved; the capture below repairs it.
+                budget: { branchId: authorMatch.branchId },
               });
               const nextReadModel = synthesized
                 ? yield* orchestrationEngine.getReadModel()
@@ -5820,8 +6039,7 @@ export const makeWorkflowService = Effect.gen(function* () {
           }
           if (reviewMatch) {
             const baseWorkflow = yield* applyTurnCost(reviewMatch.workflow);
-            const reviewedBranch =
-              reviewMatch.branchId === "a" ? baseWorkflow.branchA : baseWorkflow.branchB;
+            const reviewedBranch = requirePlanningBranch(baseWorkflow, reviewMatch.branchId);
             const review = reviewedBranch.reviews.find(
               (entry) => entry.threadId === event.payload.threadId,
             );
@@ -5845,11 +6063,9 @@ export const makeWorkflowService = Effect.gen(function* () {
                 event.occurredAt,
               );
               const expectedRetryCount =
-                (reviewMatch.branchId === "a"
-                  ? retryWorkflow.branchA
-                  : retryWorkflow.branchB
-                ).reviews.find((entry) => entry.threadId === event.payload.threadId)?.retryCount ??
-                0;
+                requirePlanningBranch(retryWorkflow, reviewMatch.branchId).reviews.find(
+                  (entry) => entry.threadId === event.payload.threadId,
+                )?.retryCount ?? 0;
               yield* upsertWorkflow(retryWorkflow);
               yield* forkPlanningReviewAutoRetry({
                 workflowId: retryWorkflow.id,
@@ -5861,22 +6077,31 @@ export const makeWorkflowService = Effect.gen(function* () {
               return;
             }
 
-            yield* upsertWorkflow(
-              markPlanningReviewError(
-                baseWorkflow,
-                reviewMatch.branchId,
-                event.payload.threadId,
-                formatSessionError(event.payload.session, "Review failed."),
-                event.occurredAt,
-              ),
+            const failedReviewWorkflow = markPlanningReviewError(
+              baseWorkflow,
+              reviewMatch.branchId,
+              event.payload.threadId,
+              formatSessionError(event.payload.session, "Review failed."),
+              event.occurredAt,
             );
+            yield* upsertWorkflow(failedReviewWorkflow);
+            if (failedReviewWorkflow !== baseWorkflow) {
+              // A failed review frees a slot: admit the next pending review of the mesh.
+              const launchSnapshot = yield* orchestrationEngine.getReadModel();
+              const launchWorkflow =
+                launchSnapshot.planningWorkflows.find(
+                  (entry) => entry.id === failedReviewWorkflow.id,
+                ) ?? null;
+              if (launchWorkflow && !isArchivedWorkflow(launchWorkflow)) {
+                yield* maybeStartReviews(launchWorkflow, launchSnapshot, event.occurredAt);
+              }
+            }
             return;
           }
 
           if (authorMatch) {
             const baseWorkflow = yield* applyTurnCost(authorMatch.workflow);
-            const branch =
-              authorMatch.branchId === "a" ? baseWorkflow.branchA : baseWorkflow.branchB;
+            const branch = requirePlanningBranch(baseWorkflow, authorMatch.branchId);
             if (branch.status !== "authoring" && branch.status !== "revising") {
               return;
             }
@@ -5890,10 +6115,10 @@ export const makeWorkflowService = Effect.gen(function* () {
                 authorMatch.branchId,
                 event.occurredAt,
               );
-              const expectedRetryCount =
-                authorMatch.branchId === "a"
-                  ? retryWorkflow.branchA.retryCount
-                  : retryWorkflow.branchB.retryCount;
+              const expectedRetryCount = requirePlanningBranch(
+                retryWorkflow,
+                authorMatch.branchId,
+              ).retryCount;
               yield* upsertWorkflow(retryWorkflow);
               yield* forkAutoRetry({
                 kind: "authoring",
@@ -5901,11 +6126,9 @@ export const makeWorkflowService = Effect.gen(function* () {
                 threadId: event.payload.threadId,
                 buildDispatch: ({ workflow, snapshot }) => {
                   const branch =
-                    workflow.branchA.authorThreadId === event.payload.threadId
-                      ? workflow.branchA
-                      : workflow.branchB.authorThreadId === event.payload.threadId
-                        ? workflow.branchB
-                        : null;
+                    planningBranches(workflow).find(
+                      (entry) => entry.authorThreadId === event.payload.threadId,
+                    ) ?? null;
                   const retryThread = snapshot.threads.find(
                     (thread) => thread.id === event.payload.threadId,
                   );
@@ -5933,7 +6156,7 @@ export const makeWorkflowService = Effect.gen(function* () {
                   });
                 },
                 markFailed: ({ workflow, detail, failedAt }) => {
-                  const branch = authorMatch.branchId === "a" ? workflow.branchA : workflow.branchB;
+                  const branch = requirePlanningBranch(workflow, authorMatch.branchId);
                   if (branch.status !== "authoring" || branch.retryCount !== expectedRetryCount) {
                     return null;
                   }
@@ -6086,11 +6309,7 @@ export const makeWorkflowService = Effect.gen(function* () {
                       reviewThreadId: retryReview.threadId,
                       mergedPlanMarkdown: retryMergedPlan.planMarkdown,
                       reviewerLabel: retryReview.reviewerLabel,
-                      lensBranch:
-                        workflow.implementation?.codeReviews.at(0)?.threadId ===
-                        retryReview.threadId
-                          ? "a"
-                          : "b",
+                      lensBranch: codeReviewLensBranch(workflow, retryReview.threadId),
                       reviewArtifact: implementationReviewPromptArtifact(workflow),
                       thread: retryThread,
                       createdAt: new Date().toISOString(),
@@ -6221,10 +6440,14 @@ export const makeWorkflowService = Effect.gen(function* () {
         ...(rawInput.templateId === DOCUMENT_WORKFLOW_TEMPLATE_ID
           ? { readerReviewEnabled: rawInput.readerReviewEnabled ?? true }
           : {}),
-        branchA: resolveAvailableWorkflowModelSlot(rawInput.branchA, providers),
-        branchB: resolveAvailableWorkflowModelSlot(rawInput.branchB, providers),
+        ...planningInputAuthorFields(
+          planningInputAuthorSlots(rawInput).map((slot) =>
+            resolveAvailableWorkflowModelSlot(slot, providers),
+          ),
+        ),
         merge: resolveAvailableWorkflowModelSlot(rawInput.merge, providers),
       };
+      const authorSlots = planningInputAuthorSlots(input);
       const behavior = yield* Effect.try({
         try: () =>
           resolveWorkflowBehavior({
@@ -6241,44 +6464,50 @@ export const makeWorkflowService = Effect.gen(function* () {
             input.templateVersion ?? 2,
           ),
       });
+      const document = input.templateId === DOCUMENT_WORKFLOW_TEMPLATE_ID;
+      const maxAuthors = workflowMaxParticipants(document ? "document" : "planning");
+      if (authorSlots.length > maxAuthors)
+        return yield* Effect.fail(
+          new Error(
+            `${document ? "Document" : "Feature"} workflows support up to ${maxAuthors} authors.`,
+          ),
+        );
       yield* Effect.try({
         try: () => {
-          assertWorkflowStageProviderSupported({
-            behavior,
-            stage: "author",
-            provider: input.branchA.provider,
-          });
-          assertWorkflowStageProviderSupported({
-            behavior,
-            stage: "author",
-            provider: input.branchB.provider,
-          });
+          for (const slot of authorSlots) {
+            assertWorkflowStageProviderSupported({
+              behavior,
+              stage: "author",
+              provider: slot.provider,
+              providers,
+            });
+          }
           assertWorkflowStageProviderSupported({
             behavior,
             stage: "merge",
             provider: input.merge.provider,
+            providers,
           });
         },
         catch: (error) => error as UnsupportedWorkflowProviderError,
       });
-      const document = input.templateId === DOCUMENT_WORKFLOW_TEMPLATE_ID;
       const documentInvariant = documentWorkflowCreateInvariant({
         ...input,
         readerSlot: input.reader,
       });
       if (documentInvariant) return yield* Effect.fail(new Error(documentInvariant));
-      if (
-        document &&
-        input.branchA.provider === input.branchB.provider &&
-        input.branchA.model === input.branchB.model
-      )
+      if (document && workflowModelSlotsHaveDuplicate(authorSlots))
         return yield* Effect.fail(
-          new Error("Document workflows need two different author models."),
+          new Error(
+            authorSlots.length === 2
+              ? "Document workflows need two different author models."
+              : "Document workflows need a different model for every author.",
+          ),
         );
       const readerSlot =
         document && input.readerReviewEnabled
           ? resolveAvailableWorkflowModelSlot(
-              input.reader ?? defaultDocumentReaderSlot(input),
+              input.reader ?? defaultDocumentReaderSlot(authorSlots, input.merge),
               providers,
             )
           : undefined;
@@ -6289,6 +6518,7 @@ export const makeWorkflowService = Effect.gen(function* () {
               behavior,
               stage: "plan-review",
               provider: readerSlot.provider,
+              providers,
             }),
           catch: (error) => error as UnsupportedWorkflowProviderError,
         });
@@ -6302,8 +6532,10 @@ export const makeWorkflowService = Effect.gen(function* () {
       );
       const now = new Date().toISOString();
       const workflowId = PlanningWorkflowId.makeUnsafe(crypto.randomUUID());
-      const authorThreadIdA = ThreadId.makeUnsafe(crypto.randomUUID());
-      const authorThreadIdB = ThreadId.makeUnsafe(crypto.randomUUID());
+      const authors = authorSlots.map((slot) => ({
+        slot,
+        threadId: ThreadId.makeUnsafe(crypto.randomUUID()),
+      }));
       const titleSourceText = input.requirementPrompt;
       const initialTitle =
         input.title ??
@@ -6328,14 +6560,18 @@ export const makeWorkflowService = Effect.gen(function* () {
         readerReviewEnabled: input.readerReviewEnabled,
         readerPersona: input.readerPersona,
         readerSlot,
-        authorThreadIdA,
-        authorThreadIdB,
-        branchA: input.branchA,
-        branchB: input.branchB,
+        authors,
         merge: input.merge,
         maxCostUsd: input.maxCostUsd,
         createdAt: now,
       });
+      const planCharBudget = workflowPlanCharBudget(workflow);
+      if (planCharBudget !== null && planCharBudget < WORKFLOW_MIN_PLAN_CHAR_BUDGET)
+        return yield* Effect.fail(
+          new Error(
+            `This requirement leaves ${Math.max(0, planCharBudget).toLocaleString("en-US")} characters per plan for ${authors.length} authors; shorten it or use fewer authors.`,
+          ),
+        );
 
       yield* orchestrationEngine.dispatch({
         type: "project.workflow.create",
@@ -6348,38 +6584,29 @@ export const makeWorkflowService = Effect.gen(function* () {
         templateVersion: behavior.templateVersion,
         requirementPrompt: input.requirementPrompt,
         plansDirectory,
-        authorThreadIdA,
-        authorThreadIdB,
+        ...planningCommandAuthorFields(authors),
         selfReviewEnabled: input.selfReviewEnabled,
         documentType: input.documentType,
         readerReviewEnabled: input.readerReviewEnabled,
         readerPersona: input.readerPersona,
         readerSlot,
-        branchA: input.branchA,
-        branchB: input.branchB,
         merge: input.merge,
         maxCostUsd: input.maxCostUsd ?? null,
         createdAt: now,
       });
 
-      yield* Effect.all([
-        createWorkflowThread({
-          orchestrationEngine,
-          input,
-          threadId: authorThreadIdA,
-          suffix: document ? "Draft A" : "Branch A",
-          lane: "a",
-          now,
-        }),
-        createWorkflowThread({
-          orchestrationEngine,
-          input,
-          threadId: authorThreadIdB,
-          suffix: document ? "Draft B" : "Branch B",
-          lane: "b",
-          now,
-        }),
-      ]).pipe(
+      yield* Effect.all(
+        planningBranches(workflow).map((branch) =>
+          createWorkflowThread({
+            orchestrationEngine,
+            input,
+            threadId: branch.authorThreadId,
+            suffix: `${document ? "Draft" : "Branch"} ${workflowParticipantLabel(branch.branchId)}`,
+            slot: branch.authorSlot,
+            now,
+          }),
+        ),
+      ).pipe(
         Effect.tapError(() =>
           dispatchWorkflowDeleteCompensation({
             orchestrationEngine,
@@ -6390,34 +6617,28 @@ export const makeWorkflowService = Effect.gen(function* () {
         ),
       );
 
-      const branchAOutcome = yield* startAuthoringTurn({
-        orchestrationEngine,
-        workflow,
-        branch: workflow.branchA,
-        createdAt: new Date().toISOString(),
-      }).pipe(
-        Effect.match({
-          onFailure: (error) => ({ ok: false as const, error: String(error) }),
-          onSuccess: () => ({ ok: true as const }),
-        }),
-      );
-      const branchBOutcome = yield* startAuthoringTurn({
-        orchestrationEngine,
-        workflow,
-        branch: workflow.branchB,
-        createdAt: new Date().toISOString(),
-      }).pipe(
-        Effect.match({
-          onFailure: (error) => ({ ok: false as const, error: String(error) }),
-          onSuccess: () => ({ ok: true as const }),
-        }),
-      );
+      // Authoring turns start in author order.
+      const outcomes: Array<{ ok: true } | { ok: false; error: string }> = [];
+      for (const branch of planningBranches(workflow)) {
+        outcomes.push(
+          yield* startAuthoringTurn({
+            orchestrationEngine,
+            workflow,
+            branch,
+            createdAt: new Date().toISOString(),
+          }).pipe(
+            Effect.match({
+              onFailure: (error) => ({ ok: false as const, error: String(error) }),
+              onSuccess: () => ({ ok: true as const }),
+            }),
+          ),
+        );
+      }
 
-      const workflowWithAuthoring = updateAuthoringBranch(
-        updateAuthoringBranch(workflow, "a", new Date().toISOString(), branchAOutcome),
-        "b",
-        new Date().toISOString(),
-        branchBOutcome,
+      const workflowWithAuthoring = planningBranches(workflow).reduce(
+        (next, branch, index) =>
+          updateAuthoringBranch(next, branch.branchId, new Date().toISOString(), outcomes[index]!),
+        workflow,
       );
       yield* upsertWorkflow(workflowWithAuthoring);
       if (input.title === undefined) {
@@ -6682,13 +6903,17 @@ export const makeWorkflowService = Effect.gen(function* () {
         if (threadId) failedThreadIds.add(threadId);
       }
 
-      for (const branch of [workflow.branchA, workflow.branchB]) {
+      for (const branch of planningBranches(workflow)) {
         const stage = planningWorkflowBranchFailureStage(branch);
         if (stage === "authoring" || stage === "revision") {
           failedThreadIds.add(branch.authorThreadId);
         }
         for (const review of branch.reviews) {
-          if (review.status === "error" || (stage === "reviews" && review.status !== "completed")) {
+          // Pending reviews are not failures: the launcher admits them on its own.
+          if (
+            review.status === "error" ||
+            (stage === "reviews" && review.status !== "completed" && review.status !== "pending")
+          ) {
             failedThreadIds.add(review.threadId);
           }
         }
@@ -6739,7 +6964,7 @@ export const makeWorkflowService = Effect.gen(function* () {
         ThreadId,
         { turnId: TurnId | null; createdAt: string }
       >();
-      for (const branch of [workflow.branchA, workflow.branchB]) {
+      for (const branch of planningBranches(workflow)) {
         if (planningWorkflowBranchFailureStage(branch) !== "revision" || !branch.planTurnId)
           continue;
         const plan = snapshot.threads
@@ -6773,7 +6998,7 @@ export const makeWorkflowService = Effect.gen(function* () {
           isDocumentWorkflow(workflow) &&
           !hasActiveRunningTurn(snapshot.threads.find((thread) => thread.id === threadId))
         ) {
-          const branch = [workflow.branchA, workflow.branchB].find(
+          const branch = planningBranches(workflow).find(
             (entry) => entry.authorThreadId === threadId,
           );
           const error =
@@ -6814,13 +7039,43 @@ export const makeWorkflowService = Effect.gen(function* () {
       let retriedWorkflow = workflow;
       const handledAcceptedThreadIds = new Set<ThreadId>();
       const handledRevisionThreads = new Set<ThreadId>();
-      const setReviewRunning = (
+      /** Failed reviews requeued for the launcher, with their retry context. */
+      const reviewRetries = new Map<ThreadId, WorkflowRetryContext>();
+      const setReviewPending = (
         current: PlanningWorkflow,
-        branchId: "a" | "b",
+        branchId: WorkflowBranchId,
         threadId: ThreadId,
       ): PlanningWorkflow => {
-        const branch = branchId === "a" ? current.branchA : current.branchB;
-        const nextBranch: PlanningWorkflow["branchA"] = {
+        const branch = requirePlanningBranch(current, branchId);
+        const nextBranch: WorkflowBranch = {
+          ...branch,
+          reviews: branch.reviews.map((review) =>
+            review.threadId === threadId
+              ? {
+                  ...review,
+                  status: "pending" as const,
+                  error: null,
+                  retryCount: 0,
+                  lastRetryAt: null,
+                  // Requeued now: a turn on this thread requested earlier is the failed attempt.
+                  updatedAt,
+                }
+              : review,
+          ),
+          status: "reviews_requested",
+          error: null,
+          errorStage: null,
+          updatedAt,
+        };
+        return { ...updatePlanningBranch(current, branchId, () => nextBranch), updatedAt };
+      };
+      const setReviewRunning = (
+        current: PlanningWorkflow,
+        branchId: WorkflowBranchId,
+        threadId: ThreadId,
+      ): PlanningWorkflow => {
+        const branch = requirePlanningBranch(current, branchId);
+        const nextBranch: WorkflowBranch = {
           ...branch,
           reviews: branch.reviews.map((review) =>
             review.threadId === threadId
@@ -6840,9 +7095,7 @@ export const makeWorkflowService = Effect.gen(function* () {
           updatedAt,
         };
         return {
-          ...current,
-          branchA: branchId === "a" ? nextBranch : current.branchA,
-          branchB: branchId === "b" ? nextBranch : current.branchB,
+          ...updatePlanningBranch(current, branchId, () => nextBranch),
           updatedAt,
         };
       };
@@ -6877,13 +7130,18 @@ export const makeWorkflowService = Effect.gen(function* () {
         };
       };
 
-      for (const branchId of ["a", "b"] as const) {
-        const branch = branchId === "a" ? workflow.branchA : workflow.branchB;
+      for (const branchId of planningBranchIds(workflow)) {
+        const branch = requirePlanningBranch(workflow, branchId);
         const stage = planningWorkflowBranchFailureStage(branch);
         for (const review of branch.reviews) {
           if (
             deliveryMode(review.threadId) !== "accepted" ||
-            (review.status !== "error" && !(stage === "reviews" && review.status !== "completed"))
+            (review.status !== "error" &&
+              !(
+                stage === "reviews" &&
+                review.status !== "completed" &&
+                review.status !== "pending"
+              ))
           ) {
             continue;
           }
@@ -6913,9 +7171,8 @@ export const makeWorkflowService = Effect.gen(function* () {
             updatedAt,
           );
           if (completedWorkflow === retriedWorkflow) {
-            const currentBranch =
-              branchId === "a" ? retriedWorkflow.branchA : retriedWorkflow.branchB;
-            const nextBranch: PlanningWorkflow["branchA"] = {
+            const currentBranch = requirePlanningBranch(retriedWorkflow, branchId);
+            const nextBranch: WorkflowBranch = {
               ...currentBranch,
               status: stage === "revision" ? "revising" : "authoring",
               error: null,
@@ -6929,9 +7186,7 @@ export const makeWorkflowService = Effect.gen(function* () {
                   : acceptedStageRequestedAt(branch.authorThreadId, currentBranch.updatedAt),
             };
             retriedWorkflow = {
-              ...retriedWorkflow,
-              branchA: branchId === "a" ? nextBranch : retriedWorkflow.branchA,
-              branchB: branchId === "b" ? nextBranch : retriedWorkflow.branchB,
+              ...updatePlanningBranch(retriedWorkflow, branchId, () => nextBranch),
               updatedAt,
             };
             yield* upsertWorkflow(retriedWorkflow);
@@ -7030,7 +7285,7 @@ export const makeWorkflowService = Effect.gen(function* () {
           threadIds: ambiguousThreadIds,
         };
       }
-      const retriesLegacyReviewSetup = [workflow.branchA, workflow.branchB].some(
+      const retriesLegacyReviewSetup = planningBranches(workflow).some(
         (branch) =>
           planningWorkflowBranchFailureStage(branch) === "reviews" && branch.reviews.length === 0,
       );
@@ -7136,33 +7391,33 @@ export const makeWorkflowService = Effect.gen(function* () {
         }
         return { status: "started" as const };
       }
-      const planForBranch = (branch: PlanningWorkflow["branchA"]) =>
+      const planForBranch = (branch: WorkflowBranch) =>
         completedProposedPlanForTurn(
           snapshot,
           branch.authorThreadId,
           branch.planTurnId,
           branch.updatedAt,
+          planReplacementFilter(workflow, branch.branchId),
         )?.planMarkdown ?? null;
 
       if (retriesLegacyReviewSetup) {
-        const prospectiveStatuses = [workflow.branchA, workflow.branchB].map((branch) =>
+        const prospectiveStatuses = planningBranches(workflow).map((branch) =>
           planningWorkflowBranchFailureStage(branch) === "reviews" && branch.reviews.length === 0
             ? "plan_saved"
             : branch.status,
         );
         if (prospectiveStatuses.some((status) => status !== "plan_saved")) {
           return yield* Effect.fail(
-            new Error("Review setup cannot be retried until both branch plans are saved."),
+            new Error("Review setup cannot be retried until every branch plan is saved."),
           );
         }
-        if (!planForBranch(workflow.branchA) || !planForBranch(workflow.branchB)) {
+        if (planningBranches(workflow).some((branch) => !planForBranch(branch))) {
           return yield* Effect.fail(new Error("Saved branch plans not found for review retry."));
         }
       }
 
-      const reviewPlans = new Map<ThreadId, string>();
       const revisionFeedback = new Map<
-        "a" | "b",
+        WorkflowBranchId,
         ReadonlyArray<{
           readonly reviewerLabel: string;
           readonly reviewMarkdown: string;
@@ -7170,30 +7425,28 @@ export const makeWorkflowService = Effect.gen(function* () {
         }>
       >();
 
-      for (const branchId of ["a", "b"] as const) {
-        const branch = branchId === "a" ? workflow.branchA : workflow.branchB;
+      for (const branchId of planningBranchIds(workflow)) {
+        const branch = requirePlanningBranch(workflow, branchId);
         const stage = planningWorkflowBranchFailureStage(branch);
         for (const review of branch.reviews) {
           if (
             review.status !== "error" &&
-            !(stage === "reviews" && review.status !== "completed")
+            !(stage === "reviews" && review.status !== "completed" && review.status !== "pending")
           ) {
             continue;
           }
           if (deliveryMode(review.threadId) !== "fresh") {
             continue;
           }
-          const planMarkdown = planForBranch(branch);
-          if (!planMarkdown) {
+          if (!planForBranch(branch)) {
             return yield* Effect.fail(
               new Error(`Saved plan not found for Branch ${branchId.toUpperCase()} review retry.`),
             );
           }
-          reviewPlans.set(review.threadId, planMarkdown);
         }
 
         if (stage === "revision" && deliveryMode(branch.authorThreadId) === "fresh") {
-          const feedback = yield* reviewFeedbackForBranch(workflow.id, branch, snapshot);
+          const feedback = yield* reviewFeedbackForBranch(workflow, branch, snapshot);
           if (feedback.length === 0) {
             return yield* Effect.fail(
               new Error(`Review feedback not found for Branch ${branchId.toUpperCase()} revision.`),
@@ -7204,19 +7457,7 @@ export const makeWorkflowService = Effect.gen(function* () {
       }
 
       if (workflow.merge.status === "error" && deliveryMode(workflow.merge.threadId) === "fresh") {
-        const planA = completedProposedPlanForTurn(
-          snapshot,
-          workflow.branchA.authorThreadId,
-          workflow.branchA.revisionTurnId,
-          workflow.branchA.updatedAt,
-        )?.planMarkdown;
-        const planB = completedProposedPlanForTurn(
-          snapshot,
-          workflow.branchB.authorThreadId,
-          workflow.branchB.revisionTurnId,
-          workflow.branchB.updatedAt,
-        )?.planMarkdown;
-        if (!planA || !planB) {
+        if (!collectMergeInputs(workflow, snapshot)) {
           return yield* Effect.fail(new Error("Revised plans not found for merge retry."));
         }
       }
@@ -7269,26 +7510,72 @@ export const makeWorkflowService = Effect.gen(function* () {
         }
       }
 
-      if (providerTurnDeliveryWorker._tag === "Some") {
-        yield* Effect.forEach(
-          [...failedThreadIds].filter((threadId) => deliveryMode(threadId) === "retry"),
-          (threadId) =>
-            providerTurnDeliveryWorker.value.retry({
-              threadId,
-              allowPossibleDuplicate: input.allowPossibleDuplicate ?? false,
-            }),
-          { discard: true },
-        );
-      }
+      // A failed plan-review delivery takes a review slot like any launch. Resends start now
+      // while slots are free; the rest are requeued, and the launcher resends each delivery when
+      // it admits that review. Legacy branch-level review errors keep the direct resend.
+      // Slots are counted from a fresh read inside the launcher gate, and the resends go out
+      // before it is released: a resent delivery holds its slot from then on, so a launcher pass
+      // that runs meanwhile can't fill the same slot.
+      const requeuedReviewDeliveries = new Set<ThreadId>();
+      yield* reviewLaunchGate.withPermits(1)(
+        Effect.gen(function* () {
+          const fresh = yield* orchestrationEngine.getReadModel();
+          const current =
+            fresh.planningWorkflows.find((entry) => entry.id === workflow.id) ?? workflow;
+          const allReviews = planningBranches(current).flatMap((branch) => branch.reviews);
+          const resendCandidates = planningBranches(workflow)
+            .filter(
+              (branch) =>
+                !(planningWorkflowBranchFailureStage(branch) === "reviews" && branch.error),
+            )
+            .flatMap((branch) => branch.reviews)
+            .filter(
+              (review) =>
+                failedThreadIds.has(review.threadId) && deliveryMode(review.threadId) === "retry",
+            )
+            .map((review) => review.threadId);
+          const idempotentStageSetup = resolveWorkflowBehavior({
+            runKind: "planning",
+            templateId: workflow.templateId,
+            templateVersion: workflow.templateVersion,
+          }).idempotentStageSetup;
+          let activeReviews = 0;
+          for (const review of allReviews) {
+            if (resendCandidates.includes(review.threadId)) continue;
+            if (yield* planReviewHoldsSlot(review, fresh, idempotentStageSetup)) {
+              activeReviews += 1;
+            }
+          }
+          for (const threadId of resendCandidates) {
+            if (activeReviews < WORKFLOW_MAX_ACTIVE_REVIEW_TURNS) activeReviews += 1;
+            else requeuedReviewDeliveries.add(threadId);
+          }
+
+          if (providerTurnDeliveryWorker._tag === "Some") {
+            yield* Effect.forEach(
+              [...failedThreadIds].filter(
+                (threadId) =>
+                  deliveryMode(threadId) === "retry" && !requeuedReviewDeliveries.has(threadId),
+              ),
+              (threadId) =>
+                providerTurnDeliveryWorker.value.retry({
+                  threadId,
+                  allowPossibleDuplicate: input.allowPossibleDuplicate ?? false,
+                }),
+              { discard: true },
+            );
+          }
+        }),
+      );
 
       const preserveLegacyReviewError = (
         current: PlanningWorkflow,
-        branchId: "a" | "b",
+        branchId: WorkflowBranchId,
         threadId: ThreadId,
         legacyError: string,
       ): PlanningWorkflow => {
-        const branch = branchId === "a" ? current.branchA : current.branchB;
-        const nextBranch: PlanningWorkflow["branchA"] = {
+        const branch = requirePlanningBranch(current, branchId);
+        const nextBranch: WorkflowBranch = {
           ...branch,
           reviews: branch.reviews.map((review) =>
             review.threadId === threadId && review.status !== "completed"
@@ -7301,35 +7588,35 @@ export const makeWorkflowService = Effect.gen(function* () {
           updatedAt,
         };
         return {
-          ...current,
-          branchA: branchId === "a" ? nextBranch : current.branchA,
-          branchB: branchId === "b" ? nextBranch : current.branchB,
+          ...updatePlanningBranch(current, branchId, () => nextBranch),
           updatedAt,
         };
       };
 
-      for (const branchId of ["a", "b"] as const) {
-        const originalBranch = branchId === "a" ? workflow.branchA : workflow.branchB;
+      for (const branchId of planningBranchIds(workflow)) {
+        const originalBranch = requirePlanningBranch(workflow, branchId);
         const originalStage = planningWorkflowBranchFailureStage(originalBranch);
         if (originalStage === "reviews" && originalBranch.reviews.length === 0) {
-          const repairedBranch: PlanningWorkflow["branchA"] = {
-            ...(branchId === "a" ? retriedWorkflow.branchA : retriedWorkflow.branchB),
+          const repairedBranch: WorkflowBranch = {
+            ...requirePlanningBranch(retriedWorkflow, branchId),
             status: "plan_saved",
             error: null,
             errorStage: null,
             updatedAt,
           };
           retriedWorkflow = {
-            ...retriedWorkflow,
-            branchA: branchId === "a" ? repairedBranch : retriedWorkflow.branchA,
-            branchB: branchId === "b" ? repairedBranch : retriedWorkflow.branchB,
+            ...updatePlanningBranch(retriedWorkflow, branchId, () => repairedBranch),
             updatedAt,
           };
         }
         for (const review of originalBranch.reviews) {
           if (
             review.status !== "error" &&
-            !(originalStage === "reviews" && review.status !== "completed")
+            !(
+              originalStage === "reviews" &&
+              review.status !== "completed" &&
+              review.status !== "pending"
+            )
           ) {
             continue;
           }
@@ -7337,6 +7624,14 @@ export const makeWorkflowService = Effect.gen(function* () {
             continue;
           }
           const mode = deliveryMode(review.threadId);
+          if (requeuedReviewDeliveries.has(review.threadId)) {
+            requeuedPlanReviewDeliveries.set(review.threadId, {
+              allowPossibleDuplicate: input.allowPossibleDuplicate ?? false,
+            });
+            retriedWorkflow = setReviewPending(retriedWorkflow, branchId, review.threadId);
+            yield* upsertWorkflow(retriedWorkflow);
+            continue;
+          }
           if (mode === "queued" || mode === "retry") {
             if (originalStage === "reviews" && originalBranch.error) {
               retriedWorkflow = preserveLegacyReviewError(
@@ -7364,30 +7659,14 @@ export const makeWorkflowService = Effect.gen(function* () {
             yield* upsertWorkflow(retriedWorkflow);
             continue;
           }
-          const branch = branchId === "a" ? retriedWorkflow.branchA : retriedWorkflow.branchB;
-          const reviewerSlot =
-            review.slot === "self"
-              ? branch.authorSlot
-              : branchId === "a"
-                ? retriedWorkflow.branchB.authorSlot
-                : retriedWorkflow.branchA.authorSlot;
-          yield* startReviewTurn({
-            orchestrationEngine,
-            workflow: retriedWorkflow,
-            reviewerSlot,
-            reviewThreadId: review.threadId,
-            planMarkdown: reviewPlans.get(review.threadId)!,
-            planTurnId: originalBranch.planTurnId,
-            reviewKind: review.slot,
-            reviewedBranchId: branchId,
-            createdAt: updatedAt,
-            retry: {
-              kind: "retry",
-              reusedThread: true,
-              priorFailure: review.error ?? undefined,
-            },
+          // Requeue rather than dispatch: the launcher keeps the running-review cap and
+          // recreates a review thread that failed before it was created.
+          reviewRetries.set(review.threadId, {
+            kind: "retry",
+            reusedThread: snapshot.threads.some((thread) => thread.id === review.threadId),
+            priorFailure: review.error ?? undefined,
           });
-          retriedWorkflow = setReviewRunning(retriedWorkflow, branchId, review.threadId);
+          retriedWorkflow = setReviewPending(retriedWorkflow, branchId, review.threadId);
           yield* upsertWorkflow(retriedWorkflow);
         }
 
@@ -7413,8 +7692,8 @@ export const makeWorkflowService = Effect.gen(function* () {
             continue;
           }
         }
-        const nextBranch: PlanningWorkflow["branchA"] = {
-          ...(branchId === "a" ? retriedWorkflow.branchA : retriedWorkflow.branchB),
+        const nextBranch: WorkflowBranch = {
+          ...requirePlanningBranch(retriedWorkflow, branchId),
           status: originalStage === "revision" ? "revising" : "authoring",
           ...(isDocumentWorkflow(workflow)
             ? {
@@ -7441,9 +7720,7 @@ export const makeWorkflowService = Effect.gen(function* () {
         };
         if (mode === "accepted") {
           retriedWorkflow = {
-            ...retriedWorkflow,
-            branchA: branchId === "a" ? nextBranch : retriedWorkflow.branchA,
-            branchB: branchId === "b" ? nextBranch : retriedWorkflow.branchB,
+            ...updatePlanningBranch(retriedWorkflow, branchId, () => nextBranch),
             updatedAt,
           };
           yield* upsertWorkflow(retriedWorkflow);
@@ -7513,16 +7790,27 @@ export const makeWorkflowService = Effect.gen(function* () {
           handledRevisionThreads.add(originalBranch.authorThreadId);
         }
         retriedWorkflow = {
-          ...retriedWorkflow,
-          branchA: branchId === "a" ? nextBranch : retriedWorkflow.branchA,
-          branchB: branchId === "b" ? nextBranch : retriedWorkflow.branchB,
+          ...updatePlanningBranch(retriedWorkflow, branchId, () => nextBranch),
           updatedAt,
         };
         yield* upsertWorkflow(retriedWorkflow);
       }
 
+      if (
+        (reviewRetries.size > 0 || requeuedReviewDeliveries.size > 0) &&
+        !retriesLegacyReviewSetup
+      ) {
+        yield* maybeStartReviews(retriedWorkflow, snapshot, updatedAt, reviewRetries);
+        const refreshed = yield* orchestrationEngine.getReadModel();
+        retriedWorkflow =
+          refreshed.planningWorkflows.find((entry) => entry.id === retriedWorkflow.id) ??
+          retriedWorkflow;
+      }
+
       if (retriesLegacyReviewSetup) {
-        yield* maybeStartReviews(retriedWorkflow, snapshot, updatedAt);
+        // The launcher reads the stored record, so the repaired branches are saved first.
+        yield* upsertWorkflow(retriedWorkflow);
+        yield* maybeStartReviews(retriedWorkflow, snapshot, updatedAt, reviewRetries);
         const refreshed = yield* orchestrationEngine.getReadModel();
         retriedWorkflow =
           refreshed.planningWorkflows.find((entry) => entry.id === retriedWorkflow.id) ??
@@ -7578,22 +7866,7 @@ export const makeWorkflowService = Effect.gen(function* () {
             orchestrationEngine,
             workflow: next,
             threadId: next.merge.threadId!,
-            planA: completedProposedPlanForTurn(
-              snapshot,
-              next.branchA.authorThreadId,
-              next.branchA.revisionTurnId,
-              next.branchA.updatedAt,
-            )!.planMarkdown,
-            planB: completedProposedPlanForTurn(
-              snapshot,
-              next.branchB.authorThreadId,
-              next.branchB.revisionTurnId,
-              next.branchB.updatedAt,
-            )!.planMarkdown,
-            reviews: [
-              ...(yield* reviewFeedbackForBranch(next.id, next.branchA, snapshot)),
-              ...(yield* reviewFeedbackForBranch(next.id, next.branchB, snapshot)),
-            ],
+            plans: collectMergeInputs(next, snapshot)!,
             createdAt: updatedAt,
             retry: {
               kind: "retry",
@@ -7682,10 +7955,7 @@ export const makeWorkflowService = Effect.gen(function* () {
                   reviewThreadId: review.threadId,
                   mergedPlanMarkdown: mergedPlanMarkdown!,
                   reviewerLabel: review.reviewerLabel,
-                  lensBranch:
-                    retriedWorkflow.implementation?.codeReviews.at(0)?.threadId === review.threadId
-                      ? "a"
-                      : "b",
+                  lensBranch: codeReviewLensBranch(retriedWorkflow, review.threadId),
                   reviewArtifact: implementationReviewPromptArtifact(retriedWorkflow),
                   thread: snapshot.threads.find((thread) => thread.id === review.threadId),
                   createdAt: updatedAt,
@@ -7871,22 +8141,197 @@ export const makeWorkflowService = Effect.gen(function* () {
   } satisfies WorkflowServiceShape;
 });
 
+/** Which of the two review lenses an author's reviews use, by roster position parity. */
+function lensBranchFor(branchId: WorkflowBranchId): "a" | "b" {
+  return workflowParticipantIndex(branchId) % 2 === 0 ? "a" : "b";
+}
+
+/** An implementation reviewer's lens, by its position among the code reviews. */
+function codeReviewLensBranch(workflow: PlanningWorkflow, threadId: ThreadId): "a" | "b" {
+  const index = workflow.implementation?.codeReviews.findIndex(
+    (review) => review.threadId === threadId,
+  );
+  return index !== undefined && index > 0 && index % 2 === 1 ? "b" : "a";
+}
+
+/** Every branch's revised plan as merge input, in author order. */
+function workflowMergePlanInputs(
+  workflow: PlanningWorkflow,
+  plans: ReadonlyArray<string>,
+  options?: { readonly includeTurnIds?: boolean },
+): MergePlanInput[] {
+  return planningBranches(workflow).map((branch, index) => ({
+    label: workflowParticipantLabel(branch.branchId),
+    markdown: plans[index] ?? "",
+    source: {
+      workflowId: workflow.id,
+      stage: `revision-${branch.branchId}`,
+      ...(options?.includeTurnIds !== false && branch.revisionTurnId
+        ? { turnId: branch.revisionTurnId }
+        : {}),
+    },
+    model: branch.authorSlot,
+  }));
+}
+
+function buildWorkflowMergePrompt(
+  workflow: PlanningWorkflow,
+  plans: ReadonlyArray<string>,
+  retry?: WorkflowRetryContext,
+  options?: { readonly includeTurnIds?: boolean },
+): string {
+  return (isDocumentWorkflow(workflow) ? buildDocumentMergePrompt : buildMergePrompt)({
+    workflow,
+    plans: workflowMergePlanInputs(workflow, plans, options),
+    mergeSlot: workflow.merge.mergeSlot,
+    retry,
+  });
+}
+
+/** Slack for envelope escaping in the revision prompt. */
+const REVISION_EXCERPT_MARGIN_CHARS = 1_000;
+
+function revisionExcerptNote(label: string, shown: number, total: number): string {
+  return `\n\n[Excerpt: the first ${shown} of ${total} characters of the ${label} review. The rest is not available to you.]`;
+}
+
+/**
+ * Shares `room` (the rendered limit minus the revision prompt with empty reviews) among the
+ * reviews with `allocateArtifactCharBudget`; a review that does not fit whole is cut and marked.
+ * `smallestExcerpt` is the smallest share an excerpted review got (`null` when all fit).
+ */
+function excerptRevisionReviews<
+  T extends { readonly reviewerLabel: string; readonly reviewMarkdown: string },
+>(
+  reviews: ReadonlyArray<T>,
+  room: number,
+): { readonly reviews: ReadonlyArray<T>; readonly smallestExcerpt: number | null } {
+  // A note names its review's label, so its room is measured; `shown` never has more digits
+  // than `total`.
+  const noteReserve = reviews.reduce((sum, review) => {
+    const total = review.reviewMarkdown.length;
+    return sum + revisionExcerptNote(review.reviewerLabel, total, total).length;
+  }, 0);
+  const { allowances, smallestExcerpt } = allocateArtifactCharBudget(
+    reviews.map((review) => review.reviewMarkdown.length),
+    room - REVISION_EXCERPT_MARGIN_CHARS - noteReserve,
+  );
+  return {
+    reviews: reviews.map((review, index) => {
+      const allowance = allowances[index]!;
+      const total = review.reviewMarkdown.length;
+      return allowance >= total
+        ? review
+        : {
+            ...review,
+            reviewMarkdown: `${review.reviewMarkdown.slice(0, allowance)}${revisionExcerptNote(review.reviewerLabel, allowance, total)}`,
+          };
+    }),
+    smallestExcerpt,
+  };
+}
+
+/**
+ * Per-plan length limit on runs with more than two authors, so every revised plan fits in the
+ * merge prompt: the rendered limit minus the merge prompt with empty plans and a 1,000-character
+ * margin, shared evenly. Two-author runs have no limit (`null`).
+ */
+export function workflowPlanCharBudget(workflow: PlanningWorkflow): number | null {
+  const count = planningBranches(workflow).length;
+  if (!workflowUsesMesh(count)) return null;
+  const emptyMergePrompt = buildWorkflowMergePrompt(
+    workflow,
+    Array.from({ length: count }, () => ""),
+    undefined,
+    { includeTurnIds: false },
+  );
+  return Math.floor(
+    (WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT - emptyMergePrompt.length - 1_000) / count,
+  );
+}
+
+/**
+ * The characters a plan adds to the merge prompt as the merge renders it. Document drafts are
+ * normalized, their envelope terminators escaped and their source turn named, so the raw length
+ * can understate it. The baseline is the merge prompt with every plan empty and no turn ids, the
+ * same one `workflowPlanCharBudget` subtracts, so plans that each fit their share fit together.
+ */
+export function workflowPlanMergeChars(
+  workflow: PlanningWorkflow,
+  branchId: WorkflowBranchId,
+  planMarkdown: string,
+  turnId: string | null,
+): number {
+  const branches = planningBranches(workflow);
+  const measured = updatePlanningBranch(workflow, branchId, (branch) => ({
+    ...branch,
+    revisionTurnId: turnId === null ? null : TurnId.makeUnsafe(turnId),
+  }));
+  const withPlan = buildWorkflowMergePrompt(
+    measured,
+    branches.map((branch) => (branch.branchId === branchId ? planMarkdown : "")),
+  ).length;
+  const withoutPlan = buildWorkflowMergePrompt(
+    measured,
+    branches.map(() => ""),
+    undefined,
+    { includeTurnIds: false },
+  ).length;
+  return withPlan - withoutPlan;
+}
+
+interface ReplacementPlanCandidate {
+  readonly planMarkdown: string;
+  readonly turnId: TurnId | null;
+}
+
+/** Accepts a replacement plan only when it fits the per-plan budget as the merge renders it. */
+function planReplacementFilter(workflow: PlanningWorkflow, branchId: WorkflowBranchId) {
+  const budget = workflowPlanCharBudget(workflow);
+  return (plan: ReplacementPlanCandidate) =>
+    budget === null ||
+    workflowPlanMergeChars(workflow, branchId, plan.planMarkdown, plan.turnId) <= budget;
+}
+
+/** Stable plan-review thread id; mesh runs add the reviewer so every edge gets its own thread. */
+function planReviewThreadId(
+  workflow: PlanningWorkflow,
+  reviewedId: WorkflowBranchId,
+  review: {
+    readonly slot: WorkflowReviewSlot;
+    readonly reviewerBranchId?: WorkflowBranchId | undefined;
+  },
+  planTurnId: string,
+): ThreadId {
+  return ThreadId.makeUnsafe(
+    workflowUsesMesh(planningBranches(workflow).length)
+      ? stableWorkflowUuid(
+          "plan-review-thread",
+          workflow.id,
+          reviewedId,
+          review.slot,
+          planTurnId,
+          planReviewReviewerBranchId(workflow, reviewedId, review),
+        )
+      : stableWorkflowUuid("plan-review-thread", workflow.id, reviewedId, review.slot, planTurnId),
+  );
+}
+
 function createWorkflowThread({
   orchestrationEngine,
   input,
   threadId,
   suffix,
-  lane,
+  slot,
   now,
 }: {
   orchestrationEngine: OrchestrationEngineShape;
   input: CreateWorkflowInput;
   threadId: ThreadId;
   suffix: string;
-  lane: "a" | "b";
+  slot: WorkflowModelSlot;
   now: string;
 }) {
-  const slot = lane === "a" ? input.branchA : input.branchB;
   return orchestrationEngine.dispatch({
     type: "thread.create",
     commandId: CommandId.makeUnsafe(timeOrderedUuid()),
@@ -7912,7 +8357,7 @@ function startAuthoringTurn({
 }: {
   orchestrationEngine: OrchestrationEngineShape;
   workflow: PlanningWorkflow;
-  branch: PlanningWorkflow["branchA"];
+  branch: WorkflowBranch;
   createdAt: string;
   retry?: WorkflowRetryContext;
 }) {
@@ -7923,6 +8368,7 @@ function startAuthoringTurn({
     branch,
     authorSlot: branch.authorSlot,
     retry,
+    maxPlanChars: workflowPlanCharBudget(workflow),
   });
   const promptError = workflowPromptInvariant({
     workflow,
@@ -7960,14 +8406,16 @@ function createReviewThread({
   workflow,
   reviewerSlot,
   reviewedBranchId,
+  reviewerBranchId,
   reviewSlot,
   threadId,
   createdAt,
 }: {
   orchestrationEngine: OrchestrationEngineShape;
   workflow: PlanningWorkflow;
-  reviewerSlot: PlanningWorkflow["branchA"]["authorSlot"];
-  reviewedBranchId: "a" | "b";
+  reviewerSlot: WorkflowModelSlot;
+  reviewedBranchId: WorkflowBranchId;
+  reviewerBranchId: WorkflowBranchId;
   reviewSlot: WorkflowReviewSlot;
   threadId: ThreadId;
   createdAt: string;
@@ -7977,7 +8425,10 @@ function createReviewThread({
     commandId: stableWorkflowCommandId("create-plan-review-thread", workflow.id, threadId),
     threadId,
     projectId: workflow.projectId,
-    title: `Review ${reviewedBranchId.toUpperCase()} ${reviewSlot === "cross" ? "Cross" : "Self"}`,
+    title:
+      reviewSlot === "cross" && workflowUsesMesh(planningBranches(workflow).length)
+        ? `Review ${workflowParticipantLabel(reviewedBranchId)} by ${workflowParticipantLabel(reviewerBranchId)}`
+        : `Review ${reviewedBranchId.toUpperCase()} ${reviewSlot === "cross" ? "Cross" : "Self"}`,
     model: reviewerSlot.model,
     runtimeMode: DEFAULT_RUNTIME_MODE,
     interactionMode: WORKFLOW_PLANNING_INTERACTION_MODE,
@@ -8002,12 +8453,12 @@ function startReviewTurn({
 }: {
   orchestrationEngine: OrchestrationEngineShape;
   workflow: PlanningWorkflow;
-  reviewerSlot: PlanningWorkflow["branchA"]["authorSlot"];
+  reviewerSlot: WorkflowModelSlot;
   reviewThreadId: ThreadId;
   planMarkdown: string;
   planTurnId: string | null;
   reviewKind: WorkflowReviewSlot;
-  reviewedBranchId: "a" | "b";
+  reviewedBranchId: WorkflowBranchId;
   createdAt: string;
   retry?: WorkflowRetryContext;
   attempt?: number;
@@ -8025,7 +8476,7 @@ function startReviewTurn({
       ...(planTurnId ? { turnId: planTurnId } : {}),
     },
     reviewKind,
-    lensBranch: reviewedBranchId,
+    lensBranch: lensBranchFor(reviewedBranchId),
     reviewerSlot,
     retry,
   });
@@ -8068,7 +8519,7 @@ function startReviewTurn({
   });
 }
 
-function prepareRevisionTurn({
+export function prepareRevisionTurn({
   workflow,
   branch,
   originalPlanMarkdown,
@@ -8079,7 +8530,7 @@ function prepareRevisionTurn({
   originalPlanCreatedAt,
 }: {
   workflow: PlanningWorkflow;
-  branch: PlanningWorkflow["branchA"];
+  branch: WorkflowBranch;
   originalPlanMarkdown: string;
   reviews: ReadonlyArray<{
     readonly reviewerLabel: string;
@@ -8107,22 +8558,48 @@ function prepareRevisionTurn({
     !!thread?.compaction &&
     thread.compaction.createdAt > originalPlanCreatedAt;
   const documentType = planningWorkflowDocumentType(workflow);
-  const prompt = (documentType ? buildDocumentRevisionPrompt : buildRevisionPrompt)({
-    documentType: documentType ?? "custom",
-    requirementPrompt: workflow.requirementPrompt,
-    originalPlan: {
-      markdown: originalPlanMarkdown,
-      source: {
-        workflowId: workflow.id,
-        stage: `author-${branch.branchId}`,
-        ...(branch.planTurnId ? { turnId: branch.planTurnId } : {}),
+  const renderRevisionPrompt = (promptReviews: typeof reviews) =>
+    (documentType ? buildDocumentRevisionPrompt : buildRevisionPrompt)({
+      documentType: documentType ?? "custom",
+      requirementPrompt: workflow.requirementPrompt,
+      originalPlan: {
+        markdown: originalPlanMarkdown,
+        source: {
+          workflowId: workflow.id,
+          stage: `author-${branch.branchId}`,
+          ...(branch.planTurnId ? { turnId: branch.planTurnId } : {}),
+        },
       },
-    },
-    reviews,
-    targetSlot: branch.authorSlot,
-    retry,
-    includeOriginalPlan,
-  });
+      reviews: promptReviews,
+      targetSlot: branch.authorSlot,
+      retry,
+      includeOriginalPlan,
+      maxPlanChars: workflowPlanCharBudget(workflow),
+    });
+  let prompt = renderRevisionPrompt(reviews);
+  let renderedReviews = reviews;
+  if (
+    workflowUsesMesh(planningBranches(workflow).length) &&
+    prompt.length > WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT
+  ) {
+    // With three or more authors each revision carries up to four reviews; a retry can't shrink
+    // paid reviews, so they share the message and the longest ones are excerpted.
+    const budgeted = excerptRevisionReviews(
+      reviews,
+      WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT -
+        renderRevisionPrompt(reviews.map((review) => ({ ...review, reviewMarkdown: "" }))).length,
+    );
+    if (
+      budgeted.smallestExcerpt !== null &&
+      budgeted.smallestExcerpt < WORKFLOW_FAN_IN_MIN_ARTIFACT_CHARS
+    ) {
+      return {
+        rejection: `The reviews for Branch ${branch.branchId.toUpperCase()} leave ${budgeted.smallestExcerpt.toLocaleString("en-US")} characters per review in the revision message. Revise it manually in that thread, or restart the workflow with fewer authors.`,
+      };
+    }
+    renderedReviews = budgeted.reviews;
+    prompt = renderRevisionPrompt(renderedReviews);
+  }
   if (includeOriginalPlan && prompt.length > WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT) {
     // Compacting again can't shrink this: the plan itself has to travel in the message.
     return {
@@ -8132,7 +8609,7 @@ function prepareRevisionTurn({
   const promptError = workflowPromptInvariant({
     workflow,
     prompt,
-    artifacts: [originalPlanMarkdown, ...reviews.map((review) => review.reviewMarkdown)],
+    artifacts: [originalPlanMarkdown, ...renderedReviews.map((review) => review.reviewMarkdown)],
     targetSlot: branch.authorSlot,
     artifactLabel: "Revision inputs",
     artifactBudgetRecovery: `Compact the Branch ${branch.branchId.toUpperCase()} author conversation, then retry.`,
@@ -8185,51 +8662,25 @@ function startMergeTurn({
   orchestrationEngine,
   workflow,
   threadId,
-  planA,
-  planB,
-  reviews,
+  plans,
   createdAt,
   retry,
 }: {
   orchestrationEngine: OrchestrationEngineShape;
   workflow: PlanningWorkflow;
   threadId: ThreadId;
-  planA: string;
-  planB: string;
-  reviews: Parameters<typeof buildMergePrompt>[0]["reviews"];
+  /** Every branch's revised plan, in author order (see `collectMergeInputs`). */
+  plans: ReadonlyArray<string>;
   createdAt: string;
   retry?: WorkflowRetryContext;
 }) {
   const budgetError = workflowBudgetError(workflow);
   if (budgetError) return Effect.fail(budgetError);
-  const prompt = (isDocumentWorkflow(workflow) ? buildDocumentMergePrompt : buildMergePrompt)({
-    workflow,
-    planA: {
-      markdown: planA,
-      source: {
-        workflowId: workflow.id,
-        stage: "revision-a",
-        ...(workflow.branchA.revisionTurnId ? { turnId: workflow.branchA.revisionTurnId } : {}),
-      },
-    },
-    planB: {
-      markdown: planB,
-      source: {
-        workflowId: workflow.id,
-        stage: "revision-b",
-        ...(workflow.branchB.revisionTurnId ? { turnId: workflow.branchB.revisionTurnId } : {}),
-      },
-    },
-    modelA: workflow.branchA.authorSlot,
-    modelB: workflow.branchB.authorSlot,
-    reviews,
-    mergeSlot: workflow.merge.mergeSlot,
-    retry,
-  });
+  const prompt = buildWorkflowMergePrompt(workflow, plans, retry);
   const promptError = workflowPromptInvariant({
     workflow,
     prompt,
-    artifacts: [planA, planB, ...(reviews ?? []).map((review) => review.reviewMarkdown)],
+    artifacts: plans,
     targetSlot: workflow.merge.mergeSlot,
     artifactLabel: "Merge inputs",
   });
@@ -8273,7 +8724,7 @@ function createCodeReviewThread({
 }: {
   orchestrationEngine: OrchestrationEngineShape;
   workflow: PlanningWorkflow;
-  reviewerSlot: PlanningWorkflow["branchA"]["authorSlot"];
+  reviewerSlot: WorkflowModelSlot;
   threadId: ThreadId;
   reviewerLabel: string;
   createdAt: string;
@@ -8340,7 +8791,7 @@ function startCodeReviewTurn({
 }: {
   orchestrationEngine: OrchestrationEngineShape;
   workflow: PlanningWorkflow;
-  reviewerSlot: PlanningWorkflow["branchA"]["authorSlot"];
+  reviewerSlot: WorkflowModelSlot;
   reviewThreadId: ThreadId;
   mergedPlanMarkdown: string;
   reviewerLabel: string;

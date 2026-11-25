@@ -1,6 +1,7 @@
 import * as NodePath from "node:path";
 
 import { describe, expect, it } from "vitest";
+import type { AntigravityPreWriteFile } from "./AntigravityEditLocation.ts";
 import { makeAntigravityToolNormalizer } from "./AntigravityToolCalls.ts";
 import { acpFileChanges } from "./AcpFileChanges.ts";
 
@@ -29,7 +30,288 @@ describe("Antigravity native tools", () => {
         content: [{ type: "diff", path: "/missing/file.ts", oldText: "old", newText: "new" }],
       },
     });
-    expect(acpFileChanges(unknown.data.content)).toEqual([]);
+    // An unplaced snippet is never shown as a whole file, but the row still names the file.
+    expect(acpFileChanges(unknown.data.content)).toEqual([
+      { path: "/missing/file.ts", type: "update" },
+    ]);
+  });
+
+  it("decodes the short Target/Replacement argument names on the snippet path", () => {
+    const tool = makeAntigravityToolNormalizer(() => Array(19).fill("line").join("\n") + "\nold")({
+      toolCallId: "edit-short",
+      title: "Running replace_file_content",
+      kind: "other",
+      status: "pending",
+      data: {
+        rawInput: { Path: "/repo/file.ts", Target: "old", Replacement: "new", StartLine: 20 },
+        content: [{ type: "diff", path: "/repo/file.ts", oldText: "old", newText: "new" }],
+      },
+    });
+    expect(acpFileChanges(tool.data.content)[0]?.diff).toContain("@@ -20,1 +20,1 @@");
+  });
+
+  it("diffs the full before/after texts current releases send on completion", () => {
+    // Over 8000 characters, so a diff of sanitized (cut) texts would be wrong.
+    const lines = Array.from({ length: 1_000 }, (_, index) => `const value${index} = ${index};\n`);
+    const before = lines.join("");
+    const after = lines.map((line, index) => (index === 700 ? "const edited = true;\n" : line));
+    const normalize = makeAntigravityToolNormalizer(() => undefined);
+    const tool = normalize({
+      toolCallId: "edit-full",
+      title: "File apps/web/src/file.ts",
+      kind: "edit",
+      status: "completed",
+      data: {
+        rawInput: {
+          Path: "/repo/file.ts",
+          Target: "const value700 = 700;\n",
+          Replacement: "const edited = true;\n",
+        },
+        locations: [{ path: "/repo/file.ts" }],
+        content: [
+          { type: "diff", path: "/repo/file.ts", oldText: before, newText: after.join("") },
+        ],
+      },
+    });
+    const [entry] = tool.data.content as ReadonlyArray<Record<string, unknown>>;
+    expect(entry).not.toHaveProperty("oldText");
+    expect(entry).not.toHaveProperty("newText");
+    const [change] = acpFileChanges(tool.data.content);
+    expect(change?.path).toBe("/repo/file.ts");
+    expect(change?.diff).toContain("@@ -698,7 +698,7 @@");
+    expect(change?.diff).toContain("-const value700 = 700;\n+const edited = true;\n");
+
+    // An unchanged file yields no change at all.
+    const same = normalize({
+      ...tool,
+      toolCallId: "edit-same",
+      data: {
+        rawInput: { Path: "/repo/file.ts", Target: "const value1 = 1;\n", Replacement: "x" },
+        content: [{ type: "diff", path: "/repo/file.ts", oldText: before, newText: before }],
+      },
+    });
+    expect(acpFileChanges(same.data.content)).toEqual([]);
+  });
+
+  it("diffs only the completed update, never a cached preview", () => {
+    const normalize = makeAntigravityToolNormalizer(() => undefined);
+    const update = (status: "pending" | "completed", oldText: string, newText: string) =>
+      normalize({
+        toolCallId: "edit-preview",
+        title: "File src/a.ts",
+        kind: "edit",
+        status,
+        data: {
+          rawInput: { Path: "/repo/src/a.ts", Target: "a\n", Replacement: "b\n" },
+          content: [{ type: "diff", path: "/repo/src/a.ts", oldText, newText }],
+        },
+      });
+    // A pending preview names the file and nothing more, even an identical one.
+    expect(acpFileChanges(update("pending", "a\n", "a\n").data.content)).toEqual([
+      { path: "/repo/src/a.ts", type: "update" },
+    ]);
+    const completed = update("completed", "x\na\n", "x\nb\n");
+    expect(acpFileChanges(completed.data.content)[0]?.diff).toContain("-a\n+b\n");
+    // A later update without texts reuses the completed patch.
+    const later = normalize({
+      ...completed,
+      data: { content: [{ type: "diff", path: "/repo/src/a.ts" }] },
+    });
+    expect(acpFileChanges(later.data.content)[0]?.diff).toContain("-a\n+b\n");
+  });
+
+  it("keeps snippet-shaped texts off the full-file path", () => {
+    // A CRLF snippet equal to the LF target is still a snippet.
+    const crlf = makeAntigravityToolNormalizer(() => undefined)({
+      toolCallId: "edit-crlf-snippet",
+      title: "File src/a.ts",
+      kind: "edit",
+      status: "completed",
+      data: {
+        rawInput: { Path: "/repo/src/a.ts", Target: "old\n", Replacement: "new\n" },
+        content: [{ type: "diff", path: "/repo/src/a.ts", oldText: "old\r\n", newText: "new\r\n" }],
+      },
+    });
+    expect(acpFileChanges(crlf.data.content)).toEqual([{ path: "/repo/src/a.ts", type: "update" }]);
+    const tool = makeAntigravityToolNormalizer(() => undefined)({
+      toolCallId: "edit-unknown-target",
+      title: "File src/a.ts",
+      kind: "edit",
+      status: "completed",
+      data: {
+        // `oldText` does not contain the replaced snippet, so it is not the whole file.
+        rawInput: { Path: "/repo/src/a.ts", Target: "missing\n", Replacement: "b\n" },
+        content: [{ type: "diff", path: "/repo/src/a.ts", oldText: "a\n", newText: "b\n" }],
+      },
+    });
+    expect(acpFileChanges(tool.data.content)).toEqual([{ path: "/repo/src/a.ts", type: "update" }]);
+  });
+
+  it("shares one patch budget across the entries of an update", () => {
+    const big = (seed: string) =>
+      Array.from({ length: 3_000 }, (_, index) => `${seed} line ${index}\n`).join("");
+    const tool = makeAntigravityToolNormalizer(() => undefined)({
+      toolCallId: "write-many",
+      title: "File src/many.ts",
+      kind: "edit",
+      status: "completed",
+      data: {
+        rawInput: { Path: "/repo/src/one.ts", Content: "" },
+        content: [
+          { type: "diff", path: "/repo/src/one.ts", newText: big("one") },
+          { type: "diff", path: "/repo/src/two.ts", newText: big("two") },
+        ],
+      },
+    });
+    const [first, second] = acpFileChanges(tool.data.content);
+    expect(first?.diff).toContain("+one line 0\n");
+    expect(second).toEqual({ path: "/repo/src/two.ts", type: "update" });
+  });
+
+  describe("whole-file writes against the pre-write snapshot", () => {
+    const setup = (files: Record<string, string>, unknown: ReadonlyArray<string> = []) => {
+      const reads: string[] = [];
+      const normalize = makeAntigravityToolNormalizer(
+        () => undefined,
+        [],
+        (path): AntigravityPreWriteFile => {
+          reads.push(path);
+          if (unknown.includes(path)) return { state: "unknown" };
+          return path in files ? { state: "text", text: files[path]! } : { state: "missing" };
+        },
+      );
+      // Antigravity marks every write as an overwrite, new files included.
+      const announce = (toolCallId: string, path: string, content: string) => {
+        const rawInput = { Path: path, Content: content, Overwrite: true };
+        for (const status of ["inProgress", "pending", "inProgress"] as const)
+          normalize({
+            toolCallId,
+            title: `File ${path}`,
+            kind: "edit",
+            status,
+            data: { rawInput, content: [] },
+          });
+      };
+      const finish = (
+        toolCallId: string,
+        path: string,
+        content: string,
+        status: "completed" | "failed" = "completed",
+        diffPath = path,
+      ) => {
+        files[path] = content;
+        return acpFileChanges(
+          normalize({
+            toolCallId,
+            title: `File ${path}`,
+            kind: "edit",
+            status,
+            data: {
+              rawInput: { Path: path, Content: content, Overwrite: true },
+              content: [{ type: "diff", path: diffPath, newText: content }],
+            },
+          }).data.content,
+        );
+      };
+      const write = (toolCallId: string, path: string, content: string) => {
+        announce(toolCallId, path, content);
+        return finish(toolCallId, path, content);
+      };
+      return { reads, announce, finish, write };
+    };
+
+    it("diffs a new file against /dev/null and an existing one against its old text", () => {
+      const { write } = setup({ "/repo/src/old.ts": "export const a = 1;\n" });
+      const [created] = write("write-new", "/repo/src/new.ts", "x\n");
+      expect(created?.diff).toContain("--- /dev/null\n+++ b//repo/src/new.ts\n@@ -0,0 +1,1 @@\n+x");
+      const [replaced] = write("write-old", "/repo/src/old.ts", "export const a = 2;\n");
+      expect(replaced?.diff).toContain("-export const a = 1;\n+export const a = 2;\n");
+      expect(replaced?.diff).not.toContain("/dev/null");
+    });
+
+    it("keeps the path when the snapshot is unknown, already matches, or names another file", () => {
+      const { announce, finish, write } = setup(
+        { "/repo/src/same.ts": "same\n", "/repo/src/a.ts": "a\n" },
+        ["/repo/big.bin"],
+      );
+      const pathOnly = (path: string) => [{ path, type: "update" }];
+      expect(write("unknown", "/repo/big.bin", "x\n")).toEqual(pathOnly("/repo/big.bin"));
+      expect(write("same", "/repo/src/same.ts", "same\n")).toEqual(pathOnly("/repo/src/same.ts"));
+      announce("moved", "/repo/src/a.ts", "b\n");
+      expect(finish("moved", "/repo/src/a.ts", "b\n", "completed", "/repo/src/b.ts")).toEqual(
+        pathOnly("/repo/src/b.ts"),
+      );
+    });
+
+    it("snapshots once per call, again after a failure, and evicts beyond 32 calls", () => {
+      const { reads, announce, finish } = setup({ "/repo/src/a.ts": "a\n" });
+      announce("reused", "/repo/src/a.ts", "b\n");
+      expect(reads).toEqual(["/repo/src/a.ts"]);
+      finish("reused", "/repo/src/a.ts", "b\n", "failed");
+      // A reused id after a failure takes a fresh snapshot rather than the stale one.
+      announce("reused", "/repo/src/a.ts", "c\n");
+      expect(reads).toHaveLength(2);
+      expect(finish("reused", "/repo/src/a.ts", "c\n")[0]?.diff).toContain("-b\n+c\n");
+
+      announce("evicted", "/repo/src/a.ts", "d\n");
+      for (let index = 0; index < 32; index++)
+        announce(`other-${index}`, `/repo/src/other-${index}.ts`, "x\n");
+      expect(finish("evicted", "/repo/src/a.ts", "d\n")).toEqual([
+        { path: "/repo/src/a.ts", type: "update" },
+      ]);
+    });
+  });
+
+  it("shows a new-file write as an addition and an overwrite as a path-only change", () => {
+    const normalize = makeAntigravityToolNormalizer(() => undefined);
+    const write = (toolCallId: string, overwrite: boolean | undefined) =>
+      normalize({
+        toolCallId,
+        title: "File src/new.ts",
+        kind: "edit",
+        status: "completed",
+        data: {
+          rawInput: {
+            Path: "/repo/src/new.ts",
+            Content: "export const a = 1;\n",
+            ...(overwrite === undefined ? {} : { Overwrite: overwrite }),
+          },
+          content: [{ type: "diff", path: "/repo/src/new.ts", newText: "export const a = 1;\n" }],
+        },
+      });
+    const [added] = acpFileChanges(write("write-new", undefined).data.content);
+    expect(added?.diff).toContain("--- /dev/null\n+++ b//repo/src/new.ts\n@@ -0,0 +1,1 @@");
+    expect(acpFileChanges(write("write-over", true).data.content)).toEqual([
+      { path: "/repo/src/new.ts", type: "update" },
+    ]);
+    // An empty new file still names its path.
+    const empty = normalize({
+      toolCallId: "write-empty",
+      title: "File src/empty.ts",
+      kind: "edit",
+      status: "completed",
+      data: {
+        rawInput: { Path: "/repo/src/empty.ts", Content: "" },
+        content: [{ type: "diff", path: "/repo/src/empty.ts", newText: "" }],
+      },
+    });
+    expect(acpFileChanges(empty.data.content)).toEqual([
+      { path: "/repo/src/empty.ts", type: "update" },
+    ]);
+    // The runtime accepts the snake-case flag too.
+    const snake = normalize({
+      toolCallId: "write-over-snake",
+      title: "File src/new.ts",
+      kind: "edit",
+      status: "completed",
+      data: {
+        rawInput: { path: "/repo/src/new.ts", content: "x\n", overwrite: true },
+        content: [{ type: "diff", path: "/repo/src/new.ts", newText: "x\n" }],
+      },
+    });
+    expect(acpFileChanges(snake.data.content)).toEqual([
+      { path: "/repo/src/new.ts", type: "update" },
+    ]);
   });
 
   it("uses Antigravity's tool summary as the command description", () => {

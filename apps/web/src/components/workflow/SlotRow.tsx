@@ -225,6 +225,12 @@ export function SlotRow(props: {
   modelOptionsByProvider: Record<ProviderKind, ReadonlyArray<{ slug: string; name: string }>>;
   onProviderModelChange: (provider: ProviderKind, model: ModelSlug) => void;
   onModelOptionsChange: (modelOptions: ProviderModelOptions | undefined) => void;
+  /** Extra reason a provider cannot be picked for this slot. */
+  providerUnavailableReason?: ((provider: ProviderKind) => string | null) | undefined;
+  /** Shown under the row, for example a duplicate-model or provider error. */
+  error?: string | null | undefined;
+  /** Rendered after the picker, for example a Remove button. */
+  trailing?: ReactNode;
   className?: string | undefined;
 }) {
   const reasoning = buildReasoningControls(
@@ -237,7 +243,7 @@ export function SlotRow(props: {
     ),
     props.modelOptions,
   );
-  return (
+  const row = (
     <div
       data-slot="workflow-slot-row"
       role="group"
@@ -256,6 +262,7 @@ export function SlotRow(props: {
           lockedProvider={null}
           modelOptionsByProvider={props.modelOptionsByProvider}
           onProviderModelChange={props.onProviderModelChange}
+          providerUnavailableReason={props.providerUnavailableReason}
           // Fill the field so every row's chevron and effort picker line up; the
           // selected model is a value, not a hint, so it gets full contrast.
           triggerClassName="flex-1 max-w-none sm:max-w-none text-foreground"
@@ -275,6 +282,19 @@ export function SlotRow(props: {
           </>
         ) : null}
       </div>
+      {props.trailing}
+    </div>
+  );
+  // The same tree with or without an error, so the row (and a focused picker in it) stays
+  // mounted when the error appears or clears.
+  return (
+    <div className="flex min-w-0 flex-col gap-1">
+      {row}
+      {props.error ? (
+        <p role="alert" className="ps-27 text-2xs text-destructive-foreground">
+          {props.error}
+        </p>
+      ) : null}
     </div>
   );
 }

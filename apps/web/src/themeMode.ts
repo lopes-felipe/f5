@@ -10,8 +10,12 @@ export function getSystemPrefersDark(): boolean {
 }
 
 export function readStoredThemeMode(): ThemeMode {
-  const raw =
-    typeof localStorage === "undefined" ? null : localStorage.getItem(THEME_MODE_STORAGE_KEY);
+  let raw: string | null = null;
+  try {
+    raw = typeof localStorage === "undefined" ? null : localStorage.getItem(THEME_MODE_STORAGE_KEY);
+  } catch {
+    raw = null;
+  }
   return raw === "light" || raw === "dark" || raw === "system" ? raw : "system";
 }
 

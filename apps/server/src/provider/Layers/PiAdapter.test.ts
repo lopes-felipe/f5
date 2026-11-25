@@ -158,6 +158,73 @@ it("keeps idle compaction alive on Stop and holds a new prompt until compaction 
     );
   }));
 
+it.each([
+  { mode: "stop-queue", abort: true, state: "cancelled" },
+  { mode: "stop-legacy", abort: true, state: "cancelled" },
+  { mode: "stop-timeout", abort: true, state: "cancelled" },
+  { mode: "stop-settled", abort: false, state: "completed" },
+  { mode: "stop-next-turn", abort: false, state: "completed" },
+  { mode: "stop-compacting", abort: false, state: "cancelled" },
+])(
+  "stops safely after requesting that Pi clear its native queue: $mode",
+  async ({ mode, abort, state }) =>
+    fixture(async ({ settings, options, trace }) => {
+      options.environment.F5_PI_CASE = mode;
+      await run(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const adapter = yield* makePiAdapter(settings, options);
+            const terminal = yield* Deferred.make<ProviderRuntimeEvent>();
+            const notices: ProviderRuntimeEvent[] = [];
+            yield* adapter.streamEvents.pipe(
+              Stream.runForEach((event) =>
+                Effect.gen(function* () {
+                  if (event.type === "runtime.warning") notices.push(event);
+                  if (event.type === "turn.completed") yield* Deferred.succeed(terminal, event);
+                }),
+              ),
+              Effect.forkScoped({ startImmediately: true }),
+            );
+            yield* adapter.startSession({
+              threadId,
+              cwd: tmpdir(),
+              runtimeMode: "approval-required",
+            });
+            const turn = yield* adapter.sendTurn({ threadId, input: "Continue" });
+            const stop = yield* adapter
+              .interruptTurn(threadId)
+              .pipe(Effect.forkScoped({ startImmediately: true }));
+            expect(yield* Deferred.await(terminal).pipe(Effect.timeout("5 seconds"))).toMatchObject(
+              {
+                turnId: turn.turnId,
+                payload: { state },
+              },
+            );
+            if (mode === "stop-next-turn") {
+              const next = yield* adapter.sendTurn({ threadId, input: "Next prompt" });
+              expect(next.turnId).not.toBe(turn.turnId);
+            }
+            yield* Fiber.join(stop);
+            const commands = (yield* Effect.promise(trace)).map((record) => record.type);
+            expect(
+              commands.filter((command) => command === "clear_queue" || command === "abort"),
+            ).toEqual(abort ? ["clear_queue", "abort"] : ["clear_queue"]);
+            if (mode !== "stop-queue") expect(notices).toEqual([]);
+            else
+              expect(notices).toMatchObject([
+                {
+                  turnId: turn.turnId,
+                  payload: {
+                    message: "Stop cleared 3 queued messages Pi had not read.",
+                  },
+                },
+              ]);
+          }),
+        ),
+      );
+    }),
+);
+
 // "streaming": native work started before its wake reached F5, so Pi must queue the prompt.
 it.each([
   "normal",

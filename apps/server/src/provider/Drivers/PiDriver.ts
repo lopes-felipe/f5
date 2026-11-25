@@ -1,6 +1,6 @@
 import { ProviderNativeHistory } from "../ProviderNativeHistory.ts";
 import { PiSettings, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
-import { Duration, Effect, FileSystem, Option, Path, Schema, Stream } from "effect";
+import { Duration, Effect, FileSystem, Option, Path, PubSub, Schema, Stream } from "effect";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { ServerConfig } from "../../config.ts";
 import { makePiTextGeneration } from "../../git/Layers/PiTextGeneration.ts";
@@ -13,6 +13,7 @@ import {
   buildInitialPiProviderSnapshot,
   checkPiProviderStatus,
   piModelsFromSettings,
+  type PiProviderStatus,
 } from "../Layers/PiProvider.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import { ProviderContinuationRequests } from "../ProviderContinuationRequests.ts";
@@ -83,9 +84,36 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
         yield* Effect.serviceOption(ProviderNativeHistory),
       );
       const preview = Option.getOrUndefined(yield* Effect.serviceOption(PreviewMcpHttpServer));
+      // Workspace commands can be published while the instance's status probe is still running.
       let liveCatalog: PiCatalog | undefined;
-      let baseSnapshot = buildInitialPiProviderSnapshot(settings);
-      let refreshSnapshot: Effect.Effect<void> = Effect.void;
+      let lastStatus = stamp(buildInitialPiProviderSnapshot(settings));
+      let unavailableModelProvider: string | undefined;
+      const workspaceChanges = yield* Effect.acquireRelease(
+        PubSub.sliding<void>(1),
+        PubSub.shutdown,
+      );
+      const withWorkspaceCatalog = (snapshot: ServerProvider): ServerProvider => {
+        const catalog = liveCatalog;
+        if (!catalog) return snapshot;
+        const hasLiveModels = catalog.models.length > 0;
+        const stillUnavailable =
+          unavailableModelProvider !== undefined &&
+          !catalog.models.some((model) => model.subProvider === unavailableModelProvider);
+        return {
+          ...snapshot,
+          installed: true,
+          status: hasLiveModels || snapshot.status === "ready" ? "ready" : "warning",
+          probeOutcome: "success",
+          ...(!stillUnavailable && {
+            message: hasLiveModels
+              ? "Pi's workspace catalog is available. Authentication is managed by Pi."
+              : "Pi is running, but its workspace catalog reported no models.",
+          }),
+          models: hasLiveModels ? piModelsFromSettings(settings, catalog.models) : snapshot.models,
+          slashCommands: catalog.slashCommands,
+          skills: catalog.skills,
+        };
+      };
       const adapter = yield* makePiAdapter(settings, {
         instanceId,
         environment: processEnv,
@@ -96,7 +124,7 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
         onCatalog: (catalog) =>
           Effect.gen(function* () {
             liveCatalog = catalog;
-            yield* refreshSnapshot;
+            yield* PubSub.publish(workspaceChanges, undefined);
           }),
         ...(preview?.supportsThreadCatalog
           ? {
@@ -140,32 +168,18 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
           : {}),
       });
       const textGeneration = yield* makePiTextGeneration(settings, processEnv, beforeLaunch, own);
-      const snapshot = yield* makeManagedServerProvider<PiSettings>({
+      const status = yield* makeManagedServerProvider<PiSettings>({
         getSettings: Effect.succeed(settings),
         streamSettings: Stream.never,
         haveSettingsChanged: () => false,
         initialSnapshot: (initial) => stamp(buildInitialPiProviderSnapshot(initial)),
-        checkProvider: Effect.suspend(() =>
-          liveCatalog
-            ? Effect.succeed({
-                ...baseSnapshot,
-                installed: true,
-                status: "ready" as const,
-                models: piModelsFromSettings(settings, liveCatalog.models),
-                slashCommands: liveCatalog.slashCommands,
-                skills: liveCatalog.skills,
-                message: "Pi's workspace catalog is available; credentials remain managed by Pi.",
-              })
-            : own(checkPiProviderStatus(settings, processEnv, beforeLaunch)).pipe(
-                Effect.orElseSucceed(() => buildInitialPiProviderSnapshot(settings)),
-                Effect.tap((checked) =>
-                  Effect.sync(() => {
-                    baseSnapshot = checked;
-                  }),
-                ),
-              ),
-        ).pipe(
-          Effect.map(stamp),
+        checkProvider: own(checkPiProviderStatus(settings, processEnv, beforeLaunch)).pipe(
+          Effect.orElseSucceed(() => buildInitialPiProviderSnapshot(settings)),
+          Effect.map(({ unavailableModelProvider: provider, ...snapshot }: PiProviderStatus) => {
+            unavailableModelProvider = provider;
+            lastStatus = stamp(snapshot);
+            return lastStatus;
+          }),
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
           Effect.provideService(FileSystem.FileSystem, fs),
         ),
@@ -180,7 +194,18 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
             }),
         ),
       );
-      refreshSnapshot = snapshot.refresh.pipe(Effect.asVoid);
+      const getSnapshot = Effect.sync(() => withWorkspaceCatalog(lastStatus));
+      const snapshot = {
+        getSnapshot,
+        refresh: status.refresh.pipe(Effect.andThen(getSnapshot)),
+        get streamChanges() {
+          return status.streamChanges.pipe(
+            Stream.map(() => undefined),
+            Stream.merge(Stream.fromPubSub(workspaceChanges)),
+            Stream.mapEffect(() => getSnapshot),
+          );
+        },
+      };
       return {
         instanceId,
         driverKind,
