@@ -99,3 +99,38 @@ transform decision before track T4.
 
 Every SDK bump records the SDK version, package integrity, helper version,
 host runtime and each certified feature, and reruns every SDK row.
+
+## Read-only sandbox gates (C1-C4)
+
+These gates decide whether Cursor read-only workflow stages can run in Cursor's
+native sandbox (`agent --sandbox enabled acp` with a `workspace_readonly`
+`sandbox.json`) rather than F5's command allowlist. Until they all pass on a
+target, `CURSOR_READ_ONLY_SANDBOX_CERTIFIED_RUNTIMES` in
+`packages/shared/src/readOnlyEnforcement.ts` has no row for it and Cursor stays
+policy-enforced.
+
+Run `node apps/server/integration/cursorSandboxGates.mjs` from a normal
+Terminal: macOS refuses to start the sandbox inside an agent's sandboxed shell.
+It spends two prompts and works in a fresh temp folder with its own HOME.
+`--handshake-only` stops before the prompts. It checks that a sandboxed ACP
+session starts, signs in and enters plan mode, and spends nothing.
+
+| Gate | Question                                                                                                                                                            | Result                                                                                          |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| C1   | Does Cursor stay signed in under a separate HOME?                                                                                                                   | Pass on darwin-arm64, CLI 2026.11.22-e9042b2 (2026-11-25), only with `Library/Keychains` linked |
+| C2   | With `--sandbox enabled` and plan mode, which commands send `session/request_permission`, and does a request tell sandboxed runs from out-of-sandbox ones?          | Pending                                                                                         |
+| C3   | Under `workspace_readonly` with network denied: do workspace, `.git` and outside writes fail, `curl` fail, `/tmp` writes succeed and Cursor's own fetch still work? | Pending                                                                                         |
+| C4   | Does C3 still hold in a workspace whose own `.cursor/sandbox.json` asks for no sandbox and full network?                                                            | Pending                                                                                         |
+
+- **C1:** the CLI keeps its sign-in in the login keychain through
+  `/usr/bin/security`, which looks under `$HOME/Library/Keychains`. An empty
+  separate HOME reports `isAuthenticated: false`. Linking only that folder into
+  the read-only HOME restores the account without copying a token. Sessions also
+  start, authenticate and enter plan mode with `--sandbox enabled` under that
+  HOME (`--handshake-only`, same date). Linux keeps credentials elsewhere and
+  needs its own C1 run.
+- **C4 exists because** the CLI folds the workspace's own `.cursor/sandbox.json`
+  into the per-user policy. A repository under review must not be able to
+  loosen a read-only stage's sandbox.
+- **The per-user policy path** is `homedir()/.cursor/sandbox.json`.
+  `CURSOR_CONFIG_DIR` doesn't move it, so a separate HOME is needed.
