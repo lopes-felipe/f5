@@ -1,8 +1,9 @@
 import { ORCHESTRATION_WS_METHODS, WS_METHODS } from "@t3tools/contracts";
-import { Effect, Exit } from "effect";
+import { Cause, Effect, Exit } from "effect";
 import { describe, expect, it, vi } from "vitest";
 import type { WebSocket } from "ws";
 
+import { RouteRequestError } from "../../turnSubmissionErrors.ts";
 import { BUILTIN_WORKFLOW_TEMPLATES } from "../../workflowPlatform.ts";
 import { workflowRoutes } from "./workflowRoutes.ts";
 
@@ -53,5 +54,10 @@ describe("workflowRoutes", () => {
       ),
     );
     expect(Exit.isFailure(failed)).toBe(true);
+    if (Exit.isFailure(failed)) {
+      const error = Cause.squash(failed.cause);
+      expect(error).toBeInstanceOf(RouteRequestError);
+      expect((error as RouteRequestError).message).toBe("Failed to create workflow: Error: boom");
+    }
   });
 });

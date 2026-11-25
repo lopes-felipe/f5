@@ -10,6 +10,14 @@ import { OrchestrationCommandInvariantError } from "./Errors.ts";
 
 export const WORKFLOW_AUTHORITATIVE_ARTIFACT_TOKEN_SHARE = 0.5;
 export const WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT = 116_000;
+/** At most this many review turns of one run are in flight at once. */
+export const WORKFLOW_MAX_ACTIVE_REVIEW_TURNS = 4;
+/** Smallest per-plan length a run with more than two authors may be created with. */
+export const WORKFLOW_MIN_PLAN_CHAR_BUDGET = 12_000;
+/** Smallest share of a fan-in prompt (consolidation, synthesis) one artifact may get. */
+export const WORKFLOW_FAN_IN_MIN_ARTIFACT_CHARS = 4_000;
+/** Largest share any one fan-in artifact gets, matching `truncateWorkflowPromptArtifact`. */
+export const WORKFLOW_FAN_IN_MAX_ARTIFACT_CHARS = 60_000;
 
 export type WorkflowFitThread = Partial<
   Pick<
@@ -462,6 +470,38 @@ export function reviewFeedbackForPinnedTurn(
         reasoningText: pinnedMessage?.reasoningText,
       })
     : feedback;
+}
+
+/**
+ * Shares a character budget among artifacts: shortest first, each gets
+ * `min(length, floor(remaining / itemsLeft))`, capped at the per-artifact maximum. Short
+ * artifacts stay whole and leave their unused share to the longer ones. Returns each
+ * artifact's allowance in input order and the smallest allowance an oversized artifact got
+ * (`null` when every artifact fits whole).
+ */
+export function allocateArtifactCharBudget(
+  lengths: ReadonlyArray<number>,
+  budget: number,
+): { readonly allowances: number[]; readonly smallestExcerpt: number | null } {
+  const allowances = Array.from({ length: lengths.length }, () => 0);
+  let remaining = Math.max(0, Math.floor(budget));
+  let smallestExcerpt: number | null = null;
+  const order = lengths
+    .map((length, index) => ({ length, index }))
+    .toSorted((left, right) => left.length - right.length || left.index - right.index);
+  for (const [position, entry] of order.entries()) {
+    const share = Math.min(
+      WORKFLOW_FAN_IN_MAX_ARTIFACT_CHARS,
+      Math.floor(remaining / (order.length - position)),
+    );
+    const allowance = Math.min(entry.length, share);
+    allowances[entry.index] = allowance;
+    remaining -= allowance;
+    if (allowance < entry.length) {
+      smallestExcerpt = smallestExcerpt === null ? allowance : Math.min(smallestExcerpt, allowance);
+    }
+  }
+  return { allowances, smallestExcerpt };
 }
 
 export function truncateWorkflowPromptArtifact(text: string, maxChars = 60_000): string {

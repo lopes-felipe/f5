@@ -51,10 +51,10 @@ export function workflowArchiveFixture(kind: "planning" | "codeReview" | "invest
           requirementPrompt: "Plan",
           plansDirectory: "/repo/plans",
           selfReviewEnabled: false,
-          authorThreadIdA: a,
-          authorThreadIdB: b,
-          branchA: slot,
-          branchB: slot,
+          authors: [
+            { slot, threadId: a },
+            { slot, threadId: b },
+          ],
           merge: slot,
         })
       : kind === "codeReview"
@@ -64,10 +64,10 @@ export function workflowArchiveFixture(kind: "planning" | "codeReview" | "invest
             templateId: "builtin.code-review.dual",
             reviewPrompt: "Review",
             branch: null,
-            reviewThreadIdA: a,
-            reviewThreadIdB: b,
-            reviewerA: slot,
-            reviewerB: slot,
+            reviewers: [
+              { slot, threadId: a },
+              { slot, threadId: b },
+            ],
             consolidation: slot,
           })
         : buildInvestigationWorkflowRecord({
@@ -77,10 +77,10 @@ export function workflowArchiveFixture(kind: "planning" | "codeReview" | "invest
             problemPrompt: "Investigate",
             branch: null,
             selfReviewEnabled: false,
-            investigationThreadIdA: a,
-            investigationThreadIdB: b,
-            investigatorA: slot,
-            investigatorB: slot,
+            investigators: [
+              { slot, threadId: a },
+              { slot, threadId: b },
+            ],
             synthesis: slot,
           });
   let model = applyArchiveTestCommand(createEmptyReadModel(createdAt), {

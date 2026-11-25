@@ -14,6 +14,9 @@ import {
   applyAntigravityModelSelection,
   applyAntigravitySessionMode,
   applyAntigravityTextGenerationSelection,
+  antigravityReadOnlyWorkflowDecision,
+  antigravityWorkflowRuntimeMode,
+  enterAntigravityWorkflowPlanMode,
   lowestAntigravityThinkingLevel,
   makeAntigravitySelectionState,
 } from "./AntigravityAcpSupport.ts";
@@ -390,6 +393,70 @@ describe("Antigravity session modes", () => {
     );
     expect(mode).toBe("default");
     expect(warnings).toHaveLength(1);
+  });
+});
+
+describe("Antigravity read-only workflow turns", () => {
+  const decide = (
+    toolCall: Parameters<typeof antigravityReadOnlyWorkflowDecision>[0]["toolCall"],
+    computerRequest = false,
+  ) => antigravityReadOnlyWorkflowDecision({ toolCall, computerRequest });
+
+  it("allows read, search, think and fetch tools", () => {
+    for (const kind of ["read", "search", "think", "fetch"])
+      expect(decide({ kind, title: "view_file", rawInput: { path: "README.md" } })).toBe("allow");
+  });
+
+  it("denies edits, deletes, moves, commands and unknown or missing kinds", () => {
+    for (const kind of ["edit", "delete", "move", "execute", "switch_mode", "other", "", null])
+      expect(decide({ kind, title: "tool" })).toBe("deny");
+    expect(decide({ title: "tool" })).toBe("deny");
+  });
+
+  it("denies computer requests and MCP tools even when their kind reads as read-only", () => {
+    expect(decide({ kind: "read", title: "screenshot" }, true)).toBe("deny");
+    expect(decide({ kind: "read", title: "mcp__github__get_issue" })).toBe("deny");
+    expect(decide({ kind: "fetch", title: "fetch", rawInput: { serverName: "github" } })).toBe(
+      "deny",
+    );
+  });
+
+  it("forces approval-required only for workflow turns", () => {
+    expect(antigravityWorkflowRuntimeMode("full-access", "unattended-readonly")).toBe(
+      "approval-required",
+    );
+    expect(antigravityWorkflowRuntimeMode("auto", "attended-readonly")).toBe("approval-required");
+    expect(antigravityWorkflowRuntimeMode("full-access", undefined)).toBe("full-access");
+  });
+
+  const enterPlan = (runtime: ReturnType<typeof modeRuntime>["runtime"]) =>
+    run(enterAntigravityWorkflowPlanMode({ runtime, mapError: (cause) => cause }));
+
+  it("enters Plan before a workflow prompt and confirms it", async () => {
+    const session = modeRuntime({ modeState: modes("default", "default", "plan") });
+    await expect(enterPlan(session.runtime)).resolves.toBe("plan");
+    expect(session.writes).toEqual(["session/set_mode=plan"]);
+  });
+
+  it("fails before anything is sent when Plan is not offered", async () => {
+    const session = modeRuntime({ modeState: modes("auto", "default", "auto") });
+    await expect(enterPlan(session.runtime)).rejects.toThrow("does not offer Plan mode");
+    expect(session.writes).toEqual([]);
+  });
+
+  it("fails when the session cannot report its mode afterwards", async () => {
+    const session = modeRuntime({});
+    await expect(enterPlan(session.runtime)).rejects.toThrow();
+    const unconfirmed = modeRuntime({ modeState: modes("default", "default", "plan") });
+    let reads = 0;
+    const forgetting = {
+      ...unconfirmed.runtime,
+      getModeState: Effect.suspend(() =>
+        // The mode state disappears once the switch has been written.
+        reads++ < 2 ? unconfirmed.runtime.getModeState : Effect.succeed(undefined),
+      ),
+    };
+    await expect(enterPlan(forgetting)).rejects.toThrow("could not confirm Plan mode");
   });
 });
 

@@ -544,19 +544,29 @@ export function StartPortDialog(props: {
                   const slot = reviewOptions[key]!;
                   return buildSlot(slot.provider, slot.model, slot.modelOptions);
                 };
+                const extraReviewers = (reviewOptions.additionalReviewers ?? []).map((slot) =>
+                  buildSlot(slot.provider, slot.model, slot.modelOptions));
                 const admittedReview = reviewOptions.enabled ? {
-                  reviewerA: build("reviewerA"), reviewerB: build("reviewerB"), consolidation: build("consolidation"),
+                  reviewerA: build("reviewerA"), reviewerB: build("reviewerB"),
+                  ...(extraReviewers.length > 0 ? { additionalReviewers: extraReviewers } : {}),
+                  consolidation: build("consolidation"),
                 } : null;
                 const remember = ({ provider, model, modelOptions }: NonNullable<typeof admittedReview>["reviewerA"]) =>
                   ({ provider, model, ...(modelOptions ? { modelOptions } : {}) });
+                // With review off, the saved reviewers (extras included) carry forward unchanged.
+                const savedExtras = props.savedReview?.additionalReviewers;
                 review = {
                   review: admittedReview,
                   reviewPreference: admittedReview ? {
                     enabled: true, reviewerA: remember(admittedReview.reviewerA),
-                    reviewerB: remember(admittedReview.reviewerB), consolidation: remember(admittedReview.consolidation),
+                    reviewerB: remember(admittedReview.reviewerB),
+                    ...(extraReviewers.length > 0 ? { additionalReviewers: extraReviewers.map(remember) } : {}),
+                    consolidation: remember(admittedReview.consolidation),
                   } : {
                     enabled: false, reviewerA: props.savedReview?.reviewerA ?? null,
-                    reviewerB: props.savedReview?.reviewerB ?? null, consolidation: props.savedReview?.consolidation ?? null,
+                    reviewerB: props.savedReview?.reviewerB ?? null,
+                    ...(savedExtras && savedExtras.length > 0 ? { additionalReviewers: savedExtras } : {}),
+                    consolidation: props.savedReview?.consolidation ?? null,
                   },
                 };
                 setLockedReview(review);

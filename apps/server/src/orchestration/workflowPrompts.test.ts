@@ -207,10 +207,15 @@ describe("workflowPrompts", () => {
     const workflow = makeWorkflow();
     const text = buildMergePrompt({
       workflow,
-      planA: { markdown: "# Plan A", source: SOURCE },
-      planB: { markdown: "# Plan B", source: { ...SOURCE, stage: "author-b" } },
-      modelA: CODEX_SLOT,
-      modelB: CLAUDE_SLOT,
+      plans: [
+        { label: "A", markdown: "# Plan A", source: SOURCE, model: CODEX_SLOT },
+        {
+          label: "B",
+          markdown: "# Plan B",
+          source: { ...SOURCE, stage: "author-b" },
+          model: CLAUDE_SLOT,
+        },
+      ],
       mergeSlot: CODEX_SLOT,
     });
     expect(text).toContain("Please merge them into a single comprehensive plan");

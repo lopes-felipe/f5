@@ -43,7 +43,15 @@ export default defineConfig({
     // omits query strings.
     babel({
       include: /[/\\]apps[/\\]web[/\\]src[/\\].*\.[tj]sx?(?:$|\?)/,
-      exclude: /\.(?:test|browser)\.[tj]sx?(?:$|\?)/,
+      exclude: [
+        /[/\\]node_modules[/\\]/,
+        /\.(?:test|browser)\.[tj]sx?(?:$|\?)/,
+        // PR Hub components still read module-level account/generation globals
+        // during render across many panels; exclude until all PR Hub read paths
+        // receive reactive snapshot parameters.
+        /[/\\]components[/\\]prHub[/\\]/,
+        /[/\\]lib[/\\]prHub/,
+      ],
       overrides: [
         { include: /\.tsx\?/, parserOpts: { plugins: ["typescript", "jsx"] } },
         { include: /\.ts\?/, parserOpts: { plugins: ["typescript"] } },

@@ -78,7 +78,14 @@ export function ProvidersSettings() {
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
   const liveProviders = serverConfigQuery.data?.providers ?? [];
   const [isAddInstanceDialogOpen, setIsAddInstanceDialogOpen] = useState(false);
+  const { focusedProviderInstanceId, focusedProviderInstanceProjectId } = useSettingsRouteContext();
   const [openInstanceDetails, setOpenInstanceDetails] = useState<Record<string, boolean>>({});
+  // A link to one instance's hooks (e.g. "Review hooks" in the work log) opens its card.
+  const [expandedFocus, setExpandedFocus] = useState<string | null>(null);
+  if (focusedProviderInstanceId && expandedFocus !== focusedProviderInstanceId) {
+    setExpandedFocus(focusedProviderInstanceId);
+    setOpenInstanceDetails((existing) => ({ ...existing, [focusedProviderInstanceId]: true }));
+  }
   const [isRefreshingProviders, setIsRefreshingProviders] = useState(false);
   const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
   const [updateCheckError, setUpdateCheckError] = useState<string | null>(null);
@@ -441,6 +448,12 @@ export function ProvidersSettings() {
                   applyProviders(result.providers);
                   return result;
                 }}
+                focusHooks={focusedProviderInstanceId === row.instanceId}
+                focusHooksProjectId={
+                  focusedProviderInstanceId === row.instanceId
+                    ? (focusedProviderInstanceProjectId ?? undefined)
+                    : undefined
+                }
                 isExpanded={openInstanceDetails[row.instanceId] ?? false}
                 onExpandedChange={(open) =>
                   setOpenInstanceDetails((existing) => ({

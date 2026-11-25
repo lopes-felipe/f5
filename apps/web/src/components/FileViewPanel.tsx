@@ -746,6 +746,8 @@ export default function FileViewPanel({
         <WorkspaceMediaView
           name={filePath}
           projectId={activeProjectId}
+          relativePath={previewTarget?.relativePath ?? filePath}
+          cwd={previewTarget?.cwd}
           {...(activeThread ? { threadId: activeThread.id } : {})}
         />
       ) : renderedMarkdown && fileQuery.data && !editing ? (

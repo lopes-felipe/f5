@@ -98,5 +98,7 @@ describe("safeStorage", () => {
 
     storage.removeItem("f5:agents-panel:v1");
     expect(data.has("f5:agents-panel:v1")).toBe(false);
+    expect(data.has("t3code:agents-panel:v1")).toBe(false);
+    expect(storage.getItem("f5:agents-panel:v1")).toBeNull();
   });
 });

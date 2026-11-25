@@ -34,6 +34,7 @@ export const runPiMetadataPrompt = (input: {
         extensionPath: undefined,
         mcpSession: undefined,
         ephemeral: true,
+        shortLived: true,
         disableExtensions: true,
         disableTools: true,
       });

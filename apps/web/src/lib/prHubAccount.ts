@@ -19,14 +19,14 @@ function notifyListeners(): void {
   for (const listener of listeners) listener();
 }
 
-function subscribePrHubAccount(listener: () => void): () => void {
+export function subscribePrHubAccount(listener: () => void): () => void {
   listeners.add(listener);
   return () => {
     listeners.delete(listener);
   };
 }
 
-function getPrHubAccountSnapshot(): PrHubAccountSnapshot {
+export function getPrHubAccountSnapshot(): PrHubAccountSnapshot {
   return snapshot;
 }
 
