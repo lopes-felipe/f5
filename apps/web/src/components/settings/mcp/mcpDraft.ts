@@ -37,7 +37,14 @@ export type ServerDraft = {
   readonly oauthCallbackPort: string;
   readonly oauthCallbackUrl: string;
   readonly oauthResource: string;
+  readonly description: string;
 };
+
+/**
+ * Fields the form does not edit. They are kept from the saved server on every save,
+ * including a transport change, so editing never drops them.
+ */
+const PRESERVED_FIELDS = ["disabledProviders", "connectionScope"] as const;
 
 export function createEmptyDraft(type: TransportType = "stdio"): ServerDraft {
   return {
@@ -62,6 +69,7 @@ export function createEmptyDraft(type: TransportType = "stdio"): ServerDraft {
     oauthCallbackPort: "",
     oauthCallbackUrl: "",
     oauthResource: "",
+    description: "",
   };
 }
 
@@ -215,7 +223,28 @@ export function draftFromServer(
       server.oauthCallbackPort !== undefined ? String(server.oauthCallbackPort) : "",
     oauthCallbackUrl: server.oauthCallbackUrl ?? "",
     oauthResource: server.oauthResource ?? "",
+    description: server.description ?? "",
   };
+}
+
+/**
+ * Moves a draft onto a newer saved version of its server. Fields the user has not
+ * changed take the new saved values; edited fields keep the user's text. A switch
+ * flipped elsewhere (enabled, a tool, a provider) is then not reverted by saving the form.
+ */
+export function rebaseDraft(
+  draft: ServerDraft,
+  name: string,
+  server: McpProjectServersConfig[string],
+): ServerDraft {
+  if (!draft.original) return draft;
+  const before = draftFromServer(draft.original.name, draft.original.server);
+  const after = draftFromServer(name, server);
+  const next: Record<string, unknown> = { ...draft, original: after.original };
+  for (const key of Object.keys(after) as Array<keyof ServerDraft>) {
+    if (key !== "original" && draft[key] === before[key]) next[key] = after[key];
+  }
+  return next as ServerDraft;
 }
 
 export function decodeDraftServer(draft: ServerDraft): {
@@ -262,6 +291,9 @@ export function decodeDraftServer(draft: ServerDraft): {
     ...(disabledTools ? { disabledTools } : {}),
     ...(scopes ? { scopes } : {}),
     ...(oauthResource ? { oauthResource } : {}),
+    ...(trimToUndefined(draft.description)
+      ? { description: trimToUndefined(draft.description) }
+      : {}),
   };
 
   const candidate =
@@ -306,6 +338,10 @@ export function decodeDraftServer(draft: ServerDraft): {
         else writable[key] = value;
       }
     }
+  }
+  for (const field of PRESERVED_FIELDS) {
+    const value = draft.original?.server[field];
+    if (value !== undefined) writable[field] = value;
   }
   return { name, server: Schema.decodeUnknownSync(McpServerWriteDefinition)(writable) };
 }

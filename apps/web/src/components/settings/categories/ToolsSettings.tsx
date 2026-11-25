@@ -6,12 +6,12 @@ export { TOOLS_SETTINGS_DESCRIPTORS } from "./ToolsSettings.descriptors";
 
 /** Global Tools page. Project MCP servers are edited from the project scope. */
 export function ToolsSettings() {
-  const { hasProjects } = useSettingsRouteContext();
+  const { hasProjects, projects } = useSettingsRouteContext();
 
   return (
     <>
       <AgentBridgeSettings />
-      <McpServersSettings selectedProject={null} hasProjects={hasProjects} />
+      <McpServersSettings selectedProject={null} hasProjects={hasProjects} projects={projects} />
     </>
   );
 }

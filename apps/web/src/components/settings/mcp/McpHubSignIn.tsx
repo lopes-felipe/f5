@@ -8,8 +8,7 @@ import { ensureNativeApi } from "../../../nativeApi";
 import { Badge } from "../../ui/badge";
 import { Button } from "../../ui/button";
 import { Input } from "../../ui/input";
-import { MCP_HUB_PROVIDER_LABELS } from "./McpHubStatusPanel";
-import { readErrorMessage } from "./mcpSettingsHelpers";
+import { MCP_HUB_PROVIDER_LABELS, readErrorMessage } from "./mcpSettingsHelpers";
 
 function describeExpiry(server: McpHubAuthServerStatus): string | null {
   if (!server.signedIn) return null;
@@ -173,34 +172,37 @@ function SignInRow({
 }
 
 /**
- * Sign-in for remote servers the hub connects to. Tokens are shared by every
- * project and agent in the profile, so this works from either scope with no
- * conversation running. F5 opens the browser only when the user clicks.
+ * F5's own sign-in for one remote server, used by the agents the hub serves.
+ * Tokens are shared by every project and agent in the profile, so this works from
+ * either scope with no conversation running. F5 opens the browser only on a click.
  */
-export function McpHubSignInPanel({ projectId }: { readonly projectId: ProjectId | null }) {
+export function McpHubSignIn({
+  serverName,
+  projectId,
+}: {
+  readonly serverName: string;
+  readonly projectId: ProjectId | null;
+}) {
   const authStatus = useQuery(mcpHubAuthQueryOptions({ projectId }));
-  const servers = authStatus.data?.servers ?? [];
-  if (!authStatus.error && servers.length === 0) return null;
+  const server = authStatus.data?.servers.find((entry) => entry.name === serverName);
   return (
-    <section
-      aria-label="Sign-in for other agents"
-      className="space-y-2 rounded-lg border border-border p-3 text-xs"
-    >
-      <p className="font-medium text-foreground">Sign-in for other agents</p>
+    <section aria-label="Sign-in for other agents" className="space-y-2 text-xs">
+      <p className="font-medium text-foreground">Other agents</p>
       <p className="text-muted-foreground">
-        F5 signs in to remote servers for {MCP_HUB_PROVIDER_LABELS.join(", ")}. A sign-in is shared
-        by every project that uses the same server.
+        F5 signs in for {MCP_HUB_PROVIDER_LABELS.join(", ")}. A sign-in is shared by every project
+        that uses the same server.
       </p>
       {authStatus.error ? (
         <p className="text-destructive">
           {readErrorMessage(authStatus.error, "Failed to load sign-in state.")}
         </p>
+      ) : server ? (
+        <ul>
+          <SignInRow server={server} projectId={projectId} />
+        </ul>
+      ) : authStatus.data ? (
+        <p className="text-muted-foreground">Sign-in applies to enabled HTTP and SSE servers.</p>
       ) : null}
-      <ul className="space-y-2">
-        {servers.map((server) => (
-          <SignInRow key={server.name} server={server} projectId={projectId} />
-        ))}
-      </ul>
     </section>
   );
 }

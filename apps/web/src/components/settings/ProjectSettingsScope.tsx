@@ -577,8 +577,14 @@ function ProjectThreadTitleInstructionsField({
 }
 
 export function ProjectToolsOverrides() {
-  const { selectedProjectSummary, hasProjects } = useSettingsRouteContext();
-  return <McpServersSettings selectedProject={selectedProjectSummary} hasProjects={hasProjects} />;
+  const { selectedProjectSummary, hasProjects, projects } = useSettingsRouteContext();
+  return (
+    <McpServersSettings
+      selectedProject={selectedProjectSummary}
+      hasProjects={hasProjects}
+      projects={projects}
+    />
+  );
 }
 
 export function ProjectBrowserOverrides() {
