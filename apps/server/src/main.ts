@@ -59,6 +59,7 @@ import {
   MIN_REMOTE_AUTH_TOKEN_BYTES,
   SERVER_AUTH_TOKEN_ENV,
 } from "./serverAuth";
+import { parseSecretStoreKey, SECRET_STORE_KEY_ENV } from "./auth/secretStoreKey";
 import { AnalyticsServiceLayerLive } from "./telemetry/Layers/AnalyticsService";
 import { AnalyticsService } from "./telemetry/Services/AnalyticsService";
 import { withStartupPhaseTiming } from "./startupTiming";
@@ -327,6 +328,9 @@ const ServerConfigLive = (input: CliInput) => {
       // through (Git and its hooks, setup scripts, maintenance workers), so drop the variable
       // from this process instead of relying on each of them to filter it.
       delete process.env[SERVER_AUTH_TOKEN_ENV];
+      // Same for the secret store key: ServerConfig keeps it, no child inherits it.
+      const secretStoreKey = parseSecretStoreKey(process.env[SECRET_STORE_KEY_ENV]);
+      delete process.env[SECRET_STORE_KEY_ENV];
       const autoBootstrapProjectFromCwd = resolveBooleanFlag(
         input.autoBootstrapProjectFromCwd,
         env.autoBootstrapProjectFromCwd ?? mode === "web",
@@ -394,6 +398,7 @@ const ServerConfigLive = (input: CliInput) => {
         devUrl,
         noBrowser,
         authToken,
+        ...(secretStoreKey ? { secretStoreKey } : {}),
         trustedProxies,
         autoBootstrapProjectFromCwd,
         logWebSocketEvents,
@@ -655,7 +660,7 @@ const makeServerProgram = (input: CliInput) =>
       config.host && !isWildcardHost(config.host)
         ? `http://${formatHostForUrl(config.host)}:${config.port}`
         : localUrl;
-    const { authToken, devUrl, ...safeConfig } = config;
+    const { authToken, devUrl, secretStoreKey: _secretStoreKey, ...safeConfig } = config;
     yield* Effect.logInfo("F5 running", {
       ...safeConfig,
       devUrl: devUrl?.origin,

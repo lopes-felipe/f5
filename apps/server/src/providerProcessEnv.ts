@@ -14,6 +14,7 @@ import * as Path from "node:path";
 import type { ActiveProfile, ProviderInstanceEnvironment } from "@t3tools/contracts";
 import { PROJECT_SCRIPT_ENV_NAMES } from "@t3tools/shared/projectScripts";
 import { SERVER_AUTH_TOKEN_ENV } from "./serverAuth";
+import { SECRET_STORE_KEY_ENV } from "./auth/secretStoreKey";
 const BLOCKED_PROVIDER_ENV_PREFIXES = ["OTEL_", "F5_LAUNCHER_", "F5_UPDATE_"] as const;
 const CODEX_PACKAGE_MANAGER_ENV = new Set<string>(CODEX_PACKAGE_MANAGER_ENV_NAMES);
 
@@ -30,6 +31,7 @@ function isBlockedProviderEnvKey(key: string): boolean {
       "F5_INSTALL_ROOT",
       BROWSER_OPEN_TOKEN_ENV,
       SERVER_AUTH_TOKEN_ENV,
+      SECRET_STORE_KEY_ENV,
     ].includes(normalizedKey) ||
     CODEX_PACKAGE_MANAGER_ENV.has(normalizedKey) ||
     BLOCKED_PROVIDER_ENV_PREFIXES.some((prefix) => normalizedKey.startsWith(prefix))

@@ -12,7 +12,12 @@ export interface DesktopBackendEnvOptions {
   readonly authToken: string;
   /** Whether syncShellEnvironment actually captured PATH into the base env. */
   readonly shellEnvironmentPrepared?: boolean;
+  /** The profile's keychain-wrapped secret store key, as hex; absent without a keychain. */
+  readonly secretStoreKey?: string | undefined;
 }
+
+/** Read and removed by the backend at startup; see the server's `secretStoreKey.ts`. */
+export const SECRET_STORE_KEY_ENV = "F5_SECRET_STORE_KEY";
 
 export type DesktopStateDirSource = "explicit-state" | "home" | "default";
 
@@ -71,8 +76,13 @@ export function buildDesktopBackendEnv(
           T3CODE_STATE_DIR: options.stateDir,
         }
       : {};
-  // An inherited marker must not claim a PATH this desktop failed to capture.
-  const { F5_SHELL_ENVIRONMENT_PREPARED: _inheritedMarker, ...inheritedEnv } = baseEnv;
+  // An inherited marker must not claim a PATH this desktop failed to capture, and an
+  // inherited key must never reach a profile it does not belong to.
+  const {
+    F5_SHELL_ENVIRONMENT_PREPARED: _inheritedMarker,
+    [SECRET_STORE_KEY_ENV]: _inheritedKey,
+    ...inheritedEnv
+  } = baseEnv;
 
   return {
     ...inheritedEnv,
@@ -86,6 +96,7 @@ export function buildDesktopBackendEnv(
     T3CODE_PORT: String(options.backendPort),
     ...stateDirEnv,
     T3CODE_AUTH_TOKEN: options.authToken,
+    ...(options.secretStoreKey ? { [SECRET_STORE_KEY_ENV]: options.secretStoreKey } : {}),
     ...(baseEnv.T3CODE_OBSERVABILITY_ENABLED !== undefined
       ? {
           T3CODE_OBSERVABILITY_ENABLED: baseEnv.T3CODE_OBSERVABILITY_ENABLED,

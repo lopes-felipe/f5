@@ -58,7 +58,7 @@ import {
   VmSlotReservations,
 } from "./vm/vmBackendLauncher";
 import { VM_REFUSED_EXIT_CODE, VM_STOP_FAILED_EXIT_CODE } from "./vm/vmSupervisor";
-import { isLinuxVmProfile } from "@t3tools/shared/profileExecution";
+import { isLinuxVmProfile, profileExecutionEnvironment } from "@t3tools/shared/profileExecution";
 import { computerHostMetadata } from "@t3tools/shared/computerExecution";
 import {
   assertFileActionCaller,
@@ -3190,6 +3190,28 @@ async function configureAutoUpdater(): Promise<void> {
 
   updatePoller.start(true);
 }
+/**
+ * One master key per host profile for the secrets its backend encrypts at rest, stored
+ * wrapped by the OS keychain beside the profile's state. A VM guest keeps its own key file.
+ */
+const secretStoreKeys = new Map<string, () => Buffer | undefined>();
+function secretStoreKeyHex(runtime: BackendRuntime): string | undefined {
+  if (profileExecutionEnvironment(runtime.profile) !== "host") return undefined;
+  let read = secretStoreKeys.get(runtime.profile.id);
+  if (!read) {
+    read = keychainConsentKey(
+      Path.join(profileStateDir(STATE_DIR, runtime.profile), "secret-store.key"),
+      {
+        available: () => safeStorage.isEncryptionAvailable(),
+        encrypt: (plain) => safeStorage.encryptString(plain),
+        decrypt: (encrypted) => safeStorage.decryptString(encrypted),
+      },
+    );
+    secretStoreKeys.set(runtime.profile.id, read);
+  }
+  return read()?.toString("hex");
+}
+
 function backendEnv(runtime: BackendRuntime = defaultBackend): NodeJS.ProcessEnv {
   return buildDesktopBackendEnv(process.env, {
     backendPort: runtime.backendPort,
@@ -3198,6 +3220,7 @@ function backendEnv(runtime: BackendRuntime = defaultBackend): NodeJS.ProcessEnv
     stateDirSource: STATE_DIR_CONFIG.source,
     authToken: runtime.backendAuthToken,
     shellEnvironmentPrepared,
+    secretStoreKey: secretStoreKeyHex(runtime),
   });
 }
 
