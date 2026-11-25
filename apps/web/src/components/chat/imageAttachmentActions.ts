@@ -1,10 +1,13 @@
 import { sanitizeDownloadFilename } from "@t3tools/shared/downloadFilename";
+import { findSnapshotContext, snapshotClipboardHtml } from "../../lib/snapshotClipboard";
 
 export interface ImageAttachmentActionItem {
   src: string;
   name: string;
   mimeType: string;
-  sourceBlob?: Blob;
+  sourceBlob?: Blob | undefined;
+  source?: "pasted-text" | "snapshot" | undefined;
+  snapshotContext?: ReturnType<typeof findSnapshotContext> | undefined;
 }
 
 function imageActionError(message: string, cause?: unknown): Error {
@@ -149,9 +152,17 @@ export function canCopyImageToClipboard(): boolean {
 export async function copyImageAttachment(item: ImageAttachmentActionItem): Promise<void> {
   const desktopCopyImage =
     typeof window !== "undefined" ? window.desktopBridge?.copyImage : undefined;
+  const snapshotHtml =
+    item.source === "snapshot" ? snapshotClipboardHtml(item.name, item.snapshotContext) : undefined;
+  void snapshotHtml?.catch(() => undefined);
   if (desktopCopyImage) {
-    const pngBlob = await fetchImageAttachmentBlob(item).then(rasterizeImageBlobToPng);
-    await desktopCopyImage(new Uint8Array(await pngBlob.arrayBuffer()));
+    const [pngBlob, html] = await Promise.all([
+      fetchImageAttachmentBlob(item).then(rasterizeImageBlobToPng),
+      snapshotHtml,
+    ]);
+    const pngBytes = new Uint8Array(await pngBlob.arrayBuffer());
+    if (html !== undefined) await desktopCopyImage(pngBytes, { html, text: item.name });
+    else await desktopCopyImage(pngBytes);
     return;
   }
 
@@ -178,7 +189,16 @@ export async function copyImageAttachment(item: ImageAttachmentActionItem): Prom
   // cannot become an unhandled rejection.
   void clipboardBlob.catch(() => undefined);
   try {
-    await navigator.clipboard.write([new ClipboardItem({ "image/png": clipboardBlob })]);
+    const metadata = snapshotHtml
+      ? {
+          "text/plain": new Blob([item.name], { type: "text/plain" }),
+          "text/html": snapshotHtml.then((html) => new Blob([html], { type: "text/html" })),
+        }
+      : undefined;
+    void metadata?.["text/html"].catch(() => undefined);
+    await navigator.clipboard.write([
+      new ClipboardItem({ "image/png": clipboardBlob, ...metadata }),
+    ]);
   } catch (clipboardError) {
     const prepared = await observedPreparation;
     if (!prepared.ok) {

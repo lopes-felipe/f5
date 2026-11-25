@@ -66,6 +66,7 @@ export function duplicateThemeDefinition(palette: ThemePalette): ThemeDefinition
     name: `${palette.name} copy`.slice(0, 80),
     parameters: palette.definition?.parameters ?? { baseHue: 264, chroma: 0.16, contrast: 1 },
     overrides: palette.definition?.overrides,
+    css: palette.definition?.css,
   });
 }
 

@@ -92,6 +92,8 @@ import {
   type TerminalContextDraft,
 } from "~/lib/terminalContext";
 import { cn, randomUUID } from "~/lib/utils";
+import { nativeFileDrag } from "~/lib/nativeFileDrag";
+import { resolvePathLinkTarget } from "~/terminal-links";
 import { isKeyboardEventComposing } from "~/lib/keyboardComposition";
 import { basenameOfPath, getVscodeIconUrlForEntry, inferEntryKindFromPath } from "~/vscode-icons";
 import {
@@ -124,16 +126,20 @@ type SerializedComposerTerminalContextNode = Spread<
   SerializedLexicalNode
 >;
 
-const ComposerTerminalContextActionsContext = createContext<{
+const ComposerEditorContext = createContext<{
   onRemoveTerminalContext: (contextId: string) => void;
+  workspaceCwd?: string | undefined;
 }>({
   onRemoveTerminalContext: () => {},
 });
 
 function ComposerMentionDecorator(props: { path: string }) {
+  const { workspaceCwd: cwd } = useContext(ComposerEditorContext);
+  const dragPath = cwd ? resolvePathLinkTarget(props.path, cwd) : props.path;
   const theme = resolvedThemeFromDocument();
   const chip = (
     <span
+      {...nativeFileDrag(dragPath)}
       className={COMPOSER_INLINE_CHIP_CLASS_NAME}
       contentEditable={false}
       spellCheck={false}
@@ -723,6 +729,7 @@ export interface ComposerPromptEditorHandle {
 }
 
 interface ComposerPromptEditorProps {
+  workspaceCwd?: string | undefined;
   mentions?: readonly ComposerMention[];
   richTextEnabled?: boolean;
   value: string;
@@ -988,7 +995,7 @@ function ComposerInlineTokenSelectionNormalizePlugin() {
 
 function ComposerInlineTokenBackspacePlugin() {
   const [editor] = useLexicalComposerContext();
-  const { onRemoveTerminalContext } = useContext(ComposerTerminalContextActionsContext);
+  const { onRemoveTerminalContext } = useContext(ComposerEditorContext);
 
   useEffect(() => {
     return editor.registerCommand(
@@ -1129,6 +1136,7 @@ function ComposerSurroundSelectionPlugin() {
 }
 
 function ComposerPromptEditorInner({
+  workspaceCwd,
   richTextEnabled = false,
   mentions = EMPTY_COMPOSER_MENTIONS,
   value,
@@ -1160,9 +1168,9 @@ function ComposerPromptEditorInner({
     terminalContextIds: terminalContexts.map((context) => context.id),
   });
   const isApplyingControlledUpdateRef = useRef(false);
-  const terminalContextActions = useMemo(
-    () => ({ onRemoveTerminalContext }),
-    [onRemoveTerminalContext],
+  const editorContext = useMemo(
+    () => ({ onRemoveTerminalContext, workspaceCwd }),
+    [onRemoveTerminalContext, workspaceCwd],
   );
 
   useEffect(() => {
@@ -1426,7 +1434,7 @@ function ComposerPromptEditorInner({
   }, []);
 
   return (
-    <ComposerTerminalContextActionsContext.Provider value={terminalContextActions}>
+    <ComposerEditorContext.Provider value={editorContext}>
       <div className="composer-editor-surface relative">
         <PlainTextPlugin
           contentEditable={
@@ -1444,7 +1452,10 @@ function ComposerPromptEditorInner({
                     ariaAutoComplete: "list" as const,
                     "aria-haspopup": "listbox" as const,
                     ...(activeSuggestionId
-                      ? { ariaControls: suggestionListId, ariaActiveDescendant: activeSuggestionId }
+                      ? {
+                          ariaControls: suggestionListId,
+                          ariaActiveDescendant: activeSuggestionId,
+                        }
                       : {}),
                   }
                 : {})}
@@ -1471,7 +1482,7 @@ function ComposerPromptEditorInner({
         <ComposerMarkdownStylePlugin enabled={richTextEnabled} />
         <HistoryPlugin />
       </div>
-    </ComposerTerminalContextActionsContext.Provider>
+    </ComposerEditorContext.Provider>
   );
 }
 

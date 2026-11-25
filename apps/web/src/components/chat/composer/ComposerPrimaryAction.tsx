@@ -4,6 +4,7 @@ import type * as React from "react";
 import { ComposerSendControl, ComposerStopButton } from "~/components/chat/ComposerSendControl";
 import { Button } from "~/components/ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "~/components/ui/menu";
+import type { PendingUserInputAnswerValue, PendingUserInputProgress } from "~/pendingUserInput";
 
 import {
   composerQueueControlProps,
@@ -26,12 +27,11 @@ export function ComposerPrimaryAction(props: {
   mode: Pick<ComposerModeControls, "showPlanFollowUpPrompt">;
   pending: Pick<
     ComposerPendingInteraction,
-    | "pendingUserInputs"
-    | "activePendingProgress"
-    | "activePendingIsResponding"
-    | "activePendingResolvedAnswers"
-    | "onPreviousActivePendingUserInputQuestion"
-  >;
+    "pendingUserInputs" | "activePendingIsResponding" | "onPreviousActivePendingUserInputQuestion"
+  > & {
+    activePendingProgress: PendingUserInputProgress | null;
+    activePendingResolvedAnswers: Record<string, PendingUserInputAnswerValue> | null;
+  };
 }) {
   const { prompt, send, mode, pending } = props;
   const {

@@ -388,7 +388,7 @@ export async function importThemeFile(file: File): Promise<ThemeDefinitionV1> {
 export function exportThemeDefinition(definition: ThemeDefinitionV1): Blob {
   const serialized = `${JSON.stringify(definition, null, 2)}\n`;
   if (new TextEncoder().encode(serialized).byteLength > MAX_THEME_DEFINITION_BYTES) {
-    throw new Error("Theme definition exceeds 64 KiB.");
+    throw new Error("Theme definition exceeds the file size limit.");
   }
   return new Blob([serialized], { type: "application/json" });
 }

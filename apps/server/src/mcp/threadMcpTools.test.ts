@@ -170,6 +170,8 @@ it.effect(
             "pull_request_merge",
             "ci_logs",
             "ci_rerun",
+            "theme_read",
+            "theme_set",
             "image_publish",
             "thread_read",
             "thread_settle",

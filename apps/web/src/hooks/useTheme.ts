@@ -21,6 +21,12 @@ function emitChange() {
   for (const listener of listeners) listener();
 }
 
+export function setThemeMode(next: ThemeMode): void {
+  localStorage.setItem(THEME_MODE_STORAGE_KEY, next);
+  applyTheme(next, true);
+  emitChange();
+}
+
 function applyTheme(theme: ThemeMode, suppressTransitions = false) {
   applyThemeMode(theme, suppressTransitions);
   syncDesktopTheme(theme);
@@ -89,11 +95,7 @@ export function useTheme() {
 
   const resolvedTheme = resolveThemeMode(theme);
 
-  const setTheme = useCallback((next: ThemeMode) => {
-    localStorage.setItem(THEME_MODE_STORAGE_KEY, next);
-    applyTheme(next, true);
-    emitChange();
-  }, []);
+  const setTheme = useCallback(setThemeMode, []);
 
   // Keep DOM in sync on mount/change
   useEffect(() => {

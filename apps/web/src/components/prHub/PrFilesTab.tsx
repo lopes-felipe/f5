@@ -11,6 +11,7 @@ import { MiddleTruncate } from "../MiddleTruncate";
 import { ChangedFileTree, orderChangedFilesLikeTree } from "../ChangedFileTree";
 import { useAppSettings } from "../../appSettings";
 import { getPrHubAccountGeneration } from "../../lib/prHubAccount";
+import { ensureNativeApi } from "../../nativeApi";
 import type { PrReviewAnchor } from "@t3tools/shared/prReview";
 import { PrReviewDraftEditor } from "./PrReviewDraftEditor";
 import { lazy, Suspense, useMemo, useState } from "react";
@@ -285,7 +286,31 @@ export function PrFilesTab({ pr, active }: { pr: TrackedPullRequest; active: boo
               {isExpanded(file.path) ? (
                 <Suspense fallback={<p className="p-3 text-sm">Loading diff?</p>}>
                   <LazyPrFileDiff
+                    key={selectionScope}
                     file={file}
+                    loadDiff={
+                      pr.provider === "github" && liveComparison
+                        ? async () => {
+                            const result = await ensureNativeApi().prHub.getFiles({
+                              key: pr.key,
+                              ...(getPrHubAccountGeneration()
+                                ? { accountGeneration: getPrHubAccountGeneration()! }
+                                : {}),
+                              mode: "force",
+                              comparisonMode,
+                              fullDiffFile: { path: file.path, comparison: liveComparison },
+                            });
+                            const loaded = result.files.find(
+                              (candidate) => candidate.path === file.path,
+                            );
+                            if (!loaded?.patch)
+                              throw new Error(
+                                "GitHub did not provide a renderable diff for this file.",
+                              );
+                            return loaded;
+                          }
+                        : undefined
+                    }
                     onComment={
                       liveComparison?.mode === "current_pr" &&
                       (pr.provider === "github" || pr.forgeCapabilities?.review.inlineComment)

@@ -68,6 +68,21 @@ let browserOpenGestureAt = -Infinity;
 // drag-to-select click, without replenishing a consumed grant on the later click.
 const takeKeepAwakeGesture = createFileActionGesture(window);
 const takeFileActionGesture = createFileActionGesture(window);
+let fileDragGestureAt = -Infinity;
+window.addEventListener(
+  "dragstart",
+  (event) => {
+    if (event.isTrusted) fileDragGestureAt = performance.now();
+  },
+  true,
+);
+window.addEventListener(
+  "pointerup",
+  () => {
+    fileDragGestureAt = -Infinity;
+  },
+  true,
+);
 for (const eventName of ["click", "keydown"] as const) {
   window.addEventListener(
     eventName,
@@ -226,7 +241,12 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   showContextMenu: (items, position, fileAction) =>
     ipcRenderer.invoke(CONTEXT_MENU_CHANNEL, items, position, fileAction),
   readClipboardText: (source) => ipcRenderer.invoke(READ_CLIPBOARD_TEXT_CHANNEL, source),
-  copyImage: (pngBytes) => ipcRenderer.invoke(COPY_IMAGE_CHANNEL, pngBytes),
+  copyImage: (pngBytes, snapshot) => ipcRenderer.invoke(COPY_IMAGE_CHANNEL, pngBytes, snapshot),
+  startFileDrag: (path) => {
+    const trusted = performance.now() - fileDragGestureAt < 1000;
+    fileDragGestureAt = -Infinity;
+    return ipcRenderer.invoke("desktop:start-file-drag", path, trusted);
+  },
   downloadImage: (bytes, filename) => ipcRenderer.invoke(DOWNLOAD_IMAGE_CHANNEL, bytes, filename),
   openExternal: (url: string) => ipcRenderer.invoke(OPEN_EXTERNAL_CHANNEL, url),
   prepareEditorOpen: (targetPath?: string) =>

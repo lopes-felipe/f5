@@ -110,6 +110,9 @@ import { TooltipScrollDismissArea } from "../ui/tooltip";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import { buildExpandedImagePreview, type ExpandedImagePreview } from "./ExpandedImagePreview";
 import type { ImageAttachmentActionItem } from "./imageAttachmentActions";
+import { findSnapshotContext } from "../../lib/snapshotClipboard";
+import { CopySnapshotButton } from "./CopySnapshotButton";
+import { nativeFileDrag } from "../../lib/nativeFileDrag";
 import { ProposedPlanCard } from "./ProposedPlanCard";
 import { CommandTranscriptCard } from "./CommandTranscriptCard";
 import { ChangedFilesTree } from "./ChangedFilesTree";
@@ -5053,7 +5056,7 @@ function UserMessageRowContent(props: {
                         image.source === "snapshot"
                           ? cn(
                               USER_MEDIA_EDGE_CLASS_NAME,
-                              "max-w-full overflow-hidden rounded-2xl bg-background/70",
+                              "relative max-w-full overflow-hidden rounded-2xl bg-background/70",
                             )
                           : loneImage
                             ? cn(
@@ -5086,13 +5089,22 @@ function UserMessageRowContent(props: {
                                 src: image.sourceUrl ?? previewUrl,
                                 name: image.name,
                                 mimeType: image.mimeType,
+                                source: image.source,
+                                snapshotContext: findSnapshotContext(
+                                  image,
+                                  row.message.attachments ?? [],
+                                ),
                                 ...(image.sourceBlob ? { sourceBlob: image.sourceBlob } : {}),
                               },
                               { x: event.clientX, y: event.clientY },
                             );
                           }}
                           onClick={() => {
-                            const preview = buildExpandedImagePreview(userImages, image.id);
+                            const preview = buildExpandedImagePreview(
+                              userImages,
+                              image.id,
+                              row.message.attachments,
+                            );
                             if (!preview) return;
                             actions.onImageExpand(preview);
                           }}
@@ -5128,6 +5140,23 @@ function UserMessageRowContent(props: {
                           {image.name}
                         </div>
                       )}
+                      {image.source === "snapshot" && previewUrl && threadId ? (
+                        <CopySnapshotButton
+                          className="absolute right-2 top-2"
+                          threadId={threadId}
+                          item={{
+                            src: image.sourceUrl ?? previewUrl,
+                            name: image.name,
+                            mimeType: image.mimeType,
+                            source: image.source,
+                            sourceBlob: image.sourceBlob,
+                            snapshotContext: findSnapshotContext(
+                              image,
+                              row.message.attachments ?? [],
+                            ),
+                          }}
+                        />
+                      ) : null}
                     </div>
                   );
                 },
@@ -5159,6 +5188,7 @@ function UserMessageRowContent(props: {
                     return (
                       <span
                         key={filePath}
+                        {...nativeFileDrag(filePath)}
                         className={COMPOSER_INLINE_CHIP_CLASS_NAME}
                         title={displayPath}
                       >

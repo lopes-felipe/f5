@@ -33,6 +33,7 @@ async function fixture() {
     assertCaller: vi.fn((_event: IpcMainInvokeEvent) => {}),
     openExternal: vi.fn(async (_url: string) => {}),
     revealFile: vi.fn(async (_path: string) => {}),
+    startDrag: vi.fn(async (_event: IpcMainInvokeEvent, _path: string) => true),
   };
   const authority = registerDesktopFileActions(ipc, actions);
   return {
@@ -67,6 +68,19 @@ it("reveals the canonical file using one native operation", async () => {
   const f = await fixture();
   await f.invoke("desktop:reveal-file", f.file);
   expect(f.actions.revealFile).toHaveBeenCalledWith(f.canonical);
+});
+
+it("starts a native drag only with a trusted gesture and an existing local path", async () => {
+  const f = await fixture();
+  expect(await f.invoke("desktop:start-file-drag", f.file, false)).toBe(false);
+  expect(await f.invoke("desktop:start-file-drag", f.file + ".missing")).toBe(false);
+  expect(f.actions.startDrag).not.toHaveBeenCalled();
+  expect(await f.invoke("desktop:start-file-drag", f.file)).toBe(true);
+  expect(f.actions.startDrag).toHaveBeenCalledWith(expect.anything(), f.canonical);
+  f.actions.assertCaller.mockImplementationOnce(() => {
+    throw new Error("Untrusted frame");
+  });
+  await expect(f.invoke("desktop:start-file-drag", f.file)).rejects.toThrow("Untrusted frame");
 });
 
 it("reveals on macOS through LaunchServices with the path as its own argument", () => {

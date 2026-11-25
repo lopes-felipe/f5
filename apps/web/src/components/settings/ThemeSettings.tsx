@@ -9,7 +9,7 @@ import {
   updateCustomTheme,
 } from "../../themeEditorStore";
 import {
-  getAvailableThemePalettes,
+  getThemePalettes,
   getThemeContrastWarnings,
   parseCustomThemeLibrary,
   type ThemeDefinitionV1,
@@ -33,8 +33,8 @@ export function ThemeSettings({ variant }: { readonly variant: ThemeVariant }) {
     [settings.customThemes],
   );
   const palettes = useMemo(
-    () => getAvailableThemePalettes(settings.customThemes),
-    [settings.customThemes],
+    () => getThemePalettes(settings.customThemes, settings.environmentThemes),
+    [settings.customThemes, settings.environmentThemes],
   );
   const effectiveThemeId = palettes.some((palette) => palette.id === settings.themeId)
     ? settings.themeId
@@ -115,7 +115,7 @@ export function ThemeSettings({ variant }: { readonly variant: ThemeVariant }) {
                     {palette.name}
                   </span>
                   <span className="text-xs text-muted-foreground">
-                    {palette.builtin ? "Built in" : "Custom"}
+                    {palette.builtin ? "Built in" : palette.published ? "Environment" : "Custom"}
                     {warnings.length > 0 ? " · Contrast warning" : ""}
                   </span>
                 </span>
@@ -130,7 +130,7 @@ export function ThemeSettings({ variant }: { readonly variant: ThemeVariant }) {
                 >
                   <CopyIcon className="size-3.5" />
                 </Button>
-                {!palette.builtin && palette.definition ? (
+                {!palette.builtin && !palette.published && palette.definition ? (
                   <>
                     <Button
                       size="icon-xs"

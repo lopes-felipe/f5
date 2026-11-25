@@ -1,4 +1,6 @@
 import { useMemo, useState } from "react";
+import { THEME_CSS_MAX_LENGTH } from "@t3tools/contracts/settings";
+import { themeCssLoadsRemoteFiles } from "@t3tools/shared/themeCss";
 
 import {
   createCustomThemeDefinition,
@@ -36,6 +38,8 @@ export function ThemeEditorPanel({
   const [chroma, setChroma] = useState(definition.parameters.chroma);
   const [contrast, setContrast] = useState(definition.parameters.contrast);
   const [overrides, setOverrides] = useState(definition.overrides ?? {});
+  const [css, setCss] = useState(definition.css ?? "");
+  const invalidCss = useMemo(() => themeCssLoadsRemoteFiles(css), [css]);
 
   const draft = useMemo(
     () =>
@@ -44,8 +48,9 @@ export function ThemeEditorPanel({
         name: name.trim() || definition.name,
         parameters: { baseHue, chroma, contrast },
         ...(Object.keys(overrides).length > 0 ? { overrides } : {}),
+        ...(css && !invalidCss ? { css } : {}),
       }),
-    [baseHue, chroma, contrast, definition.id, definition.name, name, overrides],
+    [baseHue, chroma, contrast, css, invalidCss, definition.id, definition.name, name, overrides],
   );
   const palette = useMemo(() => resolveThemePalette(draft.id, [draft]), [draft]);
   const warnings = useMemo(() => getThemeContrastWarnings(palette), [palette]);
@@ -126,11 +131,24 @@ export function ThemeEditorPanel({
         </div>
       ) : null}
 
+      <label className="block space-y-1.5">
+        <span className="text-xs font-medium">Theme CSS</span>
+        <textarea
+          className="block min-h-28 w-full rounded-md border border-border bg-background p-2 font-mono text-xs"
+          value={css}
+          maxLength={THEME_CSS_MAX_LENGTH}
+          aria-invalid={invalidCss}
+          onChange={(event) => setCss(event.target.value)}
+        />
+        {invalidCss ? (
+          <span className="text-xs text-destructive">Theme CSS cannot load files.</span>
+        ) : null}
+      </label>
       <div className="flex justify-end gap-2">
         <Button size="sm" variant="ghost" onClick={onCancel}>
           Cancel
         </Button>
-        <Button size="sm" disabled={!name.trim()} onClick={() => onSave(draft)}>
+        <Button size="sm" disabled={!name.trim() || invalidCss} onClick={() => onSave(draft)}>
           Save theme
         </Button>
       </div>

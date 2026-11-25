@@ -458,6 +458,11 @@ import { toCodexProviderStartOptions } from "./provider/codexProviderOptions.ts"
 import { reconcileCodexThreadSnapshots } from "./orchestration/codexSnapshotReconciliation.ts";
 import { makeHistoryRecoveredSessionSet } from "./orchestration/providerTerminalLifecycle.ts";
 import { redactServerSettingsForClient, ServerSettingsService } from "./serverSettings.ts";
+import {
+  makeEnvironmentThemeBackgrounds,
+  makeEnvironmentThemeTools,
+  THEME_BACKGROUND_ROUTE,
+} from "./environmentTheme.ts";
 import { DiskSpaceMonitor } from "./storage/DiskSpaceMonitor.ts";
 import { StorageMaintenance, type StorageMaintenanceShape } from "./storage/StorageMaintenance.ts";
 import {
@@ -1184,6 +1189,9 @@ export const createServer = Effect.fn(function* (
   const git = yield* GitCore;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const themesDirectory = path.join(serverConfig.stateDir, "themes");
+  const themeBackgrounds = makeEnvironmentThemeBackgrounds(themesDirectory);
+  const themeTools = yield* makeEnvironmentThemeTools(themesDirectory, serverSettings);
   const sql = yield* SqlClient.SqlClient;
   // The turn repository lives in the orchestration runtime, built later; build one
   // here so claims on the draft branch-switch route see accepted, undelivered turns.
@@ -2240,7 +2248,9 @@ export const createServer = Effect.fn(function* (
         const url = new URL(req.url ?? "/", `http://localhost:${port}`);
         // Workspace asset handles are capabilities: the URL is the credential, so
         // they skip session auth but still need CORS for the renderer's fetch().
-        const isCapabilityAssetPath = url.pathname.startsWith("/api/workspace-assets/");
+        const isThemeBackgroundPath = url.pathname.startsWith(THEME_BACKGROUND_ROUTE);
+        const isCapabilityAssetPath =
+          isThemeBackgroundPath || url.pathname.startsWith("/api/workspace-assets/");
         const isPrivatePath = isPrivateHttpPath(url.pathname) && !isCapabilityAssetPath;
         const requestOrigin = req.headers.origin;
         // Attachment URLs are also loaded by <img>, whose requests do not
@@ -2368,6 +2378,28 @@ export const createServer = Effect.fn(function* (
             426,
             { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" },
             JSON.stringify(UPGRADE_REQUIRED),
+          );
+          return;
+        }
+        if (isThemeBackgroundPath) {
+          const id = url.pathname.slice(THEME_BACKGROUND_ROUTE.length);
+          const settings = yield* serverSettings.getSettings.pipe(Effect.orElseSucceed(() => null));
+          const image =
+            req.method === "GET" && settings?.environmentThemes.some((theme) => theme.id === id)
+              ? yield* Effect.promise(() =>
+                  themeBackgrounds
+                    .read(id, url.searchParams.get("signature") ?? "")
+                    .catch(() => null),
+                )
+              : null;
+          respond(
+            image ? 200 : 404,
+            {
+              "Cache-Control": "no-store",
+              "X-Content-Type-Options": "nosniff",
+              ...(image ? { "Content-Type": image.mime } : {}),
+            },
+            image?.bytes,
           );
           return;
         }
@@ -3226,6 +3258,9 @@ export const createServer = Effect.fn(function* (
           issues: keybindingsConfig.issues,
           providers,
           settings: redactServerSettingsForClient(settings),
+          ...(settings.environmentThemes.length
+            ? { themeBackgrounds: themeBackgrounds.paths(settings) }
+            : {}),
         }),
       ),
     ),
@@ -3406,6 +3441,7 @@ export const createServer = Effect.fn(function* (
               }),
               html,
               publishImage,
+              themes: themeTools,
             }),
           )
           .pipe(Effect.provideService(Scope.Scope, subscriptionsScope), Effect.orDie);
@@ -7129,6 +7165,9 @@ export const createServer = Effect.fn(function* (
             resolveOtlpConfiguration(settings.observability, process.env),
           ),
           cursorSdkHarness: cursorSdkHarnessHostAvailability(serverConfig),
+          ...(settings.environmentThemes.length
+            ? { themeBackgrounds: themeBackgrounds.paths(settings) }
+            : {}),
         };
 
       case WS_METHODS.serverGetProjectSettings: {

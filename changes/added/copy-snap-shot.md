@@ -1,0 +1,1 @@
+- Copy a Snap Shot from its attachment or image preview and paste it into another composer with its capture context.

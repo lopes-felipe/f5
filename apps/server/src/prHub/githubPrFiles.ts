@@ -1,10 +1,12 @@
 import type { GitHubConditionalRead } from "../git/githubConditionalCache.ts";
 import { prComparisonsEqual } from "@t3tools/shared/prReview";
+import { unquoteGitPatchPath } from "@t3tools/shared/gitPatchPath";
 import { Schema, Effect } from "effect";
 import {
   PrHubComparisonIdentity,
   type PrHubFilesPage,
   type PrHubChangedFile,
+  type PrHubFilesInput,
 } from "@t3tools/contracts";
 import type { GitHubApiResponse } from "../git/githubApi.ts";
 import { SourceControlProviderError } from "../sourceControl/SourceControlProvider.ts";
@@ -76,6 +78,57 @@ export function normalizeGitHubFile(file: typeof File.Type): PrHubChangedFile {
   };
 }
 
+export function extractGitHubFilePatch(diff: string, path: string): PrHubChangedFile | null {
+  const sections = /^diff --git .+\n/gm;
+  let section = sections.exec(diff);
+  while (section) {
+    const next = sections.exec(diff);
+    const end = next?.index ?? diff.length;
+    const patchSection = diff.slice(section.index, end);
+    const firstHunk = patchSection.indexOf("\n@@ ");
+    if (firstHunk >= 0) {
+      const header = patchSection.slice(0, firstHunk);
+      const readPath = (prefix: string) => {
+        const value = header.split("\n").find((line) => line.startsWith(prefix));
+        return value ? unquoteGitPatchPath(value.slice(prefix.length).split("\t")[0]!) : "";
+      };
+      const oldPath = readPath("--- ");
+      const newPath = readPath("+++ ");
+      const deleted = newPath === "/dev/null";
+      if (
+        (deleted ? oldPath === `a/${path}` : newPath === `b/${path}`) &&
+        patchSection.length - firstHunk <= 8 * 1024 * 1024
+      ) {
+        const previous = oldPath.startsWith("a/") ? oldPath.slice(2) : null;
+        const lines = patchSection
+          .slice(firstHunk + 1)
+          .replace(/\n$/, "")
+          .split("\n");
+        const result = normalizeGitHubFile({
+          filename: path,
+          ...(previous && previous !== path ? { previous_filename: previous } : {}),
+          sha: "",
+          status: deleted
+            ? "removed"
+            : !previous
+              ? "added"
+              : previous !== path
+                ? "renamed"
+                : "modified",
+          additions: lines.filter((line) => line.startsWith("+")).length,
+          deletions: lines.filter((line) => line.startsWith("-")).length,
+          patch: lines
+            .map((line) => (line.length > 2000 ? `${line.slice(0, 2000)}… (line shortened)` : line))
+            .join("\n"),
+        });
+        return result;
+      }
+    }
+    section = next;
+  }
+  return null;
+}
+
 /** A page is accepted only while both refs and the target repository stay unchanged. */
 export function fetchGitHubPrFiles(input: {
   readonly account: string;
@@ -85,6 +138,10 @@ export function fetchGitHubPrFiles(input: {
   readonly host: string;
   readonly cursor?: string;
   readonly reviewedHeadOid?: string;
+  readonly fullDiffFile?: PrHubFilesInput["fullDiffFile"];
+  readonly requestDiff?: (
+    endpoint: string,
+  ) => Effect.Effect<GitHubApiResponse, SourceControlProviderError>;
   readonly request: (
     endpoint: string,
     query?: Readonly<Record<string, string | number | boolean>>,
@@ -153,6 +210,37 @@ export function fetchGitHubPrFiles(input: {
     };
     if (cursor && !prComparisonsEqual(cursor.comparison, comparison))
       return yield* fail("The PR comparison changed. Reload the files before continuing.");
+    if (input.fullDiffFile) {
+      if (!input.requestDiff || !prComparisonsEqual(input.fullDiffFile.comparison, comparison))
+        return yield* fail("The PR comparison changed. Reload the files before continuing.");
+      const diff = yield* input.requestDiff(
+        input.reviewedHeadOid
+          ? `${prefix}/compare/${encodeURIComponent(input.reviewedHeadOid)}...${encodeURIComponent(before.head.sha)}`
+          : pullEndpoint,
+      );
+      const file =
+        diff.status === 200 && typeof diff.body === "string"
+          ? extractGitHubFilePatch(diff.body, input.fullDiffFile.path)
+          : null;
+      const after = yield* request(pullEndpoint);
+      const verified = yield* decode(() => Schema.decodeUnknownSync(Pull)(after.body));
+      if (JSON.stringify(refs) !== JSON.stringify(refsIdentity(verified)))
+        return yield* fail("The PR changed while loading the diff. Reload the files.");
+      if (!file) return yield* fail("GitHub did not provide a renderable diff for this file.");
+      return {
+        files: [file],
+        comparison,
+        providerCapped: false,
+        pageInfo: {
+          hasNextPage: false,
+          truncated: false,
+          rateLimit: diff.rateLimit,
+          endCursor: null,
+        },
+        stale: false,
+        refreshedAt: new Date().toISOString(),
+      };
+    }
     const page = cursor?.page ?? 1;
     const response = input.reviewedHeadOid
       ? compareResponse

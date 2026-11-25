@@ -17,11 +17,6 @@ import type { FavoritePreset } from "~/favoritePresets";
 import type { TerminalContextDraft } from "~/lib/terminalContext";
 import type { NextTurnQueueThreadState } from "~/nextTurnQueueStore";
 import type {
-  PendingUserInputAnswerValue,
-  PendingUserInputDraftAnswer,
-  PendingUserInputProgress,
-} from "~/pendingUserInput";
-import type {
   ActivePlanState,
   LatestProposedPlanState,
   PendingApproval,
@@ -44,11 +39,8 @@ export interface ComposerPendingInteraction {
   pendingApprovals: PendingApproval[];
   pendingUserInputs: PendingUserInput[];
   respondingRequestIds: ApprovalRequestId[];
-  activePendingDraftAnswers: Record<string, PendingUserInputDraftAnswer>;
-  activePendingQuestionIndex: number;
-  activePendingProgress: PendingUserInputProgress | null;
   activePendingIsResponding: boolean;
-  activePendingResolvedAnswers: Record<string, PendingUserInputAnswerValue> | null;
+  onSyncPendingAnswer: (text: string) => void;
   isComposerApprovalState: boolean;
   onSelectActivePendingUserInputOption: (questionId: string, optionLabel: string) => void;
   onToggleActivePendingUserInputOption: (questionId: string, optionLabel: string) => void;

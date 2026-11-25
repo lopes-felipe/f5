@@ -1,0 +1,1 @@
+- Put a JPEG, PNG, or WebP up to 16 MiB beside a published theme to use it as wallpaper through the theme's CSS.

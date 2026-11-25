@@ -5,6 +5,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { stringifyWithinBytes } from "@t3tools/shared/boundedJson";
+import { EnvironmentThemeSetInput, THEME_CSS_MAX_LENGTH } from "@t3tools/contracts/settings";
 import {
   Cause,
   Data,
@@ -78,6 +79,8 @@ export type ThreadReadInput = typeof ThreadReadInput.Type;
 export const THREAD_READ_RESULT_MAX_BYTES = 24_000;
 
 export type ThreadToolRequest =
+  | { readonly name: "theme_read" }
+  | { readonly name: "theme_set"; readonly input: EnvironmentThemeSetInput }
   | { readonly name: "forge_pull_request"; readonly request: PullRequestMcpRequest }
   | { readonly name: "image_publish"; readonly path: string }
   | { readonly name: "thread_status" }
@@ -164,8 +167,45 @@ const annotations = (readOnlyHint: boolean) => ({
   idempotentHint: readOnlyHint,
   openWorldHint: !readOnlyHint,
 });
+const themeOverrides = z.record(z.string(), z.string().max(128));
 export const THREAD_TOOL_DEFINITIONS = [
   ...PULL_REQUEST_MCP_TOOLS,
+  {
+    name: "theme_read",
+    title: "List environment themes",
+    description:
+      "List the themes published to this F5 environment and the directory for theme files and wallpaper.",
+    shape: {},
+    annotations: annotations(true),
+    alwaysLoad: false,
+  },
+  {
+    name: "theme_set",
+    title: "Set the environment theme",
+    description:
+      "Restyle F5 only when the user asks. Publish and select a theme with light and dark color overrides and optional CSS, select a known theme by id, or set the appearance mode. CSS cannot load external files. Use theme_read first.",
+    shape: {
+      themeId: z
+        .string()
+        .regex(/^[a-z0-9][a-z0-9-]{0,63}$/)
+        .optional(),
+      appearance: z.enum(["light", "dark", "system"]).optional(),
+      theme: z
+        .object({
+          version: z.literal(1),
+          id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/),
+          name: z.string().min(1).max(80),
+          parameters: z.object({ baseHue: z.number(), chroma: z.number(), contrast: z.number() }),
+          overrides: z
+            .object({ light: themeOverrides.optional(), dark: themeOverrides.optional() })
+            .optional(),
+          css: z.string().max(THEME_CSS_MAX_LENGTH).optional(),
+        })
+        .optional(),
+    },
+    annotations: annotations(false),
+    alwaysLoad: false,
+  },
   {
     name: "image_publish",
     title: "Publish image to conversation",
@@ -382,7 +422,12 @@ export async function callThreadTool(
         return { name, input: Schema.decodeUnknownSync(HtmlRenderInput)(arguments_ ?? {}) };
       if (name === "html_preview")
         return { name, input: Schema.decodeUnknownSync(HtmlPreviewInput)(arguments_ ?? {}) };
-      if (name === "thread_status" || name === "thread_settle") {
+      if (name === "theme_set")
+        return {
+          name,
+          input: Schema.decodeUnknownSync(EnvironmentThemeSetInput)(arguments_ ?? {}),
+        };
+      if (name === "thread_status" || name === "thread_settle" || name === "theme_read") {
         Schema.decodeUnknownSync(Schema.Struct({}))(arguments_ ?? {});
         return { name };
       }

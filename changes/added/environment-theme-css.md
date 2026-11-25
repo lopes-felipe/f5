@@ -1,0 +1,1 @@
+- Edit custom theme CSS in Appearance settings. Ask an agent to apply a theme with custom colors and CSS to connected clients.
