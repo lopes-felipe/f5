@@ -143,6 +143,7 @@ import type {
   AttachmentUpload,
   AttachmentUploadsInput,
   AttachmentCloneToUploadInput,
+  AttachmentMaterializeUploadsResult,
 } from "./attachmentUpload";
 import type { ProjectId } from "./baseSchemas";
 import type {
@@ -1093,6 +1094,10 @@ export interface NativeApi {
     getUploads: (input: AttachmentUploadsInput) => Promise<Array<AttachmentUpload | null>>;
     releaseUploads: (input: AttachmentUploadsInput) => Promise<{}>;
     cloneToUpload: (input: AttachmentCloneToUploadInput) => Promise<AttachmentUpload>;
+    /** Copies draft uploads to durable server storage and returns their absolute paths. */
+    materializeUploads: (
+      input: AttachmentUploadsInput,
+    ) => Promise<AttachmentMaterializeUploadsResult>;
   };
   profiles?: {
     githubLoginStart: () => Promise<import("./profile").GithubLoginStatus>;

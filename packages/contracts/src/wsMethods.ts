@@ -52,6 +52,7 @@ export const WS_METHODS = {
   attachmentsCloneToUpload: "attachments.cloneToUpload",
   attachmentsGetUploads: "attachments.getUploads",
   attachmentsReleaseUploads: "attachments.releaseUploads",
+  attachmentsMaterializeUploads: "attachments.materializeUploads",
   projectsReadFile: "projects.readFile",
   projectsSetWatchedPaths: "projects.setWatchedPaths",
   projectsOpenHtmlPreview: "projects.openHtmlPreview",

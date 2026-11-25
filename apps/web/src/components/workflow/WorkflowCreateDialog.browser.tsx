@@ -31,6 +31,7 @@ import {
 } from "@t3tools/contracts";
 
 import { appendAttachedFilesToPrompt } from "../../lib/attachedFiles";
+import { toastManager } from "../ui/toast";
 import { serverQueryKeys } from "../../lib/serverReactQuery";
 import { isMacPlatform } from "../../lib/utils";
 import {
@@ -58,6 +59,28 @@ const nativeApiMocks = vi.hoisted(() => ({
     relativePath: input.relativePath,
     kind: "file" as const,
   })),
+  uploadAttachment: vi.fn(async (_baseUrl: string, threadId: string, file: File) => ({
+    uploadId: "00000000-0000-4000-8000-000000000001",
+    draftThreadId: threadId,
+    kind: "image" as const,
+    name: file.name,
+    mimeType: file.type,
+    sizeBytes: file.size,
+    contentHash: "hash",
+    expiresAt: "2099-01-01T00:00:00.000Z",
+  })),
+  materializeUploads: vi.fn(async (input: { threadId: string; uploadIds: string[] }) => ({
+    files: input.uploadIds.map((uploadId) => ({
+      uploadId,
+      path: `/state/workflow-attachments/${uploadId}/image.png`,
+    })),
+  })),
+  releaseUploads: vi.fn(async () => ({})),
+}));
+
+vi.mock("../../lib/attachmentUploadQueue", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../lib/attachmentUploadQueue")>()),
+  uploadAttachment: nativeApiMocks.uploadAttachment,
 }));
 
 vi.mock("../../nativeApi", () => {
@@ -103,6 +126,10 @@ vi.mock("../../nativeApi", () => {
     },
     projects: {
       authorizeEntry: nativeApiMocks.authorizeEntry,
+    },
+    attachments: {
+      materializeUploads: nativeApiMocks.materializeUploads,
+      releaseUploads: nativeApiMocks.releaseUploads,
     },
   };
   return {
@@ -465,6 +492,16 @@ async function dropFilesOnRequirement(files: File[]) {
   );
 }
 
+function pasteFilesOnRequirement(files: File[]) {
+  const dataTransfer = new DataTransfer();
+  for (const file of files) {
+    dataTransfer.items.add(file);
+  }
+  getRequirementEditorSurface().dispatchEvent(
+    new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: dataTransfer }),
+  );
+}
+
 describe("WorkflowCreateDialog", () => {
   beforeEach(() => {
     localStorage.clear();
@@ -506,6 +543,10 @@ describe("WorkflowCreateDialog", () => {
     nativeApiMocks.createInvestigationWorkflow.mockClear();
     nativeApiMocks.getConfig.mockClear();
     nativeApiMocks.authorizeEntry.mockClear();
+    nativeApiMocks.uploadAttachment.mockClear();
+    nativeApiMocks.materializeUploads.mockClear();
+    nativeApiMocks.releaseUploads.mockClear();
+    vi.restoreAllMocks();
     useStore.setState({
       projects: [],
       threads: [],
@@ -1853,6 +1894,106 @@ describe("WorkflowCreateDialog", () => {
     } finally {
       await screen.unmount();
       host.remove();
+    }
+  });
+
+  it("attaches a pasted path-less screenshot through a durable server copy", async () => {
+    const addToast = vi.spyOn(toastManager, "add");
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+    );
+    try {
+      pasteFilesOnRequirement([new File(["png"], "image.png", { type: "image/png" })]);
+
+      await vi.waitFor(() =>
+        expect(
+          page
+            .getByTitle(
+              "/state/workflow-attachments/00000000-0000-4000-8000-000000000001/image.png",
+            )
+            .elements(),
+        ).toHaveLength(1),
+      );
+      expect(nativeApiMocks.uploadAttachment).toHaveBeenCalledTimes(1);
+      const draftThreadId = nativeApiMocks.uploadAttachment.mock.calls[0]![1];
+      expect(draftThreadId).toMatch(/^workflow-draft-/);
+      expect(nativeApiMocks.materializeUploads).toHaveBeenCalledWith({
+        threadId: draftThreadId,
+        uploadIds: ["00000000-0000-4000-8000-000000000001"],
+      });
+      expect(addToast).not.toHaveBeenCalled();
+
+      await page.getByRole("button", { name: /Start workflow/ }).click();
+      await vi.waitFor(() => expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(1));
+      expect(nativeApiMocks.createWorkflow.mock.calls[0]?.[0].requirementPrompt).toContain(
+        "/state/workflow-attachments/00000000-0000-4000-8000-000000000001/image.png",
+      );
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("reports a failed pasted-file upload without adding a chip", async () => {
+    const addToast = vi.spyOn(toastManager, "add");
+    nativeApiMocks.uploadAttachment.mockRejectedValueOnce(new Error("Upload capacity is busy."));
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+    );
+    try {
+      pasteFilesOnRequirement([new File(["png"], "image.png", { type: "image/png" })]);
+
+      await vi.waitFor(() =>
+        expect(addToast).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "error",
+            title: "Couldn't attach the pasted file.",
+            description: "Upload capacity is busy.",
+          }),
+        ),
+      );
+      expect(nativeApiMocks.materializeUploads).not.toHaveBeenCalled();
+      expect(document.querySelector('[data-slot="file-chip"]')).toBeNull();
+      expect(document.body.textContent ?? "").not.toContain("Attaching");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("blocks starting the workflow while a pasted file is still attaching", async () => {
+    let finishUpload: (() => void) | undefined;
+    nativeApiMocks.uploadAttachment.mockImplementationOnce(
+      async (_baseUrl: string, threadId: string, file: File) => {
+        await new Promise<void>((resolve) => {
+          finishUpload = resolve;
+        });
+        return {
+          uploadId: "00000000-0000-4000-8000-000000000001",
+          draftThreadId: threadId,
+          kind: "image" as const,
+          name: file.name,
+          mimeType: file.type,
+          sizeBytes: file.size,
+          contentHash: "hash",
+          expiresAt: "2099-01-01T00:00:00.000Z",
+        };
+      },
+    );
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+    );
+    try {
+      await typeRequirementPrompt("Look at this screenshot");
+      expect(createWorkflowButton().disabled).toBe(false);
+      pasteFilesOnRequirement([new File(["png"], "image.png", { type: "image/png" })]);
+
+      await vi.waitFor(() => expect(document.body.textContent ?? "").toContain("Attaching…"));
+      expect(createWorkflowButton().disabled).toBe(true);
+
+      finishUpload?.();
+      await vi.waitFor(() => expect(createWorkflowButton().disabled).toBe(false));
+      expect(document.body.textContent ?? "").not.toContain("Attaching…");
+    } finally {
+      await screen.unmount();
     }
   });
 

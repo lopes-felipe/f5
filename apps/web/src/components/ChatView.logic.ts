@@ -380,6 +380,25 @@ export function attachedFileReferenceWarnings(result: {
   return warnings;
 }
 
+/**
+ * Splits dropped or pasted files into those the platform can reference by path and
+ * in-memory ones (clipboard screenshots, browser drops) that must be uploaded first.
+ */
+export function partitionAttachedFiles(
+  files: ReadonlyArray<File>,
+  options: {
+    isElectron: boolean;
+    desktopBridge?: Pick<DesktopBridge, "getPathForFile"> | undefined;
+  },
+): { withPath: File[]; pathless: File[] } {
+  const withPath: File[] = [];
+  const pathless: File[] = [];
+  for (const file of files) {
+    (readAttachedFileAbsolutePath(file, options) ? withPath : pathless).push(file);
+  }
+  return { withPath, pathless };
+}
+
 export function resolveAttachedFileReferencePaths(input: {
   files: ReadonlyArray<File>;
   isElectron: boolean;

@@ -34,6 +34,10 @@ export const AttachmentUploadsInput = Schema.Struct({
   uploadIds: Schema.Array(UploadId).check(Schema.isMaxLength(100)),
 });
 export type AttachmentUploadsInput = typeof AttachmentUploadsInput.Type;
+export const AttachmentMaterializeUploadsResult = Schema.Struct({
+  files: Schema.Array(Schema.Struct({ uploadId: UploadId, path: TrimmedNonEmptyString })),
+});
+export type AttachmentMaterializeUploadsResult = typeof AttachmentMaterializeUploadsResult.Type;
 export const AttachmentCloneToUploadInput = Schema.Struct({
   threadId: ThreadId,
   source: Schema.Union([

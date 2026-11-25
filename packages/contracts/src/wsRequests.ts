@@ -560,6 +560,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.attachmentsCloneToUpload, AttachmentCloneToUploadInput),
   tagRequestBody(WS_METHODS.attachmentsGetUploads, AttachmentUploadsInput),
   tagRequestBody(WS_METHODS.attachmentsReleaseUploads, AttachmentUploadsInput),
+  tagRequestBody(WS_METHODS.attachmentsMaterializeUploads, AttachmentUploadsInput),
   tagRequestBody(WS_METHODS.projectsReadFile, ProjectReadFileInput),
   tagRequestBody(WS_METHODS.projectsSetWatchedPaths, ProjectSetWatchedPathsInput),
   tagRequestBody(WS_METHODS.projectsOpenHtmlPreview, ProjectOpenHtmlPreviewInput),

@@ -170,7 +170,11 @@ import { createGitHubMediaProxy } from "./prHub/githubMediaProxy.ts";
 import { readAssetImageDimensions } from "./imageDimensions";
 import { makePreviewFileServer } from "./previewFileServer";
 import { MessageId } from "@t3tools/contracts";
-import { makeAttachmentUploads, AttachmentUploadError } from "./attachmentUploads";
+import {
+  makeAttachmentUploads,
+  AttachmentUploadError,
+  sweepWorkflowAttachments,
+} from "./attachmentUploads";
 import { GitCommandError } from "./git/Errors";
 import { readProjectSettings, isInsideProjectWorkspace } from "./project/projectSettings";
 import {
@@ -1198,6 +1202,9 @@ export const createServer = Effect.fn(function* (
     ),
   );
   const attachmentUploads = yield* makeAttachmentUploads(serverConfig.attachmentsDir);
+  const workflowAttachmentsDir =
+    serverConfig.workflowAttachmentsDir ??
+    NodePath.join(serverConfig.stateDir, "workflow-attachments");
   const nextTurnQueueStore = yield* NextTurnQueueStore;
   const globalSearch = yield* makeGlobalSearch;
   const projectionProjects = yield* Effect.service(ProjectionProjectRepository).pipe(
@@ -3007,6 +3014,11 @@ export const createServer = Effect.fn(function* (
     while (true) {
       yield* attachmentUploads.sweep.pipe(
         Effect.catch(() => Effect.logWarning("Attachment upload cleanup failed; will retry.")),
+      );
+      yield* Effect.tryPromise(() => sweepWorkflowAttachments(workflowAttachmentsDir)).pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("Workflow attachment cleanup failed; will retry.", { cause }),
+        ),
       );
       yield* Effect.sleep("1 hour");
     }
@@ -6120,6 +6132,22 @@ export const createServer = Effect.fn(function* (
           .pipe(
             Effect.mapError(
               () => new RouteRequestError({ message: "Unable to renew draft uploads." }),
+            ),
+          );
+      }
+      case WS_METHODS.attachmentsMaterializeUploads: {
+        const body = stripRequestTag(request.body);
+        return yield* attachmentUploads
+          .materialize(body.threadId, body.uploadIds, workflowAttachmentsDir)
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new RouteRequestError({
+                  message:
+                    Schema.is(AttachmentUploadError)(cause) && cause.status === 410
+                      ? cause.message
+                      : "Unable to save pasted attachments.",
+                }),
             ),
           );
       }

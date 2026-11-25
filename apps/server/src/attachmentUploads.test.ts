@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, unlink, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { Readable } from "node:stream";
@@ -8,7 +8,13 @@ import { ThreadId } from "@t3tools/contracts";
 import { afterEach, expect, it } from "vitest";
 import * as SqliteClient from "./persistence/NodeSqliteClient";
 import migration from "./persistence/Migrations/093_AttachmentUploads";
-import { makeAttachmentUploads, sanitizeUploadName, sniffUploadImage } from "./attachmentUploads";
+import {
+  makeAttachmentUploads,
+  sanitizeUploadName,
+  sniffUploadImage,
+  sweepWorkflowAttachments,
+  WORKFLOW_ATTACHMENT_RETENTION_MS,
+} from "./attachmentUploads";
 import { ensureAttachmentSchema } from "./persistence/Migrations/AttachmentSchema";
 
 const dirs: string[] = [];
@@ -264,4 +270,103 @@ it("rejects aggregate overflow before copying or retaining a claim lease", async
       );
     }),
   );
+});
+
+const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3]);
+
+it("materializes draft uploads to durable per-upload paths and releases them", async () => {
+  await run((store, dir) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const root = path.join(dir, "workflow-attachments");
+      const first = yield* store.upload({
+        req: request(png, "image.png", "image/png"),
+        threadId,
+        clientId: "client",
+      });
+      const second = yield* store.upload({
+        req: request(png, "image.png", "image/png"),
+        threadId,
+        clientId: "client",
+      });
+      const result = yield* store.materialize(threadId, [first.uploadId, second.uploadId], root);
+      expect(result.files).toEqual([
+        { uploadId: first.uploadId, path: path.join(root, first.uploadId, "image.png") },
+        { uploadId: second.uploadId, path: path.join(root, second.uploadId, "image.png") },
+      ]);
+      for (const file of result.files) {
+        expect(yield* Effect.promise(() => readFile(file.path))).toEqual(png);
+      }
+      expect(yield* sql`SELECT * FROM attachment_uploads`).toEqual([]);
+    }),
+  );
+});
+
+it("refuses uploads from another draft, expired or unknown ids without copying", async () => {
+  await run((store, dir) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const root = path.join(dir, "workflow-attachments");
+      const other = yield* store.upload({
+        req: request(png, "image.png", "image/png"),
+        threadId: ThreadId.makeUnsafe("draft-two"),
+        clientId: "client",
+      });
+      const expired = yield* store.upload({
+        req: request(png, "old.png", "image/png"),
+        threadId,
+        clientId: "client",
+      });
+      yield* sql`UPDATE attachment_uploads SET expires_at=${new Date(0).toISOString()} WHERE upload_id=${expired.uploadId}`;
+      for (const id of [other.uploadId, expired.uploadId, "00000000-0000-0000-0000-000000000000"]) {
+        const error = yield* Effect.flip(store.materialize(threadId, [id], root));
+        expect(error.status).toBe(410);
+      }
+      yield* Effect.promise(() => expect(readdir(root)).rejects.toMatchObject({ code: "ENOENT" }));
+      expect((yield* sql`SELECT * FROM attachment_uploads`).length).toBe(2);
+    }),
+  );
+});
+
+it("leaves no partial copies and keeps the uploads when a copy fails", async () => {
+  await run((store, dir) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const root = path.join(dir, "workflow-attachments");
+      const good = yield* store.upload({
+        req: request(png, "good.png", "image/png"),
+        threadId,
+        clientId: "client",
+      });
+      const broken = yield* store.upload({
+        req: request(png, "broken.png", "image/png"),
+        threadId,
+        clientId: "client",
+      });
+      yield* Effect.promise(() => unlink(path.join(dir, ".uploads", broken.uploadId)));
+      const exit = yield* Effect.exit(
+        store.materialize(threadId, [good.uploadId, broken.uploadId], root),
+      );
+      expect(exit._tag).toBe("Failure");
+      expect(yield* Effect.promise(() => readdir(root))).toEqual([]);
+      expect((yield* sql`SELECT * FROM attachment_uploads`).length).toBe(2);
+    }),
+  );
+});
+
+it("sweeps workflow attachment directories past the retention window", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "f5-workflow-attachments-"));
+  dirs.push(root);
+  const old = path.join(root, "old-upload");
+  const recent = path.join(root, "recent-upload");
+  for (const directory of [old, recent]) {
+    await mkdir(directory);
+    await writeFile(path.join(directory, "image.png"), png);
+  }
+  const nowMs = Date.now();
+  const stale = new Date(nowMs - WORKFLOW_ATTACHMENT_RETENTION_MS - 60_000);
+  await utimes(old, stale, stale);
+  expect(await sweepWorkflowAttachments(root, { nowMs })).toBe(1);
+  expect(await readdir(root)).toEqual(["recent-upload"]);
+  expect(await sweepWorkflowAttachments(path.join(root, "missing"))).toBe(0);
 });

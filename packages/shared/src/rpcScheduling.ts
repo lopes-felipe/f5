@@ -82,6 +82,7 @@ export const RPC_METHOD_POLICY = {
 
   "attachments.cloneToUpload": MUTATION,
   "attachments.getUploads": READ,
+  "attachments.materializeUploads": MUTATION,
   "attachments.releaseUploads": MUTATION,
 
   "chrome.getReadiness": MUTATION,

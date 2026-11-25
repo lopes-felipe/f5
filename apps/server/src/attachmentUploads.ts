@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { copyFile, mkdir, open, rename, unlink } from "node:fs/promises";
+import { copyFile, mkdir, open, readdir, rename, rm, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import type { IncomingMessage } from "node:http";
 import { openContainedFile } from "./assetHttp";
@@ -40,6 +40,8 @@ interface UploadRow {
   source: "pasted-text" | "snapshot" | null;
 }
 const HOUR = 60 * 60 * 1000;
+/** Materialized workflow attachments outlive their run's planning phase by this much. */
+export const WORKFLOW_ATTACHMENT_RETENTION_MS = 30 * 24 * HOUR;
 /** Both mirror the attachment schema so an accepted upload cannot fail validation at send. */
 const UPLOAD_NAME_MAX_LENGTH = 255;
 const UPLOAD_MIME_MAX_LENGTH = 100;
@@ -91,6 +93,40 @@ const dto = (row: UploadRow): AttachmentUpload => ({
 });
 
 /** Reservations and leases share SQLite transactions with ownership checks. Bytes never enter WS. */
+/** A sanitized upload name that is safe as the last segment of a destination path. */
+function materializedFileName(name: string): string {
+  return name === "." || name === ".." ? "attachment.bin" : name;
+}
+
+/**
+ * Deletes `<root>/<uploadId>/` directories older than `maxAgeMs`. Best effort: a missing
+ * root is not an error, and entries that vanish mid-sweep are skipped.
+ */
+export async function sweepWorkflowAttachments(
+  root: string,
+  options: { maxAgeMs?: number; nowMs?: number } = {},
+): Promise<number> {
+  const cutoff =
+    (options.nowMs ?? Date.now()) - (options.maxAgeMs ?? WORKFLOW_ATTACHMENT_RETENTION_MS);
+  let entries;
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
+    throw error;
+  }
+  let removed = 0;
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const directory = path.join(root, entry.name);
+    const info = await stat(directory).catch(() => null);
+    if (!info || info.mtimeMs >= cutoff) continue;
+    await rm(directory, { recursive: true, force: true });
+    removed++;
+  }
+  return removed;
+}
+
 export type AttachmentUploads = Effect.Success<ReturnType<typeof makeAttachmentUploads>>;
 
 /**
@@ -290,6 +326,67 @@ export const makeAttachmentUploads = Effect.fnUntraced(function* (attachmentsDir
       yield* sql`UPDATE attachment_uploads SET expires_at=${now()} WHERE upload_id=${id} AND draft_thread_id=${threadId}`;
     yield* sweep;
   });
+  /**
+   * Copies a draft's uploads to `<destinationRoot>/<uploadId>/<name>` and releases them.
+   * Used where an attachment must be referenced by path (workflow prompts) rather than
+   * sent as a turn attachment. All or nothing: on failure no copy is left behind.
+   */
+  const materialize = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    ids: ReadonlyArray<string>,
+    destinationRoot: string,
+  ) {
+    const rows = yield* Effect.forEach(
+      ids,
+      (id) =>
+        sql<UploadRow>`SELECT * FROM attachment_uploads WHERE upload_id=${id} AND draft_thread_id=${threadId} AND content_hash<>'' AND expires_at>${now()}`.pipe(
+          Effect.flatMap((found) =>
+            found[0]
+              ? Effect.succeed(found[0])
+              : Effect.fail(
+                  new AttachmentUploadError({
+                    status: 410,
+                    message: "Upload expired or was released. Re-attach the file.",
+                  }),
+                ),
+          ),
+        ),
+      { concurrency: 1 },
+    );
+    const created: string[] = [];
+    const files = yield* Effect.forEach(
+      rows,
+      (row) => {
+        const directory = path.join(destinationRoot, row.upload_id);
+        const destination = path.join(directory, materializedFileName(row.name));
+        return io(async () => {
+          await mkdir(directory, { recursive: true, mode: 0o700 });
+          created.push(directory);
+          await copyFile(row.path, destination, constants.COPYFILE_FICLONE);
+          return { uploadId: row.upload_id, path: destination };
+        });
+      },
+      { concurrency: 1 },
+    ).pipe(
+      Effect.uninterruptible,
+      Effect.onExit((exit) =>
+        Exit.isFailure(exit)
+          ? io(() =>
+              Promise.all(
+                created.map((directory) => rm(directory, { recursive: true, force: true })),
+              ),
+            ).pipe(Effect.ignore)
+          : Effect.void,
+      ),
+    );
+    // The copies are complete; a failed release only delays cleanup until the uploads expire.
+    yield* releaseUploads(threadId, ids).pipe(
+      Effect.catch(() =>
+        Effect.logWarning("Releasing materialized uploads failed; they will expire on their own."),
+      ),
+    );
+    return { files };
+  });
   const claim = Effect.fnUntraced(function* (
     id: string,
     destination: string,
@@ -423,6 +520,7 @@ export const makeAttachmentUploads = Effect.fnUntraced(function* (attachmentsDir
     upload,
     getUploads,
     releaseUploads,
+    materialize,
     claim,
     finishClaim,
     sweep,
