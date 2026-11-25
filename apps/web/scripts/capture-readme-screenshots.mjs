@@ -89,13 +89,25 @@ try {
     if (pageErrors.length > 0) throw new Error(`[${shot}] page error: ${pageErrors[0]}`);
   };
 
+  const cdp = await context.newCDPSession(page);
+
   const capture = async (shot, relative, options = {}) => {
     await page.screenshot({ path: out(relative), ...options });
     console.log(`[capture] captured ${relative}`);
     if (pageErrors.length > 0) throw new Error(`[${shot}] page error: ${pageErrors[0]}`);
   };
 
-  // Home + marketing hero.
+  const captureWebp = async (shot, relative, quality = 82) => {
+    const { data } = await cdp.send("Page.captureScreenshot", {
+      format: "webp",
+      quality,
+    });
+    FS.writeFileSync(out(relative), Buffer.from(data, "base64"));
+    console.log(`[capture] captured ${relative}`);
+    if (pageErrors.length > 0) throw new Error(`[${shot}] page error: ${pageErrors[0]}`);
+  };
+
+  // Home + marketing gallery shot.
   await page.goto(`${baseUrl}/`);
   await waitFor("home", page.getByRole("listbox", { name: "Queue" }), "the Home queue");
   // The preview pane loads after the queue.
@@ -105,7 +117,7 @@ try {
     throw new Error("[home] onboarding panel is visible");
   }
   await capture("home", "assets/screenshots/home.png");
-  await capture("home", "apps/marketing/public/screenshot.jpeg", { type: "jpeg", quality: 85 });
+  await captureWebp("home", "apps/marketing/public/screenshots/home.webp");
 
   // New workflow dialog, filled in but never submitted.
   await page.getByRole("button", { name: "New workflow" }).first().click();
@@ -138,6 +150,7 @@ try {
   );
   await prepare("workflow");
   await capture("workflow", "assets/screenshots/workflow.png");
+  await captureWebp("workflow", "apps/marketing/public/screenshots/workflow.webp");
 
   // Code Review workflow with consolidated findings.
   await page.goto(`${baseUrl}/code-review/review-todo-kanban-pr`);
@@ -165,6 +178,7 @@ try {
   );
   await prepare("thread");
   await capture("thread", "assets/screenshots/thread.png");
+  await captureWebp("thread", "apps/marketing/public/screenshots/thread.webp");
 } finally {
   await browser.close();
 }
