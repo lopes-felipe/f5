@@ -1,4 +1,14 @@
-import { mkdir, mkdtemp, readdir, readFile, rm, unlink, utimes, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  unlink,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { Readable } from "node:stream";
@@ -9,7 +19,9 @@ import { afterEach, expect, it } from "vitest";
 import * as SqliteClient from "./persistence/NodeSqliteClient";
 import migration from "./persistence/Migrations/093_AttachmentUploads";
 import {
+  AttachmentUploadError,
   makeAttachmentUploads,
+  materializeErrorMessage,
   sanitizeUploadName,
   sniffUploadImage,
   sweepWorkflowAttachments,
@@ -320,7 +332,7 @@ it("refuses uploads from another draft, expired or unknown ids without copying",
       yield* sql`UPDATE attachment_uploads SET expires_at=${new Date(0).toISOString()} WHERE upload_id=${expired.uploadId}`;
       for (const id of [other.uploadId, expired.uploadId, "00000000-0000-0000-0000-000000000000"]) {
         const error = yield* Effect.flip(store.materialize(threadId, [id], root));
-        expect(error.status).toBe(410);
+        expect(error).toMatchObject({ _tag: "AttachmentUploadError", status: 410 });
       }
       yield* Effect.promise(() => expect(readdir(root)).rejects.toMatchObject({ code: "ENOENT" }));
       expect((yield* sql`SELECT * FROM attachment_uploads`).length).toBe(2);
@@ -366,7 +378,121 @@ it("sweeps workflow attachment directories past the retention window", async () 
   const nowMs = Date.now();
   const stale = new Date(nowMs - WORKFLOW_ATTACHMENT_RETENTION_MS - 60_000);
   await utimes(old, stale, stale);
-  expect(await sweepWorkflowAttachments(root, { nowMs })).toBe(1);
+  expect(await sweepWorkflowAttachments(root, { nowMs })).toEqual({ removed: 1, failed: 0 });
   expect(await readdir(root)).toEqual(["recent-upload"]);
-  expect(await sweepWorkflowAttachments(path.join(root, "missing"))).toBe(0);
+  expect(await sweepWorkflowAttachments(path.join(root, "missing"))).toEqual({
+    removed: 0,
+    failed: 0,
+  });
+});
+
+it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+  "keeps sweeping past a directory it cannot remove",
+  async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "f5-workflow-attachments-"));
+    dirs.push(root);
+    const locked = path.join(root, "locked-upload");
+    const removable = path.join(root, "removable-upload");
+    for (const directory of [locked, removable]) {
+      await mkdir(directory);
+      await writeFile(path.join(directory, "image.png"), png);
+    }
+    const nowMs = Date.now();
+    const stale = new Date(nowMs - WORKFLOW_ATTACHMENT_RETENTION_MS - 60_000);
+    for (const directory of [locked, removable]) await utimes(directory, stale, stale);
+    // Without write permission its file cannot be unlinked, so `rm` fails for this entry.
+    await chmod(locked, 0o500);
+    try {
+      expect(await sweepWorkflowAttachments(root, { nowMs })).toEqual({ removed: 1, failed: 1 });
+      expect(await readdir(root)).toEqual(["locked-upload"]);
+    } finally {
+      await chmod(locked, 0o700);
+    }
+  },
+);
+
+it("never rolls back a directory an overlapping call for the same upload created", async () => {
+  await run((store, dir) =>
+    Effect.gen(function* () {
+      const root = path.join(dir, "workflow-attachments");
+      const upload = yield* store.upload({
+        req: request(png, "image.png", "image/png"),
+        threadId,
+        clientId: "client",
+      });
+      // Another call already saved this upload.
+      const existing = path.join(root, upload.uploadId, "image.png");
+      yield* Effect.promise(async () => {
+        await mkdir(path.dirname(existing), { recursive: true });
+        await writeFile(existing, "theirs");
+      });
+      const error = yield* Effect.flip(store.materialize(threadId, [upload.uploadId], root));
+      expect(error).toMatchObject({ _tag: "AttachmentUploadError", status: 409 });
+      expect(yield* Effect.promise(() => readFile(existing, "utf8"))).toBe("theirs");
+    }),
+  );
+});
+
+it("refuses to copy past the retained-bytes quota", async () => {
+  await run((store, dir) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const root = path.join(dir, "workflow-attachments");
+      yield* Effect.promise(async () => {
+        await mkdir(path.join(root, "earlier"), { recursive: true });
+        await writeFile(path.join(root, "earlier", "image.png"), png);
+      });
+      const upload = yield* store.upload({
+        req: request(png, "image.png", "image/png"),
+        threadId,
+        clientId: "client",
+      });
+      // The earlier copy alone fits; adding this one would not.
+      const quotaBytes = png.length + 1;
+      const error = yield* Effect.flip(
+        store.materialize(threadId, [upload.uploadId], root, { quotaBytes }),
+      );
+      expect(error).toMatchObject({ _tag: "AttachmentUploadError", status: 507 });
+      expect(yield* Effect.promise(() => readdir(root))).toEqual(["earlier"]);
+      expect((yield* sql`SELECT * FROM attachment_uploads`).length).toBe(1);
+    }),
+  );
+});
+
+it("discards materialized copies by upload id", async () => {
+  await run((store, dir) =>
+    Effect.gen(function* () {
+      const root = path.join(dir, "workflow-attachments");
+      const kept = yield* store.upload({
+        req: request(png, "kept.png", "image/png"),
+        threadId,
+        clientId: "client",
+      });
+      const dropped = yield* store.upload({
+        req: request(png, "dropped.png", "image/png"),
+        threadId,
+        clientId: "client",
+      });
+      yield* store.materialize(threadId, [kept.uploadId, dropped.uploadId], root);
+      yield* store.discardMaterialized([dropped.uploadId], root);
+      // Discarding again, or an id that was never saved, is a no-op.
+      yield* store.discardMaterialized(
+        [dropped.uploadId, "00000000-0000-0000-0000-000000000000"],
+        root,
+      );
+      expect(yield* Effect.promise(() => readdir(root))).toEqual([kept.uploadId]);
+    }),
+  );
+});
+
+it("passes actionable materialize errors through and hides storage failures", () => {
+  for (const status of [409, 410, 507]) {
+    expect(
+      materializeErrorMessage(new AttachmentUploadError({ status, message: "Do this." })),
+    ).toBe("Do this.");
+  }
+  expect(
+    materializeErrorMessage(new AttachmentUploadError({ status: 500, message: "EACCES /x" })),
+  ).toBe("Unable to save the attached files.");
+  expect(materializeErrorMessage(new Error("sql"))).toBe("Unable to save the attached files.");
 });

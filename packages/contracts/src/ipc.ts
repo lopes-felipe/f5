@@ -144,6 +144,7 @@ import type {
   AttachmentUploadsInput,
   AttachmentCloneToUploadInput,
   AttachmentMaterializeUploadsResult,
+  AttachmentDiscardMaterializedInput,
 } from "./attachmentUpload";
 import type { ProjectId } from "./baseSchemas";
 import type {
@@ -1098,6 +1099,8 @@ export interface NativeApi {
     materializeUploads: (
       input: AttachmentUploadsInput,
     ) => Promise<AttachmentMaterializeUploadsResult>;
+    /** Deletes materialized copies that nothing references any more. */
+    discardMaterialized: (input: AttachmentDiscardMaterializedInput) => Promise<{}>;
   };
   profiles?: {
     githubLoginStart: () => Promise<import("./profile").GithubLoginStatus>;

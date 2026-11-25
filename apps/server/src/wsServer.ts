@@ -173,6 +173,8 @@ import { MessageId } from "@t3tools/contracts";
 import {
   makeAttachmentUploads,
   AttachmentUploadError,
+  materializeErrorMessage,
+  resolveWorkflowAttachmentsDir,
   sweepWorkflowAttachments,
 } from "./attachmentUploads";
 import { GitCommandError } from "./git/Errors";
@@ -1202,9 +1204,7 @@ export const createServer = Effect.fn(function* (
     ),
   );
   const attachmentUploads = yield* makeAttachmentUploads(serverConfig.attachmentsDir);
-  const workflowAttachmentsDir =
-    serverConfig.workflowAttachmentsDir ??
-    NodePath.join(serverConfig.stateDir, "workflow-attachments");
+  const workflowAttachmentsDir = resolveWorkflowAttachmentsDir(serverConfig);
   const nextTurnQueueStore = yield* NextTurnQueueStore;
   const globalSearch = yield* makeGlobalSearch;
   const projectionProjects = yield* Effect.service(ProjectionProjectRepository).pipe(
@@ -3016,6 +3016,13 @@ export const createServer = Effect.fn(function* (
         Effect.catch(() => Effect.logWarning("Attachment upload cleanup failed; will retry.")),
       );
       yield* Effect.tryPromise(() => sweepWorkflowAttachments(workflowAttachmentsDir)).pipe(
+        Effect.flatMap(({ failed }) =>
+          failed > 0
+            ? Effect.logWarning("Some workflow attachments could not be removed; will retry.", {
+                failed,
+              })
+            : Effect.void,
+        ),
         Effect.catch((cause) =>
           Effect.logWarning("Workflow attachment cleanup failed; will retry.", { cause }),
         ),
@@ -6141,15 +6148,20 @@ export const createServer = Effect.fn(function* (
           .materialize(body.threadId, body.uploadIds, workflowAttachmentsDir)
           .pipe(
             Effect.mapError(
-              (cause) =>
-                new RouteRequestError({
-                  message:
-                    Schema.is(AttachmentUploadError)(cause) && cause.status === 410
-                      ? cause.message
-                      : "Unable to save pasted attachments.",
-                }),
+              (cause) => new RouteRequestError({ message: materializeErrorMessage(cause) }),
             ),
           );
+      }
+      case WS_METHODS.attachmentsDiscardMaterialized: {
+        const body = stripRequestTag(request.body);
+        yield* attachmentUploads
+          .discardMaterialized(body.uploadIds, workflowAttachmentsDir)
+          .pipe(
+            Effect.mapError(
+              () => new RouteRequestError({ message: "Unable to remove saved attachments." }),
+            ),
+          );
+        return {};
       }
       case WS_METHODS.attachmentsReleaseUploads: {
         const body = stripRequestTag(request.body);

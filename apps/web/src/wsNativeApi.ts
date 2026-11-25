@@ -746,6 +746,7 @@ export function createWsNativeApi(): NativeApi {
       releaseUploads: requestMethod(WS_METHODS.attachmentsReleaseUploads),
       cloneToUpload: requestMethod(WS_METHODS.attachmentsCloneToUpload),
       materializeUploads: requestMethod(WS_METHODS.attachmentsMaterializeUploads),
+      discardMaterialized: requestMethod(WS_METHODS.attachmentsDiscardMaterialized),
     },
     projects: {
       clone: requestMethod(WS_METHODS.projectsClone),
