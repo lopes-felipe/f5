@@ -103623,11 +103623,13 @@
     },
     {
       "createdAt": "2026-11-25T11:13:32.025Z",
-      "decidedAt": "2026-11-25T22:16:10.877Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-25T22:18:36.646Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-42299",
-      "status": "port",
+      "reason": "F5 has no product analytics pipeline that collects Codex or Claude account IDs or reports custom model names.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "observability",
