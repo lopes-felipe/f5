@@ -30,11 +30,18 @@ import { render } from "vitest-browser-react";
 
 import { McpServersSettings } from "./McpServersSettings";
 
-const { copyToClipboard, nativeApiRef } = vi.hoisted(() => ({
+const { copyToClipboard, nativeApiRef, hubMode } = vi.hoisted(() => ({
   copyToClipboard: vi.fn(),
   nativeApiRef: {
     current: undefined as NativeApi | undefined,
   },
+  // Most tests cover Codex's and Claude's own sign-in, which native passthrough keeps.
+  hubMode: { nativeProvidersOnHub: false },
+}));
+
+vi.mock("../../lib/mcpHubChat", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../lib/mcpHubChat")>()),
+  useNativeProvidersOnHub: () => hubMode.nativeProvidersOnHub,
 }));
 
 vi.mock("../../hooks/useCopyToClipboard", () => ({
@@ -363,7 +370,59 @@ describe("McpServersSettings", () => {
     noteWsConnectionClosed();
     copyToClipboard.mockReset();
     nativeApiRef.current = undefined;
+    hubMode.nativeProvidersOnHub = false;
     document.body.innerHTML = "";
+  });
+
+  it("sends Codex and Claude sign-in to F5 and says earlier sign-ins are not carried over", async () => {
+    hubMode.nativeProvidersOnHub = true;
+    const mocks = createNativeApiMock();
+    mocks.getHubAuthStatus.mockResolvedValue({
+      servers: [{ name: "docs", signedIn: false, refreshable: false }],
+    });
+    mocks.getCommonConfig.mockResolvedValue({
+      version: "common-v1",
+      servers: {
+        ...commonConfig.servers,
+        docs: { type: "http", url: "https://docs.example.test/mcp" },
+        local: { type: "stdio", command: "node", cwd: "/srv" },
+      },
+    });
+    const { screen } = await renderSettings(false);
+    try {
+      const notice = page.getByRole("region", { name: "How Codex and Claude connect" });
+      await expect.element(notice.getByText("Codex and Claude connect through F5")).toBeVisible();
+      await expect
+        .element(notice.getByText(/Sign-ins Codex and Claude saved earlier are not carried over/))
+        .toBeVisible();
+      await expect
+        .element(
+          notice.getByRole("switch", {
+            name: "Let Codex and Claude connect to servers themselves",
+          }),
+        )
+        .not.toBeChecked();
+
+      await openServer("docs", "Sign-in");
+      const panel = page.getByRole("region", { name: "F5 sign-in" });
+      await expect.element(panel.getByText(/F5 signs in for Codex, Claude, Cursor/)).toBeVisible();
+      await expect
+        .element(panel.getByText(/Codex and Claude reach this server through F5 now/))
+        .toBeVisible();
+      await expect.element(panel.getByText("Not signed in", { exact: true })).toBeVisible();
+      // The agents' own sign-in is not offered for a server F5 serves them.
+      expect(mocks.startLogin).not.toHaveBeenCalled();
+      expect(document.body.textContent).not.toContain("Codex and Claude sign-in needs a project");
+      await page.getByRole("button", { name: "Close" }).first().click();
+
+      // The hub runs stdio servers in the conversation's folder for Claude too.
+      await openServer("local");
+      const matrix = page.getByRole("region", { name: "Providers" });
+      await expect.element(matrix.getByText("Supported").first()).toBeVisible();
+      expect(matrix.element().textContent).not.toContain("Limited");
+    } finally {
+      await screen.unmount();
+    }
   });
 
   it("shows hub status in the row and panel, and reconnects a failed hub connection", async () => {

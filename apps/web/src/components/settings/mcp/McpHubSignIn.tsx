@@ -197,19 +197,36 @@ export function McpHubSignInRow({
 export function McpHubSignIn({
   serverName,
   projectId,
+  nativeProvidersOnHub = false,
 }: {
   readonly serverName: string;
   readonly projectId: ProjectId | null;
+  /** Codex and Claude reach configured servers through F5 too (no native passthrough). */
+  readonly nativeProvidersOnHub?: boolean;
 }) {
   const authStatus = useQuery(mcpHubAuthQueryOptions({ projectId }));
   const server = authStatus.data?.servers.find((entry) => entry.name === serverName);
+  const agents = nativeProvidersOnHub
+    ? ["Codex", "Claude", ...MCP_HUB_PROVIDER_LABELS]
+    : MCP_HUB_PROVIDER_LABELS;
   return (
-    <section aria-label="Sign-in for other agents" className="space-y-2 text-xs">
-      <p className="font-medium text-foreground">Other agents</p>
-      <p className="text-muted-foreground">
-        F5 signs in for {MCP_HUB_PROVIDER_LABELS.join(", ")}. A sign-in is shared by every project
-        that uses the same server.
+    <section
+      aria-label={nativeProvidersOnHub ? "F5 sign-in" : "Sign-in for other agents"}
+      className="space-y-2 text-xs"
+    >
+      <p className="font-medium text-foreground">
+        {nativeProvidersOnHub ? "F5 sign-in" : "Other agents"}
       </p>
+      <p className="text-muted-foreground">
+        F5 signs in for {agents.join(", ")}. A sign-in is shared by every project that uses the same
+        server.
+      </p>
+      {nativeProvidersOnHub ? (
+        <p className="text-muted-foreground">
+          Codex and Claude reach this server through F5 now. Sign-ins they saved earlier are not
+          carried over, so a server that needed one asks once more here.
+        </p>
+      ) : null}
       {authStatus.error ? (
         <p className="text-destructive">
           {readErrorMessage(authStatus.error, "Failed to load sign-in state.")}

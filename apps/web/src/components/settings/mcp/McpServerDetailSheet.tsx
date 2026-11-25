@@ -19,6 +19,7 @@ import { type ReactNode, useState } from "react";
 
 import { useCopyToClipboard } from "../../../hooks/useCopyToClipboard";
 import { ensureNativeApi } from "../../../nativeApi";
+import { useNativeProvidersOnHub } from "../../../lib/mcpHubChat";
 import { mcpQueryKeys } from "../../../lib/mcpReactQuery";
 import { Badge } from "../../ui/badge";
 import { Button } from "../../ui/button";
@@ -104,6 +105,7 @@ export function McpServerDetailSheet(props: {
   readonly editor: ReactNode;
 }) {
   const queryClient = useQueryClient();
+  const nativeProvidersOnHub = useNativeProvidersOnHub();
   const { copyToClipboard, isCopied } = useCopyToClipboard();
   const [probe, setProbe] = useState<McpProbeServerResult | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -316,6 +318,7 @@ export function McpServerDetailSheet(props: {
               <McpProviderMatrix
                 serverName={props.name}
                 server={props.server}
+                nativeProvidersOnHub={nativeProvidersOnHub}
                 disabled={props.busy}
                 onToggle={
                   editable
@@ -332,14 +335,26 @@ export function McpServerDetailSheet(props: {
               />
               <section aria-label="Sessions" className="space-y-1">
                 <p className="font-medium text-foreground">Sessions</p>
-                <p className="text-muted-foreground">
-                  {plural(hubSessions, "other-agent session")}
-                  {props.account
-                    ? ` · ${plural(conversations, "conversation")} on ${props.account.label}`
-                    : ""}
-                  . Other agents pick up saved changes in their next session; Apply reloads running
-                  Codex and Claude sessions.
-                </p>
+                {nativeProvidersOnHub ? (
+                  <p className="text-muted-foreground">
+                    {plural(hubSessions, "agent session")} through F5
+                    {props.account
+                      ? ` · ${plural(conversations, "conversation")} on ${props.account.label}`
+                      : ""}
+                    . Apply sends saved changes to running Codex and Claude sessions; Codex needs a
+                    new session for a newly added server. Other agents pick up changes in their next
+                    session.
+                  </p>
+                ) : (
+                  <p className="text-muted-foreground">
+                    {plural(hubSessions, "other-agent session")}
+                    {props.account
+                      ? ` · ${plural(conversations, "conversation")} on ${props.account.label}`
+                      : ""}
+                    . Other agents pick up saved changes in their next session; Apply reloads
+                    running Codex and Claude sessions.
+                  </p>
+                )}
                 <Button
                   size="xs"
                   variant="outline"
@@ -427,8 +442,12 @@ export function McpServerDetailSheet(props: {
 
           {props.tab === "sign-in" ? (
             <div className="space-y-4">
-              <McpHubSignIn serverName={props.name} projectId={props.projectId} />
-              {props.account ? (
+              <McpHubSignIn
+                serverName={props.name}
+                projectId={props.projectId}
+                nativeProvidersOnHub={nativeProvidersOnHub}
+              />
+              {nativeProvidersOnHub ? null : props.account ? (
                 <McpProviderSignIn
                   provider={props.account.provider}
                   instanceId={props.account.instanceId}

@@ -9,7 +9,7 @@ import {
   requireInvestigator,
 } from "@t3tools/shared/workflowParticipants";
 import { attachmentSources } from "../lib/attachmentUploadQueue";
-import { useMcpHubChatServers } from "../lib/mcpHubChat";
+import { mergeChatMcpServers, useMcpHubChatServers } from "../lib/mcpHubChat";
 import { composerModelMentionItems } from "./chat/composerModelMentions";
 import { formatComposerModelMention } from "@t3tools/shared/composerModelMentions";
 import { useFreshSessionStore } from "../freshSessionStore";
@@ -1983,13 +1983,13 @@ export default memo(function ChatView({
 
     return null;
   }, [threadActivities]);
-  // Agents other than Codex and Claude reach MCP servers through F5's hub, which
-  // reports their status; Codex and Claude report it as thread activities.
+  // Servers F5's hub serves report their status from the hub; Codex and Claude report
+  // their own servers (and every server with native passthrough) as thread activities.
   const hubMcpServers = useMcpHubChatServers(sessionProvider, activeThread?.projectId ?? null);
   const mcpRuntimeSummary = useMemo(() => {
-    const servers = hubMcpServers?.length
-      ? hubMcpServers
-      : [...latestMcpStatusActivities(threadActivities).values()];
+    const { servers, hubNames } = mergeChatMcpServers(hubMcpServers, [
+      ...latestMcpStatusActivities(threadActivities).values(),
+    ]);
 
     if (servers.length === 0) {
       return null;
@@ -1999,6 +1999,7 @@ export default memo(function ChatView({
     return {
       summary: `${connectedCount}/${servers.length} connected`,
       servers,
+      hubNames,
     };
   }, [hubMcpServers, threadActivities]);
   const openRewindOperationIds = useMemo(
@@ -8657,6 +8658,7 @@ export default memo(function ChatView({
                         provider={sessionProvider ?? selectedProviderByThreadId ?? null}
                         entries={providerRuntimeInfoEntries}
                         mcpServers={mcpRuntimeSummary?.servers}
+                        mcpHubServerNames={mcpRuntimeSummary?.hubNames}
                         projectId={activeThread.projectId}
                         threadId={activeThread.id}
                         className="hidden @[36rem]/header-actions:flex"
@@ -8722,6 +8724,7 @@ export default memo(function ChatView({
                     provider={sessionProvider ?? selectedProviderByThreadId ?? null}
                     entries={providerRuntimeInfoEntries}
                     mcpServers={mcpRuntimeSummary?.servers}
+                    mcpHubServerNames={mcpRuntimeSummary?.hubNames}
                     projectId={activeThread.projectId}
                     threadId={activeThread.id}
                   />
