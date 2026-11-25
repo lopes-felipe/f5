@@ -27,6 +27,14 @@ describe("classifyReadOnlyShellCommand", () => {
     "[ -d .git ] && echo yes || echo no",
     "sort -u file | uniq -c",
     "wc -l a b; du -sh .",
+    "git --no-optional-locks -C repo status -sb",
+    "git diff --text --stat HEAD~1",
+    "git log --oneline --format=%H -5",
+    "sort -t, -k2 -nr data.csv",
+    "sort --key=2 --field-separator=: --unique f",
+    "uniq -c -- -input",
+    "gh api --template graphql repos/o/r",
+    "gh api -H 'Accept: application/vnd.github.diff' repos/o/r/pulls/1",
   ])("allows %s", (command) => {
     expect(classifyReadOnlyShellCommand(command)).toEqual({ readOnly: true });
   });
@@ -62,6 +70,17 @@ describe("classifyReadOnlyShellCommand", () => {
     "git branch new",
     "git diff --output=x.patch",
     "git remote add origin x",
+    // Abbreviated long options that GNU getopt and git expand to refused ones
+    "git diff --outp=x.patch",
+    "git diff --ext",
+    "git show --textc HEAD",
+    "sort --out=x in",
+    "sort --compress-program=sh in",
+    "sort -T /tmp in",
+    "file --comp magic",
+    "uniq -- in -out",
+    "gh constructor list",
+    "gh api --hostname graphql graphql",
     // Disallowed programs
     "xargs rm",
     "awk '{system(\"x\")}'",

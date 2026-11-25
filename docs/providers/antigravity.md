@@ -97,13 +97,18 @@ On a certified version, F5 keeps every workflow turn read-only:
    when it runs.
 2. In a scratch repository, start one workflow turn on the candidate version and tell it to read
    a file holding a fresh token, edit a file, run a shell command that writes (such as
-   `touch marker`) and call that MCP tool.
+   `touch marker`) and call that MCP tool. The workflow dialog won't offer an uncertified
+   version, so start this turn with the opt-in live test described after step 5.
 3. Resume the session and repeat with a new token.
 4. The version passes when the read succeeds in both rounds, the edit, the command and the MCP
-   call each reach F5 as a permission request that F5 refuses, nothing changes on disk, and the marker file never
-   appears. If the run shows a tool kind
-   that is labelled wrongly, remove that kind from `ACP_READ_ONLY_WORKFLOW_TOOL_KINDS` in
-   `apps/server/src/provider/acp/AcpReadOnlyWorkflowPolicy.ts`.
+   call each reach F5 as a permission request that F5 refuses, nothing changes on disk, and the
+   marker file never appears. If something that changes files is approved:
+   - When a non-shell tool is labelled with a read-only kind, remove that kind from
+     `ACP_READ_ONLY_WORKFLOW_TOOL_KINDS` in
+     `apps/server/src/provider/acp/AcpReadOnlyWorkflowPolicy.ts`.
+   - When a writing shell command (`execute`) is approved, leave the version uncertified and fix
+     the shell policy in `apps/server/src/provider/readOnlyWorkflowShell.ts`. Removing a kind
+     doesn't help here: commands are checked separately.
 5. Add `{ version, target }` to `ANTIGRAVITY_READ_ONLY_WORKFLOW_CERTIFIED_RUNTIMES` in
    `packages/shared/src/workflowProviders.ts`. The target is the platform and architecture, such
    as `darwin-arm64`: each architecture is a separate build and needs its own run.

@@ -94,6 +94,15 @@ const GIT_READ_SUBCOMMANDS = new Set([
   "for-each-ref",
 ]);
 
+/** Long options that write a file or run a program; git also accepts their abbreviations. */
+const GIT_REFUSED_LONG_OPTIONS = [
+  "output",
+  "ext-diff",
+  "textconv",
+  "filters",
+  "open-files-in-pager",
+];
+
 const GIT_BRANCH_READ_FLAGS = new Set([
   "--show-current",
   "--list",
@@ -106,13 +115,28 @@ const GIT_BRANCH_READ_FLAGS = new Set([
   "--verbose",
 ]);
 
-const GH_READ_SUBCOMMANDS: Readonly<Record<string, ReadonlySet<string>>> = {
-  pr: new Set(["view", "diff", "checks", "list", "status"]),
-  issue: new Set(["view", "list"]),
-  repo: new Set(["view"]),
-  run: new Set(["view", "list"]),
-  release: new Set(["view", "list"]),
-};
+// A Map, not an object literal: `gh constructor x` must not reach `Object.prototype`.
+const GH_READ_SUBCOMMANDS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ["pr", new Set(["view", "diff", "checks", "list", "status"])],
+  ["issue", new Set(["view", "list"])],
+  ["repo", new Set(["view"])],
+  ["run", new Set(["view", "list"])],
+  ["release", new Set(["view", "list"])],
+]);
+
+/** `gh api` flags whose value is the next token, so it is never mistaken for the endpoint. */
+const GH_API_VALUE_FLAGS = new Set([
+  "-H",
+  "--header",
+  "-q",
+  "--jq",
+  "-t",
+  "--template",
+  "--hostname",
+  "--cache",
+  "-p",
+  "--preview",
+]);
 
 const SED_PRINT_SCRIPT = /^(\d+|\$)(,(\d+|\$))?p$/;
 
@@ -215,7 +239,7 @@ function classifyCommand(command: Command): ReadOnlyShellClassification {
         ? READ_ONLY
         : refuse("`env` is only allowed without arguments");
     case "file":
-      return args.some((arg) => arg === "-C" || arg.startsWith("--compile"))
+      return args.some((arg) => /^-[a-zA-Z]*C/.test(arg) || abbreviatesLongOption(arg, "compile"))
         ? refuse("`file -C` writes a file")
         : READ_ONLY;
     case "date":
@@ -241,14 +265,7 @@ function classifyCommand(command: Command): ReadOnlyShellClassification {
         ? refuse("`fd --exec` runs a program")
         : READ_ONLY;
     case "sort":
-      return args.some(
-        (arg) =>
-          arg.startsWith("--output") ||
-          arg.startsWith("--compress-program") ||
-          /^-[a-zA-Z]*o/.test(arg),
-      )
-        ? refuse("`sort -o` writes a file")
-        : READ_ONLY;
+      return classifySort(args);
     case "uniq":
       return classifyUniq(args);
     case "sed":
@@ -284,10 +301,78 @@ function classifyRedirection(redirection: Redirection): ReadOnlyShellClassificat
   }
 }
 
-function classifyUniq(args: ReadonlyArray<string>): ReadOnlyShellClassification {
-  let positionals = 0;
+/**
+ * Whether `arg` spells the long option `name` or an abbreviation of it. GNU `getopt_long` and
+ * git accept any unambiguous prefix (`--outp=x` is `--output=x`), so a refused long option has
+ * to be matched by prefix, not by exact spelling.
+ */
+function abbreviatesLongOption(arg: string, name: string): boolean {
+  if (!arg.startsWith("--") || arg.length <= 2) return false;
+  const spelled = arg.slice(2).split("=", 1)[0]!;
+  return spelled.length > 0 && name.startsWith(spelled);
+}
+
+/** `sort` flags that only change ordering or checking; anything else (`-o`, `-T`, …) is refused. */
+const SORT_FLAG_CLUSTER = /^-[bdfghiMnRrsuVzcC]+$/;
+const SORT_LONG_FLAGS = new Set([
+  "unique",
+  "reverse",
+  "numeric-sort",
+  "human-numeric-sort",
+  "general-numeric-sort",
+  "ignore-case",
+  "version-sort",
+  "month-sort",
+  "random-sort",
+  "stable",
+  "dictionary-order",
+  "ignore-leading-blanks",
+  "ignore-nonprinting",
+  "zero-terminated",
+  "check",
+]);
+const SORT_LONG_VALUE_FLAGS = new Set(["key", "field-separator", "buffer-size", "parallel"]);
+
+function classifySort(args: ReadonlyArray<string>): ReadOnlyShellClassification {
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]!;
+    if (arg === "--") return READ_ONLY;
+    if (!arg.startsWith("-") || arg === "-") continue;
+    if (SORT_FLAG_CLUSTER.test(arg)) continue;
+    if (/^-[kt]/.test(arg)) {
+      // `-k1,2` carries its value; a bare `-k` takes the next token.
+      if (arg.length === 2) index += 1;
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      // Exact spellings only: an abbreviation could be one of the refused options.
+      const name = arg.slice(2).split("=", 1)[0]!;
+      const hasValue = arg.includes("=");
+      if (SORT_LONG_FLAGS.has(name) && !hasValue) continue;
+      if (SORT_LONG_VALUE_FLAGS.has(name)) {
+        if (!hasValue) index += 1;
+        continue;
+      }
+    }
+    return refuse(`\`sort ${arg}\` is not allowed`);
+  }
+  return READ_ONLY;
+}
+
+function classifyUniq(args: ReadonlyArray<string>): ReadOnlyShellClassification {
+  let positionals = 0;
+  let optionsEnded = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (optionsEnded) {
+      positionals += 1;
+      continue;
+    }
+    if (arg === "--") {
+      // Every later token is an operand, even one starting with `-`.
+      optionsEnded = true;
+      continue;
+    }
     if (arg === "-f" || arg === "-s" || arg === "-w") {
       index += 1;
       continue;
@@ -330,7 +415,7 @@ function classifyGit(args: ReadonlyArray<string>): ReadOnlyShellClassification {
       index += 2;
       continue;
     }
-    if (arg === "--no-pager") {
+    if (arg === "--no-pager" || arg === "--no-optional-locks") {
       index += 1;
       continue;
     }
@@ -342,12 +427,9 @@ function classifyGit(args: ReadonlyArray<string>): ReadOnlyShellClassification {
   if (
     rest.some(
       (arg) =>
-        arg === "--output" ||
-        arg.startsWith("--output=") ||
-        arg === "--ext-diff" ||
-        arg === "--textconv" ||
-        arg === "--filters" ||
-        arg.startsWith("--open-files-in-pager") ||
+        // `--text` is an option of its own, not an abbreviation of `--textconv`.
+        (arg !== "--text" &&
+          GIT_REFUSED_LONG_OPTIONS.some((name) => abbreviatesLongOption(arg, name))) ||
         arg.startsWith("-O"),
     )
   )
@@ -373,7 +455,7 @@ function classifyGh(args: ReadonlyArray<string>): ReadOnlyShellClassification {
   if (args.some((arg) => arg === "--web" || arg === "-w"))
     return refuse("`gh --web` opens a browser");
   if (group === "api") return classifyGhApi(args.slice(1));
-  const allowed = GH_READ_SUBCOMMANDS[group];
+  const allowed = GH_READ_SUBCOMMANDS.get(group);
   if (!allowed || subcommand === undefined || !allowed.has(subcommand))
     return refuse(
       `\`gh ${group}${subcommand ? ` ${subcommand}` : ""}\` is not on the read-only allowlist`,
@@ -409,6 +491,10 @@ function classifyGhApi(args: ReadonlyArray<string>): ReadOnlyShellClassification
       arg.startsWith("--input")
     )
       return refuse("`gh api` request bodies are not allowed");
+    if (GH_API_VALUE_FLAGS.has(arg)) {
+      index += 1;
+      continue;
+    }
     if (!arg.startsWith("-") && endpoint === undefined) endpoint = arg;
   }
   if (endpoint === undefined) return refuse("`gh api` needs an endpoint");

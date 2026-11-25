@@ -50,6 +50,7 @@ import {
 } from "@t3tools/contracts";
 import {
   Deferred,
+  Duration,
   Effect,
   Exit,
   Layer,
@@ -80,6 +81,7 @@ import {
   toOrchestrationUsageLimit,
 } from "../providerTerminalLifecycle.ts";
 import {
+  ProfiledFailureInterruptTimeout,
   ProfiledFailureStopGraceMs,
   ProviderRuntimeIngestionLive,
 } from "./ProviderRuntimeIngestion.ts";
@@ -150,12 +152,17 @@ function createProviderServiceHarness() {
 
   const unsupported = () => Effect.die(new Error("Unsupported provider call in test")) as never;
   let sessionCapabilities: ProviderSessionCapabilities | null = null;
+  /** When set, `interruptTurn` never returns, like an agent that ignores `session/cancel`. */
+  let interruptHangs = false;
   const service: ProviderServiceShape = {
     getStartingSessionIdentity: (threadId) => startingIdentities.get(threadId),
     startSession: () => unsupported(),
     replaceSession: () => unsupported(),
     sendTurn: () => unsupported(),
-    interruptTurn: (input) => Effect.sync(() => void interruptedTurns.push(input)),
+    interruptTurn: (input) =>
+      Effect.sync(() => void interruptedTurns.push(input)).pipe(
+        Effect.andThen(interruptHangs ? Effect.never : Effect.void),
+      ),
     respondToRequest: (input) => Effect.sync(() => void requestResponses.push(input)),
     respondToUserInput: (input) => Effect.sync(() => void userInputResponses.push(input)),
     respondToElicitation: (input) =>
@@ -222,6 +229,9 @@ function createProviderServiceHarness() {
     setSession,
     clearSessions,
     setThreadSnapshot,
+    setInterruptHangs: (next: boolean) => {
+      interruptHangs = next;
+    },
     interruptedTurns,
     stoppedSessions,
     requestResponses,
@@ -312,6 +322,8 @@ describe("ProviderRuntimeIngestion", () => {
     readonly dispatchFailureCount?: number;
     /** Overrides how long a profile-failed turn may run before its session is stopped. */
     readonly profiledFailureStopGraceMs?: number;
+    /** Overrides how long recording a profile failure waits for the interrupt. */
+    readonly profiledFailureInterruptTimeoutMs?: number;
   }) {
     const workspaceRoot = makeTempDir("t3-provider-project-");
     fs.mkdirSync(path.join(workspaceRoot, ".git"));
@@ -374,6 +386,14 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provide(
         options?.profiledFailureStopGraceMs !== undefined
           ? Layer.succeed(ProfiledFailureStopGraceMs, options.profiledFailureStopGraceMs)
+          : Layer.empty,
+      ),
+      Layer.provide(
+        options?.profiledFailureInterruptTimeoutMs !== undefined
+          ? Layer.succeed(
+              ProfiledFailureInterruptTimeout,
+              Duration.millis(options.profiledFailureInterruptTimeoutMs),
+            )
           : Layer.empty,
       ),
       Layer.provide(ServerSettingsService.layerTest(options?.settings)),
@@ -510,6 +530,7 @@ describe("ProviderRuntimeIngestion", () => {
       clearProviderSessions: provider.clearSessions,
       setThreadSnapshot: provider.setThreadSnapshot,
       interruptedTurns: provider.interruptedTurns,
+      setInterruptHangs: provider.setInterruptHangs,
       stoppedSessions: provider.stoppedSessions,
       requestResponses: provider.requestResponses,
       userInputResponses: provider.userInputResponses,
@@ -6582,6 +6603,77 @@ describe("ProviderRuntimeIngestion", () => {
       expect(after?.session?.status).toBe("error");
       expect(after?.session?.lastError).toContain("read-only profile violation");
       expect(after?.latestTurn?.state).not.toBe("completed");
+    });
+
+    it("keeps the failure when the provider reports ready before completing the failed turn", async () => {
+      const harness = await createHarness();
+      const turnId = asTurnId("turn-ready-then-complete");
+      await startProfiledTurn(harness, turnId);
+
+      emitRequest(harness, turnId, "req-ready-violation", "touch x", false);
+      const failed = await waitForThread(
+        harness.engine,
+        (thread) => thread.session?.status === "error",
+      );
+      harness.emit({
+        type: "session.state.changed",
+        eventId: asEventId("evt-ready-after-failure"),
+        provider: "cursor",
+        createdAt: new Date().toISOString(),
+        threadId: asThreadId("thread-1"),
+        payload: { state: "ready" },
+      });
+      harness.emit({
+        type: "turn.completed",
+        eventId: asEventId("evt-complete-after-ready"),
+        provider: "cursor",
+        createdAt: new Date().toISOString(),
+        threadId: asThreadId("thread-1"),
+        turnId,
+        payload: { state: "completed", stopReason: "end_turn" },
+      });
+      await harness.drain();
+
+      const after = await readThread(harness);
+      expect(after?.session?.status).toBe("error");
+      expect(after?.session?.lastError).toBe(failed.session?.lastError);
+      expect(after?.latestTurn?.state).not.toBe("completed");
+
+      // A new turn still starts normally.
+      const nextTurnId = asTurnId("turn-after-failure");
+      harness.emit({
+        type: "turn.started",
+        eventId: asEventId("evt-next-turn-started"),
+        provider: "cursor",
+        createdAt: new Date().toISOString(),
+        threadId: asThreadId("thread-1"),
+        turnId: nextTurnId,
+      });
+      const running = await waitForThread(
+        harness.engine,
+        (thread) => thread.session?.status === "running",
+      );
+      expect(running.session?.activeTurnId).toBe(nextTurnId);
+    });
+
+    it("records the failure even when the interrupt is never acknowledged", async () => {
+      const harness = await createHarness({
+        profiledFailureInterruptTimeoutMs: 20,
+        profiledFailureStopGraceMs: 20,
+      });
+      const turnId = asTurnId("turn-hung-interrupt");
+      await startProfiledTurn(harness, turnId);
+      harness.setInterruptHangs(true);
+
+      emitRequest(harness, turnId, "req-hung", "touch x", false);
+      const failed = await waitForThread(
+        harness.engine,
+        (thread) => thread.session?.status === "error",
+      );
+      expect(failed.session?.lastError).toContain("read-only profile violation");
+      await vi.waitFor(() =>
+        expect(harness.stoppedSessions).toEqual([{ threadId: asThreadId("thread-1") }]),
+      );
     });
 
     it("stops the session when the provider ignores the interrupt", async () => {
