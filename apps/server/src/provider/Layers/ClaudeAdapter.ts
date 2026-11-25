@@ -22,7 +22,7 @@ import {
   type ClaudeSubagentLaunch,
 } from "../claudeSubagentSelection.ts";
 import type { ThreadMcpBroker } from "../../mcp/threadMcpTools.ts";
-import { isF5ThreadReadTool, makeClaudeThreadMcpServer } from "./claudeThreadTools.ts";
+import { isF5ReadOnlyThreadTool, makeClaudeThreadMcpServer } from "./claudeThreadTools.ts";
 import {
   makeClaudeAssistantText,
   extractAssistantTextBlocks,
@@ -8164,7 +8164,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         // Set once the thread server is built below; only permission callbacks read it.
         let threadServerName: string | undefined;
         // Host MCP tools a read-only workflow stage may call: F5 preview observation and F5's
-        // own thread_read, each identified by exact server provenance.
+        // read-only thread tools (thread_read, forge reads), each identified by exact server
+        // provenance.
         const allowReadOnlyMcpTool = (
           toolName: string,
           mcpServer?: McpToolProvenance,
@@ -8173,7 +8174,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           (classifyF5PreviewTool(toolName, agentBrowserState, mcpServer) === "observe" &&
             !writesPreviewArtifact(toolName, toolInput)) ||
           (threadServerName !== undefined &&
-            isF5ThreadReadTool(toolName, mcpServer, threadServerName));
+            isF5ReadOnlyThreadTool(toolName, mcpServer, threadServerName));
         const canUseTool: CanUseTool = (toolName, toolInput, callbackOptions) =>
           Effect.runPromise(
             Effect.gen(function* () {

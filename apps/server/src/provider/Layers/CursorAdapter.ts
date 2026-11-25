@@ -1314,8 +1314,11 @@ export function makeCursorAdapter(
                   // and recorded, and the model is told no and keeps working.
                   const computerRequest = Boolean(catalogs.classify(params.toolCall));
                   if (
-                    acpReadOnlyWorkflowDecision({ toolCall: params.toolCall, computerRequest }) ===
-                    "allow"
+                    acpReadOnlyWorkflowDecision({
+                      toolCall: params.toolCall,
+                      computerRequest,
+                      f5ThreadServerName: catalogs.readOnlyThreadServerName(),
+                    }) === "allow"
                   ) {
                     const allowOnce = acpPermissionOutcome("accept", params.options);
                     if (allowOnce !== undefined)

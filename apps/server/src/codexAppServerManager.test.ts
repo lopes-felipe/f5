@@ -24,6 +24,7 @@ import {
   buildCodexThreadForkParams,
   buildCodexThreadOpenRequestParams,
   buildCodexTurnStartParams,
+  codexReadOnlyThreadPolicyViolation,
   CODEX_ELICITATION_OPENED_METHOD,
   CODEX_ELICITATION_SETTLED_METHOD,
   CODEX_ONE_OFF_WORKER_IDLE_MS,
@@ -772,6 +773,29 @@ describe("isRecoverableThreadResumeError", () => {
   });
 });
 
+describe("codexReadOnlyThreadPolicyViolation", () => {
+  it.each([
+    [{ sandbox: { type: "readOnly", networkAccess: false }, approvalPolicy: "never" }, undefined],
+    [{ sandboxPolicy: { type: "readOnly", networkAccess: false } }, undefined],
+    [{ thread: { id: "t" } }, undefined],
+    [
+      { sandbox: { type: "dangerFullAccess" }, approvalPolicy: "never" },
+      "reported sandbox dangerFullAccess",
+    ],
+    [{ sandboxPolicy: { type: "dangerFullAccess" } }, "reported sandbox dangerFullAccess"],
+    [
+      { sandbox: { type: "readOnly", networkAccess: true } },
+      "reported sandbox readOnly with network access",
+    ],
+    [
+      { sandbox: { type: "readOnly", networkAccess: false }, approvalPolicy: "on-request" },
+      "reported approval policy on-request",
+    ],
+  ])("checks %j", (response, expected) => {
+    expect(codexReadOnlyThreadPolicyViolation(response)).toBe(expected);
+  });
+});
+
 describe("Codex runtime-mode thread configuration", () => {
   it.each([
     ["approval-required", "untrusted", "read-only", "user"],
@@ -1021,6 +1045,65 @@ describe("startSession", () => {
       await cleanupCodexFixture(manager, directory);
     }
   });
+
+  it.each([
+    [{ thread: { id: "native-thread" }, sandbox: { type: "dangerFullAccess" } }, false],
+    [
+      {
+        thread: { id: "native-thread" },
+        sandbox: { type: "readOnly", networkAccess: false },
+        approvalPolicy: "never",
+      },
+      true,
+    ],
+  ] as const)(
+    "fails a read-only workflow start closed unless Codex reports the read-only sandbox (%j)",
+    async (response, starts) => {
+      const directory = mkdtempSync(path.join(os.tmpdir(), "codex-readonly-start-"));
+      const binaryPath = path.join(directory, "codex.cjs");
+      writeFileSync(binaryPath, "#!/usr/bin/env node\nprocess.stdin.resume();\n", {
+        mode: 0o755,
+      });
+      const manager = new CodexAppServerManager();
+      vi.spyOn(
+        manager as unknown as { assertSupportedCodexCliVersion: () => string },
+        "assertSupportedCodexCliVersion",
+      ).mockReturnValue("0.166.0");
+      const sent: Array<[string, unknown]> = [];
+      const send = vi
+        .spyOn(
+          manager as unknown as {
+            sendRequest: (context: unknown, method: string, params: unknown) => Promise<unknown>;
+          },
+          "sendRequest",
+        )
+        .mockImplementation(async (_context, method, params) => {
+          sent.push([method, params]);
+          return method === "thread/start" ? response : {};
+        });
+      try {
+        const started = manager.startSession({
+          threadId: asThreadId("readonly-start"),
+          cwd: directory,
+          runtimeMode: "full-access",
+          workflowExecutionProfile: "unattended-readonly",
+          providerOptions: { codex: { binaryPath } },
+        });
+        if (starts) await expect(started).resolves.toBeDefined();
+        else
+          await expect(started).rejects.toThrow(
+            "Codex did not apply the read-only sandbox (reported sandbox dangerFullAccess).",
+          );
+        expect(sent.find(([method]) => method === "thread/start")?.[1]).toMatchObject({
+          sandbox: "read-only",
+          approvalPolicy: "never",
+        });
+      } finally {
+        send.mockRestore();
+        await cleanupCodexFixture(manager, directory);
+      }
+    },
+  );
 
   it("removes a stale browser tool flag when resume falls back to a fresh thread", async () => {
     const directory = mkdtempSync(path.join(os.tmpdir(), "codex-browser-fallback-"));
@@ -1685,6 +1768,17 @@ describe("sendTurn", () => {
         { threadId: asThreadId("thread_1"), input: "Go", model: "gpt-5.3-codex", ...input },
         { providerThreadId: "thread_1", account, ...state },
       );
+
+    it("restates the read-only sandbox on every turn of a workflow stage", () => {
+      expect(build({}, { workflowExecutionProfile: "unattended-readonly" })).toMatchObject({
+        approvalPolicy: "never",
+        approvalsReviewer: "user",
+        sandboxPolicy: { type: "readOnly", networkAccess: false },
+      });
+      const ordinary = build({});
+      expect(ordinary).not.toHaveProperty("sandboxPolicy");
+      expect(ordinary).not.toHaveProperty("approvalPolicy");
+    });
 
     it("sends the model default when no effort is given", () => {
       const params = build({});

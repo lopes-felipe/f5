@@ -37,6 +37,41 @@ describe("acpReadOnlyWorkflowDecision", () => {
     expect(decide({ kind: "execute", rawInput: { command: "ls", serverName: "x" } })).toBe("deny");
     expect(decide({ kind: "read", title: "screenshot" }, true)).toBe("deny");
   });
+
+  it("allows only F5's read-only thread server among MCP calls, by its generated name", () => {
+    const f5ThreadServerName = "f5_thread_0a1b2c3d";
+    const decideWithF5 = (
+      toolCall: Parameters<typeof acpReadOnlyWorkflowDecision>[0]["toolCall"],
+    ) => acpReadOnlyWorkflowDecision({ toolCall, computerRequest: false, f5ThreadServerName });
+    expect(decideWithF5({ title: "mcp__f5_thread_0a1b2c3d__pull_request_read" })).toBe("allow");
+    expect(decideWithF5({ kind: "other", title: "MCP: f5_thread_0a1b2c3d / ci_logs" })).toBe(
+      "allow",
+    );
+    // Without an MCP signal the call is judged by its kind like any other.
+    expect(decideWithF5({ kind: "other", title: "f5_thread_0a1b2c3d: ci_logs" })).toBe("deny");
+    expect(
+      decideWithF5({
+        kind: "other",
+        rawInput: { serverName: f5ThreadServerName, tool: "ci_logs" },
+      }),
+    ).toBe("allow");
+    // Other servers, look-alike names and mutating kinds stay denied.
+    expect(decideWithF5({ title: "mcp__github__get_file_contents" })).toBe("deny");
+    expect(decideWithF5({ title: "mcp__f5_thread_0a1b2c3d9__ci_logs" })).toBe("deny");
+    expect(decideWithF5({ title: "mcp__f5_thread__ci_logs" })).toBe("deny");
+    expect(
+      decideWithF5({ rawInput: { server: "github", note: f5ThreadServerName }, title: "mcp_x" }),
+    ).toBe("deny");
+    expect(
+      decideWithF5({
+        kind: "execute",
+        title: "`echo mcp__f5_thread_0a1b2c3d__x`",
+        rawInput: { command: "echo mcp__f5_thread_0a1b2c3d__x > out" },
+      }),
+    ).toBe("deny");
+    // Without an attached server nothing MCP is allowed.
+    expect(decide({ title: "mcp__f5_thread_0a1b2c3d__pull_request_read" })).toBe("deny");
+  });
 });
 
 describe("acpExecuteCommand", () => {

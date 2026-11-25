@@ -742,6 +742,34 @@ export function mapCodexRuntimeMode(runtimeMode: RuntimeMode): {
  * (default 1 s, too short for cold `npx`/`uvx` servers). A hung server delays
  * only the first turn of a session, not its 30 s startup timeout.
  */
+/** The sandbox every turn of a read-only workflow stage runs under: no writes, no network. */
+export const CODEX_READ_ONLY_TURN_SANDBOX_POLICY = {
+  type: "readOnly",
+  networkAccess: false,
+} as const;
+
+/**
+ * Why a thread/start or thread/resume response shows that Codex did not apply the read-only
+ * stage policy, or undefined when it did. Codex reports the effective policy as `sandbox` (older
+ * releases used `sandboxPolicy`); a release that reports neither cannot be checked here and is
+ * still bound by the per-turn `sandboxPolicy`.
+ */
+export function codexReadOnlyThreadPolicyViolation(response: unknown): string | undefined {
+  const record = asObject(response);
+  if (!record) return undefined;
+  const sandbox = asObject(record.sandbox) ?? asObject(record.sandboxPolicy);
+  if (sandbox) {
+    const type = asString(sandbox.type) ?? "unknown";
+    if (type !== "readOnly") return `reported sandbox ${type}`;
+    if (sandbox.networkAccess !== false && sandbox.networkAccess !== undefined)
+      return "reported sandbox readOnly with network access";
+  }
+  const approvalPolicy = record.approvalPolicy;
+  if (approvalPolicy !== undefined && approvalPolicy !== "never")
+    return `reported approval policy ${typeof approvalPolicy === "string" ? approvalPolicy : "granular"}`;
+  return undefined;
+}
+
 export const CODEX_THREAD_CONFIG = {
   mcp_optional_startup_grace_ms: 10_000,
   "features.concurrent_reasoning_summaries": true,
@@ -906,6 +934,9 @@ export function buildCodexTurnStartParams(
     readonly instructionContext?: Partial<SharedInstructionInput> | undefined;
     readonly resumedContextSent?: boolean | undefined;
     readonly reportedModelCapabilities?: ReadonlyMap<string, ModelCapabilities> | undefined;
+    readonly workflowExecutionProfile?:
+      | ProviderSessionStartInput["workflowExecutionProfile"]
+      | undefined;
   },
 ) {
   const turnInput: Array<
@@ -957,9 +988,21 @@ export function buildCodexTurnStartParams(
       };
     };
     additionalContext?: Record<string, CodexAdditionalContextEntry>;
+    approvalPolicy?: "never";
+    approvalsReviewer?: "user";
+    sandboxPolicy?: typeof CODEX_READ_ONLY_TURN_SANDBOX_POLICY;
   } = {
     threadId: state.providerThreadId,
     input: turnInput,
+    // Every turn of a read-only workflow stage restates the sandbox, so a resumed or reused
+    // thread can never run with whatever policy it was opened with.
+    ...(state.workflowExecutionProfile
+      ? {
+          approvalPolicy: "never" as const,
+          approvalsReviewer: "user" as const,
+          sandboxPolicy: CODEX_READ_ONLY_TURN_SANDBOX_POLICY,
+        }
+      : {}),
   };
   const normalizedModel = resolveCodexModelForAccount(
     normalizeCodexModelSlug(input.model ?? state.model),
@@ -1614,6 +1657,17 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         threadOpenMethod,
         threadOpenResponse,
       );
+      if (input.workflowExecutionProfile) {
+        const violation = codexReadOnlyThreadPolicyViolation(threadOpenResponse);
+        if (violation) {
+          await Effect.logError("codex read-only workflow session opened without its sandbox", {
+            threadId,
+            method: threadOpenMethod,
+            violation,
+          }).pipe(this.runPromise);
+          throw new Error(`Codex did not apply the read-only sandbox (${violation}).`);
+        }
+      }
       context.browserResumeRegistered =
         threadOpenMethod === "thread/start"
           ? !!threadOpenParams.start.dynamicTools
@@ -1791,6 +1845,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       instructionContext: context.instructionContext,
       resumedContextSent: context.resumedContextSent,
       reportedModelCapabilities: turnCapabilities,
+      workflowExecutionProfile: context.workflowExecutionProfile,
     });
     if (input.audioFiles?.length && supportsCodexRelease6(context.cliVersion)) {
       const model = normalizeCodexModelSlug(turnStartParams.model);

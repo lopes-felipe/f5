@@ -1,3 +1,4 @@
+import * as NodeOs from "node:os";
 import { acpPdfDocuments } from "../pdfDocuments.ts";
 import {
   driverSupportsReadOnlyWorkflowTurns,
@@ -1133,6 +1134,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   "antigravity",
                   launchedVersion,
                   runtimeBuildTarget(),
+                  NodeOs.release(),
                 ));
             if (!certified)
               return yield* new ProviderAdapterValidationError({
@@ -1395,6 +1397,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                       antigravityReadOnlyWorkflowDecision({
                         toolCall: params.toolCall,
                         computerRequest: Boolean(computerRequest),
+                        f5ThreadServerName: catalogs.readOnlyThreadServerName(),
                       }) === "allow"
                         ? selectPermissionOptionId(params, "accept")
                         : undefined;

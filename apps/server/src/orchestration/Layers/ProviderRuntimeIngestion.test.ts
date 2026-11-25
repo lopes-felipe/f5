@@ -7541,6 +7541,36 @@ describe("ProviderRuntimeIngestion", () => {
       instructionStrategy: "claude.append_system_prompt",
     });
     expect(activity?.payload).not.toHaveProperty("config");
+    expect(activity?.summary).toBe("Runtime configured");
+  });
+
+  it("summarizes a read-only stage's enforcement on its runtime.configured activity", async () => {
+    const harness = await createHarness();
+    harness.emit({
+      type: "session.configured",
+      eventId: asEventId("evt-session-configured-read-only"),
+      provider: "codex",
+      createdAt: new Date().toISOString(),
+      threadId: asThreadId("thread-1"),
+      payload: {
+        config: {
+          f5ReadOnlyEnforcement: "sandbox",
+          f5ReadOnlyEnforcementSummary: "Read-only stage: sandboxed (Codex native sandbox)",
+        },
+      },
+    });
+
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.id === "evt-session-configured-read-only",
+      ),
+    );
+    const activity = thread.activities.find(
+      (entry) => entry.id === "evt-session-configured-read-only",
+    );
+    expect(activity?.kind).toBe("runtime.configured");
+    expect(activity?.summary).toBe("Read-only stage: sandboxed (Codex native sandbox)");
   });
 
   it("refreshes session capabilities without clearing the projected usage limit", async () => {

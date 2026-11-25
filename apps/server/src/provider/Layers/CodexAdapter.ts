@@ -2982,6 +2982,11 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             ? { effectiveModelCapabilities: options.getEffectiveModelCapabilities() }
             : {}),
           runtimeMode: input.runtimeMode,
+          // Without this the stage runs with the thread's runtime mode (full access when the
+          // thread is Full access) instead of Codex's read-only sandbox.
+          ...(input.workflowExecutionProfile
+            ? { workflowExecutionProfile: input.workflowExecutionProfile }
+            : {}),
           ...(input.model !== undefined ? { model: input.model } : {}),
           ...codexServiceTierOptions(
             resolveCodexSelectionOptions({
