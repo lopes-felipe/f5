@@ -5,7 +5,6 @@ import {
   RELEASE_CACHE_TTL_MS,
   fetchLatestRelease,
   DOWNLOAD_AVAILABILITY,
-  MAC_PREVIEW_TAG,
   RELEASES_URL,
   parseRelease,
   resolveDownload,
@@ -151,18 +150,20 @@ describe("resolveDownload", () => {
   it("falls back to the releases page only when the release cannot be loaded", () => {
     expect(resolveDownload("win-x64", null).href).toBe(RELEASES_URL);
   });
-  it("pins the labelled macOS preview regardless of the latest release", () => {
-    for (const release of [RELEASE, null]) {
-      const download = resolveDownload("mac-arm64", release);
-      expect(download.href).toBe(
-        `https://github.com/lopes-felipe/f5/releases/download/${MAC_PREVIEW_TAG}/F5-0.0.11-computer-use-preview.1-arm64.dmg`,
-      );
-      expect(download.note).toMatch(/^Preview: unsigned, not notarized/);
-    }
-  });
-  it("never links platforms without an installer, even if a release carries one", () => {
-    for (const target of ["mac-x64"] as const)
-      expect(resolveDownload(target, RELEASE)).toEqual({ href: null, note: "Not yet available" });
+  it("links signed stable macOS DMGs for both Apple Silicon and Intel", () => {
+    expect(resolveDownload("mac-arm64", RELEASE)).toEqual({
+      href: "https://github.com/lopes-felipe/f5/releases/download/v1.2.3/T3-Code-1.2.3-arm64.dmg",
+      note: null,
+    });
+    expect(resolveDownload("mac-x64", RELEASE)).toEqual({
+      href: "https://github.com/lopes-felipe/f5/releases/download/v1.2.3/T3-Code-1.2.3-x64.dmg",
+      note: null,
+    });
+    expect(resolveDownload("mac-arm64", null)).toEqual({ href: RELEASES_URL, note: null });
+    expect(resolveDownload("mac-x64", { ...RELEASE, assets: [] })).toEqual({
+      href: null,
+      note: "Not in the latest release",
+    });
   });
   it("links the AppImage from the same stable release as Debian packages", () => {
     expect(resolveDownload("linux-x64", RELEASE).href).toBe(

@@ -22,10 +22,15 @@ export function serverHealthQueryOptions() {
   });
 }
 
+/**
+ * Runs only on explicit user action ("Run check") so opening Settings > General
+ * never triggers database or filesystem diagnostics automatically.
+ */
 export function serverDoctorReportQueryOptions() {
   return queryOptions({
     queryKey: serverQueryKeys.doctorReport(),
     queryFn: () => ensureNativeApi().server.getDoctorReport(),
+    enabled: false,
     staleTime: 0,
     refetchOnWindowFocus: false,
   });

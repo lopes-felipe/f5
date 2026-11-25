@@ -198,6 +198,8 @@ export const ProviderRuntimeCapabilities = Schema.Struct({
   instanceInventory: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   /** Deleting an F5 thread also removes the native transcript from the instance store. */
   nativeSessionCleanup: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  /** The runtime can be confined to read-only tools for workflow review turns. */
+  readOnlyWorkflowTurns: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
 });
 export type ProviderRuntimeCapabilities = typeof ProviderRuntimeCapabilities.Type;
 
@@ -560,8 +562,8 @@ export const DoctorProviderSummary = Schema.Struct({
 export type DoctorProviderSummary = typeof DoctorProviderSummary.Type;
 
 /**
- * Redacted, point-in-time diagnostic report returned by `f5 doctor` and `server.getDoctorReport`.
- * Contains no secrets, tokens, auth cookies, or unredacted user home paths.
+ * Point-in-time diagnostic report returned by `f5 doctor` and `server.getDoctorReport`.
+ * Scrubs common credentials, tokens, emails, and user home paths; review before sharing publicly.
  */
 export const ServerDoctorReport = Schema.Struct({
   generatedAt: IsoDateTime,

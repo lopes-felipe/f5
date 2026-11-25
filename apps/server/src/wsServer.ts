@@ -279,6 +279,7 @@ import {
 } from "effect";
 import { WebSocketServer, type WebSocket } from "ws";
 
+import { resolveAliasedBooleanEnv, THREAD_OPEN_TIMINGS_ENV } from "./envFlags.ts";
 import { createLogger } from "./logger";
 import { NextTurnQueueStore } from "./nextTurnQueue/Services/NextTurnQueueStore.ts";
 import { makeProjectionTurnRepository } from "./persistence/Layers/ProjectionTurns.ts";
@@ -395,7 +396,12 @@ import {
   SLOW_RPC_ROUTE_MS,
   startEventLoopDelayMonitor,
 } from "./observability/serverHealth.ts";
-import { runDoctorDiagnostics } from "./diagnostics/doctor.ts";
+import {
+  buildSqliteInspectionSnapshot,
+  runDoctorDiagnostics,
+  type SqliteInspectionResult,
+} from "./diagnostics/doctor.ts";
+import { canonicalManagedWorktreesDirectories } from "./worktreesDirectoryPaths.ts";
 import {
   type BootstrapThreadDisposition,
   dispatchBootstrapTurnStart,
@@ -1232,8 +1238,8 @@ export const createServer = Effect.fn(function* (
   const shouldLogThreadOpenTimings =
     process.env.NODE_ENV !== "test" &&
     process.env.VITEST !== "true" &&
-    (process.env.T3CODE_LOG_THREAD_OPEN_TIMINGS === "1" ||
-      process.env.T3CODE_LOG_THREAD_OPEN_TIMINGS === "true");
+    resolveAliasedBooleanEnv(THREAD_OPEN_TIMINGS_ENV.primary, THREAD_OPEN_TIMINGS_ENV.legacy)
+      .enabled;
 
   function logOutgoingPush(push: WsPushEnvelopeBase, recipients: number) {
     if (!logWebSocketEvents || push.channel === WS_CHANNELS.providerAccountEvent) return;
@@ -2824,8 +2830,11 @@ export const createServer = Effect.fn(function* (
               "X-Content-Type-Options": "nosniff",
               ...(contentType === "text/html"
                 ? {
+                    // Keep `srcdoc` HTML renders and MCP app bridges working in browser/remote
+                    // mode (srcdoc inherits parent `default-src`/`script-src`) while blocking
+                    // plugin embeds, base-tag hijacking, and clickjacking.
                     "Content-Security-Policy":
-                      "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; media-src 'self' data: blob: https:; connect-src 'self' ws: wss: http: https:; worker-src 'self' blob:; frame-src 'self' blob: data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+                      "object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
                     "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
                     "Referrer-Policy": "no-referrer",
                     "X-Frame-Options": "DENY",
@@ -3652,6 +3661,16 @@ export const createServer = Effect.fn(function* (
         ),
     }),
   );
+  /** Provider inventory routes: a project id to its workspace root; paths never come from the browser. */
+  const resolveProviderInventoryProjectRoot = (projectId: string | undefined) =>
+    Effect.gen(function* () {
+      if (!projectId) return undefined;
+      const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+      const model = yield* orchestrationEngine.getReadModel();
+      const project = model.projects.find((p) => p.id === projectId && p.deletedAt === null);
+      if (!project) return yield* new RouteRequestError({ message: "Project not found." });
+      return project.workspaceRoot;
+    });
   const withTerminalThreadAccess = <A>(threadId: string, action: Effect.Effect<A, TerminalError>) =>
     Effect.gen(function* () {
       const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
@@ -6011,8 +6030,16 @@ export const createServer = Effect.fn(function* (
                 const relativePath = stored ? path.basename(stored) : entry.relativePath;
                 const file = await reader.openFile(relativePath);
                 let dimensions;
+                let fileRevision: string | undefined;
                 try {
-                  dimensions = await readAssetImageDimensions(file);
+                  if (path.extname(relativePath).toLowerCase() === ".pdf") {
+                    const stat = await file.stat({ bigint: true });
+                    fileRevision = createHash("sha256")
+                      .update([stat.dev, stat.ino, stat.size, stat.mtimeNs].join(":"))
+                      .digest("hex");
+                  } else {
+                    dimensions = await readAssetImageDimensions(file);
+                  }
                 } finally {
                   await file.close();
                 }
@@ -6022,6 +6049,7 @@ export const createServer = Effect.fn(function* (
                   relativePath: entry.relativePath,
                   url: `/api/workspace-assets/${issued.handle}/${encodeURIComponent(name)}`,
                   expiresAt: issued.expiresAt,
+                  ...(fileRevision === undefined ? {} : { fileRevision }),
                   ...dimensions,
                 };
               }),
@@ -6931,71 +6959,84 @@ export const createServer = Effect.fn(function* (
 
       case WS_METHODS.serverGetDoctorReport: {
         const providers = yield* providerAdvisoryProjection.getProviders;
-        const quickRows = yield* sql<{ readonly quick_check?: string }>`PRAGMA quick_check(5)`.pipe(
-          Effect.catch(() =>
-            Effect.succeed([] as ReadonlyArray<{ readonly quick_check?: string }>),
-          ),
-        );
-        const pageSizeRows = yield* sql<{ readonly page_size?: number }>`PRAGMA page_size`.pipe(
-          Effect.catch(() => Effect.succeed([] as ReadonlyArray<{ readonly page_size?: number }>)),
-        );
-        const pageCountRows = yield* sql<{ readonly page_count?: number }>`PRAGMA page_count`.pipe(
-          Effect.catch(() => Effect.succeed([] as ReadonlyArray<{ readonly page_count?: number }>)),
-        );
-        const freelistRows = yield* sql<{
-          readonly freelist_count?: number;
-        }>`PRAGMA freelist_count`.pipe(
-          Effect.catch(() =>
-            Effect.succeed([] as ReadonlyArray<{ readonly freelist_count?: number }>),
-          ),
-        );
-        const autoVacuumRows = yield* sql<{
-          readonly auto_vacuum?: number;
-        }>`PRAGMA auto_vacuum`.pipe(
-          Effect.catch(() =>
-            Effect.succeed([] as ReadonlyArray<{ readonly auto_vacuum?: number }>),
-          ),
-        );
-        const journalRows = yield* sql<{
-          readonly journal_mode?: string;
-        }>`PRAGMA journal_mode`.pipe(
-          Effect.catch(() =>
-            Effect.succeed([] as ReadonlyArray<{ readonly journal_mode?: string }>),
-          ),
-        );
-        const migrationRows = yield* sql<{
-          readonly count?: number;
-          readonly latest?: number | null;
-        }>`SELECT COUNT(*) AS count, MAX(migration_id) AS latest FROM effect_sql_migrations`.pipe(
-          Effect.catch(() =>
-            Effect.succeed(
-              [] as ReadonlyArray<{ readonly count?: number; readonly latest?: number | null }>,
+        // Run only O(1) PRAGMAs on the live SQLite connection so checking Doctor
+        // in Settings never blocks the main server event loop with a full-DB scan.
+        const [
+          pageSizeRows,
+          pageCountRows,
+          freelistRows,
+          autoVacuumRows,
+          journalRows,
+          migrationRows,
+          managedWorktreesDirs,
+        ] = yield* Effect.all([
+          sql<{ readonly page_size?: number }>`PRAGMA page_size`.pipe(
+            Effect.catch(() =>
+              Effect.succeed([] as ReadonlyArray<{ readonly page_size?: number }>),
             ),
           ),
-        );
-        const sqliteSnapshot =
-          quickRows.length > 0
+          sql<{ readonly page_count?: number }>`PRAGMA page_count`.pipe(
+            Effect.catch(() =>
+              Effect.succeed([] as ReadonlyArray<{ readonly page_count?: number }>),
+            ),
+          ),
+          sql<{ readonly freelist_count?: number }>`PRAGMA freelist_count`.pipe(
+            Effect.catch(() =>
+              Effect.succeed([] as ReadonlyArray<{ readonly freelist_count?: number }>),
+            ),
+          ),
+          sql<{ readonly auto_vacuum?: number }>`PRAGMA auto_vacuum`.pipe(
+            Effect.catch(() =>
+              Effect.succeed([] as ReadonlyArray<{ readonly auto_vacuum?: number }>),
+            ),
+          ),
+          sql<{ readonly journal_mode?: string }>`PRAGMA journal_mode`.pipe(
+            Effect.catch(() =>
+              Effect.succeed([] as ReadonlyArray<{ readonly journal_mode?: string }>),
+            ),
+          ),
+          sql<{
+            readonly count?: number;
+            readonly latest?: number | null;
+          }>`SELECT COUNT(*) AS count, MAX(migration_id) AS latest FROM effect_sql_migrations`.pipe(
+            Effect.catch(() =>
+              Effect.succeed(
+                [] as ReadonlyArray<{ readonly count?: number; readonly latest?: number | null }>,
+              ),
+            ),
+          ),
+          serverSettings.getSettings.pipe(
+            Effect.flatMap((settings) =>
+              canonicalManagedWorktreesDirectories(settings, serverConfig.worktreesDir),
+            ),
+            Effect.orElseSucceed(() => [serverConfig.worktreesDir]),
+          ),
+        ]);
+        const sqliteResult: SqliteInspectionResult =
+          pageSizeRows.length > 0 || pageCountRows.length > 0
             ? {
-                quickCheck: quickRows
-                  .map((row) => String(row.quick_check ?? ""))
-                  .filter((line) => line.length > 0),
-                pageSize: Number(pageSizeRows[0]?.page_size ?? 0),
-                pageCount: Number(pageCountRows[0]?.page_count ?? 0),
-                freelistCount: Number(freelistRows[0]?.freelist_count ?? 0),
-                autoVacuum: Number(autoVacuumRows[0]?.auto_vacuum ?? 0),
-                journalMode: String(journalRows[0]?.journal_mode ?? "unknown"),
-                migrationCount:
-                  typeof migrationRows[0]?.count === "number" ? migrationRows[0].count : null,
-                latestMigrationId:
-                  typeof migrationRows[0]?.latest === "number" ? migrationRows[0].latest : null,
+                kind: "ok",
+                snapshot: buildSqliteInspectionSnapshot({
+                  quickRows: null,
+                  pageSizeRow: pageSizeRows[0],
+                  pageCountRow: pageCountRows[0],
+                  freelistRow: freelistRows[0],
+                  autoVacuumRow: autoVacuumRows[0],
+                  journalRow: journalRows[0],
+                  migrationRow: migrationRows[0],
+                }),
               }
-            : null;
+            : {
+                kind: "unavailable",
+                detail: "Live SQLite metadata PRAGMAs returned no rows.",
+              };
         return yield* Effect.promise(() =>
           runDoctorDiagnostics({
             mode: serverConfig.mode,
             stateDir: serverConfig.stateDir,
             dbPath: serverConfig.dbPath,
             worktreesDir: serverConfig.worktreesDir,
+            worktreesDirs: managedWorktreesDirs,
             logsDir: serverConfig.logsDir,
             attachmentsDir: serverConfig.attachmentsDir,
             ...(serverConfig.profilesRoot ? { profilesRoot: serverConfig.profilesRoot } : {}),
@@ -7011,7 +7052,7 @@ export const createServer = Effect.fn(function* (
             authEnabled: Boolean(serverConfig.authToken),
             trustedProxyCount: serverConfig.trustedProxies?.length ?? 0,
             liveProviders: providers,
-            inspectSqlite: async () => sqliteSnapshot,
+            inspectSqlite: async () => sqliteResult,
           }),
         );
       }
@@ -7170,16 +7211,7 @@ export const createServer = Effect.fn(function* (
         if (!instance) {
           return yield* new RouteRequestError({ message: "Provider instance not found." });
         }
-        let projectRoot: string | undefined;
-        if (body.projectId) {
-          const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
-          const model = yield* orchestrationEngine.getReadModel();
-          const project = model.projects.find(
-            (p) => p.id === body.projectId && p.deletedAt === null,
-          );
-          if (!project) return yield* new RouteRequestError({ message: "Project not found." });
-          projectRoot = project.workspaceRoot;
-        }
+        const projectRoot = yield* resolveProviderInventoryProjectRoot(body.projectId);
         const entries = instance.inventory
           ? yield* instance
               .inventory({ projectRoot })
@@ -7202,6 +7234,22 @@ export const createServer = Effect.fn(function* (
           ...(body.projectId ? { projectId: body.projectId } : {}),
           ...entries,
         };
+      }
+      case WS_METHODS.serverTrustProviderHooks: {
+        const body = stripRequestTag(request.body);
+        const instance = yield* providerInstanceRegistry.getInstance(body.instanceId);
+        if (!instance || instance.driverKind !== "codex" || !instance.trustHooks)
+          return yield* new RouteRequestError({
+            message: "Hook approval is only available for a configured Codex provider.",
+          });
+        const projectRoot = yield* resolveProviderInventoryProjectRoot(body.projectId);
+        return yield* instance
+          .trustHooks({ projectRoot, hooks: body.hooks })
+          .pipe(
+            Effect.mapError(
+              (error) => new RouteRequestError({ message: error.detail ?? error.message }),
+            ),
+          );
       }
 
       case WS_METHODS.serverValidateHarnesses: {

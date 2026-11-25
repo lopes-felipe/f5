@@ -305,6 +305,7 @@ import {
 import {
   ServerGetProviderInventoryInput,
   ServerSaveProviderFeedbackInput,
+  ServerTrustProviderHooksInput,
 } from "./providerInventory";
 import { ReviewPreviewDiffInput } from "./review";
 import {
@@ -656,6 +657,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.serverGetProviderInventory, ServerGetProviderInventoryInput),
   tagRequestBody(WS_METHODS.serverCodexConfiguration, ServerCodexConfigurationInput),
   tagRequestBody(WS_METHODS.serverSaveProviderFeedback, ServerSaveProviderFeedbackInput),
+  tagRequestBody(WS_METHODS.serverTrustProviderHooks, ServerTrustProviderHooksInput),
   tagRequestBody(WS_METHODS.serverUpsertKeybinding, KeybindingRule),
   tagRequestBody(WS_METHODS.serverAddKeybinding, ServerAddKeybindingInput),
   tagRequestBody(WS_METHODS.serverUpdateKeybinding, ServerUpdateKeybindingInput),

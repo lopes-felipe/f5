@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate, useRouter } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { getPrHubAccountGeneration } from "../../lib/prHubAccount";
+import { getPrHubAccountGeneration, usePrHubAccountSnapshot } from "../../lib/prHubAccount";
 import { prHubOverviewQueryOptions } from "../../lib/prHubReactQuery";
 import { buildPrAttentionNotification } from "../../prHubNotifications";
 import { ensureNativeApi } from "../../nativeApi";
@@ -22,7 +22,8 @@ export function PrAttentionNotificationControllerContent({
   navigateToPrHub: (focusedPrKey?: string) => void | Promise<void>;
 }) {
   const queryClient = useQueryClient();
-  const overviewQuery = useQuery(prHubOverviewQueryOptions());
+  const prHubAccount = usePrHubAccountSnapshot();
+  const overviewQuery = useQuery(prHubOverviewQueryOptions(undefined, [], prHubAccount));
   const accountGeneration = overviewQuery.data?.account?.generation;
   const [clientId] = useState(() => crypto.randomUUID());
   const [leaseTick, setLeaseTick] = useState(0);

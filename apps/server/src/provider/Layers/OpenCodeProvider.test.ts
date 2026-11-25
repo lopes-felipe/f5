@@ -34,6 +34,7 @@ const runtimeMock = {
     versionStdout: DEFAULT_VERSION_STDOUT,
     inventoryError: null as Error | null,
     closeCalls: 0,
+    probePassword: undefined as string | undefined,
     inventory: {
       providerList: { connected: [] as string[], all: [] as unknown[], default: {} },
       agents: [] as unknown[],
@@ -44,6 +45,7 @@ const runtimeMock = {
     this.state.versionStdout = DEFAULT_VERSION_STDOUT;
     this.state.inventoryError = null;
     this.state.closeCalls = 0;
+    this.state.probePassword = undefined;
     this.state.inventory = {
       providerList: { connected: [], all: [] as unknown[], default: {} },
       agents: [] as unknown[],
@@ -57,7 +59,7 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
       url: "http://127.0.0.1:4301",
       exitCode: Effect.never,
     }),
-  connectToOpenCodeServer: ({ serverUrl }) =>
+  connectToOpenCodeServer: ({ serverUrl, serverPassword, environment }) =>
     Effect.gen(function* () {
       if (!serverUrl) {
         yield* Effect.addFinalizer(() =>
@@ -66,10 +68,13 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
           }),
         );
       }
+      const password =
+        serverPassword ?? (serverUrl ? undefined : environment?.OPENCODE_SERVER_PASSWORD);
       return {
         url: serverUrl ?? "http://127.0.0.1:4301",
         exitCode: null,
         external: Boolean(serverUrl),
+        ...(password ? { serverPassword: password } : {}),
       };
     }),
   runOpenCodeCommand: () =>
@@ -82,8 +87,10 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
           }),
         )
       : Effect.succeed({ stdout: runtimeMock.state.versionStdout, stderr: "", code: 0 }),
-  createOpenCodeSdkClient: () =>
-    ({}) as unknown as ReturnType<OpenCodeRuntimeShape["createOpenCodeSdkClient"]>,
+  createOpenCodeSdkClient: ({ serverPassword }) => {
+    runtimeMock.state.probePassword = serverPassword;
+    return {} as ReturnType<OpenCodeRuntimeShape["createOpenCodeSdkClient"]>;
+  },
   loadOpenCodeInventory: () =>
     runtimeMock.state.inventoryError
       ? Effect.fail(
@@ -207,9 +214,12 @@ it.layer(testLayer)("checkOpenCodeProviderStatus", (it) => {
 
   it.effect("closes the local OpenCode server scope after provider refresh", () =>
     Effect.gen(function* () {
-      yield* checkOpenCodeProviderStatus(makeOpenCodeSettings(), process.cwd());
+      yield* checkOpenCodeProviderStatus(makeOpenCodeSettings(), process.cwd(), {
+        OPENCODE_SERVER_PASSWORD: "local-probe-password",
+      });
 
       assert.equal(runtimeMock.state.closeCalls, 1);
+      assert.equal(runtimeMock.state.probePassword, "local-probe-password");
     }),
   );
 });
@@ -232,19 +242,23 @@ it.layer(testLayer)("checkOpenCodeProviderStatus with configured server URL", (i
         snapshot.message,
         "OpenCode server rejected authentication. Check the server URL and password.",
       );
+      assert.equal(runtimeMock.state.probePassword, "secret-password");
     }),
   );
 
-  it.effect("reports a stored password whose secret is missing instead of connecting", () =>
-    Effect.gen(function* () {
-      const snapshot = yield* checkOpenCodeProviderStatus(
-        makeOpenCodeSettings({ serverUrl: "http://127.0.0.1:9999", serverPasswordRedacted: true }),
-        process.cwd(),
-      );
+  it.effect.each(["", "http://127.0.0.1:9999"])(
+    "reports a missing saved password for server URL %j",
+    (serverUrl) =>
+      Effect.gen(function* () {
+        const snapshot = yield* checkOpenCodeProviderStatus(
+          makeOpenCodeSettings({ serverUrl, serverPasswordRedacted: true }),
+          process.cwd(),
+        );
 
-      assert.equal(snapshot.status, "error");
-      assert.equal(snapshot.message, OPENCODE_PASSWORD_UNAVAILABLE);
-    }),
+        assert.equal(snapshot.status, "error");
+        assert.equal(snapshot.message, OPENCODE_PASSWORD_UNAVAILABLE);
+        assert.equal(runtimeMock.state.closeCalls, 0);
+      }),
   );
 
   it.effect("surfaces a friendly connection error for configured servers", () =>

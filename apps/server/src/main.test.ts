@@ -976,15 +976,24 @@ it.layer(testLayer)("profile startup selection", (it) => {
           written.push(String(chunk));
           return true;
         });
+        const stderrWritten: string[] = [];
+        const stderr = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+          stderrWritten.push(String(chunk));
+          return true;
+        });
+        const prevExitCode = process.exitCode;
         try {
           yield* runCli(["--state-dir", stateDir, "doctor", "--json", "--bundle", bundlePath]);
           const parsed = JSON.parse(written.join("")) as {
             runtime: { mode: string; profileSlug: string };
-            checks: ReadonlyArray<{ id: string }>;
+            checks: ReadonlyArray<{ id: string; status: string }>;
           };
           assert.equal(parsed.runtime.mode, "cli");
           assert.equal(parsed.runtime.profileSlug, "default");
           assert.ok(parsed.checks.some((check) => check.id === "env.git"));
+          assert.ok(
+            parsed.checks.some((check) => check.id === "env.network" && check.status === "ok"),
+          );
           assert.equal(start.mock.calls.length, 0);
 
           const bundle = JSON.parse(FS.readFileSync(bundlePath, "utf8")) as {
@@ -993,8 +1002,63 @@ it.layer(testLayer)("profile startup selection", (it) => {
           };
           assert.equal(bundle.schemaVersion, 1);
           assert.equal(bundle.doctor.runtime.mode, "cli");
+
+          // Refuses overwriting an existing file
+          process.exitCode = undefined;
+          stderrWritten.length = 0;
+          yield* runCli(["--state-dir", stateDir, "doctor", "--json", "--bundle", bundlePath]);
+          assert.equal(process.exitCode, 1);
+          assert.ok(stderrWritten.join("").includes("already exists"));
+
+          // Refuses writing through a symlink
+          const linkPath = Path.join(root, "link-bundle.json");
+          FS.symlinkSync(Path.join(root, "target-does-not-exist.json"), linkPath);
+          process.exitCode = undefined;
+          stderrWritten.length = 0;
+          yield* runCli(["--state-dir", stateDir, "doctor", "--json", "--bundle", linkPath]);
+          assert.equal(process.exitCode, 1);
+          assert.ok(stderrWritten.join("").includes("already exists"));
+
+          // Refuses writing inside stateDir
+          process.exitCode = undefined;
+          stderrWritten.length = 0;
+          yield* runCli([
+            "--state-dir",
+            stateDir,
+            "doctor",
+            "--json",
+            "--bundle",
+            Path.join(stateDir, "state.sqlite"),
+          ]);
+          assert.equal(process.exitCode, 1);
+          assert.ok(stderrWritten.join("").includes("state directory"));
+
+          // Reports error for remote bind without auth token
+          written.length = 0;
+          process.exitCode = undefined;
+          yield* runCli(["--state-dir", stateDir, "--host", "0.0.0.0", "doctor", "--json"]);
+          const remoteParsed = JSON.parse(written.join("")) as {
+            overallStatus: string;
+            checks: ReadonlyArray<{ id: string; status: string }>;
+          };
+          assert.equal(remoteParsed.overallStatus, "error");
+          assert.ok(
+            remoteParsed.checks.some(
+              (check) => check.id === "env.network" && check.status === "error",
+            ),
+          );
+          assert.equal(process.exitCode, 1);
+
+          // Unknown profile via --profile / F5_PROFILE fails cleanly
+          process.exitCode = undefined;
+          stderrWritten.length = 0;
+          yield* runCli(["--state-dir", stateDir, "--profile", "nonexistent", "doctor", "--json"]);
+          assert.equal(process.exitCode, 1);
+          assert.ok(stderrWritten.join("").includes("Unknown F5 profile"));
         } finally {
+          process.exitCode = prevExitCode;
           stdout.mockRestore();
+          stderr.mockRestore();
           FS.rmSync(root, { recursive: true, force: true });
         }
       }),

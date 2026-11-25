@@ -32,10 +32,10 @@ const base = buildPlanningWorkflowRecord({
   requirementPrompt: "Brief",
   plansDirectory: "plans",
   selfReviewEnabled: true,
-  authorThreadIdA: ThreadId.makeUnsafe("a"),
-  authorThreadIdB: ThreadId.makeUnsafe("b"),
-  branchA: slot,
-  branchB: slot,
+  authors: [
+    { slot, threadId: ThreadId.makeUnsafe("a") },
+    { slot, threadId: ThreadId.makeUnsafe("b") },
+  ],
   merge: slot,
   createdAt: now,
 });

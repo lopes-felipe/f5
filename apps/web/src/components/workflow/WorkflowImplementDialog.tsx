@@ -438,7 +438,7 @@ export function WorkflowImplementDialog(props: {
               checked={codeReviewEnabled}
               onCheckedChange={setCodeReviewEnabled}
               label="Code review after implementation"
-              description="After implementation completes, both planning models review the code before feedback is applied."
+              description="After implementation completes, every planning model reviews the code before feedback is applied."
             />
           </WorkflowOptions>
           {error ? <p className="text-ui text-destructive-foreground">{error}</p> : null}

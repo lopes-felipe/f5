@@ -51,12 +51,23 @@ export interface NextTurnQueueClaim {
 export interface UsageResumeLedger {
   limitKey: string;
   state: "scheduled" | "cancelled" | "superseded" | "revoked" | "gave_up" | "completed";
+  autoEligibleAtFailure: number;
   source: "manual" | "auto";
   itemId: CommandId | null;
   notBefore: string | null;
   autoCount: number;
   previousTarget?: string | null;
 }
+
+export function usageResumeAllowsAuto(
+  ledger: Pick<UsageResumeLedger, "state" | "autoEligibleAtFailure">,
+): boolean {
+  return (
+    ledger.autoEligibleAtFailure !== 0 &&
+    (ledger.state === "revoked" || ledger.state === "scheduled")
+  );
+}
+
 export interface NextTurnQueueStoreShape {
   readonly readWorkspaceClaims: (threadIds: ReadonlyArray<ThreadId>) => Effect.Effect<
     ReadonlyArray<{

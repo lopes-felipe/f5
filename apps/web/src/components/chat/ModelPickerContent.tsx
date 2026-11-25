@@ -26,7 +26,6 @@ import { rankModelPickerSearch } from "./modelPickerSearch";
 import {
   type ModelPickerModelOption,
   findProviderStatus,
-  isProviderSelectable,
   providerDisabledReason,
   PROVIDER_ICON_BY_PROVIDER,
   PROVIDER_LABEL_BY_PROVIDER,
@@ -71,10 +70,20 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   keybindings?: ResolvedKeybindingsConfig | undefined;
   modelOptionsByProvider: Record<ProviderKind, ReadonlyArray<ModelPickerModelOption>>;
   terminalOpen: boolean;
+  /** Extra reason a provider cannot be picked here (for example a workflow restriction). */
+  providerUnavailableReason?: ((provider: ProviderKind) => string | null) | undefined;
   onRequestClose?: (() => void) | undefined;
   onProviderModelChange: (provider: ProviderKind, model: ModelSlug) => void;
 }) {
   const { settings, updateSettings } = useAppSettings();
+  const { providers, providerUnavailableReason } = props;
+  const disabledReasonFor = useCallback(
+    (providerKind: ProviderKind): string | null =>
+      providerDisabledReason(findProviderStatus(providers, providerKind)) ??
+      providerUnavailableReason?.(providerKind) ??
+      null,
+    [providers, providerUnavailableReason],
+  );
   const [searchQuery, setSearchQuery] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
   const highlightedModelKeyRef = useRef<string | null>(null);
@@ -206,8 +215,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
 
   const handleModelSelect = useCallback(
     (providerKind: ProviderKind, modelId: string) => {
-      const status = findProviderStatus(props.providers, providerKind);
-      if (!isProviderSelectable(status)) {
+      if (disabledReasonFor(providerKind) !== null) {
         return;
       }
       const resolvedModel = resolveSelectableModel(
@@ -220,7 +228,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       }
       props.onProviderModelChange(providerKind, resolvedModel);
     },
-    [props],
+    [disabledReasonFor, props],
   );
 
   const toggleFavorite = useCallback(
@@ -261,8 +269,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       NonNullable<ReturnType<typeof modelPickerJumpCommandForIndex>>
     >();
     for (const model of filteredModels) {
-      const status = findProviderStatus(props.providers, model.providerKind);
-      if (!isProviderSelectable(status)) {
+      if (disabledReasonFor(model.providerKind) !== null) {
         continue;
       }
       const command = modelPickerJumpCommandForIndex(mapping.size);
@@ -272,7 +279,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       mapping.set(toModelKey(model.providerKind, model.slug), command);
     }
     return mapping;
-  }, [filteredModels, props.providers]);
+  }, [disabledReasonFor, filteredModels]);
   const modelJumpModelKeys = useMemo(
     () => [...modelJumpCommandByKey.keys()],
     [modelJumpCommandByKey],
@@ -462,8 +469,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                     if (!model) {
                       return null;
                     }
-                    const status = findProviderStatus(props.providers, model.providerKind);
-                    const disabledReason = providerDisabledReason(status);
+                    const disabledReason = disabledReasonFor(model.providerKind);
                     return (
                       <ModelListRow
                         key={modelKey}
