@@ -49,6 +49,34 @@ describe("mcpTranslation", () => {
     }
   });
 
+  it("sends bearerTokenEnvVar to Claude as an Authorization header from the account environment", () => {
+    const remote = {
+      type: "http" as const,
+      url: "https://example.test/mcp",
+      bearerTokenEnvVar: "MCP_TOKEN",
+    };
+    expect(
+      translateMcpForClaudeAgent({ remote }, { environment: { MCP_TOKEN: " secret " } }),
+    ).toEqual({
+      remote: {
+        type: "http",
+        url: "https://example.test/mcp",
+        headers: { Authorization: "Bearer secret" },
+      },
+    });
+    // An explicit header wins, and an unset variable adds nothing.
+    expect(
+      translateMcpForClaudeAgent(
+        { remote: { ...remote, headers: { authorization: "Token literal" } } },
+        { environment: { MCP_TOKEN: "secret" } },
+      )?.remote,
+    ).toMatchObject({ headers: { authorization: "Token literal" } });
+    expect(translateMcpForClaudeAgent({ remote }, { environment: {} })?.remote).not.toHaveProperty(
+      "headers",
+    );
+    expect(translateMcpForClaudeAgent({ remote })?.remote).not.toHaveProperty("headers");
+  });
+
   it.each(["http", "sse"] as const)(
     "omits Claude %s OAuth when no settings are configured",
     (type) => {

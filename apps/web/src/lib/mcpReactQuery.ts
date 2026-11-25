@@ -1,12 +1,10 @@
 import type {
-  McpCodexStatusResult,
   ThreadId,
   McpStatusUpdatedPayload,
   McpCommonConfigResult,
   McpEffectiveConfigResult,
   McpLoginStatusResult,
   McpProviderStatusResult,
-  McpOauthLoginStatusResult,
   McpProjectConfigResult,
   McpServerStatusesResult,
   ProjectId,
@@ -18,8 +16,6 @@ import { getWsConnectionState } from "../wsConnectionState";
 import { ensureNativeApi } from "../nativeApi";
 import { rpcQueryContext, rpcQueryMeta } from "./rpcQueryContext";
 
-type CodexEnvironmentKeyPart = string | null;
-
 export const mcpQueryKeys = {
   all: ["mcp"] as const,
   commonConfig: () => ["mcp", "commonConfig"] as const,
@@ -28,34 +24,40 @@ export const mcpQueryKeys = {
   providerStatus: (
     provider: ProviderKind,
     projectId: ProjectId | null,
-    binaryPath: CodexEnvironmentKeyPart,
-    homePath: CodexEnvironmentKeyPart,
-  ) => ["mcp", "providerStatus", provider, projectId, binaryPath, homePath] as const,
+    instanceId: ProviderInstanceId | null,
+  ) => ["mcp", "providerStatus", provider, projectId, instanceId] as const,
   serverStatuses: (
     provider: ProviderKind,
     projectId: ProjectId | null,
-    binaryPath: CodexEnvironmentKeyPart,
-    homePath: CodexEnvironmentKeyPart,
-  ) => ["mcp", "serverStatuses", provider, projectId, binaryPath, homePath] as const,
+    instanceId: ProviderInstanceId | null,
+  ) => ["mcp", "serverStatuses", provider, projectId, instanceId] as const,
   loginStatus: (
     provider: ProviderKind,
     projectId: ProjectId | null,
     serverName: string | null,
-    binaryPath: CodexEnvironmentKeyPart,
-    homePath: CodexEnvironmentKeyPart,
-  ) => ["mcp", "loginStatus", provider, projectId, serverName, binaryPath, homePath] as const,
-  codexStatus: (
-    projectId: ProjectId | null,
-    binaryPath: CodexEnvironmentKeyPart,
-    homePath: CodexEnvironmentKeyPart,
-  ) => ["mcp", "codexStatus", projectId, binaryPath, homePath] as const,
-  oauthStatus: (
-    projectId: ProjectId | null,
-    serverName: string | null,
-    binaryPath: CodexEnvironmentKeyPart,
-    homePath: CodexEnvironmentKeyPart,
-  ) => ["mcp", "oauthStatus", projectId, serverName, binaryPath, homePath] as const,
+    instanceId: ProviderInstanceId | null,
+  ) => ["mcp", "loginStatus", provider, projectId, serverName, instanceId] as const,
 };
+
+const MCP_CONFIG_QUERY_KINDS = new Set(["commonConfig", "projectConfig", "effectiveConfig"]);
+
+export function isMcpConfigQuery(queryKey: readonly unknown[]): boolean {
+  return queryKey[0] === "mcp" && MCP_CONFIG_QUERY_KINDS.has(String(queryKey[1]));
+}
+
+/**
+ * A save changes stored configuration only. Statuses are refetched on Refresh,
+ * Apply or a status event, because a Codex status check can start a provider
+ * process that launches every configured server.
+ */
+export function invalidateMcpConfigQueries(
+  queryClient: import("@tanstack/react-query").QueryClient,
+) {
+  return queryClient.invalidateQueries({
+    queryKey: mcpQueryKeys.all,
+    predicate: (query) => isMcpConfigQuery(query.queryKey),
+  });
+}
 
 /** Scoped account events must never refresh another account's control or login queries. */
 export function isMcpQueryAffected(
@@ -63,23 +65,21 @@ export function isMcpQueryAffected(
   event: McpStatusUpdatedPayload,
 ): boolean {
   if (queryKey[0] !== "mcp") return false;
+  if (event.reason === "updated" && !isMcpConfigQuery(queryKey)) return false;
   const kind = queryKey[1];
   const accountScoped = [
     "providerStatus",
     "serverStatuses",
     "inspectServer",
     "loginStatus",
-    "codexStatus",
-    "oauthStatus",
   ].includes(String(kind));
   if (event.instanceId) {
     if (!accountScoped) return false;
-    const instance = queryKey[kind === "codexStatus" ? 3 : kind === "loginStatus" ? 5 : 4];
+    const instance = queryKey[kind === "loginStatus" ? 5 : 4];
     if (instance !== event.instanceId) return false;
   }
   if (event.projectId && event.scope === "project") {
-    const project =
-      queryKey[accountScoped && kind !== "codexStatus" && kind !== "oauthStatus" ? 3 : 2];
+    const project = queryKey[accountScoped ? 3 : 2];
     if (kind !== "commonConfig" && project !== event.projectId) return false;
   }
   return true;
@@ -129,50 +129,17 @@ export function mcpEffectiveConfigQueryOptions(input: {
   });
 }
 
-export function mcpCodexStatusQueryOptions(input: {
-  readonly projectId: ProjectId | null;
-  readonly instanceId?: ProviderInstanceId;
-  readonly binaryPath?: string;
-  readonly homePath?: string;
-  readonly enabled?: boolean;
-}) {
-  return queryOptions<McpCodexStatusResult>({
-    queryKey: mcpQueryKeys.codexStatus(
-      input.projectId,
-      input.instanceId ?? input.binaryPath ?? null,
-      input.homePath ?? null,
-    ),
-    enabled: (input.enabled ?? true) && Boolean(input.projectId),
-    meta: rpcQueryMeta("refresh-background"),
-    queryFn: async (context) => {
-      if (!input.projectId) {
-        throw new Error("Codex MCP status is unavailable.");
-      }
-      return ensureNativeApi().mcp.getCodexStatus(
-        {
-          projectId: input.projectId,
-          ...(input.instanceId ? { instanceId: input.instanceId } : {}),
-        },
-        rpcQueryContext(context),
-      );
-    },
-  });
-}
-
 export function mcpProviderStatusQueryOptions(input: {
   readonly provider: ProviderKind;
   readonly projectId: ProjectId | null;
   readonly instanceId?: ProviderInstanceId;
-  readonly binaryPath?: string;
-  readonly homePath?: string;
   readonly enabled?: boolean;
 }) {
   return queryOptions<McpProviderStatusResult>({
     queryKey: mcpQueryKeys.providerStatus(
       input.provider,
       input.projectId,
-      input.instanceId ?? input.binaryPath ?? null,
-      input.homePath ?? null,
+      input.instanceId ?? null,
     ),
     enabled: (input.enabled ?? true) && Boolean(input.projectId),
     meta: rpcQueryMeta("refresh-background"),
@@ -192,41 +159,29 @@ export function mcpProviderStatusQueryOptions(input: {
   });
 }
 
+/**
+ * The key deliberately omits the saved config version: a save must not refetch
+ * statuses (see invalidateMcpConfigQueries).
+ */
 export function mcpServerStatusesQueryOptions(input: {
   readonly provider: ProviderKind;
   readonly projectId: ProjectId | null;
   readonly instanceId?: ProviderInstanceId;
-  readonly binaryPath?: string;
-  readonly homePath?: string;
   readonly enabled?: boolean;
   readonly threadId?: ThreadId;
-  readonly fingerprint?: string;
-  readonly generation?: number;
-  readonly desiredVersion?: string;
-  readonly appliedVersion?: string;
 }) {
   return queryOptions<McpServerStatusesResult>({
     queryKey: [
-      ...mcpQueryKeys.serverStatuses(
-        input.provider,
-        input.projectId,
-        input.instanceId ?? input.binaryPath ?? null,
-        input.homePath ?? null,
-      ),
+      ...mcpQueryKeys.serverStatuses(input.provider, input.projectId, input.instanceId ?? null),
       input.threadId ? "conversation" : "automatic",
-      input.fingerprint ?? null,
       input.threadId ?? null,
-      input.generation ?? null,
-      input.desiredVersion ?? null,
-      input.appliedVersion ?? null,
     ],
     placeholderData: (previous, previousQuery) => {
       const key = previousQuery?.queryKey;
       return key?.[2] === input.provider &&
         key[3] === input.projectId &&
-        key[4] === (input.instanceId ?? input.binaryPath ?? null) &&
-        key[5] === (input.homePath ?? null) &&
-        key[8] === (input.threadId ?? null)
+        key[4] === (input.instanceId ?? null) &&
+        key[6] === (input.threadId ?? null)
         ? previous
         : undefined;
     },
@@ -263,8 +218,6 @@ export function mcpLoginStatusQueryOptions(input: {
   readonly projectId: ProjectId | null;
   readonly serverName?: string | null;
   readonly instanceId?: ProviderInstanceId;
-  readonly binaryPath?: string;
-  readonly homePath?: string;
   readonly enabled?: boolean;
 }) {
   return queryOptions<McpLoginStatusResult>({
@@ -272,8 +225,7 @@ export function mcpLoginStatusQueryOptions(input: {
       input.provider,
       input.projectId,
       input.serverName ?? null,
-      input.instanceId ?? input.binaryPath ?? null,
-      input.homePath ?? null,
+      input.instanceId ?? null,
     ),
     enabled:
       (input.enabled ?? true) &&
@@ -289,37 +241,6 @@ export function mcpLoginStatusQueryOptions(input: {
         projectId: input.projectId,
         ...(input.instanceId ? { instanceId: input.instanceId } : {}),
         ...(input.serverName ? { serverName: input.serverName } : {}),
-      });
-    },
-  });
-}
-
-export function mcpOAuthStatusQueryOptions(input: {
-  readonly projectId: ProjectId | null;
-  readonly serverName: string | null;
-  readonly instanceId?: ProviderInstanceId;
-  readonly binaryPath?: string;
-  readonly homePath?: string;
-  readonly enabled?: boolean;
-  readonly refetchInterval?: number | false;
-}) {
-  return queryOptions<McpOauthLoginStatusResult>({
-    queryKey: mcpQueryKeys.oauthStatus(
-      input.projectId,
-      input.serverName,
-      input.instanceId ?? input.binaryPath ?? null,
-      input.homePath ?? null,
-    ),
-    enabled: (input.enabled ?? true) && Boolean(input.projectId) && Boolean(input.serverName),
-    refetchInterval: input.refetchInterval ?? false,
-    queryFn: async () => {
-      if (!input.projectId || !input.serverName) {
-        throw new Error("MCP OAuth status is unavailable.");
-      }
-      return ensureNativeApi().mcp.getOAuthStatus({
-        projectId: input.projectId,
-        ...(input.instanceId ? { instanceId: input.instanceId } : {}),
-        serverName: input.serverName,
       });
     },
   });

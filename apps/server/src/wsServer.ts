@@ -450,11 +450,8 @@ import {
 } from "@t3tools/shared/providerInput";
 import { CodexControlClientRegistry } from "./codex/CodexControlClientRegistry.ts";
 import { CodexMcpEventBus } from "./codex/CodexMcpEventBus.ts";
-import { CodexMcpSyncService } from "./codex/CodexMcpSyncService.ts";
-import { CodexOAuthManager } from "./codex/CodexOAuthManager.ts";
 import { ProjectMcpConfigService } from "./mcp/ProjectMcpConfigService.ts";
 import { McpRuntimeService } from "./mcp/McpRuntimeService.ts";
-import { toCodexProviderStartOptions } from "./provider/codexProviderOptions.ts";
 import { reconcileCodexThreadSnapshots } from "./orchestration/codexSnapshotReconciliation.ts";
 import { makeHistoryRecoveredSessionSet } from "./orchestration/providerTerminalLifecycle.ts";
 import { redactServerSettingsForClient, ServerSettingsService } from "./serverSettings.ts";
@@ -967,8 +964,6 @@ export type ServerCoreRuntimeServices =
   | ServerSettingsService
   | CodexControlClientRegistry
   | CodexMcpEventBus
-  | CodexMcpSyncService
-  | CodexOAuthManager
   | McpRuntimeService
   | ProjectMcpConfigService
   | PreviewAutomationBroker
@@ -1165,8 +1160,6 @@ export const createServer = Effect.fn(function* (
   const harnessValidation = yield* HarnessValidation;
   const serverSettings = yield* ServerSettingsService;
   const codexMcpEventBus = yield* CodexMcpEventBus;
-  const codexMcpSyncService = yield* CodexMcpSyncService;
-  const codexOAuthManager = yield* CodexOAuthManager;
   const mcpRuntimeService = yield* McpRuntimeService;
   const projectMcpConfigService = yield* ProjectMcpConfigService;
   const previewAutomationBroker = yield* PreviewAutomationBroker;
@@ -8304,57 +8297,8 @@ export const createServer = Effect.fn(function* (
         return yield* mcpRuntimeService.getLoginStatus(body);
       }
 
-      case WS_METHODS.mcpGetCodexStatus: {
-        const requestBody = stripRequestTag(request.body);
-        const body = yield* profileCall(() => resolveMcpAccount(requestBody));
-        const providerOptions = toCodexProviderStartOptions({
-          binaryPath: body.binaryPath,
-          homePath: body.homePath,
-        });
-        return yield* codexMcpSyncService.getStatus({
-          projectId: body.projectId,
-          ...(body.instanceId ? { instanceId: body.instanceId } : {}),
-          ...(providerOptions ? { providerOptions } : {}),
-        });
-      }
-
-      case WS_METHODS.mcpReloadProject: {
-        const requestBody = stripRequestTag(request.body);
-        const body = yield* profileCall(() => resolveMcpAccount(requestBody));
-        const providerOptions = toCodexProviderStartOptions({
-          binaryPath: body.binaryPath,
-          homePath: body.homePath,
-        });
-        yield* providerService.reloadMcpConfigForProject({
-          provider: "codex",
-          projectId: body.projectId,
-          ...(body.instanceId ? { instanceId: body.instanceId } : {}),
-          ...(providerOptions ? { providerOptions } : {}),
-        });
-        const status = yield* codexMcpSyncService.getStatus({
-          projectId: body.projectId,
-          ...(body.instanceId ? { instanceId: body.instanceId } : {}),
-          ...(providerOptions ? { providerOptions } : {}),
-        });
-        yield* codexMcpEventBus.publishStatusUpdated({
-          provider: "codex",
-          scope: "project",
-          projectId: body.projectId,
-          ...(body.instanceId ? { instanceId: body.instanceId } : {}),
-          reason: "reloaded",
-          ...(status.configVersion ? { configVersion: status.configVersion } : {}),
-        });
-        return status;
-      }
-
       case WS_METHODS.mcpApplyToLiveSessions: {
-        const requestBody = stripRequestTag(request.body);
-        if (requestBody.binaryPath !== undefined || requestBody.homePath !== undefined)
-          return yield* new RouteRequestError({
-            message:
-              "Client-supplied provider executable and home paths are not accepted. Select a provider instance.",
-          });
-        const body = requestBody;
+        const body = stripRequestTag(request.body);
         const { providerCommandReactor } = yield* awaitOrchestrationRuntimeForRoute;
         const result = yield* providerCommandReactor.applyMcpConfigToLiveSessions(body).pipe(
           Effect.mapError(
@@ -8372,25 +8316,6 @@ export const createServer = Effect.fn(function* (
           ...(result.configVersion ? { configVersion: result.configVersion } : {}),
         });
         return result;
-      }
-
-      case WS_METHODS.mcpStartOAuthLogin: {
-        const requestBody = stripRequestTag(request.body);
-        const body = yield* profileCall(() => resolveMcpAccount(requestBody));
-        return yield* codexOAuthManager.startLogin(body).pipe(
-          Effect.mapError(
-            (error) =>
-              new RouteRequestError({
-                message: error.message,
-              }),
-          ),
-        );
-      }
-
-      case WS_METHODS.mcpGetOAuthStatus: {
-        const requestBody = stripRequestTag(request.body);
-        const body = yield* profileCall(() => resolveMcpAccount(requestBody));
-        return yield* codexOAuthManager.getStatus(body);
       }
 
       default: {

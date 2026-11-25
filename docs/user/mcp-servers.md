@@ -6,7 +6,7 @@ Open **Settings → Tools → MCP servers** for common configuration, or choose 
 
 MCP settings store server definitions in a common scope and a project scope. Common entries are inherited by every project. In project settings, **Use in this project** opts out of an inherited common server without changing other projects. **Override** opens a project draft using the common definition.
 
-Names are trimmed and compared without case. An exact-name project entry replaces the entire common definition; a differently cased alias is a conflict. Each scope accepts 16 entries, with at most 32 effective entries and four reserved slots for F5's built-in servers. An oversized legacy layer stays intact while you repair or remove entries; it cannot accept new names.
+New and renamed servers may use letters, numbers, `_` and `-` (up to 128 characters), and must not start with `f5_` or `__f5`; tool names are built from the server name, and providers rewrite other characters. Saved servers with older names keep working and show a rename warning. Names are trimmed and compared without case. An exact-name project entry replaces the entire common definition; a differently cased alias is a conflict. Each scope accepts 16 entries, with at most 32 effective entries and four reserved slots for F5's built-in servers. An oversized legacy layer stays intact while you repair or remove entries; it cannot accept new names.
 
 Opt-outs compare names without case and remain recorded when a common server is removed. Reusing that name keeps the project opted out; explicitly enable it in that project if desired.
 
@@ -16,16 +16,19 @@ Arguments are separate, ordered rows. Use the arrows to reorder them; empty argu
 
 Common and project configuration is shared by Codex and Claude. Support labels in Advanced identify provider-specific fields.
 
-| Field or capability                                         | Codex                                                   | Claude                                                      |
-| ----------------------------------------------------------- | ------------------------------------------------------- | ----------------------------------------------------------- |
-| stdio command, ordered args, environment, working directory | Supported                                               | Supported                                                   |
-| HTTP URL and literal headers                                | Supported                                               | Supported                                                   |
-| SSE URL                                                     | Connects using streamable HTTP; SSE-only endpoints fail | Supported                                                   |
-| Tool timeout, enabled tools, disabled tools                 | Supported                                               | Supported                                                   |
-| Startup timeout, parallel tool calls                        | Supported                                               | Ignored                                                     |
-| Scopes, OAuth fields, bearer token environment variable     | Supported                                               | Ignored                                                     |
-| Inspector tools                                             | Names, descriptions, annotations, input schemas         | Names, descriptions, annotations; input schemas unavailable |
-| Inspector resources and templates                           | Metadata available                                      | Unavailable from Claude                                     |
+| Field or capability                         | Codex                                                   | Claude                                                           |
+| ------------------------------------------- | ------------------------------------------------------- | ---------------------------------------------------------------- |
+| stdio command, ordered args, environment    | Supported                                               | Supported                                                        |
+| stdio working directory                     | Supported                                               | Ignored; servers start in the conversation's directory           |
+| HTTP URL and literal headers                | Supported                                               | Supported                                                        |
+| SSE URL                                     | Connects using streamable HTTP; SSE-only endpoints fail | Supported                                                        |
+| Tool timeout, enabled tools, disabled tools | Supported                                               | Supported                                                        |
+| Bearer token environment variable           | Supported                                               | Sent as an `Authorization` header from the account's environment |
+| OAuth client ID and callback port           | Supported                                               | Supported                                                        |
+| Startup timeout, parallel tool calls        | Supported                                               | Ignored                                                          |
+| Scopes, OAuth callback URL, OAuth resource  | Supported                                               | Ignored                                                          |
+| Inspector tools                             | Names, descriptions, annotations, input schemas         | Names, descriptions, annotations; input schemas unavailable      |
+| Inspector resources and templates           | Metadata available                                      | Unavailable from Claude                                          |
 
 Selecting SSE shows the transport warning. If the endpoint supports streamable HTTP, choose HTTP. Authentication is provider-owned: tokens are stored by the provider for the selected account, so later sessions connect without asking. When a server needs sign-in, click **Sign in** in the conversation's sign-in row above the composer, in **Runtime details**, or on its row in a project-scoped MCP settings view (see [Sign in](#sign-in)). F5 never opens the browser on its own.
 
@@ -43,7 +46,7 @@ OAuth needs your approval in the browser, so F5 never signs in automatically. **
 
 - **In a conversation**, while its session is live: a row above the composer lists the servers that need sign-in in the current session, and **Sign in…** expands one button per server. **Runtime details** lists the same servers with Sign in.
 - **In the chat's MCP chip**, which shows how many servers need sign-in; open it for a **Sign in** button per server.
-- **In MCP settings**, when a project scope is selected. The Global scope has no live status, so it shows **Unknown**. A **Test** that reports **Sign-in required** points you to a project scope or the conversation prompt.
+- **In MCP settings**, when a project scope is selected. Without a selected project there is no live status, so no provider status is shown. A **Test** that reports **Sign-in required** points you to a project scope or the conversation prompt.
 
 The conversation row, Runtime details, and chip cover Codex servers from F5 or the profile's `config.toml`, and Claude servers configured in F5. Claude's **External** servers (plugins, Claude settings, claude.ai connectors) are not reported to the conversation; sign in to them from project-scoped MCP settings while a Claude conversation is running.
 
@@ -54,13 +57,13 @@ How sign-in works per provider:
 
 ## Apply, Reconnect, and Test
 
-After saving, the banner says: **Saved. Running sessions pick up MCP changes on their next message, restarting if needed.** Use **Apply to all live sessions** to apply now across all eligible Codex and Claude accounts in the selected scope: this project for project scope, or every project for common scope. Sessions already on that version are skipped unless they need a retry. Active-turn protections still apply. Per-session outcomes and targeted Retry appear in the inspector. The banner clears after Apply or a scope change.
+After saving, the banner says: **Saved. Running sessions pick up MCP changes on their next message, restarting if needed.** Saving does not re-check live status; use **Refresh status** or Apply. Use **Apply to all live sessions** to apply now across all eligible Codex and Claude accounts in the selected scope: this project for project scope, or every project for common scope. Sessions already on that version are skipped unless they need a retry. Active-turn protections still apply. Per-session outcomes and targeted Retry appear in the inspector. The banner clears after Apply or a scope change.
 
 **Reconnect** appears on failed, login-required, and unknown rows. It recovers connections used by running sessions for the selected project and account. Claude reconnects the selected owned server; Codex reloads its settings connection and applies through the normal session path, which can reload every MCP server in the affected sessions. The result distinguishes reconnected sessions, no running session using the server, and failures. Reconnect does not perform sign-in; use **Sign in** instead. A pending sign-in can be reopened without cancelling it if the browser fails to open.
 
 ## Import
 
-**Import configuration** opens a preview for pasted F5/Claude JSON, Codex JSON, or Codex TOML. **Detected → Detect configurations** explicitly reads the selected account's Claude state (including project entries), the project's `.mcp.json`, and Codex's `config.toml`. Files must be regular files of at most 1 MiB. Detection never applies configuration. Choose entries, review warnings, and explicitly choose **Replace** for any conflict; existing entries are kept by default. A version conflict refreshes the preview without discarding your text or choices, and requires confirmation again.
+**Import configuration** opens a preview for pasted F5/Claude JSON, Codex JSON, or Codex TOML. **Detected → Detect configurations** explicitly reads the selected account's Claude state (including project entries), the project's `.mcp.json`, and Codex's `config.toml`. Files must be regular files of at most 1 MiB. Detection never applies configuration. Names outside the allowed characters are imported under a proposed name (for example `my.server` becomes `my_server`), with a warning. F5 does not expand `${VAR}` references: values containing them are passed to the server literally and are flagged, so replace them with the value or a stored secret. Choose entries, review warnings, and explicitly choose **Replace** for any conflict; existing entries are kept by default. A version conflict refreshes the preview without discarding your text or choices, and requires confirmation again.
 
 ## Connection test results
 

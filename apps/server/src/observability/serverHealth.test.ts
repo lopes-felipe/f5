@@ -84,7 +84,7 @@ describe("readServerHealth", () => {
   });
 
   it("leaves requests that are long by design out of the ranking", () => {
-    recordSlowRpcRoute("mcp.startOAuthLogin", 120_000, "long");
+    recordSlowRpcRoute("mcp.startLogin", 120_000, "long");
     recordSlowRpcRoute("git.status", 1_200, "ordinary");
     recordSlowRpcRoute("git.status", 1_300);
     expect(readServerHealth().slowRoutes.map((route) => [route.name, route.count])).toEqual([

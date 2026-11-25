@@ -8,7 +8,34 @@ import {
 import { Schema } from "effect";
 import { parse as parseToml } from "smol-toml";
 
-import { normalizeServerName, mcpServerNameKey } from "./mcpServerName";
+import {
+  MCP_SERVER_NAME_RULE,
+  normalizeServerName,
+  mcpServerNameKey,
+  readMcpServerNameProblem,
+  sanitizeMcpServerName,
+} from "./mcpServerName";
+
+/** `${VAR}` / `${VAR:-default}` references; F5 secret placeholders are handled separately. */
+const ENV_REFERENCE_PATTERN = /\$\{(?!f5-secret:)[^}]*\}/u;
+
+/** Fields whose values other clients expand from the environment but F5 passes literally. */
+function readUnexpandedEnvReferenceFields(server: McpProjectServersConfig[string]): string[] {
+  const fields: string[] = [];
+  const check = (field: string, value: string | undefined) => {
+    if (value !== undefined && ENV_REFERENCE_PATTERN.test(value)) fields.push(field);
+  };
+  if (server.type === "stdio") {
+    check("command", server.command);
+    server.args?.forEach((value, index) => check(`args.${index}`, value));
+    for (const [key, value] of Object.entries(server.env ?? {})) check(`env.${key}`, value);
+    check("cwd", server.cwd);
+  } else {
+    check("url", server.url);
+    for (const [key, value] of Object.entries(server.headers ?? {})) check(`headers.${key}`, value);
+  }
+  return fields;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -324,12 +351,18 @@ export function parseMcpImport(
         : {};
   const seen = new Set<string>();
   const candidates = Object.entries(root).map(([rawName, raw], index) => {
-    const name = normalizeServerName(rawName) ?? rawName;
+    const normalizedName = normalizeServerName(rawName);
+    const name =
+      normalizedName && readMcpServerNameProblem(normalizedName)
+        ? sanitizeMcpServerName(normalizedName)
+        : (normalizedName ?? rawName);
     const entryIssues: Issue[] = [];
     const add = (field: string, message: string, severity: "warning" | "error" = "warning") =>
       entryIssues.push({ serverName: name, field, severity, message });
-    if (!normalizeServerName(rawName))
+    if (!normalizedName)
       add("name", "Server name is required and must be at most 128 characters.", "error");
+    else if (name !== normalizedName)
+      add("name", `Imported as '${name}' instead of '${normalizedName}'. ${MCP_SERVER_NAME_RULE}`);
     if (seen.has(mcpServerNameKey(name))) add("name", "Conflicting imported server name.", "error");
     seen.add(mcpServerNameKey(name));
     let server: McpProjectServersConfig[string] | undefined;
@@ -442,6 +475,11 @@ export function parseMcpImport(
     if (server) {
       const validation = readImportValidationIssues(server);
       for (const issue of validation) add(issue.field, issue.message, "error");
+      for (const field of readUnexpandedEnvReferenceFields(server))
+        add(
+          field,
+          "Contains a ${VAR} reference. F5 passes it to the server literally and does not expand it; replace it with the value or a stored secret.",
+        );
     }
     return {
       id: `${source}:${index}:${name}`,

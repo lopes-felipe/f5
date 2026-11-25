@@ -6,7 +6,11 @@ import {
   type McpServerTransportType,
 } from "@t3tools/contracts";
 import { Schema } from "effect";
-import { normalizeServerName, trimToUndefined } from "@t3tools/shared/mcpValidation";
+import {
+  normalizeServerName,
+  readMcpServerNameProblem,
+  trimToUndefined,
+} from "@t3tools/shared/mcpValidation";
 
 export type TransportType = McpServerTransportType;
 
@@ -222,6 +226,9 @@ export function decodeDraftServer(draft: ServerDraft): {
   if (!name) {
     throw new Error("Server name is required and must be 128 characters or fewer.");
   }
+  // Stored legacy names keep working; new and renamed servers follow the charset rule.
+  const nameProblem = name === draft.original?.name ? undefined : readMcpServerNameProblem(name);
+  if (nameProblem) throw new Error(nameProblem);
 
   const startupTimeoutSec = parseOptionalIntegerInput(draft.startupTimeoutSec, "Startup timeout");
   const toolTimeoutSec = parseOptionalIntegerInput(draft.toolTimeoutSec, "Tool timeout");

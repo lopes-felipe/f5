@@ -766,6 +766,55 @@ it("keeps placeholders and their versions in storage while every runtime read re
   );
 });
 
+it("resolves stored secrets once per config version and again after a save", async () => {
+  const { layer } = makeRepositoryLayer();
+  const { ServerSecretStore } = await import("../auth/Services/ServerSecretStore.ts");
+  const id = "00000000-0000-4000-8000-000000000001";
+  let secretReads = 0;
+  const secretStore = Layer.succeed(ServerSecretStore, {
+    get: (name: string) =>
+      Effect.sync(() => {
+        if (name === `mcp-secret-${id}`) secretReads += 1;
+        return name === `mcp-secret-${id}` ? new TextEncoder().encode("resolved") : null;
+      }),
+    set: () => Effect.void,
+    list: () => Effect.succeed([]),
+    getOrCreateRandom: () => Effect.succeed(new Uint8Array()),
+    remove: () => Effect.void,
+  });
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const service = yield* ProjectMcpConfigService;
+      const projectId = ProjectId.makeUnsafe("secret-cache");
+      const server = {
+        type: "http" as const,
+        url: "https://example.test/mcp",
+        headers: { Authorization: "${f5-secret:" + id + "}" },
+      };
+      const saved = yield* service.replaceProjectConfig({ projectId, servers: { docs: server } });
+      const readsAfterSave = secretReads;
+      const first = yield* service.readEffectiveRuntimeConfig(projectId);
+      const second = yield* service.readEffectiveRuntimeConfig(projectId);
+      expect(second).toBe(first);
+      expect(secretReads).toBe(readsAfterSave + 1);
+      yield* service.replaceProjectConfig({
+        projectId,
+        ...(saved.version ? { expectedVersion: saved.version } : {}),
+        servers: { docs: { ...server, toolTimeoutSec: 30 } },
+      });
+      const readsAfterEdit = secretReads;
+      const third = yield* service.readEffectiveRuntimeConfig(projectId);
+      expect(third.servers.docs?.toolTimeoutSec).toBe(30);
+      expect(third.servers.docs?.headers?.Authorization).toBe("resolved");
+      expect(secretReads).toBe(readsAfterEdit + 1);
+    }).pipe(
+      Effect.provide(
+        ProjectMcpConfigServiceLive.pipe(Layer.provide(layer), Layer.provide(secretStore)),
+      ),
+    ),
+  );
+});
+
 it("allows unrelated edits, opt-outs and disabling with unchanged missing secrets, but rejects new references", async () => {
   const { layer, rows } = makeRepositoryLayer();
   const projectId = ProjectId.makeUnsafe("missing-secret");

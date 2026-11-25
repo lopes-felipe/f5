@@ -226,8 +226,14 @@ export function evaluateMcpToolFilter(
   }
 }
 
+/**
+ * `environment` is the account (provider process) environment. Claude has no
+ * `bearer_token_env_var`, so a server's `bearerTokenEnvVar` is resolved from it
+ * into an `Authorization` header, as Codex and Cursor do.
+ */
 export function translateMcpForClaudeAgent(
   servers: McpProjectServersConfig | null | undefined,
+  options?: { readonly environment?: Readonly<Record<string, string | undefined>> },
 ): Record<string, ClaudeAgentMcpServerConfig> | undefined {
   const translated = Object.create(null) as Record<string, ClaudeAgentMcpServerConfig>;
   for (const [name, definition] of Object.entries(filterEnabledMcpServers(servers))) {
@@ -254,11 +260,19 @@ export function translateMcpForClaudeAgent(
     if (!normalized.url) {
       continue;
     }
+    const bearer = normalized.bearerTokenEnvVar
+      ? options?.environment?.[normalized.bearerTokenEnvVar]?.trim()
+      : undefined;
+    const headers =
+      bearer &&
+      !Object.keys(normalized.headers ?? {}).some((key) => key.toLowerCase() === "authorization")
+        ? { ...normalized.headers, Authorization: `Bearer ${bearer}` }
+        : normalized.headers;
     translated[name] = {
       type: definition.type,
       ...timeout,
       url: normalized.url,
-      ...(normalized.headers ? { headers: normalized.headers } : {}),
+      ...(headers ? { headers } : {}),
       ...(normalized.oauthClientId || normalized.oauthCallbackPort !== undefined
         ? {
             oauth: {

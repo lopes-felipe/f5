@@ -15,23 +15,38 @@ import { ServerConfig } from "../config";
 import { instanceLock, ProfileBusyError } from "../profiles/InstanceLock";
 import * as NodePath from "node:path";
 import {
-  type McpGetLoginStatusRequest,
-  type McpInspectServerRequest,
+  type McpGetLoginStatusRequest as McpGetLoginStatusWireRequest,
+  type McpInspectServerRequest as McpInspectServerWireRequest,
   type McpInspectServerResult,
-  type McpReconnectServerRequest,
+  type McpReconnectServerRequest as McpReconnectServerWireRequest,
   type McpReconnectServerResult,
-  type McpGetProviderStatusRequest,
-  type McpGetServerStatusesRequest,
+  type McpGetProviderStatusRequest as McpGetProviderStatusWireRequest,
+  type McpGetServerStatusesRequest as McpGetServerStatusesWireRequest,
   type McpLoginStatusResult,
   type McpOauthLoginStatusResult,
   type McpProviderStatusResult,
   type McpServerStatusesResult,
-  type McpStartLoginRequest,
+  type McpStartLoginRequest as McpStartLoginWireRequest,
   type McpStatusUpdatedReason,
   type McpServerDefinition,
   type ProviderStartOptions,
   type ThreadId,
 } from "@t3tools/contracts";
+
+/**
+ * The route resolves the selected provider instance before calling this service
+ * and adds that instance's executable and home. Clients cannot supply them.
+ */
+interface ResolvedAccountPaths {
+  readonly binaryPath?: string | undefined;
+  readonly homePath?: string | undefined;
+}
+type McpGetLoginStatusRequest = McpGetLoginStatusWireRequest & ResolvedAccountPaths;
+type McpInspectServerRequest = McpInspectServerWireRequest & ResolvedAccountPaths;
+type McpReconnectServerRequest = McpReconnectServerWireRequest & ResolvedAccountPaths;
+type McpGetProviderStatusRequest = McpGetProviderStatusWireRequest & ResolvedAccountPaths;
+type McpGetServerStatusesRequest = McpGetServerStatusesWireRequest & ResolvedAccountPaths;
+type McpStartLoginRequest = McpStartLoginWireRequest & ResolvedAccountPaths;
 import {
   Clock,
   Effect,

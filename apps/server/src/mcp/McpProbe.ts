@@ -114,6 +114,7 @@ class McpProbeError extends Data.TaggedError("McpProbeError")<{
   authRequired: boolean;
 }> {}
 const active = new Set<string>();
+const MAX_CONCURRENT_PROBES = 4;
 export function probeMcpServer(
   input: McpProbeServerRequest,
   execution: {
@@ -145,12 +146,14 @@ export function probeMcpServer(
     authRequired: false,
   };
   return Effect.suspend<McpProbeServerResult, never, never>(() => {
-    if (active.has(key) || active.size >= 4)
+    if (active.has(key) || active.size >= MAX_CONCURRENT_PROBES)
       return Effect.succeed({
         ...empty,
         ok: false,
         durationMs: Date.now() - start,
-        error: "A test is already running.",
+        error: active.has(key)
+          ? "This server is already being tested."
+          : `Too many tests are running (limit ${MAX_CONCURRENT_PROBES}). Wait for one to finish and try again.`,
       });
     return Effect.scoped(
       Effect.gen(function* () {

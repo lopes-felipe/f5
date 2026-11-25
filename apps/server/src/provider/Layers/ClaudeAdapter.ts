@@ -8627,7 +8627,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         // provider options may tune one-off prompts, but must never override a
         // session into a more permissive SDK mode.
         const permissionMode = input.workflowExecutionProfile ? "plan" : runtimePermissionMode;
-        const translatedMcpServers = translateMcpForClaudeAgent(input.providerOptions?.mcpServers);
+        const translatedMcpServers = translateMcpForClaudeAgent(input.providerOptions?.mcpServers, {
+          environment: queryEnvironment,
+        });
         const mcpToolFilters = buildMcpToolFilters(input.providerOptions?.mcpServers);
         // Preview tools are installed in every interactive desktop session; each
         // call checks live policy. Launch-flag capabilities read policy here.
@@ -10175,10 +10177,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             }),
         });
         const context = yield* requireSession(threadId);
-        const desired = (translateMcpForClaudeAgent(mcpServers) ?? {}) as Record<
-          string,
-          McpServerConfig
-        >;
+        const desired = (translateMcpForClaudeAgent(mcpServers, {
+          environment: context.processEnvironment,
+        }) ?? {}) as Record<string, McpServerConfig>;
         yield* Effect.try({
           try: () =>
             assertMcpServerLimit(

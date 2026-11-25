@@ -219,11 +219,7 @@ export const WS_METHODS = {
   mcpReconnectServer: "mcp.reconnectServer",
   mcpStartLogin: "mcp.startLogin",
   mcpGetLoginStatus: "mcp.getLoginStatus",
-  mcpGetCodexStatus: "mcp.getCodexStatus",
-  mcpReloadProject: "mcp.reloadProject",
   mcpApplyToLiveSessions: "mcp.applyToLiveSessions",
-  mcpStartOAuthLogin: "mcp.startOAuthLogin",
-  mcpGetOAuthStatus: "mcp.getOAuthStatus",
 } as const;
 
 // ── Push Event Channels ──────────────────────────────────────────────
