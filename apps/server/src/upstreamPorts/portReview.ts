@@ -1,15 +1,17 @@
+import { codeReviewReviewers } from "@t3tools/shared/workflowParticipants";
+import { deriveCodeReviewWorkflowStatus } from "@t3tools/shared/workflowStatus";
 import {
   CodeReviewWorkflowId,
   CommandId,
   ProjectId,
   TurnId,
-  deriveCodeReviewWorkflowStatus,
   type ClientThreadTurnStartCommand,
   type CodeReviewWorkflow,
   type OrchestrationCreateCodeReviewWorkflowInput,
   type OrchestrationReadModel,
   type OrchestrationThread,
   type UpstreamPortReviewSummary,
+  type WorkflowModelSlot,
 } from "@t3tools/contracts";
 import { formatUpstreamTopicTrailer } from "@t3tools/shared/upstreamPorts";
 import { parseUpstreamOutcome, parseUpstreamOutcomes } from "@t3tools/shared/upstreamPortsPrompts";
@@ -519,8 +521,8 @@ export function makePortReviewReactor(deps: PortReviewReactorDeps) {
         submission,
         reviewerThreadsMissing: Boolean(
           workflow &&
-          [workflow.reviewerA, workflow.reviewerB].some(
-            (reviewer) =>
+          codeReviewReviewers(workflow).some(
+            ({ reviewer }) =>
               reviewer.status === "pending" &&
               !reviewer.dispatchCommandId &&
               !model.threads.some((entry) => entry.id === reviewer.threadId),
@@ -698,9 +700,7 @@ export function makePortReviewReactor(deps: PortReviewReactorDeps) {
               prompt,
               artifacts: [portReviewReportArtifact(report)],
               targetSlot: {
-                provider: provider.driver as NonNullable<
-                  PortReviewRecord["reviewers"]
-                >["reviewerA"]["provider"],
+                provider: provider.driver as WorkflowModelSlot["provider"],
                 model: thread.modelSelection?.model ?? thread.model,
               },
               thread,

@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import { repairUnreleasedScheduledTaskMigrations } from "./repairUnreleasedScheduledTaskMigrations.ts";
 import { BASELINE_MIGRATION_ID } from "./BaselineSchema.ts";
 import {
+  applyBaselineSchemaIfFresh,
   LATEST_MIGRATION_ID,
   MIGRATIONS,
   runIncrementalMigrations,
@@ -570,24 +571,36 @@ const inspectDatabaseSchema = Effect.gen(function* () {
 });
 
 describe("squashed baseline schema bootstrap", () => {
-  it("matches incremental migrations 1..latest identically on a fresh database", async () => {
+  it("runs the baseline fast path on a fresh DB and matches incremental migrations 1..latest identically", async () => {
     const baselineRuntime = ManagedRuntime.make(SqliteClient.layerMemory());
     const incrementalRuntime = ManagedRuntime.make(SqliteClient.layerMemory());
     try {
-      const baseline = await baselineRuntime.runPromise(
-        Effect.gen(function* () {
-          yield* runMigrations;
-          // Re-running migrations must be an idempotent no-op.
-          yield* runMigrations;
-          return yield* inspectDatabaseSchema;
-        }),
-      );
+      const { appliedFirst, appliedSecond, baselineTimestamps, baseline } =
+        await baselineRuntime.runPromise(
+          Effect.gen(function* () {
+            const appliedFirst = yield* applyBaselineSchemaIfFresh;
+            const appliedSecond = yield* applyBaselineSchemaIfFresh;
+            yield* runMigrations;
+            const sql = yield* SqlClient.SqlClient;
+            const baselineTimestamps = yield* sql<{ readonly created_at: string }>`
+              SELECT DISTINCT created_at FROM effect_sql_migrations
+              WHERE migration_id <= ${BASELINE_MIGRATION_ID}
+            `;
+            const baseline = yield* inspectDatabaseSchema;
+            return { appliedFirst, appliedSecond, baselineTimestamps, baseline };
+          }),
+        );
       const incremental = await incrementalRuntime.runPromise(
         Effect.gen(function* () {
           yield* runIncrementalMigrations;
           return yield* inspectDatabaseSchema;
         }),
       );
+
+      // Explicitly prove the baseline fast path executed once and skipped on re-run.
+      expect(appliedFirst).toBe(true);
+      expect(appliedSecond).toBe(false);
+      expect(baselineTimestamps).toHaveLength(1);
 
       expect(baseline.master).toEqual(incremental.master);
       expect(baseline.tableInfo).toEqual(incremental.tableInfo);
@@ -600,8 +613,11 @@ describe("squashed baseline schema bootstrap", () => {
       expect(baseline.seeded.prHubPublication).toEqual(incremental.seeded.prHubPublication);
       expect(baseline.seeded.threadPinState).toEqual(incremental.seeded.threadPinState);
 
-      expect(baseline.seeded.usageMetadata).toHaveLength(1);
-      expect(baseline.seeded.usageMetadata[0]?.singleton_id).toBe(1);
+      // Compare every non-timestamp column of seeded singleton tables directly against incremental.
+      expect(baseline.seeded.usageMetadata).toHaveLength(incremental.seeded.usageMetadata.length);
+      expect(baseline.seeded.usageMetadata[0]?.singleton_id).toBe(
+        incremental.seeded.usageMetadata[0]?.singleton_id,
+      );
       expect(baseline.seeded.usageMetadata[0]?.fact_cutover_at).toBe(
         baseline.seeded.usageMetadata[0]?.coverage_started_at,
       );
@@ -609,20 +625,40 @@ describe("squashed baseline schema bootstrap", () => {
         /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/,
       );
 
-      expect(baseline.seeded.scheduledControl).toHaveLength(1);
-      expect(baseline.seeded.scheduledControl[0]).toMatchObject({
-        id: 1,
-        revision: 0,
-        enabled: 1,
-        ready: 0,
-        epoch: 0,
-      });
-      expect(baseline.seeded.scheduledControl[0]?.cutover_at).toMatch(
-        /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/,
+      expect(baseline.seeded.scheduledControl).toHaveLength(
+        incremental.seeded.scheduledControl.length,
       );
+      const { cutover_at: baselineCutover, ...baselineControlNonTime } =
+        baseline.seeded.scheduledControl[0]!;
+      const { cutover_at: _incCutover, ...incrementalControlNonTime } =
+        incremental.seeded.scheduledControl[0]!;
+      expect(baselineControlNonTime).toEqual(incrementalControlNonTime);
+      expect(baselineCutover).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
     } finally {
       await baselineRuntime.dispose();
       await incrementalRuntime.dispose();
+    }
+  });
+
+  it("serializes concurrent fresh-DB baseline bootstraps cleanly inside the IMMEDIATE transaction", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "f5-baseline-race-"));
+    const dbPath = join(tempDir, "concurrent.sqlite");
+    const runtime = ManagedRuntime.make(SqliteClient.layer({ filename: dbPath }));
+    try {
+      const [appliedA, appliedB] = await runtime.runPromise(
+        Effect.all([applyBaselineSchemaIfFresh, applyBaselineSchemaIfFresh], {
+          concurrency: "unbounded",
+        }),
+      );
+      // Exactly one fiber creates the baseline tables; the other acquires the transaction
+      // second, re-checks sqlite_master inside it, and skips the DDL cleanly.
+      expect([appliedA, appliedB].filter(Boolean)).toHaveLength(1);
+      await runtime.runPromise(
+        Effect.all([runMigrations, runMigrations], { concurrency: "unbounded" }),
+      );
+    } finally {
+      await runtime.dispose();
+      rmSync(tempDir, { recursive: true, force: true });
     }
   });
 

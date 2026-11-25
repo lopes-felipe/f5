@@ -389,6 +389,10 @@ interface ProviderInstanceCardProps {
   readonly liveProvider: ServerProvider | undefined;
   readonly isExpanded: boolean;
   readonly onExpandedChange: (open: boolean) => void;
+  /** Open the inventory scrolled to its hooks (a link asked for this instance). */
+  readonly focusHooks?: boolean | undefined;
+  /** With `focusHooks`: the project whose hooks the inventory lists first. */
+  readonly focusHooksProjectId?: string | undefined;
   readonly onUpdate: (nextInstance: ProviderInstanceConfig) => void;
   readonly dismissedProviderUpdateAdvisory?: string | undefined;
   readonly onDismissProviderUpdateAdvisory?: ((latestVersion: string) => void) | undefined;
@@ -449,6 +453,8 @@ export function ProviderInstanceCard({
   liveProvider,
   isExpanded,
   onExpandedChange,
+  focusHooks = false,
+  focusHooksProjectId,
   onUpdate,
   onDelete,
   onRunProviderUpdate,
@@ -1159,7 +1165,11 @@ export function ProviderInstanceCard({
               />
             )}
             {providerRuntimeCapabilities(String(instance.driver)).instanceInventory && (
-              <ProviderInventorySection instanceId={instanceId} />
+              <ProviderInventorySection
+                instanceId={instanceId}
+                focusHooks={focusHooks}
+                focusProjectId={focusHooksProjectId}
+              />
             )}
             {driverOption !== undefined ? (
               <ProviderModelsSection

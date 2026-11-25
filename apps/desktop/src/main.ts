@@ -3991,8 +3991,7 @@ function registerIpcHandlers(): void {
   });
   ipcMain.on("desktop:get-ws-url", (event) => {
     try {
-      if (event.senderFrame !== event.sender.mainFrame)
-        throw new Error("Only the owning main frame may bootstrap.");
+      authorizeAppMainFrame(event, "Backend connection requests");
       const runtime = runtimeForRenderer(event.sender.id);
       event.returnValue = getDesktopBackendWebSocketUrl(
         runtime.backendPort,

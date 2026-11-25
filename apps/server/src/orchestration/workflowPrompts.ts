@@ -1,4 +1,5 @@
 import type { PlanningWorkflow, WorkflowBranch, WorkflowModelSlot } from "@t3tools/contracts";
+import { planningBranches, workflowUsesMesh } from "@t3tools/shared/workflowParticipants";
 
 import {
   type WorkflowRetryContext,
@@ -19,6 +20,24 @@ interface ReviewInput {
   readonly source: WorkflowPromptArtifactSource;
 }
 
+/** One plan handed to the merge prompt, in author order. */
+export interface MergePlanInput {
+  readonly label: string;
+  readonly markdown: string;
+  readonly source: WorkflowPromptArtifactSource;
+  readonly model: WorkflowModelSlot;
+}
+
+/** Output limit for runs with more than two authors, so every plan fits in the merge prompt. */
+export function planLengthLimitSection(
+  maxPlanChars: number | null | undefined,
+  artifact: "plan" | "document" = "plan",
+): string | null {
+  if (maxPlanChars == null) return null;
+  return `## Length Limit
+Keep the complete ${artifact} under ${maxPlanChars} characters. Longer ${artifact}s are rejected, so every author's ${artifact} fits into the merge.`;
+}
+
 const PLAN_SUBMISSION_REQUIREMENT =
   "Submit the complete final plan in exactly one nonempty <proposed_plan> block, with each delimiter on its own line and no text outside the block. Claude may instead submit it through ExitPlanMode. Waiting messages and progress updates are not plan submissions. Wait for delegated work and incorporate its results before submitting.";
 
@@ -27,12 +46,15 @@ export function buildAuthorPromptSections(input: {
   readonly branch: WorkflowBranch;
   readonly authorSlot: WorkflowModelSlot;
   readonly retry?: WorkflowRetryContext | undefined;
+  /** Per-plan output limit; set only on runs with more than two authors. */
+  readonly maxPlanChars?: number | null | undefined;
 }): ReadonlyArray<string | null | undefined> {
+  const mesh = workflowUsesMesh(planningBranches(input.workflow).length);
   return [
     `Please create a detailed implementation plan for the following requirement:
 
 ${input.workflow.requirementPrompt}`,
-    `You are Author ${input.branch.branchId.toUpperCase()} in a multi-model planning workflow. Your plan will be independently reviewed and later merged with another plan. Focus on producing the strongest standalone plan.`,
+    `You are Author ${input.branch.branchId.toUpperCase()} in a multi-model planning workflow. Your plan will be independently reviewed and later merged with ${mesh ? "the other authors' plans" : "another plan"}. Focus on producing the strongest standalone plan.`,
     providerGuidanceSection(input.authorSlot.provider),
     `## Planning Requirements
 - Explore the relevant codebase before you write the plan. Read the current implementation, trace the affected flows, and ground the plan in code you actually inspected.
@@ -42,6 +64,7 @@ ${input.workflow.requirementPrompt}`,
 - Include specific file references. When you refer to existing code, use \`file_path:line_number\` references.`,
     `Return the full plan in your assistant response.
 Do not create or modify files during this planning phase.`,
+    planLengthLimitSection(input.maxPlanChars),
     PLAN_SUBMISSION_REQUIREMENT,
     workflowInterruptedRetrySection(input.retry),
   ];
@@ -106,6 +129,8 @@ export function buildRevisionPromptSections(input: {
    * it again only pushes large plans over the message limit.
    */
   readonly includeOriginalPlan?: boolean | undefined;
+  /** Per-plan output limit; set only on runs with more than two authors. */
+  readonly maxPlanChars?: number | null | undefined;
 }): ReadonlyArray<string | null | undefined> {
   const reviewSections = input.reviews.map(
     (review) => `## ${review.reviewerLabel}\n\n${review.reviewMarkdown}`,
@@ -125,6 +150,7 @@ ${reviewSections.join("\n\n")}`,
 The revised plan should be a complete replacement, not a diff.
 Return the full revised plan in your assistant response.
 Do not create or modify files during this planning phase.`,
+    planLengthLimitSection(input.maxPlanChars),
     PLAN_SUBMISSION_REQUIREMENT,
   ];
 }
@@ -137,29 +163,26 @@ export function buildRevisionPrompt(
 
 export function buildMergePromptSections(input: {
   readonly workflow: PlanningWorkflow;
-  readonly planA: { readonly markdown: string; readonly source: WorkflowPromptArtifactSource };
-  readonly planB: { readonly markdown: string; readonly source: WorkflowPromptArtifactSource };
-  readonly modelA: WorkflowModelSlot;
-  readonly modelB: WorkflowModelSlot;
-  readonly reviews?: ReadonlyArray<ReviewInput> | undefined;
+  /** Every author's revised plan, in author order. */
+  readonly plans: ReadonlyArray<MergePlanInput>;
   readonly mergeSlot: WorkflowModelSlot;
   readonly retry?: WorkflowRetryContext | undefined;
 }): ReadonlyArray<string | null | undefined> {
+  const mesh = workflowUsesMesh(input.plans.length);
+  const planSections = input.plans
+    .map((plan) => `## Plan ${plan.label} (by ${slotLabel(plan.model)})\n${plan.markdown}`)
+    .join("\n\n");
   return [
-    `You have two independently authored and reviewed implementation plans for the same requirement.
+    `You have ${mesh ? input.plans.length : "two"} independently authored and reviewed implementation plans for the same requirement.
 Please merge them into a single comprehensive plan.
 
 ## Original Requirement
 
 ${input.workflow.requirementPrompt}
 
-## Plan A (by ${slotLabel(input.modelA)})
-${input.planA.markdown}
+${planSections}
 
-## Plan B (by ${slotLabel(input.modelB)})
-${input.planB.markdown}
-
-Read both plans and produce a merged plan that:
+Read ${mesh ? "all" : "both"} plans and produce a merged plan that:
 - Takes the strongest ideas from each
 - Resolves contradictions by choosing the better approach
 - Maintains a coherent structure

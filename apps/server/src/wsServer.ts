@@ -249,6 +249,7 @@ import {
 } from "effect";
 import { WebSocketServer, type WebSocket } from "ws";
 
+import { resolveAliasedBooleanEnv, THREAD_OPEN_TIMINGS_ENV } from "./envFlags.ts";
 import { createLogger } from "./logger";
 import { NextTurnQueueStore } from "./nextTurnQueue/Services/NextTurnQueueStore.ts";
 import { makeProjectionTurnRepository } from "./persistence/Layers/ProjectionTurns.ts";
@@ -1171,8 +1172,8 @@ export const createServer = Effect.fn(function* (
   const shouldLogThreadOpenTimings =
     process.env.NODE_ENV !== "test" &&
     process.env.VITEST !== "true" &&
-    (process.env.T3CODE_LOG_THREAD_OPEN_TIMINGS === "1" ||
-      process.env.T3CODE_LOG_THREAD_OPEN_TIMINGS === "true");
+    resolveAliasedBooleanEnv(THREAD_OPEN_TIMINGS_ENV.primary, THREAD_OPEN_TIMINGS_ENV.legacy)
+      .enabled;
 
   function logOutgoingPush(push: WsPushEnvelopeBase, recipients: number) {
     if (!logWebSocketEvents || push.channel === WS_CHANNELS.providerAccountEvent) return;
@@ -5182,8 +5183,16 @@ export const createServer = Effect.fn(function* (
                 const relativePath = stored ? path.basename(stored) : entry.relativePath;
                 const file = await reader.openFile(relativePath);
                 let dimensions;
+                let fileRevision: string | undefined;
                 try {
-                  dimensions = await readAssetImageDimensions(file);
+                  if (path.extname(relativePath).toLowerCase() === ".pdf") {
+                    const stat = await file.stat({ bigint: true });
+                    fileRevision = createHash("sha256")
+                      .update([stat.dev, stat.ino, stat.size, stat.mtimeNs].join(":"))
+                      .digest("hex");
+                  } else {
+                    dimensions = await readAssetImageDimensions(file);
+                  }
                 } finally {
                   await file.close();
                 }
@@ -5193,6 +5202,7 @@ export const createServer = Effect.fn(function* (
                   relativePath: entry.relativePath,
                   url: `/api/workspace-assets/${issued.handle}/${encodeURIComponent(name)}`,
                   expiresAt: issued.expiresAt,
+                  ...(fileRevision === undefined ? {} : { fileRevision }),
                   ...dimensions,
                 };
               }),

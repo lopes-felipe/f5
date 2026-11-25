@@ -69,6 +69,8 @@ export interface WorkLogDiagnostic {
   outcome?: "success" | "error" | "cancelled";
   incomplete?: boolean;
   hookEvent?: string;
+  /** The provider instance that ran the hook (recorded on newer activities). */
+  providerInstanceId?: string;
   handlerType?: string;
   executionMode?: string;
   scope?: string;
@@ -154,6 +156,16 @@ export interface WorkLogEntry {
   parentProviderItemId?: ProviderItemId;
   diagnostic?: WorkLogDiagnostic;
   nestedDiagnostics?: ReadonlyArray<WorkLogEntry>;
+  /**
+   * One row per turn standing in for every hook Codex refused to run until its
+   * current contents are approved; the individual failures stay inside it.
+   */
+  hookApproval?: {
+    readonly plugins: ReadonlyArray<string>;
+    readonly entries: ReadonlyArray<WorkLogEntry>;
+    /** The provider instance that refused them, when the activities record it. */
+    readonly instanceId?: string;
+  };
   subagentThreadId?: string;
   subagentPath?: string;
   subagentSenderThreadId?: string;
@@ -905,7 +917,14 @@ function diagnosticCallKeyResolver(
 
 function dedupeProviderItemWorkLogEntries(entries: ReadonlyArray<WorkLogEntry>): WorkLogEntry[] {
   const deduped: Array<WorkLogEntry | null> = [];
-  const latestByProviderItemId = new Map<string, { index: number; signature: string }>();
+  const latestByProviderItemId = new Map<
+    string,
+    {
+      index: number;
+      signature: string;
+      fileless?: { looseSignature: string; detail: string | undefined };
+    }
+  >();
   const terminalTieKeys = new Set<string>();
 
   for (const entry of entries) {
@@ -930,8 +949,21 @@ function dedupeProviderItemWorkLogEntries(entries: ReadonlyArray<WorkLogEntry>):
     }
 
     const signature = workEntryVisibleSignature(entry);
+    // A file change can learn its files, and the path shown as its detail, only
+    // when it completes (Antigravity sends the diff on `completed`); any
+    // provider's fileless snapshot is the same row as the later one. A snapshot
+    // that already listed files keeps its row when the list changes.
+    const isFileChange = entry.itemType === "file_change" || entry.requestKind === "file-change";
+    const { detail: _detail, ...withoutDetail } = entry;
+    const looseSignature = isFileChange
+      ? workEntryVisibleSignature({ ...withoutDetail, changedFiles: [] })
+      : undefined;
     const previous = latestByProviderItemId.get(callKey);
-    if (previous && previous.signature === signature) {
+    const learnedFiles =
+      previous?.fileless !== undefined &&
+      previous.fileless.looseSignature === looseSignature &&
+      (previous.fileless.detail === undefined || previous.fileless.detail === entry.detail);
+    if (previous && (previous.signature === signature || learnedFiles)) {
       deduped[previous.index] = null;
     }
 
@@ -939,6 +971,9 @@ function dedupeProviderItemWorkLogEntries(entries: ReadonlyArray<WorkLogEntry>):
     latestByProviderItemId.set(callKey, {
       index: deduped.length - 1,
       signature,
+      ...(looseSignature !== undefined && (entry.changedFiles ?? []).length === 0
+        ? { fileless: { looseSignature, detail: entry.detail } }
+        : {}),
     });
   }
 
@@ -1279,12 +1314,14 @@ function diagnosticFromActivity(
     const displayOrder = asFiniteNumber(payload?.displayOrder);
     const statusMessage = asTrimmedString(payload?.statusMessage);
     const durationMs = asFiniteNumber(payload?.durationMs);
+    const providerInstanceId = asTrimmedString(payload?.providerInstanceId);
     return {
       type: "hook",
       id,
       status,
       ...(outcome ? { outcome } : {}),
       ...(hookEvent ? { hookEvent } : {}),
+      ...(providerInstanceId ? { providerInstanceId } : {}),
       ...(handlerType ? { handlerType } : {}),
       ...(executionMode ? { executionMode } : {}),
       ...(scope ? { scope } : {}),
@@ -1394,6 +1431,115 @@ function pairDiagnosticLifecycles(entries: ReadonlyArray<WorkLogEntry>): WorkLog
       },
     ];
   });
+}
+
+/**
+ * Codex's refusal (`hooks/src/engine/plugin_trust.rs`, 0.166+). It is raised
+ * only for plugin hooks whose bundle no longer matches the approved one.
+ */
+const HOOK_APPROVAL_REQUIRED_TEXT = "plugin contents changed; hook approval required";
+
+function hookDiagnosticTexts(diagnostic: WorkLogDiagnostic): string[] {
+  const texts = [diagnostic.output, diagnostic.statusMessage];
+  for (const entry of diagnostic.entries ?? []) {
+    if (entry && typeof entry === "object" && "text" in entry) {
+      texts.push(typeof entry.text === "string" ? entry.text : undefined);
+    }
+  }
+  return texts.filter((text): text is string => typeof text === "string");
+}
+
+/**
+ * Codex (0.166+) refuses to run a hook whose plugin contents changed since it
+ * was approved, and reports it as a failed run with this message. Only a line
+ * that is exactly the message counts, so a hook that merely prints the phrase
+ * among other output is not mistaken for a refusal.
+ */
+export function isHookApprovalRequired(entry: WorkLogEntry): boolean {
+  const diagnostic = entry.diagnostic;
+  if (diagnostic?.type !== "hook" || diagnostic.incomplete) return false;
+  if (diagnostic.status !== "failed" && diagnostic.outcome !== "error") return false;
+  return hookDiagnosticTexts(diagnostic).some((text) =>
+    text.split(/\r?\n/u).some((line) => line.trim().toLowerCase() === HOOK_APPROVAL_REQUIRED_TEXT),
+  );
+}
+
+/**
+ * `plugin@marketplace` for a hook file in Codex's plugin cache
+ * (`…/plugins/cache/<marketplace>/<plugin>/…`), the id `/hooks` shows.
+ */
+export function hookPluginIdFromSourcePath(sourcePath: string | undefined): string | undefined {
+  if (!sourcePath) return undefined;
+  const segments = sourcePath.split(/[\\/]+/u);
+  for (let index = 0; index + 3 < segments.length; index += 1) {
+    if (segments[index] !== "plugins" || segments[index + 1] !== "cache") continue;
+    const marketplace = segments[index + 2];
+    const plugin = segments[index + 3];
+    if (marketplace && plugin) return `${plugin}@${marketplace}`;
+  }
+  return undefined;
+}
+
+const hookApprovalRowCache = new WeakMap<WorkLogEntry, WorkLogEntry>();
+
+/** Collapses each turn's approval-required hook failures into one row, placed at the first. */
+function collapseHookApprovalFailures(entries: ReadonlyArray<WorkLogEntry>): WorkLogEntry[] {
+  const groups = new Map<string, WorkLogEntry[]>();
+  for (const entry of entries) {
+    if (!isHookApprovalRequired(entry)) continue;
+    const key = entry.turnId ?? "";
+    const group = groups.get(key);
+    if (group) group.push(entry);
+    else groups.set(key, [entry]);
+  }
+  if (groups.size === 0) return [...entries];
+  const result: WorkLogEntry[] = [];
+  for (const entry of entries) {
+    if (!isHookApprovalRequired(entry)) {
+      result.push(entry);
+      continue;
+    }
+    const group = groups.get(entry.turnId ?? "");
+    if (!group || group[0] !== entry) continue;
+    // Same failures, same row object, so timeline row reuse keeps working.
+    const cached = hookApprovalRowCache.get(entry);
+    if (
+      cached?.hookApproval &&
+      cached.hookApproval.entries.length === group.length &&
+      cached.hookApproval.entries.every((failure, index) => failure === group[index])
+    ) {
+      result.push(cached);
+      continue;
+    }
+    const plugins = [
+      ...new Set(
+        group.flatMap((failure) => {
+          const plugin = hookPluginIdFromSourcePath(failure.diagnostic?.sourcePath);
+          return plugin ? [plugin] : [];
+        }),
+      ),
+    ];
+    const count = group.length;
+    // The instance that ran these hooks, not whichever the thread uses now.
+    const instanceId = group.find((failure) => failure.diagnostic?.providerInstanceId)?.diagnostic
+      ?.providerInstanceId;
+    const row: WorkLogEntry = {
+      id: `hook-approval:${entry.id}`,
+      createdAt: entry.createdAt,
+      label: `${count} ${count === 1 ? "hook needs" : "hooks need"} approval after a plugin changed${
+        plugins.length > 0 ? ` (${plugins.join(", ")})` : ""
+      }`,
+      tone: "info",
+      ...(entry.turnId ? { turnId: entry.turnId } : {}),
+      activityKind: "hook.approval-required",
+      category: "hook",
+      isIssue: true,
+      hookApproval: { plugins, entries: group, ...(instanceId ? { instanceId } : {}) },
+    };
+    hookApprovalRowCache.set(entry, row);
+    result.push(row);
+  }
+  return result;
 }
 
 function coalesceProtocolWarnings(entries: ReadonlyArray<WorkLogEntry>): WorkLogEntry[] {
@@ -2233,7 +2379,7 @@ export function deriveWorkLogEntries(
       retainedActivityIds.has(entry.id) ||
       (entry.diagnostic !== undefined && automationDiagnosticCallKey(entry) !== undefined),
   );
-  return coalesceProtocolWarnings(historical);
+  return coalesceProtocolWarnings(collapseHookApprovalFailures(historical));
 }
 
 function asTrimmedString(value: unknown): string | undefined {

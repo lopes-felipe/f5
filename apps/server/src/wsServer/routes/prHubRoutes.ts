@@ -57,12 +57,16 @@ export const prHubRoutes = ({
   const requireForgeAccounts = () =>
     Option.isSome(forgeAccounts)
       ? Effect.succeed(forgeAccounts.value)
-      : Effect.fail(new Error("Forge accounts are unavailable."));
+      : Effect.logWarning("Forge accounts service is unavailable for PR Hub route.").pipe(
+          Effect.andThen(Effect.fail(new Error("Forge accounts are unavailable."))),
+        );
 
   const requirePrHubExtensions = () =>
     Option.isSome(prHubExtensions)
       ? Effect.succeed(prHubExtensions.value)
-      : Effect.fail(new Error("PR Hub extensions are unavailable."));
+      : Effect.logWarning("PR Hub extensions service is unavailable for PR Hub route.").pipe(
+          Effect.andThen(Effect.fail(new Error("PR Hub extensions are unavailable."))),
+        );
 
   const mutateAndReturnOverview = <Body extends { readonly _tag: string }>(
     mutate: (body: Omit<Body, "_tag">) => Effect.Effect<unknown, Error>,

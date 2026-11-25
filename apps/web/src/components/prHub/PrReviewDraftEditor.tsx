@@ -11,7 +11,7 @@ import type {
   PullRequestKey,
 } from "@t3tools/contracts";
 import { ensureNativeApi } from "../../nativeApi";
-import { getPrHubAccountGeneration } from "../../lib/prHubAccount";
+import { usePrHubAccountSnapshot } from "../../lib/prHubAccount";
 import { PrCompletionTextarea as Textarea } from "./PrCompletionTextarea";
 
 export function PrReviewDraftEditor({
@@ -27,7 +27,7 @@ export function PrReviewDraftEditor({
   files?: readonly PrHubChangedFile[] | undefined;
   selectedAnchor?: (PrReviewAnchor & { nonce: string }) | null | undefined;
 }) {
-  const accountGeneration = getPrHubAccountGeneration();
+  const { generation: accountGeneration } = usePrHubAccountSnapshot();
   const query = useQuery({
     queryKey: ["prHub", "reviewDraft", accountGeneration, prKey],
     queryFn: () => ensureNativeApi().prHub.getReviewDraft({ key: prKey, accountGeneration }),

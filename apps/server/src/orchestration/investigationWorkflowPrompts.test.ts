@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildBudgetedInvestigationSynthesisPrompt,
   buildInvestigationCrossReviewPrompt,
   buildInvestigationPrompt,
   buildInvestigationPromptSections,
   buildInvestigationSelfReviewPrompt,
   buildInvestigationSynthesisPrompt,
   buildInvestigationSynthesisPromptSections,
+  investigationSynthesisShareAtCreation,
 } from "./investigationWorkflowPrompts.ts";
 
 const codexSlot = { provider: "codex" as const, model: "gpt-5.6-sol" };
@@ -85,7 +87,7 @@ describe("investigation workflow prompts", () => {
         {
           label: "A",
           investigation: "report",
-          crossReviewOfThis: "review",
+          crossReviews: [{ reviewerLabel: "B", text: "review" }],
         },
       ],
     };
@@ -94,5 +96,132 @@ describe("investigation workflow prompts", () => {
     expect(headings(buildInvestigationSynthesisPromptSections(input))).toContain("## Output");
     expect(prompt).toContain("1. Primary root cause: certainty percent");
     expect(prompt).not.toContain("## Reporting Guidance");
+  });
+});
+
+describe("investigation workflow prompts with more than two investigators", () => {
+  const contribution = (label: string, peers: string[], text = `${label} report`) => ({
+    label: `Investigator ${label}`,
+    investigation: text,
+    crossReviews: peers.map((peer) => ({
+      reviewerLabel: `Investigator ${peer}`,
+      text: `${peer} on ${label}`,
+    })),
+    selfReview: `${label} self`,
+  });
+  const base = { workflowId: "wf", problemPrompt: "Find the regression", targetSlot: codexSlot };
+
+  it("tells each investigator how many peers work in parallel", () => {
+    const prompt = buildInvestigationPrompt({
+      ...base,
+      investigatorLabel: "Investigator C",
+      investigatorCount: 4,
+      lensBranch: "a",
+      branch: null,
+      attended: false,
+    });
+    expect(prompt).toContain(
+      "You are Investigator C in a 4-model root-cause investigation. 3 other models investigate the same problem independently",
+    );
+  });
+
+  it("names the reviewer of every peer cross-review in the synthesis", () => {
+    const prompt = buildInvestigationSynthesisPrompt({
+      ...base,
+      contributions: [
+        contribution("A", ["B", "C"]),
+        contribution("B", ["A", "C"]),
+        contribution("C", ["A", "B"]),
+      ],
+    });
+    expect(prompt).toContain("Weigh each investigation against every peer cross-review of it");
+    expect(prompt).toContain(
+      "### Peer Cross-Review Of This Investigation By Investigator C\n\nC on A",
+    );
+    expect(prompt).toContain("### Own-Model Review Of This Investigation\n\nC self");
+  });
+
+  it("fits four investigators with self-review and one oversized report under the limit", () => {
+    const labels = ["A", "B", "C", "D"];
+    const result = buildBudgetedInvestigationSynthesisPrompt({
+      ...base,
+      contributions: labels.map((label) =>
+        contribution(
+          label,
+          labels.filter((peer) => peer !== label),
+          label === "B" ? "y".repeat(200_000) : undefined,
+        ),
+      ),
+      maxRenderedChars: 60_000,
+    });
+    expect(result.prompt.length).toBeLessThanOrEqual(60_000);
+    expect(result.smallestExcerpt).toBeGreaterThan(40_000);
+    expect(result.prompt).toContain("D on C");
+  });
+
+  it("keeps every report whole when the whole prompt exactly fits", () => {
+    const labels = ["A", "B", "C"];
+    const input = {
+      ...base,
+      contributions: labels.map((label) => ({
+        ...contribution(
+          label,
+          labels.filter((peer) => peer !== label),
+          "r".repeat(10_000),
+        ),
+        selfReview: undefined,
+      })),
+    };
+    const whole = buildBudgetedInvestigationSynthesisPrompt({
+      ...input,
+      maxRenderedChars: 1_000_000,
+    }).prompt;
+    const result = buildBudgetedInvestigationSynthesisPrompt({
+      ...input,
+      maxRenderedChars: whole.length,
+    });
+    expect(result.smallestExcerpt).toBeNull();
+    expect(result.prompt).toBe(whole);
+  });
+
+  it("computes the creation-time share per report only for mesh runs", () => {
+    const labels = ["A", "B", "C", "D"];
+    const input = {
+      problemPrompt: "p".repeat(4_000),
+      selfReviewEnabled: true,
+      synthesisSlot: codexSlot,
+      renderedMessageCharLimit: 250_000,
+    };
+    expect(
+      investigationSynthesisShareAtCreation({
+        ...input,
+        investigatorLabels: ["Investigator A", "Investigator B"],
+      }),
+    ).toBeNull();
+    const share = investigationSynthesisShareAtCreation({
+      ...input,
+      investigatorLabels: labels.map((label) => `Investigator ${label}`),
+    })!;
+    // 4 investigations + 12 cross-reviews + 4 own-model reviews, all long, on a retry: the
+    // runtime gives every report exactly the creation-time share.
+    const long = "z".repeat(100_000);
+    const runtime = buildBudgetedInvestigationSynthesisPrompt({
+      ...base,
+      problemPrompt: input.problemPrompt,
+      retry: { kind: "retry", reusedThread: true },
+      contributions: labels.map((label) => ({
+        ...contribution(
+          label,
+          labels.filter((peer) => peer !== label),
+          long,
+        ),
+        crossReviews: labels
+          .filter((peer) => peer !== label)
+          .map((peer) => ({ reviewerLabel: `Investigator ${peer}`, text: long })),
+        selfReview: long,
+      })),
+      maxRenderedChars: input.renderedMessageCharLimit,
+    });
+    expect(runtime.smallestExcerpt).toBe(share);
   });
 });

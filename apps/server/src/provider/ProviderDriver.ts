@@ -122,6 +122,18 @@ export interface ProviderInstance {
   readonly inventory?: (input: {
     readonly projectRoot?: string | undefined;
   }) => Effect.Effect<ProviderInstanceInventoryEntries, ProviderDriverError>;
+  /**
+   * Approve the named hooks through the provider's own API, each only while
+   * the inventory token it carries still matches its current contents. Keys
+   * that are unknown, managed or already trusted are skipped.
+   */
+  readonly trustHooks?: (input: {
+    readonly projectRoot?: string | undefined;
+    readonly hooks: ReadonlyArray<{ readonly key: string; readonly token: string }>;
+  }) => Effect.Effect<
+    import("@t3tools/contracts").ServerTrustProviderHooksResult,
+    ProviderDriverError
+  >;
   readonly saveFeedback?: () => Effect.Effect<{ path: string }, ProviderDriverError>;
   readonly codexConfiguration?: (
     action: import("@t3tools/contracts").CodexConfigurationAction,

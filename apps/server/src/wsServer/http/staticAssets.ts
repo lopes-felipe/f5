@@ -3,8 +3,10 @@ import { F5_PROTOCOL_HEADER } from "@t3tools/contracts";
 import type { Path } from "effect";
 
 export const STATIC_HTML_SECURITY_HEADERS: Readonly<Record<string, string>> = {
-  "Content-Security-Policy":
-    "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; media-src 'self' data: blob: https:; connect-src 'self' ws: wss: http: https:; worker-src 'self' blob:; frame-src 'self' blob: data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+  // Keep `srcdoc` HTML renders and MCP app bridges working in browser/remote
+  // mode (srcdoc inherits parent `default-src`/`script-src`) while blocking
+  // plugin embeds, base-tag hijacking, and clickjacking.
+  "Content-Security-Policy": "object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
   "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
   "Referrer-Policy": "no-referrer",
   "X-Frame-Options": "DENY",

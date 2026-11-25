@@ -5,9 +5,15 @@
  * transaction when opening a brand-new database, while leaving existing databases
  * on the standard incremental migration path.
  *
- * Parity with incremental migrations 1..174 is strictly enforced by
- * `Migrations.test.ts` against `sqlite_master`, `PRAGMA table_info`, indexes,
- * foreign keys, triggers, and seeded singleton rows.
+ * Policy:
+ * - Migrations `1..BASELINE_MIGRATION_ID` are frozen once released. Never edit
+ *   them in place; append a new numbered migration instead.
+ * - To move `BASELINE_MIGRATION_ID` forward (or regenerate after an Effect SQL
+ *   `effect_sql_migrations` DDL change), run:
+ *   `bun apps/server/scripts/generate-sqlite-baseline.ts`
+ * - Parity with incremental migrations is strictly enforced by
+ *   `Migrations.test.ts` against `sqlite_master`, `PRAGMA table_info`, indexes,
+ *   foreign keys, triggers, and seeded singleton rows.
  *
  * @module BaselineSchema
  */
