@@ -90,7 +90,9 @@ On a certified version, F5 keeps every workflow turn read-only:
   must be literal (no variables or substitutions), and commands that never exit, such as
   `tail -f`, are refused. Cursor uses the same allowlist, in
   `apps/server/src/provider/readOnlyWorkflowShell.ts`. Commands that need the network, such as
-  `gh`, fail inside the sandbox even when F5 approves them.
+  `gh`, fail inside the sandbox even when F5 approves them. When a command fails there,
+  Antigravity may offer to run it again outside the sandbox (`BypassSandbox`). F5 always
+  refuses that, whatever the command.
 - The session gets F5's read-only forge tools (`pull_request_read`, `pull_request_list`,
   `ci_logs`, `pull_request_review_guide_read`, `repository_file_read`) for PRs, checks and remote
   files. Calls to that F5 server run; it serves only those tools.
@@ -148,7 +150,8 @@ as reads but F5 must refuse.
 
 5. Check the sandbox. F5 approves `gh api zen`, so only the sandbox keeps it off the network.
    Outside the sandbox the dummy token fails with "Bad credentials"; inside, the connection
-   fails. The test fails on "Bad credentials" and prints its verdict for each round. A verdict
+   fails. When the sandboxed run fails, the model may retry it with `BypassSandbox`; F5 must
+   refuse that retry. The test fails on "Bad credentials" and prints its verdict for each round. A verdict
    of "inconclusive" means the command never reached the network check; look at the printed
    output before certifying.
 6. Add `{ minimumVersion, target }` to `ANTIGRAVITY_READ_ONLY_WORKFLOW_CERTIFIED_RUNTIMES` in

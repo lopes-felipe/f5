@@ -243,7 +243,15 @@ describe.skipIf(!live || !stateDir)("live Antigravity read-only workflow turns",
               writeFile(path.join(cwd, "README.md"), `The certification token is ${token}.\n`),
             );
             const read = yield* runTurn(`${round} / read`, PROMPTS.read);
-            expect(JSON.stringify(read.turnEvents), `${round}: the read succeeds`).toContain(token);
+            // The reply streams in chunks that can split the token, so join them first.
+            const replyText = read.turnEvents
+              .flatMap((event) =>
+                event.type === "content.delta" && event.payload.streamKind === "assistant_text"
+                  ? [event.payload.delta]
+                  : [],
+              )
+              .join("");
+            expect(replyText, `${round}: the read succeeds`).toContain(token);
 
             const npm = yield* runTurn(`${round} / npm trap`, PROMPTS.npm);
             expect(

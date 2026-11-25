@@ -75,11 +75,29 @@ export function acpExecuteCommand(rawInput: unknown): string | undefined {
 }
 
 /**
+ * Whether a command asks to run outside the provider's sandbox. Antigravity sends
+ * `BypassSandbox: true` when the model retries a command that failed inside the sandbox; approving
+ * it runs the command with full filesystem and network access, so a read-only stage refuses it
+ * whatever the command is. Any truthy key that names bypassing or disabling a sandbox counts.
+ */
+export function acpSandboxEscalation(rawInput: unknown): boolean {
+  if (typeof rawInput !== "object" || rawInput === null || Array.isArray(rawInput)) return false;
+  return Object.entries(rawInput).some(
+    ([key, value]) =>
+      /^(?:bypass|disable|dangerously_?disable)_?sandbox$/i.test(key) &&
+      value !== false &&
+      value !== "false" &&
+      value !== null &&
+      value !== undefined,
+  );
+}
+
+/**
  * Permission policy for a read-only workflow turn on an ACP provider without an OS sandbox
  * (Cursor, Antigravity). It never opens an approval prompt: read, search, think and fetch tools
  * and read-only shell commands run once, as do calls to F5's read-only thread server (forge
- * reads); edits, deletes, moves, other commands, computer control, other MCP tools and requests
- * with an unknown or missing kind are denied.
+ * reads); edits, deletes, moves, other commands, commands that ask to leave the sandbox,
+ * computer control, other MCP tools and requests with an unknown or missing kind are denied.
  */
 export function acpReadOnlyWorkflowDecision(input: {
   readonly toolCall: AcpReadOnlyWorkflowToolCall;
@@ -93,6 +111,7 @@ export function acpReadOnlyWorkflowDecision(input: {
   const kind = input.toolCall.kind;
   if (kind && ACP_READ_ONLY_WORKFLOW_TOOL_KINDS.has(kind)) return "allow";
   if (kind === "execute") {
+    if (acpSandboxEscalation(input.toolCall.rawInput)) return "deny";
     const command = acpExecuteCommand(input.toolCall.rawInput);
     return command !== undefined && classifyReadOnlyShellCommand(command).readOnly
       ? "allow"
