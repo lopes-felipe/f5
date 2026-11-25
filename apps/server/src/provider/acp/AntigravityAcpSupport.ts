@@ -305,6 +305,18 @@ export function antigravityAcpArgs(home: string, readOnlySandbox: boolean): Read
   ];
 }
 
+/**
+ * The runtime input the Antigravity driver launches with: everything the adapter asked for,
+ * including `readOnlySandbox`, plus the instance's own settings. Kept as a spread on purpose, so
+ * a field the adapter adds later can't be dropped by picking fields one by one.
+ */
+export function antigravityDriverRuntimeInput<Input extends object, Instance extends object>(
+  input: Input,
+  instance: Instance,
+): Input & Instance {
+  return { ...input, ...instance };
+}
+
 export const makeAntigravityAcpRuntime = (input: {
   stateDir: string;
   instanceId: string;

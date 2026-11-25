@@ -7,11 +7,26 @@ import { describe, expect, it, vi } from "vitest";
 import {
   antigravityAcpArgs,
   antigravityAuthorizationUrl,
+  antigravityDriverRuntimeInput,
   antigravityEnvironment,
   antigravityProfileDirectory,
   linkAntigravityUserConfigFiles,
   linkAntigravityUserSkills,
 } from "./AntigravityAcpSupport.ts";
+
+describe("Antigravity driver runtime input", () => {
+  it("passes the adapter's read-only sandbox request through to the runtime", () => {
+    const instance = { stateDir: "/state", instanceId: "work", environment: {} };
+    const sandboxed = antigravityDriverRuntimeInput(
+      { cwd: "/repo", readOnlySandbox: true },
+      instance,
+    );
+    expect(sandboxed).toMatchObject({ readOnlySandbox: true, stateDir: "/state" });
+    expect(antigravityAcpArgs("/profile", sandboxed.readOnlySandbox)).toContain("--sandbox");
+    const ordinary: { cwd: string; readOnlySandbox?: boolean } = { cwd: "/repo" };
+    expect(antigravityDriverRuntimeInput(ordinary, instance).readOnlySandbox).toBeUndefined();
+  });
+});
 
 describe("Antigravity launch arguments", () => {
   it("adds the sandbox only for read-only sessions and keeps the shared app-data dir", () => {

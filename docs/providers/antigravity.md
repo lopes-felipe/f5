@@ -74,13 +74,26 @@ A certification covers a minimum version on one platform and architecture, such 
 updates keep working. The check uses the version of the executable the session actually
 launches; if F5 can't read that version, the workflow session is refused. On Windows F5 also
 requires Windows 11 24H2 (build 26100) or later, because Antigravity's sandbox silently does
-nothing on older builds.
+nothing on older builds. Google also requires the August 2026 Windows update, which F5 can't
+check.
+
+F5 doesn't check that the sandbox actually starts on each machine. Where it can't, Antigravity
+runs commands without it and F5's per-command policy below is the only control:
+
+- **Linux:** the namespace sandbox needs unprivileged user namespaces, which Ubuntu 23.10 and
+  later restrict by default.
+- **macOS:** Seatbelt can't start inside another sandbox.
+- **Windows:** AppContainer needs the build and update above.
+
+Before adding a Linux or Windows row, record what `agy --sandbox` does on such a host. If it
+runs unsandboxed without saying so, add a per-host check like the Windows build check.
 
 On a certified version, F5 keeps every workflow turn read-only:
 
 - The session launches with `agy acp --sandbox`. Its shell commands run in Antigravity's OS
   sandbox (Seatbelt on macOS, namespaces on Linux, AppContainer on Windows), with no network and
-  no writes outside the workspace. Ordinary sessions never use the sandbox.
+  no writes outside the workspace, where the sandbox can start (see above). Ordinary sessions
+  never use the sandbox.
 - The session runs as **Supervised**, whatever the thread's access mode is.
 - Before each workflow prompt F5 switches the session to Plan and checks that Antigravity
   reports Plan. If it doesn't, the turn stops before anything is sent. Workflow turns never fall
@@ -174,8 +187,12 @@ The opt-in live test runs steps 2 to 5 against a signed-in instance, launched wi
 as production does. It admits the version it launches even though that version isn't on the
 list yet, and prints the row for step 6. Run it from a normal Terminal, not from an agent shell:
 macOS doesn't let Antigravity's sandbox start inside another sandbox. It spends account quota.
-Set `F5_ANTIGRAVITY_LIVE_INSTANCE` to the id of a signed-in instance (it defaults to
-`antigravity`). It prints each round's tool calls and the requests F5 refused.
+`F5_ANTIGRAVITY_LIVE_INSTANCE` is required: set it to the id of a signed-in instance you can spare,
+because the test adds an MCP server to that instance's config for the run and removes it at the
+end, even after a timeout. The test launches with the flags production uses, but it doesn't
+exercise the driver's sign-in checks. It prints each round's tool calls, the requests F5 refused,
+and a verdict for each `gh api zen` call. Each round must show at least one network error and no
+call that reached GitHub.
 
 ```sh
 cd apps/server
