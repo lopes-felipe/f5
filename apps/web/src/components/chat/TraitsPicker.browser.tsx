@@ -150,6 +150,33 @@ describe("TraitsPicker", () => {
     expect(page.getByRole("button").element().className).toContain("bg-effort-high/10");
   });
 
+  it("toggles Fast mode inside the standalone traits menu without closing it", async () => {
+    const onModelOptionsChange = vi.fn();
+    const models = modelsWith([KNOWN_EFFORT, FAST_MODE]);
+    mounted = await render(
+      <TraitsPicker
+        provider={PROVIDER}
+        models={models}
+        model={MODEL}
+        onModelOptionsChange={onModelOptionsChange}
+      />,
+    );
+
+    await page.getByRole("button").click();
+    const fastMode = page.getByRole("menuitemcheckbox", { name: "Fast Mode" });
+    await expect.element(fastMode).toHaveAttribute("aria-checked", "false");
+    await fastMode.click();
+
+    await vi.waitFor(() => {
+      expect(onModelOptionsChange).toHaveBeenLastCalledWith(
+        expect.arrayContaining([{ id: "fastMode", value: true }]),
+      );
+    });
+    // Still open: the switch row and the effort rows remain rendered.
+    expect(fastMode.element().isConnected).toBe(true);
+    expect(document.querySelectorAll('[role="menuitemradio"][data-effort-level]')).toHaveLength(2);
+  });
+
   it("toggles Fast mode inside the compact composer menu without closing it", async () => {
     const onModelOptionsChange = vi.fn();
     const models = modelsWith([KNOWN_EFFORT, FAST_MODE]);

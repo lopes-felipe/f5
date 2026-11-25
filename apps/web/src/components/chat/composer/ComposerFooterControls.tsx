@@ -3,6 +3,7 @@ import {
   AtSignIcon,
   BotIcon,
   CircleOffIcon,
+  FoldVerticalIcon,
   GoalIcon,
   ListTodoIcon,
   NotebookPenIcon,
@@ -169,6 +170,21 @@ export function ComposerFooterControls(props: {
             Mention a file
           </MenuItem>
           <SideChatMenuItems threadId={threadId} />
+          {/* The compact footer offers it in its controls menu instead. */}
+          {!compact && mode.canCompactConversation ? (
+            <>
+              <MenuSeparator />
+              <MenuItem
+                disabled={
+                  isPendingTurnDispatchBlocked || send.isWorking || send.hasPendingTurnDispatch
+                }
+                onClick={() => void mode.onCompactConversation()}
+              >
+                <FoldVerticalIcon className="size-4 shrink-0" />
+                Compact conversation
+              </MenuItem>
+            </>
+          ) : null}
           {nativeGoal ? (
             <>
               <MenuSeparator />

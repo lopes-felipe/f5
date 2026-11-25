@@ -3738,6 +3738,25 @@ describe("ChatView timeline (full app)", () => {
       }
     });
 
+    it("keeps keyboard focus in the composer after expanding hidden attachments", async () => {
+      const { mounted, form, wheel } = await composerScrollFixture();
+      try {
+        useComposerDraftStore.getState().setFilePaths(THREAD_ID, ["/repo/project/notes.md"]);
+        await waitForLayout();
+        wheel();
+        await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("true"));
+        page.getByRole("button", { name: "1 attachment", exact: true }).element().focus();
+        await userEvent.keyboard("{Enter}");
+        await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("false"));
+        await vi.waitFor(() => {
+          expect(document.activeElement).not.toBe(document.body);
+          expect(form.contains(document.activeElement)).toBe(true);
+        });
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
     it("expands a resting composer when an attachment validation error arrives", async () => {
       const { mounted, form, wheel } = await composerScrollFixture();
       const image = createComposerImageAttachment({
@@ -8412,6 +8431,42 @@ describe("ChatView timeline (full app)", () => {
       await expect
         .element(page.getByRole("menuitem", { name: "Attach files…", exact: true }))
         .toBeVisible();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("offers Compact conversation at every composer width", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "compact-entry" as MessageId,
+        targetText: "existing",
+        fillerPairCount: 1,
+        targetPairIndex: 0,
+      }),
+    });
+    const compactItem = page.getByRole("menuitem", { name: "Compact conversation", exact: true });
+    try {
+      await waitForComposerShell();
+      // Wide: the + menu carries it.
+      await page.getByRole("button", { name: "Add", exact: true }).click();
+      await expect.element(compactItem).toBeVisible();
+      await userEvent.keyboard("{Escape}");
+      await expect.element(compactItem).not.toBeInTheDocument();
+
+      // Compact: the controls menu carries it, and the + menu does not repeat it.
+      await mounted.setViewport({ name: "narrow", width: 560, height: 1_100 });
+      const more = page.getByRole("button", { name: "More composer controls" });
+      await expect.element(more).toBeVisible();
+      await page.getByRole("button", { name: "Add", exact: true }).click();
+      await expect
+        .element(page.getByRole("menuitem", { name: "Attach files…", exact: true }))
+        .toBeVisible();
+      expect(compactItem.elements()).toHaveLength(0);
+      await userEvent.keyboard("{Escape}");
+      await more.click();
+      await expect.element(compactItem).toBeVisible();
     } finally {
       await mounted.cleanup();
     }

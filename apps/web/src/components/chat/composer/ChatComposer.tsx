@@ -284,15 +284,15 @@ export function ChatComposer({
     threadId,
     blocked:
       expanded ||
-      !!attachmentStatus.error ||
+      // Errors, limit notices, failed uploads and unsaved images stay in view.
+      attachmentsNeedAttention ||
       composerMenuOpen ||
       isDragOverComposer ||
       sendControls.isPreparingWorktree ||
       !!activePendingApproval ||
       pendingUserInputs.length > 0 ||
       showPlanFollowUpPrompt ||
-      sendControls.pendingComposerImageImportCount > 0 ||
-      attachments.nonPersistedComposerImageIdSet.size > 0,
+      sendControls.pendingComposerImageImportCount > 0,
     formRef: composerFormRef,
     getTimeline,
   });
@@ -811,8 +811,22 @@ export function ChatComposer({
               {collapsed && attachmentCount > 0 ? (
                 <button
                   type="button"
+                  data-composer-attachment-disclosure="true"
                   className="mb-1 flex motion-safe:animate-fade-in items-center gap-1 text-xs text-muted-foreground"
-                  onClick={expand}
+                  onClick={() => {
+                    expand();
+                    // This button unmounts on expand; keep keyboard focus in the composer.
+                    requestAnimationFrame(() => {
+                      const tray = document.getElementById(attachmentTrayId);
+                      const target = tray?.querySelector<HTMLElement>(
+                        "button:not([disabled]), [href], [tabindex]:not([tabindex='-1'])",
+                      );
+                      target?.focus();
+                      // A chip still fading in from `visibility: hidden` can refuse focus.
+                      if (!target || document.activeElement !== target)
+                        composerEditorRef.current?.focus();
+                    });
+                  }}
                   aria-expanded={false}
                   aria-controls={attachmentTrayId}
                 >

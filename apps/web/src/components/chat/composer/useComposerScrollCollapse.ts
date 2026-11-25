@@ -105,6 +105,9 @@ export function useComposerScrollCollapse({
     };
     const editorInteraction = (event: Event) => {
       if (!(event.target instanceof Element)) return;
+      // The attachment disclosure expands on activation and moves focus itself; expanding
+      // when it merely gains focus would unmount it under the keyboard.
+      if (event.target.closest("[data-composer-attachment-disclosure]")) return;
       if (event.target.closest('[data-testid="composer-editor"], [data-composer-editor-area]'))
         expand();
     };
