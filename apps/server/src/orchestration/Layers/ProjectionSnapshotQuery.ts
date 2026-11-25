@@ -3300,7 +3300,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           hasOlderActivities: thread !== null && activityResult.hasOlderActivities,
           hasOlderCommandExecutions:
             thread !== null && commandExecutionResult.hasOlderCommandExecutions,
-          detailSequence: detailSequence ?? 0,
+          // An absent row is provisional even when other threads have projected events.
+          detailSequence: thread === null ? 0 : (detailSequence ?? 0),
         });
       }).pipe(
         Effect.mapError((error) => {

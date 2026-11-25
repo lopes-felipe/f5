@@ -331,7 +331,11 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
           });
           const session = await client.session.create({
             title: `T3 Code ${input.operation}`,
-            permission: [{ permission: "*", pattern: "*", action: "deny" }],
+            // OpenCode Zen requires a tool for free models.
+            permission: [
+              { permission: "*", pattern: "*", action: "deny" },
+              { permission: "read", pattern: "*", action: "allow" },
+            ],
           });
           if (!session.data) {
             throw new Error("OpenCode session.create returned no session payload.");

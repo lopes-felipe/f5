@@ -37,6 +37,41 @@ function fixture(kind: ForgeKind, responses: unknown[] = [], login = `viewer-${+
 }
 
 describe("forge adapters", () => {
+  it("keeps the checkout's Forgejo account when the PR URL has a canonical repository path", async () => {
+    const calls: string[] = [];
+    const provider = makeForgeSourceControlProvider({
+      kind: "forgejo",
+      resolveAccount: ({ cwd, ref }) => {
+        expect(cwd).toBe("/work");
+        expect(ref).toBeUndefined();
+        return Effect.succeed({
+          kind: "forgejo",
+          host: "forge.example.com",
+          repository: "team/base",
+          login: "clone-test",
+          token: "forge-test-token",
+        });
+      },
+      fetch: (async (url: Parameters<typeof fetch>[0]) => {
+        calls.push(String(url));
+        return Response.json({
+          clone_url: "https://forge.example.com/fork/repo.git",
+          ssh_url: "git@forge.example.com:fork/repo.git",
+        });
+      }) as typeof fetch,
+    });
+    await expect(
+      Effect.runPromise(
+        provider.getRepositoryCloneUrls({
+          cwd: "/work",
+          repository: "fork/repo",
+          pullRequestUrl: "https://forge.example.com/Team/Base/pulls/7",
+        }),
+      ),
+    ).resolves.toMatchObject({ url: "https://forge.example.com/fork/repo.git" });
+    expect(calls).toEqual(["https://forge.example.com/api/v1/repos/fork/repo"]);
+  });
+
   it("marks the root of unresolved GitLab overview discussions as a finding and uses text edit times", async () => {
     const note = (id: number, fields: object = {}) => ({
       id,

@@ -20,6 +20,7 @@ const runtimeMock = {
     startCalls: [] as string[],
     promptUrls: [] as string[],
     authHeaders: [] as Array<string | null>,
+    sessionPermissions: [] as unknown[],
     closeCalls: [] as string[],
     promptResult: undefined as
       | { data?: { info?: { error?: unknown }; parts?: Array<{ type: string; text?: string }> } }
@@ -29,6 +30,7 @@ const runtimeMock = {
     this.state.startCalls.length = 0;
     this.state.promptUrls.length = 0;
     this.state.authHeaders.length = 0;
+    this.state.sessionPermissions.length = 0;
     this.state.closeCalls.length = 0;
     this.state.promptResult = undefined;
   },
@@ -63,7 +65,10 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
   createOpenCodeSdkClient: ({ baseUrl, serverPassword }) =>
     ({
       session: {
-        create: async () => ({ data: { id: `${baseUrl}/session` } }),
+        create: async ({ permission }: { permission: unknown }) => {
+          runtimeMock.state.sessionPermissions.push(permission);
+          return { data: { id: baseUrl + "/session" } };
+        },
         prompt: async () => {
           runtimeMock.state.promptUrls.push(baseUrl);
           runtimeMock.state.authHeaders.push(
@@ -179,6 +184,12 @@ it.layer(OpenCodeTextGenerationTestLayer)("OpenCodeTextGenerationLive", (it) => 
         });
 
         expect(runtimeMock.state.startCalls).toEqual(["fake-opencode"]);
+        expect(runtimeMock.state.sessionPermissions).toEqual(
+          Array.from({ length: 2 }, () => [
+            { permission: "*", pattern: "*", action: "deny" },
+            { permission: "read", pattern: "*", action: "allow" },
+          ]),
+        );
         expect(runtimeMock.state.promptUrls).toEqual([
           "http://127.0.0.1:4301",
           "http://127.0.0.1:4301",
@@ -243,12 +254,14 @@ it.layer(OpenCodeTextGenerationTestLayer)("OpenCodeTextGenerationLive", (it) => 
     ),
   );
 
-  it.effect("parses JSON returned as plain text output", () =>
+  it.effect("parses JSON after text and a read tool call", () =>
     withOpenCodeTextGeneration(DEFAULT_OPENCODE_SETTINGS, (textGeneration) =>
       Effect.gen(function* () {
         runtimeMock.state.promptResult = {
           data: {
             parts: [
+              { type: "text", text: "I’ll read the context first." },
+              { type: "tool" },
               {
                 type: "text",
                 text: 'Here is the result:\n{"subject":"Tighten OpenCode parsing","body":"Handle JSON text output locally."}',
