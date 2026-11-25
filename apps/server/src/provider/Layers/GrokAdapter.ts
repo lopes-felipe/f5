@@ -1088,6 +1088,11 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           const acp = yield* (options?.makeRuntime ?? makeGrokAcpRuntime)({
             grokSettings,
             runtimeMode: startRuntimeMode,
+            // Only sessions started for read-only workflow turns may take workflow turns, so the
+            // sandbox is decided here, once, at launch.
+            ...(PROVIDER === "antigravity" && input.workflowExecutionProfile
+              ? { readOnlySandbox: true }
+              : {}),
             ...(options?.environment ? { environment: options.environment } : {}),
             childProcessSpawner,
             cwd,

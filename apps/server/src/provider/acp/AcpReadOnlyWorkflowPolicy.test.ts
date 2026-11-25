@@ -27,6 +27,22 @@ describe("acpReadOnlyWorkflowDecision", () => {
     expect(decide({ kind: "execute", title: "`git status`" })).toBe("deny");
   });
 
+  it("denies a read-only command that asks to leave the sandbox (Antigravity shape)", () => {
+    // The live certification run on 2026-11-25: the model retried a sandboxed `gh api zen`
+    // with BypassSandbox, and approving it reached GitHub from outside the sandbox.
+    const toolCall = (rawInput: Record<string, unknown>) => ({
+      kind: "execute",
+      title: "gh api zen",
+      rawInput: { CommandLine: "gh api zen", WaitMsBeforeAsync: 10000, ...rawInput },
+    });
+    expect(decide(toolCall({ BypassSandbox: false }))).toBe("allow");
+    expect(decide(toolCall({}))).toBe("allow");
+    expect(decide(toolCall({ BypassSandbox: true }))).toBe("deny");
+    expect(decide(toolCall({ BypassSandbox: "true" }))).toBe("deny");
+    expect(decide(toolCall({ bypass_sandbox: 1 }))).toBe("deny");
+    expect(decide(toolCall({ dangerouslyDisableSandbox: true }))).toBe("deny");
+  });
+
   it("denies edits and unknown kinds", () => {
     for (const kind of ["edit", "delete", "move", "other", "switch_mode", undefined])
       expect(decide({ kind, title: "tool" })).toBe("deny");

@@ -12,6 +12,8 @@ describe("classifyReadOnlyShellCommand", () => {
     "git -C /Users/me/dev/pedregal status -sb && git -C /Users/me/dev/pedregal rev-parse HEAD",
     "GH_NO_UPDATE_NOTIFIER=1 gh api repos/x/y/pulls/1 --jq '{number,title}'",
     "gh api -X GET repos/x/y/pulls/1/files --paginate",
+    // The Antigravity live certification's sandbox network probe relies on this one passing.
+    "gh api zen",
     "rg -n foo | head",
     "sed -n '1,20p' file.ts",
     "sed -n 5p file.ts",
