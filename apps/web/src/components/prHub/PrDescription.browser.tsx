@@ -18,6 +18,7 @@ vi.mock("../../lib/prHubAccount", () => ({
   getPrHubAccountGeneration: () => "account",
   getPrHubSelectedAccountId: () => "account",
   getPrHubDraftIdentity: () => "account",
+  usePrHubAccountSnapshot: () => ({ accountId: "account", generation: "account" }),
 }));
 beforeEach(() => {
   localStorage.clear();
