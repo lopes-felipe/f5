@@ -57,11 +57,26 @@ export interface McpHubOmission {
   readonly reason: string;
 }
 
+export interface McpHubAttachmentUpdate {
+  /** Servers that now point at a new connection on their existing endpoint. */
+  readonly changed: ReadonlyArray<string>;
+  /** Servers whose endpoint now lists nothing; the provider keeps the endpoint. */
+  readonly removed: ReadonlyArray<string>;
+  /** Servers with no endpoint in this session; the provider must restart to get them. */
+  readonly added: ReadonlyArray<string>;
+  readonly omitted: ReadonlyArray<McpHubOmission>;
+}
+
 export interface McpHubAttachment {
   readonly endpoints: ReadonlyArray<McpHubEndpoint>;
   readonly omitted: ReadonlyArray<McpHubOmission>;
   /** Credentials to scrub from logs and diagnostics. */
   readonly credentials: ReadonlyArray<string>;
+  /**
+   * Applies saved servers to this session's endpoints without restarting the
+   * provider: changed servers move to a new connection, removed ones list nothing.
+   */
+  readonly update: (servers: McpProjectServersConfig | null | undefined) => McpHubAttachmentUpdate;
   /** Revokes the endpoints and releases their upstream connections. */
   readonly dispose: () => Promise<void>;
 }
@@ -105,6 +120,13 @@ export const mcpHubAdapterOption = Effect.serviceOption(McpHub).pipe(
     Option.isSome(hub) ? { mcpHub: hub.value } : {},
   ),
 );
+
+function hashDefinition(definition: McpServerDefinition): string {
+  return createHash("sha256")
+    .update(stableMcpServersJson({ entry: definition }))
+    .digest("hex")
+    .slice(0, 24);
+}
 
 export function defaultConnectionScope(definition: McpServerDefinition): McpConnectionScope {
   return definition.connectionScope ?? (definition.type === "stdio" ? "session" : "shared");
@@ -175,10 +197,7 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
     definition: McpServerDefinition,
   ): UpstreamEntry => {
     const scope = defaultConnectionScope(definition);
-    const definitionHash = createHash("sha256")
-      .update(stableMcpServersJson({ entry: definition }))
-      .digest("hex")
-      .slice(0, 24);
+    const definitionHash = hashDefinition(definition);
     // Session connections are never reused; shared ones are per account and definition.
     const key =
       scope === "session"
@@ -212,18 +231,16 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
     return entry;
   };
 
-  const attach = (input: McpHubAttachInput): McpHubAttachment => {
-    const endpoints: McpHubEndpoint[] = [];
+  /** Which servers a session should get, after provider switches and interpolation. */
+  const resolveServers = (
+    input: McpHubAttachInput,
+    servers: McpProjectServersConfig | null | undefined,
+  ) => {
     const omitted: McpHubOmission[] = [];
-    const attached: Array<{ slot: McpHubSlot; entry: UpstreamEntry }> = [];
-    if (!available || closed) {
-      for (const name of Object.keys(input.servers ?? {}))
-        omitted.push({ serverName: name, reason: "F5's MCP hub is unavailable in this runtime" });
-      return { endpoints, omitted, credentials: [], dispose: async () => {} };
-    }
+    const wanted = new Map<string, McpServerDefinition>();
     // Servers turned off for this provider are left out silently, like disabled ones.
     const interpolated = interpolateMcpServers(
-      filterEnabledMcpServers(input.servers, input.provider),
+      filterEnabledMcpServers(servers, input.provider),
       input.environment,
     );
     for (const skip of interpolated.skipped)
@@ -235,6 +252,60 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
         omitted.push({ serverName, reason: "uses a name the provider already has" });
         continue;
       }
+      wanted.set(serverName, definition);
+    }
+    return { wanted, omitted };
+  };
+
+  /** One endpoint of an attachment and the connection it currently routes to. */
+  interface AttachedSlot {
+    readonly slot: McpHubSlot;
+    entry: UpstreamEntry | undefined;
+    hash: string | undefined;
+  }
+
+  const bindEntry = (input: McpHubAttachInput, record: AttachedSlot, entry: UpstreamEntry) => {
+    entry.users.set(record.slot.id, { projectId: input.projectId, provider: input.provider });
+    entry.upstream.retain();
+    record.entry = entry;
+  };
+
+  const unbindEntry = (record: AttachedSlot) => {
+    const entry = record.entry;
+    if (!entry) return;
+    record.entry = undefined;
+    record.hash = undefined;
+    entry.users.delete(record.slot.id);
+    entry.upstream.release();
+    if (entry.users.size === 0 && entry.upstream.scope === "session") upstreams.delete(entry.key);
+  };
+
+  const attach = (input: McpHubAttachInput): McpHubAttachment => {
+    const endpoints: McpHubEndpoint[] = [];
+    if (!available || closed) {
+      const omitted = Object.keys(input.servers ?? {}).map((name) => ({
+        serverName: name,
+        reason: "F5's MCP hub is unavailable in this runtime",
+      }));
+      return {
+        endpoints,
+        omitted,
+        credentials: [],
+        update: (servers) => ({
+          changed: [],
+          removed: [],
+          added: [],
+          omitted: Object.keys(servers ?? {}).map((name) => ({
+            serverName: name,
+            reason: "F5's MCP hub is unavailable in this runtime",
+          })),
+        }),
+        dispose: async () => {},
+      };
+    }
+    const { wanted, omitted } = resolveServers(input, input.servers);
+    const records = new Map<string, AttachedSlot>();
+    for (const [serverName, definition] of wanted) {
       const entry = upstreamFor(input, serverName, definition);
       const id = randomBytes(18).toString("base64url");
       const token = randomBytes(32).toString("base64url");
@@ -246,9 +317,9 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
         upstream: entry.upstream,
       });
       slots.set(id, slot);
-      entry.users.set(id, { projectId: input.projectId, provider: input.provider });
-      entry.upstream.retain();
-      attached.push({ slot, entry });
+      const record: AttachedSlot = { slot, entry: undefined, hash: hashDefinition(definition) };
+      bindEntry(input, record, entry);
+      records.set(serverName, record);
       endpoints.push({
         serverName,
         url: `${listener!.baseUrl}${MCP_HUB_PATH_PREFIX}${id}`,
@@ -258,21 +329,65 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
       });
     }
     let disposed = false;
+    const update = (
+      servers: McpProjectServersConfig | null | undefined,
+    ): McpHubAttachmentUpdate => {
+      if (disposed || closed) return { changed: [], removed: [], added: [], omitted: [] };
+      const next = resolveServers(input, servers);
+      const changed: string[] = [];
+      const removed: string[] = [];
+      const added: string[] = [];
+      for (const [serverName, record] of records) {
+        const definition = next.wanted.get(serverName);
+        if (!definition) {
+          if (record.entry) {
+            unbindEntry(record);
+            record.slot.rebind(undefined);
+            removed.push(serverName);
+          }
+          continue;
+        }
+        const hash = hashDefinition(definition);
+        if (record.entry && record.hash === hash) continue;
+        // Bind the new connection before releasing the old, so a shared one is reused.
+        const previous = record.entry;
+        const entry = upstreamFor(input, serverName, definition);
+        record.entry = undefined;
+        bindEntry(input, record, entry);
+        record.hash = hash;
+        record.slot.rebind(entry.upstream);
+        if (previous) {
+          previous.users.delete(record.slot.id);
+          previous.upstream.release();
+          if (previous.users.size === 0 && previous.upstream.scope === "session")
+            upstreams.delete(previous.key);
+        }
+        changed.push(serverName);
+      }
+      for (const serverName of next.wanted.keys())
+        if (!records.has(serverName)) added.push(serverName);
+      return { changed, removed, added, omitted: next.omitted };
+    };
     return {
       endpoints,
       omitted,
       credentials: endpoints.map((endpoint) => endpoint.token),
+      update,
       dispose: async () => {
         if (disposed) return;
         disposed = true;
         await Promise.allSettled(
-          attached.map(async ({ slot, entry }) => {
-            slots.delete(slot.id);
-            entry.users.delete(slot.id);
-            await slot.close();
-            entry.upstream.release();
-            if (entry.users.size === 0 && entry.upstream.scope === "session")
-              upstreams.delete(entry.key);
+          [...records.values()].map(async (record) => {
+            slots.delete(record.slot.id);
+            const entry = record.entry;
+            if (entry) entry.users.delete(record.slot.id);
+            await record.slot.close();
+            if (entry) {
+              record.entry = undefined;
+              entry.upstream.release();
+              if (entry.users.size === 0 && entry.upstream.scope === "session")
+                upstreams.delete(entry.key);
+            }
           }),
         );
       },

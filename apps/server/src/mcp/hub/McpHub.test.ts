@@ -5,7 +5,10 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
+import {
+  ElicitRequestSchema,
+  ToolListChangedNotificationSchema,
+} from "@modelcontextprotocol/sdk/types.js";
 import {
   ProjectId,
   ThreadId,
@@ -108,7 +111,7 @@ describe("F5 MCP hub", () => {
     const client = await connect(endpoint.url, endpoint.token);
     expect(client.getServerVersion()?.name).toBe("fixture");
     const tools = await client.listTools();
-    expect(tools.tools.map((tool) => tool.name)).toEqual(["echo", "slow", "add_tool"]);
+    expect(tools.tools.map((tool) => tool.name)).toEqual(["echo", "slow", "add_tool", "ask"]);
 
     const echoed = await client.callTool({ name: "echo", arguments: { text: "hi" } });
     expect(echoed.content).toEqual([{ type: "text", text: "echo:hi" }]);
@@ -255,6 +258,90 @@ describe("F5 MCP hub", () => {
           reason: "needs the environment variable MISSING_KEY, which is not set",
         },
       ]);
+    } finally {
+      await attachment.dispose();
+    }
+  });
+
+  it("applies saved changes to a live session's endpoints without a new endpoint", async () => {
+    const attachment = attach(stdioServers());
+    try {
+      const endpoint = attachment.endpoints[0]!;
+      const client = await connect(endpoint.url, endpoint.token);
+      expect((await client.listTools()).tools.map((tool) => tool.name)).toContain("slow");
+      let changes = 0;
+      client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+        changes += 1;
+      });
+
+      // Unchanged definitions keep their connection.
+      expect(attachment.update(stdioServers())).toEqual({
+        changed: [],
+        removed: [],
+        added: [],
+        omitted: [],
+      });
+
+      // A changed definition moves the same endpoint to a new connection.
+      const edited = {
+        fixture: { ...stdioServers().fixture!, disabledTools: ["hidden", "slow"] },
+        later: { type: "stdio" as const, command: process.execPath, args: [fixture] },
+      };
+      expect(attachment.update(edited)).toEqual({
+        changed: ["fixture"],
+        removed: [],
+        added: ["later"],
+        omitted: [],
+      });
+      await expect.poll(() => changes).toBeGreaterThan(0);
+      expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual([
+        "echo",
+        "add_tool",
+        "ask",
+      ]);
+      expect(hub.status(projectId)).toHaveLength(1);
+
+      // A removed server lists nothing and refuses calls on the kept endpoint.
+      expect(attachment.update({}).removed).toEqual(["fixture"]);
+      expect((await client.listTools()).tools).toEqual([]);
+      const refused = await client.callTool({ name: "echo", arguments: { text: "x" } });
+      expect(refused.isError).toBe(true);
+      expect(hub.status(projectId)).toEqual([]);
+
+      // Saving it again routes the endpoint to a fresh connection.
+      expect(attachment.update(stdioServers()).changed).toEqual(["fixture"]);
+      const echoed = await client.callTool({ name: "echo", arguments: { text: "back" } });
+      expect(echoed.content).toEqual([{ type: "text", text: "echo:back" }]);
+    } finally {
+      await attachment.dispose();
+    }
+  });
+
+  it("forwards a server's question to the provider whose call is waiting", async () => {
+    const attachment = attach(stdioServers());
+    try {
+      const endpoint = attachment.endpoints[0]!;
+      const asking = new Client(
+        { name: "provider", version: "1" },
+        { capabilities: { elicitation: {} } },
+      );
+      asking.setRequestHandler(ElicitRequestSchema, (request) => {
+        expect(request.params.message).toBe("Pick a color");
+        return { action: "accept" as const, content: { color: "teal" } };
+      });
+      await asking.connect(
+        new StreamableHTTPClientTransport(new URL(endpoint.url), {
+          requestInit: { headers: { Authorization: `Bearer ${endpoint.token}` } },
+        }) as Transport,
+      );
+      clients.push(asking);
+      const answered = await asking.callTool({ name: "ask", arguments: {} });
+      expect(answered.content).toEqual([{ type: "text", text: "accept:teal" }]);
+
+      // A provider connection without elicitation gets a declined question.
+      const plain = await connect(endpoint.url, endpoint.token);
+      const declined = await plain.callTool({ name: "ask", arguments: {} });
+      expect(declined.content).toEqual([{ type: "text", text: "decline:" }]);
     } finally {
       await attachment.dispose();
     }

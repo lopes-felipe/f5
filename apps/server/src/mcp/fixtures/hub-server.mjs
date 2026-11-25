@@ -26,6 +26,7 @@ let tools = [
     description: "Adds a tool and announces it",
     inputSchema: { type: "object" },
   },
+  { name: "ask", description: "Asks the user a question", inputSchema: { type: "object" } },
 ];
 process.stderr.write(`hub fixture started token=${process.env.HUB_FIXTURE_TOKEN ?? "none"}\n`);
 
@@ -48,6 +49,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
     return { content: [{ type: "text", text: "done" }] };
+  }
+  if (name === "ask") {
+    const answer = await server.elicitInput({
+      message: "Pick a color",
+      requestedSchema: { type: "object", properties: { color: { type: "string" } } },
+    });
+    return {
+      content: [{ type: "text", text: `${answer.action}:${answer.content?.color ?? ""}` }],
+    };
   }
   if (name === "add_tool") {
     tools = [...tools, { name: "added", inputSchema: { type: "object" } }];

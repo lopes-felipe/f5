@@ -1,8 +1,11 @@
+import type { McpProjectServersConfig } from "@t3tools/contracts";
+
 import type { McpHubAttachInput, McpHubEndpoint, McpHubShape } from "../McpHub.ts";
 
 /** Records attachments and issues one fixed endpoint per enabled server. */
 export function makeFakeMcpHub(options: { readonly available?: boolean } = {}) {
   const attaches: McpHubAttachInput[] = [];
+  const updates: Array<McpProjectServersConfig | null | undefined> = [];
   let disposed = 0;
   const hub: McpHubShape = {
     available: options.available ?? true,
@@ -21,6 +24,19 @@ export function makeFakeMcpHub(options: { readonly available?: boolean } = {}) {
         endpoints,
         omitted: [],
         credentials: endpoints.map((endpoint) => endpoint.token),
+        update: (servers) => {
+          updates.push(servers);
+          const names = new Set(endpoints.map((endpoint) => endpoint.serverName));
+          const next = Object.entries(servers ?? {}).filter(
+            ([name, server]) => server.enabled !== false && !input.reservedNames?.has(name),
+          );
+          return {
+            changed: next.flatMap(([name]) => (names.has(name) ? [name] : [])),
+            removed: [...names].filter((name) => !next.some(([other]) => other === name)),
+            added: next.flatMap(([name]) => (names.has(name) ? [] : [name])),
+            omitted: [],
+          };
+        },
         dispose: async () => {
           disposed += 1;
         },
@@ -35,6 +51,7 @@ export function makeFakeMcpHub(options: { readonly available?: boolean } = {}) {
   return {
     hub,
     attaches,
+    updates,
     get disposed() {
       return disposed;
     },

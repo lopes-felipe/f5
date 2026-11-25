@@ -15,6 +15,8 @@ import {
   PromptListChangedNotificationSchema,
   ResourceListChangedNotificationSchema,
   ToolListChangedNotificationSchema,
+  type ElicitRequest,
+  type ElicitResult,
   type ServerCapabilities,
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
@@ -35,6 +37,21 @@ const MAX_STARTUP_TIMEOUT_MS = 120_000;
 const MAX_LISTED_TOOLS = 1_000;
 
 export type McpHubConnectionScope = "session" | "shared";
+
+/**
+ * A tool call in flight through one provider connection. When the upstream asks
+ * the user something (elicitation), the hub forwards it to the provider whose call
+ * is waiting, which shows it in that conversation.
+ */
+export interface McpHubInFlightCall {
+  readonly threadId: string;
+  readonly startedAt: number;
+  /** Absent when the provider's connection does not accept elicitation. */
+  readonly elicit?: (
+    request: ElicitRequest["params"],
+    signal: AbortSignal,
+  ) => Promise<ElicitResult>;
+}
 
 export type McpHubUpstreamState =
   | "idle"
@@ -119,6 +136,7 @@ export class McpHubUpstream {
   private generation = 0;
   private stderrTail = "";
   private readonly listeners = new Set<(change: McpHubListChange) => void>();
+  private readonly inFlight = new Set<McpHubInFlightCall>();
 
   constructor(options: McpHubUpstreamOptions) {
     this.options = options;
@@ -172,6 +190,33 @@ export class McpHubUpstream {
   onListChanged(listener: (change: McpHubListChange) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  /** Registers a tool call while it runs; returns its release. */
+  trackCall(call: McpHubInFlightCall): () => void {
+    this.inFlight.add(call);
+    return () => this.inFlight.delete(call);
+  }
+
+  /**
+   * Answers an upstream elicitation. MCP gives the client no link from the request
+   * to the tool call that caused it, so it is forwarded only when every call in
+   * flight belongs to one conversation (always the case for session connections);
+   * otherwise, or when that provider cannot show it, it is declined.
+   */
+  async elicit(request: ElicitRequest["params"], signal: AbortSignal): Promise<ElicitResult> {
+    const calls = [...this.inFlight];
+    const threads = new Set(calls.map((call) => call.threadId));
+    if (threads.size !== 1) return { action: "decline" };
+    const target = calls
+      .filter((call) => call.elicit)
+      .toSorted((left, right) => right.startedAt - left.startedAt)[0];
+    if (!target?.elicit) return { action: "decline" };
+    try {
+      return await target.elicit(request, signal);
+    } catch {
+      return { action: "cancel" };
+    }
   }
 
   // ── Status ────────────────────────────────────────────────────────────
@@ -278,8 +323,10 @@ export class McpHubUpstream {
       client.setRequestHandler(ListRootsRequestSchema, () => ({
         roots: [{ uri: pathToFileUri(this.options.cwd), name: this.options.cwd }],
       }));
-      // F5 has no elicitation surface for hub servers yet; declining keeps calls moving.
-      client.setRequestHandler(ElicitRequestSchema, () => ({ action: "decline" as const }));
+      // Questions go to the conversation whose call is waiting (see `elicit`).
+      client.setRequestHandler(ElicitRequestSchema, (request, extra) =>
+        this.elicit(request.params, extra.signal),
+      );
       client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
         this.tools = undefined;
         this.toolsLoading = undefined;
