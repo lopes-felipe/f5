@@ -109,10 +109,17 @@ it("opens pull request links beside the thread, like chat links", async () => {
     .toBe("pr:github:github.com/org/repo#7");
   expect(api.openExternal).not.toHaveBeenCalled();
 });
-it("opens rendered images through the existing image viewer", async () => {
+it.each([
+  [
+    "image/png",
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=",
+  ],
+  [
+    "image/svg+xml",
+    "data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%3E%3C%2Fsvg%3E",
+  ],
+])("opens rendered %s images through the existing image viewer", async (mimeType, src) => {
   const image = vi.fn();
-  const src =
-    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
   source = `<p style="display:none">Hello</p><img alt="Diagram" style="display:block;height:120px;width:100%" src="${src}">`;
   await mount(image);
   await page.getByTitle("HTML widget", { exact: true }).click();
@@ -120,7 +127,7 @@ it("opens rendered images through the existing image viewer", async () => {
   expect(image.mock.calls[0]![0].images[0]).toMatchObject({
     src,
     name: "Diagram",
-    mimeType: "image/png",
+    mimeType,
   });
 });
 it("supports fullscreen zoom and returns inline when Escape is pressed inside the frame", async () => {

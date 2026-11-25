@@ -216,7 +216,7 @@ The single rolling pull request through which F5 publishes recorded decisions an
 - [workspace-layout.md][2]
 - [upstream-ports.md][30]
 
-[1]: ../packages/contracts/src/orchestration.ts
+[1]: ../packages/contracts/src/orchestration/readModel.ts
 [2]: ./workspace-layout.md
 [3]: ../apps/server/src/git/Layers/GitCore.ts
 [4]: ../apps/server/src/orchestration/projector.ts

@@ -153,9 +153,13 @@ function Thread({
   return (
     <section className="space-y-2 rounded border border-border p-3">
       <p className="text-sm font-medium">
-        <code>
-          {thread.path}:{thread.line ?? thread.originalLine ?? "file"}
-        </code>{" "}
+        {thread.path ? (
+          <code>
+            {thread.path}:{thread.line ?? thread.originalLine ?? "file"}
+          </code>
+        ) : (
+          "Overview discussion"
+        )}{" "}
         · {thread.isResolved ? "Resolved" : "Unresolved"}
         {thread.isOutdated ? " · Outdated" : ""}
       </p>

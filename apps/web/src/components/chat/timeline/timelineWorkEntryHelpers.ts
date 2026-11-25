@@ -1,7 +1,7 @@
 import { computerToolHeading, previewToolHeading } from "@t3tools/shared/computerAction";
 import { classifyAutomationEntry } from "../AutomationSessionCard.logic";
 import { type TurnId } from "@t3tools/contracts";
-import { deriveTimelineEntries } from "../../../session-logic";
+import type { deriveTimelineEntries } from "../../../session-logic";
 import { type TurnDiffSummary } from "../../../types";
 import {
   BotIcon,
@@ -39,7 +39,7 @@ import {
 import { iconForItemType } from "../workEntryIcons";
 import { classifyCompactCommand, isGenericCommandTitle } from "@t3tools/shared/commandSummary";
 
-type TimelineEntry = ReturnType<typeof deriveTimelineEntries>[number];
+export type TimelineEntry = ReturnType<typeof deriveTimelineEntries>[number];
 export type TimelineWorkEntry = Extract<TimelineEntry, { kind: "work" }>["entry"];
 
 export function workToneIcon(tone: TimelineWorkEntry["tone"]): {
@@ -77,13 +77,13 @@ export function workToneClass(tone: "thinking" | "tool" | "info" | "error"): str
   return "text-muted-foreground";
 }
 
-export interface WorkEntryChangedFilePreview {
+interface WorkEntryChangedFilePreview {
   rawPath: string;
   targetPath: string;
   displayPath: string;
 }
 
-export function resolveWorkEntryFilePreview(
+function resolveWorkEntryFilePreview(
   rawPath: string,
   executionCwd: string | undefined,
   workspaceRoot: string | undefined,
@@ -122,7 +122,7 @@ export function changedFilesForPreview(
   );
 }
 
-export function formatChangedFilesPreview(
+function formatChangedFilesPreview(
   changedFiles: ReadonlyArray<WorkEntryChangedFilePreview> | undefined,
 ) {
   if ((changedFiles?.length ?? 0) === 0) return null;
@@ -133,7 +133,7 @@ export function formatChangedFilesPreview(
     : `${firstFile.displayPath} +${changedFiles!.length - 1} more`;
 }
 
-export function normalizedReadWorkEntry(
+function normalizedReadWorkEntry(
   workEntry: Pick<TimelineWorkEntry, "command" | "lineSummary" | "readPaths">,
 ): {
   filePaths: ReadonlyArray<string>;
@@ -175,7 +175,7 @@ export function workEntryReadFilesForPreview(
   );
 }
 
-export function workEntryInlineFilePreview(
+function workEntryInlineFilePreview(
   workEntry: Pick<TimelineWorkEntry, "command" | "lineSummary" | "readPaths">,
   executionCwd: string | undefined,
   workspaceRoot: string | undefined,
@@ -203,16 +203,13 @@ export function workEntryInlineFilePreview(
   };
 }
 
-export function asUnknownRecord(value: unknown): Record<string, unknown> | null {
+function asUnknownRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
 }
 
-export function readPositiveInteger(
-  record: Record<string, unknown>,
-  keys: string[],
-): number | undefined {
+function readPositiveInteger(record: Record<string, unknown>, keys: string[]): number | undefined {
   for (const key of keys) {
     const rawValue = record[key];
     if (typeof rawValue === "number" && Number.isInteger(rawValue) && rawValue > 0) {
@@ -228,7 +225,7 @@ export function readPositiveInteger(
   return undefined;
 }
 
-export function parsePositiveIntegerString(value: string | undefined): number | undefined {
+function parsePositiveIntegerString(value: string | undefined): number | undefined {
   if (!value || !/^\d+$/.test(value)) {
     return undefined;
   }
@@ -236,7 +233,7 @@ export function parsePositiveIntegerString(value: string | undefined): number | 
   return parsed > 0 ? parsed : undefined;
 }
 
-export function formatInlineFileReadPosition(input: {
+function formatInlineFileReadPosition(input: {
   line: number | undefined;
   endLine: number | undefined;
   column: number | undefined;
@@ -253,14 +250,14 @@ export function formatInlineFileReadPosition(input: {
   return `line ${input.line}`;
 }
 
-export interface InlineFilePreview {
+interface InlineFilePreview {
   targetPath: string;
   label: string;
   text: string;
   trailingText: string;
 }
 
-export interface ParsedFileReadDetail {
+interface ParsedFileReadDetail {
   source: "structured" | "bare-path";
   rawPath: string;
   line: number | undefined;
@@ -268,7 +265,7 @@ export interface ParsedFileReadDetail {
   column: number | undefined;
 }
 
-export function inferredFileOperationHeading(
+function inferredFileOperationHeading(
   workEntry: Pick<
     TimelineWorkEntry,
     "detail" | "itemType" | "label" | "readPaths" | "requestKind" | "toolTitle"
@@ -516,9 +513,9 @@ export function workEntryPreview(
   return changedFilesPreview;
 }
 
-export type TimelineEntryIcon = Icon | LucideIcon;
+type TimelineEntryIcon = Icon | LucideIcon;
 
-export const DYNAMIC_TOOL_ICONS: Record<DynamicToolIconKind, LucideIcon> = {
+const DYNAMIC_TOOL_ICONS: Record<DynamicToolIconKind, LucideIcon> = {
   search: SearchIcon,
   web: GlobeIcon,
   tasks: ListTodoIcon,
@@ -577,7 +574,7 @@ export function workEntryIcon(workEntry: TimelineWorkEntry): TimelineEntryIcon {
   return workToneIcon(workEntry.tone).icon;
 }
 
-export function capitalizePhrase(value: string): string {
+function capitalizePhrase(value: string): string {
   const trimmed = value.trim();
   if (trimmed.length === 0) {
     return value;
@@ -585,7 +582,7 @@ export function capitalizePhrase(value: string): string {
   return `${trimmed.charAt(0).toUpperCase()}${trimmed.slice(1)}`;
 }
 
-export function formatMcpIdentifier(value: string): string {
+function formatMcpIdentifier(value: string): string {
   const normalized = value
     .trim()
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
@@ -615,7 +612,7 @@ export function formatMcpToolHeading(workEntry: TimelineWorkEntry): string {
   return capitalizePhrase(normalizeCompactToolLabel(workEntry.toolTitle));
 }
 
-export function isGenericInferredActivityHeading(value: string): boolean {
+function isGenericInferredActivityHeading(value: string): boolean {
   const normalized = value.trim().toLowerCase();
   return normalized === "tool call" || normalized === "reasoning update";
 }

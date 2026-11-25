@@ -75,6 +75,57 @@ const detail = {
 };
 
 it.layer(SqliteClient.layerMemory())("native forge hub", (it) => {
+  it.effect("checks GitLab deletion permission on detail reads only", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* Migration102;
+        let head = detail.sha;
+        const graphql = vi.fn(() =>
+          Response.json({
+            data: {
+              project: {
+                mergeRequest: {
+                  userPermissions: { removeSourceBranch: true },
+                },
+              },
+            },
+          }),
+        );
+        const provider = makeForgeSourceControlProvider({
+          kind: "gitlab",
+          resolveAccount: () =>
+            Effect.succeed({
+              kind: "gitlab",
+              host: account.host,
+              login: account.login,
+              token: "fixture",
+              repository: "group/repo",
+            }),
+          fetch: (async (url: string | URL | Request) =>
+            new URL(String(url)).pathname === "/api/graphql"
+              ? graphql()
+              : Response.json({ ...detail, sha: head, state: "merged" })) as typeof fetch,
+        });
+        const hub = yield* makeForgePrHubService(
+          { ...account, id: "gitlab-delete-permission" },
+          provider,
+        ).pipe(Effect.provideService(ServerSettingsService, settings));
+        const { key } = yield* hub.track({ url: detail.web_url });
+        yield* hub.refreshNow({ mode: "force" });
+        yield* hub.getDetail({ key, mode: "force", omitBranchPermission: true });
+        assert.equal(graphql.mock.calls.length, 0);
+        const result = yield* hub.getDetail({ key });
+        assert.propertyVal(result.detail.providerDetails, "viewerCanDeleteBranch", true);
+        assert.equal(graphql.mock.calls.length, 1);
+        head = "new-head";
+        yield* hub.getDetail({ key, mode: "force", omitBranchPermission: true });
+        assert.equal(graphql.mock.calls.length, 1);
+        const refreshed = yield* hub.getDetail({ key });
+        assert.propertyVal(refreshed.detail.providerDetails, "viewerCanDeleteBranch", true);
+        assert.equal(graphql.mock.calls.length, 2);
+      }),
+    ).pipe(Effect.provide(SqliteClient.layerMemory())),
+  );
   it.effect(
     "refreshes discovered Forgejo checks on every poll and passes required checks through to watches",
     () =>
@@ -257,6 +308,7 @@ it.layer(SqliteClient.layerMemory())("native forge hub", (it) => {
       Effect.gen(function* () {
         yield* Migration102;
         let partial = false;
+        let listOnly = true;
         const provider = makeForgeSourceControlProvider({
           kind: "gitlab",
           resolveAccount: () =>
@@ -269,6 +321,14 @@ it.layer(SqliteClient.layerMemory())("native forge hub", (it) => {
             }),
           fetch: (async (url) => {
             const path = new URL(String(url)).pathname;
+            if (path === "/api/graphql")
+              return Response.json({
+                data: {
+                  project: {
+                    mergeRequests: { nodes: [{ iid: "7", headPipeline: { status: "SUCCESS" } }] },
+                  },
+                },
+              });
             if (path.endsWith("/bridges"))
               return partial
                 ? new Response(null, { status: 403 })
@@ -278,7 +338,7 @@ it.layer(SqliteClient.layerMemory())("native forge hub", (it) => {
               return Response.json([{ ...detail, head_pipeline: undefined }]);
             return Response.json({
               ...detail,
-              head_pipeline: { id: 31, project_id: 12, status: "success" },
+              head_pipeline: listOnly ? undefined : { id: 31, project_id: 12, status: "success" },
             });
           }) as typeof fetch,
         });
@@ -321,7 +381,14 @@ it.layer(SqliteClient.layerMemory())("native forge hub", (it) => {
         );
         const first = yield* hub.refreshNow({ mode: "force" });
         const pr = first.pullRequests[0]!;
-        assert.equal(pr.checkRollup, "failure");
+        assert.equal(pr.checkRollup, "pending");
+        const cachedList = yield* hub.getDetail({
+          key: pr.key,
+          cacheOnly: true,
+          accountGeneration: account.generation,
+        });
+        assert.deepEqual(cachedList.detail.truncatedSections, ["checks"]);
+        listOnly = false;
         yield* hub.getDetail({ key: pr.key, mode: "force" });
         const polled = yield* hub.refreshNow({ mode: "force" });
         assert.equal(polled.pullRequests[0]?.checkRollup, "failure");
@@ -588,6 +655,8 @@ it.layer(SqliteClient.layerMemory())("native forge hub", (it) => {
                 repository: "group/repo",
               }),
             fetch: (async (url: string | URL | Request) => {
+              if (new URL(String(url)).pathname === "/api/graphql")
+                return Response.json({ data: { project: { mergeRequests: { nodes: [] } } } });
               if (new URL(String(url)).pathname.endsWith("/diffs"))
                 return Response.json([
                   { new_path: "a.ts", old_path: "a.ts", diff: "@@ -1 +1 @@\n-old\n+new" },

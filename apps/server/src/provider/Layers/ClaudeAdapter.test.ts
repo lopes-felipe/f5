@@ -2763,6 +2763,12 @@ describe("ClaudeAdapterLive", () => {
             path.resolve("/tmp/attachments"),
           ),
         );
+        // Workflow prompts reference pasted files there by absolute path.
+        assert.ok(
+          (permissions?.blockReadsExemptPaths as string[] | undefined)?.includes(
+            path.resolve("/tmp/workflow-attachments"),
+          ),
+        );
         assert.equal(permissions?.blockWritesOutsideWorkingDirectories, true);
         assert.equal(settings?.idleCompaction, false);
         // The bundled runtime honors onFailure, so F5's mandatory matcher blocks on hook errors.
@@ -4029,6 +4035,8 @@ describe("ClaudeAdapterLive", () => {
         );
         const latest = configs.at(-1);
         assert.equal(latest?.fast_mode_disabled_reason, "extra_usage_disabled");
+        const completed = events.find((event) => event.type === "turn.completed");
+        assert.equal(completed?.payload.usageSpeed, "standard");
         assert.deepEqual(latest?.runtimeInfo, {
           requested: { fastMode: "on" },
           effective: { model: "claude-opus-5-5", fastMode: "off" },

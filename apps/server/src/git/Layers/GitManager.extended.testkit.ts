@@ -582,7 +582,6 @@ function makeManager(input?: {
       providerLogsDir: path.join(baseDir, "userdata", "logs", "provider"),
       providerEventLogPath: path.join(baseDir, "userdata", "logs", "provider", "events.log"),
       terminalLogsDir: path.join(baseDir, "userdata", "logs", "terminals"),
-      anonymousIdPath: path.join(baseDir, "userdata", "anonymous-id"),
       staticDir: undefined,
       devUrl: undefined,
       noBrowser: true,

@@ -1,4 +1,5 @@
 import { type EditorId, type ServerRuntimeReadiness, WS_METHODS } from "@t3tools/contracts";
+import { isDoNotTrackSet } from "@t3tools/shared/doNotTrack";
 import { publicOtlpConfiguration, resolveOtlpConfiguration } from "@t3tools/shared/observability";
 import { Effect, Option, Struct } from "effect";
 import type * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -247,6 +248,7 @@ export const serverMetaRoutes = ({
             resolveOtlpConfiguration(settings.observability, process.env),
           ),
           cursorSdkHarness: cursorSdkHarnessHostAvailability(serverConfig),
+          privacy: { doNotTrack: isDoNotTrackSet(process.env) },
         };
       }),
 

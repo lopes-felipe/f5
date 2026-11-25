@@ -853,84 +853,96 @@ describe("preloadRecentThreadDetails", () => {
     expect(useStore.getState().threads[0]?.history?.generation).toBe(2);
   });
 
-  it("loads exactly one history page per viewport request", async () => {
-    const threadId = ThreadId.makeUnsafe("thread-windowed");
-    const tailMessageId = MessageId.makeUnsafe("message-tail");
-    const olderMessageId = MessageId.makeUnsafe("message-older");
-    seedStore({
-      threads: [
-        makeThread({
-          id: threadId,
-          detailsLoaded: true,
-          messages: [
-            {
-              id: tailMessageId,
-              role: "assistant",
-              text: "tail",
-              createdAt: "2026-03-01T00:02:00.000Z",
-              completedAt: "2026-03-01T00:02:00.000Z",
-              streaming: false,
+  it.each([false, true])(
+    "loads bounded history pages with user-message seeking %s",
+    async (seekUser) => {
+      const threadId = ThreadId.makeUnsafe("thread-windowed");
+      const tailMessageId = MessageId.makeUnsafe("message-tail");
+      const olderMessageId = MessageId.makeUnsafe("message-older");
+      const userMessageId = MessageId.makeUnsafe("message-earlier-user");
+      seedStore({
+        threads: [
+          makeThread({
+            id: threadId,
+            detailsLoaded: true,
+            messages: [
+              {
+                id: tailMessageId,
+                role: "assistant",
+                text: "tail",
+                createdAt: "2026-03-01T00:02:00.000Z",
+                completedAt: "2026-03-01T00:02:00.000Z",
+                streaming: false,
+              },
+            ],
+            history: {
+              stage: "tail",
+              hasOlderMessages: true,
+              hasOlderCheckpoints: false,
+              hasOlderActivities: false,
+              hasOlderCommandExecutions: false,
+              oldestLoadedMessageCursor: {
+                createdAt: "2026-03-01T00:02:00.000Z",
+                messageId: tailMessageId,
+              },
+              oldestLoadedCheckpointTurnCount: null,
+              oldestLoadedActivityCursor: null,
+              oldestLoadedCommandExecutionCursor: null,
+              generation: 1,
             },
-          ],
-          history: {
-            stage: "tail",
+          }),
+        ],
+      });
+      const { getThreadHistoryPage } = mockOrchestrationQueries({
+        getThreadHistoryPage: async ({ threadId: requestedThreadId, beforeMessageCursor }) => {
+          const earlierPage = beforeMessageCursor?.messageId === olderMessageId;
+          const id = earlierPage ? userMessageId : olderMessageId;
+          const at = earlierPage ? "2026-03-01T00:00:30.000Z" : "2026-03-01T00:01:00.000Z";
+          return {
+            threadId: requestedThreadId,
+            messages: [
+              {
+                id,
+                role: earlierPage ? "user" : "assistant",
+                text: "older",
+                turnId: null,
+                streaming: false,
+                createdAt: at,
+                updatedAt: at,
+              },
+            ],
+            checkpoints: [],
+            activities: [],
+            commandExecutions: [],
             hasOlderMessages: true,
             hasOlderCheckpoints: false,
             hasOlderActivities: false,
             hasOlderCommandExecutions: false,
             oldestLoadedMessageCursor: {
-              createdAt: "2026-03-01T00:02:00.000Z",
-              messageId: tailMessageId,
+              createdAt: at,
+              messageId: id,
             },
             oldestLoadedCheckpointTurnCount: null,
             oldestLoadedActivityCursor: null,
             oldestLoadedCommandExecutionCursor: null,
-            generation: 1,
-          },
-        }),
-      ],
-    });
-    const { getThreadHistoryPage } = mockOrchestrationQueries({
-      getThreadHistoryPage: async ({ threadId: requestedThreadId }) => ({
-        threadId: requestedThreadId,
-        messages: [
-          {
-            id: olderMessageId,
-            role: "assistant",
-            text: "older",
-            turnId: null,
-            streaming: false,
-            createdAt: "2026-03-01T00:01:00.000Z",
-            updatedAt: "2026-03-01T00:01:00.000Z",
-          },
-        ],
-        checkpoints: [],
-        activities: [],
-        commandExecutions: [],
-        hasOlderMessages: true,
-        hasOlderCheckpoints: false,
-        hasOlderActivities: false,
-        hasOlderCommandExecutions: false,
-        oldestLoadedMessageCursor: {
-          createdAt: "2026-03-01T00:01:00.000Z",
-          messageId: olderMessageId,
+            detailSequence: 2,
+          };
         },
-        oldestLoadedCheckpointTurnCount: null,
-        oldestLoadedActivityCursor: null,
-        oldestLoadedCommandExecutionCursor: null,
-        detailSequence: 2,
-      }),
-    });
+      });
 
-    await ensureThreadHistoryBackfill(new QueryClient(), threadId);
+      await ensureThreadHistoryBackfill(new QueryClient(), threadId, {
+        throughUserMessage: seekUser,
+      });
 
-    expect(getThreadHistoryPage).toHaveBeenCalledTimes(1);
-    expect(useStore.getState().threads[0]?.messages.map((message) => message.id)).toEqual([
-      olderMessageId,
-      tailMessageId,
-    ]);
-    expect(useStore.getState().threads[0]?.history?.stage).toBe("tail");
-  });
+      expect(getThreadHistoryPage).toHaveBeenCalledTimes(seekUser ? 2 : 1);
+      expect(useStore.getState().threads[0]?.messages.map((message) => message.id)).toEqual([
+        ...(seekUser ? [userMessageId] : []),
+        olderMessageId,
+        tailMessageId,
+      ]);
+      expect(useStore.getState().threads[0]?.history?.stage).toBe("tail");
+    },
+  );
 
   it("hydrates an unloaded message anchor without replacing the loaded tail", async () => {
     const threadId = ThreadId.makeUnsafe("thread-anchor");

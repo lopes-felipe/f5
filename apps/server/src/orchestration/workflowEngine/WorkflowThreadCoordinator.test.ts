@@ -12,6 +12,7 @@ import {
   createWorkflowStageThread,
   dispatchWorkflowDeleteCompensationCommand,
   liveThreadById,
+  upsertPlanningWorkflowRecord,
 } from "./WorkflowThreadCoordinator.ts";
 
 describe("WorkflowThreadCoordinator", () => {
@@ -94,6 +95,27 @@ describe("WorkflowThreadCoordinator", () => {
       expect.objectContaining({
         type: "project.investigation-workflow.delete",
         workflowId: "inv-1",
+      }),
+    );
+
+    const planningWorkflow = {
+      id: PlanningWorkflowId.make("wf-1"),
+      projectId,
+      updatedAt: "2026-01-01T00:00:05.000Z",
+    } as never;
+    await Effect.runPromise(
+      upsertPlanningWorkflowRecord(
+        orchestrationEngine,
+        planningWorkflow,
+        "2026-01-01T00:00:05.000Z",
+      ),
+    );
+    expect(dispatch).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        type: "project.workflow.upsert",
+        projectId: "p1",
+        workflow: planningWorkflow,
+        createdAt: "2026-01-01T00:00:05.000Z",
       }),
     );
   });

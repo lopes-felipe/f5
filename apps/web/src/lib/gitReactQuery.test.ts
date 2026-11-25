@@ -79,6 +79,18 @@ describe("gitMutationKeys", () => {
       gitMutationKeys.runStackedAction("/repo/b"),
     );
   });
+  it("invalidates the cached branch list when turn status observes another branch", () => {
+    const client = new QueryClient();
+    const branches = gitQueryKeys.branches("/repo");
+    client.setQueryData(branches, { branches: [{ name: "old", current: true }] });
+    client.setQueryData(gitQueryKeys.status("/repo"), { branch: "old", pr: { number: 1 } });
+    applyTurnGitStatus(client, "/repo", { branch: "new", pr: null } as never);
+    expect(client.getQueryState(branches)?.isInvalidated).toBe(true);
+    expect(client.getQueryData(gitQueryKeys.status("/repo"))).toMatchObject({
+      branch: "new",
+      pr: null,
+    });
+  });
 
   it("scopes pull keys by cwd", () => {
     expect(gitMutationKeys.pull("/repo/a")).not.toEqual(gitMutationKeys.pull("/repo/b"));

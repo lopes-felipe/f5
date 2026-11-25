@@ -222,6 +222,7 @@ export interface CodexSessionContext {
    * tier only then, so a tier from the user's `config.toml` is left alone.
    */
   serviceTierApplied?: boolean;
+  usageServiceTiers?: Map<TurnId, string>;
   /** Resolve a startup selection only after the opened thread's catalog is known. */
   deferredServiceTier?: string | undefined;
   childThreadIds?: Set<string>;
@@ -772,7 +773,7 @@ export function resolveCodexModelForAccount(
   return CODEX_SPARK_FALLBACK_MODEL;
 }
 
-export const forceKillTimers = new WeakMap<
+const forceKillTimers = new WeakMap<
   ChildProcessWithoutNullStreams,
   ReturnType<typeof setTimeout>
 >();

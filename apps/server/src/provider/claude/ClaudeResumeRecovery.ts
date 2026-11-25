@@ -3,14 +3,6 @@ import {
   commitClaudeTranscriptRejoin,
   planClaudeTranscriptRejoin,
 } from "../../maintenance/ClaudeTranscriptRepair.ts";
-/**
- * ClaudeAdapterLive - Scoped live implementation for the Claude Agent provider adapter.
- *
- * Wraps `@anthropic-ai/claude-agent-sdk` query sessions behind the generic
- * provider adapter contract and emits canonical runtime events.
- *
- * @module ClaudeAdapterLive
- */
 import {
   beginClaudeTranscriptMaintenance,
   readClaudeTranscriptLines,
@@ -38,6 +30,9 @@ import {
   type ClaudeSessionProbeInput,
   type ClaudeSessionStoreFs,
 } from "./ClaudeTypes.ts";
+
+import { isInterruptedResult, resultErrorsText } from "./ClaudeSdkResultHelpers.ts";
+export { isInterruptedResult, resultErrorsText };
 
 export const CLAUDE_TRANSCRIPT_REJOIN_BUDGET_MS = 30_000;
 
@@ -312,12 +307,6 @@ export function interruptionMessageFromClaudeCause(cause: Cause.Cause<Error>): s
   return isClaudeInterruptedMessage(message) ? "Claude runtime interrupted." : message;
 }
 
-export function resultErrorsText(result: SDKResultMessage): string {
-  return "errors" in result && Array.isArray(result.errors)
-    ? result.errors.join(" ").toLowerCase()
-    : "";
-}
-
 /**
  * 5-minute/1-hour cache-write split summed over `result.modelUsage`. These are SDK
  * whole-agent-tree session figures for display; they never feed F5 token facts or cost.
@@ -394,26 +383,6 @@ export function resultUserFacingError(result: SDKResultMessage): string | undefi
   return (
     claudeStartupFailureMessage(result) ??
     result.errors.find((error) => !error.startsWith("[ede_diagnostic]"))
-  );
-}
-
-export function isInterruptedResult(result: SDKResultMessage): boolean {
-  const terminalReason = (result as SDKResultMessage & { terminal_reason?: unknown })
-    .terminal_reason;
-  if (terminalReason === "aborted_tools" || terminalReason === "aborted_streaming") {
-    return true;
-  }
-  const errors = resultErrorsText(result);
-  if (errors.includes("interrupt")) {
-    return true;
-  }
-
-  return (
-    result.subtype === "error_during_execution" &&
-    result.is_error === false &&
-    (errors.includes("request was aborted") ||
-      errors.includes("interrupted by user") ||
-      errors.includes("aborted"))
   );
 }
 

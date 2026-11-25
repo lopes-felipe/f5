@@ -1,5 +1,7 @@
 import "../index.css";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useRef, useState } from "react";
+import { serverQueryKeys } from "../lib/serverReactQuery";
 import { expect, it } from "vitest";
 import { userEvent } from "vitest/browser";
 import { PopupFocusContext } from "./ui/popupFocus";
@@ -158,6 +160,24 @@ it("preserves only the selected occurrence through deletion and undo/redo", asyn
   await expect.element(screen.getByLabelText("Mentions")).toHaveTextContent(mention.id);
   await userEvent.keyboard("{" + modifier + ">}{Shift>}z{/Shift}{/" + modifier + "}");
   await expect.element(screen.getByLabelText("Mentions")).toHaveTextContent("[]");
+});
+
+it("renders mention chip icons locally while the server runs with DO_NOT_TRACK", async () => {
+  const mention = createComposerMention("src/main.ts", 0);
+  const client = new QueryClient();
+  client.setQueryData(serverQueryKeys.config(), { privacy: { doNotTrack: true } });
+  const screen = await render(
+    <QueryClientProvider client={client}>
+      <Harness initial="@src/main.ts" initialMentions={[mention]} />
+    </QueryClientProvider>,
+  );
+  const chip = screen
+    .getByTestId("composer-editor")
+    .element()
+    .querySelector("[data-composer-mention-chip]");
+  expect(chip).not.toBeNull();
+  expect(chip?.querySelector("img")).toBeNull();
+  expect(chip?.querySelector("svg")).not.toBeNull();
 });
 
 it("preserves explicitly quoted mention source when toggling editor mode", async () => {

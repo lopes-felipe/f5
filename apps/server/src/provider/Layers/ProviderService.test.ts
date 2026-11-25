@@ -79,7 +79,6 @@ import {
   makeSqlitePersistenceLive,
   SqlitePersistenceMemory,
 } from "../../persistence/Layers/Sqlite.ts";
-import { AnalyticsService } from "../../telemetry/Services/AnalyticsService.ts";
 import { ServerConfig } from "../../config.ts";
 
 const providerServiceConfigLayer = ServerConfig.layerTest(
@@ -394,7 +393,6 @@ function makeProviderServiceLayer(options?: ProviderServiceLiveOptions) {
         Layer.provide(providerAdapterLayer),
         Layer.provide(directoryLayer),
         Layer.provide(makeProjectMcpConfigServiceTestLayer()),
-        Layer.provideMerge(AnalyticsService.layerTest),
       ),
       directoryLayer,
 
@@ -434,7 +432,6 @@ function makeProviderServiceLayerForAdapters(
       Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
       Layer.provide(directoryLayer),
       Layer.provide(mcpConfigLayer),
-      Layer.provideMerge(AnalyticsService.layerTest),
     ),
     directoryLayer,
     runtimeRepositoryLayer,
@@ -1238,7 +1235,6 @@ it.effect("stamps and answers a startup form processed before the new binding is
       Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
       Layer.provide(gatedDirectoryLayer),
       Layer.provide(makeProjectMcpConfigServiceTestLayer()),
-      Layer.provideMerge(AnalyticsService.layerTest),
     ),
     NodeServices.layer,
   );
@@ -1567,7 +1563,6 @@ it.effect("ProviderServiceLive keeps persisted resumable sessions on startup", (
       Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
       Layer.provide(directoryLayer),
       Layer.provide(makeProjectMcpConfigServiceTestLayer()),
-      Layer.provide(AnalyticsService.layerTest),
     );
 
     yield* Effect.gen(function* () {
@@ -1622,7 +1617,6 @@ it.effect(
         Layer.provide(Layer.succeed(ProviderAdapterRegistry, firstRegistry)),
         Layer.provide(firstDirectoryLayer),
         Layer.provide(makeProjectMcpConfigServiceTestLayer()),
-        Layer.provide(AnalyticsService.layerTest),
       );
 
       const started = yield* Effect.gen(function* () {
@@ -1670,7 +1664,6 @@ it.effect(
         Layer.provide(Layer.succeed(ProviderAdapterRegistry, secondRegistry)),
         Layer.provide(secondDirectoryLayer),
         Layer.provide(makeProjectMcpConfigServiceTestLayer()),
-        Layer.provide(AnalyticsService.layerTest),
       );
 
       secondCodex.startSession.mockClear();
@@ -1746,7 +1739,6 @@ it.effect("ProviderServiceLive shutdown leaves settled stopped sessions untouche
       ),
       Layer.provide(ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer))),
       Layer.provide(makeProjectMcpConfigServiceTestLayer()),
-      Layer.provide(AnalyticsService.layerTest),
     );
     const liveThreadId = asThreadId("thread-live");
     yield* Effect.gen(function* () {
@@ -3627,7 +3619,6 @@ it.effect("does not mark an accepted running usage recovery for another restart 
       Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
       Layer.provide(directory),
       Layer.provide(makeProjectMcpConfigServiceTestLayer()),
-      Layer.provide(AnalyticsService.layerTest),
       Layer.provide(ServerSettingsService.layerTest({ resumeActiveTurnsAfterRestart: true })),
       Layer.provideMerge(persistence),
     );
@@ -4927,7 +4918,6 @@ it.effect("marks only an opted-in idle session's owned live background work for 
       ),
       Layer.provide(directory),
       Layer.provide(makeProjectMcpConfigServiceTestLayer()),
-      Layer.provide(AnalyticsService.layerTest),
       Layer.provide(
         ServerSettingsService.layerTest({
           resumeActiveTurnsAfterRestart: true,

@@ -1,11 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  isClaudeApiKeyFailureText,
-  isClaudeAuthFailureText,
-  isClaudeMissingConversationError,
-} from "./ClaudeResumeRecovery.ts";
-import {
   accumulateClaudeThinkingTokens,
   approximateContextCharsFromMessageContent,
   classifyRequestType,
@@ -14,7 +9,7 @@ import {
   sdkNativeMethod,
 } from "./ClaudeTaskProjection.ts";
 
-describe("ClaudeTaskProjection & ClaudeResumeRecovery", () => {
+describe("ClaudeTaskProjection", () => {
   it("accumulates thinking tokens monotonically and reads cache write splits", () => {
     const first = accumulateClaudeThinkingTokens(undefined, 120);
     expect(first).toEqual({ lastEstimate: 120, pending: 120 });
@@ -49,13 +44,5 @@ describe("ClaudeTaskProjection & ClaudeResumeRecovery", () => {
         event: { type: "content_block_delta", delta: { type: "text_delta" } },
       } as never),
     ).toBe("claude/stream_event/content_block_delta/text_delta");
-  });
-
-  it("classifies Claude auth and missing-conversation failure text", () => {
-    expect(isClaudeApiKeyFailureText("Invalid API key provided")).toBe(true);
-    expect(isClaudeAuthFailureText("Please run /login to authenticate")).toBe(true);
-    expect(
-      isClaudeMissingConversationError("No conversation found with session ID abc", "abc"),
-    ).toBe(true);
   });
 });
