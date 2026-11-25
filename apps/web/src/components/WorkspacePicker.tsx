@@ -945,6 +945,17 @@ function WorkspaceRowContent({ row }: { row: SelectableWorkspaceRow }) {
   }
 }
 
+/** Keep "/<folder>" visible at the end of a truncated path, up to 40 characters. */
+function pathTailLength(path: string): number {
+  const folder = Array.from(
+    path
+      .replace(/[\\/]+$/, "")
+      .split(/[\\/]/)
+      .at(-1) ?? "",
+  );
+  return Math.min(folder.length + 1, 40);
+}
+
 function WorkspaceHeaderStrip(props: {
   state: WorkspaceState;
   creatingWorktree: boolean;
@@ -982,11 +993,13 @@ function WorkspaceHeaderStrip(props: {
   );
   return (
     <div className="flex items-center gap-1 border-b py-1 ps-3 pe-1">
+      {/* Middle-truncated: the folder name is what tells checkouts apart. */}
       <span
-        className="min-w-0 flex-1 truncate font-mono text-2xs text-muted-foreground"
+        data-slot="workspace-path"
+        className="flex min-w-0 flex-1 font-mono text-2xs text-muted-foreground"
         title={props.path}
       >
-        {props.path}
+        <MiddleTruncate text={props.path} tailLength={pathTailLength(props.path)} />
       </span>
       {iconButton("Copy path", <CopyIcon />, () =>
         run("Could not copy the path", () => writeTextToClipboard(props.path)),

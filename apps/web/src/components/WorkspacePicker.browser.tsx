@@ -369,6 +369,65 @@ describe("started threads and managing worktrees", () => {
     });
   });
 
+  it("keeps a long, unbreakable worktree path inside the popup frame", async () => {
+    const path =
+      "/Users/someone/.f5/userdata-profiles/1e371049feb34fafbb0e46fccbeb6912/worktrees/f5-3fb59513056d/t3code-57b01760-355254f9";
+    const branch = "refactor/wave-2c-marketing-refresh-with-an-unusually-long-branch-name";
+    api.git.listBranches.mockResolvedValue({
+      isRepo: true,
+      hasOriginRemote: false,
+      branches: [
+        { name: "fix/sidebar", current: true, isDefault: false, worktreePath: "/repo" },
+        { name: "main", current: false, isDefault: true, worktreePath: null },
+        { name: branch, current: false, isDefault: false, worktreePath: path },
+      ],
+    });
+    api.worktrees.list.mockResolvedValue({
+      projects: [
+        {
+          projectId,
+          name: "f5",
+          workspaceRoot: "/repo",
+          error: null,
+          entries: [
+            { path: "/repo", canonicalPath: "/repo", linkedThreads: linked("a", "b", "c") },
+            { path, canonicalPath: path, linkedThreads: linked("d") },
+          ],
+        },
+      ],
+    });
+    await open(
+      {
+        activeWorktreePath: path,
+        activeThreadBranch: branch,
+        branchCwd: path,
+        effectiveEnvMode: "worktree",
+      },
+      branch,
+    );
+    await expect.element(option(/Local · fix\/sidebar.*3 threads here/)).toBeVisible();
+
+    const popup = document.querySelector<HTMLElement>('[data-slot="combobox-popup"]')!;
+    const frame = popup.parentElement!.getBoundingClientRect();
+    const within = (element: Element) => {
+      const rect = element.getBoundingClientRect();
+      return rect.left >= frame.left - 0.5 && rect.right <= frame.right + 0.5;
+    };
+    expect(popup.getBoundingClientRect().width).toBeLessThanOrEqual(frame.width + 0.5);
+    expect(popup.scrollWidth).toBeLessThanOrEqual(popup.clientWidth);
+    expect(within(page.getByRole("button", { name: "Copy path" }).element())).toBe(true);
+    expect(within(page.getByPlaceholder("Search branches and worktrees…").element())).toBe(true);
+    expect(within(page.getByText("3 threads here").element())).toBe(true);
+
+    const header = document.querySelector<HTMLElement>('[data-slot="workspace-path"]')!;
+    expect(header.title).toBe(path);
+    expect(header.textContent).toBe(path);
+    // The folder name stays whole at the visible end; the middle is what truncates.
+    const tail = header.querySelector(":scope > span > span:last-child")!;
+    expect(tail.textContent).toBe("/t3code-57b01760-355254f9");
+    expect(within(tail)).toBe(true);
+  });
+
   it("disables moving a local conversation while its turn runs", async () => {
     await open({ isDraft: false, canMove: true, moveDisabled: true });
     await expect
