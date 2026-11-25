@@ -210,6 +210,26 @@ describe("GitHub HTTP operations", () => {
       );
     }
   });
+  it("looks up fork clone URLs on the pull request's GitHub host", async () => {
+    const f = fixture(({ url }) => ({
+      full_name: "fork/repo",
+      html_url: "https://" + url.host + "/fork/repo",
+      ssh_url: "git@" + url.host + ":fork/repo.git",
+    }));
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const gh = yield* f.make;
+        const clone = yield* gh.getRepositoryCloneUrls({
+          cwd: "/repo",
+          repository: "fork/repo",
+          pullRequestUrl: "https://github.example.com/octo/repo/pull/7",
+        });
+        expect(clone.url).toBe("https://github.example.com/fork/repo");
+        expect(f.calls.at(-1)?.url.href).toBe("https://github.example.com/api/v3/repos/fork/repo");
+      }),
+    );
+  });
+
   it("reads clone metadata and paginated viewer teams through HTTP", async () => {
     const f = fixture((call) =>
       call.url.pathname.endsWith("/teams")

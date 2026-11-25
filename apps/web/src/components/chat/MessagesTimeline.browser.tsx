@@ -757,6 +757,46 @@ describe("MessagesTimeline (LegendList)", () => {
     }
   });
 
+  it("keeps the expanded work heading in view at the bottom of the timeline", async () => {
+    const screen = await render(
+      <TimelineHarness
+        initialHeight={300}
+        initialEntries={[
+          ...Array.from({ length: 12 }, (_, index) =>
+            makeUserEntry("context-" + index, "Earlier context", index),
+          ),
+          ...Array.from({ length: 10 }, (_, index) =>
+            makeReadWorkEntry("expand-work-" + index, "src/file-" + index + ".ts", 12 + index),
+          ),
+          makeAssistantEntry("expand-answer", "Done", 23),
+          makeUserEntry("expand-next-turn", "Next task", 24),
+        ]}
+        onIsAtEndChangeSpy={() => {}}
+      />,
+    );
+    const viewport = () =>
+      document.querySelector<HTMLElement>('[data-slot="messages-scroll-container"]')!;
+    const summary = () =>
+      document.querySelector<HTMLButtonElement>('[data-slot="work-group-summary"]');
+    try {
+      await expect.poll(summary).not.toBeNull();
+      await waitForTimelineLayout(viewport);
+      const node = viewport();
+      const distanceFromEnd = () => node.scrollHeight - node.scrollTop - node.clientHeight;
+      expect(distanceFromEnd()).toBeLessThan(3);
+      const top = summary()!.getBoundingClientRect().top;
+      const name = summary()!.textContent?.trim() ?? "";
+      await page.getByRole("button", { name, exact: true }).click();
+      const expanded = page.getByRole("button", { name, exact: true });
+      await expect.element(expanded).toHaveAttribute("aria-expanded", "true");
+      await waitForTimelineLayout(viewport);
+      expect(distanceFromEnd()).toBeGreaterThan(40);
+      expect(Math.abs(expanded.element().getBoundingClientRect().top - top)).toBeLessThan(12);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("keeps a prior-turn MCP app visible while ordinary work logs collapse", async () => {
     const host = document.createElement("div");
     document.body.append(host);

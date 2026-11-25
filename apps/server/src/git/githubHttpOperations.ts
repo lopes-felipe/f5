@@ -5,6 +5,7 @@ import { PositiveInt, TrimmedNonEmptyString } from "@t3tools/contracts";
 import {
   parseSourceControlRemoteUrl,
   parseGitHubPullRequestUrl,
+  parseSourceControlPullRequestUrl,
 } from "@t3tools/shared/sourceControl";
 import {
   GitHubCredentialScope,
@@ -413,6 +414,9 @@ export function makeGitHubHttpOperations(
     getRepositoryCloneUrls: (input) =>
       Effect.gen(function* () {
         const current = yield* Effect.serviceOption(GitHubCredentialScope);
+        const pullRequestHost = input.pullRequestUrl
+          ? parseSourceControlPullRequestUrl(input.pullRequestUrl, "github")?.host
+          : undefined;
         const parts = input.repository
           .replace(/^https:\/\//, "")
           .replace(/\.git$/, "")
@@ -420,9 +424,7 @@ export function makeGitHubHttpOperations(
         const host =
           parts.length === 3
             ? parts.shift()!
-            : Option.isSome(current)
-              ? current.value.host
-              : "github.com";
+            : (pullRequestHost ?? (Option.isSome(current) ? current.value.host : "github.com"));
         if (parts.length !== 2 || parts.some((p) => !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(p)))
           return yield* invalid(
             "getRepositoryCloneUrls",

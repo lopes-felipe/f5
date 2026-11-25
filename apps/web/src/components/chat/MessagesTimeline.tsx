@@ -1437,6 +1437,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     revertPopover,
     chatDiffContext,
     pinEndThroughDisclosure,
+    leaveEnd,
     onQuoteAssistantMessage,
   };
   const latestRowInputsRef = useRef(latestRowInputs);
@@ -1450,7 +1451,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         latestRowInputsRef.current.onToggleWorkGroup(groupId, paginatedEntryCount);
       },
       onSetWorkGroupExpanded: (groupId, expanded, needsEarlierWork) => {
-        latestRowInputsRef.current.pinEndThroughDisclosure();
+        if (expanded) latestRowInputsRef.current.leaveEnd();
+        else latestRowInputsRef.current.pinEndThroughDisclosure();
         latestRowInputsRef.current.onSetWorkGroupExpanded?.(groupId, expanded, needsEarlierWork);
       },
       onLoadEarlierWork: (groupId) => latestRowInputsRef.current.onLoadEarlierWork?.(groupId),

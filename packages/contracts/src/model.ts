@@ -269,7 +269,10 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
   // The server publishes the account's catalog from Cursor; Auto is all that is known
   // without it.
   cursor: [{ slug: "auto", name: "Auto" }],
-  opencode: [{ slug: "openai/gpt-5", name: "OpenAI GPT-5" }],
+  opencode: [
+    { slug: "openai/gpt-5", name: "OpenAI GPT-5" },
+    { slug: "opencode/big-pickle", name: "Big Pickle" },
+  ],
   grok: [{ slug: "grok-build", name: "Grok Build" }],
   antigravity: [{ slug: "antigravity-default", name: "Antigravity Default" }],
   muse: [{ slug: "muse-spark-1.3", name: "Muse Spark 1.3" }],
@@ -316,7 +319,7 @@ export const DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER = {
   codex: DEFAULT_GIT_TEXT_GENERATION_MODEL,
   claudeAgent: "claude-haiku-5-5",
   cursor: "auto",
-  opencode: "openai/gpt-5",
+  opencode: "opencode/big-pickle",
   grok: "grok-build",
   antigravity: "antigravity-default",
   muse: "muse-spark-1.3",

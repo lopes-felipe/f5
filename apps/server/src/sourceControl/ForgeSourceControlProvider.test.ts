@@ -37,6 +37,38 @@ function fixture(kind: ForgeKind, responses: unknown[] = [], login = `viewer-${+
 }
 
 describe("forge adapters", () => {
+  it("routes a fork clone lookup through the pull request's Forgejo host", async () => {
+    const calls: string[] = [];
+    const provider = makeForgeSourceControlProvider({
+      kind: "forgejo",
+      resolveAccount: ({ ref }) =>
+        Effect.succeed({
+          kind: "forgejo",
+          host: ref?.host ?? "codeberg.org",
+          repository: ref?.repository ?? "team/base",
+          login: "clone-test",
+          token: "forge-test-token",
+        }),
+      fetch: (async (url: Parameters<typeof fetch>[0]) => {
+        calls.push(String(url));
+        return Response.json({
+          clone_url: "https://forge.example.com/fork/repo.git",
+          ssh_url: "git@forge.example.com:fork/repo.git",
+        });
+      }) as typeof fetch,
+    });
+    await expect(
+      Effect.runPromise(
+        provider.getRepositoryCloneUrls({
+          cwd: "/work",
+          repository: "fork/repo",
+          pullRequestUrl: "https://forge.example.com/team/base/pulls/7",
+        }),
+      ),
+    ).resolves.toMatchObject({ url: "https://forge.example.com/fork/repo.git" });
+    expect(calls).toEqual(["https://forge.example.com/api/v1/repos/fork/repo"]);
+  });
+
   it("marks the root of unresolved GitLab overview discussions as a finding and uses text edit times", async () => {
     const note = (id: number, fields: object = {}) => ({
       id,

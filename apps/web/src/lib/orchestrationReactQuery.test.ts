@@ -24,6 +24,7 @@ import {
   scheduleThreadCommandExecutionRefreshIfMissing,
   shouldBackfillThreadHistory,
   threadCommandExecutionQueryOptions,
+  threadDetailQueryOptions,
 } from "./orchestrationReactQuery";
 
 const threadId = ThreadId.makeUnsafe("thread-1");
@@ -577,6 +578,26 @@ describe("thread history backfill helpers", () => {
 });
 
 describe("isProvisionalThreadDetail", () => {
+  it("fetches again when a prior lookup ran before thread creation", async () => {
+    const queryClient = new QueryClient();
+    const options = threadDetailQueryOptions(threadId);
+    const absent = { detailSequence: 0, messages: [], checkpoints: [], commandExecutions: [] };
+    const created = { ...absent, detailSequence: 12 };
+    const getThreadTailDetails = vi
+      .fn()
+      .mockResolvedValueOnce(absent)
+      .mockResolvedValueOnce(created);
+    vi.spyOn(nativeApi, "ensureNativeApi").mockReturnValue({
+      orchestration: { getThreadTailDetails },
+    } as unknown as ReturnType<typeof nativeApi.ensureNativeApi>);
+
+    expect(await queryClient.fetchQuery(options)).toMatchObject(absent);
+    expect(await queryClient.fetchQuery(options)).toMatchObject(created);
+    expect(await queryClient.fetchQuery(options)).toMatchObject(created);
+    expect(getThreadTailDetails).toHaveBeenCalledTimes(2);
+    queryClient.clear();
+  });
+
   it("flags zero-sequence detail payloads as provisional", () => {
     expect(isProvisionalThreadDetail({ detailSequence: 0 })).toBe(true);
     expect(isProvisionalThreadDetail({ detailSequence: 12 })).toBe(false);
