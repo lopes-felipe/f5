@@ -447,7 +447,7 @@ describe("McpServersSettings", () => {
     try {
       // The failure outranks Codex's ready observation, and names where it came from.
       const row = page.getByRole("region", { name: "Project servers" });
-      await expect.element(row.getByText("Failed · Other agents")).toBeVisible();
+      await expect.element(row.getByText("Failed · F5")).toBeVisible();
       await expect.element(row.getByText("Connection refused")).toBeVisible();
       expect(mocks.getHubStatus).toHaveBeenCalledWith({ projectId: PROJECT_ID }, expect.anything());
       await rowAction("project-server", "Reconnect");

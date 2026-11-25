@@ -197,7 +197,7 @@ export function McpServerDetailSheet(props: {
                     className="space-y-1 rounded-md border border-border px-2 py-1.5"
                   >
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-foreground">Other agents</span>
+                      <span className="text-foreground">F5 connection</span>
                       <Badge
                         variant={
                           entry.state === "ready"
@@ -416,7 +416,7 @@ export function McpServerDetailSheet(props: {
               {props.hubEntries.map((entry) =>
                 entry.promptCount !== undefined || entry.resourceCount !== undefined ? (
                   <p key={entry.connectionScope}>
-                    Other agents' connection: {plural(entry.promptCount ?? 0, "prompt")} ·{" "}
+                    F5's connection: {plural(entry.promptCount ?? 0, "prompt")} ·{" "}
                     {plural(entry.resourceCount ?? 0, "resource")}.
                   </p>
                 ) : null,

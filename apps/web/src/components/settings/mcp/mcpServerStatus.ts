@@ -27,7 +27,8 @@ export function hubStatusSources(
   entries: ReadonlyArray<McpHubServerStatus>,
 ): ReadonlyArray<McpStatusSource> {
   return entries.map((entry) => ({
-    label: "Other agents",
+    // F5's own connections, which serve every agent unless native passthrough is on.
+    label: "F5",
     state:
       entry.state === "ready"
         ? "ready"
