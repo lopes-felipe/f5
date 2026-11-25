@@ -33,6 +33,7 @@ import { SectionLabel } from "../ui/section-label";
 import { Skeleton } from "../ui/skeleton";
 import { HarnessValidationPanel } from "./HarnessValidationPanel";
 import { ProjectHistoryImportPanel } from "./ProjectHistoryImportPanel";
+import { ProviderSetupWizard } from "./ProviderSetupWizard";
 
 type AccentToken = "info" | "success" | "warning" | "attention";
 
@@ -266,6 +267,7 @@ export function HomeEmptyStatePanel() {
             })}
           </div>
 
+          <ProviderSetupWizard />
           <HarnessValidationPanel />
           <ProjectHistoryImportPanel />
 
