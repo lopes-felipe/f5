@@ -5,12 +5,33 @@ import { buildAccountExecutionEnvironment } from "../../providerProcessEnv.ts";
 import { fallbackDefaultProfile } from "../../profiles/ProfileRegistryStore.ts";
 import { describe, expect, it, vi } from "vitest";
 import {
+  antigravityAcpArgs,
   antigravityAuthorizationUrl,
   antigravityEnvironment,
   antigravityProfileDirectory,
   linkAntigravityUserConfigFiles,
   linkAntigravityUserSkills,
 } from "./AntigravityAcpSupport.ts";
+
+describe("Antigravity launch arguments", () => {
+  it("adds the sandbox only for read-only sessions and keeps the shared app-data dir", () => {
+    expect(antigravityAcpArgs("/profile", false)).toEqual([
+      "acp",
+      "--gemini-dir",
+      "/profile",
+      "--app-data-dir",
+      "antigravity-acp",
+    ]);
+    expect(antigravityAcpArgs("/profile", true)).toEqual([
+      "acp",
+      "--sandbox",
+      "--gemini-dir",
+      "/profile",
+      "--app-data-dir",
+      "antigravity-acp",
+    ]);
+  });
+});
 
 describe("Antigravity user configuration copies on Windows", () => {
   const setup = async () => {

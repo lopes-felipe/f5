@@ -461,6 +461,46 @@ it.layer(AntigravityAdapterTestLayer)("Antigravity native questions", (it) => {
         yield* adapter.stopSession(threadId);
       }).pipe(Effect.provide(AntigravityAdapterTestLayer), Effect.scoped),
   );
+  rootIt.live("launches only read-only workflow sessions in Antigravity's sandbox", () =>
+    Effect.gen(function* () {
+      const dir = yield* Effect.promise(() =>
+        mkdtemp(path.join(os.tmpdir(), "antigravity-sandbox-")),
+      );
+      const wrapperPath = writeAcpWrapper(path.join(dir, "agent"), mockAgentPath, {
+        env: { F5_ACP_ANTIGRAVITY_PROFILE: "1" },
+      });
+      const sandboxed: Array<boolean | undefined> = [];
+      const adapter = yield* makeGrokAdapter(
+        Schema.decodeSync(GrokSettings)({ binaryPath: wrapperPath }),
+        {
+          provider: "antigravity",
+          instanceId: ProviderInstanceId.make("antigravity"),
+          antigravity: { readOnlyWorkflowCertified: () => true },
+          makeRuntime: (input) => {
+            sandboxed.push(input.readOnlySandbox);
+            return GrokAcpSupport.makeGrokAcpRuntime(input);
+          },
+        },
+      );
+      const base = {
+        provider: "antigravity" as const,
+        cwd: process.cwd(),
+        runtimeMode: "full-access" as const,
+      };
+      yield* adapter.startSession({
+        ...base,
+        threadId: ThreadId.make("antigravity-sandbox-workflow"),
+        workflowExecutionProfile: "unattended-readonly",
+      });
+      yield* adapter.startSession({
+        ...base,
+        threadId: ThreadId.make("antigravity-sandbox-plain"),
+      });
+      assert.deepEqual(sandboxed, [true, undefined]);
+      yield* adapter.stopSession(ThreadId.make("antigravity-sandbox-workflow"));
+      yield* adapter.stopSession(ThreadId.make("antigravity-sandbox-plain"));
+    }).pipe(Effect.provide(AntigravityAdapterTestLayer), Effect.scoped),
+  );
   rootIt.live("refuses workflow sessions on an uncertified or unknown Antigravity build", () =>
     Effect.gen(function* () {
       const dir = yield* Effect.promise(() =>
