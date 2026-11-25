@@ -100,7 +100,9 @@ On a certified version, F5 keeps every workflow turn read-only:
   back to Auto.
 - Read, search, think and fetch tools run. So do shell commands that only read, such as
   `gh pr view`, `gh pr diff`, `gh api` GET requests, `git log`/`diff`/`show`, `rg` and `cat`,
-  joined by pipes, `&&`, `||` or `;`, with output redirected to `/dev/null` at most. Arguments
+  joined by pipes, `&&`, `||` or `;`, with output redirected to `/dev/null` at most. They may
+  sit inside `if`/`elif`/`else`, `{ …; }` or `( … )` when every command inside reads; loops,
+  `case` and functions are refused. Arguments
   must be literal (no variables or substitutions), and commands that never exit, such as
   `tail -f`, are refused. Cursor uses the same allowlist, in
   `apps/server/src/provider/readOnlyWorkflowShell.ts`. Commands that need the network, such as

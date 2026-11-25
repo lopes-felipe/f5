@@ -1,6 +1,8 @@
 import {
   parse,
   type Command,
+  type CommandNode,
+  type CompoundList,
   type DoubleQuotedChild,
   type PipelineNode,
   type Redirection,
@@ -15,8 +17,9 @@ import {
  * native plan-mode classifier; these providers hand every command to F5 instead.
  *
  * The classifier fails closed: anything it cannot prove read-only is refused, and the model is
- * told no and can try a simpler command. Only plain commands joined by `|`, `&&`, `||` and `;`
- * are accepted, each running an allowlisted program with flags that cannot write or execute.
+ * told no and can try a simpler command. Only plain commands joined by `|`, `&&`, `||` and `;`,
+ * optionally inside `if`/`elif`/`else`, `{ …; }` or `( … )`, are accepted, each running an
+ * allowlisted program with flags that cannot write or execute.
  */
 export type ReadOnlyShellClassification =
   | { readonly readOnly: true }
@@ -161,32 +164,83 @@ export function classifyReadOnlyShellCommand(command: string): ReadOnlyShellClas
   return READ_ONLY;
 }
 
-function classifyStatement(statement: Statement): ReadOnlyShellClassification {
+/** Deeper nesting of `if`, `{ }` and `( )` is refused rather than walked. */
+const MAX_COMPOUND_DEPTH = 8;
+
+function classifyStatement(statement: Statement, depth = 0): ReadOnlyShellClassification {
   if (statement.background) return refuse("background commands are not allowed");
   const node = statement.command;
   if (node.type === "AndOr") {
     for (const entry of node.commands) {
-      const verdict = classifyPipelineNode(entry);
+      const verdict = classifyPipelineNode(entry, depth);
       if (!verdict.readOnly) return verdict;
     }
     return READ_ONLY;
   }
-  return classifyPipelineNode(node);
+  return classifyPipelineNode(node, depth);
 }
 
-function classifyPipelineNode(node: PipelineNode): ReadOnlyShellClassification {
+function classifyPipelineNode(node: PipelineNode, depth: number): ReadOnlyShellClassification {
   if (node.type === "Pipeline") {
     if (node.operators.some((operator) => operator !== "|"))
       return refuse("only plain `|` pipes are allowed");
     for (const entry of node.commands) {
-      if (entry.type !== "Command") return refuse(`${entry.type} commands are not allowed`);
-      const verdict = classifyCommand(entry);
+      const verdict = classifyCommandNode(entry, depth);
       if (!verdict.readOnly) return verdict;
     }
     return READ_ONLY;
   }
-  if (node.type !== "Command") return refuse(`${node.type} commands are not allowed`);
-  return classifyCommand(node);
+  if (node.type === "Time" || node.type === "Negation")
+    return refuse(`${node.type} commands are not allowed`);
+  return classifyCommandNode(node, depth);
+}
+
+/**
+ * A simple command, or an `if`/`elif`/`else`, `{ …; }` or `( … )` whose every nested statement
+ * is read-only. Redirections on a compound pass the same `/dev/null`-only check as a simple
+ * command's. Loops, `case`, functions, coprocesses and `[[ ]]`/`(( ))` stay refused: a loop can
+ * run without end and the others add expansions this classifier does not inspect.
+ */
+function classifyCommandNode(node: CommandNode, depth: number): ReadOnlyShellClassification {
+  switch (node.type) {
+    case "Command":
+      return classifyCommand(node);
+    case "Redirected": {
+      for (const redirection of node.redirects) {
+        const verdict = classifyRedirection(redirection);
+        if (!verdict.readOnly) return verdict;
+      }
+      return classifyCommandNode(node.command, depth);
+    }
+    case "If":
+    case "BraceGroup":
+    case "Subshell": {
+      if (depth >= MAX_COMPOUND_DEPTH) return refuse("commands are nested too deeply");
+      const lists =
+        node.type === "If"
+          ? [node.clause, node.then, ...(node.else ? [node.else] : [])]
+          : [node.body];
+      for (const list of lists) {
+        const verdict =
+          list.type === "If"
+            ? classifyCommandNode(list, depth + 1)
+            : classifyCompoundList(list, depth + 1);
+        if (!verdict.readOnly) return verdict;
+      }
+      return READ_ONLY;
+    }
+    default:
+      return refuse(`${node.type} commands are not allowed`);
+  }
+}
+
+function classifyCompoundList(list: CompoundList, depth: number): ReadOnlyShellClassification {
+  if (list.commands.length === 0) return refuse("empty command");
+  for (const statement of list.commands) {
+    const verdict = classifyStatement(statement, depth);
+    if (!verdict.readOnly) return verdict;
+  }
+  return READ_ONLY;
 }
 
 function classifyCommand(command: Command): ReadOnlyShellClassification {

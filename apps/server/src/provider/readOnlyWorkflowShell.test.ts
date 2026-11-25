@@ -44,13 +44,40 @@ describe("classifyReadOnlyShellCommand", () => {
     "GH_PAGER= gh pr view 1",
     "tail -n 20 log.txt",
     "gh pr view 1 --json title | jq '.title'",
+    // Compound commands whose every nested statement reads
+    'if [ -d /x/.git ]; then git -C /x status -sb; else echo "No repo"; fi',
+    "if test -f a; then cat a; elif test -f b; then cat b; else echo none; fi",
+    "if [ -d x ]; then if [ -f x/y ]; then cat x/y; fi; fi",
+    "(git status)",
+    "{ git status; git log -1; }",
+    "{ git status; } 2>/dev/null",
+    "(cd /x && git log -1) | head -5",
+    "if [ -d x ]; then git -C x log -1; fi 2>/dev/null && echo done",
   ])("allows %s", (command) => {
     expect(classifyReadOnlyShellCommand(command)).toEqual({ readOnly: true });
   });
 
   it.each([
+    // Compound commands
+    "if [ -d x ]; then git log; else rm -rf x; fi",
+    "if rm -rf x; then echo gone; fi",
+    "if [ -d x ]; then git log; fi > out",
+    "{ git status; } > out",
+    "(git status; touch x)",
+    "if [ -d x ]; then git log; elif true; then git push; fi",
+    "for f in a b; do cat $f; done",
+    "for f in a b; do cat a; done",
+    "while true; do echo x; done",
+    "until false; do echo x; done",
+    "case x in x) echo x;; esac",
+    "f() { cat a; }",
+    "[[ -d x ]]",
+    "(( 1 + 1 ))",
+    "! git status",
+    "time git status",
+    "if [ -d x ]; then git log & fi",
+    "( ".repeat(10) + "git status" + " )".repeat(10),
     // Shape
-    'if [ -d /x/.git ]; then git -C /x status -sb; else echo "No repo"; fi',
     "gh pr diff 1 > x.diff",
     "gh pr diff 1 >> x.diff",
     "echo $(rm -rf x)",
@@ -58,8 +85,6 @@ describe("classifyReadOnlyShellCommand", () => {
     "cat <(rm -rf x)",
     "sleep 1 &",
     "/usr/bin/git status",
-    "(git status)",
-    "{ git status; }",
     "cat <<EOF\nhi\nEOF",
     "X=1",
     // Mutating flags and subcommands
