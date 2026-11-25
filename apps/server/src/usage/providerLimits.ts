@@ -445,6 +445,9 @@ export function makeProviderLimits(input: {
             normalizeProviderLimits("antigravity", response, requestedAt),
         })
       : undefined;
+  // The newest account the native reader identified, so a failed or expired read after a
+  // restart still hydrates history recorded under that account's identity.
+  let lastAntigravityFingerprint: string | undefined;
   const read = Effect.tryPromise({
     try: async (signal): Promise<ReadonlyArray<AccountUsageSection>> => {
       const env = input.environment;
@@ -654,15 +657,29 @@ export function makeProviderLimits(input: {
         value = await fetchJson("https://opencode.ai/zen/go/v1/usage", token, signal);
       } else if (readNativeAntigravity && !env.F5_CLIPROXY_HUB_URL && !env.F5_CLIPROXY_USAGE_URL) {
         const certified = (await input.antigravityNativeReaders?.()) ?? true;
-        const result = certified
-          ? await readNativeAntigravity(signal, performance.now() + ANTIGRAVITY_READ_BUDGET_MS)
-          : undefined;
-        if (!result)
+        if (!certified)
           return [
             {
               ...emptyAccountSection("provider-limits"),
               outcome: "unavailable",
               errorCode: "unsupported",
+              lastAttemptAt: new Date().toISOString(),
+            },
+          ];
+        const result = await readNativeAntigravity(
+          signal,
+          performance.now() + ANTIGRAVITY_READ_BUDGET_MS,
+        );
+        lastAntigravityFingerprint =
+          result.kind === "signed-out" ? undefined : result.accountFingerprint;
+        if (result.kind !== "quota")
+          return [
+            {
+              ...emptyAccountSection("provider-limits"),
+              outcome: "unavailable",
+              // An expired sign-in keeps the last-known snapshot; signed-out clears it.
+              errorCode:
+                result.kind === "expired" ? "credentials-expired" : "authentication-required",
               lastAttemptAt: new Date().toISOString(),
             },
           ];
@@ -736,11 +753,12 @@ export function makeProviderLimits(input: {
     Effect.map((capability) => ({
       ...capability,
       identityForSnapshot: (snapshot: import("@t3tools/contracts").UsageAccount) => {
-        const fingerprint = snapshot.sections.flatMap((section) =>
-          section.kind === "provider-limits" && section.snapshot?.data.accountFingerprint
-            ? [section.snapshot.data.accountFingerprint]
-            : [],
-        )[0];
+        const fingerprint =
+          snapshot.sections.flatMap((section) =>
+            section.kind === "provider-limits" && section.snapshot?.data.accountFingerprint
+              ? [section.snapshot.data.accountFingerprint]
+              : [],
+          )[0] ?? lastAntigravityFingerprint;
         return fingerprint
           ? accountUsageIdentity("antigravity", [fingerprint])
           : capability.identity;

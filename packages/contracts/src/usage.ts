@@ -361,6 +361,8 @@ export const AccountUsageErrorCode = Schema.Literals([
   "process-unavailable",
   "invalid-response",
   "temporary-failure",
+  /** The provider's saved sign-in expired; the last-known snapshot stays until it renews. */
+  "credentials-expired",
 ]);
 export type AccountUsageErrorCode = typeof AccountUsageErrorCode.Type;
 export const ClaudeAccountUsageWindow = Schema.Struct({

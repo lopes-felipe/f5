@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { Effect } from "effect";
 import * as Semaphore from "effect/Semaphore";
-import { ProviderInstanceId } from "@t3tools/contracts";
+import { ProviderInstanceId, type UsageAccount } from "@t3tools/contracts";
 import { makeProviderLimits } from "./providerLimits.ts";
 import { normalizeProviderLimits, providerLimitsIdentity } from "./providerLimits.ts";
 import { normalizeResetCredits, normalizeRateLimits } from "./codexAccountUsage.ts";
@@ -409,4 +409,118 @@ it("skips the private token reader on an uncertified Antigravity version", async
     vi.unstubAllGlobals();
     await rm(profileDirectory, { recursive: true, force: true });
   }
+});
+
+describe("native Antigravity sign-in states", () => {
+  const cliToken = (expiry: string) =>
+    JSON.stringify({
+      token: { access_token: "cli-access", refresh_token: "cli-refresh", expiry },
+      auth_method: "personal",
+      id_token_email: "one@example.com",
+    });
+  const settle = <A extends { readonly getSnapshot: Effect.Effect<UsageAccount> }>(capability: A) =>
+    Effect.gen(function* () {
+      for (let index = 0; index < 50; index++) {
+        const value = yield* capability.getSnapshot;
+        if (value.refreshState === "idle") return value;
+        yield* Effect.sleep("10 millis");
+      }
+      return yield* capability.getSnapshot;
+    });
+  const withProfile = async (run: (profileDirectory: string) => Promise<void>) => {
+    const profileDirectory = await mkdtemp(path.join(os.tmpdir(), "f5-agy-signin-"));
+    await mkdir(path.join(profileDirectory, "antigravity-acp"), { recursive: true });
+    try {
+      await run(profileDirectory);
+    } finally {
+      vi.unstubAllGlobals();
+      await rm(profileDirectory, { recursive: true, force: true });
+    }
+  };
+  const writeToken = (profileDirectory: string, text: string) =>
+    writeFile(path.join(profileDirectory, "antigravity-acp", "antigravity-oauth-token"), text);
+  const capabilityFor = (profileDirectory: string) =>
+    makeProviderLimits({
+      provider: "antigravity",
+      instanceId: ProviderInstanceId.make("antigravity-test"),
+      displayName: "Account",
+      enabled: true,
+      environment: {},
+      antigravityProfileDirectory: profileDirectory,
+      antigravityNativeReaders: async () => true,
+    });
+  const quota = {
+    buckets: [{ bucketId: "gemini-session", remainingFraction: 0.75, window: "5h" }],
+  };
+
+  it("keeps the last-known windows when the saved sign-in expires", () =>
+    withProfile(async (profileDirectory) => {
+      await writeToken(profileDirectory, cliToken(new Date(Date.now() + 3_600_000).toISOString()));
+      const fetchMock = vi.fn(async (_url: string) => new Response(JSON.stringify(quota)));
+      vi.stubGlobal("fetch", fetchMock);
+      const [live, expired] = await Effect.runPromise(
+        Effect.gen(function* () {
+          const capability = yield* capabilityFor(profileDirectory);
+          const permits = yield* Semaphore.make(1);
+          yield* capability.refresh("force", permits);
+          const live = yield* settle(capability);
+          yield* Effect.promise(() =>
+            writeToken(profileDirectory, cliToken(new Date(Date.now() - 60_000).toISOString())),
+          );
+          yield* capability.invalidate;
+          yield* capability.refresh("if-stale", permits);
+          return [live, yield* settle(capability)] as const;
+        }).pipe(Effect.scoped),
+      );
+      expect(live.sections[0]).toMatchObject({ outcome: "available", errorCode: null });
+      expect(expired.sections[0]).toMatchObject({
+        outcome: "unavailable",
+        errorCode: "credentials-expired",
+        snapshot: live.sections[0]?.snapshot,
+      });
+      expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/token"))).toBe(false);
+    }));
+
+  it("files an expired read under the account identity so persisted history hydrates", () =>
+    withProfile(async (profileDirectory) => {
+      await writeToken(profileDirectory, cliToken(new Date(Date.now() - 60_000).toISOString()));
+      vi.stubGlobal("fetch", vi.fn());
+      const { snapshot, identity, fallback } = await Effect.runPromise(
+        Effect.gen(function* () {
+          const capability = yield* capabilityFor(profileDirectory);
+          const permits = yield* Semaphore.make(1);
+          yield* capability.refresh("force", permits);
+          const snapshot = yield* settle(capability);
+          return {
+            snapshot,
+            identity: capability.identityForSnapshot(snapshot),
+            fallback: capability.identity,
+          };
+        }).pipe(Effect.scoped),
+      );
+      expect(snapshot.sections[0]).toMatchObject({
+        errorCode: "credentials-expired",
+        snapshot: null,
+      });
+      expect(identity).not.toBe(fallback);
+    }));
+
+  it("asks for sign-in when no token file exists", () =>
+    withProfile(async (profileDirectory) => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      const snapshot = await Effect.runPromise(
+        Effect.gen(function* () {
+          const capability = yield* capabilityFor(profileDirectory);
+          const permits = yield* Semaphore.make(1);
+          yield* capability.refresh("force", permits);
+          return yield* settle(capability);
+        }).pipe(Effect.scoped),
+      );
+      expect(snapshot.sections[0]).toMatchObject({
+        outcome: "unavailable",
+        errorCode: "authentication-required",
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+    }));
 });

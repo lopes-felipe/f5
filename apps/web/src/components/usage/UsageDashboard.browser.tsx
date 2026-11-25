@@ -1617,6 +1617,7 @@ describe("limits", () => {
     ["disabled", "Claude is disabled in provider settings."],
     ["unsupported", "This installed Claude version does not expose account usage and rate limits."],
     ["unavailable", "The account usage request timed out."],
+    ["credentials-expired", "Claude's saved sign-in has expired. Start a Claude turn to renew it."],
     ["no-limits", "Plan limits aren't reported for this Claude session."],
   ] as const)("confines the %s state to its Claude card", async (state, message) => {
     const fetchedAt = "2026-09-05T00:00:00Z";
@@ -1633,13 +1634,18 @@ describe("limits", () => {
           outcome:
             state === "unsupported"
               ? "unsupported"
-              : state === "unavailable"
+              : state === "unavailable" || state === "credentials-expired"
                 ? "unavailable"
                 : "available",
           lastAttemptAt: fetchedAt,
-          errorCode: state === "unavailable" ? "timeout" : null,
+          errorCode:
+            state === "unavailable"
+              ? "timeout"
+              : state === "credentials-expired"
+                ? "credentials-expired"
+                : null,
           snapshot:
-            state === "no-limits" || state === "unavailable"
+            state === "no-limits" || state === "unavailable" || state === "credentials-expired"
               ? {
                   fetchedAt,
                   data: {
@@ -1664,10 +1670,14 @@ describe("limits", () => {
     );
     try {
       await expect
-        .element(page.getByText(message, { exact: state !== "unavailable" }))
+        .element(
+          page.getByText(message, {
+            exact: state !== "unavailable" && state !== "credentials-expired",
+          }),
+        )
         .toBeVisible();
       await expect.element(page.getByRole("heading", { name: "Usage over time" })).toBeVisible();
-      if (state === "unavailable")
+      if (state === "unavailable" || state === "credentials-expired")
         await expect.element(page.getByText(/Showing data from/)).toBeVisible();
     } finally {
       await screen.unmount();
