@@ -445,9 +445,6 @@ export function makeProviderLimits(input: {
             normalizeProviderLimits("antigravity", response, requestedAt),
         })
       : undefined;
-  // The newest account the native reader identified, so a failed or expired read after a
-  // restart still hydrates history recorded under that account's identity.
-  let lastAntigravityFingerprint: string | undefined;
   const read = Effect.tryPromise({
     try: async (signal): Promise<ReadonlyArray<AccountUsageSection>> => {
       const env = input.environment;
@@ -670,17 +667,26 @@ export function makeProviderLimits(input: {
           signal,
           performance.now() + ANTIGRAVITY_READ_BUDGET_MS,
         );
-        lastAntigravityFingerprint =
-          result.kind === "signed-out" ? undefined : result.accountFingerprint;
-        if (result.kind !== "quota")
+        if (result.kind === "signed-out")
           return [
             {
               ...emptyAccountSection("provider-limits"),
               outcome: "unavailable",
-              // An expired sign-in keeps the last-known snapshot; signed-out clears it.
-              errorCode:
-                result.kind === "expired" ? "credentials-expired" : "authentication-required",
+              // Clears both the live and the persisted snapshot.
+              errorCode: "authentication-required",
               lastAttemptAt: new Date().toISOString(),
+            },
+          ];
+        if (result.kind === "expired")
+          return [
+            {
+              kind: "provider-limits",
+              outcome: "unavailable",
+              // Names the account, so only that account's snapshot is retained or hydrated.
+              accountFingerprint: result.accountFingerprint,
+              errorCode: "credentials-expired",
+              lastAttemptAt: new Date().toISOString(),
+              snapshot: null,
             },
           ];
         value = { windows: result.windows };
@@ -753,12 +759,17 @@ export function makeProviderLimits(input: {
     Effect.map((capability) => ({
       ...capability,
       identityForSnapshot: (snapshot: import("@t3tools/contracts").UsageAccount) => {
-        const fingerprint =
-          snapshot.sections.flatMap((section) =>
-            section.kind === "provider-limits" && section.snapshot?.data.accountFingerprint
+        // Bound to the account shown: its snapshot's account, else the account an expired
+        // attempt named. An attempt that identified no account hydrates nothing.
+        const fingerprint = snapshot.sections.flatMap((section) =>
+          section.kind !== "provider-limits"
+            ? []
+            : section.snapshot?.data.accountFingerprint
               ? [section.snapshot.data.accountFingerprint]
-              : [],
-          )[0] ?? lastAntigravityFingerprint;
+              : section.accountFingerprint
+                ? [section.accountFingerprint]
+                : [],
+        )[0];
         return fingerprint
           ? accountUsageIdentity("antigravity", [fingerprint])
           : capability.identity;

@@ -498,6 +498,13 @@ export function accountStatusText(account: UsageAccount): string | null {
     : "No successful snapshot yet.";
 }
 
+/** Why the limits an account still shows are last-known rather than current, or null. */
+export function accountStaleLimitsNotice(account: UsageAccount): string | null {
+  return account.sections.some((section) => section.errorCode === "credentials-expired")
+    ? accountErrorMessage(account.provider, "credentials-expired")
+    : null;
+}
+
 export function accountNeedsAuthentication(account: UsageAccount): boolean {
   return account.sections.some((section) => section.errorCode === "authentication-required");
 }

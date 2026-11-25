@@ -1174,6 +1174,61 @@ describe("query-connected usage dashboard", () => {
     },
   );
 
+  it("says when the glance shows last-known limits after a sign-in expired", async () => {
+    const fetchedAt = new Date(Date.now() - 60 * 60_000).toISOString();
+    api.getSummary.mockResolvedValue(summary());
+    api.getAccounts.mockResolvedValue([
+      {
+        key: "antigravity:expired",
+        provider: "antigravity",
+        providerInstanceId: null,
+        displayName: "Antigravity",
+        enabled: true,
+        refreshState: "idle",
+        sections: [
+          {
+            kind: "provider-limits",
+            outcome: "unavailable",
+            errorCode: "credentials-expired",
+            accountFingerprint: "account-a",
+            lastAttemptAt: new Date().toISOString(),
+            snapshot: {
+              fetchedAt,
+              data: {
+                accountFingerprint: "account-a",
+                windows: [
+                  {
+                    id: "gemini-weekly",
+                    label: "Gemini · Weekly",
+                    usedPercent: 40,
+                    resetsAt: new Date(Date.now() + 86_400_000).toISOString(),
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    ]);
+    const queryClient = client();
+    const screen = await renderDashboard(queryClient);
+    try {
+      const tile = page
+        .getByRole("region", { name: "Limits at a glance" })
+        .getByTestId("limits-glance-tile")
+        .first();
+      await expect.element(tile).toHaveTextContent(/60%\s*left/);
+      await expect
+        .element(tile)
+        .toHaveTextContent(
+          "Antigravity's saved sign-in has expired. Start an Antigravity turn to renew it.",
+        );
+    } finally {
+      await screen.unmount();
+      queryClient.clear();
+    }
+  });
+
   it("shows an unsupported message for a project filter on an older server", async () => {
     api.getSummary.mockResolvedValue(summary({ projectScope: null }));
     api.getAccounts.mockResolvedValue(accounts());

@@ -175,6 +175,23 @@ describe("Antigravity native quota", () => {
       expect(await read(new AbortController().signal)).toMatchObject({ kind: "expired" });
       expect(fetch).not.toHaveBeenCalled();
     });
+
+    it("is signed out when the file keeps only the email", async () => {
+      const fetch = vi.fn<(...args: Parameters<typeof globalThis.fetch>) => Promise<Response>>();
+      const read = makeAntigravityQuotaReader({
+        profileDirectory: "/instance",
+        readFile: async () =>
+          JSON.stringify({
+            token: { access_token: "", refresh_token: "" },
+            id_token_email: "one@example.com",
+          }),
+        fetch,
+        normalize,
+        now: () => now,
+      });
+      expect(await read(new AbortController().signal)).toEqual({ kind: "signed-out" });
+      expect(fetch).not.toHaveBeenCalled();
+    });
   });
 
   it("is signed out when no sign-in file exists", async () => {

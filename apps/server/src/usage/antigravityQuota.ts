@@ -120,11 +120,10 @@ export function makeAntigravityQuotaReader(input: {
       // The 1.5.x CLI stores no OAuth client, so F5 can't refresh its token (as upstream). It
       // uses the stored access token while it is valid; Antigravity refreshes it during turns.
       const accessToken = asTrimmedString(cliToken.access_token);
-      const subject =
-        asTrimmedString(token?.id_token_email) ??
-        asTrimmedString(cliToken.refresh_token) ??
-        accessToken;
-      if (!subject) {
+      const refreshToken = asTrimmedString(cliToken.refresh_token);
+      const subject = asTrimmedString(token?.id_token_email) ?? refreshToken ?? accessToken;
+      // A file that kept only the email holds no sign-in an Antigravity turn could renew.
+      if (!subject || (!accessToken && !refreshToken)) {
         cached = undefined;
         return { kind: "signed-out" };
       }
