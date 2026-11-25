@@ -14,9 +14,12 @@ import {
   readMcpAppToolResult,
   findMcpAppToolPolicy,
 } from "@t3tools/shared/mcpApp";
-import { Data, Effect, Layer, ServiceMap } from "effect";
+import { Data, Effect, Layer, Option, ServiceMap } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { McpHub, type McpHubSessionServer } from "../mcp/hub/McpHub.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
+import type { ProviderServiceError } from "../provider/Errors.ts";
+import type { ProviderMcpApps } from "../provider/Services/ProviderAdapter.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
 
 export class McpAppError extends Data.TaggedError("McpAppError")<{ readonly message: string }> {}
@@ -34,6 +37,28 @@ const encode = (value: unknown, maxBytes: number) =>
     },
     catch: () => new McpAppError({ message: "This MCP app request exceeds its size limit." }),
   });
+/** MCP App routes on a hub server; session identity still comes from the provider. */
+const hubMcpApps = (
+  server: McpHubSessionServer,
+  apps: ProviderMcpApps<ProviderServiceError>,
+): ProviderMcpApps<ProviderServiceError | McpAppError> => ({
+  identity: apps.identity,
+  listTools: () => Effect.tryPromise({ try: () => server.appListTools(), catch: failure }),
+  callTool: ({ tool, arguments: args }) =>
+    Effect.tryPromise({
+      try: (signal) => server.appCallTool(tool, args, signal),
+      catch: failure,
+    }),
+  readResource: ({ uri }) =>
+    Effect.tryPromise({
+      try: (signal) => {
+        if (!uri.startsWith("ui://") || uri.length > 4096)
+          throw new Error("Invalid MCP app resource request.");
+        return server.appReadResource(uri, signal);
+      },
+      catch: failure,
+    }),
+});
 export class McpAppService extends ServiceMap.Service<
   McpAppService,
   Effect.Success<typeof makeMcpAppService>
@@ -42,6 +67,7 @@ export const makeMcpAppService = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const engine = yield* OrchestrationEngineService;
   const provider = yield* ProviderService;
+  const hub = Option.getOrUndefined(yield* Effect.serviceOption(McpHub));
   const authorize = (input: { threadId: McpAppToolInfoInput["threadId"]; attachmentId: string }) =>
     Effect.gen(function* () {
       const thread = (yield* engine.getReadModel()).threads.find(
@@ -71,7 +97,15 @@ export const makeMcpAppService = Effect.gen(function* () {
         return yield* new McpAppError({
           message: "This app belongs to an earlier provider session in this thread.",
         });
-      return { reference, apps: provider.mcpApps };
+      // Servers F5's hub serves to this conversation are reached directly, so apps work
+      // whatever the provider's own resource and tool-call support.
+      const hubServer = reference.target
+        ? undefined
+        : hub?.sessionServer?.(input.threadId, reference.server);
+      return {
+        reference,
+        apps: hubServer ? hubMcpApps(hubServer, provider.mcpApps) : provider.mcpApps,
+      };
     });
   const inspectTool = (input: McpAppToolInfoInput) =>
     Effect.gen(function* () {

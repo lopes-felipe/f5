@@ -8,6 +8,8 @@ import { ServerConfig } from "../config.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
+import { McpHub, type McpHubSessionServer } from "../mcp/hub/McpHub.ts";
+import { makeFakeMcpHub } from "../mcp/hub/testing/fakeMcpHub.ts";
 import { makeMcpAppService } from "./McpAppService.ts";
 import { snapshotMcpApp } from "./McpAppSnapshot.ts";
 import { readMcpAppModelContext } from "./McpAppContext.ts";
@@ -54,10 +56,36 @@ const fixture = Effect.gen(function* () {
     hidden: false,
     identity: "session-1",
     changeIdentityDuringRead: false,
+    viaHub: false,
+    hubCalls: 0,
+    hubReads: 0,
   };
+  const hubServer = {
+    appListTools: async () => [
+      {
+        name: "forecast",
+        inputSchema: { type: "object" },
+        annotations: { readOnlyHint: true },
+        _meta: { ui: { visibility: ["app", "model"] } },
+      },
+    ],
+    appCallTool: async () => {
+      state.hubCalls++;
+      return { content: [{ type: "text", text: "Hub sunny" }] };
+    },
+    appReadResource: async (uri: string) => {
+      state.hubReads++;
+      return { contents: [{ uri, text: "<p>Hub</p>" }] };
+    },
+  } as unknown as McpHubSessionServer;
   const service = yield* makeMcpAppService.pipe(
     Effect.provide(
       Layer.mergeAll(
+        Layer.succeed(McpHub, {
+          ...makeFakeMcpHub().hub,
+          sessionServer: (id, server) =>
+            state.viaHub && id === threadId && server === "weather" ? hubServer : undefined,
+        }),
         Layer.mock(OrchestrationEngineService)({
           getReadModel: () =>
             Effect.succeed({
@@ -350,6 +378,34 @@ it.effect("refuses an app captured under another provider after a handoff", () =
       yield* f.service.updateModelContext({ ...codexApp, structuredContent: { from: "codex" } });
       assert.include(yield* readMcpAppModelContext(threadId, "codex"), "codex");
       assert.equal(yield* readMcpAppModelContext(threadId, "claudeAgent"), "");
+    }),
+  ),
+);
+it.effect("reaches servers the hub serves to the conversation directly", () =>
+  run((f) =>
+    Effect.gen(function* () {
+      const app = yield* f.capture();
+      f.state.viaHub = true;
+      const info = yield* f.service.toolInfo({ ...app, name: "forecast" });
+      assert.equal(info.readOnlyHint, true);
+      const result = yield* f.service.callTool({
+        ...app,
+        name: "forecast",
+        arguments: {},
+        sessionIdentity: info.sessionIdentity,
+      });
+      assert.deepStrictEqual(result, { content: [{ type: "text", text: "Hub sunny" }] });
+      const resource = yield* f.service.readResource({ ...app, uri: "ui://weather/dashboard" });
+      assert.deepStrictEqual(resource, {
+        contents: [{ uri: "ui://weather/dashboard", text: "<p>Hub</p>" }],
+      });
+      assert.equal(
+        (yield* f.service.readResource({ ...app, uri: "file:///etc/hosts" }).pipe(Effect.result))
+          ._tag,
+        "Failure",
+      );
+      assert.deepStrictEqual([f.state.hubCalls, f.state.hubReads], [1, 1]);
+      assert.deepStrictEqual([f.state.calls, f.state.reads], [0, 0]);
     }),
   ),
 );

@@ -21,6 +21,8 @@ import {
   McpError,
   ReadResourceRequestSchema,
   type CallToolResult,
+  type ReadResourceResult,
+  type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import type { ThreadId } from "@t3tools/contracts";
 
@@ -108,6 +110,46 @@ export class McpHubSlot {
 
   get connectionCount(): number {
     return this.connections.size;
+  }
+
+  /** MCP Apps: the tools this session's provider sees, read from the hub directly. */
+  async appListTools(): Promise<Tool[]> {
+    const upstream = this.current;
+    if (!upstream) return [];
+    return upstream.filterTools(await upstreamCall(upstream, () => upstream.listTools()));
+  }
+
+  /** MCP Apps: one tool call on this session's connection, with the server's own timeout. */
+  async appCallTool(
+    name: string,
+    args: Record<string, unknown>,
+    signal: AbortSignal,
+  ): Promise<CallToolResult> {
+    const upstream = this.requireUpstream();
+    if (!upstream.isToolAllowed(name))
+      throw new McpError(
+        ErrorCode.InvalidRequest,
+        `The tool '${name}' is turned off in F5's MCP settings.`,
+      );
+    const client = await upstreamClient(upstream);
+    return upstreamCall(
+      upstream,
+      async () =>
+        (await client.callTool({ name, arguments: args }, undefined, {
+          signal,
+          timeout: upstream.toolTimeoutMs(),
+          resetTimeoutOnProgress: true,
+        })) as CallToolResult,
+    );
+  }
+
+  /** MCP Apps: reads a `ui://` resource on this session's connection. */
+  async appReadResource(uri: string, signal: AbortSignal): Promise<ReadResourceResult> {
+    const upstream = this.requireUpstream();
+    const client = await upstreamClient(upstream);
+    if (!client.getServerCapabilities()?.resources)
+      throw new McpError(ErrorCode.MethodNotFound, "This server has no resources.");
+    return upstreamCall(upstream, () => client.readResource({ uri }, { signal }));
   }
 
   authorizes(token: string | null | undefined): boolean {

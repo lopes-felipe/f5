@@ -35,6 +35,8 @@ import {
 } from "../provider/Services/ProviderService.ts";
 import { McpRuntimeDiagnostics } from "./McpRuntimeDiagnostics.ts";
 import { McpRuntimeService, McpRuntimeServiceLive } from "./McpRuntimeService.ts";
+import { McpHub, type McpHubShape } from "./hub/McpHub.ts";
+import { makeFakeMcpHub } from "./hub/testing/fakeMcpHub.ts";
 import { ProjectMcpConfigService } from "./ProjectMcpConfigService.ts";
 import { ProviderAdapterRequestError } from "../provider/Errors.ts";
 import type { ObservedMcpServer } from "../provider/mcpObservation.ts";
@@ -292,6 +294,8 @@ function makeClaudeLoginProvider(options: {
 
 function makeRuntimeLayer(input?: {
   readonly servers?: McpProjectServersConfig;
+  /** Serves Codex and Claude through F5's hub (no `mcpNativePassthrough`). */
+  readonly mcpHub?: McpHubShape;
   readonly published?: Array<McpStatusUpdatedPayload>;
   readonly runtimeConfigReadDelayMs?: number;
   readonly providerService?: Partial<ProviderServiceShape>;
@@ -334,6 +338,7 @@ function makeRuntimeLayer(input?: {
   const oauthStatus = input?.oauthStatus ?? { status: "idle" as const };
   const controlStatuses = input?.controlStatuses;
   return McpRuntimeServiceLive.pipe(
+    Layer.provide(input?.mcpHub ? Layer.succeed(McpHub, input.mcpHub) : Layer.empty),
     Layer.provide(
       Layer.mergeAll(
         makeProjectMcpConfigServiceLayer(
@@ -1220,6 +1225,59 @@ it.effect("reloads the Codex settings connection even without live sessions", ()
   }).pipe(
     Effect.provide(makeRuntimeLayer({ controlStatuses: [], onControlReload: () => reloads++ })),
   );
+});
+
+describe("with the hub serving Codex and Claude", () => {
+  const servers = { docs: { type: "http" as const, url: "https://docs.example/mcp" } };
+
+  it.effect("reconnects a saved server through the hub, not Codex's app-server", () => {
+    const reconnects: Array<[string, unknown]> = [];
+    const fake = makeFakeMcpHub();
+    const mcpHub: McpHubShape = {
+      ...fake.hub,
+      reconnect: async (serverName, scope) => {
+        reconnects.push([serverName, scope]);
+        return 2;
+      },
+    };
+    let controlClients = 0;
+    return Effect.gen(function* () {
+      const runtime = yield* McpRuntimeService;
+      const result = yield* runtime.reconnectServer({
+        provider: "codex",
+        projectId,
+        serverName: "docs",
+      });
+      assert.deepEqual(result, {
+        settingsConnectionReloaded: false,
+        sessionsMatched: 2,
+        sessionsReconnected: 2,
+        failures: [],
+      });
+      assert.deepEqual(reconnects, [["docs", projectId]]);
+      assert.equal(controlClients, 0);
+    }).pipe(
+      Effect.provide(
+        makeRuntimeLayer({ servers, mcpHub, onControlClient: () => controlClients++ }),
+      ),
+    );
+  });
+
+  it.effect("sends provider sign-in for saved servers to F5's sign-in", () => {
+    const oauthStartCalls: unknown[] = [];
+    return Effect.gen(function* () {
+      const runtime = yield* McpRuntimeService;
+      for (const provider of ["codex", "claudeAgent"] as const) {
+        const refused = yield* runtime
+          .startLogin({ provider, projectId, serverName: "docs" })
+          .pipe(Effect.flip);
+        assert.include(refused.message, "through F5 now");
+      }
+      assert.equal(oauthStartCalls.length, 0);
+    }).pipe(
+      Effect.provide(makeRuntimeLayer({ servers, mcpHub: makeFakeMcpHub().hub, oauthStartCalls })),
+    );
+  });
 });
 
 it.effect("keeps external same-name tool metadata out of the managed inspector", () => {

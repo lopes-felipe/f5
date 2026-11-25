@@ -122,8 +122,22 @@ export interface McpHubShape {
   readonly oauthStorage?: McpOAuthStorage | undefined;
   /** Reconnects every connection that signs in with this OAuth record (see `mcpOAuthKey`). */
   readonly reconnectOAuth: (oauthKey: string) => Promise<number>;
+  /**
+   * The hub server a conversation's provider reaches under `serverName`, for MCP Apps
+   * to call directly; undefined when the conversation has no live hub endpoint for it.
+   */
+  readonly sessionServer?: (
+    threadId: ThreadId,
+    serverName: string,
+  ) => McpHubSessionServer | undefined;
   readonly close: () => Promise<void>;
 }
+
+/** One conversation's hub server, as MCP Apps use it. */
+export type McpHubSessionServer = Pick<
+  McpHubSlot,
+  "appListTools" | "appCallTool" | "appReadResource"
+>;
 
 export class McpHub extends ServiceMap.Service<McpHub, McpHubShape>()("t3/mcp/hub/McpHub") {}
 
@@ -509,6 +523,15 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
     return entries.length;
   };
 
+  const sessionServer = (threadId: ThreadId, serverName: string) => {
+    let match: McpHubSlot | undefined;
+    // The newest bound endpoint wins, so a restarted session never reaches its predecessor's.
+    for (const slot of slots.values())
+      if (slot.threadId === threadId && slot.serverName === serverName && slot.upstream)
+        match = slot;
+    return match;
+  };
+
   return {
     available,
     attach,
@@ -517,6 +540,7 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
     readStderrTail,
     oauthStorage: options.oauthStorage,
     reconnectOAuth,
+    sessionServer,
     close,
   };
 }

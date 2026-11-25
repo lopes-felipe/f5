@@ -337,6 +337,27 @@ describe("F5 MCP hub", () => {
     }
   });
 
+  it("lets MCP Apps reach a conversation's hub server directly", async () => {
+    const attachment = attach(stdioServers(), "apps-thread");
+    try {
+      const server = hub.sessionServer!(ThreadId.makeUnsafe("apps-thread"), "fixture")!;
+      expect(server).toBeDefined();
+      expect(hub.sessionServer!(ThreadId.makeUnsafe("other-thread"), "fixture")).toBeUndefined();
+      const tools = (await server.appListTools()).map((tool) => tool.name);
+      expect(tools).toContain("echo");
+      expect(tools).not.toContain("hidden");
+      const signal = new AbortController().signal;
+      const called = await server.appCallTool("echo", { text: "app" }, signal);
+      expect(called.content).toEqual([{ type: "text", text: "echo:app" }]);
+      await expect(server.appCallTool("hidden", {}, signal)).rejects.toThrow(/turned off/);
+      const read = await server.appReadResource("fixture://readme", signal);
+      expect(read.contents[0]).toMatchObject({ text: "fixture readme" });
+    } finally {
+      await attachment.dispose();
+    }
+    expect(hub.sessionServer!(ThreadId.makeUnsafe("apps-thread"), "fixture")).toBeUndefined();
+  });
+
   it("forwards a server's question to the provider whose call is waiting", async () => {
     const attachment = attach(stdioServers());
     try {

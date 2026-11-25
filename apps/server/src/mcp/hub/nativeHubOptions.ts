@@ -22,3 +22,48 @@ export const nativeMcpHubAdapterOptions = Effect.gen(function* () {
     );
   return options;
 });
+
+/**
+ * Builds a check of whether F5's hub serves Codex and Claude sessions: the hub can
+ * mount endpoints and `mcpNativePassthrough` is off. Read per call, like sessions do.
+ */
+export const makeNativeProvidersOnHub = nativeMcpHubAdapterOptions.pipe(
+  Effect.map(
+    ({ mcpHub, mcpNativePassthrough }): Effect.Effect<boolean> =>
+      mcpHub?.available
+        ? (mcpNativePassthrough ?? Effect.succeed(false)).pipe(
+            Effect.map((passthrough) => !passthrough),
+          )
+        : Effect.succeed(false),
+  ),
+);
+
+/**
+ * With the hub serving Codex, its admin app-server (status, reconnect and sign-in for
+ * Codex's own servers) carries none of F5's servers, so one pooled client outlives saves.
+ */
+export const CODEX_ADMIN_HUB_CONFIG_VERSION = "f5-mcp-hub";
+
+/** The MCP part of a Codex admin client request, with or without F5's servers. */
+export function codexAdminMcpConfig<TEntry>(
+  stored: {
+    readonly effectiveVersion: string;
+    readonly servers: Record<string, TEntry>;
+    readonly oauthCallbackPort?: number;
+    readonly oauthCallbackUrl?: string;
+  },
+  onHub: boolean,
+): {
+  readonly mcpEffectiveConfigVersion: string;
+  readonly mcpServers: Record<string, TEntry>;
+  readonly mcpOAuthCallbackPort?: number;
+  readonly mcpOAuthCallbackUrl?: string;
+} {
+  if (onHub) return { mcpEffectiveConfigVersion: CODEX_ADMIN_HUB_CONFIG_VERSION, mcpServers: {} };
+  return {
+    mcpEffectiveConfigVersion: stored.effectiveVersion,
+    mcpServers: stored.servers,
+    ...(stored.oauthCallbackPort ? { mcpOAuthCallbackPort: stored.oauthCallbackPort } : {}),
+    ...(stored.oauthCallbackUrl ? { mcpOAuthCallbackUrl: stored.oauthCallbackUrl } : {}),
+  };
+}
