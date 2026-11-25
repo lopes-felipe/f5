@@ -396,26 +396,52 @@ describe("timeline turn rail", () => {
     ]);
   });
 
-  it("keeps a turn's reply preview when a thought-only message follows it", () => {
+  it("points both rails at the reply when a turn replied and then ended on a thought", () => {
     const thought = {
       role: "assistant" as const,
       text: "",
       reasoningText: "Checking the queue",
       streaming: false,
     };
+    const rows = [
+      { id: "u1", kind: "message", message: { role: "user" as const, text: "Question" } },
+      {
+        id: "a1",
+        kind: "message",
+        message: { role: "assistant" as const, text: "Partial answer" },
+      },
+      { id: "tool", kind: "work" },
+      { id: "t1", kind: "message", showCompletionDivider: true, message: thought },
+    ];
+    expect(deriveTimelineTurnRailItems(rows).map((item) => item.assistantText)).toEqual([
+      "Partial answer",
+    ]);
     expect(
-      deriveTimelineTurnRailItems([
-        { id: "u1", kind: "message", message: { role: "user", text: "Question" } },
-        { id: "a1", kind: "message", message: { role: "assistant", text: "Partial answer" } },
-        { id: "t1", kind: "message", message: thought },
-      ]).map((item) => item.assistantText),
-    ).toEqual(["Partial answer"]);
+      deriveTimelineAssistantRailItems(rows).map(({ id, rowIndex, assistantText }) => ({
+        id,
+        rowIndex,
+        assistantText,
+      })),
+    ).toEqual([{ id: "a1", rowIndex: 1, assistantText: "Partial answer" }]);
+  });
+
+  it("labels the answer of a turn that never replied", () => {
+    const thought = { role: "assistant" as const, text: "", reasoningTokens: 40, streaming: false };
     expect(
       deriveTimelineAssistantRailItems([
         { id: "u1", kind: "message", message: { role: "user", text: "Question" } },
+        {
+          id: "a0",
+          kind: "message",
+          showCompletionDivider: true,
+          message: { role: "assistant", text: "Earlier turn" },
+        },
         { id: "t1", kind: "message", showCompletionDivider: true, message: thought },
-      ]).map((item) => item.assistantText),
-    ).toEqual(["Finished without a reply"]);
+      ]).map(({ id, assistantText }) => ({ id, assistantText })),
+    ).toEqual([
+      { id: "a0", assistantText: "Earlier turn" },
+      { id: "t1", assistantText: "Finished without a reply" },
+    ]);
   });
 
   it("resolves measured gutter geometry", () => {

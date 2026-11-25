@@ -780,26 +780,40 @@ export function deriveTimelineAssistantRailItems(
 ): TimelineTurnRailItem[] {
   const items: TimelineTurnRailItem[] = [];
   let userText: string | null = null;
+  // The newest reply since the last prompt or answer: the destination of a turn that
+  // replied and then ended on a thought.
+  let lastReply: { row: TimelineTurnRailRowSource; rowIndex: number; preview: string } | null =
+    null;
   for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
     const row = rows[rowIndex]!;
-    if (row.kind !== "message" || !row.message) continue;
-    if (row.message.role === "user") {
-      userText = cachedPreview(userPreviewCache, row.message, () =>
-        resolveTurnRailUserPreview(row.message!),
+    const message = row.kind === "message" ? row.message : undefined;
+    if (!message) continue;
+    if (message.role === "user") {
+      userText = cachedPreview(userPreviewCache, message, () =>
+        resolveTurnRailUserPreview(message),
       );
-    } else if (row.message.role === "assistant" && row.showCompletionDivider) {
-      items.push({
-        id: row.id,
-        rowIndex,
-        createdAt: row.createdAt ?? null,
-        userText,
-        assistantText: cachedPreview(assistantPreviewCache, row.message, () =>
-          cachedIsThoughtOnly(row.message!)
-            ? FINISHED_WITHOUT_REPLY_LABEL
-            : compactTurnRailPreview(row.message!.text),
-        ),
-      });
+      lastReply = null;
+      continue;
     }
+    if (message.role !== "assistant") continue;
+    const thoughtOnly = cachedIsThoughtOnly(message);
+    const preview = thoughtOnly
+      ? null
+      : cachedPreview(assistantPreviewCache, message, () => compactTurnRailPreview(message.text));
+    if (preview !== null) lastReply = { row, rowIndex, preview };
+    if (!row.showCompletionDivider) continue;
+    const target =
+      thoughtOnly && lastReply
+        ? lastReply
+        : { row, rowIndex, preview: thoughtOnly ? FINISHED_WITHOUT_REPLY_LABEL : preview };
+    items.push({
+      id: target.row.id,
+      rowIndex: target.rowIndex,
+      createdAt: target.row.createdAt ?? null,
+      userText,
+      assistantText: target.preview,
+    });
+    lastReply = null;
   }
   return items;
 }

@@ -4406,6 +4406,7 @@ describe("MessagesTimeline thought-only messages", () => {
     ]);
     const row = extractMessageRowMarkup(markup, "thought-mid");
     expect(row).toContain('data-slot="assistant-thought-row"');
+    expect(row).toMatch(/data-slot="assistant-thought-row"[^>]*data-assistant-quote-exclude/);
     expect(row).toContain("Thought");
     expect(row).not.toContain("(empty response)");
     expect(row).not.toContain('data-slot="assistant-message-meta"');
@@ -4441,6 +4442,36 @@ describe("MessagesTimeline thought-only messages", () => {
     expect(row).toContain("Finished without a reply");
     expect(row).toContain('data-slot="assistant-message-meta"');
     expect(row).not.toContain("(empty response)");
+  });
+
+  it("does not call a turn reply-less when it replied before its last thought", async () => {
+    setPersistedAppSettings({ showReasoningExpanded: false });
+    const markup = await render([
+      question,
+      assistant("early-reply", 5, { text: "The anchor re-pins after send." }),
+      work("search-1", "Searching for nextTurnQueue", 10),
+      assistant("thought-last", 240, { reasoningText: "Nothing else to check." }),
+    ]);
+    const row = extractMessageRowMarkup(markup, "thought-last");
+    expect(row).toContain('data-slot="assistant-thought-row"');
+    expect(row).toContain("Worked for 4m 12s");
+    expect(row).toContain('data-slot="assistant-message-meta"');
+    expect(markup).not.toContain("Finished without a reply");
+  });
+
+  it("keeps the Thought label on a reply-less turn that reported only tokens", async () => {
+    setPersistedAppSettings({ showReasoningExpanded: false });
+    const tokensOnly = assistant("thought-tokens", 240, {});
+    if (tokensOnly.kind !== "message") throw new Error("expected a message entry");
+    const markup = await render([
+      question,
+      work("search-1", "Searching for nextTurnQueue", 5),
+      { ...tokensOnly, message: { ...tokensOnly.message, reasoningTokens: 320 } },
+    ]);
+    const row = extractMessageRowMarkup(markup, "thought-tokens");
+    expect(row).toContain('data-slot="reasoning-summary"');
+    expect(row).toContain("Thought");
+    expect(row).toContain("Finished without a reply");
   });
 
   it("keeps replies with reasoning and fully empty messages unchanged", async () => {

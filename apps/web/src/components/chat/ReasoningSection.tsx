@@ -17,8 +17,11 @@ interface ReasoningSectionProps {
   defaultExpanded: boolean;
   isStreaming: boolean;
   cwd: string | undefined;
-  /** Drops the bottom gap, for a Thought row that stands alone between tool rows. */
-  flush?: boolean;
+  /**
+   * A Thought row with no reply under it: drops the bottom gap, and keeps the label even
+   * when there is neither reasoning text nor a visible count.
+   */
+  standalone?: boolean;
 }
 
 function ReasoningLabel(props: {
@@ -54,7 +57,7 @@ export function ReasoningSection({
   defaultExpanded,
   isStreaming,
   cwd,
-  flush = false,
+  standalone = false,
 }: ReasoningSectionProps) {
   const [open, setOpen] = useState(defaultExpanded);
   const [userOverrode, setUserOverrode] = useState(false);
@@ -84,13 +87,13 @@ export function ReasoningSection({
   );
 
   if (reasoningText.length === 0) {
-    if (hideTokens) return null;
+    if (hideTokens && !standalone) return null;
     // A count without visible reasoning has nothing to expand.
     return (
       <div
         data-slot="reasoning-summary"
         className={cn(
-          !flush && "mb-2",
+          !standalone && "mb-2",
           "inline-flex items-center gap-1.5 px-1 py-1 text-2xs font-medium text-muted-foreground",
         )}
       >
@@ -100,7 +103,7 @@ export function ReasoningSection({
   }
 
   return (
-    <Collapsible className={cn(!flush && "mb-2")} open={open} onOpenChange={handleOpenChange}>
+    <Collapsible className={cn(!standalone && "mb-2")} open={open} onOpenChange={handleOpenChange}>
       <CollapsibleTrigger className="inline-flex items-center gap-1.5 rounded-md px-1 py-1 text-left text-2xs font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring">
         {label}
         <ChevronDownIcon
