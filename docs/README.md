@@ -34,6 +34,7 @@ packaged release may lag behind them.
 | [Antigravity](providers/antigravity.md)             | Antigravity setup and isolation                                         |
 | [Custom ACP agents](providers/acp.md)               | Local ACP commands, models and initialization checks                    |
 | [Muse Code](providers/muse.md)                      | Muse Code setup and modes                                               |
+| [Pi](providers/pi.md)                               | Pi RPC setup, permissions, rollback and limits                          |
 | [Runtime modes](runtime-modes.md)                   | The four permission modes and provider support                          |
 | [Project configuration](project-configuration.md)   | The checked-in `f5.json` file                                           |
 | [Profiles](profiles.md)                             | Separate F5 profiles with their own state and accounts                  |

@@ -1,1 +1,0 @@
-- Decoupled command-output and embedded-script syntax detection from the diff renderer bundle so opening a thread no longer loads `@pierre/diffs` eagerly.

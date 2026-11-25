@@ -1113,6 +1113,130 @@ describe("hasActionableProposedPlan", () => {
   });
 });
 
+describe("hook approval failures", () => {
+  const turnId = "turn-hooks";
+  const failure = (
+    id: string,
+    hookEvent: string,
+    sourcePath: string,
+    output = "plugin contents changed; hook approval required",
+    sequence = 1,
+  ) =>
+    makeActivity({
+      id,
+      turnId,
+      kind: "hook.completed",
+      tone: "error",
+      summary: `${hookEvent} hook (failed)`,
+      createdAt: `2026-11-23T10:00:0${sequence}.000Z`,
+      sequence,
+      payload: {
+        hookId: id,
+        hookEvent,
+        outcome: "error",
+        rawStatus: "failed",
+        source: "plugin",
+        sourcePath,
+        output,
+      },
+    });
+  const core = "/Users/me/.codex/plugins/cache/workspace-directory/core/5.3.2279/hooks/hooks.json";
+  const geordie = "/Users/me/.codex/plugins/cache/geordie-ai-local/geordie-ai/0.3.0/hooks.json";
+
+  it("collapses a turn's approval-required failures into one row with deduplicated plugins", () => {
+    const entries = deriveWorkLogEntries(
+      [
+        failure("start-core", "sessionStart", core, undefined, 1),
+        failure("start-geordie", "sessionStart", geordie, undefined, 2),
+        failure("prompt-core", "userPromptSubmit", core, undefined, 3),
+        failure("broken", "stop", core, "exit status 1: boom", 4),
+      ],
+      TurnId.makeUnsafe(turnId),
+    );
+    expect(entries.map((entry) => entry.id)).toEqual(["hook-approval:start-core", "broken"]);
+    const [collapsed, other] = entries;
+    expect(collapsed).toMatchObject({
+      label:
+        "3 hooks need approval after a plugin changed (core@workspace-directory, geordie-ai@geordie-ai-local)",
+      category: "hook",
+      isIssue: true,
+      turnId,
+    });
+    expect(collapsed?.diagnostic).toBeUndefined();
+    expect(collapsed?.hookApproval?.plugins).toEqual([
+      "core@workspace-directory",
+      "geordie-ai@geordie-ai-local",
+    ]);
+    expect(collapsed?.hookApproval?.entries.map((entry) => entry.id)).toEqual([
+      "start-core",
+      "start-geordie",
+      "prompt-core",
+    ]);
+    // Other failed hooks render exactly as before.
+    expect(other?.diagnostic).toMatchObject({ type: "hook", status: "failed" });
+
+    const timeline = deriveTimelineEntries([], [], entries);
+    expect(timeline.map((row) => row.id)).toEqual(["hook-approval:start-core", "broken"]);
+  });
+
+  it("links to the instance that ran the hooks and ignores the phrase inside other output", () => {
+    const withInstance = makeActivity({
+      id: "instance-hook",
+      kind: "hook.completed",
+      tone: "error",
+      createdAt: "2026-11-23T10:00:01.000Z",
+      turnId,
+      payload: {
+        hookId: "instance-hook",
+        hookEvent: "sessionStart",
+        outcome: "error",
+        rawStatus: "failed",
+        sourcePath: core,
+        providerInstanceId: "codex_work",
+        output: "plugin contents changed; hook approval required",
+      },
+    });
+    const chatty = failure(
+      "chatty",
+      "stop",
+      "/repo/.codex/hooks.json",
+      "lint failed: see docs on 'plugin contents changed; hook approval required' errors",
+      2,
+    );
+    const entries = deriveWorkLogEntries([withInstance, chatty], TurnId.makeUnsafe(turnId));
+    expect(entries.map((entry) => entry.id)).toEqual(["hook-approval:instance-hook", "chatty"]);
+    expect(entries[0]?.hookApproval?.instanceId).toBe("codex_work");
+    expect(entries[1]?.diagnostic).toMatchObject({ type: "hook", status: "failed" });
+  });
+
+  it("keeps one row per turn, a stable row object, and the singular label", () => {
+    const first = failure("only", "stop", "/tmp/custom/hooks.json");
+    const second = makeActivity({
+      id: "next-turn",
+      turnId: "turn-next",
+      kind: "hook.completed",
+      tone: "error",
+      createdAt: "2026-11-23T10:00:05.000Z",
+      sequence: 2,
+      payload: {
+        hookId: "next-turn",
+        hookEvent: "stop",
+        outcome: "error",
+        rawStatus: "failed",
+        output: "plugin contents changed; hook approval required",
+      },
+    });
+    const activities = [first, second];
+    const entries = deriveWorkLogEntries(activities, TurnId.makeUnsafe("turn-next"));
+    const labels = entries.map((entry) => entry.label);
+    expect(labels).toContain("1 hook needs approval after a plugin changed");
+    const again = deriveWorkLogEntries(activities, TurnId.makeUnsafe("turn-next"));
+    expect(again.find((entry) => entry.id === "hook-approval:next-turn")).toBe(
+      entries.find((entry) => entry.id === "hook-approval:next-turn"),
+    );
+  });
+});
+
 describe("deriveWorkLogEntries", () => {
   it("retains aside answers across later turns without treating them as messages", () => {
     const activity: OrchestrationThreadActivity = {
@@ -3481,6 +3605,82 @@ describe("deriveWorkLogEntries", () => {
         lineSummary: "line 12",
       }),
     ]);
+  });
+
+  it("collapses a file change snapshot that only learns its files on completion", () => {
+    const payload = {
+      itemType: "file_change",
+      providerItemId: "provider-item-edit",
+      title: "Changed files",
+      detail: "src/a.ts",
+      fileChangeId: "file-change-edit",
+    };
+    const entries = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "edit-updated",
+          createdAt: "2026-02-23T00:00:01.000Z",
+          kind: "tool.updated",
+          summary: "Tool updated",
+          payload: { ...payload, status: "inProgress" },
+        }),
+        makeActivity({
+          id: "edit-completed",
+          createdAt: "2026-02-23T00:00:02.000Z",
+          kind: "tool.completed",
+          summary: "Tool",
+          payload: { ...payload, changedFiles: ["src/a.ts"] },
+        }),
+        makeActivity({
+          id: "other-edit-completed",
+          createdAt: "2026-02-23T00:00:03.000Z",
+          kind: "tool.completed",
+          summary: "Tool",
+          payload: { ...payload, changedFiles: ["src/b.ts"] },
+        }),
+      ],
+      undefined,
+    );
+
+    expect(entries.map((entry) => [entry.id, entry.changedFiles])).toEqual([
+      ["edit-completed", ["src/a.ts"]],
+      ["other-edit-completed", ["src/b.ts"]],
+    ]);
+  });
+
+  it("collapses a fileless file change whose detail also arrives on completion", () => {
+    const payload = {
+      itemType: "file_change",
+      providerItemId: "provider-item-edit",
+      title: "Changed files",
+      fileChangeId: "file-change-edit",
+    };
+    const snapshot = (id: string, second: number, extra: Record<string, unknown>) =>
+      makeActivity({
+        id,
+        createdAt: `2026-02-23T00:00:0${second}.000Z`,
+        kind: extra.changedFiles ? "tool.completed" : "tool.updated",
+        summary: "Tool",
+        payload: { ...payload, ...extra },
+      });
+    const learned = deriveWorkLogEntries(
+      [
+        snapshot("edit-updated", 1, { status: "inProgress" }),
+        snapshot("edit-completed", 2, { detail: "src/a.ts", changedFiles: ["src/a.ts"] }),
+      ],
+      undefined,
+    );
+    expect(learned.map((entry) => entry.id)).toEqual(["edit-completed"]);
+
+    // A detail that was already shown and then changed is a different row.
+    const changed = deriveWorkLogEntries(
+      [
+        snapshot("edit-updated", 1, { status: "inProgress", detail: "src/a.ts" }),
+        snapshot("edit-completed", 2, { detail: "src/b.ts", changedFiles: ["src/b.ts"] }),
+      ],
+      undefined,
+    );
+    expect(changed.map((entry) => entry.id)).toEqual(["edit-updated", "edit-completed"]);
   });
 
   it("keeps tool snapshots when the visible read range changes", () => {

@@ -488,3 +488,47 @@ it("caps per-source auth failure buckets without losing blocked peers", async ()
   // 198.51.100.1 stays blocked because non-blocked buckets are evicted first.
   expect((await badLogin("198.51.100.1")).status).toBe(429);
 });
+
+it("preserves all active lockouts when every failure bucket is locked out", () => {
+  const auth = makeServerAuth("secret-token", {
+    trustedProxies: ["127.0.0.1"],
+    maxFailuresPerSource: 2,
+    maxFailuresGlobal: 100,
+    maxFailureSources: 2,
+  });
+  const bearerRequest = (forwardedFor: string, token: string) =>
+    ({
+      headers: {
+        authorization: `Bearer ${token}`,
+        "x-forwarded-for": forwardedFor,
+      },
+      socket: { remoteAddress: "127.0.0.1" },
+    }) as unknown as Http.IncomingMessage;
+
+  // Lock out two sources, filling maxFailureSources = 2 with active lockouts.
+  expect(auth.isHttpRequestAuthenticated(bearerRequest("198.51.100.1", "wrong"))).toBe(false);
+  expect(auth.isHttpRequestAuthenticated(bearerRequest("198.51.100.1", "wrong"))).toBe(false);
+  expect(
+    auth.bearerRetryAfterSeconds(bearerRequest("198.51.100.1", "secret-token")),
+  ).not.toBeNull();
+  expect(auth.isHttpRequestAuthenticated(bearerRequest("198.51.100.2", "wrong"))).toBe(false);
+  expect(auth.isHttpRequestAuthenticated(bearerRequest("198.51.100.2", "wrong"))).toBe(false);
+  expect(
+    auth.bearerRetryAfterSeconds(bearerRequest("198.51.100.2", "secret-token")),
+  ).not.toBeNull();
+
+  // Overflow failures from new sources must not evict existing active lockouts.
+  expect(auth.isHttpRequestAuthenticated(bearerRequest("198.51.100.3", "wrong"))).toBe(false);
+  expect(auth.isHttpRequestAuthenticated(bearerRequest("198.51.100.4", "wrong"))).toBe(false);
+  expect(
+    auth.bearerRetryAfterSeconds(bearerRequest("198.51.100.5", "secret-token")),
+  ).not.toBeNull();
+
+  // Both originally locked-out sources remain rejected even with the valid token.
+  expect(auth.isHttpRequestAuthenticated(bearerRequest("198.51.100.1", "secret-token"))).toBe(
+    false,
+  );
+  expect(auth.isHttpRequestAuthenticated(bearerRequest("198.51.100.2", "secret-token"))).toBe(
+    false,
+  );
+});

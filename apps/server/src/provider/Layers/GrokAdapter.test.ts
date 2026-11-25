@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createModelSelection } from "@t3tools/shared/model";
+import { READ_ONLY_WORKFLOW_UNCERTIFIED_ANTIGRAVITY_MESSAGE } from "@t3tools/shared/workflowProviders";
 import { fileURLToPath } from "node:url";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -395,6 +396,133 @@ it.layer(AntigravityAdapterTestLayer)("Antigravity native questions", (it) => {
       assert.equal(starts, 2);
       yield* adapter.stopSession(threadId);
       assert.equal(live, 0);
+    }).pipe(Effect.provide(AntigravityAdapterTestLayer), Effect.scoped),
+  );
+  rootIt.live(
+    "declines questions and forms on an unattended workflow turn instead of waiting",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* Effect.promise(() =>
+          mkdtemp(path.join(os.tmpdir(), "antigravity-unattended-")),
+        );
+        const wrapperPath = writeAcpWrapper(path.join(dir, "agent"), mockAgentPath, {
+          env: {
+            F5_ACP_ANTIGRAVITY_PROFILE: "1",
+            F5_ACP_ANTIGRAVITY_ELICIT: "1",
+            F5_ACP_ANTIGRAVITY_QUESTION: "1",
+          },
+        });
+        const adapter = yield* makeGrokAdapter(
+          Schema.decodeSync(GrokSettings)({ binaryPath: wrapperPath }),
+          {
+            provider: "antigravity",
+            instanceId: ProviderInstanceId.make("antigravity"),
+            antigravity: { readOnlyWorkflowCertified: () => true },
+          },
+        );
+        const events: ProviderRuntimeEvent[] = [];
+        yield* adapter.streamEvents.pipe(
+          Stream.runForEach((event) =>
+            Effect.sync(() => {
+              events.push(event);
+            }),
+          ),
+          Effect.forkChild,
+        );
+        const threadId = ThreadId.make("antigravity-unattended");
+        yield* adapter.startSession({
+          threadId,
+          provider: "antigravity",
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          workflowExecutionProfile: "unattended-readonly",
+        });
+        // Completes without anyone answering: both requests are declined at once.
+        yield* adapter
+          .sendTurn({
+            threadId,
+            input: "Ask first",
+            attachments: [],
+            workflowExecutionProfile: "unattended-readonly",
+          })
+          .pipe(Effect.timeout("20 seconds"));
+        assert.ok(
+          events.some(
+            (event) =>
+              event.type === "runtime.warning" &&
+              event.payload.message.includes("unattended workflow turn"),
+          ),
+        );
+        const requested = events.filter((event) => event.type === "user-input.requested");
+        const resolved = events.filter((event) => event.type === "user-input.resolved");
+        assert.equal(requested.length, 1);
+        assert.equal(resolved.length, 1);
+        yield* adapter.stopSession(threadId);
+      }).pipe(Effect.provide(AntigravityAdapterTestLayer), Effect.scoped),
+  );
+  rootIt.live("refuses workflow sessions on an uncertified or unknown Antigravity build", () =>
+    Effect.gen(function* () {
+      const dir = yield* Effect.promise(() =>
+        mkdtemp(path.join(os.tmpdir(), "antigravity-uncertified-")),
+      );
+      const wrapperPath = writeAcpWrapper(path.join(dir, "agent"), mockAgentPath, {
+        env: { F5_ACP_ANTIGRAVITY_PROFILE: "1" },
+      });
+      const settings = Schema.decodeSync(GrokSettings)({ binaryPath: wrapperPath });
+      const startWorkflowSession = (
+        adapter: Effect.Success<ReturnType<typeof makeGrokAdapter>>,
+        threadId: string,
+      ) =>
+        adapter.startSession({
+          threadId: ThreadId.make(threadId),
+          provider: "antigravity",
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          workflowExecutionProfile: "unattended-readonly",
+        });
+
+      // No launched version is known here and the allowlist is empty: uncertified.
+      const defaultAdapter = yield* makeGrokAdapter(settings, {
+        provider: "antigravity",
+        instanceId: ProviderInstanceId.make("antigravity"),
+      });
+      const refused = yield* Effect.flip(startWorkflowSession(defaultAdapter, "uncertified"));
+      assert.include(String(refused.message), READ_ONLY_WORKFLOW_UNCERTIFIED_ANTIGRAVITY_MESSAGE);
+
+      const seenVersions: Array<string | undefined> = [];
+      const rejectingAdapter = yield* makeGrokAdapter(settings, {
+        provider: "antigravity",
+        instanceId: ProviderInstanceId.make("antigravity"),
+        antigravity: {
+          readOnlyWorkflowCertified: (version) => {
+            seenVersions.push(version);
+            return false;
+          },
+        },
+      });
+      yield* Effect.flip(startWorkflowSession(rejectingAdapter, "rejected-by-hook"));
+      assert.deepEqual(seenVersions, [undefined]);
+
+      // An ordinary session is not gated, but it never takes a workflow turn.
+      yield* defaultAdapter.startSession({
+        threadId: ThreadId.make("ordinary"),
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      const workflowTurn = yield* Effect.flip(
+        defaultAdapter.sendTurn({
+          threadId: ThreadId.make("ordinary"),
+          input: "Review this",
+          attachments: [],
+          workflowExecutionProfile: "unattended-readonly",
+        }),
+      );
+      assert.include(
+        String(workflowTurn.message),
+        "This Antigravity session was not started for read-only workflow turns.",
+      );
+      yield* defaultAdapter.stopSession(ThreadId.make("ordinary"));
     }).pipe(Effect.provide(AntigravityAdapterTestLayer), Effect.scoped),
   );
   it.effect("waits for the user's answer even in full-access mode", () =>
@@ -828,6 +956,112 @@ rootIt.layer(
     }).pipe(Effect.scoped),
   );
 
+  it.effect("refuses a workflow prompt steered into an ordinary session's running turn", () =>
+    Effect.gen(function* () {
+      const gateDir = yield* Effect.acquireRelease(
+        Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "agy-workflow-steer-"))),
+        (directory) => Effect.promise(() => rm(directory, { recursive: true, force: true })),
+      );
+      const gate = path.join(gateDir, "go");
+      const { adapter } = yield* antigravityProfileAdapter({
+        env: { T3_ACP_PROMPT_GATE_PATH: gate },
+      });
+      const threadId = ThreadId.make("agy-workflow-steer");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter
+        .sendTurn({ threadId, input: "Start", attachments: [] })
+        .pipe(Effect.forkChild);
+      let activeTurnId: TurnId | undefined;
+      yield* Effect.promise(() =>
+        vi.waitFor(async () => {
+          const sessions = await Effect.runPromise(adapter.listSessions());
+          activeTurnId = sessions.find((session) => session.threadId === threadId)?.activeTurnId;
+          if (!activeTurnId) throw new Error("no running turn yet");
+        }),
+      );
+      const refused = yield* Effect.flip(
+        adapter.sendTurn({
+          threadId,
+          input: "Review this",
+          attachments: [],
+          expectedTurnId: activeTurnId,
+          workflowExecutionProfile: "unattended-readonly",
+        }),
+      );
+      assert.include(
+        String(refused.message),
+        "This Antigravity session was not started for read-only workflow turns.",
+      );
+      yield* Effect.promise(() => writeFile(gate, ""));
+      yield* Fiber.join(turn);
+      yield* adapter.stopSession(threadId).pipe(Effect.ignore);
+    }).pipe(Effect.scoped),
+  );
+  it.effect("refuses a steer whose workflow profile differs from the running turn's", () =>
+    Effect.gen(function* () {
+      const gateDir = yield* Effect.acquireRelease(
+        Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "agy-profile-steer-"))),
+        (directory) => Effect.promise(() => rm(directory, { recursive: true, force: true })),
+      );
+      const gate = path.join(gateDir, "go");
+      const wrapperPath = writeAcpWrapper(path.join(gateDir, "agent"), mockAgentPath, {
+        env: { F5_ACP_ANTIGRAVITY_PROFILE: "1", T3_ACP_PROMPT_GATE_PATH: gate },
+      });
+      const adapter = yield* makeGrokAdapter(
+        Schema.decodeSync(GrokSettings)({ binaryPath: wrapperPath }),
+        {
+          provider: "antigravity",
+          instanceId: ProviderInstanceId.make("antigravity"),
+          antigravity: { readOnlyWorkflowCertified: () => true },
+        },
+      );
+      const threadId = ThreadId.make("agy-profile-steer");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "attended-readonly",
+      });
+      const turn = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "Start",
+          attachments: [],
+          workflowExecutionProfile: "attended-readonly",
+        })
+        .pipe(Effect.forkChild);
+      let activeTurnId: TurnId | undefined;
+      yield* Effect.promise(() =>
+        vi.waitFor(async () => {
+          const sessions = await Effect.runPromise(adapter.listSessions());
+          activeTurnId = sessions.find((session) => session.threadId === threadId)?.activeTurnId;
+          if (!activeTurnId) throw new Error("no running turn yet");
+        }),
+      );
+      const refused = yield* Effect.flip(
+        adapter.sendTurn({
+          threadId,
+          input: "Review this",
+          attachments: [],
+          expectedTurnId: activeTurnId,
+          workflowExecutionProfile: "unattended-readonly",
+        }),
+      );
+      assert.include(
+        String(refused.message),
+        "needs a different workflow profile than the running Antigravity turn",
+      );
+      yield* Effect.promise(() => writeFile(gate, ""));
+      yield* Fiber.join(turn);
+      yield* adapter.stopSession(threadId).pipe(Effect.ignore);
+    }).pipe(Effect.scoped),
+  );
   it.effect(
     "keeps the turn's acceptance when a steer arrives before the agent's first progress",
     () =>
@@ -950,6 +1184,52 @@ rootIt.layer(
         yield* adapter.stopSession(threadId);
       }).pipe(Effect.scoped),
     );
+
+  it.effect("bounds the published payload of a request a workflow turn denies", () =>
+    Effect.gen(function* () {
+      const { adapter, events } = yield* antigravityProfileAdapter({
+        env: { T3_ACP_EMIT_TOOL_CALLS: "1", T3_ACP_PERMISSION_CONTENT_PAD_CHARS: "200000" },
+        options: () => ({
+          antigravity: {
+            accountRevision: Effect.succeed(0),
+            nativeReaders: () => Effect.succeed(false),
+            readOnlyWorkflowCertified: () => true,
+          },
+        }),
+      });
+      const threadId = ThreadId.make("agy-denied-oversized");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "unattended-readonly",
+      });
+      yield* adapter
+        .sendTurn({
+          threadId,
+          input: "Review it",
+          attachments: [],
+          workflowExecutionProfile: "unattended-readonly",
+        })
+        .pipe(Effect.timeout("20 seconds"));
+      const opened = events.find((event) => event.type === "request.opened");
+      assert.ok(opened?.type === "request.opened");
+      // The command is refused without asking, and the 200k-character request is not
+      // republished whole.
+      assert.ok(
+        events.some(
+          (event) =>
+            event.type === "request.resolved" &&
+            event.requestId === opened.requestId &&
+            event.payload.decision === "cancel",
+        ),
+      );
+      assert.isBelow(JSON.stringify(opened.payload.args).length, 50_000);
+      assert.isBelow(JSON.stringify(opened.raw?.payload).length, 50_000);
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped),
+  );
 
   it.effect("honors a thread grant from a Default turn for the same command in Plan", () =>
     Effect.gen(function* () {
