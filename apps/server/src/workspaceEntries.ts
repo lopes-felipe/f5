@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { createLogger } from "./logger";
 import { runProcess } from "./processRunner";
+import { getWorkspaceSearchRootRestriction } from "./workspaceSearchRoot";
 
 import {
   type FilesystemBrowseInput,
@@ -699,6 +700,10 @@ async function buildWorkspaceIndex(cwd: string, maxEntries: number): Promise<Wor
 }
 
 async function getWorkspaceIndex(cwd: string, maxEntries: number): Promise<WorkspaceIndex> {
+  const rootPath = await fs.realpath(cwd);
+  const restriction = await getWorkspaceSearchRootRestriction(rootPath);
+  if (restriction) throw new Error(restriction);
+
   const cached = workspaceIndexCache.get(cwd);
   if (
     cached &&
@@ -714,7 +719,7 @@ async function getWorkspaceIndex(cwd: string, maxEntries: number): Promise<Works
     return inFlight;
   }
 
-  const nextPromise = buildWorkspaceIndex(cwd, maxEntries)
+  const nextPromise = buildWorkspaceIndex(rootPath, maxEntries)
     .then((next) => {
       const current = workspaceIndexCache.get(cwd);
       if (!current || current.maxEntries <= next.maxEntries || !next.truncated) {

@@ -69,7 +69,7 @@ describe("searchWorkspaceEntries git-ignore chunking", () => {
 
     const { searchWorkspaceEntries } = await import("./workspaceEntries");
     const result = await searchWorkspaceEntries({
-      cwd: "/virtual/workspace",
+      cwd: import.meta.dirname,
       query: "",
       limit: 100,
     });

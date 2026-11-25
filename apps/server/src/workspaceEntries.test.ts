@@ -18,7 +18,7 @@ const tempDirs: string[] = [];
 function makeTempDir(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   tempDirs.push(dir);
-  return dir;
+  return fs.realpathSync(dir);
 }
 
 function writeFile(cwd: string, relativePath: string, contents = ""): void {
@@ -36,11 +36,50 @@ function runGit(cwd: string, args: string[]): void {
 
 describe("searchWorkspaceEntries", () => {
   afterEach(() => {
+    vi.unstubAllEnvs();
     vi.restoreAllMocks();
     setWorkspaceFffModuleLoaderForTests(null);
     for (const dir of tempDirs.splice(0, tempDirs.length)) {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("rejects a home directory workspace and its symlink before indexing", async () => {
+    const home = makeTempDir("f5-workspace-home-");
+    const alias = path.join(makeTempDir("f5-workspace-alias-"), "home");
+    fs.symlinkSync(home, alias, "junction");
+    writeFile(home, "OneDrive/Remix/part.stl");
+    vi.stubEnv(process.platform === "win32" ? "USERPROFILE" : "HOME", home);
+    const readdir = vi.spyOn(fsPromises, "readdir");
+
+    const alternateCase = path.join(path.dirname(home), path.basename(home).toUpperCase());
+    const homePaths = fs.existsSync(alternateCase) ? [home, alias, alternateCase] : [home, alias];
+    for (const cwd of homePaths) {
+      await expect(searchWorkspaceEntries({ cwd, query: "stl", limit: 50 })).rejects.toThrow(
+        "Workspace search is unavailable in the home directory.",
+      );
+      await expect(listWorkspaceEntries({ cwd })).rejects.toThrow(
+        "Workspace search is unavailable in the home directory.",
+      );
+    }
+    expect(readdir).not.toHaveBeenCalled();
+    const result = await searchWorkspaceEntries({
+      cwd: path.join(home, "OneDrive", "Remix"),
+      query: "stl",
+      limit: 50,
+    });
+    expect(result.entries.map((entry) => entry.path)).toEqual(["part.stl"]);
+  });
+
+  it("rejects a workspace that resolves to the filesystem root before indexing", async () => {
+    const cwd = makeTempDir("f5-workspace-root-");
+    vi.spyOn(fsPromises, "realpath").mockResolvedValue(path.parse(cwd).root);
+    const readdir = vi.spyOn(fsPromises, "readdir");
+
+    await expect(searchWorkspaceEntries({ cwd, query: "", limit: 50 })).rejects.toThrow(
+      "Workspace search is unavailable at the filesystem root.",
+    );
+    expect(readdir).not.toHaveBeenCalled();
   });
 
   it("returns files and directories relative to cwd", async () => {

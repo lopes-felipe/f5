@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { ProjectId } from "@t3tools/contracts";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   makeProjectContentSearchManager,
@@ -61,8 +61,29 @@ function fakeWorkerFactory(input?: {
 
 describe("project content search", () => {
   afterEach(() => {
+    vi.unstubAllEnvs();
     for (const directory of tempDirs.splice(0)) {
       fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["home", "filesystem root"])("rejects the %s before starting a worker", async (kind) => {
+    const home = makeTempDir();
+    vi.stubEnv(process.platform === "win32" ? "USERPROFILE" : "HOME", home);
+    const workspaceRoot = kind === "home" ? home : path.parse(home).root;
+    const workerFactory = vi.fn(() => fakeWorkerFactory());
+    const manager = makeProjectContentSearchManager({ workerFactory });
+    try {
+      await expect(
+        manager.search({
+          requestKey: "client:restricted",
+          workspaceRoot,
+          request: request("restricted"),
+        }),
+      ).rejects.toMatchObject({ failure: "invalid_workspace" });
+      expect(workerFactory).not.toHaveBeenCalled();
+    } finally {
+      await manager.dispose();
     }
   });
 

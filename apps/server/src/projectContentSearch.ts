@@ -12,6 +12,7 @@ import {
 
 import { createLogger } from "./logger";
 import { PROJECT_CONTENT_SEARCH_WORKER_SOURCE } from "./projectContentSearchWorker";
+import { getWorkspaceSearchRootRestriction } from "./workspaceSearchRoot";
 
 export const PROJECT_CONTENT_SEARCH_ACTIVE_INDEX_LIMIT = 2;
 export const PROJECT_CONTENT_SEARCH_INDEX_PATH_LIMIT = 25_000;
@@ -288,6 +289,10 @@ export function makeProjectContentSearchManager(options?: {
         { cause },
       );
     });
+    const restriction = await getWorkspaceSearchRootRestriction(rootPath);
+    if (restriction) {
+      throw new ProjectContentSearchError("invalid_workspace", restriction);
+    }
     const stat = await fs.stat(rootPath).catch((cause) => {
       throw new ProjectContentSearchError(
         "invalid_workspace",
