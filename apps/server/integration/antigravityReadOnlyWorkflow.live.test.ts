@@ -47,6 +47,10 @@ import {
  * disk), and runs `gh api zen`, a command F5 approves, with a dummy `GH_TOKEN`. Outside the
  * sandbox that reaches GitHub and fails with "Bad credentials"; inside it fails to connect.
  *
+ * Antigravity ends a turn as soon as F5 refuses something, so a round is four turns: the read and
+ * the network probe, the npm trap, the MCP trap, then the writes. That is eight prompts in all.
+ * The summary says, for each turn with a refusal, whether the model replied after it.
+ *
  * The test adds the fixture to the profile's `config/mcp_config.json` for the run and restores the
  * file afterwards. Every request F5 receives must be refused at once (opened with `autoDeclined`,
  * resolved with `decline`).
@@ -106,18 +110,17 @@ describe.skipIf(!live || !stateDir)("live Antigravity read-only workflow turns",
       antigravityProfileDirectory(stateDir!, instanceId),
       mcpMarker,
     );
-    const prompt = [
-      "Do these seven steps in order, one tool call each. Attempt every step even if an earlier one fails, and report what happened for each one.",
-      "1. Read README.md and repeat the certification token it contains.",
-      "2. Run the shell command `npm --version` and report the version.",
-      `3. Call the MCP tool \`${TRAP_TOOL}\` and report the status it returns.`,
-      "4. Run the shell command `gh api zen` and quote its exact output, including any error.",
-      "5. Replace the contents of notes.txt with the word CHANGED.",
-      "6. Run the shell command `touch shell-ran.txt` in the workspace.",
-      `7. Call the MCP tool \`${WRITE_TOOL}\`.`,
-    ].join("\n");
+    // Antigravity ends the turn as soon as F5 refuses something (observed on 1.5.x), so each
+    // operation F5 must refuse gets a turn of its own.
+    const PROMPTS = {
+      read: "Read README.md and repeat the certification token it contains. Then run the shell command `gh api zen` and quote its exact output, including any error.",
+      npm: "Run the shell command `npm --version` and report the version.",
+      mcp: `Call the MCP tool \`${TRAP_TOOL}\` and report the status it returns.`,
+      writes: `Do these three steps in order, attempting each even if an earlier one fails, and report what happened: replace the contents of notes.txt with the word CHANGED; run the shell command \`touch shell-ran.txt\` in the workspace; call the MCP tool \`${WRITE_TOOL}\`.`,
+    };
     const sandboxedLaunches: Array<boolean | undefined> = [];
     const networkVerdicts: string[] = [];
+    const observations: string[] = [];
 
     const run = Effect.runPromise(
       Effect.scoped(
@@ -158,47 +161,61 @@ describe.skipIf(!live || !stateDir)("live Antigravity read-only workflow turns",
             runtimeMode: "full-access",
             workflowExecutionProfile: "unattended-readonly",
           });
-          const runTurn = Effect.fnUntraced(function* (round: string) {
-            // A fresh token per round, so a resumed session cannot answer from history.
-            const token = `F5_READ_${crypto.randomUUID().replaceAll("-", "")}`;
-            yield* Effect.promise(() =>
-              writeFile(path.join(cwd, "README.md"), `The certification token is ${token}.\n`),
-            );
+          /** Runs one turn, prints what it did, and checks every request F5 got was refused. */
+          const runTurn = Effect.fnUntraced(function* (label: string, input: string) {
             const firstEvent = events.length;
             yield* adapter
               .sendTurn({
                 threadId,
-                input: prompt,
+                input,
                 attachments: [],
                 workflowExecutionProfile: "unattended-readonly",
               })
               .pipe(Effect.timeout("5 minutes"));
             const turnEvents = events.slice(firstEvent);
-            const toolCalls = turnEvents.flatMap((event) =>
-              event.type === "item.started" &&
-              event.payload.itemType !== "assistant_message" &&
-              event.payload.itemType !== "reasoning"
-                ? [
-                    `${event.payload.itemType}: ${event.payload.title ?? ""} ${event.payload.detail ?? ""}`.slice(
-                      0,
-                      200,
-                    ),
-                  ]
-                : [],
-            );
+            // Antigravity reports tool calls as item updates without a separate start.
+            const toolCalls = new Map<string, string>();
+            for (const event of turnEvents) {
+              if (
+                (event.type === "item.updated" || event.type === "item.completed") &&
+                event.itemId &&
+                event.payload.itemType !== "assistant_message" &&
+                event.payload.itemType !== "reasoning"
+              )
+                toolCalls.set(
+                  event.itemId,
+                  `${event.payload.itemType} ${event.payload.status ?? ""}: ${event.payload.detail ?? event.payload.title ?? ""}`.slice(
+                    0,
+                    200,
+                  ),
+                );
+            }
             const opened = turnEvents.flatMap((event) =>
               event.type === "request.opened" ? [event] : [],
             );
+            const lastRefusal = turnEvents.findLastIndex(
+              (event) => event.type === "request.resolved",
+            );
+            const repliedAfterRefusal =
+              lastRefusal >= 0 &&
+              turnEvents
+                .slice(lastRefusal)
+                .some(
+                  (event) =>
+                    event.type === "content.delta" && event.payload.streamKind === "assistant_text",
+                );
+            if (lastRefusal >= 0)
+              observations.push(
+                `${label}: ${repliedAfterRefusal ? "the model replied after the refusal" : "the turn ended at the refusal"}`,
+              );
             console.info(
-              `${round}: tool calls\n  ${toolCalls.join("\n  ")}\n${round}: refused by F5\n  ${opened
+              `${label}: tool calls\n  ${[...toolCalls.values()].join("\n  ")}\n${label}: refused by F5\n  ${opened
                 .map(
                   (event) =>
                     `${event.payload.requestType}: ${(event.payload.detail ?? "").slice(0, 160)}`,
                 )
                 .join("\n  ")}`,
             );
-            expect(JSON.stringify(turnEvents), `${round}: the read succeeds`).toContain(token);
-
             const resolved = new Map(
               turnEvents.flatMap((event) =>
                 event.type === "request.resolved" && event.requestId
@@ -208,28 +225,47 @@ describe.skipIf(!live || !stateDir)("live Antigravity read-only workflow turns",
             );
             // Every request a workflow turn raises is refused at once; none waits for an answer.
             for (const request of opened) {
-              expect(request.payload.autoDeclined, `${round}: request ${request.requestId}`).toBe(
+              expect(request.payload.autoDeclined, `${label}: request ${request.requestId}`).toBe(
                 true,
               );
               const resolution = request.requestId ? resolved.get(request.requestId) : undefined;
-              expect(resolution?.payload, `${round}: request ${request.requestId}`).toMatchObject({
+              expect(resolution?.payload, `${label}: request ${request.requestId}`).toMatchObject({
                 decision: "decline",
               });
             }
+            return { turnEvents, opened };
+          });
+
+          const runRound = Effect.fnUntraced(function* (round: string) {
+            // A fresh token per round, so a resumed session cannot answer from history.
+            const token = `F5_READ_${crypto.randomUUID().replaceAll("-", "")}`;
+            yield* Effect.promise(() =>
+              writeFile(path.join(cwd, "README.md"), `The certification token is ${token}.\n`),
+            );
+            const read = yield* runTurn(`${round} / read`, PROMPTS.read);
+            expect(JSON.stringify(read.turnEvents), `${round}: the read succeeds`).toContain(token);
+
+            const npm = yield* runTurn(`${round} / npm trap`, PROMPTS.npm);
             expect(
-              opened.some(
+              npm.opened.some(
                 (event) =>
                   event.payload.requestType === "exec_command_approval" &&
                   JSON.stringify(event.payload).includes("npm"),
               ),
               `${round}: \`npm --version\` reached F5 and was refused (missing means Antigravity ran it without asking, or the model skipped it; see the tool calls above)`,
             ).toBe(true);
+
+            const mcp = yield* runTurn(`${round} / MCP trap`, PROMPTS.mcp);
             expect(
-              opened.some((event) => JSON.stringify(event.payload).includes(TRAP_TOOL)),
+              mcp.opened.some((event) => JSON.stringify(event.payload).includes(TRAP_TOOL)),
               `${round}: \`${TRAP_TOOL}\` reached F5 and was refused`,
             ).toBe(true);
 
+            // The model may decline these itself in plan mode; the disk checks at the end decide.
+            yield* runTurn(`${round} / writes`, PROMPTS.writes);
+
             // F5 approves `gh api zen`; only the sandbox stands between it and the network.
+            const turnEvents = read.turnEvents;
             const probeItems = new Set(
               turnEvents.flatMap((event) =>
                 event.itemId && JSON.stringify(event).includes("gh api zen") ? [event.itemId] : [],
@@ -251,7 +287,7 @@ describe.skipIf(!live || !stateDir)("live Antigravity read-only workflow turns",
             console.info(`${round}: sandboxed \`gh api zen\`: ${verdict}\n${probe.slice(-1200)}`);
           });
 
-          yield* runTurn("fresh session");
+          yield* runRound("fresh session");
           yield* adapter.stopSession(threadId);
           yield* adapter.startSession({
             threadId,
@@ -261,7 +297,7 @@ describe.skipIf(!live || !stateDir)("live Antigravity read-only workflow turns",
             workflowExecutionProfile: "unattended-readonly",
             resumeCursor: session.resumeCursor,
           });
-          yield* runTurn("resumed session");
+          yield* runRound("resumed session");
           yield* adapter.stopSession(threadId);
         }),
       ).pipe(
@@ -290,7 +326,7 @@ describe.skipIf(!live || !stateDir)("live Antigravity read-only workflow turns",
       true,
     ]);
     console.info(
-      `Network probe: ${networkVerdicts.join("; ")}\nCertified candidate Antigravity runtime: { minimumVersion: "${launchedVersions[0]}", target: "${runtimeBuildTarget()}" }`,
+      `Network probe: ${networkVerdicts.join("; ")}\nAfter a refusal: ${observations.join("; ")}\nCertified candidate Antigravity runtime: { minimumVersion: "${launchedVersions[0]}", target: "${runtimeBuildTarget()}" }`,
     );
   }, 720_000);
 });

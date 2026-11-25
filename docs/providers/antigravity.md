@@ -124,8 +124,9 @@ as reads but F5 must refuse.
    - edit a file, run a shell command that writes (`touch shell-ran.txt`) and call the writing
      MCP tool.
 
-   The workflow dialog won't offer an uncertified version, so start this turn with the opt-in
-   live test described after step 6.
+   Antigravity ends a turn at the first operation F5 refuses, so give each trap and the writes
+   a turn of their own. The workflow dialog won't offer an uncertified version, so run these
+   turns with the opt-in live test described after step 6.
 
 3. Resume the session and repeat with a new token.
 4. The version passes when, in both rounds:
