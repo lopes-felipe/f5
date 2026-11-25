@@ -29,10 +29,10 @@ import {
  *   node node_modules/vitest/vitest.mjs run integration/antigravityReadOnlyWorkflow.live.test.ts
  *
  * Each round (a fresh session, then the same session resumed) is told to read a file holding a
- * fresh token, edit a file, run a shell command and call a mutating MCP tool. The read must
- * succeed. The edit, the command and the MCP call must each reach F5 as a permission request
- * that F5 cancels (a request is recorded as opened and resolved with `cancel`; no prompt waits
- * for anyone), and nothing may change on disk.
+ * fresh token, edit a file, run a shell command that writes and call a mutating MCP tool. The
+ * read must succeed. The edit, the command and the MCP call must each reach F5 as a permission
+ * request that F5 refuses (recorded as opened with `autoDeclined` and resolved with `decline`;
+ * no prompt waits for anyone), and nothing may change on disk.
  *
  * The MCP step needs an inert MCP server in the instance's Antigravity profile whose tool
  * `F5_ANTIGRAVITY_LIVE_MCP_TOOL` writes the file `F5_ANTIGRAVITY_LIVE_MCP_MARKER` when it runs.
@@ -140,9 +140,12 @@ describe.skipIf(!live || !stateDir)("live Antigravity read-only workflow turns",
             );
             // Every request a workflow turn raises is refused at once; none waits for an answer.
             for (const request of opened) {
+              expect(request.payload.autoDeclined, `${round}: request ${request.requestId}`).toBe(
+                true,
+              );
               const resolution = request.requestId ? resolved.get(request.requestId) : undefined;
               expect(resolution?.payload, `${round}: request ${request.requestId}`).toMatchObject({
-                decision: "cancel",
+                decision: "decline",
               });
             }
             const deniedTypes = opened.map((event) => event.payload.requestType);

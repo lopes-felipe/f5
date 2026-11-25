@@ -863,6 +863,7 @@ export const PrHubDetailProviderDetails = Schema.Union([
     provider: Schema.Literals(["gitlab", "azure-devops", "bitbucket", "forgejo", "unknown"]),
     externalId: Schema.optional(Schema.NullOr(Schema.String)),
     headRefOid: Schema.optional(Schema.NullOr(Schema.String)),
+    viewerCanDeleteBranch: Schema.optionalKey(Schema.Boolean),
   }),
 ]);
 export type PrHubDetailProviderDetails = typeof PrHubDetailProviderDetails.Type;

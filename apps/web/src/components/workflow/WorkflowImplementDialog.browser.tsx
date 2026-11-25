@@ -288,6 +288,59 @@ describe("WorkflowImplementDialog", () => {
     }
   });
 
+  it("lists Antigravity models for the implementer, which is not a read-only turn", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const driver = ProviderDriverKind.make("antigravity");
+    const antigravity: ServerProvider = {
+      ...claudeProvider("1.5.15", []),
+      instanceId: defaultInstanceIdForDriver(driver),
+      driver,
+      displayName: "Antigravity",
+      models: [
+        { slug: "gemini-4-neon", name: "Gemini 4 Neon", isCustom: false, capabilities: null },
+      ],
+    };
+    const client = makeQueryClient([claudeProvider("2.1.290", ["claude-opus-5"]), antigravity]);
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <WorkflowImplementDialog open workflow={makeWorkflow()} onOpenChange={() => {}} />
+      </QueryClientProvider>,
+      { container: host },
+    );
+    try {
+      const slot = page.getByRole("group", { name: "Implementation model" }).element();
+      slot.querySelector<HTMLButtonElement>("button")!.click();
+      await vi.waitFor(() =>
+        expect(
+          document.querySelector(
+            `[data-model-picker-provider="instance:${antigravity.instanceId}"]`,
+          ),
+        ).not.toBeNull(),
+      );
+      document
+        .querySelector<HTMLElement>(
+          `[data-model-picker-provider="instance:${antigravity.instanceId}"]`,
+        )!
+        .click();
+      await page.getByRole("button", { name: /Gemini 4 Neon/ }).click();
+      await vi.waitFor(() =>
+        expect(slot.querySelector("button")?.textContent).toContain("Gemini 4 Neon"),
+      );
+
+      await page.getByRole("button", { name: "Start implementation" }).click();
+      await vi.waitFor(() => expect(nativeApiMocks.startImplementation).toHaveBeenCalledTimes(1));
+      expect(nativeApiMocks.startImplementation.mock.calls[0]?.[0]).toMatchObject({
+        provider: "antigravity",
+        model: "gemini-4-neon",
+      });
+    } finally {
+      client.clear();
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("implements with the canonical persisted Fable 5.2 selection", async () => {
     const host = document.createElement("div");
     document.body.append(host);

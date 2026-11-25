@@ -5,7 +5,6 @@ import { makeProviderServiceLive } from "../../provider/Layers/ProviderService";
 import { makeCursorAdapter } from "../../provider/Layers/CursorAdapter";
 import { ProviderAdapterRegistry } from "../../provider/Services/ProviderAdapterRegistry";
 import { makeAdapterRegistryMock } from "../../provider/testUtils/providerAdapterRegistryMock";
-import { AnalyticsService } from "../../telemetry/Services/AnalyticsService";
 import { CursorSettings } from "@t3tools/contracts";
 import { Schema } from "effect";
 import { waitForAgentExit, writeAcpWrapper } from "../../testUtils/cli";
@@ -808,7 +807,6 @@ describe("ProviderCommandReactor", () => {
               }),
             ),
           ),
-          Layer.provide(AnalyticsService.layerTest),
           Layer.provide(projectMcpLayer),
           Layer.provide(settingsLayer),
         )

@@ -174,8 +174,13 @@ export function makeCompletedTurnUsageFact(input: {
     return undefined;
   }
   const cursor = asRecord(input.event.resumeCursor);
+  const provider = input.event.provider;
   const nativeSessionId =
-    input.event.provider === "muse" ? asString(cursor?.mspSessionId) : undefined;
+    provider === "muse"
+      ? asString(cursor?.mspSessionId)
+      : provider === "cursor" || provider === "opencode" || provider === "antigravity"
+        ? asString(cursor?.sessionId)
+        : undefined;
   const turn = input.thread.latestTurn;
   return {
     turnId: TurnId.makeUnsafe(String(input.event.turnId)),
@@ -186,6 +191,7 @@ export function makeCompletedTurnUsageFact(input: {
       input.event.providerInstanceId ?? input.thread.session?.providerInstanceId ?? null,
     model: input.thread.model || null,
     ...normalizeTurnUsage(input.event),
+    ...(input.event.payload?.usageSpeed ? { speed: input.event.payload.usageSpeed } : {}),
     completedAt: input.event.createdAt,
     sourceEventId: input.event.eventId,
     ...(nativeSessionId ? { nativeSessionId } : {}),

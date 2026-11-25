@@ -76,17 +76,57 @@ function getDescriptorStringValue(
   return typeof value === "string" ? value : null;
 }
 
+/** Traits a surface leaves out of the menu, such as workflow slots that send no composer prompt. */
+export interface TraitsHiddenOptions {
+  /** Select options that only work by injecting a prompt keyword (Claude `ultrathink`). */
+  readonly promptInjected?: boolean;
+  /** Whole descriptors to leave out, by id. */
+  readonly descriptorIds?: ReadonlyArray<string>;
+}
+
+/**
+ * Drops the hidden descriptors, and select options that only work by injecting a keyword into
+ * the prompt. A current value among the dropped options falls back to the descriptor default.
+ */
+function omitHiddenOptions(
+  descriptors: ReadonlyArray<ProviderOptionDescriptor>,
+  hidden: TraitsHiddenOptions,
+): ReadonlyArray<ProviderOptionDescriptor> {
+  const hiddenIds = new Set(hidden.descriptorIds);
+  return descriptors.flatMap((descriptor) => {
+    if (hiddenIds.has(descriptor.id)) return [];
+    if (
+      !hidden.promptInjected ||
+      descriptor.type !== "select" ||
+      !descriptor.promptInjectedValues?.length
+    ) {
+      return descriptor;
+    }
+    const injected = new Set(descriptor.promptInjectedValues);
+    const { currentValue, promptInjectedValues: _promptInjectedValues, ...rest } = descriptor;
+    return {
+      ...rest,
+      options: descriptor.options.filter((option) => !injected.has(option.id)),
+      ...(currentValue !== undefined && !injected.has(currentValue) ? { currentValue } : {}),
+    };
+  });
+}
+
 function getSelectedTraits(
   provider: ProviderDriverKind,
   models: ReadonlyArray<ServerProviderModel>,
   model: string | null | undefined,
   modelOptions: ProviderOptions | null | undefined,
+  hiddenOptions: TraitsHiddenOptions | undefined,
 ) {
   const caps = getProviderModelCapabilities(models, model, provider);
-  const descriptors = getProviderOptionDescriptors({
+  const allDescriptors = getProviderOptionDescriptors({
     caps,
     selections: modelOptions,
   });
+  const descriptors = hiddenOptions
+    ? omitHiddenOptions(allDescriptors, hiddenOptions)
+    : allDescriptors;
   const selectDescriptors = descriptors.filter(
     (descriptor): descriptor is Extract<ProviderOptionDescriptor, { type: "select" }> =>
       descriptor.type === "select",
@@ -139,8 +179,15 @@ function getTraitsSectionVisibility(input: {
   models: ReadonlyArray<ServerProviderModel>;
   model: string | null | undefined;
   modelOptions: ProviderOptions | null | undefined;
+  hiddenOptions?: TraitsHiddenOptions | undefined;
 }) {
-  const selected = getSelectedTraits(input.provider, input.models, input.model, input.modelOptions);
+  const selected = getSelectedTraits(
+    input.provider,
+    input.models,
+    input.model,
+    input.modelOptions,
+    input.hiddenOptions,
+  );
 
   const showEffort = selected.primarySelectDescriptor !== null;
   const showThinking = selected.thinkingDescriptor !== null;
@@ -164,6 +211,7 @@ export function shouldRenderTraitsControls(input: {
   models: ReadonlyArray<ServerProviderModel>;
   model: string | null | undefined;
   modelOptions: ProviderOptions | null | undefined;
+  hiddenOptions?: TraitsHiddenOptions | undefined;
 }): boolean {
   return getTraitsSectionVisibility(input).hasAnyControls;
 }
@@ -177,6 +225,8 @@ export interface TraitsMenuContentProps {
   triggerClassName?: string;
   /** Tint the trigger in the selected effort's colour (composer chips only). */
   tintTrigger?: boolean;
+  /** Traits to leave out, for surfaces such as workflow slots that send no composer prompt. */
+  hiddenOptions?: TraitsHiddenOptions | undefined;
 }
 
 export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
@@ -184,6 +234,7 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
   models,
   model,
   modelOptions,
+  hiddenOptions,
   ...persistence
 }: TraitsMenuContentProps & TraitsPersistence) {
   const setProviderModelOptions = useComposerDraftStore((store) => store.setProviderModelOptions);
@@ -210,6 +261,7 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
       models,
       model,
       modelOptions,
+      hiddenOptions,
     });
   const updateDescriptors = (nextDescriptors: ReadonlyArray<ProviderOptionDescriptor>) => {
     updateModelOptions(buildProviderOptionSelectionsFromDescriptors(nextDescriptors));
@@ -288,23 +340,18 @@ export const TraitsPicker = memo(function TraitsPicker({
   triggerClassName,
   tintTrigger = false,
   disabled = false,
+  hiddenOptions,
   ...persistence
 }: TraitsMenuContentProps & TraitsPersistence & { disabled?: boolean }) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const { caps, descriptors } = getTraitsSectionVisibility({
+  const { caps, descriptors, hasAnyControls } = getTraitsSectionVisibility({
     provider,
     models,
     model,
     modelOptions,
+    hiddenOptions,
   });
-  if (
-    !shouldRenderTraitsControls({
-      provider,
-      models,
-      model,
-      modelOptions,
-    })
-  ) {
+  if (!hasAnyControls) {
     return null;
   }
 
@@ -360,6 +407,7 @@ export const TraitsPicker = memo(function TraitsPicker({
           models={models}
           model={model}
           modelOptions={modelOptions}
+          hiddenOptions={hiddenOptions}
           {...persistence}
         />
       </MenuPopup>

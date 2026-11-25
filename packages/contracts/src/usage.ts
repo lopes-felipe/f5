@@ -35,6 +35,8 @@ export const UsageCostProvenance = Schema.Literals(["provider-reported", "unrepo
 export type UsageCostProvenance = typeof UsageCostProvenance.Type;
 
 const NonNegativeNumber = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
+export const UsageSpeed = Schema.Literals(["standard", "fast", "ultrafast"]);
+export type UsageSpeed = typeof UsageSpeed.Type;
 
 export const UsageTurnFact = Schema.Struct({
   turnId: TurnId,
@@ -56,6 +58,7 @@ export const UsageTurnFact = Schema.Struct({
   /** Immutable native identity captured at completion, independent of runtime projections. */
   nativeSessionId: Schema.optional(TrimmedNonEmptyString),
   startedAt: Schema.optional(IsoDateTime),
+  speed: Schema.optional(UsageSpeed),
 });
 export type UsageTurnFact = typeof UsageTurnFact.Type;
 
@@ -149,6 +152,24 @@ export const UsageFieldReporting = Schema.Struct({
 });
 export type UsageFieldReporting = typeof UsageFieldReporting.Type;
 
+export const UsageCostBreakdown = Schema.Struct({
+  byType: Schema.Struct({
+    input: NonNegativeNumber,
+    output: NonNegativeNumber,
+    cacheRead: NonNegativeNumber,
+    cacheWrite: NonNegativeNumber,
+    unattributed: NonNegativeNumber,
+  }),
+  bySpeed: Schema.Struct({
+    standard: NonNegativeNumber,
+    fast: NonNegativeNumber,
+    ultrafast: NonNegativeNumber,
+    unknown: NonNegativeNumber,
+  }),
+  speedPremiumUsd: NonNegativeNumber,
+});
+export type UsageCostBreakdown = typeof UsageCostBreakdown.Type;
+
 export const UsageMetrics = Schema.Struct({
   nativeInferenceCount: Schema.optional(NonNegativeInt),
   unpricedNativeInferenceCount: Schema.optional(NonNegativeInt),
@@ -161,6 +182,7 @@ export const UsageMetrics = Schema.Struct({
   totalTokens: NonNegativeInt,
   providerReportedCostUsd: Schema.NullOr(NonNegativeNumber),
   estimatedCostUsd: Schema.optional(Schema.NullOr(NonNegativeNumber)),
+  costBreakdown: Schema.optional(UsageCostBreakdown),
   pricedTurnCount: NonNegativeInt,
   unpricedTurnCount: NonNegativeInt,
   reporting: Schema.optional(Schema.NullOr(UsageFieldReporting)).pipe(
@@ -302,6 +324,7 @@ export type CodexAccountUsage = typeof CodexAccountUsage.Type;
 export const UsageSummary = Schema.Struct({
   nativeHistoryError: Schema.optional(Schema.String),
   nativeHistoryStatus: Schema.optional(Schema.Literals(["idle", "refreshing", "ready", "error"])),
+  listPricingRefreshing: Schema.optional(Schema.Boolean),
   range: UsageRange,
   timeZone: TrimmedNonEmptyString,
   generatedAt: IsoDateTime,

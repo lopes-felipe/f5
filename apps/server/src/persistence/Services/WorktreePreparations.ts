@@ -78,6 +78,10 @@ export interface WorktreePreparationsShape {
   ) => Effect.Effect<void, PreparationError>;
   readonly getGroup: (path: string) => Effect.Effect<WorktreeGroupPlan | null, PreparationError>;
   readonly saveGroup: (group: WorktreeGroupPlan) => Effect.Effect<void, PreparationError>;
+  readonly updateGroupBranch: (
+    group: WorktreeGroupPlan,
+    branch: string,
+  ) => Effect.Effect<void, PreparationError>;
   readonly deleteGroup: (group: WorktreeGroupPlan) => Effect.Effect<void, PreparationError>;
   readonly unfinished: Effect.Effect<ReadonlyArray<WorktreePreparationReceipt>, PreparationError>;
   readonly listByOwner: (
