@@ -101,7 +101,7 @@ describe("settings item descriptors", () => {
     expect(filterSettingsItems("merge method")[0]?.id).toBe("git.merge-method");
     expect(filterSettingsItems("manage worktrees")[0]?.id).toBe("git.manage-worktrees");
     expect(filterSettingsItems("doctor support bundle")[0]?.id).toBe("general.doctor");
-    expect(filterSettingsItems("F5_AUTH_TOKEN")[0]?.id).toBe("general.doctor");
+    expect(filterSettingsItems("sqlite quick_check")[0]?.id).toBe("general.doctor");
     expect(filterSettingsItems("providers pi")[0]?.id).toBe("providers.instances");
     expect(filterSettingsItems("providers antigravity")[0]?.id).toBe("providers.instances");
   });
@@ -193,6 +193,44 @@ describe("resolveSettingsCategoryFromSearch", () => {
 });
 
 describe("resolveSettingsSearch", () => {
+  it("keeps a provider instance focus only on the instances item", () => {
+    expect(
+      resolveSettingsSearch({
+        category: "providers",
+        item: "providers.instances",
+        instance: "codex_work",
+      }),
+    ).toEqual({ category: "providers", item: "providers.instances", instance: "codex_work" });
+    expect(
+      resolveSettingsSearch({ category: "providers", item: "providers.updates", instance: "x" }),
+    ).toEqual({ category: "providers", item: "providers.updates" });
+    expect(resolveSettingsSearch({ category: "providers", instance: "codex_work" })).toEqual({
+      category: "providers",
+    });
+    expect(
+      resolveSettingsSearch({ item: "providers.instances", instance: "x".repeat(300) }),
+    ).toEqual({ category: "providers", item: "providers.instances" });
+  });
+
+  it("keeps the inventory project only alongside an instance focus", () => {
+    expect(
+      resolveSettingsSearch({
+        item: "providers.instances",
+        instance: "codex_work",
+        instanceProject: "p-1",
+      }),
+    ).toEqual({
+      category: "providers",
+      item: "providers.instances",
+      instance: "codex_work",
+      instanceProject: "p-1",
+    });
+    expect(resolveSettingsSearch({ item: "providers.instances", instanceProject: "p-1" })).toEqual({
+      category: "providers",
+      item: "providers.instances",
+    });
+  });
+
   it("rewrites legacy item deep links to the new page", () => {
     expect(
       resolveSettingsSearch({ category: "integrations", item: "integrations.keybindings" }),

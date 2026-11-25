@@ -2,7 +2,14 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import type { ProjectId, ThreadId } from "@t3tools/contracts";
+import {
+  DEFAULT_RUNTIME_MODE,
+  ProviderInstanceId,
+  TurnId,
+  type ProjectId,
+  type ThreadId,
+} from "@t3tools/contracts";
+import { usageLimitFailureKey } from "@t3tools/shared/usageLimit";
 import { Deferred, Effect, Fiber, Layer } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { afterEach, describe, expect, it } from "vitest";
@@ -42,6 +49,19 @@ const unchangedRule = {
 };
 /** Past the default 24-hour wait of the content rules. */
 const idleSince = () => new Date(Date.now() - 2 * DAY_MS).toISOString();
+
+interface UsageRecoveryScenario {
+  name: string;
+  enabled?: boolean;
+  override?: boolean;
+  past?: boolean;
+  unknownReset?: boolean;
+  late?: boolean;
+  ledgerUnavailable?: boolean;
+  snoozed?: boolean;
+  state?: "revoked" | "cancelled" | "scheduled";
+  protect?: boolean;
+}
 
 describe("worktree cleanup rules", () => {
   const rules = { afterDays: 7, onMerge: true, onDelete: true, unchanged: false, minIdleHours: 24 };
@@ -439,6 +459,152 @@ describe("StorageCleanupWorker", { timeout: 60_000 }, () => {
       ),
     );
   });
+
+  it.each([
+    { name: "automatic resume", enabled: true, protect: true },
+    { name: "unknown reset", enabled: true, unknownReset: true, protect: true },
+    {
+      name: "limit arrives at final check",
+      enabled: true,
+      unknownReset: true,
+      late: true,
+      protect: true,
+    },
+    { name: "scheduled recovery", enabled: true, past: true, state: "scheduled", protect: true },
+    {
+      name: "ledger read fails",
+      enabled: true,
+      past: true,
+      ledgerUnavailable: true,
+      protect: true,
+    },
+    { name: "snooze", snoozed: true, protect: true },
+    { name: "expired snooze", past: true, snoozed: true },
+    { name: "automatic resume disabled" },
+    { name: "past reset with no ledger", enabled: true, past: true },
+    {
+      name: "delayed automatic resume",
+      enabled: true,
+      past: true,
+      state: "revoked",
+      protect: true,
+    },
+    { name: "cancelled continuation", enabled: true, past: true, state: "cancelled" },
+    {
+      name: "project enables automatic resume",
+      override: true,
+      past: true,
+      state: "revoked",
+      protect: true,
+    },
+    {
+      name: "project disables automatic resume",
+      enabled: true,
+      override: false,
+      past: true,
+      state: "revoked",
+    },
+  ] satisfies UsageRecoveryScenario[])(
+    "checks usage-limit recovery before cleaning a shared worktree ($name)",
+    async (scenario: UsageRecoveryScenario) => {
+      await Effect.runPromise(
+        withWorktree(
+          {
+            ...unchangedRule,
+            autoResumeUsageLimitedThreads: scenario.enabled ?? false,
+            ...(scenario.override === undefined
+              ? {}
+              : {
+                  projectSettingsOverrides: {
+                    ["project-1" as ProjectId]: {
+                      autoResumeUsageLimitedThreads: scenario.override,
+                    },
+                  },
+                }),
+          },
+          ({ worker, world, worktreePath }) =>
+            Effect.gen(function* () {
+              const nextHour = new Date(Date.now() + HOUR_MS).toISOString();
+              const resetsAt = scenario.unknownReset
+                ? null
+                : scenario.past
+                  ? new Date(Date.now() - HOUR_MS).toISOString()
+                  : nextHour;
+              const waitingThread = thread({
+                id: "waiting-thread",
+                projectId: "project-1",
+                worktreePath,
+                branch: "feature",
+                lastInteractionAt: idleSince(),
+              });
+              const providerInstanceId = ProviderInstanceId.makeUnsafe("codex");
+              const turnId = TurnId.makeUnsafe("interrupted-turn");
+              if (scenario.ledgerUnavailable) world.usageResumeLedgerUnavailable = true;
+              if (scenario.state) {
+                world.usageResumeLedgers.set(waitingThread.id, {
+                  limitKey: usageLimitFailureKey({ providerInstanceId, turnId })!,
+                  state: scenario.state,
+                  autoEligibleAtFailure: 1,
+                  source: "auto",
+                  autoCount: 0,
+                  itemId: null,
+                  notBefore: null,
+                });
+              }
+              const limitedThread: typeof waitingThread = {
+                ...waitingThread,
+                snoozedUntil: scenario.snoozed ? nextHour : null,
+                session: {
+                  threadId: waitingThread.id,
+                  status: "error",
+                  providerName: "codex",
+                  providerInstanceId,
+                  runtimeMode: DEFAULT_RUNTIME_MODE,
+                  activeTurnId: null,
+                  lastError: "Usage limit reached",
+                  lastErrorId: null,
+                  lastErrorOccurredAt: null,
+                  lastErrorRetryability: null,
+                  updatedAt: idleSince(),
+                  usageLimit: {
+                    providerInstanceId,
+                    turnId,
+                    deliveryId: null,
+                    resetsAt,
+                    resetSource: "provider",
+                    evidence: "typed",
+                    windows: [],
+                  },
+                },
+              };
+              world.threads.push(scenario.late ? waitingThread : limitedThread);
+              if (scenario.late) {
+                world.beforeMaintenanceLock = () => {
+                  world.threads[1] = limitedThread;
+                };
+              }
+              const dryRun = yield* worker.dryRun;
+              if (!scenario.protect || scenario.late) {
+                expect(dryRun.targets.map(({ action }) => action)).toEqual(["remove", "remove"]);
+              } else {
+                expect(dryRun.targets).toHaveLength(2);
+                expect(
+                  dryRun.targets.every(({ reason }) =>
+                    reason.includes("waiting to resume after a usage limit"),
+                  ),
+                ).toBe(true);
+              }
+              if (scenario.protect) {
+                const results = yield* worker.runOnce;
+                expect(results).toHaveLength(2);
+                expect(results.every(({ action }) => action === "skip")).toBe(true);
+                expect(yield* Effect.promise(() => exists(worktreePath))).toBe(true);
+              }
+            }),
+        ),
+      );
+    },
+  );
 
   it("skips worktrees with uncommitted, untracked or ignored files", async () => {
     await Effect.runPromise(

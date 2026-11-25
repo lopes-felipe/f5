@@ -35,6 +35,7 @@ export * from "./orchestration";
 export * from "./threadSearch";
 export * from "./mcp";
 export * from "./mcpServer";
+export * from "./workflowParticipants";
 export * from "./planningWorkflow";
 export * from "./codeReviewWorkflow";
 export * from "./investigationWorkflow";

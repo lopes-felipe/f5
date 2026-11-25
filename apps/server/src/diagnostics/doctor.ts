@@ -13,7 +13,13 @@ import type {
 } from "@t3tools/contracts";
 
 import { version as SERVER_APP_VERSION } from "../../package.json" with { type: "json" };
+import { isLoopbackHost } from "../networkHost.ts";
 import { databaseDamageMarkerPath, getDatabaseDamage } from "../persistence/databaseHealth.ts";
+import { openRuntimeSqliteDatabase } from "../persistence/runtimeSqlite.ts";
+import {
+  DEFAULT_WORKTREES_SETTINGS,
+  managedWorktreesDirectories,
+} from "../worktreesDirectoryPaths.ts";
 
 const WAL_WARN_BYTES = 128 * 1024 * 1024;
 const DISK_WARN_BYTES = 2 * 1024 * 1024 * 1024;
@@ -54,7 +60,11 @@ const BUILT_IN_PROVIDER_CLI_PROBES: ReadonlyArray<BuiltInCliProbe> = [
 ];
 
 export interface SqliteInspectionSnapshot {
-  readonly quickCheck: ReadonlyArray<string>;
+  /**
+   * Lines returned by `PRAGMA quick_check(5)`, or `null` when intentionally
+   * skipped on a live server connection to avoid blocking the main event loop.
+   */
+  readonly quickCheck: ReadonlyArray<string> | null;
   readonly pageSize: number;
   readonly pageCount: number;
   readonly freelistCount: number;
@@ -64,11 +74,59 @@ export interface SqliteInspectionSnapshot {
   readonly latestMigrationId: number | null;
 }
 
+export type SqliteInspectionResult =
+  | { readonly kind: "ok"; readonly snapshot: SqliteInspectionSnapshot }
+  | { readonly kind: "corrupt"; readonly detail: string }
+  | { readonly kind: "unavailable"; readonly detail: string };
+
+export interface RawSqliteInspectionRows {
+  readonly quickRows?: ReadonlyArray<{ readonly quick_check?: unknown }> | null;
+  readonly pageSizeRow?: { readonly page_size?: unknown } | null | undefined;
+  readonly pageCountRow?: { readonly page_count?: unknown } | null | undefined;
+  readonly freelistRow?: { readonly freelist_count?: unknown } | null | undefined;
+  readonly autoVacuumRow?: { readonly auto_vacuum?: unknown } | null | undefined;
+  readonly journalRow?: { readonly journal_mode?: unknown } | null | undefined;
+  readonly migrationRow?:
+    | { readonly count?: unknown; readonly latest?: unknown }
+    | null
+    | undefined;
+}
+
+/** Shared mapper used by both offline `inspectSqliteReadOnly` and live `wsServer` PRAGMA reads. */
+export function buildSqliteInspectionSnapshot(
+  rows: RawSqliteInspectionRows,
+): SqliteInspectionSnapshot {
+  const toNumber = (value: unknown): number => {
+    const parsed = typeof value === "number" ? value : Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+  const quickCheck =
+    rows.quickRows === null || rows.quickRows === undefined
+      ? null
+      : rows.quickRows
+          .map((row) => String(row.quick_check ?? ""))
+          .filter((line) => line.length > 0);
+  const countRaw = rows.migrationRow?.count;
+  const latestRaw = rows.migrationRow?.latest;
+  return {
+    quickCheck,
+    pageSize: toNumber(rows.pageSizeRow?.page_size),
+    pageCount: toNumber(rows.pageCountRow?.page_count),
+    freelistCount: toNumber(rows.freelistRow?.freelist_count),
+    autoVacuum: toNumber(rows.autoVacuumRow?.auto_vacuum),
+    journalMode: String(rows.journalRow?.journal_mode ?? "unknown"),
+    migrationCount: typeof countRaw === "number" ? countRaw : null,
+    latestMigrationId: typeof latestRaw === "number" ? latestRaw : null,
+  };
+}
+
 export interface RunDoctorInput {
   readonly mode: "web" | "desktop" | "cli";
   readonly stateDir: string;
   readonly dbPath: string;
   readonly worktreesDir: string;
+  /** Optional explicit list of managed worktree roots (e.g. from `ServerSettingsService`). */
+  readonly worktreesDirs?: ReadonlyArray<string>;
   readonly logsDir: string;
   readonly attachmentsDir: string;
   readonly profilesRoot?: string;
@@ -82,7 +140,7 @@ export interface RunDoctorInput {
   /** Live provider snapshots when running inside the server process. */
   readonly liveProviders?: ReadonlyArray<ServerProvider>;
   /** Optional SQLite inspector (e.g. backed by the live server SqlClient). */
-  readonly inspectSqlite?: () => Promise<SqliteInspectionSnapshot | null>;
+  readonly inspectSqlite?: () => Promise<SqliteInspectionResult | null>;
   readonly env?: NodeJS.ProcessEnv;
   readonly homeDir?: string;
   readonly now?: () => Date;
@@ -95,7 +153,7 @@ export interface RedactedSupportBundle {
   readonly schemaVersion: 1;
   readonly exportedAt: string;
   readonly doctor: ServerDoctorReport;
-  readonly serverHealth: ServerHealth | null;
+  readonly serverHealth?: ServerHealth | null;
 }
 
 export function formatBytesCompact(bytes: number): string {
@@ -111,22 +169,65 @@ export function formatBytesCompact(bytes: number): string {
   return `${value >= 10 ? Math.round(value) : value.toFixed(1)} ${units[unitIndex]}`;
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+function replaceHomePrefix(text: string, homeVariant: string, caseInsensitive: boolean): string {
+  if (homeVariant.length <= 1) return text;
+  // Require a path/token boundary before and after the home prefix so `/Users/al`
+  // never rewrites `/Users/alice` into `~ice`.
+  const pattern = new RegExp(
+    `(^|[\\s"'(\`=,;:])${escapeRegExp(homeVariant)}(?=$|[\\\\/\\s"')\\]\`,;:])`,
+    caseInsensitive ? "giu" : "gu",
+  );
+  return text.replace(pattern, "$1~");
+}
+
 /**
- * Replaces the user's home directory prefix with `~` and strips any inline
- * URL credentials (`user:pass@`) so diagnostic strings never leak usernames or secrets.
+ * Scrubs inline URL credentials, credential query parameters, common bearer/API
+ * tokens, email addresses, and user home-directory prefixes from diagnostic text.
  */
-export function redactDiagnosticText(value: string, homeDir = OS.homedir()): string {
+export function redactDiagnosticText(
+  value: string,
+  homeDir = OS.homedir(),
+  platform: NodeJS.Platform = process.platform,
+): string {
+  // 1. Inline URL credentials (`scheme://user:pass@host`)
   let result = value.replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^/\s@]+@/giu, "$1***@");
+
+  // 2. Credential query parameters (`?token=...`, `&api_key=...`, etc.)
+  result = result.replace(
+    /([?&](?:access_token|api_key|apikey|auth|bearer|key|passwd|password|secret|sig|signature|token)=)[^&\s"'<>#]+/giu,
+    "$1***",
+  );
+
+  // 3. Bearer / Authorization tokens
+  result = result.replace(/\b(Bearer\s+)[A-Za-z0-9._~+/=-]{8,}/giu, "$1***");
+
+  // 4. Common provider / forge API token prefixes
+  result = result.replace(
+    /\b(?:sk-(?:proj-|ant-)?|gh[pousr]_|github_pat_|glpat-|xox[baprs]-|AIza)[A-Za-z0-9_-]{8,}\b/gu,
+    "[REDACTED_TOKEN]",
+  );
+
+  // 5. Email addresses
+  result = result.replace(
+    /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/gu,
+    "[REDACTED_EMAIL]",
+  );
+
+  // 6. User home directory prefixes (case-insensitive on macOS and Windows)
   const trimmedHome = homeDir.replace(/[\\/]+$/u, "");
+  const caseInsensitive = platform === "darwin" || platform === "win32";
   if (trimmedHome.length > 1) {
-    const escapedHome = trimmedHome.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-    result = result.replace(new RegExp(escapedHome, "gu"), "~");
+    result = replaceHomePrefix(result, trimmedHome, caseInsensitive);
     const posixHome = trimmedHome.replace(/\\/gu, "/");
     if (posixHome !== trimmedHome) {
-      const escapedPosix = posixHome.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-      result = result.replace(new RegExp(escapedPosix, "gu"), "~");
+      result = replaceHomePrefix(result, posixHome, caseInsensitive);
     }
   }
+
   return result;
 }
 
@@ -145,6 +246,64 @@ async function countDirEntries(dirPath: string): Promise<number | null> {
     return entries.length;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Counts managed Git worktree checkouts across all managed roots.
+ * Managed worktrees live two levels deep (`<root>/<repo-dir>/<worktree-dir>`).
+ */
+async function countManagedWorktreeCheckouts(
+  roots: ReadonlyArray<string>,
+): Promise<{ readonly rootsExisting: number; readonly checkoutCount: number }> {
+  let rootsExisting = 0;
+  let checkoutCount = 0;
+  for (const root of new Set(roots)) {
+    let repoEntries: ReadonlyArray<FSync.Dirent>;
+    try {
+      repoEntries = await FS.readdir(root, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    rootsExisting += 1;
+    for (const repoEntry of repoEntries) {
+      if (!repoEntry.isDirectory() || repoEntry.name.startsWith(".")) continue;
+      const repoDir = Path.join(root, repoEntry.name);
+      try {
+        const worktrees = await FS.readdir(repoDir, { withFileTypes: true });
+        for (const wt of worktrees) {
+          if (wt.isDirectory() && !wt.name.startsWith(".")) {
+            checkoutCount += 1;
+          }
+        }
+      } catch {
+        // Repo directory disappeared or is unreadable; skip.
+      }
+    }
+  }
+  return { rootsExisting, checkoutCount };
+}
+
+async function resolveOfflineWorktreesDirs(
+  stateDir: string,
+  defaultDir: string,
+): Promise<string[]> {
+  try {
+    const raw = await FS.readFile(Path.join(stateDir, "settings.json"), "utf8");
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const worktreesDirectory =
+      typeof parsed.worktreesDirectory === "string" ? parsed.worktreesDirectory : "";
+    const previousWorktreesDirectories = Array.isArray(parsed.previousWorktreesDirectories)
+      ? parsed.previousWorktreesDirectories.filter(
+          (entry): entry is string => typeof entry === "string",
+        )
+      : [];
+    return managedWorktreesDirectories(
+      { worktreesDirectory, previousWorktreesDirectories },
+      defaultDir,
+    );
+  } catch {
+    return managedWorktreesDirectories(DEFAULT_WORKTREES_SETTINGS, defaultDir);
   }
 }
 
@@ -184,72 +343,109 @@ export async function findExecutableOnPath(
   return null;
 }
 
+function isSqliteCorruptionError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  const code =
+    typeof error === "object" && error !== null && "errcode" in error
+      ? String((error as { errcode?: unknown }).errcode ?? "")
+      : typeof error === "object" && error !== null && "code" in error
+        ? String((error as { code?: unknown }).code ?? "")
+        : "";
+  const combined = `${code} ${message}`;
+  return /SQLITE_NOTADB|SQLITE_CORRUPT|file is not a database|database disk image is malformed|malformed database schema/iu.test(
+    combined,
+  );
+}
+
 /**
- * Opens `dbPath` strictly read-only via `node:sqlite` for offline CLI checks.
- * Never mutates the database and works safely alongside a running WAL-mode server.
+ * Opens `dbPath` strictly read-only via the active runtime's SQLite driver
+ * (`bun:sqlite` under Bun, `node:sqlite` under Node) for offline CLI checks.
+ * Distinguishes confirmed database corruption from runtime unavailability.
  */
 export async function inspectSqliteReadOnly(
   dbPath: string,
-): Promise<SqliteInspectionSnapshot | null> {
+  homeDir = OS.homedir(),
+  platform: NodeJS.Platform = process.platform,
+): Promise<SqliteInspectionResult | null> {
   const size = await fileSizeIfExists(dbPath);
   if (size === null) return null;
 
+  let db: Awaited<ReturnType<typeof openRuntimeSqliteDatabase>>;
   try {
-    const sqlite = await import("node:sqlite");
-    const db = new sqlite.DatabaseSync(dbPath, { readOnly: true });
+    db = await openRuntimeSqliteDatabase(dbPath, { readOnly: true });
+  } catch (error) {
+    const detail = redactDiagnosticText(
+      error instanceof Error ? error.message : String(error),
+      homeDir,
+      platform,
+    );
+    return isSqliteCorruptionError(error)
+      ? { kind: "corrupt", detail }
+      : { kind: "unavailable", detail };
+  }
+
+  try {
+    const quickRows = db.prepare("PRAGMA quick_check(5)").all() as ReadonlyArray<{
+      readonly quick_check?: unknown;
+    }>;
+    const pageSizeRow = db.prepare("PRAGMA page_size").get() as
+      | { readonly page_size?: unknown }
+      | null
+      | undefined;
+    const pageCountRow = db.prepare("PRAGMA page_count").get() as
+      | { readonly page_count?: unknown }
+      | null
+      | undefined;
+    const freelistRow = db.prepare("PRAGMA freelist_count").get() as
+      | { readonly freelist_count?: unknown }
+      | null
+      | undefined;
+    const autoVacuumRow = db.prepare("PRAGMA auto_vacuum").get() as
+      | { readonly auto_vacuum?: unknown }
+      | null
+      | undefined;
+    const journalRow = db.prepare("PRAGMA journal_mode").get() as
+      | { readonly journal_mode?: unknown }
+      | null
+      | undefined;
+    let migrationRow: { readonly count?: unknown; readonly latest?: unknown } | null | undefined;
     try {
-      const quickRows = db.prepare("PRAGMA quick_check(5)").all() as ReadonlyArray<{
-        quick_check?: string;
-      }>;
-      const quickCheck = quickRows
-        .map((row) => String(row.quick_check ?? ""))
-        .filter((line) => line.length > 0);
-      const readNumber = (pragma: string, column: string): number => {
-        const row = db.prepare(`PRAGMA ${pragma}`).get() as Record<string, unknown> | undefined;
-        const value = row?.[column];
-        return typeof value === "number" ? value : 0;
-      };
-      const journalRow = db.prepare("PRAGMA journal_mode").get() as
-        | { journal_mode?: string }
-        | undefined;
-      let migrationCount: number | null = null;
-      let latestMigrationId: number | null = null;
-      try {
-        const migrationRow = db
-          .prepare(
-            "SELECT COUNT(*) AS count, MAX(migration_id) AS latest FROM effect_sql_migrations",
-          )
-          .get() as { count?: number; latest?: number | null } | undefined;
-        if (typeof migrationRow?.count === "number") {
-          migrationCount = migrationRow.count;
-        }
-        if (typeof migrationRow?.latest === "number") {
-          latestMigrationId = migrationRow.latest;
-        }
-      } catch {
-        // Fresh or uninitialized DB without migrations table.
-      }
-      return {
-        quickCheck,
-        pageSize: readNumber("page_size", "page_size"),
-        pageCount: readNumber("page_count", "page_count"),
-        freelistCount: readNumber("freelist_count", "freelist_count"),
-        autoVacuum: readNumber("auto_vacuum", "auto_vacuum"),
-        journalMode: String(journalRow?.journal_mode ?? "unknown"),
-        migrationCount,
-        latestMigrationId,
-      };
-    } finally {
-      db.close();
+      migrationRow = db
+        .prepare("SELECT COUNT(*) AS count, MAX(migration_id) AS latest FROM effect_sql_migrations")
+        .get() as { readonly count?: unknown; readonly latest?: unknown } | null | undefined;
+    } catch {
+      // Fresh or uninitialized DB without migrations table.
     }
-  } catch {
-    return null;
+    return {
+      kind: "ok",
+      snapshot: buildSqliteInspectionSnapshot({
+        quickRows,
+        pageSizeRow,
+        pageCountRow,
+        freelistRow,
+        autoVacuumRow,
+        journalRow,
+        migrationRow,
+      }),
+    };
+  } catch (error) {
+    const detail = redactDiagnosticText(
+      error instanceof Error ? error.message : String(error),
+      homeDir,
+      platform,
+    );
+    return isSqliteCorruptionError(error)
+      ? { kind: "corrupt", detail }
+      : { kind: "unavailable", detail };
+  } finally {
+    db.close();
   }
 }
 
 function summarizeLiveProviders(
   providers: ReadonlyArray<ServerProvider>,
   homeDir: string,
+  platform: NodeJS.Platform,
 ): ReadonlyArray<DoctorProviderSummary> {
   return providers.map((provider) => {
     const label = provider.displayName ?? provider.driver;
@@ -275,7 +471,7 @@ function summarizeLiveProviders(
       else if (provider.auth.status === "unauthenticated") summaryParts.push("not signed in");
     }
     if (provider.message) {
-      summaryParts.push(redactDiagnosticText(provider.message, homeDir));
+      summaryParts.push(redactDiagnosticText(provider.message, homeDir, platform));
     }
     return {
       id: provider.instanceId,
@@ -302,7 +498,7 @@ async function probeOfflineProviders(
             label: probe.label,
             status: "ready" as const,
             version: null,
-            summary: `Found at ${redactDiagnosticText(resolved, homeDir)}`,
+            summary: `Found at ${redactDiagnosticText(resolved, homeDir, platform)}`,
           };
         }
       }
@@ -329,6 +525,7 @@ export async function runDoctorDiagnostics(input: RunDoctorInput): Promise<Serve
   const platform = input.platform ?? process.platform;
   const arch = input.arch ?? process.arch;
   const now = input.now ?? (() => new Date());
+  const redact = (value: string) => redactDiagnosticText(value, homeDir, platform);
   const checks: DoctorCheck[] = [];
 
   // 1. Environment & toolchain checks
@@ -366,7 +563,7 @@ export async function runDoctorDiagnostics(input: RunDoctorInput): Promise<Serve
           category: "environment",
           title: "Git CLI",
           status: "ok",
-          summary: `Found at ${redactDiagnosticText(gitPath, homeDir)}.`,
+          summary: `Found at ${redact(gitPath)}.`,
         }
       : {
           id: "env.git",
@@ -384,7 +581,7 @@ export async function runDoctorDiagnostics(input: RunDoctorInput): Promise<Serve
           category: "environment",
           title: "GitHub CLI (gh)",
           status: "ok",
-          summary: `Found at ${redactDiagnosticText(ghPath, homeDir)}.`,
+          summary: `Found at ${redact(ghPath)}.`,
         }
       : {
           id: "env.gh",
@@ -397,11 +594,7 @@ export async function runDoctorDiagnostics(input: RunDoctorInput): Promise<Serve
   );
 
   if (input.host !== undefined) {
-    const loopback =
-      input.host === "127.0.0.1" ||
-      input.host === "localhost" ||
-      input.host === "::1" ||
-      input.host === "[::1]";
+    const loopback = isLoopbackHost(input.host);
     checks.push({
       id: "env.network",
       category: "environment",
@@ -433,39 +626,52 @@ export async function runDoctorDiagnostics(input: RunDoctorInput): Promise<Serve
       status: "error",
       summary: "Database damage marker is present; background compaction and cleanup are paused.",
       detail: liveDamage
-        ? redactDiagnosticText(liveDamage.message, homeDir)
-        : `Marker found at ${redactDiagnosticText(databaseDamageMarkerPath(input.dbPath), homeDir)}.`,
+        ? redact(liveDamage.message)
+        : `Marker found at ${redact(databaseDamageMarkerPath(input.dbPath))}.`,
       hint: "Restore from a recent backup in Settings → Storage or inspect recovery snapshots before restarting.",
     });
   }
 
-  const sqlite =
+  const sqliteResult =
     dbSize !== null || input.inspectSqlite !== undefined
       ? input.inspectSqlite
         ? await input.inspectSqlite()
-        : await inspectSqliteReadOnly(input.dbPath)
+        : await inspectSqliteReadOnly(input.dbPath, homeDir, platform)
       : null;
 
-  if (dbSize === null && !sqlite) {
+  if (dbSize === null && !sqliteResult) {
     checks.push({
       id: "db.file",
       category: "database",
       title: "SQLite database",
       status: "warn",
-      summary: `Database file not yet created at ${redactDiagnosticText(input.dbPath, homeDir)}.`,
+      summary: `Database file not yet created at ${redact(input.dbPath)}.`,
       hint: "Start F5 once to initialize this profile's SQLite database.",
     });
   } else {
-    if (!sqlite) {
+    if (!sqliteResult || sqliteResult.kind === "unavailable") {
       checks.push({
         id: "db.integrity",
         category: "database",
         title: "SQLite integrity",
         status: "warn",
-        summary: `Database exists (${formatBytesCompact(dbSize ?? 0)}), but read-only PRAGMA quick_check could not run in this runtime.`,
+        summary: `Database exists (${formatBytesCompact(dbSize ?? 0)}), but read-only SQLite inspection could not run in this runtime.`,
+        ...(sqliteResult?.kind === "unavailable" && sqliteResult.detail
+          ? { detail: redact(sqliteResult.detail) }
+          : {}),
+      });
+    } else if (sqliteResult.kind === "corrupt") {
+      checks.push({
+        id: "db.integrity",
+        category: "database",
+        title: "SQLite integrity & schema",
+        status: "error",
+        summary: `SQLite reported database corruption (${formatBytesCompact(dbSize ?? 0)}).`,
+        detail: redact(sqliteResult.detail),
+        hint: "Restore from a recent backup in Settings → Storage or run database recovery before continuing.",
       });
     } else {
-      const quickOk = sqlite.quickCheck.length === 1 && sqlite.quickCheck[0] === "ok";
+      const sqlite = sqliteResult.snapshot;
       const liveBytes = Math.max(0, sqlite.pageCount - sqlite.freelistCount) * sqlite.pageSize;
       const freeBytes = sqlite.freelistCount * sqlite.pageSize;
       const migrationSummary =
@@ -473,19 +679,33 @@ export async function runDoctorDiagnostics(input: RunDoctorInput): Promise<Serve
           ? `${sqlite.migrationCount} migrations applied${sqlite.latestMigrationId !== null ? ` (latest #${sqlite.latestMigrationId})` : ""}`
           : "migration table unavailable";
       const sizeLabel = dbSize !== null ? formatBytesCompact(dbSize) : "in-memory";
-      checks.push({
-        id: "db.integrity",
-        category: "database",
-        title: "SQLite integrity & schema",
-        status: quickOk ? "ok" : "error",
-        summary: quickOk
-          ? `quick_check OK · ${sizeLabel} (${formatBytesCompact(liveBytes)} live, ${formatBytesCompact(freeBytes)} free) · ${migrationSummary}.`
-          : `quick_check reported issues: ${sqlite.quickCheck.join("; ")}`,
-        detail: `journal_mode=${sqlite.journalMode}, auto_vacuum=${sqlite.autoVacuum}`,
-        ...(!quickOk
-          ? { hint: "Export a backup or run database recovery before continuing." }
-          : {}),
-      });
+
+      if (sqlite.quickCheck === null) {
+        checks.push({
+          id: "db.integrity",
+          category: "database",
+          title: "SQLite status & schema",
+          status: "ok",
+          summary: `Live metadata OK · ${sizeLabel} (${formatBytesCompact(liveBytes)} live, ${formatBytesCompact(freeBytes)} free) · ${migrationSummary}.`,
+          detail: `journal_mode=${sqlite.journalMode}, auto_vacuum=${sqlite.autoVacuum}`,
+          hint: "Run `f5 doctor` offline from the CLI for a full PRAGMA quick_check page scan without blocking active sessions.",
+        });
+      } else {
+        const quickOk = sqlite.quickCheck.length === 1 && sqlite.quickCheck[0] === "ok";
+        checks.push({
+          id: "db.integrity",
+          category: "database",
+          title: "SQLite integrity & schema",
+          status: quickOk ? "ok" : "error",
+          summary: quickOk
+            ? `quick_check OK · ${sizeLabel} (${formatBytesCompact(liveBytes)} live, ${formatBytesCompact(freeBytes)} free) · ${migrationSummary}.`
+            : `quick_check reported issues: ${redact(sqlite.quickCheck.join("; "))}`,
+          detail: `journal_mode=${sqlite.journalMode}, auto_vacuum=${sqlite.autoVacuum}`,
+          ...(!quickOk
+            ? { hint: "Export a backup or run database recovery before continuing." }
+            : {}),
+        });
+      }
     }
 
     if (walSize !== null && walSize > 0) {
@@ -510,7 +730,7 @@ export async function runDoctorDiagnostics(input: RunDoctorInput): Promise<Serve
       category: "database",
       title: "Recovery snapshots",
       status: "warn",
-      summary: `${recoveryCount} file${recoveryCount === 1 ? "" : "s"} present in ${redactDiagnosticText(Path.join(input.stateDir, "recovery"), homeDir)}.`,
+      summary: `${recoveryCount} file${recoveryCount === 1 ? "" : "s"} present in ${redact(Path.join(input.stateDir, "recovery"))}.`,
       hint: "Review or clean up old recovery files once you confirm your database is healthy.",
     });
   }
@@ -536,7 +756,7 @@ export async function runDoctorDiagnostics(input: RunDoctorInput): Promise<Serve
 
   // 3. Providers
   const providers = input.liveProviders
-    ? summarizeLiveProviders(input.liveProviders, homeDir)
+    ? summarizeLiveProviders(input.liveProviders, homeDir, platform)
     : await probeOfflineProviders(env, platform, homeDir);
 
   const readyProviders = providers.filter((provider) => provider.status === "ready");
@@ -570,7 +790,7 @@ export async function runDoctorDiagnostics(input: RunDoctorInput): Promise<Serve
       category: "storage",
       title: "Available disk space",
       status: freeBytes < DISK_ERROR_BYTES ? "error" : freeBytes < DISK_WARN_BYTES ? "warn" : "ok",
-      summary: `${formatBytesCompact(freeBytes)} free on state directory volume (${redactDiagnosticText(input.stateDir, homeDir)}).`,
+      summary: `${formatBytesCompact(freeBytes)} free on state directory volume (${redact(input.stateDir)}).`,
       ...(freeBytes < DISK_WARN_BYTES
         ? {
             hint: "Free disk space or run cleanup in Settings → Storage to avoid SQLite or worktree write failures.",
@@ -583,19 +803,23 @@ export async function runDoctorDiagnostics(input: RunDoctorInput): Promise<Serve
       category: "storage",
       title: "Available disk space",
       status: "warn",
-      summary: `State directory not accessible yet (${redactDiagnosticText(input.stateDir, homeDir)}).`,
+      summary: `State directory not accessible yet (${redact(input.stateDir)}).`,
     });
   }
 
-  const worktreeCount = await countDirEntries(input.worktreesDir);
-  if (worktreeCount !== null) {
+  const managedWorktreeRoots =
+    input.worktreesDirs ?? (await resolveOfflineWorktreesDirs(input.stateDir, input.worktreesDir));
+  const { rootsExisting, checkoutCount } =
+    await countManagedWorktreeCheckouts(managedWorktreeRoots);
+  if (rootsExisting > 0) {
+    const rootList = managedWorktreeRoots.map((root) => redact(root)).join(", ");
     checks.push({
       id: "storage.worktrees",
       category: "storage",
       title: "Managed worktrees",
-      status: worktreeCount > WORKTREE_COUNT_WARN ? "warn" : "ok",
-      summary: `${worktreeCount} entr${worktreeCount === 1 ? "y" : "ies"} in ${redactDiagnosticText(input.worktreesDir, homeDir)}.`,
-      ...(worktreeCount > WORKTREE_COUNT_WARN
+      status: checkoutCount > WORKTREE_COUNT_WARN ? "warn" : "ok",
+      summary: `${checkoutCount} checkout${checkoutCount === 1 ? "" : "s"} across ${rootsExisting} managed root${rootsExisting === 1 ? "" : "s"} (${rootList}).`,
+      ...(checkoutCount > WORKTREE_COUNT_WARN
         ? { hint: "Consider pruning idle worktrees in Settings → Storage → Automatic cleanup." }
         : {}),
     });
@@ -644,7 +868,7 @@ export function buildRedactedSupportBundle(input: {
     schemaVersion: 1,
     exportedAt: input.exportedAt ?? new Date().toISOString(),
     doctor: input.report,
-    serverHealth: input.serverHealth ?? null,
+    ...(input.serverHealth !== undefined ? { serverHealth: input.serverHealth } : {}),
   };
 }
 
@@ -658,7 +882,7 @@ export function formatDoctorReportText(report: ServerDoctorReport): string {
         : "ISSUES DETECTED";
 
   lines.push(
-    `F5 Doctor — ${overallLabel} (v${report.runtime.appVersion}, ${report.runtime.runtimeKind} ${report.runtime.runtimeVersion}, ${report.runtime.platform}/${report.runtime.arch})`,
+    `F5 Doctor: ${overallLabel} (v${report.runtime.appVersion}, ${report.runtime.runtimeKind} ${report.runtime.runtimeVersion}, ${report.runtime.platform}/${report.runtime.arch})`,
   );
   lines.push(
     `Profile: ${report.runtime.profileName} (${report.runtime.profileSlug}) · Checks: ${report.counts.ok} ok, ${report.counts.warn} warn, ${report.counts.error} error`,

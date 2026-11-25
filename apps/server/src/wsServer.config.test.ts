@@ -365,6 +365,120 @@ describe("WebSocket Server", () => {
     15000,
   );
 
+  it("routes hook approval to Codex instances with the server-resolved workspace root", async () => {
+    const workspaceRoot = makeTempDir("f5-hook-trust-");
+    const codexId = ProviderInstanceId.makeUnsafe("codex-trust-test");
+    const claudeId = ProviderInstanceId.makeUnsafe("claude-trust-test");
+    const hook = (key: string) => ({ key, token: `token-${key}` });
+    const trustHooks = vi.fn(
+      (input: { projectRoot?: string; hooks: ReadonlyArray<{ key: string; token: string }> }) =>
+        Effect.succeed({
+          trusted: input.hooks.map((entry) => entry.key),
+          skipped: [],
+          changed: [],
+          failed: [],
+        }),
+    );
+    const codex = {
+      instanceId: codexId,
+      driverKind: ProviderDriverKind.make("codex"),
+      trustHooks,
+    } as unknown as ProviderInstance;
+    const claude = {
+      instanceId: claudeId,
+      driverKind: ProviderDriverKind.make("claudeAgent"),
+      trustHooks,
+    } as unknown as ProviderInstance;
+    h.server = await createTestServer({
+      cwd: workspaceRoot,
+      providerInstanceRegistryLayer: Layer.succeed(ProviderInstanceRegistry, {
+        getInstance: (id: ProviderInstanceId) =>
+          Effect.succeed(id === codexId ? codex : id === claudeId ? claude : undefined),
+        listInstances: Effect.succeed([codex, claude]),
+        listUnavailable: Effect.succeed([]),
+        streamChanges: Stream.empty,
+        subscribeChanges: Effect.acquireRelease(PubSub.unbounded<void>(), PubSub.shutdown).pipe(
+          Effect.flatMap(PubSub.subscribe),
+        ),
+      }),
+    });
+    const address = h.server.address();
+    const [ws] = await connectAndAwaitWelcome(
+      typeof address === "object" && address ? address.port : 0,
+    );
+    connections.push(ws);
+    const projectId = "hook-trust-project";
+    expect(
+      (
+        await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+          type: "project.create",
+          commandId: "hook-trust-project-create",
+          projectId,
+          title: "Hooks",
+          workspaceRoot,
+          defaultModel: "gpt-5",
+          createdAt: new Date().toISOString(),
+        })
+      ).error,
+    ).toBeUndefined();
+
+    const rejected = await sendRequest(ws, WS_METHODS.serverTrustProviderHooks, {
+      instanceId: claudeId,
+      hooks: [hook("k")],
+    });
+    expect(rejected.error?.message).toBe(
+      "Hook approval is only available for a configured Codex provider.",
+    );
+    for (const hooks of [
+      [],
+      Array.from({ length: 65 }, (_, i) => hook(`k${i}`)),
+      [{ key: "k" }],
+      // Bare keys (the pre-token shape) are no longer accepted.
+      ["k"],
+    ]) {
+      const invalid = await sendRequest(ws, WS_METHODS.serverTrustProviderHooks, {
+        instanceId: codexId,
+        hooks,
+      });
+      expect(invalid.error?.message).toContain("Invalid request format");
+    }
+    const missingProject = await sendRequest(ws, WS_METHODS.serverTrustProviderHooks, {
+      instanceId: codexId,
+      projectId: "missing-project",
+      hooks: [hook("k")],
+    });
+    expect(missingProject.error?.message).toBe("Project not found.");
+    expect(trustHooks).not.toHaveBeenCalled();
+
+    const trusted = await sendRequest(ws, WS_METHODS.serverTrustProviderHooks, {
+      instanceId: codexId,
+      projectId,
+      hooks: [hook("a"), hook("b")],
+    });
+    expect(trusted.result).toEqual({ trusted: ["a", "b"], skipped: [], changed: [], failed: [] });
+    expect(trustHooks).toHaveBeenCalledWith({
+      projectRoot: workspaceRoot,
+      hooks: [hook("a"), hook("b")],
+    });
+
+    trustHooks.mockImplementationOnce(
+      () =>
+        Effect.fail(
+          new ProviderDriverError({
+            driver: ProviderDriverKind.make("codex"),
+            instanceId: codexId,
+            detail: "invalid configuration: features.chronicle",
+          }),
+        ) as never,
+    );
+    const failed = await sendRequest(ws, WS_METHODS.serverTrustProviderHooks, {
+      instanceId: codexId,
+      hooks: [hook("a")],
+    });
+    expect(failed.error?.message).toBe("invalid configuration: features.chronicle");
+    expect(trustHooks).toHaveBeenLastCalledWith({ projectRoot: undefined, hooks: [hook("a")] });
+  });
+
   it("resolves project settings over files, replaces overrides and prunes deleted projects", async () => {
     const workspaceRoot = makeTempDir("f5-project-scope-");
     fs.writeFileSync(

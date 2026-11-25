@@ -384,6 +384,8 @@ export const RPC_METHOD_POLICY = {
   // The queue has its own deadline. After dispatch, wait for server preparation
   // and its bounded installer result without abandoning an in-flight mutation.
   "server.runProviderUpdate": long(false, null),
+  // One short-lived Codex control client, bounded server-side well under the default deadline.
+  "server.trustProviderHooks": MUTATION,
   "server.undoClaudeTranscriptRepair": MUTATION_RT,
   "server.updateKeybinding": MUTATION,
   "server.updateSettings": MUTATION,
@@ -539,6 +541,7 @@ const BODY_RUNTIME_DEPENDENCIES: Partial<
   // The feature-branch step switches the workspace.
   "git.runStackedAction": (body) => Boolean(body.featureBranch),
   "server.getProviderInventory": (body) => Boolean(body.projectId),
+  "server.trustProviderHooks": (body) => Boolean(body.projectId),
   "server.updateSettings": (body) => Boolean(body.projectSettingsOverrides),
 };
 

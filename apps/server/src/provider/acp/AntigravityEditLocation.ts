@@ -41,11 +41,14 @@ const decodeEditInput = Schema.decodeUnknownOption(
   ]),
 );
 const decodeLocations = Schema.decodeUnknownOption(Schema.Array(Schema.Struct({ line: Line })));
-// The runtime accepts edit arguments in either casing.
+// The runtime accepts edit arguments in either casing; current releases also send the short
+// `Target`/`Replacement` names.
 const PASCAL_KEYS: Readonly<Record<string, string>> = {
   replacement_chunks: "ReplacementChunks",
   target_content: "TargetContent",
   replacement_content: "ReplacementContent",
+  Target: "TargetContent",
+  Replacement: "ReplacementContent",
   start_line: "StartLine",
   end_line: "EndLine",
 };
@@ -72,6 +75,69 @@ export function readAntigravityPreEditFile(path: string): string | undefined {
       : undefined;
   } catch {
     return undefined;
+  }
+}
+
+/** A file as it was before a write: absent, its text, or not readable cheaply. */
+export type AntigravityPreWriteFile =
+  | { readonly state: "missing" }
+  | { readonly state: "text"; readonly text: string }
+  | { readonly state: "unknown" };
+
+export const ANTIGRAVITY_PRE_WRITE_UNKNOWN: AntigravityPreWriteFile = { state: "unknown" };
+const strictUtf8 = new TextDecoder("utf-8", { fatal: true });
+
+/**
+ * Reads a write's target before it runs, telling a new file apart from a replaced one. Its old
+ * text ends up in the stored patch, so only an absolute target that resolves (links followed)
+ * inside the workspace, outside Git metadata, is read; any other target, and any binary or
+ * non-UTF-8 file, is unknown.
+ */
+export function readAntigravityPreWriteFile(
+  path: string,
+  workspaceRoot: string,
+): AntigravityPreWriteFile {
+  const root = canonicalWorkspaceRoot(workspaceRoot);
+  const target = root === undefined ? undefined : workspaceTarget(path, root);
+  if (target === undefined) return ANTIGRAVITY_PRE_WRITE_UNKNOWN;
+  try {
+    const bytes = readCheckedFile(target);
+    if (bytes === undefined) return ANTIGRAVITY_PRE_WRITE_UNKNOWN;
+    const text = strictUtf8.decode(bytes);
+    return text.includes("\0") ? ANTIGRAVITY_PRE_WRITE_UNKNOWN : { state: "text", text };
+  } catch (cause) {
+    return (cause as NodeJS.ErrnoException | undefined)?.code === "ENOENT"
+      ? { state: "missing" }
+      : ANTIGRAVITY_PRE_WRITE_UNKNOWN;
+  }
+}
+
+/**
+ * Reads the canonical `target` through one descriptor, so the checks and the read see the same
+ * file: the open refuses a final link, and the path must still resolve to the opened inode, so
+ * a component swapped for a link after the containment check is refused too.
+ */
+function readCheckedFile(target: string): Buffer | undefined {
+  const { O_RDONLY, O_NOFOLLOW = 0 } = NodeFS.constants;
+  const fd = NodeFS.openSync(target, O_RDONLY | O_NOFOLLOW);
+  try {
+    const opened = NodeFS.fstatSync(fd);
+    if (!opened.isFile() || opened.size > PRE_EDIT_FILE_LIMIT) return undefined;
+    const current = NodeFS.statSync(target);
+    if (
+      NodeFS.realpathSync.native(target) !== target ||
+      current.dev !== opened.dev ||
+      current.ino !== opened.ino
+    )
+      return undefined;
+    // Bounded even if the file grows after the size check.
+    const buffer = Buffer.alloc(PRE_EDIT_FILE_LIMIT + 1);
+    let length = 0;
+    for (let read = -1; read !== 0 && length < buffer.length; length += read)
+      read = NodeFS.readSync(fd, buffer, length, buffer.length - length, length);
+    return length > PRE_EDIT_FILE_LIMIT ? undefined : buffer.subarray(0, length);
+  } finally {
+    NodeFS.closeSync(fd);
   }
 }
 
@@ -306,6 +372,20 @@ const isParentTraversal = (relative: string) =>
 const isGitMetadata = (relative: string) =>
   relative.split(NodePath.sep).some((segment) => segment.toLowerCase() === ".git");
 
+/** The canonical path of an absolute target under the canonical `root`, outside Git metadata. */
+function workspaceTarget(target: string, root: string): string | undefined {
+  if (!target || target.includes("\0") || !NodePath.isAbsolute(target)) return undefined;
+  const canonical = canonicalTarget(target);
+  if (!canonical) return undefined;
+  const relative = NodePath.relative(root, canonical);
+  return relative === "" ||
+    isParentTraversal(relative) ||
+    NodePath.isAbsolute(relative) ||
+    isGitMetadata(relative)
+    ? undefined
+    : canonical;
+}
+
 /**
  * Auto-accept edits approves a request only when it is a recognised edit with no command
  * payload, names at least one target, and every target resolves under the canonical workspace
@@ -342,18 +422,6 @@ export function antigravityEditTargetsInWorkspace(
   if (targets.size === 0) return false;
   const root = canonicalWorkspaceRoot(workspaceRoot);
   if (!root) return false;
-  for (const target of targets) {
-    if (!target || target.includes("\0") || !NodePath.isAbsolute(target)) return false;
-    const canonical = canonicalTarget(target);
-    if (!canonical) return false;
-    const relative = NodePath.relative(root, canonical);
-    if (
-      relative === "" ||
-      isParentTraversal(relative) ||
-      NodePath.isAbsolute(relative) ||
-      isGitMetadata(relative)
-    )
-      return false;
-  }
+  for (const target of targets) if (workspaceTarget(target, root) === undefined) return false;
   return true;
 }

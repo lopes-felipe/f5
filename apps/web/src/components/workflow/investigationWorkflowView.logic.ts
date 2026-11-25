@@ -1,7 +1,9 @@
+import { type InvestigationWorkflowSummary as InvestigationWorkflow } from "@t3tools/contracts";
+import { deriveInvestigationWorkflowStatus } from "@t3tools/shared/workflowStatus";
 import {
-  deriveInvestigationWorkflowStatus,
-  type InvestigationWorkflowSummary as InvestigationWorkflow,
-} from "@t3tools/contracts";
+  investigationCrossReviews,
+  investigationInvestigators,
+} from "@t3tools/shared/workflowParticipants";
 
 export function statusLabel(workflow: InvestigationWorkflow): string {
   switch (deriveInvestigationWorkflowStatus(workflow)) {
@@ -30,48 +32,58 @@ export function statusLabel(workflow: InvestigationWorkflow): string {
   }
 }
 
+function investigatorsOf(workflow: InvestigationWorkflow) {
+  return investigationInvestigators(workflow).map(({ investigator }) => investigator);
+}
+
+function allInvestigationsCompleted(workflow: InvestigationWorkflow): boolean {
+  return investigatorsOf(workflow).every(
+    (investigator) => investigator.investigationStatus === "completed",
+  );
+}
+
+function allCrossReviewsCompleted(workflow: InvestigationWorkflow): boolean {
+  return investigationCrossReviews(workflow).every((view) => view.status === "completed");
+}
+
 export function canRetryFailedInvestigationPhase(workflow: InvestigationWorkflow): boolean {
   return (
-    workflow.investigatorA.investigationStatus === "error" ||
-    workflow.investigatorB.investigationStatus === "error" ||
-    workflow.investigatorA.crossReviewStatus === "error" ||
-    workflow.investigatorB.crossReviewStatus === "error" ||
-    workflow.investigatorA.selfReviewStatus === "error" ||
-    workflow.investigatorB.selfReviewStatus === "error" ||
+    investigatorsOf(workflow).some(
+      (investigator) =>
+        investigator.investigationStatus === "error" || investigator.selfReviewStatus === "error",
+    ) ||
+    investigationCrossReviews(workflow).some((view) => view.status === "error") ||
     workflow.synthesis.status === "error"
   );
 }
 
 export function canRetryCrossReview(workflow: InvestigationWorkflow): boolean {
   return (
-    workflow.investigatorA.investigationStatus === "completed" &&
-    workflow.investigatorB.investigationStatus === "completed" &&
-    (workflow.investigatorA.crossReviewStatus === "error" ||
-      workflow.investigatorB.crossReviewStatus === "error" ||
-      workflow.investigatorA.crossReviewStatus === "completed" ||
-      workflow.investigatorB.crossReviewStatus === "completed")
+    allInvestigationsCompleted(workflow) &&
+    investigationCrossReviews(workflow).some(
+      (view) => view.status === "error" || view.status === "completed",
+    )
   );
 }
 
 export function canRetrySelfReview(workflow: InvestigationWorkflow): boolean {
   return (
     workflow.selfReviewEnabled &&
-    workflow.investigatorA.investigationStatus === "completed" &&
-    workflow.investigatorB.investigationStatus === "completed" &&
-    (workflow.investigatorA.selfReviewStatus === "error" ||
-      workflow.investigatorB.selfReviewStatus === "error" ||
-      workflow.investigatorA.selfReviewStatus === "completed" ||
-      workflow.investigatorB.selfReviewStatus === "completed")
+    allInvestigationsCompleted(workflow) &&
+    investigatorsOf(workflow).some(
+      (investigator) =>
+        investigator.selfReviewStatus === "error" || investigator.selfReviewStatus === "completed",
+    )
   );
 }
 
 export function canRetrySynthesis(workflow: InvestigationWorkflow): boolean {
   return (
-    workflow.investigatorA.crossReviewStatus === "completed" &&
-    workflow.investigatorB.crossReviewStatus === "completed" &&
+    allCrossReviewsCompleted(workflow) &&
     (!workflow.selfReviewEnabled ||
-      (workflow.investigatorA.selfReviewStatus === "completed" &&
-        workflow.investigatorB.selfReviewStatus === "completed")) &&
+      investigatorsOf(workflow).every(
+        (investigator) => investigator.selfReviewStatus === "completed",
+      )) &&
     (workflow.synthesis.status === "error" || workflow.synthesis.status === "completed")
   );
 }

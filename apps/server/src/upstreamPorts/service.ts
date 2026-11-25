@@ -5,6 +5,12 @@
  *
  * @module upstreamPorts/service
  */
+import { WORKFLOW_REVIEW_MAX_PARTICIPANTS } from "@t3tools/contracts";
+import {
+  workflowParticipantIds,
+  workflowParticipantLabel,
+} from "@t3tools/shared/workflowParticipants";
+import { codeReviewInputReviewerSlots } from "../orchestration/workflowRecordBuilders.ts";
 import { realpath } from "node:fs/promises";
 import { hostname as osHostname, tmpdir } from "node:os";
 import path from "node:path";
@@ -162,6 +168,7 @@ import {
   AdmissionError,
   buildPortCommand,
   groupTopicIds,
+  normalizePortReviewRequest,
   portArgsHash,
   portBranchName,
   portSubmissionId,
@@ -1972,6 +1979,9 @@ export function makeUpstreamPortsService(
           review = {
             reviewerA: reviewSettings.reviewerA,
             reviewerB: reviewSettings.reviewerB,
+            ...(reviewSettings.additionalReviewers?.length
+              ? { additionalReviewers: reviewSettings.additionalReviewers }
+              : {}),
             consolidation: reviewSettings.consolidation,
           };
         }
@@ -2569,23 +2579,38 @@ export function makeUpstreamPortsService(
           templateVersion: LATEST_WORKFLOW_TEMPLATE_VERSION,
         });
         const availableProviders = yield* host.listProviders;
-        for (const slot of ["reviewerA", "reviewerB", "consolidation"] as const) {
+        const reviewers = codeReviewInputReviewerSlots(review);
+        if (reviewers.length > WORKFLOW_REVIEW_MAX_PARTICIPANTS)
+          return yield* fail(
+            "invalid",
+            `Port review supports up to ${WORKFLOW_REVIEW_MAX_PARTICIPANTS} reviewers.`,
+          );
+        const slots = [
+          ...reviewers.map((slot, index) => ({
+            name: `reviewer${workflowParticipantLabel(workflowParticipantIds(reviewers.length)[index]!)}`,
+            slot,
+            stage: "standalone-review" as const,
+          })),
+          { name: "consolidation", slot: review.consolidation, stage: "consolidation" as const },
+        ];
+        for (const { name, slot, stage } of slots) {
           yield* Effect.try({
             try: () =>
               assertWorkflowStageProviderSupported({
                 behavior,
-                stage: slot === "consolidation" ? "consolidation" : "standalone-review",
-                provider: review[slot].provider,
+                stage,
+                provider: slot.provider,
+                providers: availableProviders,
               }),
             catch: (error) =>
-              new UpstreamPortsError({ code: "invalid", message: slot + ": " + describe(error) }),
+              new UpstreamPortsError({ code: "invalid", message: name + ": " + describe(error) }),
           });
           if (
             !availableProviders.some(
-              (provider) => provider.enabled && provider.driver === review[slot].provider,
+              (provider) => provider.enabled && provider.driver === slot.provider,
             )
           )
-            return yield* fail("invalid", slot + ": Provider unavailable");
+            return yield* fail("invalid", name + ": Provider unavailable");
         }
       });
 
@@ -2607,7 +2632,7 @@ export function makeUpstreamPortsService(
             "That clientRequestId was already used with different arguments.",
           );
         if (!existing) {
-          yield* validatePortReview(input.review);
+          yield* validatePortReview(normalizePortReviewRequest(input.review));
           const snapshot = yield* currentView(context);
           const rowsById = new Map(snapshot.rows.map((row) => [row.topic.id, row]));
           for (const topicId of input.topicIds) {
@@ -2987,7 +3012,8 @@ export function makeUpstreamPortsService(
         const context = yield* resolveContext(input.projectId);
         yield* requireConfig(context);
         yield* requireWriter(context.cwd);
-        const { review, ...args } = input;
+        const { review: requestedReview, ...args } = input;
+        const review = normalizePortReviewRequest(requestedReview);
         const argsHash = canonicalJsonHash({ ...args, ...(review ? { review } : {}) });
         const replay = yield* queue.getEnqueueRequest(input.projectId, input.clientRequestId);
         if (replay) {

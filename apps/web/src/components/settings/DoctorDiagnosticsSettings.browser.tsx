@@ -15,6 +15,7 @@ vi.mock("../../lib/serverReactQuery", async (importOriginal) => {
     serverDoctorReportQueryOptions: () => ({
       queryKey: ["server-doctor-fixture"],
       queryFn: state.read,
+      enabled: false,
     }),
   };
 });
@@ -72,16 +73,20 @@ const mount = () =>
     </QueryClientProvider>,
   );
 
-it("renders doctor checks, providers, and refreshes on Run check", async () => {
+it("does not run diagnostics on mount and renders checks only after clicking Run check", async () => {
   state.read.mockResolvedValue(healthyReport);
   await mount();
+
+  // Mounting the card must never trigger an automatic server health scan.
+  expect(state.read).not.toHaveBeenCalled();
+  await expect.element(page.getByRole("button", { name: "Export support bundle" })).toBeDisabled();
+
+  await page.getByRole("button", { name: "Run check" }).click();
 
   await expect.element(page.getByText("Healthy")).toBeInTheDocument();
   await expect.element(page.getByText("SQLite integrity & schema")).toBeInTheDocument();
   await expect.element(page.getByText("Codex")).toBeInTheDocument();
-  await expect
-    .element(page.getByRole("button", { name: "Export redacted support bundle" }))
-    .toBeEnabled();
+  await expect.element(page.getByRole("button", { name: "Export support bundle" })).toBeEnabled();
 
   state.read.mockResolvedValue({
     ...healthyReport,
@@ -104,9 +109,11 @@ it("renders doctor checks, providers, and refreshes on Run check", async () => {
   await expect.element(page.getByText("Legacy T3CODE_* environment variables")).toBeInTheDocument();
 });
 
-it("shows an error state when the doctor report cannot be loaded", async () => {
+it("shows an error state when clicking Run check fails", async () => {
   state.read.mockRejectedValue(new Error("offline"));
   await mount();
+  expect(state.read).not.toHaveBeenCalled();
+  await page.getByRole("button", { name: "Run check" }).click();
   await expect
     .element(page.getByText("System health check could not be loaded."))
     .toBeInTheDocument();

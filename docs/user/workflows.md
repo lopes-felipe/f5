@@ -11,19 +11,21 @@ step and read exactly what that agent did.
 1. Click **New workflow** in the sidebar or on Home, or press `mod+shift+n`.
 2. Pick a type: **Feature**, **Code Review**, **Investigation** or **Document**.
 3. Describe the work. Attached files are added to the prompt as paths.
-4. Under **Models**, choose a provider, model and reasoning effort for each slot.
+4. Under **Models**, choose a provider, model and reasoning effort for each slot. Click **Add
+   author**, **Add reviewer** or **Add investigator** for more actors, and the remove button on a
+   row from C on to drop it.
 5. Open **Options** if needed, then click **Start workflow** (`mod+enter`).
 
 The run belongs to the project selected on Home or in the sidebar, and F5 generates its title.
 
 ## The four types
 
-| Type          | Stages                                                                                       | Slots                                     |
-| ------------- | -------------------------------------------------------------------------------------------- | ----------------------------------------- |
-| Feature       | Two competing plans, cross-reviews, revisions and a merge; implementation when you ask       | Author A, Author B, Merge                 |
-| Code Review   | Two independent reviews of a branch or PR, consolidated into one ranked report               | Reviewer A, Reviewer B, Consolidation     |
-| Investigation | Two investigations, cross-review, optional self-review, then a synthesis that answers        | Investigator A, Investigator B, Synthesis |
-| Document      | Two drafts (RFC, ADR, PRD, runbook and more), reviews, a merge and an optional reader review | Author A, Author B, Merge, Reader         |
+| Type          | Stages                                                                                             | Slots                                     |
+| ------------- | -------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| Feature       | Competing plans, cross-reviews, revisions and a merge; implementation when you ask                 | Author A, Author B, Merge                 |
+| Code Review   | Independent reviews of a branch or PR, consolidated into one ranked report                         | Reviewer A, Reviewer B, Consolidation     |
+| Investigation | Independent investigations, cross-review, optional self-review, then a synthesis                   | Investigator A, Investigator B, Synthesis |
+| Document      | Competing drafts (RFC, ADR, PRD, runbook and more), reviews, a merge and an optional reader review | Author A, Author B, Merge, Reader         |
 
 ```mermaid
 flowchart LR
@@ -38,6 +40,43 @@ flowchart LR
     M --> I[Implementer<br/>model 4]
     I -. optional .-> CR[Code review] --> AR[Apply reviews]
 ```
+
+## More than two actors
+
+Every type starts with two actors. Add more as rows in the dialog:
+
+| Type          | Actors        | Maximum |
+| ------------- | ------------- | ------- |
+| Feature       | Authors       | 4       |
+| Document      | Authors       | 4       |
+| Investigation | Investigators | 4       |
+| Code Review   | Reviewers     | 6       |
+
+- **Cross-review is a full mesh.** With more than two authors or investigators, each one reviews
+  every other one's output. Three authors with own-model review run 3 drafts, 6 cross-reviews,
+  3 own-model reviews, 3 revisions and 1 merge; four authors run 25 turns. The dialog shows the
+  count under the rows once there are three or more.
+- At most 4 review turns run at a time; the rest wait their turn and start as others finish.
+- Document authors and investigators must all use different provider and model pairs. Feature
+  authors and Code Review reviewers may repeat.
+- With more than two authors, each plan or draft gets a length limit so every one fits in the
+  merge prompt. A requirement that leaves fewer than 12,000 characters per plan is rejected; shorten
+  it or use fewer authors. A plan over its limit gets one repair turn, then the branch fails.
+- With more than two reviewers, very long reports are excerpted in the consolidation prompt, with a
+  note pointing to the full report in the reviewer's thread. A run whose reports would each get
+  fewer than 4,000 characters fails consolidation; start a smaller run.
+- With more than two investigators, a problem statement too long to leave room for every report in
+  the synthesis is rejected at creation.
+- Switching to a type with a lower maximum keeps your rows but blocks **Start** until you remove
+  some. Extra rows aren't remembered between runs; the first two are.
+- Implementation code review uses every planning model as a reviewer.
+- Antigravity (Gemini) can join only once its runtime is certified for read-only workflow turns
+  (see [Antigravity](../providers/antigravity.md#read-only-workflow-turns)). Until then its rows
+  are disabled with the reason.
+
+> [!WARNING]
+> Runs with three or more actors can't be opened by older F5 builds. An older build would read only
+> the first two actors and drop the rest on its next write, so don't downgrade while such runs exist.
 
 ## Implement a Feature plan
 
@@ -66,9 +105,9 @@ shows the template, cost and per-step context.
 > duplicate a provider turn**. Choose **Retry anyway** only if duplicate work is acceptable.
 
 - **Retry failed** reruns failed stages; on a Code Review, **Retry merge** reruns consolidation.
-- Document authors, and the two investigators, must use different provider and model pairs.
-  Feature authors may share one.
-- Muse Code can't run stages that need Plan mode or read-only turns.
+- Document authors, and investigators, must use different provider and model pairs. Feature
+  authors may share one.
+- Muse Code and Grok can't run stages that need Plan mode or read-only turns.
 - Read-only stages can look at the preview browser but can't save screenshots.
 
 <details>
