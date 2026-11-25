@@ -125,9 +125,38 @@ attempted is reported as inconclusive, not as blocked.
 | Gate | Question                                                                                                                                                            | Result                                                                                          |
 | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
 | C1   | Does Cursor stay signed in under a separate HOME?                                                                                                                   | Pass on darwin-arm64, CLI 2026.11.22-e9042b2 (2026-11-25), only with `Library/Keychains` linked |
-| C2   | With `--sandbox enabled` and plan mode, which commands send `session/request_permission`, and does a request tell sandboxed runs from out-of-sandbox ones?          | Pending                                                                                         |
-| C3   | Under `workspace_readonly` with network denied: do workspace, `.git` and outside writes fail, `curl` fail, `/tmp` writes succeed and Cursor's own fetch still work? | Pending                                                                                         |
-| C4   | Does C3 still hold in a workspace whose own `.cursor/sandbox.json` asks for no sandbox and full network?                                                            | Pending                                                                                         |
+| C2   | With `--sandbox enabled` and plan mode, which commands send `session/request_permission`, and does a request tell sandboxed runs from out-of-sandbox ones?          | Every non-allowlisted command asks, including the `npm --version` trap; no sandbox (2026-11-25) |
+| C3   | Under `workspace_readonly` with network denied: do workspace, `.git` and outside writes fail, `curl` fail, `/tmp` writes succeed and Cursor's own fetch still work? | Fail: every write landed and `curl` returned 200 (2026-11-25)                                   |
+| C4   | Does C3 still hold in a workspace whose own `.cursor/sandbox.json` asks for no sandbox and full network?                                                            | Fail, same as C3 (2026-11-25)                                                                   |
+
+**Outcome on CLI 2026.11.22-e9042b2: the ACP server has no sandbox.** The
+second run (2026-11-25) had the sandbox preset in `cli-config.json`,
+`workspace_readonly` in `sandbox.json` and `--sandbox enabled`. Every write still
+landed, and every command asked with "Shell allowlist is empty". The bundle explains
+why:
+
+- `agent acp` builds its permissions from `PermissionsAdapter` and
+  `PermissionsFileProvider` (`cursor-config/dist/permissions-adapter.js` and
+  `permissions-file-provider.js`). Both return
+  `userConfiguredPolicy: { type: "insecure_none" }` unconditionally.
+- The provider that turns `sandbox.mode`, the `--sandbox` override and ask mode
+  into `workspace_readonly` or `workspace_readwrite` is used only by the
+  interactive and `-p` paths. The `acp` command never passes `--sandbox` on.
+- So no setting enables the sandbox over ACP on this version, and
+  `CURSOR_READ_ONLY_SANDBOX_CERTIFIED_RUNTIMES` stays empty. Cursor read-only
+  stages remain policy-enforced. Re-run these gates when a Cursor release
+  changes the ACP permissions provider.
+
+**What the policy path relies on.** C2 shows that a command reaches F5 only
+when Cursor's own approval doesn't already allow it:
+
+- **Cursor runs these without asking F5:**
+  - commands on the user's `permissions.allow` list (`Shell(…)`);
+  - commands on `permissions.json` `terminalAllowlist` and team admin
+    allowlists;
+  - every command when `approvalMode` is `unrestricted`.
+- **The gate runs reached F5 every time** only because they used an empty
+  allowlist under a separate HOME.
 
 - **C1:** the CLI keeps its sign-in in the login keychain through
   `/usr/bin/security`, which looks under `$HOME/Library/Keychains`. An empty
@@ -143,7 +172,7 @@ attempted is reported as inconclusive, not as blocked.
   `curl` returned 200. So the session was in allowlist mode with no sandbox:
   `--sandbox enabled` alone didn't turn on the sandbox while the copied
   config had no `sandbox` key. The script now sets the preset and runs the
-  write gates outside plan mode.
+  write gates outside plan mode. The second run is the outcome above.
 - **C4 exists because** the CLI folds the workspace's own `.cursor/sandbox.json`
   into the per-user policy. A repository under review must not be able to
   loosen a read-only stage's sandbox.
