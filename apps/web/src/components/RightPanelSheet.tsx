@@ -1,6 +1,7 @@
-import { type CSSProperties, type ReactNode } from "react";
+import { useRef, type CSSProperties, type ReactNode } from "react";
 
 import { isElectron } from "../env";
+import { useRestoreFocusOnClose } from "../hooks/useRestoreFocusOnClose";
 import {
   RIGHT_PANEL_SHEET_CLASS_NAME,
   RIGHT_PANEL_TITLEBAR_HEIGHT_CSS_VAR,
@@ -12,6 +13,12 @@ export function RightPanelSheet(props: {
   open: boolean;
   onClose: () => void;
 }) {
+  const popupRef = useRef<HTMLDivElement>(null);
+  useRestoreFocusOnClose({
+    open: props.open,
+    containerRef: popupRef,
+  });
+
   return (
     <Sheet
       open={props.open}
@@ -22,6 +29,7 @@ export function RightPanelSheet(props: {
       }}
     >
       <SheetPopup
+        ref={popupRef}
         side="right"
         showCloseButton={false}
         keepMounted

@@ -20,6 +20,7 @@ import { AppTitlebar } from "../AppTitlebar";
 import { ProjectIcon } from "../ProjectIcon";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
 import { WorkflowBoard } from "./WorkflowBoard";
+import { WorkflowStatusAnnouncer } from "./WorkflowStatusAnnouncer";
 import { computeWorkflowRunTelemetry } from "./workflowTelemetry";
 import { WorkflowTelemetryBar } from "./WorkflowTelemetryBar";
 import { WorkflowTimelinePhaseList } from "./WorkflowTimelinePhaseList";
@@ -156,6 +157,13 @@ export function WorkflowPageLayout(props: {
       data-view={view}
       className="flex h-full min-h-0 flex-col bg-background"
     >
+      <WorkflowStatusAnnouncer
+        workflowKey={`${props.projectId}:${props.workflowType}:${props.createdAt}`}
+        title={props.title}
+        overallState={props.overallState}
+        statusLabel={props.statusLabel}
+        phases={props.phases}
+      />
       <AppTitlebar
         breadcrumb={[
           {

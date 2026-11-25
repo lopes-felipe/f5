@@ -295,7 +295,7 @@ export function ProviderSetupWizard() {
             onClick={() => refreshProvidersMutation.mutate()}
           >
             {refreshProvidersMutation.isPending ? (
-              <LoaderCircleIcon className="size-3.5 animate-spin" />
+              <LoaderCircleIcon className="size-3.5 motion-safe:animate-spin" />
             ) : (
               <RefreshCcwIcon className="size-3.5" />
             )}
@@ -361,7 +361,10 @@ export function ProviderSetupWizard() {
                   <span className="text-sm font-medium text-foreground">{option.label}</span>
                   <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-2xs font-medium text-muted-foreground">
                     {isSaving ? (
-                      <LoaderCircleIcon aria-hidden="true" className="size-3 animate-spin" />
+                      <LoaderCircleIcon
+                        aria-hidden="true"
+                        className="size-3 motion-safe:animate-spin"
+                      />
                     ) : selected ? (
                       <CheckCircle2Icon aria-hidden="true" className="size-3 text-primary" />
                     ) : null}
