@@ -1,4 +1,4 @@
-import { hashKey, QueryClientContext, type QueryClient } from "@tanstack/react-query";
+import { QueryClientContext, type QueryClient } from "@tanstack/react-query";
 import type { ServerConfig } from "@t3tools/contracts";
 import { useCallback, useContext, useSyncExternalStore } from "react";
 import { serverQueryKeys } from "./serverReactQuery";
@@ -13,7 +13,8 @@ export function remoteFileIconsAllowed(config: ServerConfig | undefined): boolea
 }
 
 const CONFIG_KEY = serverQueryKeys.config();
-const CONFIG_HASH = hashKey(CONFIG_KEY);
+const isConfigKey = (key: ReadonlyArray<unknown>) =>
+  key.length === CONFIG_KEY.length && CONFIG_KEY.every((part, index) => key[index] === part);
 
 interface IconPolicyStore {
   value: boolean;
@@ -44,7 +45,7 @@ function subscribeToIconPolicy(client: QueryClient, listener: () => void): () =>
   if (!store.unsubscribe) {
     store.value = readConfigPolicy(client);
     store.unsubscribe = client.getQueryCache().subscribe((event) => {
-      if (event.query.queryHash !== CONFIG_HASH) return;
+      if (!isConfigKey(event.query.queryKey)) return;
       const next = remoteFileIconsAllowed(event.query.state.data as ServerConfig | undefined);
       if (next === store.value) return;
       store.value = next;
