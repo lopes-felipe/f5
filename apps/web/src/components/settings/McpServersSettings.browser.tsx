@@ -527,7 +527,7 @@ describe("McpServersSettings", () => {
     }
   });
 
-  it("polls login every two seconds while pending and stops for idle and terminal statuses", async () => {
+  it("never polls login and refreshes it when completion is pushed", async () => {
     const mocks = createNativeApiMock();
     let status: McpLoginStatusResult["status"] = "idle";
     mocks.getLoginStatus.mockImplementation(async ({ provider, projectId, serverName }) => ({
@@ -574,23 +574,23 @@ describe("McpServersSettings", () => {
       expect(mocks.getLoginStatus).toHaveBeenCalledTimes(initial);
       await page.getByRole("button", { name: "Login", exact: true }).click();
       await vi.waitFor(() => expect(document.body.textContent).toContain("Logging in..."));
+      // Pending sign-in is not polled either.
       const pending = mocks.getLoginStatus.mock.calls.length;
-      await vi.waitFor(
-        () => expect(mocks.getLoginStatus.mock.calls.length).toBeGreaterThan(pending),
-        { timeout: 3_000 },
-      );
+      await interval();
+      expect(mocks.getLoginStatus.mock.calls.length).toBeLessThanOrEqual(pending + 1);
       status = "completed";
+      const listener = mocks.onStatusUpdated.mock.calls[0]![0];
+      listener({
+        provider: "codex",
+        scope: "project",
+        projectId: PROJECT_ID,
+        reason: "login-completed",
+      });
       await vi.waitFor(() => expect(document.body.textContent).not.toContain("Logging in..."), {
         timeout: 3_000,
       });
-      const completed = mocks.getLoginStatus.mock.calls.length;
-      await interval();
-      expect(mocks.getLoginStatus).toHaveBeenCalledTimes(completed);
-      status = "failed";
-      await queryClient.invalidateQueries({ queryKey: ["mcp", "loginStatus"] });
-      const failed = mocks.getLoginStatus.mock.calls.length;
-      await interval();
-      expect(mocks.getLoginStatus).toHaveBeenCalledTimes(failed);
+      // One subscription however many views use MCP status.
+      expect(mocks.onStatusUpdated).toHaveBeenCalledTimes(1);
     } finally {
       queryClient.clear();
       await screen.unmount();

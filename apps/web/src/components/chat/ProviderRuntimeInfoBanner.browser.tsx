@@ -31,7 +31,7 @@ const { getEffectiveConfig, getLoginStatus, startLogin, openExternal } = vi.hois
 }));
 vi.mock("../../nativeApi", () => ({
   ensureNativeApi: () => ({
-    mcp: { getEffectiveConfig, getLoginStatus, startLogin },
+    mcp: { getEffectiveConfig, getLoginStatus, startLogin, onStatusUpdated: () => () => {} },
     shell: { openExternal },
   }),
 }));

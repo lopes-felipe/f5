@@ -17,6 +17,7 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 import { stableMcpServersJson } from "@t3tools/shared/mcpConfig";
+import { filterEnabledMcpServers } from "@t3tools/shared/mcpTranslation";
 import {
   describeMcpInterpolationSkip,
   interpolateMcpServers,
@@ -220,7 +221,11 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
         omitted.push({ serverName: name, reason: "F5's MCP hub is unavailable in this runtime" });
       return { endpoints, omitted, credentials: [], dispose: async () => {} };
     }
-    const interpolated = interpolateMcpServers(input.servers, input.environment);
+    // Servers turned off for this provider are left out silently, like disabled ones.
+    const interpolated = interpolateMcpServers(
+      filterEnabledMcpServers(input.servers, input.provider),
+      input.environment,
+    );
     for (const skip of interpolated.skipped)
       if (!input.reservedNames?.has(skip.name))
         omitted.push({ serverName: skip.name, reason: describeMcpInterpolationSkip(skip) });

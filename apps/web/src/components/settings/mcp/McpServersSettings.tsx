@@ -5,7 +5,7 @@ import { onServerWelcome } from "../../../wsNativeApi";
 import { useWsConnectionState } from "../../../wsConnectionState";
 import { useThreadSummaries } from "../../../threadSelectors";
 import { McpObservedGroup } from "./McpObservedGroup";
-import { isMcpQueryAffected } from "../../../lib/mcpReactQuery";
+import { useMcpStatusUpdates } from "../../../lib/useMcpStatusUpdates";
 import { useProfileState } from "../../../profileState";
 import {
   type McpConfigScope,
@@ -278,15 +278,7 @@ export function McpServersSettings(props: {
     return new Map(Object.entries(projectConfigQuery.data?.servers ?? EMPTY_PROJECT_SERVERS));
   }, [projectConfigQuery.data, selectedProjectId, selectedScope]);
 
-  useEffect(
-    () =>
-      ensureNativeApi().mcp.onStatusUpdated((event) => {
-        void queryClient.invalidateQueries({
-          predicate: (query) => isMcpQueryAffected(query.queryKey, event),
-        });
-      }),
-    [queryClient],
-  );
+  useMcpStatusUpdates();
   useEffect(
     () =>
       onServerWelcome(() => {

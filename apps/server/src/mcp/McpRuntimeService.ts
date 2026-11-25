@@ -79,6 +79,8 @@ import { toCodexProviderStartOptions } from "../provider/codexProviderOptions.ts
 import { buildCodexCliEnvOverrides, runCodexCliCommand } from "../provider/providerCli.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
 import {
+  filterEnabledMcpServers,
+  isMcpServerServedTo,
   readCodexMcpOAuthCallbackConfig,
   translateMcpForCodex,
 } from "@t3tools/shared/mcpTranslation";
@@ -394,7 +396,18 @@ const makeMcpRuntimeService = Effect.gen(function* () {
   const setLoginStatus = (input: McpGetLoginStatusRequest, status: McpLoginStatusResult) => {
     const key = loginStatusKey(input);
     clearLoginStatusTimer(key);
+    const previous = loginStatuses.get(key);
     loginStatuses.set(key, status);
+    // Settings no longer poll sign-in, so a failed attempt is announced like a completed
+    // one (completions publish where they finish, with the applied config version).
+    if (status.status === "failed" && previous?.status === "pending")
+      Effect.runFork(
+        publishLoginCompletion({
+          provider: input.provider,
+          projectId: input.projectId,
+          ...(input.instanceId ? { instanceId: input.instanceId } : {}),
+        }),
+      );
     if (status.status !== "pending") {
       loginStatusTimers.set(
         key,
@@ -580,11 +593,7 @@ const makeMcpRuntimeService = Effect.gen(function* () {
           observation = {
             servers: observeCodexMcpServers(
               pages.entries,
-              new Set(
-                Object.keys(effective.servers).filter(
-                  (name) => effective.servers[name]?.enabled !== false,
-                ),
-              ),
+              new Set(Object.keys(filterEnabledMcpServers(effective.servers, "codex"))),
             ),
             complete: pages.complete,
             capabilities: { tools: true, inputSchemas: true, resources: true },
@@ -993,10 +1002,17 @@ const makeMcpRuntimeService = Effect.gen(function* () {
           Effect.mapError(runtimeError),
           Effect.tapError(() => release),
         );
-      if (effective.servers[input.serverName]?.enabled === false) {
+      const effectiveServer = effective.servers[input.serverName];
+      if (effectiveServer?.enabled === false) {
         yield* release;
         return yield* new McpRuntimeServiceError({
           message: `MCP server '${input.serverName}' is disabled in the shared effective config.`,
+        });
+      }
+      if (effectiveServer && !isMcpServerServedTo(effectiveServer, "claudeAgent")) {
+        yield* release;
+        return yield* new McpRuntimeServiceError({
+          message: `MCP server '${input.serverName}' is turned off for Claude in MCP settings.`,
         });
       }
       const started = yield* providerService
@@ -1170,6 +1186,11 @@ const makeMcpRuntimeService = Effect.gen(function* () {
       if (server.enabled === false) {
         return yield* new McpRuntimeServiceError({
           message: `MCP server '${input.serverName}' is disabled in the shared effective config.`,
+        });
+      }
+      if (!isMcpServerServedTo(server, "codex")) {
+        return yield* new McpRuntimeServiceError({
+          message: `MCP server '${input.serverName}' is turned off for Codex in MCP settings.`,
         });
       }
 

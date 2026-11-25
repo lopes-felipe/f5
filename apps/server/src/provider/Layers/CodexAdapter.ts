@@ -2918,7 +2918,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         yield* Effect.try({
           try: () =>
             assertMcpServerLimit(
-              filterEnabledMcpServers(providerMcpServers),
+              filterEnabledMcpServers(providerMcpServers, "codex"),
               MCP_RUNTIME_SERVER_LIMIT,
             ),
           catch: (cause) =>
@@ -3406,7 +3406,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           catch: (cause) => toRequestError(threadId, "config/mcpServer/reload", cause),
         });
         return summarizeMcpReload({
-          desired: Object.keys(filterEnabledMcpServers(mcpServers)),
+          desired: Object.keys(filterEnabledMcpServers(mcpServers, "codex")),
           observed:
             statuses === undefined
               ? undefined
@@ -3415,7 +3415,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                     const decoded = decodeCodexMcpServerStatus(status);
                     return decoded ? [decoded] : [];
                   }),
-                  new Set(Object.keys(filterEnabledMcpServers(mcpServers))),
+                  new Set(Object.keys(filterEnabledMcpServers(mcpServers, "codex"))),
                   builtInMcpServerNames(threadId),
                 ),
           sameName: codexServerNamesMatch,

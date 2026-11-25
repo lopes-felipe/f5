@@ -30,7 +30,11 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock("../../nativeApi", () => {
   const api = {
-    mcp: { startLogin: mocks.startLogin, getLoginStatus: mocks.getLoginStatus },
+    mcp: {
+      startLogin: mocks.startLogin,
+      getLoginStatus: mocks.getLoginStatus,
+      onStatusUpdated: () => () => {},
+    },
     shell: { openExternal: mocks.openExternal },
     nativeOperations: { list: async () => [] },
     agents: { getSnapshot: async () => ({ entries: [] }) },

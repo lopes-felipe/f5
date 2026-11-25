@@ -201,6 +201,12 @@ describe("F5 MCP hub", () => {
     const servers: McpProjectServersConfig = {
       remote: { type: "http", url: "http://127.0.0.1:9/mcp" },
       off: { type: "http", url: "http://127.0.0.1:9/off", enabled: false },
+      // Turned off for this provider: left out silently, even with an unset variable.
+      notForGrok: {
+        type: "http",
+        url: "http://127.0.0.1:9/${env:UNSET_FOR_GROK}",
+        disabledProviders: ["grok"],
+      },
       f5_thread: { type: "http", url: "http://127.0.0.1:9/thread" },
     };
     const first = await attach(servers, "thread-a", ["f5_thread"]);

@@ -118,9 +118,36 @@ it("does not share inspector reads across two threads on generation one", () => 
   const first = mcpInspectServerQueryOptions({ ...base, threadId: ThreadId.make("one") });
   const second = mcpInspectServerQueryOptions({ ...base, threadId: ThreadId.make("two") });
   expect(first.queryKey).not.toEqual(second.queryKey);
-  expect(first.queryKey).toEqual(
-    expect.arrayContaining(["conversation", "execution", "one", 1, "saved", "applied"]),
-  );
+  expect(first.queryKey).toEqual([
+    "mcp",
+    "inspectServer",
+    {
+      provider: "codex",
+      projectId: "project",
+      instanceId: "work",
+      serverName: "docs",
+      threadId: "one",
+    },
+    {
+      source: "conversation",
+      fingerprint: "execution",
+      generation: 1,
+      desiredVersion: "saved",
+      appliedVersion: "applied",
+      ownership: "managed",
+    },
+  ]);
+  // Account events reach the inspector through the named scope.
+  const event = {
+    scope: "project" as const,
+    projectId: ProjectId.make("project"),
+    instanceId: ProviderInstanceId.make("work"),
+    reason: "runtime" as const,
+  };
+  expect(isMcpQueryAffected(first.queryKey, event)).toBe(true);
+  expect(
+    isMcpQueryAffected(first.queryKey, { ...event, instanceId: ProviderInstanceId.make("other") }),
+  ).toBe(false);
 });
 it("stops startup polling after thirty seconds and while WebSocket is disconnected", async () => {
   const { noteWsConnectionOpened } = await import("../wsConnectionState");
