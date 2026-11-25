@@ -1174,6 +1174,61 @@ describe("query-connected usage dashboard", () => {
     },
   );
 
+  it("says when the glance shows last-known limits after a sign-in expired", async () => {
+    const fetchedAt = new Date(Date.now() - 60 * 60_000).toISOString();
+    api.getSummary.mockResolvedValue(summary());
+    api.getAccounts.mockResolvedValue([
+      {
+        key: "antigravity:expired",
+        provider: "antigravity",
+        providerInstanceId: null,
+        displayName: "Antigravity",
+        enabled: true,
+        refreshState: "idle",
+        sections: [
+          {
+            kind: "provider-limits",
+            outcome: "unavailable",
+            errorCode: "credentials-expired",
+            accountFingerprint: "account-a",
+            lastAttemptAt: new Date().toISOString(),
+            snapshot: {
+              fetchedAt,
+              data: {
+                accountFingerprint: "account-a",
+                windows: [
+                  {
+                    id: "gemini-weekly",
+                    label: "Gemini · Weekly",
+                    usedPercent: 40,
+                    resetsAt: new Date(Date.now() + 86_400_000).toISOString(),
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    ]);
+    const queryClient = client();
+    const screen = await renderDashboard(queryClient);
+    try {
+      const tile = page
+        .getByRole("region", { name: "Limits at a glance" })
+        .getByTestId("limits-glance-tile")
+        .first();
+      await expect.element(tile).toHaveTextContent(/60%\s*left/);
+      await expect
+        .element(tile)
+        .toHaveTextContent(
+          "Antigravity's saved sign-in has expired. Start an Antigravity turn to renew it.",
+        );
+    } finally {
+      await screen.unmount();
+      queryClient.clear();
+    }
+  });
+
   it("shows an unsupported message for a project filter on an older server", async () => {
     api.getSummary.mockResolvedValue(summary({ projectScope: null }));
     api.getAccounts.mockResolvedValue(accounts());
@@ -1617,6 +1672,7 @@ describe("limits", () => {
     ["disabled", "Claude is disabled in provider settings."],
     ["unsupported", "This installed Claude version does not expose account usage and rate limits."],
     ["unavailable", "The account usage request timed out."],
+    ["credentials-expired", "Claude's saved sign-in has expired. Start a Claude turn to renew it."],
     ["no-limits", "Plan limits aren't reported for this Claude session."],
   ] as const)("confines the %s state to its Claude card", async (state, message) => {
     const fetchedAt = "2026-09-05T00:00:00Z";
@@ -1633,13 +1689,18 @@ describe("limits", () => {
           outcome:
             state === "unsupported"
               ? "unsupported"
-              : state === "unavailable"
+              : state === "unavailable" || state === "credentials-expired"
                 ? "unavailable"
                 : "available",
           lastAttemptAt: fetchedAt,
-          errorCode: state === "unavailable" ? "timeout" : null,
+          errorCode:
+            state === "unavailable"
+              ? "timeout"
+              : state === "credentials-expired"
+                ? "credentials-expired"
+                : null,
           snapshot:
-            state === "no-limits" || state === "unavailable"
+            state === "no-limits" || state === "unavailable" || state === "credentials-expired"
               ? {
                   fetchedAt,
                   data: {
@@ -1664,10 +1725,14 @@ describe("limits", () => {
     );
     try {
       await expect
-        .element(page.getByText(message, { exact: state !== "unavailable" }))
+        .element(
+          page.getByText(message, {
+            exact: state !== "unavailable" && state !== "credentials-expired",
+          }),
+        )
         .toBeVisible();
       await expect.element(page.getByRole("heading", { name: "Usage over time" })).toBeVisible();
-      if (state === "unavailable")
+      if (state === "unavailable" || state === "credentials-expired")
         await expect.element(page.getByText(/Showing data from/)).toBeVisible();
     } finally {
       await screen.unmount();

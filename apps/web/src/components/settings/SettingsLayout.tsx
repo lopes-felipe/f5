@@ -1,4 +1,5 @@
 import { SETTINGS_CATEGORY_ICONS } from "./settingsCategoryIcons";
+import { useServerCapability } from "../../protocolState";
 import { SearchIcon, XIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
@@ -162,12 +163,16 @@ export function SettingsLayout({
   const searchContainerRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const reducedMotion = useReducedMotion();
+  const composerRedesign = useServerCapability("composer-redesign");
   const scope: SettingsScope = projectId ? "project" : "global";
   const categoryGroups = settingsCategoryGroupsForScope(scope);
   const scopeCategories = settingsCategoriesForScope(scope);
   const searchResults = useMemo(
-    () => filterSettingsItems(searchQuery, { scope }),
-    [searchQuery, scope],
+    () =>
+      filterSettingsItems(searchQuery, { scope }).filter(
+        (item) => composerRedesign || item.id !== "conversation.composer-collapse",
+      ),
+    [searchQuery, composerRedesign, scope],
   );
   const isSearching = searchQuery.trim().length > 0;
 
