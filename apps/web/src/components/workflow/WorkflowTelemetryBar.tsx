@@ -1,21 +1,32 @@
-import { ActivityIcon, ClockIcon, CoinsIcon, FlameIcon, GaugeIcon } from "lucide-react";
+import { ActivityIcon, ClockIcon, FlameIcon, GaugeIcon } from "lucide-react";
 
-import { formatUsd } from "../../lib/formatUsd";
-import { formatCompactTokenCount, type WorkflowRunTelemetry } from "./workflowTelemetry";
+import { useNowIso } from "../../lib/nowTicker";
+import { formatElapsed } from "../../session-logic";
+import { formatCompactTokens } from "../chat/composer/contextMeter.logic";
+import type { WorkflowRunTelemetry } from "./workflowTelemetry";
 
-export function WorkflowTelemetryBar(props: {
-  readonly telemetry: WorkflowRunTelemetry;
-  readonly totalCostUsd?: number | null | undefined;
-}) {
+function LiveRunElapsed(props: { readonly startIso: string }) {
+  const nowIso = useNowIso(true);
+  const label = formatElapsed(props.startIso, nowIso);
+  if (!label) return null;
+  return (
+    <span
+      data-slot="workflow-telemetry-elapsed"
+      className="inline-flex items-center gap-1 tabular-nums"
+    >
+      <ClockIcon aria-hidden="true" className="size-3.5" />
+      <span>Elapsed {label}</span>
+    </span>
+  );
+}
+
+export function WorkflowTelemetryBar(props: { readonly telemetry: WorkflowRunTelemetry }) {
   const { telemetry } = props;
   if (telemetry.totalSteps === 0) {
     return null;
   }
 
-  const costLabel =
-    props.totalCostUsd !== null && props.totalCostUsd !== undefined && props.totalCostUsd > 0
-      ? formatUsd(props.totalCostUsd)
-      : null;
+  const threadLabel = telemetry.contextThreadCount === 1 ? "thread" : "threads";
 
   return (
     <section
@@ -39,7 +50,9 @@ export function WorkflowTelemetryBar(props: {
         ) : null}
       </span>
 
-      {telemetry.totalElapsedLabel ? (
+      {telemetry.isRunLive ? (
+        <LiveRunElapsed startIso={telemetry.runStartIso} />
+      ) : telemetry.totalElapsedLabel ? (
         <span
           data-slot="workflow-telemetry-elapsed"
           className="inline-flex items-center gap-1 tabular-nums"
@@ -55,17 +68,10 @@ export function WorkflowTelemetryBar(props: {
           className="inline-flex items-center gap-1 tabular-nums"
         >
           <GaugeIcon aria-hidden="true" className="size-3.5" />
-          <span>~{formatCompactTokenCount(telemetry.totalContextTokens)} context</span>
-        </span>
-      ) : null}
-
-      {costLabel ? (
-        <span
-          data-slot="workflow-telemetry-cost"
-          className="inline-flex items-center gap-1 tabular-nums"
-        >
-          <CoinsIcon aria-hidden="true" className="size-3.5" />
-          <span>{costLabel}</span>
+          <span>
+            ~{formatCompactTokens(telemetry.totalContextTokens)} context in use across{" "}
+            {telemetry.contextThreadCount} {threadLabel}
+          </span>
         </span>
       ) : null}
 
