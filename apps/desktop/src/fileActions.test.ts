@@ -34,6 +34,7 @@ async function fixture() {
     openExternal: vi.fn(async (_url: string) => {}),
     revealFile: vi.fn(async (_path: string) => {}),
     startDrag: vi.fn(async (_event: IpcMainInvokeEvent, _path: string) => true),
+    canStartDrag: vi.fn(() => true),
   };
   const authority = registerDesktopFileActions(ipc, actions);
   return {
@@ -74,6 +75,8 @@ it("starts a native drag only with a trusted gesture and an existing local path"
   const f = await fixture();
   expect(await f.invoke("desktop:start-file-drag", f.file, false)).toBe(false);
   expect(await f.invoke("desktop:start-file-drag", f.file + ".missing")).toBe(false);
+  f.actions.canStartDrag.mockReturnValueOnce(false);
+  expect(await f.invoke("desktop:start-file-drag", f.file)).toBe(false);
   expect(f.actions.startDrag).not.toHaveBeenCalled();
   expect(await f.invoke("desktop:start-file-drag", f.file)).toBe(true);
   expect(f.actions.startDrag).toHaveBeenCalledWith(expect.anything(), f.canonical);

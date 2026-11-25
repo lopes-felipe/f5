@@ -58,6 +58,7 @@ export function registerDesktopFileActions(
     openExternal: (url: string) => Promise<void>;
     revealFile: (filePath: string) => Promise<void>;
     startDrag?: (event: IpcMainInvokeEvent, path: string) => Promise<boolean>;
+    canStartDrag?: (event: IpcMainInvokeEvent) => boolean;
   },
 ): {
   nativeMenuSelected: (owner: number, target: string, action?: "editor" | "reveal") => void;
@@ -67,7 +68,8 @@ export function registerDesktopFileActions(
   ipc.removeHandler("desktop:start-file-drag");
   ipc.handle("desktop:start-file-drag", async (event, raw: unknown, trusted: unknown) => {
     actions.assertCaller(event);
-    if (trusted !== true || !actions.startDrag) return false;
+    if (trusted !== true || !actions.startDrag || actions.canStartDrag?.(event) === false)
+      return false;
     try {
       const target = await resolveLocalTarget(raw, false);
       return await actions.startDrag(event, target.absolutePath);

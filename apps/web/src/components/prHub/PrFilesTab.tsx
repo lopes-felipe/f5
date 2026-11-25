@@ -287,6 +287,7 @@ export function PrFilesTab({ pr, active }: { pr: TrackedPullRequest; active: boo
                 <Suspense fallback={<p className="p-3 text-sm">Loading diff?</p>}>
                   <LazyPrFileDiff
                     key={selectionScope}
+                    forgeLabel={pr.provider === "github" ? "GitHub" : "forge"}
                     file={file}
                     loadDiff={
                       pr.provider === "github" && liveComparison

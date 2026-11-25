@@ -242,11 +242,15 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     ipcRenderer.invoke(CONTEXT_MENU_CHANNEL, items, position, fileAction),
   readClipboardText: (source) => ipcRenderer.invoke(READ_CLIPBOARD_TEXT_CHANNEL, source),
   copyImage: (pngBytes, snapshot) => ipcRenderer.invoke(COPY_IMAGE_CHANNEL, pngBytes, snapshot),
-  startFileDrag: (path) => {
-    const trusted = performance.now() - fileDragGestureAt < 1000;
-    fileDragGestureAt = -Infinity;
-    return ipcRenderer.invoke("desktop:start-file-drag", path, trusted);
-  },
+  ...(argument("f5-profile-environment") === "host" && process.platform === "darwin"
+    ? {
+        startFileDrag: (path: string) => {
+          const trusted = performance.now() - fileDragGestureAt < 1000;
+          fileDragGestureAt = -Infinity;
+          return ipcRenderer.invoke("desktop:start-file-drag", path, trusted);
+        },
+      }
+    : {}),
   downloadImage: (bytes, filename) => ipcRenderer.invoke(DOWNLOAD_IMAGE_CHANNEL, bytes, filename),
   openExternal: (url: string) => ipcRenderer.invoke(OPEN_EXTERNAL_CHANNEL, url),
   prepareEditorOpen: (targetPath?: string) =>

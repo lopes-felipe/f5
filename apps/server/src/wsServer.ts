@@ -2388,7 +2388,11 @@ export const createServer = Effect.fn(function* (
             req.method === "GET" && settings?.environmentThemes.some((theme) => theme.id === id)
               ? yield* Effect.promise(() =>
                   themeBackgrounds
-                    .read(id, url.searchParams.get("signature") ?? "")
+                    .read(
+                      id,
+                      url.searchParams.get("signature") ?? "",
+                      url.searchParams.get("revision") ?? "",
+                    )
                     .catch(() => null),
                 )
               : null;
@@ -3258,13 +3262,34 @@ export const createServer = Effect.fn(function* (
           issues: keybindingsConfig.issues,
           providers,
           settings: redactServerSettingsForClient(settings),
-          ...(settings.environmentThemes.length
-            ? { themeBackgrounds: themeBackgrounds.paths(settings) }
-            : {}),
         }),
       ),
     ),
   ).pipe(Effect.forkIn(subscriptionsScope));
+  const publishWallpaperChange = Effect.gen(function* () {
+    const settings = yield* serverSettings.getSettings;
+    if (!settings.environmentThemes.length) return;
+    yield* pushBus.publishAll(WS_CHANNELS.serverConfigUpdated, {
+      source: "settings",
+      issues: (yield* keybindingsManager.loadConfigState).issues,
+      providers: yield* providerAdvisoryProjection.getProviders,
+      themeBackgrounds: yield* Effect.promise(() => themeBackgrounds.paths(settings)),
+    });
+  }).pipe(
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Could not notify clients of theme wallpaper change", cause),
+    ),
+  );
+  yield* Effect.acquireRelease(
+    Effect.promise(() =>
+      themeBackgrounds
+        .watch(() => {
+          Effect.runFork(publishWallpaperChange);
+        })
+        .catch(() => () => {}),
+    ),
+    (stop) => Effect.sync(stop),
+  );
   yield* Stream.runForEach(providerAdvisoryProjection.streamChanges, (providers) =>
     Effect.all({
       keybindingsConfig: keybindingsManager.loadConfigState,
@@ -7166,7 +7191,7 @@ export const createServer = Effect.fn(function* (
           ),
           cursorSdkHarness: cursorSdkHarnessHostAvailability(serverConfig),
           ...(settings.environmentThemes.length
-            ? { themeBackgrounds: themeBackgrounds.paths(settings) }
+            ? { themeBackgrounds: yield* Effect.promise(() => themeBackgrounds.paths(settings)) }
             : {}),
         };
 

@@ -3953,6 +3953,8 @@ function registerIpcHandlers(): void {
     assertCaller: assertFileCaller,
     ...(process.platform === "darwin"
       ? {
+          canStartDrag: (event: Electron.IpcMainInvokeEvent) =>
+            (runtimeForRenderer(event.sender.id).profile.executionEnvironment ?? "host") === "host",
           startDrag: async (event: Electron.IpcMainInvokeEvent, path: string) => {
             const window = BrowserWindow.fromWebContents(event.sender);
             if (
@@ -4672,6 +4674,7 @@ function createWindow(
       ...(partition ? { partition } : {}),
       additionalArguments: [
         ...profileWindowArguments(runtime.profile.id),
+        `--f5-profile-environment=${runtime.profile.executionEnvironment ?? "host"}`,
         `--f5-system-locale=${systemLocale(app.getSystemLocale(), process.platform, process.env, (key) => systemPreferences.getUserDefault(key, "boolean"))}`,
       ],
       preload: Path.join(__dirname, "preload.js"),

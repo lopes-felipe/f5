@@ -440,7 +440,7 @@ export function parseCustomThemeLibrary(
     if (themes.length >= maximum) {
       issues.push({
         index,
-        message: `Only the first ${MAX_CUSTOM_THEMES} valid themes are active.`,
+        message: `Only the first ${maximum} valid themes are active.`,
       });
       continue;
     }

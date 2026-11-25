@@ -21,12 +21,14 @@ export function PrFileDiff({
   url,
   onComment,
   loadDiff,
+  forgeLabel = "GitHub",
 }: {
   file: PrHubChangedFile;
   scope: string;
   url: string;
   onComment?: ((anchor: PrReviewAnchor) => void) | undefined;
   loadDiff?: (() => Promise<PrHubChangedFile>) | undefined;
+  forgeLabel?: string;
 }) {
   const [loadedPatch, setLoadedPatch] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -41,6 +43,11 @@ export function PrFileDiff({
   const { settings } = useAppSettings();
   const { resolvedTheme } = useTheme();
   const pureRename = isPurePrFileRename(file);
+  const missingDiff =
+    (file.patchStatus === "truncated" || !file.patch) &&
+    file.patchStatus !== "available" &&
+    !pureRename &&
+    file.additions + file.deletions > 0;
   const displayPatch = useMemo(
     () =>
       file.patch && settings.diffIgnoreWhitespace && !pureRename
@@ -61,10 +68,10 @@ export function PrFileDiff({
   if ((file.patchStatus !== "available" && !pureRename) || !patch || patch.kind !== "files") {
     return (
       <p className="p-3 text-sm text-muted-foreground">
-        {file.additions + file.deletions > 0
+        {missingDiff
           ? "Diff too large to display."
           : "A renderable text patch is unavailable for this file."}{" "}
-        {loadDiff && !loadedPatch && file.additions + file.deletions > 0 ? (
+        {loadDiff && missingDiff ? (
           <Button
             size="sm"
             variant="outline"
@@ -84,7 +91,7 @@ export function PrFileDiff({
           </Button>
         ) : null}{" "}
         <OpenLinkAnchor href={url} target="_blank" rel="noreferrer" className="underline">
-          Open on forge
+          Open on {forgeLabel}
         </OpenLinkAnchor>
         {loadError ? (
           <span className="block text-destructive" role="alert">

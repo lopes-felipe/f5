@@ -482,7 +482,10 @@ export function makeGitHubApi(
               new GitHubCliError({
                 operation: "request",
                 kind: result.timedOut ? "timeout" : "invalid_json",
-                detail: "GitHub response was interrupted or truncated.",
+                detail:
+                  result.stdoutTruncated && input.accept === "application/vnd.github.diff"
+                    ? "This pull request's complete diff exceeds F5's download limit. Open the diff on GitHub."
+                    : "GitHub response was interrupted or truncated.",
               }),
             );
           }

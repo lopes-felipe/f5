@@ -621,6 +621,7 @@ export const EnvironmentThemeDefinition = Schema.Struct({
 });
 export type EnvironmentThemeDefinition = typeof EnvironmentThemeDefinition.Type;
 export const EnvironmentThemeSetInput = Schema.Struct({
+  remove: Schema.optionalKey(Schema.Boolean),
   theme: Schema.optionalKey(EnvironmentThemeDefinition),
   themeId: Schema.optionalKey(PublishedThemeId),
   appearance: Schema.optionalKey(EnvironmentAppearanceMode),

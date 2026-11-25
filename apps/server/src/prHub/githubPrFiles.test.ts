@@ -70,11 +70,13 @@ function load(
   cursor?: string,
   account = "account",
   reviewedHeadOid?: string,
+  fallback?: Pick<Parameters<typeof fetchGitHubPrFiles>[0], "fullDiffFile" | "requestDiff">,
 ) {
   const calls: string[] = [];
   return {
     calls,
     effect: fetchGitHubPrFiles({
+      ...fallback,
       account,
       ...(reviewedHeadOid ? { reviewedHeadOid } : {}),
       key: "pr",
@@ -92,6 +94,32 @@ function load(
   };
 }
 const compare = response({ merge_base_commit: { sha: "merge-base" } });
+
+it.effect("loads a withheld file patch against the displayed comparison", () =>
+  Effect.gen(function* () {
+    const first = yield* load([response(pull), compare, response([file]), response(pull)]).effect;
+    const raw = normalizeGitHubFile(file).patch!;
+    const calls: string[] = [];
+    const fetched = yield* load(
+      [response(pull), compare, response(pull)],
+      undefined,
+      "account",
+      undefined,
+      {
+        fullDiffFile: { comparison: first.comparison!, path: file.filename },
+        requestDiff: (endpoint) => {
+          calls.push(endpoint);
+          return Effect.succeed(response(raw));
+        },
+      },
+    ).effect;
+    assert.deepStrictEqual(calls, ["repos/org/repo/pulls/1"]);
+    assert.deepStrictEqual(
+      fetched.files.map(({ path, patchStatus }) => [path, patchStatus]),
+      [[file.filename, "available"]],
+    );
+  }),
+);
 
 it.effect("pins paginated files to the account and full comparison", () =>
   Effect.gen(function* () {

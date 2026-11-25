@@ -1,6 +1,6 @@
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { constants } from "node:fs";
-import { lstat, open, realpath } from "node:fs/promises";
+import { constants, watch } from "node:fs";
+import { lstat, mkdir, open, realpath } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { ServerSettings } from "@t3tools/contracts/settings";
 import { ServerSettingsPatch } from "@t3tools/contracts/settings";
@@ -22,7 +22,7 @@ const extensions = ["webp", "png", "jpg", "jpeg"] as const;
 
 export const makeEnvironmentThemeTools = Effect.fn(function* (
   directory: string,
-  settings: ServerSettingsService["Service"],
+  settings: Pick<ServerSettingsService["Service"], "getSettings" | "updateSettingsWith">,
 ) {
   const services = yield* Effect.services<FileSystem.FileSystem | Path.Path>();
   const fs = yield* FileSystem.FileSystem;
@@ -43,10 +43,14 @@ export const makeEnvironmentThemeTools = Effect.fn(function* (
             "Place <id>.webp, <id>.png, or <id>.jpg beside the published theme JSON. Use background-image: var(--theme-background-image) in the theme CSS.",
         };
       }
-      const { appearance, theme: input } = request.input;
+      const { appearance, remove, theme: input } = request.input;
       const id = request.input.themeId ?? input?.id;
       const theme = input ? { ...input, name: input.name.trim() } : undefined;
       const builtin = id ? (BUILTIN_THEME_IDS as readonly string[]).includes(id) : false;
+      if (remove && (!id || builtin || theme || appearance))
+        return yield* new ThreadToolError({
+          message: "Removal requires only the id of a published theme.",
+        });
       if ((!id && !appearance) || (theme && (theme.id !== id || builtin)))
         return yield* new ThreadToolError({
           message: "Supply an appearance, theme id, or theme definition with a matching custom id.",
@@ -83,6 +87,14 @@ export const makeEnvironmentThemeTools = Effect.fn(function* (
           refusal = "The requested theme has not been published.";
           return undefined;
         }
+        if (remove) {
+          const { theme: selected, ...selection } = current.environmentThemeSelection;
+          return {
+            environmentThemes: current.environmentThemes.filter((entry) => entry.id !== id),
+            environmentThemeSelection:
+              selected?.value === id ? selection : current.environmentThemeSelection,
+          };
+        }
         const patch = {
           ...(theme
             ? {
@@ -111,7 +123,7 @@ export const makeEnvironmentThemeTools = Effect.fn(function* (
           filePath: path.join(directory, theme.id + ".json"),
           contents: JSON.stringify(theme, null, 2),
         }).pipe(Effect.ignore);
-      return { themeId: id, appearance, directory, published: !!theme };
+      return { themeId: id, appearance, directory, published: !!theme, removed: !!remove };
     }).pipe(
       Effect.provideServices(services),
       Effect.mapError(keepThreadToolError("The environment theme could not be published.")),
@@ -121,36 +133,85 @@ export const makeEnvironmentThemeTools = Effect.fn(function* (
 
 export function makeEnvironmentThemeBackgrounds(directory: string) {
   const key = randomBytes(32);
-  const sign = (id: string) => createHmac("sha256", key).update(id).digest("hex");
+  const sign = (id: string, revision: string) =>
+    createHmac("sha256", key)
+      .update(id + ":" + revision)
+      .digest("hex");
+  const canonicalDirectory = async () => {
+    const parent = await realpath(dirname(directory)).catch(() => null);
+    if (!parent) return null;
+    const target = join(parent, basename(directory));
+    return (await lstat(target).catch(() => null))?.isDirectory() ? target : null;
+  };
+  const fileRevision = async (target: string) => {
+    const stat = await lstat(target, { bigint: true }).catch(() => null);
+    return stat?.isFile() && stat.size > 0 && stat.size <= MAX_BACKGROUND_BYTES
+      ? [stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join("-")
+      : null;
+  };
   return {
-    paths(settings: ServerSettings): Record<string, string> {
-      return Object.fromEntries(
-        settings.environmentThemes.map(({ id }) => [
-          id,
-          `${THEME_BACKGROUND_ROUTE}${id}?signature=${sign(id)}`,
-        ]),
-      );
+    async watch(onChange: () => void) {
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      const target = await canonicalDirectory();
+      if (!target) return () => {};
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const watcher = watch(target, { persistent: false }, (_event, file) => {
+        if (file && !/\.(webp|png|jpe?g)$/i.test(file)) return;
+        clearTimeout(timer);
+        timer = setTimeout(onChange, 150);
+      });
+      watcher.on("error", () => watcher.close());
+      return () => {
+        clearTimeout(timer);
+        watcher.close();
+      };
     },
-    async read(id: string, signature: string) {
+    async paths(settings: ServerSettings): Promise<Record<string, string>> {
+      if (!settings.environmentThemes.length) return {};
+      const target = await canonicalDirectory();
+      if (!target) return {};
+      const entries = await Promise.all(
+        settings.environmentThemes.map(async ({ id }) => {
+          for (const extension of extensions) {
+            const revision = await fileRevision(join(target, `${id}.${extension}`));
+            if (revision) {
+              const version = extension + "-" + revision;
+              return [
+                [
+                  id,
+                  `${THEME_BACKGROUND_ROUTE}${id}?revision=${version}&signature=${sign(id, version)}`,
+                ] as const,
+              ];
+            }
+          }
+          return [];
+        }),
+      );
+      return Object.fromEntries(entries.flat());
+    },
+    async read(id: string, signature: string, revision: string) {
       if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(id) || !/^[0-9a-f]{64}$/.test(signature)) return null;
-      if (!timingSafeEqual(Buffer.from(sign(id)), Buffer.from(signature))) return null;
-      // Only flat, regular raster files in the environment theme directory.
-      const parent = await realpath(dirname(directory)).catch(() => null);
-      if (!parent) return null;
-      const canonicalDirectory = join(parent, basename(directory));
-      if (!(await lstat(canonicalDirectory).catch(() => null))?.isDirectory()) return null;
+      if (!timingSafeEqual(Buffer.from(sign(id, revision)), Buffer.from(signature))) return null;
+      const directory = await canonicalDirectory();
+      if (!directory) return null;
       for (const extension of extensions) {
-        const target = join(canonicalDirectory, `${id}.${extension}`);
-        if (!(await lstat(target).catch(() => null))?.isFile()) continue;
+        if (!revision.startsWith(extension + "-")) continue;
+        const target = join(directory, `${id}.${extension}`);
+        if (extension + "-" + (await fileRevision(target)) !== revision) continue;
         const file = await open(
           target,
           constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
         ).catch(() => null);
         if (!file) continue;
         try {
-          const stat = await file.stat();
+          const stat = await file.stat({ bigint: true });
+          if (
+            extension + "-" + [stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join("-") !==
+            revision
+          )
+            continue;
           if (!stat.isFile() || stat.size < 1 || stat.size > MAX_BACKGROUND_BYTES) continue;
-          const buffer = Buffer.alloc(stat.size + 1);
+          const buffer = Buffer.alloc(Number(stat.size) + 1);
           let offset = 0;
           while (offset < buffer.length) {
             const { bytesRead } = await file.read(buffer, offset, buffer.length - offset, offset);

@@ -185,6 +185,10 @@ export const THREAD_TOOL_DEFINITIONS = [
     description:
       "Restyle F5 only when the user asks. Publish and select a theme with light and dark color overrides and optional CSS, select a known theme by id, or set the appearance mode. CSS cannot load external files. Use theme_read first.",
     shape: {
+      remove: z
+        .boolean()
+        .optional()
+        .describe("Remove a published theme by themeId. Omit theme and appearance."),
       themeId: z
         .string()
         .regex(/^[a-z0-9][a-z0-9-]{0,63}$/)

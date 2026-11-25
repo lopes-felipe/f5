@@ -94,6 +94,6 @@ export function useThemePaletteSync(variant: ThemeVariant): ResolvedThemePalette
     applyThemePalette(document.documentElement, resolved.palette, variant);
     if (resolved.publishedThemesLoaded) cachePublishedTheme(resolved.palette);
   }, [resolved.palette, resolved.revision, variant]);
-  useThemeBackground(resolved.background, resolved.palette.definition);
+  useThemeBackground(resolved.background);
   return resolved;
 }

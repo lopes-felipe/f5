@@ -3,7 +3,7 @@ import { render } from "vitest-browser-react";
 import { useThemeBackground } from "./themeBackground";
 
 function ThemeBackground({ path }: { path?: string | undefined }) {
-  useThemeBackground(path, undefined);
+  useThemeBackground(path);
   return null;
 }
 
@@ -26,8 +26,38 @@ it("retries a failed download when online and clears the wallpaper when switchin
     window.dispatchEvent(new Event("online"));
     await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(3));
     expect(property()).toBe(lastBackground);
+    let resolveReplacement!: (response: Response) => void;
+    const replacement = new Promise<Response>((resolve) => {
+      resolveReplacement = resolve;
+    });
+    fetch.mockReturnValueOnce(replacement);
+    await view.rerender(
+      <ThemeBackground path="/api/theme-background/test?signature=replacement" />,
+    );
+    expect(property()).toBe(lastBackground);
+    resolveReplacement(new Response(new Blob(["new wallpaper"], { type: "image/png" })));
+    await vi.waitFor(() => expect(property()).not.toBe(lastBackground));
     await view.rerender(<ThemeBackground />);
     expect(property()).toBe("");
+  } finally {
+    await view.unmount();
+    fetch.mockRestore();
+  }
+});
+
+it("retries an HTTP failure without waiting for an online event", async () => {
+  const fetch = vi
+    .spyOn(window, "fetch")
+    .mockResolvedValueOnce(new Response("", { status: 503 }))
+    .mockResolvedValueOnce(new Response(new Blob(["wallpaper"], { type: "image/png" })));
+  const view = await render(<ThemeBackground path="/api/theme-background/test?revision=next" />);
+  try {
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2), { timeout: 2500 });
+    await vi.waitFor(() =>
+      expect(document.documentElement.style.getPropertyValue("--theme-background-image")).toContain(
+        "blob:",
+      ),
+    );
   } finally {
     await view.unmount();
     fetch.mockRestore();

@@ -10,6 +10,7 @@ it("allows a quoted data image that refers to its own SVG gradient", () => {
 });
 
 it.each([
+  'a{content:"/*"} b{background:url(https://example.test/image)} c{content:"*/"}',
   '@import "https://example.test/theme.css";',
   '.sample { background: url("/relative.png"); }',
   '.sample { background: url(" data:image/png;base64,AA"); }',

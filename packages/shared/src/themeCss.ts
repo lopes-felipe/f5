@@ -12,6 +12,9 @@ export function themeCssValueFetches(value: string): boolean {
 }
 
 export function themeCssLoadsRemoteFiles(css: string): boolean {
-  const code = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  const code = css.replace(
+    /("(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*')|\/\*[\s\S]*?\*\//g,
+    (_token, quoted: string | undefined) => quoted ?? "",
+  );
   return /@import\b/i.test(code) || themeCssValueFetches(code);
 }

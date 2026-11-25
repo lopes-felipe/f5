@@ -17,17 +17,32 @@ export function nativeFileDrag(path: string | undefined, resolve?: () => Promise
       if (!start) return;
       event.preventDefault();
       event.stopPropagation();
-      void (resolve ? resolve().then(start) : start(path))
+      let released = false;
+      const didRelease = () => {
+        released = true;
+      };
+      window.addEventListener("pointerup", didRelease, true);
+      window.addEventListener("mouseup", didRelease, true);
+      void Promise.resolve()
+        .then(async () => {
+          const target = resolve ? await resolve() : path;
+          return released || (await start(target));
+        })
         .then((started) => {
           if (!started) throw new Error("The file is unavailable for drag on this Mac.");
         })
-        .catch((error: unknown) =>
-          toastManager.add({
-            type: "error",
-            title: "Unable to drag file",
-            description: error instanceof Error ? error.message : undefined,
-          }),
-        );
+        .catch((error: unknown) => {
+          if (!released)
+            toastManager.add({
+              type: "error",
+              title: "Unable to drag file",
+              description: error instanceof Error ? error.message : undefined,
+            });
+        })
+        .finally(() => {
+          window.removeEventListener("pointerup", didRelease, true);
+          window.removeEventListener("mouseup", didRelease, true);
+        });
     },
   };
 }
