@@ -173,7 +173,7 @@ describe("EventNdjsonLogger", () => {
             message: {
               content: [
                 { type: "tool_result", tool_use_id: key, content: `ANTHROPIC_API_KEY=${key}` },
-                { type: "thinking", thinking: "checking env", signature },
+                { type: "thinking", thinking: `The .env holds ${key}; use it.`, signature },
                 { type: "redacted_thinking", data: key },
               ],
             },
@@ -190,6 +190,8 @@ describe("EventNdjsonLogger", () => {
         assert.equal(result.content, "ANTHROPIC_API_KEY=[REDACTED]");
         assert.equal(result.tool_use_id, key);
         assert.equal(thinking.signature, signature);
+        // Signed thinking must stay verbatim, or a repaired transcript fails to resume.
+        assert.equal(thinking.thinking, `The .env holds ${key}; use it.`);
         assert.equal(redacted.data, key);
       } finally {
         fs.rmSync(directory, { recursive: true, force: true });

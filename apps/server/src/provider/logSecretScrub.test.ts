@@ -40,6 +40,29 @@ describe("scrubSecretsInText", () => {
     );
   });
 
+  it.each([
+    ["short Basic credential", "Authorization: Basic dTpw", `Authorization: Basic ${REDACTED}`],
+    [
+      "Bearer token without digits",
+      "authorization: bearer abcdefghijklmnopqrstuv",
+      `authorization: bearer ${REDACTED}`,
+    ],
+    ["uppercase scheme", "AUTHORIZATION: BEARER abc", `AUTHORIZATION: BEARER ${REDACTED}`],
+    [
+      "JSON header",
+      '{"Authorization": "Bearer opaque.token"}',
+      `{"Authorization": "Bearer ${REDACTED}"}`,
+    ],
+    ["bare header value", "Authorization: 0123456789abcdefXYZ", `Authorization: ${REDACTED}`],
+    [
+      "uppercase scheme in prose",
+      "send BEARER abcDEF123456ghiJKL789 now",
+      `send BEARER ${REDACTED} now`,
+    ],
+  ])("redacts an Authorization credential: %s", (_label, text, expected) => {
+    expect(scrubSecretsInText(text)).toBe(expected);
+  });
+
   it("redacts credentials embedded in URLs but keeps the host and path", () => {
     expect(
       scrubSecretsInText("remote: https://x-access-token:s3cr3tValue@github.com/org/repo.git"),
@@ -68,6 +91,9 @@ describe("scrubSecretsInText", () => {
     "the task-runner-orchestration-module and risk-assessment-framework",
     "Bearer tokens expire after an hour",
     "sha256-q2V5c2lnbmF0dXJlYmFzZTY0ZW5jb2RlZHZhbHVl",
+    'curl -H "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com',
+    "Authorization: Bearer ${{ secrets.TOKEN }}",
+    "Authorization: the request must carry a session cookie",
   ])("leaves ordinary text alone: %s", (text) => {
     expect(scrubSecretsInText(text)).toBe(text);
   });
@@ -80,6 +106,12 @@ describe("isScrubExemptField", () => {
     expect(isScrubExemptField({}, "tool_use_id")).toBe(true);
     expect(isScrubExemptField({}, "threadId")).toBe(true);
     expect(isScrubExemptField({ type: "redacted_thinking" }, "data")).toBe(true);
+  });
+
+  it("exempts signed thinking text, which the API verifies against its signature", () => {
+    expect(isScrubExemptField({ type: "thinking" }, "thinking")).toBe(true);
+    expect(isScrubExemptField({ type: "thinking_delta" }, "thinking")).toBe(true);
+    expect(isScrubExemptField({ type: "text" }, "thinking")).toBe(false);
   });
 
   it("scrubs other fields", () => {
