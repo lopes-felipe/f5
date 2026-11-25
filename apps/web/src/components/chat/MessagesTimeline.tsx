@@ -79,6 +79,7 @@ import {
   GlobeIcon,
   HammerIcon,
   ImageIcon,
+  InfoIcon,
   ListTodoIcon,
   LoaderCircleIcon,
   type LucideIcon,
@@ -160,6 +161,8 @@ import {
   summarizeWorkGroup,
   TIMELINE_TURN_RAIL_MIN_ITEMS,
   advanceRowArrivals,
+  FINISHED_WITHOUT_REPLY_LABEL,
+  isThoughtOnlyAssistantMessage,
   type RowArrivalState,
   type TimelineTurnRailItem,
   timelineIsAtEnd,
@@ -364,7 +367,12 @@ interface MessagesTimelineProps {
    * `true` keeps a prior turn's group open, `false` collapses it.
    */
   workGroupCollapseOverrides?: Readonly<Record<string, boolean>>;
-  onSetWorkGroupExpanded?: ((groupId: string, expanded: boolean) => void) | undefined;
+  onSetWorkGroupExpanded?:
+    | ((groupId: string, expanded: boolean, needsEarlierWork?: boolean) => void)
+    | undefined;
+  olderActivityBoundaryId?: string | undefined;
+  loadingEarlierWork?: boolean | undefined;
+  onLoadEarlierWork?: ((groupId: string) => void) | undefined;
   /** Context for the empty-thread state; omitted renders the plain hint. */
   emptyState?: MessagesTimelineEmptyState | undefined;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
@@ -537,6 +545,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onToggleWorkGroup,
   workGroupCollapseOverrides = EMPTY_WORK_GROUP_COLLAPSE_OVERRIDES,
   onSetWorkGroupExpanded,
+  olderActivityBoundaryId,
+  loadingEarlierWork = false,
+  onLoadEarlierWork,
   emptyState,
   onOpenTurnDiff,
   revertTurnCountByUserMessageId,
@@ -1040,6 +1051,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   }, [listRef]);
 
   const disclosurePinsEndRef = useRef(false);
+  const expandingWorkGroupRef = useRef<string | null>(null);
+  const [workGroupExpansionSettling, setWorkGroupExpansionSettling] = useState(false);
   const endSettleFrameRef = useRef<number | null>(null);
   // A jump or scroll away from the end: stop following the tail now, and drop
   // any follow scroll or disclosure pin already queued for a later frame.
@@ -1053,21 +1066,29 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     liveFollowEnabledRef.current = false;
     setLiveFollowEnabled(false);
     disclosurePinsEndRef.current = false;
+    if (expandingWorkGroupRef.current !== null) {
+      expandingWorkGroupRef.current = null;
+      setWorkGroupExpansionSettling(false);
+    }
     if (endSettleFrameRef.current !== null) {
       window.cancelAnimationFrame(endSettleFrameRef.current);
       endSettleFrameRef.current = null;
     }
   }, [onLeaveEnd]);
 
-  // While following at the end, keep the end in view while a tool result or
-  // diff changes height. Following that resumes away from the end (a send or
-  // Jump to latest) gets there through its own scroll; this pin never jumps.
-  const pinTimelineToEnd = useCallback(() => {
-    const followingAtEnd = liveFollowEnabledRef.current && physicallyAtEndRef.current;
-    if (!followingAtEnd && !disclosurePinsEndRef.current) return;
-    const node = listRef.current?.getScrollableNode?.();
-    if (node instanceof HTMLElement) node.scrollTop = node.scrollHeight;
-  }, [listRef]);
+  // Keep the tail in view as rows change height. A streaming resize also
+  // catches up after a disclosure moved the viewport while following stayed on.
+  const pinTimelineToEnd = useCallback(
+    (streamingResize = false) => {
+      if (expandingWorkGroupRef.current !== null) return;
+      const followingAtEnd =
+        liveFollowEnabledRef.current && (physicallyAtEndRef.current || streamingResize);
+      if (!followingAtEnd && !disclosurePinsEndRef.current) return;
+      const node = listRef.current?.getScrollableNode?.();
+      if (node instanceof HTMLElement) node.scrollTop = node.scrollHeight;
+    },
+    [listRef],
+  );
 
   useEffect(() => {
     if (!hasMessages && !isWorking) {
@@ -1237,22 +1258,45 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       endSettleFrameRef.current = window.requestAnimationFrame(() => {
         pinTimelineToEnd();
         disclosurePinsEndRef.current = false;
+        if (expandingWorkGroupRef.current !== null) {
+          expandingWorkGroupRef.current = null;
+          setWorkGroupExpansionSettling(false);
+        }
         endSettleFrameRef.current = null;
         syncIsAtEndFromListState();
       });
     });
   }, [pinTimelineToEnd, syncIsAtEndFromListState]);
+  const preserveWorkGroupPosition = useCallback(
+    (groupId: string) => {
+      disclosurePinsEndRef.current = false;
+      expandingWorkGroupRef.current = groupId;
+      setWorkGroupExpansionSettling(true);
+      scheduleEndSettle();
+    },
+    [scheduleEndSettle],
+  );
   const pinEndThroughDisclosure = useCallback(() => {
     if (!isAtEndRef.current) return;
     disclosurePinsEndRef.current = true;
     scheduleEndSettle();
   }, [scheduleEndSettle]);
-  const handleItemSizeChanged = useCallback(() => {
-    refreshFindRef.current?.();
-    if (!liveFollowEnabledRef.current && !disclosurePinsEndRef.current) return;
-    queueMicrotask(pinTimelineToEnd);
-    scheduleEndSettle();
-  }, [pinTimelineToEnd, scheduleEndSettle]);
+  const handleItemSizeChanged = useCallback(
+    ({ itemData }: { itemData: TimelineRow }) => {
+      refreshFindRef.current?.();
+      if (expandingWorkGroupRef.current !== null) {
+        scheduleEndSettle();
+        return;
+      }
+      if (!liveFollowEnabledRef.current && !disclosurePinsEndRef.current) return;
+      // A streamed message may grow in place after a disclosure moved the
+      // viewport away from the physical tail while following stayed enabled.
+      const streamingResize = itemData.kind === "message" && itemData.message.streaming;
+      queueMicrotask(() => pinTimelineToEnd(streamingResize));
+      scheduleEndSettle();
+    },
+    [pinTimelineToEnd, scheduleEndSettle],
+  );
   useEffect(
     () => () => {
       if (endSettleFrameRef.current !== null) {
@@ -1418,6 +1462,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const latestRowInputs = {
     onToggleWorkGroup,
     onSetWorkGroupExpanded,
+    onLoadEarlierWork,
     onOpenTurnDiff,
     onImageExpand,
     onImageActionMenu,
@@ -1428,6 +1473,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     revertPopover,
     chatDiffContext,
     pinEndThroughDisclosure,
+    preserveWorkGroupPosition,
     onQuoteAssistantMessage,
   };
   const latestRowInputsRef = useRef(latestRowInputs);
@@ -1440,10 +1486,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         latestRowInputsRef.current.pinEndThroughDisclosure();
         latestRowInputsRef.current.onToggleWorkGroup(groupId, paginatedEntryCount);
       },
-      onSetWorkGroupExpanded: (groupId, expanded) => {
-        latestRowInputsRef.current.pinEndThroughDisclosure();
-        latestRowInputsRef.current.onSetWorkGroupExpanded?.(groupId, expanded);
+      onSetWorkGroupExpanded: (groupId, expanded, needsEarlierWork) => {
+        if (expanded) latestRowInputsRef.current.preserveWorkGroupPosition(groupId);
+        else latestRowInputsRef.current.pinEndThroughDisclosure();
+        latestRowInputsRef.current.onSetWorkGroupExpanded?.(groupId, expanded, needsEarlierWork);
       },
+      onLoadEarlierWork: (groupId) => latestRowInputsRef.current.onLoadEarlierWork?.(groupId),
       onOpenTurnDiff: (turnId, filePath) =>
         latestRowInputsRef.current.onOpenTurnDiff(turnId, filePath),
       onImageExpand: (preview) => latestRowInputsRef.current.onImageExpand(preview),
@@ -1583,6 +1631,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         threadId,
         expandedWorkGroups,
         workGroupCollapseOverrides,
+        olderActivityBoundaryId,
+        loadingEarlierWork,
         turnDiffSummaryByTurnId,
         chatDiffContext: rowChatDiffContext,
         revertTurnCountByUserMessageId,
@@ -1611,7 +1661,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     changedFilesPresentationOverrides,
     expandedCommandExecutions,
     expandedWorkGroups,
+    loadingEarlierWork,
     newestTurnDiffId,
+    olderActivityBoundaryId,
     revertImpact,
     revertPopover,
     revertTurnCountByUserMessageId,
@@ -1815,14 +1867,21 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             // size/layout-based pinning so streaming growth at the tail continues to
             // follow when the user is already at the end.
             maintainScrollAtEnd={
-              liveFollowEnabled ? { on: { itemLayout: true, layout: true } } : false
+              liveFollowEnabled && !workGroupExpansionSettling
+                ? { on: { itemLayout: true, layout: true } }
+                : false
             }
             maintainScrollAtEndThreshold={atEndThreshold}
             // Stabilize the visible window both when rows resize and when a new user
             // turn appends data. Without `data: true`, historical work rows can drop
             // out of the rendered window during live chat updates even though the
             // row data itself is still present.
-            maintainVisibleContentPosition={{ size: true, data: true }}
+            maintainVisibleContentPosition={{
+              size: true,
+              data: true,
+              shouldRestorePosition: (row) =>
+                expandingWorkGroupRef.current === null || row.id === expandingWorkGroupRef.current,
+            }}
             onScroll={handleScroll}
             onItemSizeChanged={handleItemSizeChanged}
             onViewableItemsChanged={handleViewableItemsChanged}
@@ -2239,6 +2298,8 @@ type TimelineRow =
       completionSummary: string | null;
       completionStartedAt?: string;
       completionCompletedAt?: string;
+      /** The turn ended on reasoning and never produced reply text. */
+      finishedWithoutReply: boolean;
     }
   | {
       kind: "proposed-plan";
@@ -4546,6 +4607,8 @@ type TimelineRowExternals =
       kind: "work";
       expandedCount: number;
       collapseOverride: boolean | undefined;
+      containsOlderActivityBoundary: boolean;
+      loadingEarlierWork: boolean;
       turnDiffSummaryByTurnId: Map<TurnId, TurnDiffSummary>;
       chatDiffContext: ChatDiffContext;
     }
@@ -4578,7 +4641,8 @@ type TimelineRowExternalsOf<K extends TimelineRowExternals["kind"]> = Extract<
 
 interface TimelineRowActions {
   onToggleWorkGroup: (groupId: string, paginatedEntryCount: number) => void;
-  onSetWorkGroupExpanded: (groupId: string, expanded: boolean) => void;
+  onSetWorkGroupExpanded: (groupId: string, expanded: boolean, needsEarlierWork?: boolean) => void;
+  onLoadEarlierWork: (groupId: string) => void;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onImageActionMenu: (item: ImageAttachmentActionItem, position: { x: number; y: number }) => void;
@@ -4769,7 +4833,24 @@ function WorkGroupRowContent(props: {
   const appRows = appEntries.map((entry) => (
     <WorkEntryRow key={`app:${entry.id}`} workEntry={entry} {...entryProps} />
   ));
-  if (!logEntries.length) return <div className="min-w-0 space-y-2">{appRows}</div>;
+  const loadEarlierControl = externals.containsOlderActivityBoundary ? (
+    <Button
+      type="button"
+      size="xs"
+      variant="ghost"
+      disabled={externals.loadingEarlierWork}
+      onClick={() => actions.onLoadEarlierWork(groupId)}
+    >
+      {externals.loadingEarlierWork ? "Loading earlier work\u2026" : "Load earlier work"}
+    </Button>
+  ) : null;
+  if (!logEntries.length)
+    return (
+      <div className="min-w-0 space-y-2">
+        {loadEarlierControl}
+        {appRows}
+      </div>
+    );
   // Automation cards stay visible across turns; only their steps collapse.
   if (row.automationSurface) {
     return (
@@ -4783,6 +4864,7 @@ function WorkGroupRowContent(props: {
           markdownCwd={markdownCwd}
           onImageExpand={actions.onImageExpand}
         />
+        {loadEarlierControl}
       </div>
     );
   }
@@ -4797,6 +4879,7 @@ function WorkGroupRowContent(props: {
           timestampFormat={timestampFormat}
           onImageExpand={actions.onImageExpand}
         />
+        {loadEarlierControl}
       </div>
     );
   }
@@ -4819,6 +4902,7 @@ function WorkGroupRowContent(props: {
     return (
       <div className="min-w-0 px-1 py-0.5">
         <WorkEntryRow workEntry={standaloneExpandedMcpEntry} {...entryProps} />
+        {loadEarlierControl}
       </div>
     );
   }
@@ -4830,7 +4914,9 @@ function WorkGroupRowContent(props: {
         aria-expanded={false}
         data-slot="work-group-summary"
         className="flex min-h-7 w-full min-w-0 items-center gap-2 rounded-lg px-2 text-left text-ui text-muted-foreground outline-none transition-colors duration-(--duration-fast) hover:bg-accent/60 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-        onClick={() => actions.onSetWorkGroupExpanded(groupId, true)}
+        onClick={() =>
+          actions.onSetWorkGroupExpanded(groupId, true, externals.containsOlderActivityBoundary)
+        }
       >
         <ChevronRightIcon aria-hidden="true" className="size-3.5 shrink-0 text-faint-foreground" />
         <span className="min-w-0 truncate">{row.workSummary}</span>
@@ -4862,7 +4948,12 @@ function WorkGroupRowContent(props: {
             <button
               type="button"
               className="shrink-0 rounded-sm text-2xs text-muted-foreground outline-none transition-colors duration-(--duration-fast) hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-              onClick={() => actions.onToggleWorkGroup(groupId, groupState.paginatedEntryCount)}
+              onClick={() =>
+                actions.onToggleWorkGroup(
+                  groupId,
+                  groupState.isExpanded ? 0 : groupState.paginatedEntryCount,
+                )
+              }
             >
               {groupState.isExpanded
                 ? "Show less"
@@ -4872,6 +4963,7 @@ function WorkGroupRowContent(props: {
         </div>
       )}
       <div className="space-y-0.5">
+        {loadEarlierControl}
         {groupState.visibleEntries.map((workEntry) => (
           <WorkEntryRow key={`work-row:${workEntry.id}`} workEntry={workEntry} {...entryProps} />
         ))}
@@ -5233,6 +5325,34 @@ function AssistantMessageRowContent(props: {
   const reasoningTokens = row.message.reasoningTokens ?? 0;
   const isStreamingReasoning =
     Boolean(row.message.streaming) && row.message.text.length === 0 && Boolean(reasoningText);
+  // Reasoning without a reply, such as an ACP agent's thought between tool calls.
+  const thoughtOnly = isThoughtOnlyAssistantMessage(row.message);
+  const meta = (
+    <p
+      data-slot="assistant-message-meta"
+      className="whitespace-nowrap text-2xs text-muted-foreground tabular-nums"
+    >
+      <LiveMessageMeta
+        durationStart={
+          row.showCompletionDivider
+            ? (row.completionStartedAt ?? row.durationStart)
+            : row.durationStart
+        }
+        completedAt={
+          row.showCompletionDivider
+            ? (row.completionCompletedAt ?? row.message.completedAt)
+            : row.message.completedAt
+        }
+        streaming={row.message.streaming}
+      />
+      <MessageTokenUsage
+        turnId={row.message.turnId}
+        reasoningTokens={row.message.reasoningTokens}
+        reasoningEstimated={row.message.reasoningTokensEstimated}
+        streaming={row.message.streaming}
+      />
+    </p>
+  );
   return (
     <>
       {row.showCompletionDivider && (
@@ -5260,91 +5380,102 @@ function AssistantMessageRowContent(props: {
           ) : null}
         </div>
       )}
-      <div className="group/assistant-message min-w-0 px-1 py-0.5">
+      {/* One wrapper for both shapes: a message that settles into a Thought row keeps its
+          ReasoningSection mounted, so the reader's expand or collapse choice survives. */}
+      <div
+        data-slot={thoughtOnly ? "assistant-thought-row" : undefined}
+        // A Thought row offers no quote, so its reasoning is not quotable by selection either.
+        data-assistant-quote-exclude={thoughtOnly ? "" : undefined}
+        className={cn("min-w-0 px-1", !thoughtOnly && "group/assistant-message py-0.5")}
+      >
         {reasoningText || reasoningTokens > 0 ? (
           <ReasoningSection
             reasoningText={reasoningText}
             textRevision={reasoning.revision}
             reasoningTokens={reasoningTokens}
             reasoningTokensEstimated={row.message.reasoningTokensEstimated}
-            hideTokens
+            // A meta line already reports usage, except on a Thought row without one.
+            hideTokens={!thoughtOnly || row.showCompletionDivider}
             defaultExpanded={showReasoningExpanded}
             isStreaming={isStreamingReasoning}
             cwd={markdownCwd}
+            standalone={thoughtOnly}
           />
         ) : null}
-        <div
-          data-thread-find-text={rawText ? "" : undefined}
-          className={
-            /^★ Insight(?:\s|─)/mu.test(messageText)
-              ? "[&_.chat-markdown_p]:whitespace-pre-line"
-              : undefined
-          }
-        >
-          <ChatMarkdown
-            text={messageText}
-            textRevision={messageTextRevision(row.message)}
-            cwd={markdownCwd}
-            isStreaming={Boolean(row.message.streaming)}
-            // Blocks of the turn the user is reading stay open; they fold once
-            // the user starts a new turn.
-            foldCodeBlocks={!row.message.streaming && !externals.inLatestTurn}
-            showStreamingCaret
-          />
-        </div>
-        <AssistantChangedFiles externals={externals} />
-        <div
-          data-assistant-quote-exclude
-          className="mt-1.5 flex min-h-7 items-center justify-between gap-2"
-        >
-          <div className="flex min-w-0 items-center gap-2 overflow-x-auto">
-            <p
-              data-slot="assistant-message-meta"
-              className="whitespace-nowrap text-2xs text-muted-foreground tabular-nums"
+        {thoughtOnly ? (
+          <>
+            <AssistantChangedFiles externals={externals} />
+            {row.showCompletionDivider ? (
+              <div className="mt-1 flex min-w-0 items-center gap-2 overflow-x-auto">
+                {row.finishedWithoutReply ? (
+                  <>
+                    <p className="flex shrink-0 items-center gap-1.5 text-2xs text-muted-foreground italic">
+                      <InfoIcon className="size-3.5 shrink-0 text-faint-foreground" aria-hidden />
+                      {FINISHED_WITHOUT_REPLY_LABEL}
+                    </p>
+                    <span className="text-2xs text-faint-foreground" aria-hidden>
+                      ·
+                    </span>
+                  </>
+                ) : null}
+                {meta}
+                {externals.cacheMiss ? <PromptCacheMissPill turn={externals.cacheMiss} /> : null}
+              </div>
+            ) : null}
+          </>
+        ) : (
+          <>
+            <div
+              data-thread-find-text={rawText ? "" : undefined}
+              className={
+                /^★ Insight(?:\s|─)/mu.test(messageText)
+                  ? "[&_.chat-markdown_p]:whitespace-pre-line"
+                  : undefined
+              }
             >
-              <LiveMessageMeta
-                durationStart={
-                  row.showCompletionDivider
-                    ? (row.completionStartedAt ?? row.durationStart)
-                    : row.durationStart
-                }
-                completedAt={
-                  row.showCompletionDivider
-                    ? (row.completionCompletedAt ?? row.message.completedAt)
-                    : row.message.completedAt
-                }
-                streaming={row.message.streaming}
+              <ChatMarkdown
+                text={messageText}
+                textRevision={messageTextRevision(row.message)}
+                cwd={markdownCwd}
+                isStreaming={Boolean(row.message.streaming)}
+                // Blocks of the turn the user is reading stay open; they fold once
+                // the user starts a new turn.
+                foldCodeBlocks={!row.message.streaming && !externals.inLatestTurn}
+                showStreamingCaret
               />
-              <MessageTokenUsage
-                turnId={row.message.turnId}
-                reasoningTokens={row.message.reasoningTokens}
-                reasoningEstimated={row.message.reasoningTokensEstimated}
-                streaming={row.message.streaming}
-              />
-            </p>
-            {externals.cacheMiss ? <PromptCacheMissPill turn={externals.cacheMiss} /> : null}
-          </div>
-          {/* Always laid out, only faded: hovering never shifts the row. */}
-          <div className="flex items-center gap-0.5 opacity-0 transition-opacity duration-(--duration-fast) focus-within:opacity-100 group-hover/assistant-message:opacity-100 has-[[data-popup-open]]:opacity-100 pointer-coarse:opacity-100">
-            {settledText ? <MessageCopyButton text={rawText} /> : null}
-            {settledText && canQuoteAssistantMessages ? (
-              <button
-                type="button"
-                title="Reply to response"
-                aria-label="Reply to response"
-                className="rounded px-1.5 py-1 text-xs text-muted-foreground hover:text-foreground"
-                onClick={() => actions.quoteAssistantMessage(messageId, rawText, true)}
-              >
-                Reply
-              </button>
-            ) : null}
-            {settledText && canQuoteAssistantMessages ? (
-              <AssistantMessageActions
-                onQuote={() => actions.quoteAssistantMessage(messageId, rawText)}
-              />
-            ) : null}
-          </div>
-        </div>
+            </div>
+            <AssistantChangedFiles externals={externals} />
+            <div
+              data-assistant-quote-exclude
+              className="mt-1.5 flex min-h-7 items-center justify-between gap-2"
+            >
+              <div className="flex min-w-0 items-center gap-2 overflow-x-auto">
+                {meta}
+                {externals.cacheMiss ? <PromptCacheMissPill turn={externals.cacheMiss} /> : null}
+              </div>
+              {/* Always laid out, only faded: hovering never shifts the row. */}
+              <div className="flex items-center gap-0.5 opacity-0 transition-opacity duration-(--duration-fast) focus-within:opacity-100 group-hover/assistant-message:opacity-100 has-[[data-popup-open]]:opacity-100 pointer-coarse:opacity-100">
+                {settledText ? <MessageCopyButton text={rawText} /> : null}
+                {settledText && canQuoteAssistantMessages ? (
+                  <button
+                    type="button"
+                    title="Reply to response"
+                    aria-label="Reply to response"
+                    className="rounded px-1.5 py-1 text-xs text-muted-foreground hover:text-foreground"
+                    onClick={() => actions.quoteAssistantMessage(messageId, rawText, true)}
+                  >
+                    Reply
+                  </button>
+                ) : null}
+                {settledText && canQuoteAssistantMessages ? (
+                  <AssistantMessageActions
+                    onQuote={() => actions.quoteAssistantMessage(messageId, rawText)}
+                  />
+                ) : null}
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </>
   );
@@ -5727,11 +5858,27 @@ export function buildTimelineRows(input: {
   const lastAssistantByTurn = new Map<TurnId, string>();
   const startByTurn = new Map<TurnId, string>();
   const promptStartByMessageId = new Map<string, string>();
+  // Thought-only messages with no reply text before them in their turn (or, without a
+  // turn id, since the last prompt). Only these can say the turn finished without a reply.
+  const unrepliedThoughtIds = new Set<string>();
+  const repliedTurns = new Set<TurnId>();
+  let repliedSincePrompt = false;
   let lastUserAt: string | undefined;
   for (const entry of timelineEntries) {
     if (entry.kind !== "message") continue;
     const message = entry.message;
-    if (message.role === "user") lastUserAt = message.createdAt;
+    if (message.role === "user") {
+      lastUserAt = message.createdAt;
+      repliedSincePrompt = false;
+    } else if (message.role === "assistant") {
+      if (isThoughtOnlyAssistantMessage(message)) {
+        if (!(message.turnId ? repliedTurns.has(message.turnId) : repliedSincePrompt))
+          unrepliedThoughtIds.add(entry.id);
+      } else if (/\S/.test(message.text)) {
+        repliedSincePrompt = true;
+        if (message.turnId) repliedTurns.add(message.turnId);
+      }
+    }
     if (lastUserAt) promptStartByMessageId.set(message.id, lastUserAt);
     if (!message.turnId) continue;
     if (!startByTurn.has(message.turnId) && lastUserAt) {
@@ -5914,6 +6061,7 @@ export function buildTimelineRows(input: {
         : promptStartByMessageId.has(message.id)
           ? durationStartByMessageId.get(message.id)
           : undefined;
+    const finishedWithoutReply = showCompletionDivider && unrepliedThoughtIds.has(timelineEntry.id);
     nextRows.push(
       reuse(
         timelineEntry.id,
@@ -5926,6 +6074,7 @@ export function buildTimelineRows(input: {
           completionSummary,
           completionStartedAt,
           completionCompletedAt,
+          finishedWithoutReply,
         ],
         () => ({
           kind: "message",
@@ -5938,6 +6087,7 @@ export function buildTimelineRows(input: {
           completionSummary,
           ...(elapsed != null && completionStartedAt ? { completionStartedAt } : {}),
           ...(elapsed != null && completionCompletedAt ? { completionCompletedAt } : {}),
+          finishedWithoutReply,
         }),
       ),
     );
@@ -5987,6 +6137,8 @@ export interface TimelineRowExternalsInputs {
   threadId: ThreadId | null;
   expandedWorkGroups: Readonly<Record<string, number>>;
   workGroupCollapseOverrides: Readonly<Record<string, boolean>>;
+  olderActivityBoundaryId?: string | undefined;
+  loadingEarlierWork?: boolean | undefined;
   turnDiffSummaryByTurnId: Map<TurnId, TurnDiffSummary>;
   chatDiffContext: ChatDiffContext;
   revertTurnCountByUserMessageId: ReadonlyMap<MessageId, number>;
@@ -6011,11 +6163,27 @@ function describeTimelineRowExternals(
   inputs: TimelineRowExternalsInputs,
   /** The row comes after the thread's last user message. */
   inLatestTurn: boolean,
+  olderWorkRowId?: string,
 ): { version: string; build: () => TimelineRowExternals } {
   switch (row.kind) {
     case "work": {
-      const expandedCount = inputs.expandedWorkGroups[row.id] ?? WORK_LOG_PAGE_SIZE;
-      const collapseOverride = inputs.workGroupCollapseOverrides[row.id];
+      const revealAnchor = row.groupedEntries.find((entry) =>
+        Object.hasOwn(inputs.expandedWorkGroups, entry.id),
+      );
+      const expandedCount =
+        inputs.expandedWorkGroups[row.id] ??
+        (revealAnchor ? inputs.expandedWorkGroups[revealAnchor.id] : undefined) ??
+        WORK_LOG_PAGE_SIZE;
+      // Loading an older page can prepend rows to the same group and change its first id.
+      const anchoredOverride = row.groupedEntries.find((entry) =>
+        Object.hasOwn(inputs.workGroupCollapseOverrides, entry.id),
+      );
+      const collapseOverride =
+        inputs.workGroupCollapseOverrides[row.id] ??
+        (anchoredOverride ? inputs.workGroupCollapseOverrides[anchoredOverride.id] : undefined);
+      const containsOlderActivityBoundary = row.id === olderWorkRowId;
+      const loadingEarlierWork =
+        containsOlderActivityBoundary && (inputs.loadingEarlierWork ?? false);
       const { chatDiffContext } = inputs;
       const entryVersions = row.groupedEntries.map((entry) => {
         const turnSummary = entry.turnId
@@ -6047,6 +6215,8 @@ function describeTimelineRowExternals(
           "work",
           expandedCount,
           collapseOverride ?? "",
+          containsOlderActivityBoundary,
+          loadingEarlierWork,
           chatDiffContext.threadId ?? "",
           chatDiffContext.isGitRepo ? "git" : "no-git",
           ...entryVersions,
@@ -6055,6 +6225,8 @@ function describeTimelineRowExternals(
           kind: "work",
           expandedCount,
           collapseOverride,
+          containsOlderActivityBoundary,
+          loadingEarlierWork,
           turnDiffSummaryByTurnId: inputs.turnDiffSummaryByTurnId,
           chatDiffContext,
         }),
@@ -6204,8 +6376,22 @@ export function buildTimelineRowExternals(
       break;
     }
   }
+  let olderWorkRowId: string | undefined;
+  if (inputs.olderActivityBoundaryId !== undefined) {
+    const work = rows.filter((row) => row.kind === "work");
+    olderWorkRowId = (
+      work.find((row) =>
+        row.groupedEntries.some((entry) => entry.id === inputs.olderActivityBoundaryId),
+      ) ?? work[0]
+    )?.id;
+  }
   for (const [index, row] of rows.entries()) {
-    const described = describeTimelineRowExternals(row, inputs, index > latestTurnStart);
+    const described = describeTimelineRowExternals(
+      row,
+      inputs,
+      index > latestTurnStart,
+      olderWorkRowId,
+    );
     const { version } = described;
     const cached = previous.get(row.id);
     const entry =

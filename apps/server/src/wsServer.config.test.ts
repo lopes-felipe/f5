@@ -580,6 +580,7 @@ describe("WebSocket Server", () => {
     expect(response.result).toEqual({
       cwd: "/my/workspace",
       keybindingsConfigPath: keybindingsPath,
+      privacy: { doNotTrack: false },
       keybindings: DEFAULT_RESOLVED_KEYBINDINGS,
       customKeybindings: [],
       issues: [],
@@ -879,6 +880,7 @@ describe("WebSocket Server", () => {
     expect(response.result).toEqual({
       cwd: "/my/workspace",
       keybindingsConfigPath: keybindingsPath,
+      privacy: { doNotTrack: false },
       keybindings: DEFAULT_RESOLVED_KEYBINDINGS,
       customKeybindings: [],
       issues: [],
@@ -916,6 +918,7 @@ describe("WebSocket Server", () => {
     expect(response.result).toEqual({
       cwd: "/my/workspace",
       keybindingsConfigPath: keybindingsPath,
+      privacy: { doNotTrack: false },
       keybindings: DEFAULT_RESOLVED_KEYBINDINGS,
       customKeybindings: [],
       issues: [
@@ -1277,6 +1280,7 @@ describe("WebSocket Server", () => {
     expect(response.result).toEqual({
       cwd: "/my/workspace",
       keybindingsConfigPath: keybindingsPath,
+      privacy: { doNotTrack: false },
       keybindings: compileMergedKeybindings(persistedConfig),
       customKeybindings: persistedConfig,
       issues: [],
@@ -1330,6 +1334,7 @@ describe("WebSocket Server", () => {
     expect(configResponse.result).toEqual({
       cwd: "/my/workspace",
       keybindingsConfigPath: keybindingsPath,
+      privacy: { doNotTrack: false },
       keybindings: compileMergedKeybindings(persistedConfig),
       customKeybindings: persistedConfig,
       issues: [],

@@ -1,7 +1,6 @@
 import "../../index.css";
 
 import {
-  DEFAULT_RUNTIME_MODE,
   ProviderDriverKind,
   type ProviderOptionDescriptor,
   type ProviderOptionSelection,
@@ -13,8 +12,7 @@ import { page } from "vitest/browser";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
-import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
-import { TraitsMenuContent, TraitsPicker } from "./TraitsPicker";
+import { TraitsPicker } from "./TraitsPicker";
 
 const PROVIDER = ProviderDriverKind.make("opencode");
 const MODEL = "test-model";
@@ -104,6 +102,38 @@ describe("TraitsPicker", () => {
     expect(document.querySelectorAll("[data-effort-filled]")).toHaveLength(0);
   });
 
+  it("hides prompt-keyword efforts when asked and drops a stored one", async () => {
+    const promptEffort: ProviderOptionDescriptor = {
+      id: "effort",
+      label: "Effort",
+      type: "select",
+      options: [
+        { id: "low", label: "Low" },
+        { id: "high", label: "High", isDefault: true },
+        { id: "ultrathink", label: "Ultrathink" },
+      ],
+      promptInjectedValues: ["ultrathink"],
+    };
+    mounted = await render(
+      <TraitsPicker
+        provider={PROVIDER}
+        models={modelsWith([promptEffort])}
+        model={MODEL}
+        modelOptions={[{ id: "effort", value: "ultrathink" }]}
+        hiddenOptions={{ promptInjected: true }}
+        onModelOptionsChange={() => {}}
+      />,
+    );
+
+    // A stored keyword effort falls back to the default instead of showing.
+    await expect.element(page.getByRole("button")).toHaveTextContent("High");
+    await page.getByRole("button").click();
+    await vi.waitFor(() => {
+      expect(page.getByRole("menuitemradio").elements().length).toBe(2);
+    });
+    expect(document.body.textContent ?? "").not.toContain("Ultrathink");
+  });
+
   it("tints the trigger only when asked, as the composer does", async () => {
     mounted = await render(<PickerHarness models={modelsWith([KNOWN_EFFORT])} />);
     const trigger = page.getByRole("button");
@@ -118,31 +148,19 @@ describe("TraitsPicker", () => {
     expect(page.getByRole("button").element().className).toContain("bg-effort-high/10");
   });
 
-  it("toggles Fast mode inside the compact composer menu without closing it", async () => {
+  it("toggles Fast mode inside the traits menu without closing it", async () => {
     const onModelOptionsChange = vi.fn();
     const models = modelsWith([KNOWN_EFFORT, FAST_MODE]);
     mounted = await render(
-      <CompactComposerControlsMenu
-        activePlan={false}
-        interactionMode="default"
-        planSidebarOpen={false}
-        runtimeMode={DEFAULT_RUNTIME_MODE}
-        provider="codex"
-        traitsMenuContent={
-          <TraitsMenuContent
-            provider={PROVIDER}
-            models={models}
-            model={MODEL}
-            onModelOptionsChange={onModelOptionsChange}
-          />
-        }
-        onToggleInteractionMode={() => {}}
-        onTogglePlanSidebar={() => {}}
-        onRuntimeModeChange={() => {}}
+      <TraitsPicker
+        provider={PROVIDER}
+        models={models}
+        model={MODEL}
+        onModelOptionsChange={onModelOptionsChange}
       />,
     );
 
-    await page.getByRole("button", { name: "More composer controls" }).click();
+    await page.getByRole("button").click();
     const fastMode = page.getByRole("menuitemcheckbox", { name: "Fast Mode" });
     await expect.element(fastMode).toHaveAttribute("aria-checked", "false");
     await fastMode.click();

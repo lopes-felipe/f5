@@ -517,12 +517,12 @@ it("preserves all active lockouts when every failure bucket is locked out", () =
     auth.bearerRetryAfterSeconds(bearerRequest("198.51.100.2", "secret-token")),
   ).not.toBeNull();
 
-  // Overflow failures from new sources must not evict existing active lockouts.
+  // Overflow failures from new sources must not evict existing active lockouts,
+  // and must not block an untracked client presenting a valid bearer token.
   expect(auth.isHttpRequestAuthenticated(bearerRequest("198.51.100.3", "wrong"))).toBe(false);
   expect(auth.isHttpRequestAuthenticated(bearerRequest("198.51.100.4", "wrong"))).toBe(false);
-  expect(
-    auth.bearerRetryAfterSeconds(bearerRequest("198.51.100.5", "secret-token")),
-  ).not.toBeNull();
+  expect(auth.bearerRetryAfterSeconds(bearerRequest("198.51.100.5", "secret-token"))).toBeNull();
+  expect(auth.isHttpRequestAuthenticated(bearerRequest("198.51.100.5", "secret-token"))).toBe(true);
 
   // Both originally locked-out sources remain rejected even with the valid token.
   expect(auth.isHttpRequestAuthenticated(bearerRequest("198.51.100.1", "secret-token"))).toBe(
@@ -531,4 +531,48 @@ it("preserves all active lockouts when every failure bucket is locked out", () =
   expect(auth.isHttpRequestAuthenticated(bearerRequest("198.51.100.2", "secret-token"))).toBe(
     false,
   );
+});
+
+it("keeps an active login overflow lockout enforced after tracked buckets expire and recovers on expiry", async () => {
+  let clock = 1_000;
+  const origin = await startAuthServer(
+    makeServerAuth("secret-token", {
+      trustedProxies: ["127.0.0.1"],
+      maxFailuresPerSource: 2,
+      maxFailuresGlobal: 100,
+      maxFailureSources: 2,
+      failureWindowMs: 30_000,
+      lockoutMs: 60_000,
+      now: () => clock,
+    }),
+  );
+  const login = (forwardedFor: string, token: string) =>
+    fetch(`${origin}/auth/session`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Forwarded-For": forwardedFor,
+      },
+      body: JSON.stringify({ token }),
+    });
+
+  // Lock out two tracked sources at t = 1_000 (blocked until 61_000).
+  expect((await login("198.51.100.1", "wrong")).status).toBe(401);
+  expect((await login("198.51.100.1", "wrong")).status).toBe(429);
+  expect((await login("198.51.100.2", "wrong")).status).toBe(401);
+  expect((await login("198.51.100.2", "wrong")).status).toBe(429);
+
+  // Advance to t = 20_000 and trip the overflow lockout (blocked until 80_000).
+  clock = 20_000;
+  expect((await login("198.51.100.3", "wrong")).status).toBe(401);
+  expect((await login("198.51.100.4", "wrong")).status).toBe(429);
+
+  // Advance to t = 65_000: both tracked buckets have expired (map shrinks below capacity),
+  // but the overflow lockout (until 80_000) must still apply to untracked login sources.
+  clock = 65_000;
+  expect((await login("198.51.100.5", "wrong")).status).toBe(429);
+
+  // Advance past 80_000: overflow lockout expires and login recovers normally.
+  clock = 81_000;
+  expect((await login("198.51.100.5", "secret-token")).status).toBe(204);
 });

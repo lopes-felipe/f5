@@ -6,6 +6,7 @@ import { open, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { Option, Schema } from "effect";
 import type { UsageAggregateRow, UsageBucketRange } from "../persistence/Services/UsageFacts.ts";
+import { totalTokens, type NativeUsageRecord } from "./nativeUsageRecord.ts";
 import { readBoundedJsonlLines } from "../provider/agentTranscript/boundedJsonl.ts";
 
 const Entry = Schema.Struct({
@@ -100,6 +101,35 @@ export function museHistoryUsageRow(record: MuseHistoryRecord): UsageAggregateRo
     providerReportedCostUsd: null,
     nativeInferenceCount: 1,
     unpricedNativeInferenceCount: 1,
+    turnCount: 0,
+    reportedTokenTurnCount: 0,
+    pricedTurnCount: 0,
+    unpricedTurnCount: 0,
+    recordedTurnCount: 0,
+    legacyCostEventCount: 0,
+    inputTokenTurnCount: 0,
+    outputTokenTurnCount: 0,
+    cacheReadTokenTurnCount: 0,
+    cacheWriteTokenTurnCount: 0,
+    totalTokenTurnCount: 0,
+  };
+}
+
+function historyUsageRow(record: MuseHistoryRecord | NativeUsageRecord): UsageAggregateRow {
+  if (!("provider" in record)) return museHistoryUsageRow(record);
+  const { totals } = record;
+  return {
+    provider: record.provider,
+    model: record.model,
+    inputTokens: totals.uncachedInputTokens,
+    outputTokens: totals.outputTokens,
+    cacheReadTokens: totals.cachedInputTokens,
+    cacheWriteTokens: totals.cacheCreationTokens,
+    totalTokens: totalTokens(totals),
+    cacheOutsideInput: true,
+    providerReportedCostUsd: record.reportedCostUsd,
+    nativeInferenceCount: 1,
+    unpricedNativeInferenceCount: record.reportedCostUsd === null ? 1 : 0,
     turnCount: 0,
     reportedTokenTurnCount: 0,
     pricedTurnCount: 0,
@@ -291,36 +321,50 @@ export function externalMuseHistory(
 }
 
 export function museHistoryBuckets(
-  records: readonly MuseHistoryRecord[],
+  records: readonly (MuseHistoryRecord | NativeUsageRecord)[],
   buckets: readonly UsageBucketRange[],
 ) {
   const sorted = [...buckets].sort((left, right) => left.startAt.localeCompare(right.startAt));
   const groups = new Map<string, UsageAggregateRow & { bucketKey: string }>();
   for (const record of records) {
+    const date = new Date("provider" in record ? record.timestampMs : record.timestamp);
+    if (!Number.isFinite(date.getTime())) continue;
+    const timestamp = date.toISOString();
     let low = 0,
       high = sorted.length;
     while (low < high) {
       const middle = (low + high) >>> 1;
-      if (sorted[middle]!.startAt <= record.timestamp) low = middle + 1;
+      if (sorted[middle]!.startAt <= timestamp) low = middle + 1;
       else high = middle;
     }
     const bucket = sorted[low - 1];
-    if (!bucket || record.timestamp >= bucket.endAt) continue;
-    const key = JSON.stringify([bucket.key, record.row.model]);
+    if (!bucket || timestamp >= bucket.endAt) continue;
+    const usage = historyUsageRow(record);
+    const key = JSON.stringify([
+      bucket.key,
+      usage.provider,
+      usage.model,
+      usage.providerReportedCostUsd === null,
+    ]);
     const row = groups.get(key);
     if (!row) {
-      groups.set(key, { ...museHistoryUsageRow(record), bucketKey: bucket.key });
+      groups.set(key, { ...usage, bucketKey: bucket.key });
       continue;
     }
     groups.set(key, {
       ...row,
-      inputTokens: row.inputTokens + record.row.inputTokens,
-      outputTokens: row.outputTokens + record.row.outputTokens,
-      cacheReadTokens: row.cacheReadTokens + record.row.cacheReadTokens,
-      cacheWriteTokens: row.cacheWriteTokens + record.row.cacheWriteTokens,
-      totalTokens: row.totalTokens + record.row.totalTokens,
+      inputTokens: row.inputTokens + usage.inputTokens,
+      outputTokens: row.outputTokens + usage.outputTokens,
+      cacheReadTokens: row.cacheReadTokens + usage.cacheReadTokens,
+      cacheWriteTokens: row.cacheWriteTokens + usage.cacheWriteTokens,
+      totalTokens: row.totalTokens + usage.totalTokens,
+      providerReportedCostUsd:
+        row.providerReportedCostUsd === null
+          ? null
+          : row.providerReportedCostUsd + (usage.providerReportedCostUsd ?? 0),
       nativeInferenceCount: (row.nativeInferenceCount ?? 0) + 1,
-      unpricedNativeInferenceCount: (row.unpricedNativeInferenceCount ?? 0) + 1,
+      unpricedNativeInferenceCount:
+        (row.unpricedNativeInferenceCount ?? 0) + (usage.unpricedNativeInferenceCount ?? 0),
     });
   }
   return [...groups.values()];

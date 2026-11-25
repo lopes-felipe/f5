@@ -1,0 +1,1 @@
+- Inactive preview tabs stop painting between browser automation and recording operations.
