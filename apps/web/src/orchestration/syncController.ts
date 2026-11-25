@@ -3,7 +3,6 @@ import {
   cleanupDeletedThread,
   cleanupDeletedThreadsFromSnapshot,
 } from "../lib/deletedThreadCleanup";
-import type { AppSettings } from "../appSettings";
 import {
   FULL_RECONCILIATION_INTERVAL_MS,
   startSequenceReconciliation,

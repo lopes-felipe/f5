@@ -300,7 +300,6 @@ export function ArchiveSettings() {
 
   const deleteItems = useCallback(
     async (items: ReadonlyArray<ArchiveItem>, confirm: boolean) => {
-      const keys = items.map((item) => item.key);
       if (confirm) {
         const api = readNativeApi();
         if (!api) {

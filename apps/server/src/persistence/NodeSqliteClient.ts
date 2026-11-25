@@ -4,7 +4,12 @@
  *
  * @module SqliteClient
  */
-import { DatabaseSync, type StatementSync } from "node:sqlite";
+import {
+  DatabaseSync,
+  type SQLInputValue,
+  type StatementResultingChanges,
+  type StatementSync,
+} from "node:sqlite";
 
 import * as Cache from "effect/Cache";
 import * as Config from "effect/Config";
@@ -37,13 +42,15 @@ import { reportDatabaseCorruption } from "./databaseHealth.ts";
 
 const ATTR_DB_SYSTEM_NAME = "db.system.name";
 
-const recordDuration = (
-  metric: Metric.Metric<Duration.Duration, unknown>,
-  startedAt: number,
-): Effect.Effect<void> => Metric.update(metric, Duration.millis(performance.now() - startedAt));
-
 /** Statements slower than this also log process RSS, to tell memory pressure from lock waits. */
 const VERY_SLOW_SQL_MS = 10_000;
+
+/**
+ * Effect SQL encodes bound primitives before calling into the driver; narrow
+ * the unknown parameter array to Node's SQLInputValue tuple for variadic binds.
+ */
+const sqliteParams = (params: ReadonlyArray<unknown>): ReadonlyArray<SQLInputValue> =>
+  params as ReadonlyArray<SQLInputValue>;
 
 /** `startedAt` comes from `performance.now()`, `startedAtWall` from `Date.now()`. */
 const recordExecution = (
@@ -236,33 +243,45 @@ const makeWithDatabase = (
       const statementFor = (sql: string, params: ReadonlyArray<unknown>) =>
         hasLargeBinding(params) ? prepare(sql) : Cache.get(prepareCache, sql);
 
-      const runStatement = (
+      type RawStatementResult = ReadonlyArray<Record<string, unknown>> | StatementResultingChanges;
+
+      function runStatement(
+        statement: StatementSync,
+        params: ReadonlyArray<unknown>,
+        raw: false,
+      ): Effect.Effect<ReadonlyArray<Record<string, unknown>>, SqlError>;
+      function runStatement(
+        statement: StatementSync,
+        params: ReadonlyArray<unknown>,
+        raw: true,
+      ): Effect.Effect<RawStatementResult, SqlError>;
+      function runStatement(
         statement: StatementSync,
         params: ReadonlyArray<unknown>,
         raw: boolean,
-      ) =>
-        Effect.withFiber<ReadonlyArray<any>, SqlError>((fiber) => {
+      ): Effect.Effect<RawStatementResult, SqlError> {
+        return Effect.withFiber<RawStatementResult, SqlError>((fiber) => {
           statement.setReadBigInts(Boolean(ServiceMap.get(fiber.services, Client.SafeIntegers)));
           const startedAt = performance.now();
           const startedAtWall = Date.now();
-          const executed = (result: ReadonlyArray<any>) =>
+          const executed = <Result>(result: Result) =>
             Effect.as(
               recordExecution(startedAt, startedAtWall, "success", statement.sourceSQL, probe),
               result,
             );
           try {
+            const bound = sqliteParams(params);
             if (hasRows(statement)) {
-              return executed(statement.all(...(params as any)));
+              return executed(statement.all(...bound));
             }
             if (raw) {
-              const result = statement.run(...(params as any));
-              return executed(result as unknown as ReadonlyArray<any>);
+              return executed(statement.run(...bound));
             }
             // Some zero-column pragmas yield intermediate SQLITE_ROW steps.
             // run() stops at the first one (incremental_vacuum frees one page),
             // whereas all() drains to SQLITE_DONE. Keep the public no-row result.
-            statement.all(...(params as any));
-            return executed([]);
+            statement.all(...bound);
+            return executed<ReadonlyArray<Record<string, unknown>>>([]);
           } catch (cause) {
             // Failures are timed too: a busy-timeout stall ends in SQLITE_BUSY.
             return Effect.andThen(
@@ -271,11 +290,23 @@ const makeWithDatabase = (
             );
           }
         });
+      }
 
-      const run = (sql: string, params: ReadonlyArray<unknown>, raw = false) =>
-        Effect.flatMap(statementFor(sql, params), (s) => runStatement(s, params, raw)).pipe(
-          Effect.ensuring(Effect.sync(() => checkpoint?.())),
-        );
+      function run(
+        sql: string,
+        params: ReadonlyArray<unknown>,
+        raw?: false,
+      ): Effect.Effect<ReadonlyArray<Record<string, unknown>>, SqlError>;
+      function run(
+        sql: string,
+        params: ReadonlyArray<unknown>,
+        raw: true,
+      ): Effect.Effect<RawStatementResult, SqlError>;
+      function run(sql: string, params: ReadonlyArray<unknown>, raw = false) {
+        return Effect.flatMap(statementFor(sql, params), (s) =>
+          raw ? runStatement(s, params, true) : runStatement(s, params, false),
+        ).pipe(Effect.ensuring(Effect.sync(() => checkpoint?.())));
+      }
 
       const runValues = (sql: string, params: ReadonlyArray<unknown>) =>
         Effect.acquireUseRelease(
@@ -290,14 +321,15 @@ const makeWithDatabase = (
               const startedAtWall = Date.now();
               return Effect.try({
                 try: () => {
+                  const bound = sqliteParams(params);
                   if (hasRows(statement)) {
                     statement.setReturnArrays(true);
                     // Safe to cast to array after we've setReturnArrays(true)
-                    return statement.all(...(params as any)) as unknown as ReadonlyArray<
+                    return statement.all(...bound) as unknown as ReadonlyArray<
                       ReadonlyArray<unknown>
                     >;
                   }
-                  statement.all(...(params as any));
+                  statement.all(...bound);
                   return [];
                 },
                 catch: (cause) => sqlError(cause, "Failed to execute statement"),
