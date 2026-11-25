@@ -24,7 +24,11 @@ function stripFetches(parent: RuleParent): void {
       for (const frame of rule.cssRules) stripDeclarations(frame as CSSKeyframeRule);
     } else if (rule instanceof CSSGroupingRule) {
       stripFetches(rule);
-    } else if (!(rule instanceof CSSNamespaceRule)) {
+    } else if (
+      !(rule instanceof CSSNamespaceRule) &&
+      !(typeof CSSLayerStatementRule !== "undefined" && rule instanceof CSSLayerStatementRule) &&
+      !(typeof CSSNestedDeclarations !== "undefined" && rule instanceof CSSNestedDeclarations)
+    ) {
       parent.deleteRule(index);
     }
   }

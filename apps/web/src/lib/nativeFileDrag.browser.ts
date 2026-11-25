@@ -2,7 +2,7 @@ import type { DragEvent } from "react";
 import { expect, it, vi } from "vitest";
 import { nativeFileDrag } from "./nativeFileDrag";
 
-it("uses native drag on Mac host windows and cancels a pending lookup on release", async () => {
+it("starts the trusted drag before waiting for path resolution", async () => {
   const start = vi.fn(async () => true);
   const platform = vi.spyOn(window.navigator, "platform", "get").mockReturnValue("MacIntel");
   vi.stubGlobal("desktopBridge", {});
@@ -21,10 +21,10 @@ it("uses native drag on Mac host windows and cancels a pending lookup on release
       resolvePath = resolve;
     });
     nativeFileDrag("/tmp/unresolved", () => pending).onDragStart!(event);
-    window.dispatchEvent(new Event("pointerup"));
+    expect(start).toHaveBeenLastCalledWith(expect.any(Function));
     resolvePath("/tmp/resolved");
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(start).toHaveBeenCalledTimes(1);
+    expect(start).toHaveBeenCalledTimes(2);
   } finally {
     platform.mockRestore();
     vi.unstubAllGlobals();

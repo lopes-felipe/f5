@@ -69,20 +69,28 @@ let browserOpenGestureAt = -Infinity;
 const takeKeepAwakeGesture = createFileActionGesture(window);
 const takeFileActionGesture = createFileActionGesture(window);
 let fileDragGestureAt = -Infinity;
+let fileDragGeneration = 0;
 window.addEventListener(
   "dragstart",
   (event) => {
-    if (event.isTrusted) fileDragGestureAt = performance.now();
+    if (event.isTrusted) {
+      fileDragGestureAt = performance.now();
+      fileDragGeneration += 1;
+    }
   },
   true,
 );
-window.addEventListener(
-  "pointerup",
-  () => {
-    fileDragGestureAt = -Infinity;
-  },
-  true,
-);
+for (const eventName of ["pointerup", "mouseup", "blur"] as const) {
+  window.addEventListener(
+    eventName,
+    (event) => {
+      if (!event.isTrusted) return;
+      fileDragGestureAt = -Infinity;
+      fileDragGeneration += 1;
+    },
+    true,
+  );
+}
 for (const eventName of ["click", "keydown"] as const) {
   window.addEventListener(
     eventName,
@@ -244,10 +252,14 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   copyImage: (pngBytes, snapshot) => ipcRenderer.invoke(COPY_IMAGE_CHANNEL, pngBytes, snapshot),
   ...(argument("f5-profile-environment") === "host" && process.platform === "darwin"
     ? {
-        startFileDrag: (path: string) => {
+        startFileDrag: async (path: string | (() => Promise<string>)) => {
           const trusted = performance.now() - fileDragGestureAt < 1000;
           fileDragGestureAt = -Infinity;
-          return ipcRenderer.invoke("desktop:start-file-drag", path, trusted);
+          if (!trusted) return false;
+          const generation = fileDragGeneration;
+          const resolved = typeof path === "function" ? await path() : path;
+          if (generation !== fileDragGeneration) return true;
+          return ipcRenderer.invoke("desktop:start-file-drag", resolved, true);
         },
       }
     : {}),

@@ -1,6 +1,6 @@
 import "../index.css";
 import { useRef, useState } from "react";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { userEvent } from "vitest/browser";
 import { PopupFocusContext } from "./ui/popupFocus";
 import { Menu, MenuTrigger, MenuPopup, MenuItem } from "./ui/menu";
@@ -11,9 +11,11 @@ import { createComposerMention, type ComposerMention } from "../composer-editor-
 function Harness({
   initial = "**Bold** and `code` with @src/main.ts",
   initialMentions = [],
+  workspaceCwd,
 }: {
   initial?: string;
   initialMentions?: readonly ComposerMention[];
+  workspaceCwd?: string;
 }) {
   const [value, setValue] = useState(initial);
   const [mentions, setMentions] = useState(initialMentions);
@@ -25,6 +27,7 @@ function Harness({
     <>
       <ComposerPromptEditor
         ref={editor}
+        workspaceCwd={workspaceCwd}
         richTextEnabled={rich}
         value={value}
         mentions={mentions}
@@ -62,6 +65,32 @@ function Harness({
     </>
   );
 }
+it("uses the composer workspace to drag a relative file mention", async () => {
+  const startFileDrag = vi.fn(async () => true);
+  const platform = vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
+  vi.stubGlobal("desktopBridge", { startFileDrag });
+  try {
+    const view = await render(
+      <Harness
+        initial="@src/main.ts"
+        initialMentions={[createComposerMention("src/main.ts", 0)]}
+        workspaceCwd="/checkout"
+      />,
+    );
+    const chip = view
+      .getByTestId("composer-editor")
+      .element()
+      .querySelector<HTMLElement>("[data-composer-mention-chip]");
+    expect(chip?.draggable).toBe(true);
+    chip?.dispatchEvent(new Event("dragstart", { bubbles: true, cancelable: true }));
+    expect(startFileDrag).toHaveBeenCalledWith("/checkout/src/main.ts");
+    await view.unmount();
+  } finally {
+    vi.unstubAllGlobals();
+    platform.mockRestore();
+  }
+});
+
 it("keeps a retained quote comment outside the atomic token while editing", async () => {
   const screen = await render(<Harness initial="" />);
   try {

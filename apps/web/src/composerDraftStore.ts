@@ -2828,6 +2828,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
             sizeBytes: result.file.size,
             previewUrl,
             file: result.file,
+            ...(source ? { source } : {}),
           });
           imported.push({
             name: result.file.name || "image",

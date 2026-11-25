@@ -121,7 +121,9 @@ export function extractGitHubFilePatch(diff: string, path: string): PrHubChanged
             .map((line) => (line.length > 2000 ? `${line.slice(0, 2000)}… (line shortened)` : line))
             .join("\n"),
         });
-        return result;
+        return lines.some((line) => line.length > 2000)
+          ? { ...result, hasShortenedLines: true }
+          : result;
       }
     }
     section = next;

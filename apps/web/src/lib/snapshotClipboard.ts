@@ -1,6 +1,7 @@
 import { setAttachmentSource } from "./attachmentUploadQueue";
 
 const marker = "data-f5-snapshot";
+const snapshotImageName = /^(window(?:-[a-f0-9-]+)?)\.(?:png|webp)$/i;
 export const SNAPSHOT_CONTEXT_MAX_CHARS = 20_000;
 
 interface SnapshotAttachment {
@@ -16,9 +17,10 @@ export function findSnapshotContext<T extends SnapshotAttachment>(
   image: Pick<SnapshotAttachment, "name" | "source">,
   attachments: readonly T[],
 ): T | undefined {
-  if (image.source !== "snapshot" || !/^window(?:-[a-f0-9-]+)?\.png$/.test(image.name)) return;
+  const stem = snapshotImageName.exec(image.name)?.[1];
+  if (image.source !== "snapshot" || !stem) return;
   if (attachments.filter(({ name }) => name === image.name).length !== 1) return;
-  const name = image.name.replace(/\.png$/, "-context.txt");
+  const name = stem + "-context.txt";
   const context = attachments.filter((item) => item.name === name && item.source === "snapshot");
   return context.length === 1 ? context[0] : undefined;
 }
@@ -63,8 +65,9 @@ export function restoreClipboardSnapshot(files: File[], clipboard: DataTransfer)
       /[/\\\x00-\x1f]/.test(fragment.name)
     )
       return files;
+    const stem = fragment.name.replace(/\.[^.]+$/, "");
     const image = setAttachmentSource(
-      new File(files, fragment.name, { type: "image/png" }),
+      new File(files, stem + ".png", { type: "image/png" }),
       "snapshot",
     );
     return typeof fragment.context === "string" &&
@@ -72,7 +75,7 @@ export function restoreClipboardSnapshot(files: File[], clipboard: DataTransfer)
       ? [
           image,
           setAttachmentSource(
-            new File([fragment.context], fragment.name.replace(/\.png$/i, "") + "-context.txt", {
+            new File([fragment.context], stem + "-context.txt", {
               type: "text/plain",
             }),
             "snapshot",

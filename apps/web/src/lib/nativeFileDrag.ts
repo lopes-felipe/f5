@@ -23,11 +23,7 @@ export function nativeFileDrag(path: string | undefined, resolve?: () => Promise
       };
       window.addEventListener("pointerup", didRelease, true);
       window.addEventListener("mouseup", didRelease, true);
-      void Promise.resolve()
-        .then(async () => {
-          const target = resolve ? await resolve() : path;
-          return released || (await start(target));
-        })
+      void start(resolve ?? path)
         .then((started) => {
           if (!started) throw new Error("The file is unavailable for drag on this Mac.");
         })

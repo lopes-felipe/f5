@@ -1492,6 +1492,7 @@ export const ComposerPromptEditor = forwardRef<
 >(function ComposerPromptEditor(
   {
     richTextEnabled = false,
+    workspaceCwd,
     mentions = EMPTY_COMPOSER_MENTIONS,
     value,
     cursor,
@@ -1542,6 +1543,7 @@ export const ComposerPromptEditor = forwardRef<
   return (
     <LexicalComposer key={COMPOSER_EDITOR_HMR_KEY} initialConfig={initialConfig}>
       <ComposerPromptEditorInner
+        workspaceCwd={workspaceCwd}
         richTextEnabled={richTextEnabled}
         value={value}
         mentions={mentions}

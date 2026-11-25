@@ -46,6 +46,7 @@ it("loads only the requested file, retaining hunk lines that look like headers",
   const restored = extractGitHubFilePatch(diff, "new name.ts");
   assert.equal(restored?.previousPath, "old name.ts");
   assert.equal(restored?.patchStatus, "available");
+  assert.equal(restored?.hasShortenedLines, true);
   assert.include(restored?.patch ?? "", "+++ new source");
   assert.include(restored?.patch ?? "", "line shortened");
   assert.notInclude(restored?.patch ?? "", "else.ts");

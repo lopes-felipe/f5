@@ -891,7 +891,7 @@ export interface DesktopBridge {
   ) => Promise<T | null>;
   readClipboardText?: (source: "clipboard" | "selection") => Promise<string>;
   copyImage?: (pngBytes: Uint8Array, snapshot?: { html: string; text: string }) => Promise<void>;
-  startFileDrag?: (path: string) => Promise<boolean>;
+  startFileDrag?: (path: string | (() => Promise<string>)) => Promise<boolean>;
   downloadImage?: (bytes: Uint8Array, filename: string) => Promise<DesktopImageDownloadResult>;
   openExternal: (url: string) => Promise<boolean>;
   /** User-initiated local file actions run in main, outside the backend GUI sandbox. */

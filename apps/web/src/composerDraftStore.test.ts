@@ -14,6 +14,7 @@ vi.mock("./lib/attachmentUploadQueue", () => ({
 }));
 vi.mock("./lib/serverHttpOrigin", () => ({ getServerHttpOrigin: () => "http://localhost" }));
 import { resetProtocolStateForTests, setServerBootstrap } from "./protocolState";
+import { attachmentSources } from "./lib/attachmentUploadQueue";
 import { createComposerMention } from "./composer-editor-mentions";
 import { serverBootstrapFixture } from "./test/serverBootstrap";
 import { ProjectId, ProviderDriverKind, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
@@ -253,6 +254,25 @@ describe("composerDraftStore image imports", () => {
     await firstImport;
     expect(useComposerDraftStore.getState().draftsByThreadId[threadA]?.images).toHaveLength(8);
     expect(useComposerDraftStore.getState().imageImportsByThreadId[threadA]).toBeUndefined();
+  });
+
+  it("stores the snapshot source when preparation replaces the original file", async () => {
+    const original = new File(["png"], "window-abcd.png", { type: "image/png" });
+    const prepared = new File(["webp"], "window-abcd.webp", { type: "image/webp" });
+    attachmentSources.set(original, "snapshot");
+    await useComposerDraftStore.getState().importImages(threadA, [original], {
+      processor: async () => ({
+        ok: true,
+        file: prepared,
+        recompressed: true,
+        originalSizeBytes: original.size,
+        finalSizeBytes: prepared.size,
+      }),
+    });
+    expect(useComposerDraftStore.getState().draftsByThreadId[threadA]?.images[0]).toMatchObject({
+      name: prepared.name,
+      source: "snapshot",
+    });
   });
 
   it("commits to the destination thread captured when the import starts", async () => {

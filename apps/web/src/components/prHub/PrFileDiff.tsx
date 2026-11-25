@@ -30,15 +30,20 @@ export function PrFileDiff({
   loadDiff?: (() => Promise<PrHubChangedFile>) | undefined;
   forgeLabel?: string;
 }) {
-  const [loadedPatch, setLoadedPatch] = useState<string | null>(null);
+  const [loadedFile, setLoadedFile] = useState<PrHubChangedFile | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const file = useMemo(
     () =>
-      loadedPatch
-        ? { ...listedFile, patch: loadedPatch, patchStatus: "available" as const }
+      loadedFile?.patch
+        ? {
+            ...listedFile,
+            patch: loadedFile.patch,
+            patchStatus: "available" as const,
+            hasShortenedLines: loadedFile.hasShortenedLines === true,
+          }
         : listedFile,
-    [listedFile, loadedPatch],
+    [listedFile, loadedFile],
   );
   const { settings } = useAppSettings();
   const { resolvedTheme } = useTheme();
@@ -50,10 +55,10 @@ export function PrFileDiff({
     file.additions + file.deletions > 0;
   const displayPatch = useMemo(
     () =>
-      file.patch && settings.diffIgnoreWhitespace && !pureRename
+      file.patch && settings.diffIgnoreWhitespace && !pureRename && !file.hasShortenedLines
         ? substantivePrPatch(file.patch)
         : file.patch,
-    [file.patch, settings.diffIgnoreWhitespace, pureRename],
+    [file.patch, file.hasShortenedLines, settings.diffIgnoreWhitespace, pureRename],
   );
   const patch = useMemo(
     () => getRenderablePrFilePatch(file, displayPatch, scope),
@@ -80,7 +85,7 @@ export function PrFileDiff({
               setLoading(true);
               setLoadError(null);
               void loadDiff()
-                .then((result) => setLoadedPatch(result.patch ?? null))
+                .then(setLoadedFile)
                 .catch((error: unknown) =>
                   setLoadError(error instanceof Error ? error.message : "Could not load diff."),
                 )
@@ -113,7 +118,7 @@ export function PrFileDiff({
         options={{
           diffStyle: settings.diffRenderMode === "split" ? "split" : "unified",
           lineDiffType: "none",
-          ...(onComment && !loadedPatch
+          ...(onComment && !loadedFile
             ? {
                 onLineNumberClick: (event) => {
                   const anchor: PrReviewAnchor = {

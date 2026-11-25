@@ -1,6 +1,11 @@
 import { expect, it } from "vitest";
 import { themeCssLoadsRemoteFiles } from "./themeCss";
 
+it.each(['url("data:image/png;base64,AA" )', "url('#gradient' \t)"])(
+  "allows safe quoted URLs with trailing whitespace in %s",
+  (value) => expect(themeCssLoadsRemoteFiles("a { background: " + value + "; }")).toBe(false),
+);
+
 it("allows a quoted data image that refers to its own SVG gradient", () => {
   expect(
     themeCssLoadsRemoteFiles(

@@ -984,6 +984,7 @@ export const PrHubChangedFile = Schema.Struct({
   blobOid: Schema.optional(Schema.NullOr(Schema.String)),
   patch: Schema.optional(Schema.NullOr(Schema.String)),
   patchStatus: Schema.optional(Schema.Literals(["available", "unavailable", "truncated"])),
+  hasShortenedLines: Schema.optionalKey(Schema.Boolean),
 });
 export type PrHubChangedFile = typeof PrHubChangedFile.Type;
 const PrHubDiffTotals = Schema.Struct({ additions: NonNegativeInt, deletions: NonNegativeInt });
