@@ -7,7 +7,44 @@ import {
   buildAccountExecutionEnvironment,
   assertAccountEnvironmentOverrides,
   buildProviderChildProcessEnv,
+  PROVIDER_TELEMETRY_OPT_OUT_ENV,
 } from "./providerProcessEnv";
+
+const OPT_OUT = PROVIDER_TELEMETRY_OPT_OUT_ENV;
+
+describe("provider telemetry opt-out", () => {
+  it("opts agent CLIs out of vendor telemetry and error reporting", () => {
+    expect(buildProviderChildProcessEnv({ PATH: "/bin" })).toEqual({
+      PATH: "/bin",
+      DO_NOT_TRACK: "1",
+      DISABLE_TELEMETRY: "1",
+      DISABLE_ERROR_REPORTING: "1",
+    });
+  });
+  it("keeps a value the user already set, in any case", () => {
+    const env = buildProviderChildProcessEnv({ DISABLE_TELEMETRY: "0", do_not_track: "0" });
+    expect(env.DISABLE_TELEMETRY).toBe("0");
+    expect(env.do_not_track).toBe("0");
+    expect(env.DO_NOT_TRACK).toBeUndefined();
+    expect(env.DISABLE_ERROR_REPORTING).toBe("1");
+  });
+  it("lets a provider instance's environment setting override the opt-out", () => {
+    const env = buildProviderChildProcessEnv({ PATH: "/bin" }, { DISABLE_ERROR_REPORTING: "0" });
+    expect(env.DISABLE_ERROR_REPORTING).toBe("0");
+  });
+  it("applies to agent processes but not to terminals or git", () => {
+    const build = (purpose: "provider" | "terminal" | "git") =>
+      buildAccountExecutionEnvironment({
+        purpose,
+        profile: undefined,
+        stateDir: "/tmp/f5-state",
+        baseEnv: { PATH: "/bin" },
+      });
+    expect(build("provider")).toMatchObject(OPT_OUT);
+    for (const purpose of ["terminal", "git"] as const)
+      for (const name of Object.keys(OPT_OUT)) expect(build(purpose)[name]).toBeUndefined();
+  });
+});
 
 describe("buildProviderChildProcessEnv", () => {
   it("strips Codex package-manager hints from inherited and overridden environments", () => {
@@ -22,7 +59,7 @@ describe("buildProviderChildProcessEnv", () => {
         },
         { codex_managed_by_npm: "1" },
       ),
-    ).toEqual({ PATH: "/bin" });
+    ).toEqual({ ...OPT_OUT, PATH: "/bin" });
   });
   it("replaces differently-cased inherited variables on Windows", () => {
     const env = buildProviderChildProcessEnv(
@@ -41,6 +78,7 @@ describe("buildProviderChildProcessEnv", () => {
     });
 
     expect(env).toEqual({
+      ...OPT_OUT,
       PATH: "/usr/bin",
       HOME: "/Users/tester",
     });
@@ -53,7 +91,7 @@ describe("buildProviderChildProcessEnv", () => {
         F5_BROWSER_OPEN_TOKEN: "another-f5",
         f5_browser_open_token: "lowercase",
       }),
-    ).toEqual({ PATH: "/usr/bin" });
+    ).toEqual({ ...OPT_OUT, PATH: "/usr/bin" });
   });
 
   it("never passes the backend's own auth token to F5's children", () => {
@@ -64,7 +102,7 @@ describe("buildProviderChildProcessEnv", () => {
         t3code_auth_token: "lowercase",
         T3CODE_CODEX_LAUNCH_ARGS: "--legacy",
       }),
-    ).toEqual({ PATH: "/usr/bin", T3CODE_CODEX_LAUNCH_ARGS: "--legacy" });
+    ).toEqual({ ...OPT_OUT, PATH: "/usr/bin", T3CODE_CODEX_LAUNCH_ARGS: "--legacy" });
   });
 
   it("treats env keys case-insensitively and applies overrides", () => {
@@ -81,6 +119,7 @@ describe("buildProviderChildProcessEnv", () => {
     );
 
     expect(env).toEqual({
+      ...OPT_OUT,
       PATH: "/usr/bin",
       CODEX_HOME: "/tmp/codex-home",
     });
@@ -321,7 +360,7 @@ it("removes standalone launcher state from inherited and overridden provider env
     F5_UPDATE_TRIAL: "1",
     F5_UPDATE_ID: "update",
   };
-  expect(buildProviderChildProcessEnv(values, values)).toEqual({ PATH: "/user/node" });
+  expect(buildProviderChildProcessEnv(values, values)).toEqual({ ...OPT_OUT, PATH: "/user/node" });
 });
 
 it("isolates Pi configuration and multi-provider credentials while retaining explicit instance keys", () => {

@@ -41,10 +41,15 @@ function isBlockedProviderEnvKey(key: string): boolean {
  * configuration. On managed machines that can redirect Codex / Claude logs and
  * traces to unrelated endpoints, producing noisy export errors and leaking
  * telemetry intended only for the parent shell or desktop app.
+ *
+ * Agent CLIs are also opted out of their vendors' usage telemetry and error reporting
+ * (see {@link applyProviderTelemetryOptOut}) unless `telemetryOptOut` is false, as it is
+ * for terminals and git.
  */
 export function buildProviderChildProcessEnv(
   baseEnv: NodeJS.ProcessEnv,
   overrides?: NodeJS.ProcessEnv,
+  options: { readonly telemetryOptOut?: boolean } = {},
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
 
@@ -54,6 +59,9 @@ export function buildProviderChildProcessEnv(
     }
     env[key] = value;
   }
+
+  // Before the overrides, so a provider instance's own environment setting still wins.
+  if (options.telemetryOptOut !== false) applyProviderTelemetryOptOut(env);
 
   if (!overrides) {
     return env;
@@ -73,6 +81,25 @@ export function buildProviderChildProcessEnv(
     env[key] = value;
   }
 
+  return env;
+}
+
+/**
+ * Vendor telemetry opt-outs for agent CLIs: `DO_NOT_TRACK` (the cross-tool convention),
+ * and Claude Code's `DISABLE_TELEMETRY` (usage metrics) and `DISABLE_ERROR_REPORTING`
+ * (crash reports). Codex is opted out through `-c analytics.enabled=false` instead.
+ */
+export const PROVIDER_TELEMETRY_OPT_OUT_ENV: Readonly<Record<string, string>> = {
+  DO_NOT_TRACK: "1",
+  DISABLE_TELEMETRY: "1",
+  DISABLE_ERROR_REPORTING: "1",
+};
+
+/** Sets each opt-out the environment does not already define, so a user's own value wins. */
+export function applyProviderTelemetryOptOut(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const defined = new Set(Object.keys(env).map((key) => key.toUpperCase()));
+  for (const [name, value] of Object.entries(PROVIDER_TELEMETRY_OPT_OUT_ENV))
+    if (!defined.has(name)) env[name] = value;
   return env;
 }
 
@@ -161,7 +188,11 @@ export function buildAccountExecutionEnvironment(input: {
       );
   }
   const environment = profileGithubEnvironment(
-    buildProviderChildProcessEnv(base, { ...instance, ...input.overrides }),
+    buildProviderChildProcessEnv(
+      base,
+      { ...instance, ...input.overrides },
+      { telemetryOptOut: input.purpose === "provider" },
+    ),
     input.stateDir,
   );
   if (input.purpose === "provider" || input.purpose === "terminal") {
