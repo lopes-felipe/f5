@@ -111,9 +111,16 @@ policy-enforced.
 
 Run `node apps/server/integration/cursorSandboxGates.mjs` from a normal
 Terminal: macOS refuses to start the sandbox inside an agent's sandboxed shell.
-It spends two prompts and works in a fresh temp folder with its own HOME.
+It spends three prompts and works in a fresh temp folder with its own HOME.
 `--handshake-only` stops before the prompts. It checks that a sandboxed ACP
 session starts, signs in and enters plan mode, and spends nothing.
+
+The copied `cli-config.json` turns on Cursor's own "Run in Sandbox" preset
+(`sandbox: { mode: "enabled", networkAccess: "user_config_only" }`,
+`approvalMode: "allowlist"`) with an empty allowlist. C2 runs in plan mode. C3
+and C4 run in the default mode, because in plan mode a compliant model declines
+the writes itself and the write checks prove nothing. A write the model never
+attempted is reported as inconclusive, not as blocked.
 
 | Gate | Question                                                                                                                                                            | Result                                                                                          |
 | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
@@ -129,6 +136,14 @@ session starts, signs in and enters plan mode, and spends nothing.
   start, authenticate and enter plan mode with `--sandbox enabled` under that
   HOME (`--handshake-only`, same date). Linux keeps credentials elsewhere and
   needs its own C1 run.
+- **First run (2026-11-25), inconclusive:** both C3 and C4 ran in plan mode.
+  The model ran only `ls`, `curl` and the fetch, and declined every write
+  ("Plan mode is currently active"). Each of those three asked F5 for
+  permission with the text "Shell allowlist is empty" and no `rawInput`.
+  `curl` returned 200. So the session was in allowlist mode with no sandbox:
+  `--sandbox enabled` alone didn't turn on the sandbox while the copied
+  config had no `sandbox` key. The script now sets the preset and runs the
+  write gates outside plan mode.
 - **C4 exists because** the CLI folds the workspace's own `.cursor/sandbox.json`
   into the per-user policy. A repository under review must not be able to
   loosen a read-only stage's sandbox.
