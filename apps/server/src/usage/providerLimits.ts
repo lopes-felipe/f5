@@ -654,16 +654,39 @@ export function makeProviderLimits(input: {
         value = await fetchJson("https://opencode.ai/zen/go/v1/usage", token, signal);
       } else if (readNativeAntigravity && !env.F5_CLIPROXY_HUB_URL && !env.F5_CLIPROXY_USAGE_URL) {
         const certified = (await input.antigravityNativeReaders?.()) ?? true;
-        const result = certified
-          ? await readNativeAntigravity(signal, performance.now() + ANTIGRAVITY_READ_BUDGET_MS)
-          : undefined;
-        if (!result)
+        if (!certified)
           return [
             {
               ...emptyAccountSection("provider-limits"),
               outcome: "unavailable",
               errorCode: "unsupported",
               lastAttemptAt: new Date().toISOString(),
+            },
+          ];
+        const result = await readNativeAntigravity(
+          signal,
+          performance.now() + ANTIGRAVITY_READ_BUDGET_MS,
+        );
+        if (result.kind === "signed-out")
+          return [
+            {
+              ...emptyAccountSection("provider-limits"),
+              outcome: "unavailable",
+              // Clears both the live and the persisted snapshot.
+              errorCode: "authentication-required",
+              lastAttemptAt: new Date().toISOString(),
+            },
+          ];
+        if (result.kind === "expired")
+          return [
+            {
+              kind: "provider-limits",
+              outcome: "unavailable",
+              // Names the account, so only that account's snapshot is retained or hydrated.
+              accountFingerprint: result.accountFingerprint,
+              errorCode: "credentials-expired",
+              lastAttemptAt: new Date().toISOString(),
+              snapshot: null,
             },
           ];
         value = { windows: result.windows };
@@ -736,10 +759,16 @@ export function makeProviderLimits(input: {
     Effect.map((capability) => ({
       ...capability,
       identityForSnapshot: (snapshot: import("@t3tools/contracts").UsageAccount) => {
+        // Bound to the account shown: its snapshot's account, else the account an expired
+        // attempt named. An attempt that identified no account hydrates nothing.
         const fingerprint = snapshot.sections.flatMap((section) =>
-          section.kind === "provider-limits" && section.snapshot?.data.accountFingerprint
-            ? [section.snapshot.data.accountFingerprint]
-            : [],
+          section.kind !== "provider-limits"
+            ? []
+            : section.snapshot?.data.accountFingerprint
+              ? [section.snapshot.data.accountFingerprint]
+              : section.accountFingerprint
+                ? [section.accountFingerprint]
+                : [],
         )[0];
         return fingerprint
           ? accountUsageIdentity("antigravity", [fingerprint])

@@ -29,6 +29,9 @@ Each harness release bumps the version once: Release 1 is 16, and Release 2 is 1
 (session capability snapshots, reported model capabilities, catalog sources and the
 provider inventory RPC).
 
+Version 48 adds the `credentials-expired` account usage error code and the provider-limits
+section's `accountFingerprint`, which name an expired sign-in's account.
+
 Version 46 adds the explicit onboarding project discovery and history import RPCs.
 Discovery uses the current server profile's configured Codex and Claude homes.
 History import is optional, never starts a turn, and uses the normal approval defaults.

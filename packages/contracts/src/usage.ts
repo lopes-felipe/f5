@@ -361,6 +361,8 @@ export const AccountUsageErrorCode = Schema.Literals([
   "process-unavailable",
   "invalid-response",
   "temporary-failure",
+  /** The provider's saved sign-in expired; the last-known snapshot stays until it renews. */
+  "credentials-expired",
 ]);
 export type AccountUsageErrorCode = typeof AccountUsageErrorCode.Type;
 export const ClaudeAccountUsageWindow = Schema.Struct({
@@ -469,6 +471,11 @@ export const AccountUsageSection = Schema.Union([
   Schema.Struct({
     ...sectionState,
     kind: Schema.Literal("provider-limits"),
+    /**
+     * The account the latest attempt identified, when it identified one without reading
+     * quotas (an expired sign-in). Retained snapshots and history must belong to it.
+     */
+    accountFingerprint: Schema.optional(TrimmedNonEmptyString),
     snapshot: Schema.NullOr(
       Schema.Struct({
         fetchedAt: IsoDateTime,
