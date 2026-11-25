@@ -19,6 +19,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { makeOpenCodeTextGeneration } from "../../git/Layers/OpenCodeTextGeneration.ts";
 import { ServerConfig } from "../../config.ts";
+import { makeOpenCodeUsageHistory } from "../../usage/externalProviderHistory.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makeOpenCodeAdapter } from "../Layers/OpenCodeAdapter.ts";
 import {
@@ -82,6 +83,10 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
         driverKind: DRIVER_KIND,
         instanceId,
       });
+      const usageHistory = yield* makeOpenCodeUsageHistory(
+        processEnv,
+        enabled && !config.serverUrl,
+      );
       const stampIdentity = withInstanceIdentity({
         instanceId,
         displayName,
@@ -148,6 +153,7 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
         snapshot,
         adapter,
         accountUsage,
+        usageHistory,
         textGeneration,
       } satisfies ProviderInstance;
     }),

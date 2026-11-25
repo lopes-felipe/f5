@@ -1,0 +1,1 @@
+- Pull request diffs follow the changed-file tree order. The pull request and chat diff panels share a Hide test files toggle.

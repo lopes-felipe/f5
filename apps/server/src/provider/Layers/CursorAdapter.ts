@@ -75,6 +75,7 @@ import {
   ProviderAdapterValidationError,
 } from "../Errors.ts";
 import { acpPermissionOutcome, mapAcpToAdapterError } from "../acp/AcpAdapterSupport.ts";
+import { acpReadOnlyWorkflowDecision } from "../acp/AcpReadOnlyWorkflowPolicy.ts";
 import { type AcpSessionRuntimeShape } from "../acp/AcpSessionRuntime.ts";
 import {
   makeAcpAssistantItemEvent,
@@ -1308,25 +1309,55 @@ export function makeCursorAdapter(
                   return cursorFallbackQuestionReply(params, resolution);
                 }
                 if (input.workflowExecutionProfile) {
+                  // Cursor has no OS sandbox, so even its plan mode asks before every command
+                  // and web fetch. Read-only operations run once; anything else is refused here
+                  // and recorded, and the model is told no and keeps working.
+                  const computerRequest = Boolean(catalogs.classify(params.toolCall));
+                  if (
+                    acpReadOnlyWorkflowDecision({ toolCall: params.toolCall, computerRequest }) ===
+                    "allow"
+                  ) {
+                    const allowOnce = acpPermissionOutcome("accept", params.options);
+                    if (allowOnce !== undefined)
+                      return { outcome: { outcome: "selected" as const, optionId: allowOnce } };
+                  }
                   const permissionRequest = parsePermissionRequest(params);
+                  const deniedRequestId = RuntimeRequestId.make(crypto.randomUUID());
                   yield* offerRuntimeEvent(
                     makeAcpRequestOpenedEvent({
                       stamp: yield* makeEventStamp(ctx),
                       provider: PROVIDER,
                       threadId: input.threadId,
                       turnId: ctx?.activeTurnId,
-                      requestId: RuntimeRequestId.make(crypto.randomUUID()),
+                      requestId: deniedRequestId,
                       permissionRequest,
-                      detail: catalogs.classify(params.toolCall)
+                      detail: computerRequest
                         ? "Tool inputs hidden while computer control is enabled"
                         : (permissionRequest.detail ?? JSON.stringify(params).slice(0, 2000)),
                       args: params,
                       source: "acp.jsonrpc",
                       method: "session/request_permission",
                       rawPayload: params,
+                      autoDeclined: true,
                     }),
                   );
-                  return { outcome: { outcome: "cancelled" as const } };
+                  yield* offerRuntimeEvent(
+                    makeAcpRequestResolvedEvent({
+                      stamp: yield* makeEventStamp(ctx),
+                      provider: PROVIDER,
+                      threadId: input.threadId,
+                      turnId: ctx?.activeTurnId,
+                      requestId: deniedRequestId,
+                      permissionRequest,
+                      decision: "decline",
+                    }),
+                  );
+                  // `cancelled` means "the prompt turn was cancelled" in ACP; a refusal of this
+                  // one operation is `reject_once` whenever the agent offers it.
+                  const rejectOnce = acpPermissionOutcome("decline", params.options);
+                  return rejectOnce === undefined
+                    ? { outcome: { outcome: "cancelled" as const } }
+                    : { outcome: { outcome: "selected" as const, optionId: rejectOnce } };
                 }
                 const computerRequest = catalogs.classify(params.toolCall);
                 if (computerRequest)

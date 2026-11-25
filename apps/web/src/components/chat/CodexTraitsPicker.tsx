@@ -17,7 +17,7 @@ import { notifyComposerModelPick } from "../../composerModelPicks";
 import { defaultComposerEffort } from "./composerModelDefaults";
 import { memo, useState } from "react";
 import { ChevronDownIcon } from "lucide-react";
-import { useComposerDraftStore, useComposerThreadDraft } from "../../composerDraftStore";
+import { useComposerDraftStore } from "../../composerDraftStore";
 import { recordModelSelection } from "../../modelPreferencesStore";
 import { cn } from "~/lib/utils";
 
@@ -76,14 +76,41 @@ function getSelectedCodexTraits(
   };
 }
 
-function CodexTraitsMenuContentImpl(props: {
-  threadId: ThreadId;
-  model: string;
-  models?: ReadonlyArray<ServerProviderModel>;
-  onSelectionComplete?: () => void;
-}) {
-  const draft = useComposerThreadDraft(props.threadId);
-  const modelOptions = draft.modelOptions?.codex;
+/**
+ * Where the Codex traits live: a composer thread draft, or a controlled value (workflow slots)
+ * whose owner records the change itself.
+ */
+type CodexTraitsBinding =
+  | {
+      threadId: ThreadId;
+      modelOptions?: never;
+      onModelOptionsChange?: never;
+    }
+  | {
+      threadId?: undefined;
+      modelOptions: CodexModelOptions | undefined;
+      onModelOptionsChange: (next: CodexModelOptions | undefined) => void;
+    };
+
+/** The bound Codex options, read from the thread draft only when bound to one. */
+function useCodexTraitsModelOptions(binding: CodexTraitsBinding) {
+  const draftModelOptions = useComposerDraftStore((store) =>
+    binding.threadId ? store.draftsByThreadId[binding.threadId]?.modelOptions : undefined,
+  );
+  return {
+    draftModelOptions,
+    modelOptions: binding.onModelOptionsChange ? binding.modelOptions : draftModelOptions?.codex,
+  };
+}
+
+function CodexTraitsMenuContentImpl(
+  props: {
+    model: string;
+    models?: ReadonlyArray<ServerProviderModel>;
+    onSelectionComplete?: () => void;
+  } & CodexTraitsBinding,
+) {
+  const { draftModelOptions, modelOptions } = useCodexTraitsModelOptions(props);
   const setModelOptions = useComposerDraftStore((store) => store.setModelOptions);
   const reported = getReportedCodexCapabilities(props.model, props.models);
   const capabilities = resolveModelCapabilities("codex", props.model, reported);
@@ -96,7 +123,12 @@ function CodexTraitsMenuContentImpl(props: {
   );
 
   const setCodexModelOptions = (nextCodexModelOptions: CodexModelOptions | undefined) => {
-    const { codex: _discardedCodex, ...otherProviderModelOptions } = draft.modelOptions ?? {};
+    if (props.onModelOptionsChange) {
+      props.onModelOptionsChange(nextCodexModelOptions);
+      return;
+    }
+    if (!props.threadId) return;
+    const { codex: _discardedCodex, ...otherProviderModelOptions } = draftModelOptions ?? {};
     const nextProviderModelOptions: ProviderModelOptions | undefined = nextCodexModelOptions
       ? { ...otherProviderModelOptions, codex: nextCodexModelOptions }
       : Object.keys(otherProviderModelOptions).length > 0
@@ -179,27 +211,33 @@ function CodexTraitsMenuContentImpl(props: {
   );
 }
 
-export const CodexTraitsMenuContent = memo(CodexTraitsMenuContentImpl);
+const CodexTraitsMenuContent = memo(CodexTraitsMenuContentImpl);
 
-export const CodexTraitsPicker = memo(function CodexTraitsPicker(props: {
-  threadId: ThreadId;
-  model: string;
-  models?: ReadonlyArray<ServerProviderModel>;
-}) {
+export const CodexTraitsPicker = memo(function CodexTraitsPicker(
+  props: {
+    model: string;
+    models?: ReadonlyArray<ServerProviderModel>;
+    disabled?: boolean | undefined;
+    triggerClassName?: string | undefined;
+  } & CodexTraitsBinding,
+) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const modelOptions = useComposerThreadDraft(props.threadId).modelOptions?.codex;
+  const { modelOptions } = useCodexTraitsModelOptions(props);
   const { effort, fastModeEnabled } = getSelectedCodexTraits(
     props.model,
     modelOptions,
     props.models,
   );
   const triggerLabel = CODEX_REASONING_LABELS[effort];
+  const binding: CodexTraitsBinding = props.onModelOptionsChange
+    ? { modelOptions: props.modelOptions, onModelOptionsChange: props.onModelOptionsChange }
+    : { threadId: props.threadId as ThreadId };
 
   return (
     <Menu
-      open={isMenuOpen}
+      open={isMenuOpen && !props.disabled}
       onOpenChange={(open) => {
-        setIsMenuOpen(open);
+        setIsMenuOpen(open && !props.disabled);
       }}
     >
       <MenuTrigger
@@ -209,10 +247,12 @@ export const CodexTraitsPicker = memo(function CodexTraitsPicker(props: {
           <Button
             size="sm"
             variant="ghost"
+            disabled={props.disabled}
             className={cn(
               COMPOSER_CHIP_CLASS_NAME,
               "min-w-0 max-w-40 shrink justify-start overflow-hidden sm:max-w-48 [&_svg]:mx-0",
               getEffortLevel(effort)?.chipClass,
+              props.triggerClassName,
             )}
           />
         }
@@ -225,7 +265,7 @@ export const CodexTraitsPicker = memo(function CodexTraitsPicker(props: {
       </MenuTrigger>
       <MenuPopup align="start">
         <CodexTraitsMenuContent
-          threadId={props.threadId}
+          {...binding}
           model={props.model}
           {...(props.models ? { models: props.models } : {})}
           onSelectionComplete={() => {

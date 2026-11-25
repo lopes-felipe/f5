@@ -12,6 +12,7 @@ import type { ThreadId } from "@t3tools/contracts";
 import { Cause, Effect } from "effect";
 import { readCodexToolOutputImage } from "../codexToolOutputImages.ts";
 import { appendProviderLog, closeProviderLogs } from "../logWriterRegistry.ts";
+import { isScrubExemptField, scrubSecretsInText } from "../logSecretScrub.ts";
 
 import { toSafeThreadAttachmentSegment } from "../../attachmentStore.ts";
 
@@ -85,11 +86,21 @@ export function scrubInlineImagesReplacer(_key: string, value: unknown): unknown
   };
 }
 
+/**
+ * Drops inline images and redacts credentials from string fields. A `function` so
+ * `JSON.stringify` passes the holder object as `this`.
+ */
+export function scrubProviderLogReplacer(this: unknown, key: string, value: unknown): unknown {
+  if (typeof value === "string")
+    return isScrubExemptField(this, key) ? value : scrubSecretsInText(value);
+  return scrubInlineImagesReplacer(key, value);
+}
+
 function toLogMessage(event: unknown): Effect.Effect<string | undefined> {
   return Effect.gen(function* () {
     const serialized = yield* Effect.sync(() => {
       try {
-        return { ok: true as const, value: JSON.stringify(event, scrubInlineImagesReplacer) };
+        return { ok: true as const, value: JSON.stringify(event, scrubProviderLogReplacer) };
       } catch (error) {
         return { ok: false as const, error };
       }

@@ -56,6 +56,7 @@ export interface GitRouteDependencies {
     ws: WebSocket,
     event: GitActionProgressEvent,
   ) => Effect.Effect<void>;
+  readonly observeStatus?: (cwd: string, branch: string | null) => Effect.Effect<void>;
   /** Creates a worktree with the project's worktree settings applied. */
   readonly createWorktree: GitCoreShape["createWorktree"];
   /** Creates a thread's worktree once per operation and runs the project's setup script. */
@@ -92,11 +93,15 @@ export const gitRoutes = ({
   gitManager,
   switchWorkspace,
   publishActionProgress,
+  observeStatus,
   createWorktree,
   prepareWorktree,
   runtime,
 }: GitRouteDependencies): RouteTable<GitMethod, never, Error> => ({
-  [WS_METHODS.gitStatus]: (body) => gitManager.status(withoutTag(body)),
+  [WS_METHODS.gitStatus]: (body) =>
+    gitManager
+      .status(withoutTag(body))
+      .pipe(Effect.tap((status) => observeStatus?.(body.cwd, status.branch) ?? Effect.void)),
   [WS_METHODS.gitPull]: (body) => git.pullCurrentBranch(body.cwd),
   [WS_METHODS.gitRunStackedAction]: (request, ws) =>
     Effect.gen(function* () {
