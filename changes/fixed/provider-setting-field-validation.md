@@ -1,0 +1,1 @@
+- Invalid provider settings, such as an out-of-range Claude auto-compact window, stay visible with an inline error. F5 keeps using the last saved configuration.

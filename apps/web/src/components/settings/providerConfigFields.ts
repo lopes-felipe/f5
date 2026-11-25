@@ -1,31 +1,48 @@
-import { AcpSettings } from "@t3tools/contracts";
-import { Schema } from "effect";
+import { Option, Schema } from "effect";
 import type { DriverFieldDef } from "./providerDriverMeta";
+
+const DECIMAL_NUMBER = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i;
 
 export function decodeDriverConfigField(field: DriverFieldDef, text: string): unknown {
   const trimmed = text.trim();
   if (!trimmed) {
     if (field.required) throw new Error(`${field.label} is required.`);
-    return undefined;
+    if (field.format !== "number") return undefined;
   }
-  if (!field.format) return trimmed;
-  try {
-    const value: unknown = JSON.parse(trimmed);
-    return field.format === "json-array"
-      ? Schema.decodeUnknownSync(AcpSettings.fields.args)(value)
-      : Schema.decodeUnknownSync(AcpSettings.fields.env)(value);
-  } catch {
-    throw new Error(
-      field.format === "json-array"
-        ? `${field.label} must be a JSON array of arguments.`
-        : `${field.label} must be a JSON object with environment variable names and string values.`,
-    );
+  if (field.format === "json-array" || field.format === "json-record") {
+    try {
+      return Schema.decodeUnknownSync(field.schema)(JSON.parse(trimmed));
+    } catch {
+      throw new Error(
+        field.format === "json-array"
+          ? `${field.label} must be a JSON array of arguments.`
+          : `${field.label} must be a JSON object with environment variable names and string values.`,
+      );
+    }
   }
+  const value =
+    field.format === "number"
+      ? !trimmed || DECIMAL_NUMBER.test(trimmed)
+        ? Number(trimmed)
+        : NaN
+      : trimmed;
+  if (Option.isNone(Schema.decodeUnknownOption(field.schema)(value))) {
+    throw new Error("Enter a valid value. It was not saved.");
+  }
+  return value;
 }
+
+function readConfigValue(config: unknown, key: string): unknown {
+  return config && typeof config === "object"
+    ? (config as Record<string, unknown>)[key]
+    : undefined;
+}
+
 export function readDriverConfigField(config: unknown, field: DriverFieldDef): string {
   if (!config || typeof config !== "object") return "";
-  const value = (config as Record<string, unknown>)[field.key];
+  const value = readConfigValue(config, field.key);
   if (value === undefined) return field.defaultValue ?? "";
+  if (field.format === "number") return String(value);
   if (field.format) return JSON.stringify(value);
   return typeof value === "string" ? value : "";
 }
@@ -37,11 +54,12 @@ export function isDriverConfigFieldVisible(
   fields: ReadonlyArray<DriverFieldDef>,
 ): boolean {
   if (!field.visibleWhen) return true;
-  const controller = fields.find((candidate) => candidate.key === field.visibleWhen!.key);
+  const { key, equals } = field.visibleWhen;
+  const controller = fields.find((candidate) => candidate.key === key);
   const value = controller
     ? readDriverConfigField(config, controller)
-    : readDriverConfigField(config, { key: field.visibleWhen.key, label: "" });
-  return value === field.visibleWhen.equals;
+    : readConfigValue(config, key);
+  return value === equals;
 }
 
 /** A stored secret exists for this field (its value is never sent to the browser). */

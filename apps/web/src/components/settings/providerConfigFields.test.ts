@@ -40,4 +40,18 @@ describe("custom ACP settings", () => {
     expect(decodeDriverConfigField(fields[2]!, "{}")).toEqual({});
     expect(decodeDriverConfigField(fields[1]!, "[]")).toEqual([]);
   });
+
+  it("validates the command against the ACP settings schema", () => {
+    expect(() => decodeDriverConfigField(fields[0]!, "a".repeat(4097))).toThrow("not saved");
+    expect(() => decodeDriverConfigField(fields[0]!, "/custom/\0agent")).toThrow("not saved");
+  });
+});
+
+it("validates typed Pi launch arguments against the Pi settings schema", () => {
+  const launchArgs = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("pi")]!.fields.find(
+    (field) => field.key === "launchArgs",
+  )!;
+  expect(() => decodeDriverConfigField(launchArgs, "x".repeat(32 * 1024 + 1))).toThrow("not saved");
+  expect(decodeDriverConfigField(launchArgs, " --provider vendor ")).toBe("--provider vendor");
+  expect(decodeDriverConfigField(launchArgs, " ")).toBeUndefined();
 });
