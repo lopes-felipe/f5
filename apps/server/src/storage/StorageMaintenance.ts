@@ -6,7 +6,8 @@ import {
   retainedWorkflowThreadIds as workflowRetention,
   workflowEntries,
 } from "../orchestration/workflowArchiveLifecycle.ts";
-import { storageReadDir } from "./diskUsage.ts";
+import { storageLstat, storageReadDir } from "./diskUsage.ts";
+import { stripPathTerminator } from "../git/worktreeList.ts";
 import {
   pruneStorageAutomationAudit,
   readSkipsSinceLastSuccess,
@@ -58,21 +59,43 @@ import type { CheckoutGarbageScan, KnownDependencyFolder } from "./checkoutGarba
 import {
   type CheckpointRef,
   CommandId,
+  type DiskSpaceReclaimableItem,
   type PendingDatabaseCompaction,
   type StorageCleanupCategoryId,
   type StorageCleanupCategoryResult,
   type StorageCleanupCategoryUsage,
   type StorageCleanupProgressPayload,
+  type StorageCleanupRequest,
   type StorageCleanupResult,
   type StorageCleanupTarget,
   type StorageCleanupStatus,
+  type StorageGetOperationRequest,
+  type StorageGetOperationResult,
+  type StorageGetTargetsRequest,
+  type StorageGetTargetsResult,
+  type StorageGetUsageRequest,
+  type StorageGetUsageResult,
   type StoragePathWarning,
   type StorageScanStatus,
+  type StorageScheduleCompactionRequest,
+  type StorageScheduleCompactionResult,
+  type StorageStatus,
   type StorageUsageReport,
   ThreadId,
 } from "@t3tools/contracts";
 import { legacyT3BaseDir } from "@t3tools/shared/appStatePaths";
-import { Cause, Effect, Exit, Layer, Option, Scope, Semaphore, ServiceMap, Stream } from "effect";
+import {
+  Cause,
+  Effect,
+  Exit,
+  Layer,
+  Option,
+  Schema,
+  Scope,
+  Semaphore,
+  ServiceMap,
+  Stream,
+} from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import {
@@ -111,6 +134,7 @@ import {
   vacuumSpaceRequirement,
 } from "./databaseSpace.ts";
 import {
+  allocatedBytes,
   enumerateFiles,
   recursiveSize,
   indexFilesBySegment,
@@ -148,8 +172,6 @@ import {
   CHECKOUT_SIZE_BUDGET_MS,
   CHECKOUT_DISCOVERY_BUDGET_MS,
   GIT_WORKTREE_METADATA_UNRESOLVED,
-  StorageMaintenanceError,
-  refuseWhileDatabaseDamaged,
   isArchivePolicy,
   manualAuditJob,
   blockingReasons,
@@ -167,22 +189,8 @@ import {
   categoryUsage,
   resultFor,
   warningFor,
-  toStorageMaintenanceError,
   parseActiveTurnId,
   legacyAllowedRootForCategory,
-  exists,
-  databaseFileBytes,
-  listProviderLogFiles,
-  listGitWorktreeDirectories,
-  resolveWorktreeRemoveCwd,
-  loadStatfs,
-  type StorageCleanupContext,
-  type CleanupOperation,
-  type CleanupInput,
-  type AutomaticThreadPurgeResult,
-  type DatabaseSpaceResult,
-  type StorageMaintenanceShape,
-  type InactiveWorktreePreview,
   type ThreadRow,
   type OrphanAttachmentRow,
   type LegacyCleanupCategoryId,
@@ -195,21 +203,333 @@ import {
   type WorktreeRemovalReadiness,
 } from "./retentionPolicy.ts";
 
+export class StorageMaintenanceError extends Schema.TaggedErrorClass<StorageMaintenanceError>()(
+  "StorageMaintenanceError",
+  {
+    operation: Schema.String,
+    message: Schema.String,
+    cause: Schema.optional(Schema.Defect),
+  },
+) {}
+
+/**
+ * Deleting files or rewriting the database while it is damaged can destroy
+ * what recovery still needs, so every mutating entry point stands down.
+ */
+const refuseWhileDatabaseDamaged = (operation: string) =>
+  Effect.suspend(() =>
+    getDatabaseDamage() === null
+      ? Effect.void
+      : Effect.fail(
+          new StorageMaintenanceError({
+            operation,
+            message:
+              "The F5 database is damaged. Storage maintenance is paused until it is recovered.",
+          }),
+        ),
+  );
+
+export interface StorageCleanupContext {
+  readonly publishProgress?: (
+    event: StorageCleanupProgressPayload,
+  ) => Effect.Effect<void, never, never>;
+}
+
+/** What the cleanup helpers need from a request: progress and cancellation key on it. */
+type CleanupOperation = Pick<StorageCleanupRequest, "operationId">;
+type CleanupInput = Omit<StorageCleanupRequest, "backendEpoch"> & {
+  readonly backendEpoch?: string;
+};
+
+export interface AutomaticThreadPurgeResult {
+  readonly purgedThreadIds: ReadonlyArray<ThreadId>;
+  /** Archived threads soft-deleted for this purge. */
+  readonly archivedThreadIds: ReadonlyArray<ThreadId>;
+  readonly reclaimedBytes: number;
+  readonly warnings: ReadonlyArray<StoragePathWarning>;
+}
+
+export interface DatabaseSpaceResult {
+  /** `converted`: one full VACUUM switched the database to incremental auto-vacuum. */
+  readonly action: "incremental" | "converted" | "none";
+  readonly reclaimedBytes: number;
+  /** Why a needed conversion did not run. */
+  readonly skippedReason?: string;
+}
+
+export interface StorageMaintenanceShape {
+  readonly getUsage: (
+    request?: StorageGetUsageRequest,
+  ) => Effect.Effect<StorageGetUsageResult, StorageMaintenanceError>;
+  readonly getStatus: Effect.Effect<StorageStatus>;
+  readonly noteStorageMutated: Effect.Effect<void>;
+  readonly acceptCleanup: (
+    request: CleanupInput,
+  ) => Effect.Effect<StorageCleanupStatus, StorageMaintenanceError>;
+  readonly getTargets: (
+    request: StorageGetTargetsRequest,
+  ) => Effect.Effect<StorageGetTargetsResult, StorageMaintenanceError>;
+  readonly getOperation: (
+    request: StorageGetOperationRequest,
+  ) => Effect.Effect<StorageGetOperationResult, StorageMaintenanceError>;
+  readonly inspect: (
+    request?: StorageGetUsageRequest,
+  ) => Effect.Effect<
+    StorageUsageReport & { readonly confirmationNonce: string },
+    StorageMaintenanceError
+  >;
+  /**
+   * Reclaimable categories from the same scan as `inspect`, biggest first.
+   * Issues no confirmation nonce, so a scan open in the Storage settings
+   * stays valid. For the low-disk banner.
+   */
+  readonly summarizeReclaimable: Effect.Effect<
+    ReadonlyArray<DiskSpaceReclaimableItem>,
+    StorageMaintenanceError
+  >;
+  readonly cleanup: (
+    request: CleanupInput,
+    context?: StorageCleanupContext,
+  ) => Effect.Effect<StorageCleanupResult, StorageMaintenanceError>;
+  readonly cancel: (operationId: string) => Effect.Effect<void>;
+  /**
+   * Automatic purge for the storage cleanup worker: threads deleted at or
+   * before `deletedBefore`, and threads archived at or before `archivedBefore`
+   * (soft-deleted first, guarded on their archive time). Null skips a kind.
+   * Same per-thread steps and safety checks as the manual purge. Takes the
+   * oldest `maxThreads` threads that are not busy; the rest wait for the
+   * next call. A thread this skipped or failed to purge goes to the back of
+   * the order for {@link PURGE_FAILURE_BACKOFF_MS}, so a few stuck threads
+   * cannot hold every slot.
+   * `reclaimedBytes` counts files only: sizing the rows would read every
+   * deleted thread's events.
+   */
+  readonly purgeThreads: (input: {
+    readonly operationId: string;
+    readonly deletedBefore: string | null;
+    readonly archivedBefore: string | null;
+    readonly maxThreads: number;
+  }) => Effect.Effect<AutomaticThreadPurgeResult, StorageMaintenanceError>;
+  /**
+   * Returns free database pages to the file system: bounded incremental
+   * vacuum steps on an incremental database. A non-incremental database with
+   * enough free pages is switched with one full VACUUM, but only while no
+   * agent is working, no thread was used for a while, and free disk covers it.
+   */
+  readonly reclaimDatabaseSpace: (input: {
+    readonly maxDurationMs: number;
+  }) => Effect.Effect<DatabaseSpaceResult, StorageMaintenanceError>;
+  /**
+   * The one-time conversion the automatic job has skipped for
+   * {@link PENDING_COMPACTION_AFTER_MS} or longer, or null. Never fails.
+   */
+  readonly getPendingCompaction: Effect.Effect<PendingDatabaseCompaction | null>;
+  /** Requests the full compaction for the next server start, or withdraws the request. */
+  readonly scheduleCompaction: (
+    when: StorageScheduleCompactionRequest["when"],
+  ) => Effect.Effect<StorageScheduleCompactionResult, StorageMaintenanceError>;
+  /**
+   * Startup, before the queue dispatcher starts: when a compaction was
+   * scheduled, removes the request first (a crash cannot loop), takes the
+   * maintenance lock at once so no turn starts or resumes before it, and
+   * compacts once `ready` completes or after a short wait. Free space is
+   * still checked; quiet-time and busy-agent checks are not.
+   */
+  readonly startScheduledCompaction: (
+    ready: Effect.Effect<void>,
+  ) => Effect.Effect<void, never, Scope.Scope>;
+  /**
+   * Per-thread provider logs last written before `modifiedBefore` whose
+   * thread is deleted or gone (or archived, with `includeArchived`), and not
+   * busy. Live threads keep their logs: transcript repair rebuilds from them.
+   */
+  readonly listTerminalThreadLogs: (input: {
+    readonly modifiedBefore: string;
+    readonly includeArchived: boolean;
+  }) => Effect.Effect<ReadonlyArray<EnumeratedFile>, StorageMaintenanceError>;
+  /**
+   * Deletes the logs {@link StorageMaintenanceShape.listTerminalThreadLogs}
+   * lists, re-listing them under the maintenance lock.
+   */
+  readonly pruneTerminalThreadLogs: (input: {
+    readonly operationId: string;
+    readonly modifiedBefore: string;
+    readonly includeArchived: boolean;
+  }) => Effect.Effect<StorageCleanupCategoryResult, StorageMaintenanceError>;
+  /**
+   * Hourly automation: refresh the default branch of each repository with an
+   * F5 worktree, then remove every eligible inactive F5 worktree and prune
+   * missing registrations inside the F5 worktrees folder, with the same checks
+   * as the Storage settings cleanup. External worktrees are never touched.
+   * Null when a Storage settings cleanup is running.
+   */
+  readonly cleanInactiveWorktreesAutomatically: (input: {
+    readonly operationId: string;
+  }) => Effect.Effect<ReadonlyArray<StorageCleanupCategoryResult> | null, StorageMaintenanceError>;
+  /**
+   * Read-only preview of the hourly run, from the last fetched refs. Each
+   * candidate is removed, or skipped with its reason.
+   */
+  readonly previewInactiveWorktrees: Effect.Effect<
+    ReadonlyArray<InactiveWorktreePreview>,
+    StorageMaintenanceError
+  >;
+}
+
+export interface InactiveWorktreePreview {
+  readonly path: string;
+  readonly kind: "worktree" | "missingRegistration";
+  readonly action: "remove" | "skip";
+  readonly reason: string;
+}
+
+function toStorageMaintenanceError(operation: string) {
+  return (cause: unknown) =>
+    Schema.is(StorageMaintenanceError)(cause)
+      ? cause
+      : new StorageMaintenanceError({
+          operation,
+          message: cause instanceof Error ? cause.message : String(cause),
+          cause,
+        });
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await storageLstat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function databaseFileBytes(dbPath: string): Promise<number> {
+  const stats = await Promise.all(
+    ["", "-wal", "-shm", "-journal"].map((suffix) => safeLstat(`${dbPath}${suffix}`)),
+  );
+  return stats.reduce((total, stat) => total + (stat ? allocatedBytes(stat) : 0), 0);
+}
+
+async function listProviderLogFiles(providerLogsDir: string): Promise<{
+  readonly files: ReadonlyArray<EnumeratedFile>;
+  readonly warnings: ReadonlyArray<StoragePathWarning>;
+}> {
+  if (!(await exists(providerLogsDir))) {
+    return { files: [], warnings: [] };
+  }
+  const result = await enumerateFiles(providerLogsDir, { maxDepth: 1 });
+  return { files: result.files, warnings: result.errors };
+}
+
+async function listGitWorktreeDirectories(input: {
+  readonly root: string;
+  readonly maxDepth: number;
+}): Promise<{
+  readonly paths: ReadonlyArray<string>;
+  readonly warnings: ReadonlyArray<StoragePathWarning>;
+}> {
+  const warnings: StoragePathWarning[] = [];
+  const paths: string[] = [];
+  const rootStat = await safeLstat(input.root);
+  if (!rootStat) {
+    return { paths, warnings };
+  }
+  if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+    warnings.push(
+      warningFor(input.root, "Refused to scan a symlinked or non-directory F5 worktrees root."),
+    );
+    return { paths, warnings };
+  }
+
+  const visit = async (directory: string, depth: number): Promise<void> => {
+    const gitPath = Path.join(directory, ".git");
+    const gitStat = await safeLstat(gitPath);
+    if (gitStat?.isFile() === true) {
+      paths.push(directory);
+      return;
+    }
+    if (depth >= input.maxDepth) {
+      return;
+    }
+
+    let entries: import("node:fs").Dirent[] = [];
+    try {
+      entries = await storageReadDir(directory, { withFileTypes: true });
+    } catch (error) {
+      warnings.push(warningFor(directory, error instanceof Error ? error.message : String(error)));
+      return;
+    }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) {
+        if (entry.isSymbolicLink()) {
+          warnings.push(warningFor(Path.join(directory, entry.name), "Skipped symbolic link."));
+        }
+        continue;
+      }
+      await visit(Path.join(directory, entry.name), depth + 1);
+    }
+  };
+
+  await visit(input.root, 0);
+  return {
+    paths: paths.toSorted((left, right) => left.localeCompare(right)),
+    warnings,
+  };
+}
+
+async function resolveWorktreeRemoveCwd(targetPath: string): Promise<string | null> {
+  const gitPath = Path.join(targetPath, ".git");
+  const gitStat = await safeLstat(gitPath);
+  if (!gitStat) {
+    return null;
+  }
+  if (!gitStat.isFile()) {
+    return null;
+  }
+
+  const gitFile = await FS.readFile(gitPath, "utf8");
+  const match = /^gitdir: ([\s\S]+)$/.exec(stripPathTerminator(gitFile));
+  if (!match) {
+    return null;
+  }
+
+  const gitDir = Path.resolve(targetPath, match[1]!);
+  const commonDirFile = Path.join(gitDir, "commondir");
+  const commonDir = (await safeLstat(commonDirFile))?.isFile()
+    ? Path.resolve(gitDir, stripPathTerminator(await FS.readFile(commonDirFile, "utf8")))
+    : Path.dirname(Path.dirname(gitDir));
+  if (Path.basename(commonDir) !== ".git") {
+    return null;
+  }
+  const mainWorktree = Path.dirname(commonDir);
+  const mainStat = await safeLstat(mainWorktree);
+  return mainStat?.isDirectory() === true && !mainStat.isSymbolicLink() ? mainWorktree : null;
+}
+
+async function loadStatfs(): Promise<
+  ((path: string) => Promise<{ bavail: number; bsize: number }>) | null
+> {
+  const direct = (
+    FS as typeof FS & {
+      statfs?: (path: string) => Promise<{ bavail: number; bsize: number }>;
+    }
+  ).statfs;
+  if (typeof direct === "function") {
+    return direct;
+  }
+  const imported = (await import("node:fs/promises")) as typeof FS & {
+    statfs?: (path: string) => Promise<{ bavail: number; bsize: number }>;
+  };
+  return typeof imported.statfs === "function" ? imported.statfs : null;
+}
+
 export class StorageMaintenance extends ServiceMap.Service<
   StorageMaintenance,
   StorageMaintenanceShape
 >()("t3/storage/StorageMaintenance") {}
 
-export {
-  AUTO_CONVERT_SKIP_PREFIX,
-  PURGE_FAILURE_BACKOFF_MS,
-  StorageMaintenanceError,
-  type StorageCleanupContext,
-  type AutomaticThreadPurgeResult,
-  type DatabaseSpaceResult,
-  type StorageMaintenanceShape,
-  type InactiveWorktreePreview,
-};
+export { AUTO_CONVERT_SKIP_PREFIX, PURGE_FAILURE_BACKOFF_MS };
 
 const makeStorageMaintenance = Effect.gen(function* () {
   const removalServices = yield* Effect.services<

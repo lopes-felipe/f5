@@ -1,55 +1,51 @@
-import { useRef, useState } from "react";
+import "../index.css";
+
+import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
-import { useRestoreFocusOnClose } from "./useRestoreFocusOnClose";
+import { RightPanelSheet } from "../components/RightPanelSheet";
 
-function PanelHarness({
-  unmountTriggerOnOpen = false,
-}: {
-  readonly unmountTriggerOnOpen?: boolean;
-}) {
+function RightPanelSheetHarness() {
   const [open, setOpen] = useState(false);
-  const panelRef = useRef<HTMLDivElement>(null);
-  const fallbackRef = useRef<HTMLButtonElement>(null);
-
-  useRestoreFocusOnClose({
-    open,
-    containerRef: panelRef,
-    fallbackRef,
-  });
 
   return (
     <div>
-      <button ref={fallbackRef} type="button" data-testid="fallback">
-        Fallback
+      <button type="button" data-testid="trigger" onClick={() => setOpen(true)}>
+        Open right panel
       </button>
-      {!unmountTriggerOnOpen || !open ? (
-        <button type="button" data-testid="trigger" onClick={() => setOpen(true)}>
-          Open panel
-        </button>
-      ) : null}
       <button type="button" data-testid="outside">
         Outside control
       </button>
-      {open ? (
-        <div ref={panelRef} data-testid="panel">
-          <button type="button" data-testid="close" onClick={() => setOpen(false)}>
+      <RightPanelSheet open={open} onClose={() => setOpen(false)}>
+        <div data-testid="sheet-body">
+          <button type="button" data-testid="sheet-close" onClick={() => setOpen(false)}>
             Close panel
           </button>
+          <button
+            type="button"
+            data-testid="sheet-close-and-move-focus"
+            onClick={() => {
+              setOpen(false);
+              const outside = document.querySelector<HTMLButtonElement>('[data-testid="outside"]');
+              outside?.focus();
+            }}
+          >
+            Close and focus outside
+          </button>
         </div>
-      ) : null}
+      </RightPanelSheet>
     </div>
   );
 }
 
-describe("useRestoreFocusOnClose", () => {
+describe("useRestoreFocusOnClose + RightPanelSheet", () => {
   afterEach(() => {
     document.body.innerHTML = "";
   });
 
-  it("restores focus to the trigger button when the panel closes", async () => {
-    const screen = await render(<PanelHarness />);
+  it("restores focus to the trigger button when RightPanelSheet closes", async () => {
+    const screen = await render(<RightPanelSheetHarness />);
     try {
       const trigger = screen.container.querySelector<HTMLButtonElement>('[data-testid="trigger"]')!;
       trigger.focus();
@@ -57,11 +53,10 @@ describe("useRestoreFocusOnClose", () => {
 
       trigger.click();
       await vi.waitFor(() => {
-        expect(screen.container.querySelector('[data-testid="close"]')).not.toBeNull();
+        expect(document.querySelector('[data-testid="sheet-close"]')).not.toBeNull();
       });
 
-      const closeButton =
-        screen.container.querySelector<HTMLButtonElement>('[data-testid="close"]')!;
+      const closeButton = document.querySelector<HTMLButtonElement>('[data-testid="sheet-close"]')!;
       closeButton.focus();
       closeButton.click();
 
@@ -73,28 +68,27 @@ describe("useRestoreFocusOnClose", () => {
     }
   });
 
-  it("falls back cleanly when the original trigger unmounted while open", async () => {
-    const screen = await render(<PanelHarness unmountTriggerOnOpen />);
+  it("does not steal focus if another control is focused before restoration runs", async () => {
+    const screen = await render(<RightPanelSheetHarness />);
     try {
       const trigger = screen.container.querySelector<HTMLButtonElement>('[data-testid="trigger"]')!;
-      const fallback = screen.container.querySelector<HTMLButtonElement>(
-        '[data-testid="fallback"]',
-      )!;
+      const outside = screen.container.querySelector<HTMLButtonElement>('[data-testid="outside"]')!;
       trigger.focus();
       trigger.click();
 
       await vi.waitFor(() => {
-        expect(screen.container.querySelector('[data-testid="close"]')).not.toBeNull();
+        expect(document.querySelector('[data-testid="sheet-close-and-move-focus"]')).not.toBeNull();
       });
 
-      const closeButton =
-        screen.container.querySelector<HTMLButtonElement>('[data-testid="close"]')!;
-      closeButton.focus();
-      closeButton.click();
+      const closeAndMove = document.querySelector<HTMLButtonElement>(
+        '[data-testid="sheet-close-and-move-focus"]',
+      )!;
+      closeAndMove.focus();
+      closeAndMove.click();
 
-      await vi.waitFor(() => {
-        expect(document.activeElement).toBe(fallback);
-      });
+      // Wait several animation frames + exit transition window to ensure neither the hook nor Base UI steals focus.
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      expect(document.activeElement).toBe(outside);
     } finally {
       await screen.unmount();
     }

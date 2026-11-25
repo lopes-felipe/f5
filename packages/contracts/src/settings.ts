@@ -604,6 +604,9 @@ export const ServerSettings = Schema.Struct({
   autoSettleAfterDays: AutoSettleAfterDays.pipe(Schema.withDecodingDefault(() => null)),
   autoSettleKeepPullRequests: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   usagePriceOverrides: Schema.Array(UsagePriceOverride).pipe(Schema.withDecodingDefault(() => [])),
+  usageLocalProviderHistory: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  usageCursorAccountHistory: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  usageListPricing: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   usageModelAliases: UsageModelAliases.pipe(Schema.withDecodingDefault(() => ({}))),
   usageHistoryRetentionDays: UsageHistoryRetention.pipe(
     Schema.withDecodingDefault(() => DEFAULT_USAGE_HISTORY_RETENTION_DAYS),
@@ -701,6 +704,7 @@ export const ServerSettings = Schema.Struct({
   /** Allow agents to request control of apps. Each app still requires approval. */
   enableAgentComputerUse: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   autoPullDefaultBranch: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  followWorktreeBranchChanges: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   /** Extends existing GitHub shell PR linking to GitLab; opt-in automatic behavior. */
   autoLinkShellCreatedMergeRequests: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   /** Upstream tracking schedule and models. Local only; a checked-in file never sets it. */
@@ -853,6 +857,9 @@ export const ServerSettingsPatch = Schema.Struct({
   autoSettleAfterDays: Schema.optionalKey(AutoSettleAfterDays),
   autoSettleKeepPullRequests: Schema.optionalKey(Schema.Boolean),
   usagePriceOverrides: Schema.optionalKey(Schema.Array(UsagePriceOverride)),
+  usageLocalProviderHistory: Schema.optionalKey(Schema.Boolean),
+  usageCursorAccountHistory: Schema.optionalKey(Schema.Boolean),
+  usageListPricing: Schema.optionalKey(Schema.Boolean),
   /** Replaces every mapping. */
   usageModelAliases: Schema.optionalKey(UsageModelAliases),
   usageHistoryRetentionDays: Schema.optionalKey(UsageHistoryRetention),
@@ -895,6 +902,7 @@ export const ServerSettingsPatch = Schema.Struct({
   enableClaudeInChrome: Schema.optionalKey(Schema.Boolean),
   enableCodexChrome: Schema.optionalKey(Schema.Boolean),
   enableAgentComputerUse: Schema.optionalKey(Schema.Boolean),
+  followWorktreeBranchChanges: Schema.optionalKey(Schema.Boolean),
   computerUseBackend: Schema.optionalKey(Schema.Literals(["auto", "f5"])),
   computerUseExecutionMode: Schema.optionalKey(ComputerUseExecutionMode),
   computerUsePasswordMasking: Schema.optionalKey(ComputerPasswordMasking),

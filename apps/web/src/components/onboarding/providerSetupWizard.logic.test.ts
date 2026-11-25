@@ -1,10 +1,16 @@
-import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
+import {
+  DEFAULT_RUNTIME_MODE,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type ServerProvider,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 
+import { RUNTIME_MODE_PRESENTATION } from "../chat/runtimeModePresentation";
 import {
   classifyProviderReadiness,
   deriveWizardSteps,
-  getProviderLoginHint,
+  evaluateRuntimeModeCompatibility,
   RUNTIME_MODE_WIZARD_OPTIONS,
 } from "./providerSetupWizard.logic";
 
@@ -34,7 +40,7 @@ function makeProvider(
 }
 
 describe("providerSetupWizard.logic", () => {
-  it("classifies ready, needsAuth, needsAttention, and disabled providers", () => {
+  it("classifies ready, checking, needsAuth, needsAttention, and disabled providers", () => {
     const summary = classifyProviderReadiness([
       makeProvider({
         instanceId: "claudeAgent",
@@ -70,63 +76,118 @@ describe("providerSetupWizard.logic", () => {
 
     expect(summary.ready).toHaveLength(1);
     expect(summary.ready[0]?.displayName).toBe("Claude Code");
+    expect(summary.ready[0]?.hasCaveat).toBe(false);
+    expect(summary.ready[0]?.authUnverified).toBe(false);
+    expect(summary.checking).toHaveLength(0);
     expect(summary.needsAuth).toHaveLength(1);
-    expect(summary.needsAuth[0]?.loginCommand).toBe("codex login");
     expect(summary.needsAttention).toHaveLength(1);
     expect(summary.needsAttention[0]?.installed).toBe(false);
     expect(summary.enabledCount).toBe(3);
     expect(summary.disabledCount).toBe(1);
     expect(summary.hasAnyReady).toBe(true);
-    expect(summary.nextRecommendedAction).toBe("ready");
   });
 
-  it("recommends sign-in when no provider is ready but one needs authentication", () => {
+  it("handles warning variants (unprobed, checking, selectable caveat) and ready with unknown auth", () => {
     const summary = classifyProviderReadiness([
       makeProvider({
         instanceId: "claudeAgent",
         driver: "claudeAgent",
         status: "warning",
-        installed: true,
-        auth: { status: "unauthenticated" },
+        installed: false,
+        auth: { status: "unknown" },
+        message: "Claude provider status has not been checked in this session yet.",
       }),
-    ]);
-
-    expect(summary.hasAnyReady).toBe(false);
-    expect(summary.nextRecommendedAction).toBe("sign-in");
-  });
-
-  it("recommends installing a provider when none are ready or awaiting sign-in", () => {
-    const summary = classifyProviderReadiness([
+      makeProvider({
+        instanceId: "cursor",
+        driver: "cursor",
+        status: "warning",
+        installed: true,
+        auth: { status: "unknown" },
+        message: "Checking Cursor Agent availability...",
+      }),
       makeProvider({
         instanceId: "codex",
         driver: "codex",
-        status: "error",
-        installed: false,
+        status: "warning",
+        installed: true,
+        auth: { status: "authenticated" },
+        message: "Codex CLI is slightly outdated.",
+      }),
+      makeProvider({
+        instanceId: "cursor-ready",
+        driver: "cursor",
+        displayName: "Cursor Agent (unverified)",
+        status: "ready",
+        installed: true,
         auth: { status: "unknown" },
+        message: "Account status could not be confirmed from CLI output.",
       }),
     ]);
 
-    expect(summary.nextRecommendedAction).toBe("install-provider");
+    expect(summary.checking.map((p) => p.instanceId)).toEqual(["claudeAgent", "cursor"]);
+    expect(summary.ready).toHaveLength(2);
+    expect(summary.ready[0]).toMatchObject({
+      instanceId: "codex",
+      hasCaveat: true,
+      authUnverified: false,
+    });
+    expect(summary.ready[1]).toMatchObject({
+      instanceId: "cursor-ready",
+      hasCaveat: false,
+      authUnverified: true,
+      message: "Account status could not be confirmed from CLI output.",
+    });
+    expect(summary.needsAttention).toHaveLength(0);
   });
 
-  it("returns fallback hints for unknown fork drivers", () => {
-    expect(getProviderLoginHint("claudeAgent")).toEqual({
-      displayName: "Claude Code",
-      loginCommand: "claude auth login",
-    });
-    expect(getProviderLoginHint("customForkDriver")).toEqual({
-      displayName: "customForkDriver",
-      loginCommand: null,
-    });
-  });
-
-  it("exposes all four runtime modes in plain English", () => {
+  it("derives permission mode labels, warnings, and default badge from shared contracts", () => {
     expect(RUNTIME_MODE_WIZARD_OPTIONS.map((option) => option.value)).toEqual([
       "approval-required",
       "auto-accept-edits",
       "auto",
       "full-access",
     ]);
+    for (const option of RUNTIME_MODE_WIZARD_OPTIONS) {
+      expect(option.label).toBe(RUNTIME_MODE_PRESENTATION[option.value].label);
+      expect(option.summary).toBe(RUNTIME_MODE_PRESENTATION[option.value].description);
+      if (option.value === DEFAULT_RUNTIME_MODE) {
+        expect(option.badge).toBe("Default");
+      }
+    }
+    const autoOption = RUNTIME_MODE_WIZARD_OPTIONS.find((option) => option.value === "auto");
+    expect(autoOption?.summary).toContain("risky commands without asking");
+  });
+
+  it("evaluates runtime mode compatibility against ready providers and availableRuntimeModes", () => {
+    const museOnly = [
+      { driver: "muse", displayName: "Muse Code", availableRuntimeModes: undefined },
+    ];
+    expect(evaluateRuntimeModeCompatibility("approval-required", museOnly).status).toBe(
+      "unsupported",
+    );
+    expect(evaluateRuntimeModeCompatibility("auto-accept-edits", museOnly).status).toBe(
+      "supported",
+    );
+
+    const mixed = [
+      { driver: "muse", displayName: "Muse Code", availableRuntimeModes: undefined },
+      { driver: "codex", displayName: "Codex", availableRuntimeModes: undefined },
+    ];
+    const mixedResult = evaluateRuntimeModeCompatibility("approval-required", mixed);
+    expect(mixedResult.status).toBe("partial");
+    expect(mixedResult.unsupportedProviders.map((p) => p.displayName)).toEqual(["Muse Code"]);
+
+    const narrowedInstance = [
+      {
+        driver: "codex",
+        displayName: "Codex Restricted",
+        availableRuntimeModes: ["full-access"] as const,
+      },
+    ];
+    expect(evaluateRuntimeModeCompatibility("auto", narrowedInstance).status).toBe("unsupported");
+    expect(evaluateRuntimeModeCompatibility("full-access", narrowedInstance).status).toBe(
+      "supported",
+    );
   });
 
   it("advances guided step states as provider, permissions, and workspace complete", () => {

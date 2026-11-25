@@ -3,14 +3,6 @@ import {
   extractTextContent,
   normalizeOptionalString,
 } from "../claudeToolPresentation.ts";
-/**
- * ClaudeAdapterLive - Scoped live implementation for the Claude Agent provider adapter.
- *
- * Wraps `@anthropic-ai/claude-agent-sdk` query sessions behind the generic
- * provider adapter contract and emits canonical runtime events.
- *
- * @module ClaudeAdapterLive
- */
 
 import {
   type PermissionMode,
@@ -45,7 +37,7 @@ import {
   type ClaudeToolResultStreamKind,
   type ToolInFlight,
 } from "./ClaudeTypes.ts";
-import { isInterruptedResult, resultErrorsText } from "./ClaudeResumeRecovery.ts";
+import { isInterruptedResult, resultErrorsText } from "./ClaudeSdkResultHelpers.ts";
 
 export function accumulateClaudeThinkingTokens(
   account: ClaudeThinkingTokenAccount | undefined,

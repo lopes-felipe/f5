@@ -100,6 +100,12 @@ export function isStageAlreadyCompletedWith(
   );
 }
 
+type StageStatusAllowed<T extends { readonly status: string }, Target extends string> = [
+  Target,
+] extends [T["status"]]
+  ? unknown
+  : { readonly status: Target };
+
 /**
  * Immutable transition to `pending_start` once a stage thread has been created.
  */
@@ -110,7 +116,17 @@ export function transitionStagePendingStart<
     readonly error: string | null;
     readonly updatedAt: string;
   },
->(stage: T, threadId: ThreadId, updatedAt: string): T {
+  TThreadId extends T["threadId"] = T["threadId"],
+>(
+  stage: T & StageStatusAllowed<T, "pending_start">,
+  threadId: TThreadId,
+  updatedAt: string,
+): Omit<T, "threadId" | "status" | "error" | "updatedAt"> & {
+  readonly threadId: TThreadId;
+  readonly status: "pending_start";
+  readonly error: null;
+  readonly updatedAt: string;
+} {
   return {
     ...stage,
     threadId,
@@ -130,7 +146,18 @@ export function transitionStageRunning<
     readonly dispatchCommandId?: CommandId | null | undefined;
     readonly updatedAt: string;
   },
->(stage: T, updatedAt: string, dispatchCommandId: CommandId | null, extras?: Partial<T>): T {
+  TDispatch extends CommandId | null = CommandId | null,
+>(
+  stage: T & StageStatusAllowed<T, "running">,
+  updatedAt: string,
+  dispatchCommandId: TDispatch,
+  extras?: Partial<Omit<T, "status" | "error" | "dispatchCommandId" | "updatedAt">>,
+): Omit<T, "status" | "error" | "dispatchCommandId" | "updatedAt"> & {
+  readonly status: "running";
+  readonly error: null;
+  readonly dispatchCommandId: TDispatch;
+  readonly updatedAt: string;
+} {
   return {
     ...stage,
     ...extras,
@@ -153,13 +180,19 @@ export function transitionStageCompleted<
     readonly updatedAt: string;
   },
 >(
-  stage: T,
+  stage: T & StageStatusAllowed<T, "completed">,
   input: {
     readonly turnId: string | null;
     readonly assistantMessageId: string | null;
     readonly updatedAt: string;
   },
-): T {
+): Omit<T, "status" | "pinnedTurnId" | "pinnedAssistantMessageId" | "error" | "updatedAt"> & {
+  readonly status: "completed";
+  readonly pinnedTurnId: string | null;
+  readonly pinnedAssistantMessageId: string | null;
+  readonly error: null;
+  readonly updatedAt: string;
+} {
   return {
     ...stage,
     status: "completed",
@@ -179,7 +212,15 @@ export function transitionStageError<
     readonly error: string | null;
     readonly updatedAt: string;
   },
->(stage: T, error: string, updatedAt: string): T {
+>(
+  stage: T & StageStatusAllowed<T, "error">,
+  error: string,
+  updatedAt: string,
+): Omit<T, "status" | "error" | "updatedAt"> & {
+  readonly status: "error";
+  readonly error: string;
+  readonly updatedAt: string;
+} {
   return {
     ...stage,
     status: "error",

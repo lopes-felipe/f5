@@ -1,0 +1,1 @@
+- Thread CLI help identifies the remote default branch as the base to pass for independent worktrees.

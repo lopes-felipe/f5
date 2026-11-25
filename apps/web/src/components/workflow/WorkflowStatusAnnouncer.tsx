@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
+import { useLiveRegionMessage } from "../../hooks/useLiveRegionMessage";
 import type { WorkflowOverallState, WorkflowTimelinePhase } from "./workflowTimelineTypes";
 
 export interface WorkflowAnnouncementSnapshot {
@@ -15,7 +16,9 @@ export function deriveWorkflowAnnouncementSnapshot(input: {
 }): WorkflowAnnouncementSnapshot {
   const activePhase =
     input.phases.find((phase) => phase.state === "active") ??
-    input.phases.find((phase) => phase.state === "error") ??
+    (input.overallState === "error"
+      ? input.phases.find((phase) => phase.state === "error")
+      : undefined) ??
     null;
 
   return {
@@ -58,19 +61,27 @@ export function formatWorkflowAnnouncement(
     return `Workflow running: ${next.statusLabel}`;
   }
 
+  if (
+    next.overallState === "active" &&
+    previous.overallState === "active" &&
+    next.statusLabel !== previous.statusLabel &&
+    next.statusLabel.trim().length > 0
+  ) {
+    return `Workflow status: ${next.statusLabel}`;
+  }
+
   return null;
 }
 
-interface AnnouncerState {
+interface SnapshotTracker {
   readonly workflowKey: string;
   readonly snapshot: WorkflowAnnouncementSnapshot;
-  readonly message: string;
-  readonly sequence: number;
 }
 
 /**
  * Polite live region announcing coarse workflow transitions (phase changes,
- * completion, and errors). Silent on initial mount and route switches.
+ * within-phase status changes, completion, and errors). Silent on initial mount
+ * and route switches.
  */
 export function WorkflowStatusAnnouncer(props: {
   readonly workflowKey: string;
@@ -85,59 +96,30 @@ export function WorkflowStatusAnnouncer(props: {
     phases: props.phases,
   });
 
-  const [state, setState] = useState<AnnouncerState>(() => ({
+  const [tracker, setTracker] = useState<SnapshotTracker>(() => ({
     workflowKey: props.workflowKey,
     snapshot: nextSnapshot,
-    message: "",
-    sequence: 0,
   }));
+  const liveRegion = useLiveRegionMessage(props.workflowKey);
 
-  useEffect(() => {
-    if (!state.message) return;
-    const timer = setTimeout(() => {
-      setState((current) =>
-        current.workflowKey === state.workflowKey && current.sequence === state.sequence
-          ? { ...current, message: "" }
-          : current,
-      );
-    }, 7000);
-    return () => clearTimeout(timer);
-  }, [state.message, state.sequence, state.workflowKey]);
-
-  if (state.workflowKey !== props.workflowKey) {
-    setState({
-      workflowKey: props.workflowKey,
-      snapshot: nextSnapshot,
-      message: "",
-      sequence: 0,
-    });
-  } else {
-    const announcement = formatWorkflowAnnouncement(state.snapshot, nextSnapshot, props.title);
-    if (
-      announcement !== null ||
-      state.snapshot.overallState !== nextSnapshot.overallState ||
-      state.snapshot.activePhaseLabel !== nextSnapshot.activePhaseLabel ||
-      state.snapshot.statusLabel !== nextSnapshot.statusLabel
-    ) {
-      setState({
-        workflowKey: props.workflowKey,
-        snapshot: nextSnapshot,
-        message: announcement ?? state.message,
-        sequence: announcement ? state.sequence + 1 : state.sequence,
-      });
+  if (tracker.workflowKey !== props.workflowKey) {
+    setTracker({ workflowKey: props.workflowKey, snapshot: nextSnapshot });
+    liveRegion.reset(props.workflowKey);
+  } else if (
+    tracker.snapshot.overallState !== nextSnapshot.overallState ||
+    tracker.snapshot.activePhaseLabel !== nextSnapshot.activePhaseLabel ||
+    tracker.snapshot.statusLabel !== nextSnapshot.statusLabel
+  ) {
+    const announcement = formatWorkflowAnnouncement(tracker.snapshot, nextSnapshot, props.title);
+    setTracker({ workflowKey: props.workflowKey, snapshot: nextSnapshot });
+    if (announcement !== null) {
+      liveRegion.announce(announcement);
     }
   }
 
-  // Trailing non-breaking space toggles on repeated text so screen readers announce again.
-  const rendered = state.message
-    ? state.sequence % 2 === 1
-      ? `${state.message}\u00A0`
-      : state.message
-    : "";
-
   return (
     <div role="status" aria-live="polite" aria-atomic="true" className="sr-only">
-      {rendered}
+      {liveRegion.renderedMessage}
     </div>
   );
 }

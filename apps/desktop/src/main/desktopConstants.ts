@@ -9,7 +9,6 @@ export const OPEN_EXTERNAL_CHANNEL = "desktop:open-external";
 export const OPEN_THREAD_WINDOW_CHANNEL = "desktop:open-thread-window";
 export const MAX_DESKTOP_WINDOWS = 12;
 export const OPEN_THREAD_WINDOW_MIN_INTERVAL_MS = 500;
-export const lastOpenThreadWindowAtByRenderer = new Map<number, number>();
 export const MENU_ACTION_CHANNEL = "desktop:menu-action";
 export const TRACKPAD_SCROLL_CHANNEL = "desktop:trackpad-scroll";
 export const UPDATE_STATE_CHANNEL = "desktop:update-state";
@@ -21,14 +20,6 @@ export const UPDATE_SET_CHANNEL_CHANNEL = "desktop:update-set-channel";
 export const UPDATE_CLAIM_RECENT_INSTALL_CHANNEL = "desktop:update-claim-recent-install";
 export const PREVIEW_RECORDING_FRAME_CHANNEL = "desktop-preview:recording-frame";
 export const PREVIEW_STATE_CHANNEL = "desktop-preview:state";
-export const lastPreviewStateEmissionByTabId = new Map<
-  string,
-  {
-    readonly ownerWebContentsId: number;
-    readonly stateKey: string;
-    readonly faviconDataUrl: string | null;
-  }
->();
 export const PREVIEW_TAB_SCOPE_SEPARATOR = ":";
 
 export const PREVIEW_WEBVIEW_PREFERENCES =

@@ -3,12 +3,8 @@ import { useEffect, useRef, type RefObject } from "react";
 export interface UseRestoreFocusOnCloseOptions {
   /** Whether the transient panel, drawer, or dialog is currently open. */
   readonly open: boolean;
-  /** Optional container ref; focus is restored if activeElement is still inside it or on body. */
+  /** Optional container ref; focus is restored only if activeElement is inside it or on body. */
   readonly containerRef?: RefObject<HTMLElement | null> | undefined;
-  /** Optional fallback element to focus if the original trigger is no longer connected. */
-  readonly fallbackRef?: RefObject<HTMLElement | null> | undefined;
-  /** Disable focus restoration dynamically when needed. */
-  readonly enabled?: boolean | undefined;
 }
 
 function resolveFocusableElement(element: Element | null): HTMLElement | null {
@@ -21,22 +17,30 @@ function resolveFocusableElement(element: Element | null): HTMLElement | null {
   return element;
 }
 
+function isFocusLostOrInsideContainer(
+  active: Element | null,
+  container: HTMLElement | null | undefined,
+): boolean {
+  return (
+    active === null ||
+    active === document.body ||
+    active === document.documentElement ||
+    Boolean(container && container.contains(active))
+  );
+}
+
 /**
  * Captures the focused trigger element when a transient surface opens and
- * restores focus when it closes, guarding against detached nodes and avoiding
- * stealing focus if the user has already focused another surface.
+ * restores focus when it closes, re-checking `document.activeElement` inside
+ * the animation frame so focus is never stolen if another control was focused
+ * in the meantime.
  */
 export function useRestoreFocusOnClose(options: UseRestoreFocusOnCloseOptions): void {
-  const { open, containerRef, fallbackRef, enabled = true } = options;
+  const { open, containerRef } = options;
   const previousOpenRef = useRef(open);
   const triggerElementRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
-    if (!enabled) {
-      previousOpenRef.current = open;
-      return;
-    }
-
     const wasOpen = previousOpenRef.current;
     previousOpenRef.current = open;
 
@@ -49,31 +53,20 @@ export function useRestoreFocusOnClose(options: UseRestoreFocusOnCloseOptions): 
       const trigger = triggerElementRef.current;
       triggerElementRef.current = null;
 
-      const active = document.activeElement;
-      const focusWasLostOrInsideContainer =
-        active === null ||
-        active === document.body ||
-        active === document.documentElement ||
-        Boolean(containerRef?.current && containerRef.current.contains(active));
-
-      if (!focusWasLostOrInsideContainer) {
+      if (!isFocusLostOrInsideContainer(document.activeElement, containerRef?.current)) {
         return;
       }
 
-      const target =
-        trigger && trigger.isConnected
-          ? trigger
-          : fallbackRef?.current && fallbackRef.current.isConnected
-            ? fallbackRef.current
-            : null;
-
-      if (!target) {
+      if (!trigger || !trigger.isConnected) {
         return;
       }
 
       const rafId = window.requestAnimationFrame(() => {
-        if (target.isConnected) {
-          target.focus({ preventScroll: true });
+        if (
+          trigger.isConnected &&
+          isFocusLostOrInsideContainer(document.activeElement, containerRef?.current)
+        ) {
+          trigger.focus({ preventScroll: true });
         }
       });
 
@@ -83,5 +76,5 @@ export function useRestoreFocusOnClose(options: UseRestoreFocusOnCloseOptions): 
     }
 
     return undefined;
-  }, [containerRef, enabled, fallbackRef, open]);
+  }, [containerRef, open]);
 }

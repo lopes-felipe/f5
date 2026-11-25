@@ -31,7 +31,7 @@ describe("WorkflowBoard keyboard navigation", () => {
     document.body.innerHTML = "";
   });
 
-  it("moves focus across step cards with ArrowRight, ArrowLeft, Home, and End", async () => {
+  it("moves focus across focusable step card links, skips placeholder div cards, and ignores modified or outside keys", async () => {
     const phases: WorkflowTimelinePhase[] = [
       {
         id: "drafting",
@@ -43,6 +43,13 @@ describe("WorkflowBoard keyboard navigation", () => {
             label: "Branch A",
             threadId: ThreadId.makeUnsafe("t-a"),
             state: "completed",
+            modelSlot: null,
+          },
+          {
+            key: "placeholder",
+            label: "Pending step",
+            threadId: null,
+            state: "pending",
             modelSlot: null,
           },
           {
@@ -70,16 +77,26 @@ describe("WorkflowBoard keyboard navigation", () => {
       },
     ];
 
-    const screen = await render(<WorkflowBoard phases={phases} threadById={new Map()} />);
+    const screen = await render(
+      <div>
+        <button type="button" data-testid="outside">
+          Outside
+        </button>
+        <WorkflowBoard phases={phases} threadById={new Map()} />
+      </div>,
+    );
     try {
       const links = Array.from(
         screen.container.querySelectorAll<HTMLAnchorElement>('a[data-slot="workflow-step"]'),
       );
+      const placeholderCards = screen.container.querySelectorAll('div[data-slot="workflow-step"]');
       expect(links).toHaveLength(3);
+      expect(placeholderCards).toHaveLength(1);
 
       links[0]!.focus();
       expect(document.activeElement).toBe(links[0]);
 
+      // Plain arrow / Home / End keys navigate across focusable link cards (skipping placeholder divs).
       links[0]!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
       expect(document.activeElement).toBe(links[1]);
 
@@ -91,6 +108,39 @@ describe("WorkflowBoard keyboard navigation", () => {
 
       links[0]!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
       expect(document.activeElement).toBe(links[2]);
+
+      // Modified keys (browser Back/Forward, Ctrl+Home, Meta+End, Shift+ArrowRight) must NOT be swallowed.
+      for (const init of [
+        { key: "ArrowLeft", altKey: true },
+        { key: "ArrowRight", altKey: true },
+        { key: "Home", ctrlKey: true },
+        { key: "End", metaKey: true },
+        { key: "ArrowRight", shiftKey: true },
+      ]) {
+        const event = new KeyboardEvent("keydown", {
+          ...init,
+          bubbles: true,
+          cancelable: true,
+        });
+        links[2]!.dispatchEvent(event);
+        expect(event.defaultPrevented).toBe(false);
+        expect(document.activeElement).toBe(links[2]);
+      }
+
+      // Keydown on the board when focus is outside step cards must not hijack focus or preventDefault.
+      const outside = screen.container.querySelector<HTMLButtonElement>('[data-testid="outside"]')!;
+      const board = screen.container.querySelector<HTMLOListElement>(
+        '[data-slot="workflow-board"]',
+      )!;
+      outside.focus();
+      const outsideEvent = new KeyboardEvent("keydown", {
+        key: "ArrowRight",
+        bubbles: true,
+        cancelable: true,
+      });
+      board.dispatchEvent(outsideEvent);
+      expect(outsideEvent.defaultPrevented).toBe(false);
+      expect(document.activeElement).toBe(outside);
     } finally {
       await screen.unmount();
     }

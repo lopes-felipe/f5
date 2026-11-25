@@ -125,9 +125,8 @@ import {
   toMessage,
   toRequestError,
 } from "../codex/CodexOptions.ts";
+import { asObject, asString } from "../codex/CodexProtocolHelpers.ts";
 import {
-  asObject,
-  asString,
   codexReasoningTokensSinceBaseline,
   MAX_MERGED_DELTA_BYTES,
   notificationContextKey,

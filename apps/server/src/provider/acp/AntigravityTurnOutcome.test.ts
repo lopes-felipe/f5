@@ -3,11 +3,15 @@ import * as NodeSqlite from "node:sqlite";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import type * as EffectAcpSchema from "effect-acp/schema";
 
-import { watchAntigravityPromptOutcome } from "./AntigravityTurnOutcome.ts";
+import {
+  parseAntigravityQuotaNotice,
+  watchAntigravityPromptOutcome,
+} from "./AntigravityTurnOutcome.ts";
 
 const USER_INPUT = 14;
 const PLANNER_RESPONSE = 15;
@@ -223,5 +227,339 @@ describe("watchAntigravityPromptOutcome", () => {
         retryable: true,
       });
     }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+  );
+});
+
+// Newer harnesses write the error step as protobuf fields: the UI message, then
+// `STATUS (code N): message`, then the raw HTTP response with the JSON error body.
+// Trimmed from a real Antigravity session log (2026-11-25).
+const varint = (value: number) => {
+  const bytes: number[] = [];
+  while (value >= 0x80) {
+    bytes.push((value & 0x7f) | 0x80);
+    value >>>= 7;
+  }
+  bytes.push(value);
+  return Buffer.from(bytes);
+};
+const field = (tag: number, text: string) => {
+  const bytes = Buffer.from(text);
+  return Buffer.concat([Buffer.from([tag]), varint(bytes.length), bytes]);
+};
+const statusFirstPayload = (input: {
+  readonly status: string;
+  readonly code: number;
+  readonly message: string;
+  readonly json: string;
+  /** Field 4 (`"` tag), a printable byte, straight after the status field. */
+  readonly trailingField?: string;
+}) =>
+  Buffer.concat([
+    field(0x0a, input.message),
+    field(0x12, `${input.status} (code ${input.code}): ${input.message}`),
+    ...(input.trailingField === undefined ? [] : [field(0x22, input.trailingField)]),
+    field(
+      0x1a,
+      `HTTP ${input.code} Too Many Requests\nSherlog: \nTraceID: 0x563a7d94f861a02c\n\n${input.json}`,
+    ),
+  ]);
+const INDIVIDUAL_QUOTA =
+  "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 1h6m56s.";
+const quotaJson = (resetTimestamp: string) => `{
+  "error": {
+    "code": 429,
+    "details": [
+      {
+        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+        "domain": "cloudcode-pa.googleapis.com",
+        "metadata": {
+          "model": "gemini-4-neon-high",
+          "quotaResetDelay": "1h6m56.135688197s",
+          "quotaResetTimeStamp": "${resetTimestamp}",
+          "uiMessage": "true"
+        },
+        "reason": "QUOTA_EXHAUSTED"
+      }
+    ],
+    "message": "${INDIVIDUAL_QUOTA}",
+    "status": "RESOURCE_EXHAUSTED"
+}`;
+const JSON_QUOTA_ERROR = statusFirstPayload({
+  status: "RESOURCE_EXHAUSTED",
+  code: 429,
+  message: INDIVIDUAL_QUOTA,
+  json: quotaJson("2026-11-25T02:25:24Z"),
+});
+const NOTICE_TEXT =
+  "\n⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 1h8m59s.\n";
+const NOTICE_AT = "2026-11-25T01:16:24.775Z";
+
+const makeSessionLog = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const profileDirectory = yield* fs.makeTempDirectoryScoped();
+  const sessionId = "04a57a59-2df0-48ae-951b-f4a7d06c3bdc";
+  const conversations = path.join(profileDirectory, "antigravity-acp", "conversations");
+  yield* fs.makeDirectory(conversations, { recursive: true });
+  const append = (steps: ReadonlyArray<readonly [number, Uint8Array]>) => {
+    const database = new NodeSqlite.DatabaseSync(path.join(conversations, `${sessionId}.db`));
+    try {
+      database.exec(
+        "CREATE TABLE IF NOT EXISTS steps (idx INTEGER PRIMARY KEY, step_type INTEGER, step_payload BLOB)",
+      );
+      const insert = database.prepare("INSERT INTO steps (step_type, step_payload) VALUES (?, ?)");
+      for (const [type, payload] of steps) insert.run(type, payload);
+    } finally {
+      database.close();
+    }
+  };
+  append([
+    [USER_INPUT, Buffer.from("Run the fixture.")],
+    [PLANNER_RESPONSE, Buffer.from("FIXTURE_OK")],
+  ]);
+  return {
+    append,
+    watch: (options: { readonly unrecognizedErrors?: boolean } = {}) =>
+      watchAntigravityPromptOutcome(profileDirectory, sessionId, options),
+  };
+});
+
+describe("Antigravity status-first error steps", () => {
+  it.effect("reads the JSON quota body and its reset", () =>
+    Effect.gen(function* () {
+      const log = yield* makeSessionLog;
+      let check = yield* log.watch();
+      log.append([
+        [USER_INPUT, Buffer.from("go")],
+        [ERROR_MESSAGE, JSON_QUOTA_ERROR],
+      ]);
+      assert.deepEqual(yield* check({ stopReason: "end_turn" }), {
+        class: "usage_limit",
+        message: "You have reached your Antigravity quota for this period.",
+        code: "RESOURCE_EXHAUSTED",
+        retryable: true,
+        resetAt: "2026-11-25T02:25:24Z",
+      });
+
+      // An unparsable timestamp falls back to the quoted delay (TestClock starts at the epoch).
+      check = yield* log.watch();
+      log.append([
+        [USER_INPUT, Buffer.from("go")],
+        [
+          ERROR_MESSAGE,
+          statusFirstPayload({
+            status: "RESOURCE_EXHAUSTED",
+            code: 429,
+            message: INDIVIDUAL_QUOTA,
+            json: quotaJson("soon"),
+          }),
+        ],
+      ]);
+      assert.equal(
+        (yield* check({ stopReason: "end_turn" }))?.resetAt,
+        new Date(4_016_135.688197).toISOString(),
+      );
+
+      // A status-first error that is not a quota keeps its own message.
+      check = yield* log.watch();
+      log.append([
+        [USER_INPUT, Buffer.from("go")],
+        [
+          ERROR_MESSAGE,
+          statusFirstPayload({
+            status: "INVALID_ARGUMENT",
+            code: 400,
+            message: "Request contains an invalid argument.",
+            json: '{ "error": { "code": 400, "status": "INVALID_ARGUMENT" } }',
+          }),
+        ],
+      ]);
+      assert.deepEqual(yield* check({ stopReason: "end_turn" }), {
+        class: "provider_error",
+        message: "Request contains an invalid argument.",
+        code: "INVALID_ARGUMENT",
+        retryable: false,
+      });
+
+      // A one-byte field length can be a capital letter, and the next field's tag (`"`) and
+      // length (`A`) are printable: the field's own length bounds the status and the message.
+      const header = "NOT_FOUND (code 404): ";
+      const shortMessage = "Requested model was not found".padEnd(0x46 - header.length, ".");
+      check = yield* log.watch();
+      log.append([
+        [USER_INPUT, Buffer.from("go")],
+        [
+          ERROR_MESSAGE,
+          statusFirstPayload({
+            status: "NOT_FOUND",
+            code: 404,
+            message: shortMessage,
+            json: '{ "error": { "code": 404 } }',
+            trailingField: "A".repeat(0x41),
+          }),
+        ],
+      ]);
+      assert.deepEqual(yield* check({ stopReason: "end_turn" }), {
+        class: "provider_error",
+        message: shortMessage,
+        code: "NOT_FOUND",
+        retryable: false,
+      });
+
+      // A logged usage limit with no reset of its own takes the quota notice's.
+      check = yield* log.watch();
+      log.append([
+        [USER_INPUT, Buffer.from("go")],
+        [
+          ERROR_MESSAGE,
+          statusFirstPayload({
+            status: "RESOURCE_EXHAUSTED",
+            code: 429,
+            message: "Too many requests.",
+            json: '{ "error": { "code": 429, "status": "RESOURCE_EXHAUSTED" } }',
+          }),
+        ],
+      ]);
+      assert.deepEqual(
+        yield* check({ stopReason: "end_turn" }, { text: NOTICE_TEXT, receivedAt: NOTICE_AT }),
+        {
+          class: "usage_limit",
+          message: "Too many requests.",
+          code: "RESOURCE_EXHAUSTED",
+          retryable: true,
+          resetAt: "2026-11-25T02:25:23.775Z",
+          resetSource: "message",
+        },
+      );
+    }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+  );
+});
+
+describe("Antigravity quota notice", () => {
+  it("parses only the harness notice shape", () => {
+    assert.deepEqual(parseAntigravityQuotaNotice(NOTICE_TEXT, NOTICE_AT), {
+      class: "usage_limit",
+      message: "You have reached your Antigravity quota for this period.",
+      code: "QUOTA_EXHAUSTED",
+      retryable: true,
+      resetAt: "2026-11-25T02:25:23.775Z",
+      evidence: "message",
+      resetSource: "message",
+    });
+    const at = Date.parse(NOTICE_AT);
+    for (const [duration, ms] of [
+      ["45m", 45 * 60_000],
+      ["30s", 30_000],
+      ["1h", 3_600_000],
+    ] as const)
+      assert.equal(
+        parseAntigravityQuotaNotice(`⚠ Individual quota reached. Resets in ${duration}.`, NOTICE_AT)
+          ?.resetAt,
+        new Date(at + ms).toISOString(),
+      );
+    for (const text of [
+      "⚠ Individual quota reached. Please upgrade your subscription.",
+      "⚠ Individual quota reached. Resets in .",
+      "⚠ Something else failed. Resets in 1h.",
+      "Individual quota reached. Resets in 1h.",
+      "Usage Limit Reached\n\nYou have reached your current quota for this period. Your limit will reset in 1 hour.",
+    ])
+      assert.isUndefined(parseAntigravityQuotaNotice(text, NOTICE_AT), text);
+    assert.isUndefined(parseAntigravityQuotaNotice(NOTICE_TEXT, "not a date"));
+
+    // The turn's accumulated text: the notice must be its own last line.
+    assert.equal(
+      parseAntigravityQuotaNotice(`Started on the change.${NOTICE_TEXT}`, NOTICE_AT)?.resetAt,
+      "2026-11-25T02:25:23.775Z",
+    );
+    for (const text of [
+      `Started on the change. ⚠ Individual quota reached. Resets in 1h.`,
+      `${NOTICE_TEXT}Then the model kept going.`,
+    ])
+      assert.isUndefined(parseAntigravityQuotaNotice(text, NOTICE_AT), text);
+
+    // Long non-matching text is rejected without scanning it.
+    const hostile = `⚠ ${"quota ".repeat(200_000)}`;
+    const started = performance.now();
+    assert.isUndefined(parseAntigravityQuotaNotice(hostile, NOTICE_AT));
+    assert.isBelow(performance.now() - started, 100);
+  });
+
+  it.live("waits for an error step the harness has not committed yet", () =>
+    Effect.gen(function* () {
+      const log = yield* makeSessionLog;
+      const notice = { text: NOTICE_TEXT, receivedAt: NOTICE_AT };
+
+      // The step lands while the check is waiting: the log's own reset wins.
+      let check = yield* log.watch({ unrecognizedErrors: true });
+      log.append([[USER_INPUT, Buffer.from("go")]]);
+      const waiting = yield* check({ stopReason: "end_turn" }, notice).pipe(Effect.forkChild);
+      yield* Effect.sleep("300 millis");
+      log.append([[ERROR_MESSAGE, JSON_QUOTA_ERROR]]);
+      const settled = yield* Fiber.join(waiting);
+      assert.equal(settled?.resetAt, "2026-11-25T02:25:24Z");
+      assert.isUndefined(settled?.evidence);
+
+      // No step ever lands: the notice explains the turn.
+      check = yield* log.watch({ unrecognizedErrors: true });
+      log.append([[USER_INPUT, Buffer.from("go")]]);
+      const started = Date.now();
+      assert.deepEqual(yield* check({ stopReason: "end_turn" }, notice), {
+        class: "usage_limit",
+        message: "You have reached your Antigravity quota for this period.",
+        code: "QUOTA_EXHAUSTED",
+        retryable: true,
+        resetAt: "2026-11-25T02:25:23.775Z",
+        evidence: "message",
+        resetSource: "message",
+      });
+      assert.isAtLeast(Date.now() - started, 1_900);
+
+      // An unrecognised error step does not hide the quota notice, and since a committed step
+      // will not change, there is no waiting for another.
+      for (const unrecognizedErrors of [true, false]) {
+        check = yield* log.watch({ unrecognizedErrors });
+        log.append([
+          [USER_INPUT, Buffer.from("go")],
+          [ERROR_MESSAGE, Buffer.from("something the harness has never written before")],
+        ]);
+        const unrecognizedStarted = Date.now();
+        assert.equal((yield* check({ stopReason: "end_turn" }, notice))?.evidence, "message");
+        assert.isBelow(Date.now() - unrecognizedStarted, 1_000);
+      }
+
+      // A notice that is not a quota notice neither waits nor fails the turn.
+      check = yield* log.watch();
+      log.append([
+        [USER_INPUT, Buffer.from("go")],
+        [PLANNER_RESPONSE, Buffer.from("FIXTURE_OK")],
+      ]);
+      const quick = Date.now();
+      assert.isUndefined(
+        yield* check(
+          { stopReason: "end_turn" },
+          { text: "⚠ Tool output was truncated.", receivedAt: NOTICE_AT },
+        ),
+      );
+      assert.isBelow(Date.now() - quick, 1_000);
+
+      // A cancelled turn is not explained by a notice.
+      check = yield* log.watch();
+      log.append([[USER_INPUT, Buffer.from("go")]]);
+      assert.isUndefined(yield* check({ stopReason: "cancelled" }, notice));
+    }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+  );
+
+  it.effect("uses the notice when the session log is not readable", () =>
+    Effect.gen(function* () {
+      // An invalid session id cannot name a log; the check falls back to typed evidence.
+      const check = yield* watchAntigravityPromptOutcome("/nonexistent", "../escape");
+      assert.equal(
+        (yield* check({ stopReason: "end_turn" }, { text: NOTICE_TEXT, receivedAt: NOTICE_AT }))
+          ?.evidence,
+        "message",
+      );
+      assert.isUndefined(yield* check({ stopReason: "end_turn" }));
+    }),
   );
 });

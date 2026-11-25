@@ -28,6 +28,7 @@ export const FORGE_CAPABILITIES: Readonly<Record<ForgeKind, ForgeCapabilities>> 
     ...COMMON,
     comment: true,
     actions: [
+      "delete-branch",
       "merge",
       "ready",
       "draft",

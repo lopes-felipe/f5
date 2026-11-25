@@ -10,8 +10,11 @@ export interface OtlpSettings {
 }
 export interface OtlpSignalConfiguration {
   readonly url: string | null;
-  /** `secret-unavailable`: a stored header's secret is missing, so nothing is exported. */
-  readonly source: "disabled" | "settings" | "environment" | "unset" | "secret-unavailable";
+  /**
+   * `secret-unavailable`: a stored header's secret is missing, so nothing is exported.
+   * Older servers also reported `environment`; the wire contract still accepts it.
+   */
+  readonly source: "disabled" | "settings" | "unset" | "secret-unavailable";
   readonly protocol: "http/json" | "http/protobuf";
   readonly headers: Readonly<Record<string, string>>;
 }
@@ -46,18 +49,17 @@ export function resolveOtlpConfiguration(
     const prefix = `OTEL_EXPORTER_OTLP_${kind.toUpperCase()}`;
     const exporter = env[`OTEL_${kind.toUpperCase()}_EXPORTER`]?.trim().toLowerCase();
     const disabled = env.OTEL_SDK_DISABLED?.trim().toLowerCase() === "true" || exporter === "none";
-    const configured = (
+    // Only a collector named in Settings receives exports. Inherited OTEL_* endpoints and
+    // headers often belong to other tools on the machine; the environment can only turn
+    // export off or pick the wire format.
+    const candidate = (
       kind === "traces" ? settings.otlpTracesUrl : settings.otlpMetricsUrl
     )?.trim();
-    const explicit = env[`${prefix}_ENDPOINT`]?.trim();
-    const base = env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim();
-    const candidate =
-      configured || explicit || (base ? `${base.replace(/\/+$/, "")}/v1/${kind}` : "");
     const protocol =
       env[`${prefix}_PROTOCOL`] ?? env.OTEL_EXPORTER_OTLP_PROTOCOL ?? "http/protobuf";
     let url: string | null = null;
     try {
-      const parsed = new URL(candidate);
+      const parsed = new URL(candidate ?? "");
       if (
         !parsed.username &&
         !parsed.password &&
@@ -69,17 +71,7 @@ export function resolveOtlpConfiguration(
     } catch {
       /* An invalid destination disables this signal. */
     }
-    const normalizedHeaders = (value: string | undefined) =>
-      Object.fromEntries(
-        Object.entries(parseOtelAttributes(value)).map(([name, text]) => [
-          name.toLowerCase(),
-          text,
-        ]),
-      );
-    const headers = {
-      ...normalizedHeaders(env.OTEL_EXPORTER_OTLP_HEADERS),
-      ...normalizedHeaders(env[`${prefix}_HEADERS`]),
-    };
+    const headers: Record<string, string> = {};
     for (const entry of settings.otlpHeaders ?? []) headers[entry.name.toLowerCase()] = entry.value;
     for (const [key, value] of Object.entries(headers))
       if (
@@ -97,7 +89,7 @@ export function resolveOtlpConfiguration(
       return { url: null, source: "secret-unavailable", protocol: "http/protobuf", headers: {} };
     return {
       url: disabled ? null : url,
-      source: disabled ? "disabled" : !url ? "unset" : configured ? "settings" : "environment",
+      source: disabled ? "disabled" : !url ? "unset" : "settings",
       protocol: protocol === "http/json" ? "http/json" : "http/protobuf",
       headers,
     };
@@ -105,8 +97,22 @@ export function resolveOtlpConfiguration(
   return {
     traces: signal("traces"),
     metrics: signal("metrics"),
+    // Resource attributes only label what goes to the Settings collector; they never pick a
+    // destination. Honoring them lets users mask `host.name`.
     attributes: parseOtelAttributes(env.OTEL_RESOURCE_ATTRIBUTES),
   };
+}
+
+const IGNORED_OTLP_ENVIRONMENT =
+  /^OTEL_EXPORTER_OTLP_(?:(?:TRACES|METRICS)_)?(?:ENDPOINT|HEADERS)$/;
+
+/** Endpoint and header variables F5 ignores, so users relying on them can be told once. */
+export function ignoredOtlpEnvironment(
+  env: Readonly<Record<string, string | undefined>>,
+): ReadonlyArray<string> {
+  return Object.keys(env)
+    .filter((name) => IGNORED_OTLP_ENVIRONMENT.test(name) && env[name]?.trim())
+    .toSorted();
 }
 
 /** Safe to expose to the browser: no headers, URL credentials, query strings or resource attributes. */

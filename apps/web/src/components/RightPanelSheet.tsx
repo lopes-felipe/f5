@@ -33,6 +33,7 @@ export function RightPanelSheet(props: {
         side="right"
         showCloseButton={false}
         keepMounted
+        finalFocus={false}
         className={RIGHT_PANEL_SHEET_CLASS_NAME}
         style={
           {

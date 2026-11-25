@@ -1,5 +1,7 @@
 import type { OrchestrationLatestTurnState } from "@t3tools/contracts";
-import { useEffect, useState } from "react";
+import { useState } from "react";
+
+import { useLiveRegionMessage } from "../../hooks/useLiveRegionMessage";
 
 export type ChatStatusOutcome =
   | "working"
@@ -46,30 +48,25 @@ function isTerminalOutcome(outcome: ChatStatusOutcome): boolean {
   return outcome === "completed" || outcome === "failed" || outcome === "interrupted";
 }
 
-interface AnnouncerState {
+interface OutcomeTracker {
   readonly threadId: string;
   readonly lastOutcome: ChatStatusOutcome;
   readonly lastAttentionRequestId: string | null;
   /** `turnId:outcome` terminal outcomes already announced in this thread. */
   readonly announcedTerminal: ReadonlyArray<string>;
-  readonly message: string;
-  /** Bumped per announcement so repeating the same text still changes the DOM. */
-  readonly sequence: number;
 }
 
-function initialState(props: {
+function initialTracker(props: {
   threadId: string;
   turnId: string | null;
   outcome: ChatStatusOutcome;
   attentionRequestId?: string | null;
-}): AnnouncerState {
+}): OutcomeTracker {
   return {
     threadId: props.threadId,
     lastOutcome: props.outcome,
     lastAttentionRequestId: props.attentionRequestId ?? null,
     announcedTerminal: [`${props.turnId}:${props.outcome}`],
-    message: "",
-    sequence: 0,
   };
 }
 
@@ -87,59 +84,48 @@ export function ChatStatusAnnouncer(props: {
   /** The pending approval or question the user is asked about, if any. */
   attentionRequestId?: string | null;
 }) {
-  const [state, setState] = useState<AnnouncerState>(() => initialState(props));
+  const [tracker, setTracker] = useState<OutcomeTracker>(() => initialTracker(props));
+  const liveRegion = useLiveRegionMessage(props.threadId);
   const attentionRequestId = props.attentionRequestId ?? null;
-  // Clear spoken text so returning focus from a dialog cannot replay an obsolete announcement.
-  useEffect(() => {
-    if (!state.message) return;
-    const timer = setTimeout(
-      () =>
-        setState((current) =>
-          current.threadId === state.threadId && current.sequence === state.sequence
-            ? { ...current, message: "" }
-            : current,
-        ),
-      7000,
-    );
-    return () => clearTimeout(timer);
-  }, [state.message, state.sequence, state.threadId]);
 
-  if (state.threadId !== props.threadId) {
-    setState(initialState(props));
+  if (tracker.threadId !== props.threadId) {
+    setTracker(initialTracker(props));
+    liveRegion.reset(props.threadId);
   } else if (
-    state.lastOutcome !== props.outcome ||
-    (state.lastAttentionRequestId !== attentionRequestId &&
+    tracker.lastOutcome !== props.outcome ||
+    (tracker.lastAttentionRequestId !== attentionRequestId &&
       (props.outcome === "awaiting-approval" || props.outcome === "awaiting-input"))
   ) {
-    const next = {
-      ...state,
+    const next: OutcomeTracker = {
+      ...tracker,
       lastOutcome: props.outcome,
       lastAttentionRequestId: attentionRequestId,
     };
     if (props.outcome === "idle") {
-      setState({ ...next, message: "" });
+      setTracker(next);
+      liveRegion.clear();
     } else if (isTerminalOutcome(props.outcome)) {
       const key = `${props.turnId}:${props.outcome}`;
-      setState(
-        state.announcedTerminal.includes(key)
-          ? // Already heard: clear quietly rather than leave a stale status.
-            { ...next, message: "" }
-          : {
-              ...next,
-              announcedTerminal: [...state.announcedTerminal, key].slice(-MAX_REMEMBERED_OUTCOMES),
-              message: OUTCOME_MESSAGES[props.outcome],
-              sequence: state.sequence + 1,
-            },
-      );
+      if (tracker.announcedTerminal.includes(key)) {
+        // Already heard: clear quietly rather than leave a stale status.
+        setTracker(next);
+        liveRegion.clear();
+      } else {
+        setTracker({
+          ...next,
+          announcedTerminal: [...tracker.announcedTerminal, key].slice(-MAX_REMEMBERED_OUTCOMES),
+        });
+        liveRegion.announce(OUTCOME_MESSAGES[props.outcome]);
+      }
     } else {
-      setState({ ...next, message: OUTCOME_MESSAGES[props.outcome], sequence: state.sequence + 1 });
+      setTracker(next);
+      liveRegion.announce(OUTCOME_MESSAGES[props.outcome]);
     }
   }
 
   return (
     <div className="sr-only" aria-live="polite" aria-atomic="true">
-      {state.message}
-      {state.message && state.sequence % 2 === 1 ? " " : ""}
+      {liveRegion.renderedMessage}
     </div>
   );
 }

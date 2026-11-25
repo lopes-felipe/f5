@@ -51,10 +51,15 @@ function isBlockedProviderEnvKey(key: string): boolean {
  * configuration. On managed machines that can redirect Codex / Claude logs and
  * traces to unrelated endpoints, producing noisy export errors and leaking
  * telemetry intended only for the parent shell or desktop app.
+ *
+ * Agent CLIs are also opted out of their vendors' crash reporting (see
+ * {@link applyProviderTelemetryOptOut}) unless `telemetryOptOut` is false, as it is for
+ * terminals and git.
  */
 export function buildProviderChildProcessEnv(
   baseEnv: NodeJS.ProcessEnv,
   overrides?: NodeJS.ProcessEnv,
+  options: { readonly telemetryOptOut?: boolean } = {},
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
 
@@ -64,6 +69,9 @@ export function buildProviderChildProcessEnv(
     }
     env[key] = value;
   }
+
+  // Before the overrides, so a provider instance's own environment setting still wins.
+  if (options.telemetryOptOut !== false) applyProviderTelemetryOptOut(env);
 
   if (!overrides) {
     return env;
@@ -83,6 +91,26 @@ export function buildProviderChildProcessEnv(
     env[key] = value;
   }
 
+  return env;
+}
+
+/**
+ * Vendor telemetry opt-outs that cost agent CLIs nothing: crash reporting. Codex is also
+ * opted out of analytics through `-c analytics.enabled=false`.
+ *
+ * `DO_NOT_TRACK` and `DISABLE_TELEMETRY` are deliberately not set. Claude Code treats either
+ * as "no feature-flag download", which disables Code Mode, Remote Control and every other
+ * flag-gated feature. F5 still forwards them when the user sets them.
+ */
+export const PROVIDER_TELEMETRY_OPT_OUT_ENV: Readonly<Record<string, string>> = {
+  DISABLE_ERROR_REPORTING: "1",
+};
+
+/** Sets each opt-out the environment does not already define, so a user's own value wins. */
+export function applyProviderTelemetryOptOut(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const defined = new Set(Object.keys(env).map((key) => key.toUpperCase()));
+  for (const [name, value] of Object.entries(PROVIDER_TELEMETRY_OPT_OUT_ENV))
+    if (!defined.has(name)) env[name] = value;
   return env;
 }
 
@@ -171,7 +199,11 @@ export function buildAccountExecutionEnvironment(input: {
       );
   }
   const environment = profileGithubEnvironment(
-    buildProviderChildProcessEnv(base, { ...instance, ...input.overrides }),
+    buildProviderChildProcessEnv(
+      base,
+      { ...instance, ...input.overrides },
+      { telemetryOptOut: input.purpose === "provider" },
+    ),
     input.stateDir,
   );
   if (input.purpose === "provider" || input.purpose === "terminal") {

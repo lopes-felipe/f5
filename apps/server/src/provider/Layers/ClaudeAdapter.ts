@@ -288,6 +288,7 @@ import {
   readClaudeExecutableVersion,
 } from "../claudeExecutableVersion.ts";
 import { buildClaudeFlagPermissions } from "../claudeFlagPermissions.ts";
+import { resolveWorkflowAttachmentsDir } from "../../attachmentUploads.ts";
 import { makeMonotonicIsoClock } from "../monotonicEventClock.ts";
 import {
   isUuid,
@@ -637,8 +638,24 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       resumeRecoveryState.delete(threadId);
       resumeRecoveryState.set(threadId, entry);
       if (resumeRecoveryState.size > MAX_TRACKED_RESUME_RECOVERY_THREADS) {
-        const oldest = resumeRecoveryState.keys().next().value;
-        if (oldest !== undefined) resumeRecoveryState.delete(oldest);
+        // Evict zero-failure entries first so threads with active resume-failure
+        // budgets keep their retry guard under high churn.
+        let evictKey: ThreadId | undefined;
+        for (const [candidate, candidateEntry] of resumeRecoveryState) {
+          if (candidate !== threadId && candidateEntry.failures === 0) {
+            evictKey = candidate;
+            break;
+          }
+        }
+        if (evictKey === undefined) {
+          for (const candidate of resumeRecoveryState.keys()) {
+            if (candidate !== threadId) {
+              evictKey = candidate;
+              break;
+            }
+          }
+        }
+        if (evictKey !== undefined) resumeRecoveryState.delete(evictKey);
       }
     };
     const recordResumeFailure = (threadId: ThreadId): number => {
@@ -2553,6 +2570,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             ...(result?.stop_reason !== undefined ? { stopReason: result.stop_reason } : {}),
             ...(usage ? { usage } : {}),
             ...(modelUsage ? { modelUsage } : {}),
+            ...(result?.fast_mode_state
+              ? {
+                  usageSpeed:
+                    result.fast_mode_state === "on" ? ("fast" as const) : ("standard" as const),
+                }
+              : {}),
             ...turnCost,
             ...(errorMessage ? { errorMessage } : {}),
             ...(options?.usageLimit ? { usageLimit: options.usageLimit } : {}),
@@ -6213,6 +6236,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                     requestType,
                     detail,
                     args: { toolName, input: toolInput },
+                    // Denied below with a message the model sees; nothing is pending.
+                    autoDeclined: true,
                   },
                   providerRefs: nativeProviderRefs(context, {
                     providerItemId: callbackOptions.toolUseID,
@@ -6641,7 +6666,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           // With F5's compaction in charge, Claude must not compact behind F5's summaries.
           ...(providerOptions?.nativeCompaction === false ? { idleCompaction: false } : {}),
           permissions: buildClaudeFlagPermissions({
-            readExemptDirectories: [serverConfig.attachmentsDir, plansDirectory],
+            readExemptDirectories: [
+              serverConfig.attachmentsDir,
+              // Workflow prompts reference pasted files there by absolute path.
+              resolveWorkflowAttachmentsDir(serverConfig),
+              plansDirectory,
+            ],
             confineWritesToWorkspace: providerOptions?.confineWritesToWorkspace === true,
           }),
           ...claudeRuntimeSettings({

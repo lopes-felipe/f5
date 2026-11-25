@@ -5,7 +5,6 @@ import { useMemo, type ReactNode } from "react";
 
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { formatUsd } from "../../lib/formatUsd";
-import { useNowIso } from "../../lib/nowTicker";
 import { formatAbsoluteTimeLabel, formatRelativeTimeLabel } from "../../lib/relativeTime";
 import { cn } from "../../lib/utils";
 import {
@@ -106,6 +105,7 @@ export function WorkflowPageNotFound() {
  * the run's artifacts.
  */
 export function WorkflowPageLayout(props: {
+  readonly workflowId?: string | undefined;
   readonly projectId: ProjectId;
   readonly workflowType: WorkflowTypeValue;
   /** Type crumb text, e.g. "Feature", "Code Review" or "Document · RFC". */
@@ -128,28 +128,29 @@ export function WorkflowPageLayout(props: {
   const isWide = useMediaQuery("lg");
   const view = props.view ?? (isWide ? "board" : "list");
   const TypeIcon = WORKFLOW_TYPE_ICON[props.workflowType];
-  const elapsed = workflowElapsedLabel({
-    state: props.overallState,
-    createdAt: props.createdAt,
-    updatedAt: props.updatedAt,
-  });
-  const cost =
-    props.totalCostUsd !== null && props.totalCostUsd !== undefined && props.totalCostUsd > 0
-      ? formatUsd(props.totalCostUsd)
-      : null;
-  const nowIso = useNowIso(props.overallState === "active");
   const telemetry = useMemo(
     () =>
       computeWorkflowRunTelemetry({
         phases: props.phases,
         threadById: props.threadById,
-        overallState: props.overallState,
         createdAt: props.createdAt,
         updatedAt: props.updatedAt,
-        nowIso,
       }),
-    [nowIso, props.createdAt, props.overallState, props.phases, props.threadById, props.updatedAt],
+    [props.createdAt, props.phases, props.threadById, props.updatedAt],
   );
+  // Show elapsed in the header only when the telemetry bar is absent, avoiding duplicate figures.
+  const headerElapsed =
+    telemetry.totalSteps === 0
+      ? workflowElapsedLabel({
+          state: props.overallState,
+          createdAt: props.createdAt,
+          updatedAt: props.updatedAt,
+        })
+      : null;
+  const cost =
+    props.totalCostUsd !== null && props.totalCostUsd !== undefined && props.totalCostUsd > 0
+      ? formatUsd(props.totalCostUsd)
+      : null;
 
   return (
     <div
@@ -158,7 +159,9 @@ export function WorkflowPageLayout(props: {
       className="flex h-full min-h-0 flex-col bg-background"
     >
       <WorkflowStatusAnnouncer
-        workflowKey={`${props.projectId}:${props.workflowType}:${props.createdAt}`}
+        workflowKey={
+          props.workflowId ?? `${props.projectId}:${props.workflowType}:${props.createdAt}`
+        }
         title={props.title}
         overallState={props.overallState}
         statusLabel={props.statusLabel}
@@ -215,11 +218,11 @@ export function WorkflowPageLayout(props: {
                     <span className="tabular-nums">{cost}</span>
                   </>
                 ) : null}
-                {elapsed ? (
+                {headerElapsed ? (
                   <>
                     <span aria-hidden="true">·</span>
                     <span title={formatAbsoluteTimeLabel(props.createdAt) || undefined}>
-                      {elapsed}
+                      {headerElapsed}
                     </span>
                   </>
                 ) : null}
@@ -235,7 +238,7 @@ export function WorkflowPageLayout(props: {
               <div className="flex flex-wrap items-center gap-2">{props.actions}</div>
             ) : null}
           </header>
-          <WorkflowTelemetryBar telemetry={telemetry} totalCostUsd={props.totalCostUsd} />
+          <WorkflowTelemetryBar telemetry={telemetry} />
           {view === "board" ? (
             <>
               <WorkflowBoard

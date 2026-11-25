@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Effect } from "effect";
+import { forgeComments, forgeReviewThreads } from "../prHub/forgeModel.ts";
 import {
   FORGE_CAPABILITIES,
   makeForgeSourceControlProvider,
@@ -36,6 +37,378 @@ function fixture(kind: ForgeKind, responses: unknown[] = [], login = `viewer-${+
 }
 
 describe("forge adapters", () => {
+  it("keeps the checkout's Forgejo account when the PR URL has a canonical repository path", async () => {
+    const calls: string[] = [];
+    const provider = makeForgeSourceControlProvider({
+      kind: "forgejo",
+      resolveAccount: ({ cwd, ref }) => {
+        expect(cwd).toBe("/work");
+        expect(ref).toBeUndefined();
+        return Effect.succeed({
+          kind: "forgejo",
+          host: "forge.example.com",
+          repository: "team/base",
+          login: "clone-test",
+          token: "forge-test-token",
+        });
+      },
+      fetch: (async (url: Parameters<typeof fetch>[0]) => {
+        calls.push(String(url));
+        return Response.json({
+          clone_url: "https://forge.example.com/fork/repo.git",
+          ssh_url: "git@forge.example.com:fork/repo.git",
+        });
+      }) as typeof fetch,
+    });
+    await expect(
+      Effect.runPromise(
+        provider.getRepositoryCloneUrls({
+          cwd: "/work",
+          repository: "fork/repo",
+          pullRequestUrl: "https://forge.example.com/Team/Base/pulls/7",
+        }),
+      ),
+    ).resolves.toMatchObject({ url: "https://forge.example.com/fork/repo.git" });
+    expect(calls).toEqual(["https://forge.example.com/api/v1/repos/fork/repo"]);
+  });
+
+  it("marks the root of unresolved GitLab overview discussions as a finding and uses text edit times", async () => {
+    const note = (id: number, fields: object = {}) => ({
+      id,
+      updated_at: "rest-update",
+      ...fields,
+    });
+    const edit = (id: number, fields: object = {}) => ({
+      id: "gid://gitlab/Note/" + id,
+      lastEditedAt: "2026-11-06T01:00:00Z",
+      ...fields,
+    });
+    const { provider, ref } = fixture("gitlab", [
+      [
+        {
+          id: "finding",
+          individual_note: false,
+          notes: [note(1, { resolvable: true, resolved: false }), note(2)],
+        },
+        {
+          id: "resolved",
+          individual_note: false,
+          notes: [note(3, { resolvable: true, resolved: true })],
+        },
+        { id: "plain", individual_note: true, notes: [note(4)] },
+      ],
+      {
+        data: {
+          project: {
+            mergeRequest: {
+              notes: {
+                nodes: [
+                  edit(1, { lastEditedBy: { username: "bot" } }),
+                  edit(2),
+                  edit(3, { lastEditedBy: { username: "bot" }, resolved: true }),
+                ],
+              },
+            },
+          },
+        },
+      },
+    ]);
+    const discussions = await Effect.runPromise(provider.getComments(ref));
+    expect(
+      forgeComments(discussions).map((comment) => [
+        comment.id,
+        comment.overviewFinding,
+        comment.updated_at,
+      ]),
+    ).toEqual([
+      [1, true, "2026-11-06T01:00:00Z"],
+      [2, false, null],
+      [3, false, null],
+      [4, false, null],
+    ]);
+    expect(forgeReviewThreads(discussions, provider)).toMatchObject([
+      { id: "finding", path: null, isResolved: false, comments: [{ id: "1" }, { id: "2" }] },
+    ]);
+  });
+
+  it("compares every GitLab diff ref and retains unpositioned replies", async () => {
+    const refs = { base_sha: "base", start_sha: "start", head_sha: "head" };
+    const { provider, ref, calls } = fixture("gitlab", [
+      [
+        {
+          id: "old",
+          notes: [
+            {
+              id: 1,
+              position: { ...refs, start_sha: "previous", new_path: "a.ts", new_line: 2 },
+              updated_at: "2026-11-06T01:00:00Z",
+            },
+            { id: 2, updated_at: "2026-11-06T02:00:00Z" },
+          ],
+        },
+        { id: "current", notes: [{ id: 3, position: { ...refs, new_path: "a.ts", new_line: 4 } }] },
+      ],
+      { diff_refs: refs },
+    ]);
+    const threads = forgeReviewThreads(
+      await Effect.runPromise(provider.getReviewThreads(ref)),
+      provider,
+    );
+    expect(threads).toMatchObject([
+      {
+        id: "old",
+        isOutdated: true,
+        comments: [
+          { id: "1", outdated: true, updatedAt: "2026-11-06T01:00:00Z" },
+          { id: "2", outdated: true, updatedAt: "2026-11-06T02:00:00Z" },
+        ],
+      },
+      { id: "current", isOutdated: false },
+    ]);
+    expect(calls.map(({ init }) => init.method)).toEqual(["GET", "GET"]);
+  });
+
+  it("keeps GitLab timeline notes when the edit lookup reaches its page limit", async () => {
+    const { provider, ref, calls } = fixture("gitlab", [
+      [{ notes: [{ id: 1001, body: "Late note", updated_at: "rest-update" }] }],
+      ...Array.from({ length: 10 }, (_, page) => ({
+        data: {
+          project: {
+            mergeRequest: {
+              notes: {
+                nodes: Array.from({ length: 100 }, (_, index) => ({
+                  id: "gid://gitlab/Note/" + (page * 100 + index + 1),
+                })),
+                pageInfo: { hasNextPage: true, endCursor: String(page + 1) },
+              },
+            },
+          },
+        },
+      })),
+    ]);
+    expect(forgeComments(await Effect.runPromise(provider.getComments(ref)))).toMatchObject([
+      { id: 1001, body: "Late note", updated_at: null },
+    ]);
+    expect(calls.filter(({ init }) => init.method === "POST")).toHaveLength(10);
+  });
+
+  it("loads review decisions and head pipeline status in one GitLab list request", async () => {
+    const { provider, ref, calls } = fixture("gitlab", [
+      [{ iid: 7 }, { iid: 8 }],
+      {
+        data: {
+          metadata: { enterprise: true },
+          project: {
+            mergeRequests: {
+              nodes: [
+                {
+                  iid: "7",
+                  approved: true,
+                  approvedBy: { nodes: [{ username: "reviewer" }] },
+                  changeRequesters: { nodes: [{ username: "reviewer" }] },
+                  headPipeline: { status: "FAILED" },
+                },
+                {
+                  iid: "8",
+                  approved: false,
+                  approvedBy: { nodes: [] },
+                  headPipeline: { status: "RUNNING" },
+                },
+              ],
+            },
+          },
+        },
+      },
+    ]);
+    expect(await Effect.runPromise(provider.listPullRequests(ref))).toMatchObject([
+      {
+        number: 7,
+        reviewDecision: "changes_requested",
+        checks: [{ status: "failure" }],
+        checksComplete: false,
+      },
+      {
+        number: 8,
+        reviewDecision: "review_required",
+        checks: [{ status: "pending" }],
+        checksComplete: false,
+      },
+    ]);
+    expect(JSON.parse(String(calls[1]?.init.body)).variables.iids).toEqual(["7", "8"]);
+  });
+
+  it.each([401, 429])(
+    "keeps GitLab REST reads usable when optional GraphQL returns %s",
+    async (status) => {
+      const refusal = () => new Response(null, { status });
+      const list = fixture("gitlab", [[{ iid: 7, title: "MR" }], refusal()]);
+      const timeline = fixture("gitlab", [
+        [{ notes: [{ id: 1, body: "Note", updated_at: "rest-update" }] }],
+        refusal(),
+      ]);
+      const detail = fixture("gitlab", [{ iid: 7, state: "merged" }, refusal()]);
+      expect(await Effect.runPromise(list.provider.listPullRequests(list.ref))).toMatchObject([
+        { number: 7, title: "MR" },
+      ]);
+      expect(
+        forgeComments(await Effect.runPromise(timeline.provider.getComments(timeline.ref))),
+      ).toMatchObject([{ id: 1, body: "Note", updated_at: null }]);
+      expect(
+        (await Effect.runPromise(detail.provider.getDetail(detail.ref, { branchPermission: true })))
+          .viewerCanDeleteBranch,
+      ).toBe(false);
+    },
+  );
+
+  it("checks later reviewer pages on GitLab versions without changeRequesters", async () => {
+    const { provider, ref, calls } = fixture("gitlab", [
+      [{ iid: 7 }],
+      { errors: [{ message: "Unknown field changeRequesters" }] },
+      {
+        data: {
+          project: {
+            mergeRequests: {
+              nodes: [
+                {
+                  iid: "7",
+                  approved: true,
+                  approvedBy: { nodes: [{ username: "reviewer" }] },
+                  reviewers: { nodes: [], pageInfo: { hasNextPage: true, endCursor: "page-1" } },
+                },
+              ],
+            },
+          },
+        },
+      },
+      {
+        data: {
+          project: {
+            mergeRequest: {
+              reviewers: {
+                nodes: [
+                  {
+                    mergeRequestInteraction: { reviewState: "REQUESTED_CHANGES" },
+                  },
+                ],
+              },
+            },
+          },
+        },
+      },
+    ]);
+    expect(await Effect.runPromise(provider.listPullRequests(ref))).toMatchObject([
+      { number: 7, reviewDecision: "changes_requested" },
+    ]);
+    expect(JSON.parse(String(calls[3]?.init.body)).variables.after).toBe("page-1");
+  });
+
+  it.each([true, false])(
+    "verifies branch absence only when the source branch list is readable (%s)",
+    async (readable) => {
+      const { provider, calls } = fixture("gitlab", [
+        {
+          data: {
+            project: {
+              mergeRequest: {
+                state: "merged",
+                sourceBranch: "feature/a.b",
+                diffHeadSha: "head",
+                sourceProject: { fullPath: "fork/repo" },
+              },
+            },
+          },
+        },
+        new Response(null, { status: 404 }),
+        readable ? [] : new Response(null, { status: 404 }),
+      ]);
+      const result = await Effect.runPromise(
+        Effect.result(
+          provider.deletePullRequestBranch!({
+            cwd: "/project",
+            url: "https://gitlab.com/team/repo/-/merge_requests/7",
+            expectedHeadOid: "head",
+            inspectOnly: true,
+          }),
+        ),
+      );
+      expect(result).toMatchObject(
+        readable
+          ? { _tag: "Success", success: { absent: true } }
+          : { _tag: "Failure", failure: { kind: "not_found" } },
+      );
+      expect(new URL(calls[2]!.url).searchParams.get("regex")).toBe("^feature/a\\.b$");
+    },
+  );
+
+  it.each([
+    { state: "merged", canDelete: true, defaultBranch: false, currentHead: "head", deleted: true },
+    { state: "closed", canDelete: true, defaultBranch: false, currentHead: "head", deleted: true },
+    { state: "opened", canDelete: true, defaultBranch: false, currentHead: "head", deleted: false },
+    {
+      state: "merged",
+      canDelete: false,
+      defaultBranch: false,
+      currentHead: "head",
+      deleted: false,
+    },
+    { state: "merged", canDelete: true, defaultBranch: true, currentHead: "head", deleted: false },
+    {
+      state: "merged",
+      canDelete: true,
+      defaultBranch: false,
+      currentHead: "moved",
+      deleted: false,
+    },
+  ])(
+    "checks GitLab source branch deletion against $state, permission $canDelete, default $defaultBranch, head $currentHead",
+    async (input) => {
+      const { provider, calls } = fixture("gitlab", [
+        {
+          data: {
+            project: {
+              mergeRequest: {
+                state: input.state,
+                sourceBranch: "feature/one",
+                diffHeadSha: "head",
+                sourceProject: { fullPath: "fork/repo" },
+                userPermissions: { removeSourceBranch: input.canDelete },
+              },
+            },
+          },
+        },
+        {
+          default: input.defaultBranch,
+          commit: { id: input.currentHead, authored_date: "2026-11-06T12:00:00Z" },
+        },
+        new Response(null, { status: 204 }),
+      ]);
+      const result = await Effect.runPromise(
+        Effect.result(
+          provider.deletePullRequestBranch!({
+            cwd: "/project",
+            url: "https://gitlab.com/team/repo/-/merge_requests/7",
+            expectedHeadOid: "head",
+          }),
+        ),
+      );
+      const writes = calls.filter(({ init }) => init.method === "DELETE");
+      if (!input.deleted) {
+        expect(result._tag).toBe("Failure");
+        expect(writes).toHaveLength(0);
+      } else {
+        expect(result).toMatchObject({
+          _tag: "Success",
+          success: { repository: "fork/repo", absent: true },
+        });
+        expect(writes).toHaveLength(1);
+        expect(writes[0]?.url).toContain("/projects/fork%2Frepo/repository/branches/feature%2Fone");
+        expect(new Headers(writes[0]?.init.headers).get("If-Unmodified-Since")).toBe(
+          "Fri, 06 Nov 2026 12:00:00 GMT",
+        );
+      }
+    },
+  );
+
   it("reads Forgejo reviewers once and includes read-only collaborators", async () => {
     const reviewers = [
       { login: "read-only-collaborator" },

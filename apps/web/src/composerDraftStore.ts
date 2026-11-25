@@ -67,7 +67,6 @@ import { processComposerImageBounded } from "./lib/imageCompressionQueue";
 const loadImageCompression = () => import("./lib/imageCompression");
 
 export const COMPOSER_DRAFT_STORAGE_KEY = "t3code:composer-drafts:v1";
-export const COMPOSER_DRAFT_PERSISTENCE_ERROR_EVENT = "f5:composer-draft-persistence-error";
 export const MAX_PROMPT_STASH_ENTRIES = 20;
 export const MAX_PROMPT_STASH_IMAGE_DATA_CHARS = 3_000_000;
 
@@ -85,6 +84,7 @@ export type DraftId = ThreadId;
 export type DraftThreadEnvMode = "local" | "worktree";
 
 import {
+  COMPOSER_DRAFT_PERSISTENCE_ERROR_EVENT,
   type DeferredStorage,
   createDeferredStorage,
   createDebouncedStorage,
@@ -103,6 +103,7 @@ import {
   selectProjectDraftThread,
 } from "./stores/drafts/draftWorkspaceKey";
 export {
+  COMPOSER_DRAFT_PERSISTENCE_ERROR_EVENT,
   createDeferredStorage,
   createDebouncedStorage,
   type DraftThreadState,
