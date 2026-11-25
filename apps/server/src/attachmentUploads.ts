@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { copyFile, mkdir, open, rename, unlink } from "node:fs/promises";
+import { copyFile, mkdir, open, readdir, rename, rm, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import type { IncomingMessage } from "node:http";
 import { openContainedFile } from "./assetHttp";
@@ -40,6 +40,10 @@ interface UploadRow {
   source: "pasted-text" | "snapshot" | null;
 }
 const HOUR = 60 * 60 * 1000;
+/** Materialized workflow attachments outlive their run's planning phase by this much. */
+export const WORKFLOW_ATTACHMENT_RETENTION_MS = 30 * 24 * HOUR;
+/** Released uploads stop counting against the staging quota, so their copies get their own. */
+export const WORKFLOW_ATTACHMENT_QUOTA_BYTES = ATTACHMENT_PROFILE_QUOTA_BYTES;
 /** Both mirror the attachment schema so an accepted upload cannot fail validation at send. */
 const UPLOAD_NAME_MAX_LENGTH = 255;
 const UPLOAD_MIME_MAX_LENGTH = 100;
@@ -89,6 +93,81 @@ const dto = (row: UploadRow): AttachmentUpload => ({
   expiresAt: row.expires_at,
   ...(row.source ? { source: row.source } : {}),
 });
+
+/** A sanitized upload name that is safe as the last segment of a destination path. */
+function materializedFileName(name: string): string {
+  return name === "." || name === ".." ? "attachment.bin" : name;
+}
+
+/**
+ * The WS error text for a failed `materialize`: its own messages say what the user can do
+ * (re-attach, retry later); anything else stays generic so storage details never leak.
+ */
+export function materializeErrorMessage(cause: unknown): string {
+  return Schema.is(AttachmentUploadError)(cause) && [409, 410, 507].includes(cause.status)
+    ? cause.message
+    : "Unable to save the attached files.";
+}
+
+/** Where durable copies of attached workflow files live; see `ServerDerivedPaths`. */
+export function resolveWorkflowAttachmentsDir(config: {
+  readonly stateDir: string;
+  readonly workflowAttachmentsDir?: string | undefined;
+}): string {
+  return config.workflowAttachmentsDir ?? path.join(config.stateDir, "workflow-attachments");
+}
+
+async function readWorkflowAttachmentEntries(root: string) {
+  try {
+    return await readdir(root, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+}
+
+/** Bytes held under `<root>/<uploadId>/`; entries that vanish while counting are skipped. */
+export async function workflowAttachmentBytes(root: string): Promise<number> {
+  let total = 0;
+  for (const entry of await readWorkflowAttachmentEntries(root)) {
+    if (!entry.isDirectory()) continue;
+    const directory = path.join(root, entry.name);
+    const files = await readdir(directory, { withFileTypes: true }).catch(() => []);
+    for (const file of files) {
+      if (!file.isFile()) continue;
+      total += (await stat(path.join(directory, file.name)).catch(() => null))?.size ?? 0;
+    }
+  }
+  return total;
+}
+
+/**
+ * Deletes `<root>/<uploadId>/` directories older than `maxAgeMs`. Best effort: a missing
+ * root is not an error, and an entry that vanishes or cannot be removed is skipped so it
+ * never blocks the rest of the pass.
+ */
+export async function sweepWorkflowAttachments(
+  root: string,
+  options: { maxAgeMs?: number; nowMs?: number } = {},
+): Promise<{ removed: number; failed: number }> {
+  const cutoff =
+    (options.nowMs ?? Date.now()) - (options.maxAgeMs ?? WORKFLOW_ATTACHMENT_RETENTION_MS);
+  let removed = 0;
+  let failed = 0;
+  for (const entry of await readWorkflowAttachmentEntries(root)) {
+    if (!entry.isDirectory()) continue;
+    const directory = path.join(root, entry.name);
+    const info = await stat(directory).catch(() => null);
+    if (!info || info.mtimeMs >= cutoff) continue;
+    try {
+      await rm(directory, { recursive: true, force: true });
+      removed++;
+    } catch {
+      failed++;
+    }
+  }
+  return { removed, failed };
+}
 
 /** Reservations and leases share SQLite transactions with ownership checks. Bytes never enter WS. */
 export type AttachmentUploads = Effect.Success<ReturnType<typeof makeAttachmentUploads>>;
@@ -290,6 +369,103 @@ export const makeAttachmentUploads = Effect.fnUntraced(function* (attachmentsDir
       yield* sql`UPDATE attachment_uploads SET expires_at=${now()} WHERE upload_id=${id} AND draft_thread_id=${threadId}`;
     yield* sweep;
   });
+  /**
+   * Copies a draft's uploads to `<destinationRoot>/<uploadId>/<name>` and releases them.
+   * Used where an attachment must be referenced by path (workflow prompts) rather than
+   * sent as a turn attachment. All or nothing: on failure no copy this call made is left
+   * behind, and a directory another call already created is never touched.
+   */
+  const materialize = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    ids: ReadonlyArray<string>,
+    destinationRoot: string,
+    options: { readonly quotaBytes?: number } = {},
+  ) {
+    const rows = yield* Effect.forEach(
+      ids,
+      (id) =>
+        sql<UploadRow>`SELECT * FROM attachment_uploads WHERE upload_id=${id} AND draft_thread_id=${threadId} AND content_hash<>'' AND expires_at>${now()}`.pipe(
+          Effect.flatMap((found) =>
+            found[0]
+              ? Effect.succeed(found[0])
+              : Effect.fail(
+                  new AttachmentUploadError({
+                    status: 410,
+                    message: "Upload expired or was released. Re-attach the file.",
+                  }),
+                ),
+          ),
+        ),
+      { concurrency: 1 },
+    );
+    const incomingBytes = rows.reduce((total, row) => total + row.size_bytes, 0);
+    const retainedBytes = yield* io(() => workflowAttachmentBytes(destinationRoot));
+    if (retainedBytes + incomingBytes > (options.quotaBytes ?? WORKFLOW_ATTACHMENT_QUOTA_BYTES)) {
+      return yield* new AttachmentUploadError({
+        status: 507,
+        message: "Saved workflow attachments are using their full quota. Retry later.",
+      });
+    }
+    const created: string[] = [];
+    const files = yield* Effect.forEach(
+      rows,
+      (row) => {
+        const directory = path.join(destinationRoot, row.upload_id);
+        const destination = path.join(directory, materializedFileName(row.name));
+        return Effect.tryPromise({
+          try: async () => {
+            await mkdir(destinationRoot, { recursive: true, mode: 0o700 });
+            // Not recursive: an existing directory belongs to an overlapping call for the
+            // same upload, and this call must neither reuse nor roll it back.
+            await mkdir(directory, { mode: 0o700 });
+            created.push(directory);
+            await copyFile(row.path, destination, constants.COPYFILE_FICLONE);
+            return { uploadId: row.upload_id, path: destination };
+          },
+          catch: (error) =>
+            (error as NodeJS.ErrnoException).code === "EEXIST"
+              ? new AttachmentUploadError({
+                  status: 409,
+                  message: "This upload is already being saved.",
+                })
+              : new AttachmentUploadError({
+                  status: 500,
+                  message: "Attachment storage operation failed.",
+                }),
+        });
+      },
+      { concurrency: 1 },
+    ).pipe(
+      Effect.uninterruptible,
+      Effect.onExit((exit) =>
+        Exit.isFailure(exit)
+          ? io(() =>
+              Promise.all(
+                created.map((directory) => rm(directory, { recursive: true, force: true })),
+              ),
+            ).pipe(Effect.ignore)
+          : Effect.void,
+      ),
+    );
+    // The copies are complete; a failed release only delays cleanup until the uploads expire.
+    yield* releaseUploads(threadId, ids).pipe(
+      Effect.catch(() =>
+        Effect.logWarning("Releasing materialized uploads failed; they will expire on their own."),
+      ),
+    );
+    return { files };
+  });
+  /**
+   * Deletes materialized copies the client no longer references (a removed chip, a closed
+   * dialog, a result that arrived too late). Ids are schema-checked UUIDs, so each path
+   * stays inside `destinationRoot`.
+   */
+  const discardMaterialized = (ids: ReadonlyArray<string>, destinationRoot: string) =>
+    io(() =>
+      Promise.all(
+        ids.map((id) => rm(path.join(destinationRoot, id), { recursive: true, force: true })),
+      ),
+    ).pipe(Effect.asVoid);
   const claim = Effect.fnUntraced(function* (
     id: string,
     destination: string,
@@ -423,6 +599,8 @@ export const makeAttachmentUploads = Effect.fnUntraced(function* (attachmentsDir
     upload,
     getUploads,
     releaseUploads,
+    materialize,
+    discardMaterialized,
     claim,
     finishClaim,
     sweep,

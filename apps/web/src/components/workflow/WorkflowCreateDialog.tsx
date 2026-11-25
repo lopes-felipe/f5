@@ -4,6 +4,7 @@ import { Select, SelectTrigger, SelectValue, SelectPopup, SelectItem } from "../
 import {
   DOCUMENT_WORKFLOW_TEMPLATE_ID,
   DOCUMENT_WORKFLOW_BRIEF_MAX_CHARS,
+  ThreadId,
   type WorkflowDocumentType,
 } from "@t3tools/contracts";
 import {
@@ -50,6 +51,8 @@ import {
   relativePathForDisplay,
   sanitizeAttachedFileReferencePaths,
 } from "../../lib/attachedFiles";
+import { uploadAttachment } from "../../lib/attachmentUploadQueue";
+import { getServerHttpOrigin } from "../../lib/serverHttpOrigin";
 import {
   collectComposerMentionPaths,
   createComposerMention,
@@ -100,6 +103,7 @@ import {
   getComposerModelOptionsByInstance,
   getProviderDispatchModelsByProvider,
   identityAbsolutePathNormalizer,
+  partitionAttachedFiles,
   resolveComposerPickerModel,
   resolveAttachedFileReferencePaths,
 } from "../ChatView.logic";
@@ -115,6 +119,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Kbd } from "../ui/kbd";
+import { Spinner } from "../ui/spinner";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { toastManager } from "../ui/toast";
 import {
@@ -256,6 +261,18 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
   const [projectChangeNote, setProjectChangeNote] = useState<string | null>(null);
   /** Bumped on every project change so late file-tree authorizations can tell they are stale. */
   const projectGenerationRef = useRef(0);
+  /** Path-less files still uploading; the workflow cannot start until they land as paths. */
+  const [pendingAttachmentCount, setPendingAttachmentCount] = useState(0);
+  /** Bumped on reset, project change and close so late uploads can tell they are stale. */
+  const attachmentGenerationRef = useRef(0);
+  /** Draft owner for path-less file uploads; one per dialog session. */
+  const attachmentDraftIdRef = useRef<ThreadId | null>(null);
+  /**
+   * Server copies of path-less files by chip path. Copies nothing will reference (removed
+   * chip, project change, dialog closed without starting) are discarded; a started
+   * workflow keeps its copies.
+   */
+  const materializedUploadIdsRef = useRef(new Map<string, string>());
   const [reviewBranch, setReviewBranch] = useState("");
   const [plansDirectory, setPlansDirectory] = useState("plans");
   // Every open and reset starts with two rows from the remembered A/B choices; extra rows
@@ -391,6 +408,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
   const canSubmit =
     serverConfigQuery.data !== undefined &&
     (requirementPrompt.trim().length > 0 || attachedFilePaths.length > 0) &&
+    pendingAttachmentCount === 0 &&
     !sameInvestigationInvestigatorModel &&
     !sameDocumentAuthors &&
     !actorsOverMax &&
@@ -523,16 +541,54 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
     setError(null);
     setIsDragOverPrompt(false);
     dragDepthRef.current = 0;
+    attachmentGenerationRef.current += 1;
+    attachmentDraftIdRef.current = null;
+    // Reset runs after a workflow started, and that workflow's prompt references the copies.
+    materializedUploadIdsRef.current.clear();
+    setPendingAttachmentCount(0);
     submittingRef.current = false;
     setSubmitting(false);
   };
+
+  const discardMaterializedUploads = (uploadIds: ReadonlyArray<string>) => {
+    if (uploadIds.length === 0) return;
+    void readNativeApi()
+      ?.attachments.discardMaterialized({ uploadIds: [...uploadIds] })
+      .catch(() => undefined);
+  };
+
+  const discardAllMaterializedUploads = () => {
+    const uploadIds = [...materializedUploadIdsRef.current.values()];
+    materializedUploadIdsRef.current.clear();
+    discardMaterializedUploads(uploadIds);
+  };
+
+  // The host unmounts the dialog on close. Copies of files that were never submitted are
+  // not referenced anywhere, and uploads still in flight must not land afterwards.
+  const discardOnUnmountRef = useRef(discardAllMaterializedUploads);
+  discardOnUnmountRef.current = discardAllMaterializedUploads;
+  useEffect(
+    () => () => {
+      attachmentGenerationRef.current += 1;
+      // A submission in flight may still create a workflow whose prompt references them.
+      if (!submittingRef.current) discardOnUnmountRef.current();
+    },
+    [],
+  );
 
   const changeProject = (projectId: ProjectId) => {
     if (projectId === props.projectId || submittingRef.current) return;
     // A file-tree drop still authorizing against the old project must not land afterwards.
     projectGenerationRef.current += 1;
+    attachmentGenerationRef.current += 1;
     // File chips, @-mentions and the review branch belong to the old project's repository.
-    const dropsFiles = attachedFilePaths.length > 0 || requirementDraft.mentions.length > 0;
+    // A file still attaching is dropped too, so it counts toward the note.
+    const dropsFiles =
+      attachedFilePaths.length > 0 ||
+      pendingAttachmentCount > 0 ||
+      requirementDraft.mentions.length > 0;
+    setPendingAttachmentCount(0);
+    discardAllMaterializedUploads();
     const dropsBranch = reviewBranch.trim().length > 0;
     if (requirementDraft.mentions.length > 0) {
       setRequirementDraft((current) => ({ ...current, mentions: [] }));
@@ -552,7 +608,77 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
     props.onProjectChange?.(projectId);
   };
 
-  const addAttachedFiles = (files: File[]) => {
+  /**
+   * Clipboard screenshots and browser-mode drops have no filesystem path. Upload them,
+   * have the server copy them to durable storage, and reference the returned absolute
+   * paths like any dragged file.
+   */
+  const attachPathlessFiles = async (files: File[]) => {
+    const api = readNativeApi();
+    const generation = attachmentGenerationRef.current;
+    const threadId = (attachmentDraftIdRef.current ??= ThreadId.makeUnsafe(
+      `workflow-draft-${crypto.randomUUID()}`,
+    ));
+    const isCurrent = () => generation === attachmentGenerationRef.current;
+    const uploadIds: string[] = [];
+    let uploadsReleased = false;
+    setPendingAttachmentCount((count) => count + files.length);
+    try {
+      if (!api) throw new Error("Native API is unavailable.");
+      const results = await Promise.allSettled(
+        files.map((file) => uploadAttachment(getServerHttpOrigin(), threadId, file)),
+      );
+      for (const result of results) {
+        if (result.status === "fulfilled") uploadIds.push(result.value.uploadId);
+      }
+      const failure = results.find((result) => result.status === "rejected");
+      if (failure) throw failure.reason;
+      const saved = await api.attachments.materializeUploads({ threadId, uploadIds });
+      // The server released the uploads once the copies were complete.
+      uploadsReleased = true;
+      if (!isCurrent()) {
+        discardMaterializedUploads(saved.files.map((file) => file.uploadId));
+        return;
+      }
+      for (const file of saved.files) {
+        materializedUploadIdsRef.current.set(file.path, file.uploadId);
+      }
+      setAttachedFilePaths((current) =>
+        normalizeAttachedFilePaths([...current, ...saved.files.map((file) => file.path)]),
+      );
+      setProjectChangeNote(null);
+      setError(null);
+    } catch (cause) {
+      if (api && !uploadsReleased && uploadIds.length > 0) {
+        void api.attachments.releaseUploads({ threadId, uploadIds }).catch(() => undefined);
+      }
+      if (!isCurrent()) return;
+      toastManager.add({
+        type: "error",
+        title: files.length === 1 ? "Couldn't attach the file." : "Couldn't attach the files.",
+        description: cause instanceof Error ? cause.message : undefined,
+      });
+    } finally {
+      if (isCurrent()) setPendingAttachmentCount((count) => Math.max(0, count - files.length));
+    }
+  };
+
+  const addAttachedFiles = (allFiles: File[]) => {
+    const { withPath: files, pathless } = partitionAttachedFiles(allFiles, {
+      isElectron,
+      desktopBridge: window.desktopBridge,
+    });
+    // Browsers report a dropped folder as an empty file; neither can be uploaded.
+    const uploadable = pathless.filter((file) => file.size > 0);
+    if (uploadable.length < pathless.length) {
+      toastManager.add({
+        type: "warning",
+        title: "Empty files and folders can't be attached.",
+      });
+    }
+    if (uploadable.length > 0) {
+      void attachPathlessFiles(uploadable);
+    }
     if (files.length === 0) {
       return;
     }
@@ -560,7 +686,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
     const normalizeAbsolutePathForComparison = createCachedAbsolutePathComparisonNormalizer(
       window.desktopBridge?.resolveRealPath ?? identityAbsolutePathNormalizer,
     );
-    const { filePaths, missingPathCount, invalidPathCount } = resolveAttachedFileReferencePaths({
+    const { filePaths, invalidPathCount } = resolveAttachedFileReferencePaths({
       files,
       isElectron,
       desktopBridge: window.desktopBridge,
@@ -574,12 +700,6 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
       setError(null);
     }
 
-    if (missingPathCount > 0) {
-      toastManager.add({
-        type: "warning",
-        title: "File attachments require the desktop app to resolve filesystem paths.",
-      });
-    }
     if (invalidPathCount > 0) {
       toastManager.add({
         type: "warning",
@@ -590,11 +710,22 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
 
   const removeAttachedFilePath = (filePath: string) => {
     setAttachedFilePaths((current) => current.filter((entry) => entry !== filePath));
+    const uploadId = materializedUploadIdsRef.current.get(filePath);
+    if (uploadId !== undefined) {
+      materializedUploadIdsRef.current.delete(filePath);
+      discardMaterializedUploads([uploadId]);
+    }
   };
 
   const onPromptPaste = (event: ReactClipboardEvent<HTMLDivElement>) => {
     const files = Array.from(event.clipboardData.files);
-    if (files.length === 0 || !isElectron) {
+    if (files.length === 0) {
+      return;
+    }
+    // In a browser, copied spreadsheet cells or rich text carry a rendered image next to the
+    // text; paste the text as the composer does. The desktop app keeps attaching files, since
+    // a Finder copy also carries the file name as text.
+    if (!isElectron && event.clipboardData.getData("text/plain").trim().length > 0) {
       return;
     }
     event.preventDefault();
@@ -1038,7 +1169,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                   onDragLeaveCapture={onPromptFileMentionDragLeaveCapture}
                   onDropCapture={onPromptFileMentionDropCapture}
                 >
-                  {attachedFilePaths.length > 0 ? (
+                  {attachedFilePaths.length > 0 || pendingAttachmentCount > 0 ? (
                     <div className="flex flex-wrap gap-1.5">
                       {attachedFilePaths.map((filePath) => {
                         const displayPath = relativePathForDisplay(filePath, project?.cwd);
@@ -1056,6 +1187,17 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                           />
                         );
                       })}
+                      {pendingAttachmentCount > 0 ? (
+                        <span
+                          className="inline-flex h-6 items-center gap-1 rounded-md border border-border bg-muted/50 px-1.5 text-ui text-muted-foreground"
+                          role="status"
+                        >
+                          <Spinner className="size-3.5" />
+                          {pendingAttachmentCount === 1
+                            ? "Attaching…"
+                            : `Attaching ${pendingAttachmentCount} files…`}
+                        </span>
+                      ) : null}
                     </div>
                   ) : null}
                   <ComposerPromptEditor

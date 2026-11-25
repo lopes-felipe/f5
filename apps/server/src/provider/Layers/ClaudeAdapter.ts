@@ -352,6 +352,7 @@ import {
   readClaudeExecutableVersion,
 } from "../claudeExecutableVersion.ts";
 import { buildClaudeFlagPermissions } from "../claudeFlagPermissions.ts";
+import { resolveWorkflowAttachmentsDir } from "../../attachmentUploads.ts";
 import { makeMonotonicIsoClock } from "../monotonicEventClock.ts";
 import {
   isUuid,
@@ -8760,7 +8761,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           // With F5's compaction in charge, Claude must not compact behind F5's summaries.
           ...(providerOptions?.nativeCompaction === false ? { idleCompaction: false } : {}),
           permissions: buildClaudeFlagPermissions({
-            readExemptDirectories: [serverConfig.attachmentsDir, plansDirectory],
+            readExemptDirectories: [
+              serverConfig.attachmentsDir,
+              // Workflow prompts reference pasted files there by absolute path.
+              resolveWorkflowAttachmentsDir(serverConfig),
+              plansDirectory,
+            ],
             confineWritesToWorkspace: providerOptions?.confineWritesToWorkspace === true,
           }),
           ...claudeRuntimeSettings({
