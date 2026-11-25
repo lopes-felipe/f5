@@ -10,15 +10,27 @@ const McpStringArray = Schema.Array(TrimmedNonEmptyString);
 export const McpArgArray = Schema.Array(Schema.String);
 export type McpArgArray = typeof McpArgArray.Type;
 const McpPort = PositiveInt.check(Schema.isLessThanOrEqualTo(65535));
-export const McpHttpUrl = TrimmedNonEmptyString.check(
-  Schema.makeFilter((value: string) => {
-    try {
-      const url = new URL(value);
-      return url.protocol === "http:" || url.protocol === "https:";
-    } catch {
-      return false;
-    }
-  }),
+const isHttpUrl = (value: string) => {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+};
+export const McpHttpUrl = TrimmedNonEmptyString.check(Schema.makeFilter(isHttpUrl));
+const ENV_REFERENCE = /\$\{env:[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\}/gu;
+/**
+ * A server URL that may contain `${env:NAME}` references, resolved when the server
+ * starts. A URL that is one reference is accepted; otherwise it must parse with each
+ * reference standing in for a host-safe placeholder.
+ */
+export const McpHttpUrlTemplate = TrimmedNonEmptyString.check(
+  Schema.makeFilter(
+    (value: string) =>
+      /^\$\{env:[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\}$/u.test(value) ||
+      isHttpUrl(value.replace(ENV_REFERENCE, "x")),
+  ),
 );
 const UnsupportedMcpField = Schema.optional(Schema.Undefined);
 
@@ -85,7 +97,7 @@ export const McpServerWriteDefinition = Schema.Union([
   })),
   McpRemoteServerDefinition.mapFields((fields) => ({
     ...fields,
-    url: McpHttpUrl,
+    url: McpHttpUrlTemplate,
     oauthCallbackUrl: Schema.optional(McpHttpUrl),
   })),
 ]);

@@ -1,4 +1,5 @@
 import { normalizeServerName } from "./mcpServerName";
+import { interpolateMcpServers } from "./mcpInterpolation";
 import type {
   ClaudeAgentMcpServerConfig,
   CodexMcpServerEntry,
@@ -230,13 +231,17 @@ export function evaluateMcpToolFilter(
  * `environment` is the account (provider process) environment. Claude has no
  * `bearer_token_env_var`, so a server's `bearerTokenEnvVar` is resolved from it
  * into an `Authorization` header, as Codex and Cursor do.
+ * `${env:…}` references are resolved from it too; a server with an unset variable is left out.
  */
 export function translateMcpForClaudeAgent(
   servers: McpProjectServersConfig | null | undefined,
   options?: { readonly environment?: Readonly<Record<string, string | undefined>> },
 ): Record<string, ClaudeAgentMcpServerConfig> | undefined {
   const translated = Object.create(null) as Record<string, ClaudeAgentMcpServerConfig>;
-  for (const [name, definition] of Object.entries(filterEnabledMcpServers(servers))) {
+  const resolved = options?.environment
+    ? interpolateMcpServers(servers, options.environment).servers
+    : servers;
+  for (const [name, definition] of Object.entries(filterEnabledMcpServers(resolved))) {
     const normalized = normalizeCommonEntry(definition);
     // Claude ignores sub-second values, including the saved zero/default value.
     const timeout =
@@ -289,11 +294,19 @@ export function translateMcpForClaudeAgent(
   return Object.keys(translated).length > 0 ? { ...translated } : undefined;
 }
 
+/**
+ * With an account environment, `${env:…}` references are resolved first and a
+ * server with an unset variable is left out (see `interpolateMcpServers`).
+ */
 export function translateMcpForCodex(
   servers: McpProjectServersConfig | null | undefined,
+  options?: { readonly environment?: Readonly<Record<string, string | undefined>> },
 ): Record<string, CodexMcpServerEntry> | undefined {
   const translated = Object.create(null) as Record<string, CodexMcpServerEntry>;
-  for (const [name, definition] of Object.entries(filterEnabledMcpServers(servers))) {
+  const resolved = options?.environment
+    ? interpolateMcpServers(servers, options.environment).servers
+    : servers;
+  for (const [name, definition] of Object.entries(filterEnabledMcpServers(resolved))) {
     const normalized = normalizeCommonEntry(definition);
     const shared = {
       ...(normalized.bearerTokenEnvVar

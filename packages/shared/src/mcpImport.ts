@@ -1,7 +1,7 @@
 import {
   McpServerDefinition,
   McpServerWriteDefinition,
-  McpHttpUrl,
+  McpHttpUrlTemplate,
   type McpProjectServersConfig,
   type McpServerTransportType as TransportType,
 } from "@t3tools/contracts";
@@ -15,26 +15,131 @@ import {
   readMcpServerNameProblem,
   sanitizeMcpServerName,
 } from "./mcpServerName";
+import {
+  convertBareEnvReferences,
+  hasUnknownMcpReference,
+  MCP_ENV_REFERENCE_SYNTAX,
+  mapMcpInterpolatedFields,
+  mcpInterpolatedFields,
+} from "./mcpInterpolation";
 
-/** `${VAR}` / `${VAR:-default}` references; F5 secret placeholders are handled separately. */
-const ENV_REFERENCE_PATTERN = /\$\{(?!f5-secret:)[^}]*\}/u;
-
-/** Fields whose values other clients expand from the environment but F5 passes literally. */
-function readUnexpandedEnvReferenceFields(server: McpProjectServersConfig[string]): string[] {
-  const fields: string[] = [];
-  const check = (field: string, value: string | undefined) => {
-    if (value !== undefined && ENV_REFERENCE_PATTERN.test(value)) fields.push(field);
+/**
+ * Removes `//` and block comments and trailing commas outside strings, so
+ * VS Code and OpenCode configuration (JSONC) parses as JSON.
+ */
+export function stripJsonComments(text: string): string {
+  /** Walks `source`, copying strings verbatim and letting `visit` handle everything else. */
+  const scan = (source: string, visit: (index: number) => [string, number]) => {
+    let output = "";
+    let index = 0;
+    while (index < source.length) {
+      if (source[index] === '"') {
+        let end = index + 1;
+        while (end < source.length && source[end] !== '"') end += source[end] === "\\" ? 2 : 1;
+        output += source.slice(index, end + 1);
+        index = end + 1;
+        continue;
+      }
+      const [text, next] = visit(index);
+      output += text;
+      index = next;
+    }
+    return output;
   };
-  if (server.type === "stdio") {
-    check("command", server.command);
-    server.args?.forEach((value, index) => check(`args.${index}`, value));
-    for (const [key, value] of Object.entries(server.env ?? {})) check(`env.${key}`, value);
-    check("cwd", server.cwd);
-  } else {
-    check("url", server.url);
-    for (const [key, value] of Object.entries(server.headers ?? {})) check(`headers.${key}`, value);
+  const withoutComments = scan(text, (index) => {
+    if (text.startsWith("//", index)) {
+      const end = text.indexOf("\n", index);
+      return ["", end === -1 ? text.length : end];
+    }
+    if (text.startsWith("/*", index)) {
+      const end = text.indexOf("*/", index + 2);
+      return [" ", end === -1 ? text.length : end + 2];
+    }
+    return [text[index]!, index + 1];
+  });
+  return scan(withoutComments, (index) => {
+    if (withoutComments[index] === ",") {
+      const following = withoutComments.slice(index + 1).trimStart()[0];
+      if (following === "}" || following === "]") return ["", index + 1];
+    }
+    return [withoutComments[index]!, index + 1];
+  });
+}
+
+/** Strict JSON first, so a JSON error message stays precise; JSONC only as a fallback. */
+function parseJsonOrJsonc(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    try {
+      return JSON.parse(stripJsonComments(text));
+    } catch {
+      throw error;
+    }
   }
-  return fields;
+}
+
+/** OpenCode writes `{env:NAME}`; F5's form is `${env:NAME}`. */
+function convertOpenCodeValue(value: unknown): unknown {
+  return typeof value === "string"
+    ? value.replace(/(?<!\$)\{env:([A-Za-z_][A-Za-z0-9_]*)\}/gu, "${env:$1}")
+    : value;
+}
+
+function convertOpenCodeRecord(value: unknown): unknown {
+  return isRecord(value)
+    ? Object.fromEntries(
+        Object.entries(value).map(([key, entry]) => [key, convertOpenCodeValue(entry)]),
+      )
+    : value;
+}
+
+/** OpenCode's `mcp` entries: `local` with a command array, or `remote` with a URL. */
+function convertOpenCodeServer(raw: unknown): unknown {
+  if (!isRecord(raw)) return raw;
+  const enabled = raw.enabled === false ? { enabled: false } : {};
+  if (raw.type === "local") {
+    const command = Array.isArray(raw.command) ? raw.command.map(convertOpenCodeValue) : [];
+    return {
+      type: "stdio",
+      command: command[0],
+      args: command.slice(1),
+      ...(raw.environment !== undefined ? { env: convertOpenCodeRecord(raw.environment) } : {}),
+      ...enabled,
+    };
+  }
+  if (raw.type === "remote")
+    return {
+      type: "http",
+      url: convertOpenCodeValue(raw.url),
+      ...(raw.headers !== undefined ? { headers: convertOpenCodeRecord(raw.headers) } : {}),
+      ...enabled,
+    };
+  return raw;
+}
+
+/** The server map of a Claude, Cursor, Codex, VS Code, or OpenCode document. */
+function readImportRoot(
+  document: Record<string, unknown>,
+  jsonInput: boolean,
+): Record<string, unknown> {
+  if (isRecord(document.mcpServers)) return document.mcpServers;
+  if (isRecord(document.mcp_servers)) return document.mcp_servers;
+  if (!jsonInput) return {};
+  // VS Code `.vscode/mcp.json`.
+  if (isRecord(document.servers)) return document.servers;
+  // OpenCode `opencode.json`.
+  if (
+    isRecord(document.mcp) &&
+    ("$schema" in document ||
+      Object.values(document.mcp).some(
+        (entry) => isRecord(entry) && (entry.type === "local" || entry.type === "remote"),
+      ))
+  )
+    return Object.fromEntries(
+      Object.entries(document.mcp).map(([name, entry]) => [name, convertOpenCodeServer(entry)]),
+    );
+  return document;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -324,7 +429,7 @@ export function parseMcpImport(
   const jsonInput = text.trim().startsWith("{");
   let document: unknown;
   try {
-    document = jsonInput ? JSON.parse(text) : parseToml(text);
+    document = jsonInput ? parseJsonOrJsonc(text) : parseToml(text);
   } catch (error) {
     return {
       candidates: [],
@@ -342,13 +447,7 @@ export function parseMcpImport(
       candidates: [],
       issues: [{ field: "$", severity: "error", message: "Expected a configuration object." }],
     };
-  const root = isRecord(document.mcpServers)
-    ? document.mcpServers
-    : isRecord(document.mcp_servers)
-      ? document.mcp_servers
-      : jsonInput
-        ? document
-        : {};
+  const root = readImportRoot(document, jsonInput);
   const seen = new Set<string>();
   const candidates = Object.entries(root).map(([rawName, raw], index) => {
     const normalizedName = normalizeServerName(rawName);
@@ -449,7 +548,7 @@ export function parseMcpImport(
       const rawType = raw.type ?? raw.transport ?? raw.transportType;
       if (rawType !== undefined && !["stdio", "http", "sse", "sdk"].includes(String(rawType)))
         add("type", "Unsupported transport type.", "error");
-      if (typeof raw.url === "string" && !Schema.is(McpHttpUrl)(raw.url))
+      if (typeof raw.url === "string" && !Schema.is(McpHttpUrlTemplate)(raw.url))
         add("url", "Expected an HTTP or HTTPS URL.", "error");
       const inherited = {
         ...raw,
@@ -475,11 +574,20 @@ export function parseMcpImport(
     if (server) {
       const validation = readImportValidationIssues(server);
       for (const issue of validation) add(issue.field, issue.message, "error");
-      for (const field of readUnexpandedEnvReferenceFields(server))
-        add(
-          field,
-          "Contains a ${VAR} reference. F5 passes it to the server literally and does not expand it; replace it with the value or a stored secret.",
-        );
+      const original = new Map(mcpInterpolatedFields(server));
+      server = mapMcpInterpolatedFields(server, convertBareEnvReferences);
+      for (const [field, value] of mcpInterpolatedFields(server)) {
+        if (original.get(field) !== value)
+          add(
+            field,
+            `Converted \${VAR} references to ${MCP_ENV_REFERENCE_SYNTAX}; F5 reads them from the account environment when the server starts.`,
+          );
+        if (hasUnknownMcpReference(value))
+          add(
+            field,
+            `Contains a \${...} reference that F5 passes literally. Only ${MCP_ENV_REFERENCE_SYNTAX} is expanded; replace it with a value or a stored secret.`,
+          );
+      }
     }
     return {
       id: `${source}:${index}:${name}`,

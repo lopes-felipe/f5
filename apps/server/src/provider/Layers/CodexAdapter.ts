@@ -2545,6 +2545,8 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
     const serverConfig = yield* Effect.service(ServerConfig);
     const shutdown = yield* Effect.serviceOption(ServerShutdown);
     const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make(PROVIDER);
+    // `${env:…}` in MCP definitions resolve from the environment Codex runs in.
+    const mcpInterpolationEnv = { environment: options?.processEnvironment ?? process.env };
     const nativeEventLogger =
       options?.nativeEventLogger ??
       (options?.nativeEventLogPath !== undefined
@@ -2992,7 +2994,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             inheritsFastMode(input.model ?? input.modelSelection?.model),
           ),
           ...(providerMcpServers
-            ? { mcpServers: translateMcpForCodex(providerMcpServers) ?? {} }
+            ? { mcpServers: translateMcpForCodex(providerMcpServers, mcpInterpolationEnv) ?? {} }
             : {}),
           ...(previewMcpSession || computerMcpSession || threadMcpSession
             ? {
@@ -3030,7 +3032,9 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             Effect.sync(() => {
               launchedMcpConfigKeys.set(
                 input.threadId,
-                stableMcpConfigKey(translateMcpForCodex(baseProviderMcpServers) ?? {}),
+                stableMcpConfigKey(
+                  translateMcpForCodex(baseProviderMcpServers, mcpInterpolationEnv) ?? {},
+                ),
               );
             }),
           ),
@@ -3390,7 +3394,8 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         const launched = launchedMcpConfigKeys.get(threadId);
         if (
           launched !== undefined &&
-          launched !== stableMcpConfigKey(translateMcpForCodex(mcpServers) ?? {})
+          launched !==
+            stableMcpConfigKey(translateMcpForCodex(mcpServers, mcpInterpolationEnv) ?? {})
         ) {
           // This also applies after login: never reload a launch config that differs
           // from the saved snapshot. Credentials take effect at the safe restart boundary.

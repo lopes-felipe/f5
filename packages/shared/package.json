@@ -484,6 +484,10 @@
       "types": "./src/mcpImport.ts",
       "import": "./src/mcpImport.ts"
     },
+    "./mcpInterpolation": {
+      "types": "./src/mcpInterpolation.ts",
+      "import": "./src/mcpInterpolation.ts"
+    },
     "./mcpValidation": {
       "types": "./src/mcpValidation.ts",
       "import": "./src/mcpValidation.ts"

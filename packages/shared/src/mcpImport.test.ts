@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseImportedServers, parseMcpImport } from "./mcpImport";
+import { parseImportedServers, parseMcpImport, stripJsonComments } from "./mcpImport";
 
 describe("parseMcpImport name and interpolation warnings", () => {
   it("proposes a sanitized name for names outside the allowed charset", () => {
@@ -23,14 +23,14 @@ describe("parseMcpImport name and interpolation warnings", () => {
     expect(result.candidates[2]!.issues).toEqual([]);
   });
 
-  it("warns about ${VAR} references that F5 passes literally", () => {
+  it("converts ${VAR} references to ${env:VAR} and flags other references", () => {
     const result = parseMcpImport(
       JSON.stringify({
         mcpServers: {
           local: {
             command: "node",
-            args: ["--token", "${API_TOKEN}"],
-            env: { HOME_DIR: "${HOME}" },
+            args: ["--token", "${API_TOKEN}", "${workspaceFolder}/x"],
+            env: { HOME_DIR: "${HOME}", KEEP: "${env:KEEP}" },
           },
           remote: {
             type: "http",
@@ -41,14 +41,57 @@ describe("parseMcpImport name and interpolation warnings", () => {
         },
       }),
     );
-    const fields = (index: number) =>
-      result.candidates[index]!.issues.filter((issue) => issue.severity === "warning").map(
-        (issue) => issue.field,
-      );
-    expect(fields(0)).toEqual(["args.1", "env.HOME_DIR"]);
-    expect(fields(1)).toEqual(["headers.Authorization"]);
-    expect(fields(2)).toEqual([]);
-    expect(result.candidates.every((candidate) => candidate.server)).toBe(true);
+    const warnings = (index: number) =>
+      result.candidates[index]!.issues.filter((issue) => issue.severity === "warning");
+    expect(warnings(0).map((issue) => issue.field)).toEqual(["args.1", "args.2", "env.HOME_DIR"]);
+    expect(warnings(0)[1]!.message).toContain("passes literally");
+    expect(warnings(1).map((issue) => issue.field)).toEqual(["headers.Authorization"]);
+    expect(warnings(2)).toEqual([]);
+    expect(result.candidates[0]!.server).toMatchObject({
+      args: ["--token", "${env:API_TOKEN}", "${workspaceFolder}/x"],
+      env: { HOME_DIR: "${env:HOME}", KEEP: "${env:KEEP}" },
+    });
+    expect(result.candidates[1]!.server).toMatchObject({
+      headers: { Authorization: "Bearer ${env:TOKEN:-none}" },
+    });
+  });
+});
+
+describe("JSONC and other clients' shapes", () => {
+  it("strips comments and trailing commas but never touches strings", () => {
+    const text = `{
+  /* block */ "a": "https://x.example/a//b", // line
+  "b": ["/* not a comment */", "x",],
+}`;
+    expect(JSON.parse(stripJsonComments(text))).toEqual({
+      a: "https://x.example/a//b",
+      b: ["/* not a comment */", "x"],
+    });
+  });
+
+  it("reads pasted VS Code and OpenCode documents", () => {
+    const vscode = parseMcpImport(`{
+  "servers": { "docs": { "type": "sse", "url": "https://docs.example/sse" } }, // trailing
+}`);
+    expect(vscode.candidates.map((candidate) => [candidate.name, candidate.server?.type])).toEqual([
+      ["docs", "sse"],
+    ]);
+    const openCode = parseMcpImport(
+      JSON.stringify({
+        mcp: {
+          remote: {
+            type: "remote",
+            url: "https://oc.example/mcp",
+            headers: { Authorization: "Bearer {env:OC_TOKEN}" },
+          },
+        },
+      }),
+    );
+    expect(openCode.candidates[0]!.server).toEqual({
+      type: "http",
+      url: "https://oc.example/mcp",
+      headers: { Authorization: "Bearer ${env:OC_TOKEN}" },
+    });
   });
 });
 

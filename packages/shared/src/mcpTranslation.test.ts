@@ -49,6 +49,22 @@ describe("mcpTranslation", () => {
     }
   });
 
+  it("resolves ${env:} references for Codex and Claude only with an account environment", () => {
+    const servers = {
+      local: { type: "stdio" as const, command: "${env:BIN}", args: ["${env:ARG:-x}"] },
+      remote: { type: "http" as const, url: "https://${env:HOST}/mcp" },
+    };
+    const environment = { BIN: "/bin/server", HOST: "h.example" };
+    expect(translateMcpForCodex(servers, { environment })).toEqual({
+      local: { type: "stdio", command: "/bin/server", args: ["x"] },
+      remote: { type: "http", url: "https://h.example/mcp" },
+    });
+    expect(translateMcpForClaudeAgent(servers, { environment: { BIN: "/bin/server" } })).toEqual({
+      local: { type: "stdio", command: "/bin/server", args: ["x"] },
+    });
+    expect(translateMcpForCodex(servers)?.remote).toMatchObject({ url: "https://${env:HOST}/mcp" });
+  });
+
   it("sends bearerTokenEnvVar to Claude as an Authorization header from the account environment", () => {
     const remote = {
       type: "http" as const,

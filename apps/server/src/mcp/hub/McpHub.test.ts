@@ -236,6 +236,24 @@ describe("F5 MCP hub", () => {
     await attachment.dispose();
   });
 
+  it("resolves ${env:} from the account environment and omits a server with an unset variable", async () => {
+    const attachment = attach({
+      resolved: { type: "http", url: "https://${env:HOST:-resolved.example}/mcp" },
+      unresolved: { type: "http", url: "https://example.test/mcp?k=${env:MISSING_KEY}" },
+    } as unknown as McpProjectServersConfig);
+    try {
+      expect(attachment.endpoints.map((endpoint) => endpoint.serverName)).toEqual(["resolved"]);
+      expect(attachment.omitted).toEqual([
+        {
+          serverName: "unresolved",
+          reason: "needs the environment variable MISSING_KEY, which is not set",
+        },
+      ]);
+    } finally {
+      await attachment.dispose();
+    }
+  });
+
   it("omits every server when no listener can mount hub endpoints", async () => {
     const detached = makeMcpHub({});
     const attachment = await detached.attach({

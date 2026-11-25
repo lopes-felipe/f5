@@ -17,6 +17,10 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 import { stableMcpServersJson } from "@t3tools/shared/mcpConfig";
+import {
+  describeMcpInterpolationSkip,
+  interpolateMcpServers,
+} from "@t3tools/shared/mcpInterpolation";
 import { Effect, Layer, Option, ServiceMap } from "effect";
 
 import { CodexMcpEventBus } from "../../codex/CodexMcpEventBus.ts";
@@ -197,7 +201,11 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
         omitted.push({ serverName: name, reason: "F5's MCP hub is unavailable in this runtime" });
       return { endpoints, omitted, credentials: [], dispose: async () => {} };
     }
-    for (const [serverName, definition] of Object.entries(input.servers ?? {})) {
+    const interpolated = interpolateMcpServers(input.servers, input.environment);
+    for (const skip of interpolated.skipped)
+      if (!input.reservedNames?.has(skip.name))
+        omitted.push({ serverName: skip.name, reason: describeMcpInterpolationSkip(skip) });
+    for (const [serverName, definition] of Object.entries(interpolated.servers)) {
       if (definition.enabled === false) continue;
       if (input.reservedNames?.has(serverName)) {
         omitted.push({ serverName, reason: "uses a name the provider already has" });

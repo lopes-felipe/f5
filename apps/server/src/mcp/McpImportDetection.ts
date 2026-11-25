@@ -34,6 +34,41 @@ export async function readMcpImportFile(filename: string): Promise<string | null
   }
 }
 
+/** Cursor, VS Code, Claude Desktop, and OpenCode configuration, user level then project level. */
+export function otherClientConfigFiles(input: {
+  readonly environment: NodeJS.ProcessEnv;
+  readonly home: string;
+  readonly cwd?: string | undefined;
+  readonly platform?: NodeJS.Platform;
+}): string[] {
+  const platform = input.platform ?? process.platform;
+  const pathApi = platform === "win32" ? path.win32 : path.posix;
+  const appData =
+    platform === "win32"
+      ? (input.environment.APPDATA ?? pathApi.join(input.home, "AppData", "Roaming"))
+      : platform === "darwin"
+        ? pathApi.join(input.home, "Library", "Application Support")
+        : (input.environment.XDG_CONFIG_HOME ?? pathApi.join(input.home, ".config"));
+  const openCodeConfig = pathApi.join(
+    input.environment.XDG_CONFIG_HOME ?? pathApi.join(input.home, ".config"),
+    "opencode",
+  );
+  return [
+    pathApi.join(input.home, ".cursor", "mcp.json"),
+    pathApi.join(appData, "Claude", "claude_desktop_config.json"),
+    pathApi.join(openCodeConfig, "opencode.json"),
+    pathApi.join(openCodeConfig, "opencode.jsonc"),
+    ...(input.cwd
+      ? [
+          pathApi.join(input.cwd, ".cursor", "mcp.json"),
+          pathApi.join(input.cwd, ".vscode", "mcp.json"),
+          pathApi.join(input.cwd, "opencode.json"),
+          pathApi.join(input.cwd, "opencode.jsonc"),
+        ]
+      : []),
+  ];
+}
+
 /** Called exclusively by the explicit Detect action; never during startup or settings reads. */
 export async function detectMcpImports(input: {
   environment: NodeJS.ProcessEnv;
@@ -41,25 +76,32 @@ export async function detectMcpImports(input: {
 }): Promise<McpListImportCandidatesResult> {
   const home = input.environment.HOME ?? homedir();
   const claudeDir = input.environment.CLAUDE_CONFIG_DIR;
-  const filenames = [
-    claudeDir ? path.join(claudeDir, ".claude.json") : path.join(home, ".claude.json"),
-    ...(input.cwd ? [path.join(input.cwd, ".mcp.json")] : []),
-    path.join(input.environment.CODEX_HOME ?? path.join(home, ".codex"), "config.toml"),
+  const claudeState = claudeDir
+    ? path.join(claudeDir, ".claude.json")
+    : path.join(home, ".claude.json");
+  // Other clients' configuration is offered but never preselected.
+  const sources: Array<{ readonly filename: string; readonly selectedByDefault: boolean }> = [
+    { filename: claudeState, selectedByDefault: true },
+    ...(input.cwd
+      ? [{ filename: path.join(input.cwd, ".mcp.json"), selectedByDefault: false }]
+      : []),
+    {
+      filename: path.join(input.environment.CODEX_HOME ?? path.join(home, ".codex"), "config.toml"),
+      selectedByDefault: true,
+    },
+    ...otherClientConfigFiles({ environment: input.environment, home, cwd: input.cwd }).map(
+      (filename) => ({ filename, selectedByDefault: false }),
+    ),
   ];
   const candidates: McpListImportCandidatesResult["candidates"][number][] = [];
   const issues: McpListImportCandidatesResult["issues"][number][] = [];
-  for (const filename of filenames) {
+  for (const { filename, selectedByDefault } of sources) {
     try {
       const text = await readMcpImportFile(filename);
       if (text === null) continue;
-      if (filename.endsWith("config.toml") || filename.endsWith(".mcp.json")) {
+      if (filename !== claudeState) {
         const parsed = parseMcpImport(text, filename);
-        candidates.push(
-          ...parsed.candidates.map((entry) => ({
-            ...entry,
-            selectedByDefault: !filename.endsWith(".mcp.json"),
-          })),
-        );
+        candidates.push(...parsed.candidates.map((entry) => ({ ...entry, selectedByDefault })));
         issues.push(...parsed.issues);
         continue;
       }
