@@ -100,18 +100,21 @@ transform decision before track T4.
 Every SDK bump records the SDK version, package integrity, helper version,
 host runtime and each certified feature, and reruns every SDK row.
 
-## Read-only sandbox gates (C1-C4)
+## Read-only gates (C1-C6)
 
-These gates decide whether Cursor read-only workflow stages can run in Cursor's
+C1-C4 decide whether Cursor read-only workflow stages can run in Cursor's
 native sandbox (`agent --sandbox enabled acp` with a `workspace_readonly`
 `sandbox.json`) rather than F5's command allowlist. Until they all pass on a
 target, `CURSOR_READ_ONLY_SANDBOX_CERTIFIED_RUNTIMES` in
 `packages/shared/src/readOnlyEnforcement.ts` has no row for it and Cursor stays
-policy-enforced.
+policy-enforced. C5 and C6 check F5's read-only config override, which keeps
+Cursor's own approval settings from letting commands past the policy (see
+[Read-only config override](#read-only-config-override)).
 
 Run `node apps/server/integration/cursorSandboxGates.mjs` from a normal
 Terminal: macOS refuses to start the sandbox inside an agent's sandboxed shell.
-It spends three prompts and works in a fresh folder with its own HOME, under
+Each gate spends one prompt, and C5 two with its control. `--gates C5,C6` runs
+only the named gates. The script works in a fresh folder with its own HOME, under
 `~/.f5-cursor-gates` unless `--root <dir>` names another parent. The folder is
 deliberately not under a temp directory: Cursor's sandbox lets commands write to
 temp directories, so fixtures there would make the write checks pass or fail for
@@ -151,6 +154,8 @@ command (title and raw input), never by assistant text:
 | C2   | With `--sandbox enabled` and plan mode, which commands send `session/request_permission`, and does a request tell sandboxed runs from out-of-sandbox ones?        | Every non-allowlisted command asks, including the `npm --version` trap; no sandbox (2026-11-25) |
 | C3   | Under `workspace_readonly` with network denied: do workspace, `.git` and outside writes fail, `curl` fail, temp writes succeed and Cursor's own fetch still work? | Fail: every write landed and `curl` returned 200 (2026-11-25)                                   |
 | C4   | Does C3 still hold in a workspace whose own `.cursor/sandbox.json` asks for no sandbox and full network?                                                          | Fail, same as C3 (2026-11-25)                                                                   |
+| C5   | Launched like a production read-only stage, does `npm --version` ask F5 when the user's config allows `Shell(npm)` but `CURSOR_CONFIG_DIR` points at F5's copy?   | Pending (C5a, the control, must show the allow entry working)                                   |
+| C6   | Does Cursor honour `permissions.allow` from the repository's `.cursor/cli.json` over ACP?                                                                         | Pending (F5 refuses such repositories either way)                                               |
 
 **Outcome on CLI 2026.11.22-e9042b2: the ACP server has no sandbox.** The
 second run (2026-11-25) had the sandbox preset in `cli-config.json`,
@@ -180,6 +185,35 @@ when Cursor's own approval doesn't already allow it:
   - every command when `approvalMode` is `unrestricted`.
 - **The gate runs reached F5 every time** only because they used an empty
   allowlist under a separate HOME.
+
+### Read-only config override
+
+Read-only Cursor stages launch with `CURSOR_CONFIG_DIR` set to
+`<state dir>/provider-homes/cursor-readonly/<instance id>`
+(`apps/server/src/provider/cursor/CursorReadOnlyConfig.ts`). The bundle for
+2026.11.22-e9042b2 shows why that one variable is enough:
+
+- **What follows `CURSOR_CONFIG_DIR`:** the CLI resolves its config dir as
+  `CURSOR_CONFIG_DIR`, then `$XDG_CONFIG_HOME/cursor`, then `~/.cursor`
+  (`cursor-config/dist/paths.js`). `cli-config.json` (`permissions.allow`,
+  `approvalMode`), `permissions.json` (`terminalAllowlist`, `autoRun`), user MCP
+  servers, hooks, `acp-sessions` and `chats` all live in it.
+- **What F5 writes there:** a copy of the user's `cli-config.json` with an empty
+  allowlist and `approvalMode: "allowlist"`, rewritten at every start, and no
+  `permissions.json`. `approvalMode` also accepts `unrestricted` and
+  `auto-review`, and both let commands run without asking.
+- **Sign-in doesn't move:** credentials are in the keychain or `auth.json` under
+  HOME (macOS), `XDG_CONFIG_HOME` or `~/.config/cursor` (Linux), or `APPDATA`
+  (Windows), never in `CURSOR_CONFIG_DIR`. No keychain link is needed, unlike
+  the separate HOME in C1.
+- **Repository config:** the CLI also merges every `.cursor/cli.json` from the
+  repository root down to the working directory into that config, using the
+  full schema. F5 can't override those files, so it refuses a read-only stage
+  when one between the working directory and the filesystem root sets
+  `permissions.allow` or an `approvalMode` other than `allowlist`. C6 records
+  whether ACP honours them at all.
+- **Team admin allowlists** come from Cursor's servers and stay out of F5's
+  reach.
 
 - **C1:** the CLI keeps its sign-in in the login keychain through
   `/usr/bin/security`, which looks under `$HOME/Library/Keychains`. An empty

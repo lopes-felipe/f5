@@ -1,9 +1,12 @@
 #!/usr/bin/env node
-// Live gates C1-C4 for running Cursor read-only workflow stages in Cursor's native sandbox
-// (docs/reviews/cursor-live-gates.md). Run it from a normal Terminal: macOS does not let the
-// sandbox start inside another sandbox, such as an agent's shell. It spends three Cursor prompts.
+// Live gates C1-C6 for Cursor read-only workflow stages (docs/reviews/cursor-live-gates.md):
+// C2-C4 test Cursor's native sandbox, C5-C6 test F5's read-only config override. Run it from a
+// normal Terminal: macOS does not let the sandbox start inside another sandbox, such as an
+// agent's shell. Each gate spends one Cursor prompt (C5 two, with its control); --gates picks
+// which run.
 //
-//   node apps/server/integration/cursorSandboxGates.mjs [--handshake-only] [--root <dir>] [agent]
+//   node apps/server/integration/cursorSandboxGates.mjs [--handshake-only] [--root <dir>]
+//     [--gates C2,C3,C4,C5,C6] [agent]
 //
 // Everything happens in a fresh folder with its own HOME, under ~/.f5-cursor-gates unless --root
 // names another parent. It is deliberately not under a temp directory: Cursor's sandbox lets
@@ -21,6 +24,12 @@
 //       that the commands ran at all), and Cursor's own fetch is recorded.
 //   C4  C3 again in a workspace whose own .cursor/sandbox.json asks for no sandbox and full
 //       network: the per-user read-only policy must still hold.
+//   C5  Launched as production launches read-only stages (no --sandbox, plan mode), with an
+//       allowlist entry for `npm` in the user's config and CURSOR_CONFIG_DIR pointing at F5's
+//       sanitized copy: `npm --version` must ask F5. C5a, a control run without the override,
+//       must show the entry working (npm runs without asking).
+//   C6  The same launch with the allowlist in the repository's .cursor/cli.json instead: records
+//       whether Cursor honours it over ACP. F5 refuses such repositories either way.
 //
 // Each check is PASS, FAIL or INCONCLUSIVE. A write counts as blocked only when its tool call was
 // seen, nothing changed, and the output shows a sandbox denial; a step the model skipped or that
@@ -47,11 +56,20 @@ import { createInterface } from "node:readline";
 const argv = process.argv.slice(2);
 const handshakeOnly = argv.includes("--handshake-only");
 const rootFlag = argv.indexOf("--root");
+const gatesFlag = argv.indexOf("--gates");
 const rootParent =
   rootFlag >= 0 && argv[rootFlag + 1]
     ? path.resolve(argv[rootFlag + 1])
     : path.join(homedir(), ".f5-cursor-gates");
-const agent = argv.find((arg, index) => !arg.startsWith("--") && index !== rootFlag + 1) ?? "agent";
+const ALL_GATES = ["C2", "C3", "C4", "C5", "C6"];
+const selected =
+  gatesFlag >= 0 && argv[gatesFlag + 1]
+    ? ALL_GATES.filter((gate) => argv[gatesFlag + 1].split(",").includes(gate))
+    : ALL_GATES;
+const agent =
+  argv.find(
+    (arg, index) => !arg.startsWith("--") && index !== rootFlag + 1 && index !== gatesFlag + 1,
+  ) ?? "agent";
 mkdirSync(rootParent, { recursive: true });
 const root = mkdtempSync(path.join(rootParent, "run-"));
 const home = path.join(root, "home");
@@ -108,7 +126,7 @@ report.gates.C1 = { verdict: authenticated ? "PASS" : "FAIL", exitCode: status.s
 console.log(`C1 separate HOME authenticates: ${authenticated ? "PASS" : "FAIL"}`);
 if (!authenticated) {
   console.log(
-    "   (status output withheld; it may contain your email). Stopping: C2-C4 need a signed-in HOME.",
+    "   (status output withheld; it may contain your email). Stopping: the other gates need a signed-in HOME.",
   );
   finish();
 }
@@ -123,8 +141,12 @@ const SANDBOX_DENIAL =
 // The literal /tmp and the per-user temp directory can have different sandbox rules.
 const TEMP_DIRECTORIES = [...new Set(["/tmp", tmpdir()])];
 
-for (const gate of ["C2", "C3", "C4"]) {
-  const workspace = makeWorkspace(gate, gate === "C4");
+for (const gate of ["C2", "C3", "C4"].filter((name) => selected.includes(name))) {
+  const workspace = makeWorkspace(gate, {
+    ...(gate === "C4"
+      ? { sandboxPolicy: { type: "insecure_none", networkPolicy: { default: "allow" } } }
+      : {}),
+  });
   const marker = `${path.basename(root)}-${gate}`;
   const tempMarkers = TEMP_DIRECTORIES.map((directory) => path.join(directory, `${marker}.txt`));
   const outsideMarker = path.join(outside, `${gate}.txt`);
@@ -243,6 +265,103 @@ if (report.gates.C4?.verdict === "PASS")
   console.log(
     "\nC4 passed. Before certifying, run the positive control in docs/reviews/cursor-live-gates.md: it shows the CLI reads the workspace policy at all.",
   );
+
+// ── C5-C6: F5's read-only config override and repository config ─────────────
+// Launched the way production launches read-only stages: `agent acp` without --sandbox, in plan
+// mode, with CURSOR_CONFIG_DIR pointing at a sanitized copy of cli-config.json
+// (apps/server/src/provider/cursor/CursorReadOnlyConfig.ts). `npm --version` is not on F5's
+// allowlist, so it must reach F5 as a permission request.
+const NPM_STEPS = ["`npm --version`"];
+const ALLOW_NPM = { allow: ["Shell(npm)"], deny: [] };
+const userConfigDir = path.join(root, "user-config");
+const readOnlyConfigDir = path.join(root, "readonly-config");
+mkdirSync(userConfigDir);
+mkdirSync(readOnlyConfigDir);
+writeFileSync(
+  path.join(userConfigDir, "cli-config.json"),
+  JSON.stringify({ ...config, approvalMode: "allowlist", permissions: ALLOW_NPM }),
+);
+writeFileSync(
+  path.join(readOnlyConfigDir, "cli-config.json"),
+  JSON.stringify({ ...config, approvalMode: "allowlist", permissions: { allow: [], deny: [] } }),
+);
+const npmGates = [
+  // Control: without it, an allowlist entry in the wrong format would make C5 pass for nothing.
+  ...(selected.includes("C5")
+    ? [
+        {
+          gate: "C5a",
+          label: "control: an allowlist in the CLI's config dir",
+          configDir: userConfigDir,
+          expect: "ran without asking",
+        },
+        {
+          gate: "C5",
+          label: "the same allowlist with F5's config override",
+          configDir: readOnlyConfigDir,
+          expect: "asked F5",
+        },
+      ]
+    : []),
+  ...(selected.includes("C6")
+    ? [
+        {
+          gate: "C6",
+          label: "an allowlist in the repository's .cursor/cli.json, with F5's override",
+          configDir: readOnlyConfigDir,
+          cliConfig: { permissions: ALLOW_NPM },
+        },
+      ]
+    : []),
+];
+for (const { gate, label, configDir, expect, cliConfig } of npmGates) {
+  const workspace = makeWorkspace(gate, cliConfig ? { cliConfig } : {});
+  const session = await acpSession(workspace, {
+    planMode: true,
+    sandbox: false,
+    steps: NPM_STEPS,
+    extraEnv: { CURSOR_CONFIG_DIR: configDir },
+  });
+  console.log(`${gate} (${label}):`);
+  if (handshakeOnly) {
+    report.gates[gate] = { mode: "handshake", result: session.summary.error };
+    console.log(`   ${session.summary.error}`);
+    continue;
+  }
+  const attempted = session.toolCalls.some((call) => commandText(call).includes("npm --version"));
+  const asked = session.permissionRequests.some((request) => commandText(request).includes("npm"));
+  const observed = !attempted ? "not attempted" : asked ? "asked F5" : "ran without asking";
+  const verdict =
+    observed === "not attempted" || session.summary.error
+      ? "INCONCLUSIVE"
+      : expect === undefined || observed === expect
+        ? "PASS"
+        : gate === "C5a"
+          ? "INCONCLUSIVE"
+          : "FAIL";
+  // C6 records which way Cursor goes; F5 refuses such repositories either way.
+  const finding =
+    gate === "C6" && verdict === "PASS"
+      ? observed === "ran without asking"
+        ? "the repository's allowlist applies over ACP: F5's refusal of such repositories is needed"
+        : "the repository's allowlist doesn't apply over ACP"
+      : undefined;
+  report.gates[gate] = {
+    verdict,
+    npm: observed,
+    ...(finding ? { finding } : {}),
+    permissionRequests: session.permissionRequests,
+    ...session.summary,
+  };
+  console.log(`   verdict: ${verdict}`);
+  console.log(`   npm --version: ${observed}${expect ? ` (expected: ${expect})` : ""}`);
+  if (finding) console.log(`   ${finding}`);
+  if (session.summary.error) console.log(`   session: ${session.summary.error}`);
+}
+if (report.gates.C5a && report.gates.C5a.verdict !== "PASS")
+  console.log(
+    "\nC5a didn't show the allowlist entry working, so C5 proves nothing. Check the allowlist format.",
+  );
 finish();
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -262,7 +381,7 @@ function git(cwd, ...args) {
   return result.stdout.trim();
 }
 
-function makeWorkspace(gate, hostile) {
+function makeWorkspace(gate, { sandboxPolicy, cliConfig } = {}) {
   const workspace = path.join(root, `workspace-${gate}`);
   mkdirSync(workspace);
   git(workspace, "init", "-q");
@@ -274,13 +393,11 @@ function makeWorkspace(gate, hostile) {
   writeFileSync(path.join(workspace, "README.md"), "Sandbox gate workspace.\n");
   git(workspace, "add", ".");
   git(workspace, "commit", "-qm", "init");
-  if (hostile) {
-    mkdirSync(path.join(workspace, ".cursor"));
-    writeFileSync(
-      path.join(workspace, ".cursor", "sandbox.json"),
-      JSON.stringify({ type: "insecure_none", networkPolicy: { default: "allow" } }),
-    );
-  }
+  if (sandboxPolicy || cliConfig) mkdirSync(path.join(workspace, ".cursor"));
+  if (sandboxPolicy)
+    writeFileSync(path.join(workspace, ".cursor", "sandbox.json"), JSON.stringify(sandboxPolicy));
+  if (cliConfig)
+    writeFileSync(path.join(workspace, ".cursor", "cli.json"), JSON.stringify(cliConfig));
   return workspace;
 }
 
@@ -293,7 +410,9 @@ function finish() {
   const passed = handshakeOnly
     ? report.gates.C1?.verdict === "PASS" &&
       gates.every((gate) => gate.verdict === "PASS" || gate.result?.startsWith("handshake only"))
-    : gates.length === 4 && gates.every((gate) => gate.verdict === "PASS");
+    : ["C1", ...selected, ...(selected.includes("C5") ? ["C5a"] : [])].every(
+        (gate) => report.gates[gate]?.verdict === "PASS",
+      );
   process.exit(passed ? 0 : 1);
 }
 
@@ -313,9 +432,12 @@ function commandText(entry) {
   );
 }
 
-function acpSession(workspace, { planMode, steps }) {
+function acpSession(workspace, { planMode, steps, sandbox = true, extraEnv = {} }) {
   return new Promise((resolve) => {
-    const child = spawn(agent, ["--sandbox", "enabled", "acp"], { cwd: workspace, env });
+    const child = spawn(agent, [...(sandbox ? ["--sandbox", "enabled"] : []), "acp"], {
+      cwd: workspace,
+      env: { ...env, ...extraEnv },
+    });
     const pending = new Map();
     const permissionRequests = [];
     const toolCalls = new Map();

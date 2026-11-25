@@ -143,6 +143,10 @@ import {
 } from "./EventNdjsonLogger.ts";
 import { buildProviderAttachmentRuntimeContext } from "../attachmentRuntimeContext.ts";
 import { READ_ONLY_WORKFLOW_ENVIRONMENT } from "../readOnlyWorkflowShell.ts";
+import {
+  findPermissiveCursorProjectConfig,
+  prepareCursorReadOnlyEnvironment,
+} from "../cursor/CursorReadOnlyConfig.ts";
 
 const PROVIDER: ProviderKind = "cursor";
 const CURSOR_RESUME_VERSION = 1 as const;
@@ -857,6 +861,41 @@ export function makeCursorAdapter(
           }
 
           const cwd = nodePath.resolve(input.cwd);
+          // Read-only stages launch with an F5-owned Cursor config, so the user's own allowlist
+          // and approval mode can't let commands past F5; a repository whose `.cursor/cli.json`
+          // would do the same is refused (CursorReadOnlyConfig.ts).
+          let readOnlyEnvironment: NodeJS.ProcessEnv | undefined;
+          if (input.workflowExecutionProfile) {
+            const processError = (error: unknown) =>
+              new ProviderAdapterProcessError({
+                provider: PROVIDER,
+                threadId: input.threadId,
+                detail: `Could not prepare Cursor's read-only configuration: ${error instanceof Error ? error.message : String(error)}`,
+                cause: error,
+              });
+            const permissive = yield* Effect.tryPromise({
+              try: () => findPermissiveCursorProjectConfig(cwd),
+              catch: processError,
+            });
+            if (permissive) {
+              return yield* new ProviderAdapterValidationError({
+                provider: PROVIDER,
+                operation: "startSession",
+                issue: `Cursor can't run read-only workflow stages here: ${permissive} sets approvalMode or permissions.allow, which would let Cursor run commands without asking F5. Remove those settings or use another provider for this stage.`,
+              });
+            }
+            readOnlyEnvironment = yield* Effect.tryPromise({
+              try: () =>
+                prepareCursorReadOnlyEnvironment({
+                  providerHomesDir:
+                    serverConfig.providerHomesDir ??
+                    nodePath.join(serverConfig.stateDir, "provider-homes"),
+                  instanceId: boundInstanceId,
+                  environment: options?.environment ?? process.env,
+                }),
+              catch: processError,
+            });
+          }
           const cursorModelSelection = resolveCursorModelSelection({
             boundInstanceId,
             model: input.model,
@@ -974,7 +1013,12 @@ export function makeCursorAdapter(
             cursorSettings: effectiveCursorSettings,
             runtimeMode: input.workflowExecutionProfile ? "approval-required" : input.runtimeMode,
             ...(input.workflowExecutionProfile
-              ? { environment: { ...cursorEnvironment, ...READ_ONLY_WORKFLOW_ENVIRONMENT } }
+              ? {
+                  environment: {
+                    ...(readOnlyEnvironment ?? cursorEnvironment),
+                    ...READ_ONLY_WORKFLOW_ENVIRONMENT,
+                  },
+                }
               : options?.environment
                 ? { environment: options.environment }
                 : {}),

@@ -135,6 +135,16 @@ shows the template, cost and per-step context.
   refused and the model is told no; a turn with three refused operations fails the stage, on any
   provider. Unlike Antigravity, Cursor is not certified per version, so F5 relies on Cursor
   labelling its tools' kinds correctly.
+- F5 only sees the Cursor commands that Cursor asks about, so read-only Cursor stages run with an
+  F5-owned copy of your Cursor CLI config (`CURSOR_CONFIG_DIR`):
+  - **Ignored in these stages:** your allowlist (`permissions.allow`, `permissions.json`) and an
+    `unrestricted` or `auto-review` approval mode. Your Cursor MCP servers, rules, skills and hooks
+    are left out too. Your sign-in and model settings still apply.
+  - **Repository config:** a repository whose `.cursor/cli.json` sets an allowlist or a looser
+    approval mode can't run read-only Cursor stages. F5 can't override that file, so the stage
+    fails to start and names the file.
+  - **Team allowlists:** your team admin's allowlist is applied by Cursor's servers. F5 can't turn
+    it off.
 - Fetch stays allowed in read-only stages on Cursor and Antigravity, as for Codex and Claude plan
   mode. Text planted in the code under review could get the model to put repository content into
   a URL it fetches, so don't run workflows on code you don't trust with secrets in the workspace.

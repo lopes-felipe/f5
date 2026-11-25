@@ -1,7 +1,7 @@
 import { writeAcpWrapper, waitForAgentExit } from "../../testUtils/cli.ts";
 import * as path from "node:path";
 import * as os from "node:os";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -389,35 +389,86 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
     }),
   );
 
-  it.effect("launches read-only workflow stages without optional Git locks", () =>
+  it.effect(
+    "launches read-only workflow stages with F5's Cursor config and no optional Git locks",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* CursorAdapter;
+        const serverSettings = yield* ServerSettingsService;
+        const serverConfig = yield* ServerConfig;
+        const tempDir = yield* Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "cursor-acp-")));
+        const envLogPath = path.join(tempDir, "env.ndjson");
+        const wrapperPath = writeAcpWrapper(path.join(tempDir, "fake-agent"), mockAgentPath, {
+          envLog: { path: envLogPath, keys: ["GIT_OPTIONAL_LOCKS", "CURSOR_CONFIG_DIR"] },
+        });
+        yield* serverSettings.updateSettings({
+          providers: { cursor: { binaryPath: wrapperPath } },
+        });
+        for (const [name, profiled] of [
+          ["cursor-readonly-git-locks", true],
+          ["cursor-ordinary-git-locks", false],
+        ] as const) {
+          const threadId = ThreadId.make(name);
+          yield* adapter.startSession({
+            threadId,
+            provider: ProviderDriverKind.make("cursor"),
+            cwd: process.cwd(),
+            runtimeMode: "full-access",
+            ...(profiled ? { workflowExecutionProfile: "unattended-readonly" as const } : {}),
+            modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+          });
+          yield* adapter.stopSession(threadId);
+        }
+        const launches = yield* Effect.promise(() => readJsonLines(envLogPath));
+        assert.deepEqual(
+          launches.map((entry) => entry.GIT_OPTIONAL_LOCKS),
+          ["0", process.env.GIT_OPTIONAL_LOCKS ?? null],
+        );
+        const readOnlyConfigDir = path.join(
+          serverConfig.providerHomesDir ?? path.join(serverConfig.stateDir, "provider-homes"),
+          "cursor-readonly",
+          "cursor",
+        );
+        assert.deepEqual(
+          launches.map((entry) => entry.CURSOR_CONFIG_DIR),
+          [readOnlyConfigDir, process.env.CURSOR_CONFIG_DIR ?? null],
+        );
+        const written = JSON.parse(
+          yield* Effect.promise(() =>
+            readFile(path.join(readOnlyConfigDir, "cli-config.json"), "utf8"),
+          ),
+        ) as Record<string, unknown>;
+        assert.equal(written.approvalMode, "allowlist");
+        assert.deepEqual((written.permissions as { allow: unknown }).allow, []);
+      }),
+  );
+
+  it.effect("refuses a read-only stage in a repository whose Cursor config loosens approvals", () =>
     Effect.gen(function* () {
       const adapter = yield* CursorAdapter;
-      const serverSettings = yield* ServerSettingsService;
-      const tempDir = yield* Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "cursor-acp-")));
-      const envLogPath = path.join(tempDir, "env.ndjson");
-      const wrapperPath = writeAcpWrapper(path.join(tempDir, "fake-agent"), mockAgentPath, {
-        envLog: { path: envLogPath, keys: ["GIT_OPTIONAL_LOCKS"] },
+      const repo = yield* Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "cursor-repo-")));
+      yield* Effect.promise(async () => {
+        await mkdir(path.join(repo, ".cursor"), { recursive: true });
+        await writeFile(
+          path.join(repo, ".cursor", "cli.json"),
+          JSON.stringify({ permissions: { allow: ["Shell(rm)"] } }),
+        );
+        await mkdir(path.join(repo, "sub"));
       });
-      yield* serverSettings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
-      for (const [name, profiled] of [
-        ["cursor-readonly-git-locks", true],
-        ["cursor-ordinary-git-locks", false],
-      ] as const) {
-        const threadId = ThreadId.make(name);
-        yield* adapter.startSession({
-          threadId,
+      const error = yield* adapter
+        .startSession({
+          threadId: ThreadId.make("cursor-readonly-permissive-repo"),
           provider: ProviderDriverKind.make("cursor"),
-          cwd: process.cwd(),
+          cwd: path.join(repo, "sub"),
           runtimeMode: "full-access",
-          ...(profiled ? { workflowExecutionProfile: "unattended-readonly" as const } : {}),
+          workflowExecutionProfile: "unattended-readonly",
           modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
-        });
-        yield* adapter.stopSession(threadId);
-      }
-      const launches = yield* Effect.promise(() => readJsonLines(envLogPath));
-      assert.deepEqual(
-        launches.map((entry) => entry.GIT_OPTIONAL_LOCKS),
-        ["0", process.env.GIT_OPTIONAL_LOCKS ?? null],
+        })
+        .pipe(Effect.flip);
+      assert.equal(error._tag, "ProviderAdapterValidationError");
+      assert.include(
+        String((error as { issue?: string }).issue),
+        path.join(repo, ".cursor", "cli.json"),
       );
     }),
   );
