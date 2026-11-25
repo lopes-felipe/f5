@@ -3,6 +3,7 @@ import { type Thread } from "../../types";
 import { ScrollArea } from "../ui/scroll-area";
 import { WorkflowStateGlyph } from "./WorkflowStateGlyph";
 import { WorkflowStepCard } from "./WorkflowStepCard";
+import type { StepTelemetry } from "./workflowTelemetry";
 import { type WorkflowTimelinePhase } from "./workflowTimelineTypes";
 
 /**
@@ -12,6 +13,7 @@ import { type WorkflowTimelinePhase } from "./workflowTimelineTypes";
 export function WorkflowBoard(props: {
   phases: readonly WorkflowTimelinePhase[];
   threadById: ReadonlyMap<Thread["id"], Thread>;
+  stepTelemetryByKey?: ReadonlyMap<string, StepTelemetry> | undefined;
 }) {
   return (
     <ScrollArea className="h-auto" scrollbarGutter>
@@ -61,6 +63,7 @@ export function WorkflowBoard(props: {
                       key={step.key}
                       step={step}
                       thread={step.threadId ? props.threadById.get(step.threadId) : undefined}
+                      telemetry={props.stepTelemetryByKey?.get(step.key)}
                       variant="card"
                     />
                   ))}
