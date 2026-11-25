@@ -98,6 +98,9 @@ More recipes, including packaging and updating a checkout: [Quick start](docs/qu
 
 Guides, configuration and contributor docs: **[docs/README.md](docs/README.md)**.
 
+F5 sends no telemetry. [Privacy](docs/privacy.md) lists every request it makes on its own and
+what it keeps on disk.
+
 ## Relationship to upstream
 
 F5 is an opinionated fork of [T3 Code](https://github.com/pingdotgg/t3code) by [@pingdotgg](https://github.com/pingdotgg). It keeps the upstream's MIT license and some legacy identifiers (the `t3` npm package, `@t3tools/*` workspace names, `T3CODE_*` environment variables) so existing installations keep working. See [`NOTICE.md`](./NOTICE.md) and [`CHANGELOG.md`](./CHANGELOG.md).

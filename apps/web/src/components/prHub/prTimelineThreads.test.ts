@@ -64,6 +64,25 @@ const shape = (rows: ReadonlyArray<PrTimelineRow>) =>
   );
 
 describe("groupTimelineReviewThreads", () => {
+  it("keeps an Azure issue comment separate when it shares an inline comment ID", () => {
+    const issue = {
+      ...comment("1", "2026-10-02T00:00:00Z", "issue-comment"),
+      body: "General comment",
+    };
+    const finding = comment("1", "2026-10-01T00:00:00Z");
+    const [first, second] = groupTimelineReviewThreads([issue, finding], [thread("T1", ["1"])]);
+    expect(first).toEqual({ type: "entry", entry: issue });
+    expect(second).toMatchObject({ type: "thread", root: finding });
+  });
+
+  it("groups GitLab overview replies with the finding", () => {
+    const reply = comment("2", "2026-10-02T00:00:00Z", "issue-comment");
+    const finding = comment("1", "2026-10-01T00:00:00Z");
+    expect(
+      groupTimelineReviewThreads([reply, finding], [thread("T1", ["1", "2"])], true),
+    ).toMatchObject([{ type: "thread", root: finding, replies: [reply] }]);
+  });
+
   it("keeps later replies with their finding, oldest first, at the finding's place", () => {
     // Newest first, as the timeline arrives.
     const entries: PrHubTimelineEntry[] = [

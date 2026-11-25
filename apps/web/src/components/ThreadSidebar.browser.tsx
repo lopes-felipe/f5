@@ -5921,6 +5921,68 @@ describe("Thread sidebar", () => {
     }
   });
 
+  it("opens a keyboard context menu on a draft and restores the discarded prompt", async () => {
+    const toast = vi.spyOn(toastManager, "add");
+    const showContextMenu = vi
+      .fn<(items: readonly { id: string; label: string }[]) => Promise<string | null>>()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce("discard");
+    installDesktopBridgeMock({
+      showContextMenu: showContextMenu as DesktopBridge["showContextMenu"],
+    });
+    const mounted = await mountApp({ width: 1_400, initialEntries: [`/${THREAD_ID}`] });
+    try {
+      await page.getByTestId("new-thread-button").click();
+      const draftPath = await waitForPath(
+        mounted.router,
+        (pathname) => UUID_ROUTE_RE.test(pathname),
+        "Draft route missing",
+      );
+      const draftId = draftPath.slice(1) as ThreadId;
+      useComposerDraftStore.getState().setPrompt(draftId, "Restore this prompt");
+      useComposerDraftStore.setState({
+        imageImportsByThreadId: {
+          [draftId]: {
+            pendingCount: 1,
+            preparing: [{ id: "preparing-image", name: "image.png", previewUrl: null }],
+          },
+        },
+      });
+      const row = await waitForSidebarThreadRow("New thread");
+      row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+      await vi.waitFor(() => expect(showContextMenu).toHaveBeenCalledTimes(1));
+      expect(showContextMenu.mock.calls[0]?.[0]).toContainEqual(
+        expect.objectContaining({ id: "discard", disabled: true }),
+      );
+      useComposerDraftStore.setState({ imageImportsByThreadId: {} });
+      await waitForLayout();
+      (await waitForSidebarThreadRow("New thread")).focus();
+      await userEvent.keyboard("{Shift>}{F10}{/Shift}");
+      await vi.waitFor(() => expect(showContextMenu).toHaveBeenCalledTimes(2));
+      expect(showContextMenu.mock.calls[1]?.[0]).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: "copy-path", label: "Copy path" }),
+          expect.objectContaining({ id: "settings", label: "Project settings…" }),
+          expect.objectContaining({ id: "discard", label: "Discard draft" }),
+        ]),
+      );
+      await vi.waitFor(() =>
+        expect(useComposerDraftStore.getState().getDraftThread(draftId)).toBeNull(),
+      );
+      const undo = toast.mock.calls.find(([options]) => options.title === "Draft discarded")?.[0]
+        .data?.actions?.[0];
+      expect(undo?.label).toBe("Undo");
+      await undo?.onClick({} as never);
+      expect(useComposerDraftStore.getState().draftsByThreadId[draftId]?.prompt).toBe(
+        "Restore this prompt",
+      );
+      await waitForSidebarThreadRow("New thread");
+    } finally {
+      toast.mockRestore();
+      await mounted.cleanup();
+    }
+  });
+
   it("treats modifier clicks on draft rows like plain focus instead of multi-select", async () => {
     const mounted = await mountApp({
       width: 1_400,

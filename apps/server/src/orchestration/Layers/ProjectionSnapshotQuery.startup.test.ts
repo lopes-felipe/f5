@@ -1094,6 +1094,11 @@ projectionSnapshotLayer("ProjectionSnapshotQuery lazy loading", (it) => {
         checkpointLimit: 1,
         activityLimit: 1,
       });
+      const missing = yield* snapshotQuery.getThreadTailDetails({
+        threadId: asThreadId("not-created-yet"),
+      });
+      assert.isAbove(tail.detailSequence, 0);
+      assert.strictEqual(missing.detailSequence, 0);
 
       assert.deepEqual(
         tail.messages.map((message) => message.id),

@@ -50,6 +50,14 @@ import { useWsConnectionState } from "../../wsConnectionState";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import {
+  Dialog,
+  DialogDescription,
+  DialogHeader,
+  DialogPanel,
+  DialogPopup,
+  DialogTitle,
+} from "../ui/dialog";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Skeleton } from "../ui/skeleton";
@@ -92,6 +100,7 @@ import { ProjectsThreadsCard } from "./ProjectsThreadsCard";
 import { BudgetAlerts, BudgetSection, useMonthToDateUsage } from "./UsageBudget";
 import { USAGE_CSV_KINDS, usageCsv, usageCsvFilename } from "./usageCsv";
 import { UsagePriceDialog, type UsagePriceDraft } from "./UsagePriceDialog";
+import { UsageCostBreakdown } from "./UsageCostBreakdown";
 import { unpricedModelCount, UsagePricingPanel } from "./UsagePricingPanel";
 import { UsageProviderFilter } from "./UsageProviderFilter";
 import { isUsageBackShortcut, resolveUsageShortcut } from "./usageShortcuts";
@@ -264,6 +273,12 @@ function ProvidersModelsSection(props: {
   readonly onSetPrice?: ((provider: ProviderKind, model: string) => void) | undefined;
 }) {
   const [sort, setSort] = useState<UsageSort | null>(null);
+  const [selected, setSelected] = useState<{ provider: ProviderKind; model: string } | null>(null);
+  const selectedEntry = selected
+    ? props.summary.byProvider.find(
+        (entry) => entry.provider === selected.provider && entry.model === selected.model,
+      )
+    : undefined;
   const records = recordCountDisplay(props.summary.metrics);
   type Entry = UsageSummary["byProvider"][number];
   const metricColumn =
@@ -281,7 +296,19 @@ function ProvidersModelsSection(props: {
       header: "Thread model",
       sortValue: (entry) => entry.model ?? "",
       className: "max-w-72 truncate font-mono text-muted-foreground",
-      render: (entry) => entry.model ?? "Unavailable for historical cost",
+      render: (entry) =>
+        entry.model !== null ? (
+          <Button
+            size="xs"
+            variant="link"
+            className="max-w-full truncate p-0 font-mono"
+            onClick={() => setSelected({ provider: entry.provider, model: entry.model! })}
+          >
+            {entry.model}
+          </Button>
+        ) : (
+          "Unavailable for historical cost"
+        ),
     },
     {
       key: "turns",
@@ -341,6 +368,47 @@ function ProvidersModelsSection(props: {
   ];
   return (
     <UsageSection title="Providers and models" flush>
+      {selectedEntry?.model ? (
+        <Dialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setSelected(null);
+          }}
+        >
+          <DialogPopup>
+            <DialogHeader>
+              <DialogTitle>{selectedEntry.model}</DialogTitle>
+              <DialogDescription>
+                {providerLabel(selectedEntry.provider)} · {rangeLabel(props.summary.range)}
+              </DialogDescription>
+            </DialogHeader>
+            <DialogPanel className="space-y-4">
+              <dl className="grid grid-cols-2 gap-3 text-xs">
+                {[
+                  ["Cost", costLabel(selectedEntry.metrics)],
+                  ["Total tokens", tokenFieldDisplay(selectedEntry.metrics, "totalTokens").value],
+                  ["Input tokens", tokenFieldDisplay(selectedEntry.metrics, "inputTokens").value],
+                  ["Output tokens", tokenFieldDisplay(selectedEntry.metrics, "outputTokens").value],
+                  [
+                    "Cache read tokens",
+                    tokenFieldDisplay(selectedEntry.metrics, "cacheReadTokens").value,
+                  ],
+                  [
+                    "Cache write tokens",
+                    tokenFieldDisplay(selectedEntry.metrics, "cacheWriteTokens").value,
+                  ],
+                ].map(([label, value]) => (
+                  <div key={label}>
+                    <dt className="text-muted-foreground">{label}</dt>
+                    <dd className="tabular-nums">{value}</dd>
+                  </div>
+                ))}
+              </dl>
+              <UsageCostBreakdown metrics={selectedEntry.metrics} />
+            </DialogPanel>
+          </DialogPopup>
+        </Dialog>
+      ) : null}
       <UsageTable
         caption="Providers and models"
         columns={columns}
@@ -540,6 +608,11 @@ export function UsageDashboardView(props: {
         {status}
       </p>
       {props.budget}
+      {totalCost(summary.metrics) > 0 && summary.metrics.costBreakdown ? (
+        <UsageSection title="Cost breakdown">
+          <UsageCostBreakdown metrics={summary.metrics} />
+        </UsageSection>
+      ) : null}
       <UsageSection
         title="Usage over time"
         actions={
@@ -602,18 +675,18 @@ export function UsageDashboardView(props: {
       <CoverageNotes summary={summary} />
       {summary.nativeHistoryStatus === "refreshing" ? (
         <p role="status" className="text-xs text-muted-foreground">
-          Refreshing Muse Code history…
+          Refreshing provider history…
         </p>
       ) : null}
       {summary.nativeHistoryStatus === "error" ? (
         <p role="status" className="text-xs text-muted-foreground">
-          {summary.nativeHistoryError ?? "Muse Code history could not refresh."} Previously loaded
+          {summary.nativeHistoryError ?? "Provider history could not refresh."} Previously loaded
           history is retained. Failed refreshes retry with increasing backoff, up to ten minutes.
         </p>
       ) : null}
       {summary.metrics.nativeInferenceCount ? (
         <p className="text-xs text-muted-foreground">
-          {summary.metrics.nativeInferenceCount} native Muse model calls included. Model calls are
+          {summary.metrics.nativeInferenceCount} native model calls included. Model calls are
           separate from recorded turns.
         </p>
       ) : null}

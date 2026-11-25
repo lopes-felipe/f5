@@ -7,13 +7,13 @@ import {
   planReviewReviewerBranchId,
   requireInvestigator,
 } from "@t3tools/shared/workflowParticipants";
-import {
-  type ProviderKind,
-  ThreadId,
-  type WorkflowModelSlot,
+import type {
   ProviderDriverKind,
+  ProviderKind,
+  ThreadId,
+  WorkflowModelSlot,
 } from "@t3tools/contracts";
-import { deriveActivePlanState } from "../../session-logic";
+import type { deriveActivePlanState } from "../../session-logic";
 import {
   type CodeReviewWorkflow,
   type InvestigationWorkflow,
@@ -169,8 +169,8 @@ export function deriveFallbackTasksFromPlan(
   }));
 }
 
-export const DIALOG_POPUP_SELECTOR = '[data-slot="dialog-popup"]';
-export const DIALOG_PORTALED_POPUP_SELECTOR = [
+const DIALOG_POPUP_SELECTOR = '[data-slot="dialog-popup"]';
+const DIALOG_PORTALED_POPUP_SELECTOR = [
   '[data-slot="combobox-positioner"]',
   '[data-slot="combobox-popup"]',
   '[data-slot="menu-positioner"]',

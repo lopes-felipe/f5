@@ -44,6 +44,77 @@ const init = async (directory: string, file: string, contents: string) => {
   );
 };
 
+it("reconciles an F5-prepared group only when its live branch matches the observation", async () => {
+  const project = await mkdtemp(path.join(tmpdir(), "f5-observed-group-"));
+  try {
+    await init(project, "README.md", "project");
+    const source = path.join(project, "service");
+    await mkdir(source);
+    await init(source, "app.txt", "nested");
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const git = yield* GitCore;
+        const { worktree } = yield* git.createWorktree({
+          cwd: project,
+          branch: "main",
+          newBranch: "feature",
+          path: null,
+          preparation: { owner: "thread:thread", runSetupScript: false, setupIdentity: null },
+        });
+        const input = { projectRoot: project, path: worktree.path, threadId: "thread" };
+        yield* git.prepareWorktreeGroup!({
+          ...input,
+          projectId: "project",
+          rooted: true,
+          branch: "feature",
+          baseBranch: "main",
+          repositories: [source],
+          selected: [source],
+        });
+        run(worktree.path, "switch", "-qc", "new-topic");
+        const member = path.join(worktree.path, "service");
+        run(member, "switch", "-qc", "new-topic");
+        const observe = (branch: string) =>
+          git.prepareObservedWorktreeBranch!({ ...input, previousBranch: "feature", branch });
+        expect((yield* observe("stale-topic").pipe(Effect.result))._tag).toBe("Failure");
+        expect((yield* git.readWorktreeGroup!(worktree.path))?.branch).toBe("feature");
+        const prepared = yield* observe("new-topic");
+        run(member, "switch", "-q", "feature");
+        expect((yield* prepared.verifyBranch.pipe(Effect.result))._tag).toBe("Failure");
+        run(member, "switch", "-q", "new-topic");
+        yield* prepared.verifyBranch;
+        yield* prepared.commit;
+        expect((yield* git.readWorktreeGroup!(worktree.path))?.branch).toBe("new-topic");
+        yield* assertWorktreeReady(git, {
+          projectCwd: project,
+          worktreePath: worktree.path,
+          branch: "new-topic",
+        });
+        yield* git.removeWorktree({ cwd: source, path: member });
+        expect(
+          yield* git.ensureWorktree({
+            cwd: project,
+            path: worktree.path,
+            branch: "new-topic",
+            owner: "thread:thread",
+          }),
+        ).toEqual({ recreated: true });
+        expect(run(member, "branch", "--show-current")).toBe("new-topic");
+      }).pipe(
+        Effect.provide(
+          GitCoreTestLive.pipe(
+            Layer.provide(ServerConfig.layerTest(project, { prefix: "f5-wt-" })),
+            Layer.provide(GitServiceLive),
+            Layer.provide(NodeServices.layer),
+          ),
+        ),
+      ),
+    );
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
 it("defaults to eight checkouts and keeps the root checkout available above the limit", async () => {
   const repositories = Array.from({ length: 9 }, (_, i) => ({
     path: "/project/repo-" + i,

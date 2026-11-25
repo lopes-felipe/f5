@@ -140,7 +140,10 @@ export function usageSummaryQueryOptions(input: {
     meta: rpcQueryMeta("refresh-background"),
     staleTime: 30_000,
     refetchInterval: (query) =>
-      query.state.data?.nativeHistoryStatus === "refreshing" ? 1_000 : false,
+      query.state.data?.nativeHistoryStatus === "refreshing" ||
+      query.state.data?.listPricingRefreshing
+        ? 1_000
+        : false,
     enabled: input.enabled ?? true,
   });
 }

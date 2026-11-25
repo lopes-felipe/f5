@@ -171,7 +171,11 @@ export function makeOwnerThreadTools(
         title: z.string().trim().min(1).max(200),
         provider: id.optional(),
         model: id.optional(),
-        worktree: id.optional(),
+        worktree: id
+          .describe(
+            "Worktree base ref. For independent work, use the remote default branch (for example origin/main), or the local default if there is no remote. Honor an explicit or dependent local base.",
+          )
+          .optional(),
         branch: id.optional(),
       }),
       false,

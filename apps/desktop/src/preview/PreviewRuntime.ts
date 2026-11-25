@@ -1,4 +1,5 @@
 import { captureBoundedPage, releasePreviewCaptures } from "./capture";
+import { acquirePreviewWake, withPreviewWake } from "./previewWake";
 import path from "node:path";
 
 import type {
@@ -52,6 +53,7 @@ interface ActiveRecording {
   ) => void;
   readonly limitTimer: ReturnType<typeof setTimeout>;
   readonly removeGuestListeners: () => void;
+  readonly releaseWake: () => void;
   stopped: boolean;
 }
 
@@ -73,6 +75,7 @@ export class PreviewRuntime {
   readonly #onTabStateChanged: (tabId: string) => void;
   readonly #artifactStore: PreviewArtifactStore;
   readonly #recordings = new Map<string, ActiveRecording>();
+  readonly #startingRecordings = new Set<string>();
 
   constructor(options: PreviewRuntimeOptions) {
     this.#defaultZoomFactor = options.defaultZoomFactor;
@@ -174,7 +177,7 @@ export class PreviewRuntime {
 
   async captureScreenshot(tabId: string): Promise<PreviewArtifact> {
     const guest = this.#requireGuest(tabId);
-    const bounded = await captureBoundedPage(guest);
+    const bounded = await withPreviewWake(guest, () => captureBoundedPage(guest));
     const boundedSize = bounded.getSize();
     return this.#artifactStore.captureScreenshot({
       png: bounded.toPNG(),
@@ -184,10 +187,30 @@ export class PreviewRuntime {
   }
 
   async startRecording(tabId: string): Promise<DesktopPreviewRecordingStartResult> {
-    if ([...this.#recordings.values()].some((recording) => recording.tabId === tabId)) {
+    if (
+      this.#startingRecordings.has(tabId) ||
+      [...this.#recordings.values()].some((recording) => recording.tabId === tabId)
+    ) {
       throw new Error("This preview tab is already recording.");
     }
     const guest = this.#requireGuest(tabId);
+    const releaseWake = acquirePreviewWake(guest);
+    this.#startingRecordings.add(tabId);
+    try {
+      return await this.#startRecording(tabId, guest, releaseWake);
+    } catch (error) {
+      releaseWake();
+      throw error;
+    } finally {
+      this.#startingRecordings.delete(tabId);
+    }
+  }
+
+  async #startRecording(
+    tabId: string,
+    guest: WebContents,
+    releaseWake: () => void,
+  ): Promise<DesktopPreviewRecordingStartResult> {
     const viewport = this.lookupTab(tabId)?.viewport;
     const capture = await captureBoundedPage(guest);
     const captureSize = capture.getSize();
@@ -196,6 +219,10 @@ export class PreviewRuntime {
       width: viewport?.width ?? captureSize.width,
       height: viewport?.height ?? captureSize.height,
     });
+    if (guest.isDestroyed() || this.#getWebContents(tabId) !== guest) {
+      await this.#artifactStore.discardRecording(recordingHandle.recordingId);
+      throw new Error("Preview closed during recording setup.");
+    }
     const needsDebugger = !previewDebugger(guest).isAttached();
 
     let recording!: ActiveRecording;
@@ -210,6 +237,7 @@ export class PreviewRuntime {
       recordingId: recordingHandle.recordingId,
       tabId,
       guest,
+      releaseWake,
       limitTimer,
       removeGuestListeners: () => {
         guest.off("destroyed", onGuestLost);
@@ -354,12 +382,16 @@ export class PreviewRuntime {
     clearTimeout(recording.limitTimer);
     recording.removeGuestListeners();
     previewDebugger(recording.guest).off("message", recording.onDebuggerMessage);
-    if (previewDebugger(recording.guest).isAttached()) {
-      await previewDebugger(recording.guest)
-        .sendCommand("Page.stopScreencast")
-        .catch(() => undefined);
-      // The pinned debugger is shared with snapshots and input. Keep it for the guest's
-      // lifetime; recording shutdown must not detach a click waiting for its mouseup.
+    try {
+      if (previewDebugger(recording.guest).isAttached()) {
+        await previewDebugger(recording.guest)
+          .sendCommand("Page.stopScreencast")
+          .catch(() => undefined);
+        // The pinned debugger is shared with snapshots and input. Keep it for the guest's
+        // lifetime; recording shutdown must not detach a click waiting for its mouseup.
+      }
+    } finally {
+      recording.releaseWake();
     }
   }
 }

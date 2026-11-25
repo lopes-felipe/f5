@@ -1,14 +1,8 @@
-import {
-  ProjectId,
-  ThreadId,
-  type ProviderInteractionMode,
-  type RuntimeMode,
-} from "@t3tools/contracts";
+import type { ProjectId, ProviderInteractionMode, RuntimeMode, ThreadId } from "@t3tools/contracts";
 
-// Image preparation loads on the first attachment, keeping it out of the startup bundle.
 import type { DraftThreadEnvMode } from "../../composerDraftStore";
 
-export interface WorktreeCreationOptions {
+interface WorktreeCreationOptions {
   worktreeBranchName?: string | null;
   runSetupScript?: boolean | null;
 }
@@ -89,11 +83,11 @@ export interface ProjectDraftThread extends DraftThreadState {
   threadId: ThreadId;
 }
 
-export const PROJECT_DRAFT_KEY_SEPARATOR = "::";
-export const LEGACY_PROJECT_DRAFT_KEY_SEPARATOR = "\u0000";
-export type ProjectDraftThreadKey = string;
+const PROJECT_DRAFT_KEY_SEPARATOR = "::";
+const LEGACY_PROJECT_DRAFT_KEY_SEPARATOR = "\u0000";
+type ProjectDraftThreadKey = string;
 
-export function normalizeDraftWorkspaceKey(input?: {
+function normalizeDraftWorkspaceKey(input?: {
   worktreePath?: string | null;
   envMode?: DraftThreadEnvMode | null;
 }): string {
@@ -104,7 +98,7 @@ export function normalizeDraftWorkspaceKey(input?: {
   return input?.envMode === "worktree" ? "worktree:new" : "local";
 }
 
-export function projectDraftThreadKey(
+function projectDraftThreadKey(
   projectId: ProjectId,
   input?: {
     worktreePath?: string | null;

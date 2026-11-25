@@ -14,14 +14,6 @@ import { ElicitationRegistry } from "../elicitationRegistry.ts";
 import type { ProviderSessionStartInput } from "@t3tools/contracts";
 import { claudeLimitState } from "../usageLimitMessages.ts";
 import { type ClaudeMcpAppCatalog } from "../claudeMcpApps.ts";
-/**
- * ClaudeAdapterLive - Scoped live implementation for the Claude Agent provider adapter.
- *
- * Wraps `@anthropic-ai/claude-agent-sdk` query sessions behind the generic
- * provider adapter contract and emits canonical runtime events.
- *
- * @module ClaudeAdapterLive
- */
 
 import {
   type RewindFilesResult,

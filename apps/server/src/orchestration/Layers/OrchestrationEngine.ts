@@ -652,6 +652,8 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             !thread ||
             thread.branch !== write.expected.branch ||
             thread.worktreePath !== write.expected.worktreePath ||
+            (write.verifyObservation &&
+              (thread.session?.activeTurnId || thread.latestTurn?.state === "running")) ||
             (!write.operationId &&
               !write.observation &&
               (thread.session?.updatedAt ?? null) !== write.expected.sessionUpdatedAt)
@@ -733,10 +735,12 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             : {}),
         });
         const eventBases = Array.isArray(eventBase) ? eventBase : [eventBase];
+        yield* envelope.workspaceWrite?.verifyObservation ?? Effect.void;
         const committedCommand = yield* sql
           .withTransaction(
             Effect.gen(function* () {
               yield* checkWorkspaceBarrier;
+              yield* envelope.workspaceWrite?.commitObservation ?? Effect.void;
               if (
                 envelope.command.type === "thread.compacted.record" &&
                 envelope.command.freshSessionGuard

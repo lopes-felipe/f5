@@ -1,0 +1,1 @@
+- Right-click a draft thread in the sidebar or press Shift+F10 to copy its path or branch, open project settings, or discard it with Undo.

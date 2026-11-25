@@ -167,6 +167,7 @@ import {
   createWorkflowStageThread,
   dispatchWorkflowDeleteCompensationCommand,
   readActivePlanningWorkflow as readWorkflow,
+  upsertPlanningWorkflowRecord,
 } from "../workflowEngine/WorkflowThreadCoordinator.ts";
 import {
   buildWorkflowMergePrompt,
@@ -188,7 +189,7 @@ import {
   isRetryableSessionError,
   formatSessionError,
   isSessionSettledForAutoRetry,
-  hasActiveRunningTurn,
+  hasRunningSessionTurn,
   isSessionUnavailableForReconciliation,
   getFinishedLatestTurnId,
   updateAuthoringBranch,
@@ -266,13 +267,7 @@ export const makeWorkflowService = Effect.gen(function* () {
   );
 
   const writeWorkflow = (workflow: PlanningWorkflow) =>
-    orchestrationEngine.dispatch({
-      type: "project.workflow.upsert",
-      commandId: CommandId.makeUnsafe(timeOrderedUuid()),
-      projectId: workflow.projectId,
-      workflow,
-      createdAt: workflow.updatedAt,
-    });
+    upsertPlanningWorkflowRecord(orchestrationEngine, workflow, workflow.updatedAt);
 
   const upsertWorkflow = (workflow: PlanningWorkflow) =>
     withWorkflowGate(
@@ -564,7 +559,7 @@ export const makeWorkflowService = Effect.gen(function* () {
       }
 
       const retryThread = snapshot.threads.find((thread) => thread.id === input.threadId);
-      if (hasActiveRunningTurn(retryThread)) {
+      if (hasRunningSessionTurn(retryThread)) {
         return;
       }
       if (!retryThread) {
@@ -1405,7 +1400,7 @@ export const makeWorkflowService = Effect.gen(function* () {
     Effect.gen(function* () {
       const thread = snapshot.threads.find((entry) => entry.id === review.threadId);
       if (review.status === "error") {
-        return hasActiveRunningTurn(thread) || (yield* hasDeliveryInFlight(review.threadId));
+        return hasRunningSessionTurn(thread) || (yield* hasDeliveryInFlight(review.threadId));
       }
       if (review.status !== "running") return false;
       // A turn requested before the review was (re)queued is an earlier attempt's. A resent
@@ -2047,7 +2042,7 @@ export const makeWorkflowService = Effect.gen(function* () {
         const alreadyStarted = !!thread?.latestTurn && thread.latestTurn.requestedAt >= intentAt;
         if (
           alreadyStarted &&
-          (hasActiveRunningTurn(thread) || thread?.latestTurn?.state === "running")
+          (hasRunningSessionTurn(thread) || thread?.latestTurn?.state === "running")
         ) {
           if (stage === "reader") yield* upsertWorkflow(markReaderRunning(current, intentAt));
           return;
@@ -4437,7 +4432,7 @@ export const makeWorkflowService = Effect.gen(function* () {
                       workflow.readerPass?.status !== "error" ||
                       workflow.readerPass.errorStage !== "reader" ||
                       workflow.readerPass.retryCount !== count ||
-                      hasActiveRunningTurn(
+                      hasRunningSessionTurn(
                         retrySnapshot.threads.find((entry) => entry.id === threadId),
                       )
                     )
@@ -5024,7 +5019,7 @@ export const makeWorkflowService = Effect.gen(function* () {
                     !retryThread ||
                     branch.status !== "authoring" ||
                     branch.retryCount !== expectedRetryCount ||
-                    hasActiveRunningTurn(retryThread)
+                    hasRunningSessionTurn(retryThread)
                   ) {
                     return null;
                   }
@@ -5107,7 +5102,7 @@ export const makeWorkflowService = Effect.gen(function* () {
                       !retryThread ||
                       workflow.implementation.status !== "implementing" ||
                       workflow.implementation.retryCount !== expectedRetryCount ||
-                      hasActiveRunningTurn(retryThread)
+                      hasRunningSessionTurn(retryThread)
                     ) {
                       return null;
                     }
@@ -5183,7 +5178,7 @@ export const makeWorkflowService = Effect.gen(function* () {
                       !retryThread ||
                       retryReview.status !== "running" ||
                       retryReview.retryCount !== expectedRetryCount ||
-                      hasActiveRunningTurn(retryThread) ||
+                      hasRunningSessionTurn(retryThread) ||
                       !retryMergedPlan?.planMarkdown
                     ) {
                       return null;
@@ -5883,7 +5878,7 @@ export const makeWorkflowService = Effect.gen(function* () {
         // capture needs a new turn, rather than waiting on the old accepted delivery.
         if (
           isDocumentWorkflow(workflow) &&
-          !hasActiveRunningTurn(snapshot.threads.find((thread) => thread.id === threadId))
+          !hasRunningSessionTurn(snapshot.threads.find((thread) => thread.id === threadId))
         ) {
           const branch = planningBranches(workflow).find(
             (entry) => entry.authorThreadId === threadId,
@@ -6210,7 +6205,7 @@ export const makeWorkflowService = Effect.gen(function* () {
             yield* maybeContinueDocumentReaderPass(advanced);
             return { status: "started" as const };
           }
-          if (hasActiveRunningTurn(snapshot.threads.find((entry) => entry.id === threadId)))
+          if (hasRunningSessionTurn(snapshot.threads.find((entry) => entry.id === threadId)))
             return { status: "started" as const };
         }
         if ((mode === "retry" || mode === "queued") && providerTurnDeliveryWorker._tag === "Some") {
@@ -6955,7 +6950,7 @@ export const makeWorkflowService = Effect.gen(function* () {
       for (const threadId of [workflow.readerPass.readerThreadId, workflow.merge.threadId]) {
         if (!threadId) continue;
         const thread = snapshot.threads.find((entry) => entry.id === threadId);
-        if (hasActiveRunningTurn(thread))
+        if (hasRunningSessionTurn(thread))
           return yield* Effect.fail(
             new Error("Wait for the active turn to finish before skipping reader review."),
           );

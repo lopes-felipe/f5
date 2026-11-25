@@ -109,6 +109,16 @@ shows the template, cost and per-step context.
   authors may share one.
 - Muse Code and Grok can't run stages that need Plan mode or read-only turns.
 - Read-only stages can look at the preview browser but can't save screenshots.
+- Cursor has no read-only sandbox, so F5 decides each of its permission requests in a read-only
+  stage. Read, search, think and fetch tools run, and so do shell commands on the read-only
+  allowlist that Antigravity also uses (see
+  [Antigravity](../providers/antigravity.md#read-only-workflow-turns)). Everything else is
+  refused and the model is told no; a turn with three refused operations fails the stage, on any
+  provider. Unlike Antigravity, Cursor is not certified per version, so F5 relies on Cursor
+  labelling its tools' kinds correctly.
+- Fetch stays allowed in read-only stages on Cursor and Antigravity, as for Codex and Claude plan
+  mode. Text planted in the code under review could get the model to put repository content into
+  a URL it fetches, so don't run workflows on code you don't trust with secrets in the workspace.
 
 <details>
 <summary>Options</summary>

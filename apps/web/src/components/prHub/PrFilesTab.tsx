@@ -4,11 +4,11 @@ import { describePrDiffError } from "./prDiffError";
 import { forgeProviderLabel } from "./forgePresentation";
 import { OpenLinkAnchor } from "../OpenLinkAnchor";
 import { Empty, EmptyHeader, EmptyTitle, EmptyDescription } from "../ui/empty";
-import { orderPrFilePages } from "./prFileOrder";
+import { isTestChangedFile } from "@t3tools/shared/changedFileKind";
 import { ForgeComposer } from "./ForgeControls";
 import { CopyPathButton } from "../CopyPathButton";
 import { MiddleTruncate } from "../MiddleTruncate";
-import { ChangedFileTree } from "../ChangedFileTree";
+import { ChangedFileTree, orderChangedFilesLikeTree } from "../ChangedFileTree";
 import { useAppSettings } from "../../appSettings";
 import { getPrHubAccountGeneration } from "../../lib/prHubAccount";
 import type { PrReviewAnchor } from "@t3tools/shared/prReview";
@@ -16,7 +16,7 @@ import { PrReviewDraftEditor } from "./PrReviewDraftEditor";
 import { lazy, Suspense, useMemo, useState } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { AlertTriangleIcon, FileIcon, LoaderCircleIcon } from "lucide-react";
-import type { TrackedPullRequest } from "@t3tools/contracts";
+import type { PrHubChangedFile, TrackedPullRequest } from "@t3tools/contracts";
 
 import { prHubFilesQueryOptions } from "../../lib/prHubReactQuery";
 import { Badge } from "../ui/badge";
@@ -42,12 +42,25 @@ export function PrFilesTab({ pr, active }: { pr: TrackedPullRequest; active: boo
   });
   const pages = query.data?.pages ?? [];
   const liveComparison = query.isFetched ? pages[0]?.comparison : undefined;
-  const files = useMemo(() => orderPrFilePages(query.data?.pages ?? []), [query.data]);
+  const loadedFiles = useMemo(() => {
+    const byPath = new Map<string, PrHubChangedFile>();
+    for (const page of query.data?.pages ?? []) {
+      for (const file of page.files) {
+        if (!byPath.has(file.path)) byPath.set(file.path, file);
+      }
+    }
+    return orderChangedFilesLikeTree([...byPath.values()], settings.diffFileTreeOrder === "path");
+  }, [query.data, settings.diffFileTreeOrder]);
   const selectionScope = JSON.stringify([
     pr.key,
     getPrHubAccountGeneration(),
     pages[0]?.comparison,
   ]);
+  const selectedPath = selectedAnchor?.scope === selectionScope ? selectedAnchor.path : undefined;
+  const testFileCount = loadedFiles.filter((file) => isTestChangedFile(file.path)).length;
+  const files = settings.diffHideTestFiles
+    ? loadedFiles.filter((file) => file.path === selectedPath || !isTestChangedFile(file.path))
+    : loadedFiles;
   const isExpanded = (path: string) =>
     expandedOverrides[`${selectionScope}:${path}`] ?? settings.diffFileDefaultState === "expanded";
   const toggleExpanded = (path: string) =>
@@ -107,12 +120,12 @@ export function PrFilesTab({ pr, active }: { pr: TrackedPullRequest; active: boo
       <p className="text-xs text-muted-foreground" aria-live="polite">
         {comparisonMode === "current_pr" ? (
           <>
-            {files.length} of {pr.changedFiles} changed files loaded ·{" "}
+            {loadedFiles.length} of {pr.changedFiles} changed files loaded ·{" "}
             <PrChangeStat pr={pr} eager />
           </>
         ) : (
           <>
-            {files.length} changed files loaded{query.hasNextPage ? " · more available" : ""}
+            {loadedFiles.length} changed files loaded{query.hasNextPage ? " · more available" : ""}
           </>
         )}
         {pages.some((page) => page.providerCapped) ? " · provider file limit reached" : ""}
@@ -143,6 +156,19 @@ export function PrFilesTab({ pr, active }: { pr: TrackedPullRequest; active: boo
         />
         Hide whitespace-only hunks
       </label>
+      {testFileCount > 0 ? (
+        <label className="flex items-center gap-2 text-xs">
+          <input
+            type="checkbox"
+            checked={settings.diffHideTestFiles}
+            onChange={(event) => updateSettings({ diffHideTestFiles: event.target.checked })}
+          />
+          Hide test files
+          {loadedFiles.length > files.length
+            ? ` (${loadedFiles.length - files.length} hidden)`
+            : ""}
+        </label>
+      ) : null}
       <div className="flex gap-2">
         <Button
           size="xs"
@@ -195,7 +221,7 @@ export function PrFilesTab({ pr, active }: { pr: TrackedPullRequest; active: boo
           prKey={pr.key}
           prUrl={pr.url}
           comparison={liveComparison}
-          files={files}
+          files={loadedFiles}
           selectedAnchor={selectedAnchor?.scope === selectionScope ? selectedAnchor : null}
         />
       ) : null}
@@ -227,7 +253,9 @@ export function PrFilesTab({ pr, active }: { pr: TrackedPullRequest; active: boo
         </Alert>
       ) : null}
       {files.length === 0 ? (
-        <p className="py-4 text-sm text-muted-foreground">No changed files reported.</p>
+        <p className="py-4 text-sm text-muted-foreground">
+          {loadedFiles.length > 0 ? "All loaded files are hidden." : "No changed files reported."}
+        </p>
       ) : (
         <div className="divide-y divide-border overflow-hidden rounded-lg border border-border">
           {files.map((file) => (

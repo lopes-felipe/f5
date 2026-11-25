@@ -9,6 +9,7 @@ import { PerformanceStageProbe } from "../../observability/Metrics.ts";
 import { registerShutdown, AcceptedShutdownWork } from "../../shutdown.ts";
 import { tryWithProviderThreadAccess } from "../../provider/providerThreadAccess.ts";
 import { readPersistedSessionGeneration } from "../../provider/sessionCapabilities.ts";
+import { redactProviderFailureText } from "../../provider/failureText.ts";
 import { CodexMcpEventBus } from "../../codex/CodexMcpEventBus.ts";
 import { isPreparedComputerEvent } from "../../provider/prepareAutomationRuntimeEvent";
 import { computerToolHeading } from "@t3tools/shared/computerAction";
@@ -74,6 +75,7 @@ import {
   Option,
   Path,
   Schedule,
+  ServiceMap,
   Stream,
   Schema,
 } from "effect";
@@ -304,6 +306,38 @@ const currentPendingContextTokens = (
     ? pending
     : null;
 const PROFILED_WORKFLOW_TURN_TIMEOUT_MS = 30 * 60 * 1_000;
+/**
+ * How long a provider gets to settle a read-only workflow turn after F5 failed and interrupted
+ * it. One that is still running afterwards (Cursor once kept working ~40s) has its session
+ * stopped, so nothing else is produced for a stage that already failed. Tests shorten it.
+ */
+export const ProfiledFailureStopGraceMs = ServiceMap.Reference<number>(
+  "f5/orchestration/ProfiledFailureStopGraceMs",
+  { defaultValue: () => 10_000 },
+);
+/** Lifecycle error id that marks a turn F5 failed under a read-only workflow profile. */
+const PROFILED_FAILURE_ERROR_ID_PREFIX = "workflow-profile-failure:";
+const profiledFailureErrorId = (turnId: TurnId) => `${PROFILED_FAILURE_ERROR_ID_PREFIX}${turnId}`;
+/**
+ * How long recording a profile failure waits for the provider to acknowledge the interrupt.
+ * Tests shorten it.
+ */
+export const ProfiledFailureInterruptTimeout = ServiceMap.Reference<Duration.Duration>(
+  "f5/orchestration/ProfiledFailureInterruptTimeout",
+  { defaultValue: () => Duration.seconds(5) },
+);
+/**
+ * Request details quoted in profile-violation messages are redacted, then cut to this many
+ * characters: redacting first keeps a credential near the start from surviving the cut.
+ */
+const PROFILE_VIOLATION_DETAIL_CHARS = 200;
+const profileViolationDetail = (detail: string | undefined): string => {
+  const trimmed = detail ? redactProviderFailureText(detail).trim() : "";
+  if (!trimmed) return "";
+  return trimmed.length > PROFILE_VIOLATION_DETAIL_CHARS
+    ? `${trimmed.slice(0, PROFILE_VIOLATION_DETAIL_CHARS)}…`
+    : trimmed;
+};
 // Tool items that never complete are evicted oldest first past this many.
 const MAX_TRACKED_TOOL_UPDATES = 512;
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
@@ -1673,6 +1707,37 @@ export function runtimeEventToActivities(
         return [];
       }
       const requestKind = requestKindFromCanonicalRequestType(event.payload.requestType);
+      if (event.payload.autoDeclined === true) {
+        // The adapter already refused it, so nothing is pending: a distinct kind keeps it out of
+        // pending approvals, notifications and snooze wake-ups, which key on `approval.requested`.
+        return [
+          {
+            id: event.eventId,
+            createdAt: event.createdAt,
+            tone: "approval",
+            kind: "approval.auto-declined",
+            summary:
+              requestKind === "command"
+                ? "Command refused in a read-only stage"
+                : requestKind === "file-read"
+                  ? "File read refused in a read-only stage"
+                  : requestKind === "file-change"
+                    ? "File change refused in a read-only stage"
+                    : `Operation refused in a read-only stage (${event.payload.requestType})`,
+            payload: {
+              requestId: toApprovalRequestId(event.requestId),
+              ...(requestKind ? { requestKind } : {}),
+              requestType: event.payload.requestType,
+              autoDeclined: true,
+              ...(event.payload.detail
+                ? { detail: truncateApprovalDetail(event.payload.detail) }
+                : {}),
+            },
+            turnId: toTurnId(event.turnId) ?? null,
+            ...maybeSequence,
+          },
+        ];
+      }
       return [
         {
           id: event.eventId,
@@ -2768,6 +2833,127 @@ const make = Effect.gen(function* () {
       unattendedDeclineCounts.delete(threadId);
     });
 
+  /**
+   * Per-turn count of operations an adapter already refused under a read-only profile
+   * (`request.opened` with `autoDeclined`). Nothing ran and the model was told no, so one refusal
+   * is recoverable; a model that keeps trying is failed once the allowance is spent.
+   */
+  const autoDeclinedRequestCounts = new Map<ThreadId, { readonly turnId: TurnId; count: number }>();
+  const MAX_AUTO_DECLINED_REQUESTS_PER_TURN = 3;
+
+  const countAutoDeclinedRequest = (threadId: ThreadId, turnId: TurnId) =>
+    Effect.sync(() => {
+      const existing = autoDeclinedRequestCounts.get(threadId);
+      const next = existing && existing.turnId === turnId ? existing.count + 1 : 1;
+      autoDeclinedRequestCounts.set(threadId, { turnId, count: next });
+      return next;
+    });
+
+  const clearAutoDeclinedRequests = (threadId: ThreadId, turnId?: TurnId) =>
+    Effect.sync(() => {
+      const existing = autoDeclinedRequestCounts.get(threadId);
+      if (!existing || (turnId !== undefined && existing.turnId !== turnId)) return;
+      autoDeclinedRequestCounts.delete(threadId);
+    });
+
+  const profiledFailureStopGraceMs = yield* ProfiledFailureStopGraceMs;
+  const profiledFailureInterruptTimeout = yield* ProfiledFailureInterruptTimeout;
+  /** Sessions to stop if a profile-failed turn does not settle within the grace period. */
+  const profiledFailureStopTimers = new Map<
+    ThreadId,
+    { readonly turnId: TurnId; readonly timer: ReturnType<typeof setTimeout> }
+  >();
+
+  const clearProfiledFailureStopTimer = (threadId: ThreadId, turnId?: TurnId) =>
+    Effect.sync(() => {
+      const existing = profiledFailureStopTimers.get(threadId);
+      if (!existing || (turnId !== undefined && existing.turnId !== turnId)) return;
+      clearTimeout(existing.timer);
+      profiledFailureStopTimers.delete(threadId);
+    });
+
+  /**
+   * The turn F5 last failed under a read-only profile, per thread. The session's `lastErrorId`
+   * records the same fact durably, but a later `ready` report would clear it while the provider
+   * can still complete that turn; this marker outlives such reports until a new turn starts.
+   */
+  const profileFailedTurns = new Map<ThreadId, TurnId>();
+
+  const isProfileFailedTurn = (
+    thread: Pick<OrchestrationThread, "id" | "session">,
+    turnId: TurnId,
+  ): boolean =>
+    profileFailedTurns.get(thread.id) === turnId ||
+    (thread.session?.status === "error" &&
+      thread.session.lastErrorId === profiledFailureErrorId(turnId));
+
+  /** Whether the thread's latest settled turn is one F5 failed under a read-only profile. */
+  const hasProfileFailedTurn = (thread: Pick<OrchestrationThread, "id" | "session">): boolean =>
+    profileFailedTurns.has(thread.id) ||
+    (thread.session?.status === "error" &&
+      (thread.session.lastErrorId?.startsWith(PROFILED_FAILURE_ERROR_ID_PREFIX) ?? false));
+
+  const readSessionGeneration = (threadId: ThreadId) =>
+    providerSessionDirectory.getBinding(threadId).pipe(
+      Effect.map((binding) =>
+        Option.isSome(binding)
+          ? readPersistedSessionGeneration(binding.value.runtimePayload)
+          : undefined,
+      ),
+      Effect.orElseSucceed(() => undefined),
+    );
+
+  /**
+   * Whether the session that ignored the interrupt is still the one bound to the thread and is
+   * not running some other turn. A retry or a replacement session on the same thread must never
+   * be stopped for the failed turn's sake.
+   */
+  const shouldStopProfileFailedSession = (
+    threadId: ThreadId,
+    turnId: TurnId,
+    generation: number | undefined,
+  ) =>
+    Effect.gen(function* () {
+      if (profileFailedTurns.get(threadId) !== turnId) return false;
+      if ((yield* readSessionGeneration(threadId)) !== generation) return false;
+      const session = (yield* providerService.listSessions()).find(
+        (entry) => entry.threadId === threadId,
+      );
+      if (!session) return false;
+      return session.activeTurnId === undefined || session.activeTurnId === turnId;
+    });
+
+  const armProfiledFailureStopTimer = (threadId: ThreadId, turnId: TurnId) =>
+    Effect.gen(function* () {
+      yield* clearProfiledFailureStopTimer(threadId);
+      const generation = yield* readSessionGeneration(threadId);
+      const timer = setTimeout(() => {
+        if (profiledFailureStopTimers.get(threadId)?.timer !== timer) return;
+        profiledFailureStopTimers.delete(threadId);
+        Effect.runFork(
+          Effect.gen(function* () {
+            if (!(yield* shouldStopProfileFailedSession(threadId, turnId, generation))) return;
+            yield* Effect.logWarning("profiled workflow turn ignored interrupt; stopping session", {
+              threadId,
+              turnId,
+              graceMs: profiledFailureStopGraceMs,
+            });
+            yield* providerService.stopSession({ threadId });
+          }).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("failed to stop session after profiled workflow failure", {
+                threadId,
+                turnId,
+                cause: Cause.pretty(cause),
+              }),
+            ),
+          ),
+        );
+      }, profiledFailureStopGraceMs);
+      timer.unref?.();
+      profiledFailureStopTimers.set(threadId, { turnId, timer });
+    });
+
   const readWorkflowExecutionProfileForThread = Effect.fnUntraced(function* (threadId: ThreadId) {
     const binding = Option.getOrUndefined(yield* providerSessionDirectory.getBinding(threadId));
     return binding
@@ -2785,13 +2971,29 @@ const make = Effect.gen(function* () {
     const readModel = yield* orchestrationEngine.getReadModel();
     const thread = readModel.threads.find((entry) => entry.id === input.threadId);
     if (!thread) return;
+    // The first failure is the one to report: a provider that keeps going after the interrupt
+    // must not overwrite it with a later, less telling one.
+    if (isProfileFailedTurn(thread, input.turnId)) return;
+    profileFailedTurns.set(input.threadId, input.turnId);
 
+    // Recording the failure must not wait on a provider that never acknowledges the cancel; the
+    // stop timer below handles one that keeps running.
     yield* providerService
       .interruptTurn({
         threadId: input.threadId,
         turnId: input.turnId,
       })
       .pipe(
+        Effect.timeoutOption(profiledFailureInterruptTimeout),
+        Effect.flatMap((result) =>
+          Option.isNone(result)
+            ? Effect.logWarning("failed to interrupt profiled workflow turn", {
+                threadId: input.threadId,
+                turnId: input.turnId,
+                cause: `interrupt not acknowledged within ${Duration.format(profiledFailureInterruptTimeout)}`,
+              })
+            : Effect.void,
+        ),
         Effect.catchCause((cause) =>
           Effect.logWarning("failed to interrupt profiled workflow turn", {
             threadId: input.threadId,
@@ -2800,6 +3002,9 @@ const make = Effect.gen(function* () {
           }),
         ),
       );
+    // Only a violation stops the session. A retryable failure (the 30-minute timeout) is retried
+    // on the same thread, and that retry must not race a stop meant for the stuck turn.
+    if (!input.retryable) yield* armProfiledFailureStopTimer(input.threadId, input.turnId);
     yield* orchestrationEngine.dispatch({
       type: "thread.session.set",
       commandId: CommandId.makeUnsafe(
@@ -2821,12 +3026,48 @@ const make = Effect.gen(function* () {
           : {}),
         activeTurnId: null,
         lastError: input.error,
-        lastErrorId: `workflow-profile-failure:${input.turnId}`,
+        lastErrorId: profiledFailureErrorId(input.turnId),
         lastErrorOccurredAt: input.createdAt,
         lastErrorRetryability: input.retryable ? "retryable" : "non-retryable",
         updatedAt: input.createdAt,
       },
       createdAt: input.createdAt,
+    });
+  });
+
+  /**
+   * A profile-failed turn's late completion is not applied, but what the provider spent still
+   * counts toward the workflow budget, which reads `turnCostUsd` from session-set events. The
+   * cost rides on a copy of the current session so no stage sees a new outcome. It is skipped
+   * only while a retryable failure is still showing: repeating it would retry the stage twice.
+   */
+  const forwardProfileFailedTurnCost = Effect.fnUntraced(function* (
+    thread: OrchestrationThread,
+    session: NonNullable<OrchestrationThread["session"]>,
+    eventId: string,
+    turnCostUsd: number,
+    now: string,
+  ) {
+    const safeToRepeat =
+      session.status === "starting" ||
+      session.status === "running" ||
+      (session.status === "error" &&
+        session.lastErrorRetryability === "non-retryable" &&
+        (session.lastErrorId?.startsWith(PROFILED_FAILURE_ERROR_ID_PREFIX) ?? false));
+    if (!safeToRepeat) {
+      yield* Effect.logDebug("profile-failed turn cost not forwarded", {
+        threadId: thread.id,
+        sessionStatus: session.status,
+        turnCostUsd,
+      });
+      return;
+    }
+    yield* orchestrationEngine.dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.makeUnsafe(`workflow-profile-failure-cost:${eventId}`),
+      threadId: thread.id,
+      session: { ...session, turnCostUsd, updatedAt: now },
+      createdAt: now,
     });
   });
 
@@ -5051,7 +5292,39 @@ const make = Effect.gen(function* () {
         workflowExecutionProfile = yield* readWorkflowExecutionProfileForThread(thread.id);
       }
 
-      if (workflowExecutionProfile && event.type === "request.opened" && profiledTurnId) {
+      if (
+        workflowExecutionProfile &&
+        event.type === "request.opened" &&
+        event.payload.autoDeclined === true &&
+        profiledTurnId
+      ) {
+        // The adapter already refused this operation and told the model no; nothing ran and
+        // nothing is pending. Killing the turn would discard the work it already did, so the
+        // refusal is recorded and the stage only fails when the model keeps trying. The
+        // watchdog stays armed: the turn is still unattended and time-bounded.
+        const declinedCount = yield* countAutoDeclinedRequest(thread.id, profiledTurnId);
+        // The raw command or URL stays out of the server log; it is in the thread's activity.
+        yield* Effect.logInfo("read-only workflow stage attempted a refused operation", {
+          threadId: thread.id,
+          turnId: profiledTurnId,
+          requestId: event.requestId,
+          requestType: event.payload.requestType,
+          declinedCount,
+        });
+        if (declinedCount >= MAX_AUTO_DECLINED_REQUESTS_PER_TURN) {
+          const detail = profileViolationDetail(event.payload.detail);
+          yield* clearProfiledTurnWatchdog(thread.id, profiledTurnId);
+          yield* clearAutoDeclinedRequests(thread.id, profiledTurnId);
+          yield* recordProfiledTurnFailure({
+            threadId: thread.id,
+            turnId: profiledTurnId,
+            error: `Workflow read-only profile violation: the provider attempted ${declinedCount} operations that are not allowed in a read-only stage (last: ${event.payload.requestType}${detail ? `: ${detail}` : ""}). The turn was interrupted.`,
+            retryable: false,
+            createdAt: now,
+          });
+          return;
+        }
+      } else if (workflowExecutionProfile && event.type === "request.opened" && profiledTurnId) {
         if (event.requestId !== undefined) {
           yield* providerService
             .respondToRequest({
@@ -5060,6 +5333,15 @@ const make = Effect.gen(function* () {
               decision: "decline",
             })
             .pipe(
+              // An adapter that settled the request itself registered no pending entry.
+              Effect.catchTag("ProviderAdapterRequestError", (error) =>
+                Effect.logDebug("profiled workflow approval request had no pending entry", {
+                  threadId: thread.id,
+                  turnId: profiledTurnId,
+                  requestId: event.requestId,
+                  detail: error.detail,
+                }),
+              ),
               Effect.catchCause((cause) =>
                 Effect.logWarning("failed to decline profiled workflow approval request", {
                   threadId: thread.id,
@@ -5070,11 +5352,12 @@ const make = Effect.gen(function* () {
               ),
             );
         }
+        const detail = profileViolationDetail(event.payload.detail);
         yield* clearProfiledTurnWatchdog(thread.id, profiledTurnId);
         yield* recordProfiledTurnFailure({
           threadId: thread.id,
           turnId: profiledTurnId,
-          error: `Workflow read-only profile violation: provider requested '${event.payload.requestType}'. The attempted operation was declined and the turn was interrupted.`,
+          error: `Workflow read-only profile violation: provider requested '${event.payload.requestType}'${detail ? ` (${detail})` : ""}. The attempted operation was declined and the turn was interrupted.`,
           retryable: false,
           createdAt: now,
         });
@@ -5184,8 +5467,30 @@ const make = Effect.gen(function* () {
       const conflictsWithActiveTurn =
         activeTurnId !== null && eventTurnId !== undefined && !sameId(activeTurnId, eventTurnId);
       const missingTurnForActiveTurn = activeTurnId !== null && eventTurnId === undefined;
+      // A turn F5 failed under a read-only workflow profile stays failed. A provider that ignores
+      // the interrupt can still finish it normally; that completion must not settle the session
+      // as ready and let the workflow consume the failed stage's output.
+      const settlesProfileFailedTurn =
+        (event.type === "turn.started" || event.type === "turn.completed") &&
+        eventTurnId !== undefined &&
+        isProfileFailedTurn(thread, eventTurnId);
+      // Nor may a generic `ready`/`running` report or a session/thread start notification from
+      // that provider clear the failure while no new turn has started: the session would read as
+      // healthy, and a `ready` session lets the projection repair the errored turn as completed.
+      const reopensProfileFailedSession =
+        activeTurnId === null &&
+        (event.type === "session.started" ||
+          event.type === "thread.started" ||
+          (event.type === "session.state.changed" &&
+            ["ready", "running", "starting", "interrupted"].includes(
+              orchestrationSessionStatusFromRuntimeState(event.payload.state),
+            ))) &&
+        hasProfileFailedTurn(thread);
 
       const shouldApplyThreadLifecycle = (() => {
+        if (settlesProfileFailedTurn || reopensProfileFailedSession) {
+          return false;
+        }
         if (!STRICT_PROVIDER_LIFECYCLE_GUARD) {
           return true;
         }
@@ -5423,6 +5728,32 @@ const make = Effect.gen(function* () {
       }
 
       if (
+        event.type === "turn.completed" &&
+        settlesProfileFailedTurn &&
+        thread.session &&
+        event.payload?.totalCostUsd !== undefined
+      ) {
+        yield* forwardProfileFailedTurnCost(
+          thread,
+          thread.session,
+          event.eventId,
+          event.payload.totalCostUsd,
+          now,
+        );
+      }
+      if (
+        event.type === "turn.started" &&
+        shouldApplyThreadLifecycle &&
+        eventTurnId !== undefined
+      ) {
+        // A new turn supersedes the failed one; only that turn's late events stay ignored, and the
+        // session now running the new turn must not be stopped on the old one's behalf.
+        profileFailedTurns.delete(thread.id);
+        const pendingStop = profiledFailureStopTimers.get(thread.id);
+        if (pendingStop && !sameId(pendingStop.turnId, eventTurnId))
+          yield* clearProfiledFailureStopTimer(thread.id);
+      }
+      if (
         event.type === "turn.started" &&
         shouldApplyThreadLifecycle &&
         eventTurnId !== undefined &&
@@ -5440,10 +5771,15 @@ const make = Effect.gen(function* () {
       ) {
         yield* clearProfiledTurnWatchdog(thread.id, eventTurnId);
         yield* clearUnattendedDeclines(thread.id, eventTurnId);
+        yield* clearAutoDeclinedRequests(thread.id, eventTurnId);
+        // The provider did settle the failed turn, even though the projection ignores it.
+        yield* clearProfiledFailureStopTimer(thread.id, eventTurnId);
       }
       if (event.type === "session.exited") {
         yield* clearProfiledTurnWatchdog(thread.id);
         yield* clearUnattendedDeclines(thread.id);
+        yield* clearAutoDeclinedRequests(thread.id);
+        yield* clearProfiledFailureStopTimer(thread.id);
       }
 
       if (
@@ -7379,6 +7715,10 @@ const make = Effect.gen(function* () {
           clearTimeout(watchdog.timer);
         }
         profiledTurnWatchdogs.clear();
+        for (const pending of profiledFailureStopTimers.values()) {
+          clearTimeout(pending.timer);
+        }
+        profiledFailureStopTimers.clear();
       }),
     );
     yield* Effect.forkScoped(

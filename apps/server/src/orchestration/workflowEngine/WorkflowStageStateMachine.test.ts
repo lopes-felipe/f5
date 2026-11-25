@@ -1,4 +1,10 @@
-import { CommandId, MessageId, ThreadId, TurnId } from "@t3tools/contracts";
+import {
+  CommandId,
+  MessageId,
+  ThreadId,
+  TurnId,
+  type CodeReviewReviewer,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -116,13 +122,21 @@ describe("WorkflowStageStateMachine", () => {
   });
 
   it("performs immutable stage state transitions", () => {
-    const base = {
-      threadId: null as ThreadId | null,
+    const base: {
+      readonly threadId: ThreadId | null;
+      readonly status: "not_started" | "pending_start" | "running" | "completed" | "error";
+      readonly pinnedTurnId: string | null;
+      readonly pinnedAssistantMessageId: string | null;
+      readonly error: string | null;
+      readonly dispatchCommandId: CommandId | null;
+      readonly updatedAt: string;
+    } = {
+      threadId: null,
       status: "not_started",
-      pinnedTurnId: null as string | null,
-      pinnedAssistantMessageId: null as string | null,
-      error: "old" as string | null,
-      dispatchCommandId: null as CommandId | null,
+      pinnedTurnId: null,
+      pinnedAssistantMessageId: null,
+      error: "old",
+      dispatchCommandId: null,
       updatedAt: "2026-01-01T00:00:00.000Z",
     };
 
@@ -136,22 +150,45 @@ describe("WorkflowStageStateMachine", () => {
     expect(pending.error).toBeNull();
 
     const running = transitionStageRunning(
-      pending,
+      { ...pending, status: pending.status as typeof base.status },
       "2026-01-01T00:00:02.000Z",
       CommandId.makeUnsafe("cmd-1"),
     );
     expect(running.status).toBe("running");
     expect(running.dispatchCommandId).toBe("cmd-1");
 
-    const completed = transitionStageCompleted(running, {
-      turnId: "turn-1",
-      assistantMessageId: "msg-1",
-      updatedAt: "2026-01-01T00:00:03.000Z",
-    });
+    const completed = transitionStageCompleted(
+      { ...running, status: running.status as typeof base.status },
+      {
+        turnId: "turn-1",
+        assistantMessageId: "msg-1",
+        updatedAt: "2026-01-01T00:00:03.000Z",
+      },
+    );
     expect(isStageAlreadyCompletedWith(completed, "turn-1", "msg-1")).toBe(true);
 
-    const errored = transitionStageError(completed, "failed", "2026-01-01T00:00:04.000Z");
+    const errored = transitionStageError(
+      { ...completed, status: completed.status as typeof base.status },
+      "failed",
+      "2026-01-01T00:00:04.000Z",
+    );
     expect(errored.status).toBe("error");
     expect(errored.error).toBe("failed");
+  });
+
+  it("enforces target status membership and extras exclusions at compile time", () => {
+    const typeCheck = (reviewer: CodeReviewReviewer) => {
+      // @ts-expect-error CodeReviewReviewer.status does not include "pending_start"
+      transitionStagePendingStart(reviewer, ThreadId.make("t1"), "2026-01-01T00:00:01.000Z");
+
+      transitionStageRunning(
+        reviewer,
+        "2026-01-01T00:00:02.000Z",
+        CommandId.makeUnsafe("cmd-1"),
+        // @ts-expect-error status cannot be overridden through extras
+        { status: "completed" },
+      );
+    };
+    expect(typeof typeCheck).toBe("function");
   });
 });

@@ -6,7 +6,6 @@ import * as OS from "node:os";
 import * as Path from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it, vi } from "@effect/vitest";
-import type { OrchestrationReadModel } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -21,14 +20,12 @@ import { NetService } from "@t3tools/shared/Net";
 import { legacyT3BaseDir, legacyT3UserdataStateDir } from "@t3tools/shared/appStatePaths";
 import { startDesktopAppControl } from "@t3tools/shared/desktopAppControl";
 
-import { CliConfig, recordStartupHeartbeat, t3Cli, type CliConfigShape } from "./main";
+import { CliConfig, removeRetiredTelemetryFiles, t3Cli, type CliConfigShape } from "./main";
 import { ServerConfig, type ServerConfigShape } from "./config";
 import { LEGACY_STATE_MIGRATION_FAILURE_SENTINEL } from "./legacyStateMigration";
 import { withHomeSandbox } from "./testing/homeSandbox.ts";
 import { Open, OpenError, type OpenShape } from "./open";
 import { spanToTraceRecord, type EffectTraceRecord } from "./observability/TraceRecord.ts";
-import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery";
-import { AnalyticsService } from "./telemetry/Services/AnalyticsService";
 import { Server, type ServerShape } from "./wsServer";
 
 // These tests apply real Windows ACLs, including cold PowerShell startup.
@@ -66,7 +63,6 @@ const testLayer = Layer.mergeAll(
     openInEditor: () => Effect.void,
     revealInFileManager: () => Effect.void,
   } satisfies OpenShape),
-  AnalyticsService.layerTest,
   FetchHttpClient.layer,
   NodeServices.layer,
 );
@@ -602,105 +598,36 @@ it.layer(testLayer)("server CLI command", (it) => {
     }),
   );
 
-  it.effect("records a startup heartbeat with thread/project counts", () =>
+  it.effect("removes files left by retired telemetry and keeps the installation id", () =>
     Effect.gen(function* () {
-      const recordTelemetry = vi.fn(
-        (_event: string, _properties?: Readonly<Record<string, unknown>>) => Effect.void,
-      );
-      const getSnapshot = vi.fn(() =>
-        Effect.succeed({
-          snapshotSequence: 2,
-          projects: [{} as OrchestrationReadModel["projects"][number]],
-          planningWorkflows: [],
-          codeReviewWorkflows: [],
-          investigationWorkflows: [],
-          threads: [
-            {} as OrchestrationReadModel["threads"][number],
-            {} as OrchestrationReadModel["threads"][number],
-          ],
-          updatedAt: new Date(1).toISOString(),
-        } satisfies OrchestrationReadModel),
-      );
+      const root = FS.mkdtempSync(Path.join(OS.tmpdir(), "f5-retired-telemetry-"));
+      try {
+        const stateDir = Path.join(root, "userdata");
+        const profilesRoot = Path.join(root, "profiles");
+        FS.mkdirSync(stateDir, { recursive: true });
+        FS.mkdirSync(Path.join(profilesRoot, "locks"), { recursive: true });
+        FS.writeFileSync(Path.join(stateDir, "anonymous-id"), "random");
+        FS.writeFileSync(Path.join(profilesRoot, "installation-id"), "install");
+        for (const suffix of ["", "-wal", "-shm"])
+          FS.writeFileSync(
+            Path.join(profilesRoot, "locks", `telemetry-heartbeat.lock.sqlite${suffix}`),
+            "",
+          );
 
-      yield* recordStartupHeartbeat.pipe(
-        Effect.provideService(ProjectionSnapshotQuery, {
-          searchThread: () => Effect.die("unused thread search"),
-          getSnapshot,
-          getBootstrapSnapshot: getSnapshot,
-          getStartupSnapshot: () =>
-            getSnapshot().pipe(
-              Effect.map((snapshot) => ({
-                snapshot,
-                threadTailDetails: null,
-              })),
-            ),
-          getRewindDrafts: ({ threadId }) => Effect.succeed({ threadId, drafts: [] }),
-          getThreadTailDetails: (input) =>
-            Effect.succeed({
-              threadId: input.threadId,
-              messages: [],
-              checkpoints: [],
-              activities: [],
-              commandExecutions: [],
-              proposedPlans: [],
-              tasks: [],
-              tasksTurnId: null,
-              tasksUpdatedAt: null,
-              sessionNotes: null,
-              threadReferences: [],
-              hasOlderMessages: false,
-              hasOlderCheckpoints: false,
-              hasOlderActivities: false,
-              hasOlderCommandExecutions: false,
-              oldestLoadedMessageCursor: null,
-              oldestLoadedCheckpointTurnCount: null,
-              oldestLoadedActivityCursor: null,
-              oldestLoadedCommandExecutionCursor: null,
-              detailSequence: 2,
-            }),
-          getThreadHistoryPage: (input) =>
-            Effect.succeed({
-              threadId: input.threadId,
-              messages: [],
-              checkpoints: [],
-              activities: [],
-              commandExecutions: [],
-              hasOlderMessages: false,
-              hasOlderCheckpoints: false,
-              hasOlderActivities: false,
-              hasOlderCommandExecutions: false,
-              oldestLoadedMessageCursor: null,
-              oldestLoadedCheckpointTurnCount: null,
-              oldestLoadedActivityCursor: null,
-              oldestLoadedCommandExecutionCursor: null,
-              detailSequence: 2,
-            }),
-          getThreadDetails: (input) =>
-            Effect.succeed({
-              threadId: input.threadId,
-              messages: [],
-              checkpoints: [],
-              tasks: [],
-              tasksTurnId: null,
-              tasksUpdatedAt: null,
-              sessionNotes: null,
-              threadReferences: [],
-              detailSequence: 2,
-            }),
-        }),
-        Effect.provideService(AnalyticsService, {
-          record: recordTelemetry,
-          flush: Effect.void,
-        }),
-      );
+        yield* removeRetiredTelemetryFiles({ stateDir, profilesRoot });
 
-      assert.deepEqual(recordTelemetry.mock.calls[0], [
-        "server.boot.heartbeat",
-        {
-          threadCount: 2,
-          projectCount: 1,
-        },
-      ]);
+        assert.isFalse(FS.existsSync(Path.join(stateDir, "anonymous-id")));
+        assert.deepEqual(FS.readdirSync(Path.join(profilesRoot, "locks")), []);
+        assert.equal(
+          FS.readFileSync(Path.join(profilesRoot, "installation-id"), "utf8"),
+          "install",
+        );
+        // Missing files and a missing profiles root are not errors.
+        yield* removeRetiredTelemetryFiles({ stateDir, profilesRoot });
+        yield* removeRetiredTelemetryFiles({ stateDir });
+      } finally {
+        FS.rmSync(root, { recursive: true, force: true });
+      }
     }),
   );
 
