@@ -132,6 +132,7 @@ import {
   findLastUserMessageRowIndex,
   findNearestMinimapMarkerIndex,
   formatWorkingLabel,
+  isThoughtOnlyAssistantMessage,
   summarizeWorkGroup,
   type WorkEntryClassificationSource,
   normalizeCompactToolLabel,
@@ -394,6 +395,29 @@ describe("timeline turn rail", () => {
       },
     ]);
   });
+
+  it("keeps a turn's reply preview when a thought-only message follows it", () => {
+    const thought = {
+      role: "assistant" as const,
+      text: "",
+      reasoningText: "Checking the queue",
+      streaming: false,
+    };
+    expect(
+      deriveTimelineTurnRailItems([
+        { id: "u1", kind: "message", message: { role: "user", text: "Question" } },
+        { id: "a1", kind: "message", message: { role: "assistant", text: "Partial answer" } },
+        { id: "t1", kind: "message", message: thought },
+      ]).map((item) => item.assistantText),
+    ).toEqual(["Partial answer"]);
+    expect(
+      deriveTimelineAssistantRailItems([
+        { id: "u1", kind: "message", message: { role: "user", text: "Question" } },
+        { id: "t1", kind: "message", showCompletionDivider: true, message: thought },
+      ]).map((item) => item.assistantText),
+    ).toEqual(["Finished without a reply"]);
+  });
+
   it("resolves measured gutter geometry", () => {
     expect([47, 48, 0, Number.NaN].map(resolveTimelineTurnRailHasPersistentGutter)).toEqual([
       false,
@@ -657,5 +681,31 @@ describe("findLastUserMessageRowIndex", () => {
         { kind: "message", message: { role: "assistant" } },
       ]),
     ).toBe(-1);
+  });
+});
+
+describe("isThoughtOnlyAssistantMessage", () => {
+  const base = { role: "assistant" as const, text: "", streaming: false };
+
+  it("matches finished assistant messages that carry only reasoning", () => {
+    expect(isThoughtOnlyAssistantMessage({ ...base, reasoningText: "Thinking" })).toBe(true);
+    expect(isThoughtOnlyAssistantMessage({ ...base, text: " \n", reasoningText: "Thinking" })).toBe(
+      true,
+    );
+    expect(isThoughtOnlyAssistantMessage({ ...base, reasoningTokens: 120 })).toBe(true);
+  });
+
+  it("leaves streaming, replying, empty and non-assistant messages alone", () => {
+    expect(
+      isThoughtOnlyAssistantMessage({ ...base, streaming: true, reasoningText: "Thinking" }),
+    ).toBe(false);
+    expect(
+      isThoughtOnlyAssistantMessage({ ...base, text: "Done", reasoningText: "Thinking" }),
+    ).toBe(false);
+    expect(isThoughtOnlyAssistantMessage({ ...base, reasoningText: "  " })).toBe(false);
+    expect(isThoughtOnlyAssistantMessage(base)).toBe(false);
+    expect(
+      isThoughtOnlyAssistantMessage({ ...base, role: "user", reasoningText: "Thinking" }),
+    ).toBe(false);
   });
 });

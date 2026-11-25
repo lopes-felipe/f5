@@ -638,11 +638,29 @@ export interface TimelineTurnRailRowSource {
   readonly kind: string;
   readonly createdAt?: string | null;
   readonly showCompletionDivider?: boolean;
-  readonly message?: {
-    readonly role: "user" | "assistant" | "system";
-    readonly text: string;
+  readonly message?: ThoughtOnlyMessageSource & {
     readonly attachments?: ReadonlyArray<{ readonly name: string }>;
   };
+}
+
+export interface ThoughtOnlyMessageSource {
+  readonly role: "user" | "assistant" | "system";
+  readonly text: string;
+  readonly streaming?: boolean;
+  readonly reasoningText?: string;
+  readonly reasoningTokens?: number;
+}
+
+/** Shown where a finished turn ended on reasoning without any reply text. */
+export const FINISHED_WITHOUT_REPLY_LABEL = "Finished without a reply";
+
+/**
+ * A finished assistant message that carries only reasoning, such as an ACP
+ * agent's thought between two tool calls. It renders as a compact Thought row.
+ */
+export function isThoughtOnlyAssistantMessage(message: ThoughtOnlyMessageSource): boolean {
+  if (message.role !== "assistant" || message.streaming || /\S/.test(message.text)) return false;
+  return /\S/.test(message.reasoningText ?? "") || (message.reasoningTokens ?? 0) > 0;
 }
 
 export interface TimelineTurnRailItem {
@@ -670,6 +688,16 @@ function compactTurnRailPreview(value: string | null | undefined): string | null
 // Previews per message object: a message is immutable, and streaming replaces it.
 const userPreviewCache = new WeakMap<object, string | null>();
 const assistantPreviewCache = new WeakMap<object, string | null>();
+const thoughtOnlyCache = new WeakMap<object, boolean>();
+
+function cachedIsThoughtOnly(message: ThoughtOnlyMessageSource): boolean {
+  let thoughtOnly = thoughtOnlyCache.get(message);
+  if (thoughtOnly === undefined) {
+    thoughtOnly = isThoughtOnlyAssistantMessage(message);
+    thoughtOnlyCache.set(message, thoughtOnly);
+  }
+  return thoughtOnly;
+}
 
 function cachedPreview(
   cache: WeakMap<object, string | null>,
@@ -736,7 +764,7 @@ export function deriveTimelineTurnRailItems(
         ),
         assistantText: null,
       };
-    } else if (message.role === "assistant" && current) {
+    } else if (message.role === "assistant" && current && !cachedIsThoughtOnly(message)) {
       current.assistantText = cachedPreview(assistantPreviewCache, message, () =>
         compactTurnRailPreview(message.text),
       );
@@ -766,7 +794,9 @@ export function deriveTimelineAssistantRailItems(
         createdAt: row.createdAt ?? null,
         userText,
         assistantText: cachedPreview(assistantPreviewCache, row.message, () =>
-          compactTurnRailPreview(row.message!.text),
+          cachedIsThoughtOnly(row.message!)
+            ? FINISHED_WITHOUT_REPLY_LABEL
+            : compactTurnRailPreview(row.message!.text),
         ),
       });
     }

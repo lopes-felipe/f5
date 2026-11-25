@@ -4311,3 +4311,155 @@ describe("MessagesTimeline", () => {
     expect(diagnosticSerializationCount).toBe(0);
   });
 });
+
+describe("MessagesTimeline thought-only messages", () => {
+  const turnId = TurnId.makeUnsafe("thought-turn");
+  const startedAt = "2026-11-25T11:00:00.000Z";
+  const completedAt = "2026-11-25T11:04:12.000Z";
+  const at = (seconds: number) => new Date(Date.parse(startedAt) + seconds * 1_000).toISOString();
+  const work = (id: string, label: string, seconds: number): TimelineEntry => ({
+    id,
+    kind: "work",
+    createdAt: at(seconds),
+    entry: {
+      id: `work-${id}`,
+      createdAt: at(seconds),
+      label,
+      tone: "tool",
+      itemType: "dynamic_tool_call",
+    },
+  });
+  const assistant = (
+    id: string,
+    seconds: number,
+    fields: { text?: string; reasoningText?: string },
+  ): TimelineEntry => ({
+    id,
+    kind: "message",
+    createdAt: at(seconds),
+    message: {
+      id: MessageId.makeUnsafe(id),
+      role: "assistant",
+      text: fields.text ?? "",
+      ...(fields.reasoningText !== undefined ? { reasoningText: fields.reasoningText } : {}),
+      turnId,
+      createdAt: at(seconds),
+      completedAt: at(seconds + 1),
+      streaming: false,
+    },
+  });
+  const question: TimelineEntry = {
+    id: "thought-question",
+    kind: "message",
+    createdAt: startedAt,
+    message: {
+      id: MessageId.makeUnsafe("thought-question"),
+      role: "user",
+      text: "Why does the queue test fail?",
+      turnId,
+      createdAt: startedAt,
+      streaming: false,
+    },
+  };
+
+  async function render(timelineEntries: TimelineEntry[]): Promise<string> {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    return renderToStaticMarkup(
+      <MessagesTimeline
+        hasMessages
+        isWorking={false}
+        activeTurnStartedAt={null}
+        listRef={{ current: null }}
+        onIsAtEndChange={() => {}}
+        timelineEntries={timelineEntries}
+        completionDividerBeforeEntryId={null}
+        completionSummary={null}
+        turnDiffSummaryByAssistantMessageId={new Map()}
+        turnDiffSummaryByTurnId={new Map([[turnId, { turnId, startedAt, completedAt, files: [] }]])}
+        expandedWorkGroups={{}}
+        onToggleWorkGroup={() => {}}
+        onOpenTurnDiff={() => {}}
+        revertTurnCountByUserMessageId={new Map()}
+        onRevertUserMessage={() => {}}
+        isRevertingCheckpoint={false}
+        onImageExpand={() => {}}
+        markdownCwd={undefined}
+        resolvedTheme="light"
+        timestampFormat="locale"
+        workspaceRoot={undefined}
+        expandedCommandExecutions={{}}
+        onToggleCommandExecution={() => {}}
+        allDirectoriesExpanded
+        onToggleAllDirectories={() => {}}
+      />,
+    );
+  }
+
+  it("renders a thought between tool calls as a bare Thought row", async () => {
+    setPersistedAppSettings({ showReasoningExpanded: false });
+    const markup = await render([
+      question,
+      work("search-1", "Searching for nextTurnQueue", 5),
+      assistant("thought-mid", 10, { reasoningText: "Check the scroll anchor first." }),
+      work("search-2", "Searching for followNewTurn", 20),
+      assistant("final-answer", 30, { text: "The anchor re-pins after send." }),
+    ]);
+    const row = extractMessageRowMarkup(markup, "thought-mid");
+    expect(row).toContain('data-slot="assistant-thought-row"');
+    expect(row).toContain("Thought");
+    expect(row).not.toContain("(empty response)");
+    expect(row).not.toContain('data-slot="assistant-message-meta"');
+    expect(row).not.toContain("Copy message");
+    expect(row).not.toContain("Check the scroll anchor first.");
+    expect(row).not.toContain("Finished without a reply");
+  });
+
+  it("opens the Thought row when reasoning auto-expands", async () => {
+    setPersistedAppSettings({ showReasoningExpanded: true });
+    const markup = await render([
+      question,
+      work("search-1", "Searching for nextTurnQueue", 5),
+      assistant("thought-mid", 10, { reasoningText: "Check the scroll anchor first." }),
+      work("search-2", "Searching for followNewTurn", 20),
+      assistant("final-answer", 30, { text: "The anchor re-pins after send." }),
+    ]);
+    expect(extractMessageRowMarkup(markup, "thought-mid")).toContain(
+      "Check the scroll anchor first.",
+    );
+  });
+
+  it("notes a finished turn that ended on a thought, keeping its timing", async () => {
+    setPersistedAppSettings({ showReasoningExpanded: false });
+    const markup = await render([
+      question,
+      work("search-1", "Searching for nextTurnQueue", 5),
+      assistant("thought-last", 240, { reasoningText: "Nothing else to check." }),
+    ]);
+    const row = extractMessageRowMarkup(markup, "thought-last");
+    expect(row).toContain('role="separator"');
+    expect(row).toContain("Worked for 4m 12s");
+    expect(row).toContain("Finished without a reply");
+    expect(row).toContain('data-slot="assistant-message-meta"');
+    expect(row).not.toContain("(empty response)");
+  });
+
+  it("keeps replies with reasoning and fully empty messages unchanged", async () => {
+    setPersistedAppSettings({ showReasoningExpanded: false });
+    const markup = await render([
+      question,
+      assistant("empty-mid", 5, {}),
+      work("search-1", "Searching for nextTurnQueue", 10),
+      assistant("final-answer", 30, {
+        text: "The anchor re-pins after send.",
+        reasoningText: "Compare scrollTop.",
+      }),
+    ]);
+    const answer = extractMessageRowMarkup(markup, "final-answer");
+    expect(answer).not.toContain('data-slot="assistant-thought-row"');
+    expect(answer).toContain("Thought");
+    expect(answer).toContain("The anchor re-pins after send.");
+    expect(answer).toContain('data-slot="assistant-message-meta"');
+    expect(answer).not.toContain("Finished without a reply");
+    expect(extractMessageRowMarkup(markup, "empty-mid")).toContain("(empty response)");
+  });
+});

@@ -79,6 +79,7 @@ import {
   GlobeIcon,
   HammerIcon,
   ImageIcon,
+  InfoIcon,
   ListTodoIcon,
   LoaderCircleIcon,
   type LucideIcon,
@@ -160,6 +161,8 @@ import {
   summarizeWorkGroup,
   TIMELINE_TURN_RAIL_MIN_ITEMS,
   advanceRowArrivals,
+  FINISHED_WITHOUT_REPLY_LABEL,
+  isThoughtOnlyAssistantMessage,
   type RowArrivalState,
   type TimelineTurnRailItem,
   timelineIsAtEnd,
@@ -5278,6 +5281,34 @@ function AssistantMessageRowContent(props: {
   const reasoningTokens = row.message.reasoningTokens ?? 0;
   const isStreamingReasoning =
     Boolean(row.message.streaming) && row.message.text.length === 0 && Boolean(reasoningText);
+  // Reasoning without a reply, such as an ACP agent's thought between tool calls.
+  const thoughtOnly = isThoughtOnlyAssistantMessage(row.message);
+  const meta = (
+    <p
+      data-slot="assistant-message-meta"
+      className="whitespace-nowrap text-2xs text-muted-foreground tabular-nums"
+    >
+      <LiveMessageMeta
+        durationStart={
+          row.showCompletionDivider
+            ? (row.completionStartedAt ?? row.durationStart)
+            : row.durationStart
+        }
+        completedAt={
+          row.showCompletionDivider
+            ? (row.completionCompletedAt ?? row.message.completedAt)
+            : row.message.completedAt
+        }
+        streaming={row.message.streaming}
+      />
+      <MessageTokenUsage
+        turnId={row.message.turnId}
+        reasoningTokens={row.message.reasoningTokens}
+        reasoningEstimated={row.message.reasoningTokensEstimated}
+        streaming={row.message.streaming}
+      />
+    </p>
+  );
   return (
     <>
       {row.showCompletionDivider && (
@@ -5305,92 +5336,103 @@ function AssistantMessageRowContent(props: {
           ) : null}
         </div>
       )}
-      <div className="group/assistant-message min-w-0 px-1 py-0.5">
-        {reasoningText || reasoningTokens > 0 ? (
+      {thoughtOnly ? (
+        <div data-slot="assistant-thought-row" className="min-w-0 px-1">
           <ReasoningSection
             reasoningText={reasoningText}
             textRevision={reasoning.revision}
             reasoningTokens={reasoningTokens}
             reasoningTokensEstimated={row.message.reasoningTokensEstimated}
-            hideTokens
+            // The meta line under a turn's last message already reports usage.
+            hideTokens={row.showCompletionDivider}
             defaultExpanded={showReasoningExpanded}
-            isStreaming={isStreamingReasoning}
+            isStreaming={false}
             cwd={markdownCwd}
+            flush
           />
-        ) : null}
-        <div
-          data-thread-find-text={rawText ? "" : undefined}
-          className={
-            /^★ Insight(?:\s|─)/mu.test(messageText)
-              ? "[&_.chat-markdown_p]:whitespace-pre-line"
-              : undefined
-          }
-        >
-          <ChatMarkdown
-            text={messageText}
-            textRevision={messageTextRevision(row.message)}
-            cwd={markdownCwd}
-            isStreaming={Boolean(row.message.streaming)}
-            // Blocks of the turn the user is reading stay open; they fold once
-            // the user starts a new turn.
-            foldCodeBlocks={!row.message.streaming && !externals.inLatestTurn}
-            showStreamingCaret
-          />
-        </div>
-        <AssistantChangedFiles externals={externals} />
-        <div
-          data-assistant-quote-exclude
-          className="mt-1.5 flex min-h-7 items-center justify-between gap-2"
-        >
-          <div className="flex min-w-0 items-center gap-2 overflow-x-auto">
-            <p
-              data-slot="assistant-message-meta"
-              className="whitespace-nowrap text-2xs text-muted-foreground tabular-nums"
+          <AssistantChangedFiles externals={externals} />
+          {row.showCompletionDivider ? (
+            <div
+              data-assistant-quote-exclude
+              className="mt-1 flex min-w-0 items-center gap-2 overflow-x-auto"
             >
-              <LiveMessageMeta
-                durationStart={
-                  row.showCompletionDivider
-                    ? (row.completionStartedAt ?? row.durationStart)
-                    : row.durationStart
-                }
-                completedAt={
-                  row.showCompletionDivider
-                    ? (row.completionCompletedAt ?? row.message.completedAt)
-                    : row.message.completedAt
-                }
-                streaming={row.message.streaming}
-              />
-              <MessageTokenUsage
-                turnId={row.message.turnId}
-                reasoningTokens={row.message.reasoningTokens}
-                reasoningEstimated={row.message.reasoningTokensEstimated}
-                streaming={row.message.streaming}
-              />
-            </p>
-            {externals.cacheMiss ? <PromptCacheMissPill turn={externals.cacheMiss} /> : null}
+              <p className="flex shrink-0 items-center gap-1.5 text-2xs text-muted-foreground italic">
+                <InfoIcon className="size-3.5 shrink-0 text-faint-foreground" aria-hidden />
+                {FINISHED_WITHOUT_REPLY_LABEL}
+              </p>
+              <span className="text-2xs text-faint-foreground" aria-hidden>
+                ·
+              </span>
+              {meta}
+              {externals.cacheMiss ? <PromptCacheMissPill turn={externals.cacheMiss} /> : null}
+            </div>
+          ) : null}
+        </div>
+      ) : (
+        <div className="group/assistant-message min-w-0 px-1 py-0.5">
+          {reasoningText || reasoningTokens > 0 ? (
+            <ReasoningSection
+              reasoningText={reasoningText}
+              textRevision={reasoning.revision}
+              reasoningTokens={reasoningTokens}
+              reasoningTokensEstimated={row.message.reasoningTokensEstimated}
+              hideTokens
+              defaultExpanded={showReasoningExpanded}
+              isStreaming={isStreamingReasoning}
+              cwd={markdownCwd}
+            />
+          ) : null}
+          <div
+            data-thread-find-text={rawText ? "" : undefined}
+            className={
+              /^★ Insight(?:\s|─)/mu.test(messageText)
+                ? "[&_.chat-markdown_p]:whitespace-pre-line"
+                : undefined
+            }
+          >
+            <ChatMarkdown
+              text={messageText}
+              textRevision={messageTextRevision(row.message)}
+              cwd={markdownCwd}
+              isStreaming={Boolean(row.message.streaming)}
+              // Blocks of the turn the user is reading stay open; they fold once
+              // the user starts a new turn.
+              foldCodeBlocks={!row.message.streaming && !externals.inLatestTurn}
+              showStreamingCaret
+            />
           </div>
-          {/* Always laid out, only faded: hovering never shifts the row. */}
-          <div className="flex items-center gap-0.5 opacity-0 transition-opacity duration-(--duration-fast) focus-within:opacity-100 group-hover/assistant-message:opacity-100 has-[[data-popup-open]]:opacity-100 pointer-coarse:opacity-100">
-            {settledText ? <MessageCopyButton text={rawText} /> : null}
-            {settledText && canQuoteAssistantMessages ? (
-              <button
-                type="button"
-                title="Reply to response"
-                aria-label="Reply to response"
-                className="rounded px-1.5 py-1 text-xs text-muted-foreground hover:text-foreground"
-                onClick={() => actions.quoteAssistantMessage(messageId, rawText, true)}
-              >
-                Reply
-              </button>
-            ) : null}
-            {settledText && canQuoteAssistantMessages ? (
-              <AssistantMessageActions
-                onQuote={() => actions.quoteAssistantMessage(messageId, rawText)}
-              />
-            ) : null}
+          <AssistantChangedFiles externals={externals} />
+          <div
+            data-assistant-quote-exclude
+            className="mt-1.5 flex min-h-7 items-center justify-between gap-2"
+          >
+            <div className="flex min-w-0 items-center gap-2 overflow-x-auto">
+              {meta}
+              {externals.cacheMiss ? <PromptCacheMissPill turn={externals.cacheMiss} /> : null}
+            </div>
+            {/* Always laid out, only faded: hovering never shifts the row. */}
+            <div className="flex items-center gap-0.5 opacity-0 transition-opacity duration-(--duration-fast) focus-within:opacity-100 group-hover/assistant-message:opacity-100 has-[[data-popup-open]]:opacity-100 pointer-coarse:opacity-100">
+              {settledText ? <MessageCopyButton text={rawText} /> : null}
+              {settledText && canQuoteAssistantMessages ? (
+                <button
+                  type="button"
+                  title="Reply to response"
+                  aria-label="Reply to response"
+                  className="rounded px-1.5 py-1 text-xs text-muted-foreground hover:text-foreground"
+                  onClick={() => actions.quoteAssistantMessage(messageId, rawText, true)}
+                >
+                  Reply
+                </button>
+              ) : null}
+              {settledText && canQuoteAssistantMessages ? (
+                <AssistantMessageActions
+                  onQuote={() => actions.quoteAssistantMessage(messageId, rawText)}
+                />
+              ) : null}
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </>
   );
 }

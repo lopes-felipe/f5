@@ -17,6 +17,8 @@ interface ReasoningSectionProps {
   defaultExpanded: boolean;
   isStreaming: boolean;
   cwd: string | undefined;
+  /** Drops the bottom gap, for a Thought row that stands alone between tool rows. */
+  flush?: boolean;
 }
 
 function ReasoningLabel(props: {
@@ -52,6 +54,7 @@ export function ReasoningSection({
   defaultExpanded,
   isStreaming,
   cwd,
+  flush = false,
 }: ReasoningSectionProps) {
   const [open, setOpen] = useState(defaultExpanded);
   const [userOverrode, setUserOverrode] = useState(false);
@@ -86,7 +89,10 @@ export function ReasoningSection({
     return (
       <div
         data-slot="reasoning-summary"
-        className="mb-2 inline-flex items-center gap-1.5 px-1 py-1 text-2xs font-medium text-muted-foreground"
+        className={cn(
+          !flush && "mb-2",
+          "inline-flex items-center gap-1.5 px-1 py-1 text-2xs font-medium text-muted-foreground",
+        )}
       >
         {label}
       </div>
@@ -94,7 +100,7 @@ export function ReasoningSection({
   }
 
   return (
-    <Collapsible className="mb-2" open={open} onOpenChange={handleOpenChange}>
+    <Collapsible className={cn(!flush && "mb-2")} open={open} onOpenChange={handleOpenChange}>
       <CollapsibleTrigger className="inline-flex items-center gap-1.5 rounded-md px-1 py-1 text-left text-2xs font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring">
         {label}
         <ChevronDownIcon
