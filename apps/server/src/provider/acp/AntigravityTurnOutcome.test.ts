@@ -233,25 +233,36 @@ describe("watchAntigravityPromptOutcome", () => {
 // Newer harnesses write the error step as protobuf fields: the UI message, then
 // `STATUS (code N): message`, then the raw HTTP response with the JSON error body.
 // Trimmed from a real Antigravity session log (2026-11-25).
+const varint = (value: number) => {
+  const bytes: number[] = [];
+  while (value >= 0x80) {
+    bytes.push((value & 0x7f) | 0x80);
+    value >>>= 7;
+  }
+  bytes.push(value);
+  return Buffer.from(bytes);
+};
+const field = (tag: number, text: string) => {
+  const bytes = Buffer.from(text);
+  return Buffer.concat([Buffer.from([tag]), varint(bytes.length), bytes]);
+};
 const statusFirstPayload = (input: {
   readonly status: string;
   readonly code: number;
   readonly message: string;
   readonly json: string;
-}) => {
-  const field = (tag: number, text: string) => {
-    const bytes = Buffer.from(text);
-    return Buffer.concat([Buffer.from([tag, 0x85, 0x01]), bytes]);
-  };
-  return Buffer.concat([
+  /** Field 4 (`"` tag), a printable byte, straight after the status field. */
+  readonly trailingField?: string;
+}) =>
+  Buffer.concat([
     field(0x0a, input.message),
     field(0x12, `${input.status} (code ${input.code}): ${input.message}`),
+    ...(input.trailingField === undefined ? [] : [field(0x22, input.trailingField)]),
     field(
       0x1a,
       `HTTP ${input.code} Too Many Requests\nSherlog: \nTraceID: 0x563a7d94f861a02c\n\n${input.json}`,
     ),
   ]);
-};
 const INDIVIDUAL_QUOTA =
   "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 1h6m56s.";
 const quotaJson = (resetTimestamp: string) => `{
@@ -369,6 +380,57 @@ describe("Antigravity status-first error steps", () => {
         code: "INVALID_ARGUMENT",
         retryable: false,
       });
+
+      // A one-byte field length can be a capital letter, and the next field's tag (`"`) and
+      // length (`A`) are printable: the field's own length bounds the status and the message.
+      const header = "NOT_FOUND (code 404): ";
+      const shortMessage = "Requested model was not found".padEnd(0x46 - header.length, ".");
+      check = yield* log.watch();
+      log.append([
+        [USER_INPUT, Buffer.from("go")],
+        [
+          ERROR_MESSAGE,
+          statusFirstPayload({
+            status: "NOT_FOUND",
+            code: 404,
+            message: shortMessage,
+            json: '{ "error": { "code": 404 } }',
+            trailingField: "A".repeat(0x41),
+          }),
+        ],
+      ]);
+      assert.deepEqual(yield* check({ stopReason: "end_turn" }), {
+        class: "provider_error",
+        message: shortMessage,
+        code: "NOT_FOUND",
+        retryable: false,
+      });
+
+      // A logged usage limit with no reset of its own takes the quota notice's.
+      check = yield* log.watch();
+      log.append([
+        [USER_INPUT, Buffer.from("go")],
+        [
+          ERROR_MESSAGE,
+          statusFirstPayload({
+            status: "RESOURCE_EXHAUSTED",
+            code: 429,
+            message: "Too many requests.",
+            json: '{ "error": { "code": 429, "status": "RESOURCE_EXHAUSTED" } }',
+          }),
+        ],
+      ]);
+      assert.deepEqual(
+        yield* check({ stopReason: "end_turn" }, { text: NOTICE_TEXT, receivedAt: NOTICE_AT }),
+        {
+          class: "usage_limit",
+          message: "Too many requests.",
+          code: "RESOURCE_EXHAUSTED",
+          retryable: true,
+          resetAt: "2026-11-25T02:25:23.775Z",
+          resetSource: "message",
+        },
+      );
     }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
   );
 });
@@ -382,6 +444,7 @@ describe("Antigravity quota notice", () => {
       retryable: true,
       resetAt: "2026-11-25T02:25:23.775Z",
       evidence: "message",
+      resetSource: "message",
     });
     const at = Date.parse(NOTICE_AT);
     for (const [duration, ms] of [
@@ -403,6 +466,23 @@ describe("Antigravity quota notice", () => {
     ])
       assert.isUndefined(parseAntigravityQuotaNotice(text, NOTICE_AT), text);
     assert.isUndefined(parseAntigravityQuotaNotice(NOTICE_TEXT, "not a date"));
+
+    // The turn's accumulated text: the notice must be its own last line.
+    assert.equal(
+      parseAntigravityQuotaNotice(`Started on the change.${NOTICE_TEXT}`, NOTICE_AT)?.resetAt,
+      "2026-11-25T02:25:23.775Z",
+    );
+    for (const text of [
+      `Started on the change. ⚠ Individual quota reached. Resets in 1h.`,
+      `${NOTICE_TEXT}Then the model kept going.`,
+    ])
+      assert.isUndefined(parseAntigravityQuotaNotice(text, NOTICE_AT), text);
+
+    // Long non-matching text is rejected without scanning it.
+    const hostile = `⚠ ${"quota ".repeat(200_000)}`;
+    const started = performance.now();
+    assert.isUndefined(parseAntigravityQuotaNotice(hostile, NOTICE_AT));
+    assert.isBelow(performance.now() - started, 100);
   });
 
   it.live("waits for an error step the harness has not committed yet", () =>
@@ -431,16 +511,22 @@ describe("Antigravity quota notice", () => {
         retryable: true,
         resetAt: "2026-11-25T02:25:23.775Z",
         evidence: "message",
+        resetSource: "message",
       });
       assert.isAtLeast(Date.now() - started, 1_900);
 
-      // An unrecognised error step does not hide the quota notice.
-      check = yield* log.watch({ unrecognizedErrors: true });
-      log.append([
-        [USER_INPUT, Buffer.from("go")],
-        [ERROR_MESSAGE, Buffer.from("something the harness has never written before")],
-      ]);
-      assert.equal((yield* check({ stopReason: "end_turn" }, notice))?.evidence, "message");
+      // An unrecognised error step does not hide the quota notice, and since a committed step
+      // will not change, there is no waiting for another.
+      for (const unrecognizedErrors of [true, false]) {
+        check = yield* log.watch({ unrecognizedErrors });
+        log.append([
+          [USER_INPUT, Buffer.from("go")],
+          [ERROR_MESSAGE, Buffer.from("something the harness has never written before")],
+        ]);
+        const unrecognizedStarted = Date.now();
+        assert.equal((yield* check({ stopReason: "end_turn" }, notice))?.evidence, "message");
+        assert.isBelow(Date.now() - unrecognizedStarted, 1_000);
+      }
 
       // A notice that is not a quota notice neither waits nor fails the turn.
       check = yield* log.watch();

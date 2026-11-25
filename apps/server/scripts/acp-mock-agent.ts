@@ -1286,15 +1286,19 @@ const program = Effect.gen(function* () {
         },
       });
 
-      yield* agent.client.sessionUpdate({
-        sessionId: requestedSessionId,
-        update: {
-          sessionUpdate: "agent_message_chunk",
-          content: { type: "text", text: promptResponseText ?? "hello from mock" },
-        },
-      });
+      // The response text, optionally streamed as two chunks split at a character offset.
+      const responseText = promptResponseText ?? "hello from mock";
+      const splitAt = Number.parseInt(process.env.F5_ACP_RESPONSE_SPLIT_AT ?? "", 10);
+      for (const text of Number.isInteger(splitAt) && splitAt > 0 && splitAt < responseText.length
+        ? [responseText.slice(0, splitAt), responseText.slice(splitAt)]
+        : [responseText])
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } },
+        });
       // Agent output after the response text, so it no longer ends the turn.
-      if (process.env.F5_ACP_TRAILING_TOOL_CALL === "1")
+      const trailingUpdate = process.env.F5_ACP_TRAILING_UPDATE;
+      if (trailingUpdate === "tool")
         yield* agent.client.sessionUpdate({
           sessionId: requestedSessionId,
           update: {
@@ -1304,6 +1308,14 @@ const program = Effect.gen(function* () {
             kind: "read",
             status: "completed",
             rawInput: { path: "README.md" },
+          },
+        });
+      if (trailingUpdate === "thought")
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "agent_thought_chunk",
+            content: { type: "text", text: "Thinking about what to do next." },
           },
         });
 
