@@ -64,6 +64,7 @@ describe("envFlags and child process credential isolation", () => {
         F5_HOST: "0.0.0.0",
         F5_MODE: "web",
         F5_AUTO_BOOTSTRAP_PROJECT_FROM_CWD: "1",
+        T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD: "1",
         USER_CUSTOM_VAR: "keep",
       },
       {
@@ -81,6 +82,7 @@ describe("envFlags and child process credential isolation", () => {
     expect(childEnv.F5_HOST).toBeUndefined();
     expect(childEnv.F5_MODE).toBeUndefined();
     expect(childEnv.F5_AUTO_BOOTSTRAP_PROJECT_FROM_CWD).toBeUndefined();
+    expect(childEnv.T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD).toBeUndefined();
     expect(childEnv.USER_CUSTOM_VAR).toBe("keep");
     expect(childEnv.CUSTOM_OVERRIDE).toBe("ok");
   });
