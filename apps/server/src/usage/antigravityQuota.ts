@@ -7,6 +7,18 @@ import { mergeProviderUsageWindows } from "./providerUsageWindows.ts";
 
 const HOSTS = ["daily-cloudcode-pa.googleapis.com", "cloudcode-pa.googleapis.com"];
 
+export type AntigravityQuotaResult =
+  | {
+      readonly kind: "quota";
+      readonly windows: ReadonlyArray<ProviderUsageWindow>;
+      readonly partial: boolean;
+      readonly accountFingerprint: string;
+    }
+  /** No sign-in file, or one without usable credentials. */
+  | { readonly kind: "signed-out" }
+  /** The 1.5.x CLI's stored access token expired; an Antigravity turn renews it. */
+  | { readonly kind: "expired"; readonly accountFingerprint: string };
+
 const oauthFingerprint = (
   clientId: string,
   refreshToken: string,
@@ -42,7 +54,10 @@ export function makeAntigravityQuotaReader(input: {
   const now = input.now ?? Date.now;
   let cached: { fingerprint: string; accessToken: string; expiresAt: number } | undefined;
 
-  return async (signal: AbortSignal, deadline = performance.now() + 7_000) => {
+  return async (
+    signal: AbortSignal,
+    deadline = performance.now() + 7_000,
+  ): Promise<AntigravityQuotaResult> => {
     const remainingMs = () => Math.max(0, deadline - performance.now());
     let text: string | undefined;
     // The 1.5.x CLI's file first, then the file earlier agents wrote.
@@ -58,41 +73,11 @@ export function makeAntigravityQuotaReader(input: {
     }
     if (text === undefined) {
       cached = undefined;
-      return null;
+      return { kind: "signed-out" };
     }
     signal.throwIfAborted();
     const token = asRecord(JSON.parse(text));
     const cliToken = asRecord(token?.token);
-    let fingerprint: string;
-    let project: string | null | undefined;
-    let refresh: { clientId: string; clientSecret: string; refreshToken: string } | undefined;
-    if (cliToken) {
-      // The 1.5.x CLI stores no OAuth client, so F5 can't refresh its token. It uses the
-      // stored access token while it is valid; Antigravity refreshes it during sessions.
-      const accessToken = asTrimmedString(cliToken.access_token);
-      const expiresAt = Date.parse(asTrimmedString(cliToken.expiry) ?? "");
-      if (!accessToken || !(expiresAt > now() + 60_000)) {
-        cached = undefined;
-        return null;
-      }
-      const subject =
-        asTrimmedString(token?.id_token_email) ??
-        asTrimmedString(cliToken.refresh_token) ??
-        accessToken;
-      fingerprint = oauthFingerprint("antigravity-cli", subject, undefined);
-      cached = { fingerprint, accessToken, expiresAt };
-    } else {
-      const clientId = asTrimmedString(token?.client_id);
-      const clientSecret = asTrimmedString(token?.client_secret);
-      const refreshToken = asTrimmedString(token?.refresh_token);
-      project = asTrimmedString(token?.project_id);
-      if (!clientId || !clientSecret || !refreshToken) {
-        cached = undefined;
-        return null;
-      }
-      fingerprint = oauthFingerprint(clientId, refreshToken, project);
-      refresh = { clientId, clientSecret, refreshToken };
-    }
     const json = async (url: string, init: RequestInit, maximumMs = 6_000) => {
       const timeoutMs = Math.min(maximumMs, remainingMs());
       if (timeoutMs <= 0) throw new Error("Antigravity quota deadline reached.");
@@ -129,31 +114,63 @@ export function makeAntigravityQuotaReader(input: {
         requestSignal.removeEventListener("abort", onAbort);
       }
     };
-    if (refresh && (cached?.fingerprint !== fingerprint || cached.expiresAt <= now() + 60_000)) {
-      cached = undefined;
-      const refreshed = asRecord(
-        await json("https://oauth2.googleapis.com/token", {
-          method: "POST",
-          body: new URLSearchParams({
-            client_id: refresh.clientId,
-            client_secret: refresh.clientSecret,
-            refresh_token: refresh.refreshToken,
-            grant_type: "refresh_token",
+    let fingerprint: string;
+    let project: string | null | undefined;
+    if (cliToken) {
+      // The 1.5.x CLI stores no OAuth client, so F5 can't refresh its token (as upstream). It
+      // uses the stored access token while it is valid; Antigravity refreshes it during turns.
+      const accessToken = asTrimmedString(cliToken.access_token);
+      const refreshToken = asTrimmedString(cliToken.refresh_token);
+      const subject = asTrimmedString(token?.id_token_email) ?? refreshToken ?? accessToken;
+      // A file that kept only the email holds no sign-in an Antigravity turn could renew.
+      if (!subject || (!accessToken && !refreshToken)) {
+        cached = undefined;
+        return { kind: "signed-out" };
+      }
+      // The identity is known before expiry, so an expired sign-in still finds its history.
+      fingerprint = oauthFingerprint("antigravity-cli", subject, undefined);
+      const expiresAt = Date.parse(asTrimmedString(cliToken.expiry) ?? "");
+      if (!accessToken || !(expiresAt > now() + 60_000)) {
+        cached = undefined;
+        return { kind: "expired", accountFingerprint: fingerprint };
+      }
+      cached = { fingerprint, accessToken, expiresAt };
+    } else {
+      const clientId = asTrimmedString(token?.client_id);
+      const clientSecret = asTrimmedString(token?.client_secret);
+      const refreshToken = asTrimmedString(token?.refresh_token);
+      project = asTrimmedString(token?.project_id);
+      if (!clientId || !clientSecret || !refreshToken) {
+        cached = undefined;
+        return { kind: "signed-out" };
+      }
+      fingerprint = oauthFingerprint(clientId, refreshToken, project);
+      if (cached?.fingerprint !== fingerprint || cached.expiresAt <= now() + 60_000) {
+        cached = undefined;
+        const refreshed = asRecord(
+          await json("https://oauth2.googleapis.com/token", {
+            method: "POST",
+            body: new URLSearchParams({
+              client_id: clientId,
+              client_secret: clientSecret,
+              refresh_token: refreshToken,
+              grant_type: "refresh_token",
+            }),
           }),
-        }),
-      );
-      const accessToken = asTrimmedString(refreshed?.access_token);
-      const expiresIn = refreshed?.expires_in;
-      if (
-        !accessToken ||
-        typeof expiresIn !== "number" ||
-        !Number.isFinite(expiresIn) ||
-        expiresIn <= 0
-      )
-        throw new Error("Antigravity returned an invalid access token.");
-      cached = { fingerprint, accessToken, expiresAt: now() + expiresIn * 1000 };
+        );
+        const accessToken = asTrimmedString(refreshed?.access_token);
+        const expiresIn = refreshed?.expires_in;
+        if (
+          !accessToken ||
+          typeof expiresIn !== "number" ||
+          !Number.isFinite(expiresIn) ||
+          expiresIn <= 0
+        )
+          throw new Error("Antigravity returned an invalid access token.");
+        cached = { fingerprint, accessToken, expiresAt: now() + expiresIn * 1000 };
+      }
     }
-    if (!cached) return null;
+    if (!cached) return { kind: "signed-out" };
     const accessToken = cached.accessToken;
     const responses = await Promise.all(
       HOSTS.map(async (host) => {
@@ -194,6 +211,7 @@ export function makeAntigravityQuotaReader(input: {
     if (!windows.length && responses.some((response) => response.failed))
       throw new Error("Could not read Antigravity quotas.");
     return {
+      kind: "quota",
       windows,
       accountFingerprint: fingerprint,
       partial:

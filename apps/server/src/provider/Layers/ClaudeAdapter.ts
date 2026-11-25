@@ -2801,10 +2801,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         if (evictKey !== undefined) resumeRecoveryState.delete(evictKey);
       }
     };
-    const recordResumeFailure = (threadId: ThreadId): number => {
+    const recordResumeFailure = (threadId: ThreadId, generation: unknown): number => {
       const existing = resumeRecoveryState.get(threadId);
-      const failures = (existing?.failures ?? 0) + 1;
-      setResumeRecoveryState(threadId, { generation: existing?.generation, failures });
+      const failures = existing && existing.generation === generation ? existing.failures + 1 : 1;
+      setResumeRecoveryState(threadId, { generation, failures });
       return failures;
     };
     const clearResumeFailures = (threadId: ThreadId): void => {
@@ -6949,7 +6949,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           if (context.lastAssistantUuid)
             context.recoveryMetadata.missingResumePoint ??= requested ?? context.lastAssistantUuid;
           yield* updateResumeCursor(context);
-          const failures = recordResumeFailure(threadId);
+          const failures = recordResumeFailure(
+            threadId,
+            context.recoveryMetadata.resumeRecoveryGeneration,
+          );
           // Resuming from an older boundary would drop turns the user saw.
           if (forked) return yield* Effect.fail(new Error(CLAUDE_TRANSCRIPT_FORKED_MESSAGE));
           if (failures >= 3 || attempt > 0 || !context.resumeSessionId) {
@@ -7783,7 +7786,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                     ? selection.target
                     : undefined;
               if (!selected) {
-                recordResumeFailure(threadId);
+                recordResumeFailure(
+                  threadId,
+                  readClaudeRecoveryMetadata(input.resumeCursor).resumeRecoveryGeneration,
+                );
                 return yield* new ProviderAdapterProcessError({
                   provider: PROVIDER,
                   threadId,
