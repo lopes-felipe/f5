@@ -279,6 +279,7 @@ import {
 } from "effect";
 import { WebSocketServer, type WebSocket } from "ws";
 
+import { resolveAliasedBooleanEnv, THREAD_OPEN_TIMINGS_ENV } from "./envFlags.ts";
 import { createLogger } from "./logger";
 import { NextTurnQueueStore } from "./nextTurnQueue/Services/NextTurnQueueStore.ts";
 import { makeProjectionTurnRepository } from "./persistence/Layers/ProjectionTurns.ts";
@@ -1231,8 +1232,8 @@ export const createServer = Effect.fn(function* (
   const shouldLogThreadOpenTimings =
     process.env.NODE_ENV !== "test" &&
     process.env.VITEST !== "true" &&
-    (process.env.T3CODE_LOG_THREAD_OPEN_TIMINGS === "1" ||
-      process.env.T3CODE_LOG_THREAD_OPEN_TIMINGS === "true");
+    resolveAliasedBooleanEnv(THREAD_OPEN_TIMINGS_ENV.primary, THREAD_OPEN_TIMINGS_ENV.legacy)
+      .enabled;
 
   function logOutgoingPush(push: WsPushEnvelopeBase, recipients: number) {
     if (!logWebSocketEvents || push.channel === WS_CHANNELS.providerAccountEvent) return;
@@ -2823,8 +2824,11 @@ export const createServer = Effect.fn(function* (
               "X-Content-Type-Options": "nosniff",
               ...(contentType === "text/html"
                 ? {
+                    // Keep `srcdoc` HTML renders and MCP app bridges working in browser/remote
+                    // mode (srcdoc inherits parent `default-src`/`script-src`) while blocking
+                    // plugin embeds, base-tag hijacking, and clickjacking.
                     "Content-Security-Policy":
-                      "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; media-src 'self' data: blob: https:; connect-src 'self' ws: wss: http: https:; worker-src 'self' blob:; frame-src 'self' blob: data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+                      "object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
                     "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
                     "Referrer-Policy": "no-referrer",
                     "X-Frame-Options": "DENY",
@@ -3651,6 +3655,16 @@ export const createServer = Effect.fn(function* (
         ),
     }),
   );
+  /** Provider inventory routes: a project id to its workspace root; paths never come from the browser. */
+  const resolveProviderInventoryProjectRoot = (projectId: string | undefined) =>
+    Effect.gen(function* () {
+      if (!projectId) return undefined;
+      const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+      const model = yield* orchestrationEngine.getReadModel();
+      const project = model.projects.find((p) => p.id === projectId && p.deletedAt === null);
+      if (!project) return yield* new RouteRequestError({ message: "Project not found." });
+      return project.workspaceRoot;
+    });
   const withTerminalThreadAccess = <A>(threadId: string, action: Effect.Effect<A, TerminalError>) =>
     Effect.gen(function* () {
       const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
@@ -6010,8 +6024,16 @@ export const createServer = Effect.fn(function* (
                 const relativePath = stored ? path.basename(stored) : entry.relativePath;
                 const file = await reader.openFile(relativePath);
                 let dimensions;
+                let fileRevision: string | undefined;
                 try {
-                  dimensions = await readAssetImageDimensions(file);
+                  if (path.extname(relativePath).toLowerCase() === ".pdf") {
+                    const stat = await file.stat({ bigint: true });
+                    fileRevision = createHash("sha256")
+                      .update([stat.dev, stat.ino, stat.size, stat.mtimeNs].join(":"))
+                      .digest("hex");
+                  } else {
+                    dimensions = await readAssetImageDimensions(file);
+                  }
                 } finally {
                   await file.close();
                 }
@@ -6021,6 +6043,7 @@ export const createServer = Effect.fn(function* (
                   relativePath: entry.relativePath,
                   url: `/api/workspace-assets/${issued.handle}/${encodeURIComponent(name)}`,
                   expiresAt: issued.expiresAt,
+                  ...(fileRevision === undefined ? {} : { fileRevision }),
                   ...dimensions,
                 };
               }),
@@ -7082,16 +7105,7 @@ export const createServer = Effect.fn(function* (
         if (!instance) {
           return yield* new RouteRequestError({ message: "Provider instance not found." });
         }
-        let projectRoot: string | undefined;
-        if (body.projectId) {
-          const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
-          const model = yield* orchestrationEngine.getReadModel();
-          const project = model.projects.find(
-            (p) => p.id === body.projectId && p.deletedAt === null,
-          );
-          if (!project) return yield* new RouteRequestError({ message: "Project not found." });
-          projectRoot = project.workspaceRoot;
-        }
+        const projectRoot = yield* resolveProviderInventoryProjectRoot(body.projectId);
         const entries = instance.inventory
           ? yield* instance
               .inventory({ projectRoot })
@@ -7114,6 +7128,22 @@ export const createServer = Effect.fn(function* (
           ...(body.projectId ? { projectId: body.projectId } : {}),
           ...entries,
         };
+      }
+      case WS_METHODS.serverTrustProviderHooks: {
+        const body = stripRequestTag(request.body);
+        const instance = yield* providerInstanceRegistry.getInstance(body.instanceId);
+        if (!instance || instance.driverKind !== "codex" || !instance.trustHooks)
+          return yield* new RouteRequestError({
+            message: "Hook approval is only available for a configured Codex provider.",
+          });
+        const projectRoot = yield* resolveProviderInventoryProjectRoot(body.projectId);
+        return yield* instance
+          .trustHooks({ projectRoot, hooks: body.hooks })
+          .pipe(
+            Effect.mapError(
+              (error) => new RouteRequestError({ message: error.detail ?? error.message }),
+            ),
+          );
       }
 
       case WS_METHODS.serverValidateHarnesses: {

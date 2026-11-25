@@ -6,9 +6,10 @@
 
 F5's performance harness collects both server component benchmarks and a production-browser,
 WebSocket, and native-terminal soak report. Changes targeting server or interactive performance
-compare before/after reports through `perf:compare` against the budgets below. For historical
-comparisons against the initial baseline commit (`290d261c9c9daa0c469b312d7f62dfd4ea9b9698`), see
-[Reproducing the pinned baseline](#reproducing-the-pinned-baseline).
+compare before/after reports through `perf:compare` against the budgets below. The pinned original
+baseline is `290d261c9c9daa0c469b312d7f62dfd4ea9b9698`; use its runtime code and frozen dependencies
+when reproducing it (see [Reproducing the pinned baseline](#reproducing-the-pinned-baseline)).
+Existing baseline failures remain failures until their approved Phase 2 fixes meet the gates.
 
 ## Run server measurements
 

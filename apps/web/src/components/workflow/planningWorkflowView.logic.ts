@@ -1,6 +1,12 @@
 import { isDocumentWorkflow, documentReaderPassPhase } from "@t3tools/shared/documentWorkflow";
 import type { PlanningWorkflowSummary as PlanningWorkflow } from "@t3tools/contracts";
 import { planningWorkflowBranchFailureStage } from "@t3tools/shared/planningWorkflow";
+import {
+  planningBranches,
+  planReviewReviewerBranchId,
+  workflowParticipantLabel,
+  workflowUsesMesh,
+} from "@t3tools/shared/workflowParticipants";
 
 export type PlanningWorkflowErrorDetail = {
   readonly key: string;
@@ -19,10 +25,9 @@ export function collectPlanningWorkflowErrors(
       message: workflow.readerPass.error ?? "Reader pass failed.",
     });
 
-  for (const [branchLabel, branch] of [
-    ["A", workflow.branchA],
-    ["B", workflow.branchB],
-  ] as const) {
+  const mesh = workflowUsesMesh(planningBranches(workflow).length);
+  for (const branch of planningBranches(workflow)) {
+    const branchLabel = workflowParticipantLabel(branch.branchId);
     const stage = planningWorkflowBranchFailureStage(branch);
     if (stage && stage !== "reviews" && branch.error) {
       errors.push({
@@ -35,7 +40,12 @@ export function collectPlanningWorkflowErrors(
     for (const review of reviewErrors) {
       errors.push({
         key: `review-${branchLabel}-${review.slot}-${review.threadId}`,
-        step: `Reviews · Review ${branchLabel} ${review.slot === "cross" ? "Cross" : "Self"}`,
+        step:
+          mesh && review.slot === "cross"
+            ? `Reviews · Review ${branchLabel} by ${workflowParticipantLabel(
+                planReviewReviewerBranchId(workflow, branch.branchId, review),
+              )}`
+            : `Reviews · Review ${branchLabel} ${review.slot === "cross" ? "Cross" : "Self"}`,
         message: review.error ?? "Review failed.",
       });
     }
@@ -117,22 +127,20 @@ export function planningWorkflowStatusLabel(workflow: PlanningWorkflow): string 
   if (workflow.merge.status === "merged") return "Merged";
   if (workflow.merge.status === "manual_review") return "Manual review";
   if (workflow.merge.status === "in_progress") return "Merging";
-  if (workflow.branchA.status === "revised" && workflow.branchB.status === "revised") {
+  const branches = planningBranches(workflow);
+  if (branches.every((branch) => branch.status === "revised")) {
     return "Ready to merge";
   }
-  if (workflow.branchA.status === "revising" || workflow.branchB.status === "revising") {
+  if (branches.some((branch) => branch.status === "revising")) {
     return "Revising";
   }
-  if (workflow.branchA.status === "reviews_saved" || workflow.branchB.status === "reviews_saved") {
+  if (branches.some((branch) => branch.status === "reviews_saved")) {
     return "Revising";
   }
-  if (
-    workflow.branchA.status === "reviews_requested" ||
-    workflow.branchB.status === "reviews_requested"
-  ) {
+  if (branches.some((branch) => branch.status === "reviews_requested")) {
     return "Reviewing";
   }
-  if (workflow.branchA.planTurnId && workflow.branchB.planTurnId) {
+  if (branches.every((branch) => branch.planTurnId)) {
     return isDocumentWorkflow(workflow) ? "Drafts ready" : "Plans drafted";
   }
   return "Authoring";

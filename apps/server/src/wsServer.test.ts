@@ -576,6 +576,7 @@ describe("WebSocket Server", () => {
     expect(response.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
     expect(response.headers.get("content-security-policy")).toContain("object-src 'none'");
     expect(response.headers.get("content-security-policy")).toContain("base-uri 'self'");
+    expect(response.headers.get("content-security-policy")).not.toContain("script-src");
     expect(response.headers.get("referrer-policy")).toBe("no-referrer");
     expect(response.headers.get("permissions-policy")).toBe(
       "camera=(), microphone=(), geolocation=()",
@@ -2036,26 +2037,37 @@ describe("WebSocket Server", () => {
   it("opens an extensionless persisted attachment through a restricted capability URL", async () => {
     const stateDir = makeTempDir("f5-attachment-viewer-");
     fs.mkdirSync(path.join(stateDir, "attachments"), { recursive: true });
-    fs.writeFileSync(path.join(stateDir, "attachments", "saved-document.pdf"), "%PDF-test");
+    const pdfPath = path.join(stateDir, "attachments", "saved-document.pdf");
+    fs.writeFileSync(pdfPath, "%PDF-test");
     h.server = await createTestServer({ cwd: "/test", stateDir, authToken: "secret-token" });
     const address = h.server.address();
     const port = typeof address === "object" && address ? address.port : 0;
     const [ws] = await connectAndAwaitWelcome(port, "secret-token");
     connections.push(ws);
-    const response = await sendRequest(ws, WS_METHODS.projectsIssueAssetUrl, {
-      identity: { kind: "attachments" },
-      files: [{ relativePath: "saved-document", grant: "file" }],
-    });
-    expect(response.error).toBeUndefined();
-    const grants = response.result as Array<{ url: string }>;
-    expect(grants).toHaveLength(1);
-    const url = `http://127.0.0.1:${port}${grants[0]!.url}`;
+    const issuePdf = async () => {
+      const response = await sendRequest(ws, WS_METHODS.projectsIssueAssetUrl, {
+        identity: { kind: "attachments" },
+        files: [{ relativePath: "saved-document", grant: "file" }],
+      });
+      expect(response.error).toBeUndefined();
+      const grants = response.result as Array<{ url: string; fileRevision: string }>;
+      expect(grants).toHaveLength(1);
+      return grants[0]!;
+    };
+    const grant = await issuePdf();
+    expect(grant.fileRevision).toEqual(expect.any(String));
+    expect((await issuePdf()).fileRevision).toBe(grant.fileRevision);
+    fs.chmodSync(pdfPath, 0o600);
+    expect((await issuePdf()).fileRevision).toBe(grant.fileRevision);
+    const url = `http://127.0.0.1:${port}${grant.url}`;
     const document = await fetch(url);
     expect(document.status).toBe(200);
     expect(document.headers.get("content-type")).toBe("application/pdf");
     expect(await document.text()).toBe("%PDF-test");
     expect((await fetch(url, { method: "POST" })).status).toBe(405);
     expect((await fetch(url.replace("saved-document.pdf", "other.pdf"))).status).toBe(400);
+    fs.writeFileSync(pdfPath, "%PDF-test-edited");
+    expect((await issuePdf()).fileRevision).not.toBe(grant.fileRevision);
   });
 
   it("streams generic uploads with protocol, origin, filename, and range checks", async () => {

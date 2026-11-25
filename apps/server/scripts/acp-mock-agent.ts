@@ -882,6 +882,18 @@ const program = Effect.gen(function* () {
         return { stopReason: "end_turn" };
       }
 
+      if (process.env.F5_ACP_ANTIGRAVITY_ELICIT === "1") {
+        yield* agent.client.elicit({
+          mode: "form",
+          sessionId: requestedSessionId,
+          message: "Confirm the environment",
+          requestedSchema: {
+            type: "object",
+            properties: { environment: { type: "string" } },
+          },
+        });
+      }
+
       // Antigravity asks permission for every MCP call, F5's question tool included.
       const interactionServer = sessionMcpServerNames.find((name) =>
         name.startsWith("f5_interaction_"),
@@ -1030,7 +1042,10 @@ const program = Effect.gen(function* () {
                   type: "content",
                   content: {
                     type: "text",
-                    text: `Not in allowlist: ${command}`,
+                    text: `Not in allowlist: ${command}${"x".repeat(
+                      Number.parseInt(process.env.T3_ACP_PERMISSION_CONTENT_PAD_CHARS ?? "0", 10) ||
+                        0,
+                    )}`,
                   },
                 },
               ],

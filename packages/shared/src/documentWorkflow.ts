@@ -256,15 +256,15 @@ export function documentReaderPersona(workflow: PlanningWorkflow): string {
     WORKFLOW_DOCUMENT_PROFILES[planningWorkflowDocumentType(workflow) ?? "custom"].readerPersona
   );
 }
-export function defaultDocumentReaderSlot(input: {
-  branchA: WorkflowModelSlot;
-  branchB: WorkflowModelSlot;
-  merge: WorkflowModelSlot;
-}): WorkflowModelSlot {
+/** The first author whose model differs from Merge, else the first author. */
+export function defaultDocumentReaderSlot(
+  authors: ReadonlyArray<WorkflowModelSlot>,
+  merge: WorkflowModelSlot,
+): WorkflowModelSlot {
+  const first = authors[0];
+  if (!first) throw new Error("Document workflows need at least one author.");
   return (
-    [input.branchA, input.branchB].find(
-      (slot) => slot.provider !== input.merge.provider || slot.model !== input.merge.model,
-    ) ?? input.branchA
+    authors.find((slot) => slot.provider !== merge.provider || slot.model !== merge.model) ?? first
   );
 }
 export function documentReaderPassPhase(

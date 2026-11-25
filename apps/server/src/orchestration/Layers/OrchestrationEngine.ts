@@ -160,6 +160,15 @@ function controlCommandConflict(existing: CommandEnvelope, command: Orchestratio
       });
 }
 
+/** Commands whose decision reads live provider snapshots (read-only workflow certification). */
+const COMMANDS_READING_PROVIDER_SNAPSHOTS: ReadonlySet<string> = new Set([
+  "thread.turn.start",
+  "project.workflow.create",
+  "project.code-review-workflow.create",
+  "project.investigation-workflow.create",
+  "project.debug-workflow.create",
+]);
+
 /** Only unclaimed control delivery expires; a running side effect keeps its lease. */
 export const ControlDeliveryClock = ServiceMap.Reference<() => number>(
   "f5/orchestration/ControlDeliveryClock",
@@ -718,7 +727,8 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           nativeRemovedMessageIds,
           command: envelope.command,
           readModel: commandReadModel,
-          ...(envelope.command.type === "thread.turn.start" && providerRegistry._tag === "Some"
+          ...(COMMANDS_READING_PROVIDER_SNAPSHOTS.has(envelope.command.type) &&
+          providerRegistry._tag === "Some"
             ? { providerInstances: yield* providerRegistry.value.getProviders }
             : {}),
         });

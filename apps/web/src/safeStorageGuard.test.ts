@@ -6,23 +6,22 @@ const sources = import.meta.glob<string>(
 );
 
 /**
- * Ratchet allowlist for pre-existing guarded `localStorage` write sites pending
- * migration to `apps/web/src/lib/safeStorage.ts`. New code must use
- * `safeLocalStorageSetItem` / `safeLocalStorageRemoveItem` instead.
+ * Per-file call-site ratchet for pre-existing `localStorage.setItem` /
+ * `removeItem` calls pending migration to `apps/web/src/lib/safeStorage.ts`.
+ * Any new call site—even inside an already-listed file—fails this test.
  */
-const LEGACY_LOCAL_STORAGE_WRITE_FILES = new Set([
-  "components/RepositoryPicker.tsx",
-  "components/chat/UserMessageRevertPopover.tsx",
-  "components/prHub/PrQueueView.tsx",
-  "components/usage/ResetCreditButton.tsx",
-  "hooks/useMigrateClientSettings.ts",
-  "hooks/useServerUpdateOutcome.ts",
-  "notificationCenter/inboxStore.ts",
-  "routes/_chat.tsx",
-  "store.ts",
-]);
+const LEGACY_LOCAL_STORAGE_WRITE_COUNTS: Readonly<Record<string, number>> = {
+  "components/RepositoryPicker.tsx": 1,
+  "components/chat/UserMessageRevertPopover.tsx": 1,
+  "components/prHub/PrQueueView.tsx": 1,
+  "components/usage/ResetCreditButton.tsx": 2,
+  "hooks/useMigrateClientSettings.ts": 2,
+  "hooks/useServerUpdateOutcome.ts": 1,
+  "routes/_chat.tsx": 1,
+  "store.ts": 2,
+};
 
-const DIRECT_LOCAL_STORAGE_WRITE = /\blocalStorage\.(?:setItem|removeItem)\s*\(/;
+const DIRECT_LOCAL_STORAGE_WRITE = /\blocalStorage\.(?:setItem|removeItem)\s*\(/g;
 
 describe("safeStorage guard", () => {
   it("prevents new direct localStorage.setItem/removeItem calls outside safeStorage.ts", () => {
@@ -30,9 +29,10 @@ describe("safeStorage guard", () => {
     for (const [key, source] of Object.entries(sources)) {
       const relativePath = key.replace(/^\.\//, "");
       if (relativePath === "lib/safeStorage.ts") continue;
-      if (LEGACY_LOCAL_STORAGE_WRITE_FILES.has(relativePath)) continue;
-      if (DIRECT_LOCAL_STORAGE_WRITE.test(source)) {
-        violations.push(relativePath);
+      const matches = source.match(DIRECT_LOCAL_STORAGE_WRITE) ?? [];
+      const allowed = LEGACY_LOCAL_STORAGE_WRITE_COUNTS[relativePath] ?? 0;
+      if (matches.length > allowed) {
+        violations.push(`${relativePath} (found ${matches.length}, allowed ${allowed})`);
       }
     }
     expect(

@@ -20,6 +20,10 @@ export const MIN_REMOTE_AUTH_TOKEN_BYTES = 24;
 /** Primary and legacy environment variables carrying the backend's WebSocket/HTTP credential. */
 export const PRIMARY_SERVER_AUTH_TOKEN_ENV = "F5_AUTH_TOKEN";
 export const SERVER_AUTH_TOKEN_ENV = "T3CODE_AUTH_TOKEN";
+export const SERVER_AUTH_TOKEN_ENV_NAMES = [
+  PRIMARY_SERVER_AUTH_TOKEN_ENV,
+  SERVER_AUTH_TOKEN_ENV,
+] as const;
 
 interface SessionRecord {
   readonly expiresAt: number;
@@ -429,27 +433,50 @@ export function makeServerAuth(
     }
   };
 
+  let overflowAuthFailures: AuthFailureBucket | null = null;
+
+  const pruneOverflowAuthFailures = (timestamp: number) => {
+    if (
+      overflowAuthFailures &&
+      overflowAuthFailures.blockedUntil <= timestamp &&
+      timestamp - overflowAuthFailures.windowStartedAt >= failureWindowMs
+    ) {
+      overflowAuthFailures = null;
+    }
+  };
+
   const blockedUntilFor = (source: string, timestamp: number): number => {
     pruneExpiredAuthFailures(timestamp);
-    return Math.max(
-      authFailuresBySource.get(source)?.blockedUntil ?? timestamp,
-      globalAuthFailures?.blockedUntil ?? timestamp,
-    );
+    pruneOverflowAuthFailures(timestamp);
+    const sourceBlocked =
+      authFailuresBySource.get(source)?.blockedUntil ??
+      (authFailuresBySource.size >= maxFailureSources
+        ? (overflowAuthFailures?.blockedUntil ?? timestamp)
+        : timestamp);
+    return Math.max(sourceBlocked, globalAuthFailures?.blockedUntil ?? timestamp);
   };
 
   const sourceBlockedUntil = (source: string, timestamp: number): number => {
     pruneExpiredAuthFailures(timestamp);
-    return authFailuresBySource.get(source)?.blockedUntil ?? timestamp;
+    pruneOverflowAuthFailures(timestamp);
+    return (
+      authFailuresBySource.get(source)?.blockedUntil ??
+      (authFailuresBySource.size >= maxFailureSources
+        ? (overflowAuthFailures?.blockedUntil ?? timestamp)
+        : timestamp)
+    );
   };
 
   const recordSourceFailure = (source: string, timestamp: number): number => {
     pruneExpiredAuthFailures(timestamp);
-    const sourceFailures = nextFailureBucket(
-      authFailuresBySource.get(source),
-      timestamp,
-      maxFailuresPerSource,
-    );
-    authFailuresBySource.delete(source);
+    pruneOverflowAuthFailures(timestamp);
+    const existing = authFailuresBySource.get(source);
+    if (existing !== undefined) {
+      const updated = nextFailureBucket(existing, timestamp, maxFailuresPerSource);
+      authFailuresBySource.delete(source);
+      authFailuresBySource.set(source, updated);
+      return updated.blockedUntil;
+    }
     if (authFailuresBySource.size >= maxFailureSources) {
       let evictKey: string | undefined;
       for (const [candidate, bucket] of authFailuresBySource) {
@@ -458,9 +485,19 @@ export function makeServerAuth(
           break;
         }
       }
-      evictKey ??= authFailuresBySource.keys().next().value;
-      if (evictKey !== undefined) authFailuresBySource.delete(evictKey);
+      if (evictKey === undefined) {
+        // Every tracked source has an active lockout; preserve all live lockouts
+        // and fold overflow traffic into a single bounded overflow bucket.
+        overflowAuthFailures = nextFailureBucket(
+          overflowAuthFailures,
+          timestamp,
+          maxFailuresPerSource,
+        );
+        return overflowAuthFailures.blockedUntil;
+      }
+      authFailuresBySource.delete(evictKey);
     }
+    const sourceFailures = nextFailureBucket(undefined, timestamp, maxFailuresPerSource);
     authFailuresBySource.set(source, sourceFailures);
     return sourceFailures.blockedUntil;
   };

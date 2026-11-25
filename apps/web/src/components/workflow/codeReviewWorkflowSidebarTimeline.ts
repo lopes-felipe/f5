@@ -1,4 +1,5 @@
 import type { CodeReviewWorkflowSummary as CodeReviewWorkflow, ThreadId } from "@t3tools/contracts";
+import { codeReviewReviewers } from "@t3tools/shared/workflowParticipants";
 import {
   threadLabelsFromPhases,
   type WorkflowTimelinePhase as TimelinePhase,
@@ -28,19 +29,22 @@ function reviewerStepState(status: string): StepState {
 // ---------------------------------------------------------------------------
 
 function deriveReviewersPhase(workflow: CodeReviewWorkflow): TimelinePhase {
-  const aState = reviewerStepState(workflow.reviewerA.status);
-  const bState = reviewerStepState(workflow.reviewerB.status);
+  const reviewers = codeReviewReviewers(workflow).map(({ id, reviewer }) => ({
+    id,
+    reviewer,
+    state: reviewerStepState(reviewer.status),
+  }));
+  const states = reviewers.map((entry) => entry.state);
 
   let state: PhaseState;
-  if (aState === "error" || bState === "error") {
+  if (states.includes("error")) {
     state = "error";
-  } else if (aState === "completed" && bState === "completed") {
+  } else if (states.every((entry) => entry === "completed")) {
     state = "completed";
-  } else if (aState === "active" || bState === "active") {
+  } else if (states.includes("active")) {
     state = "active";
   } else {
-    // Both still pending — the phase itself is pending unless at least one
-    // reviewer has started.
+    // Reviewers still queued or pending, none started yet.
     state = "pending";
   }
 
@@ -48,22 +52,13 @@ function deriveReviewersPhase(workflow: CodeReviewWorkflow): TimelinePhase {
     id: "reviewers",
     label: "Reviewers",
     state,
-    steps: [
-      {
-        key: "reviewer-a",
-        label: workflow.reviewerA.label,
-        threadId: workflow.reviewerA.threadId,
-        state: aState,
-        modelSlot: workflow.reviewerA.slot,
-      },
-      {
-        key: "reviewer-b",
-        label: workflow.reviewerB.label,
-        threadId: workflow.reviewerB.threadId,
-        state: bState,
-        modelSlot: workflow.reviewerB.slot,
-      },
-    ],
+    steps: reviewers.map(({ id, reviewer, state: stepState }) => ({
+      key: `reviewer-${id}`,
+      label: reviewer.label,
+      threadId: reviewer.threadId,
+      state: stepState,
+      modelSlot: reviewer.slot,
+    })),
   };
 }
 
