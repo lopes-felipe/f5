@@ -18,7 +18,9 @@ it is set:
 - file and folder icons are drawn locally instead of loaded from jsDelivr
 
 It does not turn off desktop app updates (see below), an OTLP collector you configured in
-Settings, or anything you start yourself.
+Settings, or anything you start yourself. Agents inherit it too, so Claude Code stops sending
+usage metrics and also turns off its feature-flag-gated features, such as Code Mode and Remote
+Control (see [Provider CLIs](#provider-clis)).
 
 ## Requests F5 makes on its own
 
@@ -52,16 +54,21 @@ history** reads OpenCode and Antigravity history from their local stores and sen
 
 ## Provider CLIs
 
-Agent processes start with `DO_NOT_TRACK=1`, `DISABLE_TELEMETRY=1` and
-`DISABLE_ERROR_REPORTING=1`, which opt Claude Code and other CLIs that honor them out of usage
-metrics and crash reports. Codex also gets `analytics.enabled=false`, and inherited `OTEL_*`
-variables never reach any agent. A value already in your environment wins, and a provider
-instance's **Environment** setting can override each one.
+Agent processes, and the commands they run, start with `DISABLE_ERROR_REPORTING=1`, which opts
+Claude Code and other CLIs that honor it out of crash reports. Codex also gets
+`analytics.enabled=false`, and inherited `OTEL_*` variables never reach any agent. A value already
+in your environment wins, and a provider instance's **Environment** setting can override it.
+
+F5 does not set `DO_NOT_TRACK` or `DISABLE_TELEMETRY` for agents. Claude Code reads either one as
+"don't download feature flags", which turns off Code Mode, Remote Control and other flag-gated
+features. To opt Claude Code out of usage metrics anyway, set `DO_NOT_TRACK=1` in the environment
+F5 starts with (it then also applies to F5 itself, see above) or in a provider instance's
+**Environment** setting.
 
 Terminals and git commands keep your environment unchanged.
 
 **Known vendor telemetry.** The Cursor SDK includes Statsig-based telemetry with no switch F5
-can set. F5 still passes `DO_NOT_TRACK`, which the SDK may ignore.
+can set.
 
 ## Observability export
 

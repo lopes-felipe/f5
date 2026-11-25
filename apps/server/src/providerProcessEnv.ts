@@ -42,9 +42,9 @@ function isBlockedProviderEnvKey(key: string): boolean {
  * traces to unrelated endpoints, producing noisy export errors and leaking
  * telemetry intended only for the parent shell or desktop app.
  *
- * Agent CLIs are also opted out of their vendors' usage telemetry and error reporting
- * (see {@link applyProviderTelemetryOptOut}) unless `telemetryOptOut` is false, as it is
- * for terminals and git.
+ * Agent CLIs are also opted out of their vendors' crash reporting (see
+ * {@link applyProviderTelemetryOptOut}) unless `telemetryOptOut` is false, as it is for
+ * terminals and git.
  */
 export function buildProviderChildProcessEnv(
   baseEnv: NodeJS.ProcessEnv,
@@ -85,13 +85,14 @@ export function buildProviderChildProcessEnv(
 }
 
 /**
- * Vendor telemetry opt-outs for agent CLIs: `DO_NOT_TRACK` (the cross-tool convention),
- * and Claude Code's `DISABLE_TELEMETRY` (usage metrics) and `DISABLE_ERROR_REPORTING`
- * (crash reports). Codex is opted out through `-c analytics.enabled=false` instead.
+ * Vendor telemetry opt-outs that cost agent CLIs nothing: crash reporting. Codex is also
+ * opted out of analytics through `-c analytics.enabled=false`.
+ *
+ * `DO_NOT_TRACK` and `DISABLE_TELEMETRY` are deliberately not set. Claude Code treats either
+ * as "no feature-flag download", which disables Code Mode, Remote Control and every other
+ * flag-gated feature. F5 still forwards them when the user sets them.
  */
 export const PROVIDER_TELEMETRY_OPT_OUT_ENV: Readonly<Record<string, string>> = {
-  DO_NOT_TRACK: "1",
-  DISABLE_TELEMETRY: "1",
   DISABLE_ERROR_REPORTING: "1",
 };
 
