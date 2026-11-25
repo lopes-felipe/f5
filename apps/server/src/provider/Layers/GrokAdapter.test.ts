@@ -742,6 +742,26 @@ rootIt.live(
         (overtaken.completed.at(-1)?.payload as { state?: string } | undefined)?.state,
         "completed",
       );
+      // A typed quota stop with no reset: the terminal carries the same limit, so ingestion can
+      // resolve its reset from the account afterwards.
+      const typed = yield* runTurn(
+        { T3_ACP_PROMPT_RESPONSE_TEXT: "Working on it.", F5_ACP_STOP_REASON: "refusal" },
+        "agy-native-refusal",
+      );
+      assert.equal(typed.errors.length, 1);
+      const typedLimit = (typed.errors[0]?.payload as { usageLimit?: unknown } | undefined)
+        ?.usageLimit;
+      assert.deepEqual(typedLimit, {
+        windows: [],
+        resetsAt: null,
+        resetSource: null,
+        evidence: "typed",
+      });
+      const typedCompleted = typed.completed.at(-1)?.payload as
+        | { state?: string; usageLimit?: unknown }
+        | undefined;
+      assert.equal(typedCompleted?.state, "failed");
+      assert.deepEqual(typedCompleted?.usageLimit, typedLimit);
     }).pipe(
       Effect.provide(
         ServerConfig.layerTest(process.cwd(), { prefix: "f5-agy-native-notice-test-" }).pipe(
