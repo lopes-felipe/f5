@@ -5,7 +5,6 @@ import { makeWorkflowArchiveLifecycle } from "../workflowArchiveLifecycle.ts";
 import {
   CodeReviewWorkflowId,
   CommandId,
-  DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
   MessageId,
   type OrchestrationReadModel,
@@ -66,7 +65,6 @@ import {
 } from "../Services/CodeReviewWorkflowService.ts";
 import { isArchivedWorkflow, isDeletedWorkflow } from "@t3tools/shared/workflowArchive";
 import {
-  completedTurnEvidenceAt,
   getFinishedConsumableLatestTurn,
   hasActiveRunningTurn,
   hasPriorThreadWork,
@@ -83,10 +81,7 @@ import {
   ProviderTurnDeliveryWorker,
   type ProviderTurnDeliveryOutcome,
 } from "../Services/ProviderTurnDeliveryWorker.ts";
-import {
-  ProviderTurnDeliveryRepository,
-  type ProviderTurnDelivery,
-} from "../Services/ProviderTurnDeliveryRepository.ts";
+import { ProviderTurnDeliveryRepository } from "../Services/ProviderTurnDeliveryRepository.ts";
 import { OrchestrationCommandInvariantError } from "../Errors.ts";
 import { applyWorkflowTurnCost, workflowBudgetError } from "../workflowBudget.ts";
 import {
@@ -113,9 +108,23 @@ import type { WorkflowRetryContext } from "../workflowPromptFragments.ts";
 import {
   makeWorkflowStageDispatchResolver,
   STARTUP_DISPATCH_RECHECK_TIMEOUT,
-  stageDispatchAllowsTurn,
-  type WorkflowStageDispatchTurn,
 } from "../workflowStageDispatch.ts";
+import {
+  acceptedDeliveryMatchesCurrentTurn,
+  canConsumeCompletedStageTurn,
+  hasNewerActiveStageTurn,
+  isStageAlreadyCompletedWith,
+  transitionStageCompleted,
+  transitionStageError,
+  transitionStagePendingStart,
+  transitionStageRunning,
+} from "../workflowEngine/WorkflowStageStateMachine.ts";
+import {
+  createWorkflowStageThread,
+  dispatchWorkflowDeleteCompensationCommand,
+  readActiveCodeReviewWorkflow as readCodeReviewWorkflow,
+  upsertCodeReviewWorkflowRecord as upsertWorkflow,
+} from "../workflowEngine/WorkflowThreadCoordinator.ts";
 
 type CodeReviewWorkflowTitleGenerationWorkItem = {
   readonly workflowId: CodeReviewWorkflowId;
@@ -135,56 +144,6 @@ type CodeReviewStage = {
   readonly updatedAt: string;
 };
 
-// A running stage only completes with the turn its own dispatch started, so a
-// stale or user-started turn on a reused thread cannot stand in for it. Error
-// and unpinned-completed stages keep the original recovery rules.
-function canConsumeCompletedStageTurn(
-  stage: CodeReviewStage,
-  thread: OrchestrationReadModel["threads"][number] | null | undefined,
-  dispatch: WorkflowStageDispatchTurn,
-): boolean {
-  const completionEvidenceAt = completedTurnEvidenceAt(thread);
-  const completedTurn = getFinishedConsumableLatestTurn(thread);
-  if (!completionEvidenceAt || !completedTurn) {
-    return false;
-  }
-  return (
-    (stage.status === "running" && stageDispatchAllowsTurn(dispatch, completedTurn.turnId)) ||
-    (stage.status === "error" && completionEvidenceAt >= stage.updatedAt) ||
-    (stage.status === "completed" &&
-      (stage.pinnedTurnId === null || stage.pinnedAssistantMessageId === null))
-  );
-}
-
-function hasNewerActiveStageTurn(
-  stageUpdatedAt: string,
-  thread: OrchestrationReadModel["threads"][number] | null | undefined,
-): boolean {
-  return (
-    hasActiveRunningTurn(thread) &&
-    thread?.latestTurn !== null &&
-    thread?.latestTurn !== undefined &&
-    thread.latestTurn.requestedAt >= stageUpdatedAt
-  );
-}
-
-function acceptedDeliveryMatchesCurrentTurn(
-  delivery: ProviderTurnDelivery,
-  thread: OrchestrationReadModel["threads"][number] | null | undefined,
-): boolean {
-  if (delivery.state !== "accepted" || delivery.providerTurnId === null) {
-    return false;
-  }
-  const latestTurn = thread?.latestTurn ?? null;
-  if (!latestTurn) {
-    return true;
-  }
-  if (latestTurn.turnId === delivery.providerTurnId) {
-    return latestTurn.state === "running";
-  }
-  return delivery.preSendTurnIds.some((turnId) => turnId === latestTurn.turnId);
-}
-
 function updateReviewer(
   workflow: CodeReviewWorkflow,
   reviewerId: WorkflowParticipantId,
@@ -199,22 +158,6 @@ function updateReviewer(
 
 function allReviewersCompleted(workflow: CodeReviewWorkflow): boolean {
   return codeReviewReviewers(workflow).every(({ reviewer }) => reviewer.status === "completed");
-}
-
-function readCodeReviewWorkflow(
-  orchestrationEngine: OrchestrationEngineShape,
-  workflowId: CodeReviewWorkflowId,
-) {
-  return orchestrationEngine
-    .getReadModel()
-    .pipe(
-      Effect.map(
-        (snapshot) =>
-          snapshot.codeReviewWorkflows.find(
-            (workflow) => workflow.id === workflowId && workflow.deletedAt === null,
-          ) ?? null,
-      ),
-    );
 }
 
 function shouldRetryConsolidationAfterReviewerUpdate(workflow: CodeReviewWorkflow): boolean {
@@ -276,13 +219,9 @@ function withReviewerRunning(
   for (const { id, reviewer } of codeReviewReviewers(workflow)) {
     const dispatchCommandId = dispatchCommandIds.get(reviewer.threadId);
     if (reviewer.status !== "pending" || dispatchCommandId === undefined) continue;
-    next = updateCodeReviewReviewer(next, id, (current) => ({
-      ...current,
-      status: "running",
-      error: null,
-      dispatchCommandId,
-      updatedAt,
-    }));
+    next = updateCodeReviewReviewer(next, id, (current) =>
+      transitionStageRunning(current, updatedAt, dispatchCommandId),
+    );
   }
   return { ...next, updatedAt };
 }
@@ -297,16 +236,11 @@ function withReviewerRetryRunning(
   return updateReviewer(
     workflow,
     reviewerId,
-    {
-      ...reviewer,
-      status: "running",
+    transitionStageRunning(reviewer, updatedAt, dispatchCommandId, {
       pinnedTurnId: null,
       pinnedAssistantMessageId: null,
-      error: null,
       retryCount: 0,
-      dispatchCommandId,
-      updatedAt,
-    },
+    }),
     updatedAt,
   );
 }
@@ -319,24 +253,17 @@ function withCompletedReviewer(input: {
   updatedAt: string;
 }): CodeReviewWorkflow {
   const current = requireCodeReviewReviewer(input.workflow, input.reviewerId);
-  if (
-    current.status === "completed" &&
-    current.pinnedTurnId === input.turnId &&
-    current.pinnedAssistantMessageId === input.assistantMessageId
-  ) {
+  if (isStageAlreadyCompletedWith(current, input.turnId, input.assistantMessageId)) {
     return input.workflow;
   }
   return updateReviewer(
     input.workflow,
     input.reviewerId,
-    {
-      ...current,
-      status: "completed",
-      pinnedTurnId: input.turnId,
-      pinnedAssistantMessageId: input.assistantMessageId,
-      error: null,
+    transitionStageCompleted(current, {
+      turnId: input.turnId,
+      assistantMessageId: input.assistantMessageId,
       updatedAt: input.updatedAt,
-    },
+    }),
     input.updatedAt,
   );
 }
@@ -351,12 +278,7 @@ function withReviewerError(input: {
   return updateReviewer(
     input.workflow,
     input.reviewerId,
-    {
-      ...current,
-      status: "error",
-      error: input.error,
-      updatedAt: input.updatedAt,
-    },
+    transitionStageError(current, input.error, input.updatedAt),
     input.updatedAt,
   );
 }
@@ -374,13 +296,7 @@ function withConsolidationPendingStart(
   }
   return {
     ...workflow,
-    consolidation: {
-      ...workflow.consolidation,
-      threadId,
-      status: "pending_start",
-      error: null,
-      updatedAt,
-    },
+    consolidation: transitionStagePendingStart(workflow.consolidation, threadId, updatedAt),
     updatedAt,
   };
 }
@@ -393,14 +309,9 @@ function withConsolidationRunning(
 ): CodeReviewWorkflow {
   return {
     ...workflow,
-    consolidation: {
-      ...workflow.consolidation,
+    consolidation: transitionStageRunning(workflow.consolidation, updatedAt, dispatchCommandId, {
       threadId,
-      status: "running",
-      error: null,
-      dispatchCommandId,
-      updatedAt,
-    },
+    }),
     updatedAt,
   };
 }
@@ -412,23 +323,16 @@ function withConsolidationCompleted(input: {
   updatedAt: string;
 }): CodeReviewWorkflow {
   const current = input.workflow.consolidation;
-  if (
-    current.status === "completed" &&
-    current.pinnedTurnId === input.turnId &&
-    current.pinnedAssistantMessageId === input.assistantMessageId
-  ) {
+  if (isStageAlreadyCompletedWith(current, input.turnId, input.assistantMessageId)) {
     return input.workflow;
   }
   return {
     ...input.workflow,
-    consolidation: {
-      ...current,
-      status: "completed",
-      pinnedTurnId: input.turnId,
-      pinnedAssistantMessageId: input.assistantMessageId,
-      error: null,
+    consolidation: transitionStageCompleted(current, {
+      turnId: input.turnId,
+      assistantMessageId: input.assistantMessageId,
       updatedAt: input.updatedAt,
-    },
+    }),
     updatedAt: input.updatedAt,
   };
 }
@@ -440,28 +344,9 @@ function withConsolidationError(
 ): CodeReviewWorkflow {
   return {
     ...workflow,
-    consolidation: {
-      ...workflow.consolidation,
-      status: "error",
-      error,
-      updatedAt,
-    },
+    consolidation: transitionStageError(workflow.consolidation, error, updatedAt),
     updatedAt,
   };
-}
-
-function upsertWorkflow(
-  orchestrationEngine: OrchestrationEngineShape,
-  workflow: CodeReviewWorkflow,
-  updatedAt: string,
-) {
-  return orchestrationEngine.dispatch({
-    type: "project.code-review-workflow.upsert",
-    commandId: CommandId.makeUnsafe(timeOrderedUuid()),
-    projectId: workflow.projectId,
-    workflow,
-    updatedAt,
-  });
 }
 
 function dispatchWorkflowDeleteCompensation(input: {
@@ -470,13 +355,7 @@ function dispatchWorkflowDeleteCompensation(input: {
   projectId: CodeReviewWorkflow["projectId"];
   createdAt: string;
 }) {
-  return input.orchestrationEngine.dispatch({
-    type: "project.code-review-workflow.delete",
-    commandId: CommandId.makeUnsafe(timeOrderedUuid()),
-    workflowId: input.workflowId,
-    projectId: input.projectId,
-    createdAt: input.createdAt,
-  });
+  return dispatchWorkflowDeleteCompensationCommand({ kind: "codeReview", ...input });
 }
 
 function createReviewerThread(input: {
@@ -487,17 +366,13 @@ function createReviewerThread(input: {
   title: string;
   createdAt: string;
 }) {
-  return input.orchestrationEngine.dispatch({
-    type: "thread.create",
-    commandId: CommandId.makeUnsafe(timeOrderedUuid()),
+  return createWorkflowStageThread({
+    orchestrationEngine: input.orchestrationEngine,
     threadId: input.threadId,
     projectId: input.workflow.projectId,
     title: input.title,
     model: input.reviewer.slot.model,
-    runtimeMode: DEFAULT_RUNTIME_MODE,
-    interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
     branch: input.workflow.branch,
-    worktreePath: null,
     createdAt: input.createdAt,
   });
 }
@@ -566,17 +441,13 @@ function createConsolidationThread(input: {
   threadId: ThreadId;
   createdAt: string;
 }) {
-  return input.orchestrationEngine.dispatch({
-    type: "thread.create",
-    commandId: CommandId.makeUnsafe(timeOrderedUuid()),
+  return createWorkflowStageThread({
+    orchestrationEngine: input.orchestrationEngine,
     threadId: input.threadId,
     projectId: input.workflow.projectId,
     title: "Review Merge",
     model: input.workflow.consolidation.slot.model,
-    runtimeMode: DEFAULT_RUNTIME_MODE,
-    interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
     branch: input.workflow.branch,
-    worktreePath: null,
     createdAt: input.createdAt,
   });
 }
