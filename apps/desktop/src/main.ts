@@ -277,38 +277,43 @@ const shellEnvironmentReady = syncShellEnvironment().then((prepared) => {
 /** Main windows awaiting their first composer-ready marker, by renderer id. */
 const windowCreatedAtByWebContentsId = new Map<number, number>();
 
-const PICK_FOLDER_CHANNEL = "desktop:pick-folder";
-const CONFIRM_CHANNEL = "desktop:confirm";
-const SET_THEME_CHANNEL = "desktop:set-theme";
-const CONTEXT_MENU_CHANNEL = "desktop:context-menu";
-const READ_CLIPBOARD_TEXT_CHANNEL = "desktop:read-clipboard-text";
-const COPY_IMAGE_CHANNEL = "desktop:copy-image";
-const DOWNLOAD_IMAGE_CHANNEL = "desktop:download-image";
-const OPEN_EXTERNAL_CHANNEL = "desktop:open-external";
-const OPEN_THREAD_WINDOW_CHANNEL = "desktop:open-thread-window";
-const MAX_DESKTOP_WINDOWS = 12;
-const OPEN_THREAD_WINDOW_MIN_INTERVAL_MS = 500;
-const lastOpenThreadWindowAtByRenderer = new Map<number, number>();
-const MENU_ACTION_CHANNEL = "desktop:menu-action";
-const TRACKPAD_SCROLL_CHANNEL = "desktop:trackpad-scroll";
-const UPDATE_STATE_CHANNEL = "desktop:update-state";
-const UPDATE_GET_STATE_CHANNEL = "desktop:update-get-state";
-const UPDATE_DOWNLOAD_CHANNEL = "desktop:update-download";
-const UPDATE_INSTALL_CHANNEL = "desktop:update-install";
-const UPDATE_CHECK_CHANNEL = "desktop:update-check";
-const UPDATE_SET_CHANNEL_CHANNEL = "desktop:update-set-channel";
-const UPDATE_CLAIM_RECENT_INSTALL_CHANNEL = "desktop:update-claim-recent-install";
-const PREVIEW_RECORDING_FRAME_CHANNEL = "desktop-preview:recording-frame";
-const PREVIEW_STATE_CHANNEL = "desktop-preview:state";
-const lastPreviewStateEmissionByTabId = new Map<
-  string,
-  {
-    readonly ownerWebContentsId: number;
-    readonly stateKey: string;
-    readonly faviconDataUrl: string | null;
-  }
->();
-const PREVIEW_TAB_SCOPE_SEPARATOR = ":";
+import {
+  PICK_FOLDER_CHANNEL,
+  CONFIRM_CHANNEL,
+  SET_THEME_CHANNEL,
+  CONTEXT_MENU_CHANNEL,
+  READ_CLIPBOARD_TEXT_CHANNEL,
+  COPY_IMAGE_CHANNEL,
+  DOWNLOAD_IMAGE_CHANNEL,
+  OPEN_EXTERNAL_CHANNEL,
+  OPEN_THREAD_WINDOW_CHANNEL,
+  MAX_DESKTOP_WINDOWS,
+  OPEN_THREAD_WINDOW_MIN_INTERVAL_MS,
+  lastOpenThreadWindowAtByRenderer,
+  MENU_ACTION_CHANNEL,
+  TRACKPAD_SCROLL_CHANNEL,
+  UPDATE_STATE_CHANNEL,
+  UPDATE_GET_STATE_CHANNEL,
+  UPDATE_DOWNLOAD_CHANNEL,
+  UPDATE_INSTALL_CHANNEL,
+  UPDATE_CHECK_CHANNEL,
+  UPDATE_SET_CHANNEL_CHANNEL,
+  UPDATE_CLAIM_RECENT_INSTALL_CHANNEL,
+  PREVIEW_RECORDING_FRAME_CHANNEL,
+  PREVIEW_STATE_CHANNEL,
+  lastPreviewStateEmissionByTabId,
+  PREVIEW_TAB_SCOPE_SEPARATOR,
+  PREVIEW_WEBVIEW_PREFERENCES,
+  PREVIEW_DEFAULT_ZOOM_FACTOR,
+  PREVIEW_CAPTURE_MAX_EDGE_PX,
+  PREVIEW_CAPTURE_MAX_PIXELS,
+  PREVIEW_AUTOMATION_MAX_EVALUATION_BYTES,
+  PREVIEW_AUTOMATION_EVALUATE_DEFAULT_TIMEOUT_MS,
+  PREVIEW_AUTOMATION_WAIT_INTERVAL_MS,
+  PREVIEW_AUTOMATION_PRINTABLE_KEY_PATTERN,
+  PREVIEW_AUTOMATION_SUPPORTED_PUNCTUATION_KEYS,
+  PREVIEW_AUTOMATION_SUPPORTED_NAMED_KEYS,
+} from "./main/desktopConstants";
 const STATE_DIR_CONFIG = resolveDesktopStateDirConfig(process.env);
 const STATE_DIR = STATE_DIR_CONFIG.stateDir;
 const DESKTOP_SCHEME = "t3";
@@ -328,46 +333,6 @@ const LOG_FILE_MAX_FILES = 10;
 const APP_RUN_ID = Crypto.randomBytes(6).toString("hex");
 const AUTO_UPDATE_STARTUP_DELAY_MS = 15_000;
 const AUTO_UPDATE_POLL_INTERVAL_MS = 4 * 60 * 60 * 1000;
-
-const PREVIEW_WEBVIEW_PREFERENCES = "contextIsolation=true,sandbox=true,nodeIntegration=false";
-const PREVIEW_DEFAULT_ZOOM_FACTOR = 1;
-const PREVIEW_CAPTURE_MAX_EDGE_PX = 1600;
-const PREVIEW_CAPTURE_MAX_PIXELS = 2_000_000;
-const PREVIEW_AUTOMATION_MAX_EVALUATION_BYTES = 64_000;
-const PREVIEW_AUTOMATION_EVALUATE_DEFAULT_TIMEOUT_MS = 15_000;
-const PREVIEW_AUTOMATION_WAIT_INTERVAL_MS = 100;
-const PREVIEW_AUTOMATION_PRINTABLE_KEY_PATTERN = /^[A-Za-z0-9]$/;
-const PREVIEW_AUTOMATION_SUPPORTED_PUNCTUATION_KEYS: ReadonlySet<string> = new Set([
-  "`",
-  "-",
-  "=",
-  "[",
-  "]",
-  "\\",
-  ";",
-  "'",
-  ",",
-  ".",
-  "/",
-]);
-const PREVIEW_AUTOMATION_SUPPORTED_NAMED_KEYS: ReadonlySet<string> = new Set([
-  "Backspace",
-  "Tab",
-  "Enter",
-  "Escape",
-  "ArrowUp",
-  "ArrowDown",
-  "ArrowLeft",
-  "ArrowRight",
-  "Delete",
-  "Home",
-  "End",
-  "PageUp",
-  "PageDown",
-  "Space",
-  "Insert",
-  ...Array.from({ length: 24 }, (_, index) => `F${index + 1}`),
-]);
 
 type DesktopUpdateErrorContext = DesktopUpdateState["errorContext"];
 
