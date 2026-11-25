@@ -26,10 +26,12 @@ import { readNativeApi } from "../../nativeApi";
 import { useStore } from "../../store";
 import { resolveProviderOptionsForDispatch } from "../../providerOptionsForDispatch";
 import {
-  getCustomModelOptionsByProvider,
+  getComposerModelOptionsByInstance,
   getProviderDispatchModelsByProvider,
   resolveComposerPickerModel,
 } from "../ChatView.logic";
+import { useSettings } from "../../hooks/useSettings";
+import { selectModelCatalogSettings } from "../chat/composer/useComposerDispatchSettings";
 import { Button } from "../ui/button";
 import {
   Combobox,
@@ -49,7 +51,11 @@ import {
   DialogPopup,
   DialogTitle,
 } from "../ui/dialog";
-import { normalizeWorkflowSlotModelOptions, getSingleProviderModelOptions } from "./workflowSlots";
+import {
+  normalizeWorkflowSlotModelOptions,
+  getSingleProviderModelOptions,
+  workflowModelOptionsByProvider,
+} from "./workflowSlots";
 import { SlotRow } from "./SlotRow";
 import { WorkflowOptionCheckbox, WorkflowOptionField, WorkflowOptions } from "./WorkflowOptions";
 import { RUNTIME_MODE_PRESENTATION } from "../chat/runtimeModePresentation";
@@ -179,14 +185,30 @@ export function WorkflowImplementDialog(props: {
   const [baseBranch, setBaseBranch] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const modelOptionsByProvider = useMemo(
+  const catalogSettings = useSettings(selectModelCatalogSettings);
+  // The composer's picker options, so the implementation slot lists exactly what threads list.
+  const modelOptionsByInstance = useMemo(
     () =>
-      getCustomModelOptionsByProvider(
+      getComposerModelOptionsByInstance(
         settings,
+        catalogSettings,
         serverConfigQuery.data?.providers,
         serverConfigQuery.data?.settings,
       ),
-    [settings, serverConfigQuery.data?.providers, serverConfigQuery.data?.settings],
+    [
+      catalogSettings,
+      settings,
+      serverConfigQuery.data?.providers,
+      serverConfigQuery.data?.settings,
+    ],
+  );
+  const modelOptionsByProvider = useMemo(
+    () =>
+      workflowModelOptionsByProvider(
+        modelOptionsByInstance,
+        serverConfigQuery.data?.providers ?? [],
+      ),
+    [modelOptionsByInstance, serverConfigQuery.data?.providers],
   );
   const dispatchModelsByProvider = useMemo(
     () =>
@@ -337,7 +359,7 @@ export function WorkflowImplementDialog(props: {
             provider={provider}
             model={selection}
             modelOptions={modelOptions}
-            modelOptionsByProvider={modelOptionsByProvider}
+            modelOptionsByInstance={modelOptionsByInstance}
             onProviderModelChange={(nextProvider, nextModel) => {
               setProvider(nextProvider);
               setModel(nextModel);
