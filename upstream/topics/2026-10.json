@@ -4659,11 +4659,21 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
-      "decidedAt": "2026-11-13T14:45:41.681Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-18T22:52:39.908Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/provider/Drivers/ClaudeDriver.ts:250",
+          "apps/web/src/components/usage/AccountUsageCards.tsx:281"
+        ],
+        "f5Refs": [
+          "310a4f7183c9970ca7c5c12df5f0ca7483c32968"
+        ]
+      },
       "id": "pr-13118",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "usage",
@@ -7822,11 +7832,22 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
-      "decidedAt": "2026-11-07T23:28:08.435Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-20T15:43:10.479Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/git/DefaultBranchAutoPull.ts:307",
+          "apps/server/src/git/DefaultBranchAutoPull.ts:255",
+          "apps/server/src/git/DefaultBranchAutoPull.ts:282"
+        ],
+        "f5Refs": [
+          "6ff10063052612724db49fc448d044606e7a6634"
+        ]
+      },
       "id": "pr-14912",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "git",
@@ -13157,11 +13178,13 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
-      "decidedAt": "2026-11-13T14:45:41.681Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-18T22:52:39.908Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-16666",
-      "status": "port",
+      "reason": "F5 threads have no parent-thread relationship for this breadcrumb.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "threads",
@@ -13346,12 +13369,14 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
+      "decidedAt": "2026-11-22T18:13:50.956Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-16694",
       "relatedTopics": [
         "pr-15060"
       ],
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "keybindings",
@@ -19452,11 +19477,21 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
-      "decidedAt": "2026-11-13T14:45:41.681Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-18T22:52:39.908Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "packages/shared/src/promptLinks.ts:201",
+          "apps/web/src/components/promptLinks/linkedPrompt.ts:45"
+        ],
+        "f5Refs": [
+          "310a4f7183c9970ca7c5c12df5f0ca7483c32968"
+        ]
+      },
       "id": "pr-18454",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "composer",
@@ -22908,14 +22943,16 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-11-09T19:20:10.758Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T23:16:41.149Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-19196",
+      "reason": "F5 starts a Claude wake turn only after root assistant output arrives.",
+      "reasonKey": "not-applicable",
       "relatedTopics": [
         "pr-15816"
       ],
-      "status": "port",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -24602,14 +24639,24 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-11-09T19:20:10.758Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T23:16:41.149Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/provider/Layers/ClaudeAdapter.ts:5877",
+          "apps/server/src/provider/Layers/ClaudeAdapter.ts:5908"
+        ],
+        "f5Refs": [
+          "d1bad8ea9c3bb8b7da247266291cefe0f8baec8c"
+        ]
+      },
       "id": "pr-19543",
+      "reason": "Already present in f5",
       "relatedTopics": [
         "pr-15816"
       ],
-      "status": "port",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
@@ -25802,11 +25849,13 @@
     },
     {
       "createdAt": "2026-10-26T13:58:20.040Z",
-      "decidedAt": "2026-11-09T19:20:10.758Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T23:16:41.149Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-19771",
-      "status": "port",
+      "reason": "F5 uses Cursor’s local CLI and ACP, outside the SDK catalog and sign-in flow that reports `plan_required`.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers"
@@ -36883,11 +36932,21 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-03T10:30:22.437Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-23T11:42:22.809Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/provider/Layers/ClaudeAdapter.ts:7981",
+          "apps/web/src/components/ChatView.tsx:8888"
+        ],
+        "f5Refs": [
+          "e0656eb14fc18be68596bcbdab9c243ecfe717f1"
+        ]
+      },
       "id": "pr-21903",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
@@ -41720,14 +41779,16 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-20T15:53:57.825Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-22739",
+      "reason": "F5 handles preview input directly in Electron and has no streamed viewer input queue.",
+      "reasonKey": "not-applicable",
       "relatedTopics": [
         "pr-19456"
       ],
-      "status": "port",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "preview browser"
@@ -43744,14 +43805,16 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
-      "decidedAt": "2026-11-13T14:45:41.681Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T17:22:51.894Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-23135",
+      "reason": "F5 has no equivalent cross-thread agent-message surface.",
+      "reasonKey": "not-applicable",
       "relatedTopics": [
         "pr-18194"
       ],
-      "status": "port",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "timeline",
@@ -44223,11 +44286,22 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
-      "decidedAt": "2026-11-07T23:28:08.435Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T23:16:41.148Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/provider/acp/AcpSessionRuntime.ts:1256",
+          "apps/server/src/provider/Layers/CursorAdapter.ts:1147",
+          "apps/server/src/provider/Layers/CursorAdapter.ts:1521"
+        ],
+        "f5Refs": [
+          "d1bad8ea9c3bb8b7da247266291cefe0f8baec8c"
+        ]
+      },
       "id": "pr-23273",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
@@ -44614,11 +44688,21 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-07T23:28:08.434Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T22:24:20.968Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/codexAppServerManager.ts:5183",
+          "apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts:5800"
+        ],
+        "f5Refs": [
+          "2bf3550a6a2560959d09ce69fad543460605823e"
+        ]
+      },
       "id": "pr-23388",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
@@ -45689,11 +45773,21 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-07T23:28:08.434Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-23T12:16:58.128Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/provider/Layers/OpenCodeAdapter.ts:394",
+          "apps/server/src/provider/Layers/OpenCodeAdapter.ts:822"
+        ],
+        "f5Refs": [
+          "1b43185bc4da346a05bfe536e2d334552971888f"
+        ]
+      },
       "id": "pr-23591",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",
@@ -45928,11 +46022,21 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-03T18:46:47.105Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T23:43:46.164Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/terminal/Layers/Manager.ts:950",
+          "apps/server/src/terminal/Layers/Manager.ts:1565"
+        ],
+        "f5Refs": [
+          "2b6e7ce029d851b15e9b5cd20c8adbb07d3ef262"
+        ]
+      },
       "id": "pr-23664",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "terminal",
@@ -46103,11 +46207,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-07T23:28:08.434Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-23T11:42:22.809Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-23684",
-      "status": "port",
+      "reason": "F5 has no ACP Registry installer.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers"
@@ -47083,11 +47189,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-07T23:28:08.434Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-23T12:16:58.129Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-23834",
-      "status": "port",
+      "reason": "F5 has no in-band MCP-over-ACP bridge.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -48343,11 +48451,21 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-03T18:46:47.105Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T23:43:46.164Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/web/src/components/ChatView.tsx:3435",
+          "apps/web/src/components/ChatView.tsx:9099"
+        ],
+        "f5Refs": [
+          "2b6e7ce029d851b15e9b5cd20c8adbb07d3ef262"
+        ]
+      },
       "id": "pr-24020",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "terminal"
@@ -48390,11 +48508,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-03T10:30:22.437Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T23:43:46.164Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-24024",
-      "status": "port",
+      "reason": "The affected agent-owned terminal chunk stream is specific to upstream’s ACP adapter.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -48777,11 +48897,13 @@
     },
     {
       "createdAt": "2026-10-26T14:35:48.824Z",
-      "decidedAt": "2026-11-13T14:45:41.681Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T17:22:51.894Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-24104",
-      "status": "port",
+      "reason": "Guest sharing requires T3 Connect, excluded by relay-cloud policy.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "sharing"
@@ -48970,11 +49092,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-07T23:28:08.434Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-23T12:16:58.129Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-24176",
-      "status": "port",
+      "reason": "F5 reads Claude Bash output from SDK results and has no temporary-file output tail.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -50510,11 +50634,13 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-23T12:16:58.129Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-24479",
-      "status": "port",
+      "reason": "F5 has no host-side ACP terminal output buffer.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "providers",
@@ -50617,11 +50743,20 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T23:43:46.164Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/web/src/components/ThreadStatusNotificationController.tsx:136"
+        ],
+        "f5Refs": [
+          "2b6e7ce029d851b15e9b5cd20c8adbb07d3ef262"
+        ]
+      },
       "id": "pr-24493",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "threads",
@@ -52599,9 +52734,11 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
+      "decidedAt": "2026-11-22T18:12:39.541Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-24788",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "settings"
@@ -53087,11 +53224,20 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T23:43:46.165Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:590"
+        ],
+        "f5Refs": [
+          "2b6e7ce029d851b15e9b5cd20c8adbb07d3ef262"
+        ]
+      },
       "id": "pr-24871",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "pr hub",
@@ -59269,14 +59415,25 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-03T10:30:22.437Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T23:43:46.165Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/keybindings.ts:617",
+          "apps/server/src/keybindings.ts:646",
+          "packages/shared/src/keybindings.ts:594"
+        ],
+        "f5Refs": [
+          "2b6e7ce029d851b15e9b5cd20c8adbb07d3ef262"
+        ]
+      },
       "id": "pr-25556",
+      "reason": "Already present in f5",
       "relatedTopics": [
         "pr-22496"
       ],
-      "status": "port",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "settings",
@@ -63789,11 +63946,13 @@
     },
     {
       "createdAt": "2026-10-28T20:56:34.441Z",
-      "decidedAt": "2026-11-07T23:28:08.434Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-22T22:24:20.968Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-26331",
-      "status": "port",
+      "reason": "F5’s account usage view reads limits through direct account probes.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "usage",
@@ -65875,11 +66034,13 @@
     },
     {
       "createdAt": "2026-10-29T11:02:55.890Z",
-      "decidedAt": "2026-11-13T14:45:41.681Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-20T16:37:25.218Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-26904",
-      "status": "port",
+      "reason": "F5 has no equivalent thread details card to customize.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "usage",
@@ -66525,9 +66686,11 @@
     },
     {
       "createdAt": "2026-10-30T00:13:58.623Z",
+      "decidedAt": "2026-11-22T18:13:22.456Z",
+      "decidedBy": "user",
       "epoch": 1,
       "id": "pr-27104",
-      "status": "inbox",
+      "status": "port",
       "suggestion": {
         "areas": [
           "observability",
@@ -71942,11 +72105,21 @@
     },
     {
       "createdAt": "2026-10-26T17:22:32.389Z",
-      "decidedAt": "2026-11-07T23:28:08.435Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-23T12:16:58.129Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/web/src/requestLatencyState.ts:23",
+          "apps/web/src/wsTransport.ts:537"
+        ],
+        "f5Refs": [
+          "1b43185bc4da346a05bfe536e2d334552971888f"
+        ]
+      },
       "id": "pr-5570",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "providers",

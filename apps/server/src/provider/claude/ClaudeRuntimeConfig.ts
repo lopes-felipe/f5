@@ -2,14 +2,6 @@ import { createClaudeModelCapabilities } from "@t3tools/shared/model";
 import { normalizeOptionalString } from "../claudeToolPresentation.ts";
 import { claudeThinkingConfig, type ClaudeThinkingResolution } from "../claudeProviderOptions.ts";
 import { randomUUID } from "node:crypto";
-/**
- * ClaudeAdapterLive - Scoped live implementation for the Claude Agent provider adapter.
- *
- * Wraps `@anthropic-ai/claude-agent-sdk` query sessions behind the generic
- * provider adapter contract and emits canonical runtime events.
- *
- * @module ClaudeAdapterLive
- */
 
 import { type SettingSource, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import {

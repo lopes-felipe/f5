@@ -43,6 +43,7 @@ packaged release may lag behind them.
 | [Profiles](profiles.md)                             | Separate F5 profiles with their own state and accounts                  |
 | [Remote access](../REMOTE.md)                       | Run F5 on another machine                                               |
 | [Environment variables](environment.md)             | Every supported variable                                                |
+| [Privacy](privacy.md)                               | Outbound requests, `DO_NOT_TRACK` and local data                        |
 
 F5 stores state under `~/.f5` (`%USERPROFILE%\.f5` on Windows). Use `F5_HOME` and `F5_STATE_DIR`
 to override it. The inherited `T3CODE_*` variables still work; see [`NOTICE.md`](../NOTICE.md).

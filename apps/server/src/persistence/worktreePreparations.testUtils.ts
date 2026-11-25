@@ -38,6 +38,17 @@ export function makeMemoryWorktreePreparations() {
         groups.set(group.path, group);
         return Effect.void;
       }),
+    updateGroupBranch: (group, branch) =>
+      Effect.gen(function* () {
+        const current = groups.get(group.path);
+        if (
+          current?.threadId !== group.threadId ||
+          current.projectRoot !== group.projectRoot ||
+          current.branch !== group.branch
+        )
+          return yield* new PreparationError({ message: "Worktree group changed." });
+        groups.set(group.path, { ...current, branch });
+      }),
     deleteGroup: (group) =>
       Effect.sync(() => {
         if (groups.get(group.path)?.threadId === group.threadId) {

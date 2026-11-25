@@ -4,6 +4,7 @@ import {
   changedFilesForPreview,
   formatMcpToolHeading,
   parseFileReadDetail,
+  resolveInlineFilePreview,
   toolWorkEntryHeading,
   workToneClass,
 } from "./timelineWorkEntryHelpers";
@@ -19,11 +20,13 @@ describe("timelineWorkEntryHelpers", () => {
       endLine: 25,
     });
     expect(parseFileReadDetail("not json")).toBeNull();
-    expect(workToneClass("error")).toBeTruthy();
-    expect(workToneClass("tool")).toBeTruthy();
+    expect(workToneClass("error")).toBe("text-destructive-foreground");
+    expect(workToneClass("tool")).toBe("text-muted-foreground");
+    expect(workToneClass("thinking")).toBe("text-muted-foreground");
+    expect(workToneClass("info")).toBe("text-muted-foreground");
   });
 
-  it("formats MCP tool headings and deduplicates changed file previews", () => {
+  it("formats MCP tool headings and workspace-relative changed file previews", () => {
     expect(
       formatMcpToolHeading({
         id: "w1",
@@ -55,5 +58,61 @@ describe("timelineWorkEntryHelpers", () => {
         "/repo",
       )?.map((item) => item.displayPath),
     ).toEqual(["src/a.ts", "src/b.ts"]);
+  });
+
+  it("resolves inline file previews from read paths, changed files, and structured details", () => {
+    expect(
+      resolveInlineFilePreview(
+        {
+          label: "Read file",
+          cwd: "/repo",
+          readPaths: ["/repo/src/a.ts", "/repo/src/b.ts"],
+          lineSummary: "lines 1-20",
+        },
+        new Map(),
+        "/repo",
+      ),
+    ).toEqual({
+      targetPath: "/repo/src/a.ts",
+      label: "src/a.ts",
+      text: "src/a.ts +1 more (lines 1-20)",
+      trailingText: " +1 more (lines 1-20)",
+    });
+
+    expect(
+      resolveInlineFilePreview(
+        {
+          label: "Dynamic tool",
+          itemType: "dynamic_tool_call",
+          cwd: "/repo",
+          detail: '{"file_path":"src/index.ts","line":14,"column":3}',
+        },
+        new Map(),
+        "/repo",
+      ),
+    ).toEqual({
+      targetPath: "/repo/src/index.ts:14:3",
+      label: "src/index.ts",
+      text: "src/index.ts (line 14:3)",
+      trailingText: " (line 14:3)",
+    });
+
+    expect(
+      resolveInlineFilePreview(
+        {
+          label: "Read file",
+          requestKind: "file-read",
+          cwd: "/repo",
+          detail: "src/plain.ts:42",
+        },
+        new Map(),
+        "/repo",
+      ),
+    ).toEqual({
+      targetPath: "/repo/src/plain.ts:42",
+      label: "src/plain.ts",
+      text: "src/plain.ts (line 42)",
+      trailingText: " (line 42)",
+    });
   });
 });

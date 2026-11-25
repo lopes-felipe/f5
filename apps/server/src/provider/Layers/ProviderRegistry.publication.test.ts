@@ -104,6 +104,82 @@ it.live("publishes a late manifest refresh without a provider or settings change
   ).pipe(Effect.provide(infra)),
 );
 
+it.live("does not fetch the remote manifest while DO_NOT_TRACK is set", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      // A failed response, so nothing is cached between the two passes below.
+      const fetch = vi
+        .spyOn(globalThis, "fetch")
+        .mockImplementation(async () => new Response("", { status: 503 }));
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          fetch.mockRestore();
+          vi.unstubAllEnvs();
+        }),
+      );
+      const id = ProviderInstanceId.make("codex");
+      const snapshot: ServerProvider = {
+        instanceId: id,
+        driver: ProviderDriverKind.make("codex"),
+        enabled: true,
+        installed: true,
+        version: "1",
+        status: "ready",
+        auth: { status: "authenticated" },
+        checkedAt: "2026-11-19T00:00:00Z",
+        models: [],
+        skills: [],
+        slashCommands: [],
+      };
+      const instance: ProviderInstance = {
+        instanceId: id,
+        driverKind: snapshot.driver,
+        displayName: undefined,
+        enabled: true,
+        continuationIdentity: { driverKind: snapshot.driver, continuationKey: "test" },
+        snapshot: {
+          getSnapshot: Effect.succeed(snapshot),
+          refresh: Effect.succeed(snapshot),
+          streamChanges: Stream.empty,
+        },
+        adapter: {} as ProviderInstance["adapter"],
+        textGeneration: {} as ProviderInstance["textGeneration"],
+      };
+      const fetchesWith = (doNotTrack: boolean) =>
+        Effect.gen(function* () {
+          fetch.mockClear();
+          if (doNotTrack) vi.stubEnv("DO_NOT_TRACK", "1");
+          else vi.unstubAllEnvs();
+          const registry = yield* ProviderRegistry;
+          yield* registry.getProviders;
+          yield* Effect.sleep("50 millis");
+          yield* registry.getProviders;
+          return fetch.mock.calls.length > 0;
+        }).pipe(
+          Effect.provide(
+            ProviderRegistryLive.pipe(
+              Layer.provideMerge(
+                ServerSettingsService.layerTest({ enableRemoteModelManifest: true }),
+              ),
+            ),
+          ),
+          Effect.provideService(ProviderInstanceRegistry, {
+            listInstances: Effect.succeed([instance]),
+            getInstance: () => Effect.succeed(instance),
+            listUnavailable: Effect.succeed([]),
+            streamChanges: Stream.empty,
+            subscribeChanges: Effect.acquireRelease(PubSub.unbounded<void>(), PubSub.shutdown).pipe(
+              Effect.flatMap(PubSub.subscribe),
+            ),
+          }),
+        );
+      expect(yield* fetchesWith(true)).toBe(false);
+      // Positive control: the same setup fetches once DO_NOT_TRACK is unset.
+      expect(yield* fetchesWith(false)).toBe(true);
+    }),
+  ).pipe(Effect.provide(infra)),
+);
+
 it.effect("ignores a retired instance's late probe result or failure", () =>
   Effect.gen(function* () {
     for (const fails of [false, true]) {

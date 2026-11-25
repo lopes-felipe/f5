@@ -2235,6 +2235,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
           turn: {
             id: "auth-turn-b",
             status: "failed",
+            serviceTier: "priority",
             error: {
               message:
                 "Your access token could not be refreshed because your refresh token has expired.",
@@ -2246,6 +2247,8 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       if (announced?.type !== "runtime.error") assert.fail("Expected a runtime error first");
       assert.equal(announced.payload.class, "auth_error");
       assert.notEqual(announced.eventId, completed?.eventId);
+      if (completed?.type !== "turn.completed") assert.fail("Expected a completed turn");
+      assert.equal(completed.payload.usageSpeed, "fast");
       assert.equal(completed?.type, "turn.completed");
     }),
   );

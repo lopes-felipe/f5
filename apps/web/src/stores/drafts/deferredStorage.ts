@@ -1,8 +1,7 @@
 import { Debouncer } from "@tanstack/react-pacer";
 import type { StateStorage } from "zustand/middleware";
 
-import { COMPOSER_DRAFT_PERSISTENCE_ERROR_EVENT } from "../../composerDraftStore";
-
+export const COMPOSER_DRAFT_PERSISTENCE_ERROR_EVENT = "f5:composer-draft-persistence-error";
 export const COMPOSER_PERSIST_DEBOUNCE_MS = 300;
 
 /**
@@ -22,7 +21,7 @@ export interface DeferredStorage<T> {
   pendingValue: (name?: string) => string | null;
 }
 
-export interface PendingWrite<T> {
+interface PendingWrite<T> {
   readonly debouncer: Debouncer<() => void>;
   latest: { readonly value: T } | null;
   serialized: { readonly value: T; readonly text: string } | null;

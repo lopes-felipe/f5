@@ -49,7 +49,6 @@ function makeServerConfigStub(): ServerConfigShape {
     providerLogsDir: "/tmp/f3-code/logs/provider",
     providerEventLogPath: "/tmp/f3-code/logs/provider/events.log",
     terminalLogsDir: "/tmp/f3-code/logs/terminal",
-    anonymousIdPath: "/tmp/f3-code/anonymous-id",
   };
 }
 

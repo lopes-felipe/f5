@@ -1,5 +1,6 @@
 import {
   defaultInstanceIdForDriver,
+  KNOWN_PROVIDER_KINDS,
   MessageId,
   EventId,
   ProjectId,
@@ -26,9 +27,11 @@ import {
   createCachedAbsolutePathComparisonNormalizer,
   deriveComposerSendState,
   deriveProviderRuntimeInfoEntries,
+  getComposerModelOptionsByInstance,
   getCustomModelOptionsByProvider,
   getProviderDispatchModelsByProvider,
   identityAbsolutePathNormalizer,
+  partitionAttachedFiles,
   readAttachedFileAbsolutePath,
   resolveClaudeSubagentModel,
   resolveComposerNativeSlashCommands,
@@ -221,6 +224,69 @@ function provider(input: {
 }
 
 describe("getCustomModelOptionsByProvider", () => {
+  const emptyAppSettings = {
+    customCodexModels: [],
+    customClaudeModels: [],
+    customGrokModels: [],
+    providerModelPreferences: {},
+  };
+
+  it("has an entry for every provider kind, with no legacy catalog for newer drivers", () => {
+    const options = getCustomModelOptionsByProvider(emptyAppSettings, [
+      provider({
+        provider: "antigravity",
+        models: [{ slug: "gemini-4-neon", name: "Gemini 4 Neon" }],
+      }),
+    ]);
+
+    expect(Object.keys(options).toSorted()).toEqual([...KNOWN_PROVIDER_KINDS].toSorted());
+    // Antigravity, Muse, ACP and Pi list only what their instance reports.
+    expect(options.antigravity).toEqual([]);
+    expect(options.acp).toEqual([]);
+    expect(options.pi).toEqual([]);
+    expect(options.muse).toEqual([]);
+  });
+
+  it("offers no placeholder model for a live instance that reports none", () => {
+    const byInstance = getComposerModelOptionsByInstance(
+      emptyAppSettings,
+      DEFAULT_UNIFIED_SETTINGS,
+      [provider({ provider: "acp", models: [] }), provider({ provider: "pi", models: [] })],
+    );
+
+    expect(byInstance.get(defaultInstanceIdForDriver(ProviderDriverKind.make("acp")))).toEqual([]);
+    expect(byInstance.get(defaultInstanceIdForDriver(ProviderDriverKind.make("pi")))).toEqual([]);
+  });
+
+  it("builds composer picker options per instance with legacy custom models on the default", () => {
+    const providers = [
+      provider({
+        provider: "codex",
+        models: [{ slug: "gpt-5-codex", name: "GPT-5 Codex" }],
+      }),
+      provider({
+        provider: "antigravity",
+        models: [{ slug: "gemini-4-neon", name: "Gemini 4 Neon" }],
+      }),
+    ];
+    const byInstance = getComposerModelOptionsByInstance(
+      { ...emptyAppSettings, customCodexModels: ["my-codex-model"] },
+      DEFAULT_UNIFIED_SETTINGS,
+      providers,
+    );
+
+    expect(
+      byInstance
+        .get(defaultInstanceIdForDriver(ProviderDriverKind.make("codex")))
+        ?.map((option) => option.slug),
+    ).toEqual(["gpt-5-codex", "my-codex-model"]);
+    expect(
+      byInstance
+        .get(defaultInstanceIdForDriver(ProviderDriverKind.make("antigravity")))
+        ?.map((option) => option.slug),
+    ).toEqual(["gemini-4-neon"]);
+  });
+
   it("keeps hidden runtime models available for non-picker dispatch settings", () => {
     const providers = [
       provider({
@@ -1251,6 +1317,32 @@ describe("deriveComposerSendState", () => {
     expect(state.sendableTerminalContexts).toEqual([]);
     expect(state.expiredTerminalContextCount).toBe(0);
     expect(state.hasSendableContent).toBe(true);
+  });
+});
+
+describe("partitionAttachedFiles", () => {
+  it("separates path-less clipboard files from files the bridge can resolve", () => {
+    const dragged = new File(["test"], "dragged.png", { type: "image/png" });
+    const pasted = new File(["test"], "image.png", { type: "image/png" });
+
+    expect(
+      partitionAttachedFiles([dragged, pasted], {
+        isElectron: true,
+        // Electron's webUtils.getPathForFile returns "" for in-memory clipboard files.
+        desktopBridge: {
+          getPathForFile: (file) => (file === dragged ? "/Users/me/Desktop/dragged.png" : ""),
+        },
+      }),
+    ).toEqual({ withPath: [dragged], pathless: [pasted] });
+  });
+
+  it("treats every file as path-less outside Electron", () => {
+    const file = new File(["test"], "browser.png");
+
+    expect(partitionAttachedFiles([file], { isElectron: false })).toEqual({
+      withPath: [],
+      pathless: [file],
+    });
   });
 });
 

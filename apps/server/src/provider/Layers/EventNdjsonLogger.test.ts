@@ -157,6 +157,48 @@ describe("EventNdjsonLogger", () => {
     }),
   );
 
+  it.effect("redacts credentials in tool output but keeps signatures and ids byte for byte", () =>
+    Effect.gen(function* () {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), "f5-scrub-log-"));
+      // Assembled at runtime so secret scanners do not flag the fixture.
+      const key = ["sk-ant-api03-", "Ab3dEfGh1jKlMnOpQrStUvWxYz012345"].join("");
+      const signature = `${key}/EqQBCkYIBRgCKkBsignature==`;
+      try {
+        const logger = (yield* makeEventNdjsonLogger(path.join(directory, "native.ndjson"), {
+          stream: "native",
+        }))!;
+        yield* logger.write(
+          {
+            type: "user",
+            message: {
+              content: [
+                { type: "tool_result", tool_use_id: key, content: `ANTHROPIC_API_KEY=${key}` },
+                { type: "thinking", thinking: `The .env holds ${key}; use it.`, signature },
+                { type: "redacted_thinking", data: key },
+              ],
+            },
+          },
+          ThreadId.makeUnsafe("thread"),
+        );
+        yield* logger.close();
+        const [line] = fs
+          .readFileSync(path.join(directory, "thread.log"), "utf8")
+          .trim()
+          .split("\n")
+          .map(parseLogLine);
+        const [result, thinking, redacted] = JSON.parse(line!.payload).message.content;
+        assert.equal(result.content, "ANTHROPIC_API_KEY=[REDACTED]");
+        assert.equal(result.tool_use_id, key);
+        assert.equal(thinking.signature, signature);
+        // Signed thinking must stay verbatim, or a repaired transcript fails to resume.
+        assert.equal(thinking.thinking, `The .env holds ${key}; use it.`);
+        assert.equal(redacted.data, key);
+      } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    }),
+  );
+
   it.effect("recovers a transient open failure and removes a crashed partial final record", () =>
     Effect.gen(function* () {
       const directory = fs.mkdtempSync(path.join(os.tmpdir(), "f5-retry-log-"));

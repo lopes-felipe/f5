@@ -10,6 +10,7 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   Columns2Icon,
+  FlaskConicalOffIcon,
   PilcrowIcon,
   Rows3Icon,
   WrapTextIcon,
@@ -59,6 +60,7 @@ import {
 import { compareFilePaths } from "../lib/filePathCollator";
 import { changedLineCount } from "../lib/turnDiffTree";
 import { isScratchProject } from "@t3tools/shared/scratchProject";
+import { isTestChangedFile } from "@t3tools/shared/changedFileKind";
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 
 type DiffThemeType = "light" | "dark";
@@ -79,6 +81,7 @@ function selectDiffPanelSettings(settings: AppSettings) {
   return {
     diffFileDefaultState: settings.diffFileDefaultState,
     diffIgnoreWhitespace: settings.diffIgnoreWhitespace,
+    diffHideTestFiles: settings.diffHideTestFiles,
     diffRenderMode: settings.diffRenderMode,
     diffWordWrap: settings.diffWordWrap,
     gitStatusAutoRefreshIntervalSeconds: settings.gitStatusAutoRefreshIntervalSeconds,
@@ -275,7 +278,7 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
       ),
     [isExactFileChangeMode, selectedFileChangeId, selectedPatch],
   );
-  const renderableFiles = useMemo(() => {
+  const allFiles = useMemo(() => {
     if (!renderablePatch || renderablePatch.kind !== "files") {
       return [];
     }
@@ -283,6 +286,17 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
       compareFilePaths(resolveFileDiffPath(left), resolveFileDiffPath(right)),
     );
   }, [renderablePatch]);
+  const hasTestFiles = allFiles.some((file) => isTestChangedFile(resolveFileDiffPath(file)));
+  const renderableFiles = useMemo(
+    () =>
+      settings.diffHideTestFiles && !isExactFileChangeMode
+        ? allFiles.filter((file) => {
+            const path = resolveFileDiffPath(file);
+            return path === selectedFilePath || !isTestChangedFile(path);
+          })
+        : allFiles,
+    [allFiles, isExactFileChangeMode, selectedFilePath, settings.diffHideTestFiles],
+  );
   const diffLogicalScope = useMemo(() => {
     if (isExactFileChangeMode) {
       return `file-change:${selectedFileChangeId ?? ""}`;
@@ -624,6 +638,18 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
           <PilcrowIcon className="size-3" />
         </Toggle>
       ) : null}
+      {!isExactFileChangeMode && hasTestFiles ? (
+        <Toggle
+          aria-label="Hide test files"
+          title={settings.diffHideTestFiles ? "Show test files" : "Hide test files"}
+          variant="outline"
+          size="xs"
+          pressed={settings.diffHideTestFiles}
+          onPressedChange={(pressed) => updateSettings({ diffHideTestFiles: Boolean(pressed) })}
+        >
+          <FlaskConicalOffIcon className="size-3" />
+        </Toggle>
+      ) : null}
       <Toggle
         aria-label="Wrap long lines"
         variant="outline"
@@ -832,6 +858,10 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
                   </p>
                 </div>
               )
+            ) : renderablePatch.kind === "files" && renderableFiles.length === 0 ? (
+              <p className="px-3 py-2 text-xs text-muted-foreground">
+                All changed files are hidden.
+              </p>
             ) : renderablePatch.kind === "files" ? (
               <SearchableDiffView
                 viewerRef={diffViewerRef}

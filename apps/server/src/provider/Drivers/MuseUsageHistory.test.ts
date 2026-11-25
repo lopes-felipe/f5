@@ -22,9 +22,10 @@ import Migration0068 from "../../persistence/Migrations/068_UsageFacts.ts";
 import Migration0073 from "../../persistence/Migrations/073_UsageFactRecordedAt.ts";
 import Migration0074 from "../../persistence/Migrations/074_ProviderTerminalEvents.ts";
 import Migration0161 from "../../persistence/Migrations/161_UsageNativeIdentity.ts";
+import Migration0175 from "../../persistence/Migrations/175_UsageSpeedAndExternalIdentity.ts";
 import { UsageFactRepositoryLive } from "../../persistence/Layers/UsageFacts.ts";
 import { UsageFactRepository } from "../../persistence/Services/UsageFacts.ts";
-import { museRecordedIntervals } from "../../usage/museRecordedIntervals.ts";
+import { nativeRecordedIntervals } from "../../usage/museRecordedIntervals.ts";
 
 const fact = Schema.decodeUnknownSync(UsageTurnFact)({
   turnId: "native-turn",
@@ -52,6 +53,7 @@ const migrate = Effect.gen(function* () {
   yield* Migration0073;
   yield* Migration0074;
   yield* Migration0161;
+  yield* Migration0175;
 });
 
 it.effect("discovers the configured native home and closes without opening a session", () =>
@@ -143,7 +145,7 @@ it.layer(SqliteClient.layerMemory())("Muse durable history identity", (it) => {
           nativeSessionId: "delayed-session",
         });
         assert.equal(
-          (yield* museRecordedIntervals(sql)).find((row) => row.sessionId === "delayed-session")
+          (yield* nativeRecordedIntervals(sql)).find((row) => row.sessionId === "delayed-session")
             ?.startedAt,
           "2026-08-01T12:00:00.000Z",
         );
@@ -158,7 +160,7 @@ it.layer(SqliteClient.layerMemory())("Muse durable history identity", (it) => {
           totalTokens: null,
         });
         assert.isFalse(
-          (yield* museRecordedIntervals(sql)).some((row) =>
+          (yield* nativeRecordedIntervals(sql)).some((row) =>
             ["unknown-bound", "no-usage"].includes(row.sessionId),
           ),
         );
@@ -181,12 +183,12 @@ it.layer(SqliteClient.layerMemory())("Muse durable history identity", (it) => {
         yield* sql`INSERT INTO provider_session_runtime
         (thread_id, provider_name, adapter_key, status, last_seen_at, resume_cursor_json)
         VALUES ('thread', 'muse', 'muse', 'ready', '2026-08-01', '{"mspSessionId":"replacement"}')`;
-        const before = yield* museRecordedIntervals(sql);
+        const before = yield* nativeRecordedIntervals(sql);
         assert.equal(before[0]?.sessionId, "original-session");
         yield* sql`DELETE FROM provider_session_runtime`;
         yield* sql`DELETE FROM projection_turns`;
         yield* repository.record(fact);
-        assert.deepEqual(yield* museRecordedIntervals(sql), before);
+        assert.deepEqual(yield* nativeRecordedIntervals(sql), before);
       }).pipe(Effect.provide(UsageFactRepositoryLive)),
   );
 });
@@ -218,8 +220,9 @@ it.layer(SqliteClient.layerMemory())("Muse receipt migration", (it) => {
         yield* Migration0161;
         yield* sql`DELETE FROM projection_turns`;
         yield* sql`DELETE FROM provider_terminal_events`;
-        assert.deepEqual(yield* museRecordedIntervals(sql), [
+        assert.deepEqual(yield* nativeRecordedIntervals(sql), [
           {
+            provider: "muse",
             sessionId: "old-session",
             startedAt: "2026-08-01T12:00:00.000Z",
             endedAt: fact.completedAt,

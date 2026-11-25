@@ -42,8 +42,12 @@ export async function syncShellEnvironment(
     const shell = env.SHELL ?? "/bin/zsh";
     const shellEnvironment = await (options.readEnvironment ?? readEnvironmentFromLoginShellAsync)(
       shell,
-      ["PATH", "__MISE_DIFF", "SSH_AUTH_SOCK", ...LOCALE_NAMES, ...CA_TRUST_NAMES],
+      ["PATH", "__MISE_DIFF", "SSH_AUTH_SOCK", ...LOCALE_NAMES, ...CA_TRUST_NAMES, "DO_NOT_TRACK"],
     );
+
+    // An app launched from Finder misses an opt-out exported from the shell profile.
+    if (!env.DO_NOT_TRACK?.trim() && shellEnvironment.DO_NOT_TRACK?.trim())
+      env.DO_NOT_TRACK = shellEnvironment.DO_NOT_TRACK;
 
     for (const name of CA_TRUST_NAMES)
       if (!env[name]?.trim() && shellEnvironment[name]?.trim()) env[name] = shellEnvironment[name];

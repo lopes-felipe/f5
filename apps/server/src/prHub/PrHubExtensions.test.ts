@@ -62,6 +62,8 @@ interface State {
   itemWrites: string[];
   actionCalls: string[];
   branchCalls: boolean[];
+  branchUrls: string[];
+  canDeleteBranch: boolean;
   lifecycle: "opened" | "closed" | "merged";
   branchDeleted: boolean;
   branchMode: Mode;
@@ -93,6 +95,8 @@ const fixture = Effect.gen(function* () {
     itemWrites: [],
     actionCalls: [],
     branchCalls: [],
+    branchUrls: [],
+    canDeleteBranch: false,
     lifecycle: "opened",
     branchDeleted: false,
     branchMode: "success",
@@ -108,19 +112,29 @@ const fixture = Effect.gen(function* () {
         viewerId: account.viewerId,
         token: "token",
       }),
-    fetch: (async () =>
-      Response.json({
-        iid: 7,
-        title: "A native MR",
-        source_branch: "topic",
-        target_branch: "main",
-        state: state.lifecycle,
-        sha: state.head,
-        diff_refs: { head_sha: state.head, base_sha: "merge-base", start_sha: state.base },
-        web_url: "https://gitlab.example/team/repo/-/merge_requests/7",
-        author: { username: "alice" },
-        created_at: "2026-10-19T12:00:00.000Z",
-      })) as unknown as typeof fetch,
+    fetch: (async (url: string) =>
+      url.endsWith("/api/graphql")
+        ? Response.json({
+            data: {
+              project: {
+                mergeRequest: {
+                  userPermissions: { removeSourceBranch: state.canDeleteBranch },
+                },
+              },
+            },
+          })
+        : Response.json({
+            iid: 7,
+            title: "A native MR",
+            source_branch: "topic",
+            target_branch: "main",
+            state: state.lifecycle,
+            sha: state.head,
+            diff_refs: { head_sha: state.head, base_sha: "merge-base", start_sha: state.base },
+            web_url: "https://gitlab.example/team/repo/-/merge_requests/7",
+            author: { username: "alice" },
+            created_at: "2026-10-19T12:00:00.000Z",
+          })) as unknown as typeof fetch,
   });
   const provider = {
     ...native,
@@ -135,9 +149,10 @@ const fixture = Effect.gen(function* () {
         if (input.action === "close") state.lifecycle = "closed";
         return {};
       }),
-    deletePullRequestBranch: (input: { inspectOnly?: boolean }) =>
+    deletePullRequestBranch: (input: { url: string; inspectOnly?: boolean }) =>
       Effect.gen(function* () {
         state.branchCalls.push(input.inspectOnly === true);
+        state.branchUrls.push(input.url);
         if (!input.inspectOnly) {
           if (state.branchMode !== "unsent") state.branchDeleted = true;
           if (state.branchMode !== "success") return yield* transportFailure(state.branchMode);
@@ -688,7 +703,7 @@ it.effect("per-thread resolution restrictions are rechecked before dispatch", ()
 );
 
 it.effect(
-  "records merge-then-delete intent, dispatches each once and reports skipped local cleanup",
+  "refuses GitLab combined actions and verifies standalone permission before deletion",
   () =>
     run(({ engine, state }) =>
       Effect.gen(function* () {
@@ -698,13 +713,25 @@ it.effect(
           method: "squash",
           deleteBranch: true,
         });
-        yield* engine.prepareOperation(input);
-        const first = yield* engine.submitOperation(identify(input));
+        assert.equal((yield* engine.prepareOperation(input).pipe(Effect.result))._tag, "Failure");
+        const standalone = prepared("gitlab-delete-once", {
+          kind: "action",
+          action: "delete-branch",
+        });
+        state.lifecycle = "merged";
+        assert.equal(
+          (yield* engine.prepareOperation(standalone).pipe(Effect.result))._tag,
+          "Failure",
+        );
+        state.canDeleteBranch = true;
+        yield* engine.prepareOperation(standalone);
+        const first = yield* engine.submitOperation(identify(standalone));
         assert.equal(first.status, "succeeded");
-        assert.ok(first.warning?.includes("local branch cleanup is unavailable"));
-        yield* engine.submitOperation(identify(input));
-        assert.deepEqual(state.actionCalls, ["merge"]);
+        assert.equal(first.warning, undefined);
+        yield* engine.submitOperation(identify(standalone));
+        assert.deepEqual(state.actionCalls, []);
         assert.deepEqual(state.branchCalls, [false]);
+        assert.deepEqual(state.branchUrls, ["https://gitlab.example/team/repo/-/merge_requests/7"]);
       }),
     ),
 );
@@ -714,10 +741,11 @@ it.effect(
     run(({ engine, state, create }) =>
       Effect.gen(function* () {
         state.branchMode = "ambiguous";
+        state.lifecycle = "merged";
+        state.canDeleteBranch = true;
         const input = prepared("merge-delete-unknown", {
           kind: "action",
-          action: "merge",
-          deleteBranch: true,
+          action: "delete-branch",
         });
         yield* engine.prepareOperation(input);
         assert.equal((yield* engine.submitOperation(identify(input))).status, "outcome_unknown");
@@ -725,45 +753,41 @@ it.effect(
         assert.equal((yield* restarted.submitOperation(identify(input))).status, "outcome_unknown");
         const recovered = yield* restarted.recoverOperation(identify(input));
         assert.equal(recovered.status, "succeeded");
-        assert.ok(recovered.warning?.includes("not replayed"));
-        assert.deepEqual(state.actionCalls, ["merge"]);
+        assert.equal(recovered.warning, "Remote branch absence was verified.");
+        assert.deepEqual(state.actionCalls, []);
         assert.deepEqual(state.branchCalls, [false, true]);
       }),
     ),
 );
-it.effect("reports a completed close separately when branch deletion was definitely not sent", () =>
+it.effect("reports standalone branch deletion that was definitely not sent", () =>
   run(({ engine, state }) =>
     Effect.gen(function* () {
       state.branchMode = "unsent";
+      state.lifecycle = "closed";
+      state.canDeleteBranch = true;
       const input = prepared("close-delete-unsent", {
         kind: "action",
-        action: "close",
-        deleteBranch: true,
+        action: "delete-branch",
       });
       yield* engine.prepareOperation(input);
       const result = yield* engine.submitOperation(identify(input));
       assert.equal(result.status, "failed");
-      assert.ok(result.error?.includes("PR action completed"));
+      assert.ok(result.error?.includes("Fixture provider refused"));
       yield* engine.submitOperation(identify(input));
-      assert.deepEqual(state.actionCalls, ["close"]);
+      assert.deepEqual(state.actionCalls, []);
       assert.deepEqual(state.branchCalls, [false]);
     }),
   ),
 );
-it.effect("does not start branch deletion while recovering an unrecorded primary response", () =>
-  run(({ engine, state, sql }) =>
+it.effect("refuses combined GitLab close and branch deletion", () =>
+  run(({ engine, state }) =>
     Effect.gen(function* () {
       const input = prepared("merge-delete-not-started", {
         kind: "action",
-        action: "merge",
+        action: "close",
         deleteBranch: true,
       });
-      yield* engine.prepareOperation(input);
-      state.lifecycle = "merged";
-      yield* sql`UPDATE forge_operations SET status='outcome_unknown' WHERE operation_id=${input.operationId}`;
-      const result = yield* engine.recoverOperation(identify(input));
-      assert.equal(result.status, "failed");
-      assert.ok(result.error?.includes("not sent"));
+      assert.equal((yield* engine.prepareOperation(input).pipe(Effect.result))._tag, "Failure");
       assert.deepEqual(state.actionCalls, []);
       assert.deepEqual(state.branchCalls, []);
     }),

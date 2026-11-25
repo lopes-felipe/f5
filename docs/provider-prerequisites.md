@@ -57,7 +57,10 @@ that installation while it updates.
 
 - If `codex` is missing or signed out, starting a session fails with a clear error.
 - `META_API_KEY` takes precedence over a stored Muse browser sign-in.
-- OpenCode's **Server password** for an external server is stored in plain text on disk.
+- OpenCode's **Server password** for an external server sits unencrypted in F5's separate secret
+  store (not in `settings.json`, which holds only a redacted reference; restoring only
+  `settings.json` requires re-entering the password). Always use `https://` for remote OpenCode
+  servers.
 - On macOS, a quarantined `opencode` download is blocked; fix it with
   `xattr -d com.apple.quarantine $(which opencode)`.
 

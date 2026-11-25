@@ -24,13 +24,7 @@ import {
 } from "../Errors.ts";
 import type { EventNdjsonLogger } from "../Layers/EventNdjsonLogger.ts";
 import type { NotificationAdmissionLimits } from "../notificationAdmission.ts";
-
-function asObject(value: unknown): Record<string, unknown> | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return undefined;
-  }
-  return value as Record<string, unknown>;
-}
+import { asObject } from "./CodexProtocolHelpers.ts";
 
 export const PROVIDER = "codex" as const;
 
