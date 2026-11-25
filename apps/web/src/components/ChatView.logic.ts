@@ -9,6 +9,7 @@ import {
   ProjectId,
   type ProjectScript,
   type ProviderInteractionMode,
+  isKnownProviderKind,
   type RuntimeMode,
   type ServerProvider,
   type ServerProviderModel,
@@ -42,7 +43,11 @@ import { normalizeAttachedFilePaths, resolveAttachedFileReferencePath } from "..
 import { setupProjectScript } from "~/projectScripts";
 import type { ModelPickerModelOption } from "./chat/providerIconUtils";
 import { resolveRuntimeModelReport } from "./chat/runtimePresentation";
-import { resolveFallbackModelOptions, type ModelCatalogSettings } from "../modelSelection";
+import {
+  getCustomModelOptionsByInstance,
+  resolveFallbackModelOptions,
+  type ModelCatalogSettings,
+} from "../modelSelection";
 
 export const LAST_INVOKED_SCRIPT_BY_PROJECT_KEY = "t3code:last-invoked-script-by-project";
 
@@ -497,7 +502,23 @@ export function cloneComposerImageForRetry(
   }
 }
 
-const PICKER_PROVIDERS = ["codex", "claudeAgent", "cursor", "opencode", "grok"] as const;
+/**
+ * One value per provider kind. The explicit literal makes a new `ProviderKind` a compile
+ * error here instead of a provider silently missing from driver-keyed model maps.
+ */
+export function mapProviderKinds<T>(fn: (provider: ProviderKind) => T): Record<ProviderKind, T> {
+  return {
+    codex: fn("codex"),
+    claudeAgent: fn("claudeAgent"),
+    cursor: fn("cursor"),
+    opencode: fn("opencode"),
+    grok: fn("grok"),
+    antigravity: fn("antigravity"),
+    muse: fn("muse"),
+    acp: fn("acp"),
+    pi: fn("pi"),
+  };
+}
 
 type ModelPickerOptionWithCustomFlag = ModelPickerModelOption & {
   readonly isCustom?: boolean;
@@ -632,21 +653,11 @@ export function getProviderDispatchModelsByProvider(
   providers?: ReadonlyArray<ServerProvider> | null,
   serverSettings?: Pick<ServerSettings, "providers" | "providerInstances"> | null,
 ): Record<ProviderKind, ReadonlyArray<{ readonly slug: string }>> {
-  const modelsFor = (provider: ProviderKind) =>
+  return mapProviderKinds((provider) =>
     getUnfilteredModelOptionsByProvider(settings, providers, serverSettings, provider).map(
       ({ slug }) => ({ slug }),
-    );
-  return {
-    codex: modelsFor("codex"),
-    claudeAgent: modelsFor("claudeAgent"),
-    cursor: modelsFor("cursor"),
-    opencode: modelsFor("opencode"),
-    grok: modelsFor("grok"),
-    antigravity: modelsFor("antigravity"),
-    muse: modelsFor("muse"),
-    acp: modelsFor("acp"),
-    pi: modelsFor("pi"),
-  };
+    ),
+  );
 }
 
 function applyPickerModelPreferences(
@@ -693,18 +704,63 @@ export function getCustomModelOptionsByProvider(
   providers?: ReadonlyArray<ServerProvider> | null,
   serverSettings?: Pick<ServerSettings, "providers" | "providerInstances"> | null,
 ): Record<ProviderKind, ReadonlyArray<ModelPickerModelOption>> {
-  return Object.fromEntries(
-    PICKER_PROVIDERS.map((provider) => {
-      const options = getUnfilteredModelOptionsByProvider(
-        settings,
-        providers,
-        serverSettings,
-        provider,
-      );
+  return mapProviderKinds((provider) =>
+    LEGACY_CATALOG_PROVIDERS.has(provider)
+      ? applyPickerModelPreferences(
+          provider,
+          getUnfilteredModelOptionsByProvider(settings, providers, serverSettings, provider),
+          settings,
+        )
+      : [],
+  );
+}
 
-      return [provider, applyPickerModelPreferences(provider, options, settings)] as const;
-    }),
-  ) as Record<ProviderKind, ReadonlyArray<ModelPickerModelOption>>;
+/**
+ * Drivers whose default instance also lists the legacy driver-keyed catalog (app-level custom
+ * models and the static fallback). The others list only what their instance reports, so a live
+ * instance without models never offers a placeholder slug such as `acp-default`.
+ */
+const LEGACY_CATALOG_PROVIDERS: ReadonlySet<ProviderKind> = new Set([
+  "codex",
+  "claudeAgent",
+  "cursor",
+  "opencode",
+  "grok",
+]);
+
+/**
+ * The model options every provider-instance picker shows (the composer and workflow slots):
+ * each instance's own catalog, with the legacy driver-keyed options (app-level custom models
+ * and the static fallback catalog) appended to that driver's default instance.
+ */
+export function getComposerModelOptionsByInstance(
+  appSettings: Parameters<typeof getCustomModelOptionsByProvider>[0],
+  catalogSettings: ModelCatalogSettings,
+  providers: ReadonlyArray<ServerProvider> | null | undefined,
+  serverSettings?: Pick<ServerSettings, "providers" | "providerInstances"> | null,
+): ReadonlyMap<ProviderInstanceId, ReadonlyArray<ModelPickerModelOption>> {
+  const snapshots = providers ?? [];
+  const legacyOptionsByProvider = getCustomModelOptionsByProvider(
+    appSettings,
+    snapshots,
+    serverSettings,
+  );
+  const next = new Map(getCustomModelOptionsByInstance(catalogSettings, snapshots));
+  for (const provider of snapshots) {
+    if (provider.instanceId !== defaultInstanceIdForDriver(provider.driver)) continue;
+    const legacyOptions: ReadonlyArray<ModelPickerModelOption> = isKnownProviderKind(
+      provider.driver,
+    )
+      ? legacyOptionsByProvider[provider.driver as ProviderKind]
+      : [];
+    const instanceOptions = next.get(provider.instanceId) ?? [];
+    const seen = new Set(instanceOptions.map((option) => option.slug));
+    next.set(provider.instanceId, [
+      ...instanceOptions,
+      ...legacyOptions.filter((option) => !seen.has(option.slug)),
+    ]);
+  }
+  return next;
 }
 
 export function resolveComposerPickerModel(input: {

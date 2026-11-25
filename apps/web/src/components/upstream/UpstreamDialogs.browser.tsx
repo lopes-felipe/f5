@@ -216,8 +216,9 @@ it("sends each review slot's selection, freezes it for retry, and keeps workflow
   active = await render(<Harness providers={() => [claude()]} savedModel={sonnet} savedReview={saved} onStart={onStart} />);
   for (const name of ["Reviewer A", "Consolidation"]) {
     await page.getByRole("group", { name, exact: true }).getByRole("button", { name: /Claude Sonnet 4.6/ }).click();
-    await page.getByRole("option", { name: "Claude Opus 4.6", exact: true }).click();
-    await expect.element(page.getByRole("listbox")).not.toBeInTheDocument();
+    // The picker row, not a trigger already showing Opus.
+    await page.getByRole("button", { name: /^Claude Opus 4\.6 Claude/ }).click();
+    await expect.element(page.getByPlaceholder("Search models...")).not.toBeInTheDocument();
   }
   expect(getModelPreferences()).toEqual(preferences);
   await page.getByRole("button", { name: "Start port" }).click();

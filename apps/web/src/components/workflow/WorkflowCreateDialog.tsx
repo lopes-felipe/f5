@@ -77,7 +77,10 @@ import {
   getWorkflowSlotDefaultsForProvider,
   normalizeWorkflowSlotModelOptions,
   makeWorkflowSlotBuilder,
+  workflowModelOptionsByProvider,
 } from "./workflowSlots";
+import { useSettings } from "../../hooks/useSettings";
+import { selectModelCatalogSettings } from "../chat/composer/useComposerDispatchSettings";
 import {
   firstUsableWorkflowProvider,
   formatWorkflowTurnEstimate,
@@ -94,7 +97,7 @@ import { readOnlyWorkflowUnsupportedReason } from "@t3tools/shared/workflowProvi
 import { basenameOfPath } from "../../vscode-icons";
 import {
   createCachedAbsolutePathComparisonNormalizer,
-  getCustomModelOptionsByProvider,
+  getComposerModelOptionsByInstance,
   getProviderDispatchModelsByProvider,
   identityAbsolutePathNormalizer,
   resolveComposerPickerModel,
@@ -181,14 +184,30 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
     () => allProjects.filter((entry) => !isScratchProject(entry)),
     [allProjects],
   );
-  const modelOptionsByProvider = useMemo(
+  const catalogSettings = useSettings(selectModelCatalogSettings);
+  // The composer's picker options, so workflow slots list exactly what threads list.
+  const modelOptionsByInstance = useMemo(
     () =>
-      getCustomModelOptionsByProvider(
+      getComposerModelOptionsByInstance(
         settings,
+        catalogSettings,
         serverConfigQuery.data?.providers,
         serverConfigQuery.data?.settings,
       ),
-    [settings, serverConfigQuery.data?.providers, serverConfigQuery.data?.settings],
+    [
+      catalogSettings,
+      settings,
+      serverConfigQuery.data?.providers,
+      serverConfigQuery.data?.settings,
+    ],
+  );
+  const modelOptionsByProvider = useMemo(
+    () =>
+      workflowModelOptionsByProvider(
+        modelOptionsByInstance,
+        serverConfigQuery.data?.providers ?? [],
+      ),
+    [modelOptionsByInstance, serverConfigQuery.data?.providers],
   );
   const dispatchModelsByProvider = useMemo(
     () =>
@@ -1127,7 +1146,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                       provider={row.provider}
                       model={selection}
                       modelOptions={row.modelOptions}
-                      modelOptionsByProvider={modelOptionsByProvider}
+                      modelOptionsByInstance={modelOptionsByInstance}
                       providerUnavailableReason={workflowProviderUnavailableReason}
                       error={rowError}
                       onProviderModelChange={(provider, model) => {
@@ -1216,7 +1235,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                   provider={mergeProvider}
                   model={mergeSelection}
                   modelOptions={mergeModelOptions}
-                  modelOptionsByProvider={modelOptionsByProvider}
+                  modelOptionsByInstance={modelOptionsByInstance}
                   // The merge is a read-only turn for every workflow type.
                   providerUnavailableReason={workflowProviderUnavailableReason}
                   error={mergeProviderError}
@@ -1279,7 +1298,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                         provider={effectiveReaderSlot.provider}
                         model={readerSelection}
                         modelOptions={effectiveReaderSlot.modelOptions}
-                        modelOptionsByProvider={modelOptionsByProvider}
+                        modelOptionsByInstance={modelOptionsByInstance}
                         providerUnavailableReason={workflowProviderUnavailableReason}
                         error={readerProviderError}
                         onProviderModelChange={(provider, model) =>
