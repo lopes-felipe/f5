@@ -36,6 +36,7 @@ import {
   antigravityAdvertisedModes,
   antigravityThinkingLevels,
   applyAntigravityTextGenerationSelection,
+  antigravityDriverRuntimeInput,
   antigravityLaunchedVersion,
   makeAntigravityAcpRuntime,
   antigravityProfileDirectory,
@@ -220,13 +221,14 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
       const makeRuntime = (input: GrokAcpRuntimeInput) =>
         refuseStale.pipe(
           Effect.andThen(
-            makeAntigravityAcpRuntime({
-              ...input,
-              stateDir: server.stateDir,
-              instanceId,
-              environment: processEnv,
-              auth,
-            }),
+            makeAntigravityAcpRuntime(
+              antigravityDriverRuntimeInput(input, {
+                stateDir: server.stateDir,
+                instanceId,
+                environment: processEnv,
+                auth,
+              }),
+            ),
           ),
         );
       const normalizeModel = (model: string | null | undefined) =>

@@ -103,7 +103,7 @@ function ClaudeTraitsMenuContentImpl(props: ClaudeTraitsProps) {
   );
 }
 
-const ClaudeTraitsMenuContent = memo(ClaudeTraitsMenuContentImpl);
+export const ClaudeTraitsMenuContent = memo(ClaudeTraitsMenuContentImpl);
 
 export const ClaudeTraitsPicker = memo(function ClaudeTraitsPicker(
   props: ClaudeTraitsProps & {

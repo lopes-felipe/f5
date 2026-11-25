@@ -2,12 +2,16 @@ import { describe, expect, it, vi } from "vitest";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { Effect } from "effect";
+import { Effect, Layer } from "effect";
 import * as Semaphore from "effect/Semaphore";
-import { ProviderInstanceId } from "@t3tools/contracts";
+import { ProviderInstanceId, type UsageAccount } from "@t3tools/contracts";
 import { makeProviderLimits } from "./providerLimits.ts";
 import { normalizeProviderLimits, providerLimitsIdentity } from "./providerLimits.ts";
 import { normalizeResetCredits, normalizeRateLimits } from "./codexAccountUsage.ts";
+import { makeAccountHistoryRecorder } from "./accountHistory.ts";
+import { UsageAccountHistoryRepositoryLive } from "../persistence/Layers/UsageAccountHistory.ts";
+import Migration0116 from "../persistence/Migrations/116_UsageAccountHistory.ts";
+import * as SqliteClient from "../persistence/NodeSqliteClient.ts";
 
 describe("provider limits", () => {
   it.each([
@@ -409,4 +413,230 @@ it("skips the private token reader on an uncertified Antigravity version", async
     vi.unstubAllGlobals();
     await rm(profileDirectory, { recursive: true, force: true });
   }
+});
+
+describe("native Antigravity sign-in states", () => {
+  const cliToken = (expiry: string, email = "one@example.com") =>
+    JSON.stringify({
+      token: { access_token: "cli-access", refresh_token: `refresh-${email}`, expiry },
+      auth_method: "personal",
+      id_token_email: email,
+    });
+  const live = () => new Date(Date.now() + 3_600_000).toISOString();
+  const expired = () => new Date(Date.now() - 60_000).toISOString();
+  /** Refreshes once more after the token file changed, and returns the settled account. */
+  const reread = <
+    A extends {
+      readonly getSnapshot: Effect.Effect<UsageAccount>;
+      readonly invalidate: Effect.Effect<void>;
+      readonly refresh: (
+        mode: "force" | "if-stale",
+        permits: Semaphore.Semaphore,
+      ) => Effect.Effect<void>;
+    },
+  >(
+    capability: A,
+    permits: Semaphore.Semaphore,
+  ) =>
+    Effect.gen(function* () {
+      yield* capability.invalidate;
+      yield* capability.refresh("if-stale", permits);
+      return yield* settle(capability);
+    });
+  const settle = <A extends { readonly getSnapshot: Effect.Effect<UsageAccount> }>(capability: A) =>
+    Effect.gen(function* () {
+      for (let index = 0; index < 50; index++) {
+        const value = yield* capability.getSnapshot;
+        if (value.refreshState === "idle") return value;
+        yield* Effect.sleep("10 millis");
+      }
+      return yield* capability.getSnapshot;
+    });
+  const withProfile = async (run: (profileDirectory: string) => Promise<void>) => {
+    const profileDirectory = await mkdtemp(path.join(os.tmpdir(), "f5-agy-signin-"));
+    await mkdir(path.join(profileDirectory, "antigravity-acp"), { recursive: true });
+    try {
+      await run(profileDirectory);
+    } finally {
+      vi.unstubAllGlobals();
+      await rm(profileDirectory, { recursive: true, force: true });
+    }
+  };
+  const writeToken = (profileDirectory: string, text: string) =>
+    writeFile(path.join(profileDirectory, "antigravity-acp", "antigravity-oauth-token"), text);
+  const capabilityFor = (profileDirectory: string) =>
+    makeProviderLimits({
+      provider: "antigravity",
+      instanceId: ProviderInstanceId.make("antigravity-test"),
+      displayName: "Account",
+      enabled: true,
+      environment: {},
+      antigravityProfileDirectory: profileDirectory,
+      antigravityNativeReaders: async () => true,
+    });
+  const quota = {
+    buckets: [{ bucketId: "gemini-session", remainingFraction: 0.75, window: "5h" }],
+  };
+
+  it("keeps the last-known windows when the saved sign-in expires", () =>
+    withProfile(async (profileDirectory) => {
+      await writeToken(profileDirectory, cliToken(new Date(Date.now() + 3_600_000).toISOString()));
+      const fetchMock = vi.fn(async (_url: string) => new Response(JSON.stringify(quota)));
+      vi.stubGlobal("fetch", fetchMock);
+      const [live, expired] = await Effect.runPromise(
+        Effect.gen(function* () {
+          const capability = yield* capabilityFor(profileDirectory);
+          const permits = yield* Semaphore.make(1);
+          yield* capability.refresh("force", permits);
+          const live = yield* settle(capability);
+          yield* Effect.promise(() =>
+            writeToken(profileDirectory, cliToken(new Date(Date.now() - 60_000).toISOString())),
+          );
+          yield* capability.invalidate;
+          yield* capability.refresh("if-stale", permits);
+          return [live, yield* settle(capability)] as const;
+        }).pipe(Effect.scoped),
+      );
+      expect(live.sections[0]).toMatchObject({ outcome: "available", errorCode: null });
+      expect(expired.sections[0]).toMatchObject({
+        outcome: "unavailable",
+        errorCode: "credentials-expired",
+        snapshot: live.sections[0]?.snapshot,
+      });
+      expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/token"))).toBe(false);
+    }));
+
+  it("hydrates the account's persisted limits after a restart with an expired sign-in", () =>
+    withProfile(async (profileDirectory) => {
+      await writeToken(profileDirectory, cliToken(live()));
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => new Response(JSON.stringify(quota))),
+      );
+      const result = await Effect.runPromise(
+        Effect.gen(function* () {
+          yield* Migration0116;
+          const permits = yield* Semaphore.make(1);
+          const before = yield* capabilityFor(profileDirectory);
+          yield* before.refresh("force", permits);
+          const liveAccount = yield* settle(before);
+          const recorder = yield* makeAccountHistoryRecorder;
+          yield* recorder.observe(liveAccount, before.identityForSnapshot(liveAccount));
+
+          // Restart: a new capability and recorder, and the saved sign-in has expired.
+          yield* Effect.promise(() => writeToken(profileDirectory, cliToken(expired())));
+          const after = yield* capabilityFor(profileDirectory);
+          const restarted = yield* makeAccountHistoryRecorder;
+          yield* after.refresh("force", permits);
+          const expiredAccount = yield* settle(after);
+          const hydrated = restarted.hydrate(
+            expiredAccount,
+            after.identityForSnapshot(expiredAccount),
+          );
+
+          // Another account whose sign-in has also expired gets none of it.
+          yield* Effect.promise(() =>
+            writeToken(profileDirectory, cliToken(expired(), "two@example.com")),
+          );
+          const other = yield* reread(after, permits);
+          return {
+            liveAccount,
+            expiredAccount,
+            hydrated,
+            other: restarted.hydrate(other, after.identityForSnapshot(other)),
+          };
+        }).pipe(
+          Effect.scoped,
+          Effect.provide(
+            UsageAccountHistoryRepositoryLive.pipe(Layer.provideMerge(SqliteClient.layerMemory())),
+          ),
+        ),
+      );
+      expect(result.expiredAccount.sections[0]).toMatchObject({
+        errorCode: "credentials-expired",
+        snapshot: null,
+      });
+      expect(result.hydrated.sections[0]?.snapshot?.data).toEqual(
+        result.liveAccount.sections[0]?.snapshot?.data,
+      );
+      expect(result.other.sections[0]).toMatchObject({
+        errorCode: "credentials-expired",
+        snapshot: null,
+      });
+    }));
+
+  it("drops the previous account's limits when another account's sign-in has expired", () =>
+    withProfile(async (profileDirectory) => {
+      await writeToken(profileDirectory, cliToken(live()));
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => new Response(JSON.stringify(quota))),
+      );
+      const [first, switched] = await Effect.runPromise(
+        Effect.gen(function* () {
+          const capability = yield* capabilityFor(profileDirectory);
+          const permits = yield* Semaphore.make(1);
+          yield* capability.refresh("force", permits);
+          const first = yield* settle(capability);
+          yield* Effect.promise(() =>
+            writeToken(profileDirectory, cliToken(expired(), "two@example.com")),
+          );
+          const switched = yield* reread(capability, permits);
+          return [
+            { account: first, identity: capability.identityForSnapshot(first) },
+            { account: switched, identity: capability.identityForSnapshot(switched) },
+          ] as const;
+        }).pipe(Effect.scoped),
+      );
+      expect(first.account.sections[0]?.snapshot).not.toBeNull();
+      expect(switched.account.sections[0]).toMatchObject({
+        errorCode: "credentials-expired",
+        snapshot: null,
+      });
+      expect(switched.identity).not.toBe(first.identity);
+    }));
+
+  it("clears the live limits when the sign-in file is removed", () =>
+    withProfile(async (profileDirectory) => {
+      await writeToken(profileDirectory, cliToken(live()));
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => new Response(JSON.stringify(quota))),
+      );
+      const signedOut = await Effect.runPromise(
+        Effect.gen(function* () {
+          const capability = yield* capabilityFor(profileDirectory);
+          const permits = yield* Semaphore.make(1);
+          yield* capability.refresh("force", permits);
+          yield* settle(capability);
+          yield* Effect.promise(() =>
+            rm(path.join(profileDirectory, "antigravity-acp", "antigravity-oauth-token")),
+          );
+          return yield* reread(capability, permits);
+        }).pipe(Effect.scoped),
+      );
+      expect(signedOut.sections[0]).toMatchObject({
+        errorCode: "authentication-required",
+        snapshot: null,
+      });
+    }));
+
+  it("asks for sign-in when no token file exists", () =>
+    withProfile(async (profileDirectory) => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      const snapshot = await Effect.runPromise(
+        Effect.gen(function* () {
+          const capability = yield* capabilityFor(profileDirectory);
+          const permits = yield* Semaphore.make(1);
+          yield* capability.refresh("force", permits);
+          return yield* settle(capability);
+        }).pipe(Effect.scoped),
+      );
+      expect(snapshot.sections[0]).toMatchObject({
+        outcome: "unavailable",
+        errorCode: "authentication-required",
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+    }));
 });

@@ -48,6 +48,14 @@ export interface GitManagerShape {
    */
   readonly pullRequestStateChanges?: Stream.Stream<string>;
   /**
+   * The repository's forge identity, from its remotes and Git config only. Unlike `status` it
+   * never fetches, refreshes the index or updates refs, so read-only callers can use it.
+   */
+  readonly sourceControlIdentity: (
+    cwd: string,
+  ) => Effect.Effect<GitStatusResult["sourceControl"], GitManagerServiceError>;
+
+  /**
    * Read current repository Git status plus open PR metadata when available.
    */
   readonly status: (

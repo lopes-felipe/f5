@@ -1,3 +1,4 @@
+import { MessageSquareIcon, MessageSquarePlusIcon } from "lucide-react";
 import { useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import type { ThreadId } from "@t3tools/contracts";
@@ -32,6 +33,7 @@ export function SideChatMenuItems({ threadId }: { threadId: ThreadId }) {
             .finally(() => setBusy(false));
         }}
       >
+        <MessageSquarePlusIcon className="size-4 shrink-0" />
         {busy ? "Opening side chat…" : "New side chat"}
       </MenuItem>
       {children.slice(-20).map((child) => (
@@ -41,6 +43,7 @@ export function SideChatMenuItems({ threadId }: { threadId: ThreadId }) {
             useRightPanelStore.getState().openSideChat(threadId, child.id, child.title)
           }
         >
+          <MessageSquareIcon className="size-4 shrink-0" />
           {child.title}
         </MenuItem>
       ))}

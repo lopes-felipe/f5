@@ -474,6 +474,23 @@ validationLayer("CodexAdapterLive validation", (it) => {
     }),
   );
 
+  it.effect("starts read-only workflow sessions with their profile", () =>
+    Effect.gen(function* () {
+      validationManager.startSessionImpl.mockClear();
+      const adapter = yield* CodexAdapter;
+      yield* adapter.startSession({
+        provider: "codex",
+        threadId: asThreadId("readonly-stage"),
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "unattended-readonly",
+      });
+      assert.equal(
+        validationManager.startSessionImpl.mock.calls.at(-1)?.[0].workflowExecutionProfile,
+        "unattended-readonly",
+      );
+    }),
+  );
+
   it.effect("maps codex model options before starting a session", () =>
     Effect.gen(function* () {
       validationManager.startSessionImpl.mockClear();
@@ -4908,6 +4925,66 @@ it.effect("gives a read-only Codex workflow stage a read-only thread catalog", (
     assert.equal(threadCatalogCall()?.threadAccess, "full");
   }).pipe(Effect.provide(layer), Effect.scoped);
 });
+
+it.effect(
+  "gives a read-only Codex workflow stage no MCP server but F5's read-only thread catalog",
+  () => {
+    const manager = new FakeCodexManager();
+    const createSessionConfig = vi.fn((input: { readonly catalog?: string }) => ({
+      serverName: input.catalog === "thread" ? "f5_thread" : "f5_preview",
+      serverDefinition: { type: "http" as const, url: "http://127.0.0.1/mcp" },
+      env: {},
+      dispose: () => undefined,
+    }));
+    const previewMcpHttpServer = {
+      supportsThreadCatalog: true,
+      createSessionConfig,
+    } as unknown as NonNullable<CodexAdapterLiveOptions["previewMcpHttpServer"]>;
+    const layer = makeCodexAdapterLive({ manager, previewMcpHttpServer }).pipe(
+      Layer.provideMerge(
+        ServerConfig.layerTest(
+          process.cwd(),
+          { prefix: "codex-readonly-mcp-" },
+          { mode: "desktop" },
+        ),
+      ),
+      Layer.provideMerge(providerSessionDirectoryTestLayer),
+      Layer.provideMerge(NodeServices.layer),
+    );
+    const lastStart = () =>
+      manager.startSessionImpl.mock.calls.at(-1)?.[0] as {
+        mcpServers?: Record<string, unknown>;
+        disablePlugins?: boolean;
+      };
+    // A server from the user's Codex settings and the project's provider options.
+    const providerOptions = {
+      mcpServers: { github: { type: "stdio" as const, command: "github-mcp" } },
+    };
+    return Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      yield* adapter.startSession({
+        threadId: asThreadId("workflow-stage"),
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "unattended-readonly",
+        providerOptions,
+      });
+      assert.deepEqual(Object.keys(lastStart().mcpServers ?? {}), ["f5_thread"]);
+      assert.equal(lastStart().disablePlugins, true);
+
+      yield* adapter.startSession({
+        threadId: asThreadId("normal"),
+        runtimeMode: "full-access",
+        providerOptions,
+      });
+      assert.deepEqual(Object.keys(lastStart().mcpServers ?? {}).toSorted(), [
+        "f5_preview",
+        "f5_thread",
+        "github",
+      ]);
+      assert.equal(lastStart().disablePlugins, undefined);
+    }).pipe(Effect.provide(layer), Effect.scoped);
+  },
+);
 
 it.effect(
   "has Codex start node_repl only for consented, interactive desktop sessions without a node_repl of their own",

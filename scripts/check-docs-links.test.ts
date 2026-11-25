@@ -19,10 +19,13 @@ describe("documentation hygiene", () => {
     expect(findUndocumentedBuiltInDrivers(repoRoot)).toEqual([]);
   });
 
-  it("respects CommonMark fence matching, tilde fences, inline code, balanced parens, and reference links", () => {
+  it("respects CommonMark fence matching, tilde fences, single/multiline inline code, balanced parens, angle-bracketed destinations, and reference links", () => {
     const sample = [
-      "Real [guide](docs/guide.md) and [parens](docs/file(v1).md) and [ref][missing-ref].",
+      "Real [guide](docs/guide.md) and [parens](docs/file(v1).md) and [angle](<docs/angle.md>) and [ref][missing-ref].",
       "Inline `[ignored](missing-inline.md)` link.",
+      "`multiline",
+      "[ignored-multiline](missing-multiline.md)",
+      "span`",
       "````markdown",
       "```",
       "[still-fenced](missing-nested.md)",
@@ -33,17 +36,18 @@ describe("documentation hygiene", () => {
       "[tilde-fenced](missing-tilde.md)",
       "~~~",
       "After [valid](docs/after.md).",
-      "[missing-ref]: docs/missing-ref.md",
+      "[missing-ref]: <docs/missing-ref.md>",
     ].join("\n");
     expect(extractMarkdownLinkTargets(sample)).toEqual([
       "docs/guide.md",
       "docs/file(v1).md",
+      "docs/angle.md",
       "docs/after.md",
       "docs/missing-ref.md",
     ]);
   });
 
-  it("handles percent-encoded paths, malformed escapes, and unclosed parens without backtracking", () => {
+  it("handles percent-encoded paths, angle-bracketed inline destinations, malformed escapes, and unclosed parens without backtracking", () => {
     const tmpRoot = mkdtempSync(path.join(os.tmpdir(), "f5-docs-links-"));
     try {
       mkdirSync(path.join(tmpRoot, "docs"), { recursive: true });
@@ -53,6 +57,8 @@ describe("documentation hygiene", () => {
         path.join(tmpRoot, "README.md"),
         [
           "[Encoded](docs/My%20Guide.md?ref=1#top)",
+          "[AngleValid](<docs/My Guide.md>)",
+          "[AngleMissing](<docs/missing-angle.md>)",
           "[Ordinary](docs/ordinary.md)",
           "[Malformed](docs/bad%E0%A4%A.md)",
           "[Ref][broken-ref]",
@@ -65,7 +71,11 @@ describe("documentation hygiene", () => {
       const started = performance.now();
       const broken = findBrokenDocLinks(tmpRoot);
       expect(performance.now() - started).toBeLessThan(1_000);
-      expect(broken).toEqual(["README.md -> docs/bad%E0%A4%A.md", "README.md -> docs/missing.md"]);
+      expect(broken).toEqual([
+        "README.md -> docs/missing-angle.md",
+        "README.md -> docs/bad%E0%A4%A.md",
+        "README.md -> docs/missing.md",
+      ]);
     } finally {
       rmSync(tmpRoot, { recursive: true, force: true });
     }

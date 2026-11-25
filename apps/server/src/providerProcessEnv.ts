@@ -23,6 +23,7 @@ const BLOCKED_F5_SERVER_ENV = new Set<string>([
   "F5_PORT",
   "F5_HOST",
   "F5_NO_BROWSER",
+  "F5_AUTO_BOOTSTRAP_PROJECT_FROM_CWD",
   "F5_STATE_DIR",
   "F5_HOME",
   "F5_LOG_WS_EVENTS",
@@ -78,10 +79,16 @@ export function buildProviderChildProcessEnv(
   }
 
   for (const [key, value] of Object.entries(overrides)) {
-    if (CODEX_PACKAGE_MANAGER_ENV.has(key.toUpperCase())) continue;
+    const normalizedKey = key.toUpperCase();
+    if (
+      CODEX_PACKAGE_MANAGER_ENV.has(normalizedKey) ||
+      SERVER_AUTH_TOKEN_ENV_NAMES.some((name) => name === normalizedKey)
+    ) {
+      continue;
+    }
     if (process.platform === "win32") {
       for (const inherited of Object.keys(env))
-        if (inherited.toUpperCase() === key.toUpperCase()) delete env[inherited];
+        if (inherited.toUpperCase() === normalizedKey) delete env[inherited];
     }
     if (/^F5_(?:LAUNCHER_|UPDATE_|STANDALONE(?:_DIR)?$|INSTALL_ROOT$)/i.test(key)) continue;
     if (value === undefined) {
