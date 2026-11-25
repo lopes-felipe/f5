@@ -604,6 +604,9 @@ export const ServerSettings = Schema.Struct({
   autoSettleAfterDays: AutoSettleAfterDays.pipe(Schema.withDecodingDefault(() => null)),
   autoSettleKeepPullRequests: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   usagePriceOverrides: Schema.Array(UsagePriceOverride).pipe(Schema.withDecodingDefault(() => [])),
+  usageLocalProviderHistory: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  usageCursorAccountHistory: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  usageListPricing: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   usageModelAliases: UsageModelAliases.pipe(Schema.withDecodingDefault(() => ({}))),
   usageHistoryRetentionDays: UsageHistoryRetention.pipe(
     Schema.withDecodingDefault(() => DEFAULT_USAGE_HISTORY_RETENTION_DAYS),
@@ -854,6 +857,9 @@ export const ServerSettingsPatch = Schema.Struct({
   autoSettleAfterDays: Schema.optionalKey(AutoSettleAfterDays),
   autoSettleKeepPullRequests: Schema.optionalKey(Schema.Boolean),
   usagePriceOverrides: Schema.optionalKey(Schema.Array(UsagePriceOverride)),
+  usageLocalProviderHistory: Schema.optionalKey(Schema.Boolean),
+  usageCursorAccountHistory: Schema.optionalKey(Schema.Boolean),
+  usageListPricing: Schema.optionalKey(Schema.Boolean),
   /** Replaces every mapping. */
   usageModelAliases: Schema.optionalKey(UsageModelAliases),
   usageHistoryRetentionDays: Schema.optionalKey(UsageHistoryRetention),

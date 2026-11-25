@@ -36,6 +36,8 @@ function makeGuest(options?: { attachFailures?: number }) {
   const guest = Object.assign(guestEvents, {
     debugger: debuggerApi,
     isDestroyed: () => false,
+    getBackgroundThrottling: () => true,
+    setBackgroundThrottling: vi.fn(),
     close: vi.fn(),
     capturePage: async () => ({
       getSize: () => ({ width: 640, height: 480 }),
@@ -147,6 +149,9 @@ describe("PreviewRuntime", () => {
     const { runtime, mock, frames } = makeRuntime();
     await runtime.initialize();
     const started = await runtime.startRecording("tab-1");
+    expect(mock.guest.setBackgroundThrottling).toHaveBeenCalledExactlyOnceWith(false);
+    await runtime.captureScreenshot("tab-1");
+    expect(mock.guest.setBackgroundThrottling).toHaveBeenCalledTimes(1);
 
     mock.debuggerApi.emit("message", {}, "Page.screencastFrame", {
       sessionId: 7,
@@ -156,6 +161,7 @@ describe("PreviewRuntime", () => {
     await Promise.resolve();
     await runtime.appendRecordingChunk(started.recordingId, new Uint8Array([1, 2, 3]));
     const artifact = await runtime.stopRecording(started.recordingId);
+    expect(mock.guest.setBackgroundThrottling).toHaveBeenLastCalledWith(true);
 
     expect(frames).toHaveLength(1);
     expect(mock.commands).toContainEqual({

@@ -696,6 +696,7 @@ export function resetProvisionalThreadDetailRefreshesForTests(): void {
 type ThreadHistoryBackfillOptions = {
   includeCommandExecutionHistory?: boolean;
   signal?: AbortSignal;
+  throughUserMessage?: boolean;
 };
 
 export function shouldBackfillThreadHistory(
@@ -790,19 +791,39 @@ export async function ensureThreadHistoryBackfill(
     store.markThreadHistoryBackfilling(threadId);
 
     try {
-      const nextInput = buildThreadHistoryBackfillInput(threadId, threadHistory, options);
-      if (nextInput === null) {
-        useStore.getState().markThreadHistoryComplete(threadId, expectedGeneration);
-        return;
-      }
-      const page = await fetchThreadHistoryPageRpc(nextInput, options?.signal);
-      if (options?.signal?.aborted) return;
-      if (!threadHistoryPageHasProgress(page, options) && threadHistoryPageHasMore(page, options)) {
-        throw new Error("Thread history page made no progress.");
-      }
-      useStore.getState().prependOlderThreadHistoryPage(threadId, page, expectedGeneration);
-      if (!threadHistoryPageHasMore(page, options)) {
-        useStore.getState().markThreadHistoryComplete(threadId, expectedGeneration);
+      let history = threadHistory;
+      while (!options?.signal?.aborted) {
+        const nextInput = buildThreadHistoryBackfillInput(threadId, history, options);
+        if (nextInput === null) {
+          useStore.getState().markThreadHistoryComplete(threadId, expectedGeneration);
+          return;
+        }
+        const page = await fetchThreadHistoryPageRpc(nextInput, options?.signal);
+        if (options?.signal?.aborted) return;
+        const hasMore = threadHistoryPageHasMore(page, options);
+        if (!threadHistoryPageHasProgress(page, options) && hasMore) {
+          throw new Error("Thread history page made no progress.");
+        }
+        useStore.getState().prependOlderThreadHistoryPage(threadId, page, expectedGeneration);
+        if (!hasMore) {
+          useStore.getState().markThreadHistoryComplete(threadId, expectedGeneration);
+          return;
+        }
+        if (
+          !options?.throughUserMessage ||
+          !page.hasOlderMessages ||
+          page.messages.some((message) => message.role === "user")
+        )
+          return;
+        const updatedThread = useStore.getState().threads.find((entry) => entry.id === threadId);
+        const updatedHistory = updatedThread?.history;
+        if (!updatedHistory || updatedHistory.generation !== expectedGeneration) return;
+        const previousCursor = history.oldestLoadedMessageCursor;
+        const nextCursor = updatedHistory.oldestLoadedMessageCursor;
+        if (!nextCursor || nextCursor.messageId === previousCursor?.messageId) {
+          throw new Error("Thread message history page did not advance.");
+        }
+        history = updatedHistory;
       }
     } catch (error) {
       if (isAbortError(error)) {
@@ -820,14 +841,6 @@ export async function ensureThreadHistoryBackfill(
 
   inFlightThreadHistoryBackfills.set(backfillKey, backfillPromise);
   return backfillPromise;
-}
-
-export function retryThreadHistoryBackfill(
-  queryClient: QueryClient,
-  threadId: ThreadId,
-  options?: ThreadHistoryBackfillOptions,
-): Promise<void> {
-  return ensureThreadHistoryBackfill(queryClient, threadId, options);
 }
 
 export async function loadOlderThreadActivitiesPage(
@@ -860,7 +873,12 @@ export async function loadOlderThreadActivitiesPage(
   if (page.activities.length === 0 && page.hasOlderActivities) {
     throw new Error("Activity history page made no progress.");
   }
-  useStore.getState().prependOlderThreadActivitiesPage(threadId, page, expectedGeneration);
+  const store = useStore.getState();
+  const currentCursor = store.threads.find((entry) => entry.id === threadId)?.history
+    ?.oldestLoadedActivityCursor;
+  if (currentCursor?.activityId === history.oldestLoadedActivityCursor.activityId) {
+    store.prependOlderThreadActivitiesPage(threadId, page, expectedGeneration);
+  }
 }
 
 export async function loadThreadHistoryAroundMessage(

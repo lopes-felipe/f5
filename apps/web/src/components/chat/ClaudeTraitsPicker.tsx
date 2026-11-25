@@ -79,7 +79,7 @@ function ClaudeTraitsMenuContentImpl(props: {
   );
 }
 
-export const ClaudeTraitsMenuContent = memo(ClaudeTraitsMenuContentImpl);
+const ClaudeTraitsMenuContent = memo(ClaudeTraitsMenuContentImpl);
 
 export const ClaudeTraitsPicker = memo(function ClaudeTraitsPicker(props: {
   threadId: ThreadId;

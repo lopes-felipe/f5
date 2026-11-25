@@ -4399,6 +4399,28 @@ describe("MessagesTimeline row stability", () => {
     return { ...entry, entry: { ...entry.entry, turnId } };
   }
 
+  it("keeps the load control and reveal state when the cursor is filtered and work prepends", () => {
+    const cache = createTimelineRowCache();
+    const work = makeReadWorkEntry("existing-work", "src/existing.ts", 2);
+    const inputs = externalsInputs({
+      olderActivityBoundaryId: "filtered-activity",
+      expandedWorkGroups: { "existing-work": Infinity },
+      workGroupCollapseOverrides: { "existing-work": true },
+    });
+    const before = buildRows([work], cache);
+    const previous = buildTimelineRowExternals(before, inputs, new Map());
+    expect(previous.get("existing-work")?.externals).toMatchObject({
+      containsOlderActivityBoundary: true,
+    });
+    const rows = buildRows([makeReadWorkEntry("earlier-work", "src/earlier.ts", 1), work], cache);
+    const next = buildTimelineRowExternals(rows, inputs, previous);
+    expect(next.get("earlier-work")?.externals).toMatchObject({
+      containsOlderActivityBoundary: true,
+      expandedCount: Infinity,
+      collapseOverride: true,
+    });
+  });
+
   it("keeps earlier row objects and versions when the last message streams", () => {
     const cache = createTimelineRowCache();
     const user = makeUserEntry("row-user", "hello", 0);
