@@ -94,7 +94,8 @@ export function antigravityLaunchEnvironment(input: {
     ...(input.auth.authMethod === "oauth-personal"
       ? { SSH_CONNECTION: input.base.SSH_CONNECTION || "127.0.0.1 0 127.0.0.1 0" }
       : {}),
-    AGY_CLI_DISABLE_AUTO_UPDATE: "1",
+    // agy only honors the literal "true"; "1" leaves self-update (and its update lookups) on.
+    AGY_CLI_DISABLE_AUTO_UPDATE: "true",
     BROWSER: input.browserCommand,
     PYTHONUNBUFFERED: "1",
   };

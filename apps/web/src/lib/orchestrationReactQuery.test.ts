@@ -1,6 +1,9 @@
 import {
   EventId,
+  DEFAULT_PROVIDER_INTERACTION_MODE,
+  DEFAULT_RUNTIME_MODE,
   OrchestrationCommandExecutionId,
+  ProjectId,
   ThreadId,
   TurnId,
   type OrchestrationCommandExecution,
@@ -12,6 +15,7 @@ import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import * as nativeApi from "../nativeApi";
+import { useStore } from "../store";
 import {
   applyThreadCommandExecutionEventToQueryCache,
   buildThreadHistoryBackfillInput,
@@ -24,6 +28,7 @@ import {
   scheduleThreadCommandExecutionRefreshIfMissing,
   shouldBackfillThreadHistory,
   threadCommandExecutionQueryOptions,
+  threadDetailQueryOptions,
 } from "./orchestrationReactQuery";
 
 const threadId = ThreadId.makeUnsafe("thread-1");
@@ -577,6 +582,70 @@ describe("thread history backfill helpers", () => {
 });
 
 describe("isProvisionalThreadDetail", () => {
+  it("fetches again when a prior lookup ran before thread creation", async () => {
+    const queryClient = new QueryClient();
+    const options = threadDetailQueryOptions(threadId);
+    const absent = {
+      thread: null,
+      detailSequence: 0,
+      messages: [],
+      checkpoints: [],
+      commandExecutions: [],
+    };
+    const created = { ...absent, detailSequence: 12 };
+    let resolveEarlyRead!: (details: typeof absent) => void;
+    const pending = new Promise<typeof absent>((resolve) => {
+      resolveEarlyRead = resolve;
+    });
+    const getThreadTailDetails = vi
+      .fn()
+      .mockReturnValueOnce(pending)
+      .mockResolvedValueOnce(created);
+    vi.spyOn(nativeApi, "ensureNativeApi").mockReturnValue({
+      orchestration: { getThreadTailDetails },
+    } as unknown as ReturnType<typeof nativeApi.ensureNativeApi>);
+
+    const savedState = useStore.getState();
+    try {
+      const earlyRead = queryClient.fetchQuery(options);
+      await vi.waitFor(() => expect(getThreadTailDetails).toHaveBeenCalledOnce());
+      const occurredAt = "2026-03-20T10:00:01.000Z";
+      savedState.applyDomainEvent({
+        type: "thread.created",
+        sequence: 12,
+        eventId: EventId.makeUnsafe("event-thread-created"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt,
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        payload: {
+          threadId,
+          projectId: ProjectId.makeUnsafe("project-1"),
+          title: "New thread",
+          model: "gpt-5",
+          runtimeMode: DEFAULT_RUNTIME_MODE,
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          branch: null,
+          worktreePath: null,
+          createdAt: occurredAt,
+          updatedAt: occurredAt,
+        },
+      });
+      resolveEarlyRead(absent);
+      expect(await earlyRead).toMatchObject(absent);
+      expect(await queryClient.fetchQuery(options)).toMatchObject(created);
+      expect(await queryClient.fetchQuery(options)).toMatchObject(created);
+      expect(getThreadTailDetails).toHaveBeenCalledTimes(2);
+    } finally {
+      resolveEarlyRead(absent);
+      queryClient.clear();
+      useStore.setState(savedState, true);
+    }
+  });
+
   it("flags zero-sequence detail payloads as provisional", () => {
     expect(isProvisionalThreadDetail({ detailSequence: 0 })).toBe(true);
     expect(isProvisionalThreadDetail({ detailSequence: 12 })).toBe(false);

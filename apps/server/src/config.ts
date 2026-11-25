@@ -24,13 +24,17 @@ export interface ServerDerivedPaths {
   readonly secretsDir?: string;
   readonly worktreesDir: string;
   readonly attachmentsDir: string;
+  /**
+   * Durable copies of pasted workflow attachments, referenced by absolute path in
+   * workflow prompts. Kept outside `attachmentsDir` so upload and registry sweeps skip it.
+   */
+  readonly workflowAttachmentsDir?: string;
   readonly logsDir: string;
   readonly serverLogPath: string;
   readonly providerLogsDir: string;
   readonly providerEventLogPath: string;
   readonly providerStatusCacheDir?: string;
   readonly terminalLogsDir: string;
-  readonly anonymousIdPath: string;
 }
 
 /**
@@ -89,13 +93,13 @@ export const deriveServerPaths = Effect.fn(function* ({
     secretsDir: join(stateDir, "secrets"),
     worktreesDir: join(profile.isDefault ? baseDir : stateDir, "worktrees"),
     attachmentsDir,
+    workflowAttachmentsDir: join(stateDir, "workflow-attachments"),
     logsDir,
     serverLogPath: join(logsDir, "server.log"),
     providerLogsDir,
     providerEventLogPath: join(providerLogsDir, "events.log"),
     providerStatusCacheDir,
     terminalLogsDir: join(logsDir, "terminals"),
-    anonymousIdPath: join(stateDir, "anonymous-id"),
   };
 });
 

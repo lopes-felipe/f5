@@ -69,7 +69,7 @@ export function threadDetailQueryOptions(threadId: ThreadId) {
     queryKey: orchestrationQueryKeys.threadDetails(threadId),
     queryFn: ({ signal }) => fetchThreadTailDetailsRpc(threadId, signal),
     gcTime: 30_000,
-    staleTime: Infinity,
+    staleTime: (query) => (query.state.data?.detailSequence === 0 ? 0 : Infinity),
   });
 }
 
@@ -274,8 +274,8 @@ async function fetchThreadTailDetailsRpc(
   priority: "interactive" | "background" = "interactive",
 ): Promise<OrchestrationThreadTailDetails> {
   const generation = useStore.getState().backendGeneration;
-  const historyGeneration = useStore.getState().threads.find((thread) => thread.id === threadId)
-    ?.history?.generation;
+  const initialThread = useStore.getState().threads.find((thread) => thread.id === threadId);
+  const historyGeneration = initialThread?.history?.generation;
   const api = ensureNativeApi();
   for (let attempt = 0; attempt < 2; attempt++) {
     // Interactive hydration never joins a background warm: that request may
@@ -289,8 +289,9 @@ async function fetchThreadTailDetailsRpc(
     if (
       signal?.aborted ||
       generation !== useStore.getState().backendGeneration ||
-      historyGeneration !==
-        useStore.getState().threads.find((thread) => thread.id === threadId)?.history?.generation
+      (initialThread !== undefined &&
+        historyGeneration !==
+          useStore.getState().threads.find((thread) => thread.id === threadId)?.history?.generation)
     ) {
       throw makeAbortError();
     }
@@ -580,7 +581,7 @@ async function fetchThreadDetailInternal(
 
   return queryClient.fetchQuery({
     ...threadDetailQueryOptions(threadId),
-    staleTime: options?.force ? 0 : Infinity,
+    ...(options?.force ? { staleTime: 0 } : {}),
   });
 }
 
@@ -696,6 +697,7 @@ export function resetProvisionalThreadDetailRefreshesForTests(): void {
 type ThreadHistoryBackfillOptions = {
   includeCommandExecutionHistory?: boolean;
   signal?: AbortSignal;
+  throughUserMessage?: boolean;
 };
 
 export function shouldBackfillThreadHistory(
@@ -790,19 +792,39 @@ export async function ensureThreadHistoryBackfill(
     store.markThreadHistoryBackfilling(threadId);
 
     try {
-      const nextInput = buildThreadHistoryBackfillInput(threadId, threadHistory, options);
-      if (nextInput === null) {
-        useStore.getState().markThreadHistoryComplete(threadId, expectedGeneration);
-        return;
-      }
-      const page = await fetchThreadHistoryPageRpc(nextInput, options?.signal);
-      if (options?.signal?.aborted) return;
-      if (!threadHistoryPageHasProgress(page, options) && threadHistoryPageHasMore(page, options)) {
-        throw new Error("Thread history page made no progress.");
-      }
-      useStore.getState().prependOlderThreadHistoryPage(threadId, page, expectedGeneration);
-      if (!threadHistoryPageHasMore(page, options)) {
-        useStore.getState().markThreadHistoryComplete(threadId, expectedGeneration);
+      let history = threadHistory;
+      while (!options?.signal?.aborted) {
+        const nextInput = buildThreadHistoryBackfillInput(threadId, history, options);
+        if (nextInput === null) {
+          useStore.getState().markThreadHistoryComplete(threadId, expectedGeneration);
+          return;
+        }
+        const page = await fetchThreadHistoryPageRpc(nextInput, options?.signal);
+        if (options?.signal?.aborted) return;
+        const hasMore = threadHistoryPageHasMore(page, options);
+        if (!threadHistoryPageHasProgress(page, options) && hasMore) {
+          throw new Error("Thread history page made no progress.");
+        }
+        useStore.getState().prependOlderThreadHistoryPage(threadId, page, expectedGeneration);
+        if (!hasMore) {
+          useStore.getState().markThreadHistoryComplete(threadId, expectedGeneration);
+          return;
+        }
+        if (
+          !options?.throughUserMessage ||
+          !page.hasOlderMessages ||
+          page.messages.some((message) => message.role === "user")
+        )
+          return;
+        const updatedThread = useStore.getState().threads.find((entry) => entry.id === threadId);
+        const updatedHistory = updatedThread?.history;
+        if (!updatedHistory || updatedHistory.generation !== expectedGeneration) return;
+        const previousCursor = history.oldestLoadedMessageCursor;
+        const nextCursor = updatedHistory.oldestLoadedMessageCursor;
+        if (!nextCursor || nextCursor.messageId === previousCursor?.messageId) {
+          throw new Error("Thread message history page did not advance.");
+        }
+        history = updatedHistory;
       }
     } catch (error) {
       if (isAbortError(error)) {
@@ -820,14 +842,6 @@ export async function ensureThreadHistoryBackfill(
 
   inFlightThreadHistoryBackfills.set(backfillKey, backfillPromise);
   return backfillPromise;
-}
-
-export function retryThreadHistoryBackfill(
-  queryClient: QueryClient,
-  threadId: ThreadId,
-  options?: ThreadHistoryBackfillOptions,
-): Promise<void> {
-  return ensureThreadHistoryBackfill(queryClient, threadId, options);
 }
 
 export async function loadOlderThreadActivitiesPage(
@@ -860,7 +874,12 @@ export async function loadOlderThreadActivitiesPage(
   if (page.activities.length === 0 && page.hasOlderActivities) {
     throw new Error("Activity history page made no progress.");
   }
-  useStore.getState().prependOlderThreadActivitiesPage(threadId, page, expectedGeneration);
+  const store = useStore.getState();
+  const currentCursor = store.threads.find((entry) => entry.id === threadId)?.history
+    ?.oldestLoadedActivityCursor;
+  if (currentCursor?.activityId === history.oldestLoadedActivityCursor.activityId) {
+    store.prependOlderThreadActivitiesPage(threadId, page, expectedGeneration);
+  }
 }
 
 export async function loadThreadHistoryAroundMessage(
@@ -1018,7 +1037,7 @@ export function useThreadDetail(threadId: ThreadId | null | undefined) {
     enabled: Boolean(threadId) && !detailsLoaded,
     gcTime: 30_000,
     // Revalidate cached absence when navigating back to an unlisted thread.
-    staleTime: threadExists ? Infinity : 0,
+    staleTime: (query) => (threadExists && query.state.data?.detailSequence !== 0 ? Infinity : 0),
     // A tail older than the shell cannot seed missing metadata safely.
     // Retry until a current tail arrives, without polling listed threads.
     refetchInterval: (query) =>
@@ -1048,7 +1067,7 @@ export function useThreadDetail(threadId: ThreadId | null | undefined) {
       hasOlderActivities: query.data.hasOlderActivities,
       hasOlderCommandExecutions: query.data.hasOlderCommandExecutions,
     });
-    if (!isProvisionalThreadDetail(query.data)) {
+    if (!threadExists || !isProvisionalThreadDetail(query.data)) {
       return;
     }
     void scheduleThreadDetailRefreshIfProvisional(queryClient, threadId, query.data).catch(
@@ -1059,7 +1078,7 @@ export function useThreadDetail(threadId: ThreadId | null | undefined) {
         console.warn("Failed to refresh provisional thread details.", { threadId, error });
       },
     );
-  }, [query.data, queryClient, syncThreadTailDetails, threadId]);
+  }, [query.data, queryClient, syncThreadTailDetails, threadExists, threadId]);
 
   useEffect(() => {
     if (!threadId || !query.isError || query.isFetching) {

@@ -1,5 +1,5 @@
 import { installHeapSnapshotSignal } from "../heapSnapshot.ts";
-import { resolveOtlpConfiguration } from "@t3tools/shared/observability";
+import { ignoredOtlpEnvironment, resolveOtlpConfiguration } from "@t3tools/shared/observability";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { makeOtlpTraceSink, otlpMetricsLayer, otlpResource } from "../OtlpExport.ts";
 import { makeTraceSink } from "../TraceSink.ts";
@@ -28,6 +28,12 @@ export const ObservabilityLive = Layer.unwrap(
       saved?._tag === "Failure"
         ? resolveOtlpConfiguration({}, { OTEL_SDK_DISABLED: "true" })
         : resolveOtlpConfiguration(saved?.success.observability, process.env);
+    const ignored = ignoredOtlpEnvironment(process.env);
+    if (ignored.length > 0)
+      yield* Effect.logWarning(
+        "Ignoring OTLP endpoint and header environment variables; set the collector in Settings → Diagnostics",
+        { variables: ignored },
+      );
     const resource = otlpResource(serverPackageVersion, config.profile?.id, remote.attributes);
     if (!config.observabilityEnabled && !remote.traces.url && !remote.metrics.url)
       return Layer.empty;

@@ -1,0 +1,234 @@
+{
+  "baseSha": "1e78f37618f087f8606a0bc5a4e49f546c9e2781",
+  "commits": [
+    {
+      "pr": 39382,
+      "sha": "c00f1172eed4188e6c9bdd15e6ee55fbd0ab9a5e",
+      "subject": "fix(mobile): TalkBack can reach the status pill above the composer (#39382)",
+      "topic": "pr-39382"
+    },
+    {
+      "pr": 41027,
+      "sha": "02a4c18d644e1b4af2dfa558c95e68e827042215",
+      "subject": "fix(mobile): cancel pending media actions when swiping gallery pages (#41027)",
+      "topic": "pr-41027"
+    },
+    {
+      "pr": 41021,
+      "sha": "c7df7004af5e5d086da00d556479efa0de4e8d2c",
+      "subject": "fix(web): a photo picked on a phone attaches even when the composer collapses (#41021)",
+      "topic": "pr-41021"
+    },
+    {
+      "pr": 38791,
+      "sha": "024dba275d9e5ade1b29a0a240c5f8661cdbdb51",
+      "subject": "perf(server): a run's provider turn lookup is linear, not quadratic (#38791)",
+      "topic": "pr-38791"
+    },
+    {
+      "pr": 41018,
+      "sha": "2e62a7189366a3541329479c7b6b4d40cab2916a",
+      "subject": "fix(mobile): keep media actions on each sent image page (#41018)",
+      "topic": "pr-41018"
+    },
+    {
+      "pr": 40986,
+      "sha": "55880c41b401469225a63e8128f2119290a7ad32",
+      "subject": "fix(client-runtime): count ambiguous projects in chat file links (#40986)",
+      "topic": "pr-40986"
+    },
+    {
+      "pr": 41020,
+      "sha": "5bd0616f0524d312e0ee4471ca96f11bbdcb261c",
+      "subject": "fix: restart linked thread reads when trying again (#41020)",
+      "topic": "pr-39406"
+    },
+    {
+      "pr": 41025,
+      "sha": "000ba180beef5c9491970b66c2d640032658696e",
+      "subject": "fix(web): keep the conversation when a pairing tab closes (#41025)",
+      "topic": "pr-39406"
+    },
+    {
+      "pr": 41015,
+      "sha": "7ed41b7c238dc6e61c750d8fad806811e9fd1b6f",
+      "subject": "fix(mobile): scope Git result banners to their originating thread (#41015)",
+      "topic": "pr-41015"
+    },
+    {
+      "pr": 41005,
+      "sha": "28706aceb6fb3babf2cbae0dc0c3edd93b9b6d5f",
+      "subject": "fix(server): unlinking an environment ends its session on the other machine (#41005)",
+      "topic": "pr-41005"
+    },
+    {
+      "pr": 40945,
+      "sha": "87554a7b86d17ce9efc9f72d58d1f2f0f47f7e99",
+      "subject": "fix(web): editing a queued message keeps its attachment chips resolved (#40945)",
+      "topic": "pr-40945"
+    },
+    {
+      "pr": 40998,
+      "sha": "01794015f8a2eccbea347d719e2321499040bc3e",
+      "subject": "fix(web): prioritize visible saved notebook outputs (#40998)",
+      "topic": "pr-40998"
+    },
+    {
+      "pr": 40991,
+      "sha": "9b7f5eb4479c5287340a863407ad083e2fdbeb7a",
+      "subject": "fix(mobile): bound app-owned composer attachment filenames (#40991)",
+      "topic": "pr-40991"
+    },
+    {
+      "pr": 41008,
+      "sha": "25440f5bd5050e262bab4a01b21895f52476e3b7",
+      "subject": "fix(web): navigate Excel sheets from the focused tab (#41008)",
+      "topic": "pr-41008"
+    },
+    {
+      "pr": 40989,
+      "sha": "380676302298e5515fd58cf02009e9961743db53",
+      "subject": "fix(client-runtime): skip waiting for lower-priority linked addresses (#40989)",
+      "topic": "pr-39406"
+    },
+    {
+      "pr": 40973,
+      "sha": "4e1c1fea7aa21189b2b363aefd38892377625307",
+      "subject": "fix(mobile): show linked thread history page errors (#40973)",
+      "topic": "pr-40973"
+    },
+    {
+      "pr": 40965,
+      "sha": "bc13afaa3c42be200956b6181d21642883d77903",
+      "subject": "Invalidate pending theme imports when a replacement is too large (#40965)",
+      "topic": "pr-40965"
+    },
+    {
+      "pr": 40951,
+      "sha": "69720261214c047e583b494675ea9624bbe3a00a",
+      "subject": "fix(web): show clone failure after progress is dismissed (#40951)",
+      "topic": "pr-40951"
+    },
+    {
+      "pr": 40952,
+      "sha": "ec35ad6618ea8ca72069b3f35198786deabb550a",
+      "subject": "fix(server): t3 doctor no longer reports a database just under 1 GiB as \"1024.0 MiB\" (#40952)",
+      "topic": "pr-40952"
+    },
+    {
+      "pr": 40905,
+      "sha": "7ddc81d639aa75ca6e0cbffb0f394ea3f0d83308",
+      "subject": "fix(web): tool calls stay grouped after a usage-limit pause again (#40905)",
+      "topic": "pr-40905"
+    },
+    {
+      "pr": 40924,
+      "sha": "9de4ec1bfa0b222e71f8fc2ed71257c1c1d1a281",
+      "subject": "fix(web,mobile): @-file mentions show by name in message previews, not as raw links (#40924)",
+      "topic": "pr-40924"
+    },
+    {
+      "pr": 40934,
+      "sha": "cc4bb17955287e5a7ad2a64b05f491879ee888fa",
+      "subject": "fix(server): thread reads no longer attribute T3 Code's compact-before-send /compact to the user (#40934)",
+      "topic": "pr-40934"
+    },
+    {
+      "pr": 40932,
+      "sha": "ad446450e1cd66763cf03ed5c4b012913826f5d7",
+      "subject": "fix(server): idle /ws connections behind a reverse proxy no longer drop every 60s (#40932)",
+      "topic": "pr-40932"
+    },
+    {
+      "pr": 40918,
+      "sha": "5ddcc2598d0338614c2b2ea84da9470fd16be0da",
+      "subject": "fix(desktop): WSL is not offered or started when only the Windows install stub exists (#40918)",
+      "topic": "pr-40918"
+    },
+    {
+      "pr": 40858,
+      "sha": "344de5fe8e70e9eeaacaedc34e7aa5e2a29287d1",
+      "subject": "fix(antigravity): bound silent post-settle background command holds (#40858)",
+      "topic": "pr-40858"
+    },
+    {
+      "pr": 40909,
+      "sha": "2c4310eb061373bb1c6ccefe6dafd0500ee8f5e3",
+      "subject": "fix(web): pasting a chat message with text and a picture keeps both (#40909)",
+      "topic": "pr-40686"
+    },
+    {
+      "pr": 40894,
+      "sha": "2251de4d2e61f921b90fb7bfdabef8b1a34d8803",
+      "subject": "fix(gitlab): find merge requests opened from a fork (#40894)",
+      "topic": "pr-40894"
+    },
+    {
+      "pr": 40886,
+      "sha": "f10e1eb3825a773cf702569d2258edfdbc8b77dc",
+      "subject": "fix(server): list open delegated tasks when task_status or task_cancel finds no match (#40886)",
+      "topic": "pr-40886"
+    },
+    {
+      "pr": 40877,
+      "sha": "1d028248683f90f405b2d8e7b71682e3b67317ed",
+      "subject": "fix(server): a branch prefixed with another remote's name publishes under its full name (#40877)",
+      "topic": "pr-40877"
+    },
+    {
+      "pr": 40864,
+      "sha": "2f19cec07933f9f5fe1fe380d98b0841f83b90be",
+      "subject": "fix(server): ACP startup gives up when the agent never answers the handshake (#40864)",
+      "topic": "pr-40864"
+    },
+    {
+      "pr": 40874,
+      "sha": "a445025645680d8c282011df5edc774f4551e6d8",
+      "subject": "fix(codex): Open diff shows every file of a multi-file patch (#40874)",
+      "topic": "pr-40874"
+    },
+    {
+      "pr": 40866,
+      "sha": "ad2bdc76a5bf22cd63b84e2cdee610c1a1b4bd18",
+      "subject": "fix(server): watch_pull_request says when checks already passed (#40866)",
+      "topic": "pr-40866"
+    },
+    {
+      "pr": 9727,
+      "sha": "30372d0fade8903b4cd6c544768333fc7588fd37",
+      "subject": "perf(mobile): keep image bytes outside draft JSON (#9727)",
+      "topic": "pr-9727"
+    },
+    {
+      "pr": 40856,
+      "sha": "620cf4770d992d642f822a13dc2539c2605a3500",
+      "subject": "fix(web): browser page translation no longer crashes the app when a turn updates (#40856)",
+      "topic": "pr-40856"
+    },
+    {
+      "pr": 21667,
+      "sha": "b479ce21edae40ed1bcd02d117e54bb7243e5897",
+      "subject": "fix(client-runtime): stop sessions on incompatible server configuration (#21667)",
+      "topic": "pr-21667"
+    },
+    {
+      "pr": 27391,
+      "sha": "a985332c447173750394c0875fb961f88c306730",
+      "subject": "fix(shared): Windows command discovery no longer blocks the event loop (#27391)",
+      "topic": "pr-27391"
+    },
+    {
+      "pr": 25123,
+      "sha": "b23f1e8af9b13af2c4aa1ba8e0d6987550688645",
+      "subject": "fix(server): retire unresponsive shared Codex app-servers (#25123)",
+      "topic": "pr-25123"
+    }
+  ],
+  "count": 37,
+  "createdAt": "2026-11-22T20:32:34.048Z",
+  "digest": "fe9fc50135ee61ae82ff95c196ccf9b722089aa1ca318a0aafc34a06c5382925",
+  "interval": 40,
+  "schemaVersion": 8,
+  "selection": "first-parent",
+  "targetSha": "c00f1172eed4188e6c9bdd15e6ee55fbd0ab9a5e"
+}

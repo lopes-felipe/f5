@@ -22,6 +22,7 @@ import { Cause, Duration, Effect, FileSystem, Path, Schema, Scope, Stream } from
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { ServerConfig } from "../../config.ts";
 import { makeGrokTextGeneration } from "../../git/Layers/GrokTextGeneration.ts";
+import { makeAntigravityUsageHistory } from "../../usage/externalProviderHistory.ts";
 import { makeGrokAdapter, type AntigravityCatalogObservation } from "../Layers/GrokAdapter.ts";
 import {
   antigravityThinkingFromModel,
@@ -189,6 +190,11 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         instance: environment,
       });
       const continuationIdentity = defaultProviderContinuationIdentity({ driverKind, instanceId });
+      const usageHistory = yield* makeAntigravityUsageHistory(
+        processEnv,
+        profileDirectory,
+        enabled,
+      );
       // A method or key change since the last build advances the account revision, so sessions
       // and cached catalogs from the previous account are not reused.
       const before = yield* Effect.promise(() => readAntigravityAuthState(profileDirectory));
@@ -705,6 +711,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         enabled,
         adapter,
         accountUsage,
+        usageHistory,
         textGeneration,
         snapshot,
         // No `invalidateModelCatalog`: the registry calls it on every refresh, including startup.

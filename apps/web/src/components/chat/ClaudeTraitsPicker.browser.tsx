@@ -510,3 +510,81 @@ describe("ClaudeTraitsPicker", () => {
     }
   });
 });
+
+describe("ClaudeTraitsPicker controlled value", () => {
+  const OPUS_4_7: ReadonlyArray<ServerProviderModel> = [
+    {
+      slug: "claude-opus-4-7",
+      name: "Claude Opus 4.7",
+      isCustom: false,
+      capabilities: createClaudeModelCapabilities("claude-opus-4-7"),
+    },
+  ];
+
+  beforeEach(() => {
+    localStorage.clear();
+    useComposerDraftStore.setState({
+      draftsByThreadId: {},
+      draftThreadsByThreadId: {},
+      projectDraftThreadIdByProjectId: {},
+    });
+    useModelPreferencesStore.setState({
+      lastProvider: null,
+      lastModelByProvider: {},
+      lastModelOptions: null,
+      lastWorkflowProviderBySlot: {},
+      recentModelSelections: [],
+    });
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it("reports picks to its owner without touching drafts or recent models", async () => {
+    const onModelOptionsChange = vi.fn();
+    const screen = await render(
+      <ClaudeTraitsPicker
+        model="claude-opus-4-7"
+        models={OPUS_4_7}
+        modelOptions={[]}
+        onModelOptionsChange={onModelOptionsChange}
+      />,
+    );
+    try {
+      await page.getByRole("button").click();
+      await expect.element(page.getByRole("menuitemcheckbox", { name: "Ultracode" })).toBeVisible();
+      await page.getByRole("menuitemradio", { name: /^Medium/ }).click();
+
+      expect(onModelOptionsChange).toHaveBeenCalledWith(
+        expect.arrayContaining([{ id: "effort", value: "medium" }]),
+      );
+      expect(useComposerDraftStore.getState().draftsByThreadId).toEqual({});
+      const preferences = useModelPreferencesStore.getState();
+      expect(preferences.lastModelOptions).toBeNull();
+      expect(preferences.recentModelSelections).toEqual([]);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("leaves out the descriptors its owner hides", async () => {
+    const screen = await render(
+      <ClaudeTraitsPicker
+        model="claude-opus-4-7"
+        models={OPUS_4_7}
+        modelOptions={[]}
+        hiddenOptions={{ promptInjected: true, descriptorIds: ["ultracode"] }}
+        onModelOptionsChange={vi.fn()}
+      />,
+    );
+    try {
+      await page.getByRole("button").click();
+      await expect.element(page.getByRole("menuitemradio", { name: /^Medium/ })).toBeVisible();
+      expect(document.body.textContent).not.toContain("Ultracode");
+      expect(document.body.textContent).not.toContain("Ultrathink");
+    } finally {
+      await screen.unmount();
+    }
+  });
+});
