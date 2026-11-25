@@ -1482,10 +1482,12 @@ rootIt.layer(
       assert.isString(payload.usageLimit?.resetsAt);
       assert.equal(payload.usageLimit?.resetSource, "message");
       assert.equal(payload.usageLimit?.evidence, "message");
-      assert.equal(
-        (limited.completed.at(-1)?.payload as { state?: string } | undefined)?.state,
-        "failed",
-      );
+      const completedPayload = limited.completed.at(-1)?.payload as
+        | { state?: string; usageLimit?: unknown }
+        | undefined;
+      assert.equal(completedPayload?.state, "failed");
+      // The failed turn's terminal sets the session's limit, so it must carry the same one.
+      assert.deepEqual(completedPayload?.usageLimit, payload.usageLimit);
 
       // A notice split across chunks, after the model's own text, still reads whole.
       const split = yield* runTurn(
