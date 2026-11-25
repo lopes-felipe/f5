@@ -172,10 +172,10 @@ export function isSessionSettledForAutoRetry(
 ): boolean {
   if (!thread) return false;
   const status = thread.session?.status ?? null;
-  return status !== "starting" && !hasActiveRunningTurn(thread);
+  return status !== "starting" && !hasRunningSessionTurn(thread);
 }
 
-export function hasActiveRunningTurn(
+export function hasRunningSessionTurn(
   thread: Pick<OrchestrationReadModel["threads"][number], "session"> | null | undefined,
 ): boolean {
   return thread?.session?.status === "running" && thread.session.activeTurnId !== null;
@@ -1175,7 +1175,7 @@ export function resolveApprovedMergedPlan(
   return mergeThread.proposedPlans.at(-1) ?? null;
 }
 
-export function latestUnimplementedMergedPlan(mergeThread: {
+function latestUnimplementedMergedPlan(mergeThread: {
   readonly proposedPlans: ReadonlyArray<{
     readonly id: typeof OrchestrationProposedPlanId.Type;
     readonly turnId: TurnId | null;
@@ -1238,7 +1238,7 @@ export function resolveMergedPlanForImplementation(
 }
 
 /** Every branch's revised plan as merge input, in author order. */
-export function workflowMergePlanInputs(
+function workflowMergePlanInputs(
   workflow: PlanningWorkflow,
   plans: ReadonlyArray<string>,
   options?: { readonly includeTurnIds?: boolean },
@@ -1272,9 +1272,9 @@ export function buildWorkflowMergePrompt(
 }
 
 /** Slack for envelope escaping in the revision prompt. */
-export const REVISION_EXCERPT_MARGIN_CHARS = 1_000;
+const REVISION_EXCERPT_MARGIN_CHARS = 1_000;
 
-export function revisionExcerptNote(label: string, shown: number, total: number): string {
+function revisionExcerptNote(label: string, shown: number, total: number): string {
   return `\n\n[Excerpt: the first ${shown} of ${total} characters of the ${label} review. The rest is not available to you.]`;
 }
 
