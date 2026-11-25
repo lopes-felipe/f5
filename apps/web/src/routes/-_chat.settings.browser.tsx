@@ -1209,7 +1209,7 @@ describe("settings route", () => {
         // A real scope change asks once; keeping the draft stays on this scope.
         void router.navigate({
           to: "/settings",
-          search: (prev) => ({ ...prev, project: PROJECT_TWO }),
+          search: { category: "tools", item: "tools.mcp", project: PROJECT_TWO },
         });
         await expect
           .element(page.getByRole("alertdialog"))
@@ -1220,7 +1220,7 @@ describe("settings route", () => {
         // Confirming clears the draft and closes the dialog.
         void router.navigate({
           to: "/settings",
-          search: (prev) => ({ ...prev, project: PROJECT_TWO }),
+          search: { category: "tools", item: "tools.mcp", project: PROJECT_TWO },
         });
         await page.getByRole("button", { name: "Discard changes", exact: true }).click();
         await vi.waitFor(() => expect(router.state.location.search.project).toBe(PROJECT_TWO));

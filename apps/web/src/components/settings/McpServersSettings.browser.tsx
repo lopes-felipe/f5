@@ -1359,6 +1359,29 @@ describe("McpServersSettings", () => {
     }
   });
 
+  it("opens the linked server's panel, including an inherited one", async () => {
+    createNativeApiMock();
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <McpServersSettings
+          selectedProject={{ id: PROJECT_ID, name: "Project One" }}
+          hasProjects
+          focusServer="COMMON-server"
+        />
+      </QueryClientProvider>,
+    );
+    try {
+      await expect
+        .element(page.getByRole("heading", { name: "common-server", exact: true }))
+        .toBeVisible();
+      expect(document.body.textContent).toContain("inherited from common scope");
+    } finally {
+      queryClient.clear();
+      await screen.unmount();
+    }
+  });
+
   it("overrides an inherited server in the project from its entry", async () => {
     const mocks = createNativeApiMock();
     const { screen, queryClient } = await renderSettings();

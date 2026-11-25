@@ -9,6 +9,7 @@ import {
   requireInvestigator,
 } from "@t3tools/shared/workflowParticipants";
 import { attachmentSources } from "../lib/attachmentUploadQueue";
+import { useMcpHubChatServers } from "../lib/mcpHubChat";
 import { composerModelMentionItems } from "./chat/composerModelMentions";
 import { formatComposerModelMention } from "@t3tools/shared/composerModelMentions";
 import { useFreshSessionStore } from "../freshSessionStore";
@@ -1982,25 +1983,24 @@ export default memo(function ChatView({
 
     return null;
   }, [threadActivities]);
+  // Agents other than Codex and Claude reach MCP servers through F5's hub, which
+  // reports their status; Codex and Claude report it as thread activities.
+  const hubMcpServers = useMcpHubChatServers(sessionProvider, activeThread?.projectId ?? null);
   const mcpRuntimeSummary = useMemo(() => {
-    const latestStatusByServer = latestMcpStatusActivities(threadActivities);
+    const servers = hubMcpServers?.length
+      ? hubMcpServers
+      : [...latestMcpStatusActivities(threadActivities).values()];
 
-    if (latestStatusByServer.size === 0) {
+    if (servers.length === 0) {
       return null;
     }
 
-    let connectedCount = 0;
-    for (const status of latestStatusByServer.values()) {
-      if (status?.status === "ready") {
-        connectedCount += 1;
-      }
-    }
-
+    const connectedCount = servers.filter((status) => status?.status === "ready").length;
     return {
-      summary: `${connectedCount}/${latestStatusByServer.size} connected`,
-      servers: [...latestStatusByServer.values()],
+      summary: `${connectedCount}/${servers.length} connected`,
+      servers,
     };
-  }, [threadActivities]);
+  }, [hubMcpServers, threadActivities]);
   const openRewindOperationIds = useMemo(
     () => new Set((activeThread?.rewindDrafts ?? []).map((draft) => draft.operationId as string)),
     [activeThread?.rewindDrafts],

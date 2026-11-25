@@ -227,6 +227,22 @@ describe("resolveSettingsSearch", () => {
     });
   });
 
+  it("keeps an MCP server focus only on the MCP servers item", () => {
+    expect(resolveSettingsSearch({ item: "tools.mcp", server: "docs" })).toEqual({
+      category: "tools",
+      item: "tools.mcp",
+      server: "docs",
+    });
+    expect(resolveSettingsSearch({ item: "providers.instances", server: "docs" })).toEqual({
+      category: "providers",
+      item: "providers.instances",
+    });
+    expect(resolveSettingsSearch({ item: "tools.mcp", server: "x".repeat(300) })).toEqual({
+      category: "tools",
+      item: "tools.mcp",
+    });
+  });
+
   it("rewrites legacy item deep links to the new page", () => {
     expect(
       resolveSettingsSearch({ category: "integrations", item: "integrations.keybindings" }),

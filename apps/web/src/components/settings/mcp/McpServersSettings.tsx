@@ -107,6 +107,8 @@ export function McpServersSettings(props: {
   readonly selectedProject: ProjectSummary | null;
   readonly hasProjects: boolean;
   readonly projects?: ReadonlyArray<ProjectSummary>;
+  /** A server to open in its detail panel, from a settings link. */
+  readonly focusServer?: string | null | undefined;
 }) {
   const queryClient = useQueryClient();
   const { copyToClipboard, isCopied } = useCopyToClipboard({
@@ -433,6 +435,28 @@ export function McpServersSettings(props: {
       setAdding(null);
       setDetail({ name, kind, tab });
     });
+  // A link from chat (`server` search param) opens that server's panel once the
+  // configuration has loaded, once per link.
+  const openedFocus = useRef<string | null>(null);
+  useEffect(() => {
+    const target = props.focusServer;
+    if (!target) {
+      openedFocus.current = null;
+      return;
+    }
+    if (openedFocus.current === target || !activeConfig) return;
+    if (scope === "project" && !commonConfigQuery.data) return;
+    openedFocus.current = target;
+    const key = mcpServerNameKey(target);
+    const own = Object.keys(activeServers).find((name) => mcpServerNameKey(name) === key);
+    const inherited =
+      scope === "project"
+        ? Object.keys(commonServers).find((name) => mcpServerNameKey(name) === key)
+        : undefined;
+    if (own) openDetail(own, "scope", "overview");
+    else if (inherited) openDetail(inherited, "inherited", "overview");
+    // openDetail reads the latest servers; the link opens once per target.
+  }, [props.focusServer, activeConfig, commonConfigQuery.data, scope]);
   const closeSurfaces = () =>
     requestChange(() => {
       setDetail(null);

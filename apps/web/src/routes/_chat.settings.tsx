@@ -22,6 +22,7 @@ function SettingsRouteView() {
     projectId: search.project ?? null,
     focusedProviderInstanceId: search.instance ?? null,
     focusedProviderInstanceProjectId: search.instanceProject ?? null,
+    focusedMcpServer: search.server ?? null,
   });
 
   return (
@@ -90,7 +91,8 @@ export const Route = createFileRoute("/_chat/settings")({
       (raw.item !== undefined && raw.item !== canonical.item) ||
       (raw.project !== undefined && raw.project !== canonical.project) ||
       (raw.instance !== undefined && raw.instance !== canonical.instance) ||
-      (raw.instanceProject !== undefined && raw.instanceProject !== canonical.instanceProject);
+      (raw.instanceProject !== undefined && raw.instanceProject !== canonical.instanceProject) ||
+      (raw.server !== undefined && raw.server !== canonical.server);
     if (!stale) return;
     const {
       projectId: _projectId,
@@ -99,6 +101,7 @@ export const Route = createFileRoute("/_chat/settings")({
       project: _project,
       instance: _instance,
       instanceProject: _instanceProject,
+      server: _server,
       ...rest
     } = raw;
     throw redirect({ to: "/settings", search: { ...rest, ...canonical } as never, replace: true });

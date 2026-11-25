@@ -171,6 +171,24 @@ function SignInRow({
   );
 }
 
+/** One server's F5 sign-in row without the settings heading, for the chat's MCP chip. */
+export function McpHubSignInRow({
+  serverName,
+  projectId,
+}: {
+  readonly serverName: string;
+  readonly projectId: ProjectId | null;
+}) {
+  const authStatus = useQuery(mcpHubAuthQueryOptions({ projectId }));
+  const server = authStatus.data?.servers.find((entry) => entry.name === serverName);
+  if (!server) return null;
+  return (
+    <ul className="text-xs">
+      <SignInRow server={server} projectId={projectId} />
+    </ul>
+  );
+}
+
 /**
  * F5's own sign-in for one remote server, used by the agents the hub serves.
  * Tokens are shared by every project and agent in the profile, so this works from

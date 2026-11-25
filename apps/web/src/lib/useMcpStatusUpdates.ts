@@ -11,9 +11,10 @@ const subscriptions = new WeakMap<QueryClient, { count: number; unsubscribe: () 
  * not polled, so every view that shows them mounts this; one subscription per
  * query client is shared however many views do.
  */
-export function useMcpStatusUpdates(): void {
+export function useMcpStatusUpdates(enabled = true): void {
   const queryClient = useQueryClient();
   useEffect(() => {
+    if (!enabled) return;
     const existing = subscriptions.get(queryClient);
     if (existing) existing.count += 1;
     else
@@ -33,5 +34,5 @@ export function useMcpStatusUpdates(): void {
       subscriptions.delete(queryClient);
       current.unsubscribe();
     };
-  }, [queryClient]);
+  }, [queryClient, enabled]);
 }
