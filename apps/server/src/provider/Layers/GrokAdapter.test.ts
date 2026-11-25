@@ -1254,8 +1254,12 @@ rootIt.layer(
 
   it.effect("bounds the published payload of a request a workflow turn denies", () =>
     Effect.gen(function* () {
-      const { adapter, events } = yield* antigravityProfileAdapter({
-        env: { T3_ACP_EMIT_TOOL_CALLS: "1", T3_ACP_PERMISSION_CONTENT_PAD_CHARS: "200000" },
+      const { adapter, events, requests } = yield* antigravityProfileAdapter({
+        env: {
+          T3_ACP_EMIT_TOOL_CALLS: "1",
+          T3_ACP_PERMISSION_CONTENT_PAD_CHARS: "200000",
+          T3_ACP_PERMISSION_COMMAND: "rm -rf build",
+        },
         options: () => ({
           antigravity: {
             accountRevision: Effect.succeed(0),
@@ -1282,18 +1286,67 @@ rootIt.layer(
         .pipe(Effect.timeout("20 seconds"));
       const opened = events.find((event) => event.type === "request.opened");
       assert.ok(opened?.type === "request.opened");
-      // The command is refused without asking, and the 200k-character request is not
-      // republished whole.
+      // The command is refused without asking, marked as already settled, and the
+      // 200k-character request is not republished whole.
+      assert.equal(opened.payload.autoDeclined, true);
       assert.ok(
         events.some(
           (event) =>
             event.type === "request.resolved" &&
             event.requestId === opened.requestId &&
-            event.payload.decision === "cancel",
+            event.payload.decision === "decline",
         ),
       );
       assert.isBelow(JSON.stringify(opened.payload.args).length, 50_000);
       assert.isBelow(JSON.stringify(opened.raw?.payload).length, 50_000);
+      // The agent hears a refusal of this one operation, not a cancelled turn.
+      const selected = (yield* requests()).flatMap((frame) => {
+        const result = (frame as { result?: { outcome?: { optionId?: string } } }).result;
+        return result?.outcome?.optionId ? [result.outcome.optionId] : [];
+      });
+      assert.include(selected, "reject-once");
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("runs a read-only command in a workflow turn without opening a request", () =>
+    Effect.gen(function* () {
+      const { adapter, events, requests } = yield* antigravityProfileAdapter({
+        env: {
+          T3_ACP_EMIT_TOOL_CALLS: "1",
+          T3_ACP_PERMISSION_ANTIGRAVITY_SHAPE: "1",
+          T3_ACP_PERMISSION_COMMAND: "gh pr view 1 --json title",
+        },
+        options: () => ({
+          antigravity: {
+            accountRevision: Effect.succeed(0),
+            nativeReaders: () => Effect.succeed(false),
+            readOnlyWorkflowCertified: () => true,
+          },
+        }),
+      });
+      const threadId = ThreadId.make("agy-readonly-command");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "unattended-readonly",
+      });
+      yield* adapter
+        .sendTurn({
+          threadId,
+          input: "Review it",
+          attachments: [],
+          workflowExecutionProfile: "unattended-readonly",
+        })
+        .pipe(Effect.timeout("20 seconds"));
+      assert.notOk(events.some((event) => event.type === "request.opened"));
+      const selected = (yield* requests()).flatMap((frame) => {
+        const result = (frame as { result?: { outcome?: { optionId?: string } } }).result;
+        return result?.outcome?.optionId ? [result.outcome.optionId] : [];
+      });
+      assert.include(selected, "allow-once");
       yield* adapter.stopSession(threadId);
     }).pipe(Effect.scoped),
   );

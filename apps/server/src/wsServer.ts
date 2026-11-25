@@ -171,7 +171,13 @@ import { createGitHubMediaProxy } from "./prHub/githubMediaProxy.ts";
 import { readAssetImageDimensions } from "./imageDimensions";
 import { makePreviewFileServer } from "./previewFileServer";
 import { MessageId } from "@t3tools/contracts";
-import { makeAttachmentUploads, AttachmentUploadError } from "./attachmentUploads";
+import {
+  makeAttachmentUploads,
+  AttachmentUploadError,
+  materializeErrorMessage,
+  resolveWorkflowAttachmentsDir,
+  sweepWorkflowAttachments,
+} from "./attachmentUploads";
 import { GitCommandError } from "./git/Errors";
 import { readProjectSettings, isInsideProjectWorkspace } from "./project/projectSettings";
 import {
@@ -1206,6 +1212,7 @@ export const createServer = Effect.fn(function* (
     ),
   );
   const attachmentUploads = yield* makeAttachmentUploads(serverConfig.attachmentsDir);
+  const workflowAttachmentsDir = resolveWorkflowAttachmentsDir(serverConfig);
   const nextTurnQueueStore = yield* NextTurnQueueStore;
   const globalSearch = yield* makeGlobalSearch;
   const projectionProjects = yield* Effect.service(ProjectionProjectRepository).pipe(
@@ -3043,6 +3050,18 @@ export const createServer = Effect.fn(function* (
     while (true) {
       yield* attachmentUploads.sweep.pipe(
         Effect.catch(() => Effect.logWarning("Attachment upload cleanup failed; will retry.")),
+      );
+      yield* Effect.tryPromise(() => sweepWorkflowAttachments(workflowAttachmentsDir)).pipe(
+        Effect.flatMap(({ failed }) =>
+          failed > 0
+            ? Effect.logWarning("Some workflow attachments could not be removed; will retry.", {
+                failed,
+              })
+            : Effect.void,
+        ),
+        Effect.catch((cause) =>
+          Effect.logWarning("Workflow attachment cleanup failed; will retry.", { cause }),
+        ),
       );
       yield* Effect.sleep("1 hour");
     }
@@ -6177,6 +6196,27 @@ export const createServer = Effect.fn(function* (
               () => new RouteRequestError({ message: "Unable to renew draft uploads." }),
             ),
           );
+      }
+      case WS_METHODS.attachmentsMaterializeUploads: {
+        const body = stripRequestTag(request.body);
+        return yield* attachmentUploads
+          .materialize(body.threadId, body.uploadIds, workflowAttachmentsDir)
+          .pipe(
+            Effect.mapError(
+              (cause) => new RouteRequestError({ message: materializeErrorMessage(cause) }),
+            ),
+          );
+      }
+      case WS_METHODS.attachmentsDiscardMaterialized: {
+        const body = stripRequestTag(request.body);
+        yield* attachmentUploads
+          .discardMaterialized(body.uploadIds, workflowAttachmentsDir)
+          .pipe(
+            Effect.mapError(
+              () => new RouteRequestError({ message: "Unable to remove saved attachments." }),
+            ),
+          );
+        return {};
       }
       case WS_METHODS.attachmentsReleaseUploads: {
         const body = stripRequestTag(request.body);
