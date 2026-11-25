@@ -48,9 +48,7 @@ Prefer `F5_*` variables for F5-owned state. The legacy `T3CODE_*` prefix remains
 | `T3CODE_OBSERVABILITY_ENABLED`           | Legacy alias for `F5_OBSERVABILITY_ENABLED`                                                                                         |
 | `T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD` | Legacy alias for `F5_AUTO_BOOTSTRAP_PROJECT_FROM_CWD`                                                                               |
 | `T3CODE_WEB_SOURCEMAP`                   | Legacy alias for `F5_WEB_SOURCEMAP`                                                                                                 |
-| `T3CODE_TELEMETRY_ENABLED`               | Set to `false` to force anonymous usage telemetry off even when a key is configured                                                 |
-| `T3CODE_POSTHOG_KEY`                     | PostHog project key for anonymous usage telemetry; empty by default, which disables it                                              |
-| `T3CODE_POSTHOG_HOST`                    | PostHog ingestion host; defaults to `https://us.i.posthog.com`                                                                      |
+| `DO_NOT_TRACK`                           | Set to `1` to stop background lookups: model manifest, automatic provider update checks and remote file icons (see privacy.md)      |
 | `T3CODE_DESKTOP_WS_URL`                  | Short-lived desktop startup bootstrap URL; its token expires within 24 hours. Use the desktop bridge for a fresh URL.               |
 | `F5_DISABLE_PREVIEW_PASSKEYS`            | Set to `1` and restart the desktop to disable both Touch ID configuration and the preview passkey bridge, independently of signing. |
 | `PORT`                                   | Fallback HTTP port (used when `F5_PORT` and `T3CODE_PORT` are unset)                                                                |
@@ -58,9 +56,8 @@ Prefer `F5_*` variables for F5-owned state. The legacy `T3CODE_*` prefix remains
 | `VITE_WS_URL`                            | WebSocket URL for the web frontend (dev)                                                                                            |
 | `VITE_DEV_SERVER_URL`                    | Vite dev server URL for proxy mode                                                                                                  |
 
-Anonymous usage telemetry is off by default. It is active only when `T3CODE_POSTHOG_KEY` is
-non-empty and `T3CODE_TELEMETRY_ENABLED` is not `false`. While inactive, F5 records, buffers and
-sends nothing, and does not create the telemetry identifier file.
+F5 has no product analytics or usage telemetry. [privacy.md](privacy.md) lists every request F5
+makes on its own, what `DO_NOT_TRACK` turns off, and what F5 keeps on disk.
 
 Restore limits are enforced while streaming, before extraction, and against the combined raw plus
 extracted staging footprint. F5 also reserves free space on the staging volume. Increase the caps or

@@ -127,7 +127,12 @@ export function makeThreadCommand<E, R>(resolveStateDir: Effect.Effect<string, E
     title: Flag.string("title").pipe(Flag.optional),
     provider: Flag.string("provider").pipe(Flag.optional),
     model: Flag.string("model").pipe(Flag.optional),
-    worktree: Flag.string("worktree").pipe(Flag.optional),
+    worktree: Flag.string("worktree").pipe(
+      Flag.withDescription(
+        "Base ref for a new worktree. Use the remote default branch (for example origin/main) for independent work, or the local default if there is no remote. Honor an explicit or dependent local base.",
+      ),
+      Flag.optional,
+    ),
     branch: Flag.string("branch").pipe(Flag.optional),
   }).pipe(
     Command.withDescription("Start a thread and print its id."),

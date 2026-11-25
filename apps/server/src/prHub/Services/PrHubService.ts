@@ -133,7 +133,7 @@ export interface PrHubServiceShape {
     input: PrHubLocalCandidatesInput,
   ) => Effect.Effect<ReadonlyArray<PrHubLocalCheckoutCandidate>>;
   readonly getDetail: (
-    input: PrHubDetailInput,
+    input: PrHubDetailInput & { readonly omitBranchPermission?: boolean },
   ) => Effect.Effect<PrHubDetailResult, SourceControlProviderError>;
   readonly getTimeline: (
     input: PrHubTimelineInput,

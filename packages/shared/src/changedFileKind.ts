@@ -80,3 +80,8 @@ export function classifyChangedFile(path: string): ChangedFileKind {
   if (DOCS_NAME.test(name) && !NOT_DOCS_NAME.test(name)) return "docs";
   return "code";
 }
+
+export function isTestChangedFile(path: string): boolean {
+  const kind = classifyChangedFile(path);
+  return kind === "tests" || kind === "mocks";
+}

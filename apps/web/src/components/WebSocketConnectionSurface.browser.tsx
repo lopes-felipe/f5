@@ -27,7 +27,9 @@ import {
 import {
   noteWsConnectionAttempt,
   noteWsConnectionClosed,
+  noteWsConnectionError,
   noteWsConnectionOpened,
+  noteWsSynchronized,
   noteWsSynchronizationError,
   registerWsTransportReconnectHandler,
   resetWsConnectionStateForTests,
@@ -70,6 +72,21 @@ describe("WebSocketConnectionSurface", () => {
     resetComposerDraftBaseStorageForTesting();
     vi.restoreAllMocks();
     vi.useRealTimers();
+  });
+
+  it("keeps a synchronized local connection healthy when the browser goes offline", async () => {
+    enableFlag(WEB_LOCAL_FLAG_KEYS.wsDisconnectSurfaceEnabled);
+    noteWsConnectionOpened();
+    noteWsSynchronized();
+    const mounted = await mountSurface();
+    try {
+      vi.spyOn(navigator, "onLine", "get").mockReturnValue(false);
+      window.dispatchEvent(new Event("offline"));
+      await vi.advanceTimersByTimeAsync(2500);
+      expect(document.querySelector('[role="status"]')).toBeNull();
+    } finally {
+      await mounted.cleanup();
+    }
   });
 
   it("offers reload after repeated synchronization failures and preserves editable drafts", async () => {
@@ -269,6 +286,9 @@ describe("WebSocketConnectionSurface", () => {
 
     const mounted = await mountSurface(<div>Persistent child</div>);
     try {
+      await vi.advanceTimersByTimeAsync(1_999);
+      expect(document.body.textContent).not.toContain("Reconnecting…");
+      await vi.advanceTimersByTimeAsync(1);
       await vi.waitFor(() => {
         expect(document.body.textContent).toContain("Reconnecting…");
         expect(document.body.textContent).toContain("Persistent child");
@@ -284,6 +304,35 @@ describe("WebSocketConnectionSurface", () => {
         expect(document.body.textContent).toContain("Connection lost.");
         expect(document.body.textContent).toContain("Persistent child");
       });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("cancels the warning when a reconnect succeeds within the grace period", async () => {
+    enableFlag(WEB_LOCAL_FLAG_KEYS.wsDisconnectSurfaceEnabled);
+    noteWsConnectionOpened();
+    noteWsConnectionClosed();
+    const mounted = await mountSurface();
+    try {
+      await vi.advanceTimersByTimeAsync(1_000);
+      noteWsConnectionOpened();
+      noteWsSynchronized();
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(document.body.textContent).not.toContain("Reconnecting…");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("shows connection errors without waiting for the reconnect grace period", async () => {
+    enableFlag(WEB_LOCAL_FLAG_KEYS.wsDisconnectSurfaceEnabled);
+    noteWsConnectionOpened();
+    noteWsConnectionClosed();
+    noteWsConnectionError("Connection timed out.");
+    const mounted = await mountSurface();
+    try {
+      expect(mounted.host.textContent).toContain("Connection timed out.");
     } finally {
       await mounted.cleanup();
     }

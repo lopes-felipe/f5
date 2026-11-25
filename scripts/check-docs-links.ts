@@ -66,18 +66,32 @@ export function stripCodeBlocksAndInlineCode(markdown: string): string {
 }
 
 /**
- * Extracts markdown link targets while supporting one level of balanced
- * parentheses (e.g. `foo(bar).md`).
+ * Extracts inline and reference-style markdown link targets while supporting
+ * one level of balanced parentheses (e.g. `foo(bar).md`) without nested
+ * quantifiers.
  */
 export function extractMarkdownLinkTargets(markdown: string): string[] {
   const targets: string[] = [];
   const cleaned = stripCodeBlocksAndInlineCode(markdown);
-  const pattern = /!?\[[^\]]*\]\(((?:[^()\s]+|\([^()\s]*\))+)(?:\s+"[^"]*")?\)/g;
-  for (const match of cleaned.matchAll(pattern)) {
+  const inlinePattern = /!?\[[^\]]*\]\(((?:[^()\s]|\([^()\s]*\))+)(?:\s+"[^"]*")?\)/g;
+  for (const match of cleaned.matchAll(inlinePattern)) {
     const rawTarget = match[1];
     if (rawTarget) targets.push(rawTarget);
   }
+  const referenceDefPattern = /^[ ]{0,3}\[[^\]]+\]:[ \t]*(?:<([^>\r\n]+)>|([^\s]+))/gm;
+  for (const match of cleaned.matchAll(referenceDefPattern)) {
+    const rawTarget = match[1] ?? match[2];
+    if (rawTarget) targets.push(rawTarget);
+  }
   return targets;
+}
+
+function decodeLinkPathname(rawPathname: string): string {
+  try {
+    return decodeURIComponent(rawPathname);
+  } catch {
+    return rawPathname;
+  }
 }
 
 function collectActiveMarkdownFiles(repoRoot: string): string[] {
@@ -118,7 +132,8 @@ export function findBrokenDocLinks(repoRoot: string): string[] {
       ) {
         continue;
       }
-      const resolved = path.resolve(path.dirname(file), target);
+      const decodedTarget = decodeLinkPathname(target);
+      const resolved = path.resolve(path.dirname(file), decodedTarget);
       if (!existsSync(resolved)) {
         broken.push(`${path.relative(repoRoot, file)} -> ${rawTarget}`);
       }
