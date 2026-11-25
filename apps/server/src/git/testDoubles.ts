@@ -477,8 +477,10 @@ export interface FakeGitHubCliOptions {
 export function makeFakeGitHubCli(options: FakeGitHubCliOptions = {}): {
   readonly service: GitHubCliShape;
   readonly calls: string[];
+  readonly cloneLookups: Array<Parameters<GitHubCliShape["getRepositoryCloneUrls"]>[0]>;
 } {
   const calls: string[] = [];
+  const cloneLookups: Array<Parameters<GitHubCliShape["getRepositoryCloneUrls"]>[0]> = [];
   const pullRequestSequence = [...(options.pullRequestSequence ?? [])];
   const pullRequest = options.pullRequest ?? {
     number: 42,
@@ -514,6 +516,7 @@ export function makeFakeGitHubCli(options: FakeGitHubCliOptions = {}): {
       return Effect.succeed(pullRequest);
     },
     getRepositoryCloneUrls: (input) => {
+      cloneLookups.push(input);
       calls.push(`getRepositoryCloneUrls:${input.repository}`);
       return Effect.succeed({
         nameWithOwner: input.repository,
@@ -548,7 +551,7 @@ export function makeFakeGitHubCli(options: FakeGitHubCliOptions = {}): {
     updatePullRequestComment: () => Effect.void,
   };
 
-  return { service, calls };
+  return { service, calls, cloneLookups };
 }
 
 export function makeFakeTextGeneration(

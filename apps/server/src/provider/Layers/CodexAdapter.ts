@@ -1555,6 +1555,15 @@ function mapToRuntimeEvents(
   }
 
   if (event.method === "turn/completed") {
+    const tier = asString(turn && "serviceTier" in turn ? turn.serviceTier : payload?.serviceTier);
+    const usageSpeed =
+      tier === "fast" || tier === "priority"
+        ? ("fast" as const)
+        : tier === "ultrafast"
+          ? ("ultrafast" as const)
+          : tier === "standard" || tier === "default"
+            ? ("standard" as const)
+            : undefined;
     const rawErrorMessage = asString(asObject(turn?.error)?.message);
     const errorInfo = resolveCodexCompletionErrorInfo({
       message: rawErrorMessage,
@@ -1604,6 +1613,7 @@ function mapToRuntimeEvents(
           ...(asString(turn?.stopReason) ? { stopReason: asString(turn?.stopReason) } : {}),
           ...(turn?.usage !== undefined ? { usage: turn.usage } : {}),
           ...(asObject(turn?.modelUsage) ? { modelUsage: asObject(turn?.modelUsage) } : {}),
+          ...(usageSpeed ? { usageSpeed } : {}),
           ...(asNumber(turn?.totalCostUsd) !== undefined
             ? { totalCostUsd: asNumber(turn?.totalCostUsd) }
             : {}),

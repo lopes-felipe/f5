@@ -105,6 +105,22 @@ export const makeWorktreePreparations = Effect.gen(function* () {
             path: group.path,
           });
       }).pipe(Effect.mapError(queryError)),
+    updateGroupBranch: (group, branch) =>
+      Effect.gen(function* () {
+        const [updated] = yield* sql<{ workspace_path: string }>`
+          UPDATE worktree_groups
+          SET plan_json = json_set(plan_json, '$.branch', ${branch})
+          WHERE workspace_path = ${group.path}
+            AND json_extract(plan_json, '$.threadId') = ${group.threadId}
+            AND json_extract(plan_json, '$.projectRoot') = ${group.projectRoot}
+            AND json_extract(plan_json, '$.branch') = ${group.branch}
+          RETURNING workspace_path`;
+        if (!updated)
+          return yield* new PreparationError({
+            message: "Worktree group changed.",
+            path: group.path,
+          });
+      }).pipe(Effect.mapError(queryError)),
     deleteGroup: (group) =>
       sql`DELETE FROM worktree_groups
         WHERE workspace_path = ${group.path} AND json_extract(plan_json, '$.threadId') = ${group.threadId}`.pipe(

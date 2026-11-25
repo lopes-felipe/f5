@@ -1,5 +1,6 @@
-import { Cause, Clock, Effect } from "effect";
+import { Cause, Clock, Deferred, Effect } from "effect";
 import type { MuseHistoryRecord } from "./museHistory.ts";
+import type { ExternalHistoryProvider, NativeUsageRecord } from "./nativeUsageRecord.ts";
 import {
   DEFAULT_USAGE_HISTORY_RETENTION_DAYS,
   type UsageHistoryRetention,
@@ -8,12 +9,13 @@ import {
 export type NativeHistoryStatus = "idle" | "refreshing" | "ready" | "error";
 export interface NativeHistorySnapshot {
   readonly source: string | null;
-  readonly records: readonly MuseHistoryRecord[];
+  readonly records: readonly (MuseHistoryRecord | NativeUsageRecord)[];
   readonly status: NativeHistoryStatus;
   readonly errorMessage?: string;
   readonly refreshedAt?: number;
 }
 export interface NativeHistoryCapability {
+  readonly provider?: ExternalHistoryProvider;
   readonly refresh: (retention?: UsageHistoryRetention) => Effect.Effect<void>;
   readonly getSnapshot: Effect.Effect<NativeHistorySnapshot>;
 }
@@ -21,11 +23,15 @@ export interface NativeHistoryCapability {
 /** Requesting a refresh never waits for discovery/IO. Failures retain the last good snapshot. */
 export const makeNativeHistoryCapability = <E, E2>(options: {
   readonly enabled: boolean;
+  readonly provider?: ExternalHistoryProvider;
+  readonly displayName?: string;
   readonly discover: Effect.Effect<string, E>;
+  readonly resolveAccount?: Effect.Effect<{ source: string; token: string }, E>;
   readonly scan: (
     home: string,
     retention: UsageHistoryRetention,
-  ) => Effect.Effect<readonly MuseHistoryRecord[], E2>;
+    token?: string,
+  ) => Effect.Effect<readonly (MuseHistoryRecord | NativeUsageRecord)[], E2>;
 }) =>
   Effect.gen(function* () {
     const scope = yield* Effect.scope;
@@ -33,22 +39,50 @@ export const makeNativeHistoryCapability = <E, E2>(options: {
     let snapshot: NativeHistorySnapshot = { source: null, records: [], status: "idle" };
     let nextRefreshAt = 0;
     let failures = 0;
+    let accountCheck: Deferred.Deferred<void> | undefined;
     let lastRetention: UsageHistoryRetention | undefined;
+    const name = options.displayName ?? "Muse";
     const refresh = (retention: UsageHistoryRetention = DEFAULT_USAGE_HISTORY_RETENTION_DAYS) =>
       Effect.gen(function* () {
         if (!options.enabled) return;
         const now = yield* Clock.currentTimeMillis;
         if (snapshot.status === "refreshing") return;
-        if (now < nextRefreshAt && retention === lastRetention) return;
-        lastRetention = retention;
-        snapshot = { ...snapshot, status: "refreshing" };
-        let phase: "discovery" | "scan" = home ? "scan" : "discovery";
+        const withinRefreshWindow = now < nextRefreshAt && retention === lastRetention;
+        if (withinRefreshWindow && !options.resolveAccount) return;
+        const previous = snapshot;
+        let checkedCachedAccount = false;
+        let refreshedSnapshot: NativeHistorySnapshot | undefined;
+        snapshot = options.resolveAccount
+          ? { source: null, records: [], status: "refreshing" }
+          : { ...previous, status: "refreshing" };
+        const checked = options.resolveAccount ? yield* Deferred.make<void>() : undefined;
+        accountCheck = checked;
+        let phase: "discovery" | "scan" = home && !options.resolveAccount ? "scan" : "discovery";
         yield* Effect.gen(function* () {
+          const account = options.resolveAccount
+            ? yield* options.resolveAccount.pipe(Effect.timeout("12 seconds"))
+            : undefined;
+          if (account) {
+            home = account.source;
+            if (home === previous.source) {
+              if (withinRefreshWindow) {
+                checkedCachedAccount = true;
+                refreshedSnapshot = previous;
+                return;
+              }
+              snapshot = { ...previous, status: "refreshing" };
+            } else {
+              snapshot = { source: home, records: [], status: "refreshing" };
+            }
+          }
           home ??= yield* options.discover.pipe(Effect.timeout("5 seconds"));
           phase = "scan";
-          const records = yield* options.scan(home, retention).pipe(Effect.timeout("2 minutes"));
+          if (checked) yield* Deferred.succeed(checked, undefined);
+          const records = yield* options
+            .scan(home, retention, account?.token)
+            .pipe(Effect.timeout("2 minutes"));
           failures = 0;
-          snapshot = {
+          refreshedSnapshot = {
             source: home,
             records,
             status: "ready",
@@ -75,13 +109,13 @@ export const makeNativeHistoryCapability = <E, E2>(options: {
                 underlying && typeof underlying === "object" && "code" in underlying
                   ? underlying.code
                   : undefined;
-              const name = underlying instanceof Error ? underlying.name : "";
+              const errorName = underlying instanceof Error ? underlying.name : "";
               const reason =
                 code === "EACCES" || code === "EPERM"
                   ? "permission denied"
-                  : code === "ENOENT" || name === "CommandNotFoundError"
+                  : code === "ENOENT" || errorName === "CommandNotFoundError"
                     ? "file or executable not found"
-                    : name === "ProtocolError"
+                    : errorName === "ProtocolError"
                       ? "incompatible Muse protocol"
                       : timeout
                         ? "timeout"
@@ -89,13 +123,15 @@ export const makeNativeHistoryCapability = <E, E2>(options: {
               const errorMessage =
                 phase === "discovery"
                   ? timeout
-                    ? "Muse home discovery timed out. Check the configured Muse CLI installation."
-                    : "Muse home discovery failed. Check that the configured CLI is installed and can initialize."
+                    ? `${name} home discovery timed out.`
+                    : `${name} home discovery failed.`
                   : timeout
-                    ? "Muse history scan timed out. Previously loaded history is retained."
-                    : "Muse history could not be read. Check access to the configured history directory.";
-              snapshot = {
-                ...snapshot,
+                    ? `${name} history scan timed out.`
+                    : `${name} history could not be read. Check your login or access to the history directory.`;
+              refreshedSnapshot = {
+                ...(underlying instanceof Error && underlying.name === "CursorAuthenticationError"
+                  ? { source: null, records: [] }
+                  : snapshot),
                 status: "error",
                 errorMessage: errorMessage + (reason ? " Reason: " + reason + "." : ""),
               };
@@ -108,13 +144,26 @@ export const makeNativeHistoryCapability = <E, E2>(options: {
           ),
           Effect.ensuring(
             Effect.gen(function* () {
-              nextRefreshAt =
-                (yield* Clock.currentTimeMillis) +
-                Math.min(10 * 60_000, 30_000 * 2 ** Math.min(5, Math.max(0, failures - 1)));
+              if (!checkedCachedAccount) {
+                nextRefreshAt =
+                  (yield* Clock.currentTimeMillis) +
+                  Math.min(10 * 60_000, 30_000 * 2 ** Math.min(5, Math.max(0, failures - 1)));
+                lastRetention = retention;
+              }
+              if (refreshedSnapshot) snapshot = refreshedSnapshot;
+              if (checked) yield* Deferred.succeed(checked, undefined);
             }),
           ),
           Effect.forkIn(scope),
         );
       });
-    return { refresh, getSnapshot: Effect.sync(() => snapshot) } satisfies NativeHistoryCapability;
+    return {
+      ...(options.provider ? { provider: options.provider } : {}),
+      refresh,
+      getSnapshot: Effect.suspend(() =>
+        accountCheck
+          ? Deferred.await(accountCheck).pipe(Effect.map(() => snapshot))
+          : Effect.succeed(snapshot),
+      ),
+    } satisfies NativeHistoryCapability;
   });

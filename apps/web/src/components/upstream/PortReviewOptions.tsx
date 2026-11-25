@@ -2,6 +2,7 @@ import { isKnownProviderKind, ProviderDriverKind, type ProviderKind, type Server
 import { workflowParticipantIds, workflowParticipantLabel } from "@t3tools/shared/workflowParticipants";
 import { readOnlyWorkflowUnsupportedReason } from "@t3tools/shared/workflowProviders";
 import { PlusIcon, XIcon } from "lucide-react";
+import type { ComponentProps } from "react";
 import { getWorkflowModelCapabilities } from "../../providerModels";
 import { Button } from "../ui/button";
 import { SlotRow } from "../workflow/SlotRow";
@@ -70,6 +71,7 @@ export function PortReviewOptions(props: {
   readonly value: UpstreamPortReviewSettings;
   readonly providers: ReadonlyArray<ServerProvider>;
   readonly modelOptionsByProvider: ModelOptionsByProvider;
+  readonly modelOptionsByInstance: ComponentProps<typeof SlotRow>["modelOptionsByInstance"];
   readonly locked: boolean;
   readonly onChange: (value: UpstreamPortReviewSettings) => void;
 }) {
@@ -102,7 +104,7 @@ export function PortReviewOptions(props: {
         return <SlotRow
           key={row.label} label={row.label}
           disabled={props.locked} provider={slot.provider} model={slot.model} modelOptions={slot.modelOptions}
-          providers={props.providers} modelOptionsByProvider={props.modelOptionsByProvider}
+          providers={props.providers} modelOptionsByInstance={props.modelOptionsByInstance}
           providerUnavailableReason={(provider) => readOnlyWorkflowUnsupportedReason(provider, props.providers)}
           onProviderModelChange={(provider, model) => write({ provider, model })}
           onModelOptionsChange={(options) => write({

@@ -75,16 +75,22 @@ it.each(["reconnecting", "resynchronizing", "backend replacement"])(
     try {
       const editor = mounted.host.querySelector("textarea")!;
       editor.focus();
-      if (phase === "reconnecting") noteWsConnectionClosed();
-      else {
+      if (phase === "reconnecting") {
+        noteWsConnectionClosed();
+        expect(document.querySelector('[role="status"]')).toBeNull();
+        expect(document.activeElement).toBe(editor);
+        await page.getByRole("textbox", { name: "Draft" }).fill("unfinished prompt");
+      } else {
         if (phase === "backend replacement")
           useStore.getState().resetBackendState("replacement-with-lower-head");
         noteWsResynchronizing();
       }
-      await vi.waitFor(() =>
-        expect(document.querySelector('[role="status"]')?.textContent).toContain(
-          phase === "reconnecting" ? "Reconnecting" : "Resynchronizing",
-        ),
+      await vi.waitFor(
+        () =>
+          expect(document.querySelector('[role="status"]')?.textContent).toContain(
+            phase === "reconnecting" ? "Reconnecting" : "Resynchronizing",
+          ),
+        { timeout: 5_000 },
       );
       expect(document.activeElement).toBe(editor);
       await page.getByRole("textbox", { name: "Draft" }).fill("unfinished prompt, still editable");

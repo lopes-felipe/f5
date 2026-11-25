@@ -9,17 +9,17 @@ export interface ChangedFileTreeEntry {
   path: string;
   previousPath?: string | null | undefined;
 }
-interface Node {
+interface Node<T> {
   path: string;
-  file?: ChangedFileTreeEntry;
-  children: Map<string, Node>;
+  file?: T;
+  children: Map<string, Node<T>>;
 }
-export function changedFileTreeRows(
-  files: readonly ChangedFileTreeEntry[],
+export function changedFileTreeRows<T extends ChangedFileTreeEntry>(
+  files: readonly T[],
   collapsed: ReadonlySet<string>,
   flat: boolean,
 ) {
-  const root: Node = { path: "", children: new Map() };
+  const root: Node<T> = { path: "", children: new Map() };
   for (const file of files) {
     let node = root;
     const parts = flat ? [file.path] : file.path.split("/");
@@ -36,8 +36,8 @@ export function changedFileTreeRows(
     }
     node.file = file;
   }
-  const rows: { path: string; depth: number; file?: ChangedFileTreeEntry }[] = [];
-  const visit = (node: Node, depth: number) => {
+  const rows: { path: string; depth: number; file?: T }[] = [];
+  const visit = (node: Node<T>, depth: number) => {
     for (const child of [...node.children.values()].sort(
       (a, b) =>
         Number(Boolean(a.file)) - Number(Boolean(b.file)) ||
@@ -49,6 +49,13 @@ export function changedFileTreeRows(
   };
   visit(root, 0);
   return rows;
+}
+
+export function orderChangedFilesLikeTree<T extends ChangedFileTreeEntry>(
+  files: readonly T[],
+  flat: boolean,
+): T[] {
+  return changedFileTreeRows(files, new Set(), flat).flatMap((row) => (row.file ? [row.file] : []));
 }
 
 /** Shared navigation and folder preferences for chat and pull-request diffs. */

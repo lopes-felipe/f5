@@ -1,0 +1,1 @@
+- Usage shows cost by token type and speed, with details for each model. Enable model list prices to estimate costs when the provider omits them.
