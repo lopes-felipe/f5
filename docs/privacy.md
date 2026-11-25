@@ -90,8 +90,7 @@ Everything lives under the state directory (`~/.f5` by default; see
   choose to, and then encrypts them with the backup password. The database and attachments in it
   are not encrypted.
 - **Browser cookies**: the preview browser keeps its own cookies, including any you import from
-  another browser. The desktop app stores them encrypted with the same OS key it uses for
-  `safeStorage`.
+  another browser, in the desktop app's profile.
 
 There is no installation-wide identifier sent anywhere. `installation-id` under the profiles
 directory stays local; backups and the profile registry use it.

@@ -524,9 +524,6 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     appId: "io.github.lopesfelipe.f5",
     electronFuses: {
       runAsNode: true, // Required by the sandboxed backend until it has a dedicated executable.
-      // Encrypts the cookie store with the Safe Storage key safeStorage already uses. Existing
-      // plain cookies stay readable. One-way: turning it off would leave the store unreadable.
-      enableCookieEncryption: true,
       enableNodeOptionsEnvironmentVariable: false,
       enableNodeCliInspectArguments: false,
       enableEmbeddedAsarIntegrityValidation: platform !== "linux",
