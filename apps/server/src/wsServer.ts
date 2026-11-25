@@ -453,6 +453,7 @@ import { CodexMcpEventBus } from "./codex/CodexMcpEventBus.ts";
 import { ProjectMcpConfigService } from "./mcp/ProjectMcpConfigService.ts";
 import { McpRuntimeService } from "./mcp/McpRuntimeService.ts";
 import { McpHub } from "./mcp/hub/McpHub.ts";
+import { McpHubAuth } from "./mcp/hub/McpHubAuth.ts";
 import { reconcileCodexThreadSnapshots } from "./orchestration/codexSnapshotReconciliation.ts";
 import { makeHistoryRecoveredSessionSet } from "./orchestration/providerTerminalLifecycle.ts";
 import { redactServerSettingsForClient, ServerSettingsService } from "./serverSettings.ts";
@@ -1163,6 +1164,7 @@ export const createServer = Effect.fn(function* (
   const codexMcpEventBus = yield* CodexMcpEventBus;
   const mcpRuntimeService = yield* McpRuntimeService;
   const mcpHub = Option.getOrUndefined(yield* Effect.serviceOption(McpHub));
+  const mcpHubAuth = Option.getOrUndefined(yield* Effect.serviceOption(McpHubAuth));
   const projectMcpConfigService = yield* ProjectMcpConfigService;
   const previewAutomationBroker = yield* PreviewAutomationBroker;
   const computerAutomationBroker = yield* Effect.serviceOption(ComputerAutomationBroker);
@@ -8310,6 +8312,40 @@ export const createServer = Effect.fn(function* (
           ? yield* Effect.promise(() => mcpHub.reconnect(body.serverName, body.projectId))
           : 0;
         return { reconnected };
+      }
+
+      case WS_METHODS.mcpGetHubAuthStatus: {
+        const body = stripRequestTag(request.body);
+        if (!mcpHubAuth) return { servers: [] };
+        return yield* mcpHubAuth
+          .status(body.projectId)
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+      }
+
+      case WS_METHODS.mcpStartHubSignIn: {
+        const body = stripRequestTag(request.body);
+        if (!mcpHubAuth)
+          return yield* new RouteRequestError({ message: "MCP sign-in is unavailable here." });
+        return yield* mcpHubAuth
+          .startSignIn(body)
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+      }
+
+      case WS_METHODS.mcpCompleteHubSignIn: {
+        const body = stripRequestTag(request.body);
+        if (!mcpHubAuth)
+          return yield* new RouteRequestError({ message: "MCP sign-in is unavailable here." });
+        return yield* mcpHubAuth
+          .completeSignIn(body)
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+      }
+
+      case WS_METHODS.mcpSignOutHubServer: {
+        const body = stripRequestTag(request.body);
+        if (!mcpHubAuth) return { signedOut: false };
+        return yield* mcpHubAuth
+          .signOut(body)
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
       }
 
       case WS_METHODS.mcpApplyToLiveSessions: {

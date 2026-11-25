@@ -173,6 +173,50 @@ export const McpReconnectHubServerResult = Schema.Struct({
 });
 export type McpReconnectHubServerResult = typeof McpReconnectHubServerResult.Type;
 
+export const McpHubSignInAttempt = Schema.Struct({
+  attemptId: TrimmedNonEmptyString,
+  /** Open this in a browser; F5 never opens it on its own. */
+  authorizationUrl: TrimmedNonEmptyString,
+  redirectUrl: TrimmedNonEmptyString,
+  startedAt: IsoDateTime,
+});
+export type McpHubSignInAttempt = typeof McpHubSignInAttempt.Type;
+
+/** OAuth state of one remote server; tokens are shared by every project with the same URL. */
+export const McpHubAuthServerStatus = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  signedIn: Schema.Boolean,
+  /** F5 can renew the access token without a new sign-in. */
+  refreshable: Schema.Boolean,
+  expiresAt: Schema.optional(IsoDateTime),
+  pending: Schema.optional(McpHubSignInAttempt),
+});
+export type McpHubAuthServerStatus = typeof McpHubAuthServerStatus.Type;
+
+export const McpGetHubAuthStatusResult = Schema.Struct({
+  servers: Schema.Array(McpHubAuthServerStatus),
+});
+export type McpGetHubAuthStatusResult = typeof McpGetHubAuthStatusResult.Type;
+
+export const McpStartHubSignInResult = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("signed-in") }),
+  Schema.Struct({ status: Schema.Literal("pending"), attempt: McpHubSignInAttempt }),
+]);
+export type McpStartHubSignInResult = typeof McpStartHubSignInResult.Type;
+
+export const McpCompleteHubSignInResult = Schema.Struct({
+  status: Schema.Literal("signed-in"),
+  serverName: TrimmedNonEmptyString,
+  /** Hub connections reconnected with the new tokens. */
+  reconnected: NonNegativeInt,
+});
+export type McpCompleteHubSignInResult = typeof McpCompleteHubSignInResult.Type;
+
+export const McpSignOutHubServerResult = Schema.Struct({
+  signedOut: Schema.Boolean,
+});
+export type McpSignOutHubServerResult = typeof McpSignOutHubServerResult.Type;
+
 export const McpApplyToLiveSessionsResult = Schema.Struct({
   scope: McpConfigScope,
   projectId: Schema.optional(ProjectId),

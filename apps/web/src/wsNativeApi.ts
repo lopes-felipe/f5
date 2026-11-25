@@ -931,6 +931,10 @@ export function createWsNativeApi(): NativeApi {
       applyToLiveSessions: requestMethod(WS_METHODS.mcpApplyToLiveSessions),
       getHubStatus: requestMethod(WS_METHODS.mcpGetHubStatus),
       reconnectHubServer: requestMethod(WS_METHODS.mcpReconnectHubServer),
+      getHubAuthStatus: requestMethod(WS_METHODS.mcpGetHubAuthStatus),
+      startHubSignIn: requestMethod(WS_METHODS.mcpStartHubSignIn),
+      completeHubSignIn: requestMethod(WS_METHODS.mcpCompleteHubSignIn),
+      signOutHubServer: requestMethod(WS_METHODS.mcpSignOutHubServer),
       onStatusUpdated: (callback) => {
         mcpStatusUpdatedListeners.add(callback);
         return () => {

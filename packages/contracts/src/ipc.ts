@@ -267,7 +267,15 @@ import type {
   McpGetHubStatusRequest,
   McpGetHubStatusResult,
   McpReconnectHubServerRequest,
+  McpGetHubAuthStatusRequest,
+  McpStartHubSignInRequest,
+  McpCompleteHubSignInRequest,
+  McpSignOutHubServerRequest,
   McpReconnectHubServerResult,
+  McpGetHubAuthStatusResult,
+  McpStartHubSignInResult,
+  McpCompleteHubSignInResult,
+  McpSignOutHubServerResult,
   McpGetProviderStatusRequest,
   McpGetEffectiveConfigRequest,
   McpGetProjectConfigRequest,
@@ -1334,6 +1342,13 @@ export interface NativeApi {
     reconnectHubServer: (
       input: McpReconnectHubServerRequest,
     ) => Promise<McpReconnectHubServerResult>;
+    getHubAuthStatus: (
+      input: McpGetHubAuthStatusRequest,
+      context?: NativeRequestContext,
+    ) => Promise<McpGetHubAuthStatusResult>;
+    startHubSignIn: (input: McpStartHubSignInRequest) => Promise<McpStartHubSignInResult>;
+    completeHubSignIn: (input: McpCompleteHubSignInRequest) => Promise<McpCompleteHubSignInResult>;
+    signOutHubServer: (input: McpSignOutHubServerRequest) => Promise<McpSignOutHubServerResult>;
     onStatusUpdated: (callback: (payload: McpStatusUpdatedPayload) => void) => () => void;
   };
   storage: {

@@ -24,10 +24,17 @@ import {
 import { Effect, Layer, Option, ServiceMap } from "effect";
 
 import { CodexMcpEventBus } from "../../codex/CodexMcpEventBus.ts";
+import { ServerSecretStore } from "../../auth/Services/ServerSecretStore.ts";
 import { readBearerToken } from "../jsonRpcHttp.ts";
 import { PreviewMcpHttpServer, type PreviewMcpHttpServerShape } from "../PreviewMcpHttpServer.ts";
 import { McpHubSlot } from "./McpHubEndpoint.ts";
 import { McpHubUpstream } from "./McpHubUpstream.ts";
+import {
+  McpOAuthProvider,
+  mcpOAuthServerUrl,
+  secretStoreOAuthStorage,
+  type McpOAuthStorage,
+} from "./McpOAuth.ts";
 
 export const MCP_HUB_PATH_PREFIX = "/mcp/user/";
 const STATUS_DEBOUNCE_MS = 250;
@@ -82,6 +89,10 @@ export interface McpHubShape {
   readonly status: (projectId?: ProjectId) => ReadonlyArray<McpHubServerStatus>;
   readonly reconnect: (serverName: string, projectId?: ProjectId) => Promise<number>;
   readonly readStderrTail: (serverName: string, projectId?: ProjectId) => string | undefined;
+  /** Where remote servers' OAuth tokens live; shared with sign-in so both see one cache. */
+  readonly oauthStorage?: McpOAuthStorage | undefined;
+  /** Reconnects every connection that signs in with this OAuth record (see `mcpOAuthKey`). */
+  readonly reconnectOAuth: (oauthKey: string) => Promise<number>;
   readonly close: () => Promise<void>;
 }
 
@@ -112,6 +123,8 @@ export interface McpHubOptions {
   readonly makeUpstream?: (
     options: ConstructorParameters<typeof McpHubUpstream>[0],
   ) => McpHubUpstream;
+  /** OAuth token storage for remote servers; without it they only use static credentials. */
+  readonly oauthStorage?: McpOAuthStorage;
 }
 
 export function makeMcpHub(options: McpHubOptions): McpHubShape {
@@ -173,12 +186,18 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
     const existing = upstreams.get(key);
     if (existing) return existing;
     const make = options.makeUpstream ?? ((value) => new McpHubUpstream(value));
+    const oauthUrl = mcpOAuthServerUrl(definition);
+    const authProvider =
+      options.oauthStorage && oauthUrl
+        ? new McpOAuthProvider({ storage: options.oauthStorage, serverUrl: oauthUrl, definition })
+        : undefined;
     const upstream = make({
       name: serverName,
       definition,
       scope,
       environment: input.environment,
       cwd: input.cwd,
+      ...(authProvider ? { authProvider } : {}),
       onChange: () => {
         markChanged(serverName);
         // A stopped upstream with no users is forgotten so it never leaks.
@@ -322,7 +341,24 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
     await Promise.allSettled(allUpstreams.map((entry) => entry.upstream.stop()));
   };
 
-  return { available, attach, status, reconnect, readStderrTail, close };
+  const reconnectOAuth = async (oauthKey: string): Promise<number> => {
+    const entries = [...upstreams.values()].filter(
+      (entry) => entry.users.size > 0 && entry.upstream.oauthKey === oauthKey,
+    );
+    await Promise.allSettled(entries.map((entry) => entry.upstream.reconnect()));
+    return entries.length;
+  };
+
+  return {
+    available,
+    attach,
+    status,
+    reconnect,
+    readStderrTail,
+    oauthStorage: options.oauthStorage,
+    reconnectOAuth,
+    close,
+  };
 }
 
 export const McpHubLive = Layer.effect(
@@ -330,8 +366,10 @@ export const McpHubLive = Layer.effect(
   Effect.gen(function* () {
     const listener = Option.getOrUndefined(yield* Effect.serviceOption(PreviewMcpHttpServer));
     const bus = Option.getOrUndefined(yield* Effect.serviceOption(CodexMcpEventBus));
+    const secrets = Option.getOrUndefined(yield* Effect.serviceOption(ServerSecretStore));
     const hub = makeMcpHub({
       listener,
+      ...(secrets ? { oauthStorage: secretStoreOAuthStorage(secrets) } : {}),
       ...(bus
         ? { publish: (payload) => void Effect.runFork(bus.publishStatusUpdated(payload)) }
         : {}),

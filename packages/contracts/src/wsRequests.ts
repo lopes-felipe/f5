@@ -168,6 +168,10 @@ import {
   McpStoreSecretRequest,
   McpInspectServerRequest,
   McpReconnectHubServerRequest,
+  McpGetHubAuthStatusRequest,
+  McpStartHubSignInRequest,
+  McpCompleteHubSignInRequest,
+  McpSignOutHubServerRequest,
   McpReconnectServerRequest,
   McpReplaceCommonConfigRequest,
   McpReplaceProjectConfigRequest,
@@ -780,6 +784,10 @@ const WebSocketRequestBody = Schema.Union([
   tagMcpAccountRequestBody(WS_METHODS.mcpApplyToLiveSessions, McpApplyToLiveSessionsRequest),
   tagRequestBody(WS_METHODS.mcpGetHubStatus, McpGetHubStatusRequest),
   tagRequestBody(WS_METHODS.mcpReconnectHubServer, McpReconnectHubServerRequest),
+  tagRequestBody(WS_METHODS.mcpGetHubAuthStatus, McpGetHubAuthStatusRequest),
+  tagRequestBody(WS_METHODS.mcpStartHubSignIn, McpStartHubSignInRequest),
+  tagRequestBody(WS_METHODS.mcpCompleteHubSignIn, McpCompleteHubSignInRequest),
+  tagRequestBody(WS_METHODS.mcpSignOutHubServer, McpSignOutHubServerRequest),
 
   // PR Hub methods
   tagRequestBody(PR_HUB_WS_METHODS.listAccounts, Schema.Struct({})),
