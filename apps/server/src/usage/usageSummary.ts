@@ -14,6 +14,7 @@ import {
   type UsageSummary,
   type UsageThreadBreakdown,
   type UsageTokenComposition,
+  type UsageCostBreakdown,
 } from "@t3tools/contracts";
 
 import type {
@@ -23,10 +24,12 @@ import type {
   UsageScopeTitles,
 } from "../persistence/Services/UsageFacts.ts";
 import type { UsageBucketPlan } from "./usageBuckets.ts";
+import { emptyCostBreakdown, priceUsageAggregate } from "./usagePricing.ts";
 
 export const TOP_THREAD_LIMIT = 10;
 
 interface MutableMetrics {
+  costBreakdown?: ReturnType<typeof emptyCostBreakdown>;
   nativeInferenceCount: number;
   unpricedNativeInferenceCount: number;
   turnCount: number;
@@ -91,9 +94,22 @@ function emptyMetrics(): MutableMetrics {
 }
 
 function addMetrics(target: MutableMetrics, row: UsageAggregateRow): void {
+  if (row.costBreakdown) {
+    const totals = (target.costBreakdown ??= emptyCostBreakdown());
+    for (const key of Object.keys(totals.byType) as Array<keyof UsageCostBreakdown["byType"]>) {
+      totals.byType[key] += row.costBreakdown.byType[key];
+    }
+    for (const key of Object.keys(totals.bySpeed) as Array<keyof UsageCostBreakdown["bySpeed"]>) {
+      totals.bySpeed[key] += row.costBreakdown.bySpeed[key];
+    }
+    totals.speedPremiumUsd += row.costBreakdown.speedPremiumUsd;
+  }
   target.nativeInferenceCount += row.nativeInferenceCount ?? 0;
   target.unpricedNativeInferenceCount += row.unpricedNativeInferenceCount ?? 0;
-  target.reportedCostTurnCount += row.providerReportedCostUsd === null ? 0 : row.pricedTurnCount;
+  target.reportedCostTurnCount +=
+    row.providerReportedCostUsd === null
+      ? 0
+      : row.pricedTurnCount + (row.nativeInferenceCount ?? 0);
   target.estimatedTurnCount +=
     row.estimatedCostUsd !== undefined ? row.turnCount + (row.nativeInferenceCount ?? 0) : 0;
   target.estimatedCostUsd += row.estimatedCostUsd ?? 0;
@@ -118,6 +134,7 @@ function addMetrics(target: MutableMetrics, row: UsageAggregateRow): void {
 
 function freezeMetrics(metrics: MutableMetrics): UsageMetrics {
   return {
+    ...(metrics.costBreakdown ? { costBreakdown: metrics.costBreakdown } : {}),
     ...(metrics.nativeInferenceCount > 0
       ? {
           nativeInferenceCount: metrics.nativeInferenceCount,
@@ -200,27 +217,7 @@ export function applyPriceOverride<Row extends UsageAggregateRow>(
   const override = overrides?.find(
     (price) => price.provider === row.provider && price.model === row.model,
   );
-  const canEstimate =
-    override &&
-    row.providerReportedCostUsd === null &&
-    (row.estimationEligibleTurnCount ?? row.reportedTokenTurnCount) === row.turnCount &&
-    (row.turnCount > 0 || (row.nativeInferenceCount ?? 0) > 0);
-  if (!canEstimate) return row;
-  const claude = providerReportsCacheOutsideInput(row.provider);
-  return {
-    ...row,
-    estimatedCostUsd:
-      ((claude ? row.inputTokens : Math.max(0, row.inputTokens - row.cacheReadTokens)) *
-        override.inputUsdPerMillion +
-        row.outputTokens * override.outputUsdPerMillion +
-        row.cacheReadTokens * (override.cacheReadUsdPerMillion ?? override.inputUsdPerMillion) +
-        (claude ? row.cacheWriteTokens : 0) *
-          (override.cacheWriteUsdPerMillion ?? override.inputUsdPerMillion)) /
-      1_000_000,
-    pricedTurnCount: row.turnCount,
-    unpricedTurnCount: 0,
-    ...(row.nativeInferenceCount ? { unpricedNativeInferenceCount: 0 } : {}),
-  };
+  return override ? priceUsageAggregate(row, override) : row;
 }
 
 /** Aggregates rows (prices applied) into one metrics value. */
@@ -237,7 +234,7 @@ function addComposition(target: MutableComposition, row: UsageAggregateRow): voi
   // Only partitions with a known total contribute, so unknown-total rows
   // cannot inflate the stacked composition.
   if (row.totalTokenTurnCount === 0 && !row.nativeInferenceCount) return;
-  const claude = providerReportsCacheOutsideInput(row.provider);
+  const claude = row.cacheOutsideInput ?? providerReportsCacheOutsideInput(row.provider);
   const segments: UsageTokenComposition = {
     uncachedInputTokens: claude
       ? row.inputTokens

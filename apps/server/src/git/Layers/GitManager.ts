@@ -90,6 +90,7 @@ interface BranchHeadContext {
   headSelectors: ReadonlyArray<string>;
   preferredHeadSelector: string;
   remoteName: string | null;
+  localTracking: boolean;
   headRepositoryNameWithOwner: string | null;
   headRepositoryOwnerLogin: string | null;
   isCrossRepository: boolean;
@@ -603,6 +604,7 @@ export const makeGitManager = Effect.gen(function* () {
       const cloneUrls = yield* provider.getRepositoryCloneUrls({
         cwd,
         repository: repositoryNameWithOwner,
+        pullRequestUrl: pullRequest.url,
       });
       const originRemoteUrl = yield* gitCore.readConfigValue(cwd, "remote.origin.url");
       const remoteUrl = shouldPreferSshRemote(originRemoteUrl) ? cloneUrls.sshUrl : cloneUrls.url;
@@ -710,6 +712,7 @@ export const makeGitManager = Effect.gen(function* () {
           const cloneUrls = yield* provider.getRepositoryCloneUrls({
             cwd,
             repository: repositoryNameWithOwner,
+            pullRequestUrl: pullRequest.url,
           });
           const origin = yield* gitCore.readConfigValue(cwd, "remote.origin.url");
           remoteName = yield* gitCore.ensureRemote({
@@ -747,6 +750,7 @@ export const makeGitManager = Effect.gen(function* () {
       const cloneUrls = yield* provider.getRepositoryCloneUrls({
         cwd,
         repository: repositoryNameWithOwner,
+        pullRequestUrl: pullRequest.url,
       });
       const originRemoteUrl = yield* gitCore.readConfigValue(cwd, "remote.origin.url");
       const remoteUrl = shouldPreferSshRemote(originRemoteUrl) ? cloneUrls.sshUrl : cloneUrls.url;
@@ -872,17 +876,21 @@ export const makeGitManager = Effect.gen(function* () {
     details: { branch: string; upstreamRef: string | null; remoteName?: string },
   ) =>
     Effect.gen(function* () {
-      const remoteName =
+      const configuredRemote =
         details.remoteName ??
-        (yield* readConfigValueNullable(cwd, `branch.${details.branch}.remote`)) ??
-        (details.upstreamRef === null
+        (yield* readConfigValueNullable(cwd, `branch.${details.branch}.remote`));
+      const localTracking = configuredRemote === ".";
+      const remoteName =
+        (localTracking ? null : configuredRemote) ??
+        (details.upstreamRef === null || localTracking
           ? yield* findPublishedBranchRemote(cwd, details.branch).pipe(
               Effect.orElseSucceed(() => null),
             )
           : null);
-      const headBranchFromUpstream = details.upstreamRef
-        ? extractBranchNameFromRemoteRef(details.upstreamRef, { remoteName })
-        : "";
+      const headBranchFromUpstream =
+        details.upstreamRef && !localTracking
+          ? extractBranchNameFromRemoteRef(details.upstreamRef, { remoteName })
+          : "";
 
       const [remoteRepository, originRepository] = yield* Effect.all(
         [
@@ -926,6 +934,7 @@ export const makeGitManager = Effect.gen(function* () {
             ? ownerHeadSelector
             : headBranch,
         remoteName,
+        localTracking,
         headRepositoryNameWithOwner: remoteRepository.repositoryNameWithOwner,
         headRepositoryOwnerLogin: remoteRepository.ownerLogin,
         isCrossRepository,
@@ -973,6 +982,7 @@ export const makeGitManager = Effect.gen(function* () {
   ) =>
     Effect.gen(function* () {
       const headContext = yield* resolveBranchHeadContext(cwd, details);
+      if (headContext.localTracking && !headContext.remoteName) return null;
       const parsedByNumber = new Map<number, PullRequestInfo>();
 
       for (const headSelector of headContext.headSelectors) {
@@ -1253,6 +1263,8 @@ export const makeGitManager = Effect.gen(function* () {
         branch,
         upstreamRef: details.upstreamRef,
       });
+      if (headContext.localTracking && !headContext.remoteName)
+        return yield* gitManagerError("runPrStep", "Current branch has not been pushed.");
 
       const existing = yield* findOpenPr(cwd, headContext, sourceControlProvider);
       if (existing) {

@@ -11,7 +11,6 @@ import {
   ProviderService,
   type ProviderServiceShape,
 } from "../src/provider/Services/ProviderService.ts";
-import { AnalyticsService } from "../src/telemetry/Services/AnalyticsService.ts";
 import { SqlitePersistenceMemory } from "../src/persistence/Layers/Sqlite.ts";
 import { ProviderSessionRuntimeRepositoryLive } from "../src/persistence/Layers/ProviderSessionRuntime.ts";
 import { ProjectMcpConfigService } from "../src/mcp/ProjectMcpConfigService.ts";
@@ -123,7 +122,6 @@ const makeIntegrationFixture = Effect.gen(function* () {
           servers: {},
         }),
     }),
-    AnalyticsService.layerTest,
   ).pipe(Layer.provide(SqlitePersistenceMemory));
 
   const serverConfigLayer = ServerConfig.layerTest(cwd, nodePath.join(cwd, ".f5-state")).pipe(

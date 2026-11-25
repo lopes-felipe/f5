@@ -102,7 +102,14 @@ export function ForgeControls({
           detail.providerDetails.mergeStateStatus,
         )
       );
-    return action !== "delete-branch" || pr.state === "merged" || pr.state === "closed";
+    if (action !== "delete-branch") return true;
+    const state = detail?.state ?? pr.state;
+    return (
+      (state === "merged" || state === "closed") &&
+      (pr.provider !== "gitlab" ||
+        (detail?.providerDetails.provider === "gitlab" &&
+          detail.providerDetails.viewerCanDeleteBranch === true))
+    );
   });
   const availableAction = actions.includes(action) ? action : actions[0]!;
   const methods = availableAction === "update-branch" ? caps.updateMethods : caps.mergeMethods;

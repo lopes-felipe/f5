@@ -39,7 +39,7 @@ export async function readTerminalProcessTable(
           "-NoProfile",
           "-NonInteractive",
           "-Command",
-          '$ErrorActionPreference = "Stop"; Get-CimInstance Win32_Process -ErrorAction Stop | ForEach-Object { Write-Output "$($_.ProcessId)|$($_.ParentProcessId)" }',
+          '$ErrorActionPreference = "Stop"; Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId -ErrorAction Stop | ForEach-Object { Write-Output "$($_.ProcessId)|$($_.ParentProcessId)" }',
         ]
       : ["-eo", "pid=,ppid="],
     options,

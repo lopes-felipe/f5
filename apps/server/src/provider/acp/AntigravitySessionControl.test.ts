@@ -413,6 +413,17 @@ describe("Antigravity read-only workflow turns", () => {
     expect(decide({ title: "tool" })).toBe("deny");
   });
 
+  it("allows only read-only shell commands, read from the raw input", () => {
+    const run = (CommandLine: string) =>
+      decide({ kind: "execute", title: "run_command", rawInput: { CommandLine } });
+    expect(run("gh pr view 1 --json title")).toBe("allow");
+    expect(run("git log -1 && git diff HEAD~1")).toBe("allow");
+    expect(run("rm -rf build")).toBe("deny");
+    expect(run("gh pr diff 1 > pr.diff")).toBe("deny");
+    // A command only in the title is display text, not what runs.
+    expect(decide({ kind: "execute", title: "`git status`" })).toBe("deny");
+  });
+
   it("denies computer requests and MCP tools even when their kind reads as read-only", () => {
     expect(decide({ kind: "read", title: "screenshot" }, true)).toBe("deny");
     expect(decide({ kind: "read", title: "mcp__github__get_issue" })).toBe("deny");

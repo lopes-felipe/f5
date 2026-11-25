@@ -815,6 +815,13 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     }
     const turnId = TurnId.makeUnsafe(turnIdRaw);
 
+    const serviceTier = this.readString(turn, "serviceTier");
+    if (serviceTier) {
+      const tiers = (context.usageServiceTiers ??= new Map());
+      tiers.set(turnId, serviceTier);
+      if (tiers.size > 256) tiers.delete(tiers.keys().next().value!);
+    }
+
     const nextConfiguredModel = turnStartParams.model ?? context.session.model;
 
     this.updateSession(context, {
@@ -3278,6 +3285,26 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       notification.method === "item/agentMessage/delta"
         ? this.readString(notification.params, "delta")
         : undefined;
+    const completedTier =
+      notification.method === "turn/completed" && route.turnId
+        ? context.usageServiceTiers?.get(route.turnId)
+        : undefined;
+    if (notification.method === "turn/started" && route.turnId) {
+      const serviceTier = this.readString(
+        this.readObject(notification.params, "turn"),
+        "serviceTier",
+      );
+      if (serviceTier) {
+        const tiers = (context.usageServiceTiers ??= new Map());
+        tiers.set(route.turnId, serviceTier);
+        if (tiers.size > 256) tiers.delete(tiers.keys().next().value!);
+      }
+    }
+    if (
+      route.turnId &&
+      (notification.method === "turn/completed" || notification.method === "turn/aborted")
+    )
+      context.usageServiceTiers?.delete(route.turnId);
 
     this.emitEvent({
       ...context.mcpEventIdentity,
@@ -3290,8 +3317,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       turnId: route.turnId,
       itemId: route.itemId,
       textDelta,
-      payload:
-        notification.method === "turn/started" && context.nativeReviewTurnId
+      payload: completedTier
+        ? { serviceTier: completedTier, ...asObject(notification.params) }
+        : notification.method === "turn/started" && context.nativeReviewTurnId
           ? {
               ...asObject(notification.params),
               turn: {

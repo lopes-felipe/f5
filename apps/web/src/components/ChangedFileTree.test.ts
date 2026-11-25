@@ -1,5 +1,23 @@
 import { expect, it } from "vitest";
-import { changedFileTreeRows } from "./ChangedFileTree";
+import { changedFileTreeRows, orderChangedFilesLikeTree } from "./ChangedFileTree";
+
+it("orders files across pages using the selected tree layout", () => {
+  const files = ["README.md", "src/io.ts", "docs/setup.md", "src/io.test.ts"].map((path) => ({
+    path,
+  }));
+  expect(orderChangedFilesLikeTree(files, false).map((file) => file.path)).toEqual([
+    "docs/setup.md",
+    "src/io.test.ts",
+    "src/io.ts",
+    "README.md",
+  ]);
+  expect(orderChangedFilesLikeTree(files, true).map((file) => file.path)).toEqual([
+    "docs/setup.md",
+    "README.md",
+    "src/io.test.ts",
+    "src/io.ts",
+  ]);
+});
 it("keeps directories, renames, and unusual literal file names navigable", () => {
   const files = [
     { path: "src/new.ts", previousPath: "old.ts" },

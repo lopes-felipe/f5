@@ -1,0 +1,1 @@
+- New threads recover when the conversation loads before the server has saved the thread.

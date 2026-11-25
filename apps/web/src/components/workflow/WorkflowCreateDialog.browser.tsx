@@ -1,10 +1,12 @@
 import { useState } from "react";
 import type { ProviderModelOptions } from "@t3tools/contracts";
+import { READ_ONLY_WORKFLOW_UNCERTIFIED_ANTIGRAVITY_MESSAGE } from "@t3tools/shared/workflowProviders";
 import {
+  createClaudeModelCapabilities,
+  createModelCapabilities,
   createReportedClaudeModelCapabilities,
   createReportedCodexModelCapabilities,
 } from "@t3tools/shared/model";
-import { WorkflowReasoningPicker } from "./SlotRow";
 import "../../index.css";
 
 import type { ReactElement } from "react";
@@ -22,12 +24,14 @@ import {
   OrchestrationCreateWorkflowInput,
   ProjectId,
   ProviderDriverKind,
+  type ProviderInstanceId,
   ResolvedKeybindingsConfig,
   ServerProvider,
   WorkflowPlatformCreateRunInput,
 } from "@t3tools/contracts";
 
 import { appendAttachedFilesToPrompt } from "../../lib/attachedFiles";
+import { toastManager } from "../ui/toast";
 import { serverQueryKeys } from "../../lib/serverReactQuery";
 import { isMacPlatform } from "../../lib/utils";
 import {
@@ -55,6 +59,29 @@ const nativeApiMocks = vi.hoisted(() => ({
     relativePath: input.relativePath,
     kind: "file" as const,
   })),
+  uploadAttachment: vi.fn(async (_baseUrl: string, threadId: string, file: File) => ({
+    uploadId: "00000000-0000-4000-8000-000000000001",
+    draftThreadId: threadId,
+    kind: "image" as const,
+    name: file.name,
+    mimeType: file.type,
+    sizeBytes: file.size,
+    contentHash: "hash",
+    expiresAt: "2099-01-01T00:00:00.000Z",
+  })),
+  materializeUploads: vi.fn(async (input: { threadId: string; uploadIds: string[] }) => ({
+    files: input.uploadIds.map((uploadId) => ({
+      uploadId,
+      path: `/state/workflow-attachments/${uploadId}/image.png`,
+    })),
+  })),
+  releaseUploads: vi.fn(async () => ({})),
+  discardMaterialized: vi.fn(async () => ({})),
+}));
+
+vi.mock("../../lib/attachmentUploadQueue", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../lib/attachmentUploadQueue")>()),
+  uploadAttachment: nativeApiMocks.uploadAttachment,
 }));
 
 vi.mock("../../nativeApi", () => {
@@ -101,6 +128,11 @@ vi.mock("../../nativeApi", () => {
     projects: {
       authorizeEntry: nativeApiMocks.authorizeEntry,
     },
+    attachments: {
+      materializeUploads: nativeApiMocks.materializeUploads,
+      releaseUploads: nativeApiMocks.releaseUploads,
+      discardMaterialized: nativeApiMocks.discardMaterialized,
+    },
   };
   return {
     ensureNativeApi: () => api,
@@ -145,6 +177,23 @@ import { WorkflowCreateDialog } from "./WorkflowCreateDialog";
 import { normalizeWorkflowSlotModelOptions } from "./workflowSlots";
 
 const desktopBridgePathByFileName = new Map<string, string>();
+
+/** The default `uploadAttachment` mock's id, and the path `materializeUploads` returns for it. */
+const FIRST_UPLOAD_ID = "00000000-0000-4000-8000-000000000001";
+const FIRST_UPLOAD_PATH = `/state/workflow-attachments/${FIRST_UPLOAD_ID}/image.png`;
+
+function uploadRecord(threadId: string, file: File, uploadId: string) {
+  return {
+    uploadId,
+    draftThreadId: threadId,
+    kind: "image" as const,
+    name: file.name,
+    mimeType: file.type,
+    sizeBytes: file.size,
+    contentHash: "hash",
+    expiresAt: "2099-01-01T00:00:00.000Z",
+  };
+}
 
 function createTestQueryClient(
   keybindings: ResolvedKeybindingsConfig = DEFAULT_RESOLVED_KEYBINDINGS,
@@ -260,33 +309,126 @@ function findProviderFieldButton(labelText: string): HTMLButtonElement {
   return button;
 }
 
-function findMenuItemRadio(text: string): HTMLElement | null {
-  return (
-    Array.from(
-      document.querySelectorAll<HTMLElement>(
-        '[role="menuitemradio"], [role="option"], [data-slot="combobox-item"]',
-      ),
-    ).find(
-      (element) =>
-        element.getAttribute("aria-label") === text || element.textContent?.trim() === text,
-    ) ?? null
+/** The select button of a model picker row whose display name is `name`. */
+function findModelRow(name: string): HTMLButtonElement | null {
+  for (const row of document.querySelectorAll<HTMLElement>("[data-model-picker-row]")) {
+    const select = row.querySelectorAll<HTMLButtonElement>("button")[1];
+    if (select?.querySelector(".truncate")?.textContent?.trim() === name) return select;
+  }
+  return null;
+}
+
+/** The model picker rail entry for a provider's default instance. */
+function findRailInstance(provider: string): HTMLElement | null {
+  return document.querySelector<HTMLElement>(
+    `[data-model-picker-provider="instance:${defaultInstanceIdForDriver(ProviderDriverKind.make(provider))}"]`,
   );
 }
 
-function findMenuItem(text: string): HTMLElement | null {
-  if (text === "Claude") {
-    const providerButton = document.querySelector<HTMLElement>(
-      '[data-model-picker-provider="claudeAgent"]',
-    );
-    if (providerButton) {
-      return providerButton;
-    }
-  }
-  return (
-    Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find(
-      (element) => element.textContent?.trim() === text,
-    ) ?? null
+function providerSnapshot(
+  provider: string,
+  models: ReadonlyArray<{
+    slug: string;
+    name: string;
+    capabilities?: ServerProvider["models"][number]["capabilities"];
+  }>,
+  overrides: Partial<ServerProvider> = {},
+): ServerProvider {
+  const driver = ProviderDriverKind.make(provider);
+  return {
+    instanceId: defaultInstanceIdForDriver(driver),
+    driver,
+    enabled: true,
+    installed: true,
+    version: "1.0.0",
+    status: "ready",
+    auth: { status: "authenticated" },
+    checkedAt: "2026-07-28T00:00:00.000Z",
+    models: models.map((model) => ({
+      slug: model.slug,
+      name: model.name,
+      isCustom: false,
+      capabilities: model.capabilities ?? null,
+    })),
+    slashCommands: [],
+    skills: [],
+    ...overrides,
+  };
+}
+
+const EMPTY_MODEL_OPTIONS_BY_INSTANCE = new Map<ProviderInstanceId, never[]>();
+
+/** An Antigravity snapshot whose Gemini row has a thinking level, as the live runtime reports. */
+function antigravityProvider(readOnlyWorkflowTurns: boolean): ServerProvider {
+  return providerSnapshot(
+    "antigravity",
+    [
+      {
+        slug: "gemini-4-neon",
+        name: "Gemini 4 Neon",
+        capabilities: createModelCapabilities({
+          optionDescriptors: [
+            {
+              id: "thinking",
+              label: "Thinking",
+              type: "select",
+              options: [
+                { id: "low", label: "Low" },
+                { id: "high", label: "High", isDefault: true },
+              ],
+            },
+          ],
+        }),
+      },
+    ],
+    {
+      displayName: "Antigravity",
+      runtimeCapabilities: {
+        nativeReview: false,
+        nativeCompaction: false,
+        nativeFork: false,
+        nativeGoals: false,
+        nativeAttachments: false,
+        childTaskInspection: false,
+        childTaskStop: false,
+        fileCheckpointing: false,
+        turnSteering: true,
+        conversationRollback: false,
+        rollbackAffectsFiles: false,
+        rollbackReadback: false,
+        asyncQuestions: false,
+        maxImagesPerTurn: 20,
+        reportedModels: true,
+        sessionCommandCatalog: true,
+        instanceInventory: false,
+        nativeSessionCleanup: false,
+        readOnlyWorkflowTurns,
+      },
+    },
   );
+}
+
+const CODEX_EFFORT_BY_LABEL: Record<string, string> = {
+  Low: "low",
+  Medium: "medium",
+  High: "high",
+  "Extra High": "xhigh",
+  Max: "max",
+  Ultra: "ultra",
+};
+
+/** Codex and Claude snapshots with the models the dialog tests pick from. */
+function defaultTestProviders(): ServerProvider[] {
+  return [
+    providerSnapshot("codex", [
+      { slug: "gpt-5-codex", name: "GPT-5 Codex" },
+      { slug: "gpt-5.4", name: "GPT-5.4" },
+    ]),
+    providerSnapshot("claudeAgent", [
+      { slug: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
+      { slug: "claude-opus-4-7", name: "Claude Opus 4.7" },
+    ]),
+  ];
 }
 
 async function seedModelPreferences(state: {
@@ -369,6 +511,16 @@ async function dropFilesOnRequirement(files: File[]) {
   );
 }
 
+function pasteFilesOnRequirement(files: File[]) {
+  const dataTransfer = new DataTransfer();
+  for (const file of files) {
+    dataTransfer.items.add(file);
+  }
+  getRequirementEditorSurface().dispatchEvent(
+    new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: dataTransfer }),
+  );
+}
+
 describe("WorkflowCreateDialog", () => {
   beforeEach(() => {
     localStorage.clear();
@@ -410,6 +562,11 @@ describe("WorkflowCreateDialog", () => {
     nativeApiMocks.createInvestigationWorkflow.mockClear();
     nativeApiMocks.getConfig.mockClear();
     nativeApiMocks.authorizeEntry.mockClear();
+    nativeApiMocks.uploadAttachment.mockClear();
+    nativeApiMocks.materializeUploads.mockClear();
+    nativeApiMocks.releaseUploads.mockClear();
+    nativeApiMocks.discardMaterialized.mockClear();
+    vi.restoreAllMocks();
     useStore.setState({
       projects: [],
       threads: [],
@@ -424,23 +581,13 @@ describe("WorkflowCreateDialog", () => {
     const host = document.createElement("div");
     document.body.append(host);
     const onModelOptionsChange = vi.fn();
-    const screen = await render(
+    const screen = await renderWithQueryClient(
       <SlotRow
         label="Branch A"
         provider="codex"
         model="gpt-5-codex"
         modelOptions={{ codex: { reasoningEffort: "high" } }}
-        modelOptionsByProvider={{
-          codex: [{ slug: "gpt-5-codex", name: "GPT-5 Codex" }],
-          claudeAgent: [{ slug: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" }],
-          cursor: [{ slug: "auto", name: "Auto" }],
-          opencode: [{ slug: "openai/gpt-5", name: "OpenAI GPT-5" }],
-          grok: [{ slug: "grok-build", name: "Grok Build" }],
-          antigravity: [],
-          muse: [],
-          acp: [],
-          pi: [],
-        }}
+        modelOptionsByInstance={EMPTY_MODEL_OPTIONS_BY_INSTANCE}
         onProviderModelChange={() => {}}
         onModelOptionsChange={onModelOptionsChange}
       />,
@@ -454,7 +601,7 @@ describe("WorkflowCreateDialog", () => {
         expect(document.body.textContent ?? "").toContain("Extra High");
       });
 
-      await page.getByRole("menuitemradio", { name: "Medium" }).click();
+      await page.getByRole("menuitemradio", { name: /^Medium/ }).click();
 
       await vi.waitFor(() => {
         expect(document.body.textContent ?? "").not.toContain("Extra High");
@@ -470,27 +617,16 @@ describe("WorkflowCreateDialog", () => {
   });
 
   it("divides the model and effort pickers only when reasoning controls render", async () => {
-    const modelOptionsByProvider = {
-      codex: [{ slug: "gpt-5-codex", name: "GPT-5 Codex" }],
-      claudeAgent: [{ slug: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" }],
-      cursor: [{ slug: "auto", name: "Auto" }],
-      opencode: [{ slug: "openai/gpt-5", name: "OpenAI GPT-5" }],
-      grok: [{ slug: "grok-build", name: "Grok Build" }],
-      antigravity: [],
-      muse: [],
-      acp: [],
-      pi: [],
-    };
     const host = document.createElement("div");
     document.body.append(host);
-    const screen = await render(
+    const screen = await renderWithQueryClient(
       <>
         <SlotRow
           label="With reasoning"
           provider="codex"
           model="gpt-5-codex"
           modelOptions={{ codex: { reasoningEffort: "high" } }}
-          modelOptionsByProvider={modelOptionsByProvider}
+          modelOptionsByInstance={EMPTY_MODEL_OPTIONS_BY_INSTANCE}
           onProviderModelChange={() => {}}
           onModelOptionsChange={() => {}}
         />
@@ -499,7 +635,7 @@ describe("WorkflowCreateDialog", () => {
           provider="cursor"
           model="auto"
           modelOptions={undefined}
-          modelOptionsByProvider={modelOptionsByProvider}
+          modelOptionsByInstance={EMPTY_MODEL_OPTIONS_BY_INSTANCE}
           onProviderModelChange={() => {}}
           onModelOptionsChange={() => {}}
         />
@@ -520,27 +656,115 @@ describe("WorkflowCreateDialog", () => {
     }
   });
 
+  it("offers Cursor's reported reasoning levels and stores the pick for dispatch", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const cursor = providerSnapshot("cursor", [
+      {
+        slug: "gpt-5.6-sol",
+        name: "GPT-5.6 Sol",
+        capabilities: createModelCapabilities({
+          optionDescriptors: [
+            {
+              id: "reasoning",
+              label: "Reasoning",
+              type: "select",
+              options: [
+                { id: "low", label: "Low" },
+                { id: "medium", label: "Medium", isDefault: true },
+                { id: "high", label: "High" },
+              ],
+            },
+          ],
+        }),
+      },
+    ]);
+    const onModelOptionsChange = vi.fn();
+    const screen = await renderWithQueryClient(
+      <SlotRow
+        label="Cursor slot"
+        provider="cursor"
+        model="gpt-5.6-sol"
+        modelOptions={undefined}
+        providers={[cursor]}
+        modelOptionsByInstance={EMPTY_MODEL_OPTIONS_BY_INSTANCE}
+        onProviderModelChange={() => {}}
+        onModelOptionsChange={onModelOptionsChange}
+      />,
+      { container: host },
+    );
+
+    try {
+      const row = page.getByRole("group", { name: "Cursor slot" }).element();
+      expect(row.querySelector('[data-slot="workflow-slot-divider"]')).not.toBeNull();
+      const trigger = row.querySelector<HTMLElement>("button[aria-haspopup='menu']")!;
+      expect(trigger.textContent).toContain("Medium");
+      trigger.click();
+      await page.getByRole("menuitemradio", { name: /^High/ }).click();
+      expect(onModelOptionsChange).toHaveBeenCalledWith({ cursor: { reasoning: "high" } });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("shows no traits for OpenCode slots, whose traits workflow turns never apply", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const opencode = providerSnapshot("opencode", [
+      {
+        slug: "openai/gpt-5",
+        name: "GPT-5",
+        capabilities: createModelCapabilities({
+          optionDescriptors: [
+            {
+              id: "variant",
+              label: "Variant",
+              type: "select",
+              options: [
+                { id: "low", label: "Low" },
+                { id: "high", label: "High", isDefault: true },
+              ],
+            },
+          ],
+        }),
+      },
+    ]);
+    const screen = await renderWithQueryClient(
+      <SlotRow
+        label="OpenCode slot"
+        provider="opencode"
+        model="openai/gpt-5"
+        modelOptions={{ opencode: { variant: "low" } }}
+        providers={[opencode]}
+        modelOptionsByInstance={EMPTY_MODEL_OPTIONS_BY_INSTANCE}
+        onProviderModelChange={() => {}}
+        onModelOptionsChange={() => {}}
+      />,
+      { container: host },
+    );
+
+    try {
+      const row = page.getByRole("group", { name: "OpenCode slot" }).element();
+      expect(row.querySelector('[data-slot="workflow-slot-divider"]')).toBeNull();
+      expect(row.querySelector("button[aria-haspopup='menu']")).toBeNull();
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("omits Ultra for Astra and normalizes persisted Ultra to Max", async () => {
     const host = document.createElement("div");
     document.body.append(host);
     const onModelOptionsChange = vi.fn();
-    const screen = await render(
+    const screen = await renderWithQueryClient(
       <SlotRow
         label="Branch A"
         provider="codex"
         model="gpt-6-astra"
         modelOptions={{ codex: { reasoningEffort: "ultra" } }}
-        modelOptionsByProvider={{
-          codex: [{ slug: "gpt-6-astra", name: "GPT-6 Astra" }],
-          claudeAgent: [{ slug: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" }],
-          cursor: [{ slug: "auto", name: "Auto" }],
-          opencode: [{ slug: "openai/gpt-5", name: "OpenAI GPT-5" }],
-          grok: [{ slug: "grok-build", name: "Grok Build" }],
-          antigravity: [],
-          muse: [],
-          acp: [],
-          pi: [],
-        }}
+        modelOptionsByInstance={EMPTY_MODEL_OPTIONS_BY_INSTANCE}
         onProviderModelChange={() => {}}
         onModelOptionsChange={onModelOptionsChange}
       />,
@@ -552,7 +776,7 @@ describe("WorkflowCreateDialog", () => {
       await vi.waitFor(() => {
         expect(document.body.textContent ?? "").not.toContain("Ultra");
       });
-      await page.getByRole("menuitemradio", { name: "Max" }).click();
+      await page.getByRole("menuitemradio", { name: /^Max/ }).click();
       expect(onModelOptionsChange).toHaveBeenCalledWith({
         codex: { reasoningEffort: "max" },
       });
@@ -566,23 +790,22 @@ describe("WorkflowCreateDialog", () => {
     const host = document.createElement("div");
     document.body.append(host);
     const onModelOptionsChange = vi.fn();
-    const screen = await render(
+    const screen = await renderWithQueryClient(
       <SlotRow
         label="Branch A"
         provider="claudeAgent"
         model="claude-opus-4-7"
         modelOptions={undefined}
-        modelOptionsByProvider={{
-          codex: [{ slug: "gpt-5-codex", name: "GPT-5 Codex" }],
-          claudeAgent: [{ slug: "claude-opus-4-7", name: "Claude Opus 4.7" }],
-          cursor: [{ slug: "auto", name: "Auto" }],
-          opencode: [{ slug: "openai/gpt-5", name: "OpenAI GPT-5" }],
-          grok: [{ slug: "grok-build", name: "Grok Build" }],
-          antigravity: [],
-          muse: [],
-          acp: [],
-          pi: [],
-        }}
+        providers={[
+          providerSnapshot("claudeAgent", [
+            {
+              slug: "claude-opus-4-7",
+              name: "Claude Opus 4.7",
+              capabilities: createClaudeModelCapabilities("claude-opus-4-7"),
+            },
+          ]),
+        ]}
+        modelOptionsByInstance={EMPTY_MODEL_OPTIONS_BY_INSTANCE}
         onProviderModelChange={() => {}}
         onModelOptionsChange={onModelOptionsChange}
       />,
@@ -599,11 +822,13 @@ describe("WorkflowCreateDialog", () => {
         expect(text).not.toContain("Ultrathink");
       });
 
-      await page.getByRole("menuitemradio", { name: "Max" }).click();
+      await page.getByRole("menuitemradio", { name: /^Max/ }).click();
 
       await vi.waitFor(() => {
+        // Like a thread, the Claude control saves its shown traits, including the default
+        // context window.
         expect(onModelOptionsChange).toHaveBeenCalledWith({
-          claudeAgent: { effort: "max" },
+          claudeAgent: { effort: "max", contextWindow: "200k" },
         });
       });
     } finally {
@@ -625,25 +850,25 @@ describe("WorkflowCreateDialog", () => {
     document.body.append(host);
     const screen = await renderWithQueryClient(
       <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
-      { container: host },
+      { container: host, providers: defaultTestProviders() },
     );
 
     try {
       findProviderFieldButton("Author A").click();
 
       await vi.waitFor(() => {
-        expect(findMenuItem("Claude")).not.toBeNull();
+        expect(findRailInstance("claudeAgent")).not.toBeNull();
       });
 
-      findMenuItem("Claude")?.click();
+      findRailInstance("claudeAgent")?.click();
 
       await vi.waitFor(() => {
-        const rememberedOption = findMenuItemRadio("Claude Opus 4.7");
+        const rememberedOption = findModelRow("Claude Opus 4.7");
         expect(rememberedOption).not.toBeNull();
         expect(rememberedOption?.textContent ?? "").not.toContain("Active");
       });
 
-      findMenuItemRadio("Claude Sonnet 4.6")?.click();
+      findModelRow("Claude Sonnet 4.6")?.click();
 
       await vi.waitFor(() => {
         expect(useModelPreferencesStore.getState().lastProvider).toBe("claudeAgent");
@@ -780,23 +1005,23 @@ describe("WorkflowCreateDialog", () => {
     document.body.append(firstHost);
     const firstScreen = await renderWithQueryClient(
       <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
-      { container: firstHost },
+      { container: firstHost, providers: defaultTestProviders() },
     );
 
     try {
       findProviderFieldButton("Merge").click();
 
       await vi.waitFor(() => {
-        expect(findMenuItem("Claude")).not.toBeNull();
+        expect(findRailInstance("claudeAgent")).not.toBeNull();
       });
 
-      findMenuItem("Claude")?.click();
+      findRailInstance("claudeAgent")?.click();
 
       await vi.waitFor(() => {
-        expect(findMenuItemRadio("Claude Sonnet 4.6")).not.toBeNull();
+        expect(findModelRow("Claude Sonnet 4.6")).not.toBeNull();
       });
 
-      findMenuItemRadio("Claude Sonnet 4.6")?.click();
+      findModelRow("Claude Sonnet 4.6")?.click();
 
       await vi.waitFor(() => {
         expect(useModelPreferencesStore.getState().lastWorkflowProviderBySlot.merge).toBe(
@@ -812,7 +1037,7 @@ describe("WorkflowCreateDialog", () => {
     document.body.append(secondHost);
     const secondScreen = await renderWithQueryClient(
       <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
-      { container: secondHost },
+      { container: secondHost, providers: defaultTestProviders() },
     );
 
     try {
@@ -822,6 +1047,124 @@ describe("WorkflowCreateDialog", () => {
     } finally {
       await secondScreen.unmount();
       secondHost.remove();
+    }
+  });
+
+  it("lists uncertified Antigravity models disabled with the read-only reason", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+      { container: host, providers: [...defaultTestProviders(), antigravityProvider(false)] },
+    );
+
+    try {
+      findProviderFieldButton("Author A").click();
+      await vi.waitFor(() => expect(findRailInstance("antigravity")).not.toBeNull());
+      findRailInstance("antigravity")!.click();
+
+      await vi.waitFor(() => expect(findModelRow("Gemini 4 Neon")).not.toBeNull());
+      const row = findModelRow("Gemini 4 Neon")!;
+      expect(row.disabled).toBe(true);
+      expect(row.textContent).toContain(READ_ONLY_WORKFLOW_UNCERTIFIED_ANTIGRAVITY_MESSAGE);
+      expect(document.body.textContent).not.toContain("No models found");
+
+      row.click();
+      expect(findProviderFieldButton("Author A").textContent).not.toContain("Gemini");
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("picks a certified Antigravity model and submits its thinking level", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+      { container: host, providers: [...defaultTestProviders(), antigravityProvider(true)] },
+    );
+
+    try {
+      findProviderFieldButton("Author A").click();
+      await vi.waitFor(() => expect(findRailInstance("antigravity")).not.toBeNull());
+      findRailInstance("antigravity")!.click();
+      await vi.waitFor(() => expect(findModelRow("Gemini 4 Neon")?.disabled).toBe(false));
+      findModelRow("Gemini 4 Neon")!.click();
+      await vi.waitFor(() =>
+        expect(findProviderFieldButton("Author A").textContent).toContain("Gemini 4 Neon"),
+      );
+
+      const authorA = page.getByRole("group", { name: "Author A" }).element();
+      authorA.querySelector<HTMLButtonElement>("button[aria-haspopup='menu']")!.click();
+      await page.getByRole("menuitemradio", { name: /^Low/ }).click();
+
+      await typeRequirementPrompt("Plan with Gemini");
+      await page.getByRole("button", { name: /Start workflow/ }).click();
+      await vi.waitFor(() => expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(1));
+      expect(nativeApiMocks.createWorkflow.mock.calls[0]?.[0].branchA).toMatchObject({
+        provider: "antigravity",
+        model: "gemini-4-neon",
+        modelOptions: { antigravity: { thinking: "low" } },
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("lists only the instance each workflow slot runs on", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+      {
+        container: host,
+        providers: [
+          ...defaultTestProviders(),
+          providerSnapshot("codex", [{ slug: "gpt-5-codex", name: "GPT-5 Codex" }], {
+            instanceId: "codex_work" as ProviderInstanceId,
+            displayName: "Codex Work",
+          }),
+        ],
+      },
+    );
+
+    try {
+      findProviderFieldButton("Author A").click();
+      await vi.waitFor(() => expect(findRailInstance("codex")).not.toBeNull());
+      expect(
+        document.querySelector('[data-model-picker-provider="instance:codex_work"]'),
+      ).toBeNull();
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("submits the Codex effort the traits control shows when none was picked", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+      { container: host, providers: defaultTestProviders() },
+    );
+
+    try {
+      const authorA = page.getByRole("group", { name: "Author A" }).element();
+      await vi.waitFor(() =>
+        expect(authorA.querySelector("button[aria-haspopup='menu']")).not.toBeNull(),
+      );
+      const shown = authorA.querySelector("button[aria-haspopup='menu']")!.textContent!.trim();
+      await typeRequirementPrompt("Plan the default effort");
+      await page.getByRole("button", { name: /Start workflow/ }).click();
+      await vi.waitFor(() => expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(1));
+      const branchA = nativeApiMocks.createWorkflow.mock.calls[0]?.[0].branchA;
+      expect(branchA?.provider).toBe("codex");
+      expect(branchA?.modelOptions?.codex?.reasoningEffort).toBe(CODEX_EFFORT_BY_LABEL[shown]);
+    } finally {
+      await screen.unmount();
+      host.remove();
     }
   });
 
@@ -915,20 +1258,20 @@ describe("WorkflowCreateDialog", () => {
     document.body.append(host);
     const screen = await renderWithQueryClient(
       <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
-      { container: host },
+      { container: host, providers: defaultTestProviders() },
     );
     const chooseClaude = async (field: string, model: string) => {
       findProviderFieldButton(field).click();
-      await vi.waitFor(() => expect(findMenuItem("Claude")).not.toBeNull());
-      findMenuItem("Claude")!.click();
-      await vi.waitFor(() => expect(findMenuItemRadio(model)).not.toBeNull());
-      findMenuItemRadio(model)!.click();
+      await vi.waitFor(() => expect(findRailInstance("claudeAgent")).not.toBeNull());
+      findRailInstance("claudeAgent")!.click();
+      await vi.waitFor(() => expect(findModelRow(model)).not.toBeNull());
+      findModelRow(model)!.click();
       await vi.waitFor(() =>
         expect(findProviderFieldButton(field).textContent, field).toContain(
           model.replace("Claude ", ""),
         ),
       );
-      await vi.waitFor(() => expect(findMenuItem("Claude")).toBeNull());
+      await vi.waitFor(() => expect(findRailInstance("claudeAgent")).toBeNull());
     };
     try {
       await page.getByRole("button", { name: "Document", exact: true }).click();
@@ -1574,6 +1917,270 @@ describe("WorkflowCreateDialog", () => {
     }
   });
 
+  it("attaches a pasted path-less screenshot through a durable server copy", async () => {
+    const addToast = vi.spyOn(toastManager, "add");
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+    );
+    try {
+      pasteFilesOnRequirement([new File(["png"], "image.png", { type: "image/png" })]);
+
+      await vi.waitFor(() =>
+        expect(
+          page
+            .getByTitle(
+              "/state/workflow-attachments/00000000-0000-4000-8000-000000000001/image.png",
+            )
+            .elements(),
+        ).toHaveLength(1),
+      );
+      expect(nativeApiMocks.uploadAttachment).toHaveBeenCalledTimes(1);
+      const draftThreadId = nativeApiMocks.uploadAttachment.mock.calls[0]![1];
+      expect(draftThreadId).toMatch(/^workflow-draft-/);
+      expect(nativeApiMocks.materializeUploads).toHaveBeenCalledWith({
+        threadId: draftThreadId,
+        uploadIds: ["00000000-0000-4000-8000-000000000001"],
+      });
+      expect(addToast).not.toHaveBeenCalled();
+
+      await page.getByRole("button", { name: /Start workflow/ }).click();
+      await vi.waitFor(() => expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(1));
+      expect(nativeApiMocks.createWorkflow.mock.calls[0]?.[0].requirementPrompt).toContain(
+        "/state/workflow-attachments/00000000-0000-4000-8000-000000000001/image.png",
+      );
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("reports a failed pasted-file upload without adding a chip", async () => {
+    const addToast = vi.spyOn(toastManager, "add");
+    nativeApiMocks.uploadAttachment.mockRejectedValueOnce(new Error("Upload capacity is busy."));
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+    );
+    try {
+      pasteFilesOnRequirement([new File(["png"], "image.png", { type: "image/png" })]);
+
+      await vi.waitFor(() =>
+        expect(addToast).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "error",
+            title: "Couldn't attach the file.",
+            description: "Upload capacity is busy.",
+          }),
+        ),
+      );
+      // The toast fires in `catch`; the pending count clears in `finally`.
+      await vi.waitFor(() => expect(document.body.textContent ?? "").not.toContain("Attaching"));
+      expect(nativeApiMocks.materializeUploads).not.toHaveBeenCalled();
+      expect(document.querySelector('[data-slot="file-chip"]')).toBeNull();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("releases the uploads that succeeded when another file in the paste fails", async () => {
+    const addToast = vi.spyOn(toastManager, "add");
+    nativeApiMocks.uploadAttachment
+      .mockImplementationOnce(async (_baseUrl: string, threadId: string, file: File) =>
+        uploadRecord(threadId, file, FIRST_UPLOAD_ID),
+      )
+      .mockRejectedValueOnce(new Error("Upload timed out. Retry the file."));
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+    );
+    try {
+      pasteFilesOnRequirement([
+        new File(["png"], "one.png", { type: "image/png" }),
+        new File(["png"], "two.png", { type: "image/png" }),
+      ]);
+
+      await vi.waitFor(() =>
+        expect(addToast).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "error",
+            title: "Couldn't attach the files.",
+            description: "Upload timed out. Retry the file.",
+          }),
+        ),
+      );
+      expect(nativeApiMocks.materializeUploads).not.toHaveBeenCalled();
+      expect(nativeApiMocks.releaseUploads).toHaveBeenCalledWith({
+        threadId: expect.stringMatching(/^workflow-draft-/),
+        uploadIds: [FIRST_UPLOAD_ID],
+      });
+      expect(document.querySelector('[data-slot="file-chip"]')).toBeNull();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("releases the uploads and reports the error when saving them fails", async () => {
+    const addToast = vi.spyOn(toastManager, "add");
+    nativeApiMocks.materializeUploads.mockRejectedValueOnce(
+      new Error("Saved workflow attachments are using their full quota. Retry later."),
+    );
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+    );
+    try {
+      pasteFilesOnRequirement([new File(["png"], "image.png", { type: "image/png" })]);
+
+      await vi.waitFor(() =>
+        expect(addToast).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "error",
+            title: "Couldn't attach the file.",
+            description: "Saved workflow attachments are using their full quota. Retry later.",
+          }),
+        ),
+      );
+      expect(nativeApiMocks.releaseUploads).toHaveBeenCalledWith({
+        threadId: expect.stringMatching(/^workflow-draft-/),
+        uploadIds: [FIRST_UPLOAD_ID],
+      });
+      expect(document.querySelector('[data-slot="file-chip"]')).toBeNull();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("skips empty files and folders instead of uploading them", async () => {
+    const addToast = vi.spyOn(toastManager, "add");
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+    );
+    try {
+      await dropFilesOnRequirement([new File([], "folder", { type: "" })]);
+
+      await vi.waitFor(() =>
+        expect(addToast).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "warning",
+            title: "Empty files and folders can't be attached.",
+          }),
+        ),
+      );
+      expect(nativeApiMocks.uploadAttachment).not.toHaveBeenCalled();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("discards the saved copy when its chip is removed", async () => {
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+    );
+    try {
+      pasteFilesOnRequirement([new File(["png"], "image.png", { type: "image/png" })]);
+      await vi.waitFor(() =>
+        expect(document.querySelector('[data-slot="file-chip"]')).not.toBeNull(),
+      );
+
+      await page.getByRole("button", { name: `Remove ${FIRST_UPLOAD_PATH}` }).click();
+
+      await vi.waitFor(() =>
+        expect(nativeApiMocks.discardMaterialized).toHaveBeenCalledWith({
+          uploadIds: [FIRST_UPLOAD_ID],
+        }),
+      );
+      expect(document.querySelector('[data-slot="file-chip"]')).toBeNull();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("discards saved copies when the dialog closes without starting a workflow", async () => {
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+    );
+    pasteFilesOnRequirement([new File(["png"], "image.png", { type: "image/png" })]);
+    await vi.waitFor(() =>
+      expect(document.querySelector('[data-slot="file-chip"]')).not.toBeNull(),
+    );
+
+    await screen.unmount();
+
+    expect(nativeApiMocks.discardMaterialized).toHaveBeenCalledWith({
+      uploadIds: [FIRST_UPLOAD_ID],
+    });
+  });
+
+  it("keeps saved copies that a started workflow references", async () => {
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+    );
+    try {
+      pasteFilesOnRequirement([new File(["png"], "image.png", { type: "image/png" })]);
+      await vi.waitFor(() =>
+        expect(document.querySelector('[data-slot="file-chip"]')).not.toBeNull(),
+      );
+      await page.getByRole("button", { name: /Start workflow/ }).click();
+      await vi.waitFor(() => expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(1));
+    } finally {
+      await screen.unmount();
+    }
+    expect(nativeApiMocks.discardMaterialized).not.toHaveBeenCalled();
+  });
+
+  it("discards a copy that finishes saving after the dialog closed", async () => {
+    const addToast = vi.spyOn(toastManager, "add");
+    let finishUpload: (() => void) | undefined;
+    nativeApiMocks.uploadAttachment.mockImplementationOnce(
+      async (_baseUrl: string, threadId: string, file: File) => {
+        await new Promise<void>((resolve) => {
+          finishUpload = resolve;
+        });
+        return uploadRecord(threadId, file, FIRST_UPLOAD_ID);
+      },
+    );
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+    );
+    pasteFilesOnRequirement([new File(["png"], "image.png", { type: "image/png" })]);
+    await vi.waitFor(() => expect(finishUpload).toBeDefined());
+
+    await screen.unmount();
+    finishUpload?.();
+
+    await vi.waitFor(() =>
+      expect(nativeApiMocks.discardMaterialized).toHaveBeenCalledWith({
+        uploadIds: [FIRST_UPLOAD_ID],
+      }),
+    );
+    expect(addToast).not.toHaveBeenCalled();
+  });
+
+  it("blocks starting the workflow while a pasted file is still attaching", async () => {
+    let finishUpload: (() => void) | undefined;
+    nativeApiMocks.uploadAttachment.mockImplementationOnce(
+      async (_baseUrl: string, threadId: string, file: File) => {
+        await new Promise<void>((resolve) => {
+          finishUpload = resolve;
+        });
+        return uploadRecord(threadId, file, FIRST_UPLOAD_ID);
+      },
+    );
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+    );
+    try {
+      await typeRequirementPrompt("Look at this screenshot");
+      expect(createWorkflowButton().disabled).toBe(false);
+      pasteFilesOnRequirement([new File(["png"], "image.png", { type: "image/png" })]);
+
+      await vi.waitFor(() => expect(document.body.textContent ?? "").toContain("Attaching…"));
+      expect(createWorkflowButton().disabled).toBe(true);
+
+      finishUpload?.();
+      await vi.waitFor(() => expect(createWorkflowButton().disabled).toBe(false));
+      expect(document.body.textContent ?? "").not.toContain("Attaching…");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("submits literal handles and quoted paths without authorizing them", async () => {
     const screen = await renderWithQueryClient(
       <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
@@ -1921,6 +2528,64 @@ describe("WorkflowCreateDialog", () => {
       host.remove();
     }
   });
+
+  it("notes a file that was still attaching when the project changed and discards its copy", async () => {
+    const baseProject = useStore.getState().projects[0]!;
+    useStore.setState({
+      projects: [
+        baseProject,
+        { ...baseProject, id: "project-2" as ProjectId, name: "Second", cwd: "/repo/second" },
+      ],
+    });
+    let finishUpload: (() => void) | undefined;
+    nativeApiMocks.uploadAttachment.mockImplementationOnce(
+      async (_baseUrl: string, threadId: string, file: File) => {
+        await new Promise<void>((resolve) => {
+          finishUpload = resolve;
+        });
+        return uploadRecord(threadId, file, FIRST_UPLOAD_ID);
+      },
+    );
+    function Host() {
+      const [projectId, setProjectId] = useState("project-1" as ProjectId);
+      return (
+        <WorkflowCreateDialog
+          open
+          projectId={projectId}
+          onOpenChange={() => {}}
+          onProjectChange={setProjectId}
+        />
+      );
+    }
+
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(<Host />, { container: host });
+
+    try {
+      pasteFilesOnRequirement([new File(["png"], "image.png", { type: "image/png" })]);
+      await vi.waitFor(() => expect(document.body.textContent ?? "").toContain("Attaching…"));
+
+      await page.getByRole("combobox", { name: "Project: Project" }).click();
+      await page.getByRole("option", { name: "Second" }).click();
+
+      await expect
+        .element(page.getByText("File references were cleared for the new project."))
+        .toBeVisible();
+      expect(document.body.textContent ?? "").not.toContain("Attaching…");
+
+      finishUpload?.();
+      await vi.waitFor(() =>
+        expect(nativeApiMocks.discardMaterialized).toHaveBeenCalledWith({
+          uploadIds: [FIRST_UPLOAD_ID],
+        }),
+      );
+      expect(document.querySelector('[data-slot="file-chip"]')).toBeNull();
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
 });
 
 describe("reported workflow capabilities", () => {
@@ -1944,29 +2609,36 @@ describe("reported workflow capabilities", () => {
       const changes = vi.fn();
       const host = document.createElement("div");
       document.body.append(host);
+      const providers = [providerSnapshot(provider, [{ slug: model, name: model, capabilities }])];
       const Harness = () => {
         const [options, setOptions] = useState<ProviderModelOptions>();
         return (
-          <WorkflowReasoningPicker
+          <SlotRow
+            label="Branch A"
             provider={provider}
             model={model}
-            capabilities={capabilities}
+            providers={providers}
             modelOptions={options}
-            onChange={(next) => {
+            modelOptionsByInstance={EMPTY_MODEL_OPTIONS_BY_INSTANCE}
+            onProviderModelChange={() => {}}
+            onModelOptionsChange={(next) => {
               setOptions(next);
               changes(next);
             }}
           />
         );
       };
-      const screen = await render(<Harness />, { container: host });
+      const screen = await renderWithQueryClient(<Harness />, { container: host });
       try {
         const defaultEffort = provider === "codex" ? "Low" : "High";
         await page.getByRole("button", { name: defaultEffort, exact: true }).click();
         const nondefaultEffort = provider === "codex" ? "High" : "Low";
         await page.getByRole("menuitemradio", { name: nondefaultEffort, exact: true }).click();
-        await page.getByRole("button", { name: nondefaultEffort, exact: true }).click();
-        await page.getByRole("menuitemradio", { name: "On", exact: true }).click();
+        // Like the composer, the Codex menu closes after an effort pick and Claude's stays open.
+        if (provider === "codex") {
+          await page.getByRole("button", { name: nondefaultEffort, exact: true }).click();
+        }
+        await page.getByRole("menuitemcheckbox", { name: /Fast Mode/ }).click();
         expect(changes.mock.lastCall?.[0]).toEqual(
           provider === "codex"
             ? { codex: { reasoningEffort: "high", fastMode: true } }
@@ -1986,12 +2658,15 @@ it("saves a Codex pick of the built-in default when no capabilities were reporte
   const changes = vi.fn();
   const host = document.createElement("div");
   document.body.append(host);
-  const screen = await render(
-    <WorkflowReasoningPicker
+  const screen = await renderWithQueryClient(
+    <SlotRow
+      label="Branch A"
       provider="codex"
       model="gpt-6.1-sol"
       modelOptions={{ codex: { reasoningEffort: "medium" } }}
-      onChange={changes}
+      modelOptionsByInstance={EMPTY_MODEL_OPTIONS_BY_INSTANCE}
+      onProviderModelChange={() => {}}
+      onModelOptionsChange={changes}
     />,
     { container: host },
   );
@@ -2008,43 +2683,72 @@ it("saves a Codex pick of the built-in default when no capabilities were reporte
 it("walks an unsupported stored effort down, not to the default, and shows fast-only controls", async () => {
   const host = document.createElement("div");
   document.body.append(host);
+  const model = "gpt-future";
   const props = {
+    label: "Branch A",
     provider: "codex" as const,
-    model: "gpt-future",
+    model,
     modelOptions: { codex: { reasoningEffort: "ultra" as const } },
-    onChange: () => {},
+    modelOptionsByInstance: EMPTY_MODEL_OPTIONS_BY_INSTANCE,
+    onProviderModelChange: () => {},
+    onModelOptionsChange: () => {},
   };
+  const queryClient = createTestQueryClient();
   const screen = await render(
-    <WorkflowReasoningPicker
-      {...props}
-      capabilities={createReportedCodexModelCapabilities({
-        model: props.model,
-        supportedReasoningEfforts: [
-          { reasoningEffort: "max" },
-          { reasoningEffort: "high" },
-          { reasoningEffort: "low" },
-        ],
-        defaultReasoningEffort: "low",
-      })}
-    />,
+    <QueryClientProvider client={queryClient}>
+      <SlotRow
+        {...props}
+        providers={[
+          providerSnapshot("codex", [
+            {
+              slug: model,
+              name: model,
+              capabilities: createReportedCodexModelCapabilities({
+                model,
+                supportedReasoningEfforts: [
+                  { reasoningEffort: "max" },
+                  { reasoningEffort: "high" },
+                  { reasoningEffort: "low" },
+                ],
+                defaultReasoningEffort: "low",
+              }),
+            },
+          ]),
+        ]}
+      />
+    </QueryClientProvider>,
     { container: host },
   );
   try {
     // turn/start lowers Ultra to Max; Low (the default) would misstate the run.
     await expect.element(page.getByRole("button", { name: "Max", exact: true })).toBeVisible();
     await screen.rerender(
-      <WorkflowReasoningPicker
-        {...props}
-        capabilities={createReportedCodexModelCapabilities({
-          model: props.model,
-          supportedReasoningEfforts: [],
-          serviceTiers: [{ id: "priority" }],
-        })}
-      />,
+      <QueryClientProvider client={queryClient}>
+        <SlotRow
+          {...props}
+          providers={[
+            providerSnapshot("codex", [
+              {
+                slug: model,
+                name: model,
+                capabilities: createReportedCodexModelCapabilities({
+                  model,
+                  supportedReasoningEfforts: [],
+                  serviceTiers: [{ id: "priority" }],
+                }),
+              },
+            ]),
+          ]}
+        />
+      </QueryClientProvider>,
     );
-    await expect
-      .element(page.getByRole("button", { name: "Fast Mode", exact: true }))
-      .toBeVisible();
+    // A model whose only control is Fast Mode still gets the traits control.
+    const row = page.getByRole("group", { name: "Branch A" }).element();
+    await vi.waitFor(() => {
+      expect(row.querySelector('[data-slot="workflow-slot-divider"]')).not.toBeNull();
+    });
+    row.querySelector<HTMLButtonElement>("button[aria-haspopup='menu']")?.click();
+    await expect.element(page.getByRole("menuitemcheckbox", { name: /Fast Mode/ })).toBeVisible();
   } finally {
     await screen.unmount();
     host.remove();

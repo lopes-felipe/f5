@@ -448,23 +448,23 @@ export function makeServerAuth(
   const blockedUntilFor = (source: string, timestamp: number): number => {
     pruneExpiredAuthFailures(timestamp);
     pruneOverflowAuthFailures(timestamp);
+    // Tracked sources keep their own deadline; untracked login sources inherit
+    // an active overflow lockout until it expires, even if earlier tracked
+    // buckets expire first.
     const sourceBlocked =
       authFailuresBySource.get(source)?.blockedUntil ??
-      (authFailuresBySource.size >= maxFailureSources
-        ? (overflowAuthFailures?.blockedUntil ?? timestamp)
-        : timestamp);
+      overflowAuthFailures?.blockedUntil ??
+      timestamp;
     return Math.max(sourceBlocked, globalAuthFailures?.blockedUntil ?? timestamp);
   };
 
   const sourceBlockedUntil = (source: string, timestamp: number): number => {
     pruneExpiredAuthFailures(timestamp);
     pruneOverflowAuthFailures(timestamp);
-    return (
-      authFailuresBySource.get(source)?.blockedUntil ??
-      (authFailuresBySource.size >= maxFailureSources
-        ? (overflowAuthFailures?.blockedUntil ?? timestamp)
-        : timestamp)
-    );
+    // Bearer authentication deliberately uses only per-source limits so
+    // failures from other clients cannot lock out an untracked client with a
+    // valid bearer token.
+    return authFailuresBySource.get(source)?.blockedUntil ?? timestamp;
   };
 
   const recordSourceFailure = (source: string, timestamp: number): number => {

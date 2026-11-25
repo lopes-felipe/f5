@@ -906,14 +906,12 @@ describe("terminalNavigationShortcutData", () => {
     );
   });
 
-  it("maps Ctrl+Arrow on non-macOS to word movement", () => {
-    assert.strictEqual(
+  it("lets the terminal encode Ctrl+Arrow on Windows and Linux", () => {
+    assert.isNull(
       terminalNavigationShortcutData(event({ key: "ArrowLeft", ctrlKey: true }), "Win32"),
-      "\u001bb",
     );
-    assert.strictEqual(
+    assert.isNull(
       terminalNavigationShortcutData(event({ key: "ArrowRight", ctrlKey: true }), "Linux"),
-      "\u001bf",
     );
   });
 
