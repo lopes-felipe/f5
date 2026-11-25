@@ -154,7 +154,7 @@ export function findBrokenDocLinks(repoRoot: string): string[] {
         ? isDirectoryPath(resolved)
         : isRegularFile(resolved);
       if (!valid) {
-        broken.push(`${path.relative(repoRoot, file)} -> ${rawTarget}`);
+        broken.push(`${path.relative(repoRoot, file).replaceAll("\\", "/")} -> ${rawTarget}`);
       }
     }
   }
