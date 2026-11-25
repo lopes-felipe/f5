@@ -164,7 +164,7 @@ export function WebSocketConnectionSurface({ children }: { readonly children: Re
   const disconnected =
     connectionState.synchronizationError !== null ||
     (enabled &&
-      (!online || connectionState.phase !== "connected" || !connectionState.synchronized) &&
+      (connectionState.phase !== "connected" || !connectionState.synchronized) &&
       (!transient || graceElapsed));
   const copy = protocol.upgradeRequired
     ? {

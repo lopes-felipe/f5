@@ -179,7 +179,7 @@ function CodexTraitsMenuContentImpl(props: {
   );
 }
 
-export const CodexTraitsMenuContent = memo(CodexTraitsMenuContentImpl);
+const CodexTraitsMenuContent = memo(CodexTraitsMenuContentImpl);
 
 export const CodexTraitsPicker = memo(function CodexTraitsPicker(props: {
   threadId: ThreadId;

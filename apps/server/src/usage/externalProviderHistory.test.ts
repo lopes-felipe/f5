@@ -6,6 +6,7 @@ import { expect, it, vi } from "vitest";
 import { readAntigravityUsage } from "./antigravityUsageReader.ts";
 import { readCursorAccountUsage } from "./cursorUsageReader.ts";
 import { readOpenCodeUsage } from "./opencodeUsageReader.ts";
+import { recordedExternalPredicate } from "./museRecordedIntervals.ts";
 
 it("reads OpenCode SQLite and JSON without counting a migrated message twice", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "f5-opencode-usage-"));
@@ -45,6 +46,10 @@ it("reads OpenCode SQLite and JSON without counting a migrated message twice", a
       },
       reportedCostUsd: 0.05,
     });
+    await writeFile(path.join(root, "opencode.db"), "unreadable SQLite data");
+    const partial = await readOpenCodeUsage(root, 1_000);
+    expect(partial.error).toBe(true);
+    expect(partial.files.flatMap((file) => file.records)).toHaveLength(2);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -114,3 +119,63 @@ it("uses Cursor account events from the fixed origin and preserves reported cost
     },
   ]);
 });
+
+it.each(["exact", "overlap", "changed"] as const)(
+  "completes Cursor pagination for %s pages",
+  async (mode) => {
+    const token = `test.${Buffer.from(JSON.stringify({ sub: "auth|fixture" })).toString("base64url")}.fixture`;
+    const events = Array.from({ length: 1002 }, (_, index) => ({
+      timestamp: 1000 + index,
+      model: "test-model",
+      tokenUsage: { inputTokens: 1 },
+    }));
+    const response = (count: number, rows: typeof events) =>
+      Response.json({ totalUsageEventsCount: count, usageEventsDisplay: rows });
+    const request = vi.fn<typeof fetch>();
+    request.mockResolvedValueOnce(response(mode === "exact" ? 1000 : 1002, events.slice(0, 1000)));
+    if (mode === "overlap") request.mockResolvedValueOnce(response(1002, events.slice(999)));
+    if (mode === "changed") {
+      request.mockResolvedValueOnce(response(1003, events.slice(1000)));
+      request.mockResolvedValueOnce(response(1002, events.slice(0, 1000)));
+      request.mockResolvedValueOnce(response(1002, events.slice(1000)));
+    }
+    const result = await readCursorAccountUsage(token, 0, 3_000, request);
+    expect(result.error).toBeNull();
+    expect(result.records).toHaveLength(mode === "exact" ? 1000 : 1002);
+    expect(request).toHaveBeenCalledTimes(mode === "exact" ? 1 : mode === "overlap" ? 2 : 4);
+  },
+);
+
+it.each(["antigravity", "cursor", "opencode"] as const)(
+  "reconciles %s records using exact session identity",
+  (provider) => {
+    const recorded = recordedExternalPredicate([
+      {
+        provider,
+        sessionId: "native-session",
+        startedAt: "2026-11-01T00:00:00.000Z",
+        endedAt: "2026-11-01T00:01:00.000Z",
+      },
+    ]);
+    const record = {
+      provider,
+      sessionId: "native-session",
+      model: "test-model",
+      dedupeKey: null,
+      reportedCostUsd: null,
+      totals: {
+        uncachedInputTokens: 1,
+        cachedInputTokens: 0,
+        cacheCreationTokens: 0,
+        outputTokens: 1,
+        reasoningTokens: 0,
+      },
+      timestampMs: Date.parse(
+        provider === "cursor" ? "2026-11-01T00:01:02.000Z" : "2026-11-01T00:00:30.000Z",
+      ),
+    };
+    expect(recorded(record)).toBe(true);
+    expect(recorded({ ...record, sessionId: "other-session" })).toBe(false);
+    expect(recorded({ ...record, timestampMs: record.timestampMs + 120_000 })).toBe(false);
+  },
+);

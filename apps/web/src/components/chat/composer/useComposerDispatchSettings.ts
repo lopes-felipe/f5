@@ -28,7 +28,6 @@ import { supportsClaudeTraitsControls } from "~/components/chat/ClaudeTraitsPick
 import {
   getComposerEffortDescriptors,
   getComposerProviderState,
-  renderProviderTraitsMenuContent,
   renderProviderTraitsPicker,
 } from "~/components/chat/composerProviderState";
 import { type ComposerThreadDraftState, useComposerDraftStore } from "~/composerDraftStore";
@@ -450,25 +449,6 @@ export function useComposerDispatchSettings(input: ComposerDispatchSettingsInput
       undefined,
     [selectedProvider, selectedProviderModelOptionsForDispatch],
   );
-  const genericProviderTraitsMenuContent = useMemo(() => {
-    if (selectedProvider === "codex" || selectedProvider === "claudeAgent") {
-      return null;
-    }
-    return renderProviderTraitsMenuContent({
-      provider: selectedProviderDriver,
-      draftId: threadId,
-      model: selectedModel,
-      models: selectedProviderModels,
-      modelOptions: selectedProviderModelOptions,
-    });
-  }, [
-    selectedModel,
-    selectedProvider,
-    selectedProviderDriver,
-    selectedProviderModelOptions,
-    selectedProviderModels,
-    threadId,
-  ]);
   const genericProviderTraitsPicker = useMemo(() => {
     if (selectedProvider === "codex" || selectedProvider === "claudeAgent") {
       return null;
@@ -581,7 +561,6 @@ export function useComposerDispatchSettings(input: ComposerDispatchSettingsInput
     selectedProviderModelOptions,
     selectedProviderModelOptionsForDispatch,
     selectedComposerEffort,
-    genericProviderTraitsMenuContent,
     genericProviderTraitsPicker,
     isClaudeUltrathink,
     showClaudeTraitsControls,

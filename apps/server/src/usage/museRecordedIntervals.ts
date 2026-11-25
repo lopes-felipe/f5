@@ -22,7 +22,7 @@ export const nativeRecordedIntervals = (sql: SqlClient.SqlClient) => sql<NativeR
     AND started_at IS NOT NULL AND total_tokens IS NOT NULL
 `;
 
-function recordedIntervalPredicate(intervals: readonly MuseRecordedInterval[]) {
+function recordedIntervalPredicate(intervals: readonly MuseRecordedInterval[], graceMs = 0) {
   const bySession = new Map<string, MuseRecordedInterval[]>();
   for (const interval of intervals) {
     const start = Date.parse(interval.startedAt),
@@ -32,7 +32,7 @@ function recordedIntervalPredicate(intervals: readonly MuseRecordedInterval[]) {
     entries.push({
       ...interval,
       startedAt: new Date(start).toISOString(),
-      endedAt: new Date(end).toISOString(),
+      endedAt: new Date(end + graceMs).toISOString(),
     });
     bySession.set(interval.sessionId, entries);
   }
@@ -54,7 +54,10 @@ export function recordedExternalPredicate(intervals: readonly NativeRecordedInte
   const predicates = new Map(
     (["opencode", "cursor", "antigravity"] as const).map((provider) => [
       provider,
-      recordedIntervalPredicate(intervals.filter((interval) => interval.provider === provider)),
+      recordedIntervalPredicate(
+        intervals.filter((interval) => interval.provider === provider),
+        provider === "cursor" ? 5_000 : 0,
+      ),
     ]),
   );
   return (record: NativeUsageRecord) => {

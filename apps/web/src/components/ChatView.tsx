@@ -315,6 +315,7 @@ import { useSwitchDraftProject } from "../hooks/useSwitchDraftProject";
 import { type ThreadActionId, useThreadActionController } from "../hooks/useThreadActionController";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import {
+  ensureThreadHistoryBackfill,
   fetchAndSyncThreadDetail,
   fetchThreadFileChangesDelta,
   fullThreadFileChangesQueryOptions,
@@ -322,7 +323,6 @@ import {
   loadThreadHistoryAroundMessage,
   mergeThreadFileChangesResult,
   orchestrationQueryKeys,
-  retryThreadHistoryBackfill,
   shouldBackfillThreadHistory,
 } from "../lib/orchestrationReactQuery";
 import { buildLocalDraftThread } from "../lib/draftThreads";
@@ -1675,7 +1675,6 @@ export default memo(function ChatView({
     selectedProviderModelOptions,
     selectedProviderModelOptionsForDispatch,
     selectedComposerEffort,
-    genericProviderTraitsMenuContent,
     genericProviderTraitsPicker,
     isClaudeUltrathink,
     showClaudeTraitsControls,
@@ -2686,52 +2685,75 @@ export default memo(function ChatView({
   const hasOlderTimelineHistory = shouldBackfillThreadHistory(activeThreadHistory, {
     includeCommandExecutionHistory: settings.showAgentCommandTranscripts,
   });
+  const timelineHistoryRequests = useRef(Promise.resolve());
   const loadOlderTimelineHistory = useCallback(
-    async (signal: AbortSignal, activityOnly = false) => {
+    async (signal: AbortSignal, activityOnly = false, throughUserMessage = false) => {
       if (!activeThread) return;
-      const scrollGeneration = endScrollGenerationRef.current;
-      await preserveTimelineAnchorDuringHistoryLoad({
-        getList: () => legendListRef.current,
-        getRowIndex: (id) => timelineEntryRowIndexMapRef.current?.get(id),
-        signal,
-        canRestore: () => endScrollGenerationRef.current === scrollGeneration,
-        load: () =>
-          activityOnly
-            ? loadOlderThreadActivitiesPage(activeThread.id, signal)
-            : retryThreadHistoryBackfill(queryClient, activeThread.id, {
-                signal,
-                includeCommandExecutionHistory: settings.showAgentCommandTranscripts,
-              }),
+      const request = timelineHistoryRequests.current.then(() => {
+        if (signal.aborted) return;
+        const scrollGeneration = endScrollGenerationRef.current;
+        return preserveTimelineAnchorDuringHistoryLoad({
+          getList: () => legendListRef.current,
+          getRowIndex: (id) => timelineEntryRowIndexMapRef.current?.get(id),
+          signal,
+          canRestore: () => endScrollGenerationRef.current === scrollGeneration,
+          load: () =>
+            activityOnly
+              ? loadOlderThreadActivitiesPage(activeThread.id, signal)
+              : ensureThreadHistoryBackfill(queryClient, activeThread.id, {
+                  signal,
+                  throughUserMessage,
+                  includeCommandExecutionHistory: settings.showAgentCommandTranscripts,
+                }),
+        });
       });
+      timelineHistoryRequests.current = request.catch(() => undefined);
+      await request;
     },
     [activeThread, queryClient, settings.showAgentCommandTranscripts],
   );
   const historyThreadId = activeThread?.id ?? null;
   const historyStage = activeThreadHistory.stage;
   const olderHistoryControllerRef = useRef<AbortController | null>(null);
-  useEffect(() => () => olderHistoryControllerRef.current?.abort(), [historyThreadId]);
+  const pendingOlderHistoryRef = useRef(new Set<boolean>());
+  useEffect(
+    () => () => {
+      olderHistoryControllerRef.current?.abort();
+      pendingOlderHistoryRef.current.clear();
+    },
+    [historyThreadId],
+  );
   const [loadingEarlierWork, setLoadingEarlierWork] = useState(false);
   const requestOlderHistory = useCallback(
     (activityOnly: boolean) => {
-      if (olderHistoryControllerRef.current && !olderHistoryControllerRef.current.signal.aborted)
+      if (olderHistoryControllerRef.current && !olderHistoryControllerRef.current.signal.aborted) {
+        pendingOlderHistoryRef.current.add(activityOnly);
         return;
+      }
       const controller = new AbortController();
       olderHistoryControllerRef.current = controller;
-      setLoadingEarlierWork(activityOnly);
-      void loadOlderTimelineHistory(controller.signal, activityOnly)
-        .catch((error) => {
-          if (!controller.signal.aborted) {
-            console.warn("Failed to load earlier conversation history.", error);
-            if (activityOnly)
-              toastManager.add({ type: "error", title: "Earlier work could not be loaded" });
+      void (async () => {
+        let next: boolean | undefined = activityOnly;
+        while (next !== undefined && !controller.signal.aborted) {
+          setLoadingEarlierWork(next);
+          try {
+            await loadOlderTimelineHistory(controller.signal, next, !next);
+          } catch (error) {
+            if (!controller.signal.aborted) {
+              console.warn("Failed to load earlier conversation history.", error);
+              if (next)
+                toastManager.add({ type: "error", title: "Earlier work could not be loaded" });
+            }
           }
-        })
-        .finally(() => {
-          if (olderHistoryControllerRef.current === controller) {
-            olderHistoryControllerRef.current = null;
-            if (activityOnly) setLoadingEarlierWork(false);
-          }
-        });
+          next = pendingOlderHistoryRef.current.values().next().value;
+          if (next !== undefined) pendingOlderHistoryRef.current.delete(next);
+        }
+      })().finally(() => {
+        if (olderHistoryControllerRef.current === controller) {
+          olderHistoryControllerRef.current = null;
+          setLoadingEarlierWork(false);
+        }
+      });
     },
     [loadOlderTimelineHistory],
   );
@@ -2739,13 +2761,19 @@ export default memo(function ChatView({
     () => requestOlderHistory(false),
     [requestOlderHistory],
   );
-  const loadEarlierWork = useCallback(() => requestOlderHistory(true), [requestOlderHistory]);
+  const loadEarlierWork = useCallback(
+    (groupId: string) => {
+      setExpandedWorkGroups((existing) => ({ ...existing, [groupId]: Infinity }));
+      requestOlderHistory(true);
+    },
+    [requestOlderHistory],
+  );
   const onSetWorkGroupExpanded = useCallback(
     (groupId: string, expanded: boolean, needsEarlierWork?: boolean) => {
       setWorkGroupCollapseOverrides((existing) =>
         existing[groupId] === expanded ? existing : { ...existing, [groupId]: expanded },
       );
-      if (expanded && needsEarlierWork) loadEarlierWork();
+      if (expanded && needsEarlierWork) loadEarlierWork(groupId);
     },
     [loadEarlierWork],
   );
@@ -8466,7 +8494,6 @@ export default memo(function ChatView({
     selectedProviderModels,
     selectedProviderModelOptions,
     genericProviderTraitsPicker,
-    genericProviderTraitsMenuContent,
   };
   const composerModeControls: ComposerModeControls = {
     interactionMode,

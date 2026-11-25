@@ -2048,7 +2048,7 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
                 left.tabId < right.tabId ? -1 : left.tabId > right.tabId ? 1 : 0,
               )
               .map((session) => {
-                const isActive = visible && session.tabId === activeSession?.tabId;
+                const isActive = session.tabId === activeSession?.tabId;
                 const requested = requestedViewportByTabId[session.tabId] ?? null;
                 const dimensions = requested
                   ? clampPreviewViewport({ requested, bounds: viewportBounds })
@@ -2059,7 +2059,9 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
                     session={session}
                     visible={isActive}
                     awake={
-                      isActive || session.tabId === recordingTabId || awakeTabIds.has(session.tabId)
+                      (visible && isActive) ||
+                      session.tabId === recordingTabId ||
+                      awakeTabIds.has(session.tabId)
                     }
                     config={webviewConfig}
                     desktopPreview={desktopPreview}
@@ -2069,7 +2071,7 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
                     isAgentTab={() => automationOwnedTabs.current.has(session.tabId)}
                     applyNavigationPolicy={applyNavigationPolicy}
                     overlay={
-                      isActive ? (
+                      visible && isActive ? (
                         <PreviewAgentOverlay
                           threadId={threadId}
                           zoomFactor={desktopStateByTabId[session.tabId]?.zoomFactor ?? 1}

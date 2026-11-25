@@ -24,6 +24,17 @@ export interface CursorAccountUsageReadResult {
 
 const accountHash = (value: string) => NodeCrypto.createHash("sha256").update(value).digest("hex");
 
+export function cursorAccountIdentity(accessToken: string) {
+  const subject = object(
+    JSON.parse(Buffer.from(accessToken.split(".")[1] ?? "", "base64url").toString("utf8")),
+  ).sub;
+  const userId = typeof subject === "string" ? subject.split("|").at(-1) : undefined;
+  if (typeof subject !== "string" || !userId) throw new Error("Invalid Cursor login");
+  return { userId, accountKey: accountHash(subject) };
+}
+
+class CursorUsageCountChanged extends Error {}
+
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   if (value !== null && typeof value === "object") {
@@ -56,25 +67,47 @@ export async function readCursorAccountUsage(
   request: (url: string, init: RequestInit) => Promise<Response> = globalThis.fetch,
   signal?: AbortSignal,
 ): Promise<CursorAccountUsageReadResult> {
+  const deadline = AbortSignal.any([AbortSignal.timeout(60_000), ...(signal ? [signal] : [])]);
+  try {
+    return await scanCursorAccountUsage(accessToken, sinceMs, endDate, request, deadline);
+  } catch (error) {
+    if (!(error instanceof CursorUsageCountChanged)) throw error;
+    return scanCursorAccountUsage(accessToken, sinceMs, endDate, request, deadline).catch(
+      (retryError) => {
+        if (!(retryError instanceof CursorUsageCountChanged)) throw retryError;
+        return {
+          accountKey: cursorAccountIdentity(accessToken).accountKey,
+          records: [],
+          missing: false,
+          error: "Cursor usage changed during both scan attempts.",
+        };
+      },
+    );
+  }
+}
+
+async function scanCursorAccountUsage(
+  accessToken: string,
+  sinceMs: number,
+  endDate: number,
+  request: (url: string, init: RequestInit) => Promise<Response>,
+  deadline: AbortSignal,
+): Promise<CursorAccountUsageReadResult> {
   let accountKey: string | null = null;
   try {
-    const payload = accessToken.split(".")[1];
-    const subject = object(
-      JSON.parse(Buffer.from(payload ?? "", "base64url").toString("utf8")),
-    ).sub;
-    if (typeof subject !== "string" || !subject) throw new Error("Invalid authentication");
-    const userId = subject.split("|").at(-1);
-    if (!userId) throw new Error("Invalid authentication");
-    accountKey = accountHash(subject);
+    const identity = cursorAccountIdentity(accessToken);
+    const { userId } = identity;
+    accountKey = identity.accountKey;
     if (!Number.isFinite(sinceMs) || !Number.isFinite(endDate) || sinceMs < 0 || sinceMs > endDate)
       throw new Error("Invalid date window");
-    const deadline = AbortSignal.timeout(60_000);
     const records: NativeUsageRecord[] = [];
     const occurrences = new Map<string, number>();
     const pages: unknown[][] = [];
     let completed = false;
     const pageSize = 1000;
     let total: number | undefined;
+    let reconciledCount = 0;
+    let lastKeys: string[] = [];
     for (let page = 1; ; page++) {
       // A count can include overlapping page boundaries. Allow room to
       // reconcile them without imposing a fixed account-size limit.
@@ -84,11 +117,7 @@ export async function readCursorAccountUsage(
       const response = await request("https://cursor.com/api/dashboard/get-filtered-usage-events", {
         method: "POST",
         redirect: "error",
-        signal: AbortSignal.any([
-          deadline,
-          AbortSignal.timeout(10_000),
-          ...(signal ? [signal] : []),
-        ]),
+        signal: AbortSignal.any([deadline, AbortSignal.timeout(10_000)]),
         headers: {
           "Content-Type": "application/json",
           Origin: "https://cursor.com",
@@ -105,7 +134,7 @@ export async function readCursorAccountUsage(
         return {
           accountKey,
           records: [],
-          missing: false,
+          missing: true,
           error: "Sign in to Cursor again to read account usage.",
         };
       }
@@ -118,7 +147,9 @@ export async function readCursorAccountUsage(
       const keys = Object.keys(body);
       if ("error" in body || "message" in body || "code" in body)
         throw new Error("Account usage error response");
-      const count = keys.length === 0 ? 0 : body.totalUsageEventsCount;
+      const count = keys.length === 0 ? (total ?? 0) : body.totalUsageEventsCount;
+      if (typeof count === "number" && total !== undefined && count !== total)
+        throw new CursorUsageCountChanged();
       const events =
         keys.length === 0 || (keys.length === 1 && keys[0] === "totalUsageEventsCount")
           ? []
@@ -137,7 +168,10 @@ export async function readCursorAccountUsage(
       }
       if (typeof count === "number") total = count;
       pages.push(events);
-      if (events.length < pageSize) {
+      const eventKeys = events.map((event) => accountHash(canonicalJson(event)));
+      reconciledCount += events.length - boundaryOverlap(lastKeys, eventKeys);
+      lastKeys = eventKeys;
+      if (events.length < pageSize || reconciledCount === total) {
         completed = true;
         break;
       }
@@ -214,7 +248,8 @@ export async function readCursorAccountUsage(
     }
     if (removalsRemaining !== 0) throw new Error("Inconsistent account usage boundaries");
     return { accountKey, records, missing: false, error: null };
-  } catch {
+  } catch (error) {
+    if (error instanceof CursorUsageCountChanged) throw error;
     return {
       accountKey,
       records: [],

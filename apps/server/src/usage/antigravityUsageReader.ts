@@ -163,6 +163,7 @@ async function readDatabase(
   path: string,
   fallbackTimestamp: number,
   signal?: AbortSignal,
+  onInvalidRecord?: () => void,
 ): Promise<UsageCandidate[]> {
   const db = (await openRuntimeSqliteDatabase(path, {
     readOnly: true,
@@ -182,8 +183,12 @@ async function readDatabase(
       const entries: Array<{ idx: number; entry: Metadata }> = [];
       for (const row of db.prepare(query).iterate()) {
         signal?.throwIfAborted();
-        if (typeof row.idx !== "number") throw new Error("Invalid Antigravity metadata index");
-        entries.push({ idx: row.idx, entry: metadata(blob(row[column]), step) });
+        try {
+          if (typeof row.idx !== "number") throw new Error("Invalid Antigravity metadata index");
+          entries.push({ idx: row.idx, entry: metadata(blob(row[column]), step) });
+        } catch {
+          onInvalidRecord?.();
+        }
         if (entries.length % 256 === 0) await NodeTimersPromises.setImmediate();
       }
       return entries;
@@ -360,7 +365,18 @@ export async function readAntigravityUsage(
           if (visited.has(canonical)) continue;
           visited.add(canonical);
           const stat = await NodeFSP.stat(path);
-          const candidates = await readDatabase(path, stat.mtimeMs, signal);
+          if (stat.mtimeMs < sinceMs) {
+            const wal = await NodeFSP.stat(`${path}-wal`).catch((error: NodeJS.ErrnoException) => {
+              if (error.code !== "ENOENT") throw error;
+              return null;
+            });
+            if (!wal || wal.mtimeMs < sinceMs) continue;
+          }
+          let partial = false;
+          const candidates = await readDatabase(path, stat.mtimeMs, signal, () => {
+            partial = true;
+          });
+          if (partial) errors.push(path);
           const fileIndex = files.length;
           files.push({ root, path, records: [] });
           for (const [index, candidate] of candidates.entries()) {

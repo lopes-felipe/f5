@@ -1,6 +1,5 @@
 import { execFile } from "node:child_process";
 import { readFile, realpath, stat } from "node:fs/promises";
-import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -9,7 +8,7 @@ import { makeNativeHistoryCapability } from "./nativeHistory.ts";
 import { usageHistoryCutoff } from "./museHistory.ts";
 import { readOpenCodeUsage } from "./opencodeUsageReader.ts";
 import { readAntigravityUsage } from "./antigravityUsageReader.ts";
-import { readCursorAccountUsage } from "./cursorUsageReader.ts";
+import { cursorAccountIdentity, readCursorAccountUsage } from "./cursorUsageReader.ts";
 
 function canonical(directory: string) {
   const absolute = path.resolve(directory);
@@ -37,7 +36,7 @@ export function makeOpenCodeUsageHistory(env: NodeJS.ProcessEnv, enabled: boolea
     scan: (source, retention) =>
       Effect.tryPromise(async (signal) => {
         const result = await readOpenCodeUsage(source, cutoff(retention), signal);
-        if (result.error && result.files.every(({ records }) => records.length === 0)) {
+        if (result.error) {
           throw new Error("OpenCode usage history could not be read.");
         }
         return result.files.flatMap(({ records }) => records);
@@ -84,7 +83,7 @@ export function makeAntigravityUsageHistory(
           cutoff(retention),
           signal,
         );
-        if (result.errors.length && result.files.every(({ records }) => records.length === 0)) {
+        if (result.errors.length) {
           throw new Error("Antigravity usage history could not be read.");
         }
         return result.files.flatMap(({ records }) => records);
@@ -115,32 +114,33 @@ export function makeCursorUsageHistory(env: NodeJS.ProcessEnv, endpoint: string,
     provider: "cursor",
     displayName: "Cursor",
     enabled: enabled && !customEndpoint && !env.CURSOR_API_KEY?.trim() && store !== "memory",
-    discover: Effect.succeed(
-      explicitToken
-        ? `cursor:token:${createHash("sha256").update(explicitToken).digest("hex")}`
-        : canUseKeychain
-          ? "cursor:default-keychain"
-          : `cursor:${authFile}`,
-    ),
-    scan: (_, retention) =>
+    discover: Effect.succeed("cursor"),
+    resolveAccount: Effect.tryPromise(async (signal) => {
+      const accessToken =
+        explicitToken ??
+        (canUseKeychain
+          ? (
+              await runFile(
+                "/usr/bin/security",
+                ["find-generic-password", "-a", "cursor-user", "-s", "cursor-access-token", "-w"],
+                { signal, timeout: 10_000, maxBuffer: 16_384 },
+              )
+            ).stdout.trim()
+          : (
+              JSON.parse(await readFile(authFile, { encoding: "utf8", signal })) as {
+                accessToken?: unknown;
+              }
+            ).accessToken);
+      if (typeof accessToken !== "string" || !accessToken)
+        throw new Error("Cursor login is missing.");
+      return {
+        source: `cursor:${cursorAccountIdentity(accessToken).accountKey}`,
+        token: accessToken,
+      };
+    }),
+    scan: (_, retention, accessToken) =>
       Effect.tryPromise(async (signal) => {
-        const accessToken =
-          explicitToken ??
-          (canUseKeychain
-            ? (
-                await runFile(
-                  "/usr/bin/security",
-                  ["find-generic-password", "-a", "cursor-user", "-s", "cursor-access-token", "-w"],
-                  { signal, timeout: 10_000, maxBuffer: 16_384 },
-                )
-              ).stdout.trim()
-            : (
-                JSON.parse(await readFile(authFile, { encoding: "utf8", signal })) as {
-                  accessToken?: unknown;
-                }
-              ).accessToken);
-        if (typeof accessToken !== "string" || !accessToken)
-          throw new Error("Cursor login is missing.");
+        if (!accessToken) throw new Error("Cursor login is missing.");
         const result = await readCursorAccountUsage(
           accessToken,
           cutoff(retention),
@@ -148,7 +148,11 @@ export function makeCursorUsageHistory(env: NodeJS.ProcessEnv, endpoint: string,
           fetch,
           signal,
         );
-        if (result.error) throw new Error(result.error);
+        if (result.error) {
+          const error = new Error(result.error);
+          if (result.missing) error.name = "CursorAuthenticationError";
+          throw error;
+        }
         return result.records;
       }),
   });

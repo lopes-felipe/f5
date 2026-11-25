@@ -33,6 +33,7 @@ import { emptyAccountSection, makeAccountUsageCapability } from "./AccountUsageS
 import { UsageServiceLive } from "./UsageService.ts";
 import { parseMuseHistoryLine } from "../museHistory.ts";
 import { makeNativeHistoryCapability } from "../nativeHistory.ts";
+import type { NativeUsageRecord } from "../nativeUsageRecord.ts";
 import { readMuseHistory } from "../museHistory.ts";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import path from "node:path";
@@ -172,7 +173,17 @@ it.layer(SqliteClient.layerMemory())("Muse history summary integration", (it) =>
         scan: () => Effect.succeed([]),
       });
       const registry = {
-        listInstances: Effect.succeed([{ enabled: true, usageHistory: history }]),
+        listInstances: Effect.succeed([
+          { enabled: true, usageHistory: history },
+          ...(["cursor", "opencode", "antigravity"] as const).map((provider) => ({
+            enabled: true,
+            usageHistory: {
+              provider,
+              refresh: () => Effect.die(new Error(`Unexpected ${provider} history refresh`)),
+              getSnapshot: Effect.die(new Error(`Unexpected ${provider} history snapshot`)),
+            },
+          })),
+        ]),
       } as unknown as typeof ProviderInstanceRegistry.Service;
       yield* Effect.gen(function* () {
         const usage = yield* UsageService;
@@ -190,6 +201,92 @@ it.layer(SqliteClient.layerMemory())("Muse history summary integration", (it) =>
               Layer.mergeAll(
                 Layer.succeed(ProviderInstanceRegistry, registry),
                 ServerSettingsService.layerTest(),
+              ),
+            ),
+          ),
+        ),
+      );
+    }).pipe(Effect.provide(UsageFactRepositoryLive)),
+  );
+});
+
+it.layer(SqliteClient.layerMemory())("External history summary integration", (it) => {
+  it.effect("reconciles recorded turns with matching external history from each provider", () =>
+    Effect.gen(function* () {
+      yield* Migration0001;
+      yield* Migration0005;
+      yield* Migration0068;
+      yield* Migration0071;
+      yield* Migration0073;
+      yield* Migration0161;
+      yield* Migration0175;
+      yield* Migration0116;
+      yield* TestClock.setTime(Date.parse("2026-08-20T23:59:00.000Z"));
+      const facts = yield* UsageFactRepository;
+      const providers = ["cursor", "opencode", "antigravity"] as const;
+      for (const provider of providers) {
+        yield* facts.record(
+          fact(provider, "2026-08-20T12:01:00.000Z", {
+            provider,
+            startedAt: "2026-08-20T12:00:00.000Z",
+            nativeSessionId: "f5-session",
+          }),
+        );
+      }
+      const registry = {
+        listInstances: Effect.succeed(
+          providers.map((provider) => {
+            const record: NativeUsageRecord = {
+              provider,
+              sessionId: "f5-session",
+              model: "test-model",
+              dedupeKey: null,
+              reportedCostUsd: 0.05,
+              totals: {
+                uncachedInputTokens: 80,
+                cachedInputTokens: 0,
+                cacheCreationTokens: 0,
+                outputTokens: 20,
+                reasoningTokens: 0,
+              },
+              timestampMs: Date.parse(
+                provider === "cursor" ? "2026-08-20T12:01:02.000Z" : "2026-08-20T12:00:30.000Z",
+              ),
+            };
+            return {
+              enabled: true,
+              usageHistory: {
+                provider,
+                refresh: () => Effect.void,
+                getSnapshot: Effect.succeed({
+                  source: provider,
+                  status: "ready",
+                  records: [record, { ...record, sessionId: "independent-session" }],
+                }),
+              },
+            };
+          }),
+        ),
+      } as unknown as typeof ProviderInstanceRegistry.Service;
+      yield* Effect.gen(function* () {
+        const usage = yield* UsageService;
+        for (const provider of providers) {
+          const summary = yield* usage.getSummary({ provider, range: "24h", timeZone: "UTC" });
+          assert.equal(summary.metrics.turnCount, 1);
+          assert.equal(summary.metrics.nativeInferenceCount, 1);
+          assert.equal(summary.metrics.totalTokens, 200);
+          assert.equal(summary.metrics.providerReportedCostUsd, 0.05);
+        }
+      }).pipe(
+        Effect.provide(
+          UsageServiceLive.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                Layer.succeed(ProviderInstanceRegistry, registry),
+                ServerSettingsService.layerTest({
+                  usageCursorAccountHistory: true,
+                  usageLocalProviderHistory: true,
+                }),
               ),
             ),
           ),

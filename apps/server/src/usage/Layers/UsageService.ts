@@ -235,9 +235,8 @@ const make = Effect.gen(function* () {
         Effect.mapError(() => new UsageQueryError({ message: "Usage prices are unavailable." })),
       );
       const modelAliases = resolveModelAliases(settings.usageModelAliases);
-      const listRates = settings.usageListPricing
-        ? yield* Effect.promise(() => listRateCache(now.getTime()))
-        : undefined;
+      const listPricing = settings.usageListPricing ? listRateCache(now.getTime()) : undefined;
+      const listRates = listPricing?.table;
       const overrides = new Map(
         settings.usagePriceOverrides.map((price) => [
           JSON.stringify([price.provider, price.model]),
@@ -403,6 +402,7 @@ const make = Effect.gen(function* () {
         }),
         nativeHistoryStatus,
         ...(nativeHistoryError ? { nativeHistoryError } : {}),
+        ...(listPricing?.refreshing ? { listPricingRefreshing: true } : {}),
       };
     });
 

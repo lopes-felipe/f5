@@ -19,6 +19,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { makeOpenCodeTextGeneration } from "../../git/Layers/OpenCodeTextGeneration.ts";
 import { ServerConfig } from "../../config.ts";
+import { makeOpenCodeUsageHistory } from "../../usage/externalProviderHistory.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makeOpenCodeAdapter } from "../Layers/OpenCodeAdapter.ts";
 import {
@@ -157,4 +158,3 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
       } satisfies ProviderInstance;
     }),
 };
-import { makeOpenCodeUsageHistory } from "../../usage/externalProviderHistory.ts";

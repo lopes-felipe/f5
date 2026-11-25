@@ -4029,6 +4029,8 @@ describe("ClaudeAdapterLive", () => {
         );
         const latest = configs.at(-1);
         assert.equal(latest?.fast_mode_disabled_reason, "extra_usage_disabled");
+        const completed = events.find((event) => event.type === "turn.completed");
+        assert.equal(completed?.payload.usageSpeed, "standard");
         assert.deepEqual(latest?.runtimeInfo, {
           requested: { fastMode: "on" },
           effective: { model: "claude-opus-5-5", fastMode: "off" },

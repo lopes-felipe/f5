@@ -37,7 +37,6 @@ import {
   loadOlderThreadActivitiesPage,
   loadThreadHistoryAroundMessage,
   orchestrationQueryKeys,
-  retryThreadHistoryBackfill,
   threadDetailQueryOptions,
   resetProvisionalThreadDetailRefreshesForTests,
 } from "./orchestrationReactQuery";
@@ -931,8 +930,9 @@ describe("preloadRecentThreadDetails", () => {
         },
       });
 
-      const load = seekUser ? retryThreadHistoryBackfill : ensureThreadHistoryBackfill;
-      await load(new QueryClient(), threadId);
+      await ensureThreadHistoryBackfill(new QueryClient(), threadId, {
+        throughUserMessage: seekUser,
+      });
 
       expect(getThreadHistoryPage).toHaveBeenCalledTimes(seekUser ? 2 : 1);
       expect(useStore.getState().threads[0]?.messages.map((message) => message.id)).toEqual([

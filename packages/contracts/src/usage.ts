@@ -324,6 +324,7 @@ export type CodexAccountUsage = typeof CodexAccountUsage.Type;
 export const UsageSummary = Schema.Struct({
   nativeHistoryError: Schema.optional(Schema.String),
   nativeHistoryStatus: Schema.optional(Schema.Literals(["idle", "refreshing", "ready", "error"])),
+  listPricingRefreshing: Schema.optional(Schema.Boolean),
   range: UsageRange,
   timeZone: TrimmedNonEmptyString,
   generatedAt: IsoDateTime,

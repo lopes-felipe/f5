@@ -22,6 +22,7 @@ import { Cause, Duration, Effect, FileSystem, Path, Schema, Scope, Stream } from
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { ServerConfig } from "../../config.ts";
 import { makeGrokTextGeneration } from "../../git/Layers/GrokTextGeneration.ts";
+import { makeAntigravityUsageHistory } from "../../usage/externalProviderHistory.ts";
 import { makeGrokAdapter, type AntigravityCatalogObservation } from "../Layers/GrokAdapter.ts";
 import {
   antigravityThinkingFromModel,
@@ -748,4 +749,3 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
       };
     }),
 };
-import { makeAntigravityUsageHistory } from "../../usage/externalProviderHistory.ts";

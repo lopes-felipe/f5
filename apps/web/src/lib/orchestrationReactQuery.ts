@@ -843,17 +843,6 @@ export async function ensureThreadHistoryBackfill(
   return backfillPromise;
 }
 
-export function retryThreadHistoryBackfill(
-  queryClient: QueryClient,
-  threadId: ThreadId,
-  options?: ThreadHistoryBackfillOptions,
-): Promise<void> {
-  return ensureThreadHistoryBackfill(queryClient, threadId, {
-    ...options,
-    throughUserMessage: true,
-  });
-}
-
 export async function loadOlderThreadActivitiesPage(
   threadId: ThreadId,
   signal?: AbortSignal,

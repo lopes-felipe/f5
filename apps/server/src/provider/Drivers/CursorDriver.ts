@@ -23,6 +23,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { ServerConfig } from "../../config.ts";
 import { makeCursorTextGeneration } from "../../git/Layers/CursorTextGeneration.ts";
+import { makeCursorUsageHistory } from "../../usage/externalProviderHistory.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makeCursorAdapter } from "../Layers/CursorAdapter.ts";
 import {
@@ -216,4 +217,3 @@ export const CursorDriver: ProviderDriver<CursorSettings, CursorDriverEnv> = {
       } satisfies ProviderInstance;
     }),
 };
-import { makeCursorUsageHistory } from "../../usage/externalProviderHistory.ts";

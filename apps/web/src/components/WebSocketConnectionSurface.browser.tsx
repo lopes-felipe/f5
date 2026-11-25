@@ -74,6 +74,21 @@ describe("WebSocketConnectionSurface", () => {
     vi.useRealTimers();
   });
 
+  it("keeps a synchronized local connection healthy when the browser goes offline", async () => {
+    enableFlag(WEB_LOCAL_FLAG_KEYS.wsDisconnectSurfaceEnabled);
+    noteWsConnectionOpened();
+    noteWsSynchronized();
+    const mounted = await mountSurface();
+    try {
+      vi.spyOn(navigator, "onLine", "get").mockReturnValue(false);
+      window.dispatchEvent(new Event("offline"));
+      await vi.advanceTimersByTimeAsync(2500);
+      expect(document.querySelector('[role="status"]')).toBeNull();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("offers reload after repeated synchronization failures and preserves editable drafts", async () => {
     noteWsConnectionOpened();
     const mounted = await mountSurface(

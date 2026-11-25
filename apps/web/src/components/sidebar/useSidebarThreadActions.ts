@@ -243,8 +243,10 @@ export function useSidebarThreadActions(input: {
   const handleDraftContextMenu = useStableCallback(
     async (threadId: ThreadId, position: { x: number; y: number }) => {
       const api = readNativeApi();
-      const draft = useComposerDraftStore.getState().getDraftThread(threadId);
+      const drafts = useComposerDraftStore.getState();
+      const draft = drafts.getDraftThread(threadId);
       if (!api || !draft || draft.promoting) return;
+      const importPending = (drafts.imageImportsByThreadId[threadId]?.pendingCount ?? 0) > 0;
       const project = projects.find((entry) => entry.id === draft.projectId);
       const workspacePath = threadWorkspaceCwd(draft, project);
       const clicked = await api.contextMenu.show(
@@ -254,7 +256,12 @@ export function useSidebarThreadActions(input: {
           ...(project && !isScratchProject(project)
             ? [{ id: "settings", label: "Project settings…" }]
             : []),
-          { id: "discard", label: "Discard draft", destructive: true },
+          {
+            id: "discard",
+            label: importPending ? "Discard draft (preparing attachments…)" : "Discard draft",
+            destructive: true,
+            disabled: importPending,
+          },
         ],
         position,
       );

@@ -10,6 +10,7 @@ export function discardComposerDraft(threadId: ThreadId): boolean {
   if (
     !thread ||
     thread.promoting ||
+    (store.imageImportsByThreadId[threadId]?.pendingCount ?? 0) > 0 ||
     useStore.getState().threads.some(({ id }) => id === threadId)
   ) {
     return false;

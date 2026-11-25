@@ -87,17 +87,22 @@ describe("usage pricing", () => {
     expect(metrics.costBreakdown?.bySpeed).toMatchObject({ fast: 15, unknown: 2 });
   });
 
-  it("shares list-rate refreshes and retains the last good rates after failure", async () => {
+  it("returns rates without waiting for a shared refresh and keeps cached rates on failure", async () => {
     const fetchRates = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(Response.json(ratesDocument))
       .mockResolvedValueOnce(new Response(null, { status: 503 }));
     const load = makeListRateCache(fetchRates);
-    const [first, second] = await Promise.all([load(1), load(1)]);
-    expect(first).toBe(second);
+    const initial = load(1);
+    expect(initial).toMatchObject({ table: new Map(), refreshing: true });
+    expect(load(1).table).toBe(initial.table);
     expect(fetchRates).toHaveBeenCalledTimes(1);
-    expect(await load(86_400_001)).toBe(first);
-    expect(await load(86_400_002)).toBe(first);
+    await vi.waitFor(() => expect(load(1).refreshing).toBe(false));
+    const { table } = load(1);
+    expect(table.size).toBeGreaterThan(0);
+    expect(load(86_400_001)).toEqual({ table, refreshing: true });
+    await vi.waitFor(() => expect(load(86_400_002).refreshing).toBe(false));
+    expect(load(86_400_002).table).toBe(table);
     expect(fetchRates).toHaveBeenCalledTimes(2);
   });
 });

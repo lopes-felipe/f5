@@ -369,7 +369,7 @@ interface MessagesTimelineProps {
     | undefined;
   olderActivityBoundaryId?: string | undefined;
   loadingEarlierWork?: boolean | undefined;
-  onLoadEarlierWork?: (() => void) | undefined;
+  onLoadEarlierWork?: ((groupId: string) => void) | undefined;
   /** Context for the empty-thread state; omitted renders the plain hint. */
   emptyState?: MessagesTimelineEmptyState | undefined;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
@@ -1453,7 +1453,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         latestRowInputsRef.current.pinEndThroughDisclosure();
         latestRowInputsRef.current.onSetWorkGroupExpanded?.(groupId, expanded, needsEarlierWork);
       },
-      onLoadEarlierWork: () => latestRowInputsRef.current.onLoadEarlierWork?.(),
+      onLoadEarlierWork: (groupId) => latestRowInputsRef.current.onLoadEarlierWork?.(groupId),
       onOpenTurnDiff: (turnId, filePath) =>
         latestRowInputsRef.current.onOpenTurnDiff(turnId, filePath),
       onImageExpand: (preview) => latestRowInputsRef.current.onImageExpand(preview),
@@ -4595,7 +4595,7 @@ type TimelineRowExternalsOf<K extends TimelineRowExternals["kind"]> = Extract<
 interface TimelineRowActions {
   onToggleWorkGroup: (groupId: string, paginatedEntryCount: number) => void;
   onSetWorkGroupExpanded: (groupId: string, expanded: boolean, needsEarlierWork?: boolean) => void;
-  onLoadEarlierWork: () => void;
+  onLoadEarlierWork: (groupId: string) => void;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onImageActionMenu: (item: ImageAttachmentActionItem, position: { x: number; y: number }) => void;
@@ -4786,7 +4786,24 @@ function WorkGroupRowContent(props: {
   const appRows = appEntries.map((entry) => (
     <WorkEntryRow key={`app:${entry.id}`} workEntry={entry} {...entryProps} />
   ));
-  if (!logEntries.length) return <div className="min-w-0 space-y-2">{appRows}</div>;
+  const loadEarlierControl = externals.containsOlderActivityBoundary ? (
+    <Button
+      type="button"
+      size="xs"
+      variant="ghost"
+      disabled={externals.loadingEarlierWork}
+      onClick={() => actions.onLoadEarlierWork(groupId)}
+    >
+      {externals.loadingEarlierWork ? "Loading earlier work\u2026" : "Load earlier work"}
+    </Button>
+  ) : null;
+  if (!logEntries.length)
+    return (
+      <div className="min-w-0 space-y-2">
+        {loadEarlierControl}
+        {appRows}
+      </div>
+    );
   // Automation cards stay visible across turns; only their steps collapse.
   if (row.automationSurface) {
     return (
@@ -4800,6 +4817,7 @@ function WorkGroupRowContent(props: {
           markdownCwd={markdownCwd}
           onImageExpand={actions.onImageExpand}
         />
+        {loadEarlierControl}
       </div>
     );
   }
@@ -4814,6 +4832,7 @@ function WorkGroupRowContent(props: {
           timestampFormat={timestampFormat}
           onImageExpand={actions.onImageExpand}
         />
+        {loadEarlierControl}
       </div>
     );
   }
@@ -4836,6 +4855,7 @@ function WorkGroupRowContent(props: {
     return (
       <div className="min-w-0 px-1 py-0.5">
         <WorkEntryRow workEntry={standaloneExpandedMcpEntry} {...entryProps} />
+        {loadEarlierControl}
       </div>
     );
   }
@@ -4881,7 +4901,12 @@ function WorkGroupRowContent(props: {
             <button
               type="button"
               className="shrink-0 rounded-sm text-2xs text-muted-foreground outline-none transition-colors duration-(--duration-fast) hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-              onClick={() => actions.onToggleWorkGroup(groupId, groupState.paginatedEntryCount)}
+              onClick={() =>
+                actions.onToggleWorkGroup(
+                  groupId,
+                  groupState.isExpanded ? 0 : groupState.paginatedEntryCount,
+                )
+              }
             >
               {groupState.isExpanded
                 ? "Show less"
@@ -4891,17 +4916,7 @@ function WorkGroupRowContent(props: {
         </div>
       )}
       <div className="space-y-0.5">
-        {externals.containsOlderActivityBoundary ? (
-          <Button
-            type="button"
-            size="xs"
-            variant="ghost"
-            disabled={externals.loadingEarlierWork}
-            onClick={actions.onLoadEarlierWork}
-          >
-            {externals.loadingEarlierWork ? "Loading earlier work…" : "Load earlier work"}
-          </Button>
-        ) : null}
+        {loadEarlierControl}
         {groupState.visibleEntries.map((workEntry) => (
           <WorkEntryRow key={`work-row:${workEntry.id}`} workEntry={workEntry} {...entryProps} />
         ))}
@@ -6043,10 +6058,17 @@ function describeTimelineRowExternals(
   inputs: TimelineRowExternalsInputs,
   /** The row comes after the thread's last user message. */
   inLatestTurn: boolean,
+  olderWorkRowId?: string,
 ): { version: string; build: () => TimelineRowExternals } {
   switch (row.kind) {
     case "work": {
-      const expandedCount = inputs.expandedWorkGroups[row.id] ?? WORK_LOG_PAGE_SIZE;
+      const revealAnchor = row.groupedEntries.find((entry) =>
+        Object.hasOwn(inputs.expandedWorkGroups, entry.id),
+      );
+      const expandedCount =
+        inputs.expandedWorkGroups[row.id] ??
+        (revealAnchor ? inputs.expandedWorkGroups[revealAnchor.id] : undefined) ??
+        WORK_LOG_PAGE_SIZE;
       // Loading an older page can prepend rows to the same group and change its first id.
       const anchoredOverride = row.groupedEntries.find((entry) =>
         Object.hasOwn(inputs.workGroupCollapseOverrides, entry.id),
@@ -6054,9 +6076,7 @@ function describeTimelineRowExternals(
       const collapseOverride =
         inputs.workGroupCollapseOverrides[row.id] ??
         (anchoredOverride ? inputs.workGroupCollapseOverrides[anchoredOverride.id] : undefined);
-      const containsOlderActivityBoundary = row.groupedEntries.some(
-        (entry) => entry.id === inputs.olderActivityBoundaryId,
-      );
+      const containsOlderActivityBoundary = row.id === olderWorkRowId;
       const loadingEarlierWork =
         containsOlderActivityBoundary && (inputs.loadingEarlierWork ?? false);
       const { chatDiffContext } = inputs;
@@ -6251,8 +6271,22 @@ export function buildTimelineRowExternals(
       break;
     }
   }
+  let olderWorkRowId: string | undefined;
+  if (inputs.olderActivityBoundaryId !== undefined) {
+    const work = rows.filter((row) => row.kind === "work");
+    olderWorkRowId = (
+      work.find((row) =>
+        row.groupedEntries.some((entry) => entry.id === inputs.olderActivityBoundaryId),
+      ) ?? work[0]
+    )?.id;
+  }
   for (const [index, row] of rows.entries()) {
-    const described = describeTimelineRowExternals(row, inputs, index > latestTurnStart);
+    const described = describeTimelineRowExternals(
+      row,
+      inputs,
+      index > latestTurnStart,
+      olderWorkRowId,
+    );
     const { version } = described;
     const cached = previous.get(row.id);
     const entry =

@@ -1870,11 +1870,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     }
     const turnId = TurnId.makeUnsafe(turnIdRaw);
 
-    const serviceTier =
-      this.readString(turn, "serviceTier") ??
-      (turnStartParams.serviceTier === null
-        ? "default"
-        : (turnStartParams.serviceTier ?? asString(context.configuredBase?.serviceTier)));
+    const serviceTier = this.readString(turn, "serviceTier");
     if (serviceTier) {
       const tiers = (context.usageServiceTiers ??= new Map());
       tiers.set(turnId, serviceTier);
@@ -4348,6 +4344,17 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       notification.method === "turn/completed" && route.turnId
         ? context.usageServiceTiers?.get(route.turnId)
         : undefined;
+    if (notification.method === "turn/started" && route.turnId) {
+      const serviceTier = this.readString(
+        this.readObject(notification.params, "turn"),
+        "serviceTier",
+      );
+      if (serviceTier) {
+        const tiers = (context.usageServiceTiers ??= new Map());
+        tiers.set(route.turnId, serviceTier);
+        if (tiers.size > 256) tiers.delete(tiers.keys().next().value!);
+      }
+    }
     if (
       route.turnId &&
       (notification.method === "turn/completed" || notification.method === "turn/aborted")

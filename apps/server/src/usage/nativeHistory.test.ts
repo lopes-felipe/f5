@@ -4,6 +4,43 @@ import * as TestClock from "effect/testing/TestClock";
 import { makeNativeHistoryCapability, type NativeHistoryCapability } from "./nativeHistory.ts";
 import { parseMuseHistoryLine } from "./museHistory.ts";
 
+it.effect("invalidates Cursor snapshots on account change and missing credentials", () =>
+  Effect.gen(function* () {
+    let source: string | null = "account-a";
+    let scans = 0;
+    const capability = yield* makeNativeHistoryCapability({
+      enabled: true,
+      provider: "cursor",
+      discover: Effect.succeed("unused"),
+      resolveAccount: Effect.suspend(() =>
+        source === null
+          ? Effect.fail(new Error("signed out"))
+          : Effect.succeed({ source, token: "fixture" }),
+      ),
+      scan: () =>
+        Effect.sync(() => {
+          scans++;
+          return [];
+        }),
+    });
+    yield* capability.refresh();
+    yield* settle(capability);
+    assert.equal((yield* capability.getSnapshot).source, "account-a");
+    yield* capability.refresh();
+    yield* settle(capability);
+    assert.equal(scans, 1);
+    source = "account-b";
+    yield* capability.refresh();
+    yield* settle(capability);
+    assert.equal((yield* capability.getSnapshot).source, "account-b");
+    assert.equal(scans, 2);
+    source = null;
+    yield* capability.refresh();
+    yield* settle(capability);
+    assert.equal((yield* capability.getSnapshot).source, null);
+  }),
+);
+
 const settle = (capability: NativeHistoryCapability) =>
   Effect.gen(function* () {
     while ((yield* capability.getSnapshot).status === "refreshing") yield* Effect.yieldNow;

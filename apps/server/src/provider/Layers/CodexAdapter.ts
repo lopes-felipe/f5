@@ -1555,7 +1555,7 @@ function mapToRuntimeEvents(
   }
 
   if (event.method === "turn/completed") {
-    const tier = asString(turn?.serviceTier ?? payload?.serviceTier);
+    const tier = asString(turn && "serviceTier" in turn ? turn.serviceTier : payload?.serviceTier);
     const usageSpeed =
       tier === "fast" || tier === "priority"
         ? ("fast" as const)

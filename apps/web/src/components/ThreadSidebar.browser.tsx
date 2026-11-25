@@ -5940,9 +5940,21 @@ describe("Thread sidebar", () => {
       );
       const draftId = draftPath.slice(1) as ThreadId;
       useComposerDraftStore.getState().setPrompt(draftId, "Restore this prompt");
+      useComposerDraftStore.setState({
+        imageImportsByThreadId: {
+          [draftId]: {
+            pendingCount: 1,
+            preparing: [{ id: "preparing-image", name: "image.png", previewUrl: null }],
+          },
+        },
+      });
       const row = await waitForSidebarThreadRow("New thread");
       row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
       await vi.waitFor(() => expect(showContextMenu).toHaveBeenCalledTimes(1));
+      expect(showContextMenu.mock.calls[0]?.[0]).toContainEqual(
+        expect.objectContaining({ id: "discard", disabled: true }),
+      );
+      useComposerDraftStore.setState({ imageImportsByThreadId: {} });
       await waitForLayout();
       (await waitForSidebarThreadRow("New thread")).focus();
       await userEvent.keyboard("{Shift>}{F10}{/Shift}");

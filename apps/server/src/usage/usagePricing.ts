@@ -92,12 +92,12 @@ const MAX_RATE_BYTES = 8 * 1024 * 1024;
 /** A shared refresh per server, with the last valid table retained across a failed refresh. */
 export function makeListRateCache(request = fetch) {
   let table: RateTable = new Map();
-  let pending: Promise<RateTable> | undefined;
+  let refreshing = false;
   let refreshAt = 0;
-  return (now: number): Promise<RateTable> => {
-    if (pending) return pending;
-    if (now < refreshAt) return Promise.resolve(table);
-    pending = (async () => {
+  return (now: number): { table: RateTable; refreshing: boolean } => {
+    if (refreshing || now < refreshAt) return { table, refreshing };
+    refreshing = true;
+    void (async () => {
       const response = await request(LIST_RATES_URL, {
         signal: AbortSignal.timeout(5_000),
         redirect: "error",
@@ -125,15 +125,13 @@ export function makeListRateCache(request = fetch) {
       if (parsed.size === 0) throw new Error("Model rate table is empty.");
       table = parsed;
       refreshAt = now + 86_400_000;
-      return table;
     })()
       .catch(() => {
         refreshAt = now + 300_000;
-        return table;
       })
       .finally(() => {
-        pending = undefined;
+        refreshing = false;
       });
-    return pending;
+    return { table, refreshing };
   };
 }

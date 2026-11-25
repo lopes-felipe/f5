@@ -511,7 +511,7 @@ function UsageSourcesSection() {
       key: "usageCursorAccountHistory",
       label: "Include Cursor account history",
       description:
-        "Read account usage with your Cursor CLI login. On macOS, Keychain may ask for access.",
+        "Send your Cursor CLI login token to cursor.com to read account usage. On macOS, Keychain may ask for access.",
       checked: cursorHistory,
     },
   ] as const;
