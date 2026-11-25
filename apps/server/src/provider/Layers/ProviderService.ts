@@ -25,6 +25,7 @@ import { resolveClaudeLaunchAppendSystemPrompt } from "../claudeAppendSystemProm
 import { DeliveryAttemptContext, TurnAcceptanceSignal } from "../deliveryAttemptContext";
 import { automationEventSanitizer } from "@t3tools/shared/automationActivitySanitizer";
 import { ComputerAutomationBroker } from "../../computer/ComputerAutomationBroker";
+import { McpHubGovernanceService } from "../../mcp/hub/McpHubGovernanceLive.ts";
 import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts";
 import { redactProviderRuntimeFailure } from "../failureText.ts";
 import {
@@ -684,6 +685,15 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           );
         yield* PubSub.publish(runtimeEventPubSub, event);
       });
+    // F5's MCP hub asks before Ask-policy and changed tools run; its approval cards
+    // join the conversation's runtime events, and answers come back below.
+    const mcpHubGovernance = Option.getOrUndefined(
+      yield* Effect.serviceOption(McpHubGovernanceService),
+    );
+    if (mcpHubGovernance)
+      yield* Stream.runForEach(mcpHubGovernance.approvalEvents, publishRuntimeEvent).pipe(
+        Effect.forkScoped,
+      );
 
     const upsertSessionBinding = (
       session: ProviderSession,
@@ -2970,6 +2980,19 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           schema: ProviderRespondToRequestInput,
           payload: rawInput,
         });
+        if (mcpHubGovernance?.isHubRequest(input.requestId)) {
+          if (input.decision === "acceptAlways")
+            return yield* toValidationError(
+              "ProviderService.respondToRequest",
+              "F5 can allow this tool once or for this conversation. To always allow it, set it to Allow in MCP settings.",
+            );
+          if (!mcpHubGovernance.respondToApproval(input.threadId, input.requestId, input.decision))
+            return yield* toValidationError(
+              "ProviderService.respondToRequest",
+              "This MCP tool call is no longer waiting for an answer.",
+            );
+          return;
+        }
         if (input.decision === "acceptAlways") {
           const binding = Option.getOrUndefined(yield* directory.getBinding(input.threadId));
           if (binding?.provider !== "codex")

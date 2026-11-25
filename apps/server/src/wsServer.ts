@@ -454,6 +454,7 @@ import { ProjectMcpConfigService } from "./mcp/ProjectMcpConfigService.ts";
 import { McpRuntimeService } from "./mcp/McpRuntimeService.ts";
 import { McpHub } from "./mcp/hub/McpHub.ts";
 import { McpHubAuth } from "./mcp/hub/McpHubAuth.ts";
+import { McpHubGovernanceService } from "./mcp/hub/McpHubGovernanceLive.ts";
 import { reconcileCodexThreadSnapshots } from "./orchestration/codexSnapshotReconciliation.ts";
 import { makeHistoryRecoveredSessionSet } from "./orchestration/providerTerminalLifecycle.ts";
 import { redactServerSettingsForClient, ServerSettingsService } from "./serverSettings.ts";
@@ -1165,6 +1166,9 @@ export const createServer = Effect.fn(function* (
   const mcpRuntimeService = yield* McpRuntimeService;
   const mcpHub = Option.getOrUndefined(yield* Effect.serviceOption(McpHub));
   const mcpHubAuth = Option.getOrUndefined(yield* Effect.serviceOption(McpHubAuth));
+  const mcpHubGovernance = Option.getOrUndefined(
+    yield* Effect.serviceOption(McpHubGovernanceService),
+  );
   const projectMcpConfigService = yield* ProjectMcpConfigService;
   const previewAutomationBroker = yield* PreviewAutomationBroker;
   const computerAutomationBroker = yield* Effect.serviceOption(ComputerAutomationBroker);
@@ -8367,6 +8371,41 @@ export const createServer = Effect.fn(function* (
           ...(result.configVersion ? { configVersion: result.configVersion } : {}),
         });
         return result;
+      }
+
+      case WS_METHODS.mcpListToolPins: {
+        const body = stripRequestTag(request.body);
+        return {
+          tools: mcpHubGovernance ? [...mcpHubGovernance.listToolPins(body.serverName)] : [],
+        };
+      }
+
+      case WS_METHODS.mcpAcceptToolChanges: {
+        const body = stripRequestTag(request.body);
+        const accepted = mcpHubGovernance ? yield* mcpHubGovernance.acceptToolChanges(body) : 0;
+        return { accepted };
+      }
+
+      case WS_METHODS.mcpListActivity: {
+        const body = stripRequestTag(request.body);
+        if (!mcpHubGovernance) return { calls: [], last24h: { calls: 0, errors: 0 } };
+        return yield* mcpHubGovernance.listActivity(body);
+      }
+
+      case WS_METHODS.mcpGetThreadServers: {
+        const body = stripRequestTag(request.body);
+        return mcpHubGovernance
+          ? mcpHubGovernance.threadServers(body.threadId)
+          : { disabledServers: [] };
+      }
+
+      case WS_METHODS.mcpSetThreadServerEnabled: {
+        const body = stripRequestTag(request.body);
+        if (!mcpHubGovernance)
+          return yield* new RouteRequestError({
+            message: "Turning MCP servers off per conversation is unavailable here.",
+          });
+        return yield* mcpHubGovernance.setThreadServerEnabled(body);
       }
 
       default: {

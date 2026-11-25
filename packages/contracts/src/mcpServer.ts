@@ -38,6 +38,13 @@ const UnsupportedMcpField = Schema.optional(Schema.Undefined);
 export const McpConnectionScope = Schema.Literals(["session", "shared"]);
 export type McpConnectionScope = typeof McpConnectionScope.Type;
 
+/**
+ * Whether F5's hub runs a tool call at once (`allow`) or asks in the conversation
+ * first (`ask`). Blocking a tool is `disabledTools`.
+ */
+export const McpToolPolicy = Schema.Literals(["allow", "ask"]);
+export type McpToolPolicy = typeof McpToolPolicy.Type;
+
 const McpCommonServerFields = {
   enabled: Schema.optional(Schema.Boolean),
   bearerTokenEnvVar: Schema.optional(TrimmedNonEmptyString),
@@ -64,6 +71,10 @@ const McpCommonServerFields = {
    * unknown provider name never hides the server; writes accept known providers only.
    */
   disabledProviders: Schema.optional(McpStringArray),
+  /** Per-tool policy for calls through F5's hub; tools not listed use `defaultToolPolicy`. */
+  toolPolicy: Schema.optional(Schema.Record(TrimmedNonEmptyString, McpToolPolicy)),
+  /** Policy for tools without their own entry in `toolPolicy`; `allow` when unset. */
+  defaultToolPolicy: Schema.optional(McpToolPolicy),
 };
 
 export const MCP_SERVER_DESCRIPTION_MAX_LENGTH = 500;

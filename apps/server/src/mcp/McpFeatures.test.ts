@@ -20,6 +20,7 @@ import {
   resolveMcpSecrets,
   validateStoredMcpSecrets,
 } from "./McpSecretResolver.ts";
+import { resolvedMcpSecretsIn } from "./mcpResolvedSecrets.ts";
 import type { ServerSecretStoreShape } from "../auth/Services/ServerSecretStore.ts";
 
 const dirs: string[] = [];
@@ -463,6 +464,27 @@ describe("MCP feature boundaries", () => {
     await expect(Effect.runPromise(validateStoredMcpSecrets(servers, store))).rejects.toThrow(
       "missing.headers.Authorization",
     );
+    // References inside values, arguments and URLs resolve too, and are remembered for redaction.
+    const reference = "${f5-secret:" + id + "}";
+    const embedded = await Effect.runPromise(
+      resolveMcpSecrets(
+        {
+          cli: {
+            type: "stdio",
+            command: "node",
+            args: [`--token=${reference}`],
+            env: { AUTH: `Bearer ${reference}` },
+          },
+          remote: { type: "http", url: `https://example.com/mcp?key=${reference}` },
+        },
+        store,
+      ),
+    );
+    expect(embedded.issues).toEqual([]);
+    expect(embedded.servers.cli?.args).toEqual(["--token=private-value"]);
+    expect(embedded.servers.cli?.env?.AUTH).toBe("Bearer private-value");
+    expect(embedded.servers.remote?.url).toBe("https://example.com/mcp?key=private-value");
+    expect(resolvedMcpSecretsIn("--token=private-value")).toEqual(["private-value"]);
     await Effect.runPromise(collectMcpSecrets(store, servers));
     expect(removed).toEqual(["mcp-secret-stale"]);
   });

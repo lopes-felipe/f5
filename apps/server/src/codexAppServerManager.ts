@@ -44,6 +44,7 @@ import {
   type CodexCommandApprovalOffer,
 } from "./codex/commandApprovalOffer.ts";
 import { describeMcpElicitation, mcpElicitationResponse } from "./codex/mcpElicitation.ts";
+import { codexMcpConsentToolName } from "./mcp/hub/providerHubServers.ts";
 import { buildElicitationDescriptor } from "@t3tools/shared/elicitationForm";
 import {
   ElicitationDeliveryUncertainError,
@@ -1292,6 +1293,11 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
   private readonly oneOffWorkers = new Map<ThreadId, CodexOneOffWorker>();
 
   private runPromise: (effect: Effect.Effect<unknown, never>) => Promise<unknown>;
+  /**
+   * Set by the adapter: true when F5's MCP hub will ask before this tool call, so
+   * Codex's own consent prompt for it is accepted without showing.
+   */
+  mcpHubAsksBeforeCall?: (threadId: ThreadId, serverName: string, toolName: string) => boolean;
   constructor(services?: ServiceMap.ServiceMap<never>) {
     super();
     this.runPromise = services ? Effect.runPromiseWith(services) : Effect.runPromise;
@@ -4554,6 +4560,23 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     ) {
       this.openElicitation(context, request);
       return;
+    }
+    // F5's hub asks before this tool call itself (Ask policy or a changed tool), so
+    // Codex's own consent prompt is accepted unseen and the user answers once.
+    if (request.method === "mcpServer/elicitation/request") {
+      const serverName = asString(asObject(request.params)?.serverName);
+      const toolName = codexMcpConsentToolName(request.params);
+      if (
+        serverName &&
+        toolName &&
+        this.mcpHubAsksBeforeCall?.(context.session.threadId, serverName, toolName)
+      ) {
+        this.writeServerRequestResponse(context, {
+          id: request.id,
+          result: mcpElicitationResponse(request.params, "accept"),
+        });
+        return;
+      }
     }
     const approvalRequest = this.approvalRequestForMethod(request.method);
     const requestKind = approvalRequest?.requestKind;

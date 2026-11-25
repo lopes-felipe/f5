@@ -109,6 +109,43 @@ export const McpReconnectHubServerRequest = Schema.Struct({
 });
 export type McpReconnectHubServerRequest = typeof McpReconnectHubServerRequest.Type;
 
+export const McpListToolPinsRequest = Schema.Struct({
+  serverName: TrimmedNonEmptyString,
+});
+export type McpListToolPinsRequest = typeof McpListToolPinsRequest.Type;
+
+/** Accepts the current definition of changed or new tools, or of every tool when none are named. */
+export const McpAcceptToolChangesRequest = Schema.Struct({
+  serverName: TrimmedNonEmptyString,
+  identity: TrimmedNonEmptyString,
+  toolNames: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
+});
+export type McpAcceptToolChangesRequest = typeof McpAcceptToolChangesRequest.Type;
+
+export const MCP_ACTIVITY_PAGE_LIMIT = 200;
+
+export const McpListActivityRequest = Schema.Struct({
+  serverName: Schema.optional(TrimmedNonEmptyString),
+  threadId: Schema.optional(ThreadId),
+  limit: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: MCP_ACTIVITY_PAGE_LIMIT })),
+  ),
+});
+export type McpListActivityRequest = typeof McpListActivityRequest.Type;
+
+export const McpGetThreadServersRequest = Schema.Struct({
+  threadId: ThreadId,
+});
+export type McpGetThreadServersRequest = typeof McpGetThreadServersRequest.Type;
+
+/** Turns a hub server off (or back on) for one conversation; no provider restart. */
+export const McpSetThreadServerEnabledRequest = Schema.Struct({
+  threadId: ThreadId,
+  serverName: TrimmedNonEmptyString,
+  enabled: Schema.Boolean,
+});
+export type McpSetThreadServerEnabledRequest = typeof McpSetThreadServerEnabledRequest.Type;
+
 /** Without a project, common servers are listed and signed in. */
 export const McpGetHubAuthStatusRequest = Schema.Struct({
   projectId: Schema.optional(ProjectId),

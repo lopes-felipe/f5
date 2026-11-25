@@ -24,6 +24,7 @@ import type { McpServerDefinition } from "@t3tools/contracts";
 import { createMcpDiagnosticsSanitizer, isMcpCredentialKey } from "@t3tools/shared/mcpDiagnostics";
 
 import { ProbeStdioTransport } from "../McpProbe.ts";
+import { resolvedMcpSecretsIn } from "../mcpResolvedSecrets.ts";
 import type { McpOAuthProvider } from "./McpOAuth.ts";
 
 export const HUB_STDERR_LIMIT = 64 * 1024;
@@ -146,6 +147,10 @@ export class McpHubUpstream {
     const bearer = this.bearerToken();
     const sanitizer = createMcpDiagnosticsSanitizer({ [options.name]: options.definition }, [
       ...(bearer ? [bearer] : []),
+      // Stored secrets inside arguments or the URL are redacted on their own.
+      ...resolvedMcpSecretsIn(
+        [...(options.definition.args ?? []), options.definition.url ?? ""].join("\n"),
+      ),
       ...Object.entries(options.environment).flatMap(([name, value]) =>
         value && isMcpCredentialKey(name) ? [value] : [],
       ),

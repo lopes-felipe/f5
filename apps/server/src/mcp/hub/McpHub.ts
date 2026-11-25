@@ -29,6 +29,8 @@ import { ServerSecretStore } from "../../auth/Services/ServerSecretStore.ts";
 import { readBearerToken } from "../jsonRpcHttp.ts";
 import { PreviewMcpHttpServer, type PreviewMcpHttpServerShape } from "../PreviewMcpHttpServer.ts";
 import { McpHubSlot } from "./McpHubEndpoint.ts";
+import { McpHubGovernanceService } from "./McpHubGovernanceLive.ts";
+import type { McpHubGovernance } from "./McpHubGovernance.ts";
 import { McpHubUpstream } from "./McpHubUpstream.ts";
 import {
   McpOAuthProvider,
@@ -90,6 +92,11 @@ export interface McpHubAttachment {
     servers: McpProjectServersConfig | null | undefined,
     options?: { readonly addEndpoints?: boolean },
   ) => McpHubAttachmentUpdate;
+  /**
+   * True when F5 will ask before running this tool (Ask policy or a changed tool), so
+   * the provider's own prompt for the same call can be answered without showing it.
+   */
+  readonly asksBeforeCall?: (serverName: string, toolName: string) => boolean;
   /** Revokes the endpoints and releases their upstream connections. */
   readonly dispose: () => Promise<void>;
 }
@@ -148,9 +155,20 @@ export const mcpHubAdapterOption = Effect.serviceOption(McpHub).pipe(
   ),
 );
 
+/**
+ * What a connection depends on. Settings-only fields (description, provider switches,
+ * tool policy) are left out, so editing them never reconnects the server.
+ */
 function hashDefinition(definition: McpServerDefinition): string {
+  const {
+    description: _description,
+    disabledProviders: _disabledProviders,
+    toolPolicy: _toolPolicy,
+    defaultToolPolicy: _defaultToolPolicy,
+    ...connection
+  } = definition;
   return createHash("sha256")
-    .update(stableMcpServersJson({ entry: definition }))
+    .update(stableMcpServersJson({ entry: connection as McpServerDefinition }))
     .digest("hex")
     .slice(0, 24);
 }
@@ -175,6 +193,11 @@ export interface McpHubOptions {
   ) => McpHubUpstream;
   /** OAuth token storage for remote servers; without it they only use static credentials. */
   readonly oauthStorage?: McpOAuthStorage;
+  /**
+   * Ask policy, tool pins, conversation toggles and the call log. Without it every
+   * allowed tool runs, and tools set to Ask are refused because nobody can be asked.
+   */
+  readonly governance?: McpHubGovernance;
 }
 
 export function makeMcpHub(options: McpHubOptions): McpHubShape {
@@ -343,7 +366,11 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
         token,
         serverName,
         threadId: input.threadId,
+        provider: input.provider,
+        projectId: input.projectId,
         upstream: entry.upstream,
+        definition,
+        governance: options.governance,
       });
       slots.set(id, slot);
       const record: AttachedSlot = { slot, entry: undefined, hash: hashDefinition(definition) };
@@ -388,6 +415,7 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
           }
           continue;
         }
+        record.slot.setDefinition(definition);
         const hash = hashDefinition(definition);
         if (record.entry && record.hash === hash) continue;
         // Bind the new connection before releasing the old, so a shared one is reused.
@@ -427,6 +455,10 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
         return endpoints.map((endpoint) => endpoint.token);
       },
       update,
+      asksBeforeCall: (serverName, toolName) => {
+        const record = records.get(serverName);
+        return !disposed && record?.entry !== undefined && record.slot.asksBeforeCall(toolName);
+      },
       dispose: async () => {
         if (disposed) return;
         disposed = true;
@@ -551,8 +583,10 @@ export const McpHubLive = Layer.effect(
     const listener = Option.getOrUndefined(yield* Effect.serviceOption(PreviewMcpHttpServer));
     const bus = Option.getOrUndefined(yield* Effect.serviceOption(CodexMcpEventBus));
     const secrets = Option.getOrUndefined(yield* Effect.serviceOption(ServerSecretStore));
+    const governance = Option.getOrUndefined(yield* Effect.serviceOption(McpHubGovernanceService));
     const hub = makeMcpHub({
       listener,
+      ...(governance ? { governance } : {}),
       ...(secrets ? { oauthStorage: secretStoreOAuthStorage(secrets) } : {}),
       ...(bus
         ? { publish: (payload) => void Effect.runFork(bus.publishStatusUpdated(payload)) }

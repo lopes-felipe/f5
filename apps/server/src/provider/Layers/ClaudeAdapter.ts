@@ -23,7 +23,7 @@ import {
 } from "../claudeSubagentSelection.ts";
 import type { ThreadMcpBroker } from "../../mcp/threadMcpTools.ts";
 import type { McpHubAttachment, McpHubShape } from "../../mcp/hub/McpHub.ts";
-import { hubEndpointsForClaude } from "../../mcp/hub/providerHubServers.ts";
+import { hubAsksForClaudeTool, hubEndpointsForClaude } from "../../mcp/hub/providerHubServers.ts";
 import { isF5ThreadReadTool, makeClaudeThreadMcpServer } from "./claudeThreadTools.ts";
 import {
   makeClaudeAssistantText,
@@ -8157,6 +8157,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               );
               if (mandatoryDenial)
                 return { behavior: "deny", message: mandatoryDenial } satisfies PermissionResult;
+              // F5's hub asks before this call itself (Ask policy or a changed tool);
+              // allowing Claude's prompt keeps it to one question.
+              if (
+                hubAsksForClaudeTool(context.mcpHubAttachment, toolName, callbackOptions.mcpServer)
+              )
+                return { behavior: "allow", updatedInput: toolInput } satisfies PermissionResult;
               const dynamicDenial = yield* evaluateAgentBrowserToolPolicy(threadId, toolName, {
                 input: toolInput,
                 mcpServer: callbackOptions.mcpServer,

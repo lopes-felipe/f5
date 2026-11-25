@@ -44,7 +44,12 @@ export type ServerDraft = {
  * Fields the form does not edit. They are kept from the saved server on every save,
  * including a transport change, so editing never drops them.
  */
-const PRESERVED_FIELDS = ["disabledProviders", "connectionScope"] as const;
+const PRESERVED_FIELDS = [
+  "disabledProviders",
+  "connectionScope",
+  "toolPolicy",
+  "defaultToolPolicy",
+] as const;
 
 export function createEmptyDraft(type: TransportType = "stdio"): ServerDraft {
   return {

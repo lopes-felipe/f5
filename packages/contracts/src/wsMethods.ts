@@ -226,6 +226,11 @@ export const WS_METHODS = {
   mcpStartHubSignIn: "mcp.startHubSignIn",
   mcpCompleteHubSignIn: "mcp.completeHubSignIn",
   mcpSignOutHubServer: "mcp.signOutHubServer",
+  mcpListToolPins: "mcp.listToolPins",
+  mcpAcceptToolChanges: "mcp.acceptToolChanges",
+  mcpListActivity: "mcp.listActivity",
+  mcpGetThreadServers: "mcp.getThreadServers",
+  mcpSetThreadServerEnabled: "mcp.setThreadServerEnabled",
 } as const;
 
 // ── Push Event Channels ──────────────────────────────────────────────

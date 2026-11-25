@@ -1,6 +1,41 @@
 import type { McpProjectServersConfig, McpServerDefinition } from "@t3tools/contracts";
+import { normalizeClaudeMcpName } from "@t3tools/shared/mcpTranslation";
 
-import type { McpHubEndpoint } from "./McpHub.ts";
+import type { McpHubAttachment, McpHubEndpoint } from "./McpHub.ts";
+
+/**
+ * True when Claude's `mcp__<server>__<tool>` names a hub tool F5 will ask about
+ * itself, so Claude's own permission prompt for it can be allowed without showing.
+ */
+export function hubAsksForClaudeTool(
+  attachment: Pick<McpHubAttachment, "endpoints" | "asksBeforeCall"> | undefined,
+  toolName: string,
+  mcpServer?: { readonly name: string },
+): boolean {
+  if (!attachment?.asksBeforeCall) return false;
+  for (const endpoint of attachment.endpoints) {
+    if (mcpServer && mcpServer.name !== endpoint.serverName) continue;
+    const prefix = `mcp__${normalizeClaudeMcpName(endpoint.serverName)}__`;
+    if (!toolName.startsWith(prefix)) continue;
+    if (attachment.asksBeforeCall(endpoint.serverName, toolName.slice(prefix.length))) return true;
+  }
+  return false;
+}
+
+/** The tool named in a Codex MCP tool-call consent prompt (`… to run tool "name"?`). */
+export function codexMcpConsentToolName(params: unknown): string | undefined {
+  if (!params || typeof params !== "object") return undefined;
+  const record = params as { _meta?: unknown; message?: unknown };
+  const meta =
+    record._meta && typeof record._meta === "object"
+      ? (record._meta as Record<string, unknown>)
+      : undefined;
+  if (meta?.codex_approval_kind !== "mcp_tool_call") return undefined;
+  if (typeof meta.tool_name === "string" && meta.tool_name) return meta.tool_name;
+  const match =
+    typeof record.message === "string" ? /run tool "([^"]+)"\?\s*$/u.exec(record.message) : null;
+  return match?.[1];
+}
 
 /** Codex and Claude wait this long for a hub endpoint; the hub answers initialize itself. */
 const HUB_ENDPOINT_STARTUP_TIMEOUT_SEC = 30;
