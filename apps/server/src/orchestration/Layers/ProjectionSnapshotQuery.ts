@@ -96,6 +96,7 @@ import {
   MAX_THREAD_PROPOSED_PLANS,
   MAX_READ_MODEL_ACTIVITIES,
 } from "../readModelRetention.ts";
+import { PROJECTION_TIMINGS_ENV, resolveAliasedBooleanEnv } from "../../envFlags.ts";
 import {
   ProjectionSnapshotQuery,
   type ProjectionSnapshotQueryShape,
@@ -108,8 +109,7 @@ const decodeThreadHistoryPage = Schema.decodeUnknownEffect(OrchestrationThreadHi
 const isTestRuntime = () => process.env.NODE_ENV === "test" || process.env.VITEST === "true";
 const shouldLogProjectionTimings =
   !isTestRuntime() &&
-  (process.env.T3CODE_LOG_PROJECTION_TIMINGS === "1" ||
-    process.env.T3CODE_LOG_PROJECTION_TIMINGS === "true");
+  resolveAliasedBooleanEnv(PROJECTION_TIMINGS_ENV.primary, PROJECTION_TIMINGS_ENV.legacy).enabled;
 const ProjectionProjectDbRowSchema = ProjectionProject.mapFields(
   Struct.assign({
     pinned: Schema.optional(Schema.BooleanFromBit),

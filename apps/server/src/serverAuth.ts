@@ -17,8 +17,13 @@ const MAX_ACTIVE_SESSIONS = 1_024;
 const MAX_AUTH_FAILURE_SOURCES = 4_096;
 
 export const MIN_REMOTE_AUTH_TOKEN_BYTES = 24;
-/** Environment variable that carries the backend's WebSocket/HTTP credential into the server. */
+/** Primary and legacy environment variables carrying the backend's WebSocket/HTTP credential. */
+export const PRIMARY_SERVER_AUTH_TOKEN_ENV = "F5_AUTH_TOKEN";
 export const SERVER_AUTH_TOKEN_ENV = "T3CODE_AUTH_TOKEN";
+export const SERVER_AUTH_TOKEN_ENV_NAMES = [
+  PRIMARY_SERVER_AUTH_TOKEN_ENV,
+  SERVER_AUTH_TOKEN_ENV,
+] as const;
 
 interface SessionRecord {
   readonly expiresAt: number;

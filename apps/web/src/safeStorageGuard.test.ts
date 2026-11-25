@@ -17,10 +17,8 @@ const LEGACY_LOCAL_STORAGE_WRITE_COUNTS: Readonly<Record<string, number>> = {
   "components/usage/ResetCreditButton.tsx": 2,
   "hooks/useMigrateClientSettings.ts": 2,
   "hooks/useServerUpdateOutcome.ts": 1,
-  "pinnedThreadsStore.ts": 1,
   "routes/_chat.tsx": 1,
   "store.ts": 2,
-  "threadStatusNotifications.ts": 1,
 };
 
 const DIRECT_LOCAL_STORAGE_WRITE = /\blocalStorage\.(?:setItem|removeItem)\s*\(/g;

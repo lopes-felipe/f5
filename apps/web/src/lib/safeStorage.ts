@@ -1,3 +1,5 @@
+import type { StateStorage } from "zustand/middleware";
+
 function getLocalStorage(): Storage | null {
   if (typeof window === "undefined") return null;
   try {
@@ -46,4 +48,39 @@ export function safeLocalStorageRemoveItem(key: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Reads `primaryKey`, falling back to `legacyKey` on first read and copying the
+ * legacy value forward to `primaryKey` (best-effort) while leaving `legacyKey`
+ * readable if a user rolls back before clearing storage.
+ */
+export function safeLocalStorageGetMigrated(primaryKey: string, legacyKey: string): string | null {
+  const current = safeLocalStorageGetItem(primaryKey);
+  if (current !== null) return current;
+  const legacy = safeLocalStorageGetItem(legacyKey);
+  if (legacy !== null) {
+    safeLocalStorageSetItem(primaryKey, legacy);
+  }
+  return legacy;
+}
+
+/**
+ * Shared Zustand `StateStorage` wrapper backed by `safeStorage` helpers, with
+ * optional silent one-way read migration from a legacy `t3code:*` storage key.
+ * Removing a key also clears the legacy alias so `clearStorage()` does not
+ * resurrect stale legacy state on the next read.
+ */
+export function createSafeZustandStorage(legacyKey?: string): StateStorage {
+  return {
+    getItem: (name) =>
+      legacyKey ? safeLocalStorageGetMigrated(name, legacyKey) : safeLocalStorageGetItem(name),
+    setItem: (name, value) => {
+      safeLocalStorageSetItem(name, value);
+    },
+    removeItem: (name) => {
+      safeLocalStorageRemoveItem(name);
+      if (legacyKey) safeLocalStorageRemoveItem(legacyKey);
+    },
+  };
 }

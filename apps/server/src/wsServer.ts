@@ -291,6 +291,7 @@ import {
 } from "effect";
 import { WebSocketServer, type WebSocket } from "ws";
 
+import { resolveAliasedBooleanEnv, THREAD_OPEN_TIMINGS_ENV } from "./envFlags.ts";
 import { createLogger } from "./logger";
 import { NextTurnQueueStore } from "./nextTurnQueue/Services/NextTurnQueueStore.ts";
 import { makeProjectionTurnRepository } from "./persistence/Layers/ProjectionTurns.ts";
@@ -1242,8 +1243,8 @@ export const createServer = Effect.fn(function* (
   const shouldLogThreadOpenTimings =
     process.env.NODE_ENV !== "test" &&
     process.env.VITEST !== "true" &&
-    (process.env.T3CODE_LOG_THREAD_OPEN_TIMINGS === "1" ||
-      process.env.T3CODE_LOG_THREAD_OPEN_TIMINGS === "true");
+    resolveAliasedBooleanEnv(THREAD_OPEN_TIMINGS_ENV.primary, THREAD_OPEN_TIMINGS_ENV.legacy)
+      .enabled;
 
   function logOutgoingPush(push: WsPushEnvelopeBase, recipients: number) {
     if (!logWebSocketEvents || push.channel === WS_CHANNELS.providerAccountEvent) return;

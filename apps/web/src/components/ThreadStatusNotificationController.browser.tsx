@@ -42,7 +42,9 @@ import type { Thread } from "../types";
 import { ThreadStatusNotificationControllerContent } from "./ThreadStatusNotificationController";
 
 const APP_SETTINGS_STORAGE_KEY = "t3code:app-settings:v1";
-const THREAD_STATUS_NOTIFICATION_PROMPT_STORAGE_KEY = "t3code:thread-status-notification-prompt:v1";
+const LEGACY_THREAD_STATUS_NOTIFICATION_PROMPT_STORAGE_KEY =
+  "t3code:thread-status-notification-prompt:v1";
+const THREAD_STATUS_NOTIFICATION_PROMPT_STORAGE_KEY = "f5:thread-status-notification-prompt:v1";
 const PROJECT_ID = "project-browser" as ProjectId;
 const THREAD_ID = "thread-browser" as ThreadId;
 
@@ -219,6 +221,7 @@ describe("ThreadStatusNotificationController", () => {
 
   afterEach(() => {
     localStorage.removeItem(THREAD_STATUS_NOTIFICATION_PROMPT_STORAGE_KEY);
+    localStorage.removeItem(LEGACY_THREAD_STATUS_NOTIFICATION_PROMPT_STORAGE_KEY);
     document.body.innerHTML = "";
   });
 

@@ -1,6 +1,9 @@
+import { safeLocalStorageGetMigrated } from "./lib/safeStorage";
+
 export type ThemeMode = "light" | "dark" | "system";
 
-export const THEME_MODE_STORAGE_KEY = "t3code:theme";
+export const LEGACY_THEME_MODE_STORAGE_KEY = "t3code:theme";
+export const THEME_MODE_STORAGE_KEY = "f5:theme";
 const MEDIA_QUERY = "(prefers-color-scheme: dark)";
 
 export function getSystemPrefersDark(): boolean {
@@ -10,12 +13,7 @@ export function getSystemPrefersDark(): boolean {
 }
 
 export function readStoredThemeMode(): ThemeMode {
-  let raw: string | null = null;
-  try {
-    raw = typeof localStorage === "undefined" ? null : localStorage.getItem(THEME_MODE_STORAGE_KEY);
-  } catch {
-    raw = null;
-  }
+  const raw = safeLocalStorageGetMigrated(THEME_MODE_STORAGE_KEY, LEGACY_THEME_MODE_STORAGE_KEY);
   return raw === "light" || raw === "dark" || raw === "system" ? raw : "system";
 }
 
