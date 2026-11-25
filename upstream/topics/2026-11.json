@@ -5082,11 +5082,22 @@
     },
     {
       "createdAt": "2026-11-12T11:14:04.510Z",
-      "decidedAt": "2026-11-25T22:16:10.877Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-25T22:19:32.436Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/persistence/sqliteCheckpointWorker.ts:209",
+          "apps/server/src/persistence/sqliteCheckpointWorker.ts:94",
+          "apps/server/src/persistence/sqliteCheckpointWorker.test.ts:349"
+        ],
+        "f5Refs": [
+          "21dc05d5a7b42cef176a88ff312ea1da0f920a99"
+        ]
+      },
       "id": "pr-23496",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "server",
@@ -18844,14 +18855,16 @@
     },
     {
       "createdAt": "2026-11-12T11:14:04.510Z",
-      "decidedAt": "2026-11-25T22:16:10.877Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-25T22:19:35.691Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-28056",
+      "reason": "F5 renders the supplied patches in its diff panel, PR diffs, and review guides without fetching live file contents to expand hidden context, so the upstream crash path is absent.",
+      "reasonKey": "not-applicable",
       "relatedTopics": [
         "pr-33629"
       ],
-      "status": "port",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "diff",
