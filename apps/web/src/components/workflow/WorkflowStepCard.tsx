@@ -9,6 +9,7 @@ import { ModelChip } from "../chat/ModelChip";
 import { normalizedWorkEntryHeading } from "../chat/MessagesTimeline.logic";
 import { ThreadStatusPillBadge } from "../thread/ThreadStatusPillBadge";
 import { WorkflowStateGlyph } from "./WorkflowStateGlyph";
+import { formatCompactTokenCount, type StepTelemetry } from "./workflowTelemetry";
 import type { WorkflowTimelineStep } from "./workflowTimelineTypes";
 
 export interface WorkflowStepCardModel {
@@ -74,9 +75,10 @@ export function WorkflowStepCard(props: {
   readonly step: WorkflowTimelineStep;
   readonly thread: Thread | null | undefined;
   readonly variant?: "row" | "card" | undefined;
+  readonly telemetry?: StepTelemetry | undefined;
 }) {
   const variant = props.variant ?? "row";
-  const { step } = props;
+  const { step, telemetry } = props;
   const model = resolveWorkflowStepCardModel({
     step,
     thread: props.thread,
@@ -123,6 +125,28 @@ export function WorkflowStepCard(props: {
               className="size-1.5 shrink-0 rounded-full bg-info motion-safe:animate-status-pulse"
             />
             <span className="truncate">{model.activity}</span>
+          </span>
+        ) : null}
+        {telemetry &&
+        (telemetry.elapsedLabel !== null ||
+          telemetry.contextTokens !== null ||
+          telemetry.isBottleneck) ? (
+          <span
+            data-slot="workflow-step-telemetry"
+            className="flex flex-wrap items-center gap-x-2 gap-y-1 ps-6 text-2xs text-muted-foreground tabular-nums"
+          >
+            {telemetry.elapsedLabel ? <span>{telemetry.elapsedLabel}</span> : null}
+            {telemetry.contextTokens !== null ? (
+              <span>{formatCompactTokenCount(telemetry.contextTokens)}</span>
+            ) : null}
+            {telemetry.isBottleneck ? (
+              <span
+                data-slot="workflow-step-bottleneck"
+                className="rounded-full bg-warning/10 px-1.5 py-0.5 text-2xs font-medium text-warning-foreground"
+              >
+                Slowest
+              </span>
+            ) : null}
           </span>
         ) : null}
       </>

@@ -1,10 +1,11 @@
 import type { ProjectId } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import { CheckIcon, CircleAlertIcon, CircleIcon, LoaderIcon, type LucideIcon } from "lucide-react";
-import type { ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
 
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { formatUsd } from "../../lib/formatUsd";
+import { useNowIso } from "../../lib/nowTicker";
 import { formatAbsoluteTimeLabel, formatRelativeTimeLabel } from "../../lib/relativeTime";
 import { cn } from "../../lib/utils";
 import {
@@ -19,6 +20,8 @@ import { AppTitlebar } from "../AppTitlebar";
 import { ProjectIcon } from "../ProjectIcon";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
 import { WorkflowBoard } from "./WorkflowBoard";
+import { computeWorkflowRunTelemetry } from "./workflowTelemetry";
+import { WorkflowTelemetryBar } from "./WorkflowTelemetryBar";
 import { WorkflowTimelinePhaseList } from "./WorkflowTimelinePhaseList";
 import type { WorkflowOverallState, WorkflowTimelinePhase } from "./workflowTimelineTypes";
 
@@ -133,6 +136,19 @@ export function WorkflowPageLayout(props: {
     props.totalCostUsd !== null && props.totalCostUsd !== undefined && props.totalCostUsd > 0
       ? formatUsd(props.totalCostUsd)
       : null;
+  const nowIso = useNowIso(props.overallState === "active");
+  const telemetry = useMemo(
+    () =>
+      computeWorkflowRunTelemetry({
+        phases: props.phases,
+        threadById: props.threadById,
+        overallState: props.overallState,
+        createdAt: props.createdAt,
+        updatedAt: props.updatedAt,
+        nowIso,
+      }),
+    [nowIso, props.createdAt, props.overallState, props.phases, props.threadById, props.updatedAt],
+  );
 
   return (
     <div
@@ -211,9 +227,14 @@ export function WorkflowPageLayout(props: {
               <div className="flex flex-wrap items-center gap-2">{props.actions}</div>
             ) : null}
           </header>
+          <WorkflowTelemetryBar telemetry={telemetry} totalCostUsd={props.totalCostUsd} />
           {view === "board" ? (
             <>
-              <WorkflowBoard phases={props.phases} threadById={props.threadById} />
+              <WorkflowBoard
+                phases={props.phases}
+                threadById={props.threadById}
+                stepTelemetryByKey={telemetry.stepTelemetryByKey}
+              />
               <main className="flex min-w-0 flex-col gap-6">{props.children}</main>
             </>
           ) : (
