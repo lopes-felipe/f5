@@ -132,6 +132,7 @@ import {
   findLastUserMessageRowIndex,
   findNearestMinimapMarkerIndex,
   formatWorkingLabel,
+  isThoughtOnlyAssistantMessage,
   summarizeWorkGroup,
   type WorkEntryClassificationSource,
   normalizeCompactToolLabel,
@@ -394,6 +395,55 @@ describe("timeline turn rail", () => {
       },
     ]);
   });
+
+  it("points both rails at the reply when a turn replied and then ended on a thought", () => {
+    const thought = {
+      role: "assistant" as const,
+      text: "",
+      reasoningText: "Checking the queue",
+      streaming: false,
+    };
+    const rows = [
+      { id: "u1", kind: "message", message: { role: "user" as const, text: "Question" } },
+      {
+        id: "a1",
+        kind: "message",
+        message: { role: "assistant" as const, text: "Partial answer" },
+      },
+      { id: "tool", kind: "work" },
+      { id: "t1", kind: "message", showCompletionDivider: true, message: thought },
+    ];
+    expect(deriveTimelineTurnRailItems(rows).map((item) => item.assistantText)).toEqual([
+      "Partial answer",
+    ]);
+    expect(
+      deriveTimelineAssistantRailItems(rows).map(({ id, rowIndex, assistantText }) => ({
+        id,
+        rowIndex,
+        assistantText,
+      })),
+    ).toEqual([{ id: "a1", rowIndex: 1, assistantText: "Partial answer" }]);
+  });
+
+  it("labels the answer of a turn that never replied", () => {
+    const thought = { role: "assistant" as const, text: "", reasoningTokens: 40, streaming: false };
+    expect(
+      deriveTimelineAssistantRailItems([
+        { id: "u1", kind: "message", message: { role: "user", text: "Question" } },
+        {
+          id: "a0",
+          kind: "message",
+          showCompletionDivider: true,
+          message: { role: "assistant", text: "Earlier turn" },
+        },
+        { id: "t1", kind: "message", showCompletionDivider: true, message: thought },
+      ]).map(({ id, assistantText }) => ({ id, assistantText })),
+    ).toEqual([
+      { id: "a0", assistantText: "Earlier turn" },
+      { id: "t1", assistantText: "Finished without a reply" },
+    ]);
+  });
+
   it("resolves measured gutter geometry", () => {
     expect([47, 48, 0, Number.NaN].map(resolveTimelineTurnRailHasPersistentGutter)).toEqual([
       false,
@@ -657,5 +707,31 @@ describe("findLastUserMessageRowIndex", () => {
         { kind: "message", message: { role: "assistant" } },
       ]),
     ).toBe(-1);
+  });
+});
+
+describe("isThoughtOnlyAssistantMessage", () => {
+  const base = { role: "assistant" as const, text: "", streaming: false };
+
+  it("matches finished assistant messages that carry only reasoning", () => {
+    expect(isThoughtOnlyAssistantMessage({ ...base, reasoningText: "Thinking" })).toBe(true);
+    expect(isThoughtOnlyAssistantMessage({ ...base, text: " \n", reasoningText: "Thinking" })).toBe(
+      true,
+    );
+    expect(isThoughtOnlyAssistantMessage({ ...base, reasoningTokens: 120 })).toBe(true);
+  });
+
+  it("leaves streaming, replying, empty and non-assistant messages alone", () => {
+    expect(
+      isThoughtOnlyAssistantMessage({ ...base, streaming: true, reasoningText: "Thinking" }),
+    ).toBe(false);
+    expect(
+      isThoughtOnlyAssistantMessage({ ...base, text: "Done", reasoningText: "Thinking" }),
+    ).toBe(false);
+    expect(isThoughtOnlyAssistantMessage({ ...base, reasoningText: "  " })).toBe(false);
+    expect(isThoughtOnlyAssistantMessage(base)).toBe(false);
+    expect(
+      isThoughtOnlyAssistantMessage({ ...base, role: "user", reasoningText: "Thinking" }),
+    ).toBe(false);
   });
 });

@@ -638,11 +638,29 @@ export interface TimelineTurnRailRowSource {
   readonly kind: string;
   readonly createdAt?: string | null;
   readonly showCompletionDivider?: boolean;
-  readonly message?: {
-    readonly role: "user" | "assistant" | "system";
-    readonly text: string;
+  readonly message?: ThoughtOnlyMessageSource & {
     readonly attachments?: ReadonlyArray<{ readonly name: string }>;
   };
+}
+
+export interface ThoughtOnlyMessageSource {
+  readonly role: "user" | "assistant" | "system";
+  readonly text: string;
+  readonly streaming?: boolean;
+  readonly reasoningText?: string;
+  readonly reasoningTokens?: number;
+}
+
+/** Shown where a finished turn ended on reasoning without any reply text. */
+export const FINISHED_WITHOUT_REPLY_LABEL = "Finished without a reply";
+
+/**
+ * A finished assistant message that carries only reasoning, such as an ACP
+ * agent's thought between two tool calls. It renders as a compact Thought row.
+ */
+export function isThoughtOnlyAssistantMessage(message: ThoughtOnlyMessageSource): boolean {
+  if (message.role !== "assistant" || message.streaming || /\S/.test(message.text)) return false;
+  return /\S/.test(message.reasoningText ?? "") || (message.reasoningTokens ?? 0) > 0;
 }
 
 export interface TimelineTurnRailItem {
@@ -670,6 +688,16 @@ function compactTurnRailPreview(value: string | null | undefined): string | null
 // Previews per message object: a message is immutable, and streaming replaces it.
 const userPreviewCache = new WeakMap<object, string | null>();
 const assistantPreviewCache = new WeakMap<object, string | null>();
+const thoughtOnlyCache = new WeakMap<object, boolean>();
+
+function cachedIsThoughtOnly(message: ThoughtOnlyMessageSource): boolean {
+  let thoughtOnly = thoughtOnlyCache.get(message);
+  if (thoughtOnly === undefined) {
+    thoughtOnly = isThoughtOnlyAssistantMessage(message);
+    thoughtOnlyCache.set(message, thoughtOnly);
+  }
+  return thoughtOnly;
+}
 
 function cachedPreview(
   cache: WeakMap<object, string | null>,
@@ -736,7 +764,7 @@ export function deriveTimelineTurnRailItems(
         ),
         assistantText: null,
       };
-    } else if (message.role === "assistant" && current) {
+    } else if (message.role === "assistant" && current && !cachedIsThoughtOnly(message)) {
       current.assistantText = cachedPreview(assistantPreviewCache, message, () =>
         compactTurnRailPreview(message.text),
       );
@@ -752,24 +780,40 @@ export function deriveTimelineAssistantRailItems(
 ): TimelineTurnRailItem[] {
   const items: TimelineTurnRailItem[] = [];
   let userText: string | null = null;
+  // The newest reply since the last prompt or answer: the destination of a turn that
+  // replied and then ended on a thought.
+  let lastReply: { row: TimelineTurnRailRowSource; rowIndex: number; preview: string } | null =
+    null;
   for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
     const row = rows[rowIndex]!;
-    if (row.kind !== "message" || !row.message) continue;
-    if (row.message.role === "user") {
-      userText = cachedPreview(userPreviewCache, row.message, () =>
-        resolveTurnRailUserPreview(row.message!),
+    const message = row.kind === "message" ? row.message : undefined;
+    if (!message) continue;
+    if (message.role === "user") {
+      userText = cachedPreview(userPreviewCache, message, () =>
+        resolveTurnRailUserPreview(message),
       );
-    } else if (row.message.role === "assistant" && row.showCompletionDivider) {
-      items.push({
-        id: row.id,
-        rowIndex,
-        createdAt: row.createdAt ?? null,
-        userText,
-        assistantText: cachedPreview(assistantPreviewCache, row.message, () =>
-          compactTurnRailPreview(row.message!.text),
-        ),
-      });
+      lastReply = null;
+      continue;
     }
+    if (message.role !== "assistant") continue;
+    const thoughtOnly = cachedIsThoughtOnly(message);
+    const preview = thoughtOnly
+      ? null
+      : cachedPreview(assistantPreviewCache, message, () => compactTurnRailPreview(message.text));
+    if (preview !== null) lastReply = { row, rowIndex, preview };
+    if (!row.showCompletionDivider) continue;
+    const target =
+      thoughtOnly && lastReply
+        ? lastReply
+        : { row, rowIndex, preview: thoughtOnly ? FINISHED_WITHOUT_REPLY_LABEL : preview };
+    items.push({
+      id: target.row.id,
+      rowIndex: target.rowIndex,
+      createdAt: target.row.createdAt ?? null,
+      userText,
+      assistantText: target.preview,
+    });
+    lastReply = null;
   }
   return items;
 }

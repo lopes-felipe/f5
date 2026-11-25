@@ -643,7 +643,6 @@ async function createHarness(
     providerLogsDir: "/tmp/f5-workflow/userdata/logs/provider",
     providerEventLogPath: "/tmp/f5-workflow/userdata/logs/provider/events.log",
     terminalLogsDir: "/tmp/f5-workflow/userdata/logs/terminals",
-    anonymousIdPath: "/tmp/f5-workflow/userdata/anonymous-id",
     staticDir: undefined,
     devUrl: undefined,
     noBrowser: true,

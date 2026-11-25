@@ -531,6 +531,10 @@
       "import": "./src/scheduledTasks.ts"
     },
     "./observability": "./src/observability.ts",
+    "./doNotTrack": {
+      "types": "./src/doNotTrack.ts",
+      "import": "./src/doNotTrack.ts"
+    },
     "./htmlRender": {
       "types": "./src/htmlRender.ts",
       "import": "./src/htmlRender.ts"

@@ -370,6 +370,16 @@ export const ServerConfig = Schema.Struct({
       reason: Schema.optional(TrimmedNonEmptyString),
     }),
   ),
+  /**
+   * Privacy switches read from the server's environment. `doNotTrack` mirrors
+   * `DO_NOT_TRACK`; clients then skip their own background requests (remote file
+   * icons). Absent on older servers, which means false.
+   */
+  privacy: Schema.optionalKey(
+    Schema.Struct({
+      doNotTrack: Schema.Boolean,
+    }),
+  ),
 });
 export type ServerConfig = typeof ServerConfig.Type;
 

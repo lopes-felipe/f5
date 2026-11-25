@@ -434,3 +434,139 @@ it("keeps selected and fan-out unlisted models visible and reacts while open", a
   await active.rerender(picker("listed"));
   await expect.element(page.getByText("Retired Model", { exact: true })).toBeVisible();
 });
+
+it("keeps an instance blocked by the caller in the rail with its rows disabled", async () => {
+  const isMac = /Mac/u.test(navigator.platform);
+  const onChange = vi.fn();
+  const reason = "Not allowed for this workflow stage.";
+  active = await render(
+    <TooltipProvider delay={0}>
+      <ProviderInstanceModelPicker
+        instanceId={CODEX_ID}
+        model={"gpt-5.6-sol" as ModelSlug}
+        lockedInstanceId={null}
+        providers={PROVIDERS}
+        modelOptionsByInstance={MODELS}
+        keybindings={DEFAULT_RESOLVED_KEYBINDINGS}
+        instanceUnavailableReason={(instance) =>
+          instance.instanceId === CLAUDE_ID ? reason : null
+        }
+        onInstanceModelChange={onChange}
+      />
+    </TooltipProvider>,
+  );
+  await page.getByRole("button", { name: /GPT-5.6 Sol/ }).click();
+  await page.getByRole("button", { name: "Claude", exact: true }).click();
+
+  const claudeRow = () =>
+    [...document.querySelectorAll<HTMLElement>("[data-model-picker-row]")].find((row) =>
+      row.textContent?.includes("Claude Sonnet 4.6"),
+    );
+  await expect.poll(() => claudeRow()?.textContent ?? "").toContain(reason);
+  const select = claudeRow()!.querySelectorAll("button")[1]!;
+  expect(select.disabled).toBe(true);
+
+  select.click();
+  await userEvent.keyboard("{Enter}");
+  await userEvent.keyboard(isMac ? "{Meta>}1{/Meta}" : "{Control>}1{/Control}");
+  expect(onChange).not.toHaveBeenCalled();
+});
+
+describe("ProviderInstanceModelPicker keyboard navigation", () => {
+  function pressKey(input: HTMLElement, key: string) {
+    input.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+  }
+
+  it("moves through a long list with the arrow keys and picks the highlighted row", async () => {
+    const onChange = vi.fn();
+    const models = new Map([
+      [
+        CODEX_ID,
+        Array.from({ length: 160 }, (_, index) => ({
+          slug: `codex-long-${index}`,
+          name: `Codex Long ${index}`,
+        })),
+      ],
+    ]);
+    active = await render(
+      <TooltipProvider delay={0}>
+        <ProviderInstanceModelPicker
+          instanceId={CODEX_ID}
+          model={"codex-long-0" as ModelSlug}
+          lockedInstanceId={null}
+          providers={PROVIDERS}
+          modelOptionsByInstance={models}
+          onInstanceModelChange={onChange}
+        />
+      </TooltipProvider>,
+    );
+    await page.getByRole("button", { name: /Codex Long 0/ }).click();
+    await expect.element(page.getByPlaceholder("Search models...")).toBeVisible();
+    const input = page.getByPlaceholder("Search models...").element() as HTMLElement;
+
+    for (let index = 0; index < 200; index += 1) pressKey(input, "ArrowDown");
+    pressKey(input, "ArrowUp");
+
+    const highlighted = () =>
+      document.querySelector<HTMLElement>("[data-model-picker-row][data-highlighted]");
+    await vi.waitFor(() => expect(highlighted()?.textContent).toContain("Codex Long 158"));
+    await vi.waitFor(() => {
+      const row = highlighted()!.getBoundingClientRect();
+      const list = highlighted()!.closest(".overflow-y-auto")!.getBoundingClientRect();
+      expect(row.top).toBeGreaterThanOrEqual(list.top - 1);
+      expect(row.bottom).toBeLessThanOrEqual(list.bottom + 1);
+    });
+
+    pressKey(input, "Enter");
+    expect(onChange).toHaveBeenCalledWith(CODEX_ID, "codex", "codex-long-158");
+  });
+
+  it("skips rows the caller blocks, so Enter picks the first selectable match", async () => {
+    const onChange = vi.fn();
+    active = await render(
+      <TooltipProvider delay={0}>
+        <ProviderInstanceModelPicker
+          instanceId={CODEX_ID}
+          model={"gpt-5.6-sol" as ModelSlug}
+          lockedInstanceId={null}
+          providers={PROVIDERS}
+          modelOptionsByInstance={MODELS}
+          instanceUnavailableReason={(instance) =>
+            instance.instanceId === CLAUDE_ID ? "Not allowed for this workflow stage." : null
+          }
+          onInstanceModelChange={onChange}
+        />
+      </TooltipProvider>,
+    );
+    await page.getByRole("button", { name: /GPT-5.6 Sol/ }).click();
+    await page.getByPlaceholder("Search models...").fill("claude");
+    const input = page.getByPlaceholder("Search models...").element() as HTMLElement;
+
+    await vi.waitFor(() =>
+      expect(
+        document.querySelector("[data-model-picker-row][data-highlighted]")?.textContent,
+      ).toContain("Claude Opus 4.6"),
+    );
+    pressKey(input, "ArrowDown");
+    pressKey(input, "Enter");
+    expect(onChange).toHaveBeenCalledWith(CURSOR_ID, "cursor", "claude-opus-4-6");
+  });
+});
+
+it("shows the bare model, not another provider's icon, when its instance is gone", async () => {
+  active = await render(
+    <TooltipProvider delay={0}>
+      <ProviderInstanceModelPicker
+        instanceId={defaultInstanceIdForDriver(ProviderDriverKind.make("antigravity"))}
+        model={"gemini-4-neon" as ModelSlug}
+        lockedInstanceId={null}
+        providers={PROVIDERS}
+        modelOptionsByInstance={MODELS}
+        onInstanceModelChange={vi.fn()}
+      />
+    </TooltipProvider>,
+  );
+  const trigger = page.getByRole("button", { name: /gemini-4-neon/ }).element();
+  // Only the chevron; no driver icon.
+  expect(trigger.querySelectorAll("svg")).toHaveLength(1);
+});
