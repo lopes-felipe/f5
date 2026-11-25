@@ -131,20 +131,22 @@ interface TransportRequest extends ScheduledRpc {
   /** Stop and answer controls may be sent before synchronization. */
   readonly control: boolean;
   readonly requiresRuntime: boolean;
-  /** Socket generation at enqueue; a queued mutation never crosses into another socket. */
-  readonly generation: number;
+  /** Socket generation at enqueue or readmission of a lost submission. */
+  generation: number;
   readonly createdAtMs: number;
   /** Execution deadline from creation, or `null`. */
-  readonly deadlineAtMs: number | null;
+  deadlineAtMs: number | null;
   /** Unsent deadline from creation, or `null`. */
-  readonly queueDeadlineAtMs: number | null;
+  queueDeadlineAtMs: number | null;
   readonly trackLatency: boolean;
   readonly resolve: (result: unknown) => void;
   readonly reject: (error: Error) => void;
   state: "queued" | "sent";
   /** The caller has been answered; a sent request may still hold its slot. */
   settled: boolean;
-  everSent: boolean;
+  lastSentGeneration: number | null;
+  /** Present after a durable turn submission loses its socket before receiving a response. */
+  resend?: { remaining: number; waitingSince: number | null };
   timer: ReturnType<typeof setTimeout> | null;
   detachAbort: (() => void) | null;
 }
@@ -165,6 +167,7 @@ const LONG_LANE_QUEUE_DEADLINE_MS = 60_000;
 export const ORPHAN_RELEASE_GRACE_MS = 30_000;
 /** Read retries after `RpcBusy`: at most three attempts in total. */
 const RPC_BUSY_BACKOFF_MS = [250, 500];
+const MAX_SUBMISSION_RESENDS = 2;
 const RUNTIME_PROBE_INTERVAL_MS = 1_000;
 const CONNECTION_TIMEOUT_MS = 10_000;
 const RECONNECT_DELAYS_MS = [500, 3_000, 4_000, 8_000, 16_000];
@@ -414,8 +417,7 @@ export class WsTransport {
           timeoutMs: timeoutMs === null ? null : Math.max(1, timeoutMs - (Date.now() - startedAt)),
         });
       } catch (error) {
-        // Only retry an explicit pre-execution rejection of a read. Never replay
-        // mutations, disconnected work or a request accepted by the server.
+        // This loop only retries explicit pre-execution rejections of reads.
         if (
           !retryBusy ||
           !(error instanceof WsRequestError) ||
@@ -470,9 +472,8 @@ export class WsTransport {
     const lane = rpcLane({ ...(params as { command?: unknown } | undefined), _tag: method });
     const control = lane === "stop" || lane === "answer";
     if (kind === "mutation" && getWsConnectionState().phase !== "connected") {
-      // A mutation is never queued offline: it would execute against state
-      // the user can no longer see. One issued while connected but still
-      // synchronizing waits unsent below instead.
+      // New mutations require a connection. One issued during synchronization
+      // waits unsent below.
       countRpcDiagnostic("rpcConnectionNotReady");
       return Promise.reject(connectionNotReadyError());
     }
@@ -523,7 +524,7 @@ export class WsTransport {
         reject,
         state: "queued",
         settled: false,
-        everSent: false,
+        lastSentGeneration: null,
         timer: null,
         detachAbort: null,
       };
@@ -546,12 +547,14 @@ export class WsTransport {
     if (!result.ok) {
       this.finishRequest(
         request,
-        new WsRequestError(
-          `WebSocket request queue is full for the ${result.lane} lane.`,
-          "RpcQueueFull",
-          undefined,
-          true,
-        ),
+        request.resend
+          ? new Error(WS_CONNECTION_CLOSED_MESSAGE)
+          : new WsRequestError(
+              `WebSocket request queue is full for the ${result.lane} lane.`,
+              "RpcQueueFull",
+              undefined,
+              true,
+            ),
       );
       return false;
     }
@@ -601,6 +604,7 @@ export class WsTransport {
    */
   private armTimer(request: TransportRequest): void {
     this.clearTimer(request);
+    if (request.resend?.waitingSince != null) return;
     const at =
       request.state === "queued"
         ? request.queueDeadlineAtMs
@@ -640,12 +644,14 @@ export class WsTransport {
     countRpcDiagnostic("rpcQueueExpired");
     this.finishRequest(
       request,
-      new WsRequestError(
-        `Request timed out before it was sent: ${request.method}`,
-        "QueueExpired",
-        undefined,
-        true,
-      ),
+      request.resend
+        ? new Error(WS_CONNECTION_CLOSED_MESSAGE)
+        : new WsRequestError(
+            `Request timed out before it was sent: ${request.method}`,
+            "QueueExpired",
+            undefined,
+            true,
+          ),
     );
   }
 
@@ -994,28 +1000,44 @@ export class WsTransport {
     this.authoritativeSocketGeneration = DETACHED_SOCKET_GENERATION;
   }
 
-  /**
-   * When the connection is lost, a mutation still queued (including one
-   * requeued after `ServerStarting`) never executed, so it is rejected as not
-   * sent rather than as possibly applied.
-   */
   private failPendingRequests(message: string, connectionLost = false): void {
-    clearTrackedSlowRpcRequests(this.requests.keys());
-    const requests = [...this.requests.values()];
-    this.requests.clear();
     this.scheduler.reset();
     this.runtime = null;
     this.clearRuntimeProbe();
     this.runtimeProbeGeneration = null;
-    for (const request of requests) {
+    const failedIds: string[] = [];
+    const now = Date.now();
+    for (const request of this.requests.values()) {
       this.clearTimer(request);
+      if (connectionLost && this.requeueLostSubmission(request, now)) continue;
+      this.requests.delete(request.id);
+      failedIds.push(request.id);
       this.settle(
         request,
-        connectionLost && request.kind === "mutation" && request.state === "queued"
+        connectionLost &&
+          request.kind === "mutation" &&
+          request.state === "queued" &&
+          !request.resend
           ? connectionNotReadyError()
           : new Error(message),
       );
     }
+    clearTrackedSlowRpcRequests(failedIds);
+  }
+
+  /** The submission ledger replays the result for the same submission ID and command. */
+  private requeueLostSubmission(request: TransportRequest, now: number): boolean {
+    if (request.settled || request.method !== WS_METHODS.nextTurnQueueSubmit) return false;
+    const resend = request.resend;
+    if (resend?.remaining === 0 || (!resend && request.state !== "sent")) return false;
+    const deadline = request.state === "sent" ? request.deadlineAtMs : request.queueDeadlineAtMs;
+    if (resend?.waitingSince == null && deadline !== null && deadline <= now) {
+      return false;
+    }
+    request.resend ??= { remaining: MAX_SUBMISSION_RESENDS, waitingSince: now };
+    request.resend.waitingSince ??= now;
+    this.enqueue(request);
+    return true;
   }
 
   /**
@@ -1240,7 +1262,8 @@ export class WsTransport {
   }
 
   private isEligible(request: TransportRequest): boolean {
-    if (request.state !== "queued" || request.settled) return false;
+    if (request.state !== "queued" || request.settled || request.resend?.waitingSince != null)
+      return false;
     if (request.kind === "mutation" && !request.control) {
       const connection = getWsConnectionState();
       if (
@@ -1272,9 +1295,22 @@ export class WsTransport {
     // Expire before admission: a deadline timer may not have run yet when a
     // released slot or a readiness change flushes the queue.
     const now = Date.now();
-    for (const request of this.scheduler.queuedEntries())
+    const synchronized = getWsConnectionState().synchronized;
+    for (const request of this.scheduler.queuedEntries()) {
+      const resend = request.resend;
+      if (resend && resend.waitingSince !== null) {
+        if (!synchronized) continue;
+        // Reconnection and synchronization do not spend the submission's deadline.
+        const waited = now - resend.waitingSince;
+        resend.waitingSince = null;
+        request.generation = this.authoritativeSocketGeneration;
+        if (request.deadlineAtMs !== null) request.deadlineAtMs += waited;
+        if (request.queueDeadlineAtMs !== null) request.queueDeadlineAtMs += waited;
+        this.armTimer(request);
+      }
       if (request.queueDeadlineAtMs !== null && request.queueDeadlineAtMs <= now)
         this.expireQueued(request);
+    }
     for (const request of this.scheduler.takeDispatchable(
       (entry) => this.isEligible(entry),
       (held, later) => this.holdsBack(held, later),
@@ -1287,10 +1323,12 @@ export class WsTransport {
         continue;
       }
       request.state = "sent";
-      if (!request.everSent) {
-        request.everSent = true;
+      if (request.lastSentGeneration === null) {
         recordRpcQueueWait(Date.now() - request.createdAtMs);
+      } else if (request.resend && request.lastSentGeneration !== request.generation) {
+        request.resend.remaining--;
       }
+      request.lastSentGeneration = request.generation;
       this.armTimer(request);
     }
     this.scheduleRuntimeProbe();

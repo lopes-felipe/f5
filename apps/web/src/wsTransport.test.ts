@@ -939,6 +939,125 @@ it("admits stop and answers during resynchronization but never queues mutations 
   transport.dispose();
 });
 
+const messageSubmission = {
+  submissionId: "submission-1",
+  command: { type: "thread.turn.start", commandId: "command-1", message: { text: "hello" } },
+  intent: "auto",
+};
+
+it("keeps a sent message pending through backoff and resends it after synchronization", async () => {
+  const transport = new WsTransport("ws://localhost:3020");
+  const first = getSocket();
+  first.open();
+  noteWsSynchronized();
+  const pending = transport.request(WS_METHODS.nextTurnQueueSubmit, messageSubmission, {
+    timeoutMs: 100,
+  });
+  const settled = vi.fn();
+  void pending.then(settled, settled);
+  const sent = first.sent[0]!;
+  first.close();
+
+  // A socket that fails to synchronize never spends a resend.
+  await vi.advanceTimersByTimeAsync(500);
+  const unsynchronized = getSocket();
+  unsynchronized.open();
+  expect(unsynchronized.sent).toEqual([]);
+  unsynchronized.close();
+  await vi.advanceTimersByTimeAsync(3_000);
+  const replacement = getSocket();
+  replacement.open();
+  await vi.advanceTimersByTimeAsync(1_000);
+  expect(settled).not.toHaveBeenCalled();
+  expect(replacement.sent).toEqual([]);
+
+  noteWsSynchronized();
+  expect(replacement.sent).toEqual([sent]);
+  const { id } = JSON.parse(sent);
+  first.serverMessage(JSON.stringify({ id, result: "stale" }));
+  replacement.serverMessage(JSON.stringify({ id, result: "accepted" }));
+  await expect(pending).resolves.toBe("accepted");
+  transport.dispose();
+});
+
+it("resends a lost message at most twice", async () => {
+  const transport = new WsTransport("ws://localhost:3020");
+  getSocket().open();
+  noteWsSynchronized();
+  const pending = transport.request(WS_METHODS.nextTurnQueueSubmit, messageSubmission);
+  const rejected = expect(pending).rejects.toThrow("WebSocket connection closed.");
+  const sent = getSocket().sent[0]!;
+  for (const delay of [500, 3_000]) {
+    getSocket().close();
+    await vi.advanceTimersByTimeAsync(delay);
+    getSocket().open();
+    noteWsSynchronized();
+    expect(getSocket().sent).toEqual([sent]);
+  }
+  getSocket().close();
+  await rejected;
+
+  await vi.advanceTimersByTimeAsync(4_000);
+  getSocket().open();
+  noteWsSynchronized();
+  expect(getSocket().sent).toEqual([]);
+  transport.dispose();
+});
+
+it("does not replay unsent messages or other mutations on socket loss", async () => {
+  const transport = new WsTransport("ws://localhost:3020");
+  const socket = getSocket();
+  socket.open();
+  const unsent = transport.request(WS_METHODS.nextTurnQueueSubmit, messageSubmission);
+  const unsentRejected = expect(unsent).rejects.toMatchObject({ code: "ConnectionNotReady" });
+  const control = transport.request(WS_METHODS.nextTurnQueueSteer, { itemId: "queued-message" });
+  const controlRejected = expect(control).rejects.toThrow("WebSocket connection closed.");
+  expect(socket.sent).toHaveLength(1);
+  socket.close();
+  await unsentRejected;
+  await controlRejected;
+  await expect(
+    transport.request(WS_METHODS.nextTurnQueueSubmit, messageSubmission),
+  ).rejects.toMatchObject({ code: "ConnectionNotReady" });
+
+  await vi.advanceTimersByTimeAsync(500);
+  getSocket().open();
+  noteWsSynchronized();
+  expect(getSocket().sent).toEqual([]);
+  transport.dispose();
+});
+
+it.each(["abort", "dispose", "upgrade"] as const)(
+  "settles a pending resend when it is stopped by %s",
+  async (stop) => {
+    const transport = new WsTransport("ws://localhost:3020");
+    const controller = new AbortController();
+    getSocket().open();
+    noteWsSynchronized();
+    const pending = transport.request(WS_METHODS.nextTurnQueueSubmit, messageSubmission, {
+      signal: controller.signal,
+    });
+    const rejected = expect(pending).rejects.toThrow(
+      stop === "abort" ? "aborted" : stop === "dispose" ? "Transport disposed" : "F5 was updated",
+    );
+    getSocket().close();
+    if (stop === "abort") controller.abort();
+    else if (stop === "dispose") transport.dispose();
+    else {
+      await vi.advanceTimersByTimeAsync(500);
+      getSocket().close(F5_UPGRADE_REQUIRED_CLOSE_CODE);
+    }
+    await rejected;
+    await vi.advanceTimersByTimeAsync(1_000);
+    if (stop === "abort") {
+      getSocket().open();
+      noteWsSynchronized();
+      expect(getSocket().sent).toEqual([]);
+    }
+    transport.dispose();
+  },
+);
+
 it("honours retryAfterMs for busy reads without replaying rejected mutations", async () => {
   const transport = new WsTransport("ws://localhost:3020");
   const socket = sockets[0]!;
