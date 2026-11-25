@@ -593,10 +593,13 @@ describe("isProvisionalThreadDetail", () => {
       commandExecutions: [],
     };
     const created = { ...absent, detailSequence: 12 };
-    const pending = Promise.withResolvers<typeof absent>();
+    let resolveEarlyRead!: (details: typeof absent) => void;
+    const pending = new Promise<typeof absent>((resolve) => {
+      resolveEarlyRead = resolve;
+    });
     const getThreadTailDetails = vi
       .fn()
-      .mockReturnValueOnce(pending.promise)
+      .mockReturnValueOnce(pending)
       .mockResolvedValueOnce(created);
     vi.spyOn(nativeApi, "ensureNativeApi").mockReturnValue({
       orchestration: { getThreadTailDetails },
@@ -631,13 +634,13 @@ describe("isProvisionalThreadDetail", () => {
           updatedAt: occurredAt,
         },
       });
-      pending.resolve(absent);
+      resolveEarlyRead(absent);
       expect(await earlyRead).toMatchObject(absent);
       expect(await queryClient.fetchQuery(options)).toMatchObject(created);
       expect(await queryClient.fetchQuery(options)).toMatchObject(created);
       expect(getThreadTailDetails).toHaveBeenCalledTimes(2);
     } finally {
-      pending.resolve(absent);
+      resolveEarlyRead(absent);
       queryClient.clear();
       useStore.setState(savedState, true);
     }
