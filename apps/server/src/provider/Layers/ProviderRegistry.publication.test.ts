@@ -107,8 +107,10 @@ it.live("publishes a late manifest refresh without a provider or settings change
 it.live("does not fetch the remote manifest while DO_NOT_TRACK is set", () =>
   Effect.scoped(
     Effect.gen(function* () {
-      vi.stubEnv("DO_NOT_TRACK", "1");
-      const fetch = vi.spyOn(globalThis, "fetch");
+      // A failed response, so nothing is cached between the two passes below.
+      const fetch = vi
+        .spyOn(globalThis, "fetch")
+        .mockImplementation(async () => new Response("", { status: 503 }));
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
           fetch.mockRestore();
@@ -143,30 +145,37 @@ it.live("does not fetch the remote manifest while DO_NOT_TRACK is set", () =>
         adapter: {} as ProviderInstance["adapter"],
         textGeneration: {} as ProviderInstance["textGeneration"],
       };
-      yield* Effect.gen(function* () {
-        const registry = yield* ProviderRegistry;
-        yield* registry.getProviders;
-        yield* Effect.sleep("50 millis");
-        yield* registry.getProviders;
-        expect(fetch).not.toHaveBeenCalled();
-      }).pipe(
-        Effect.provide(
-          ProviderRegistryLive.pipe(
-            Layer.provideMerge(
-              ServerSettingsService.layerTest({ enableRemoteModelManifest: true }),
+      const fetchesWith = (doNotTrack: boolean) =>
+        Effect.gen(function* () {
+          fetch.mockClear();
+          if (doNotTrack) vi.stubEnv("DO_NOT_TRACK", "1");
+          else vi.unstubAllEnvs();
+          const registry = yield* ProviderRegistry;
+          yield* registry.getProviders;
+          yield* Effect.sleep("50 millis");
+          yield* registry.getProviders;
+          return fetch.mock.calls.length > 0;
+        }).pipe(
+          Effect.provide(
+            ProviderRegistryLive.pipe(
+              Layer.provideMerge(
+                ServerSettingsService.layerTest({ enableRemoteModelManifest: true }),
+              ),
             ),
           ),
-        ),
-        Effect.provideService(ProviderInstanceRegistry, {
-          listInstances: Effect.succeed([instance]),
-          getInstance: () => Effect.succeed(instance),
-          listUnavailable: Effect.succeed([]),
-          streamChanges: Stream.empty,
-          subscribeChanges: Effect.acquireRelease(PubSub.unbounded<void>(), PubSub.shutdown).pipe(
-            Effect.flatMap(PubSub.subscribe),
-          ),
-        }),
-      );
+          Effect.provideService(ProviderInstanceRegistry, {
+            listInstances: Effect.succeed([instance]),
+            getInstance: () => Effect.succeed(instance),
+            listUnavailable: Effect.succeed([]),
+            streamChanges: Stream.empty,
+            subscribeChanges: Effect.acquireRelease(PubSub.unbounded<void>(), PubSub.shutdown).pipe(
+              Effect.flatMap(PubSub.subscribe),
+            ),
+          }),
+        );
+      expect(yield* fetchesWith(true)).toBe(false);
+      // Positive control: the same setup fetches once DO_NOT_TRACK is unset.
+      expect(yield* fetchesWith(false)).toBe(true);
     }),
   ).pipe(Effect.provide(infra)),
 );

@@ -969,13 +969,16 @@ export const makeProviderUpdateAdvisor = (
       yield* Effect.raceFirst(Effect.sleep(Duration.seconds(5)), PubSub.take(wakeSubscription));
       while (true) {
         yield* PubSub.takeUpTo(wakeSubscription, Number.POSITIVE_INFINITY);
-        if (automaticChecks) yield* refreshAdvisories();
+        // Under DO_NOT_TRACK the background schedule is off, like the Settings switch. A manual
+        // check's expired entry would otherwise set a one-second delay that is never refreshed.
+        const automatic = automaticChecks && !isDoNotTrackSet(process.env);
+        if (automatic) yield* refreshAdvisories();
         const cache = yield* Ref.get(cacheRef);
         const targets = yield* Ref.get(targetsRef);
         const keys = new Set(
           [...targets.values()].flatMap((target) => (target?.sourceKey ? [target.sourceKey] : [])),
         );
-        const delay = automaticChecks
+        const delay = automatic
           ? nextProviderUpdateCheckDelay(
               [...cache].filter(([key]) => keys.has(key)).map(([, entry]) => entry),
             )

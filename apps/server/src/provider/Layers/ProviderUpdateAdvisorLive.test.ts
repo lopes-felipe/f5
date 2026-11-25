@@ -322,6 +322,29 @@ describe("provider update advisor", () => {
       }
     }),
   );
+  it.effect("keeps the scheduler idle under DO_NOT_TRACK after a manual result expires", () =>
+    Effect.gen(function* () {
+      vi.stubEnv("DO_NOT_TRACK", "1");
+      const clock = vi.spyOn(Date, "now");
+      try {
+        const { advisor, state } = yield* makeHarness({ enabled: true });
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust("5 seconds");
+        yield* advisor.refreshAdvisories({ mode: "explicit" });
+        expect(state.httpCalls).toBe(1);
+        // The manual result is long past its refresh time.
+        clock.mockReturnValue(Date.now() + 7 * 60 * 60 * 1000);
+        yield* TestClock.adjust("1 minute");
+        const reads = state.targetReads;
+        yield* TestClock.adjust("1 minute");
+        expect(state.targetReads).toBe(reads);
+        expect(state.httpCalls).toBe(1);
+      } finally {
+        clock.mockRestore();
+        vi.unstubAllEnvs();
+      }
+    }),
+  );
   for (const failure of [
     new Error("spawn failed"),
     { ...processSuccess, code: 1 },
