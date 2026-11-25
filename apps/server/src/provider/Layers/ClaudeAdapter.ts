@@ -8330,6 +8330,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                     requestType,
                     detail,
                     args: { toolName, input: toolInput },
+                    // Denied below with a message the model sees; nothing is pending.
+                    autoDeclined: true,
                   },
                   providerRefs: nativeProviderRefs(context, {
                     providerItemId: callbackOptions.toolUseID,
