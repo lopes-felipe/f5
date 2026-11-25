@@ -595,6 +595,58 @@ describe("WorkflowCreateDialog", () => {
     }
   });
 
+  it("offers Cursor's reported reasoning levels and stores the pick for dispatch", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const cursor = providerSnapshot("cursor", [
+      {
+        slug: "gpt-5.6-sol",
+        name: "GPT-5.6 Sol",
+        capabilities: createModelCapabilities({
+          optionDescriptors: [
+            {
+              id: "reasoning",
+              label: "Reasoning",
+              type: "select",
+              options: [
+                { id: "low", label: "Low" },
+                { id: "medium", label: "Medium", isDefault: true },
+                { id: "high", label: "High" },
+              ],
+            },
+          ],
+        }),
+      },
+    ]);
+    const onModelOptionsChange = vi.fn();
+    const screen = await renderWithQueryClient(
+      <SlotRow
+        label="Cursor slot"
+        provider="cursor"
+        model="gpt-5.6-sol"
+        modelOptions={undefined}
+        providers={[cursor]}
+        modelOptionsByInstance={EMPTY_MODEL_OPTIONS_BY_INSTANCE}
+        onProviderModelChange={() => {}}
+        onModelOptionsChange={onModelOptionsChange}
+      />,
+      { container: host },
+    );
+
+    try {
+      const row = page.getByRole("group", { name: "Cursor slot" }).element();
+      expect(row.querySelector('[data-slot="workflow-slot-divider"]')).not.toBeNull();
+      const trigger = row.querySelector<HTMLElement>("button[aria-haspopup='menu']")!;
+      expect(trigger.textContent).toContain("Medium");
+      trigger.click();
+      await page.getByRole("menuitemradio", { name: /^High/ }).click();
+      expect(onModelOptionsChange).toHaveBeenCalledWith({ cursor: { reasoning: "high" } });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("shows no traits for OpenCode slots, whose traits workflow turns never apply", async () => {
     const host = document.createElement("div");
     document.body.append(host);
