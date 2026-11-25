@@ -6,6 +6,7 @@ import * as NodePath from "node:path";
 export interface WindowsRegistryPaths {
   readonly machine?: string;
   readonly user?: string;
+  readonly savedDoNotTrack?: string;
 }
 
 export type WindowsRegistryPathReader = (
@@ -113,7 +114,9 @@ export const readWindowsRegistryPaths: WindowsRegistryPathReader = async (enviro
     "$user = [Environment]::GetEnvironmentVariable('Path', 'User')",
     "if ($machine) { $machine = [Environment]::ExpandEnvironmentVariables($machine) }",
     "if ($user) { $user = [Environment]::ExpandEnvironmentVariables($user) }",
-    "[Console]::Write((ConvertTo-Json @($machine, $user) -Compress))",
+    "$userDoNotTrack = [Environment]::GetEnvironmentVariable('DO_NOT_TRACK', 'User')",
+    "$machineDoNotTrack = [Environment]::GetEnvironmentVariable('DO_NOT_TRACK', 'Machine')",
+    "[Console]::Write((ConvertTo-Json @($machine, $user, $userDoNotTrack, $machineDoNotTrack) -Compress))",
   ].join("; ");
   const output = await Effect.runPromise(
     Effect.gen(function* () {
@@ -130,9 +133,13 @@ export const readWindowsRegistryPaths: WindowsRegistryPathReader = async (enviro
   try {
     const parsed = JSON.parse(stdout) as unknown;
     if (!Array.isArray(parsed)) return undefined;
+    const savedDoNotTrack = [parsed[2], parsed[3]].find(
+      (value): value is string => typeof value === "string" && value.trim().length > 0,
+    );
     return {
       ...(typeof parsed[0] === "string" ? { machine: parsed[0] } : {}),
       ...(typeof parsed[1] === "string" ? { user: parsed[1] } : {}),
+      ...(savedDoNotTrack !== undefined ? { savedDoNotTrack } : {}),
     };
   } catch {
     return undefined;
@@ -195,6 +202,8 @@ export interface WindowsPathHydration {
   readonly path: string | undefined;
   /** False when the registry PATH could not be read and only inherited entries were kept. */
   readonly registryRead: boolean;
+  /** The opt-out setting saved in the User or Machine registry scope. */
+  readonly savedDoNotTrack?: string;
 }
 
 export async function hydrateWindowsPath(
@@ -237,7 +246,12 @@ async function hydrateWindowsPathWithStatus(
   ]);
 
   installPath(environment, merged);
-  return { path: merged, registryRead: registryPaths !== undefined };
+  const savedDoNotTrack = registryPaths?.savedDoNotTrack;
+  return {
+    path: merged,
+    registryRead: registryPaths !== undefined,
+    ...(savedDoNotTrack !== undefined ? { savedDoNotTrack } : {}),
+  };
 }
 
 export function ensureWindowsPathHydrated(

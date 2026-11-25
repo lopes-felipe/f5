@@ -26,14 +26,23 @@ export async function syncShellEnvironment(
 ): Promise<boolean> {
   const platform = options.platform ?? process.platform;
   if (platform === "win32") {
-    return ensureWindowsPathHydration(env, {
+    const result = await ensureWindowsPathHydration(env, {
       platform,
       ...(options.readWindowsRegistryPaths
         ? { readRegistryPaths: options.readWindowsRegistryPaths }
         : {}),
       ...(options.windowsPathExists ? { pathExists: options.windowsPathExists } : {}),
       warn: options.warn ?? ((message) => console.warn(`[environment] ${message}`)),
-    }).then((result) => result.registryRead);
+    });
+    if (
+      result.savedDoNotTrack !== undefined &&
+      !Object.entries(env).some(
+        ([key, value]) => key.toUpperCase() === "DO_NOT_TRACK" && value?.trim(),
+      )
+    ) {
+      env.DO_NOT_TRACK = result.savedDoNotTrack;
+    }
+    return result.registryRead;
   }
   if (platform !== "darwin") return Promise.resolve(false);
 

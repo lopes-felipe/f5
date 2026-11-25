@@ -195,6 +195,25 @@ describe("syncShellEnvironment", () => {
     );
   });
 
+  it.each([
+    [{}, { DO_NOT_TRACK: "1" }],
+    [{ DO_NOT_TRACK: "0" }, { DO_NOT_TRACK: "0" }],
+    [{ do_not_track: "0" }, { do_not_track: "0" }],
+  ])(
+    "applies the saved Windows opt-out only when absent from the launcher (%o)",
+    async (initial, expected) => {
+      const env: NodeJS.ProcessEnv = { Path: "C:\\Inherited", ...initial };
+      const prepared = await syncShellEnvironment(env, {
+        platform: "win32",
+        readWindowsRegistryPaths: async () => ({ savedDoNotTrack: "1" }),
+        windowsPathExists: async () => false,
+      });
+
+      expect(prepared).toBe(true);
+      expect(env).toEqual({ PATH: "C:\\Inherited", ...expected });
+    },
+  );
+
   it("leaves Windows preparation incomplete when the registry PATH cannot be read", async () => {
     const env: NodeJS.ProcessEnv = { Path: "C:\\Inherited" };
     const warn = vi.fn();
