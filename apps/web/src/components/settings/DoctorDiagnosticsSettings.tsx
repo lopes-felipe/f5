@@ -1,5 +1,5 @@
-import type { DoctorCheck, ServerDoctorReport, ServerHealth } from "@t3tools/contracts";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import type { DoctorCheck, ServerDoctorReport } from "@t3tools/contracts";
+import { useQuery } from "@tanstack/react-query";
 import {
   AlertTriangleIcon,
   CheckCircle2Icon,
@@ -8,7 +8,7 @@ import {
   XCircleIcon,
 } from "lucide-react";
 
-import { serverDoctorReportQueryOptions, serverQueryKeys } from "../../lib/serverReactQuery";
+import { serverDoctorReportQueryOptions } from "../../lib/serverReactQuery";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { SettingsCard } from "./SettingsCard";
@@ -41,7 +41,6 @@ function StatusIcon({ status }: { readonly status: DoctorCheck["status"] }) {
 
 export function buildClientSupportBundleJson(input: {
   readonly report: ServerDoctorReport;
-  readonly serverHealth: ServerHealth | null;
   readonly exportedAt?: string;
 }): string {
   return `${JSON.stringify(
@@ -49,7 +48,6 @@ export function buildClientSupportBundleJson(input: {
       schemaVersion: 1,
       exportedAt: input.exportedAt ?? new Date().toISOString(),
       doctor: input.report,
-      serverHealth: input.serverHealth,
     },
     null,
     2,
@@ -74,17 +72,14 @@ function downloadSupportBundle(json: string, dateStamp: string): void {
  * provider, and storage checks and exports a redacted JSON support bundle.
  */
 export function DoctorDiagnosticsSettings() {
-  const queryClient = useQueryClient();
   const report = useQuery(serverDoctorReportQueryOptions());
 
   const handleExportBundle = () => {
     if (!report.data) return;
-    const serverHealth = queryClient.getQueryData<ServerHealth>(serverQueryKeys.health()) ?? null;
     const exportedAt = new Date().toISOString();
     const dateStamp = exportedAt.slice(0, 10);
     const json = buildClientSupportBundleJson({
       report: report.data,
-      serverHealth,
       exportedAt,
     });
     downloadSupportBundle(json, dateStamp);
@@ -93,7 +88,7 @@ export function DoctorDiagnosticsSettings() {
   return (
     <SettingsCard
       title="System health check (Doctor)"
-      description="Read-only check of your environment, SQLite database integrity, provider availability, and storage. Support bundles redact user home paths and omit tokens, cookies, and environment values."
+      description="Read-only check of your environment, SQLite status, provider availability, and storage. Support bundles scrub common credentials and user home paths; review before sharing publicly."
       searchTarget="general.doctor"
       actions={
         <div className="flex flex-wrap items-center gap-2">
@@ -104,7 +99,7 @@ export function DoctorDiagnosticsSettings() {
             onClick={handleExportBundle}
           >
             <DownloadIcon className="size-3.5" />
-            Export redacted support bundle
+            Export support bundle
           </Button>
           <Button
             size="xs"
@@ -202,7 +197,11 @@ export function DoctorDiagnosticsSettings() {
         </div>
       ) : (
         <p className="text-ui text-muted-foreground">
-          {report.isError ? "System health check could not be loaded." : "Running health check…"}
+          {report.isFetching
+            ? "Running health check…"
+            : report.isError
+              ? "System health check could not be loaded."
+              : "Click Run check to inspect your environment, SQLite status, provider availability, and storage."}
         </p>
       )}
     </SettingsCard>

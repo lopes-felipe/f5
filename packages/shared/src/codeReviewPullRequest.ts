@@ -122,11 +122,10 @@ export function codeReviewPullRequestMarkdownLink(pullRequest: CodeReviewPullReq
 }
 
 export function codeReviewPostFooter(slots: {
-  readonly reviewerA: Pick<WorkflowModelSlot, "model">;
-  readonly reviewerB: Pick<WorkflowModelSlot, "model">;
+  readonly reviewers: ReadonlyArray<Pick<WorkflowModelSlot, "model">>;
   readonly consolidation: Pick<WorkflowModelSlot, "model">;
 }): string {
-  return `<sub>Posted by F5 code review · Reviewers: ${slots.reviewerA.model}, ${slots.reviewerB.model} · Merge: ${slots.consolidation.model}</sub>`;
+  return `<sub>Posted by F5 code review · Reviewers: ${slots.reviewers.map((slot) => slot.model).join(", ")} · Merge: ${slots.consolidation.model}</sub>`;
 }
 
 function escapeRegExp(value: string): string {

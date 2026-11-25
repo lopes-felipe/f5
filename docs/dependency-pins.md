@@ -8,12 +8,12 @@ Checked against the npm registry on 2026-11-25.
 
 | Dependency                                                 | Pinned                                                           | Latest tagged | Patch                                          |
 | ---------------------------------------------------------- | ---------------------------------------------------------------- | ------------- | ---------------------------------------------- |
-| `effect` and four `@effect/*` packages in the root catalog | pkg.pr.new builds of `Effect-TS/effect-smol` at commit `8881a9b` | `4.1.4`       | `@effect%2Fplatform-node-shared@8881a9b.patch` |
+| `effect` and four `@effect/*` packages in the root catalog | pkg.pr.new builds of `Effect-TS/effect-smol` at commit `8881a9b` | `4.1.5`       | `@effect%2Fplatform-node-shared@8881a9b.patch` |
 
 Completed prerelease exits:
 
 - **`@pierre/diffs`**: moved from `1.1.0-beta.19` to stable `1.5.2` (still carries `@pierre%2Fdiffs@1.5.2.patch`; track dropping the patch on the next `1.6.x` bump).
-- **`@legendapp/list`**: moved from `3.0.0-beta.44` to stable `3.9.0` (no patch required).
+- **`@legendapp/list`**: moved from `3.0.0-beta.44` to stable `3.7.3` (no patch required; pinned to mature `3.7.3` rather than newly published `3.9.0`; initial entry JS unchanged at 315 KB, on-demand `@legendapp/list/react` route chunk is 158.8 KB / 50.1 KB gzip; verified against the Chromium browser suites including `MessagesTimeline`, `TimelineNavigation`, `DegradedStates`, `PrPageContent`, `PrDetailsTabs`, and `ChatView`).
 
 The four are `@effect/platform-node`, `@effect/openapi-generator`, `@effect/sql-sqlite-bun` and `@effect/vitest`. `@effect/language-service` in the same catalog is a registry release. The patched `@effect/platform-node-shared` is not in the catalog: it comes in through `@effect/platform-node`. The Effect pin was already in the repository's first commit (2026-04-24), so when it was chosen is not recorded here.
 

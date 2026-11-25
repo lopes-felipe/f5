@@ -5,6 +5,11 @@ import {
   type ProviderKind,
   type WorkflowTurnExecutionProfile,
 } from "@t3tools/contracts";
+import {
+  providerSupportsReadOnlyWorkflow,
+  READ_ONLY_WORKFLOW_UNCERTIFIED_ANTIGRAVITY_MESSAGE,
+  type WorkflowProviderSnapshot,
+} from "@t3tools/shared/workflowProviders";
 
 export type WorkflowRunKind = "planning" | "codeReview" | "investigation";
 export type WorkflowBehaviorStage =
@@ -47,8 +52,14 @@ export class UnsupportedWorkflowProviderError extends Error {
   constructor(
     readonly provider: ProviderKind,
     readonly stage: WorkflowBehaviorStage,
+    message?: string,
   ) {
-    super(`Provider '${provider}' cannot enforce the read-only workflow profile for '${stage}'.`);
+    super(
+      message ??
+        (provider === "antigravity"
+          ? READ_ONLY_WORKFLOW_UNCERTIFIED_ANTIGRAVITY_MESSAGE
+          : `Provider '${provider}' cannot enforce the read-only workflow profile for '${stage}'.`),
+    );
   }
 }
 
@@ -182,16 +193,64 @@ export function workflowTurnBehaviorFields(input: {
   };
 }
 
+/**
+ * Whether a new run's stage needs a provider that can enforce read-only turns. A new run on an
+ * older template version follows the latest version's rule too, so asking for version 1 can't
+ * admit a provider (such as Muse or an uncertified Antigravity) that the current version refuses.
+ * Existing records are judged only at creation, so they keep their behavior.
+ */
+export function newRunStageRequiresReadOnlyProvider(
+  behavior: WorkflowBehavior,
+  stage: WorkflowBehaviorStage,
+): boolean {
+  if (behavior.executionProfileForStage(stage) !== undefined) return true;
+  const latest = resolveWorkflowBehavior({
+    runKind: behavior.runKind,
+    templateId: behavior.templateId,
+    templateVersion: latestWorkflowTemplateVersion(behavior),
+  });
+  return latest.executionProfileForStage(stage) !== undefined;
+}
+
+export const READ_ONLY_WORKFLOW_LEGACY_TEMPLATE_MESSAGE =
+  "Antigravity runs read-only workflow turns only on the current workflow template version.";
+
+/**
+ * Whether a provider that confines a turn only through its workflow execution profile
+ * (Antigravity) is refused for this stage: the stage must be read-only, but this template
+ * version dispatches it without a profile (version 1).
+ */
+export function readOnlyStageLacksExecutionProfile(
+  behavior: WorkflowBehavior,
+  stage: WorkflowBehaviorStage,
+  provider: ProviderKind,
+): boolean {
+  return (
+    provider === "antigravity" &&
+    behavior.executionProfileForStage(stage) === undefined &&
+    newRunStageRequiresReadOnlyProvider(behavior, stage)
+  );
+}
+
 export function assertWorkflowStageProviderSupported(input: {
   readonly behavior: WorkflowBehavior;
   readonly stage: WorkflowBehaviorStage;
   readonly provider: ProviderKind;
+  /** Live provider snapshots; Antigravity is allowed only when its runtime is certified. */
+  readonly providers: ReadonlyArray<WorkflowProviderSnapshot>;
 }): void {
   if (
-    input.behavior.executionProfileForStage(input.stage) !== undefined &&
-    input.provider === "grok"
+    newRunStageRequiresReadOnlyProvider(input.behavior, input.stage) &&
+    !providerSupportsReadOnlyWorkflow(input.provider, input.providers)
   ) {
     throw new UnsupportedWorkflowProviderError(input.provider, input.stage);
+  }
+  if (readOnlyStageLacksExecutionProfile(input.behavior, input.stage, input.provider)) {
+    throw new UnsupportedWorkflowProviderError(
+      input.provider,
+      input.stage,
+      READ_ONLY_WORKFLOW_LEGACY_TEMPLATE_MESSAGE,
+    );
   }
   if (
     (input.stage === "author" || input.stage === "revision" || input.stage === "merge") &&

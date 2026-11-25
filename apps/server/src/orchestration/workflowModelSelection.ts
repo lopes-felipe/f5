@@ -1,5 +1,5 @@
+import { workflowProviderSnapshot } from "@t3tools/shared/workflowProviders";
 import {
-  defaultInstanceIdForDriver,
   type OrchestrationCommand,
   ProviderDriverKind,
   type ServerProvider,
@@ -34,10 +34,7 @@ export function resolveAvailableWorkflowModelSlot(
   providers: ReadonlyArray<ServerProvider>,
 ): WorkflowModelSlot {
   const driver = ProviderDriverKind.make(slot.provider);
-  const defaultInstanceId = defaultInstanceIdForDriver(driver);
-  const provider =
-    providers.find((candidate) => candidate.instanceId === defaultInstanceId) ??
-    providers.find((candidate) => candidate.driver === driver);
+  const provider = workflowProviderSnapshot(slot.provider, providers);
   if (!provider || provider.models.length === 0) {
     return slot;
   }

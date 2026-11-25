@@ -451,6 +451,9 @@ export const CODEX_DECODED_RESPONSE_FIELDS = {
       "data[].hooks[].enabled",
       "data[].hooks[].isManaged",
       "data[].hooks[].pluginId",
+      // Hook trust (0.166+). Optional when decoding: older CLIs omit both.
+      "data[].hooks[].trustStatus",
+      "data[].hooks[].currentHash",
     ],
   },
   "plugin/list": {

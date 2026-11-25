@@ -887,6 +887,81 @@ describe("deriveTimelinePhases", () => {
   });
 });
 
+describe("deriveTimelinePhases with three authors", () => {
+  const review = (
+    slot: "cross" | "self",
+    reviewerBranchId: "a" | "b" | "c",
+    reviewed: string,
+    status: "running" | "completed" | "pending" = "completed",
+  ) => ({
+    slot,
+    reviewerBranchId,
+    threadId: ThreadId.makeUnsafe(`review-${reviewed}-${slot}-${reviewerBranchId}`),
+    outputFilePath: null,
+    status,
+    error: null,
+    retryCount: 0,
+    pinnedTurnId: null,
+    pinnedAssistantMessageId: null,
+    lastRetryAt: null,
+    updatedAt: NOW,
+  });
+
+  it("names every cross-review's reviewer and keeps keys unique", () => {
+    const base = makeWorkflow();
+    const workflow: PlanningWorkflow = {
+      ...base,
+      branchA: {
+        ...base.branchA,
+        status: "reviews_requested",
+        reviews: [
+          review("cross", "b", "a"),
+          review("cross", "c", "a", "running"),
+          review("self", "a", "a"),
+        ],
+      },
+      branchB: {
+        ...base.branchB,
+        status: "reviews_requested",
+        reviews: [
+          review("cross", "a", "b"),
+          review("cross", "c", "b", "pending"),
+          review("self", "b", "b"),
+        ],
+      },
+      additionalBranches: [
+        {
+          ...base.branchA,
+          branchId: "c",
+          authorThreadId: ThreadId.makeUnsafe("author-c"),
+          status: "reviews_requested",
+          reviews: [review("cross", "a", "c"), review("cross", "b", "c"), review("self", "c", "c")],
+        },
+      ],
+    };
+    const phases = deriveTimelinePhases(workflow);
+    expect(phases[AUTHORING]!.steps.map((step) => step.threadId)).toEqual([
+      "author-a",
+      "author-b",
+      "author-c",
+    ]);
+    const reviews = phases[REVIEWS]!;
+    expect(reviews.state).toBe("active");
+    expect(reviews.steps.map((step) => step.label)).toEqual([
+      "Review A by B",
+      "Review A by C",
+      "Review B by A",
+      "Review B by C",
+      "Review C by A",
+      "Review C by B",
+      "Review A Self",
+      "Review B Self",
+      "Review C Self",
+    ]);
+    expect(new Set(reviews.steps.map((step) => step.key)).size).toBe(9);
+  });
+});
+
 describe("deriveTimelinePhases modelSlot", () => {
   it("carries each step's configured model slot", () => {
     const codex = { provider: "codex" as const, model: "gpt-5-codex" };

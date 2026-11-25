@@ -2047,6 +2047,10 @@ async function waitForTimelineRowVisible(rowSelector: string, message: string): 
  * height hold still.
  */
 async function waitForTimelineScrollToSettle(): Promise<void> {
+  await waitForElement(
+    () => document.querySelector<HTMLElement>('[data-slot="messages-scroll-container"]'),
+    "Messages scroll container must mount before settling.",
+  );
   await waitForTimelineLayout(() =>
     document.querySelector<HTMLElement>('[data-slot="messages-scroll-container"]'),
   );
@@ -7298,14 +7302,8 @@ describe("ChatView timeline (full app)", () => {
       );
 
       const composerEditor = await waitForComposerEditor();
-      composerEditor.focus();
-      composerEditor.dispatchEvent(
-        new KeyboardEvent("keydown", {
-          key: "Backspace",
-          bubbles: true,
-          cancelable: true,
-        }),
-      );
+      await userEvent.click(composerEditor);
+      await userEvent.keyboard("{End}{Backspace}");
 
       await vi.waitFor(
         () => {
@@ -8054,9 +8052,9 @@ describe("ChatView timeline (full app)", () => {
       try {
         const editor = await waitForComposerEditor();
         editor.focus();
+        await waitForLayout();
         const text = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT).nextNode()!;
         window.getSelection()!.setBaseAndExtent(text, start, text, end);
-        await waitForLayout();
         if (windowFocus) {
           window.dispatchEvent(new Event("focus"));
           await waitForLayout();
@@ -11018,9 +11016,12 @@ describe("ChatView timeline (full app)", () => {
         },
       });
       await waitForLayout();
+      // Starting a new turn via explicit send follows the tail (followNewTurn); scrolling
+      // back confirms the historical file-change row was neither dropped nor evicted.
+      await scrollTimelineRowIntoView('[data-timeline-row-id="activity-remote-file-change"]');
       await waitForTimelineRowVisible(
         '[data-timeline-row-id="activity-remote-file-change"]',
-        "Historical file-change row should stay visible after the optimistic user message and next-turn assistant commentary are appended.",
+        "Historical file-change row should remain intact after the optimistic user message and next-turn assistant commentary are appended.",
       );
     } finally {
       await mounted.cleanup();
@@ -11163,9 +11164,12 @@ describe("ChatView timeline (full app)", () => {
         },
       });
       await waitForLayout();
+      // Starting a new turn via explicit send follows the tail (followNewTurn); scrolling
+      // back confirms the historical file-change row was neither dropped nor evicted.
+      await scrollTimelineRowIntoView('[data-timeline-row-id="activity-remote-file-change"]');
       await waitForTimelineRowVisible(
         '[data-timeline-row-id="activity-remote-file-change"]',
-        "Historical file-change row should stay visible after the optimistic user message and next-turn assistant commentary are appended.",
+        "Historical file-change row should remain intact after the optimistic user message and next-turn assistant commentary are appended.",
       );
       await waitForTimelineRowVisible(
         '[data-testid="inline-file-diff"][data-work-entry-id="activity-remote-file-change"]',

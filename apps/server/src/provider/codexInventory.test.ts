@@ -53,9 +53,44 @@ describe("parseCodexHooks", () => {
         source: "project",
         sourcePath: "/repo/.codex/hooks.json",
         enabled: true,
+        key: "h1",
       },
-      { event: "stop", source: "managed" },
+      { event: "stop", source: "managed", key: "h2" },
     ]);
+  });
+
+  it("maps trust status and key, never the hash, and tolerates CLIs without trust", () => {
+    const hooks = parseCodexHooks([
+      {
+        hooks: [
+          {
+            key: "/plugins/cache/m/core/hooks.json:session_start:0:0",
+            eventName: "sessionStart",
+            source: "plugin",
+            pluginId: "core@m",
+            trustStatus: "modified",
+            currentHash: "sha256:decl/sha256:content",
+          },
+          { key: "h-old", eventName: "stop", source: "user" },
+          { key: "h-new", eventName: "stop", source: "user", trustStatus: "somethingNew" },
+          { key: `${"k".repeat(600)}`, eventName: "stop", source: "user", trustStatus: "trusted" },
+        ],
+      },
+    ]);
+    expect(hooks).toEqual([
+      {
+        event: "sessionStart",
+        source: "plugin",
+        pluginId: "core@m",
+        key: "/plugins/cache/m/core/hooks.json:session_start:0:0",
+        trustStatus: "modified",
+      },
+      { event: "stop", source: "instance", key: "h-old" },
+      { event: "stop", source: "instance", key: "h-new" },
+      // A key that cannot round-trip through a trust request is not exposed.
+      { event: "stop", source: "instance", trustStatus: "trusted" },
+    ]);
+    expect(JSON.stringify(hooks)).not.toContain("sha256");
   });
 });
 

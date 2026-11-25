@@ -10,6 +10,7 @@ import {
 import { WorkflowStageDispatchCommandId } from "./workflowStageDispatch";
 import { WorkflowModelSlot, WorkflowStepStatus } from "./planningWorkflow";
 import { WorkflowArchiveRestorations } from "./workflowArchive";
+import { WorkflowParticipantId } from "./workflowParticipants";
 
 export const InvestigationWorkflowId = makeEntityId("InvestigationWorkflowId");
 export type InvestigationWorkflowId = typeof InvestigationWorkflowId.Type;
@@ -22,6 +23,24 @@ export const InvestigationPhaseStatus = Schema.Literals([
   "error",
 ]);
 export type InvestigationPhaseStatus = typeof InvestigationPhaseStatus.Type;
+
+/**
+ * One directed cross-review on a run with more than two investigators: the
+ * owning investigator reviews `revieweeId`'s report. Two-investigator runs keep
+ * using the single `crossReview*` fields instead.
+ */
+export const InvestigationCrossReview = Schema.Struct({
+  revieweeId: WorkflowParticipantId,
+  threadId: Schema.NullOr(ThreadId),
+  status: InvestigationPhaseStatus,
+  turnId: Schema.NullOr(TrimmedNonEmptyString),
+  messageId: Schema.NullOr(TrimmedNonEmptyString),
+  error: Schema.NullOr(Schema.String),
+  retryCount: Schema.optional(Schema.Number).pipe(Schema.withDecodingDefault(() => 0)),
+  dispatchCommandId: WorkflowStageDispatchCommandId,
+  updatedAt: IsoDateTime,
+});
+export type InvestigationCrossReview = typeof InvestigationCrossReview.Type;
 
 export const InvestigationInvestigator = Schema.Struct({
   label: TrimmedNonEmptyString,
@@ -51,6 +70,8 @@ export const InvestigationInvestigator = Schema.Struct({
   investigationDispatchCommandId: WorkflowStageDispatchCommandId,
   crossReviewDispatchCommandId: WorkflowStageDispatchCommandId,
   selfReviewDispatchCommandId: WorkflowStageDispatchCommandId,
+  /** Directed cross-reviews by this investigator; only on runs with more than two investigators. */
+  crossReviews: Schema.optional(Schema.Array(InvestigationCrossReview)),
   updatedAt: IsoDateTime,
 });
 export type InvestigationInvestigator = typeof InvestigationInvestigator.Type;
@@ -82,6 +103,10 @@ export const InvestigationWorkflow = Schema.Struct({
   selfReviewEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   investigatorA: InvestigationInvestigator,
   investigatorB: InvestigationInvestigator,
+  /** Investigators beyond A and B (C, D), in roster order. Omitted on two-investigator runs. */
+  additionalInvestigators: Schema.optional(
+    Schema.Array(InvestigationInvestigator).check(Schema.isMaxLength(2)),
+  ),
   synthesis: InvestigationSynthesis,
   totalCostUsd: Schema.optional(Schema.Number).pipe(Schema.withDecodingDefault(() => 0)),
   maxCostUsd: Schema.optional(Schema.NullOr(Schema.Number)).pipe(
@@ -94,87 +119,3 @@ export const InvestigationWorkflow = Schema.Struct({
   deletedAt: Schema.NullOr(IsoDateTime),
 });
 export type InvestigationWorkflow = typeof InvestigationWorkflow.Type;
-
-export type DerivedInvestigationWorkflowStatus =
-  | "pending"
-  | "investigating"
-  | "investigations_complete"
-  | "cross_reviewing"
-  | "cross_reviews_complete"
-  | "self_reviewing"
-  | "self_reviews_complete"
-  | "pending_synthesis"
-  | "synthesizing"
-  | "completed"
-  | "error";
-
-export function deriveInvestigationWorkflowStatus(
-  workflow: Pick<
-    InvestigationWorkflow,
-    "investigatorA" | "investigatorB" | "selfReviewEnabled" | "synthesis"
-  >,
-): DerivedInvestigationWorkflowStatus {
-  if (
-    workflow.investigatorA.investigationStatus === "error" ||
-    workflow.investigatorB.investigationStatus === "error" ||
-    workflow.investigatorA.crossReviewStatus === "error" ||
-    workflow.investigatorB.crossReviewStatus === "error" ||
-    workflow.investigatorA.selfReviewStatus === "error" ||
-    workflow.investigatorB.selfReviewStatus === "error" ||
-    workflow.synthesis.status === "error"
-  ) {
-    return "error";
-  }
-  if (workflow.synthesis.status === "completed") {
-    return "completed";
-  }
-  if (workflow.synthesis.status === "running") {
-    return "synthesizing";
-  }
-  if (workflow.synthesis.status === "pending_start") {
-    return "pending_synthesis";
-  }
-  const crossReviewsComplete =
-    workflow.investigatorA.crossReviewStatus === "completed" &&
-    workflow.investigatorB.crossReviewStatus === "completed";
-  const selfReviewsComplete =
-    workflow.investigatorA.selfReviewStatus === "completed" &&
-    workflow.investigatorB.selfReviewStatus === "completed";
-  if (crossReviewsComplete && workflow.selfReviewEnabled && selfReviewsComplete) {
-    return "self_reviews_complete";
-  }
-  if (
-    workflow.investigatorA.crossReviewStatus === "pending_start" ||
-    workflow.investigatorB.crossReviewStatus === "pending_start" ||
-    workflow.investigatorA.crossReviewStatus === "running" ||
-    workflow.investigatorB.crossReviewStatus === "running"
-  ) {
-    return "cross_reviewing";
-  }
-  if (
-    workflow.selfReviewEnabled &&
-    (workflow.investigatorA.selfReviewStatus === "pending_start" ||
-      workflow.investigatorB.selfReviewStatus === "pending_start" ||
-      workflow.investigatorA.selfReviewStatus === "running" ||
-      workflow.investigatorB.selfReviewStatus === "running" ||
-      crossReviewsComplete)
-  ) {
-    return "self_reviewing";
-  }
-  if (crossReviewsComplete) {
-    return "cross_reviews_complete";
-  }
-  if (
-    workflow.investigatorA.investigationStatus === "completed" &&
-    workflow.investigatorB.investigationStatus === "completed"
-  ) {
-    return "investigations_complete";
-  }
-  if (
-    workflow.investigatorA.investigationStatus === "running" ||
-    workflow.investigatorB.investigationStatus === "running"
-  ) {
-    return "investigating";
-  }
-  return "pending";
-}

@@ -1324,6 +1324,77 @@ describe("WorkflowCreateDialog", () => {
     }
   });
 
+  it("adds, removes and relabels author rows up to the maximum", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog
+        open
+        projectId={"project-1" as ProjectId}
+        onOpenChange={vi.fn()}
+        onWorkflowCreated={vi.fn()}
+      />,
+      { container: host },
+    );
+    const addAuthorButton = () => {
+      const button = Array.from(document.querySelectorAll("button")).find(
+        (element) => element.textContent?.trim() === "Add author",
+      );
+      if (!(button instanceof HTMLButtonElement)) throw new Error("Add author button not found.");
+      return button;
+    };
+    const rowLabels = () =>
+      Array.from(document.querySelectorAll("label"))
+        .map((element) => element.textContent?.trim() ?? "")
+        .filter((text) => /^Author [A-F]$/.test(text));
+
+    try {
+      await typeRequirementPrompt("Plan with more authors");
+      expect(rowLabels()).toEqual(["Author A", "Author B"]);
+
+      addAuthorButton().click();
+      addAuthorButton().click();
+      await vi.waitFor(() => {
+        expect(rowLabels()).toEqual(["Author A", "Author B", "Author C", "Author D"]);
+      });
+      expect(addAuthorButton().disabled).toBe(true);
+      expect(document.body.textContent).toContain(
+        "4 authors: 12 cross-reviews, 4 own-model reviews, 4 revisions, 1 merge",
+      );
+
+      const rowText = (label: string) =>
+        document.querySelector(`[data-slot="workflow-slot-row"][aria-label="${label}"]`)
+          ?.textContent ?? "";
+      const authorCBefore = rowText("Author C");
+      const authorDBefore = rowText("Author D");
+      expect(authorDBefore).not.toBe(authorCBefore);
+      const removeC = document.querySelector('button[aria-label="Remove Author C"]');
+      if (!(removeC instanceof HTMLButtonElement)) throw new Error("Remove Author C not found.");
+      removeC.click();
+      await vi.waitFor(() => {
+        expect(rowLabels()).toEqual(["Author A", "Author B", "Author C"]);
+      });
+      expect(addAuthorButton().disabled).toBe(false);
+      // The former Author D keeps its model under its new label.
+      expect(rowText("Author C").replace("Author C", "")).toBe(
+        authorDBefore.replace("Author D", ""),
+      );
+
+      await vi.waitFor(() => {
+        expect(createWorkflowButton().disabled).toBe(false);
+      });
+      createWorkflowButton().click();
+      await vi.waitFor(() => {
+        expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(1);
+      });
+      const [payload] = nativeApiMocks.createWorkflow.mock.calls[0]!;
+      expect(payload.additionalBranches).toHaveLength(1);
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("sends a code review workflow request without title and with titleGenerationModel", async () => {
     const host = document.createElement("div");
     document.body.append(host);
