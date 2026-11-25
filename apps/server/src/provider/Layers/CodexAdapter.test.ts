@@ -474,6 +474,23 @@ validationLayer("CodexAdapterLive validation", (it) => {
     }),
   );
 
+  it.effect("starts read-only workflow sessions with their profile", () =>
+    Effect.gen(function* () {
+      validationManager.startSessionImpl.mockClear();
+      const adapter = yield* CodexAdapter;
+      yield* adapter.startSession({
+        provider: "codex",
+        threadId: asThreadId("readonly-stage"),
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "unattended-readonly",
+      });
+      assert.equal(
+        validationManager.startSessionImpl.mock.calls.at(-1)?.[0].workflowExecutionProfile,
+        "unattended-readonly",
+      );
+    }),
+  );
+
   it.effect("maps codex model options before starting a session", () =>
     Effect.gen(function* () {
       validationManager.startSessionImpl.mockClear();

@@ -767,6 +767,7 @@ const writeAntigravitySessionMode = <E>(input: {
 export function antigravityReadOnlyWorkflowDecision(input: {
   readonly toolCall: AcpReadOnlyWorkflowToolCall;
   readonly computerRequest: boolean;
+  readonly f5ThreadServerName?: string | undefined;
 }): "allow" | "deny" {
   return acpReadOnlyWorkflowDecision(input);
 }

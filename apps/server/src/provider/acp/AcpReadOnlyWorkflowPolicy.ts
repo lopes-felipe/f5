@@ -19,13 +19,45 @@ export interface AcpReadOnlyWorkflowToolCall {
   readonly rawInput?: unknown;
 }
 
-/** A tool call that names an MCP server. Read-only workflow sessions install no MCP catalog. */
+const MCP_SERVER_KEYS = ["server", "serverName", "server_name", "mcpServer", "mcp_server"] as const;
+
+/**
+ * A tool call that names an MCP server. The only MCP server a read-only workflow session gets
+ * is F5's read-only thread server.
+ */
 export function acpMcpToolCall(toolCall: AcpReadOnlyWorkflowToolCall): boolean {
   if (/\bmcp(?:__|[_:/.])/i.test(toolCall.title ?? "")) return true;
   const raw = toolCall.rawInput;
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return false;
-  return ["server", "serverName", "server_name", "mcpServer", "mcp_server"].some(
-    (key) => key in raw,
+  return MCP_SERVER_KEYS.some((key) => key in raw);
+}
+
+/** Kinds that change things or run code; never treated as a call to F5's thread server. */
+const ACP_MUTATING_TOOL_KINDS: ReadonlySet<string> = new Set(["execute", "edit", "delete", "move"]);
+
+/**
+ * Whether an MCP tool call targets F5's read-only thread server, by its per-session generated
+ * name (`f5_thread_<random hex>`): an exact server field in the raw input, or the name as a whole
+ * token in the title. No user-configured server can carry that name, and the server itself only
+ * serves its read-only tools.
+ */
+export function acpF5ReadOnlyThreadToolCall(
+  toolCall: AcpReadOnlyWorkflowToolCall,
+  serverName: string | undefined,
+): boolean {
+  if (!serverName) return false;
+  if (toolCall.kind && ACP_MUTATING_TOOL_KINDS.has(toolCall.kind)) return false;
+  const raw = toolCall.rawInput;
+  if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
+    const record = raw as Record<string, unknown>;
+    const named = MCP_SERVER_KEYS.map((key) => record[key]).filter((value) => value !== undefined);
+    if (named.length > 0) return named.every((value) => value === serverName);
+  }
+  const title = toolCall.title ?? "";
+  const escaped = serverName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return (
+    title.includes(`mcp__${serverName}__`) ||
+    new RegExp(`(?:^|[^A-Za-z0-9_-])${escaped}(?:[^A-Za-z0-9_-]|$)`).test(title)
   );
 }
 
@@ -45,15 +77,19 @@ export function acpExecuteCommand(rawInput: unknown): string | undefined {
 /**
  * Permission policy for a read-only workflow turn on an ACP provider without an OS sandbox
  * (Cursor, Antigravity). It never opens an approval prompt: read, search, think and fetch tools
- * and read-only shell commands run once; edits, deletes, moves, other commands, computer control,
- * MCP tools and requests with an unknown or missing kind are denied.
+ * and read-only shell commands run once, as do calls to F5's read-only thread server (forge
+ * reads); edits, deletes, moves, other commands, computer control, other MCP tools and requests
+ * with an unknown or missing kind are denied.
  */
 export function acpReadOnlyWorkflowDecision(input: {
   readonly toolCall: AcpReadOnlyWorkflowToolCall;
   readonly computerRequest: boolean;
+  /** The generated name of this session's read-only F5 thread server, when attached. */
+  readonly f5ThreadServerName?: string | undefined;
 }): "allow" | "deny" {
   if (input.computerRequest) return "deny";
-  if (acpMcpToolCall(input.toolCall)) return "deny";
+  if (acpMcpToolCall(input.toolCall))
+    return acpF5ReadOnlyThreadToolCall(input.toolCall, input.f5ThreadServerName) ? "allow" : "deny";
   const kind = input.toolCall.kind;
   if (kind && ACP_READ_ONLY_WORKFLOW_TOOL_KINDS.has(kind)) return "allow";
   if (kind === "execute") {

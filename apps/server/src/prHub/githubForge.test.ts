@@ -97,6 +97,56 @@ function fixture(
   };
 }
 describe("typed GitHub forge", () => {
+  it("reads repository files and directories through the contents API with GET only", async () => {
+    const { provider, calls } = fixture([
+      {
+        type: "file",
+        encoding: "base64",
+        content: Buffer.from("export {};\n").toString("base64"),
+        size: 11,
+      },
+      [
+        { name: "src", type: "dir", size: 0 },
+        { name: "README.md", type: "file", size: 42 },
+      ],
+      { type: "file", encoding: "base64", content: Buffer.from([0, 1, 2]).toString("base64") },
+      { type: "file", encoding: "none", content: "", size: 5_000_000 },
+    ]);
+    const read = (path: string, revision?: string) =>
+      Effect.runPromise(provider.readRepositoryContent!({ ref, path, revision }));
+    await expect(read("src/a b.ts", "head-sha")).resolves.toEqual({
+      kind: "file",
+      path: "src/a b.ts",
+      size: 11,
+      text: "export {};\n",
+      binary: false,
+    });
+    await expect(read("")).resolves.toEqual({
+      kind: "directory",
+      path: "",
+      entries: [
+        { name: "src", type: "dir", size: 0 },
+        { name: "README.md", type: "file", size: 42 },
+      ],
+    });
+    await expect(read("logo.png")).resolves.toMatchObject({ text: null, binary: true });
+    await expect(read("huge.json")).resolves.toMatchObject({
+      text: null,
+      binary: false,
+      size: 5_000_000,
+    });
+    expect(calls.map(({ endpoint, method, query }) => ({ endpoint, method, query }))).toEqual([
+      {
+        endpoint: "repos/team/repo/contents/src/a%20b.ts",
+        method: "GET",
+        query: { ref: "head-sha" },
+      },
+      { endpoint: "repos/team/repo/contents", method: "GET", query: undefined },
+      { endpoint: "repos/team/repo/contents/logo.png", method: "GET", query: undefined },
+      { endpoint: "repos/team/repo/contents/huge.json", method: "GET", query: undefined },
+    ]);
+  });
+
   it("sends inline comments with the verdict in one GitHub review write", async () => {
     const { provider, calls } = fixture();
     await Effect.runPromise(
