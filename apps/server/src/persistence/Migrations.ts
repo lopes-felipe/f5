@@ -431,28 +431,32 @@ const BASELINE_MIGRATION_ENTRIES: ReadonlyArray<{
   .filter((entry) => entry.migrationId <= BASELINE_MIGRATION_ID)
   .toSorted((left, right) => left.migrationId - right.migrationId);
 
+if (LATEST_MIGRATION_ID < BASELINE_MIGRATION_ID) {
+  throw new Error(
+    `LATEST_MIGRATION_ID (${LATEST_MIGRATION_ID}) is behind BASELINE_MIGRATION_ID (${BASELINE_MIGRATION_ID}); regenerate BaselineSchema.ts.`,
+  );
+}
+
 /**
  * Bootstraps a completely empty SQLite database directly to `BASELINE_MIGRATION_ID`
- * in a single transaction, recording all baseline migration IDs in
- * `effect_sql_migrations`. Existing databases with any user table bypass this
- * fast path and upgrade incrementally through the Effect SQL migrator.
+ * in a single `BEGIN IMMEDIATE` transaction, recording all baseline migration IDs
+ * in `effect_sql_migrations`. The emptiness probe runs inside the transaction so
+ * concurrent openers cannot race into duplicate `CREATE TABLE` statements.
+ *
+ * @internal Exported for migration bootstrap tests.
  */
-const applyBaselineSchemaIfFresh = Effect.gen(function* () {
-  if (LATEST_MIGRATION_ID < BASELINE_MIGRATION_ID) {
-    return false;
-  }
+export const applyBaselineSchemaIfFresh = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  const existingTables = yield* sql<{ readonly name: string }>`
-    SELECT name FROM sqlite_master
-    WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
-    LIMIT 1
-  `;
-  if (existingTables.length > 0) {
-    return false;
-  }
-
-  yield* sql.withTransaction(
+  return yield* sql.withTransaction(
     Effect.gen(function* () {
+      const existingTables = yield* sql<{ readonly name: string }>`
+        SELECT name FROM sqlite_master
+        WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+        LIMIT 1
+      `;
+      if (existingTables.length > 0) {
+        return false;
+      }
       for (const statement of BASELINE_DDL_STATEMENTS) {
         yield* sql.unsafe(statement);
       }
@@ -466,15 +470,16 @@ const applyBaselineSchemaIfFresh = Effect.gen(function* () {
           VALUES (${entry.migrationId}, ${entry.name})
         `;
       }
+      return true;
     }),
   );
-  return true;
 });
 
 /**
  * Run all migrations incrementally from scratch without the fresh-DB baseline
- * fast path. Primarily used by schema-parity tests to verify that
- * `BaselineSchema` matches running migrations 1..BASELINE_MIGRATION_ID in order.
+ * fast path.
+ *
+ * @internal Test and baseline-regeneration helper only; production code must use `runMigrations`.
  */
 export const runIncrementalMigrations = Effect.gen(function* () {
   yield* run({ loader });
