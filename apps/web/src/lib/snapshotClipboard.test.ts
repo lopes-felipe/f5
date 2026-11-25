@@ -20,7 +20,7 @@ it.each(["png", "webp"])(
       image.name,
       findSnapshotContext(image, [image, context]),
     );
-    const files = restoreClipboardSnapshot(
+    const files = await restoreClipboardSnapshot(
       [new File([new Uint8Array([1, 2, 3])], "clipboard.png", { type: "image/png" })],
       { getData: () => html } as unknown as DataTransfer,
     );
@@ -30,11 +30,23 @@ it.each(["png", "webp"])(
   },
 );
 
-it("keeps an ordinary clipboard image unchanged when its metadata cannot be read", () => {
+it("keeps an ordinary clipboard image unchanged when its metadata cannot be read", async () => {
   const files = [new File([], "clipboard.png", { type: "image/png" })];
   expect(
-    restoreClipboardSnapshot(files, {
+    await restoreClipboardSnapshot(files, {
       getData: () => '<span data-f5-snapshot="%not-json">broken</span>',
+    } as unknown as DataTransfer),
+  ).toBe(files);
+});
+
+it("keeps ordinary clipboard images unchanged when the Snap Shot metadata comes from another app", async () => {
+  const files = [new File([], "clipboard.png", { type: "image/png" })];
+  const metadata = encodeURIComponent(
+    JSON.stringify({ version: 1, name: "window.png", context: "Window title" }),
+  );
+  expect(
+    await restoreClipboardSnapshot(files, {
+      getData: () => `<span data-f5-snapshot="${metadata}">F5 Snap Shot</span>`,
     } as unknown as DataTransfer),
   ).toBe(files);
 });

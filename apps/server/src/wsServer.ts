@@ -274,6 +274,7 @@ import {
   Layer,
   Option,
   Path,
+  Queue,
   Ref,
   Result,
   Schema,
@@ -2392,17 +2393,17 @@ export const createServer = Effect.fn(function* (
                       url.searchParams.get("signature") ?? "",
                       url.searchParams.get("revision") ?? "",
                     )
-                    .catch(() => null),
+                    .catch(() => "unavailable" as const),
                 )
               : null;
           respond(
-            image ? 200 : 404,
+            image === "unavailable" ? 503 : image ? 200 : 404,
             {
               "Cache-Control": "no-store",
               "X-Content-Type-Options": "nosniff",
-              ...(image ? { "Content-Type": image.mime } : {}),
+              ...(image && image !== "unavailable" ? { "Content-Type": image.mime } : {}),
             },
-            image?.bytes,
+            image === "unavailable" ? undefined : image?.bytes,
           );
           return;
         }
@@ -3214,16 +3215,11 @@ export const createServer = Effect.fn(function* (
   );
   yield* Stream.runForEach(keybindingsManager.streamChanges, (event) =>
     providerAdvisoryProjection.getProviders.pipe(
-      Effect.bindTo("providers"),
-      Effect.bind("settings", () =>
-        serverSettings.getSettings.pipe(Effect.map(redactServerSettingsForClient)),
-      ),
-      Effect.flatMap(({ providers, settings }) =>
+      Effect.flatMap((providers) =>
         pushBus.publishAll(WS_CHANNELS.serverConfigUpdated, {
           source: "keybindings",
           issues: event.issues,
           providers,
-          settings,
         }),
       ),
     ),
@@ -3247,7 +3243,7 @@ export const createServer = Effect.fn(function* (
   yield* Stream.runForEach(serverSettings.streamChanges, syncProfileGitAuthor).pipe(
     Effect.forkIn(subscriptionsScope),
   );
-  yield* Stream.runForEach(serverSettings.streamChanges, (settings) =>
+  yield* Stream.runForEach(serverSettings.streamChanges, () =>
     Effect.all({
       computerPolicy: Option.isSome(computerAutomationBroker)
         ? Effect.promise(() => computerAutomationBroker.value.refreshPolicies())
@@ -3260,7 +3256,6 @@ export const createServer = Effect.fn(function* (
           source: "settings",
           issues: keybindingsConfig.issues,
           providers,
-          settings: redactServerSettingsForClient(settings),
         }),
       ),
     ),
@@ -3279,27 +3274,27 @@ export const createServer = Effect.fn(function* (
       Effect.logWarning("Could not notify clients of theme wallpaper change", cause),
     ),
   );
+  const wallpaperChanges = yield* Queue.sliding<void>(1);
+  yield* Stream.runForEach(Stream.fromQueue(wallpaperChanges), () => publishWallpaperChange).pipe(
+    Effect.forkIn(subscriptionsScope),
+  );
   yield* Effect.acquireRelease(
     Effect.promise(() =>
       themeBackgrounds
         .watch(() => {
-          Effect.runFork(publishWallpaperChange);
+          Queue.offerUnsafe(wallpaperChanges, undefined);
         })
         .catch(() => () => {}),
     ),
     (stop) => Effect.sync(stop),
   );
   yield* Stream.runForEach(providerAdvisoryProjection.streamChanges, (providers) =>
-    Effect.all({
-      keybindingsConfig: keybindingsManager.loadConfigState,
-      settings: serverSettings.getSettings.pipe(Effect.map(redactServerSettingsForClient)),
-    }).pipe(
-      Effect.flatMap(({ keybindingsConfig, settings }) =>
+    keybindingsManager.loadConfigState.pipe(
+      Effect.flatMap((keybindingsConfig) =>
         pushBus.publishAll(WS_CHANNELS.serverConfigUpdated, {
           source: "providers",
           issues: keybindingsConfig.issues,
           providers,
-          settings,
         }),
       ),
       Effect.tap(() => providerUpdateAdvisor.noteRegistryChanged),

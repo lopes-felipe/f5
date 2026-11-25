@@ -29,11 +29,14 @@ import {
   type ProviderInstanceConfig,
   type ProviderInstanceEnvironmentVariable,
   ProviderInstanceId,
+  type EnvironmentThemeDefinition,
   ServerSettings,
   ServerSettingsError,
   type ServerSettingsPatch,
   type UsageHistoryRetention,
 } from "@t3tools/contracts";
+import { themeCssLoadsRemoteFiles } from "@t3tools/shared/themeCss";
+import { BUILTIN_THEME_IDS, THEME_TOKEN_NAMES } from "@t3tools/shared/themeTokens";
 import {
   Cache,
   Deferred,
@@ -282,10 +285,27 @@ const withBridgeActivation = (
   },
 });
 
-const normalizeStorageDiscoveryPatch = (patch: ServerSettingsPatch) =>
+export function isValidPublishedTheme(theme: EnvironmentThemeDefinition): boolean {
+  return (
+    !!theme.name.trim() &&
+    !(BUILTIN_THEME_IDS as readonly string[]).includes(theme.id) &&
+    (!theme.css || !themeCssLoadsRemoteFiles(theme.css)) &&
+    Object.values(theme.overrides ?? {}).every((variant) =>
+      Object.entries(variant ?? {}).every(
+        ([token, color]) =>
+          (THEME_TOKEN_NAMES as readonly string[]).includes(token) &&
+          /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(color),
+      ),
+    )
+  );
+}
+
+const normalizeServerSettingsPatch = (patch: ServerSettingsPatch) =>
   Effect.try({
-    try: () =>
-      patch.storageDiscovery
+    try: () => {
+      if (patch.environmentThemes?.some((theme) => !isValidPublishedTheme(theme)))
+        throw new Error("Published themes require valid colors and CSS without file loads.");
+      return patch.storageDiscovery
         ? {
             ...patch,
             storageDiscovery: {
@@ -295,10 +315,11 @@ const normalizeStorageDiscoveryPatch = (patch: ServerSettingsPatch) =>
               ),
             },
           }
-        : patch,
+        : patch;
+    },
     catch: (cause) =>
       new ServerSettingsError({
-        settingsPath: "<storageDiscovery>",
+        settingsPath: "<settings>",
         detail: cause instanceof Error ? cause.message : String(cause),
         cause,
       }),
@@ -346,7 +367,7 @@ export class ServerSettingsService extends ServiceMap.Service<
               },
             ),
           updateSettings: (patch) =>
-            normalizeStorageDiscoveryPatch(patch).pipe(
+            normalizeServerSettingsPatch(patch).pipe(
               Effect.flatMap((patch) =>
                 Ref.get(currentSettingsRef).pipe(
                   Effect.flatMap((currentSettings) =>
@@ -965,7 +986,7 @@ const makeServerSettings = Effect.gen(function* () {
               : patchOrBuild;
           if (!built) return undefined;
           const heldAccountChanges = new Set(options?.heldAccountChanges ?? []);
-          let patch = yield* normalizeStorageDiscoveryPatch(built);
+          let patch = yield* normalizeServerSettingsPatch(built);
           const migratedKeys = ["defaultThreadEnvMode", "enableAssistantStreaming"] as const;
           const markers = Object.fromEntries(
             migratedKeys

@@ -82,6 +82,26 @@ describe("GitHub HTTP transport", () => {
     expect(result.detail).not.toContain("private");
     expect(canceled).toHaveBeenCalledOnce();
   });
+  it("reports a diff response that exceeds the limit without returning a partial diff", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response("diff\n".repeat(1_000)));
+    const result = await Effect.runPromise(
+      makeGitHubHttpTransport(fetcher)({
+        cwd: ".",
+        args: [
+          "api",
+          "repos/org/repo/pulls/1",
+          "--hostname",
+          "github.com",
+          "--header",
+          "Accept: application/vnd.github.diff",
+        ],
+        maxStdoutBytes: 1024,
+        truncateOutput: true,
+      }),
+    );
+    expect(result.stdout).toBe("");
+    expect(result.stdoutTruncated).toBe(true);
+  });
   it("classifies a stalled request deadline without exposing fetch errors", async () => {
     const fetcher = vi.fn<typeof fetch>().mockImplementation(
       (_url, options) =>

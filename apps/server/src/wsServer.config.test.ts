@@ -49,6 +49,58 @@ import {
 describe("WebSocket Server", () => {
   const h = createWsServerTestHarness();
   const { connections, makeTempDir, createTestServer } = h;
+  it("serves only current signed wallpaper URLs for published themes", async () => {
+    const stateDir = makeTempDir("f5-theme-http-");
+    h.server = await createTestServer({ stateDir });
+    const address = h.server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    const [ws] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+    const theme = {
+      version: 1,
+      id: "wallpaper-test",
+      name: "Wallpaper",
+      parameters: { baseHue: 240, chroma: 0.15, contrast: 1 },
+    };
+    const imagePath = path.join(stateDir, "themes", theme.id + ".png");
+    fs.writeFileSync(imagePath, Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+    expect(
+      (
+        await sendRequest(ws, WS_METHODS.serverUpdateSettings, {
+          environmentThemes: [{ ...theme, css: "a { background: url(/file.png) }" }],
+        })
+      ).error?.message,
+    ).toContain("CSS without file loads");
+    expect(
+      (
+        await sendRequest(ws, WS_METHODS.serverUpdateSettings, {
+          environmentThemes: [theme],
+        })
+      ).error,
+    ).toBeUndefined();
+    const getUrl = async () => {
+      const config = await sendRequest(ws, WS_METHODS.serverGetConfig);
+      const { themeBackgrounds } = config.result as { themeBackgrounds: Record<string, string> };
+      return new URL(themeBackgrounds[theme.id]!, "http://127.0.0.1:" + port);
+    };
+    const url = await getUrl();
+    const image = await fetch(url);
+    expect(image.status).toBe(200);
+    expect(image.headers.get("content-type")).toBe("image/png");
+    await image.arrayBuffer();
+    const forged = new URL(url);
+    forged.searchParams.set("signature", "0".repeat(64));
+    expect((await fetch(forged)).status).toBe(404);
+    expect((await fetch(url, { method: "POST" })).status).toBe(404);
+    fs.appendFileSync(imagePath, "changed");
+    expect((await fetch(url)).status).toBe(404);
+    const replacement = await getUrl();
+    expect(
+      (await sendRequest(ws, WS_METHODS.serverUpdateSettings, { environmentThemes: [] })).error,
+    ).toBeUndefined();
+    expect((await fetch(replacement)).status).toBe(404);
+  });
+
   it.each(["write", "setDefault", "read"] as const)(
     "invalidates changed Codex catalogs even when %s returns an error",
     async (type) => {
@@ -1016,7 +1068,6 @@ describe("WebSocket Server", () => {
       source: "keybindings",
       issues: [{ kind: "keybindings.malformed-config", message: expect.any(String) }],
       providers: defaultProviderSnapshots,
-      settings: DEFAULT_SERVER_SETTINGS,
     });
 
     const successPush = await rewriteKeybindingsAndWaitForPush(
@@ -1029,7 +1080,6 @@ describe("WebSocket Server", () => {
       source: "keybindings",
       issues: [],
       providers: defaultProviderSnapshots,
-      settings: DEFAULT_SERVER_SETTINGS,
     });
   });
 

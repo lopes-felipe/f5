@@ -57,7 +57,10 @@ export function useResolvedThemePalette(variant: ThemeVariant): ResolvedThemePal
       library,
       revision: themePaletteRevision(palette, variant),
       publishedThemesLoaded: !!data,
-      background: palette.published ? data?.backgrounds?.[palette.id] : undefined,
+      background:
+        palette.published && palette.definition
+          ? data?.backgrounds?.[palette.definition.id]
+          : undefined,
     };
   }, [settings.customThemes, settings.themeId, variant, data, cachedThemes]);
 }
@@ -66,25 +69,32 @@ export function useThemePaletteSync(variant: ThemeVariant): ResolvedThemePalette
   const resolved = useResolvedThemePalette(variant);
   const { data: selection } = useQuery({
     ...serverConfigQueryOptions(),
-    select: (config) => config.settings?.environmentThemeSelection,
+    select: (config) => config.settings,
   });
   useLayoutEffect(() => {
     try {
       if (
-        selection?.theme &&
-        localStorage.getItem("f5:applied-environment-theme") !== selection.theme.generation
+        selection?.environmentThemeSelection.theme &&
+        localStorage.getItem("f5:applied-environment-theme") !==
+          selection.environmentThemeSelection.theme.generation
       ) {
-        updateAppSettings({ themeId: selection.theme.value });
-        if (readAppSettingsSnapshot().themeId === selection.theme.value)
-          localStorage.setItem("f5:applied-environment-theme", selection.theme.generation);
+        const { value, generation } = selection.environmentThemeSelection.theme;
+        const published = selection.environmentThemes.some((theme) => theme.id === value);
+        const themeId = published ? "published:" + value : value;
+        const target = resolveThemePalette(themeId, [], selection.environmentThemes);
+        if (target.id === themeId && (published || target.builtin)) {
+          updateAppSettings({ themeId });
+          if (readAppSettingsSnapshot().themeId === themeId)
+            localStorage.setItem("f5:applied-environment-theme", generation);
+        }
       }
+      const appearance = selection?.environmentThemeSelection.appearance;
       if (
-        selection?.appearance &&
-        localStorage.getItem("f5:applied-environment-appearance") !==
-          selection.appearance.generation
+        appearance &&
+        localStorage.getItem("f5:applied-environment-appearance") !== appearance.generation
       ) {
-        setThemeMode(selection.appearance.value);
-        localStorage.setItem("f5:applied-environment-appearance", selection.appearance.generation);
+        setThemeMode(appearance.value);
+        localStorage.setItem("f5:applied-environment-appearance", appearance.generation);
       }
     } catch {
       // Existing local choices still apply when storage is unavailable.

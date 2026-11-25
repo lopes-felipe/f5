@@ -14,6 +14,16 @@ it("allows a quoted data image that refers to its own SVG gradient", () => {
   ).toBe(false);
 });
 
+it("allows escapes and literal at-rule names in quoted content", () => {
+  expect(themeCssLoadsRemoteFiles('a::after { content: "Say \\"@import\\"."; }')).toBe(false);
+});
+
+it("scans long stylesheets with an unfinished string", () => {
+  expect(themeCssLoadsRemoteFiles("a{color:red;}\n".repeat(6500) + 'a{content:"unfinished')).toBe(
+    true,
+  );
+});
+
 it.each([
   'a{content:"/*"} b{background:url(https://example.test/image)} c{content:"*/"}',
   '@import "https://example.test/theme.css";',

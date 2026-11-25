@@ -601,12 +601,13 @@ export function getThemePalettes(
   publishedThemes: unknown,
 ): readonly ThemePalette[] {
   const palettes = getAvailableThemePalettes(customThemes);
-  const localIds = new Set(palettes.map(({ id }) => id));
   return [
     ...palettes,
-    ...parseCustomThemeLibrary(publishedThemes, MAX_ENVIRONMENT_THEMES)
-      .themes.filter(({ id }) => !localIds.has(id))
-      .map((theme) => ({ ...paletteFromDefinition(theme, false), published: true as const })),
+    ...parseCustomThemeLibrary(publishedThemes, MAX_ENVIRONMENT_THEMES).themes.map((theme) => ({
+      ...paletteFromDefinition(theme, false),
+      id: "published:" + theme.id,
+      published: true as const,
+    })),
   ];
 }
 
@@ -618,6 +619,7 @@ export function resolveThemePalette(
   const palettes = getThemePalettes(customThemes, publishedThemes);
   return (
     palettes.find((theme) => theme.id === themeId) ??
+    palettes.find((theme) => theme.published && theme.definition?.id === themeId) ??
     BUILTIN_THEME_BY_ID.get(DEFAULT_THEME_ID) ??
     palettes[0]!
   );

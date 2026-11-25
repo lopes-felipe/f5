@@ -73,7 +73,7 @@ export function PrFileDiff({
   if ((file.patchStatus !== "available" && !pureRename) || !patch || patch.kind !== "files") {
     return (
       <p className="p-3 text-sm text-muted-foreground">
-        {missingDiff
+        {missingDiff && (loadDiff || file.patchStatus === "truncated")
           ? "Diff too large to display."
           : "A renderable text patch is unavailable for this file."}{" "}
         {loadDiff && missingDiff ? (

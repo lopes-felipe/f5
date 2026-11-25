@@ -598,6 +598,9 @@ export const THEME_CSS_MAX_LENGTH = 100_000;
 export const MAX_ENVIRONMENT_THEMES = 32;
 const PublishedThemeId = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,63}$/));
 const EnvironmentAppearanceMode = Schema.Literals(["light", "dark", "system"]);
+const PublishedThemeColor = Schema.String.check(
+  Schema.isPattern(/^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i),
+);
 export const EnvironmentThemeDefinition = Schema.Struct({
   version: Schema.Literal(1),
   id: PublishedThemeId,
@@ -609,12 +612,8 @@ export const EnvironmentThemeDefinition = Schema.Struct({
   }),
   overrides: Schema.optional(
     Schema.Struct({
-      light: Schema.optional(
-        Schema.Record(Schema.String, Schema.String.check(Schema.isMaxLength(128))),
-      ),
-      dark: Schema.optional(
-        Schema.Record(Schema.String, Schema.String.check(Schema.isMaxLength(128))),
-      ),
+      light: Schema.optional(Schema.Record(Schema.String, PublishedThemeColor)),
+      dark: Schema.optional(Schema.Record(Schema.String, PublishedThemeColor)),
     }),
   ),
   css: Schema.optional(Schema.String.check(Schema.isMaxLength(THEME_CSS_MAX_LENGTH))),
@@ -635,6 +634,7 @@ const EnvironmentThemeSelection = Schema.Struct({
 });
 const EnvironmentThemes = Schema.Array(EnvironmentThemeDefinition).check(
   Schema.isMaxLength(MAX_ENVIRONMENT_THEMES),
+  Schema.makeFilter((themes) => new Set(themes.map(({ id }) => id)).size === themes.length),
   Schema.makeFilter(
     (themes) => new TextEncoder().encode(JSON.stringify(themes)).byteLength <= 2 * 1024 * 1024,
   ),

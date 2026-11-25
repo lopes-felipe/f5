@@ -469,6 +469,7 @@ export function makeGitHubApi(
                 args: prepared.args,
                 timeoutMs: prepared.timeoutMs,
                 maxStdoutBytes: prepared.maxStdoutBytes,
+                ...(input.accept === "application/vnd.github.diff" ? { truncateOutput: true } : {}),
                 allowNonZeroExit: true,
                 env: tokenEnvironment(input.host, input.token),
                 ...(prepared.body === undefined ? {} : { stdin: prepared.body }),

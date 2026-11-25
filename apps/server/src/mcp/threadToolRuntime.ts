@@ -67,10 +67,10 @@ export function makeThreadToolHandler(input: {
       if (request.name === "theme_read" || request.name === "theme_set") {
         if (
           request.name === "theme_set" &&
-          (thread.archivedAt || thread.runtimeMode === "approval-required")
+          (thread.archivedAt || thread.runtimeMode !== "full-access")
         )
           return yield* new ThreadToolError({
-            message: "Setting the theme requires an active thread with normal or full access.",
+            message: "Setting the environment theme requires an active full-access thread.",
           });
         if (!input.themes)
           return yield* new ThreadToolError({ message: "Environment themes are unavailable." });

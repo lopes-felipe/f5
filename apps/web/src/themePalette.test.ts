@@ -306,4 +306,9 @@ it("uses a local theme in preference to a published theme with the same id", () 
   expect(resolveThemePalette(published.id, [], [published]).published).toBe(true);
   expect(resolveThemePalette(published.id, [local], [published])).toMatchObject({ name: "Local" });
   expect(resolveThemePalette(published.id, [local], [published]).published).toBeUndefined();
+  expect(resolveThemePalette("published:" + published.id, [local], [published])).toMatchObject({
+    name: "Published",
+    published: true,
+    definition: published,
+  });
 });

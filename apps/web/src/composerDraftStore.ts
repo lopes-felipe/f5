@@ -315,6 +315,7 @@ export interface PersistedComposerImageAttachment {
   uploadId?: string;
   uploadThreadId?: ThreadId;
   kind?: "image" | "file";
+  source?: ComposerImageAttachment["source"];
 }
 
 export interface ComposerImageAttachment extends Omit<ChatImageAttachment, "previewUrl" | "type"> {
@@ -394,6 +395,7 @@ export async function persistComposerAttachment(
     uploadId,
     uploadThreadId: threadId,
     dataUrl: "",
+    ...(image.source ? { source: image.source } : {}),
   };
 }
 
@@ -1164,6 +1166,7 @@ async function serializeComposerDraftAttachments(
         mimeType: image.mimeType,
         sizeBytes: image.sizeBytes,
         dataUrl: await readFileAsDataUrl(image.file),
+        ...(image.source ? { source: image.source } : {}),
       } satisfies PersistedComposerImageAttachment;
     }),
   );
@@ -1303,6 +1306,9 @@ function normalizePersistedAttachment(value: unknown): PersistedComposerImageAtt
       ? { uploadThreadId: ThreadId.makeUnsafe(candidate.uploadThreadId) }
       : {}),
     kind: candidate.kind === "file" ? "file" : "image",
+    ...(candidate.source === "snapshot" || candidate.source === "pasted-text"
+      ? { source: candidate.source }
+      : {}),
   };
 }
 
@@ -1893,6 +1899,7 @@ function hydrateImagesFromPersisted(
   return attachments.flatMap((attachment) => {
     const file = hydreatePersistedComposerImageAttachment(attachment);
     if (!file) return [];
+    if (attachment.source) setAttachmentSource(file, attachment.source);
 
     return [
       {
@@ -1908,6 +1915,7 @@ function hydrateImagesFromPersisted(
           ? `${getServerHttpOrigin()}/api/attachments/uploads/${attachment.uploadId}`
           : attachment.dataUrl,
         file,
+        ...(attachment.source ? { source: attachment.source } : {}),
       } satisfies ComposerImageAttachment,
     ];
   });

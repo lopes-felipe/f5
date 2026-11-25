@@ -4979,7 +4979,7 @@ export default memo(function ChatView({
       return;
     }
     event.preventDefault();
-    void addComposerImages(restoreClipboardSnapshot(files, event.clipboardData));
+    void restoreClipboardSnapshot(files, event.clipboardData).then(addComposerImages);
   };
 
   const onComposerDragEnter = (event: React.DragEvent<HTMLDivElement>) => {

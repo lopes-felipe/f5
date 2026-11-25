@@ -1,5 +1,14 @@
 import { afterEach, expect, it } from "vitest";
-import { mkdir, mkdtemp, realpath, rm, symlink, truncate, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  truncate,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_SERVER_SETTINGS, ServerSettingsPatch } from "@t3tools/contracts/settings";
@@ -32,6 +41,7 @@ it("authorizes a full-size theme background and rejects a forged URL or linked f
   const png = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
   await writeFile(image, png);
   await truncate(image, 16 * 1024 * 1024);
+  await writeFile(join(directory, theme.id + ".webp"), "unrecognized image");
   const path = (await backgrounds.paths(settings))[theme.id]!;
   const params = new URL(path, "http://localhost").searchParams;
   const signature = params.get("signature")!;
@@ -45,6 +55,7 @@ it("authorizes a full-size theme background and rejects a forged URL or linked f
   expect(await backgrounds.read(theme.id, signature, revision)).toBeNull();
   await truncate(image, 16 * 1024 * 1024 + 1);
   expect(await backgrounds.paths(settings)).toEqual({});
+  await rm(join(directory, theme.id + ".webp"));
   await writeFile(join(root, "outside.png"), png);
   await symlink(join(root, "outside.png"), join(directory, theme.id + ".webp"));
   expect(await backgrounds.paths(settings)).toEqual({});
@@ -54,6 +65,10 @@ it("allows 100,000 CSS characters and applies the 2 MiB published library budget
   const valid = Schema.is(ServerSettingsPatch);
   const large = { ...theme, css: ".".repeat(100_000) };
   expect(valid({ environmentThemes: [large] })).toBe(true);
+  expect(valid({ environmentThemes: [theme, theme] })).toBe(false);
+  expect(
+    valid({ environmentThemes: [{ ...theme, overrides: { light: { background: "red" } } }] }),
+  ).toBe(false);
   expect(valid({ environmentThemes: [{ ...large, css: large.css + "." }] })).toBe(false);
   expect(
     valid({
@@ -65,21 +80,37 @@ it("allows 100,000 CSS characters and applies the 2 MiB published library budget
   ).toBe(false);
 });
 
-it("notifies clients when an image is added to the theme directory", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "f5-theme-watch-"));
-  directories.push(directory);
+it("notifies clients when an image is added, including after recreating the theme directory", async () => {
+  const root = await mkdtemp(join(await realpath(tmpdir()), "f5-theme-watch-"));
+  directories.push(root);
+  const directory = join(root, "themes");
   const backgrounds = makeEnvironmentThemeBackgrounds(directory);
   let changes = 0;
   const stop = await backgrounds.watch(() => {
     changes += 1;
   });
+  const waitForImageChange = (previous: number) =>
+    expect
+      .poll(
+        async () => {
+          // Some platforms begin delivering fs.watch events after watch() returns.
+          if (changes === previous) await writeFile(join(directory, theme.id + ".png"), "image");
+          return changes;
+        },
+        { timeout: 4_000, interval: 400 },
+      )
+      .toBeGreaterThan(previous);
   try {
-    await writeFile(join(directory, theme.id + ".png"), "image");
-    await expect.poll(() => changes).toBeGreaterThan(0);
+    await waitForImageChange(0);
+    const first = changes;
+    await rm(directory, { recursive: true, force: true });
+    await mkdir(directory);
+    await expect.poll(() => changes, { timeout: 4_000 }).toBeGreaterThan(first);
+    await waitForImageChange(changes);
   } finally {
     stop();
   }
-});
+}, 15_000);
 
 it("publishes and removes a theme without disturbing the appearance selection", async () => {
   const directory = await mkdtemp(join(tmpdir(), "f5-theme-set-"));
@@ -105,9 +136,15 @@ it("publishes and removes a theme without disturbing the appearance selection", 
     set({ theme: { ...theme, css: "a{background:url(https://example.test/image)}" } }),
   ).rejects.toThrow("CSS that does not load files");
   await set({ theme, appearance: "dark" });
+  const jsonPath = join(directory, theme.id + ".json");
+  const wallpaperPath = join(directory, theme.id + ".png");
+  expect(JSON.parse(await readFile(jsonPath, "utf8"))).toEqual(theme);
+  await writeFile(wallpaperPath, "image");
   const appearance = settings.environmentThemeSelection.appearance;
   expect(settings.environmentThemes).toEqual([theme]);
   await set({ themeId: theme.id, remove: true });
   expect(settings.environmentThemes).toEqual([]);
   expect(settings.environmentThemeSelection).toEqual({ appearance });
+  await expect(readFile(jsonPath)).rejects.toMatchObject({ code: "ENOENT" });
+  expect(await readFile(wallpaperPath, "utf8")).toBe("image");
 });

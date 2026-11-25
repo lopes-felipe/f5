@@ -36,9 +36,11 @@ export function ThemeSettings({ variant }: { readonly variant: ThemeVariant }) {
     () => getThemePalettes(settings.customThemes, settings.environmentThemes),
     [settings.customThemes, settings.environmentThemes],
   );
-  const effectiveThemeId = palettes.some((palette) => palette.id === settings.themeId)
-    ? settings.themeId
-    : palettes[0]?.id;
+  const effectiveThemeId =
+    palettes.find((palette) => palette.id === settings.themeId)?.id ??
+    palettes.find((palette) => palette.published && palette.definition?.id === settings.themeId)
+      ?.id ??
+    palettes[0]?.id;
 
   const persistNewTheme = (definition: ThemeDefinitionV1) => {
     const customThemes = addCustomTheme(settings.customThemes, definition);
