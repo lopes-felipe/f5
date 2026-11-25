@@ -1,0 +1,1 @@
+- GitLab merge requests show head pipeline status in PR Hub, and review filters can find requests with changes requested.

@@ -84,7 +84,10 @@ import {
   inPlaceSwitchBlockers,
   readWorktreeClaims,
 } from "./project/worktreeClaims.ts";
-import { withRepositoryLifecycleLock } from "./project/Layers/WorktreeLifecycleCoordinator.ts";
+import {
+  pathContains,
+  withRepositoryLifecycleLock,
+} from "./project/Layers/WorktreeLifecycleCoordinator.ts";
 import { GitHubCli } from "./git/Services/GitHubCli.ts";
 import { GitService } from "./git/Services/GitService.ts";
 import { TextGeneration } from "./git/Services/TextGeneration.ts";
@@ -108,7 +111,9 @@ import {
 } from "./project/Services/WorktreePreparation.ts";
 import { removeWorktreeSafely } from "./project/worktreeClaims.ts";
 import { WorktreeManager, type WorktreeManagerShape } from "./project/Services/WorktreeManager.ts";
-import { canonicalWorktreePath } from "./git/worktreePaths.ts";
+import { canonicalWorktreePath, isTemporaryWorktreeBranch } from "./git/worktreePaths.ts";
+import { WorkspaceWriteContext } from "./project/workspaceTransitionContext.ts";
+import { followsCheckoutBranchAtTurnEnd } from "./project/worktreeReadiness.ts";
 import { ProjectionProjectRepository } from "./persistence/Services/ProjectionProjects";
 import { ProjectionProjectRepositoryLive } from "./persistence/Layers/ProjectionProjects";
 import {
@@ -3010,6 +3015,155 @@ export const createServer = Effect.fn(function* (
   const previewFileServer = makePreviewFileServer(workspaceAssetAuthorizer);
   yield* Effect.addFinalizer(() => Effect.promise(previewFileServer.close));
   const subscriptionsScope = yield* Scope.make("sequential");
+  const reconcileWorktreeBranch = (
+    engine: import("./orchestration/Services/OrchestrationEngine.ts").OrchestrationEngineShape,
+    cwd: string,
+    branch: string | null,
+  ) =>
+    Effect.gen(function* () {
+      const prepare = git.prepareObservedWorktreeBranch;
+      if (!prepare || !branch || isTemporaryWorktreeBranch(branch)) return;
+      if (!(yield* serverSettings.getSettings).followWorktreeBranchChanges) return;
+      const target = NodePath.resolve(cwd);
+      const model = yield* engine.getReadModel();
+      const { projects, threads } = model;
+      const candidates = threads.filter(
+        (thread) => thread.deletedAt === null && thread.worktreePath !== null,
+      );
+      let thread = candidates.find((thread) => NodePath.resolve(thread.worktreePath!) === target);
+      if (!candidates.length || thread?.branch === branch) return;
+      if (!thread) {
+        const canonical = yield* Effect.tryPromise(() => canonicalWorktreePath(target));
+        let memberOwner: (typeof candidates)[number] | undefined;
+        for (const candidate of candidates) {
+          const candidatePath = yield* Effect.tryPromise(() =>
+            canonicalWorktreePath(candidate.worktreePath!),
+          ).pipe(Effect.orElseSucceed(() => null));
+          if (candidatePath === canonical) {
+            thread = candidate;
+            break;
+          }
+          if (!candidatePath || !git.readWorktreeGroup || !pathContains(candidatePath, canonical))
+            continue;
+          const group = yield* git.readWorktreeGroup(candidatePath);
+          if (
+            group?.threadId === candidate.id &&
+            group.members.some((member) => member.path === canonical)
+          )
+            memberOwner = candidate;
+        }
+        thread ??= memberOwner;
+      }
+      const worktreePath = thread?.worktreePath;
+      if (
+        !thread ||
+        !worktreePath ||
+        thread.branch === branch ||
+        thread.session?.activeTurnId ||
+        thread.latestTurn?.state === "running"
+      )
+        return;
+      const project = projects.find(
+        (project) => project.id === thread.projectId && project.deletedAt === null,
+      );
+      if (!project) return;
+      const verifyOwnership = (current: typeof model) =>
+        Effect.gen(function* () {
+          if (!(yield* followsCheckoutBranchAtTurnEnd(current, thread.id, worktreePath, branch)))
+            return yield* Effect.fail(
+              new Error("The worktree is shared with another conversation."),
+            );
+        });
+      const mapInvariant = (error: { message: string }) =>
+        new OrchestrationCommandInvariantError({
+          commandType: "thread.meta.update",
+          detail: error.message,
+        });
+      yield* verifyOwnership(model);
+      const prepared = yield* prepare({
+        projectRoot: project.workspaceRoot,
+        path: worktreePath,
+        threadId: thread.id,
+        previousBranch: thread.branch,
+        branch,
+      });
+      yield* engine
+        .dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.makeUnsafe("server:worktree-branch:" + randomUUID()),
+          threadId: thread.id,
+          branch,
+          worktreePath,
+          expectedBranch: thread.branch,
+          expectedWorktreePath: worktreePath,
+        })
+        .pipe(
+          Effect.provideService(WorkspaceWriteContext, {
+            expected: {
+              branch: thread.branch,
+              worktreePath,
+              sessionUpdatedAt: thread.session?.updatedAt ?? null,
+            },
+            observation: true,
+            verifyObservation: engine.getReadModel().pipe(
+              Effect.flatMap((current) =>
+                current === model ? Effect.void : verifyOwnership(current),
+              ),
+              Effect.andThen(prepared.verifyBranch),
+              Effect.mapError(mapInvariant),
+            ),
+            commitObservation: prepared.commit.pipe(Effect.mapError(mapInvariant)),
+          }),
+        );
+    });
+  const pendingBranchObservations = new Map<string, { branch: string | null }>();
+  const failedBranchObservations = new Map<string, { branch: string; retryAfter: number }>();
+  const observeWorktreeBranch = (
+    engine: Parameters<typeof reconcileWorktreeBranch>[0],
+    cwd: string,
+    branch: string | null,
+  ) =>
+    Effect.suspend(() => {
+      const target = NodePath.resolve(cwd);
+      const failed = failedBranchObservations.get(target);
+      if (failed?.branch === branch && failed.retryAfter > Date.now()) return Effect.void;
+      failedBranchObservations.delete(target);
+      const pending = pendingBranchObservations.get(target);
+      if (pending) {
+        pending.branch = branch;
+        return Effect.void;
+      }
+      if (!branch || pendingBranchObservations.size >= 64) return Effect.void;
+      const observation: { branch: string | null } = { branch };
+      pendingBranchObservations.set(target, observation);
+      return Effect.gen(function* () {
+        let observed: string | null;
+        do {
+          observed = observation.branch;
+          const attemptedBranch = observed;
+          if (attemptedBranch)
+            yield* reconcileWorktreeBranch(engine, target, observed).pipe(
+              Effect.catch(() =>
+                Effect.sync(() => {
+                  if (observation.branch !== attemptedBranch) return;
+                  if (failedBranchObservations.size >= 64) {
+                    const oldest = failedBranchObservations.keys().next().value;
+                    if (oldest !== undefined) failedBranchObservations.delete(oldest);
+                  }
+                  failedBranchObservations.set(target, {
+                    branch: attemptedBranch,
+                    retryAfter: Date.now() + 30_000,
+                  });
+                }),
+              ),
+            );
+        } while (observed !== observation.branch);
+      }).pipe(
+        Effect.ensuring(Effect.sync(() => pendingBranchObservations.delete(target))),
+        Effect.forkIn(subscriptionsScope),
+        Effect.asVoid,
+      );
+    });
   if (git.subscribeStatusRefresh) {
     const unsubscribe = yield* git.subscribeStatusRefresh((cwd) => {
       Effect.runFork(pushBus.publishAll(WS_CHANNELS.gitStatusInvalidated, { cwd }));
@@ -3271,7 +3425,9 @@ export const createServer = Effect.fn(function* (
             .status({ cwd, includeRemote: false, includePullRequest: false })
             .pipe(Effect.orElseSucceed(() => null)),
         publish: (cwd, status) =>
-          pushBus.publishAll(WS_CHANNELS.gitStatusInvalidated, { cwd, status }),
+          pushBus
+            .publishAll(WS_CHANNELS.gitStatusInvalidated, { cwd, status })
+            .pipe(Effect.andThen(observeWorktreeBranch(orchestrationEngine, cwd, status.branch))),
       });
       yield* Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) =>
         Effect.gen(function* () {
@@ -4473,6 +4629,15 @@ export const createServer = Effect.fn(function* (
       gitRoutes({
         git,
         gitManager,
+        observeStatus: (cwd, branch) =>
+          runtimeReadiness.state === "ready"
+            ? awaitOrchestrationRuntimeForRoute.pipe(
+                Effect.flatMap(({ orchestrationEngine }) =>
+                  observeWorktreeBranch(orchestrationEngine, cwd, branch),
+                ),
+                Effect.ignore,
+              )
+            : Effect.void,
         switchWorkspace: switchGitWorkspace,
         publishActionProgress: (ws, event) =>
           pushBus.publishClient(ws, WS_CHANNELS.gitActionProgress, event).pipe(Effect.asVoid),
