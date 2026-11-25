@@ -23,6 +23,20 @@ afterEach(() => {
 });
 
 describe("imageAttachmentActions", () => {
+  it.each(["data:image/png;base64,iVBORw%3D%3D#fragment", "data:image/png,%89PNG#fragment"])(
+    "loads inline image bytes without fetch from %s",
+    async (src) => {
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
+      const blob = await fetchImageAttachmentBlob({ ...IMAGE_ITEM, src }, { maxBytes: 4 });
+      expect(blob.type).toBe("image/png");
+      expect(new Uint8Array(await blob.arrayBuffer())).toEqual(Uint8Array.of(0x89, 80, 78, 71));
+      await expect(
+        fetchImageAttachmentBlob({ ...IMAGE_ITEM, src }, { maxBytes: 3 }),
+      ).rejects.toThrow("source size limit");
+      expect(fetchSpy).not.toHaveBeenCalled();
+    },
+  );
+
   it("bounds downloaded source bytes and cancels oversized streams", async () => {
     const cancel = vi.fn();
     const body = new ReadableStream({

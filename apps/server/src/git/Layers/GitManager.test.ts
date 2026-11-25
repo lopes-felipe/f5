@@ -73,7 +73,6 @@ function makeServerConfig(): ServerConfigShape {
     providerLogsDir: path.join(logsDir, "provider"),
     providerEventLogPath: path.join(logsDir, "provider", "events.log"),
     terminalLogsDir: path.join(logsDir, "terminals"),
-    anonymousIdPath: path.join(stateDir, "anonymous-id"),
     staticDir: undefined,
     devUrl: undefined,
     noBrowser: true,
@@ -231,6 +230,55 @@ describe("GitManager unit", () => {
     expect(github.calls).toEqual([]);
     expect(git.calls.statusDetails).toHaveLength(1);
     expect(git.calls.inspectCheckoutIdentity).toHaveLength(0);
+  });
+  it("does not query the forge for a branch that only tracks a local branch", async () => {
+    const { manager, github } = await makeManager({
+      gitCore: {
+        statusDetails: () => Effect.succeed({ ...cleanStatus, upstreamRef: "test" }),
+        readConfigValue: (_cwd, key) =>
+          Effect.succeed(key === "branch.feature/test.remote" ? "." : null),
+        resolveCommit: (_cwd, ref) =>
+          Effect.succeed(ref === "refs/heads/feature/test" ? "local-head" : null),
+      },
+    });
+    const status = await Effect.runPromise(manager.status({ cwd }));
+    expect(status.pr).toBeNull();
+    expect(status.changeRequest).toBeNull();
+    expect(github.calls).toEqual([]);
+  });
+  it("finds a locally tracking branch's own PR when the branch was published separately", async () => {
+    const { manager } = await makeManager({
+      gitCore: {
+        statusDetails: () => Effect.succeed({ ...cleanStatus, upstreamRef: "test" }),
+        readConfigValue: (_cwd, key) =>
+          Effect.succeed(key === "branch.feature/test.remote" ? "." : null),
+        resolveCommit: (_cwd, ref) =>
+          Effect.succeed(
+            ["refs/heads/feature/test", "refs/remotes/origin/feature/test"].includes(ref)
+              ? "local-head"
+              : null,
+          ),
+      },
+      gitHub: {
+        pullRequests: [
+          {
+            number: 1,
+            title: "Tracked branch",
+            url: "https://github.com/t3tools/f5/pull/1",
+            baseRefName: "main",
+            headRefName: "test",
+          },
+          {
+            number: 2,
+            title: "Published feature",
+            url: "https://github.com/t3tools/f5/pull/2",
+            baseRefName: "main",
+            headRefName: "feature/test",
+          },
+        ],
+      },
+    });
+    expect((await Effect.runPromise(manager.status({ cwd }))).pr?.number).toBe(2);
   });
   it("rejects remote metadata when the checked-out branch changes during the lookup", async () => {
     let reads = 0;
@@ -948,7 +996,8 @@ describe("GitManager unit", () => {
     "configures tracking only when reusing %s",
     async (_label, branchName, upstreamWrites) => {
       const worktreePath = "/tmp/f5-existing-main-worktree";
-      const { manager, git } = await makeManager({
+      const pullRequestUrl = "https://github.com/t3tools/f5/pull/42";
+      const { manager, git, github } = await makeManager({
         gitCore: {
           statusDetails: () => Effect.succeed({ ...cleanStatus, branch: branchName }),
           listBranches: () =>
@@ -970,7 +1019,7 @@ describe("GitManager unit", () => {
           pullRequest: {
             number: 42,
             title: "Fork PR",
-            url: "https://github.com/t3tools/f5/pull/42",
+            url: pullRequestUrl,
             baseRefName: "main",
             headRefName: "main",
             isCrossRepository: true,
@@ -986,6 +1035,9 @@ describe("GitManager unit", () => {
 
       expect(result).toMatchObject({ branch: "t3code/pr-42/main", worktreePath });
       expect(git.calls.setBranchUpstream).toHaveLength(upstreamWrites);
+      expect(github.cloneLookups).toEqual(
+        upstreamWrites ? [{ cwd: worktreePath, repository: "contributor/f5", pullRequestUrl }] : [],
+      );
       expect(git.calls.fetchPullRequestBranch).toHaveLength(0);
       expect(git.calls.createWorktree).toHaveLength(0);
     },

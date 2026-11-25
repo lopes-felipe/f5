@@ -118,6 +118,8 @@ export function makeAcpRequestOpenedEvent(input: {
   readonly source: AcpAdapterRawSource;
   readonly method: string;
   readonly rawPayload: unknown;
+  /** The adapter already refused the request; see `RequestOpenedPayload.autoDeclined`. */
+  readonly autoDeclined?: true;
 }): ProviderRuntimeEvent {
   return {
     type: "request.opened",
@@ -131,6 +133,7 @@ export function makeAcpRequestOpenedEvent(input: {
       detail: input.detail,
       ...(input.approvalOptions ? { approvalOptions: input.approvalOptions } : {}),
       args: input.args,
+      ...(input.autoDeclined ? { autoDeclined: true } : {}),
     },
     raw: {
       source: input.source,

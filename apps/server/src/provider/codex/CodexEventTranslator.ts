@@ -20,14 +20,6 @@ import {
   readCodexCommandApprovalOffer,
 } from "../../codex/commandApprovalOffer.ts";
 import { describeMcpElicitation } from "../../codex/mcpElicitation.ts";
-/**
- * CodexAdapterLive - Scoped live implementation for the Codex provider adapter.
- *
- * Wraps `CodexAppServerManager` behind the `CodexAdapter` service contract and
- * maps manager failures into the shared `ProviderAdapterError` algebra.
- *
- * @module CodexAdapterLive
- */
 import {
   type CanonicalRequestType,
   type ProviderEvent,
@@ -55,27 +47,15 @@ import { codexNotificationDisposition } from "@t3tools/shared/codexProtocolManif
 import { Effect, Schema } from "effect";
 
 import {
+  asArray,
+  asObject,
+  asString,
   CODEX_ELICITATION_OPENED_METHOD,
   CODEX_ELICITATION_SETTLED_METHOD,
-} from "../../codexAppServerManager.ts";
+} from "./CodexProtocolHelpers.ts";
 import type { AgentCapabilityState } from "../Layers/claudeAgentBrowser.ts";
 import { CODEX_CHROME_SERVER_NAME } from "../codexChromeIntegration.ts";
 import { CodexChromeSession } from "../codexChromeSession.ts";
-
-export function asObject(value: unknown): Record<string, unknown> | undefined {
-  if (!value || typeof value !== "object") {
-    return undefined;
-  }
-  return value as Record<string, unknown>;
-}
-
-export function asString(value: unknown): string | undefined {
-  return typeof value === "string" ? value : undefined;
-}
-
-export function asArray(value: unknown): unknown[] | undefined {
-  return Array.isArray(value) ? value : undefined;
-}
 
 export function asNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
@@ -1291,6 +1271,15 @@ export function mapToRuntimeEvents(
   }
 
   if (event.method === "turn/completed") {
+    const tier = asString(turn && "serviceTier" in turn ? turn.serviceTier : payload?.serviceTier);
+    const usageSpeed =
+      tier === "fast" || tier === "priority"
+        ? ("fast" as const)
+        : tier === "ultrafast"
+          ? ("ultrafast" as const)
+          : tier === "standard" || tier === "default"
+            ? ("standard" as const)
+            : undefined;
     const rawErrorMessage = asString(asObject(turn?.error)?.message);
     const errorInfo = resolveCodexCompletionErrorInfo({
       message: rawErrorMessage,
@@ -1340,6 +1329,7 @@ export function mapToRuntimeEvents(
           ...(asString(turn?.stopReason) ? { stopReason: asString(turn?.stopReason) } : {}),
           ...(turn?.usage !== undefined ? { usage: turn.usage } : {}),
           ...(asObject(turn?.modelUsage) ? { modelUsage: asObject(turn?.modelUsage) } : {}),
+          ...(usageSpeed ? { usageSpeed } : {}),
           ...(asNumber(turn?.totalCostUsd) !== undefined
             ? { totalCostUsd: asNumber(turn?.totalCostUsd) }
             : {}),

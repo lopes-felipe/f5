@@ -103,6 +103,7 @@ import {
   isStageAlreadyCompletedWith,
   transitionStageCompleted,
   transitionStageError,
+  transitionStagePendingStart,
   transitionStageRunning,
 } from "../workflowEngine/WorkflowStageStateMachine.ts";
 import {
@@ -461,12 +462,11 @@ function withSynthesisPendingStart(
   }
   return {
     ...workflow,
-    synthesis: {
-      ...workflow.synthesis,
-      status: "pending_start",
-      error: null,
+    synthesis: transitionStagePendingStart(
+      workflow.synthesis,
+      workflow.synthesis.threadId,
       updatedAt,
-    },
+    ),
     updatedAt,
   };
 }

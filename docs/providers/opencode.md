@@ -6,7 +6,9 @@ process or an external OpenCode server.
 ## How to
 
 1. Install OpenCode CLI `1.14.19` or newer (below `2.0.0`) so `opencode` is on the server's `PATH`,
-   **or** run an external OpenCode server and copy its URL.
+   **or** run an external OpenCode server and copy its URL (always use `https://` for remote
+   servers; use plain `http://` only for loopback `localhost` URLs, because F5 sends **Server
+   password** in an HTTP Basic `Authorization` header).
 2. Configure your model providers in OpenCode's own settings/environment.
 3. Open **Settings → Providers**, enable OpenCode, and optionally set **Binary path**, **Server
    URL**, or **Server password**.
@@ -23,8 +25,8 @@ process or an external OpenCode server.
 | Environment     | `{}`       | Per-instance environment variables for local managed OpenCode processes    |
 
 You can add multiple OpenCode instances. Instances with distinct **Server URL** values talk to
-independent servers; instances without a **Server URL** each manage their own scoped child server
-process that shuts down cleanly when the instance closes.
+independent external servers; instances without a **Server URL** start one scoped child server
+process per session, owned by that session and shut down when the session closes.
 
 ## Access modes
 
@@ -51,8 +53,10 @@ and the Plan interaction mode toggle are unavailable for OpenCode.
 ## Good to know
 
 > [!NOTE]
-> An external OpenCode server's **Server password** is stored in plain text in F5's server settings
-> on disk (and redacted before settings are sent back to the browser).
+> An external OpenCode server's **Server password** is stored unencrypted in F5's separate
+> file-backed secret store on disk (`settings.json` keeps only a redacted reference, and the
+> password is redacted before settings are sent back to the browser). If you restore only
+> `settings.json`, you will need to enter the password again.
 
 - F5 communicates with OpenCode via `@opencode-ai/sdk/v2` and shares an owning-session abort signal
   across SDK fetches so a server exit cancels pending HTTP calls immediately.

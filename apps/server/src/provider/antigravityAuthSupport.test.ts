@@ -93,6 +93,17 @@ describe("Antigravity launch environment", () => {
     });
     expect(keyless.GEMINI_API_KEY).toBeUndefined();
   });
+  it("disables the CLI's self-update with the value it accepts", () => {
+    const env = antigravityLaunchEnvironment({
+      base,
+      home: "/profile",
+      harness: undefined,
+      browserCommand: "helper",
+      auth: { authMethod: "oauth-personal", apiKey: KEY },
+    });
+    // agy only treats the literal "true" as set; "1" leaves auto-update on.
+    expect(env.AGY_CLI_DISABLE_AUTO_UPDATE).toBe("true");
+  });
   it("names the method in settings.json without any credential", () => {
     const text = antigravityProfileSettings({ authMethod: "gemini-api-key", apiKey: KEY });
     expect(JSON.parse(text)).toEqual({ auth: { type: "gemini-api-key" } });

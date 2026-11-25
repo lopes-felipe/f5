@@ -1581,6 +1581,37 @@ export function runtimeEventToActivities(
         return [];
       }
       const requestKind = requestKindFromCanonicalRequestType(event.payload.requestType);
+      if (event.payload.autoDeclined === true) {
+        // The adapter already refused it, so nothing is pending: a distinct kind keeps it out of
+        // pending approvals, notifications and snooze wake-ups, which key on `approval.requested`.
+        return [
+          {
+            id: event.eventId,
+            createdAt: event.createdAt,
+            tone: "approval",
+            kind: "approval.auto-declined",
+            summary:
+              requestKind === "command"
+                ? "Command refused in a read-only stage"
+                : requestKind === "file-read"
+                  ? "File read refused in a read-only stage"
+                  : requestKind === "file-change"
+                    ? "File change refused in a read-only stage"
+                    : `Operation refused in a read-only stage (${event.payload.requestType})`,
+            payload: {
+              requestId: toApprovalRequestId(event.requestId),
+              ...(requestKind ? { requestKind } : {}),
+              requestType: event.payload.requestType,
+              autoDeclined: true,
+              ...(event.payload.detail
+                ? { detail: truncateApprovalDetail(event.payload.detail) }
+                : {}),
+            },
+            turnId: toTurnId(event.turnId) ?? null,
+            ...maybeSequence,
+          },
+        ];
+      }
       return [
         {
           id: event.eventId,

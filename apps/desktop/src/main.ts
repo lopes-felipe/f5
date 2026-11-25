@@ -71,6 +71,7 @@ import { createAppIpcRegistrar } from "./ipcRegistry";
 import { profilePreviewPartition } from "./profileRuntime";
 import { CaptureShortcut } from "./snapShot/CaptureShortcut";
 import { captureBoundedPage } from "./preview/capture";
+import { withPreviewWake } from "./preview/previewWake";
 import { capturePreviewSnapshotPage } from "./preview/snapshotScript";
 import { PreviewPicker } from "./preview/PreviewPicker";
 import { previewLocationPromptOptions } from "./preview/locationPrompt";
@@ -266,17 +267,6 @@ import {
   type AppActivationEntry,
 } from "./appActivationQueue";
 import { startDesktopAppControl, type DesktopAppRequest } from "@t3tools/shared/desktopAppControl";
-
-const shellEnvironmentStartedAt = performance.now();
-let shellEnvironmentPrepared = false;
-/** Resolves with the capture's duration; the log sink opens later, so bootstrap logs it. */
-const shellEnvironmentReady = syncShellEnvironment().then((prepared) => {
-  shellEnvironmentPrepared = prepared;
-  return performance.now() - shellEnvironmentStartedAt;
-});
-/** Main windows awaiting their first composer-ready marker, by renderer id. */
-const windowCreatedAtByWebContentsId = new Map<number, number>();
-
 import {
   PICK_FOLDER_CHANNEL,
   CONFIRM_CHANNEL,
@@ -289,7 +279,6 @@ import {
   OPEN_THREAD_WINDOW_CHANNEL,
   MAX_DESKTOP_WINDOWS,
   OPEN_THREAD_WINDOW_MIN_INTERVAL_MS,
-  lastOpenThreadWindowAtByRenderer,
   MENU_ACTION_CHANNEL,
   TRACKPAD_SCROLL_CHANNEL,
   UPDATE_STATE_CHANNEL,
@@ -301,7 +290,6 @@ import {
   UPDATE_CLAIM_RECENT_INSTALL_CHANNEL,
   PREVIEW_RECORDING_FRAME_CHANNEL,
   PREVIEW_STATE_CHANNEL,
-  lastPreviewStateEmissionByTabId,
   PREVIEW_TAB_SCOPE_SEPARATOR,
   PREVIEW_WEBVIEW_PREFERENCES,
   PREVIEW_DEFAULT_ZOOM_FACTOR,
@@ -314,6 +302,25 @@ import {
   PREVIEW_AUTOMATION_SUPPORTED_PUNCTUATION_KEYS,
   PREVIEW_AUTOMATION_SUPPORTED_NAMED_KEYS,
 } from "./main/desktopConstants";
+
+const shellEnvironmentStartedAt = performance.now();
+let shellEnvironmentPrepared = false;
+/** Resolves with the capture's duration; the log sink opens later, so bootstrap logs it. */
+const shellEnvironmentReady = syncShellEnvironment().then((prepared) => {
+  shellEnvironmentPrepared = prepared;
+  return performance.now() - shellEnvironmentStartedAt;
+});
+/** Main windows awaiting their first composer-ready marker, by renderer id. */
+const windowCreatedAtByWebContentsId = new Map<number, number>();
+const lastOpenThreadWindowAtByRenderer = new Map<number, number>();
+const lastPreviewStateEmissionByTabId = new Map<
+  string,
+  {
+    readonly ownerWebContentsId: number;
+    readonly stateKey: string;
+    readonly faviconDataUrl: string | null;
+  }
+>();
 const STATE_DIR_CONFIG = resolveDesktopStateDirConfig(process.env);
 const STATE_DIR = STATE_DIR_CONFIG.stateDir;
 const DESKTOP_SCHEME = "t3";
@@ -1801,7 +1808,7 @@ async function runPreviewAutomationAction<T>(
       requireAllowedPreviewPage(tabId, guest);
       markAgentNavigation(tabId);
       try {
-        const value = await run(guest, checkpoint);
+        const value = await withPreviewWake(guest, () => run(guest, checkpoint));
         requireAllowedPreviewPage(tabId, guest);
         return value;
       } finally {
@@ -1838,7 +1845,9 @@ function cancelPreviewAutomation(tabId: string): void {
 async function capturePreviewThumbnail(tabId: string): Promise<string | null> {
   const guest = getPreviewWebContents(tabId);
   if (!guest) return null;
-  const image = await captureBoundedPage(guest, undefined, 3_000).catch(() => null);
+  const image = await withPreviewWake(guest, () =>
+    captureBoundedPage(guest, undefined, 3_000),
+  ).catch(() => null);
   if (!image) return null;
   const size = image.getSize();
   const thumbnail = size.width > 480 ? image.resize({ width: 480 }) : image;
@@ -1930,44 +1939,46 @@ async function previewAutomationSnapshot(
 ): Promise<PreviewAutomationSnapshot> {
   const guest = requirePreviewWebContents(tabId);
   requireAllowedPreviewPage(tabId, guest);
-  const scriptedPage = await capturePreviewSnapshotPage(guest, previewDiagnostics.read(tabId));
-  const popupOpen = (lookupPreviewTabEntry(tabId)?.popupCount ?? 0) > 0;
-  const page = boundSnapshotPageData({
-    ...scriptedPage,
-    ...(popupOpen ? { popupOpen } : {}),
-  });
-  const viewport = normalizePickViewport(
-    await executePreviewJavaScript<unknown>(
-      guest,
-      "(() => ({ width: window.innerWidth, height: window.innerHeight }))()",
-    ),
-  );
-  const rect = viewport
-    ? clampPreviewCaptureRect(
-        { x: 0, y: 0, width: viewport.width, height: viewport.height },
-        viewport,
-      )
-    : null;
-  const image = await captureBoundedPage(guest, rect ?? undefined);
-  const size = image.getSize();
-  const encoded = encodeBoundedPreviewImage(image);
-  return assertSnapshotResponseSize({
-    ...page,
-    ...(save
-      ? {
-          savedScreenshot: await previewRuntime.saveScreenshot(
-            image.toPNG(),
-            size.width,
-            size.height,
-          ),
-        }
-      : {}),
-    screenshot: {
-      mimeType: encoded.mimeType,
-      data: encoded.bytes.toString("base64"),
-      width: encoded.width,
-      height: encoded.height,
-    },
+  return withPreviewWake(guest, async () => {
+    const scriptedPage = await capturePreviewSnapshotPage(guest, previewDiagnostics.read(tabId));
+    const popupOpen = (lookupPreviewTabEntry(tabId)?.popupCount ?? 0) > 0;
+    const page = boundSnapshotPageData({
+      ...scriptedPage,
+      ...(popupOpen ? { popupOpen } : {}),
+    });
+    const viewport = normalizePickViewport(
+      await executePreviewJavaScript<unknown>(
+        guest,
+        "(() => ({ width: window.innerWidth, height: window.innerHeight }))()",
+      ),
+    );
+    const rect = viewport
+      ? clampPreviewCaptureRect(
+          { x: 0, y: 0, width: viewport.width, height: viewport.height },
+          viewport,
+        )
+      : null;
+    const image = await captureBoundedPage(guest, rect ?? undefined);
+    const size = image.getSize();
+    const encoded = encodeBoundedPreviewImage(image);
+    return assertSnapshotResponseSize({
+      ...page,
+      ...(save
+        ? {
+            savedScreenshot: await previewRuntime.saveScreenshot(
+              image.toPNG(),
+              size.width,
+              size.height,
+            ),
+          }
+        : {}),
+      screenshot: {
+        mimeType: encoded.mimeType,
+        data: encoded.bytes.toString("base64"),
+        width: encoded.width,
+        height: encoded.height,
+      },
+    });
   });
 }
 
@@ -2228,14 +2239,17 @@ async function previewAutomationWaitFor(
   // must not queue behind it. Take over still stops the poll loop at its next checkpoint.
   const checkpoint = previewAutomationControl.checkpoint(tabId);
   const deadline = Date.now() + (input.timeoutMs ?? 15_000);
-  while (Date.now() < deadline) {
-    checkpoint.check();
-    if (await executePreviewJavaScript<boolean>(requirePreviewWebContents(tabId), checkScript)) {
-      return;
+  const guest = requirePreviewWebContents(tabId);
+  await withPreviewWake(guest, async () => {
+    while (Date.now() < deadline) {
+      checkpoint.check();
+      if (await executePreviewJavaScript<boolean>(guest, checkScript)) {
+        return;
+      }
+      await waitPreviewAutomationPoll();
     }
-    await waitPreviewAutomationPoll();
-  }
-  throw new Error(`Preview wait timed out after ${input.timeoutMs ?? 15_000}ms.`);
+    throw new Error(`Preview wait timed out after ${input.timeoutMs ?? 15_000}ms.`);
+  });
 }
 
 function writeDesktopStreamChunk(
@@ -4468,7 +4482,7 @@ function registerIpcHandlers(): void {
           // Redirects from an agent's navigation are blocked, never opened externally.
           markAgentNavigation(scopedTabId);
           try {
-            await loadPreviewURL(guest, url);
+            await withPreviewWake(guest, () => loadPreviewURL(guest, url));
           } catch (error) {
             takeover.check();
             throw error;
@@ -4653,8 +4667,6 @@ function createWindow(
     });
     // A page that goes fullscreen fills its own webview instead of the whole F5 window.
     webPreferences.disableHtmlFullscreenWindowResize = true;
-    // Agent-driven previews may be hidden or headless; keep timers and rendering running.
-    webPreferences.backgroundThrottling = false;
     webPreferences.zoomMode = "isolated";
     webPreferences.sandbox = true;
     webPreferences.nodeIntegration = false;

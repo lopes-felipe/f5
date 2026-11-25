@@ -190,6 +190,18 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
             "invalid_response",
           );
         const previous = state.get(formatSourceControlPullRequestKey(ref));
+        if (previous && detail.headRefOid && previous.pr.headRefOid === detail.headRefOid) {
+          const permission = previous.detail.detail.providerDetails;
+          detail = {
+            ...detail,
+            reviewDecision: detail.reviewDecision ?? previous.pr.reviewDecision,
+            ...(detail.state === previous.pr.state &&
+            "viewerCanDeleteBranch" in permission &&
+            detail.viewerCanDeleteBranch === undefined
+              ? { viewerCanDeleteBranch: permission.viewerCanDeleteBranch }
+              : {}),
+          };
+        }
         // Comparison-only reads must not erase checks verified for the same head.
         if (
           detail.checks === undefined &&
@@ -215,7 +227,11 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
               }
             : {}),
           ...(old && old.headRefOid === normalized.headRefOid
-            ? { additions: old.additions, deletions: old.deletions, changedFiles: old.changedFiles }
+            ? {
+                additions: old.additions,
+                deletions: old.deletions,
+                changedFiles: old.changedFiles,
+              }
             : {}),
         };
         if (old && old.headRefOid !== normalized.headRefOid) {
@@ -240,9 +256,12 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
         pendingTracked.delete(pr.key);
         return pr;
       });
-    const refreshOne = (ref: SourceControlPullRequestRef) =>
+    const refreshOne = (ref: SourceControlPullRequestRef, branchPermission = false) =>
       Effect.gen(function* () {
-        const detail = yield* provider.getDetail(ref, { checks: true });
+        const detail = yield* provider.getDetail(ref, {
+          checks: true,
+          ...(ref.provider === "gitlab" ? { branchPermission, review: true } : {}),
+        });
         return yield* saveDetail(ref, detail);
       });
     const refreshNow: PrHubServiceShape["refreshNow"] = (input) =>
@@ -295,7 +314,27 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
               const discoveredRef = { ...ref, number: detail.number };
               const saved = yield* (
                 account.provider === "gitlab" || account.provider === "forgejo"
-                  ? refreshOne(discoveredRef)
+                  ? provider.getDetail(discoveredRef, { checks: true }).pipe(
+                      Effect.flatMap((fresh) =>
+                        saveDetail(discoveredRef, {
+                          ...fresh,
+                          ...(detail.reviewDecision === undefined ||
+                          !fresh.headRefOid ||
+                          detail.headRefOid !== fresh.headRefOid
+                            ? {}
+                            : { reviewDecision: detail.reviewDecision }),
+                          ...(account.provider === "gitlab" &&
+                          fresh.checks?.length === 0 &&
+                          detail.checks?.length &&
+                          fresh.headRefOid === detail.headRefOid
+                            ? {
+                                checks: detail.checks,
+                                checksComplete: detail.checksComplete === true,
+                              }
+                            : {}),
+                        }),
+                      ),
+                    )
                   : saveDetail(discoveredRef, detail)
               ).pipe(Effect.result);
               if (saved._tag === "Failure") failures++;
@@ -358,10 +397,17 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
             Effect.gen(function* () {
               const ref = yield* refFor(input.key, input.accountGeneration),
                 cached = state.get(input.key);
+              const hasRequiredPermission =
+                input.omitBranchPermission ||
+                ref.provider !== "gitlab" ||
+                cached?.pr.state === "open" ||
+                (cached !== undefined &&
+                  "viewerCanDeleteBranch" in cached.detail.detail.providerDetails);
 
               if (
                 input.mode !== "force" &&
                 cached &&
+                hasRequiredPermission &&
                 Date.now() - (detailAttempts.get(input.key) ?? 0) < CACHE_MS
               )
                 return { ...cached.detail, stale: detailErrors.has(input.key) };
@@ -371,9 +417,10 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
                 detailErrors.has(input.key)
               )
                 return yield* detailErrors.get(input.key)!;
-              remember(detailAttempts, input.key, Date.now(), MAX_TRACKED);
+              if (!input.omitBranchPermission)
+                remember(detailAttempts, input.key, Date.now(), MAX_TRACKED);
               const previous = snapshot(),
-                read = yield* refreshOne(ref).pipe(Effect.result);
+                read = yield* refreshOne(ref, !input.omitBranchPermission).pipe(Effect.result);
               if (read._tag === "Failure") {
                 remember(detailErrors, input.key, read.failure, MAX_TRACKED);
                 if (cached)
@@ -542,10 +589,7 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
               id: String(comment.id ?? ""),
               databaseId: null,
               kind:
-                record(comment.position).new_path ||
-                record(comment.position).old_path ||
-                record(comment.inline).path ||
-                comment.path
+                nativeCommentIsInline(comment) || comment.overviewFinding === true
                   ? "review-comment"
                   : "issue-comment",
               author: login(comment.author ?? comment.user)
@@ -560,7 +604,9 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
                 validDate(comment.created_at ?? comment.created_on ?? comment.publishedDate) ??
                 new Date().toISOString(),
               updatedAt: validDate(comment.updated_at ?? comment.updated_on),
-              url: text(comment.html_url) ?? text(record(record(comment.links).html).href),
+              url:
+                text(comment.html_url ?? comment.web_url) ??
+                text(record(record(comment.links).html).href),
               path: null,
               line: null,
               reviewState: null,
@@ -585,12 +631,16 @@ export const makeForgePrHubService = (account: ForgeAccount, provider: ForgeProv
           return value;
         }),
       );
-    const readThreads = (input: { key: string; accountGeneration?: string | undefined }) =>
+    const readThreads = (input: {
+      key: string;
+      accountGeneration?: string | undefined;
+      mode?: "force" | "if_stale" | undefined;
+    }) =>
       gate.withPermits(1)(
         Effect.gen(function* () {
           const ref = yield* refFor(input.key, input.accountGeneration),
             cached = threadsCache.get(input.key);
-          if (cached && Date.now() - cached.attemptedAt < CACHE_MS) {
+          if (input.mode !== "force" && cached && Date.now() - cached.attemptedAt < CACHE_MS) {
             if (cached.value) return { threads: cached.value, stale: cached.failed };
             if (cached.error) return yield* cached.error;
           }
