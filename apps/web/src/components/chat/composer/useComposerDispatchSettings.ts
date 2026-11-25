@@ -20,7 +20,7 @@ import {
 
 import { type AppSettings, resolveThreadTitleModel } from "~/appSettings";
 import {
-  getCustomModelOptionsByProvider,
+  getComposerModelOptionsByInstance,
   providerKindForImportedThread,
   resolveComposerModelOptionsSeed,
 } from "~/components/ChatView.logic";
@@ -28,13 +28,11 @@ import { supportsClaudeTraitsControls } from "~/components/chat/ClaudeTraitsPick
 import {
   getComposerEffortDescriptors,
   getComposerProviderState,
-  renderProviderTraitsMenuContent,
   renderProviderTraitsPicker,
 } from "~/components/chat/composerProviderState";
 import { type ComposerThreadDraftState, useComposerDraftStore } from "~/composerDraftStore";
 import { getCurrentEffort } from "~/favoritePresets";
 import {
-  getCustomModelOptionsByInstance,
   type ModelCatalogSettings,
   resolveComposerFallbackModel,
   resolveFallbackModelOptions,
@@ -254,26 +252,16 @@ export function useComposerDispatchSettings(input: ComposerDispatchSettingsInput
     );
   const selectedProviderDriver = ProviderDriverKind.make(selectedProvider);
   const selectedProviderInstanceId = selectedProviderEntry?.instanceId ?? NO_PROVIDER_INSTANCE_ID;
-  const modelOptionsByProvider = useMemo(
+  const modelOptionsByInstance = useMemo(
     () =>
-      getCustomModelOptionsByProvider(settings, serverConfig?.providers, serverConfig?.settings),
-    [settings, serverConfig?.providers, serverConfig?.settings],
+      getComposerModelOptionsByInstance(
+        settings,
+        unifiedSettings,
+        serverConfig?.providers,
+        serverConfig?.settings,
+      ),
+    [settings, serverConfig?.providers, serverConfig?.settings, unifiedSettings],
   );
-  const modelOptionsByInstance = useMemo(() => {
-    const providers = serverConfig?.providers ?? EMPTY_PROVIDER_STATUSES;
-    const next = new Map(getCustomModelOptionsByInstance(unifiedSettings, providers));
-    for (const provider of providers) {
-      if (provider.instanceId !== defaultInstanceIdForDriver(provider.driver)) continue;
-      const legacyOptions = modelOptionsByProvider[provider.driver as ProviderKind] ?? [];
-      const instanceOptions = next.get(provider.instanceId) ?? [];
-      const seen = new Set(instanceOptions.map((option) => option.slug));
-      next.set(provider.instanceId, [
-        ...instanceOptions,
-        ...legacyOptions.filter((option) => !seen.has(option.slug)),
-      ]);
-    }
-    return next;
-  }, [modelOptionsByProvider, serverConfig?.providers, unifiedSettings]);
   const selectedProviderPickerOptions =
     modelOptionsByInstance.get(selectedProviderInstanceId) ?? [];
   const baseThreadModel = useMemo(() => {
@@ -450,25 +438,6 @@ export function useComposerDispatchSettings(input: ComposerDispatchSettingsInput
       undefined,
     [selectedProvider, selectedProviderModelOptionsForDispatch],
   );
-  const genericProviderTraitsMenuContent = useMemo(() => {
-    if (selectedProvider === "codex" || selectedProvider === "claudeAgent") {
-      return null;
-    }
-    return renderProviderTraitsMenuContent({
-      provider: selectedProviderDriver,
-      draftId: threadId,
-      model: selectedModel,
-      models: selectedProviderModels,
-      modelOptions: selectedProviderModelOptions,
-    });
-  }, [
-    selectedModel,
-    selectedProvider,
-    selectedProviderDriver,
-    selectedProviderModelOptions,
-    selectedProviderModels,
-    threadId,
-  ]);
   const genericProviderTraitsPicker = useMemo(() => {
     if (selectedProvider === "codex" || selectedProvider === "claudeAgent") {
       return null;
@@ -581,7 +550,6 @@ export function useComposerDispatchSettings(input: ComposerDispatchSettingsInput
     selectedProviderModelOptions,
     selectedProviderModelOptionsForDispatch,
     selectedComposerEffort,
-    genericProviderTraitsMenuContent,
     genericProviderTraitsPicker,
     isClaudeUltrathink,
     showClaudeTraitsControls,

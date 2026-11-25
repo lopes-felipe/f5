@@ -10,6 +10,10 @@ export interface WorkspaceWrite {
   readonly operationId?: string;
   readonly version?: number;
   readonly observation?: boolean;
+  /** Revalidate the checkout just before opening the write transaction. */
+  readonly verifyObservation?: Effect.Effect<void, OrchestrationCommandInvariantError>;
+  /** Persist the preparation records alongside the metadata event. */
+  readonly commitObservation?: Effect.Effect<void, OrchestrationCommandInvariantError>;
 }
 export const WorkspaceWriteContext = ServiceMap.Reference<WorkspaceWrite | null>(
   "f5/WorkspaceWriteContext",

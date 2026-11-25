@@ -468,3 +468,50 @@ describe("CodexTraitsPicker", () => {
     }
   });
 });
+
+describe("CodexTraitsPicker controlled value", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    useComposerDraftStore.setState({
+      draftsByThreadId: {},
+      draftThreadsByThreadId: {},
+      projectDraftThreadIdByProjectId: {},
+    });
+    useModelPreferencesStore.setState({
+      lastProvider: null,
+      lastModelByProvider: {},
+      lastModelOptions: null,
+      lastWorkflowProviderBySlot: {},
+      recentModelSelections: [],
+    });
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it("reports picks to its owner without touching drafts or recent models", async () => {
+    const onModelOptionsChange = vi.fn();
+    const screen = await render(
+      <CodexTraitsPicker
+        model="gpt-5.6-sol"
+        modelOptions={{ reasoningEffort: "high" }}
+        onModelOptionsChange={onModelOptionsChange}
+      />,
+    );
+    try {
+      await page.getByRole("button").click();
+      await page.getByRole("menuitemradio", { name: /^Medium/ }).click();
+
+      expect(onModelOptionsChange).toHaveBeenCalledWith(
+        expect.objectContaining({ reasoningEffort: "medium" }),
+      );
+      expect(useComposerDraftStore.getState().draftsByThreadId).toEqual({});
+      const preferences = useModelPreferencesStore.getState();
+      expect(preferences.lastModelOptions).toBeNull();
+      expect(preferences.recentModelSelections).toEqual([]);
+    } finally {
+      await screen.unmount();
+    }
+  });
+});

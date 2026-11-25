@@ -97,7 +97,7 @@ export function forgeTracked(
     primaryReason: "Provider status; review and merge requirements must be verified on the forge.",
     nextAction: state === "open" ? "Review pull request" : "No action needed",
     checkRollup,
-    reviewDecision: "none",
+    reviewDecision: detail.reviewDecision ?? "none",
     mergeable: raw.has_conflicts === true ? "conflicting" : "unknown",
     mergeStateStatus: "UNKNOWN",
     mergePermission: "unknown",
@@ -161,6 +161,9 @@ export function forgeDetail(pr: TrackedPullRequest, detail: ForgeDetail): PrHubD
           { provider: "github" }
         >),
         headRefOid: detail.headRefOid ?? null,
+        ...(detail.viewerCanDeleteBranch === undefined
+          ? {}
+          : { viewerCanDeleteBranch: detail.viewerCanDeleteBranch }),
       },
       title: pr.title,
       body: detail.body,
@@ -222,8 +225,10 @@ export function forgeReviewThreads(
           comment.path ||
           record(value.threadContext).filePath),
     );
-    if (!inline.length) return [];
-    const first = inline[0]!;
+    const gitLab = provider.kind === "gitlab";
+    if (!inline.length && !(gitLab && value.overviewFinding === true)) return [];
+    const first = inline[0] ?? comments[0]!;
+    const replies = gitLab ? comments : inline;
     const position = record(first.position),
       location = record(first.inline),
       context = record(value.threadContext);
@@ -245,7 +250,10 @@ export function forgeReviewThreads(
         id: String(value.id ?? first.id),
         isResolved:
           value.resolved === true ||
-          inline.every((comment) => comment.resolvable === true && comment.resolved === true),
+          (gitLab
+            ? first.resolved === true
+            : inline.every((comment) => comment.resolvable === true && comment.resolved === true)),
+        ...(gitLab ? { isOutdated: value.isOutdated === true } : {}),
         path,
         line,
         originalLine: line,
@@ -259,7 +267,7 @@ export function forgeReviewThreads(
           provider.forgeCapabilities.review.resolve &&
           value.canResolve !== false &&
           value.viewerCanUnresolve !== false,
-        comments: inline.map((comment) => ({
+        comments: replies.map((comment) => ({
           id: String(comment.id),
           ...(typeof comment.canEdit === "boolean" ? { canEdit: comment.canEdit } : {}),
           url: text(comment.html_url ?? comment.web_url) ?? "",
@@ -274,7 +282,7 @@ export function forgeReviewThreads(
             text(comment.body) ?? text(record(comment.content).raw) ?? text(comment.content) ?? "",
           createdAt: text(comment.created_at ?? comment.created_on ?? comment.publishedDate),
           updatedAt: text(comment.updated_at ?? comment.updated_on),
-          outdated: comment.outdated === true,
+          outdated: comment.outdated === true || (gitLab && value.isOutdated === true),
           diffHunk: text(comment.diff_hunk),
         })),
       },
