@@ -2877,6 +2877,10 @@ layer("upstream ports service", (it) => {
         .pipe(Effect.flip);
       assert.include(error.message, "https://github.com/someone/else.git");
       assert.notInclude(error.message, token);
+      const conflict = yield* service.addRemote(PROJECT_ID).pipe(Effect.flip);
+      assert.strictEqual(conflict.code, "conflict");
+      assert.include(conflict.message, "https://github.com/someone/else.git");
+      assert.notInclude(conflict.message, token);
     }),
   );
 

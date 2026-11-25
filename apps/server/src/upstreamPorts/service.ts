@@ -4566,7 +4566,10 @@ export function makeUpstreamPortsService(
           .remoteUrl(context.cwd, config.remote)
           .pipe(Effect.mapError(internal));
         if (existing !== null)
-          return yield* fail("conflict", `A ${config.remote} remote already exists (${existing}).`);
+          return yield* fail(
+            "conflict",
+            `A ${config.remote} remote already exists (${stripRemoteUrlCredentials(existing)}).`,
+          );
         yield* git
           .addRemote(context.cwd, config.remote, config.repository)
           .pipe(Effect.mapError(internal));
