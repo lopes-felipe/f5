@@ -1738,6 +1738,7 @@ async function waitForProductionStyles(): Promise<void> {
 async function waitForElement<T extends Element>(
   query: () => T | null,
   errorMessage: string,
+  timeout = 8_000,
 ): Promise<T> {
   let element: T | null = null;
   await vi.waitFor(
@@ -1746,7 +1747,7 @@ async function waitForElement<T extends Element>(
       expect(element, errorMessage).toBeTruthy();
     },
     {
-      timeout: 8_000,
+      timeout,
       interval: 16,
     },
   );
@@ -1786,10 +1787,11 @@ async function waitForComposerShell(): Promise<HTMLElement> {
   );
 }
 
-async function waitForSendButton(): Promise<HTMLButtonElement> {
+async function waitForSendButton(timeout?: number): Promise<HTMLButtonElement> {
   return waitForElement(
     () => document.querySelector<HTMLButtonElement>('button[aria-label="Send message"]'),
     "Unable to find send button.",
+    timeout,
   );
 }
 
@@ -1839,13 +1841,14 @@ function getStartImplementationRequests(): WsRequestEnvelope["body"][] {
   );
 }
 
-async function waitForButtonByText(text: string): Promise<HTMLButtonElement> {
+async function waitForButtonByText(text: string, timeout?: number): Promise<HTMLButtonElement> {
   return waitForElement(
     () =>
       Array.from(document.querySelectorAll("button")).find(
         (button) => button.textContent?.trim() === text,
       ) as HTMLButtonElement | null,
     `Unable to find ${text} button.`,
+    timeout,
   );
 }
 
@@ -10041,7 +10044,7 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
-  it("recovers a draft first send after reconnect when snapshot proves acceptance", async () => {
+  it("automatically resends a draft first send after reconnect with the same IDs", async () => {
     const sentText = "Recover this first send";
     let dispatchedMessageId: MessageId | null = null;
 
@@ -10069,6 +10072,7 @@ describe("ChatView timeline (full app)", () => {
         nextFixture.resolveWsRequest = (body, _client) => {
           const command = getSubmittedTurnCommand(body);
           if (!command) return null;
+          if (getDispatchCommandRequests("thread.turn.start").length > 1) return null;
 
           dispatchedMessageId = command.message?.messageId ?? null;
           nextFixture.snapshot = createSnapshotForTargetUser({
@@ -10083,7 +10087,7 @@ describe("ChatView timeline (full app)", () => {
     try {
       useComposerDraftStore.getState().setPrompt(THREAD_ID, sentText);
 
-      const sendButton = await waitForSendButton();
+      const sendButton = await waitForSendButton(16_000);
       await vi.waitFor(
         () => {
           expect(sendButton.disabled).toBe(false);
@@ -10095,6 +10099,12 @@ describe("ChatView timeline (full app)", () => {
       await vi.waitFor(
         () => {
           expect(dispatchedMessageId).not.toBeNull();
+          const [original, replay] = getDispatchCommandRequests("thread.turn.start");
+          expect(replay).toEqual(original);
+          expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(2);
+          expect(
+            usePendingTurnDispatchStore.getState().pendingByThreadId[THREAD_ID],
+          ).toBeUndefined();
           expect(useRecoveryStateStore.getState().recoveryEpoch).toBeGreaterThan(0);
           const recoveredThread = useStore
             .getState()
@@ -10183,7 +10193,7 @@ describe("ChatView timeline (full app)", () => {
     },
   );
 
-  it.each(["transport", "rejected"] as const)(
+  it.each(["accepted", "rejected"] as const)(
     "shows recovery actions after reconnect and retries the original command: %s",
     async (outcome) => {
       const sentText = "Retry this pending send";
@@ -10216,13 +10226,10 @@ describe("ChatView timeline (full app)", () => {
             if (!command) return null;
             firstCommandId ??= command.commandId ?? null;
             firstMessageId ??= command.message?.messageId ?? null;
-            if (
-              outcome === "rejected" &&
-              getDispatchCommandRequests("thread.turn.start").length > 1
-            ) {
-              return { type: "error", message: "Admission rejected" };
+            if (getDispatchCommandRequests("thread.turn.start").length <= 3) {
+              return { type: "close" };
             }
-            return { type: "close" };
+            return outcome === "rejected" ? { type: "error", message: "Admission rejected" } : null;
           };
         },
       });
@@ -10239,7 +10246,8 @@ describe("ChatView timeline (full app)", () => {
         );
         sendButton.click();
 
-        const retryButton = await waitForButtonByText("Retry send");
+        await waitForButtonByText("Retry send", 16_000);
+        expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(3);
         await vi.waitFor(
           () => {
             expect(firstMessageId).not.toBeNull();
@@ -10250,13 +10258,15 @@ describe("ChatView timeline (full app)", () => {
           { timeout: 12_000, interval: 16 },
         );
 
-        retryButton.click();
+        const retryButton = page.getByRole("button", { name: "Retry send", exact: true });
+        await expect.element(retryButton, { timeout: 8_000 }).toBeEnabled();
+        await retryButton.click();
 
         await vi.waitFor(
           () => {
             const dispatchRequests = getDispatchCommandRequests("thread.turn.start");
-            expect(dispatchRequests).toHaveLength(2);
-            const retriedCommand = dispatchRequests[1]?.command as
+            expect(dispatchRequests).toHaveLength(4);
+            const retriedCommand = dispatchRequests[3]?.command as
               | {
                   commandId?: string;
                   message?: { messageId?: MessageId };
@@ -10276,9 +10286,9 @@ describe("ChatView timeline (full app)", () => {
               );
               return;
             }
-            expect(useComposerDraftStore.getState().getDraftThread(THREAD_ID)?.promoting).toBe(
-              true,
-            );
+            expect(
+              usePendingTurnDispatchStore.getState().pendingByThreadId[THREAD_ID]?.acceptedSequence,
+            ).not.toBeNull();
             expect(document.querySelectorAll(`[data-message-id="${firstMessageId}"]`)).toHaveLength(
               1,
             );
@@ -10351,7 +10361,7 @@ describe("ChatView timeline (full app)", () => {
       );
       sendButton.click();
 
-      await waitForButtonByText("Restore draft");
+      await waitForButtonByText("Restore draft", 16_000);
       await mounted.router.navigate({
         to: "/$threadId",
         params: { threadId: otherThreadId },
@@ -10429,7 +10439,7 @@ describe("ChatView timeline (full app)", () => {
       const implementButton = await waitForButtonByText("Implement");
       implementButton.click();
 
-      await waitForButtonByText("Retry send");
+      await waitForButtonByText("Retry send", 16_000);
       expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.interactionMode).toBe(
         "default",
       );
