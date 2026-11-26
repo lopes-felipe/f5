@@ -239,6 +239,9 @@ export const SETTINGS_ITEM_ROUTES = defineItemRoutes({
   "appearance.palette": {
     category: "appearance",
   },
+  "appearance.app-icon": {
+    category: "appearance",
+  },
   "appearance.diff-colors": {
     category: "appearance",
   },

@@ -2608,6 +2608,8 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
     const serverConfig = yield* Effect.service(ServerConfig);
     const shutdown = yield* Effect.serviceOption(ServerShutdown);
     const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make(PROVIDER);
+    // `${env:…}` in MCP definitions resolve from the environment Codex runs in.
+    const mcpInterpolationEnv = { environment: options?.processEnvironment ?? process.env };
     const nativeEventLogger =
       options?.nativeEventLogger ??
       (options?.nativeEventLogPath !== undefined
@@ -3084,6 +3086,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             ? {
                 mcpServers:
                   translateMcpForCodex(providerMcpServers, {
+                    ...mcpInterpolationEnv,
                     // F5's own catalogs read their credentials from these variables.
                     ownBearerEnvVars: new Set(Object.keys(mcpEnvironment ?? {})),
                   }) ?? {},
@@ -3117,7 +3120,9 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             Effect.sync(() => {
               launchedMcpConfigKeys.set(
                 input.threadId,
-                stableMcpConfigKey(translateMcpForCodex(baseProviderMcpServers) ?? {}),
+                stableMcpConfigKey(
+                  translateMcpForCodex(baseProviderMcpServers, mcpInterpolationEnv) ?? {},
+                ),
               );
             }),
           ),
@@ -3474,11 +3479,12 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
               issue: mcpConfigErrorMessage(cause),
             }),
         });
+        // What Codex is given: enabled servers whose variables resolve. A server left out
+        // for an unset variable is neither expected nor owned by this reload.
+        const translated = translateMcpForCodex(mcpServers, mcpInterpolationEnv) ?? {};
+        const desired = Object.keys(translated);
         const launched = launchedMcpConfigKeys.get(threadId);
-        if (
-          launched !== undefined &&
-          launched !== stableMcpConfigKey(translateMcpForCodex(mcpServers) ?? {})
-        ) {
+        if (launched !== undefined && launched !== stableMcpConfigKey(translated)) {
           // This also applies after login: never reload a launch config that differs
           // from the saved snapshot. Credentials take effect at the safe restart boundary.
           return restartRequiredMcpReload("Codex fixes its MCP servers when the session starts.");
@@ -3488,7 +3494,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           catch: (cause) => toRequestError(threadId, "config/mcpServer/reload", cause),
         });
         return summarizeMcpReload({
-          desired: Object.keys(filterEnabledMcpServers(mcpServers)),
+          desired,
           observed:
             statuses === undefined
               ? undefined
@@ -3497,7 +3503,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                     const decoded = decodeCodexMcpServerStatus(status);
                     return decoded ? [decoded] : [];
                   }),
-                  new Set(Object.keys(filterEnabledMcpServers(mcpServers))),
+                  new Set(desired),
                   builtInMcpServerNames(threadId),
                 ),
           sameName: codexServerNamesMatch,

@@ -104,6 +104,7 @@ import {
   PreviewMcpHttpServerLive,
 } from "./mcp/PreviewMcpHttpServer";
 import { McpHub, McpHubLive } from "./mcp/hub/McpHub";
+import { McpHubAuth, McpHubAuthLive } from "./mcp/hub/McpHubAuth";
 import { StorageMaintenanceLive } from "./storage/StorageMaintenance";
 import { PrHubAdvisoryServiceLive } from "./prHub/Layers/PrHubAdvisoryService";
 import { PrHubFederationLive, PrHubFederatedServiceLive } from "./prHub/Layers/PrHubFederation";
@@ -174,6 +175,7 @@ export function makeServerProviderLayer(): Layer.Layer<
   | ComputerAutomationBroker
   | PreviewMcpHttpServer
   | McpHub
+  | McpHubAuth
   | ThreadMcpBroker
   | ProviderRegistry
   | ProviderUpdateAdvisor
@@ -236,6 +238,13 @@ export function makeServerProviderLayer(): Layer.Layer<
     const mcpHubLayer = McpHubLive.pipe(
       Layer.provide(previewMcpHttpServerLayer),
       Layer.provide(codexMcpEventBusLayer),
+      Layer.provide(ServerSecretStoreLive),
+    );
+    // Sign-in shares the hub's token storage, so a new token reaches open connections.
+    const mcpHubAuthLayer = McpHubAuthLive.pipe(
+      Layer.provide(mcpHubLayer),
+      Layer.provide(codexMcpEventBusLayer),
+      Layer.provide(projectMcpConfigServiceLayer),
     );
     const providerInstanceRegistryLayer = ProviderInstanceRegistryHydrationLive.pipe(
       Layer.provide(mcpHubLayer),
@@ -333,6 +342,7 @@ export function makeServerProviderLayer(): Layer.Layer<
       computerAutomationBrokerLayer,
       previewMcpHttpServerLayer,
       mcpHubLayer,
+      mcpHubAuthLayer,
       ThreadMcpBrokerLive,
     );
   }).pipe(Effect.provide(ProviderTerminalEventRepositoryLive), Layer.unwrap);

@@ -1,4 +1,5 @@
 import { ServerSecretStore } from "../auth/Services/ServerSecretStore.ts";
+import { readMcpEnvironmentIssues } from "@t3tools/shared/mcpInterpolation";
 import {
   collectMcpSecrets,
   resolveMcpSecrets,
@@ -313,7 +314,10 @@ const makeProjectMcpConfigService = Effect.gen(function* () {
       return {
         ...(stored.version ? { version: stored.version } : {}),
         servers: stored.servers,
-        issues: yield* commonIssues(stored.servers),
+        issues: [
+          ...(yield* commonIssues(stored.servers)),
+          ...readMcpEnvironmentIssues(stored.servers, process.env),
+        ],
       };
     });
 
@@ -335,6 +339,7 @@ const makeProjectMcpConfigService = Effect.gen(function* () {
           ...readMcpValidationIssues(stored.servers),
           ...readMcpLayerNameConflicts(common.servers, stored.servers),
           ...callbackIssue(merged, [projectId], [stored.projectName ?? projectId]),
+          ...readMcpEnvironmentIssues(stored.servers, process.env),
         ],
       };
     });
@@ -504,7 +509,9 @@ const makeProjectMcpConfigService = Effect.gen(function* () {
           Effect.map((oauthCallbackConfig) => ({
             projectId,
             effectiveVersion: stored.effectiveVersion,
-            servers: translateMcpForCodex(stored.servers) ?? {},
+            // Admin clients pool by config version, so resolve `${env:…}` the same way the
+            // status paths do when no account environment is at hand.
+            servers: translateMcpForCodex(stored.servers, { environment: process.env }) ?? {},
             ...(oauthCallbackConfig.port ? { oauthCallbackPort: oauthCallbackConfig.port } : {}),
             ...(oauthCallbackConfig.url ? { oauthCallbackUrl: oauthCallbackConfig.url } : {}),
           })),

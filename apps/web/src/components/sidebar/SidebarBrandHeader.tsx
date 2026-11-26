@@ -1,6 +1,7 @@
 import { useRouter } from "@tanstack/react-router";
 import { ArrowLeftIcon, ArrowRightIcon, TriangleAlertIcon } from "lucide-react";
 
+import { appIconUrl, useAppIcon } from "../../appIcon";
 import { APP_STAGE_LABEL, APP_VERSION } from "../../branding";
 import { isElectron } from "../../env";
 import { shortcutLabelForCommand, useServerKeybindings } from "../../keybindings";
@@ -18,11 +19,12 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { DesktopUpdateInstalledNotesDialog, DesktopUpdatePill } from "./DesktopUpdatePill";
 import type { DesktopUpdateController } from "./useDesktopUpdate";
 
-function F5Icon() {
+export function F5Icon() {
+  const { id } = useAppIcon();
   return (
     <img
       alt="F5"
-      src="/icon.png"
+      src={appIconUrl(id, 256)}
       width={24}
       height={24}
       className="size-6 shrink-0 object-contain"

@@ -17,13 +17,25 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 import { stableMcpServersJson } from "@t3tools/shared/mcpConfig";
+import {
+  describeMcpInterpolationSkip,
+  interpolateMcpServers,
+} from "@t3tools/shared/mcpInterpolation";
 import { Effect, Layer, Option, ServiceMap } from "effect";
 
 import { CodexMcpEventBus } from "../../codex/CodexMcpEventBus.ts";
+import { ServerSecretStore } from "../../auth/Services/ServerSecretStore.ts";
 import { readBearerToken } from "../jsonRpcHttp.ts";
 import { PreviewMcpHttpServer, type PreviewMcpHttpServerShape } from "../PreviewMcpHttpServer.ts";
 import { McpHubSlot } from "./McpHubEndpoint.ts";
 import { McpHubUpstream } from "./McpHubUpstream.ts";
+import {
+  McpOAuthProvider,
+  mcpUsesStaticAuthorization,
+  mcpOAuthServerUrl,
+  secretStoreOAuthStorage,
+  type McpOAuthStorage,
+} from "./McpOAuth.ts";
 
 export const MCP_HUB_PATH_PREFIX = "/mcp/user/";
 const STATUS_DEBOUNCE_MS = 250;
@@ -98,6 +110,18 @@ export interface McpHubShape {
   readonly status: (projectId?: ProjectId) => ReadonlyArray<McpHubServerStatus>;
   readonly reconnect: (serverName: string, projectId?: ProjectId) => Promise<number>;
   readonly readStderrTail: (serverName: string, projectId?: ProjectId) => string | undefined;
+  /** Where remote servers' OAuth tokens live; shared with sign-in so both see one cache. */
+  readonly oauthStorage?: McpOAuthStorage | undefined;
+  /** Reconnects every connection that signs in with this OAuth record (see `mcpOAuthKey`). */
+  readonly reconnectOAuth: (oauthKey: string) => Promise<number>;
+  /**
+   * The account environment of a live session using the server (in the project when
+   * given), so sign-in resolves `${env:…}` the way that session does.
+   */
+  readonly accountEnvironment: (
+    serverName: string,
+    projectId?: ProjectId,
+  ) => NodeJS.ProcessEnv | undefined;
   readonly close: () => Promise<void>;
 }
 
@@ -121,6 +145,8 @@ interface UpstreamEntry {
   readonly id: string;
   /** Live attachments: slot id → who uses it. */
   readonly users: Map<string, { projectId?: ProjectId | undefined; provider: ProviderKind }>;
+  /** The account environment of the session that created the connection. */
+  readonly environment: NodeJS.ProcessEnv;
 }
 
 export interface McpHubOptions {
@@ -130,6 +156,8 @@ export interface McpHubOptions {
   readonly makeUpstream?: (
     options: ConstructorParameters<typeof McpHubUpstream>[0],
   ) => McpHubUpstream;
+  /** OAuth token storage for remote servers; without it they only use static credentials. */
+  readonly oauthStorage?: McpOAuthStorage;
 }
 
 export function makeMcpHub(options: McpHubOptions): McpHubShape {
@@ -193,12 +221,20 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
     const existing = upstreams.get(key);
     if (existing) return existing;
     const make = options.makeUpstream ?? ((value) => new McpHubUpstream(value));
+    const oauthUrl = mcpOAuthServerUrl(definition);
+    // A server with its own Authorization never gets OAuth: a 401 must not start discovery
+    // that would carry its credentials to other hosts.
+    const authProvider =
+      options.oauthStorage && oauthUrl && !mcpUsesStaticAuthorization(definition, input.environment)
+        ? new McpOAuthProvider({ storage: options.oauthStorage, serverUrl: oauthUrl, definition })
+        : undefined;
     const upstream = make({
       name: serverName,
       definition,
       scope,
       environment: input.environment,
       cwd: input.cwd,
+      ...(authProvider ? { authProvider } : {}),
       onChange: () => {
         markChanged(serverName);
         // A stopped upstream with no users is forgotten so it never leaks.
@@ -212,6 +248,7 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
       key,
       id: createHash("sha256").update(key).digest("base64url").slice(0, 16),
       users: new Map(),
+      environment: input.environment,
     };
     upstreams.set(key, entry);
     return entry;
@@ -229,7 +266,11 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
         });
       return { endpoints, omitted, credentials: [], dispose: async () => {} };
     }
-    for (const [serverName, definition] of Object.entries(input.servers ?? {})) {
+    const interpolated = interpolateMcpServers(input.servers, input.environment);
+    for (const skip of interpolated.skipped)
+      if (!input.reservedNames?.has(skip.name))
+        omitted.push({ serverName: skip.name, reason: describeMcpInterpolationSkip(skip) });
+    for (const [serverName, definition] of Object.entries(interpolated.servers)) {
       if (definition.enabled === false) continue;
       if (input.reservedNames?.has(serverName)) {
         omitted.push({ serverName, reason: "uses a name the provider already has" });
@@ -351,7 +392,34 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
     await Promise.allSettled(allUpstreams.map((entry) => entry.upstream.stop()));
   };
 
-  return { available, attach, status, reconnect, readStderrTail, close };
+  const reconnectOAuth = async (oauthKey: string): Promise<number> => {
+    const entries = [...upstreams.values()].filter(
+      (entry) => entry.users.size > 0 && entry.upstream.oauthKey === oauthKey,
+    );
+    await Promise.allSettled(entries.map((entry) => entry.upstream.reconnect()));
+    return entries.length;
+  };
+
+  const accountEnvironment = (serverName: string, projectId?: ProjectId) => {
+    for (const entry of upstreams.values()) {
+      if (entry.upstream.name !== serverName) continue;
+      for (const user of entry.users.values())
+        if (projectId === undefined || user.projectId === projectId) return entry.environment;
+    }
+    return undefined;
+  };
+
+  return {
+    available,
+    attach,
+    status,
+    reconnect,
+    readStderrTail,
+    oauthStorage: options.oauthStorage,
+    reconnectOAuth,
+    accountEnvironment,
+    close,
+  };
 }
 
 export const McpHubLive = Layer.effect(
@@ -359,8 +427,10 @@ export const McpHubLive = Layer.effect(
   Effect.gen(function* () {
     const listener = Option.getOrUndefined(yield* Effect.serviceOption(PreviewMcpHttpServer));
     const bus = Option.getOrUndefined(yield* Effect.serviceOption(CodexMcpEventBus));
+    const secrets = Option.getOrUndefined(yield* Effect.serviceOption(ServerSecretStore));
     const hub = makeMcpHub({
       listener,
+      ...(secrets ? { oauthStorage: secretStoreOAuthStorage(secrets) } : {}),
       ...(bus
         ? { publish: (payload) => void Effect.runFork(bus.publishStatusUpdated(payload)) }
         : {}),

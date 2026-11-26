@@ -68,6 +68,8 @@ export interface ServerConfigShape extends ServerDerivedPaths {
   readonly devUrl: URL | undefined;
   readonly noBrowser: boolean;
   readonly authToken: string | undefined;
+  /** Master key for secrets encrypted at rest, from desktop main; see `secretStoreKey.ts`. */
+  readonly secretStoreKey?: Uint8Array | undefined;
   /** Reverse proxies whose `X-Forwarded-For` is believed; see `ServerAuthOptions.trustedProxies`. */
   readonly trustedProxies?: ReadonlyArray<string>;
   readonly autoBootstrapProjectFromCwd: boolean;
