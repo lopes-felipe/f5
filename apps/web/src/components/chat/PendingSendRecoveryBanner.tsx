@@ -6,10 +6,12 @@ import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
 
 export const PendingSendRecoveryBanner = memo(function PendingSendRecoveryBanner({
   visible,
+  retryDisabled,
   onRetrySend,
   onRestoreDraft,
 }: {
   visible: boolean;
+  retryDisabled: boolean;
   onRetrySend: () => void;
   onRestoreDraft: () => void;
 }) {
@@ -26,7 +28,7 @@ export const PendingSendRecoveryBanner = memo(function PendingSendRecoveryBanner
         the draft.
       </AlertDescription>
       <AlertAction>
-        <Button size="sm" onClick={onRetrySend}>
+        <Button size="sm" disabled={retryDisabled} onClick={onRetrySend}>
           Retry send
         </Button>
         <Button size="sm" variant="outline" onClick={onRestoreDraft}>

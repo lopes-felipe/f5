@@ -67,7 +67,31 @@ export interface ForgeWorkflowRun {
   readonly attempt: number;
   readonly completed: boolean;
 }
+export type ForgeRepositoryContent =
+  | {
+      readonly kind: "file";
+      readonly path: string;
+      readonly size: number;
+      /** Null when the forge didn't return the content (too large) or it isn't UTF-8 text. */
+      readonly text: string | null;
+      readonly binary: boolean;
+    }
+  | {
+      readonly kind: "directory";
+      readonly path: string;
+      readonly entries: ReadonlyArray<{
+        readonly name: string;
+        readonly type: "file" | "dir" | "symlink" | "submodule";
+        readonly size: number;
+      }>;
+    };
 export interface ForgeProvider extends SourceControlProvider {
+  /** A file or directory listing at `revision` (the default branch when omitted). Read-only. */
+  readonly readRepositoryContent?: (input: {
+    readonly ref: SourceControlPullRequestRef;
+    readonly path: string;
+    readonly revision?: string | undefined;
+  }) => Effect.Effect<ForgeRepositoryContent, SourceControlProviderError>;
   readonly openChangeRequest?: (input: {
     readonly ref: SourceControlPullRequestRef;
     readonly head: string;

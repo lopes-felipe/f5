@@ -33,6 +33,7 @@ Use the reason keys in `rules.json`.
 - Automatic file-link repair
 - Trailing toast icons
 - Environment-configured OTLP export (f5 exports only to a collector set in Settings)
+- Two-row composer redesign (upstream #25869): f5 keeps model, effort, mode, Access and Plan-panel chips inline in a scrollable footer, attachments in the + menu, collapse while scrolling, and a model picker that closes on select
 
 ## Porting defaults
 

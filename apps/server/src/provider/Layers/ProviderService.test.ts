@@ -993,6 +993,38 @@ for (const driver of ["grok", "antigravity"] as const)
     },
   );
 
+it.effect("records how a read-only workflow stage is enforced when its session starts", () => {
+  const codex = makeFakeCodexAdapter();
+  const adapter = {
+    ...codex.adapter,
+    capabilities: { ...codex.adapter.capabilities, enforcesReadOnlyWorkflow: true },
+  };
+  const layer = makeProviderServiceLayerForAdapters(new Map([["codex", adapter]]));
+  return Effect.gen(function* () {
+    const provider = yield* ProviderService;
+    const threadId = asThreadId("read-only-stage");
+    const configured = yield* Stream.runHead(
+      Stream.filter(
+        provider.streamEvents,
+        (event) => event.type === "session.configured" && event.threadId === threadId,
+      ),
+    ).pipe(Effect.forkChild);
+    yield* sleep(20);
+    yield* provider.startSession(threadId, {
+      threadId,
+      provider: "codex",
+      runtimeMode: "full-access",
+      workflowExecutionProfile: "attended-readonly",
+    });
+    assert.equal(codex.startSession.mock.calls[0]?.[0].readOnlyEnforcement, "sandbox");
+    const event = Option.getOrThrow(yield* Fiber.join(configured));
+    assert.deepEqual(event.type === "session.configured" ? event.payload.config : undefined, {
+      f5ReadOnlyEnforcement: "sandbox",
+      f5ReadOnlyEnforcementSummary: "Read-only stage: sandboxed (Codex native sandbox)",
+    });
+  }).pipe(Effect.provide(layer), Effect.scoped);
+});
+
 it.effect("persists Codex fork adoption before a failed final read", () => {
   const codex = makeFakeCodexAdapter();
   const adapter = {

@@ -128,7 +128,10 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
           }),
         ...(preview?.supportsThreadCatalog
           ? {
-              createMcpSession: (threadId: import("@t3tools/contracts").ThreadId) =>
+              createMcpSession: (
+                threadId: import("@t3tools/contracts").ThreadId,
+                access: "full" | "read-only",
+              ) =>
                 Effect.acquireRelease(
                   Effect.try({
                     try: () =>
@@ -136,6 +139,7 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
                         threadId,
                         providerInstanceId: instanceId,
                         catalog: "thread",
+                        threadAccess: access,
                       }),
                     catch: () =>
                       new PiRpcError({

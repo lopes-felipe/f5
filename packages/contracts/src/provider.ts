@@ -29,6 +29,7 @@ import {
   ProviderSandboxMode,
   ProviderStartOptions,
   ProviderUserInputAnswers,
+  ReadOnlyEnforcement,
   WorkflowTurnExecutionProfile,
   RuntimeMode,
   ThreadSessionNotes,
@@ -88,6 +89,8 @@ export const ProviderSessionStartInput = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   interactionMode: Schema.optional(ProviderInteractionMode),
   workflowExecutionProfile: Schema.optional(WorkflowTurnExecutionProfile),
+  /** Resolved by the provider service for read-only workflow stages; adapters launch to match. */
+  readOnlyEnforcement: Schema.optional(ReadOnlyEnforcement),
   /** Started for an automation's turn: nobody is there to answer a consent dialog. */
   unattended: Schema.optional(Schema.Boolean),
   /** Start a new native conversation and discard any previously stored cursor. */

@@ -489,7 +489,7 @@ it("caps per-source auth failure buckets without losing blocked peers", async ()
   expect((await badLogin("198.51.100.1")).status).toBe(429);
 });
 
-it("preserves all active lockouts when every failure bucket is locked out", () => {
+it("preserves all active lockouts when every failure bucket is locked out", async () => {
   const auth = makeServerAuth("secret-token", {
     trustedProxies: ["127.0.0.1"],
     maxFailuresPerSource: 2,
@@ -531,6 +531,18 @@ it("preserves all active lockouts when every failure bucket is locked out", () =
   expect(auth.isHttpRequestAuthenticated(bearerRequest("198.51.100.2", "secret-token"))).toBe(
     false,
   );
+
+  // Overflow bearer failures must also never trip the shared login overflow lockout.
+  const origin = await startAuthServer(auth);
+  const loginRes = await fetch(`${origin}/auth/session`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Forwarded-For": "203.0.113.9",
+    },
+    body: JSON.stringify({ token: "secret-token" }),
+  });
+  expect(loginRes.status).toBe(204);
 });
 
 it("keeps an active login overflow lockout enforced after tracked buckets expire and recovers on expiry", async () => {

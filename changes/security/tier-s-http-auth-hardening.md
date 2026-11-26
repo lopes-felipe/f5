@@ -1,2 +1,2 @@
-- Added defense-in-depth `Content-Security-Policy`, `Referrer-Policy`, and `Permissions-Policy` headers on static HTML responses and enforced Origin checks uniformly across all private HTTP routes.
+- Added defense-in-depth `Content-Security-Policy`, `Referrer-Policy`, and `Permissions-Policy` headers on static HTML responses and enforced Origin checks uniformly across all private `/api/` HTTP routes.
 - Capped active in-memory session and per-source authentication failure tracking maps in the server auth layer to guard against memory exhaustion under repeated login or failed-auth traffic.

@@ -30,6 +30,11 @@ export interface GrokAcpRuntimeInput extends Omit<
   readonly grokSettings: GrokAcpRuntimeGrokSettings | null | undefined;
   readonly environment?: NodeJS.ProcessEnv;
   readonly runtimeMode?: RuntimeMode;
+  /**
+   * A read-only workflow session: Antigravity launches it in its native sandbox. Other ACP
+   * runtimes ignore it.
+   */
+  readonly readOnlySandbox?: boolean;
 }
 
 /**
