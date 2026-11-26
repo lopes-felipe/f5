@@ -97,6 +97,8 @@ export function McpServerDetailSheet(props: {
   readonly onApply: () => void;
   /** Conversations from the last Apply or Reconnect, for this server and account. */
   readonly outcomes?: ReadonlyArray<McpSessionReloadOutcome> | undefined;
+  /** Identifies that Apply or Reconnect result; it changes only when a new one arrives. */
+  readonly outcomesKey?: unknown;
   readonly outcomeAction?: "apply" | "reconnect";
   readonly onReconnected?: (sessions: ReadonlyArray<McpSessionReloadOutcome>) => void;
   readonly onServerChange: (next: McpProjectServersConfig[string]) => Promise<void>;
@@ -107,7 +109,11 @@ export function McpServerDetailSheet(props: {
   const queryClient = useQueryClient();
   const nativeProvidersOnHub = useNativeProvidersOnHub();
   const { copyToClipboard, isCopied } = useCopyToClipboard();
-  const [probe, setProbe] = useState<McpProbeServerResult | null>(null);
+  const [testedProbe, setTestedProbe] = useState<{
+    readonly connection: string;
+    readonly result: McpProbeServerResult;
+  } | null>(null);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [reconnecting, setReconnecting] = useState(false);
   const observed: McpServerStatusEntry | undefined = props.account?.data?.statuses.find(
@@ -115,6 +121,17 @@ export function McpServerDetailSheet(props: {
   );
   const editable = props.kind === "scope";
   const instanceId = props.account?.instanceId ?? ProviderInstanceId.make("codex");
+  // A connection check describes the definition and account it tested; once either
+  // changes (a save, another account), its tools and counts no longer apply.
+  const connectionKey = (
+    name: string,
+    server: McpProjectServersConfig[string],
+    account: ProviderInstanceId,
+  ) => JSON.stringify([name, server, account]);
+  const probe =
+    testedProbe?.connection === connectionKey(props.name, props.server, instanceId)
+      ? testedProbe.result
+      : null;
   const hubSessions = props.hubEntries.reduce((sum, entry) => sum + entry.attachedSessions, 0);
   const conversations = props.account?.data?.sessions?.length ?? 0;
 
@@ -233,9 +250,15 @@ export function McpServerDetailSheet(props: {
                           variant="outline"
                           className="ml-auto"
                           disabled={reconnecting}
+                          title={
+                            props.projectId
+                              ? undefined
+                              : "Restarts this server's connections in every project, including project overrides."
+                          }
                           onClick={() => void reconnectHub()}
                         >
-                          Reconnect
+                          {/* Without a project the hub restarts every connection of this name. */}
+                          {props.projectId ? "Reconnect" : "Reconnect in all projects"}
                         </Button>
                       ) : null}
                     </div>
@@ -310,11 +333,39 @@ export function McpServerDetailSheet(props: {
                   </p>
                 ) : null}
               </section>
+              {props.account && props.projectId ? (
+                <details
+                  className="space-y-2"
+                  onToggle={(event) => setDiagnosticsOpen(event.currentTarget.open)}
+                >
+                  <summary className="cursor-pointer font-medium text-foreground">
+                    Diagnostics
+                  </summary>
+                  {/* Read-only history for the observed conversation, with Copy diagnostics. */}
+                  {diagnosticsOpen ? (
+                    <McpServerInspector
+                      tab="Diagnostics"
+                      provider={props.account.provider}
+                      instanceId={props.account.instanceId}
+                      projectId={props.projectId}
+                      serverName={props.name}
+                      configuredServer={props.server}
+                      observation={props.account.data}
+                      outcomes={[]}
+                    />
+                  ) : null}
+                </details>
+              ) : null}
               <McpTestConnection
                 projectId={props.projectId}
                 instanceId={instanceId}
                 getServer={() => ({ name: props.name, server: props.server })}
-                onResult={setProbe}
+                onResult={(result, tested) =>
+                  setTestedProbe({
+                    connection: connectionKey(tested.name, tested.server, tested.instanceId),
+                    result,
+                  })
+                }
                 onOpenTools={() => props.onTabChange("tools")}
               />
               <McpProviderMatrix
@@ -367,6 +418,7 @@ export function McpServerDetailSheet(props: {
                 </Button>
                 <McpSessionOutcomes
                   outcomes={props.outcomes}
+                  resultKey={props.outcomesKey}
                   action={props.outcomeAction ?? "apply"}
                   projectId={props.projectId}
                   instanceId={instanceId}
@@ -415,9 +467,10 @@ export function McpServerDetailSheet(props: {
                   in the last connection check.
                 </p>
               ) : null}
-              {props.hubEntries.map((entry) =>
+              {props.hubEntries.map((entry, index) =>
                 entry.promptCount !== undefined || entry.resourceCount !== undefined ? (
-                  <p key={entry.connectionScope}>
+                  // Several connections can serve one server (one per session for stdio).
+                  <p key={entry.id ?? `${entry.connectionScope}:${index}`}>
                     F5's connection: {plural(entry.promptCount ?? 0, "prompt")} ·{" "}
                     {plural(entry.resourceCount ?? 0, "resource")}.
                   </p>

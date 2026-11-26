@@ -7,3 +7,6 @@
   scope have their own group, where you can turn them off for the project or override them.
   Servers that Codex or Claude configure themselves, and F5's built-in servers, are in a
   collapsed read-only "Provider-managed servers" section.
+- A server's Overview keeps read-only Diagnostics for the observed conversation. After an Apply
+  in common scope it lists conversations from every project, and each retry runs where that
+  conversation lives.

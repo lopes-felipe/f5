@@ -23,6 +23,7 @@ import { Button } from "../../ui/button";
 import { Input } from "../../ui/input";
 import { Switch } from "../../ui/switch";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../../ui/select";
+import { AppIconPicker } from "../AppIconPicker";
 import { SettingsCard, SettingsRow } from "../SettingsCard";
 import { ThemeSettings } from "../ThemeSettings";
 import { useSettingsRouteContext } from "../SettingsRouteContext";
@@ -286,6 +287,8 @@ export function AppearanceSettings() {
           </div>
         </div>
       </section>
+
+      <AppIconPicker />
 
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="mb-4 flex items-start justify-between gap-3">

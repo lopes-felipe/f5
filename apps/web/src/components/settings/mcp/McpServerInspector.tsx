@@ -67,10 +67,11 @@ export function McpServerInspector(props: {
       className="space-y-3 rounded-md border border-border p-3"
       aria-label={`Inspect ${props.serverName}`}
     >
-      <div className="flex flex-wrap gap-2" role="tablist" aria-label="Server inspector">
-        {props.tab
-          ? null
-          : (["Overview", "Tools", "Resources", "Diagnostics"] as const).map((value) => (
+      <div className="flex flex-wrap gap-2">
+        {/* A fixed section has no tabs to choose, so it has no tablist either. */}
+        {props.tab ? null : (
+          <div className="flex flex-wrap gap-2" role="tablist" aria-label="Server inspector">
+            {(["Overview", "Tools", "Resources", "Diagnostics"] as const).map((value) => (
               <Button
                 key={value}
                 size="xs"
@@ -82,6 +83,8 @@ export function McpServerInspector(props: {
                 {value}
               </Button>
             ))}
+          </div>
+        )}
         <Button
           size="xs"
           variant="outline"
