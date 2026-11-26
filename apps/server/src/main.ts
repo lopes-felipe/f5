@@ -1,10 +1,16 @@
 import { summarizeTraceFile } from "./observability/traceSummary.ts";
+import {
+  buildRedactedSupportBundle,
+  formatDoctorReportText,
+  runDoctorDiagnostics,
+} from "./diagnostics/doctor.ts";
 import { registerShutdown, ServerShutdown, ServerShutdownLive } from "./shutdown.ts";
 import { terminateRunningProcesses } from "./processRunner.ts";
 import { ProfileGithubAccount } from "./git/ProfileGithubAccount";
 import { makeServerSecretStore } from "./auth/Layers/ServerSecretStore";
-import * as ProfileFS from "node:fs/promises";
 import * as NodePath from "node:path";
+import * as ProfileFS from "node:fs/promises";
+import { isLoopbackHost } from "./networkHost.ts";
 import {
   ProfileRegistryStore,
   fallbackDefaultProfile,
@@ -355,7 +361,7 @@ const ServerConfigLive = (input: CliInput) => {
         return yield* new StartupError({
           message:
             `Refusing to bind F5 to non-loopback host '${host}' without authentication. ` +
-            "Set --auth-token (or T3CODE_AUTH_TOKEN), or bind to 127.0.0.1/localhost.",
+            "Set --auth-token (or F5_AUTH_TOKEN / T3CODE_AUTH_TOKEN), or bind to 127.0.0.1/localhost.",
         });
       }
       if (
@@ -557,16 +563,7 @@ const LayerLive = (input: CliInput) =>
 const isWildcardHost = (host: string | undefined): boolean =>
   host === "0.0.0.0" || host === "::" || host === "[::]";
 
-export const isLoopbackHost = (host: string | undefined): boolean => {
-  const normalized =
-    host
-      ?.trim()
-      .toLowerCase()
-      .replace(/^\[|\]$/gu, "") ?? "";
-  return (
-    normalized === "localhost" || normalized === "::1" || /^127(?:\.\d{1,3}){3}$/u.test(normalized)
-  );
-};
+export { isLoopbackHost };
 
 const formatHostForUrl = (host: string): string =>
   host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
@@ -773,7 +770,7 @@ const t3Base = Command.make("t3", {
 });
 
 /** Shared profile selection for local clients; never starts a server or takes its lock. */
-const resolveCliProfileStateDir = Effect.gen(function* () {
+const resolveCliProfileContext = Effect.gen(function* () {
   const parent = yield* t3Base;
   const path = yield* Path.Path;
   const explicitStateDir =
@@ -793,18 +790,28 @@ const resolveCliProfileStateDir = Effect.gen(function* () {
   const defaultStateDir = resolvedStateDir ?? path.join(baseDir, "userdata");
   const profileRef =
     optionStringToTrimmedUndefined(parent.profile) ?? trimToUndefined(process.env.F5_PROFILE);
-  const read = yield* Effect.promise(() => new ProfileRegistryStore(defaultStateDir).read());
+  const registryStore = new ProfileRegistryStore(defaultStateDir);
+  const read = yield* Effect.promise(() => registryStore.read());
   const records = read.ok ? read.registry.profiles : [fallbackDefaultProfile(defaultStateDir)];
   const profile =
     records.find((record) => record.slug === (profileRef ?? "default")) ??
     records.find((record) => record.id === profileRef);
   if (!profile) {
-    return yield* new StartupError({ message: "Unknown F5 profile '" + profileRef + "'." });
+    return yield* new StartupError({ message: `Unknown F5 profile '${profileRef}'.` });
   }
   const vmRefusal = hostExecutionRefusal(profile);
   if (vmRefusal) return yield* new StartupError({ message: vmRefusal });
-  return profileStateDir(defaultStateDir, profile);
+  return {
+    parent,
+    baseDir,
+    defaultStateDir,
+    registryStore,
+    profile,
+    stateDir: profileStateDir(defaultStateDir, profile),
+  };
 });
+
+const resolveCliProfileStateDir = resolveCliProfileContext.pipe(Effect.map((ctx) => ctx.stateDir));
 
 const agentBridgeStdioCommand = Command.make("agent-bridge-stdio", {}).pipe(
   Command.withDescription("Connect an MCP client over STDIO to this profile's F5 Agent Bridge."),
@@ -921,6 +928,147 @@ const appCommand = Command.make("app", {
   ),
 );
 
+async function writeSupportBundleSafely(
+  bundlePath: string,
+  stateDir: string,
+  contents: string,
+): Promise<void> {
+  const resolvedBundle = NodePath.resolve(bundlePath);
+  const resolvedState = NodePath.resolve(stateDir);
+  const isInside = (target: string, dir: string): boolean => {
+    const rel = NodePath.relative(dir, target);
+    return rel === "" || (!rel.startsWith("..") && !NodePath.isAbsolute(rel));
+  };
+  if (isInside(resolvedBundle, resolvedState)) {
+    throw new Error("Refusing to write a support bundle inside the F5 state directory.");
+  }
+  const parentDir = NodePath.dirname(resolvedBundle);
+  const [canonicalParent, canonicalState] = await Promise.all([
+    ProfileFS.realpath(parentDir).catch(() => parentDir),
+    ProfileFS.realpath(resolvedState).catch(() => resolvedState),
+  ]);
+  if (isInside(NodePath.join(canonicalParent, NodePath.basename(resolvedBundle)), canonicalState)) {
+    throw new Error("Refusing to write a support bundle inside the F5 state directory.");
+  }
+  try {
+    await ProfileFS.lstat(resolvedBundle);
+    throw new Error(
+      `Destination '${bundlePath}' already exists; choose a new file path instead of overwriting.`,
+    );
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+  }
+  await ProfileFS.writeFile(resolvedBundle, contents, {
+    mode: 0o600,
+    flag: "wx",
+  });
+}
+
+const doctorCommand = Command.make("doctor", {
+  json: Flag.boolean("json").pipe(
+    Flag.withDescription("Emit the diagnostic report as machine-readable JSON."),
+    Flag.withDefault(false),
+  ),
+  bundle: Flag.string("bundle").pipe(
+    Flag.withDescription("Write a redacted JSON support bundle to a new file path."),
+    Flag.optional,
+  ),
+}).pipe(
+  Command.withDescription(
+    "Inspect F5 environment, SQLite health, provider CLIs, and storage without modifying state.",
+  ),
+  Command.withHandler(({ json, bundle }) =>
+    Effect.gen(function* () {
+      const { parent, baseDir, defaultStateDir, registryStore, profile } =
+        yield* resolveCliProfileContext;
+      const paths = yield* deriveServerPaths({ baseDir, defaultStateDir, profile });
+      const host =
+        optionStringToTrimmedUndefined(parent.host) ??
+        trimToUndefined(process.env.F5_HOST) ??
+        trimToUndefined(process.env.T3CODE_HOST) ??
+        "127.0.0.1";
+      const portRaw =
+        Option.getOrUndefined(parent.port) ??
+        (() => {
+          const raw =
+            trimToUndefined(process.env.F5_PORT) ?? trimToUndefined(process.env.T3CODE_PORT);
+          const parsed = raw ? Number.parseInt(raw, 10) : Number.NaN;
+          return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+        })() ??
+        profile.port ??
+        DEFAULT_PORT;
+      const authToken =
+        optionStringToTrimmedUndefined(parent.authToken) ??
+        trimToUndefined(process.env.F5_AUTH_TOKEN) ??
+        trimToUndefined(process.env.T3CODE_AUTH_TOKEN);
+      const trustedProxiesRaw =
+        optionStringToTrimmedUndefined(parent.trustedProxies) ??
+        trimToUndefined(process.env.F5_TRUSTED_PROXIES) ??
+        trimToUndefined(process.env.T3CODE_TRUSTED_PROXIES) ??
+        "";
+      const trustedProxyCount = trustedProxiesRaw
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0).length;
+
+      const report = yield* Effect.promise(() =>
+        runDoctorDiagnostics({
+          mode: "cli",
+          stateDir: paths.stateDir,
+          dbPath: paths.dbPath,
+          worktreesDir: paths.worktreesDir,
+          logsDir: paths.logsDir,
+          attachmentsDir: paths.attachmentsDir,
+          profilesRoot: registryStore.root,
+          profileSlug: profile.slug,
+          profileName: profile.name,
+          isDefaultProfile: profile.isDefault,
+          host,
+          port: portRaw,
+          authEnabled: Boolean(authToken),
+          trustedProxyCount,
+        }),
+      );
+      const bundlePath = optionStringToTrimmedUndefined(bundle);
+      if (bundlePath) {
+        const payload = buildRedactedSupportBundle({ report });
+        yield* Effect.tryPromise({
+          try: () =>
+            writeSupportBundleSafely(
+              bundlePath,
+              paths.stateDir,
+              `${JSON.stringify(payload, null, 2)}\n`,
+            ),
+          catch: (cause) =>
+            new StartupError({
+              message: `Failed to write support bundle to '${bundlePath}': ${cause instanceof Error ? cause.message : String(cause)}`,
+            }),
+        });
+      }
+      if (json) {
+        process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+      } else {
+        process.stdout.write(formatDoctorReportText(report));
+        if (bundlePath) {
+          process.stdout.write(`Support bundle written to ${bundlePath}\n`);
+        }
+      }
+      if (report.overallStatus === "error") {
+        process.exitCode = 1;
+      }
+    }).pipe(
+      Effect.catchTag("StartupError", (error) =>
+        Effect.sync(() => {
+          process.stderr.write(`${error.message}\n`);
+          process.exitCode = 1;
+        }),
+      ),
+    ),
+  ),
+);
+
 export const t3Cli = t3Base.pipe(
   Command.withDescription("Run the F5 server."),
   Command.withHandler((input) => Effect.scoped(makeServerProgram(input))),
@@ -930,5 +1078,6 @@ export const t3Cli = t3Base.pipe(
     makeThreadCommand(resolveCliProfileStateDir),
     traceCommand,
     appCommand,
+    doctorCommand,
   ]),
 );

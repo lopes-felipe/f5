@@ -350,6 +350,7 @@ import {
   useFavoritePresetShortcuts,
 } from "./chat/useFavoritePresetShortcuts";
 import { useWsConnectionState } from "../wsConnectionState";
+import { UnconfirmedSubmissionError } from "../wsTransport";
 import BranchToolbar, { BranchToolbarRow } from "./BranchToolbar";
 import {
   PlainGroupWorkspacePicker,
@@ -4316,19 +4317,20 @@ export default memo(function ChatView({
         return { ok: true as const, disposition: result.disposition };
       } catch (error) {
         const message = error instanceof Error ? error.message : input.failureMessage;
-        if (isTransportConnectionErrorMessage(message)) {
+        const resendStopped = error instanceof UnconfirmedSubmissionError;
+        if (resendStopped || isTransportConnectionErrorMessage(message)) {
           updateStorePendingTurnDispatch(input.command.threadId, (current) => {
             if (!current || current.commandId !== input.command.commandId) {
               return current;
             }
             return {
               ...current,
-              status: "awaiting-recovery",
-              awaitingRecoveryAfterEpoch: recoveryEpoch,
+              status: resendStopped ? "awaiting-user-action" : "awaiting-recovery",
+              awaitingRecoveryAfterEpoch: resendStopped ? null : recoveryEpoch,
             };
           });
           if (input.command.bootstrap) {
-            setThreadError(input.command.threadId, message);
+            if (!resendStopped) setThreadError(input.command.threadId, message);
           } else {
             toastManager.add({ type: "error", title: message });
           }
@@ -8347,6 +8349,7 @@ export default memo(function ChatView({
       content: (
         <PendingSendRecoveryBanner
           visible
+          retryDisabled={wsInteractionBlocked}
           onRetrySend={() => {
             void onRetryPendingTurnDispatch();
           }}

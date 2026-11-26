@@ -10,8 +10,9 @@ request, cloning, signing in, installing a provider CLI and so on.
 ## `DO_NOT_TRACK`
 
 Set `DO_NOT_TRACK=1` (or `true`, `yes`, `on`) in the environment F5 starts with. On macOS the
-desktop app also reads it from your login shell when it is launched from Finder or the Dock. While
-it is set:
+desktop app also reads it from your login shell when it is launched from Finder or the Dock.
+On Windows, F5 uses the first non-blank value from the launcher environment, the User registry
+scope, or the Machine registry scope, in that order. While it is set:
 
 - provider CLI update lookups run only when you press **Check for updates**
 - the remote model manifest is never fetched, even when it is enabled in Settings

@@ -467,7 +467,11 @@ export function makeServerAuth(
     return authFailuresBySource.get(source)?.blockedUntil ?? timestamp;
   };
 
-  const recordSourceFailure = (source: string, timestamp: number): number => {
+  const recordSourceFailure = (
+    source: string,
+    timestamp: number,
+    options: { readonly allowOverflowLockout: boolean },
+  ): number => {
     pruneExpiredAuthFailures(timestamp);
     pruneOverflowAuthFailures(timestamp);
     const existing = authFailuresBySource.get(source);
@@ -486,8 +490,14 @@ export function makeServerAuth(
         }
       }
       if (evictKey === undefined) {
+        if (!options.allowOverflowLockout) {
+          // Every tracked source has an active lockout; preserve all live
+          // lockouts without spilling bearer failures into the shared login
+          // overflow bucket.
+          return timestamp;
+        }
         // Every tracked source has an active lockout; preserve all live lockouts
-        // and fold overflow traffic into a single bounded overflow bucket.
+        // and fold overflow login traffic into a single bounded overflow bucket.
         overflowAuthFailures = nextFailureBucket(
           overflowAuthFailures,
           timestamp,
@@ -503,7 +513,7 @@ export function makeServerAuth(
   };
 
   const recordAuthFailure = (source: string, timestamp: number): number => {
-    const sourceBlocked = recordSourceFailure(source, timestamp);
+    const sourceBlocked = recordSourceFailure(source, timestamp, { allowOverflowLockout: true });
     globalAuthFailures = nextFailureBucket(globalAuthFailures, timestamp, maxFailuresGlobal);
     return Math.max(sourceBlocked, globalAuthFailures.blockedUntil);
   };
@@ -559,7 +569,7 @@ export function makeServerAuth(
     if (tokenValid(presented)) return true;
     if (limited && !countedTokenFailures.has(request)) {
       countedTokenFailures.add(request);
-      recordSourceFailure(source, timestamp);
+      recordSourceFailure(source, timestamp, { allowOverflowLockout: false });
     }
     return false;
   };

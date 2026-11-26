@@ -1,4 +1,5 @@
 import { DiagnosticsSettings } from "../DiagnosticsSettings";
+import { DoctorDiagnosticsSettings } from "../DoctorDiagnosticsSettings";
 import { KeepAwakeSettings } from "../KeepAwakeSettings";
 import { ServerHealthSettings } from "../ServerHealthSettings";
 import {
@@ -314,6 +315,7 @@ export function GeneralSettings() {
         />
       </SettingsCard>
       <DiagnosticsSettings />
+      <DoctorDiagnosticsSettings />
       <ServerHealthSettings />
     </>
   );

@@ -1,0 +1,2 @@
+- Added `f5 doctor` (`--json` and `--bundle <path>`) CLI command and matching **System health check (Doctor)** card in Settings → General with one-click redacted support bundle export.
+- Improved Settings search to match category names, `F5_*` environment variables, and all built-in providers (`antigravity`, `pi`, `acp`), added result descriptions, a `/` shortcut hint, screen-reader result counts, and keyboard arrow navigation across settings categories.
