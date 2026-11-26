@@ -1,0 +1,1 @@
+- F5 has a new app icon: the name drawn as five coloured lines.
