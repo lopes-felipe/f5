@@ -64,6 +64,8 @@ export function ProviderTraitsPicker(
   props: ProviderTraitsInput & {
     readonly disabled?: boolean | undefined;
     readonly triggerClassName?: string | undefined;
+    /** Tint the trigger with the effort level's colour. Defaults to each picker's own default. */
+    readonly tint?: boolean | undefined;
     readonly onModelOptionsChange: (next: ProviderModelOptions | undefined) => void;
   },
 ) {
@@ -75,6 +77,7 @@ export function ProviderTraitsPicker(
         models={props.models}
         disabled={props.disabled}
         triggerClassName={props.triggerClassName}
+        tint={props.tint}
         modelOptions={props.modelOptions?.codex}
         onModelOptionsChange={(codex) => onModelOptionsChange(codex ? { codex } : undefined)}
       />
@@ -91,6 +94,7 @@ export function ProviderTraitsPicker(
         modelOptions={selections}
         disabled={props.disabled}
         triggerClassName={props.triggerClassName}
+        tint={props.tint}
         hiddenOptions={props.hiddenOptions}
         onModelOptionsChange={fromSelections}
       />
@@ -104,6 +108,7 @@ export function ProviderTraitsPicker(
       modelOptions={selections}
       disabled={props.disabled ?? false}
       {...(props.triggerClassName ? { triggerClassName: props.triggerClassName } : {})}
+      {...(props.tint !== undefined ? { tintTrigger: props.tint } : {})}
       hiddenOptions={props.hiddenOptions}
       onModelOptionsChange={fromSelections}
     />

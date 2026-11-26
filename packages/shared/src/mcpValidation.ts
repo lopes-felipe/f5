@@ -6,12 +6,22 @@ import {
 } from "@t3tools/contracts";
 import { Schema, SchemaIssue } from "effect";
 import { mergeMcpServerLayers, stableMcpServersJson } from "./mcpConfig";
-import { mcpServerNameKey, normalizeServerName } from "./mcpServerName";
+import {
+  mcpServerNameKey,
+  normalizeServerName,
+  readMcpServerNameProblem,
+  sanitizeMcpServerName,
+} from "./mcpServerName";
 
 export {
   MAX_SERVER_NAME_LENGTH,
+  MCP_SERVER_NAME_PATTERN,
+  MCP_SERVER_NAME_RULE,
+  isValidNewMcpServerName,
   mcpServerNameKey,
   normalizeServerName,
+  readMcpServerNameProblem,
+  sanitizeMcpServerName,
   trimToUndefined,
 } from "./mcpServerName";
 
@@ -68,6 +78,12 @@ export function readMcpValidationIssues(servers: McpProjectServersConfig): McpCo
         serverName,
         message: "Server names must contain 1–128 characters.",
       });
+    } else if (readMcpServerNameProblem(serverName)) {
+      issues.push({
+        kind: "compatibility",
+        serverName,
+        message: `Rename '${serverName}' (for example to '${sanitizeMcpServerName(serverName)}'). ${readMcpServerNameProblem(serverName)} The current name keeps working, but providers may rewrite it.`,
+      });
     }
     try {
       Schema.decodeUnknownSync(McpServerWriteDefinition)(server);
@@ -93,6 +109,7 @@ export function readMcpValidationIssues(servers: McpProjectServersConfig): McpCo
 export function validateMcpLayerWrite(
   base: McpProjectServersConfig,
   submitted: McpProjectServersConfig,
+  options?: { readonly inheritedNames?: ReadonlyArray<string> },
 ): McpProjectServersConfig {
   const next = Object.create(null) as Record<string, McpProjectServersConfig[string]>;
   const addedNames = Object.keys(submitted).filter((name) => !Object.hasOwn(base, name));
@@ -110,6 +127,13 @@ export function validateMcpLayerWrite(
     const storedName = unchanged ? name : normalizeServerName(name);
     if (!storedName)
       throw new Error("Server name is required and must be 128 characters or fewer.");
+    // Existing (possibly legacy) names keep working, including exact-name overrides of
+    // inherited servers; new and renamed ones follow the rule.
+    const nameProblem =
+      Object.hasOwn(base, name) || options?.inheritedNames?.includes(storedName)
+        ? undefined
+        : readMcpServerNameProblem(storedName);
+    if (nameProblem) throw new Error(`Invalid MCP server name '${storedName}'. ${nameProblem}`);
     if (Object.hasOwn(next, storedName))
       throw new Error(`Conflicting MCP server name '${storedName}'.`);
     next[storedName] = unchanged

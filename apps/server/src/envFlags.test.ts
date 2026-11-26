@@ -55,21 +55,33 @@ describe("envFlags and child process credential isolation", () => {
   });
 
   it("strips both F5_AUTH_TOKEN and T3CODE_AUTH_TOKEN and F5 server vars from provider children", () => {
-    const childEnv = buildProviderChildProcessEnv({
-      PATH: "/usr/bin",
-      F5_AUTH_TOKEN: "secret-f5",
-      T3CODE_AUTH_TOKEN: "secret-legacy",
-      F5_PORT: "3773",
-      F5_HOST: "0.0.0.0",
-      F5_MODE: "web",
-      USER_CUSTOM_VAR: "keep",
-    });
+    const childEnv = buildProviderChildProcessEnv(
+      {
+        PATH: "/usr/bin",
+        F5_AUTH_TOKEN: "secret-f5",
+        T3CODE_AUTH_TOKEN: "secret-legacy",
+        F5_PORT: "3773",
+        F5_HOST: "0.0.0.0",
+        F5_MODE: "web",
+        F5_AUTO_BOOTSTRAP_PROJECT_FROM_CWD: "1",
+        USER_CUSTOM_VAR: "keep",
+      },
+      {
+        F5_AUTH_TOKEN: "override-secret-f5",
+        T3CODE_AUTH_TOKEN: "override-secret-legacy",
+        f5_auth_token: "override-secret-lower",
+        CUSTOM_OVERRIDE: "ok",
+      },
+    );
 
     expect(childEnv.F5_AUTH_TOKEN).toBeUndefined();
     expect(childEnv.T3CODE_AUTH_TOKEN).toBeUndefined();
+    expect(childEnv.f5_auth_token).toBeUndefined();
     expect(childEnv.F5_PORT).toBeUndefined();
     expect(childEnv.F5_HOST).toBeUndefined();
     expect(childEnv.F5_MODE).toBeUndefined();
+    expect(childEnv.F5_AUTO_BOOTSTRAP_PROJECT_FROM_CWD).toBeUndefined();
     expect(childEnv.USER_CUSTOM_VAR).toBe("keep");
+    expect(childEnv.CUSTOM_OVERRIDE).toBe("ok");
   });
 });

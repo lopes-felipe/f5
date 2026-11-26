@@ -17,6 +17,7 @@ import { leadingSlashCommandName } from "../nativeCommandInput.ts";
  *
  * @module CursorAdapterLive
  */
+import * as nodeOs from "node:os";
 import * as nodePath from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -62,7 +63,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 import type * as EffectAcpSchema from "effect-acp/schema";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
-import { ServerConfig } from "../../config.ts";
+import { resolveProviderHomesDir, ServerConfig } from "../../config.ts";
 import {
   acpCursorSerializationWaitsTotal,
   providerMetricAttributes,
@@ -120,7 +121,7 @@ import {
   resolveCursorGeneratedImage,
 } from "../acp/CursorAcpExtension.ts";
 import { CURSOR_ACP_CLIENT_INFO } from "../cursor/cursorAcpClientInfo.ts";
-import { cursorConfigDir } from "../cursor/CursorNativeSessions.ts";
+import { cursorHomeDir } from "../cursor/CursorNativeSessions.ts";
 import {
   type ResolvedCursorMcpServers,
   cursorMcpServerSecrets,
@@ -142,6 +143,12 @@ import {
   makeEventNdjsonLogger,
 } from "./EventNdjsonLogger.ts";
 import { buildProviderAttachmentRuntimeContext } from "../attachmentRuntimeContext.ts";
+import { READ_ONLY_WORKFLOW_ENVIRONMENT } from "../readOnlyWorkflowShell.ts";
+import {
+  cursorProjectConfigConflictMessage,
+  findCursorProjectConfigConflict,
+  prepareCursorReadOnlyEnvironment,
+} from "../cursor/CursorReadOnlyConfig.ts";
 
 const PROVIDER: ProviderKind = "cursor";
 const CURSOR_RESUME_VERSION = 1 as const;
@@ -619,6 +626,36 @@ export function makeCursorAdapter(
     const withThreadLock = <A, E, R>(threadId: string, effect: Effect.Effect<A, E, R>) =>
       Effect.flatMap(getThreadSemaphore(threadId), (semaphore) => semaphore.withPermit(effect));
 
+    /**
+     * Refuses a read-only stage in a workspace whose project files would let Cursor act without
+     * asking F5, or that F5 can't read with certainty (CursorReadOnlyConfig.ts).
+     */
+    const assertCursorReadOnlyWorkspace = (cwd: string, operation: "startSession" | "sendTurn") =>
+      Effect.tryPromise({
+        try: () =>
+          findCursorProjectConfigConflict(cwd, {
+            homeDir: (options?.environment ?? process.env).HOME ?? nodeOs.homedir(),
+          }),
+        catch: (cause) =>
+          new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation,
+            issue: `Cursor can't run read-only workflow stages here: F5 couldn't check the workspace's Cursor project files (${cause instanceof Error ? cause.message : String(cause)}).`,
+          }),
+      }).pipe(
+        Effect.flatMap((conflict) =>
+          conflict
+            ? Effect.fail(
+                new ProviderAdapterValidationError({
+                  provider: PROVIDER,
+                  operation,
+                  issue: cursorProjectConfigConflictMessage(conflict),
+                }),
+              )
+            : Effect.void,
+        ),
+      );
+
     const withSessionLock = <A, E, R>(threadId: string, effect: Effect.Effect<A, E, R>) =>
       Effect.flatMap(getThreadSemaphore(threadId, sessionLocksRef), (semaphore) =>
         semaphore.withPermit(effect),
@@ -856,6 +893,29 @@ export function makeCursorAdapter(
           }
 
           const cwd = nodePath.resolve(input.cwd);
+          // Read-only stages launch with an F5-owned Cursor config, so the user's own allowlist
+          // and approval mode can't let commands past F5; a repository whose `.cursor/cli.json`
+          // would do the same is refused (CursorReadOnlyConfig.ts).
+          let readOnlyEnvironment: NodeJS.ProcessEnv | undefined;
+          if (input.workflowExecutionProfile) {
+            const processError = (error: unknown) =>
+              new ProviderAdapterProcessError({
+                provider: PROVIDER,
+                threadId: input.threadId,
+                detail: `Could not prepare Cursor's read-only configuration: ${error instanceof Error ? error.message : String(error)}`,
+                cause: error,
+              });
+            yield* assertCursorReadOnlyWorkspace(cwd, "startSession");
+            readOnlyEnvironment = yield* Effect.tryPromise({
+              try: () =>
+                prepareCursorReadOnlyEnvironment({
+                  providerHomesDir: resolveProviderHomesDir(serverConfig),
+                  instanceId: boundInstanceId,
+                  environment: options?.environment ?? process.env,
+                }),
+              catch: processError,
+            });
+          }
           const cursorModelSelection = resolveCursorModelSelection({
             boundInstanceId,
             model: input.model,
@@ -947,7 +1007,7 @@ export function makeCursorAdapter(
           const cursorMcpConfigNames =
             projectMcpServers && Object.keys(projectMcpServers).length > 0
               ? yield* Effect.promise(() =>
-                  readCursorMcpConfigNames({ configDir: cursorConfigDir(cursorEnvironment), cwd }),
+                  readCursorMcpConfigNames({ configDir: cursorHomeDir(cursorEnvironment), cwd }),
                 )
               : new Set<string>();
           let mcpResolution: ResolvedCursorMcpServers | undefined;
@@ -972,7 +1032,11 @@ export function makeCursorAdapter(
           const acp = yield* makeCursorAcpRuntime({
             cursorSettings: effectiveCursorSettings,
             runtimeMode: input.workflowExecutionProfile ? "approval-required" : input.runtimeMode,
-            ...(options?.environment ? { environment: options.environment } : {}),
+            ...(readOnlyEnvironment
+              ? { environment: { ...readOnlyEnvironment, ...READ_ONLY_WORKFLOW_ENVIRONMENT } }
+              : options?.environment
+                ? { environment: options.environment }
+                : {}),
             childProcessSpawner,
             cwd,
             ...(resumeSessionId ? { resumeSessionId } : {}),
@@ -1314,8 +1378,11 @@ export function makeCursorAdapter(
                   // and recorded, and the model is told no and keeps working.
                   const computerRequest = Boolean(catalogs.classify(params.toolCall));
                   if (
-                    acpReadOnlyWorkflowDecision({ toolCall: params.toolCall, computerRequest }) ===
-                    "allow"
+                    acpReadOnlyWorkflowDecision({
+                      toolCall: params.toolCall,
+                      computerRequest,
+                      f5ThreadServerName: catalogs.readOnlyThreadServerName(),
+                    }) === "allow"
                   ) {
                     const allowOnce = acpPermissionOutcome("accept", params.options);
                     if (allowOnce !== undefined)
@@ -1796,6 +1863,10 @@ export function makeCursorAdapter(
             const model = turnModelSelection?.model ?? ctx.session.model;
             const resolvedModel = resolveCursorAcpBaseModelId(model);
             if (input.workflowExecutionProfile) {
+              // The workspace was checked at start, but another writer in the same worktree can
+              // add a project file since; checking before every prompt narrows that window.
+              if (ctx.session.cwd)
+                yield* assertCursorReadOnlyWorkspace(ctx.session.cwd, "sendTurn");
               const modeState = yield* ctx.acp.getModeState;
               const planModeId = resolveRequestedModeId({
                 interactionMode: "plan",

@@ -89,7 +89,7 @@ export function savedRuntimeModeUnsupportedReason(
 }
 
 /** Runtime modes from least to most autonomous. */
-const RUNTIME_MODES_BY_AUTONOMY: ReadonlyArray<RuntimeMode> = [
+export const RUNTIME_MODES_BY_AUTONOMY: ReadonlyArray<RuntimeMode> = [
   "approval-required",
   "auto-accept-edits",
   "auto",

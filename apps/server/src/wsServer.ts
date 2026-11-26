@@ -281,6 +281,7 @@ import {
   searchWorkspaceEntries,
 } from "./workspaceEntries";
 import { makeProjectContentSearchManager } from "./projectContentSearch";
+import { WorkspaceSearchRestrictedError } from "./workspaceSearchRoot";
 import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
@@ -359,6 +360,12 @@ import {
   startEventLoopDelayMonitor,
 } from "./observability/serverHealth.ts";
 import {
+  buildSqliteInspectionSnapshot,
+  runDoctorDiagnostics,
+  type SqliteInspectionResult,
+} from "./diagnostics/doctor.ts";
+import { canonicalManagedWorktreesDirectories } from "./worktreesDirectoryPaths.ts";
+import {
   type BootstrapThreadDisposition,
   dispatchBootstrapTurnStart,
 } from "./wsServer/bootstrapTurnStart.ts";
@@ -416,8 +423,6 @@ import {
 } from "@t3tools/shared/providerInput";
 import { CodexControlClientRegistry } from "./codex/CodexControlClientRegistry.ts";
 import { CodexMcpEventBus } from "./codex/CodexMcpEventBus.ts";
-import { CodexMcpSyncService } from "./codex/CodexMcpSyncService.ts";
-import { CodexOAuthManager } from "./codex/CodexOAuthManager.ts";
 import { ProjectMcpConfigService } from "./mcp/ProjectMcpConfigService.ts";
 import { McpRuntimeService } from "./mcp/McpRuntimeService.ts";
 import { reconcileCodexThreadSnapshots } from "./orchestration/codexSnapshotReconciliation.ts";
@@ -912,8 +917,6 @@ export type ServerCoreRuntimeServices =
   | ServerSettingsService
   | CodexControlClientRegistry
   | CodexMcpEventBus
-  | CodexMcpSyncService
-  | CodexOAuthManager
   | McpRuntimeService
   | ProjectMcpConfigService
   | PreviewAutomationBroker
@@ -938,6 +941,14 @@ export class ServerLifecycleError extends Schema.TaggedErrorClass<ServerLifecycl
     cause: Schema.optional(Schema.Defect),
   },
 ) {}
+
+function workspaceSearchRouteError(cause: unknown, summary: string): RouteRequestError {
+  if (cause instanceof WorkspaceSearchRestrictedError) {
+    return new RouteRequestError({ message: cause.message, code: cause.code });
+  }
+  const detail = cause instanceof Error ? cause.message : String(cause);
+  return new RouteRequestError({ message: `${summary}: ${detail}` });
+}
 
 function toDeliveryRecoveryError(error: Error): RouteRequestError {
   return new RouteRequestError({
@@ -1109,8 +1120,6 @@ export const createServer = Effect.fn(function* (
   const harnessValidation = yield* HarnessValidation;
   const serverSettings = yield* ServerSettingsService;
   const codexMcpEventBus = yield* CodexMcpEventBus;
-  const codexMcpSyncService = yield* CodexMcpSyncService;
-  const codexOAuthManager = yield* CodexOAuthManager;
   const mcpRuntimeService = yield* McpRuntimeService;
   const projectMcpConfigService = yield* ProjectMcpConfigService;
   const previewAutomationBroker = yield* PreviewAutomationBroker;
@@ -4033,8 +4042,6 @@ export const createServer = Effect.fn(function* (
         projectMcpConfigService,
         mcpRuntimeService,
         codexMcpEventBus,
-        codexMcpSyncService,
-        codexOAuthManager,
         providerService,
         profileSecrets,
         storeMcpSecret,
@@ -5101,10 +5108,7 @@ export const createServer = Effect.fn(function* (
         const body = stripRequestTag(request.body);
         return yield* Effect.tryPromise({
           try: () => listWorkspaceEntries(body),
-          catch: (cause) =>
-            new RouteRequestError({
-              message: `Failed to list workspace entries: ${String(cause)}`,
-            }),
+          catch: (cause) => workspaceSearchRouteError(cause, "Failed to list workspace entries"),
         });
       }
 
@@ -5112,10 +5116,7 @@ export const createServer = Effect.fn(function* (
         const body = stripRequestTag(request.body);
         return yield* Effect.tryPromise({
           try: () => searchWorkspaceEntries(body),
-          catch: (cause) =>
-            new RouteRequestError({
-              message: `Failed to search workspace entries: ${String(cause)}`,
-            }),
+          catch: (cause) => workspaceSearchRouteError(cause, "Failed to search workspace entries"),
         });
       }
 
@@ -5225,15 +5226,15 @@ export const createServer = Effect.fn(function* (
             }
           },
           catch: (cause) => {
-            const detail = cause instanceof Error ? cause.message : String(cause);
-            logger.warn("Project content search request failed", {
-              projectId: body.projectId,
-              threadId: body.threadId ?? null,
-              detail,
-            });
-            return new RouteRequestError({
-              message: `Project content search failed: ${detail}`,
-            });
+            const error = workspaceSearchRouteError(cause, "Project content search failed");
+            if (!(cause instanceof WorkspaceSearchRestrictedError)) {
+              logger.warn("Project content search request failed", {
+                projectId: body.projectId,
+                threadId: body.threadId ?? null,
+                detail: error.message,
+              });
+            }
+            return error;
           },
         });
       }

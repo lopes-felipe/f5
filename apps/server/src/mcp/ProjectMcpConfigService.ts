@@ -140,6 +140,8 @@ export class ProjectMcpConfigService extends ServiceMap.Service<
   ProjectMcpConfigServiceShape
 >()("t3/mcp/ProjectMcpConfigService") {}
 
+const RUNTIME_CONFIG_CACHE_LIMIT = 64;
+
 function rowToStoredCommonConfig(row: ProjectMcpConfigRecord | undefined): StoredCommonMcpConfig {
   return {
     scope: "common",
@@ -177,6 +179,11 @@ const makeProjectMcpConfigService = Effect.gen(function* () {
     });
 
   const writeLock = yield* Semaphore.make(1);
+  /** Secret-resolved effective configs, keyed by the common and project layer versions. */
+  const runtimeConfigCache = new Map<
+    ProjectId,
+    { readonly key: string; readonly value: StoredEffectiveMcpConfig }
+  >();
   const validationError = (cause: unknown) =>
     new ProjectMcpConfigServiceError({
       code: "validation",
@@ -358,8 +365,11 @@ const makeProjectMcpConfigService = Effect.gen(function* () {
               )
             )
               return yield* validationError(new Error("Invalid disabled common server names."));
+            const inheritedNames = projectId
+              ? Object.keys((yield* readCommonStoredConfig()).servers)
+              : [];
             const servers = yield* Effect.try({
-              try: () => validateMcpLayerWrite(base.servers, input.servers),
+              try: () => validateMcpLayerWrite(base.servers, input.servers, { inheritedNames }),
               catch: validationError,
             });
             yield* validateStoredMcpSecrets(servers, secretStore, base.servers).pipe(
@@ -407,6 +417,8 @@ const makeProjectMcpConfigService = Effect.gen(function* () {
                 code: "conflict",
                 message: "MCP configuration changed since this page loaded. Refresh and try again.",
               });
+            if (projectId) runtimeConfigCache.delete(projectId);
+            else runtimeConfigCache.clear();
             return projectId ? yield* readProjectConfig(projectId) : yield* readCommonConfig();
           }),
         )
@@ -428,8 +440,13 @@ const makeProjectMcpConfigService = Effect.gen(function* () {
 
   const readEffectiveRuntimeConfig = (projectId: ProjectId) =>
     readEffectiveStoredConfig(projectId).pipe(
-      Effect.flatMap((stored) =>
-        resolveMcpSecrets(stored.servers, secretStore).pipe(
+      Effect.flatMap((stored) => {
+        // Secret ids are immutable (each write mints a new placeholder), so the layer
+        // versions fully determine the resolved result.
+        const cacheKey = `${stored.commonVersion ?? ""}\u0000${stored.projectVersion ?? ""}`;
+        const cached = runtimeConfigCache.get(projectId);
+        if (cached?.key === cacheKey) return Effect.succeed(cached.value);
+        return resolveMcpSecrets(stored.servers, secretStore).pipe(
           Effect.tap((resolved) =>
             resolved.issues.length
               ? Effect.logWarning("MCP servers skipped because stored secrets are unavailable", {
@@ -438,13 +455,22 @@ const makeProjectMcpConfigService = Effect.gen(function* () {
                 })
               : Effect.void,
           ),
-          Effect.map((resolved) => ({
-            ...stored,
-            servers: resolved.servers,
-            issues: [...(stored.issues ?? []), ...resolved.issues],
-          })),
-        ),
-      ),
+          Effect.map((resolved): StoredEffectiveMcpConfig => {
+            const value = {
+              ...stored,
+              servers: resolved.servers,
+              issues: [...(stored.issues ?? []), ...resolved.issues],
+            };
+            // Unavailable secrets may be a transient read failure, so only clean results are kept.
+            if (resolved.issues.length === 0) {
+              if (runtimeConfigCache.size >= RUNTIME_CONFIG_CACHE_LIMIT)
+                runtimeConfigCache.delete(runtimeConfigCache.keys().next().value!);
+              runtimeConfigCache.set(projectId, { key: cacheKey, value });
+            }
+            return value;
+          }),
+        );
+      }),
     );
 
   // Startup collection shares the writer lock; saves never remove secrets.

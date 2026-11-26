@@ -1404,6 +1404,79 @@ describe("ClaudeAdapter agent browser", () => {
   );
 
   it.effect(
+    "sends bearer variables only over the control channel and never reserved variables",
+    () => {
+      const directory = mkdtempSync(path.join(os.tmpdir(), "f5-claude-bearer-"));
+      const binaryPath = writeCliScript(
+        path.join(directory, "claude"),
+        `process.stdout.write("2.1.317 (Claude Code)\\n");`,
+      );
+      const harness = makeHarness({
+        processEnvironment: {
+          ...process.env,
+          DOCS_TOKEN: "  docs-bearer-fixture  ",
+          ANTHROPIC_API_KEY: "anthropic-key-fixture",
+        },
+      });
+      const setMcpServers = vi.fn(async () => ({ added: [], removed: [], errors: {} }));
+      Object.assign(harness.query, { setMcpServers });
+      const servers = {
+        docs: {
+          type: "http" as const,
+          url: "https://docs.example.invalid/mcp",
+          bearerTokenEnvVar: "DOCS_TOKEN",
+        },
+        browser: {
+          type: "http" as const,
+          url: "https://browser.example.invalid/mcp",
+          bearerTokenEnvVar: "F5_BROWSER_OPEN_TOKEN",
+        },
+        anthropic: {
+          type: "http" as const,
+          url: "https://anthropic.example.invalid/mcp",
+          bearerTokenEnvVar: "ANTHROPIC_API_KEY",
+        },
+      };
+      const delivered = (call: number) =>
+        (setMcpServers.mock.calls as unknown as Array<[Record<string, { headers?: object }>]>)[
+          call
+        ]![0];
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          runtimeMode: "full-access",
+          providerOptions: { claudeAgent: { binaryPath }, mcpServers: servers },
+        });
+        assert.equal(harness.getLastCreateQueryInput()!.options.mcpServersDelivery, "argv");
+        // Launch MCP config becomes --mcp-config argv; the token must not be in it.
+        assert.equal(
+          JSON.stringify(harness.getLastCreateQueryInput()!.options.mcpServers ?? {}).includes(
+            "docs-bearer-fixture",
+          ),
+          false,
+        );
+        assert.deepEqual(delivered(0).docs?.headers, {
+          Authorization: "Bearer docs-bearer-fixture",
+        });
+        assert.equal(delivered(0).browser?.headers, undefined);
+        assert.equal(delivered(0).anthropic?.headers, undefined);
+        yield* adapter.reloadMcpConfig!({ threadId: THREAD_ID, mcpServers: servers });
+        const reloaded = delivered(setMcpServers.mock.calls.length - 1);
+        assert.deepEqual(reloaded.docs?.headers, { Authorization: "Bearer docs-bearer-fixture" });
+        assert.equal(reloaded.browser?.headers, undefined);
+        assert.equal(
+          JSON.stringify(setMcpServers.mock.calls).includes("anthropic-key-fixture"),
+          false,
+        );
+      }).pipe(
+        Effect.ensuring(Effect.sync(() => rmSync(directory, { recursive: true, force: true }))),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
+  it.effect(
     "auto-allows observation and grants mutation once per session after verification",
     () => {
       const { harness } = makeBrowserHarness();

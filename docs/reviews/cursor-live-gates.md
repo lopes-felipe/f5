@@ -99,3 +99,211 @@ transform decision before track T4.
 
 Every SDK bump records the SDK version, package integrity, helper version,
 host runtime and each certified feature, and reruns every SDK row.
+
+## Read-only gates (C1-C6)
+
+C1-C4 decide whether Cursor read-only workflow stages can run in Cursor's
+native sandbox (`agent --sandbox enabled acp` with a `workspace_readonly`
+`sandbox.json`) rather than F5's command allowlist. Until they all pass on a
+target, `CURSOR_READ_ONLY_SANDBOX_CERTIFIED_RUNTIMES` in
+`packages/shared/src/readOnlyEnforcement.ts` has no row for it and Cursor stays
+policy-enforced. C5 and C6 check F5's read-only config override, which keeps
+Cursor's own approval settings from letting commands past the policy (see
+[Read-only config override](#read-only-config-override)).
+
+Run `node apps/server/integration/cursorSandboxGates.mjs` from a normal
+Terminal: macOS refuses to start the sandbox inside an agent's sandboxed shell.
+Each gate spends one prompt, and C5 two with its control. `--gates C5,C6` runs
+only the named gates. The script works in a fresh folder with its own HOME, under
+`~/.f5-cursor-gates` unless `--root <dir>` names another parent. The folder is
+deliberately not under a temp directory: Cursor's sandbox lets commands write to
+temp directories, so fixtures there would make the write checks pass or fail for
+the wrong reason. `--handshake-only` stops before the prompts. It checks that a
+sandboxed ACP session starts, signs in and enters plan mode, and spends nothing.
+The script exits non-zero unless every gate passed.
+
+The copied `cli-config.json` turns on Cursor's own "Run in Sandbox" preset
+(`sandbox: { mode: "enabled", networkAccess: "user_config_only" }`,
+`approvalMode: "allowlist"`) with an empty allowlist. C2 runs in plan mode. C3
+and C4 run in the default mode, because in plan mode a compliant model declines
+the writes itself and the write checks prove nothing.
+
+Each check is PASS, FAIL or INCONCLUSIVE, matched to the tool call by its
+command (title and raw input), never by assistant text:
+
+- **A write counts as blocked** only when its call was seen, nothing changed and
+  the output shows a sandbox denial (`Operation not permitted`, `EPERM`,
+  `Read-only file system`). A step the model skipped, or one that failed for
+  another reason, is inconclusive.
+- **`.git` is checked twice:** with a direct `touch .git/gate-marker`, and with
+  `git commit` in a fixture whose local config sets an identity, so a commit can
+  only fail because of the sandbox.
+- **Temp writes are the positive control:** the run writes to both `/tmp` and
+  `$TMPDIR`, records which landed, and needs at least one. Otherwise nothing
+  shows the commands ran at all.
+- **`curl`** is scored per call. Any HTTP status fails. A transport error (`000`,
+  a curl error) passes only when the script's own unsandboxed request to the same
+  URL got an HTTP status, so an offline host stays inconclusive.
+- **Cursor's own fetch** must complete for C3 and C4 to pass.
+- **`npm --version`** (C2, C5, C6) counts as "asked F5" only when a permission
+  request names that call's `toolCallId`, and as "ran without asking" only when
+  the call completed and printed a version.
+- **Fixture setup** runs Git without the caller's `GIT_*` variables, global or
+  system config, hooks or signing, and stops at the first failure.
+- **Permission requests** are answered "allow once" only for the gate's own
+  steps: a shell call whose command is exactly one of the prompt's backticked
+  commands, or the fetch step. Anything else is refused ("reject once"), so a
+  model that strays can't touch files or credentials outside the fixtures. A
+  request is cancelled when it offers neither option. The report keeps each
+  request in full, with its options and the answer; a fixture step reported as
+  "refused (not a fixture step)" means Cursor described it differently, and the
+  gate needs a look before its verdict counts.
+- **Environment:** the script runs as the operator, with the operator's
+  keychain (C1 links it). It is not isolated with disposable credentials; the
+  allow-list above is what limits it.
+
+| Gate | Question                                                                                                                                                          | Result                                                                                                        |
+| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| C1   | Does Cursor stay signed in under a separate HOME?                                                                                                                 | Pass on darwin-arm64, CLI 2026.11.22-e9042b2 (2026-11-25), only with `Library/Keychains` linked               |
+| C2   | With `--sandbox enabled` and plan mode, which commands send `session/request_permission`, and does a request tell sandboxed runs from out-of-sandbox ones?        | Every non-allowlisted command asks, including the `npm --version` trap; no sandbox (2026-11-25)               |
+| C3   | Under `workspace_readonly` with network denied: do workspace, `.git` and outside writes fail, `curl` fail, temp writes succeed and Cursor's own fetch still work? | Fail: every write landed and `curl` returned 200 (2026-11-25)                                                 |
+| C4   | Does C3 still hold in a workspace whose own `.cursor/sandbox.json` asks for no sandbox and full network?                                                          | Fail, same as C3 (2026-11-25)                                                                                 |
+| C5   | Launched like a production read-only stage, does `npm --version` ask F5 when the user's config allows `Shell(npm)` but `CURSOR_CONFIG_DIR` points at F5's copy?   | Pass (2026-11-26): it asked F5; control C5a ran `npm` without asking. Rerun with the shipped sanitizer passed |
+| C6   | Does Cursor honour `permissions.allow` from the repository's `.cursor/cli.json` over ACP?                                                                         | Yes (2026-11-26): `npm` ran without asking despite F5's override, so the repository guard is needed           |
+
+**Outcome on CLI 2026.11.22-e9042b2: the ACP server has no sandbox.** The
+second run (2026-11-25) had the sandbox preset in `cli-config.json`,
+`workspace_readonly` in `sandbox.json` and `--sandbox enabled`. Every write still
+landed, and every command asked with "Shell allowlist is empty". The bundle explains
+why:
+
+- `agent acp` builds its permissions from `PermissionsAdapter` and
+  `PermissionsFileProvider` (`cursor-config/dist/permissions-adapter.js` and
+  `permissions-file-provider.js`). Both return
+  `userConfiguredPolicy: { type: "insecure_none" }` unconditionally.
+- The provider that turns `sandbox.mode`, the `--sandbox` override and ask mode
+  into `workspace_readonly` or `workspace_readwrite` is used only by the
+  interactive and `-p` paths. The `acp` command never passes `--sandbox` on.
+- So no setting enables the sandbox over ACP on this version, and
+  `CURSOR_READ_ONLY_SANDBOX_CERTIFIED_RUNTIMES` stays empty. Cursor read-only
+  stages remain policy-enforced. Re-run these gates when a Cursor release
+  changes the ACP permissions provider.
+
+**What the policy path relies on.** C2 shows that a command reaches F5 only
+when Cursor's own approval doesn't already allow it:
+
+- **Cursor runs these without asking F5:**
+  - commands on the user's `permissions.allow` list (`Shell(…)`);
+  - commands on `permissions.json` `terminalAllowlist` and team admin
+    allowlists;
+  - every command when `approvalMode` is `unrestricted`.
+- **The gate runs reached F5 every time** only because they used an empty
+  allowlist under a separate HOME.
+
+### Read-only config override
+
+Read-only Cursor stages launch with `CURSOR_CONFIG_DIR` set to
+`<state dir>/provider-homes/cursor-readonly/<instance id>`
+(`apps/server/src/provider/cursor/CursorReadOnlyConfig.ts`). The bundle for
+2026.11.22-e9042b2 shows why that one variable is enough:
+
+- **What follows `CURSOR_CONFIG_DIR`:** the CLI resolves its config dir as
+  `CURSOR_CONFIG_DIR`, then `$XDG_CONFIG_HOME/cursor`, then `~/.cursor`
+  (`cursor-config/dist/paths.js`). `cli-config.json` (`permissions.allow`,
+  `approvalMode`), `permissions.json` (`terminalAllowlist`, `autoRun`),
+  `acp-sessions` and `chats` live in it. User MCP servers (`~/.cursor/mcp.json`),
+  rules and skills are read from the home folder and still load. F5's read-only
+  ACP policy refuses every MCP call except its own read-only tools.
+- **What F5 writes there:** a copy of the user's `cli-config.json` that keeps
+  only display, model, account-display and privacy settings (`version`,
+  `editor`, `display`, `notifications`, `hints`, `model`, `modelParameters`,
+  `selectedModel`, `maxMode`, `hasChangedDefaultModel`, `exploreSubagentModel`,
+  `privacyCache`, `authInfo`), with an empty allowlist (deny rules kept) and
+  `approvalMode: "allowlist"`, rewritten at every start, and no
+  `permissions.json`. Every other key, including `sandbox`,
+  `autoAcceptWebSearch` and anything a later release adds, is dropped.
+  `approvalMode` also accepts `unrestricted` and `auto-review`, and both let
+  commands run without asking.
+- **Sign-in doesn't move:** in the 2026.11.22 bundle, credentials are in the OS
+  keychain (`AGENT_CLI_CREDENTIAL_STORE` unset) or `auth.json` under
+  `~/.cursor` (macOS), `$XDG_CONFIG_HOME/cursor` or `~/.config/cursor` (Linux),
+  or `%APPDATA%\Cursor` (Windows), never under `CURSOR_CONFIG_DIR`.
+  `cursorCredentialStoreKey` keys on `~/.cursor` plus the store selection for
+  that reason. Only darwin-arm64 with the keychain is verified live (C5
+  signed in with `CURSOR_CONFIG_DIR` pointing at a folder holding only the
+  sanitized `cli-config.json`). `AGENT_CLI_CREDENTIAL_STORE=file`, Linux and
+  Windows are read from the source only and still need a live run.
+- **Where read-only sessions are recorded:** `acp-sessions` and `chats` follow
+  `CURSOR_CONFIG_DIR`, so read-only sessions live under
+  `provider-homes/cursor-readonly/<instance id>`, not `~/.cursor`. Read-only
+  sessions recorded under `~/.cursor` before this change can't be resumed. F5
+  doesn't prune the folder, and backups that include `provider-homes` include
+  it.
+- **C5 was rerun the same day with the shipped sanitizer.** The first run's
+  read-only copy also carried the sandbox preset the script adds for C2-C4,
+  which production doesn't add. The script now builds C5's copy with
+  `sanitizeCursorCliConfig` from the unmodified user config, and C6 always runs
+  with C5 as its control. The rerun (CLI 2026.11.22-e9042b2, darwin-arm64)
+  passed C1, C5a, C5 and C6 with the same outcomes. Its one permission request,
+  for `npm --version`, carried no `rawInput` and was matched to the fixture step
+  by its title.
+- **Repository config:** the CLI also merges every `.cursor/cli.json` from the
+  repository root down to the working directory into that config, using the
+  full schema. C6 showed that ACP honours them: a repository allowlist ran `npm`
+  without asking F5, even with F5's config override in place. F5 can't override
+  those files, so a read-only stage is refused when, between the working
+  directory and the filesystem root, a `.cursor/cli.json`:
+  - sets anything but deny rules, an empty allowlist or `approvalMode:
+"allowlist"` (unknown keys included);
+  - isn't a regular file, can't be read, is over 256 KiB, or isn't strict JSON
+    (the CLI might read JSON with comments that F5 can't).
+- **Project hooks and MCP servers:** the CLI loads the workspace's
+  `.cursor/hooks.json` (hooks run shell commands) and starts the project's
+  `.cursor/mcp.json` servers once approved; approvals are kept per project in
+  the CLI's data dir, so an earlier interactive approval carries over. Neither
+  is a gate yet (C7/C8 would be), so a read-only stage is refused when either
+  file, from the working directory up to the repository root, defines any hook
+  or server, or can't be read as above. Your own `~/.cursor/hooks.json` and
+  `~/.cursor/mcp.json` are left alone.
+- **Known window:** the CLI reads the live workspace. F5 checks it at start and
+  again before every turn, but a concurrent writer in the same worktree can add
+  a project file between a check and the CLI reading it. No launch flag turns
+  off project config discovery in 2026.11.22.
+- **Team admin allowlists** come from Cursor's servers and stay out of F5's
+  reach.
+
+- **C1:** the CLI keeps its sign-in in the login keychain through
+  `/usr/bin/security`, which looks under `$HOME/Library/Keychains`. An empty
+  separate HOME reports `isAuthenticated: false`. Linking only that folder into
+  the read-only HOME restores the account without copying a token. Sessions also
+  start, authenticate and enter plan mode with `--sandbox enabled` under that
+  HOME (`--handshake-only`, same date). Linux keeps credentials elsewhere and
+  needs its own C1 run.
+- **First run (2026-11-25), inconclusive:** both C3 and C4 ran in plan mode.
+  The model ran only `ls`, `curl` and the fetch, and declined every write
+  ("Plan mode is currently active"). Each of those three asked F5 for
+  permission with the text "Shell allowlist is empty" and no `rawInput`.
+  `curl` returned 200. So the session was in allowlist mode with no sandbox:
+  `--sandbox enabled` alone didn't turn on the sandbox while the copied
+  config had no `sandbox` key. The script now sets the preset and runs the
+  write gates outside plan mode. The second run is the outcome above.
+- **The 2026-11-25 results predate the stricter scoring** above. They are still
+  fails: writes landed and `curl` returned 200, which no scoring change turns
+  into a pass.
+- **C4 exists because** the CLI folds the workspace's own `.cursor/sandbox.json`
+  into the per-user policy. A repository under review must not be able to
+  loosen a read-only stage's sandbox.
+- **A C4 pass needs a positive control before certification.** With no
+  per-user `sandbox.json`, run the same steps in two workspaces: one with the
+  hostile policy and one without. The hostile policy must change the result (for
+  example, `curl` returns 200 only there). A control that only shows `curl`
+  succeeding in the hostile workspace proves nothing: a CLI that ignores
+  workspace policy files and allows network by default gives the same result.
+  On 2026.11.22 the sandbox never applied over ACP, so the control wasn't run.
+- **Keychain exposure is a design risk for a production read-only HOME.** C1
+  passes only with the whole login keychain folder linked, so sandboxed
+  commands could run `security find-*-password`. Before any production use, add
+  a gate showing `security` access is denied or scoped. The script removes its
+  keychain link when it finishes, and keeps the run folder for `report.json`.
+- **The per-user policy path** is `homedir()/.cursor/sandbox.json`.
+  `CURSOR_CONFIG_DIR` doesn't move it, so a separate HOME is needed.

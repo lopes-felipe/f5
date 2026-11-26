@@ -524,6 +524,13 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     appId: "io.github.lopesfelipe.f5",
     electronFuses: {
       runAsNode: true, // Required by the sandboxed backend until it has a dedicated executable.
+      // Encrypts cookie values with the OS key (DPAPI, macOS Keychain). Existing plain cookies stay
+      // readable. One-way: once a build with it has run, turning it off leaves the store unreadable,
+      // so build-desktop-artifact.test.ts pins it. Off where the key can be unavailable at launch,
+      // which makes Chromium delete undecryptable cookies: unsigned macOS builds (Keychain access is
+      // tied to a signature that changes per build) and Linux (the backend is picked per launch and
+      // may be the fixed-key basic_text) until a Linux backend is pinned.
+      enableCookieEncryption: platform === "win" || (platform === "mac" && signed),
       enableNodeOptionsEnvironmentVariable: false,
       enableNodeCliInspectArguments: false,
       enableEmbeddedAsarIntegrityValidation: platform !== "linux",

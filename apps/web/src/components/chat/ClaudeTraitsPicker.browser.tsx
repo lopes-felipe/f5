@@ -541,6 +541,62 @@ describe("ClaudeTraitsPicker controlled value", () => {
     document.body.innerHTML = "";
   });
 
+  it("truncates a long label in a width-capped trigger and keeps the chevron inside", async () => {
+    const screen = await render(
+      <ClaudeTraitsPicker
+        model="claude-opus-4-7"
+        models={OPUS_4_7}
+        modelOptions={[{ id: "effort", value: "xhigh" }]}
+        triggerClassName="w-16 min-w-0 justify-start overflow-hidden"
+        onModelOptionsChange={() => {}}
+      />,
+    );
+    try {
+      const trigger = document.querySelector<HTMLElement>(
+        "button[data-composer-control='effort']",
+      )!;
+      const label = trigger.querySelector<HTMLElement>("span[title]")!;
+      const chevron = trigger.lastElementChild!;
+      expect(label.title.length).toBeGreaterThan(0);
+      expect(label.scrollWidth).toBeGreaterThan(label.clientWidth);
+      expect(chevron.getBoundingClientRect().right).toBeLessThanOrEqual(
+        trigger.getBoundingClientRect().right,
+      );
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("tints the trigger by effort level unless tint is off", async () => {
+    const screen = await render(
+      <>
+        <ClaudeTraitsPicker
+          model="claude-opus-4-7"
+          models={OPUS_4_7}
+          modelOptions={[{ id: "effort", value: "high" }]}
+          onModelOptionsChange={() => {}}
+        />
+        <ClaudeTraitsPicker
+          model="claude-opus-4-7"
+          models={OPUS_4_7}
+          modelOptions={[{ id: "effort", value: "high" }]}
+          tint={false}
+          onModelOptionsChange={() => {}}
+        />
+      </>,
+    );
+    try {
+      const [tinted, neutral] = Array.from(
+        document.querySelectorAll<HTMLElement>("button[data-composer-control='effort']"),
+      );
+      expect(tinted?.className).toMatch(/bg-effort-high\//);
+      expect(neutral?.className).not.toMatch(/bg-effort-/);
+      expect(neutral?.getAttribute("data-effort-level")).toBe("high");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("reports picks to its owner without touching drafts or recent models", async () => {
     const onModelOptionsChange = vi.fn();
     const screen = await render(
