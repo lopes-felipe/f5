@@ -2913,6 +2913,14 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                 ...(chromeServer ? { [CODEX_CHROME_SERVER_NAME]: chromeServer } : {}),
               }
             : baseProviderMcpServers;
+        const mcpEnvironment =
+          previewMcpSession || computerMcpSession || threadMcpSession
+            ? {
+                ...previewMcpSession?.env,
+                ...computerMcpSession?.env,
+                ...threadMcpSession?.env,
+              }
+            : undefined;
         yield* Effect.try({
           try: () =>
             assertMcpServerLimit(
@@ -2992,17 +3000,15 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             inheritsFastMode(input.model ?? input.modelSelection?.model),
           ),
           ...(providerMcpServers
-            ? { mcpServers: translateMcpForCodex(providerMcpServers) ?? {} }
-            : {}),
-          ...(previewMcpSession || computerMcpSession || threadMcpSession
             ? {
-                mcpEnvironment: {
-                  ...previewMcpSession?.env,
-                  ...computerMcpSession?.env,
-                  ...threadMcpSession?.env,
-                },
+                mcpServers:
+                  translateMcpForCodex(providerMcpServers, {
+                    // F5's own catalogs read their credentials from these variables.
+                    ownBearerEnvVars: new Set(Object.keys(mcpEnvironment ?? {})),
+                  }) ?? {},
               }
             : {}),
+          ...(mcpEnvironment ? { mcpEnvironment } : {}),
           ...(chromeInstructions ? { integrationInstructions: [chromeInstructions] } : {}),
           ...(mcpOAuthCallbackConfig.port
             ? { mcpOAuthCallbackPort: mcpOAuthCallbackConfig.port }
