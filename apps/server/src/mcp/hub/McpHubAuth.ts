@@ -32,6 +32,7 @@ import {
   describeMcpInterpolationSkip,
   interpolateMcpServers,
 } from "@t3tools/shared/mcpInterpolation";
+import { mcpRemoteHeaders } from "@t3tools/shared/mcpTranslation";
 import { Data, Effect, Layer, Option, ServiceMap } from "effect";
 
 import { CodexMcpEventBus } from "../../codex/CodexMcpEventBus.ts";
@@ -40,7 +41,9 @@ import { McpHub, type McpHubShape } from "./McpHub.ts";
 import {
   bumpMcpOAuthEpoch,
   McpOAuthProvider,
+  mcpOAuthEpoch,
   mcpOAuthExpiresAt,
+  mcpOAuthFetch,
   mcpOAuthKey,
   mcpOAuthServerUrl,
   mcpUsesStaticAuthorization,
@@ -107,8 +110,8 @@ function loopbackPort(url: string | undefined): number | undefined {
 
 export class McpHubAuthManager {
   private readonly attempts = new Map<string, Attempt>();
-  /** Cleanup for attempts that are still discovering, before they are registered. */
-  private readonly starting = new Map<string, () => void>();
+  /** Attempts that are still discovering, before they are registered. */
+  private readonly starting = new Map<string, { readonly key: string; readonly end: () => void }>();
   private readonly now: () => number;
 
   constructor(private readonly options: McpHubAuthManagerOptions) {
@@ -153,7 +156,11 @@ export class McpHubAuthManager {
   private async resolveServer(
     serverName: string,
     projectId?: ProjectId,
-  ): Promise<{ definition: McpServerDefinition; serverUrl: string }> {
+  ): Promise<{
+    definition: McpServerDefinition;
+    serverUrl: string;
+    environment: NodeJS.ProcessEnv;
+  }> {
     const servers = await this.options.readServers(projectId);
     const configured = servers[serverName];
     if (!configured) throw fail(`MCP server ${serverName} is not configured here.`);
@@ -173,7 +180,11 @@ export class McpHubAuthManager {
       if ("problem" in resolved) continue;
       const { definition, serverUrl } = resolved;
       const key = mcpOAuthKey(serverUrl, definition.oauthClientId);
-      const record = this.options.storage ? await this.options.storage.read(key) : undefined;
+      // A record that cannot be read reports as not signed in; the row stays, so the
+      // user can sign in again, which replaces it.
+      const record = this.options.storage
+        ? await this.options.storage.read(key).catch(() => undefined)
+        : undefined;
       const expiresAt = mcpOAuthExpiresAt(record);
       const pending = [...this.attempts.values()].find((attempt) => attempt.key === key);
       result.push({
@@ -189,42 +200,27 @@ export class McpHubAuthManager {
 
   async startSignIn(serverName: string, projectId?: ProjectId): Promise<McpStartHubSignInResult> {
     const storage = this.storage();
-    const { definition, serverUrl } = await this.resolveServer(serverName, projectId);
+    const { definition, serverUrl, environment } = await this.resolveServer(serverName, projectId);
     const key = mcpOAuthKey(serverUrl, definition.oauthClientId);
-    // One attempt per OAuth record: a new start replaces an abandoned one.
-    for (const attempt of this.attempts.values()) if (attempt.key === key) this.cancel(attempt.id);
+    // One attempt per OAuth record: a new start replaces an abandoned one, even one
+    // that is still discovering.
+    this.endAttemptsFor(key);
+    // A sign-out from here on rejects this attempt's tokens.
+    const epoch = mcpOAuthEpoch(key);
 
     const id = randomBytes(12).toString("base64url");
     const state = randomBytes(24).toString("base64url");
-    const record = await storage.read(key);
-    const configuredRedirect = definition.oauthCallbackUrl;
-    // A loopback callback URL names the port to listen on. Otherwise reuse the port
-    // the stored registration was made for, so servers that match redirect URIs
-    // exactly keep accepting it; fall back to any free port.
-    const fixedPort = definition.oauthCallbackPort ?? loopbackPort(configuredRedirect);
-    const callbackPath =
-      configuredRedirect && loopbackPort(configuredRedirect) !== undefined
-        ? new URL(configuredRedirect).pathname
-        : "/callback";
-    const reusePort = fixedPort === undefined ? loopbackPort(record?.redirectUrl) : undefined;
-    const listener =
-      reusePort !== undefined
-        ? await this.listen(id, reusePort, callbackPath).catch(() =>
-            this.listen(id, undefined, callbackPath),
-          )
-        : await this.listen(id, fixedPort, callbackPath);
-    const redirectUrl = configuredRedirect ?? `http://127.0.0.1:${listener.port}/callback`;
-
-    // One deadline covers discovery, registration, the browser and the code exchange,
-    // and the listener is tracked from the moment it opens.
+    // One deadline covers discovery, registration, the browser and the code exchange.
+    // The attempt is tracked from here, so a sign-out or a newer start ends it at once.
     const deadline = new AbortController();
     let ended = false;
+    let listener: { readonly port: number; readonly close: () => void } | undefined;
     const end = (reason = "This sign-in attempt was cancelled.") => {
       if (ended) return;
       ended = true;
       clearTimeout(timer);
       deadline.abort(fail(reason));
-      listener.close();
+      listener?.close();
       this.starting.delete(id);
       this.attempts.delete(id);
     };
@@ -233,30 +229,54 @@ export class McpHubAuthManager {
       SIGN_IN_ATTEMPT_TTL_MS,
     );
     timer.unref?.();
-    this.starting.set(id, end);
+    this.starting.set(id, { key, end });
+    const endedEarly = () =>
+      fail("This sign-in attempt ended before the browser step. Start sign-in again.");
     const base = this.options.fetchFn ?? fetch;
-    const fetchFn: FetchLike = (url, init) =>
+    const deadlineFetch: FetchLike = (url, init) =>
       base(url, {
         ...init,
         signal: init?.signal ? AbortSignal.any([init.signal, deadline.signal]) : deadline.signal,
       });
+    // Shares token refreshes with the hub's connections, which may hold the same grant.
+    const fetchFn = mcpOAuthFetch(serverUrl, [], deadlineFetch);
 
     let authorizationUrl: URL | undefined;
     let outcome: Awaited<ReturnType<typeof auth>>;
     let resourceMetadataUrl: URL | undefined;
     let provider: McpOAuthProvider;
+    let redirectUrl: string;
     try {
-      // A registration made for another redirect is useless to servers that match it
-      // exactly; register again unless the client ID is configured.
-      if (
-        !definition.oauthClientId &&
-        record?.clientInformation &&
-        record.redirectUrl !== redirectUrl
-      )
-        await updateMcpOAuthRecord(storage, key, (current) => {
-          const { clientInformation: _client, redirectUrl: _redirect, ...rest } = current;
-          return rest;
-        });
+      // An unreadable record only loses the port hint; this sign-in replaces it.
+      const record = await storage.read(key).catch(() => undefined);
+      if (ended) throw endedEarly();
+      const configuredRedirect = definition.oauthCallbackUrl;
+      // A loopback callback URL names the port to listen on. Otherwise reuse the port
+      // the stored registration was made for, so servers that match redirect URIs
+      // exactly keep accepting it; fall back to any free port.
+      const fixedPort = definition.oauthCallbackPort ?? loopbackPort(configuredRedirect);
+      const configuredLoopback =
+        configuredRedirect && loopbackPort(configuredRedirect) !== undefined
+          ? new URL(configuredRedirect)
+          : undefined;
+      const callbackPath = configuredLoopback?.pathname ?? "/callback";
+      const host = configuredLoopback?.hostname === "[::1]" ? "::1" : "127.0.0.1";
+      const reusePort = fixedPort === undefined ? loopbackPort(record?.redirectUrl) : undefined;
+      const opened =
+        reusePort !== undefined
+          ? await this.listen(id, reusePort, callbackPath, host).catch(() =>
+              this.listen(id, undefined, callbackPath, host),
+            )
+          : await this.listen(id, fixedPort, callbackPath, host);
+      listener = opened;
+      if (ended) {
+        opened.close();
+        throw endedEarly();
+      }
+      redirectUrl = configuredRedirect ?? `http://127.0.0.1:${opened.port}/callback`;
+      // A registration made for another redirect is not reused; the provider registers
+      // again and stores that registration only with the tokens it earns, so an
+      // abandoned sign-in leaves the working sign-in alone.
       provider = new McpOAuthProvider({
         storage,
         serverUrl,
@@ -264,12 +284,19 @@ export class McpHubAuthManager {
         interactive: {
           redirectUrl,
           state,
+          epoch,
           onAuthorizationUrl: (url) => {
             authorizationUrl = url;
           },
         },
       });
-      resourceMetadataUrl = await this.probeResourceMetadata(serverUrl, fetchFn);
+      resourceMetadataUrl = await this.probeResourceMetadata(
+        definition,
+        serverUrl,
+        environment,
+        fetchFn,
+      );
+      if (ended) throw endedEarly();
       outcome = await auth(provider, {
         serverUrl,
         ...(definition.scopes?.length ? { scope: definition.scopes.join(" ") } : {}),
@@ -277,11 +304,12 @@ export class McpHubAuthManager {
         fetchFn,
       });
     } catch (error) {
+      const endedBefore = ended;
       end();
+      if (endedBefore) throw endedEarly();
       throw fail(`Could not start sign-in for ${serverName}: ${readMessage(error)}`);
     }
-    if (ended)
-      throw fail("This sign-in attempt ended before the browser step. Start sign-in again.");
+    if (ended) throw endedEarly();
     if (outcome === "AUTHORIZED" || !authorizationUrl) {
       end();
       await this.signedIn(serverName, key);
@@ -309,32 +337,50 @@ export class McpHubAuthManager {
     return { status: "pending", attempt: info };
   }
 
+  /** Ends every attempt for one OAuth record, registered or still discovering. */
+  private endAttemptsFor(key: string): void {
+    for (const attempt of this.attempts.values()) if (attempt.key === key) this.cancel(attempt.id);
+    for (const start of this.starting.values()) if (start.key === key) start.end();
+  }
+
   /**
    * The protected-resource metadata URL from the server's 401 challenge. Servers may
-   * advertise it only there, and background connections already honour it.
+   * advertise it only there, and background connections already honour it. The probe
+   * carries the server's own headers, which some servers need before they answer, and
+   * speaks the server's transport: SSE servers take a GET for their event stream.
    */
   private async probeResourceMetadata(
+    definition: McpServerDefinition,
     serverUrl: string,
+    environment: NodeJS.ProcessEnv,
     fetchFn: FetchLike,
   ): Promise<URL | undefined> {
+    const headers =
+      definition.type === "stdio" ? undefined : mcpRemoteHeaders(definition, environment);
+    const request: RequestInit =
+      definition.type === "sse"
+        ? { method: "GET", headers: { ...headers, accept: "text/event-stream" } }
+        : {
+            method: "POST",
+            headers: {
+              ...headers,
+              "content-type": "application/json",
+              accept: "application/json, text/event-stream",
+            },
+            body: JSON.stringify({
+              jsonrpc: "2.0",
+              id: 0,
+              method: "initialize",
+              params: {
+                protocolVersion: LATEST_PROTOCOL_VERSION,
+                capabilities: {},
+                clientInfo: { name: "F5", version: "1" },
+              },
+            }),
+          };
     try {
-      const response = await fetchFn(serverUrl, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          accept: "application/json, text/event-stream",
-        },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: 0,
-          method: "initialize",
-          params: {
-            protocolVersion: LATEST_PROTOCOL_VERSION,
-            capabilities: {},
-            clientInfo: { name: "F5", version: "1" },
-          },
-        }),
-      });
+      // A redirect is not followed: the challenge belongs to the configured URL.
+      const response = await fetchFn(serverUrl, { ...request, redirect: "manual" });
       await response.body?.cancel().catch(() => undefined);
       return response.status === 401 ? extractResourceMetadataUrl(response) : undefined;
     } catch {
@@ -395,7 +441,7 @@ export class McpHubAuthManager {
     const storage = this.storage();
     const { definition, serverUrl } = await this.resolveServer(serverName, projectId);
     const key = mcpOAuthKey(serverUrl, definition.oauthClientId);
-    for (const attempt of this.attempts.values()) if (attempt.key === key) this.cancel(attempt.id);
+    this.endAttemptsFor(key);
     // Token writes already in flight (a code exchange or a refresh) are rejected from here on.
     bumpMcpOAuthEpoch(key);
     let hadTokens = false;
@@ -420,7 +466,7 @@ export class McpHubAuthManager {
 
   close(): void {
     for (const id of this.attempts.keys()) this.cancel(id);
-    for (const end of this.starting.values()) end();
+    for (const { end } of this.starting.values()) end();
   }
 
   private async signedIn(serverName: string, key: string): Promise<number> {
@@ -430,7 +476,7 @@ export class McpHubAuthManager {
   }
 
   /** A loopback listener for one attempt; it answers only the redirect for that attempt. */
-  private listen(attemptId: string, port: number | undefined, callbackPath: string) {
+  private listen(attemptId: string, port: number | undefined, callbackPath: string, host: string) {
     return new Promise<{ port: number; close: () => void }>((resolve, reject) => {
       const server = Http.createServer((request, response) => {
         let target: URL;
@@ -479,7 +525,7 @@ export class McpHubAuthManager {
           ),
         ),
       );
-      server.listen(port ?? 0, "127.0.0.1", () => {
+      server.listen(port ?? 0, host, () => {
         const address = server.address() as AddressInfo;
         resolve({
           port: address.port,
