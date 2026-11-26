@@ -322,9 +322,14 @@ describe("ProviderInstanceModelPicker", () => {
         expect(onChange).not.toHaveBeenCalled();
       }
     }
+    // In a short window the list shrinks to the room above the trigger instead of covering it.
     const popup = document.querySelector('[data-slot="popover-popup"]')!;
-    await expect.poll(() => popup.getBoundingClientRect().height).toBeGreaterThan(250);
-    expect(popup.getBoundingClientRect().bottom).toBeLessThanOrEqual(300);
+    const trigger = document.querySelector("[data-chat-provider-model-picker]")!;
+    await expect.poll(() => popup.getBoundingClientRect().height).toBeGreaterThan(150);
+    expect(popup.getBoundingClientRect().top).toBeGreaterThanOrEqual(0);
+    expect(popup.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+      trigger.getBoundingClientRect().top,
+    );
     await userEvent.keyboard("{Enter}");
     await expect.poll(() => onChange.mock.calls.length).toBe(1);
   });
