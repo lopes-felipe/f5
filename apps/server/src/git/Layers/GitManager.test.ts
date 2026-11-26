@@ -73,7 +73,6 @@ function makeServerConfig(): ServerConfigShape {
     providerLogsDir: path.join(logsDir, "provider"),
     providerEventLogPath: path.join(logsDir, "provider", "events.log"),
     terminalLogsDir: path.join(logsDir, "terminals"),
-    anonymousIdPath: path.join(stateDir, "anonymous-id"),
     staticDir: undefined,
     devUrl: undefined,
     noBrowser: true,
@@ -997,7 +996,8 @@ describe("GitManager unit", () => {
     "configures tracking only when reusing %s",
     async (_label, branchName, upstreamWrites) => {
       const worktreePath = "/tmp/f5-existing-main-worktree";
-      const { manager, git } = await makeManager({
+      const pullRequestUrl = "https://github.com/t3tools/f5/pull/42";
+      const { manager, git, github } = await makeManager({
         gitCore: {
           statusDetails: () => Effect.succeed({ ...cleanStatus, branch: branchName }),
           listBranches: () =>
@@ -1019,7 +1019,7 @@ describe("GitManager unit", () => {
           pullRequest: {
             number: 42,
             title: "Fork PR",
-            url: "https://github.com/t3tools/f5/pull/42",
+            url: pullRequestUrl,
             baseRefName: "main",
             headRefName: "main",
             isCrossRepository: true,
@@ -1035,6 +1035,9 @@ describe("GitManager unit", () => {
 
       expect(result).toMatchObject({ branch: "t3code/pr-42/main", worktreePath });
       expect(git.calls.setBranchUpstream).toHaveLength(upstreamWrites);
+      expect(github.cloneLookups).toEqual(
+        upstreamWrites ? [{ cwd: worktreePath, repository: "contributor/f5", pullRequestUrl }] : [],
+      );
       expect(git.calls.fetchPullRequestBranch).toHaveLength(0);
       expect(git.calls.createWorktree).toHaveLength(0);
     },

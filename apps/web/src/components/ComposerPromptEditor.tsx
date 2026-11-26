@@ -98,6 +98,8 @@ import {
 import { cn, randomUUID } from "~/lib/utils";
 import { isKeyboardEventComposing } from "~/lib/keyboardComposition";
 import { basenameOfPath, getVscodeIconUrlForEntry, inferEntryKindFromPath } from "~/vscode-icons";
+import { useRemoteFileIconsEnabled } from "~/lib/remoteFileIcons";
+import { FileIcon, FolderIcon } from "lucide-react";
 import {
   COMPOSER_INLINE_CHIP_CLASS_NAME,
   COMPOSER_INLINE_CHIP_ICON_CLASS_NAME,
@@ -136,6 +138,9 @@ const ComposerTerminalContextActionsContext = createContext<{
 
 function ComposerMentionDecorator(props: { path: string }) {
   const theme = resolvedThemeFromDocument();
+  const remoteIcons = useRemoteFileIconsEnabled();
+  const entryKind = inferEntryKindFromPath(props.path);
+  const EntryIcon = entryKind === "directory" ? FolderIcon : FileIcon;
   const chip = (
     <span
       className={COMPOSER_INLINE_CHIP_CLASS_NAME}
@@ -143,13 +148,17 @@ function ComposerMentionDecorator(props: { path: string }) {
       spellCheck={false}
       data-composer-mention-chip="true"
     >
-      <img
-        alt=""
-        aria-hidden="true"
-        className={COMPOSER_INLINE_CHIP_ICON_CLASS_NAME}
-        loading="lazy"
-        src={getVscodeIconUrlForEntry(props.path, inferEntryKindFromPath(props.path), theme)}
-      />
+      {remoteIcons ? (
+        <img
+          alt=""
+          aria-hidden="true"
+          className={COMPOSER_INLINE_CHIP_ICON_CLASS_NAME}
+          loading="lazy"
+          src={getVscodeIconUrlForEntry(props.path, entryKind, theme)}
+        />
+      ) : (
+        <EntryIcon aria-hidden="true" className={COMPOSER_INLINE_CHIP_ICON_CLASS_NAME} />
+      )}
       <span className={COMPOSER_INLINE_CHIP_LABEL_CLASS_NAME}>{basenameOfPath(props.path)}</span>
     </span>
   );

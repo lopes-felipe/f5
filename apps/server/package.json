@@ -1,6 +1,6 @@
 {
   "name": "t3",
-  "version": "0.1.11",
+  "version": "0.1.13",
   "repository": {
     "type": "git",
     "url": "https://github.com/lopes-felipe/f5",
@@ -54,6 +54,7 @@
     "node-pty": "^1.1.0",
     "open": "^10.1.0",
     "parse5": "^7.3.0",
+    "unbash": "5.1.0",
     "undici": "8.11.2",
     "ws": "^8.18.0",
     "yaml": "^2.8.2",

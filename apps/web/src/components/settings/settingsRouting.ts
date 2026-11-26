@@ -111,6 +111,7 @@ export const LEGACY_SETTINGS_CATEGORY_ALIASES: Readonly<Record<string, SettingsC
 export const LEGACY_SETTINGS_ITEM_ALIASES: Readonly<Record<string, string>> = {
   "general.theme": "appearance.theme",
   // General
+  "general.composer-collapse": "conversation.composer-collapse",
   "general.composer-editor": "conversation.composer-editor",
   "general.send-shortcut": "conversation.send-shortcut",
   "general.pr-merge-method": "git.merge-method",
@@ -312,6 +313,9 @@ export const SETTINGS_ITEM_ROUTES = defineItemRoutes({
   "conversation.composer-editor": {
     category: "conversation",
   },
+  "conversation.composer-collapse": {
+    category: "conversation",
+  },
   "conversation.compact-layout": {
     category: "conversation",
   },
@@ -375,6 +379,9 @@ export const SETTINGS_ITEM_ROUTES = defineItemRoutes({
     category: "conversation",
   },
   "general.diagnostics": {
+    category: "general",
+  },
+  "general.doctor": {
     category: "general",
   },
   "general.server-health": {

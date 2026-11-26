@@ -15,9 +15,25 @@ import {
   extractPersistedServerObservabilitySettings,
   normalizePersistedServerSettingString,
   parsePersistedServerObservabilitySettings,
+  resolveTextGenerationProvider,
 } from "./serverSettings";
 
 describe("serverSettings helpers", () => {
+  it("defaults to Big Pickle when only OpenCode can generate text", () => {
+    const settings = Schema.decodeUnknownSync(ServerSettings)({
+      providers: Object.fromEntries(
+        Object.keys(DEFAULT_SERVER_SETTINGS.providers).map((provider) => [
+          provider,
+          { enabled: provider === "opencode" },
+        ]),
+      ),
+    });
+    expect(resolveTextGenerationProvider(settings).textGenerationModelSelection).toEqual({
+      instanceId: "opencode",
+      model: "opencode/big-pickle",
+    });
+  });
+
   it("keeps automatic shell-created GitLab linking opt-in", () => {
     expect(DEFAULT_SERVER_SETTINGS.autoLinkShellCreatedMergeRequests).toBe(false);
     expect(

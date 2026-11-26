@@ -89,7 +89,6 @@ import {
 } from "./provider/Services/ProviderUpdateAdvisor.ts";
 import { makeServerRuntimeServicesLayer } from "./serverLayers";
 import { ServerSettingsLive } from "./serverSettings.ts";
-import { AnalyticsService } from "./telemetry/Services/AnalyticsService.ts";
 import { TerminalManager, type TerminalManagerShape } from "./terminal/Services/Manager";
 import { createServer } from "./wsServer";
 
@@ -949,7 +948,6 @@ export function createWsServerTestHarness() {
       providerLogsDir: path.join(stateDir, "logs", "provider"),
       providerEventLogPath: path.join(stateDir, "logs", "provider", "events.log"),
       terminalLogsDir: path.join(stateDir, "logs", "terminals"),
-      anonymousIdPath: path.join(stateDir, "anonymous-id"),
       staticDir: options.staticDir,
       devUrl: options.devUrl ? new URL(options.devUrl) : undefined,
       noBrowser: true,
@@ -988,7 +986,6 @@ export function createWsServerTestHarness() {
       Layer.provideMerge(openLayer),
       Layer.provideMerge(serverConfigLayer),
       Layer.provideMerge(previewAutomationBrokerLayer),
-      Layer.provideMerge(AnalyticsService.layerTest),
       Layer.provideMerge(NodeServices.layer),
     );
     const runtimeServices = await Effect.runPromise(

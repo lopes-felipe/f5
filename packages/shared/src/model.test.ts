@@ -323,11 +323,12 @@ describe("resolveSelectableModel", () => {
 
 describe("model catalog invariants", () => {
   const providers = Object.keys(MODEL_OPTIONS_BY_PROVIDER) as ProviderKind[];
-  const defaultMaps = [
-    DEFAULT_MODEL_BY_PROVIDER,
-    DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER,
-    DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER,
-  ] as const;
+  const defaultMaps = [DEFAULT_MODEL_BY_PROVIDER, DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER] as const;
+
+  it.each(providers)("keeps the %s text-generation default round-trippable", (provider) => {
+    const model = DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER[provider];
+    expect(normalizeModelSlug(model, provider)).toBe(model);
+  });
 
   it.each(providers)("keeps %s built-in slugs unique and round-trippable", (provider) => {
     const slugs = MODEL_OPTIONS_BY_PROVIDER[provider].map((model) => model.slug);

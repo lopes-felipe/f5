@@ -25,7 +25,7 @@ vi.mock("../../lib/serverReactQuery", () => ({
     queryKey: ["diagnostics-fixture"],
     queryFn: async () => ({
       diagnostics: {
-        traces: { endpoint: "https://collector.test/v1/traces", source: "environment" },
+        traces: { endpoint: "https://collector.test/v1/traces", source: "settings" },
         metrics: { endpoint: null, source: "unset" },
       },
     }),
@@ -40,7 +40,7 @@ it("shows the effective source and saves credentials through settings without re
     </QueryClientProvider>,
   );
   await expect
-    .element(page.getByText("Source: environment · https://collector.test/v1/traces"))
+    .element(page.getByText("Source: settings · https://collector.test/v1/traces"))
     .toBeInTheDocument();
   await page.getByLabelText("Collector header name").fill("Authorization");
   await page.getByLabelText("Collector header value").fill("Bearer new-private-value");

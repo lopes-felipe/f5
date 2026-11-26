@@ -10,6 +10,7 @@ import { serverConfigQueryOptions } from "../lib/serverReactQuery";
 import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { APP_SETTINGS_STORAGE_KEY } from "../appSettings";
+import { safeLocalStorageRemoveItem, safeLocalStorageSetItem } from "../lib/safeStorage";
 import { ensureNativeApi } from "../nativeApi";
 import { serverQueryKeys } from "../lib/serverReactQuery";
 import { PROJECT_SETTINGS_QUERY_KEY } from "../lib/projectSettingsQuery";
@@ -127,8 +128,8 @@ function forgetLegacyClientSetting(key: LegacyKey): void {
     if (!stored || !(key in stored)) continue;
     delete stored[key];
     if (storageKey === PENDING_CLIENT_SETTINGS_STORAGE_KEY && Object.keys(stored).length === 0)
-      localStorage.removeItem(storageKey);
-    else localStorage.setItem(storageKey, JSON.stringify(stored));
+      safeLocalStorageRemoveItem(storageKey);
+    else safeLocalStorageSetItem(storageKey, JSON.stringify(stored));
   }
 }
 

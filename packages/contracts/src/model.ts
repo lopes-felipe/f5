@@ -316,7 +316,7 @@ export const DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER = {
   codex: DEFAULT_GIT_TEXT_GENERATION_MODEL,
   claudeAgent: "claude-haiku-5-5",
   cursor: "auto",
-  opencode: "openai/gpt-5",
+  opencode: "opencode/big-pickle",
   grok: "grok-build",
   antigravity: "antigravity-default",
   muse: "muse-spark-1.3",

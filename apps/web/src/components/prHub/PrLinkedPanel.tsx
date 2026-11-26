@@ -1,13 +1,12 @@
 import type { PrQuickActionRequest } from "../../lib/prQuickActions";
 import { useQuery } from "@tanstack/react-query";
 import type { ThreadId } from "@t3tools/contracts";
-import { useAppSettingsSelector } from "../../appSettings";
 import { OpenLinkThread, useOpenLink } from "../../hooks/useOpenLink";
 import { ensureNativeApi } from "../../nativeApi";
 import {
   assertPrHubAccountGeneration,
-  getPrHubAccountGeneration,
   getPrHubSelectedAccountId,
+  usePrHubAccountSnapshot,
 } from "../../lib/prHubAccount";
 import { Button } from "../ui/button";
 import { PrPageContent } from "./PrPageContent";
@@ -25,10 +24,7 @@ export default function PrLinkedPanel({
   onInitialActionHandled?: (() => void) | undefined;
 }) {
   const openLink = useOpenLink();
-  // Re-render when the account choice changes; the choice itself is applied at startup.
-  useAppSettingsSelector((settings) => settings.prHubAccountId);
-  const accountId = getPrHubSelectedAccountId();
-  const generation = getPrHubAccountGeneration();
+  const { accountId, generation } = usePrHubAccountSnapshot();
   const query = useQuery({
     // The generation sits third, as in every PR Hub key, so a change event for this
     // account does not drop the query.

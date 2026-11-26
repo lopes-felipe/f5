@@ -53,18 +53,6 @@ export const PROVIDER_ICON_BY_PROVIDER: Partial<Record<string, Icon>> = {
   [ProviderDriverKind.make("pi")]: PiIcon,
 };
 
-export const PROVIDER_ICON_BY_PICKER_KIND: Record<ProviderPickerKind, Icon> = {
-  codex: OpenAI,
-  claudeAgent: ClaudeAI,
-  cursor: CursorIcon,
-  opencode: OpenCodeIcon,
-  grok: GrokIcon,
-  antigravity: Gemini,
-  muse: MuseIcon,
-  acp: ACPRegistryIcon,
-  pi: PiIcon,
-};
-
 /** Extra search terms for providers whose harness name differs from the model family. */
 export const PROVIDER_SEARCH_KEYWORDS: Partial<Record<ProviderKind, readonly string[]>> = {
   antigravity: ["gemini", "google", "neon"],
@@ -121,17 +109,6 @@ export function providerDisabledReason(status: ServerProvider | null): string | 
     return null;
   }
   return status?.message ?? status?.unavailableReason ?? "Provider unavailable";
-}
-
-export function describeProviderStatus(label: string, status: ServerProvider | null): string {
-  if (!status) {
-    return label;
-  }
-  if (isProviderSelectable(status)) {
-    return status.message ? `${label}. ${status.message}` : label;
-  }
-  const message = status.message ?? status.unavailableReason;
-  return message ? `${label}. ${message}` : `${label} is unavailable.`;
 }
 
 /**

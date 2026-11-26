@@ -1,1 +1,0 @@
-- A branch tracking another local branch no longer displays that branch’s pull request.

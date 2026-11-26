@@ -86,6 +86,7 @@ export function GenerationModelPicker({
             providers={selectable}
             modelOptionsByInstance={getCustomModelOptionsByInstance(settings, selectable)}
             disabled={disabled}
+            recordRecents={false}
             onInstanceModelChange={(instanceId, _driver, model) => onChange({ instanceId, model })}
           />
           {selected ? (
