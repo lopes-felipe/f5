@@ -32,7 +32,7 @@ export function stableMcpServersJson(servers: McpProjectServersConfig): string {
  */
 export function mergeMcpServerLayers(input: {
   readonly common?: McpProjectServersConfig | null;
-  readonly repository?: McpProjectServersConfig | null;
+  readonly repository?: McpProjectServersConfig | null | undefined;
   readonly project?: McpProjectServersConfig | null;
   readonly disabledCommon?: ReadonlyArray<string> | undefined;
 }): McpProjectServersConfig {

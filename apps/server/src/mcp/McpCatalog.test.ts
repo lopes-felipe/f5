@@ -53,7 +53,7 @@ const page = {
 
 function fakeFetch(body: unknown, status = 200) {
   const urls: URL[] = [];
-  const fetch = (async (input: URL | RequestInfo) => {
+  const fetch = (async (input: Parameters<typeof globalThis.fetch>[0]) => {
     urls.push(new URL(String(input)));
     return new Response(JSON.stringify(body), { status });
   }) as typeof globalThis.fetch;

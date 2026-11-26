@@ -101,7 +101,7 @@ export function McpRepositoryServers(props: { projectId: ProjectId }) {
       await invalidateMcpConfigQueries(queryClient);
       setReviewing(null);
     } catch (cause) {
-      setError(readErrorMessage(cause));
+      setError(readErrorMessage(cause, "The approval could not be changed."));
       // The file may have changed under the dialog; show what is there now.
       await query.refetch();
     } finally {

@@ -60,7 +60,7 @@ export function McpCatalogPanel(props: { onChoose: (draft: McpCatalogDraft) => v
       </p>
       {search.isError ? (
         <p role="alert" className="text-destructive text-sm">
-          {readErrorMessage(search.error)}
+          {readErrorMessage(search.error, "The MCP Registry could not be searched.")}
         </p>
       ) : null}
       {search.isPending ? <p className="text-muted-foreground text-sm">Searching…</p> : null}

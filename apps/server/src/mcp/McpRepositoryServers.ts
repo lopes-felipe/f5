@@ -62,7 +62,7 @@ export interface McpRepositoryServersShape {
 export class McpRepositoryServers extends ServiceMap.Service<
   McpRepositoryServers,
   McpRepositoryServersShape
->()("t3/mcp/McpRepositoryServers/McpRepositoryServers") {}
+>()("t3/mcp/McpRepositoryServers") {}
 
 export function repositoryDefinitionHash(
   name: string,
@@ -142,7 +142,13 @@ export const makeMcpRepositoryServers = Effect.gen(function* () {
     projectId: string;
     serverName: string;
     definitionHash: string;
-  }>`SELECT project_id AS "projectId", server_name AS "serverName", definition_hash AS "definitionHash" FROM mcp_repository_trust`;
+  }>`SELECT project_id AS "projectId", server_name AS "serverName", definition_hash AS "definitionHash" FROM mcp_repository_trust`.pipe(
+    // Unreadable approvals fail closed: nothing from a repository runs until approved again.
+    Effect.tapError((error) =>
+      Effect.logWarning("MCP repository approvals could not be read", { error: String(error) }),
+    ),
+    Effect.orElseSucceed(() => []),
+  );
   for (const row of rows) {
     const byName = trust.get(row.projectId) ?? new Map<string, string>();
     byName.set(mcpServerNameKey(row.serverName), row.definitionHash);
@@ -167,13 +173,16 @@ export const makeMcpRepositoryServers = Effect.gen(function* () {
       const filename = path.join(root, MCP_REPOSITORY_FILE);
       const read = yield* Effect.tryPromise({
         try: () => readRepositoryFile(filename, files.get(projectId)),
-        catch: (error) => error,
+        catch: (error) =>
+          new McpRepositoryTrustError({
+            message: error instanceof Error ? error.message : String(error),
+          }),
       }).pipe(
         Effect.map((parsed) => ({ parsed, error: undefined as string | undefined })),
         Effect.catch((error) =>
           Effect.succeed({
             parsed: undefined,
-            error: `${MCP_REPOSITORY_FILE} could not be read: ${error instanceof Error ? error.message : String(error)}`,
+            error: `${MCP_REPOSITORY_FILE} could not be read: ${error.message}`,
           }),
         ),
       );
