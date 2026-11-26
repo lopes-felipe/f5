@@ -109,6 +109,8 @@ export const ClaudeTraitsPicker = memo(function ClaudeTraitsPicker(
   props: ClaudeTraitsProps & {
     disabled?: boolean | undefined;
     triggerClassName?: string | undefined;
+    /** Tint the trigger with the effort level's colour (the composer chip). Defaults to true. */
+    tint?: boolean | undefined;
   },
 ) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -116,7 +118,7 @@ export const ClaudeTraitsPicker = memo(function ClaudeTraitsPicker(
     return null;
   }
   const trigger = getClaudeTriggerPresentation(props);
-  const { disabled, triggerClassName, ...menuProps } = props;
+  const { disabled, triggerClassName, tint = true, ...menuProps } = props;
 
   return (
     <Menu
@@ -135,15 +137,19 @@ export const ClaudeTraitsPicker = memo(function ClaudeTraitsPicker(
             disabled={disabled}
             className={cn(
               COMPOSER_CHIP_CLASS_NAME,
-              trigger.effortTint?.className,
+              tint ? trigger.effortTint?.className : undefined,
               triggerClassName,
             )}
           />
         }
       >
-        <span>{trigger.label}</span>
+        {/* In a width-capped trigger the label truncates; the icons and chevron stay whole. */}
+        <span className="min-w-0 truncate" title={trigger.label}>
+          {trigger.label}
+        </span>
         <TraitsTriggerIcons icons={trigger.icons} />
-        <ChevronDownIcon aria-hidden="true" className="size-3 opacity-60" />
+        {/* Pinned to the trailing edge when the trigger is wider than its content. */}
+        <ChevronDownIcon aria-hidden="true" className="ms-auto size-3 shrink-0 opacity-60" />
       </MenuTrigger>
       <MenuPopup align="start">
         <ClaudeTraitsMenuContent {...menuProps} />

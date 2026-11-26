@@ -105,6 +105,7 @@ export function PortReviewOptions(props: {
           key={row.label} label={row.label}
           disabled={props.locked} provider={slot.provider} model={slot.model} modelOptions={slot.modelOptions}
           providers={props.providers} modelOptionsByInstance={props.modelOptionsByInstance}
+          reserveTraitsColumn reserveTrailing={(props.value.additionalReviewers?.length ?? 0) > 0}
           providerUnavailableReason={(provider) => readOnlyWorkflowUnsupportedReason(provider, props.providers)}
           onProviderModelChange={(provider, model) => write({ provider, model })}
           onModelOptionsChange={(options) => write({

@@ -617,7 +617,105 @@ describe("WorkflowCreateDialog", () => {
     }
   });
 
-  it("divides the model and effort pickers only when reasoning controls render", async () => {
+  it("lines up the model field of a row without reasoning when the effort column is reserved", async () => {
+    const host = document.createElement("div");
+    host.style.width = "480px";
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <>
+        <SlotRow
+          label="With reasoning"
+          provider="codex"
+          model="gpt-5-codex"
+          modelOptions={{ codex: { reasoningEffort: "high" } }}
+          modelOptionsByInstance={EMPTY_MODEL_OPTIONS_BY_INSTANCE}
+          reserveTraitsColumn
+          reserveTrailing
+          onProviderModelChange={() => {}}
+          onModelOptionsChange={() => {}}
+        />
+        <SlotRow
+          label="Without reasoning"
+          provider="cursor"
+          model="auto"
+          modelOptions={undefined}
+          modelOptionsByInstance={EMPTY_MODEL_OPTIONS_BY_INSTANCE}
+          reserveTraitsColumn
+          reserveTrailing
+          trailing={<button type="button" aria-label="Remove" className="size-7" />}
+          onProviderModelChange={() => {}}
+          onModelOptionsChange={() => {}}
+        />
+      </>,
+      { container: host },
+    );
+
+    try {
+      const modelRight = (name: string) =>
+        page
+          .getByRole("group", { name })
+          .element()
+          .querySelector('[data-slot="workflow-slot-model"]')!
+          .getBoundingClientRect().right;
+      expect(modelRight("Without reasoning")).toBe(modelRight("With reasoning"));
+      // The effort trigger is neutral in a slot: no effort-level tint.
+      const effortTrigger = page
+        .getByRole("group", { name: "With reasoning" })
+        .element()
+        .querySelector<HTMLElement>("[data-slot='workflow-slot-traits'] button")!;
+      expect(effortTrigger.className).not.toMatch(/bg-effort-/);
+      // Wide enough for one line: the label sits beside the model field.
+      const row = page.getByRole("group", { name: "With reasoning" }).element();
+      expect(row.querySelector("label")!.getBoundingClientRect().right).toBeLessThanOrEqual(
+        row.querySelector('[data-slot="workflow-slot-model"]')!.getBoundingClientRect().left,
+      );
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("moves the label above the fields in a phone-width container so the model stays readable", async () => {
+    const host = document.createElement("div");
+    // About the dialog's content width on a 375px phone.
+    host.style.width = "327px";
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <SlotRow
+        label="Author C"
+        provider="codex"
+        model="gpt-5-codex"
+        modelOptions={{ codex: { reasoningEffort: "high" } }}
+        modelOptionsByInstance={EMPTY_MODEL_OPTIONS_BY_INSTANCE}
+        reserveTraitsColumn
+        reserveTrailing
+        trailing={<button type="button" aria-label="Remove Author C" className="size-7" />}
+        onProviderModelChange={() => {}}
+        onModelOptionsChange={() => {}}
+      />,
+      { container: host },
+    );
+
+    try {
+      const row = page.getByRole("group", { name: "Author C" }).element();
+      const label = row.querySelector("label")!.getBoundingClientRect();
+      const model = row.querySelector('[data-slot="workflow-slot-model"]')!;
+      const traits = row
+        .querySelector('[data-slot="workflow-slot-traits"]')!
+        .getBoundingClientRect();
+      expect(label.bottom).toBeLessThanOrEqual(model.getBoundingClientRect().top);
+      // Model, effort and Remove still share one line.
+      expect(traits.top).toBe(model.getBoundingClientRect().top);
+      const modelName = model.querySelector<HTMLElement>("button span.truncate")!;
+      expect(modelName.textContent?.length).toBeGreaterThan(0);
+      expect(modelName.clientWidth).toBeGreaterThanOrEqual(64);
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("renders the effort field only when reasoning controls render", async () => {
     const host = document.createElement("div");
     document.body.append(host);
     const screen = await renderWithQueryClient(
@@ -647,9 +745,9 @@ describe("WorkflowCreateDialog", () => {
     try {
       const withReasoning = page.getByRole("group", { name: "With reasoning" }).element();
       const withoutReasoning = page.getByRole("group", { name: "Without reasoning" }).element();
-      expect(withReasoning.querySelector('[data-slot="workflow-slot-divider"]')).not.toBeNull();
+      expect(withReasoning.querySelector('[data-slot="workflow-slot-traits"]')).not.toBeNull();
       expect(withReasoning.querySelector("button[aria-haspopup='menu']")?.textContent).toBe("High");
-      expect(withoutReasoning.querySelector('[data-slot="workflow-slot-divider"]')).toBeNull();
+      expect(withoutReasoning.querySelector('[data-slot="workflow-slot-traits"]')).toBeNull();
       expect(withoutReasoning.querySelector("button[aria-haspopup='menu']")).toBeNull();
     } finally {
       await screen.unmount();
@@ -697,7 +795,7 @@ describe("WorkflowCreateDialog", () => {
 
     try {
       const row = page.getByRole("group", { name: "Cursor slot" }).element();
-      expect(row.querySelector('[data-slot="workflow-slot-divider"]')).not.toBeNull();
+      expect(row.querySelector('[data-slot="workflow-slot-traits"]')).not.toBeNull();
       const trigger = row.querySelector<HTMLElement>("button[aria-haspopup='menu']")!;
       expect(trigger.textContent).toContain("Medium");
       trigger.click();
@@ -747,7 +845,7 @@ describe("WorkflowCreateDialog", () => {
 
     try {
       const row = page.getByRole("group", { name: "OpenCode slot" }).element();
-      expect(row.querySelector('[data-slot="workflow-slot-divider"]')).toBeNull();
+      expect(row.querySelector('[data-slot="workflow-slot-traits"]')).toBeNull();
       expect(row.querySelector("button[aria-haspopup='menu']")).toBeNull();
     } finally {
       await screen.unmount();
@@ -1683,7 +1781,8 @@ describe("WorkflowCreateDialog", () => {
         onOpenChange={vi.fn()}
         onWorkflowCreated={vi.fn()}
       />,
-      { container: host },
+      // Ready Codex and Claude snapshots, so every row renders an effort field to align.
+      { container: host, providers: defaultTestProviders() },
     );
     const addAuthorButton = () => {
       const button = Array.from(document.querySelectorAll("button")).find(
@@ -1710,6 +1809,35 @@ describe("WorkflowCreateDialog", () => {
       expect(document.body.textContent).toContain(
         "4 authors: 12 cross-reviews, 4 own-model reviews, 4 revisions, 1 merge",
       );
+      // Removable and fixed rows share one column grid, and the estimate closes the
+      // section after the merge row.
+      const slotRow = (label: string) => {
+        const row = document.querySelector(
+          `[data-slot="workflow-slot-row"][aria-label="${label}"]`,
+        );
+        if (!row) throw new Error(`${label} row not found.`);
+        return row;
+      };
+      const rightEdge = (row: Element, slot: string) =>
+        row.querySelector(`[data-slot="${slot}"]`)?.getBoundingClientRect().right;
+      const alignedRows = [slotRow("Author A"), slotRow("Author C"), slotRow("Merge")];
+      const modelEdges = alignedRows.map((row) => rightEdge(row, "workflow-slot-model"));
+      expect(modelEdges[0]).toBeDefined();
+      expect(new Set(modelEdges).size).toBe(1);
+      // Author A and Merge render effort fields; Author C's provider has no effort control,
+      // so its row keeps the column as a reserved spacer. All three edges must match.
+      const effortEdges = [
+        rightEdge(slotRow("Author A"), "workflow-slot-traits"),
+        rightEdge(slotRow("Merge"), "workflow-slot-traits"),
+        rightEdge(slotRow("Author C"), "workflow-slot-traits-reserved"),
+      ];
+      expect(effortEdges).not.toContain(undefined);
+      expect(new Set(effortEdges).size).toBe(1);
+      const estimate = document.querySelector('[data-slot="workflow-turn-estimate"]');
+      if (!estimate) throw new Error("Turn estimate not found.");
+      expect(
+        slotRow("Merge").compareDocumentPosition(estimate) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
 
       const rowText = (label: string) =>
         document.querySelector(`[data-slot="workflow-slot-row"][aria-label="${label}"]`)
@@ -2751,7 +2879,7 @@ it("walks an unsupported stored effort down, not to the default, and shows fast-
     // A model whose only control is Fast Mode still gets the traits control.
     const row = page.getByRole("group", { name: "Branch A" }).element();
     await vi.waitFor(() => {
-      expect(row.querySelector('[data-slot="workflow-slot-divider"]')).not.toBeNull();
+      expect(row.querySelector('[data-slot="workflow-slot-traits"]')).not.toBeNull();
     });
     row.querySelector<HTMLButtonElement>("button[aria-haspopup='menu']")?.click();
     await expect.element(page.getByRole("menuitemcheckbox", { name: /Fast Mode/ })).toBeVisible();
