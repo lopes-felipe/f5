@@ -175,6 +175,8 @@ export interface BuildCodexAppServerCommandInput {
    * start it.
    */
   readonly disablePlugins?: boolean;
+  /** Server-owned config appended after filtering user flags, such as a read-only stage's. */
+  readonly extraConfigArgs?: ReadonlyArray<string>;
 }
 
 /** Codex config override that skips plugin startup tasks such as marketplace auto-upgrade. */
@@ -208,6 +210,7 @@ export function buildCodexAppServerCommand(
       ...resolved.argv,
       ...managedArgs,
       ...codexModelProviderConfigArgs(input.modelProvider),
+      ...(input.extraConfigArgs ?? []),
     ],
     dropped: resolved.dropped,
   };

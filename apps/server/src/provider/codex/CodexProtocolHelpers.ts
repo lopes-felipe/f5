@@ -358,6 +358,11 @@ export interface CodexAppServerStartSessionInput {
   readonly readOnlyEnforcement?: ReadOnlyEnforcement;
   /** Internal: launch the app-server with Codex plugins (and marketplace auto-upgrade) off. */
   readonly disablePlugins?: boolean;
+  /**
+   * Internal: the rules-free Codex home a read-only workflow stage runs in (CodexReadOnlyHome.ts).
+   * Materialized from the instance's home before launch; only used with `workflowExecutionProfile`.
+   */
+  readonly readOnlyHomePath?: string;
   /** Internal: working directory of the app-server process, when it differs from the thread cwd. */
   readonly processCwd?: string;
 }
@@ -691,7 +696,7 @@ export const CODEX_READ_ONLY_TURN_SANDBOX_POLICY = {
 const CODEX_POLICY_TURN_SANDBOX_POLICY = { type: "dangerFullAccess" } as const;
 
 /**
- * How a read-only workflow stage runs Codex (docs/reviews/cursor-live-gates.md, "Codex read-only
+ * How a read-only workflow stage runs Codex (docs/reviews/read-only-live-gates.md, "Codex read-only
  * escalation"):
  *
  * - `sandbox`: Codex's read-only sandbox, and Codex never asks. Where that sandbox can't start
