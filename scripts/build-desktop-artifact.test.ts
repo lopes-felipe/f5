@@ -14,6 +14,7 @@ import { Effect } from "effect";
 import { describe, expect, it, vi } from "vitest";
 
 import { APP_ICON_IDS } from "@t3tools/contracts";
+import { APP_BUNDLE_ID } from "@t3tools/shared/appIdentity";
 import { CODEX_PROTOCOL_BASELINE_VERSION } from "@t3tools/shared/codexProtocolManifest";
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
 import {
@@ -179,6 +180,20 @@ it("signs limactl and carries the VM backend pin only in macOS arm64 builds", as
       Effect.runPromise(createBuildConfig("mac", "dmg", "F5", false, false, arch, undefined, true)),
     ).rejects.toThrow(/Only macOS arm64/);
   }
+});
+
+it("packages the app under the bundle id the running app and the Dock tile plug-in use", async () => {
+  for (const [platform, target] of [
+    ["mac", "dmg"],
+    ["win", "nsis"],
+    ["linux", "AppImage"],
+  ] as const) {
+    const config = await Effect.runPromise(
+      createBuildConfig(platform, target, "F5", false, false, "x64"),
+    );
+    expect(config.appId).toBe(APP_BUNDLE_ID);
+  }
+  expect(APP_BUNDLE_ID).toBe("io.github.lopesfelipe.f5");
 });
 
 it("bundles the audited Codex version and unpacks its native platform packages", () => {

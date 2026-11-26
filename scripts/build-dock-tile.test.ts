@@ -21,6 +21,22 @@ it("gives the plug-in an image for every choice except the built-in one", () => 
   );
 });
 
+it("lets every choice through the plug-in's id rule", () => {
+  const plugIn = source("F5DockTile.m");
+  const characters = /F5ChoiceCharacters = @"([^"]+)"/.exec(plugIn)?.[1];
+  const maxLength = Number(/F5ChoiceMaxLength = (\d+);/.exec(plugIn)?.[1]);
+  expect(characters).toBeDefined();
+  // Path separators and dots must never reach the plug-in's file lookup.
+  expect(characters).not.toMatch(/[./\\]/);
+  for (const id of APP_ICON_IDS) {
+    expect(
+      [...id].every((character) => characters!.includes(character)),
+      id,
+    ).toBe(true);
+    expect(id.length, id).toBeLessThanOrEqual(maxLength);
+  }
+});
+
 it("names the plug-in's executable and principal class as the bundle declares them", () => {
   const info = source("Info.plist").replace(/>\s+</g, "><");
   expect(info).toContain(`<key>CFBundleExecutable</key><string>${DOCK_TILE_EXECUTABLE}</string>`);

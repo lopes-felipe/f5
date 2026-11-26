@@ -444,6 +444,10 @@
       "types": "./src/vmBackendPin.ts",
       "import": "./src/vmBackendPin.ts"
     },
+    "./appIdentity": {
+      "types": "./src/appIdentity.ts",
+      "import": "./src/appIdentity.ts"
+    },
     "./hostRuntime": {
       "types": "./src/hostRuntime.ts",
       "import": "./src/hostRuntime.ts"
