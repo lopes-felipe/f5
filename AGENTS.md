@@ -45,7 +45,7 @@ For commands with safe and destructive variants, use the safe variant rather tha
 
 ## Project Snapshot
 
-F5 is a desktop and web GUI for coding agents (Codex, Claude Code, Cursor, OpenCode, Grok, Antigravity, Muse Code) with multi-model workflows. It is a fork of T3 Code. This repository is a VERY EARLY WIP. Proposing sweeping changes that improve long-term maintainability is encouraged.
+F5 is a desktop and web GUI for coding agents (Codex, Claude Code, Cursor, OpenCode, Grok, Antigravity, Muse Code, Pi, and custom ACP agents) with multi-model workflows. It is a fork of T3 Code. This repository is a VERY EARLY WIP. Proposing sweeping changes that improve long-term maintainability is encouraged.
 
 ## Core Priorities
 

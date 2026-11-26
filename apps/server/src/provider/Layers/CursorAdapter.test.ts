@@ -1,7 +1,7 @@
 import { writeAcpWrapper, waitForAgentExit } from "../../testUtils/cli.ts";
 import * as path from "node:path";
 import * as os from "node:os";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -386,6 +386,117 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         .pipe(Effect.result);
 
       assert.equal(result._tag, "Failure");
+    }),
+  );
+
+  it.effect(
+    "launches read-only workflow stages with F5's Cursor config and no optional Git locks",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* CursorAdapter;
+        const serverSettings = yield* ServerSettingsService;
+        const serverConfig = yield* ServerConfig;
+        const tempDir = yield* Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "cursor-acp-")));
+        const envLogPath = path.join(tempDir, "env.ndjson");
+        const wrapperPath = writeAcpWrapper(path.join(tempDir, "fake-agent"), mockAgentPath, {
+          envLog: { path: envLogPath, keys: ["GIT_OPTIONAL_LOCKS", "CURSOR_CONFIG_DIR"] },
+        });
+        yield* serverSettings.updateSettings({
+          providers: { cursor: { binaryPath: wrapperPath } },
+        });
+        for (const [name, profiled] of [
+          ["cursor-readonly-git-locks", true],
+          ["cursor-ordinary-git-locks", false],
+        ] as const) {
+          const threadId = ThreadId.make(name);
+          yield* adapter.startSession({
+            threadId,
+            provider: ProviderDriverKind.make("cursor"),
+            cwd: process.cwd(),
+            runtimeMode: "full-access",
+            ...(profiled ? { workflowExecutionProfile: "unattended-readonly" as const } : {}),
+            modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+          });
+          yield* adapter.stopSession(threadId);
+        }
+        const launches = yield* Effect.promise(() => readJsonLines(envLogPath));
+        assert.deepEqual(
+          launches.map((entry) => entry.GIT_OPTIONAL_LOCKS),
+          ["0", process.env.GIT_OPTIONAL_LOCKS ?? null],
+        );
+        const readOnlyConfigDir = path.join(
+          serverConfig.providerHomesDir ?? path.join(serverConfig.stateDir, "provider-homes"),
+          "cursor-readonly",
+          "cursor",
+        );
+        assert.deepEqual(
+          launches.map((entry) => entry.CURSOR_CONFIG_DIR),
+          [readOnlyConfigDir, process.env.CURSOR_CONFIG_DIR ?? null],
+        );
+        const written = JSON.parse(
+          yield* Effect.promise(() =>
+            readFile(path.join(readOnlyConfigDir, "cli-config.json"), "utf8"),
+          ),
+        ) as Record<string, unknown>;
+        assert.equal(written.approvalMode, "allowlist");
+        assert.deepEqual((written.permissions as { allow: unknown }).allow, []);
+      }),
+  );
+
+  it.effect("refuses a read-only stage in a repository whose Cursor config loosens approvals", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const repo = yield* Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "cursor-repo-")));
+      yield* Effect.promise(async () => {
+        await mkdir(path.join(repo, ".cursor"), { recursive: true });
+        await writeFile(
+          path.join(repo, ".cursor", "cli.json"),
+          JSON.stringify({ permissions: { allow: ["Shell(rm)"] } }),
+        );
+        await mkdir(path.join(repo, "sub"));
+      });
+      const error = yield* adapter
+        .startSession({
+          threadId: ThreadId.make("cursor-readonly-permissive-repo"),
+          provider: ProviderDriverKind.make("cursor"),
+          cwd: path.join(repo, "sub"),
+          runtimeMode: "full-access",
+          workflowExecutionProfile: "unattended-readonly",
+          modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+        })
+        .pipe(Effect.flip);
+      assert.equal(error._tag, "ProviderAdapterValidationError");
+      assert.include(
+        String((error as { issue?: string }).issue),
+        path.join(repo, ".cursor", "cli.json"),
+      );
+    }),
+  );
+
+  it.effect("refuses a read-only stage in a repository with project Cursor hooks", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const repo = yield* Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "cursor-repo-")));
+      yield* Effect.promise(async () => {
+        await mkdir(path.join(repo, ".git"), { recursive: true });
+        await mkdir(path.join(repo, ".cursor"), { recursive: true });
+        await writeFile(
+          path.join(repo, ".cursor", "hooks.json"),
+          JSON.stringify({ version: 1, hooks: { sessionStart: [{ command: "./x.sh" }] } }),
+        );
+      });
+      const error = yield* adapter
+        .startSession({
+          threadId: ThreadId.make("cursor-readonly-hooks-repo"),
+          provider: ProviderDriverKind.make("cursor"),
+          cwd: repo,
+          runtimeMode: "full-access",
+          workflowExecutionProfile: "unattended-readonly",
+          modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+        })
+        .pipe(Effect.flip);
+      assert.equal(error._tag, "ProviderAdapterValidationError");
+      assert.include(String((error as { issue?: string }).issue), "defines hooks");
     }),
   );
 
@@ -1758,6 +1869,104 @@ cursorAdapterHardeningTestLayer("CursorAdapterLive ACP hardening", (it) => {
 
   const responsesFor = (lines: ReadonlyArray<Record<string, unknown>>) =>
     lines.filter((line) => "result" in line && !("method" in line));
+
+  it.effect(
+    "runs read-only commands in a workflow stage and refuses others without failing the turn",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* CursorAdapter;
+        const settings = yield* ServerSettingsService;
+        const threadId = ThreadId.make("cursor-workflow-permissions");
+        const tempDir = yield* scopedTempDir("cursor-workflow-permissions-");
+        const requestLogPath = path.join(tempDir, "requests.ndjson");
+        const wrapperPath = yield* Effect.promise(() =>
+          makeMockAgentWrapper({
+            T3_ACP_EMIT_TOOL_CALLS: "1",
+            T3_ACP_PERMISSION_REQUEST_COUNT: "2",
+            T3_ACP_PERMISSION_COMMAND: "gh pr view 743438 --repo x/y --json title",
+            T3_ACP_SECOND_PERMISSION_COMMAND: "rm -rf build",
+            T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+          }),
+        );
+        yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+        const { events, fiber } = yield* collectThreadEvents(threadId);
+        yield* adapter.startSession({
+          threadId,
+          provider: ProviderDriverKind.make("cursor"),
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          workflowExecutionProfile: "unattended-readonly",
+          modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+        });
+        // Nothing waits on F5: the read-only command runs and the other is refused at once.
+        yield* adapter.sendTurn({
+          threadId,
+          input: "review the PR",
+          attachments: [],
+          workflowExecutionProfile: "unattended-readonly",
+        });
+
+        const opened = events.filter((event) => event.type === "request.opened");
+        assert.equal(opened.length, 1);
+        const denied = opened[0];
+        assert.ok(denied?.type === "request.opened");
+        assert.equal(denied.payload.autoDeclined, true);
+        assert.include(denied.payload.detail ?? "", "rm -rf build");
+        assert.ok(
+          events.some(
+            (event) =>
+              event.type === "request.resolved" &&
+              event.requestId === denied.requestId &&
+              event.payload.decision === "decline",
+          ),
+        );
+        const outcomes = responsesFor(yield* Effect.promise(() => readJsonLines(requestLogPath)))
+          .map((line) => (line.result as { outcome?: { optionId?: string } } | undefined)?.outcome)
+          .flatMap((outcome) => (outcome?.optionId ? [outcome.optionId] : []));
+        assert.deepEqual(outcomes, ["allow-once", "reject-once"]);
+        yield* Fiber.interrupt(fiber);
+        yield* adapter.stopSession(threadId);
+      }),
+  );
+
+  it.effect("checks the workspace again before every read-only turn", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("cursor-readonly-recheck");
+      const repo = yield* scopedTempDir("cursor-readonly-recheck-");
+      yield* Effect.promise(() => mkdir(path.join(repo, ".git")));
+      const wrapperPath = yield* Effect.promise(() => makeMockAgentWrapper({}));
+      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: repo,
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "unattended-readonly",
+        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+      });
+      // Another writer in the worktree adds an allowlist after the stage started.
+      yield* Effect.promise(async () => {
+        await mkdir(path.join(repo, ".cursor"));
+        await writeFile(
+          path.join(repo, ".cursor", "cli.json"),
+          JSON.stringify({ permissions: { allow: ["Shell(*)"] } }),
+        );
+      });
+      const error = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "review",
+          attachments: [],
+          workflowExecutionProfile: "unattended-readonly",
+        })
+        .pipe(Effect.flip);
+      assert.equal(error._tag, "ProviderAdapterValidationError");
+      assert.include(String((error as { issue?: string }).issue), "permissions.allow");
+      yield* adapter.stopSession(threadId);
+    }),
+  );
 
   it.effect("replies to cursor/ask_question with an answered outcome keyed by option id", () =>
     Effect.gen(function* () {

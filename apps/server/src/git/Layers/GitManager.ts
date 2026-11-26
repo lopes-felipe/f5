@@ -604,6 +604,7 @@ export const makeGitManager = Effect.gen(function* () {
       const cloneUrls = yield* provider.getRepositoryCloneUrls({
         cwd,
         repository: repositoryNameWithOwner,
+        pullRequestUrl: pullRequest.url,
       });
       const originRemoteUrl = yield* gitCore.readConfigValue(cwd, "remote.origin.url");
       const remoteUrl = shouldPreferSshRemote(originRemoteUrl) ? cloneUrls.sshUrl : cloneUrls.url;
@@ -711,6 +712,7 @@ export const makeGitManager = Effect.gen(function* () {
           const cloneUrls = yield* provider.getRepositoryCloneUrls({
             cwd,
             repository: repositoryNameWithOwner,
+            pullRequestUrl: pullRequest.url,
           });
           const origin = yield* gitCore.readConfigValue(cwd, "remote.origin.url");
           remoteName = yield* gitCore.ensureRemote({
@@ -748,6 +750,7 @@ export const makeGitManager = Effect.gen(function* () {
       const cloneUrls = yield* provider.getRepositoryCloneUrls({
         cwd,
         repository: repositoryNameWithOwner,
+        pullRequestUrl: pullRequest.url,
       });
       const originRemoteUrl = yield* gitCore.readConfigValue(cwd, "remote.origin.url");
       const remoteUrl = shouldPreferSshRemote(originRemoteUrl) ? cloneUrls.sshUrl : cloneUrls.url;
@@ -1820,6 +1823,7 @@ export const makeGitManager = Effect.gen(function* () {
   );
 
   return {
+    sourceControlIdentity: resolveSourceControlProviderIdentity,
     status,
     pullRequestStateChanges: Stream.fromPubSub(pullRequestStateChanges),
     branchPullRequest,

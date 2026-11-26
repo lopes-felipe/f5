@@ -6,7 +6,6 @@ import * as OS from "node:os";
 import * as Path from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it, vi } from "@effect/vitest";
-import type { OrchestrationReadModel } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -21,14 +20,12 @@ import { NetService } from "@t3tools/shared/Net";
 import { legacyT3BaseDir, legacyT3UserdataStateDir } from "@t3tools/shared/appStatePaths";
 import { startDesktopAppControl } from "@t3tools/shared/desktopAppControl";
 
-import { CliConfig, recordStartupHeartbeat, t3Cli, type CliConfigShape } from "./main";
+import { CliConfig, removeRetiredTelemetryFiles, t3Cli, type CliConfigShape } from "./main";
 import { ServerConfig, type ServerConfigShape } from "./config";
 import { LEGACY_STATE_MIGRATION_FAILURE_SENTINEL } from "./legacyStateMigration";
 import { withHomeSandbox } from "./testing/homeSandbox.ts";
 import { Open, OpenError, type OpenShape } from "./open";
 import { spanToTraceRecord, type EffectTraceRecord } from "./observability/TraceRecord.ts";
-import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery";
-import { AnalyticsService } from "./telemetry/Services/AnalyticsService";
 import { Server, type ServerShape } from "./wsServer";
 
 // These tests apply real Windows ACLs, including cold PowerShell startup.
@@ -66,7 +63,6 @@ const testLayer = Layer.mergeAll(
     openInEditor: () => Effect.void,
     revealInFileManager: () => Effect.void,
   } satisfies OpenShape),
-  AnalyticsService.layerTest,
   FetchHttpClient.layer,
   NodeServices.layer,
 );
@@ -602,105 +598,36 @@ it.layer(testLayer)("server CLI command", (it) => {
     }),
   );
 
-  it.effect("records a startup heartbeat with thread/project counts", () =>
+  it.effect("removes files left by retired telemetry and keeps the installation id", () =>
     Effect.gen(function* () {
-      const recordTelemetry = vi.fn(
-        (_event: string, _properties?: Readonly<Record<string, unknown>>) => Effect.void,
-      );
-      const getSnapshot = vi.fn(() =>
-        Effect.succeed({
-          snapshotSequence: 2,
-          projects: [{} as OrchestrationReadModel["projects"][number]],
-          planningWorkflows: [],
-          codeReviewWorkflows: [],
-          investigationWorkflows: [],
-          threads: [
-            {} as OrchestrationReadModel["threads"][number],
-            {} as OrchestrationReadModel["threads"][number],
-          ],
-          updatedAt: new Date(1).toISOString(),
-        } satisfies OrchestrationReadModel),
-      );
+      const root = FS.mkdtempSync(Path.join(OS.tmpdir(), "f5-retired-telemetry-"));
+      try {
+        const stateDir = Path.join(root, "userdata");
+        const profilesRoot = Path.join(root, "profiles");
+        FS.mkdirSync(stateDir, { recursive: true });
+        FS.mkdirSync(Path.join(profilesRoot, "locks"), { recursive: true });
+        FS.writeFileSync(Path.join(stateDir, "anonymous-id"), "random");
+        FS.writeFileSync(Path.join(profilesRoot, "installation-id"), "install");
+        for (const suffix of ["", "-wal", "-shm"])
+          FS.writeFileSync(
+            Path.join(profilesRoot, "locks", `telemetry-heartbeat.lock.sqlite${suffix}`),
+            "",
+          );
 
-      yield* recordStartupHeartbeat.pipe(
-        Effect.provideService(ProjectionSnapshotQuery, {
-          searchThread: () => Effect.die("unused thread search"),
-          getSnapshot,
-          getBootstrapSnapshot: getSnapshot,
-          getStartupSnapshot: () =>
-            getSnapshot().pipe(
-              Effect.map((snapshot) => ({
-                snapshot,
-                threadTailDetails: null,
-              })),
-            ),
-          getRewindDrafts: ({ threadId }) => Effect.succeed({ threadId, drafts: [] }),
-          getThreadTailDetails: (input) =>
-            Effect.succeed({
-              threadId: input.threadId,
-              messages: [],
-              checkpoints: [],
-              activities: [],
-              commandExecutions: [],
-              proposedPlans: [],
-              tasks: [],
-              tasksTurnId: null,
-              tasksUpdatedAt: null,
-              sessionNotes: null,
-              threadReferences: [],
-              hasOlderMessages: false,
-              hasOlderCheckpoints: false,
-              hasOlderActivities: false,
-              hasOlderCommandExecutions: false,
-              oldestLoadedMessageCursor: null,
-              oldestLoadedCheckpointTurnCount: null,
-              oldestLoadedActivityCursor: null,
-              oldestLoadedCommandExecutionCursor: null,
-              detailSequence: 2,
-            }),
-          getThreadHistoryPage: (input) =>
-            Effect.succeed({
-              threadId: input.threadId,
-              messages: [],
-              checkpoints: [],
-              activities: [],
-              commandExecutions: [],
-              hasOlderMessages: false,
-              hasOlderCheckpoints: false,
-              hasOlderActivities: false,
-              hasOlderCommandExecutions: false,
-              oldestLoadedMessageCursor: null,
-              oldestLoadedCheckpointTurnCount: null,
-              oldestLoadedActivityCursor: null,
-              oldestLoadedCommandExecutionCursor: null,
-              detailSequence: 2,
-            }),
-          getThreadDetails: (input) =>
-            Effect.succeed({
-              threadId: input.threadId,
-              messages: [],
-              checkpoints: [],
-              tasks: [],
-              tasksTurnId: null,
-              tasksUpdatedAt: null,
-              sessionNotes: null,
-              threadReferences: [],
-              detailSequence: 2,
-            }),
-        }),
-        Effect.provideService(AnalyticsService, {
-          record: recordTelemetry,
-          flush: Effect.void,
-        }),
-      );
+        yield* removeRetiredTelemetryFiles({ stateDir, profilesRoot });
 
-      assert.deepEqual(recordTelemetry.mock.calls[0], [
-        "server.boot.heartbeat",
-        {
-          threadCount: 2,
-          projectCount: 1,
-        },
-      ]);
+        assert.isFalse(FS.existsSync(Path.join(stateDir, "anonymous-id")));
+        assert.deepEqual(FS.readdirSync(Path.join(profilesRoot, "locks")), []);
+        assert.equal(
+          FS.readFileSync(Path.join(profilesRoot, "installation-id"), "utf8"),
+          "install",
+        );
+        // Missing files and a missing profiles root are not errors.
+        yield* removeRetiredTelemetryFiles({ stateDir, profilesRoot });
+        yield* removeRetiredTelemetryFiles({ stateDir });
+      } finally {
+        FS.rmSync(root, { recursive: true, force: true });
+      }
     }),
   );
 
@@ -935,5 +862,132 @@ it.layer(testLayer)("profile startup selection", (it) => {
         FS.rmSync(root, { recursive: true, force: true });
       }
     }),
+  );
+  it.effect("prefers primary F5_* server environment variables over legacy T3CODE_* aliases", () =>
+    Effect.gen(function* () {
+      yield* runCli([], {
+        F5_MODE: "desktop",
+        T3CODE_MODE: "web",
+        F5_PORT: "4123",
+        T3CODE_PORT: "4999",
+        F5_HOST: "127.0.0.1",
+        T3CODE_HOST: "0.0.0.0",
+        F5_NO_BROWSER: "true",
+        T3CODE_NO_BROWSER: "false",
+        F5_AUTH_TOKEN: "f5-primary-token-0123456789abcdef",
+        T3CODE_AUTH_TOKEN: "legacy-token-0123456789abcdef0123",
+        F5_LOG_WS_EVENTS: "true",
+        T3CODE_LOG_WS_EVENTS: "false",
+        F5_OBSERVABILITY_ENABLED: "true",
+        T3CODE_OBSERVABILITY_ENABLED: "false",
+      });
+      assert.equal(resolvedConfig?.mode, "desktop");
+      assert.equal(resolvedConfig?.port, 4123);
+      assert.equal(resolvedConfig?.host, "127.0.0.1");
+      assert.equal(resolvedConfig?.noBrowser, true);
+      assert.equal(resolvedConfig?.authToken, "f5-primary-token-0123456789abcdef");
+      assert.equal(resolvedConfig?.logWebSocketEvents, true);
+      assert.equal(resolvedConfig?.observabilityEnabled, true);
+    }),
+  );
+  it.effect(
+    "runs `doctor --json` and writes a redacted support bundle without starting the server",
+    () =>
+      Effect.gen(function* () {
+        const root = FS.mkdtempSync(Path.join(OS.tmpdir(), "f5-doctor-cli-"));
+        const stateDir = Path.join(root, "userdata");
+        const bundlePath = Path.join(root, "support-bundle.json");
+        FS.mkdirSync(stateDir, { recursive: true });
+        const written: string[] = [];
+        const stdout = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+          written.push(String(chunk));
+          return true;
+        });
+        const stderrWritten: string[] = [];
+        const stderr = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+          stderrWritten.push(String(chunk));
+          return true;
+        });
+        const prevExitCode = process.exitCode;
+        try {
+          yield* runCli(["--state-dir", stateDir, "doctor", "--json", "--bundle", bundlePath]);
+          const parsed = JSON.parse(written.join("")) as {
+            runtime: { mode: string; profileSlug: string };
+            checks: ReadonlyArray<{ id: string; status: string }>;
+          };
+          assert.equal(parsed.runtime.mode, "cli");
+          assert.equal(parsed.runtime.profileSlug, "default");
+          assert.ok(parsed.checks.some((check) => check.id === "env.git"));
+          assert.ok(
+            parsed.checks.some((check) => check.id === "env.network" && check.status === "ok"),
+          );
+          assert.equal(start.mock.calls.length, 0);
+
+          const bundle = JSON.parse(FS.readFileSync(bundlePath, "utf8")) as {
+            schemaVersion: number;
+            doctor: { runtime: { mode: string } };
+          };
+          assert.equal(bundle.schemaVersion, 1);
+          assert.equal(bundle.doctor.runtime.mode, "cli");
+
+          // Refuses overwriting an existing file
+          process.exitCode = undefined;
+          stderrWritten.length = 0;
+          yield* runCli(["--state-dir", stateDir, "doctor", "--json", "--bundle", bundlePath]);
+          assert.equal(process.exitCode, 1);
+          assert.ok(stderrWritten.join("").includes("already exists"));
+
+          // Refuses writing through a symlink
+          const linkPath = Path.join(root, "link-bundle.json");
+          FS.symlinkSync(Path.join(root, "target-does-not-exist.json"), linkPath);
+          process.exitCode = undefined;
+          stderrWritten.length = 0;
+          yield* runCli(["--state-dir", stateDir, "doctor", "--json", "--bundle", linkPath]);
+          assert.equal(process.exitCode, 1);
+          assert.ok(stderrWritten.join("").includes("already exists"));
+
+          // Refuses writing inside stateDir
+          process.exitCode = undefined;
+          stderrWritten.length = 0;
+          yield* runCli([
+            "--state-dir",
+            stateDir,
+            "doctor",
+            "--json",
+            "--bundle",
+            Path.join(stateDir, "state.sqlite"),
+          ]);
+          assert.equal(process.exitCode, 1);
+          assert.ok(stderrWritten.join("").includes("state directory"));
+
+          // Reports error for remote bind without auth token
+          written.length = 0;
+          process.exitCode = undefined;
+          yield* runCli(["--state-dir", stateDir, "--host", "0.0.0.0", "doctor", "--json"]);
+          const remoteParsed = JSON.parse(written.join("")) as {
+            overallStatus: string;
+            checks: ReadonlyArray<{ id: string; status: string }>;
+          };
+          assert.equal(remoteParsed.overallStatus, "error");
+          assert.ok(
+            remoteParsed.checks.some(
+              (check) => check.id === "env.network" && check.status === "error",
+            ),
+          );
+          assert.equal(process.exitCode, 1);
+
+          // Unknown profile via --profile / F5_PROFILE fails cleanly
+          process.exitCode = undefined;
+          stderrWritten.length = 0;
+          yield* runCli(["--state-dir", stateDir, "--profile", "nonexistent", "doctor", "--json"]);
+          assert.equal(process.exitCode, 1);
+          assert.ok(stderrWritten.join("").includes("Unknown F5 profile"));
+        } finally {
+          process.exitCode = prevExitCode;
+          stdout.mockRestore();
+          stderr.mockRestore();
+          FS.rmSync(root, { recursive: true, force: true });
+        }
+      }),
   );
 });

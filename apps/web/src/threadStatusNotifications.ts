@@ -11,9 +11,14 @@ import {
   type AppNotificationPermissionState,
 } from "./notifications";
 
+import { safeLocalStorageGetMigrated, safeLocalStorageSetItem } from "./lib/safeStorage";
+
 export { isAppWindowFocused };
 
-const THREAD_STATUS_NOTIFICATION_PROMPT_STORAGE_KEY = "t3code:thread-status-notification-prompt:v1";
+export const LEGACY_THREAD_STATUS_NOTIFICATION_PROMPT_STORAGE_KEY =
+  "t3code:thread-status-notification-prompt:v1";
+export const THREAD_STATUS_NOTIFICATION_PROMPT_STORAGE_KEY =
+  "f5:thread-status-notification-prompt:v1";
 
 export type ThreadStatusNotificationPermissionState = AppNotificationPermissionState;
 
@@ -73,7 +78,10 @@ export function getThreadStatusNotificationPromptStateSnapshot(): ThreadStatusNo
     return { shown: false, dismissed: false };
   }
 
-  const raw = window.localStorage.getItem(THREAD_STATUS_NOTIFICATION_PROMPT_STORAGE_KEY);
+  const raw = safeLocalStorageGetMigrated(
+    THREAD_STATUS_NOTIFICATION_PROMPT_STORAGE_KEY,
+    LEGACY_THREAD_STATUS_NOTIFICATION_PROMPT_STORAGE_KEY,
+  );
   if (raw === cachedRawPromptState) {
     return cachedPromptState;
   }
@@ -89,12 +97,8 @@ function persistThreadStatusNotificationPromptState(
   if (typeof window === "undefined") return;
 
   const raw = JSON.stringify(next);
-  try {
-    if (raw !== cachedRawPromptState) {
-      window.localStorage.setItem(THREAD_STATUS_NOTIFICATION_PROMPT_STORAGE_KEY, raw);
-    }
-  } catch {
-    // Best-effort persistence only.
+  if (raw !== cachedRawPromptState) {
+    safeLocalStorageSetItem(THREAD_STATUS_NOTIFICATION_PROMPT_STORAGE_KEY, raw);
   }
 
   cachedRawPromptState = raw;

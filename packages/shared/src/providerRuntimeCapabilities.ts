@@ -47,6 +47,8 @@ export function providerRuntimeCapabilities(
   version?: string | null,
   variant?: string | null,
   buildTarget: string | undefined = runtimeBuildTarget(),
+  /** The host's `os.release()`; a Windows sandbox certification is trusted only with it. */
+  osRelease?: string,
 ): ProviderRuntimeCapabilities {
   if (driver === "cursor" && variant === "sdk") return cursorSdkRuntimeCapabilities();
   const rollback =
@@ -88,7 +90,12 @@ export function providerRuntimeCapabilities(
       driver === "antigravity",
     instanceInventory: driver === "claudeAgent" || driver === "codex",
     nativeSessionCleanup: driver === "claudeAgent",
-    readOnlyWorkflowTurns: driverSupportsReadOnlyWorkflowTurns(driver, version, buildTarget),
+    readOnlyWorkflowTurns: driverSupportsReadOnlyWorkflowTurns(
+      driver,
+      version,
+      buildTarget,
+      osRelease,
+    ),
   };
 }
 

@@ -27,7 +27,7 @@ export function DiagnosticsSettings() {
             description={
               effective
                 ? `Source: ${effective.source}${effective.endpoint ? ` · ${effective.endpoint}` : ""}`
-                : "Leave blank to use the environment configuration."
+                : "Leave blank to disable export."
             }
             control={
               <Input

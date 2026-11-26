@@ -1,4 +1,5 @@
 import { SETTINGS_CATEGORY_ICONS } from "./settingsCategoryIcons";
+import { useServerCapability } from "../../protocolState";
 import { SearchIcon, XIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
@@ -162,12 +163,16 @@ export function SettingsLayout({
   const searchContainerRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const reducedMotion = useReducedMotion();
+  const composerRedesign = useServerCapability("composer-redesign");
   const scope: SettingsScope = projectId ? "project" : "global";
   const categoryGroups = settingsCategoryGroupsForScope(scope);
   const scopeCategories = settingsCategoriesForScope(scope);
   const searchResults = useMemo(
-    () => filterSettingsItems(searchQuery, { scope }),
-    [searchQuery, scope],
+    () =>
+      filterSettingsItems(searchQuery, { scope }).filter(
+        (item) => composerRedesign || item.id !== "conversation.composer-collapse",
+      ),
+    [searchQuery, composerRedesign, scope],
   );
   const isSearching = searchQuery.trim().length > 0;
 
@@ -378,7 +383,21 @@ export function SettingsLayout({
                       >
                         <XIcon className="size-3" />
                       </Button>
-                    ) : null}
+                    ) : (
+                      <kbd
+                        aria-hidden="true"
+                        className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 rounded border border-border bg-muted px-1 py-0.5 font-mono text-2xs leading-none text-muted-foreground"
+                      >
+                        /
+                      </kbd>
+                    )}
+                    <span className="sr-only" aria-live="polite" role="status">
+                      {isSearching
+                        ? searchResults.length > 0
+                          ? `${searchResults.length} setting${searchResults.length === 1 ? "" : "s"} found`
+                          : "No settings found"
+                        : ""}
+                    </span>
                     {isSearching ? (
                       <div
                         id="settings-search-results"
@@ -396,17 +415,22 @@ export function SettingsLayout({
                               aria-selected={index === activeSearchResultIndex}
                               tabIndex={-1}
                               className={cn(
-                                "flex w-full flex-col rounded-lg px-2.5 py-2 text-left hover:bg-accent focus-visible:bg-accent focus-visible:outline-none",
+                                "flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-2 text-left hover:bg-accent focus-visible:bg-accent focus-visible:outline-none",
                                 index === activeSearchResultIndex && "bg-accent",
                               )}
                               onMouseMove={() => setActiveSearchResultIndex(index)}
                               onClick={() => selectSearchResult(result.id)}
                             >
-                              <span className="text-ui font-medium text-foreground">
-                                {result.label}
+                              <span className="flex items-baseline justify-between gap-2">
+                                <span className="text-ui font-medium text-foreground">
+                                  {result.label}
+                                </span>
+                                <span className="shrink-0 text-2xs text-muted-foreground">
+                                  {SETTINGS_CATEGORY_LABELS[result.category]}
+                                </span>
                               </span>
-                              <span className="text-2xs text-muted-foreground">
-                                {SETTINGS_CATEGORY_LABELS[result.category]}
+                              <span className="line-clamp-1 text-2xs text-muted-foreground">
+                                {result.description}
                               </span>
                             </button>
                           ))
@@ -419,7 +443,38 @@ export function SettingsLayout({
                     ) : null}
                   </div>
                   {/* Scrolls on its own so short desktop windows can reach every page. */}
-                  <div className="flex flex-col gap-3 lg:min-h-0 lg:overflow-y-auto">
+                  <div
+                    className="flex flex-col gap-3 lg:min-h-0 lg:overflow-y-auto"
+                    onKeyDown={(event) => {
+                      if (
+                        event.key !== "ArrowDown" &&
+                        event.key !== "ArrowUp" &&
+                        event.key !== "Home" &&
+                        event.key !== "End"
+                      ) {
+                        return;
+                      }
+                      const buttons = Array.from(
+                        event.currentTarget.querySelectorAll<HTMLButtonElement>(
+                          "button[data-settings-category-button]",
+                        ),
+                      );
+                      const currentIndex = buttons.indexOf(
+                        document.activeElement as HTMLButtonElement,
+                      );
+                      if (currentIndex < 0 || buttons.length === 0) return;
+                      event.preventDefault();
+                      const nextIndex =
+                        event.key === "Home"
+                          ? 0
+                          : event.key === "End"
+                            ? buttons.length - 1
+                            : event.key === "ArrowDown"
+                              ? (currentIndex + 1) % buttons.length
+                              : (currentIndex - 1 + buttons.length) % buttons.length;
+                      buttons[nextIndex]?.focus();
+                    }}
+                  >
                     {categoryGroups.map((group) => (
                       <div
                         key={group.id}
@@ -441,6 +496,7 @@ export function SettingsLayout({
                             <button
                               key={candidate}
                               type="button"
+                              data-settings-category-button={candidate}
                               aria-current={selected ? "page" : undefined}
                               className={cn(
                                 "flex h-8 items-center gap-2 rounded-md px-2 text-left text-ui outline-none transition-colors duration-(--duration-fast) focus-visible:ring-2 focus-visible:ring-ring",

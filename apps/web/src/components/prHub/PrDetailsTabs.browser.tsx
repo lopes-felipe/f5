@@ -334,6 +334,9 @@ describe("PrDetailsTabs", () => {
     await expect.element(page.getByText("Timeline comment 0", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Edit comment", exact: true }).first().click();
     await userEvent.fill(page.getByRole("textbox"), "Unsaved draft survives eviction");
+    // LegendList 3.x protects the focused container from virtualization eviction so
+    // keyboard/IME focus isn't lost while scrolling; blur first to exercise eviction.
+    (page.getByRole("textbox").element() as HTMLElement).blur();
     expect(
       document.querySelectorAll(
         'section[aria-label="Conversation"] article, [aria-label="Conversation"] article',

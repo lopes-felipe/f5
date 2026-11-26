@@ -3,7 +3,7 @@
 A runtime mode is a thread's permission posture: what the agent may do without asking you. You
 choose it per thread from the access chip in the composer.
 
-![Access menu with Supervised, Auto-accept edits, Auto and Full access](images/getting-started-runtime-mode.webp)
+![Access menu with Supervised, Accept edits, Auto and Full access](images/getting-started-runtime-mode.webp)
 
 ## How to
 
@@ -15,24 +15,24 @@ choose it per thread from the access chip in the composer.
 
 ## Modes
 
-| Mode                  | What the agent may do                                               |
-| --------------------- | ------------------------------------------------------------------- |
-| **Supervised**        | Asks before edits and commands                                      |
-| **Auto-accept edits** | Edits files freely and asks before other actions                    |
-| **Auto**              | The provider's own AI reviewer approves actions, not F5 and not you |
-| **Full access**       | Runs commands and edits without prompts. This is the default        |
+| Mode             | What the agent may do                                               |
+| ---------------- | ------------------------------------------------------------------- |
+| **Supervised**   | Asks before edits and commands                                      |
+| **Accept edits** | Edits files freely and asks before other actions                    |
+| **Auto**         | The provider's own AI reviewer approves actions, not F5 and not you |
+| **Full access**  | Runs commands and edits without prompts. This is the default        |
 
 ## Provider support
 
-| Provider    | Supervised | Auto-accept edits | Auto | Full access |
-| ----------- | :--------: | :---------------: | :--: | :---------: |
-| Codex       |    Yes     |        Yes        | Yes  |     Yes     |
-| Claude Code |    Yes     |        Yes        | Yes  |     Yes     |
-| OpenCode    |    Yes     |        Yes        |  No  |     Yes     |
-| Cursor      |    Yes     |        No         |  No  |     Yes     |
-| Grok        |    Yes     |        No         |  No  |     Yes     |
-| Antigravity |    Yes     |        Yes        |  \*  |     Yes     |
-| Muse Code   |     No     |        Yes        |  No  |     Yes     |
+| Provider    | Supervised | Accept edits | Auto | Full access |
+| ----------- | :--------: | :----------: | :--: | :---------: |
+| Codex       |    Yes     |     Yes      | Yes  |     Yes     |
+| Claude Code |    Yes     |     Yes      | Yes  |     Yes     |
+| OpenCode    |    Yes     |     Yes      |  No  |     Yes     |
+| Cursor      |    Yes     |      No      |  No  |     Yes     |
+| Grok        |    Yes     |      No      |  No  |     Yes     |
+| Antigravity |    Yes     |     Yes      |  \*  |     Yes     |
+| Muse Code   |     No     |     Yes      |  No  |     Yes     |
 
 \* Antigravity offers **Auto** only when the installed version advertises its own reviewer. F5
 enforces the other modes itself, and asks before every action while **Plan** is on. See
@@ -53,12 +53,12 @@ Muse Code approves in-workspace edits in every mode, so F5 never offers Supervis
 <details>
 <summary>Details and limits</summary>
 
-| Mode              | Codex (`approvalPolicy` + `sandbox`)                     | Claude Code (`permissionMode`) |
-| ----------------- | -------------------------------------------------------- | ------------------------------ |
-| Supervised        | `untrusted` + `read-only`                                | `default`                      |
-| Auto-accept edits | `on-request` + `workspace-write`                         | `acceptEdits`                  |
-| Auto              | `on-request` + `workspace-write`, reviewer `auto_review` | `auto`                         |
-| Full access       | `never` + `danger-full-access`                           | `bypassPermissions`            |
+| Mode         | Codex (`approvalPolicy` + `sandbox`)                     | Claude Code (`permissionMode`) |
+| ------------ | -------------------------------------------------------- | ------------------------------ |
+| Supervised   | `untrusted` + `read-only`                                | `default`                      |
+| Accept edits | `on-request` + `workspace-write`                         | `acceptEdits`                  |
+| Auto         | `on-request` + `workspace-write`, reviewer `auto_review` | `auto`                         |
+| Full access  | `never` + `danger-full-access`                           | `bypassPermissions`            |
 
 Claude uses `auto` only when the model and CLI support it; otherwise the session falls back to
 `default` and F5 asks before actions.

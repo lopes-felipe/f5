@@ -1,5 +1,6 @@
 import { readEnvironmentFromLoginShellAsync, ShellEnvironmentReader } from "@t3tools/shared/shell";
 import {
+  applySavedWindowsDoNotTrack,
   ensureWindowsPathHydration,
   type WindowsRegistryPathReader,
 } from "@t3tools/shared/windowsPath";
@@ -26,14 +27,16 @@ export async function syncShellEnvironment(
 ): Promise<boolean> {
   const platform = options.platform ?? process.platform;
   if (platform === "win32") {
-    return ensureWindowsPathHydration(env, {
+    const result = await ensureWindowsPathHydration(env, {
       platform,
       ...(options.readWindowsRegistryPaths
         ? { readRegistryPaths: options.readWindowsRegistryPaths }
         : {}),
       ...(options.windowsPathExists ? { pathExists: options.windowsPathExists } : {}),
       warn: options.warn ?? ((message) => console.warn(`[environment] ${message}`)),
-    }).then((result) => result.registryRead);
+    });
+    applySavedWindowsDoNotTrack(env, result.savedDoNotTrack);
+    return result.registryRead;
   }
   if (platform !== "darwin") return Promise.resolve(false);
 
@@ -42,8 +45,12 @@ export async function syncShellEnvironment(
     const shell = env.SHELL ?? "/bin/zsh";
     const shellEnvironment = await (options.readEnvironment ?? readEnvironmentFromLoginShellAsync)(
       shell,
-      ["PATH", "__MISE_DIFF", "SSH_AUTH_SOCK", ...LOCALE_NAMES, ...CA_TRUST_NAMES],
+      ["PATH", "__MISE_DIFF", "SSH_AUTH_SOCK", ...LOCALE_NAMES, ...CA_TRUST_NAMES, "DO_NOT_TRACK"],
     );
+
+    // An app launched from Finder misses an opt-out exported from the shell profile.
+    if (!env.DO_NOT_TRACK?.trim() && shellEnvironment.DO_NOT_TRACK?.trim())
+      env.DO_NOT_TRACK = shellEnvironment.DO_NOT_TRACK;
 
     for (const name of CA_TRUST_NAMES)
       if (!env[name]?.trim() && shellEnvironment[name]?.trim()) env[name] = shellEnvironment[name];

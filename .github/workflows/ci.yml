@@ -79,6 +79,15 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
           node scripts/generate-computer-tiers.ts --check
+      - name: Check brand asset drift
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          # The committed icons must match what the recipe draws; see assets/README.md.
+          python3 -m venv "$RUNNER_TEMP/brand-tools"
+          "$RUNNER_TEMP/brand-tools/bin/pip" install --quiet --disable-pip-version-check Pillow==11.3.0
+          "$RUNNER_TEMP/brand-tools/bin/python" scripts/generate_brand_assets_test.py
       - name: Validate authoritative upstream port ledger
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         env:

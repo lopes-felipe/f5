@@ -1,0 +1,1 @@
+- Fresh SQLite databases now bootstrap directly from a squashed baseline schema (migrations 1 to 174) in a single transaction instead of replaying every historical migration, speeding up fresh-install first launch and test database setup while keeping existing databases on the standard incremental upgrade path.

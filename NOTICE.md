@@ -21,4 +21,4 @@ These identifiers are expected to remain stable for at least the first public F5
 
 - Original project: <https://github.com/pingdotgg/t3code>
 - Fork maintained at: <https://github.com/lopes-felipe/f5>
-- Third-party runtime dependencies: see [THIRD_PARTY_LICENSES.md](./THIRD_PARTY_LICENSES.md).
+- Third-party runtime dependencies: declared across workspace [`package.json`](./package.json) manifests and [`bun.lock`](./bun.lock).

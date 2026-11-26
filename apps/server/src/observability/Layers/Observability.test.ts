@@ -5,6 +5,7 @@ import { it, assert } from "@effect/vitest";
 import * as TestClock from "effect/testing/TestClock";
 import { afterEach, beforeEach, vi } from "vitest";
 import { ServerConfig } from "../../config.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 import type { TraceRecord } from "../TraceRecord.ts";
 import { ObservabilityLive } from "./Observability.ts";
 
@@ -92,17 +93,40 @@ it.layer(
   it.effect("keeps heap attribution off in metrics-only mode", () =>
     Effect.gen(function* () {
       vi.stubEnv("OTEL_METRICS_EXPORTER", "otlp");
-      vi.stubEnv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "http://127.0.0.1:4318/v1/metrics");
       vi.stubEnv("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL", "http/protobuf");
       const fetch = vi.fn(async () => new Response(null, { status: 204 }));
       vi.stubGlobal("fetch", fetch);
 
       yield* TestClock.adjust("11 seconds").pipe(
         Effect.withSpan("server.metrics.fixture"),
-        Effect.provide(ObservabilityLive),
+        Effect.provide(
+          ObservabilityLive.pipe(
+            Layer.provide(
+              ServerSettingsService.layerTest({
+                observability: { otlpMetricsUrl: "http://127.0.0.1:4318/v1/metrics" },
+              }),
+            ),
+          ),
+        ),
       );
       assert.isAbove(fetch.mock.calls.length, 0);
       assert.equal(vi.mocked(getHeapStatistics).mock.calls.length, 0);
+    }),
+  );
+
+  it.effect("exports nothing to a collector named only by inherited OTEL variables", () =>
+    Effect.gen(function* () {
+      vi.stubEnv("OTEL_TRACES_EXPORTER", "otlp");
+      vi.stubEnv("OTEL_METRICS_EXPORTER", "otlp");
+      vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318");
+      const fetch = vi.fn(async () => new Response(null, { status: 204 }));
+      vi.stubGlobal("fetch", fetch);
+
+      yield* TestClock.adjust("11 seconds").pipe(
+        Effect.withSpan("server.env-collector.fixture"),
+        Effect.provide(ObservabilityLive.pipe(Layer.provide(ServerSettingsService.layerTest()))),
+      );
+      assert.equal(fetch.mock.calls.length, 0);
     }),
   );
 });
