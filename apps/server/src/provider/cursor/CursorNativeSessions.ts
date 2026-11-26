@@ -17,9 +17,27 @@ import { Effect } from "effect";
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/;
 
-export function cursorConfigDir(environment: NodeJS.ProcessEnv = process.env): string {
+/**
+ * `~/.cursor` for the given environment. Cursor CLI 2026.11.22 reads the user's `mcp.json`,
+ * rules and skills from here whatever `CURSOR_CONFIG_DIR` says, and on macOS keeps `auth.json`
+ * here, so MCP dedup and the credential-store key use it.
+ */
+export function cursorHomeDir(environment: NodeJS.ProcessEnv = process.env): string {
   const home = environment.HOME?.trim() || environment.USERPROFILE?.trim() || nodeOs.homedir();
   return nodePath.join(home, ".cursor");
+}
+
+/**
+ * The CLI's config dir, resolved as Cursor CLI 2026.11.22 resolves it on every platform:
+ * `CURSOR_CONFIG_DIR`, then `$XDG_CONFIG_HOME/cursor`, then `~/.cursor`. It holds
+ * `cli-config.json`, `permissions.json` and the `acp-sessions` store.
+ */
+export function cursorCliConfigDir(environment: NodeJS.ProcessEnv = process.env): string {
+  const explicit = environment.CURSOR_CONFIG_DIR?.trim();
+  if (explicit) return explicit;
+  const xdg = environment.XDG_CONFIG_HOME?.trim();
+  if (xdg) return nodePath.join(xdg, "cursor");
+  return cursorHomeDir(environment);
 }
 
 export function cursorChatsWorkspaceKey(cwd: string): string {

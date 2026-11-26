@@ -142,6 +142,28 @@ shows the template, cost and per-step context.
   is refused and the model is told no; a turn with three refused operations fails the stage, on
   any provider. Unlike Antigravity, Cursor is not certified per version, so F5 relies on Cursor
   labelling its tools' kinds correctly.
+- F5 only sees the Cursor commands that Cursor asks about, so read-only Cursor stages run with an
+  F5-owned copy of your Cursor CLI config (`CURSOR_CONFIG_DIR`):
+  - **Ignored in these stages:** your allowlist (`permissions.allow`, `permissions.json`), an
+    `unrestricted` or `auto-review` approval mode, and any other CLI setting besides display,
+    model and account details. Your sign-in, rules, skills and MCP servers (read from your home
+    folder) still load. F5 refuses every MCP call except its own read-only tools.
+  - **Repository config:** F5 can't override a repository's own Cursor files, so a read-only
+    Cursor stage won't start, and names the file, when the repository has:
+    - a `.cursor/cli.json` that sets anything but deny rules, such as an allowlist or a looser
+      approval mode;
+    - a `.cursor/hooks.json` with hooks, which run shell commands;
+    - a `.cursor/mcp.json` with servers, which Cursor can start without asking F5;
+    - any of these files that F5 can't read as strict JSON.
+
+    F5 checks again before every turn. A file another process adds mid-turn isn't caught until
+    the next turn.
+
+  - **Session history:** read-only Cursor sessions are recorded in F5's state folder
+    (`provider-homes/cursor-readonly`), not `~/.cursor`, and included in backups of that folder.
+  - **Team allowlists:** your team admin's allowlist is applied by Cursor's servers. F5 can't turn
+    it off.
+
 - Fetch stays allowed in read-only stages on Cursor and Antigravity, as for Codex and Claude plan
   mode. Text planted in the code under review could get the model to put repository content into
   a URL it fetches, so don't run workflows on code you don't trust with secrets in the workspace.
