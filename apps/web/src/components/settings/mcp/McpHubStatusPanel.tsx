@@ -95,9 +95,10 @@ export function McpHubStatusPanel({ projectId }: { readonly projectId: ProjectId
         <p className="text-muted-foreground">No agent session is using these servers right now.</p>
       ) : (
         <ul className="space-y-2">
-          {servers.map((server) => (
+          {servers.map((server, index) => (
             <li
-              key={`${server.name}:${server.connectionScope}`}
+              // Several connections can serve one server (one per session for stdio).
+              key={server.id ?? `${server.name}:${server.connectionScope}:${index}`}
               className="flex flex-wrap items-center gap-2 rounded border border-border px-2 py-1.5"
             >
               <span className="font-medium text-foreground">{server.name}</span>
@@ -106,7 +107,8 @@ export function McpHubStatusPanel({ projectId }: { readonly projectId: ProjectId
               {server.error ? (
                 <span className="basis-full text-muted-foreground">{server.error}</span>
               ) : null}
-              {server.state === "failed" || server.state === "retrying" ? (
+              {/* A connection can look ready while its session is gone; any settled state can be reconnected. */}
+              {server.state !== "connecting" ? (
                 <Button
                   size="xs"
                   variant="outline"

@@ -256,14 +256,23 @@ export function McpServersSettings(props: {
       ),
     [codexCallbackSummaryServers, orderedServers],
   );
+  // Saving does not re-run the configuration check (it can launch every server), so a
+  // check made before the save describes another configuration: its rows are not shown.
+  const configurationCheckStale =
+    serverStatusesQuery.data?.source === "configurationCheck" &&
+    !!effectiveConfigQuery.data?.effectiveVersion &&
+    !!serverStatusesQuery.data.desiredVersion &&
+    serverStatusesQuery.data.desiredVersion !== effectiveConfigQuery.data.effectiveVersion;
   const serverStatusByName = useMemo(
     () =>
       new Map(
-        (serverStatusesQuery.data?.statuses ?? [])
-          .filter((status) => !status.ownership || status.ownership === "managed")
-          .map((status) => [status.name, status]),
+        configurationCheckStale
+          ? []
+          : (serverStatusesQuery.data?.statuses ?? [])
+              .filter((status) => !status.ownership || status.ownership === "managed")
+              .map((status) => [status.name, status]),
       ),
-    [serverStatusesQuery.data],
+    [serverStatusesQuery.data, configurationCheckStale],
   );
   const overriddenServerNames = useMemo(() => {
     if (selectedScope !== "common" || !selectedProjectId) {
@@ -759,6 +768,9 @@ export function McpServersSettings(props: {
                 serverStatusesQuery.data.desiredVersion) ? (
               <p>Saved changes are pending in this conversation.</p>
             ) : null}
+            {configurationCheckStale ? (
+              <p>Not checked since the last save. Use Refresh status to check the saved servers.</p>
+            ) : null}
             {selectedProvider === "claudeAgent" &&
             serverStatusesQuery.data?.source === "configurationCheck" ? (
               <p>
@@ -934,8 +946,8 @@ export function McpServersSettings(props: {
               group="managed"
               servers={effectiveConfigQuery.data?.servers ?? activeServers}
               removedNames={
-                serverStatusesQuery.data?.statuses
-                  .filter(
+                (configurationCheckStale ? undefined : serverStatusesQuery.data?.statuses)
+                  ?.filter(
                     (status) =>
                       status.ownership === "managed" &&
                       !Object.keys(effectiveConfigQuery.data?.servers ?? {}).some(

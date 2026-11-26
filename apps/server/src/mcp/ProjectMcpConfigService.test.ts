@@ -75,6 +75,43 @@ async function runServiceEffect<T, E, RepositoryError>(
 }
 
 describe("ProjectMcpConfigService", () => {
+  it("lets a project override a legacy-named common server by its exact name, and no other", async () => {
+    const projectId = ProjectId.makeUnsafe("project-mcp-legacy-override");
+    const { rows, layer } = makeRepositoryLayer();
+    // Saved before the name rule existed.
+    rows.set(scopeKey("common", null), {
+      scope: "common",
+      projectId: null,
+      version: "common-v1",
+      servers: { "team.docs": { type: "stdio", command: "node" } },
+      disabledCommonServers: [],
+      updatedAt: "2026-11-01T00:00:00.000Z",
+    });
+    const result = await runServiceEffect(
+      Effect.gen(function* () {
+        const service = yield* ProjectMcpConfigService;
+        const saved = yield* service.replaceProjectConfig({
+          projectId,
+          servers: { "team.docs": { type: "stdio", command: "deno" } },
+        });
+        const effective = yield* service.readEffectiveConfig(projectId);
+        const renamed = yield* service
+          .replaceProjectConfig({
+            projectId,
+            ...(saved.version ? { expectedVersion: saved.version } : {}),
+            servers: { "other.docs": { type: "stdio", command: "deno" } },
+          })
+          .pipe(Effect.flip);
+        return { effective, renamed };
+      }),
+      layer,
+    );
+    expect(result.effective.servers["team.docs"]).toMatchObject({ command: "deno" });
+    // A new legacy name in the project is still refused.
+    expect(result.renamed).toMatchObject({ code: "validation" });
+    expect(result.renamed.message).toMatch(/other\.docs|letters/i);
+  });
+
   it("reads raw common and project config and merges effective config with project precedence", async () => {
     const projectId = ProjectId.makeUnsafe("project-mcp-service-merge");
     const { layer } = makeRepositoryLayer();

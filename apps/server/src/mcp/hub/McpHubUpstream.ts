@@ -5,6 +5,7 @@
  */
 import { homedir } from "node:os";
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
+import { pathToFileURL } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -20,6 +21,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import type { McpServerDefinition } from "@t3tools/contracts";
 import { createMcpDiagnosticsSanitizer, isMcpCredentialKey } from "@t3tools/shared/mcpDiagnostics";
+import { mcpBearerRedactionValues, mcpRemoteHeaders } from "@t3tools/shared/mcpTranslation";
 
 import { ProbeStdioTransport } from "../McpProbe.ts";
 import type { McpOAuthProvider } from "./McpOAuth.ts";
@@ -89,6 +91,21 @@ export function isMcpAuthError(error: unknown): boolean {
   );
 }
 
+/**
+ * Failures that mean the live connection is gone even though the transport did not
+ * close: streamable HTTP reports an expired session (404) or a dropped socket as a
+ * failed request and stays open.
+ */
+export function isMcpConnectionLostError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  if ("code" in error && error.code === 404) return true;
+  const cause = error instanceof Error && error.cause instanceof Error ? error.cause.message : "";
+  const message = `${error instanceof Error ? error.message : ""} ${cause}`;
+  return /session not found|\b404\b|fetch failed|ECONNREFUSED|ECONNRESET|socket hang up|other side closed|\bNot connected\b/i.test(
+    message,
+  );
+}
+
 export function reconnectDelayMs(attempt: number): number {
   return Math.min(HUB_RECONNECT_BASE_MS * 2 ** Math.max(0, attempt - 1), HUB_RECONNECT_MAX_MS);
 }
@@ -118,6 +135,8 @@ export class McpHubUpstream {
   private attachments = 0;
   private generation = 0;
   private stderrTail = "";
+  /** True once a connection was ready, so a later one tells providers to list again. */
+  private everConnected = false;
   private readonly listeners = new Set<(change: McpHubListChange) => void>();
 
   constructor(options: McpHubUpstreamOptions) {
@@ -125,9 +144,8 @@ export class McpHubUpstream {
     this.name = options.name;
     this.definition = options.definition;
     this.scope = options.scope;
-    const bearer = this.bearerToken();
     const sanitizer = createMcpDiagnosticsSanitizer({ [options.name]: options.definition }, [
-      ...(bearer ? [bearer] : []),
+      ...mcpBearerRedactionValues(options.definition, options.environment),
       ...Object.entries(options.environment).flatMap(([name, value]) =>
         value && isMcpCredentialKey(name) ? [value] : [],
       ),
@@ -139,6 +157,13 @@ export class McpHubUpstream {
 
   /** A session endpoint now routes to this upstream. */
   retain(): void {
+    // A shared connection that failed while nobody used it never retried; the next
+    // session gets a fresh attempt instead of inheriting that failure.
+    if (this.attachments === 0 && this.state === "failed") {
+      this.state = "idle";
+      this.attempts = 0;
+      this.lastError = undefined;
+    }
     this.attachments += 1;
     if (this.idleTimer) {
       this.clearTimer(this.idleTimer);
@@ -159,9 +184,10 @@ export class McpHubUpstream {
       void this.stop();
       return;
     }
+    // Stopped (not idle), so the hub forgets the entry and its resolved environment.
     this.idleTimer = this.setTimer(() => {
       this.idleTimer = undefined;
-      if (this.attachments === 0) void this.stop("idle");
+      if (this.attachments === 0) void this.stop();
     }, HUB_SHARED_IDLE_MS);
   }
 
@@ -234,9 +260,34 @@ export class McpHubUpstream {
 
   async reconnect(): Promise<void> {
     await this.stop("restart");
+    const generation = this.generation;
     this.attempts = 0;
     this.lastError = undefined;
+    // Teardown awaited the old connection. If the last session left (or anything else
+    // stopped or restarted this upstream) meanwhile, dialing again would start a server
+    // nothing tracks.
+    if (generation !== this.generation || this.state !== "idle" || this.attachments === 0) return;
     await this.connect().catch(() => undefined);
+  }
+
+  /** The live client, for attributing a request failure to the connection it used. */
+  get liveClient(): Client | undefined {
+    return this.state === "ready" ? this.client : undefined;
+  }
+
+  /**
+   * A request on `client` failed. A lost session, dropped socket or revoked credential
+   * leaves an HTTP transport open, so the connection is dropped here and recovered like
+   * a crash (or moved to sign-in on a 401). The failed request is never replayed.
+   */
+  noteRequestFailure(client: Client | undefined, error: unknown): void {
+    if (!client || client !== this.client || this.state !== "ready") return;
+    if (!isMcpConnectionLostError(error) && !isMcpAuthError(error)) return;
+    const transport = this.transport;
+    // The old connection's close handler must not act on the replacement.
+    this.generation += 1;
+    this.handleFailure(error);
+    void Promise.allSettled([client.close(), transport?.close()]);
   }
 
   async stop(reason: "idle" | "restart" | "stopped" = "stopped"): Promise<void> {
@@ -323,6 +374,11 @@ export class McpHubUpstream {
           }
         : undefined;
       this.options.onChange?.();
+      // A replacement connection (after a crash, a lost session or Reconnect) may serve a
+      // different catalog, for example after an upgrade: providers list again.
+      if (this.everConnected)
+        for (const change of ["tools", "resources", "prompts"] as const) this.emit(change);
+      this.everConnected = true;
       void this.refreshCounts(client, generation);
       return client;
     })();
@@ -345,6 +401,9 @@ export class McpHubUpstream {
     if (transport instanceof ProbeStdioTransport) this.stderrTail = transport.stderrTail;
     this.client = undefined;
     this.transport = undefined;
+    // The catalog belongs to the connection that failed.
+    this.tools = undefined;
+    this.toolsLoading = undefined;
     this.lastError = this.sanitize(
       error instanceof Error ? error.message : "The MCP server could not be reached.",
     ).slice(0, 2_000);
@@ -354,7 +413,8 @@ export class McpHubUpstream {
       return;
     }
     this.attempts += 1;
-    if (this.attempts >= HUB_RECONNECT_ATTEMPTS || this.attachments === 0) {
+    // Retries run after 1, 2, 4, 8 and 16 seconds; the next failure is final.
+    if (this.attempts > HUB_RECONNECT_ATTEMPTS || this.attachments === 0) {
       this.state = "failed";
       this.options.onChange?.();
       return;
@@ -372,7 +432,6 @@ export class McpHubUpstream {
   private handleUnexpectedClose(generation: number): void {
     if (generation !== this.generation || this.state !== "ready") return;
     this.handleFailure(new Error("The MCP server closed the connection."));
-    this.emit("tools");
   }
 
   private async refreshCounts(client: Client, generation: number): Promise<void> {
@@ -456,12 +515,8 @@ export class McpHubUpstream {
     return reason;
   }
 
-  private bearerToken(): string | undefined {
-    const variable = this.definition.bearerTokenEnvVar?.trim();
-    return variable ? this.options.environment[variable]?.trim() || undefined : undefined;
-  }
-
-  private startupTimeoutMs(): number {
+  /** How long connecting may take (the server's startup timeout, capped at two minutes). */
+  startupTimeoutMs(): number {
     const seconds = this.definition.startupTimeoutSec;
     return seconds && seconds > 0
       ? Math.min(seconds * 1000, MAX_STARTUP_TIMEOUT_MS)
@@ -479,9 +534,7 @@ export class McpHubUpstream {
         definition.cwd ?? this.options.cwd ?? this.options.environment.HOME ?? homedir(),
         { stderrLimit: HUB_STDERR_LIMIT, maxPendingBytes: HUB_MAX_MESSAGE_BYTES },
       );
-    const headers = new Headers(definition.headers);
-    const bearer = this.bearerToken();
-    if (bearer && !headers.has("authorization")) headers.set("Authorization", `Bearer ${bearer}`);
+    const headers = new Headers(mcpRemoteHeaders(definition, this.options.environment));
     const authProvider = this.options.authProvider;
     const options = { requestInit: { headers }, ...(authProvider ? { authProvider } : {}) };
     return definition.type === "sse"
@@ -504,7 +557,7 @@ export class McpHubUpstream {
   }
 }
 
+/** `file:` URI for a local path on this platform (drive letters and `#`/`?` included). */
 export function pathToFileUri(path: string): string {
-  const normalized = path.replaceAll("\\", "/");
-  return `file://${normalized.startsWith("/") ? "" : "/"}${encodeURI(normalized)}`;
+  return pathToFileURL(path).href;
 }

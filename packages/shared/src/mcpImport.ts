@@ -11,7 +11,6 @@ import { parse as parseToml } from "smol-toml";
 import {
   MCP_SERVER_NAME_RULE,
   normalizeServerName,
-  mcpServerNameKey,
   readMcpServerNameProblem,
   sanitizeMcpServerName,
 } from "./mcpServerName";
@@ -22,6 +21,15 @@ import {
   mapMcpInterpolatedFields,
   mcpInterpolatedFields,
 } from "./mcpInterpolation";
+import { isReservedMcpBearerEnvVar } from "./mcpTranslation";
+
+function describeHost(url: string | undefined): string {
+  try {
+    return url ? new URL(url).host || "the server" : "the server";
+  } catch {
+    return "the server";
+  }
+}
 
 /**
  * Removes `//` and block comments and trailing commas outside strings, so
@@ -448,7 +456,6 @@ export function parseMcpImport(
       issues: [{ field: "$", severity: "error", message: "Expected a configuration object." }],
     };
   const root = readImportRoot(document, jsonInput);
-  const seen = new Set<string>();
   const candidates = Object.entries(root).map(([rawName, raw], index) => {
     const normalizedName = normalizeServerName(rawName);
     const name =
@@ -462,8 +469,6 @@ export function parseMcpImport(
       add("name", "Server name is required and must be at most 128 characters.", "error");
     else if (name !== normalizedName)
       add("name", `Imported as '${name}' instead of '${normalizedName}'. ${MCP_SERVER_NAME_RULE}`);
-    if (seen.has(mcpServerNameKey(name))) add("name", "Conflicting imported server name.", "error");
-    seen.add(mcpServerNameKey(name));
     let server: McpProjectServersConfig[string] | undefined;
     if (!isRecord(raw)) add("$", "Expected a server object.", "error");
     else {
@@ -588,10 +593,20 @@ export function parseMcpImport(
             `Contains a \${...} reference that F5 passes literally. Only ${MCP_ENV_REFERENCE_SYNTAX} is expanded; replace it with a value or a stored secret.`,
           );
       }
+      if (server.type !== "stdio" && server.bearerTokenEnvVar) {
+        const variable = server.bearerTokenEnvVar.trim();
+        add(
+          "bearerTokenEnvVar",
+          isReservedMcpBearerEnvVar(variable)
+            ? `${variable} is reserved for F5 and provider credentials, so F5 never sends it to a server.`
+            : `Sends the value of the environment variable ${variable} to ${describeHost(server.url)} as a bearer token. Import it only if you trust that server with the variable.`,
+        );
+      }
     }
     return {
       id: `${source}:${index}:${name}`,
       name,
+      ...(normalizedName && name !== normalizedName ? { originalName: normalizedName } : {}),
       source,
       ...(server ? { server } : {}),
       issues: entryIssues,
