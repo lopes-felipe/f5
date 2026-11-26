@@ -12,12 +12,12 @@ matrices finish every shard, and all jobs have timeouts.
 | ------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------- | ------- |
 | static              | Every run               | Formatting, lint, workflow lint, types, server boot, SDK/protocol audits, release smoke, tier/port drift | 15 min  |
 | test                | Every run               | Seven workspace suites, server Git smoke, integration, extended Git matrix                               | 20 min  |
-| server-unit         | Code changes            | Two Linux unit shards, four workers each                                                                 | 15 min  |
-| browser             | Code changes            | Discovered browser tests in Chromium                                                                     | 15 min  |
+| server-unit         | Code outside web        | Two Linux unit shards, four workers each                                                                 | 15 min  |
+| browser             | Code outside server     | Discovered browser tests in Chromium                                                                     | 15 min  |
 | desktop             | Code changes            | Sandboxed Electron smoke, profile lifecycle, marketing build                                             | 20 min  |
 | windows-build       | Code changes            | Strict Rust checks, workspace/Git/integration suites, desktop build and smoke, profiles                  | 30 min  |
-| windows-server-unit | Code changes            | Three Windows unit shards, two workers each                                                              | 20 min  |
-| macos-profiles      | Code changes            | Claude descriptor drift, Keep Awake watchdog, Swift, strict universal helper, selected profile tests     | 20 min  |
+| windows-server-unit | Main, nightly, dispatch | Three Windows unit shards, two workers each                                                              | 20 min  |
+| macos-profiles      | Code outside web        | Claude descriptor drift, Keep Awake watchdog, Swift, strict universal helper, selected profile tests     | 20 min  |
 | macos-workspaces    | Main, nightly, dispatch | Seven workspace suites                                                                                   | 30 min  |
 | macos-server-unit   | Main, nightly, dispatch | Two duration-balanced server-unit shards                                                                 | 30 min  |
 | macos-integration   | Main, nightly, dispatch | Git smoke, server integration and the extended real-Git suites                                           | 30 min  |
@@ -29,6 +29,34 @@ matrices finish every shard, and all jobs have timeouts.
 A docs-only PR (only Markdown or `docs/**`) skips the heavy checks. Static checks
 and workspace/Git/integration tests still run, including environment documentation
 drift tests. Main pushes, nightly runs and dispatches always run heavy jobs.
+
+A PR that changes code in only one app also skips the heavy jobs that cannot read
+that app:
+
+| PR changes only                 | Skipped                                   |
+| ------------------------------- | ----------------------------------------- |
+| `apps/web` and `apps/marketing` | `server-unit` shards and `macos-profiles` |
+| `apps/server`                   | `browser`                                 |
+
+Anything else runs every PR job: a change under `packages/`, `scripts/`,
+`.github/`, a root file, or more than one app. The browser fixture imports
+`apps/server/src/assetHttp.ts` for the real asset headers, so a change to that file
+runs `browser` too. `static`, `test`, `desktop` and `windows-build` never skip for
+this reason, so the bundled web client and the server are still built and exercised
+together on every PR. `scripts/ci-change-scopes.test.ts` fails when code run by a
+skipped job starts importing the app it skips for; a coupling that is not an import
+(for example a test reading another app's files) would surface on main instead.
+
+The three Windows server-unit shards were 39% of a PR run's runner time (200 runs
+on 25–26 November 2026) and run only on main pushes, nightly and dispatch. PRs keep Windows coverage through
+`windows-build`. A Windows-only unit regression therefore fails main, not the PR.
+Before merging a change that is sensitive to Windows process, path or filesystem
+behaviour, dispatch the full workflow on its branch, which also runs the macOS
+suites:
+
+```sh
+gh workflow run ci.yml --ref <branch>
+```
 
 `changelog.yml` reports a separate `Changelog` check on every PR. It requires a new
 changelog fragment, `changes/<category>/<slug>.md`, unless the PR has the
@@ -56,7 +84,10 @@ runtime checks.
 Heavy jobs classify their own changes after checkout and before setup through
 `.github/actions/changes`. There is no queued prerequisite filter job.
 Docs-only heavy jobs succeed with their install/check steps skipped; a filter
-failure fails the job. The full macOS suite retains its non-PR job condition.
+failure fails the job. A job names the app it cannot read through the action's
+`unaffected_by` input (`web` or `server`); an empty or unknown value runs the job
+for every code change. The full macOS suite and the Windows unit shards have a
+non-PR job condition instead and do not classify changes.
 This trades the serial dependency for runner allocation on docs-only PRs: every
 heavy matrix job still checks out and filters on its normal hosted OS before
 skipping setup and checks. `CI result` waits for these lightweight executions,
