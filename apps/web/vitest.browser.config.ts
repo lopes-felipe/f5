@@ -19,9 +19,9 @@ const browserConfig = mergeConfig(
       },
     },
     server: {
-      // Transforming the first "use memo" module loads Babel and the React
-      // Compiler (about half a second); do it at startup instead of inside
-      // whichever test first renders an annotated component.
+      // Loading Babel and the React Compiler on the first transformed web module
+      // takes about half a second; warm up a representative component at startup
+      // instead of paying that cost inside whichever browser test runs first.
       warmup: { clientFiles: ["./src/components/Sidebar.tsx"] },
     },
     test: {

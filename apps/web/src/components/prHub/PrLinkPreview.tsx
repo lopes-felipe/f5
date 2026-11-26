@@ -11,7 +11,7 @@ import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { useExternalLinkContextMenu } from "../../hooks/useExternalLinkContextMenu";
 import { OpenLinkThread, useOpenLink } from "../../hooks/useOpenLink";
 import { cachedPrHubRows, prHubPeekQueryOptions } from "../../lib/prHubReactQuery";
-import { useAppSettingsSelector } from "../../appSettings";
+import { usePrHubAccountSnapshot } from "../../lib/prHubAccount";
 import { parsePullRequestReference } from "../../lib/pullRequestReference";
 import { formatRelativeTimeLabel } from "../../lib/relativeTime";
 import { useRightPanelStore } from "../../rightPanelStore";
@@ -126,10 +126,10 @@ export function PrLinkPreview({ url, children }: { url: string; children: ReactN
   const openLink = useOpenLink();
   const thread = useContext(OpenLinkThread);
   const [open, setOpen] = useState(false);
-  // Changing the selected account must discard the previous account's preview on render.
-  useAppSettingsSelector((settings) => settings.prHubAccountId);
+  // Changing the selected account or generation must discard the previous account's preview on render.
+  const prHubAccount = usePrHubAccountSnapshot();
   const client = useQueryClient();
-  const options = prHubPeekQueryOptions(url);
+  const options = prHubPeekQueryOptions(url, prHubAccount);
   const query = useQuery({ ...options, enabled: open });
   const parsed = parsePullRequestReference(url);
   const listed =

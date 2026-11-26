@@ -1,4 +1,0 @@
-- Earlier chat work remains visible as you page back, and hidden previews retain their active viewport.
-- Usage retains complete history after a partial scan and clears Cursor history when the login changes or becomes unavailable.
-- Losing internet access no longer shows a disconnect warning while the local F5 server remains reachable.
-- Drafts stay available while attachments are preparing, and Usage opens while list prices refresh.

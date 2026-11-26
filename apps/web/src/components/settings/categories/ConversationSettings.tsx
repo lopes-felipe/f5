@@ -8,6 +8,7 @@ import {
   buildAppSettingsPatch,
   parsePersistedAppSettings,
 } from "../../../appSettings";
+import { useServerCapability } from "../../../protocolState";
 import { isElectron } from "../../../env";
 import { DisplayProfileSelector } from "../DisplayProfileSelector";
 import { useSettingsRouteContext } from "../SettingsRouteContext";
@@ -48,6 +49,7 @@ const COMPOSER_KEYS = [
   "persistentUsageLimits",
   "sendShortcut",
   "composerRichTextEnabled",
+  "composerCollapseOnScroll",
   "compactChatLayout",
 ] as const;
 const MESSAGE_KEYS = [
@@ -89,6 +91,7 @@ function RestoreDefaultsButton({ onClick }: { readonly onClick: () => void }) {
 }
 
 export function ConversationSettings() {
+  const composerRedesign = useServerCapability("composer-redesign");
   const { settings, defaults, updateSettings } = useSettingsRouteContext();
   const defaultDisplaySettings = parsePersistedAppSettings(null);
   const activityChanged =
@@ -154,6 +157,19 @@ export function ConversationSettings() {
             />
           }
         />
+        {composerRedesign && (
+          <SettingsRow
+            title="Collapse composer while scrolling"
+            description="Make room for the conversation when you scroll. Typing or clicking the editor expands it; leaving the editor never collapses it."
+            control={
+              <Switch
+                aria-label="Collapse composer while scrolling"
+                checked={settings.composerCollapseOnScroll}
+                onCheckedChange={(checked) => updateSettings({ composerCollapseOnScroll: checked })}
+              />
+            }
+          />
+        )}
         <SettingsRow
           title="Compact chat layout"
           description="Show tasks, queued turns and non-critical notices as chips above the composer, and runtime info in the header."
@@ -416,7 +432,7 @@ export function ConversationSettings() {
             />
             <SettingsRow
               title="Auto-expand reasoning"
-              description="Show the model's thinking inline instead of collapsed."
+              description="Show the model's thinking inline instead of collapsed, including thoughts between tool calls."
               control={
                 <Switch
                   checked={settings.showReasoningExpanded}

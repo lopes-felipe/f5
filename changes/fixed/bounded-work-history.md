@@ -1,1 +1,0 @@
-- Opening a work group with earlier activity fetches a bounded page. Load earlier keeps paging until it reaches an earlier user message or the end of message history.

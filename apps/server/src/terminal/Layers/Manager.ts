@@ -240,10 +240,25 @@ function toSessionKey(threadId: string, terminalId: string): string {
   return `${terminalOwnerKey({ kind: "thread", threadId })}\u0000${terminalId}`;
 }
 
+const EXCLUDED_F5_SERVER_ENV_KEYS = new Set<string>([
+  "F5_AUTH_TOKEN",
+  "F5_MODE",
+  "F5_PORT",
+  "F5_HOST",
+  "F5_NO_BROWSER",
+  "F5_AUTO_BOOTSTRAP_PROJECT_FROM_CWD",
+  "F5_STATE_DIR",
+  "F5_HOME",
+  "F5_LOG_WS_EVENTS",
+  "F5_LOG_THREAD_OPEN_TIMINGS",
+  "F5_LOG_PROJECTION_TIMINGS",
+]);
+
 function shouldExcludeTerminalEnvKey(key: string): boolean {
   const normalizedKey = key.toUpperCase();
   if (
     /^F5_(?:LAUNCHER_|UPDATE_|STANDALONE(?:_DIR)?$|INSTALL_ROOT$)/.test(normalizedKey) ||
+    EXCLUDED_F5_SERVER_ENV_KEYS.has(normalizedKey) ||
     normalizedKey.startsWith("T3CODE_")
   ) {
     return true;

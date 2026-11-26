@@ -21,7 +21,7 @@ const record: TraceRecord = {
   exit: { _tag: "Success" },
 };
 describe("otlpResource", () => {
-  it("names the host and build, unless OTEL_RESOURCE_ATTRIBUTES already names the host", () => {
+  it("names the host and build, unless the given attributes already name the host", () => {
     const resource = (attributes: Record<string, string>) =>
       otlpResource("1.2.3", "profile", attributes, "box-1");
     expect(resource({})).toMatchObject({

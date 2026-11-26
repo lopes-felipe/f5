@@ -37,6 +37,8 @@ export function writeAcpWrapper(
     env?: Record<string, string> | undefined;
     delayMs?: number;
     argvLogPath?: string;
+    /** Appends the named variables from the inherited environment as one JSON line per launch. */
+    envLog?: { path: string; keys: ReadonlyArray<string> };
     about?: string;
     requireAcp?: boolean;
   } = {},
@@ -46,6 +48,7 @@ export function writeAcpWrapper(
     `
 const { appendFileSync } = require("node:fs");
 const options = ${JSON.stringify(options)};
+if (options.envLog) appendFileSync(options.envLog.path, JSON.stringify(Object.fromEntries(options.envLog.keys.map((key) => [key, process.env[key] ?? null]))) + "\\n");
 Object.assign(process.env, options.env);
 if (process.env.T3_ACP_EXIT_LOG_PATH) appendFileSync(process.env.T3_ACP_EXIT_LOG_PATH + ".pids", process.pid + "\\n");
 if (options.argvLogPath) appendFileSync(options.argvLogPath, process.argv.slice(2).join("\\t") + "\\t\\n");

@@ -7,6 +7,7 @@ export const releasePackageFiles = [
   "apps/desktop/package.json",
   "apps/web/package.json",
   "packages/contracts/package.json",
+  "packages/shared/package.json",
 ] as const;
 
 interface UpdateReleasePackageVersionsOptions {

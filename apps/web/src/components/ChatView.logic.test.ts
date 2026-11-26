@@ -31,6 +31,7 @@ import {
   getCustomModelOptionsByProvider,
   getProviderDispatchModelsByProvider,
   identityAbsolutePathNormalizer,
+  partitionAttachedFiles,
   readAttachedFileAbsolutePath,
   resolveClaudeSubagentModel,
   resolveComposerNativeSlashCommands,
@@ -1316,6 +1317,32 @@ describe("deriveComposerSendState", () => {
     expect(state.sendableTerminalContexts).toEqual([]);
     expect(state.expiredTerminalContextCount).toBe(0);
     expect(state.hasSendableContent).toBe(true);
+  });
+});
+
+describe("partitionAttachedFiles", () => {
+  it("separates path-less clipboard files from files the bridge can resolve", () => {
+    const dragged = new File(["test"], "dragged.png", { type: "image/png" });
+    const pasted = new File(["test"], "image.png", { type: "image/png" });
+
+    expect(
+      partitionAttachedFiles([dragged, pasted], {
+        isElectron: true,
+        // Electron's webUtils.getPathForFile returns "" for in-memory clipboard files.
+        desktopBridge: {
+          getPathForFile: (file) => (file === dragged ? "/Users/me/Desktop/dragged.png" : ""),
+        },
+      }),
+    ).toEqual({ withPath: [dragged], pathless: [pasted] });
+  });
+
+  it("treats every file as path-less outside Electron", () => {
+    const file = new File(["test"], "browser.png");
+
+    expect(partitionAttachedFiles([file], { isElectron: false })).toEqual({
+      withPath: [],
+      pathless: [file],
+    });
   });
 });
 

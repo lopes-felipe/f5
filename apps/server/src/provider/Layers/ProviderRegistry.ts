@@ -1,4 +1,5 @@
 import { projectProviderSnapshots } from "@t3tools/shared/serverSettings";
+import { isDoNotTrackSet } from "@t3tools/shared/doNotTrack";
 import { withUpdateRequiredModels } from "../updateRequiredModels.ts";
 import {
   BUNDLED_MODEL_MANIFEST,
@@ -30,7 +31,9 @@ import { ServerSettingsService } from "../../serverSettings.ts";
  *
  * @module ProviderRegistryLive
  */
+import * as NodeOs from "node:os";
 import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
+import { runtimeBuildTarget } from "@t3tools/shared/workflowProviders";
 import {
   defaultInstanceIdForDriver,
   ProviderDriverKind,
@@ -300,7 +303,9 @@ export const ProviderRegistryLive = Layer.effect(
       Option.isSome(settingsService)
         ? settingsService.value.getSettings.pipe(
             Effect.map((settings) => {
-              manifest.refreshInBackground(settings.enableRemoteModelManifest);
+              manifest.refreshInBackground(
+                settings.enableRemoteModelManifest && !isDoNotTrackSet(process.env),
+              );
               return projectProviderSnapshots(
                 snapshots.map((provider) =>
                   classifyModelManifest(
@@ -456,6 +461,8 @@ export const ProviderRegistryLive = Layer.effect(
                 rawProvider.driver,
                 rawProvider.version,
                 rawProvider.harnessVariant,
+                runtimeBuildTarget(),
+                NodeOs.release(),
               ),
             };
             const key = snapshotInstanceKey(provider);

@@ -156,6 +156,7 @@ export function createDevRunnerEnv({
 
     const output: NodeJS.ProcessEnv = {
       ...baseEnv,
+      F5_PORT: String(serverPort),
       T3CODE_PORT: String(serverPort),
       PORT: String(webPort),
       ELECTRON_RENDERER_PORT: String(webPort),
@@ -166,40 +167,49 @@ export function createDevRunnerEnv({
     };
 
     if (host !== undefined) {
+      output.F5_HOST = host;
       output.T3CODE_HOST = host;
+    } else {
+      delete output.F5_HOST;
+      delete output.T3CODE_HOST;
     }
 
     if (authToken !== undefined) {
+      output.F5_AUTH_TOKEN = authToken;
       output.T3CODE_AUTH_TOKEN = authToken;
     } else {
+      delete output.F5_AUTH_TOKEN;
       delete output.T3CODE_AUTH_TOKEN;
     }
 
     if (noBrowser !== undefined) {
+      output.F5_NO_BROWSER = noBrowser ? "1" : "0";
       output.T3CODE_NO_BROWSER = noBrowser ? "1" : "0";
     } else {
+      delete output.F5_NO_BROWSER;
       delete output.T3CODE_NO_BROWSER;
     }
 
     if (autoBootstrapProjectFromCwd !== undefined) {
+      output.F5_AUTO_BOOTSTRAP_PROJECT_FROM_CWD = autoBootstrapProjectFromCwd ? "1" : "0";
       output.T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD = autoBootstrapProjectFromCwd ? "1" : "0";
     } else {
+      delete output.F5_AUTO_BOOTSTRAP_PROJECT_FROM_CWD;
       delete output.T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD;
     }
 
     if (logWebSocketEvents !== undefined) {
+      output.F5_LOG_WS_EVENTS = logWebSocketEvents ? "1" : "0";
       output.T3CODE_LOG_WS_EVENTS = logWebSocketEvents ? "1" : "0";
     } else {
+      delete output.F5_LOG_WS_EVENTS;
       delete output.T3CODE_LOG_WS_EVENTS;
     }
 
-    if (mode === "dev") {
+    if (mode === "dev" || mode === "dev:server" || mode === "dev:web") {
+      output.F5_MODE = "web";
       output.T3CODE_MODE = "web";
-      delete output.T3CODE_DESKTOP_WS_URL;
-    }
-
-    if (mode === "dev:server" || mode === "dev:web") {
-      output.T3CODE_MODE = "web";
+      delete output.F5_DESKTOP_WS_URL;
       delete output.T3CODE_DESKTOP_WS_URL;
     }
 

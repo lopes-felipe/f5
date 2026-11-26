@@ -1,1 +1,0 @@
-- Usage can include OpenCode and Antigravity history from local stores and Cursor account history from your CLI login. Enable the sources under Usage → Pricing.

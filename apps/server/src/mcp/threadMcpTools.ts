@@ -332,9 +332,19 @@ export const THREAD_TOOL_DEFINITIONS = [
 ] as const;
 export const THREAD_TOOL_TIMEOUT_MS = 35_000;
 
-/** Workflow turns that must not change anything get only the tools that read. */
+/**
+ * Workflow turns that must not change anything get only the tools that read. Their shell has no
+ * network, so the forge reads here are how they see PRs, checks and remote files.
+ */
 export type ThreadToolAccess = "full" | "read-only";
-export const READ_ONLY_THREAD_TOOL_NAMES: ReadonlySet<string> = new Set(["thread_read"]);
+export const READ_ONLY_THREAD_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "thread_read",
+  "pull_request_read",
+  "pull_request_list",
+  "ci_logs",
+  "repository_file_read",
+  "pull_request_review_guide_read",
+]);
 export type ThreadToolDefinition = (typeof THREAD_TOOL_DEFINITIONS)[number];
 export function threadToolDefinitions(
   access: ThreadToolAccess,

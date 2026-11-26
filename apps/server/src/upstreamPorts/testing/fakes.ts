@@ -9,7 +9,6 @@ import path from "node:path";
 import {
   DEFAULT_SERVER_SETTINGS,
   ProjectId,
-  type OrchestrationThread,
   type CodeReviewWorkflow,
   type OrchestrationCreateCodeReviewWorkflowInput,
   type NextTurnQueueSubmitInput,

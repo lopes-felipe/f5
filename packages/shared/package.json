@@ -1,6 +1,6 @@
 {
   "name": "@t3tools/shared",
-  "version": "0.0.0-alpha.1",
+  "version": "0.1.13",
   "private": true,
   "type": "module",
   "exports": {
@@ -352,6 +352,10 @@
       "types": "./src/runtimeMode.ts",
       "import": "./src/runtimeMode.ts"
     },
+    "./readOnlyEnforcement": {
+      "types": "./src/readOnlyEnforcement.ts",
+      "import": "./src/readOnlyEnforcement.ts"
+    },
     "./cursorHarness": {
       "types": "./src/cursorHarness.ts",
       "import": "./src/cursorHarness.ts"
@@ -535,6 +539,10 @@
       "import": "./src/scheduledTasks.ts"
     },
     "./observability": "./src/observability.ts",
+    "./doNotTrack": {
+      "types": "./src/doNotTrack.ts",
+      "import": "./src/doNotTrack.ts"
+    },
     "./htmlRender": {
       "types": "./src/htmlRender.ts",
       "import": "./src/htmlRender.ts"

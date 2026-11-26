@@ -67,7 +67,31 @@ export interface ForgeWorkflowRun {
   readonly attempt: number;
   readonly completed: boolean;
 }
+export type ForgeRepositoryContent =
+  | {
+      readonly kind: "file";
+      readonly path: string;
+      readonly size: number;
+      /** Null when the forge didn't return the content (too large) or it isn't UTF-8 text. */
+      readonly text: string | null;
+      readonly binary: boolean;
+    }
+  | {
+      readonly kind: "directory";
+      readonly path: string;
+      readonly entries: ReadonlyArray<{
+        readonly name: string;
+        readonly type: "file" | "dir" | "symlink" | "submodule";
+        readonly size: number;
+      }>;
+    };
 export interface ForgeProvider extends SourceControlProvider {
+  /** A file or directory listing at `revision` (the default branch when omitted). Read-only. */
+  readonly readRepositoryContent?: (input: {
+    readonly ref: SourceControlPullRequestRef;
+    readonly path: string;
+    readonly revision?: string | undefined;
+  }) => Effect.Effect<ForgeRepositoryContent, SourceControlProviderError>;
   readonly openChangeRequest?: (input: {
     readonly ref: SourceControlPullRequestRef;
     readonly head: string;
@@ -1923,6 +1947,8 @@ export function makeForgeSourceControlProvider(options: {
     getDefaultBranch: (input) =>
       request(undefined, input.cwd, "").pipe(Effect.map(repositoryDefaultBranch)),
     getRepositoryCloneUrls: (input) =>
+      // PR resolution already checks the checkout host. Reuse its account routing
+      // even when the API returns a canonical URL with a different repository path.
       request(undefined, input.cwd, "", "GET", undefined, false, input.repository).pipe(
         Effect.map((value) => {
           const v = object(value),

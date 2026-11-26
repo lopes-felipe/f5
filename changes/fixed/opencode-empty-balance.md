@@ -1,1 +1,0 @@
-- OpenCode shows the provider’s payment error when an account is out of funds, without treating it as a temporary usage limit.

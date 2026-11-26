@@ -982,11 +982,13 @@ function WorkspaceHeaderStrip(props: {
   );
   return (
     <div className="flex items-center gap-1 border-b py-1 ps-3 pe-1">
+      {/* Middle-truncated: the folder name is what tells checkouts apart. */}
       <span
-        className="min-w-0 flex-1 truncate font-mono text-2xs text-muted-foreground"
+        data-slot="workspace-path"
+        className="flex min-w-0 flex-1 overflow-hidden font-mono text-2xs text-muted-foreground"
         title={props.path}
       >
-        {props.path}
+        <MiddleTruncate text={props.path} maxTailLength={40} />
       </span>
       {iconButton("Copy path", <CopyIcon />, () =>
         run("Could not copy the path", () => writeTextToClipboard(props.path)),

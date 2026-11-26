@@ -17,6 +17,7 @@ Use the reason keys in `rules.json`.
 - `maintenance` covers chore, test, ci, docs and style changes, React Compiler adoption, and refactors with no behavior change.
 - `upstream-only:<slug>` covers upstream subsystems f5 does not have (listed in `rules.json`).
 - f5 has its own scheduler (`apps/server/src/scheduledTasks`). Judge upstream scheduled-task changes by behavior against it. Webhook triggers are `relay-cloud`; interval schedules are `upstream-only:scheduled-task-intervals`. `upstream-only:scheduled-tasks` is retired; do not use it.
+- f5 has no product analytics. Upstream analytics and PostHog changes are `upstream-only:analytics-feedback`. Port only privacy opt-outs that reach f5, such as `DO_NOT_TRACK`, provider CLI telemetry switches and fewer outbound requests (see `docs/privacy.md`).
 
 ## Declined (`declined-by-policy`)
 
@@ -31,6 +32,8 @@ Use the reason keys in `rules.json`.
 - Anonymous-usage note
 - Automatic file-link repair
 - Trailing toast icons
+- Environment-configured OTLP export (f5 exports only to a collector set in Settings)
+- Two-row composer redesign (upstream #25869): f5 keeps model, effort, mode, Access and Plan-panel chips inline in a scrollable footer, attachments in the + menu, collapse while scrolling, and a model picker that closes on select
 
 ## Porting defaults
 

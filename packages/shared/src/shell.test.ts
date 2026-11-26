@@ -1,5 +1,9 @@
-import { type spawn } from "node:child_process";
+import { spawn, type SpawnOptions } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { existsSync } from "node:fs";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 
@@ -74,6 +78,34 @@ describe("login shell environment", () => {
     probe.child.emit("close", 0);
     expect(await result).toEqual({ PATH: "/a:/b", SSH_AUTH_SOCK: "/tmp/agent.sock" });
   });
+
+  it.runIf(existsSync("/bin/bash"))(
+    "ignores terminal titles printed by a Bash DEBUG trap",
+    async () => {
+      const home = await mkdtemp(join(tmpdir(), "f5-bash-env-"));
+      try {
+        const bashEnv = join(home, "env.bash");
+        await writeFile(bashEnv, `trap 'printf "\\033]0;%s\\007" "$BASH_COMMAND"' DEBUG\n`);
+        const shellPath = "/test/bin:/usr/bin:/bin";
+        const bashWithFixture = (file: string, [, command]: string[], options: SpawnOptions) =>
+          // Non-interactive Bash reads the fixture via BASH_ENV and skips host startup files.
+          spawn(file, ["-c", command ?? ""], {
+            ...options,
+            env: { HOME: home, BASH_ENV: bashEnv, PATH: shellPath },
+          });
+
+        await expect(
+          readEnvironmentFromLoginShellAsync(
+            "/bin/bash",
+            ["XDG_DATA_HOME", "PATH"],
+            bashWithFixture as typeof spawn,
+          ),
+        ).resolves.toEqual({ PATH: shellPath });
+      } finally {
+        await rm(home, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("clears timers after a successful probe", async () => {
     vi.useFakeTimers();

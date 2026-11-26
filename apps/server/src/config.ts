@@ -1,3 +1,5 @@
+import { join as nodePathJoin } from "node:path";
+
 import type { ActiveProfile, ProfileId } from "@t3tools/contracts";
 import { profileStateDir, profilesRootDir } from "@t3tools/shared/profilePaths";
 import { fallbackDefaultProfile } from "@t3tools/shared/profileIdentity";
@@ -13,6 +15,13 @@ import { Effect, FileSystem, Layer, Path, ServiceMap } from "effect";
 
 export const DEFAULT_PORT = 3773;
 
+/** Where F5 keeps provider homes; configs built by hand (tests) may leave it unset. */
+export function resolveProviderHomesDir(
+  paths: Pick<ServerDerivedPaths, "providerHomesDir" | "stateDir">,
+): string {
+  return paths.providerHomesDir ?? nodePathJoin(paths.stateDir, "provider-homes");
+}
+
 export type RuntimeMode = "web" | "desktop";
 
 export interface ServerDerivedPaths {
@@ -24,13 +33,17 @@ export interface ServerDerivedPaths {
   readonly secretsDir?: string;
   readonly worktreesDir: string;
   readonly attachmentsDir: string;
+  /**
+   * Durable copies of pasted workflow attachments, referenced by absolute path in
+   * workflow prompts. Kept outside `attachmentsDir` so upload and registry sweeps skip it.
+   */
+  readonly workflowAttachmentsDir?: string;
   readonly logsDir: string;
   readonly serverLogPath: string;
   readonly providerLogsDir: string;
   readonly providerEventLogPath: string;
   readonly providerStatusCacheDir?: string;
   readonly terminalLogsDir: string;
-  readonly anonymousIdPath: string;
 }
 
 /**
@@ -91,13 +104,13 @@ export const deriveServerPaths = Effect.fn(function* ({
     secretsDir: join(stateDir, "secrets"),
     worktreesDir: join(profile.isDefault ? baseDir : stateDir, "worktrees"),
     attachmentsDir,
+    workflowAttachmentsDir: join(stateDir, "workflow-attachments"),
     logsDir,
     serverLogPath: join(logsDir, "server.log"),
     providerLogsDir,
     providerEventLogPath: join(providerLogsDir, "events.log"),
     providerStatusCacheDir,
     terminalLogsDir: join(logsDir, "terminals"),
-    anonymousIdPath: join(stateDir, "anonymous-id"),
   };
 });
 

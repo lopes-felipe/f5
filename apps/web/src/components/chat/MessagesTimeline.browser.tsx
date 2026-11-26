@@ -278,6 +278,56 @@ describe("MessagesTimeline (LegendList)", () => {
     await expect.element(page.getByText("Skill: team:review", { exact: true })).toBeVisible();
   });
 
+  it("keeps a collapsed thought collapsed and unquotable once it settles into a Thought row", async () => {
+    persistAppSettings({ showReasoningExpanded: true });
+    const thought = (streaming: boolean) => {
+      const entry = makeAssistantEntry("thought-settles", "", 1);
+      if (entry.kind !== "message") throw new Error("expected a message entry");
+      return {
+        ...entry,
+        message: {
+          ...entry.message,
+          reasoningText: "Check the scroll anchor before the click.",
+          streaming,
+          ...(streaming ? { completedAt: undefined } : {}),
+        },
+      };
+    };
+    let api: TimelineHarnessApi | null = null;
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={[makeUserEntry("thought-user", "Why?", 0), thought(true)]}
+        onIsAtEndChangeSpy={vi.fn()}
+        setApi={(nextApi) => {
+          api = nextApi;
+        }}
+      />,
+      { container: host },
+    );
+    try {
+      const reasoning = page.getByText("Check the scroll anchor before the click.");
+      await expect.element(reasoning).toBeVisible();
+      await page.getByRole("button", { name: "Thinking…" }).click();
+      await expect.element(reasoning).not.toBeInTheDocument();
+
+      api!.setEntries([makeUserEntry("thought-user", "Why?", 0), thought(false)]);
+      await vi.waitFor(() => {
+        expect(host.querySelector('[data-slot="assistant-thought-row"]')).not.toBeNull();
+      });
+      await expect.element(page.getByRole("button", { name: "Thought" })).toBeVisible();
+      await expect.element(reasoning).not.toBeInTheDocument();
+
+      await page.getByRole("button", { name: "Thought" }).click();
+      await expect.element(reasoning).toBeVisible();
+      expect(reasoning.element().closest("[data-assistant-quote-exclude]")).not.toBeNull();
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("restores a thread reading position after navigating away", async () => {
     const threadId = ThreadId.makeUnsafe("remember-reading-position");
     const entries = makeOverflowEntries(40);
@@ -756,6 +806,92 @@ describe("MessagesTimeline (LegendList)", () => {
       host.remove();
     }
   });
+
+  it.each(["active stream", "pending send"] as const)(
+    "preserves the work heading and tail following during a %s",
+    async (mode) => {
+      let api: TimelineHarnessApi | null = null;
+      const entries = [
+        ...Array.from({ length: 12 }, (_, index) =>
+          makeUserEntry("context-" + index, "Earlier context", index),
+        ),
+        ...Array.from({ length: 10 }, (_, index) =>
+          makeReadWorkEntry("expand-work-" + index, "src/file-" + index + ".ts", 12 + index),
+        ),
+        makeAssistantEntry("expand-answer", "Done", 23),
+        makeUserEntry("expand-next-turn", "Next task", 24),
+      ];
+      const reply = makeAssistantEntry("stream-reply", "Starting", 25);
+      if (reply.kind !== "message") throw new Error("Expected a message entry");
+      const streamingReply = { ...reply, message: { ...reply.message, streaming: true } };
+      if (mode === "active stream") entries.push(streamingReply);
+      const screen = await render(
+        <TimelineHarness
+          initialHeight={370}
+          initialEntries={entries}
+          initialIsWorking={mode === "active stream"}
+          setApi={(value) => {
+            api = value;
+          }}
+          onIsAtEndChangeSpy={() => {}}
+        />,
+      );
+      const viewport = () =>
+        document.querySelector<HTMLElement>('[data-slot="messages-scroll-container"]')!;
+      const summary = () =>
+        document.querySelector<HTMLButtonElement>('[data-slot="work-group-summary"]');
+      try {
+        await expect.poll(summary).not.toBeNull();
+        await waitForTimelineLayout(viewport);
+        const node = viewport();
+        const distanceFromEnd = () => node.scrollHeight - node.scrollTop - node.clientHeight;
+        expect(distanceFromEnd()).toBeLessThan(3);
+        if (mode === "pending send") {
+          const requestFrame = window.requestAnimationFrame.bind(window);
+          const frameSpy = vi
+            .spyOn(window, "requestAnimationFrame")
+            .mockImplementation((callback) =>
+              requestFrame((now) => {
+                if (callback.name === "scrollToEndWhenReady") summary()?.click();
+                callback(now);
+              }),
+            );
+          try {
+            api!.followNewTurn([...entries, makeUserEntry("pending-send", "Sent message", 25)]);
+            await expect.poll(summary).toBeNull();
+            await waitForTimelineLayout(viewport);
+            expect(distanceFromEnd()).toBeLessThan(3);
+          } finally {
+            frameSpy.mockRestore();
+          }
+          return;
+        }
+        const top = summary()!.getBoundingClientRect().top;
+        const name = summary()!.textContent?.trim() ?? "";
+        await page.getByRole("button", { name, exact: true }).click();
+        const expanded = page.getByRole("button", { name, exact: true });
+        await expect.element(expanded).toHaveAttribute("aria-expanded", "true");
+        await waitForTimelineLayout(viewport);
+        // Wait past the 2-rAF expansion settle window to confirm LegendList does
+        // not re-arm `maintainScrollAtEnd` and snap back to the bottom.
+        for (let frame = 0; frame < 4; frame += 1) {
+          await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+        }
+        expect(distanceFromEnd()).toBeGreaterThan(40);
+        expect(Math.abs(expanded.element().getBoundingClientRect().top - top)).toBeLessThan(12);
+        api!.setEntries([
+          ...entries.slice(0, -1),
+          {
+            ...streamingReply,
+            message: { ...streamingReply.message, text: "More output\n\n".repeat(8) },
+          },
+        ]);
+        await expect.poll(distanceFromEnd).toBeLessThan(3);
+      } finally {
+        await screen.unmount();
+      }
+    },
+  );
 
   it("keeps a prior-turn MCP app visible while ordinary work logs collapse", async () => {
     const host = document.createElement("div");
