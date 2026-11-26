@@ -11,6 +11,17 @@ export const BRAND_ASSET_PATHS = {
   developmentWebFavicon16Png: "assets/dev/blueprint-web-favicon-16x16.png",
   developmentWebFavicon32Png: "assets/dev/blueprint-web-favicon-32x32.png",
   developmentWebAppleTouchIconPng: "assets/dev/blueprint-web-apple-touch-180.png",
+  /** One folder per app icon people can choose, named by its id. */
+  productionAppIconsDir: "assets/prod/app-icons",
+  developmentAppIconsDir: "apps/desktop/resources/app-icons",
+  webAppIconsDir: "apps/web/public/app-icons",
+} as const;
+
+/** The file of each app icon choice a desktop platform uses for its Dock or taskbar. */
+export const APP_ICON_FILE_BY_PLATFORM = {
+  mac: "macos.png",
+  linux: "linux.png",
+  win: "windows.ico",
 } as const;
 
 export interface IconOverride {

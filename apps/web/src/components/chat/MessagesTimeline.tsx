@@ -4,6 +4,7 @@ import { AttachmentImage } from "../AttachmentImage";
 import { ThreadFindContext } from "./threadFindContext";
 import { watchThreadFindHighlights } from "./threadFindHighlights";
 import { HtmlRenderFrame } from "./HtmlRenderFrame";
+import { appIconUrl, useAppIcon } from "../../appIcon";
 import { recordTimelineRowRender } from "../../lib/performanceCounters";
 import { messageTextRevision, messageReasoningContent } from "../../lib/streamingTextRevision";
 import { computerToolHeading, previewToolHeading } from "@t3tools/shared/computerAction";
@@ -3796,10 +3797,16 @@ function McpServerIcon(props: { serverName: string; label: string }) {
       ) : kind === "claude" ? (
         <ClaudeAI className={glyphClassName} />
       ) : (
-        <img src="/favicon-32x32.png" alt="" className={cn(glyphClassName, "rounded-xs")} />
+        <AppIconGlyph className={cn(glyphClassName, "rounded-xs")} />
       )}
     </span>
   );
+}
+
+/** F5's own servers carry the app icon the person chose. */
+function AppIconGlyph(props: { className: string }) {
+  const { id } = useAppIcon();
+  return <img src={appIconUrl(id, 32)} alt="" className={props.className} />;
 }
 
 const MCP_CALL_STATUS_PRESENTATION: Record<

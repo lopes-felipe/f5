@@ -86,6 +86,14 @@ describe("parsePersistedAppSettings", () => {
     );
   });
 
+  it("defaults the browser's app icon to Lines and keeps a known choice", () => {
+    expect(parsePersistedAppSettings(null).appIcon).toBe("lines");
+    expect(parsePersistedAppSettings(JSON.stringify({ appIcon: "classic" })).appIcon).toBe(
+      "classic",
+    );
+    expect(parsePersistedAppSettings(JSON.stringify({ appIcon: "retired" })).appIcon).toBe("lines");
+  });
+
   it("defaults and preserves local palette selections and opaque invalid theme sources", () => {
     expect(parsePersistedAppSettings(null).themeId).toBe("f5-black");
     const customThemes = [{ version: 99, raw: "keep me" }];
