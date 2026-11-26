@@ -110,8 +110,17 @@ export function McpServersSettings(props: {
   readonly focusServer?: string | null | undefined;
 }) {
   const queryClient = useQueryClient();
-  const { copyToClipboard, isCopied } = useCopyToClipboard({
-    onError: (error: Error) => console.error(error),
+  // The context is the server a row exported, so its toast reports the write's real outcome.
+  const { copyToClipboard, isCopied } = useCopyToClipboard<string | undefined>({
+    onCopy: (name) => {
+      if (name) toastManager.add({ type: "success", title: `Copied ${name} as JSON` });
+    },
+    onError: (error, name) =>
+      toastManager.add({
+        type: "error",
+        title: name ? `Could not copy ${name}` : "Could not copy the configuration",
+        description: readErrorMessage(error, "The clipboard refused the write."),
+      }),
   });
   const selectedProject = props.selectedProject;
   const selectedProjectId = selectedProject?.id ?? null;
@@ -283,7 +292,10 @@ export function McpServersSettings(props: {
         provider: account.provider,
         instanceId: account.instanceId,
         label: account.label,
-        data: observation,
+        // A stale check's server rows describe a configuration that was replaced; the
+        // panel must not show their errors or Reconnect for the new one.
+        data:
+          configurationCheckStale && observation ? { ...observation, statuses: [] } : observation,
       }
     : undefined;
 
@@ -328,7 +340,9 @@ export function McpServersSettings(props: {
   const hubByName = useMemo(() => {
     const map = new Map<string, McpHubServerStatus[]>();
     for (const entry of hubStatusQuery.data?.servers ?? []) {
-      map.set(entry.name, [...(map.get(entry.name) ?? []), entry]);
+      const bucket = map.get(entry.name);
+      if (bucket) bucket.push(entry);
+      else map.set(entry.name, [entry]);
     }
     return map;
   }, [hubStatusQuery.data]);
@@ -440,10 +454,12 @@ export function McpServersSettings(props: {
       return;
     }
     if (openedFocus.current === target || !activeConfig) return;
-    if (scope === "project" && !commonConfigQuery.data) return;
-    openedFocus.current = target;
     const key = mcpServerNameKey(target);
     const own = Object.keys(activeServers).find((name) => mcpServerNameKey(name) === key);
+    // A project server opens at once. Only a link that may name an inherited server waits
+    // for common configuration, and not after that read failed.
+    if (!own && scope === "project" && !commonConfigQuery.data && !commonConfigQuery.error) return;
+    openedFocus.current = target;
     const inherited =
       scope === "project"
         ? Object.keys(commonServers).find((name) => mcpServerNameKey(name) === key)
@@ -458,7 +474,7 @@ export function McpServersSettings(props: {
         description: "It comes from F5 itself or from the provider's own configuration.",
       });
     // openDetail reads the latest servers; the link opens once per target.
-  }, [props.focusServer, activeConfig, commonConfigQuery.data, scope]);
+  }, [props.focusServer, activeConfig, commonConfigQuery.data, commonConfigQuery.error, scope]);
   const closeSurfaces = () =>
     requestChange(() => {
       setDetail(null);
@@ -522,10 +538,22 @@ export function McpServersSettings(props: {
             return;
           const saved = result.servers[name] ?? server;
           if (editing === null) {
-            // Added: close the dialog and show the new server's panel.
+            // Added: close the dialog and show the new server's panel. Typing made while
+            // it saved is kept in its Configuration tab, as unsaved changes to the new entry.
+            const typed = latest.current.draft;
+            const edited = typed !== submittedDraft;
             loadEditor(name, saved);
+            if (edited)
+              setDraft(
+                rebaseDraft(
+                  { ...typed, original: { name, server: saved } },
+                  name,
+                  saved,
+                  submittedDraft,
+                ),
+              );
             setAdding(null);
-            setDetail({ name, kind: "scope", tab: "overview" });
+            setDetail({ name, kind: "scope", tab: edited ? "configuration" : "overview" });
             return;
           }
           const next = draftFromServer(name, saved);
@@ -533,7 +561,7 @@ export function McpServersSettings(props: {
           setDraftBase(next);
           setEditingServerName(name);
           if (latest.current.draft === submittedDraft) setDraft(next);
-          else setDraft((current) => rebaseDraft(current, name, saved));
+          else setDraft((current) => rebaseDraft(current, name, saved, submittedDraft));
           setDetail((current) => (current ? { ...current, name } : current));
         })
         .catch((error) => setFormError(readErrorMessage(error, "Failed to save MCP server.")));
@@ -597,7 +625,15 @@ export function McpServersSettings(props: {
             )
           )
             throw new Error(`${targetLabel} already has a server named '${name}'.`);
-          const added = validateMcpLayerWrite(base.servers, { ...base.servers, [name]: server });
+          // A project may hold an exact-name override of a common server, which keeps a legacy
+          // name working while the common entry still exists (it is removed after the copy).
+          const added = validateMcpLayerWrite(
+            base.servers,
+            { ...base.servers, [name]: server },
+            target.scope === "project"
+              ? { inheritedNames: Object.keys(scope === "common" ? activeServers : commonServers) }
+              : undefined,
+          );
           await writeLayer(target, added, base.version);
           const remaining = toWritableProjectServers(activeServers);
           delete remaining[name];
@@ -675,8 +711,7 @@ export function McpServersSettings(props: {
       ));
 
   const exportServer = (name: string, server: McpProjectServersConfig[string]) => {
-    copyToClipboard(formatMcpServersAsJson({ [name]: server }), undefined);
-    toastManager.add({ type: "success", title: `Copied ${name} as JSON` });
+    copyToClipboard(formatMcpServersAsJson({ [name]: server }), name);
   };
 
   const setUsedInProject = (name: string, used: boolean) => {
@@ -1197,13 +1232,18 @@ export function McpServersSettings(props: {
               ? undefined
               : sessionOutcomes?.sessions.filter(
                   (outcome) =>
-                    outcome.instanceId === account.instanceId &&
-                    (sessionOutcomes.action === "reconnect" ||
-                      serverStatusesQuery.data?.sessions?.some(
-                        (session) => session.threadId === outcome.threadId,
-                      )),
+                    // A common-scope Apply spans every project and account and there is no
+                    // project observation to narrow it, so each conversation is listed.
+                    !selectedProjectId ||
+                    (outcome.instanceId === account.instanceId &&
+                      (sessionOutcomes.action === "reconnect" ||
+                        serverStatusesQuery.data?.sessions?.some(
+                          (session) => session.threadId === outcome.threadId,
+                        ))),
                 )
           }
+          // Retry results stay until the next Apply or Reconnect, not the next render.
+          outcomesKey={sessionOutcomes}
           onReconnected={(sessions) =>
             setSessionOutcomes({ action: "reconnect", serverName: detail.name, sessions })
           }

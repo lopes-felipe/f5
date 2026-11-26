@@ -67,6 +67,8 @@ export type McpLiveSessionReloadFailure = typeof McpLiveSessionReloadFailure.Typ
 
 export const McpSessionReloadOutcome = Schema.Struct({
   threadId: ThreadId,
+  /** The conversation's project; set by Apply, which can span projects in common scope. */
+  projectId: Schema.optional(ProjectId),
   instanceId: ProviderInstanceId,
   generation: NonNegativeInt,
   requestedVersion: Schema.String,

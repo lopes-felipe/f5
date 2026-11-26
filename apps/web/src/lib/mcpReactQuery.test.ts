@@ -4,11 +4,37 @@ import { ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import {
   isMcpConfigQuery,
   isMcpQueryAffected,
+  mcpLoginStatusQueryOptions,
   mcpQueryKeys,
   shouldPollMcpRuntime,
 } from "./mcpReactQuery";
 
 describe("MCP status event scoping", () => {
+  it("keys a Claude server sign-in by the instance the server records it under", () => {
+    const project = ProjectId.makeUnsafe("project");
+    const claudeKey = mcpLoginStatusQueryOptions({
+      provider: "claudeAgent",
+      projectId: project,
+      serverName: "docs",
+    }).queryKey;
+    // The server stamps the default Claude instance on the completion it pushes.
+    const completed = {
+      scope: "project" as const,
+      projectId: project,
+      provider: "claudeAgent" as const,
+      instanceId: ProviderInstanceId.make("claudeAgent"),
+      reason: "login-completed" as const,
+    };
+    expect(isMcpQueryAffected(claudeKey, completed)).toBe(true);
+    // Codex keeps an unstamped key, matching its unstamped events.
+    const codexKey = mcpLoginStatusQueryOptions({
+      provider: "codex",
+      projectId: project,
+      serverName: "docs",
+    }).queryKey;
+    expect(codexKey).toEqual(mcpQueryKeys.loginStatus("codex", project, "docs", null));
+  });
+
   it("invalidates only the named account when an instance is stamped", () => {
     const project = ProjectId.makeUnsafe("project");
     const work = ProviderInstanceId.make("work");

@@ -3975,10 +3975,20 @@ const make = Effect.gen(function* () {
                 .pipe(Effect.catch(() => Effect.succeed(undefined)))
             : undefined;
 
+        // A common-scope Apply spans projects; each conversation names its own, so a retry
+        // can target it.
+        const projectByThread = new Map(
+          bindings.flatMap((binding) =>
+            binding.projectId ? [[binding.threadId, binding.projectId] as const] : [],
+          ),
+        );
         return {
           scope: input.scope,
           ...(responseProjectId !== undefined ? { projectId: responseProjectId } : {}),
-          sessions: sessionOutcomes,
+          sessions: sessionOutcomes.map((outcome) => {
+            const projectId = projectByThread.get(outcome.threadId);
+            return projectId ? { ...outcome, projectId } : outcome;
+          }),
           codexReloaded,
           claudeRestarted,
           claudeReconciled,

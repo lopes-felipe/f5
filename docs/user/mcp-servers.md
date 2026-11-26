@@ -70,7 +70,9 @@ Cursor, Grok, Antigravity, custom ACP agents, OpenCode, Muse Code, and Pi reach 
 - Agents without HTTP MCP support reach these servers through F5's stdio relay, which carries requests and responses but not server notifications: a server whose tool list changes during the session shows the new tools in the next session.
 - A server an agent does not get (for example because the agent lacks the transport it needs) is listed in a warning in the conversation.
 
-A server's Overview lists F5's connections in use, the agents and session counts using them, and any error, with **Reconnect** for any connection that is not connecting. In common scope the status covers every project's connections for that name, project overrides included, and is labeled **Other agents, all projects**; Reconnect there restarts them all.
+A server's Overview lists F5's connections in use, the agents and session counts using them, and any error, with **Reconnect** for any connection that is not connecting. In common scope the status covers every project's connections for that name, project overrides included, and the button reads **Reconnect in all projects** because it restarts them all.
+
+In a project, Overview also has a collapsed **Diagnostics** section with the observed conversation's history for this server and **Copy diagnostics**. It is read-only.
 
 ## Saved configuration and live status
 
@@ -112,7 +114,7 @@ Claude and Codex sessions keep using their own sign-in.
 
 ## Apply, Reconnect, and Test
 
-After saving, the banner says: **Saved. Codex and Claude sessions pick up MCP changes on their next message, restarting if needed; other agents in their next session.** Saving does not re-check live status; use **Refresh status** or Apply. Use **Apply to all live sessions** to apply now across all eligible Codex and Claude accounts in the selected scope: this project for project scope, or every project for common scope. Sessions already on that version are skipped unless they need a retry. Active-turn protections still apply. A server's Overview lists the conversations that did not pick up the last Apply or Reconnect, each with **Retry in this conversation**. The banner clears after Apply or a scope change.
+After saving, the banner says: **Saved. Codex and Claude sessions pick up MCP changes on their next message, restarting if needed; other agents in their next session.** Saving does not re-check live status; use **Refresh status** or Apply. Use **Apply to all live sessions** to apply now across all eligible Codex and Claude accounts in the selected scope: this project for project scope, or every project for common scope. Sessions already on that version are skipped unless they need a retry. Active-turn protections still apply. A server's Overview lists the conversations that did not pick up the last Apply or Reconnect, each with **Retry in this conversation**. After an Apply in common scope the list covers every project and account, and each retry runs in that conversation's own project and account. The banner clears after Apply or a scope change.
 
 **Reconnect** is in a row's menu, and on a panel's Overview, for a failed, signed-out, or unknown server. A failed connection for other agents is reconnected first. Otherwise it recovers connections used by running sessions for the selected project and account. Claude reconnects the selected owned server; Codex reloads its settings connection and applies through the normal session path, which can reload every MCP server in the affected sessions. The result distinguishes reconnected sessions, no running session using the server, and failures. Reconnect does not perform sign-in; use **Sign in** instead. A pending sign-in can be reopened without cancelling it if the browser fails to open.
 

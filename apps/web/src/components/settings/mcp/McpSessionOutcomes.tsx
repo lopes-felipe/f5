@@ -12,44 +12,60 @@ import { readErrorMessage } from "./mcpSettingsHelpers";
  */
 export function McpSessionOutcomes(props: {
   readonly outcomes: ReadonlyArray<McpSessionReloadOutcome> | undefined;
+  /**
+   * Identifies one Apply or Reconnect result. Retry results last until it changes, so a
+   * parent that re-derives `outcomes` (filtering, a status refetch) keeps them. Defaults
+   * to the `outcomes` array itself.
+   */
+  readonly resultKey?: unknown;
   readonly action: "apply" | "reconnect";
+  /** Used for outcomes that do not name their own project. */
   readonly projectId: ProjectId | null;
   readonly instanceId: ProviderInstanceId;
   readonly serverName: string;
 }) {
   const queryClient = useQueryClient();
-  const [retryError, setRetryError] = useState<string | null>(null);
+  const resultKey = props.resultKey ?? props.outcomes;
+  // A retry failure belongs to the result it was issued for; a newer result never shows it.
+  const [failedRetry, setFailedRetry] = useState<{
+    readonly base: unknown;
+    readonly message: string;
+  } | null>(null);
+  const retryError = failedRetry && failedRetry.base === resultKey ? failedRetry.message : null;
   const [retrying, setRetrying] = useState(false);
   // Retry results replace only their own conversation's row, and only until the next
-  // Apply or Reconnect delivers a new list.
+  // Apply or Reconnect delivers a new result.
   const [retried, setRetried] = useState<{
-    readonly base: ReadonlyArray<McpSessionReloadOutcome> | undefined;
+    readonly base: unknown;
     readonly byThread: ReadonlyMap<string, McpSessionReloadOutcome>;
   }>();
-  const overrides = retried?.base === props.outcomes ? retried?.byThread : undefined;
+  const overrides = retried?.base === resultKey ? retried?.byThread : undefined;
   const outcomes = props.outcomes?.map((outcome) => overrides?.get(outcome.threadId) ?? outcome);
   if (!outcomes?.length && !retryError) return null;
 
   const retry = (outcome: McpSessionReloadOutcome) => {
-    if (!props.projectId) return;
+    // A common-scope Apply returns conversations from several projects and accounts;
+    // each is retried where it runs.
+    const projectId = outcome.projectId ?? props.projectId;
+    if (!projectId) return;
     setRetrying(true);
-    setRetryError(null);
+    setFailedRetry(null);
     const request =
       props.action === "reconnect"
         ? ensureNativeApi().mcp.reconnectServer({
-            projectId: props.projectId,
-            instanceId: props.instanceId,
+            projectId,
+            instanceId: outcome.instanceId,
             serverName: props.serverName,
             threadIds: [outcome.threadId],
           })
         : ensureNativeApi().mcp.applyToLiveSessions({
             scope: "project",
-            projectId: props.projectId,
-            instanceId: props.instanceId,
+            projectId,
+            instanceId: outcome.instanceId,
             threadIds: [outcome.threadId],
             retryUnchanged: true,
           });
-    const base = props.outcomes;
+    const base = resultKey;
     void request
       .then((result) => {
         setRetried((previous) => {
@@ -61,7 +77,7 @@ export function McpSessionOutcomes(props: {
         });
         return queryClient.invalidateQueries({ queryKey: mcpQueryKeys.all });
       })
-      .catch((error) => setRetryError(readErrorMessage(error, "Retry failed.")))
+      .catch((error) => setFailedRetry({ base, message: readErrorMessage(error, "Retry failed.") }))
       .finally(() => setRetrying(false));
   };
 
@@ -77,7 +93,7 @@ export function McpSessionOutcomes(props: {
               {error.message}
             </p>
           ))}
-          {outcome.disposition !== "applied" ? (
+          {outcome.disposition !== "applied" && (outcome.projectId ?? props.projectId) ? (
             <Button size="xs" variant="outline" disabled={retrying} onClick={() => retry(outcome)}>
               Retry in this conversation
             </Button>

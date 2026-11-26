@@ -3850,6 +3850,8 @@ describe("ProviderCommandReactor", () => {
     );
     expect(all).toMatchObject({ codexReloaded: 2, claudeReconciled: 2 });
     expect(all.sessions).toHaveLength(4);
+    // A common-scope result names each conversation's project, so settings can retry it.
+    expect(all.sessions?.every((session) => session.projectId === projectId)).toBe(true);
     harness.reloadMcpConfigForProject.mockClear();
     const work = await Effect.runPromise(
       harness.reactor.applyMcpConfigToLiveSessions({
