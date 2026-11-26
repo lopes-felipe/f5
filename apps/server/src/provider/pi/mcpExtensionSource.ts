@@ -69,10 +69,12 @@ type UserMcpServer = {
   readonly url: string;
   readonly token: string;
   readonly timeoutMs: number;
+  readonly startupTimeoutMs?: number;
 };
 
-function userMcpServers(): UserMcpServer[] {
-  const raw = env(SERVERS_ENV);
+const SERVERS_CACHE = Symbol.for("f5.pi.userMcpServers");
+
+function parseUserMcpServers(raw: string | undefined): UserMcpServer[] {
   if (raw === undefined) return [];
   try {
     const parsed = JSON.parse(raw);
@@ -84,11 +86,23 @@ function userMcpServers(): UserMcpServer[] {
         typeof server.name === "string" &&
         typeof server.url === "string" &&
         typeof server.token === "string" &&
-        typeof server.timeoutMs === "number",
+        typeof server.timeoutMs === "number" &&
+        (server.startupTimeoutMs === undefined || typeof server.startupTimeoutMs === "number"),
     );
   } catch {
     return [];
   }
+}
+
+function userMcpServers(): UserMcpServer[] {
+  // The hub tokens must not reach shell commands Pi runs, which would let a
+  // command call hub tools without Pi's approval. Read the variable once, drop
+  // it from the environment and keep the value for an extension reload.
+  const store = globalThis as { [SERVERS_CACHE]?: UserMcpServer[] };
+  const raw = env(SERVERS_ENV);
+  delete process.env[SERVERS_ENV];
+  if (raw !== undefined) store[SERVERS_CACHE] = parseUserMcpServers(raw);
+  return store[SERVERS_CACHE] ?? [];
 }
 
 function runtimeMode(): RuntimeMode {
@@ -455,61 +469,80 @@ export default async function f5McpExtension(pi: ExtensionAPI) {
 
   // Project MCP servers reach Pi through F5's hub, one endpoint per server. Their
   // tools always ask for approval: a third-party read-only hint is not trusted.
-  const hubFailures: string[] = [];
   const hubServers = userMcpServers();
-  const hubStarted = Promise.allSettled(
-    hubServers.map(async (server) => {
+  const hubAttempts = new Map<string, Promise<void>>();
+  // One attempt per server at a time; a failed attempt is forgotten so the next
+  // call retries, and a successful one is reused.
+  const startHubServer = (server: UserMcpServer): Promise<void> => {
+    const existing = hubAttempts.get(server.name);
+    if (existing !== undefined) return existing;
+    const attempt = (async () => {
       const client = createMcpClient(server.url, server.token, server.timeoutMs);
-      try {
-        const signal = AbortSignal.timeout(30_000);
-        await client.connect(signal);
-        const tools = await client.listTools(signal);
-        for (const tool of tools) {
-          const name = tool.name;
-          pi.registerTool({
-            name: "mcp__" + server.name + "__" + name,
-            label: name,
-            description: tool.description ?? name,
-            parameters: jsonSchemaToTypebox(tool.inputSchema),
-            async execute(_toolCallId, params, signal) {
-              const result = await client.callTool(
-                name,
-                (params ?? {}) as Record<string, unknown>,
-                signal,
-              );
-              const content = mcpModelContent(result);
-              if (isMcpToolError(result) && !content.some((part) => part.type === "text" && part.text.length > 0)) {
-                content.push({ type: "text", text: "MCP tool " + server.name + "/" + name + " returned an error" });
-              }
-              return {
-                content,
-                structuredContent: mcpScriptResult(result),
-                details: { server: server.name, tool: name },
-                ...(isMcpToolError(result) ? { isError: true } : {}),
-              };
-            },
-          });
-        }
-      } catch {
-        hubFailures.push(server.name);
+      // The hub starts the server on this first listing, so allow its whole
+      // startup timeout plus time to answer.
+      const signal = AbortSignal.timeout((server.startupTimeoutMs ?? 30_000) + 30_000);
+      await client.connect(signal);
+      const tools = await client.listTools(signal);
+      for (const tool of tools) {
+        const name = tool.name;
+        pi.registerTool({
+          name: "mcp__" + server.name + "__" + name,
+          label: name,
+          description: tool.description ?? name,
+          parameters: jsonSchemaToTypebox(tool.inputSchema),
+          async execute(_toolCallId, params, signal) {
+            const result = await client.callTool(
+              name,
+              (params ?? {}) as Record<string, unknown>,
+              signal,
+            );
+            const content = mcpModelContent(result);
+            if (isMcpToolError(result) && !content.some((part) => part.type === "text" && part.text.length > 0)) {
+              content.push({ type: "text", text: "MCP tool " + server.name + "/" + name + " returned an error" });
+            }
+            return {
+              content,
+              structuredContent: mcpScriptResult(result),
+              details: { server: server.name, tool: name },
+              ...(isMcpToolError(result) ? { isError: true } : {}),
+            };
+          },
+        });
       }
-    }),
-  );
+    })();
+    hubAttempts.set(server.name, attempt);
+    void attempt.catch(() => {
+      if (hubAttempts.get(server.name) === attempt) hubAttempts.delete(server.name);
+    });
+    return attempt;
+  };
+  // Resolves to the names of servers that are still unavailable.
+  const startHubServers = async (): Promise<string[]> => {
+    const results = await Promise.allSettled(hubServers.map(startHubServer));
+    return hubServers
+      .filter((_server, index) => results[index]?.status === "rejected")
+      .map((server) => server.name);
+  };
   if (hubServers.length > 0) {
-    // Register before builtins when the hub answers quickly; slower servers join later.
+    const initial = startHubServers();
+    // Register before builtins when the hub answers quickly; slower servers
+    // register when they are ready (Pi accepts tools registered after load).
     let hubWait: ReturnType<typeof setTimeout> | undefined;
     await Promise.race([
-      hubStarted,
+      initial,
       new Promise((resolve) => {
-        hubWait = setTimeout(resolve, 10_000);
+        hubWait = setTimeout(resolve, 2_000);
       }),
     ]);
     clearTimeout(hubWait);
     pi.on("session_start", async (_event, ctx) => {
-      void hubStarted.then(() => {
-        if (hubFailures.length > 0)
-          ctx.ui.notify("MCP servers unavailable: " + hubFailures.join(", "), "warning");
-      });
+      // Retry servers whose first attempt failed before telling the user.
+      void initial
+        .then((failed) => (failed.length > 0 ? startHubServers() : failed))
+        .then((failed) => {
+          if (failed.length > 0)
+            ctx.ui.notify("MCP servers unavailable: " + failed.join(", "), "warning");
+        });
     });
   }
 

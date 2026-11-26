@@ -1,12 +1,22 @@
 import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { createServer, type Server as HttpServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
+  CallToolRequestSchema,
+  ElicitationCompleteNotificationSchema,
   ElicitRequestSchema,
+  ListResourcesRequestSchema,
+  ListToolsRequestSchema,
+  McpError,
+  ReadResourceRequestSchema,
   ToolListChangedNotificationSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import {
@@ -17,7 +27,7 @@ import {
   type McpStatusUpdatedPayload,
 } from "@t3tools/contracts";
 import { Effect, Exit, Scope } from "effect";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   makePreviewAutomationBroker,
@@ -27,13 +37,19 @@ import {
   makePreviewMcpHttpServer,
   type PreviewMcpHttpServerShape,
 } from "../PreviewMcpHttpServer.ts";
-import { defaultConnectionScope, makeMcpHub, type McpHubShape } from "./McpHub.ts";
+import {
+  defaultConnectionScope,
+  describeMcpHubOmissions,
+  makeMcpHub,
+  type McpHubShape,
+} from "./McpHub.ts";
 import type {
   McpHubGovernance,
   McpToolApprovalDecision,
   McpToolApprovalInput,
   McpToolCallLogEntry,
 } from "./McpHubGovernance.ts";
+import { withoutProviderMeta } from "./McpHubEndpoint.ts";
 import { HUB_SHARED_IDLE_MS, reconnectDelayMs } from "./McpHubUpstream.ts";
 import {
   flattenPrompt,
@@ -41,6 +57,7 @@ import {
   listComposerResources,
   shapeResourceContents,
 } from "./mcpComposerContext.ts";
+import { memoryOAuthStorage, mcpOAuthKey } from "./McpOAuth.ts";
 
 const fixture = fileURLToPath(new URL("../fixtures/hub-server.mjs", import.meta.url));
 const projectId = ProjectId.makeUnsafe("hub-project");
@@ -52,6 +69,7 @@ let hub: McpHubShape;
 let events: McpStatusUpdatedPayload[];
 let root: string;
 const clients: Client[] = [];
+const remoteFixtures: HttpServer[] = [];
 
 beforeEach(async () => {
   root = await realpath(await mkdtemp(join(tmpdir(), "f5-mcp-hub-")));
@@ -68,9 +86,15 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await Promise.allSettled(clients.splice(0).map((client) => client.close()));
+  vi.useRealTimers();
   await hub.close();
   await Effect.runPromise(Scope.close(scope, Exit.void));
-  await rm(root, { recursive: true, force: true });
+  for (const http of remoteFixtures.splice(0)) {
+    http.closeAllConnections();
+    await new Promise((resolve) => http.close(resolve));
+  }
+  // Windows keeps a just-exited child's working directory locked for a moment.
+  await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 function stdioServers(report?: string): McpProjectServersConfig {
@@ -87,7 +111,10 @@ function stdioServers(report?: string): McpProjectServersConfig {
 
 /** The stdio fixture with extra settings, such as a tool policy. */
 function withFixture(
-  extra: Pick<McpServerDefinition, "toolPolicy" | "defaultToolPolicy">,
+  extra: Pick<
+    McpServerDefinition,
+    "toolPolicy" | "defaultToolPolicy" | "disabledTools" | "enabledTools"
+  >,
 ): McpProjectServersConfig {
   return { fixture: { ...stdioServers().fixture!, ...extra } };
 }
@@ -103,7 +130,12 @@ async function connect(url: string, token: string): Promise<Client> {
   return client;
 }
 
-function attach(servers: McpProjectServersConfig, threadId = "thread-1", reserved?: string[]) {
+function attach(
+  servers: McpProjectServersConfig,
+  threadId = "thread-1",
+  reserved?: string[],
+  cwd = root,
+) {
   return hub.attach({
     threadId: ThreadId.makeUnsafe(threadId),
     projectId,
@@ -111,7 +143,7 @@ function attach(servers: McpProjectServersConfig, threadId = "thread-1", reserve
     accountKey: "grok",
     servers,
     environment: { PATH: process.env.PATH ?? "" },
-    cwd: root,
+    cwd,
     ...(reserved ? { reservedNames: new Set(reserved) } : {}),
   });
 }
@@ -133,16 +165,34 @@ function makeFakeGovernance() {
   const allowances = new Set<string>();
   const disabled = new Set<string>();
   const listeners = new Set<(threadId: ThreadId) => void>();
+  // Tools of the first listing are pinned; any tool seen later is new.
+  let firstListing: Set<string> | undefined;
+  const hooks: { onAsk?: (() => void) | undefined } = {};
   const governance: McpHubGovernance = {
-    observeTools: (_server, _identity, tools) => observed.push(...tools.map((tool) => tool.name)),
-    pinState: (_server, _identity, tool) => (changed.has(tool) ? "changed" : "pinned"),
+    observeTools: (_server, _identity, tools) => {
+      firstListing ??= new Set(tools.map((tool) => tool.name));
+      observed.push(...tools.map((tool) => tool.name));
+    },
+    pinState: (_server, _identity, tool) =>
+      changed.has(tool)
+        ? "changed"
+        : firstListing && !firstListing.has(tool) && observed.includes(tool)
+          ? "new"
+          : "pinned",
+    acceptedDescription: (_identity, tool) => (changed.has(tool) ? "Accepted text" : undefined),
     requestApproval: async ({ signal: _signal, ...input }) => {
       asked.push(input);
+      hooks.onAsk?.();
       return answers.shift() ?? "decline";
     },
-    allowedForSession: (threadId, server, tool) => allowances.has(`${threadId}/${server}/${tool}`),
-    allowForSession: (threadId, server, tool) => {
-      allowances.add(`${threadId}/${server}/${tool}`);
+    allowedForSession: (threadId, server, tool, identity) =>
+      allowances.has(`${threadId}/${server}/${identity}/${tool}`),
+    allowForSession: (threadId, server, tool, identity) => {
+      allowances.add(`${threadId}/${server}/${identity}/${tool}`);
+    },
+    clearSessionAllowances: (threadId, server) => {
+      for (const key of allowances)
+        if (key.startsWith(`${threadId}/${server}/`)) allowances.delete(key);
     },
     isServerDisabled: (threadId, server) => disabled.has(`${threadId}/${server}`),
     onThreadServersChanged: (listener) => {
@@ -158,11 +208,55 @@ function makeFakeGovernance() {
     calls,
     observed,
     changed,
+    hooks,
     disable: (threadId: ThreadId, server: string) => {
       disabled.add(`${threadId}/${server}`);
       for (const listener of listeners) listener(threadId);
     },
   };
+}
+
+/**
+ * A stateless streamable HTTP MCP server whose tool names and failure status can
+ * change between requests, to model a restart (404), a revoked credential (401)
+ * or an upgrade that changes the catalog.
+ */
+async function startRemoteFixture() {
+  const state: { tools: string[]; failWith: number | undefined } = {
+    tools: ["one"],
+    failWith: undefined,
+  };
+  const http = createServer(async (req, res) => {
+    if (state.failWith !== undefined) {
+      res.writeHead(state.failWith).end("unavailable");
+      return;
+    }
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(chunk as Buffer);
+    const body = chunks.length > 0 ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : undefined;
+    const server = new Server(
+      { name: "remote-fixture", version: "1.0.0" },
+      { capabilities: { tools: {}, resources: {} } },
+    );
+    server.setRequestHandler(ListToolsRequestSchema, () => ({
+      tools: state.tools.map((name) => ({ name, inputSchema: { type: "object" as const } })),
+    }));
+    server.setRequestHandler(CallToolRequestSchema, (request) => ({
+      content: [{ type: "text", text: `called:${request.params.name}` }],
+    }));
+    server.setRequestHandler(ListResourcesRequestSchema, () => ({ resources: [] }));
+    server.setRequestHandler(ReadResourceRequestSchema, () => {
+      throw new McpError(-32002, `lookup failed for ${SECRET}`, { echoed: { header: SECRET } });
+    });
+    const transport = new StreamableHTTPServerTransport({});
+    res.on("close", () => void Promise.allSettled([transport.close(), server.close()]));
+    await server.connect(transport as Transport);
+    await transport.handleRequest(req, res, body);
+  });
+  await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve));
+  const { port } = http.address() as AddressInfo;
+  remoteFixtures.push(http);
+  return { state, url: `http://127.0.0.1:${port}/mcp` };
 }
 
 describe("F5 MCP hub", () => {
@@ -180,7 +274,14 @@ describe("F5 MCP hub", () => {
     const client = await connect(endpoint.url, endpoint.token);
     expect(client.getServerVersion()?.name).toBe("fixture");
     const tools = await client.listTools();
-    expect(tools.tools.map((tool) => tool.name)).toEqual(["echo", "slow", "add_tool", "ask"]);
+    expect(tools.tools.map((tool) => tool.name)).toEqual([
+      "echo",
+      "slow",
+      "add_tool",
+      "ask",
+      "ask_url",
+      "wait",
+    ]);
 
     const echoed = await client.callTool({ name: "echo", arguments: { text: "hi" } });
     expect(echoed.content).toEqual([{ type: "text", text: "echo:hi" }]);
@@ -206,7 +307,7 @@ describe("F5 MCP hub", () => {
       roots: Array<{ uri: string }>;
     };
     expect(observed.cwd).toBe(root);
-    expect(observed.roots[0]?.uri).toBe(`file://${root}`);
+    expect(observed.roots[0]?.uri).toBe(pathToFileURL(root).href);
 
     const [status] = hub.status(projectId);
     expect(status).toMatchObject({
@@ -351,6 +452,7 @@ describe("F5 MCP hub", () => {
         addedEndpoints: [],
         endpoints: [endpoint],
         omitted: [],
+        timeoutRaised: [],
       });
 
       // A changed definition moves the same endpoint to a new connection.
@@ -365,12 +467,15 @@ describe("F5 MCP hub", () => {
         addedEndpoints: [],
         endpoints: [endpoint],
         omitted: [],
+        timeoutRaised: [],
       });
       await expect.poll(() => changes).toBeGreaterThan(0);
       expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual([
         "echo",
         "add_tool",
         "ask",
+        "ask_url",
+        "wait",
       ]);
       expect(hub.status(projectId)).toHaveLength(1);
 
@@ -630,6 +735,105 @@ describe("F5 MCP hub", () => {
     }
   });
 
+  it("checks pins against the server's current tools, even when the provider never re-lists", async () => {
+    const governance = makeFakeGovernance();
+    const governed = await useGovernedHub(governance);
+    const attachment = governed.attach({
+      threadId: ThreadId.makeUnsafe("pin-thread"),
+      provider: "grok",
+      accountKey: "grok",
+      servers: stdioServers(),
+      environment: { PATH: process.env.PATH ?? "" },
+      cwd: root,
+    });
+    try {
+      const endpoint = attachment.endpoints[0]!;
+      const client = await connect(endpoint.url, endpoint.token);
+      await client.listTools();
+      // The server adds a tool and says its list changed; the provider calls it directly.
+      await client.callTool({ name: "add_tool", arguments: {} });
+      const answer = await client.callTool({ name: "added", arguments: {} });
+      expect(JSON.stringify(answer.content)).toContain("declined");
+      expect(governance.asked.at(-1)).toMatchObject({ toolName: "added", reason: "new" });
+
+      // A changed tool is listed with its accepted description until it is reviewed.
+      governance.changed.add("slow");
+      const slow = (await client.listTools()).tools.find((tool) => tool.name === "slow");
+      expect(slow?.description).toBe("Accepted text");
+    } finally {
+      await attachment.dispose();
+      await governed.close();
+    }
+  });
+
+  it("re-checks the toggle after an approval wait and blocks tools as soon as they are saved", async () => {
+    const governance = makeFakeGovernance();
+    const governed = await useGovernedHub(governance);
+    const threadId = ThreadId.makeUnsafe("recheck-thread");
+    const attachment = governed.attach({
+      threadId,
+      provider: "grok",
+      accountKey: "grok",
+      servers: withFixture({ toolPolicy: { echo: "ask" } }),
+      environment: { PATH: process.env.PATH ?? "" },
+      cwd: root,
+    });
+    try {
+      const endpoint = attachment.endpoints[0]!;
+      const client = await connect(endpoint.url, endpoint.token);
+      // The user turns the server off while the approval card is open, then accepts it.
+      governance.hooks.onAsk = () => governance.disable(threadId, "fixture");
+      governance.answers.push("accept");
+      const refused = await client.callTool({ name: "echo", arguments: { text: "late" } });
+      expect(JSON.stringify(refused.content)).toContain("turned off for this conversation");
+      expect(governance.calls.at(-1)).toMatchObject({ toolName: "echo", outcome: "turned-off" });
+    } finally {
+      await attachment.dispose();
+    }
+
+    const second = governed.attach({
+      threadId: ThreadId.makeUnsafe("block-thread"),
+      provider: "grok",
+      accountKey: "grok",
+      servers: withFixture({ toolPolicy: { echo: "ask" } }),
+      environment: { PATH: process.env.PATH ?? "" },
+      cwd: root,
+    });
+    try {
+      const endpoint = second.endpoints[0]!;
+      const client = await connect(endpoint.url, endpoint.token);
+      governance.hooks.onAsk = undefined;
+      governance.answers.push("acceptForSession");
+      await client.callTool({ name: "echo", arguments: { text: "a" } });
+      expect(second.asksBeforeCall!("fixture", "echo")).toBe(false);
+      // Saving a policy change ends the conversation allowance.
+      governed.refreshToolPolicies!(
+        undefined,
+        withFixture({ toolPolicy: { echo: "ask", slow: "ask" } }),
+      );
+      expect(second.asksBeforeCall!("fixture", "echo")).toBe(true);
+      // Saving Block hides the tool and refuses its calls without Apply.
+      governed.refreshToolPolicies!(undefined, withFixture({ disabledTools: ["hidden", "echo"] }));
+      expect((await client.listTools()).tools.map((tool) => tool.name)).not.toContain("echo");
+      const blocked = await client.callTool({ name: "echo", arguments: { text: "b" } });
+      expect(JSON.stringify(blocked.content)).toContain("turned off in F5's MCP settings");
+    } finally {
+      await second.dispose();
+      await governed.close();
+    }
+  });
+
+  it("never forwards a provider's reserved meta from a server's question", () => {
+    expect(
+      withoutProviderMeta({
+        message: "Allow?",
+        _meta: { codex_approval_kind: "mcp_tool_call", tool_name: "x", trace: "t" },
+      }),
+    ).toEqual({ message: "Allow?", _meta: { tool_name: "x", trace: "t" } });
+    const plain = { message: "Pick", _meta: { trace: "t" } };
+    expect(withoutProviderMeta(plain)).toBe(plain);
+  });
+
   it("refuses Ask-policy tools when nobody can be asked", async () => {
     const attachment = attach(withFixture({ defaultToolPolicy: "ask" }), "ungoverned");
     try {
@@ -641,6 +845,142 @@ describe("F5 MCP hub", () => {
     } finally {
       await attachment.dispose();
     }
+  });
+
+  it("forwards a URL-mode question and its completion notice to the provider that showed it", async () => {
+    const attachment = attach(stdioServers());
+    try {
+      const endpoint = attachment.endpoints[0]!;
+      const completed: string[] = [];
+      const asking = new Client(
+        { name: "provider", version: "1" },
+        { capabilities: { elicitation: { form: {}, url: {} } } },
+      );
+      asking.setRequestHandler(ElicitRequestSchema, (request) => {
+        expect(request.params).toMatchObject({ mode: "url", url: "https://example.test/finish" });
+        return { action: "accept" as const };
+      });
+      asking.setNotificationHandler(ElicitationCompleteNotificationSchema, (notification) => {
+        completed.push(notification.params.elicitationId);
+      });
+      await asking.connect(
+        new StreamableHTTPClientTransport(new URL(endpoint.url), {
+          requestInit: { headers: { Authorization: `Bearer ${endpoint.token}` } },
+        }) as Transport,
+      );
+      clients.push(asking);
+      const answered = await asking.callTool({ name: "ask_url", arguments: {} });
+      expect(answered.content).toEqual([{ type: "text", text: "url:accept" }]);
+      await expect.poll(() => completed).toEqual(["fixture-elicitation"]);
+
+      // A provider that only takes forms gets the URL question declined.
+      const formOnly = new Client(
+        { name: "provider", version: "1" },
+        { capabilities: { elicitation: {} } },
+      );
+      formOnly.setRequestHandler(ElicitRequestSchema, () => ({ action: "accept" as const }));
+      await formOnly.connect(
+        new StreamableHTTPClientTransport(new URL(endpoint.url), {
+          requestInit: { headers: { Authorization: `Bearer ${endpoint.token}` } },
+        }) as Transport,
+      );
+      clients.push(formOnly);
+      const declined = await formOnly.callTool({ name: "ask_url", arguments: {} });
+      expect(declined.content).toEqual([{ type: "text", text: "url:decline" }]);
+    } finally {
+      await attachment.dispose();
+    }
+  });
+
+  it("never forwards a question from one conversation's app call to another conversation", async () => {
+    const shared = {
+      fixture: { ...stdioServers().fixture!, connectionScope: "shared" as const },
+    };
+    const first = attach(shared, "thread-a");
+    const second = attach(shared, "thread-b");
+    try {
+      expect(hub.status(projectId)).toHaveLength(1);
+      const endpoint = second.endpoints[0]!;
+      let asked = 0;
+      const provider = new Client(
+        { name: "provider", version: "1" },
+        { capabilities: { elicitation: {} } },
+      );
+      provider.setRequestHandler(ElicitRequestSchema, () => {
+        asked += 1;
+        return { action: "accept" as const, content: { color: "red" } };
+      });
+      await provider.connect(
+        new StreamableHTTPClientTransport(new URL(endpoint.url), {
+          requestInit: { headers: { Authorization: `Bearer ${endpoint.token}` } },
+        }) as Transport,
+      );
+      clients.push(provider);
+      // Thread B has a call waiting while thread A's app asks a question.
+      const waiting = provider.callTool({ name: "wait", arguments: { ms: 1_500 } });
+      await expect.poll(() => hub.status(projectId)[0]?.state).toBe("ready");
+      const app = hub.sessionServer!(ThreadId.makeUnsafe("thread-a"), "fixture")!;
+      const answer = await app.appCallTool("ask", {}, new AbortController().signal);
+      expect(answer.content).toEqual([{ type: "text", text: "decline:" }]);
+      expect(asked).toBe(0);
+      expect((await waiting).content).toEqual([{ type: "text", text: "waited" }]);
+    } finally {
+      await first.dispose();
+      await second.dispose();
+    }
+  });
+
+  it("lets a call finish on a connection an Apply replaced, and reports a raised timeout", async () => {
+    const servers = { fixture: { ...stdioServers().fixture!, toolTimeoutSec: 30 } };
+    const attachment = attach(servers);
+    try {
+      const endpoint = attachment.endpoints[0]!;
+      const client = await connect(endpoint.url, endpoint.token);
+      const running = client.callTool({ name: "wait", arguments: { ms: 500 } });
+      await expect.poll(() => hub.status(projectId)[0]?.state).toBe("ready");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const update = attachment.update({
+        fixture: { ...servers.fixture, toolTimeoutSec: 120 },
+      });
+      expect(update.changed).toEqual(["fixture"]);
+      expect(update.timeoutRaised).toEqual(["fixture"]);
+      expect((await running).content).toEqual([{ type: "text", text: "waited" }]);
+      // A lower timeout needs nothing from the provider.
+      expect(
+        attachment.update({ fixture: { ...servers.fixture, toolTimeoutSec: 10 } }).timeoutRaised,
+      ).toEqual([]);
+    } finally {
+      await attachment.dispose();
+    }
+  });
+
+  it("re-binds MCP Apps identity, honours declined servers and refuses closed endpoints", async () => {
+    const attachment = attach(stdioServers(), "apps-thread");
+    const threadId = ThreadId.makeUnsafe("apps-thread");
+    const server = hub.sessionServer!(threadId, "fixture")!;
+    try {
+      const before = server.binding;
+      attachment.update({
+        fixture: { ...stdioServers().fixture!, disabledTools: ["hidden", "slow"] },
+      });
+      expect(server.binding).not.toBe(before);
+
+      // A server the provider refused to install is reached neither way.
+      attachment.decline(["fixture"]);
+      expect(hub.sessionServer!(threadId, "fixture")).toBeUndefined();
+      expect(await server.appListTools()).toEqual([]);
+      const endpoint = attachment.endpoints[0]!;
+      const client = await connect(endpoint.url, endpoint.token);
+      expect((await client.listTools()).tools).toEqual([]);
+      expect(attachment.update(stdioServers()).changed).toEqual(["fixture"]);
+    } finally {
+      await attachment.dispose();
+    }
+    // A reference kept past dispose cannot restart the server.
+    await expect(
+      server.appCallTool("echo", { text: "late" }, new AbortController().signal),
+    ).rejects.toThrow(/closed/);
+    expect(hub.status(projectId)).toEqual([]);
   });
 
   it("omits every server when no listener can mount hub endpoints", async () => {
@@ -656,6 +996,127 @@ describe("F5 MCP hub", () => {
     expect(detached.available).toBe(false);
     expect(attachment.endpoints).toEqual([]);
     expect(attachment.omitted[0]?.serverName).toBe("fixture");
+  });
+
+  it("reconnects a shared remote connection whose session expired and refreshes its tools", async () => {
+    const remote = await startRemoteFixture();
+    const attachment = await attach({ remote: { type: "http", url: remote.url } });
+    const endpoint = attachment.endpoints[0]!;
+    const client = await connect(endpoint.url, endpoint.token);
+    expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(["one"]);
+    let notified = false;
+    client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+      notified = true;
+    });
+
+    // The server restarts onto a build with other tools; the old session is gone.
+    remote.state.failWith = 404;
+    remote.state.tools = ["two"];
+    const failed = await client.callTool({ name: "one", arguments: {} });
+    expect(failed.isError).toBe(true);
+    expect(hub.status()[0]?.state).not.toBe("ready");
+
+    remote.state.failWith = undefined;
+    await expect.poll(() => hub.status()[0]?.state, { timeout: 5_000 }).toBe("ready");
+    await expect.poll(() => notified).toBe(true);
+    expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(["two"]);
+    expect(hub.status()[0]?.toolCount).toBe(1);
+    await attachment.dispose();
+  });
+
+  it("moves a remote connection to needs-auth when its credential is rejected after initialize", async () => {
+    const remote = await startRemoteFixture();
+    const attachment = await attach({ remote: { type: "http", url: remote.url } });
+    const endpoint = attachment.endpoints[0]!;
+    const client = await connect(endpoint.url, endpoint.token);
+    await client.listTools();
+    remote.state.failWith = 401;
+    const failed = await client.callTool({ name: "one", arguments: {} });
+    expect(failed.isError).toBe(true);
+    await expect.poll(() => hub.status()[0]?.state).toBe("needs-auth");
+    await attachment.dispose();
+  });
+
+  it("redacts upstream error messages and drops their structured data", async () => {
+    const remote = await startRemoteFixture();
+    const attachment = await attach({
+      remote: { type: "http", url: remote.url, headers: { "X-Api-Key": SECRET } },
+    });
+    const endpoint = attachment.endpoints[0]!;
+    const client = await connect(endpoint.url, endpoint.token);
+    const error = await client.readResource({ uri: "fixture://x" }).then(
+      () => undefined,
+      (cause: unknown) => cause as McpError,
+    );
+    expect(error).toBeInstanceOf(McpError);
+    expect(error!.code).toBe(-32002);
+    expect(error!.message).not.toContain(SECRET);
+    expect(error!.data).toBeUndefined();
+    await attachment.dispose();
+  });
+
+  it("reuses a shared connection when only settings-only fields change", async () => {
+    const url = "http://127.0.0.1:9/mcp";
+    const first = await attach({ remote: { type: "http", url, description: "Docs" } }, "thread-a");
+    const second = await attach(
+      { remote: { type: "http", url, description: "Team docs", disabledProviders: ["codex"] } },
+      "thread-b",
+    );
+    expect(hub.status(projectId)).toEqual([
+      expect.objectContaining({ name: "remote", attachedSessions: 2 }),
+    ]);
+    await Promise.all([first.dispose(), second.dispose()]);
+  });
+
+  it("keeps one shared connection per workspace folder", async () => {
+    const otherRoot = join(root, "other");
+    const servers: McpProjectServersConfig = {
+      remote: { type: "http", url: "http://127.0.0.1:9/mcp" },
+    };
+    const first = await attach(servers, "thread-a");
+    const second = await attach(servers, "thread-b", undefined, otherRoot);
+    const third = await attach(servers, "thread-c");
+    const statuses = hub.status(projectId);
+    expect(statuses).toHaveLength(2);
+    expect(new Set(statuses.map((status) => status.id)).size).toBe(2);
+    expect(statuses.map((status) => status.attachedSessions).sort()).toEqual([1, 2]);
+    await Promise.all([first.dispose(), second.dispose(), third.dispose()]);
+  });
+
+  it("gives OAuth only to remote servers without their own Authorization", async () => {
+    await hub.close();
+    hub = makeMcpHub({ listener, oauthStorage: memoryOAuthStorage() });
+    const withOAuth = hub;
+    {
+      const url = "http://127.0.0.1:9/mcp";
+      const input = {
+        threadId: ThreadId.makeUnsafe("thread-oauth"),
+        projectId,
+        provider: "grok" as const,
+        accountKey: "grok",
+        environment: { DOCS_TOKEN: "secret" },
+        cwd: root,
+      };
+      const keyed = withOAuth.attach({
+        ...input,
+        servers: { keyed: { type: "http", url, bearerTokenEnvVar: "DOCS_TOKEN" } },
+      });
+      expect(await withOAuth.reconnectOAuth(mcpOAuthKey(url, undefined))).toBe(0);
+      const open = withOAuth.attach({ ...input, servers: { open: { type: "http", url } } });
+      expect(await withOAuth.reconnectOAuth(mcpOAuthKey(url, undefined))).toBe(1);
+      await Promise.all([keyed.dispose(), open.dispose()]);
+    }
+  });
+
+  it("removes an idle shared connection when its idle timer fires", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const attachment = await attach({ remote: { type: "http", url: "http://127.0.0.1:9/mcp" } });
+    await attachment.dispose();
+    expect(hub.status()).toEqual([
+      expect.objectContaining({ name: "remote", state: "idle", attachedSessions: 0 }),
+    ]);
+    await vi.advanceTimersByTimeAsync(HUB_SHARED_IDLE_MS);
+    expect(hub.status()).toEqual([]);
   });
 });
 
@@ -673,5 +1134,23 @@ describe("hub defaults", () => {
       1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000,
     ]);
     expect(HUB_SHARED_IDLE_MS).toBe(300_000);
+  });
+
+  it("describes omitted servers for the conversation warning", () => {
+    expect(describeMcpHubOmissions("Pi", [])).toBeUndefined();
+    expect(
+      describeMcpHubOmissions("Grok", [
+        { serverName: "docs", reason: "uses a name the provider already has" },
+      ]),
+    ).toEqual({
+      summary: "F5 did not pass MCP server docs to Grok.",
+      details: "docs uses a name the provider already has.",
+    });
+    expect(
+      describeMcpHubOmissions("OpenCode", [
+        { serverName: "a", reason: "could not be added to OpenCode" },
+        { serverName: "b", reason: "could not be added to OpenCode" },
+      ])?.summary,
+    ).toBe("F5 did not pass 2 MCP servers to OpenCode.");
   });
 });

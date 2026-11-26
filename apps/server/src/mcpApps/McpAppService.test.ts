@@ -59,8 +59,12 @@ const fixture = Effect.gen(function* () {
     viaHub: false,
     hubCalls: 0,
     hubReads: 0,
+    binding: "slot:1",
   };
   const hubServer = {
+    get binding() {
+      return state.binding;
+    },
     appListTools: async () => [
       {
         name: "forecast",
@@ -406,6 +410,22 @@ it.effect("reaches servers the hub serves to the conversation directly", () =>
       );
       assert.deepStrictEqual([f.state.hubCalls, f.state.hubReads], [1, 1]);
       assert.deepStrictEqual([f.state.calls, f.state.reads], [0, 0]);
+
+      // An Apply re-binds the endpoint after review: the reviewed approval no longer applies.
+      f.state.readonly = false;
+      const reviewed = yield* f.service.toolInfo({ ...app, name: "forecast" });
+      f.state.binding = "slot:2";
+      const stale = yield* f.service
+        .callTool({
+          ...app,
+          name: "forecast",
+          arguments: {},
+          sessionIdentity: reviewed.sessionIdentity,
+          approved: true,
+        })
+        .pipe(Effect.result);
+      assert.equal(stale._tag, "Failure");
+      assert.equal(f.state.hubCalls, 1);
     }),
   ),
 );

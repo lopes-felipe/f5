@@ -1,11 +1,22 @@
 import type { McpProjectServersConfig } from "@t3tools/contracts";
 
-import type { McpHubAttachInput, McpHubEndpoint, McpHubShape } from "../McpHub.ts";
+import type { McpHubAttachInput, McpHubEndpoint, McpHubOmission, McpHubShape } from "../McpHub.ts";
 
 /** Records attachments and issues one fixed endpoint per enabled server. */
-export function makeFakeMcpHub(options: { readonly available?: boolean } = {}) {
+export function makeFakeMcpHub(
+  options: {
+    readonly available?: boolean;
+    /** Servers every attach and update reports as left out. */
+    readonly omitted?: ReadonlyArray<McpHubOmission>;
+    /** Servers every update reports as needing a longer provider timeout. */
+    readonly timeoutRaised?: ReadonlyArray<string>;
+    /** Whether F5 would ask before a tool call (Ask policy or a changed tool). */
+    readonly asksBeforeCall?: (serverName: string, toolName: string) => boolean;
+  } = {},
+) {
   const attaches: McpHubAttachInput[] = [];
   const updates: Array<McpProjectServersConfig | null | undefined> = [];
+  const declined: string[] = [];
   let disposed = 0;
   const hub: McpHubShape = {
     available: options.available ?? true,
@@ -20,13 +31,14 @@ export function makeFakeMcpHub(options: { readonly available?: boolean } = {}) {
         token: `token-${name}`,
         transport: server.type,
         toolTimeoutMs: 600_000,
+        startupTimeoutMs: 30_000,
       });
       const endpoints: McpHubEndpoint[] = Object.entries(input.servers ?? {})
         .filter(([name, server]) => server.enabled !== false && !input.reservedNames?.has(name))
         .map(([name, server]) => endpointFor(name, server));
       return {
         endpoints,
-        omitted: [],
+        omitted: options.omitted ?? [],
         get credentials() {
           return endpoints.map((endpoint) => endpoint.token);
         },
@@ -49,8 +61,13 @@ export function makeFakeMcpHub(options: { readonly available?: boolean } = {}) {
             endpoints: endpoints.filter((endpoint) =>
               next.some(([name]) => name === endpoint.serverName),
             ),
-            omitted: [],
+            omitted: options.omitted ?? [],
+            timeoutRaised: options.timeoutRaised ?? [],
           };
+        },
+        ...(options.asksBeforeCall ? { asksBeforeCall: options.asksBeforeCall } : {}),
+        decline: (names) => {
+          declined.push(...names);
         },
         dispose: async () => {
           disposed += 1;
@@ -60,6 +77,7 @@ export function makeFakeMcpHub(options: { readonly available?: boolean } = {}) {
     status: () => [],
     reconnect: async () => 0,
     reconnectOAuth: async () => 0,
+    accountEnvironment: () => undefined,
     readStderrTail: () => undefined,
     close: async () => undefined,
   };
@@ -67,6 +85,7 @@ export function makeFakeMcpHub(options: { readonly available?: boolean } = {}) {
     hub,
     attaches,
     updates,
+    declined,
     get disposed() {
       return disposed;
     },

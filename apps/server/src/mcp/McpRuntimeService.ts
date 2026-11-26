@@ -10,7 +10,7 @@ import { makeMcpAccountExecutionResolver } from "./accountExecution.ts";
 import { mcpServerNameKey } from "@t3tools/shared/mcpValidation";
 import { makeClaudeProcessEnvironment } from "../provider/Drivers/ClaudeHome";
 import { assertOAuthPortAvailable } from "../profiles/ProviderAccountService";
-import { ProviderInstanceId } from "@t3tools/contracts";
+import { ProviderInstanceId, type ProviderKind } from "@t3tools/contracts";
 import { ServerConfig } from "../config";
 import { instanceLock, ProfileBusyError } from "../profiles/InstanceLock";
 import * as NodePath from "node:path";
@@ -85,6 +85,7 @@ import { ProviderService } from "../provider/Services/ProviderService.ts";
 import {
   filterEnabledMcpServers,
   isMcpServerServedTo,
+  mcpBearerRedactionValues,
   readCodexMcpOAuthCallbackConfig,
   translateMcpForCodex,
 } from "@t3tools/shared/mcpTranslation";
@@ -164,10 +165,22 @@ function readIdleLoginStatus(
   };
 }
 
-/** Whether `name` is one of F5's saved servers (Claude may report a normalized spelling). */
-function isConfiguredServer(servers: McpProjectServersConfig, name: string): boolean {
+/**
+ * The saved name of the server the hub serves to `provider` under `name` (Claude may
+ * report a normalized spelling), or undefined when the hub does not serve it: unknown,
+ * disabled, or turned off for that provider (a same-named provider server then stays
+ * the provider's own).
+ */
+function hubServedName(
+  servers: McpProjectServersConfig,
+  provider: ProviderKind,
+  name: string,
+): string | undefined {
   const key = mcpServerNameKey(name);
-  return Object.keys(servers).some((candidate) => mcpServerNameKey(candidate) === key);
+  return Object.entries(filterEnabledMcpServers(servers, provider)).find(
+    ([candidate, definition]) =>
+      definition.enabled !== false && mcpServerNameKey(candidate) === key,
+  )?.[0];
 }
 
 function supportsCodexOauthLogin(server: McpServerDefinition): boolean {
@@ -405,14 +418,18 @@ const makeMcpRuntimeService = Effect.gen(function* () {
       ),
     );
 
-  const setLoginStatus = (input: McpGetLoginStatusRequest, status: McpLoginStatusResult) => {
+  const setLoginStatus = (
+    input: McpGetLoginStatusRequest,
+    status: McpLoginStatusResult,
+    options: { readonly publish?: boolean } = {},
+  ) => {
     const key = loginStatusKey(input);
     clearLoginStatusTimer(key);
     const previous = loginStatuses.get(key);
     loginStatuses.set(key, status);
     // Settings no longer poll sign-in, so a failed attempt is announced like a completed
     // one (completions publish where they finish, with the applied config version).
-    if (status.status === "failed" && previous?.status === "pending")
+    if (options.publish !== false && status.status === "failed" && previous?.status === "pending")
       Effect.runFork(
         publishLoginCompletion({
           provider: input.provider,
@@ -561,9 +578,7 @@ const makeMcpRuntimeService = Effect.gen(function* () {
       const identity = yield* resolveExecution(input).pipe(Effect.option);
       const environment = Option.isSome(identity) ? identity.value.environment : {};
       const additionalValues = Object.values(effective.servers).flatMap((server) =>
-        server.bearerTokenEnvVar && environment[server.bearerTokenEnvVar]
-          ? [environment[server.bearerTokenEnvVar]!]
-          : [],
+        mcpBearerRedactionValues(server, environment),
       );
       return { servers: effective.servers, additionalValues };
     });
@@ -584,9 +599,7 @@ const makeMcpRuntimeService = Effect.gen(function* () {
         .readEffectiveRuntimeConfig(input.projectId)
         .pipe(Effect.mapError(runtimeError));
       const additionalValues = Object.values(effective.servers).flatMap((server) =>
-        server.bearerTokenEnvVar && identity.environment[server.bearerTokenEnvVar]
-          ? [identity.environment[server.bearerTokenEnvVar]!]
-          : [],
+        mcpBearerRedactionValues(server, identity.environment),
       );
       // This branch must precede provider preflight: a conversation read never creates a control client.
       const live = providerService.readMcpSessionStatuses
@@ -763,11 +776,10 @@ const makeMcpRuntimeService = Effect.gen(function* () {
         .readEffectiveRuntimeConfig(input.projectId)
         .pipe(Effect.mapError(runtimeError));
       const onHub = yield* nativeProvidersOnHub;
-      if (onHub && hub && isConfiguredServer(effective.servers, input.serverName)) {
+      const servedName = hubServedName(effective.servers, input.provider, input.serverName);
+      if (onHub && hub && servedName) {
         // The provider's connection is to F5's endpoint; the server's own is the hub's.
-        const reconnected = yield* Effect.promise(() =>
-          hub.reconnect(input.serverName, input.projectId),
-        );
+        const reconnected = yield* Effect.promise(() => hub.reconnect(servedName, input.projectId));
         return {
           settingsConnectionReloaded: false,
           sessionsMatched: reconnected,
@@ -1039,7 +1051,8 @@ const makeMcpRuntimeService = Effect.gen(function* () {
       // A start rejected before reaching the provider restores the previous outcome.
       const release = Effect.sync(() => {
         if (loginStatuses.get(key) !== placeholder) return;
-        if (existing) setLoginStatus(input, existing);
+        // Restoring an earlier outcome is not a new sign-in result, so nothing is published.
+        if (existing) setLoginStatus(input, existing, { publish: false });
         else {
           clearLoginStatusTimer(key);
           loginStatuses.delete(key);
@@ -1204,7 +1217,7 @@ const makeMcpRuntimeService = Effect.gen(function* () {
         const configured = yield* projectMcpConfigService
           .readEffectiveRuntimeConfig(input.projectId)
           .pipe(Effect.mapError(runtimeError));
-        if (isConfiguredServer(configured.servers, input.serverName))
+        if (hubServedName(configured.servers, input.provider, input.serverName))
           return yield* new McpRuntimeServiceError({
             message: `Codex and Claude reach '${input.serverName}' through F5 now. Sign in from the server's Sign-in tab in MCP settings; earlier Codex or Claude sign-ins are not carried over.`,
           });

@@ -22,7 +22,13 @@ import {
   type ClaudeSubagentLaunch,
 } from "../claudeSubagentSelection.ts";
 import type { ThreadMcpBroker } from "../../mcp/threadMcpTools.ts";
-import type { McpHubAttachment, McpHubShape } from "../../mcp/hub/McpHub.ts";
+import {
+  describeMcpHubOmissions,
+  withMcpHubOmissions,
+  type McpHubAttachment,
+  type McpHubAttachmentUpdate,
+  type McpHubShape,
+} from "../../mcp/hub/McpHub.ts";
 import { hubAsksForClaudeTool, hubEndpointsForClaude } from "../../mcp/hub/providerHubServers.ts";
 import { isF5ThreadReadTool, makeClaudeThreadMcpServer } from "./claudeThreadTools.ts";
 import {
@@ -627,6 +633,8 @@ interface ClaudeSessionContext {
   readonly internalMcpServers: NonNullable<ClaudeQueryOptions["mcpServers"]>;
   /** This session's F5 MCP hub endpoints; absent in passthrough mode or with no servers. */
   mcpHubAttachment?: McpHubAttachment;
+  /** Set once the start-time warning about servers the hub left out was sent. */
+  mcpHubOmissionsReported?: boolean;
   readonly turns: Array<{
     id: TurnId;
     items: Array<unknown>;
@@ -2894,6 +2902,21 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           },
           providerRefs: nativeProviderRefs(context),
         });
+        const omissions =
+          context.mcpHubAttachment && !context.mcpHubOmissionsReported
+            ? describeMcpHubOmissions("Claude", context.mcpHubAttachment.omitted)
+            : undefined;
+        context.mcpHubOmissionsReported = true;
+        if (omissions) {
+          const warningStamp = yield* makeEventStamp(context);
+          yield* offerRuntimeEvent({
+            type: "config.warning",
+            ...warningStamp,
+            provider: PROVIDER,
+            threadId: context.session.threadId,
+            payload: omissions,
+          });
+        }
       });
 
     const refreshModelContextWindowTokens = (context: ClaudeSessionContext): Effect.Effect<void> =>
@@ -8158,8 +8181,20 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               if (mandatoryDenial)
                 return { behavior: "deny", message: mandatoryDenial } satisfies PermissionResult;
               // F5's hub asks before this call itself (Ask policy or a changed tool);
-              // allowing Claude's prompt keeps it to one question.
+              // allowing Claude's prompt keeps it to one question. Never ahead of a check
+              // that would deny it: read-only workflow stages, removal safety, and plan mode
+              // without approvals still decide below.
               if (
+                !input.workflowExecutionProfile &&
+                !(
+                  context.configuredBase?.permissionMode === "plan" &&
+                  input.approvalPolicy === "never"
+                ) &&
+                !claudeRemovalSafetyDenial(
+                  toolName,
+                  context.configuredBase?.permissionMode ?? context.basePermissionMode,
+                  callbackOptions,
+                ) &&
                 hubAsksForClaudeTool(context.mcpHubAttachment, toolName, callbackOptions.mcpServer)
               )
                 return { behavior: "allow", updatedInput: toolInput } satisfies PermissionResult;
@@ -9004,10 +9039,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           planModeInstructions,
         } satisfies ClaudeQueryOptions;
         const mandatoryDisallowedTools = queryOptions.disallowedTools ?? [];
+        // The hub already hides turned-off tools, so a fixed deny list would only keep a
+        // re-enabled tool blocked until restart.
         queryOptions.disallowedTools = [
           ...new Set([
             ...mandatoryDisallowedTools,
-            ...claudeDisallowedMcpToolNames(mcpToolFilters),
+            ...(mcpHubAttachment ? [] : claudeDisallowedMcpToolNames(mcpToolFilters)),
           ]),
         ];
         const threadServer = options?.threadMcpBroker
@@ -10245,10 +10282,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               issue: mcpConfigErrorMessage(cause),
             }),
         });
+        let hubOmitted: McpHubAttachmentUpdate["omitted"] = [];
         if (context.mcpHubAttachment) {
           // Edits and removals re-bind this session's hub endpoints; new servers get
           // new endpoints. Unchanged entries keep their URL, so Claude keeps them connected.
           const update = context.mcpHubAttachment.update(mcpServers, { addEndpoints: true });
+          hubOmitted = update.omitted;
           desired = (translateMcpForClaudeAgent(
             hubEndpointsForClaude(update.endpoints, mcpServers),
           ) ?? {}) as Record<string, McpServerConfig>;
@@ -10260,7 +10299,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         context.queryOptions.disallowedTools = [
           ...new Set([
             ...context.mandatoryDisallowedTools,
-            ...claudeDisallowedMcpToolNames(context.mcpToolFilters),
+            ...(context.mcpHubAttachment
+              ? []
+              : claudeDisallowedMcpToolNames(context.mcpToolFilters)),
           ]),
         ];
         const outcome = yield* Effect.tryPromise({
@@ -10283,6 +10324,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             }),
         });
         context.ownedMcpServerNames = outcome.owned;
+        // A name Claude kept for its own settings or plugin server never reaches F5's
+        // server, neither through the endpoint nor through MCP Apps.
+        context.mcpHubAttachment?.decline(
+          Object.keys(desired).filter((name) => !outcome.owned.has(name)),
+        );
         if (outcome.applied) {
           // Keep in-process recovery (which re-creates the query) on the new set.
           const recoveryServers = { ...outcome.applied, ...context.internalMcpServers };
@@ -10294,20 +10340,21 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const denyListChanged =
           stableMcpConfigKey([...context.activeDisallowedTools].sort()) !==
           stableMcpConfigKey([...context.queryOptions.disallowedTools].sort());
+        const result = withMcpHubOmissions(outcome.result, hubOmitted);
         return denyListChanged
           ? {
-              ...outcome.result,
+              ...result,
               converged: false,
               restartRequired: true,
               errors: [
-                ...outcome.result.errors,
+                ...result.errors,
                 {
                   message:
                     "Claude must restart to update its MCP tool deny list. The live F5 MCP filters already enforce the saved settings.",
                 },
               ],
             }
-          : outcome.result;
+          : result;
       });
 
     const respondToUserInput: ClaudeAdapterShape["respondToUserInput"] = (

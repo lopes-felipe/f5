@@ -118,7 +118,13 @@ export type McpListToolPinsRequest = typeof McpListToolPinsRequest.Type;
 export const McpAcceptToolChangesRequest = Schema.Struct({
   serverName: TrimmedNonEmptyString,
   identity: TrimmedNonEmptyString,
-  toolNames: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
+  /**
+   * The tools the user reviewed and the definition each showed. A tool whose current
+   * definition differs (it changed again) is not accepted and counts as stale.
+   */
+  reviewed: Schema.Array(
+    Schema.Struct({ toolName: TrimmedNonEmptyString, definition: Schema.String }),
+  ),
 });
 export type McpAcceptToolChangesRequest = typeof McpAcceptToolChangesRequest.Type;
 
@@ -127,7 +133,7 @@ export const MCP_ACTIVITY_PAGE_LIMIT = 200;
 export const McpListActivityRequest = Schema.Struct({
   serverName: Schema.optional(TrimmedNonEmptyString),
   threadId: Schema.optional(ThreadId),
-  /** Limits the stderr tail to connections serving this project. */
+  /** Limits calls, the summary and the stderr tail to this project. */
   projectId: Schema.optional(ProjectId),
   limit: Schema.optional(
     Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: MCP_ACTIVITY_PAGE_LIMIT })),

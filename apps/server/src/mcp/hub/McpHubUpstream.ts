@@ -5,11 +5,13 @@
  */
 import { homedir } from "node:os";
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
+import { pathToFileURL } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
+  ElicitationCompleteNotificationSchema,
   ElicitRequestSchema,
   ListRootsRequestSchema,
   PromptListChangedNotificationSchema,
@@ -22,10 +24,11 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import type { McpServerDefinition } from "@t3tools/contracts";
 import { createMcpDiagnosticsSanitizer, isMcpCredentialKey } from "@t3tools/shared/mcpDiagnostics";
+import { mcpBearerRedactionValues, mcpRemoteHeaders } from "@t3tools/shared/mcpTranslation";
 
 import { ProbeStdioTransport } from "../McpProbe.ts";
 import { resolvedMcpSecretsIn } from "../mcpResolvedSecrets.ts";
-import type { McpOAuthProvider } from "./McpOAuth.ts";
+import { mcpOAuthFetch, type McpOAuthProvider } from "./McpOAuth.ts";
 
 export const HUB_STDERR_LIMIT = 64 * 1024;
 const HUB_MAX_MESSAGE_BYTES = 16 * 1024 * 1024;
@@ -52,7 +55,12 @@ export interface McpHubInFlightCall {
     request: ElicitRequest["params"],
     signal: AbortSignal,
   ) => Promise<ElicitResult>;
+  /** Present when the provider accepts URL-mode questions and their completion notice. */
+  readonly completeElicitation?: (elicitationId: string) => void;
 }
+
+/** URL-mode questions remembered for their completion notice; the oldest are dropped. */
+const MAX_PENDING_URL_ELICITATIONS = 64;
 
 export type McpHubUpstreamState =
   | "idle"
@@ -107,6 +115,21 @@ export function isMcpAuthError(error: unknown): boolean {
   );
 }
 
+/**
+ * Failures that mean the live connection is gone even though the transport did not
+ * close: streamable HTTP reports an expired session (404) or a dropped socket as a
+ * failed request and stays open.
+ */
+export function isMcpConnectionLostError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  if ("code" in error && error.code === 404) return true;
+  const cause = error instanceof Error && error.cause instanceof Error ? error.cause.message : "";
+  const message = `${error instanceof Error ? error.message : ""} ${cause}`;
+  return /session not found|\b404\b|fetch failed|ECONNREFUSED|ECONNRESET|socket hang up|other side closed|\bNot connected\b/i.test(
+    message,
+  );
+}
+
 export function reconnectDelayMs(attempt: number): number {
   return Math.min(HUB_RECONNECT_BASE_MS * 2 ** Math.max(0, attempt - 1), HUB_RECONNECT_MAX_MS);
 }
@@ -136,17 +159,22 @@ export class McpHubUpstream {
   private attachments = 0;
   private generation = 0;
   private stderrTail = "";
+  /** True once a connection was ready, so a later one tells providers to list again. */
+  private everConnected = false;
   private readonly listeners = new Set<(change: McpHubListChange) => void>();
   private readonly inFlight = new Set<McpHubInFlightCall>();
+  /** URL-mode questions forwarded to a provider, by elicitation id. */
+  private readonly urlElicitations = new Map<string, McpHubInFlightCall>();
+  /** A released session connection stops once its calls in flight finish. */
+  private stopWhenDrained = false;
 
   constructor(options: McpHubUpstreamOptions) {
     this.options = options;
     this.name = options.name;
     this.definition = options.definition;
     this.scope = options.scope;
-    const bearer = this.bearerToken();
     const sanitizer = createMcpDiagnosticsSanitizer({ [options.name]: options.definition }, [
-      ...(bearer ? [bearer] : []),
+      ...mcpBearerRedactionValues(options.definition, options.environment),
       // Stored secrets inside arguments or the URL are redacted on their own.
       ...resolvedMcpSecretsIn(
         [...(options.definition.args ?? []), options.definition.url ?? ""].join("\n"),
@@ -162,7 +190,15 @@ export class McpHubUpstream {
 
   /** A session endpoint now routes to this upstream. */
   retain(): void {
+    // A shared connection that failed while nobody used it never retried; the next
+    // session gets a fresh attempt instead of inheriting that failure.
+    if (this.attachments === 0 && this.state === "failed") {
+      this.state = "idle";
+      this.attempts = 0;
+      this.lastError = undefined;
+    }
     this.attachments += 1;
+    this.stopWhenDrained = false;
     if (this.idleTimer) {
       this.clearTimer(this.idleTimer);
       this.idleTimer = undefined;
@@ -179,13 +215,23 @@ export class McpHubUpstream {
     this.options.onChange?.();
     if (this.attachments > 0) return;
     if (this.scope === "session") {
-      void this.stop();
+      this.stopWhenIdle();
       return;
     }
+    // Stopped (not idle), so the hub forgets the entry and its resolved environment.
     this.idleTimer = this.setTimer(() => {
       this.idleTimer = undefined;
-      if (this.attachments === 0) void this.stop("idle");
+      if (this.attachments === 0) this.stopWhenIdle();
     }, HUB_SHARED_IDLE_MS);
+  }
+
+  /** Stops now, or after the calls still running (for example across an Apply) finish. */
+  private stopWhenIdle(): void {
+    if (this.inFlight.size > 0) {
+      this.stopWhenDrained = true;
+      return;
+    }
+    void this.stop();
   }
 
   get attachmentCount(): number {
@@ -200,7 +246,13 @@ export class McpHubUpstream {
   /** Registers a tool call while it runs; returns its release. */
   trackCall(call: McpHubInFlightCall): () => void {
     this.inFlight.add(call);
-    return () => this.inFlight.delete(call);
+    return () => {
+      this.inFlight.delete(call);
+      if (this.stopWhenDrained && this.inFlight.size === 0 && this.attachments === 0) {
+        this.stopWhenDrained = false;
+        void this.stop();
+      }
+    };
   }
 
   /**
@@ -218,7 +270,17 @@ export class McpHubUpstream {
       .toSorted((left, right) => right.startedAt - left.startedAt)[0];
     if (!target?.elicit) return { action: "decline" };
     try {
-      return await target.elicit(request, signal);
+      const result = await target.elicit(request, signal);
+      // The server announces when the person finished the URL flow; that notice goes to
+      // the provider that showed the question.
+      if (request.mode === "url" && result.action === "accept" && target.completeElicitation) {
+        this.urlElicitations.set(request.elicitationId, target);
+        for (const id of this.urlElicitations.keys()) {
+          if (this.urlElicitations.size <= MAX_PENDING_URL_ELICITATIONS) break;
+          this.urlElicitations.delete(id);
+        }
+      }
+      return result;
     } catch {
       return { action: "cancel" };
     }
@@ -284,9 +346,34 @@ export class McpHubUpstream {
 
   async reconnect(): Promise<void> {
     await this.stop("restart");
+    const generation = this.generation;
     this.attempts = 0;
     this.lastError = undefined;
+    // Teardown awaited the old connection. If the last session left (or anything else
+    // stopped or restarted this upstream) meanwhile, dialing again would start a server
+    // nothing tracks.
+    if (generation !== this.generation || this.state !== "idle" || this.attachments === 0) return;
     await this.connect().catch(() => undefined);
+  }
+
+  /** The live client, for attributing a request failure to the connection it used. */
+  get liveClient(): Client | undefined {
+    return this.state === "ready" ? this.client : undefined;
+  }
+
+  /**
+   * A request on `client` failed. A lost session, dropped socket or revoked credential
+   * leaves an HTTP transport open, so the connection is dropped here and recovered like
+   * a crash (or moved to sign-in on a 401). The failed request is never replayed.
+   */
+  noteRequestFailure(client: Client | undefined, error: unknown): void {
+    if (!client || client !== this.client || this.state !== "ready") return;
+    if (!isMcpConnectionLostError(error) && !isMcpAuthError(error)) return;
+    const transport = this.transport;
+    // The old connection's close handler must not act on the replacement.
+    this.generation += 1;
+    this.handleFailure(error);
+    void Promise.allSettled([client.close(), transport?.close()]);
   }
 
   async stop(reason: "idle" | "restart" | "stopped" = "stopped"): Promise<void> {
@@ -305,6 +392,7 @@ export class McpHubUpstream {
     this.client = undefined;
     this.transport = undefined;
     this.connecting = undefined;
+    this.urlElicitations.clear();
     this.tools = undefined;
     this.toolsLoading = undefined;
     this.state = reason === "stopped" ? "stopped" : "idle";
@@ -322,7 +410,7 @@ export class McpHubUpstream {
       const transport = this.makeTransport();
       const client = new Client(
         { name: "f5-mcp-hub", version: "1.0.0" },
-        { capabilities: { roots: { listChanged: true }, elicitation: {} } },
+        { capabilities: { roots: { listChanged: true }, elicitation: { form: {}, url: {} } } },
       );
       // Roots are the working directory this connection serves.
       client.setRequestHandler(ListRootsRequestSchema, () => ({
@@ -332,6 +420,12 @@ export class McpHubUpstream {
       client.setRequestHandler(ElicitRequestSchema, (request, extra) =>
         this.elicit(request.params, extra.signal),
       );
+      client.setNotificationHandler(ElicitationCompleteNotificationSchema, (notification) => {
+        const id = notification.params.elicitationId;
+        const target = this.urlElicitations.get(id);
+        this.urlElicitations.delete(id);
+        target?.completeElicitation?.(id);
+      });
       client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
         this.tools = undefined;
         this.toolsLoading = undefined;
@@ -375,6 +469,11 @@ export class McpHubUpstream {
           }
         : undefined;
       this.options.onChange?.();
+      // A replacement connection (after a crash, a lost session or Reconnect) may serve a
+      // different catalog, for example after an upgrade: providers list again.
+      if (this.everConnected)
+        for (const change of ["tools", "resources", "prompts"] as const) this.emit(change);
+      this.everConnected = true;
       void this.refreshCounts(client, generation);
       return client;
     })();
@@ -397,17 +496,24 @@ export class McpHubUpstream {
     if (transport instanceof ProbeStdioTransport) this.stderrTail = transport.stderrTail;
     this.client = undefined;
     this.transport = undefined;
+    // The catalog belongs to the connection that failed.
+    this.tools = undefined;
+    this.toolsLoading = undefined;
     this.lastError = this.sanitize(
       error instanceof Error ? error.message : "The MCP server could not be reached.",
     ).slice(0, 2_000);
-    if (isMcpAuthError(error)) {
+    // An auth failure while a refresh token is still valid (a token endpoint that was
+    // briefly down, or another connection that just rotated the tokens) is retried;
+    // only a connection with nothing left to refresh needs the user to sign in.
+    if (isMcpAuthError(error) && !this.options.authProvider?.mayRefresh) {
       this.state = "needs-auth";
       this.options.onChange?.();
       return;
     }
     this.attempts += 1;
-    if (this.attempts >= HUB_RECONNECT_ATTEMPTS || this.attachments === 0) {
-      this.state = "failed";
+    // Retries run after 1, 2, 4, 8 and 16 seconds; the next failure is final.
+    if (this.attempts > HUB_RECONNECT_ATTEMPTS || this.attachments === 0) {
+      this.state = isMcpAuthError(error) ? "needs-auth" : "failed";
       this.options.onChange?.();
       return;
     }
@@ -424,7 +530,6 @@ export class McpHubUpstream {
   private handleUnexpectedClose(generation: number): void {
     if (generation !== this.generation || this.state !== "ready") return;
     this.handleFailure(new Error("The MCP server closed the connection."));
-    this.emit("tools");
   }
 
   private async refreshCounts(client: Client, generation: number): Promise<void> {
@@ -508,12 +613,8 @@ export class McpHubUpstream {
     return reason;
   }
 
-  private bearerToken(): string | undefined {
-    const variable = this.definition.bearerTokenEnvVar?.trim();
-    return variable ? this.options.environment[variable]?.trim() || undefined : undefined;
-  }
-
-  private startupTimeoutMs(): number {
+  /** How long connecting may take (the server's startup timeout, capped at two minutes). */
+  startupTimeoutMs(): number {
     const seconds = this.definition.startupTimeoutSec;
     return seconds && seconds > 0
       ? Math.min(seconds * 1000, MAX_STARTUP_TIMEOUT_MS)
@@ -531,11 +632,19 @@ export class McpHubUpstream {
         definition.cwd ?? this.options.cwd ?? this.options.environment.HOME ?? homedir(),
         { stderrLimit: HUB_STDERR_LIMIT, maxPendingBytes: HUB_MAX_MESSAGE_BYTES },
       );
-    const headers = new Headers(definition.headers);
-    const bearer = this.bearerToken();
-    if (bearer && !headers.has("authorization")) headers.set("Authorization", `Bearer ${bearer}`);
+    const resourceHeaders = mcpRemoteHeaders(definition, this.options.environment) ?? {};
+    const headers = new Headers(resourceHeaders);
     const authProvider = this.options.authProvider;
-    const options = { requestInit: { headers }, ...(authProvider ? { authProvider } : {}) };
+    const options = {
+      requestInit: { headers },
+      ...(authProvider
+        ? {
+            authProvider,
+            // OAuth calls can reach other hosts; the server's own headers stay on its origin.
+            fetch: mcpOAuthFetch(definition.url, Object.keys(resourceHeaders)),
+          }
+        : {}),
+    };
     return definition.type === "sse"
       ? (new SSEClientTransport(new URL(definition.url), options) as Transport)
       : (new StreamableHTTPClientTransport(new URL(definition.url), options) as Transport);
@@ -556,7 +665,7 @@ export class McpHubUpstream {
   }
 }
 
+/** `file:` URI for a local path on this platform (drive letters and `#`/`?` included). */
 export function pathToFileUri(path: string): string {
-  const normalized = path.replaceAll("\\", "/");
-  return `file://${normalized.startsWith("/") ? "" : "/"}${encodeURI(normalized)}`;
+  return pathToFileURL(path).href;
 }

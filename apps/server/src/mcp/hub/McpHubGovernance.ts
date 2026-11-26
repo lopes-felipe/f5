@@ -19,6 +19,8 @@ import type {
 } from "@t3tools/contracts";
 import { mcpServerNameKey } from "@t3tools/shared/mcpValidation";
 
+import { maskResolvedMcpSecrets } from "../mcpResolvedSecrets.ts";
+
 /** Which definition of a server a pin belongs to: same name, different URL or command, new pins. */
 export interface McpServerIdentity {
   /** Opaque hash; never contains arguments or query strings. */
@@ -27,7 +29,7 @@ export interface McpServerIdentity {
   readonly label: string;
 }
 
-export type McpToolApprovalReason = "policy" | "changed";
+export type McpToolApprovalReason = "policy" | "changed" | "new";
 
 export type McpToolApprovalDecision = "accept" | "acceptForSession" | "decline" | "cancel";
 
@@ -66,11 +68,31 @@ export interface McpHubGovernance {
     identity: McpServerIdentity,
     toolName: string,
   ) => McpToolPinState | undefined;
+  /** The accepted description of a tool whose definition changed, until the change is reviewed. */
+  readonly acceptedDescription?: (
+    identity: McpServerIdentity,
+    toolName: string,
+  ) => string | undefined;
   /** Shows F5's approval in the conversation and settles with the user's answer. */
   readonly requestApproval: (input: McpToolApprovalInput) => Promise<McpToolApprovalDecision>;
-  /** True after the user allowed this tool for the rest of the conversation. */
-  readonly allowedForSession: (threadId: ThreadId, serverName: string, toolName: string) => boolean;
-  readonly allowForSession: (threadId: ThreadId, serverName: string, toolName: string) => void;
+  /**
+   * True after the user allowed this tool for the rest of the conversation. Keyed by
+   * the server's identity too, so a new URL or command under the same name asks again.
+   */
+  readonly allowedForSession: (
+    threadId: ThreadId,
+    serverName: string,
+    toolName: string,
+    identityKey?: string,
+  ) => boolean;
+  readonly allowForSession: (
+    threadId: ThreadId,
+    serverName: string,
+    toolName: string,
+    identityKey?: string,
+  ) => void;
+  /** Forgets this conversation's allowances for a server, after its policy was saved. */
+  readonly clearSessionAllowances?: (threadId: ThreadId, serverName: string) => void;
   /** True when the user turned this server off for the conversation from the chat chip. */
   readonly isServerDisabled: (threadId: ThreadId, serverName: string) => boolean;
   /** Called with the conversation whose server toggles changed. */
@@ -85,17 +107,22 @@ export function mcpServerIdentity(
 ): McpServerIdentity {
   let label: string;
   let material: string;
+  // Resolved secrets are masked: the identity is stored and shown, and must not change
+  // when a secret is rotated (that would trust every tool again as a first listing).
   if (definition.type === "stdio") {
-    label = basename(definition.command);
-    material = JSON.stringify([definition.command, ...(definition.args ?? [])]);
+    label = maskResolvedMcpSecrets(basename(definition.command));
+    material = maskResolvedMcpSecrets(
+      JSON.stringify([definition.command, ...(definition.args ?? [])]),
+    );
   } else {
+    const masked = maskResolvedMcpSecrets(definition.url);
     try {
-      const url = new URL(definition.url);
+      const url = new URL(masked);
       label = `${url.origin}${url.pathname}`;
     } catch {
       label = definition.type;
     }
-    material = definition.url;
+    material = masked;
   }
   const key = createHash("sha256")
     .update(`${mcpServerNameKey(serverName)}\0${definition.type}\0${material}`)

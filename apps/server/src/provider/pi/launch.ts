@@ -226,6 +226,8 @@ export interface PiUserMcpServer {
   readonly url: string;
   readonly token: string;
   readonly timeoutMs: number;
+  /** The server's startup timeout: the first listing waits this long plus a margin. */
+  readonly startupTimeoutMs?: number;
 }
 
 export function buildPiRpcLaunch(input: {

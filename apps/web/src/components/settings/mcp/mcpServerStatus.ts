@@ -25,10 +25,12 @@ export interface McpServerStatusSummary {
 
 export function hubStatusSources(
   entries: ReadonlyArray<McpHubServerStatus>,
+  /** Common scope sees every project's connections, overrides included. */
+  acrossProjects = false,
 ): ReadonlyArray<McpStatusSource> {
   return entries.map((entry) => ({
     // F5's own connections, which serve every agent unless native passthrough is on.
-    label: "F5",
+    label: acrossProjects ? "F5, all projects" : "F5",
     state:
       entry.state === "ready"
         ? "ready"

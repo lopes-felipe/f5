@@ -681,6 +681,56 @@ describe("CodexOAuthManager", () => {
     });
   });
 
+  it("completes and publishes a pending login on its own when Codex never announces it", async () => {
+    const client = new FakeOauthClient();
+    let leaseActive = false;
+    const published: unknown[] = [];
+
+    const dependencies = Layer.mergeAll(
+      Layer.succeed(ProviderService, makeProviderServiceStub()),
+      makeProjectMcpConfigServiceStub(),
+      Layer.succeed(CodexMcpEventBus, {
+        publishStatusUpdated: (payload) => Effect.sync(() => void published.push(payload)),
+        streamStatusUpdates: Stream.empty,
+      }),
+      Layer.succeed(CodexControlClientRegistry, {
+        getAdminClient: (_input) => Effect.die(new Error("unused in CodexOAuthManager tests")),
+        hasOauthLease: (_input) => Effect.succeed(leaseActive),
+        acquireOauthClient: (_input) =>
+          Effect.sync(() => {
+            leaseActive = true;
+            return {
+              client: client as unknown as CodexControlClient,
+              release: Effect.sync(() => {
+                leaseActive = false;
+              }),
+            };
+          }),
+      }),
+    );
+    const layer = CodexOAuthManagerLive.pipe(Layer.provide(dependencies));
+
+    await withManagerRuntime(layer, async (runtime) => {
+      await runtime.runPromise(
+        Effect.gen(function* () {
+          const manager = yield* CodexOAuthManager;
+          return yield* manager.startLogin(request);
+        }),
+      );
+      client.statuses = [{ name: request.serverName, authStatus: "oAuth", startupStatus: "ready" }];
+      // No client reads the status; the manager's own reconciliation finishes it.
+      await vi.waitFor(() => expect(published.length).toBeGreaterThan(0), { timeout: 8_000 });
+      expect(leaseActive).toBe(false);
+      const status = await runtime.runPromise(
+        Effect.gen(function* () {
+          const manager = yield* CodexOAuthManager;
+          return yield* manager.getStatus(request);
+        }),
+      );
+      expect(status.status).toBe("completed");
+    });
+  }, 15_000);
+
   it("does not complete pending OAuth login from stale failed auth status", async () => {
     const client = new FakeOauthClient();
     let leaseActive = false;

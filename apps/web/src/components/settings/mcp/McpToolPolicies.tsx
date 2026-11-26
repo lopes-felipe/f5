@@ -8,6 +8,7 @@ import { mcpQueryKeys, mcpToolPinsQueryOptions } from "../../../lib/mcpReactQuer
 import { Badge } from "../../ui/badge";
 import { Button } from "../../ui/button";
 import { Toggle, ToggleGroup } from "../../ui/toggle-group";
+import { toastManager } from "../../ui/toast";
 import { readErrorMessage } from "./mcpSettingsHelpers";
 
 const CHOICE_LABELS: Record<McpToolPolicyChoice, string> = {
@@ -101,14 +102,28 @@ export function McpToolPolicies(props: {
     }
   };
 
-  const accept = (identity: string, toolNames?: ReadonlyArray<string>) =>
+  // Sends the definitions shown, so a tool that changed again since is not accepted.
+  const accept = (pins: ReadonlyArray<McpToolPin>) =>
     run(async () => {
-      await ensureNativeApi().mcp.acceptToolChanges({
+      const identity = pins[0]?.identity;
+      if (!identity) return;
+      const result = await ensureNativeApi().mcp.acceptToolChanges({
         serverName: props.serverName,
         identity,
-        ...(toolNames ? { toolNames: [...toolNames] } : {}),
+        reviewed: pins.map((pin) => ({
+          toolName: pin.toolName,
+          definition: pin.observed ?? pin.accepted,
+        })),
       });
       await queryClient.invalidateQueries({ queryKey: mcpQueryKeys.toolPins(props.serverName) });
+      if (result.stale)
+        toastManager.add({
+          type: "warning",
+          title:
+            result.stale === 1
+              ? "A tool changed again before you accepted it. Review it again."
+              : `${result.stale} tools changed again before you accepted them. Review them again.`,
+        });
     }, "Could not accept the tool changes.");
 
   return (
@@ -153,7 +168,7 @@ export function McpToolPolicies(props: {
                 size="xs"
                 variant="outline"
                 disabled={busy}
-                onClick={() => void accept(identity)}
+                onClick={() => void accept(review.filter((pin) => pin.identity === identity))}
               >
                 Accept all
               </Button>
@@ -173,7 +188,7 @@ export function McpToolPolicies(props: {
                   size="xs"
                   variant="outline"
                   disabled={busy}
-                  onClick={() => void accept(pin.identity, [pin.toolName])}
+                  onClick={() => void accept([pin])}
                 >
                   {pin.state === "changed" ? "Accept change" : "Mark reviewed"}
                 </Button>

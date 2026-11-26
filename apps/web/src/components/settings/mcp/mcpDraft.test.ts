@@ -2,6 +2,24 @@ import { describe, expect, it } from "vitest";
 import type { McpServerDefinition } from "@t3tools/contracts";
 import { createEmptyDraft, decodeDraftServer, draftFromServer, rebaseDraft } from "./mcpDraft";
 
+describe("legacy server names", () => {
+  const legacy: McpServerDefinition = { type: "stdio", command: "node" };
+
+  it("keeps a stored legacy name, including an Override of a legacy common server", () => {
+    // Edit and Override both start from the stored server.
+    expect(decodeDraftServer(draftFromServer("team.docs", legacy)).name).toBe("team.docs");
+  });
+
+  it("refuses a legacy name for a new or renamed server", () => {
+    expect(() =>
+      decodeDraftServer({ ...createEmptyDraft(), name: "team.docs", command: "node" }),
+    ).toThrow();
+    expect(() =>
+      decodeDraftServer({ ...draftFromServer("team.docs", legacy), name: "other.docs" }),
+    ).toThrow();
+  });
+});
+
 describe("lossless MCP editing", () => {
   it.each([undefined, false, true])(
     "round-trips the parallel tool calls setting %s",
@@ -101,5 +119,33 @@ describe("lossless MCP editing", () => {
     const draft = { ...createEmptyDraft(), name: "shell", command: "node", args: "[literal\n" };
     expect(decodeDraftServer(draft).server.args).toEqual(["[literal", ""]);
     expect(() => decodeDraftServer({ ...draft, argsFormat: "json" })).toThrow();
+  });
+});
+
+describe("fields the form does not edit", () => {
+  it("takes them from the current saved entry, so a change saved elsewhere survives", () => {
+    const opened: McpServerDefinition = { type: "stdio", command: "docs" };
+    const draft = { ...draftFromServer("docs", opened), description: "Team docs" };
+    // Another window turned Claude off after this draft was opened.
+    const current: McpServerDefinition = { ...opened, disabledProviders: ["claudeAgent"] };
+    expect(decodeDraftServer(draft, current).server).toMatchObject({
+      description: "Team docs",
+      disabledProviders: ["claudeAgent"],
+    });
+  });
+
+  it("drops provider names this version does not know, so the entry stays writable", () => {
+    const saved = {
+      type: "stdio",
+      command: "docs",
+      disabledProviders: ["claudeAgent", "future-agent"],
+    } as unknown as McpServerDefinition;
+    expect(decodeDraftServer(draftFromServer("docs", saved)).server.disabledProviders).toEqual([
+      "claudeAgent",
+    ]);
+    const onlyUnknown = { ...saved, disabledProviders: ["future-agent"] } as McpServerDefinition;
+    expect(
+      decodeDraftServer(draftFromServer("docs", onlyUnknown)).server.disabledProviders,
+    ).toBeUndefined();
   });
 });

@@ -249,7 +249,10 @@ it("offers F5 sign-in and links each server's settings panel for agents served b
   getEffectiveConfig.mockResolvedValue({
     projectId: "project-1",
     effectiveVersion: "v1",
-    servers: {},
+    servers: {
+      docs: { type: "http", url: "https://docs.example.test/mcp" },
+      search: { type: "http", url: "https://search.example.test/mcp" },
+    },
   });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const root = createRootRoute({ component: () => <Outlet /> });
@@ -264,6 +267,7 @@ it("offers F5 sign-in and links each server's settings panel for agents served b
         mcpServers={[
           { name: "docs", status: "ready", toolCount: 3 },
           { name: "search", status: "needs-auth" },
+          { name: "f5_thread", status: "ready" },
         ]}
       />
     ),
@@ -286,6 +290,8 @@ it("offers F5 sign-in and links each server's settings panel for agents served b
     await expect
       .element(details)
       .toHaveAttribute("href", expect.stringContaining("project=project-1"));
+    // A built-in server has no saved entry, so it has no settings link.
+    expect(page.getByRole("link", { name: "f5_thread in MCP settings" }).elements()).toEqual([]);
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
     await vi.waitFor(() =>
       expect(startHubSignIn).toHaveBeenCalledWith({
