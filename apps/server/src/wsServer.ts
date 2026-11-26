@@ -8382,8 +8382,9 @@ export const createServer = Effect.fn(function* (
 
       case WS_METHODS.mcpAcceptToolChanges: {
         const body = stripRequestTag(request.body);
-        const accepted = mcpHubGovernance ? yield* mcpHubGovernance.acceptToolChanges(body) : 0;
-        return { accepted };
+        return mcpHubGovernance
+          ? yield* mcpHubGovernance.acceptToolChanges(body)
+          : { accepted: 0, stale: 0 };
       }
 
       case WS_METHODS.mcpListActivity: {

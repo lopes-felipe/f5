@@ -15,6 +15,18 @@ const server: McpServerDefinition = {
 };
 
 describe("MCP tool policy", () => {
+  it("never reads inherited property names as a tool's own policy", () => {
+    const server = {
+      type: "http" as const,
+      url: "https://x.test/mcp",
+      defaultToolPolicy: "ask" as const,
+      toolPolicy: { search: "allow" as const },
+    };
+    for (const name of ["constructor", "toString", "__proto__", "hasOwnProperty"])
+      expect(mcpToolPolicy(server, name)).toBe("ask");
+    expect(mcpToolPolicy(server, "search")).toBe("allow");
+  });
+
   it("defaults to Allow, and a tool's own entry beats the server default", () => {
     expect(mcpToolPolicy(server, "search")).toBe("allow");
     const asking = setMcpDefaultToolPolicy(server, "ask");

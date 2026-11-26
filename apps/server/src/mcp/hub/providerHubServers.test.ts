@@ -29,6 +29,25 @@ describe("one prompt per hub tool call", () => {
     expect(hubAsksForClaudeTool(undefined, "mcp__linear__create_issue")).toBe(false);
   });
 
+  it("never attributes a tool to a server whose name is only a prefix or a shared spelling", () => {
+    const asks = new Set(["a/b__write"]);
+    const nested = {
+      endpoints: [endpoint("a"), endpoint("a__b")],
+      asksBeforeCall: (server: string, tool: string) => asks.has(`${server}/${tool}`),
+    };
+    // `mcp__a__b__write` is `a__b`'s `write`, not `a`'s `b__write`.
+    expect(hubAsksForClaudeTool(nested, "mcp__a__b__write")).toBe(false);
+    expect(hubAsksForClaudeTool(nested, "mcp__a__b__write", { name: "a" })).toBe(true);
+    const sameSpelling = {
+      endpoints: [endpoint("my.server"), endpoint("my_server")],
+      asksBeforeCall: () => true,
+    };
+    expect(hubAsksForClaudeTool(sameSpelling, "mcp__my_server__go")).toBe(false);
+    expect(hubAsksForClaudeTool(sameSpelling, "mcp__my_server__go", { name: "my.server" })).toBe(
+      true,
+    );
+  });
+
   it("reads the tool from Codex's MCP tool-call consent prompt", () => {
     expect(
       codexMcpConsentToolName({

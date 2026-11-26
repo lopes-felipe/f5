@@ -17567,8 +17567,8 @@ describe("F5 MCP hub", () => {
         type: "http",
         url: "http://127.0.0.1:9/mcp/user/docs",
         headers: { Authorization: "Bearer token-docs" },
-        // The provider waits a little longer than the hub's own tool timeout.
-        timeout: 605_000,
+        // The provider waits for the hub's own tool timeout plus F5's approval wait.
+        timeout: 1_205_000,
       });
       assert.notInclude(JSON.stringify(launched), "secret-value");
       yield* adapter.stopSession(threadId);
@@ -17665,6 +17665,58 @@ describe("F5 MCP hub", () => {
       ];
       yield* adapter.reloadMcpConfig!({ threadId, mcpServers: { docs: hubServers.docs } });
       assert.deepEqual(fakeHub.declined, ["docs"]);
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  for (const workflowExecutionProfile of ["attended-readonly", "unattended-readonly"] as const)
+    it.effect(
+      `denies a mutating Ask-policy hub tool in a ${workflowExecutionProfile} stage`,
+      () => {
+        const fakeHub = makeFakeMcpHub({ asksBeforeCall: () => true });
+        const harness = makeHarness({ mcpHub: fakeHub.hub });
+        return Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          yield* adapter.startSession({
+            threadId: ThreadId.makeUnsafe(`claude-hub-${workflowExecutionProfile}`),
+            runtimeMode: "full-access",
+            workflowExecutionProfile,
+            providerOptions: { mcpServers: hubServers },
+          });
+          const canUseTool = harness.getLastCreateQueryInput()!.options.canUseTool!;
+          const response = yield* Effect.promise(() =>
+            canUseTool("mcp__docs__write", {}, {
+              signal: new AbortController().signal,
+              toolUseID: "hub-write",
+              requestId: "request-hub-write",
+              mcpServer: { name: "docs", source: "dynamic" },
+            } as Parameters<typeof canUseTool>[2]),
+          );
+          // F5's own approval card would otherwise stand in for the read-only stage's denial.
+          assert.equal(response?.behavior, "deny");
+        }).pipe(Effect.provide(harness.layer));
+      },
+    );
+
+  it.effect("lets F5's hub ask instead of Claude for an Ask-policy tool", () => {
+    const fakeHub = makeFakeMcpHub({ asksBeforeCall: (_server, tool) => tool === "write" });
+    const harness = makeHarness({ mcpHub: fakeHub.hub });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: ThreadId.makeUnsafe("claude-hub-ask"),
+        runtimeMode: "approval-required",
+        providerOptions: { mcpServers: hubServers },
+      });
+      const canUseTool = harness.getLastCreateQueryInput()!.options.canUseTool!;
+      const response = yield* Effect.promise(() =>
+        canUseTool("mcp__docs__write", {}, {
+          signal: new AbortController().signal,
+          toolUseID: "hub-ask",
+          requestId: "request-hub-ask",
+          mcpServer: { name: "docs", source: "dynamic" },
+        } as Parameters<typeof canUseTool>[2]),
+      );
+      assert.equal(response?.behavior, "allow");
     }).pipe(Effect.provide(harness.layer));
   });
 

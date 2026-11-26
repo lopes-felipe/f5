@@ -251,6 +251,8 @@ export type McpListToolPinsResult = typeof McpListToolPinsResult.Type;
 
 export const McpAcceptToolChangesResult = Schema.Struct({
   accepted: NonNegativeInt,
+  /** Reviewed tools that changed again before the click; review them again. */
+  stale: Schema.optional(NonNegativeInt),
 });
 export type McpAcceptToolChangesResult = typeof McpAcceptToolChangesResult.Type;
 

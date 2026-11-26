@@ -15,6 +15,7 @@ import {
   RuntimeRequestId,
   ThreadId,
   type McpAcceptToolChangesRequest,
+  type McpAcceptToolChangesResult,
   type McpListActivityRequest,
   type McpListActivityResult,
   type McpSetThreadServerEnabledRequest,
@@ -80,7 +81,9 @@ export interface McpHubGovernanceShape extends McpHubGovernance {
   ) => boolean;
   readonly isHubRequest: (requestId: string) => boolean;
   readonly listToolPins: (serverName: string) => ReadonlyArray<McpToolPin>;
-  readonly acceptToolChanges: (input: McpAcceptToolChangesRequest) => Effect.Effect<number>;
+  readonly acceptToolChanges: (
+    input: McpAcceptToolChangesRequest,
+  ) => Effect.Effect<McpAcceptToolChangesResult>;
   readonly listActivity: (input: McpListActivityRequest) => Effect.Effect<McpListActivityResult>;
   readonly threadServers: (threadId: ThreadId) => McpThreadServersResult;
   readonly setThreadServerEnabled: (
@@ -107,7 +110,9 @@ function percentile(sorted: ReadonlyArray<number>, fraction: number): number | u
 function approvalDetail(input: McpToolApprovalInput): string {
   return input.reason === "changed"
     ? `The '${input.toolName}' tool on ${input.serverName} changed since it was last reviewed. Run it anyway? Review the change in MCP settings to stop this question.`
-    : `Run the '${input.toolName}' tool on ${input.serverName}?`;
+    : input.reason === "new"
+      ? `The '${input.toolName}' tool is new on ${input.serverName} since it was last reviewed. Run it? Mark it reviewed in MCP settings to stop this question.`
+      : `Run the '${input.toolName}' tool on ${input.serverName}?`;
 }
 
 function approvalOptions(input: McpToolApprovalInput): ProviderApprovalOption[] {
@@ -285,14 +290,21 @@ export const makeMcpHubGovernance = Effect.gen(function* () {
   const acceptToolChanges = (input: McpAcceptToolChangesRequest) =>
     Effect.sync(() => {
       const byTool = pins.get(input.identity);
-      if (!byTool) return 0;
-      const names = input.toolNames ? new Set(input.toolNames) : undefined;
+      if (!byTool) return { accepted: 0, stale: 0 };
+      const reviewed = new Map(input.reviewed.map((entry) => [entry.toolName, entry.definition]));
       const now = new Date().toISOString();
       let accepted = 0;
+      let stale = 0;
       for (const row of byTool.values()) {
         if (row.serverKey !== mcpServerNameKey(input.serverName)) continue;
-        if (names && !names.has(row.toolName)) continue;
+        const definition = reviewed.get(row.toolName);
+        if (definition === undefined) continue;
         if (pinState(row) === "pinned") continue;
+        // Only the definition the user saw is accepted; a newer one needs a new review.
+        if (definition !== row.observedJson) {
+          stale += 1;
+          continue;
+        }
         row.acceptedDigest = row.observedDigest;
         row.acceptedJson = row.observedJson;
         row.isNew = false;
@@ -301,7 +313,7 @@ export const makeMcpHubGovernance = Effect.gen(function* () {
         accepted += 1;
       }
       if (accepted > 0) publishHubChange(input.serverName);
-      return accepted;
+      return { accepted, stale };
     });
 
   // ── Approvals ──────────────────────────────────────────────────────────
@@ -362,8 +374,12 @@ export const makeMcpHubGovernance = Effect.gen(function* () {
     return true;
   };
 
-  const allowanceKey = (threadId: ThreadId, serverName: string, toolName: string) =>
-    `${threadId}\0${mcpServerNameKey(serverName)}\0${toolName}`;
+  const allowanceKey = (
+    threadId: ThreadId,
+    serverName: string,
+    toolName: string,
+    identityKey = "",
+  ) => `${threadId}\0${mcpServerNameKey(serverName)}\0${identityKey}\0${toolName}`;
 
   // ── Conversation toggles ───────────────────────────────────────────────
   const threadServers = (threadId: ThreadId): McpThreadServersResult => ({
@@ -376,14 +392,15 @@ export const makeMcpHubGovernance = Effect.gen(function* () {
       const servers = disabledServers.get(input.threadId) ?? new Map<string, string>();
       const wasDisabled = servers.has(key);
       if (input.enabled === wasDisabled) {
+        // The row is written first: a failed write leaves memory and listeners unchanged.
         if (input.enabled) {
-          servers.delete(key);
           yield* sql`DELETE FROM mcp_thread_server_overrides WHERE thread_id=${input.threadId} AND server_key=${key}`;
+          servers.delete(key);
         } else {
-          servers.set(key, input.serverName);
           yield* sql`INSERT INTO mcp_thread_server_overrides (thread_id, server_key, server_name, updated_at)
             VALUES (${input.threadId}, ${key}, ${input.serverName}, ${new Date().toISOString()})
             ON CONFLICT(thread_id, server_key) DO UPDATE SET server_name=excluded.server_name, updated_at=excluded.updated_at`;
+          servers.set(key, input.serverName);
         }
         if (servers.size > 0) disabledServers.set(input.threadId, servers);
         else disabledServers.delete(input.threadId);
@@ -414,6 +431,8 @@ export const makeMcpHubGovernance = Effect.gen(function* () {
       yield* Effect.promise(() => queue);
       const serverKey = input.serverName ? mcpServerNameKey(input.serverName) : null;
       const threadId = input.threadId ?? null;
+      // A project's panel shows only its own calls, not those of same-named servers elsewhere.
+      const projectId = input.projectId ?? null;
       const limit = input.limit ?? DEFAULT_ACTIVITY_LIMIT;
       const rows = yield* sql<{
         id: string;
@@ -430,6 +449,7 @@ export const makeMcpHubGovernance = Effect.gen(function* () {
         FROM mcp_tool_calls
         WHERE (${serverKey} IS NULL OR server_key = ${serverKey})
           AND (${threadId} IS NULL OR thread_id = ${threadId})
+          AND (${projectId} IS NULL OR project_id = ${projectId})
         ORDER BY created_at DESC LIMIT ${limit}`;
       const since = new Date(Date.now() - 86_400_000).toISOString();
       const recent = yield* sql<{
@@ -438,7 +458,8 @@ export const makeMcpHubGovernance = Effect.gen(function* () {
       }>`SELECT outcome, duration_ms FROM mcp_tool_calls
         WHERE created_at >= ${since}
           AND (${serverKey} IS NULL OR server_key = ${serverKey})
-          AND (${threadId} IS NULL OR thread_id = ${threadId})`;
+          AND (${threadId} IS NULL OR thread_id = ${threadId})
+          AND (${projectId} IS NULL OR project_id = ${projectId})`;
       // Latency covers calls that ran; refused and declined ones never reached the server.
       const ran = recent.filter((row) => row.outcome === "ok" || row.outcome === "error");
       const durations = ran.map((row) => row.duration_ms).toSorted((left, right) => left - right);
@@ -479,11 +500,26 @@ export const makeMcpHubGovernance = Effect.gen(function* () {
       const row = pins.get(identity.key)?.get(toolName);
       return row ? pinState(row) : undefined;
     },
+    acceptedDescription: (identity, toolName) => {
+      const row = pins.get(identity.key)?.get(toolName);
+      if (!row || pinState(row) !== "changed") return undefined;
+      try {
+        const accepted = JSON.parse(row.acceptedJson) as { description?: unknown };
+        return typeof accepted.description === "string" ? accepted.description : "";
+      } catch {
+        return "";
+      }
+    },
     requestApproval,
-    allowedForSession: (threadId, serverName, toolName) =>
-      sessionAllowances.has(allowanceKey(threadId, serverName, toolName)),
-    allowForSession: (threadId, serverName, toolName) => {
-      sessionAllowances.add(allowanceKey(threadId, serverName, toolName));
+    allowedForSession: (threadId, serverName, toolName, identityKey) =>
+      sessionAllowances.has(allowanceKey(threadId, serverName, toolName, identityKey)),
+    allowForSession: (threadId, serverName, toolName, identityKey) => {
+      sessionAllowances.add(allowanceKey(threadId, serverName, toolName, identityKey));
+    },
+    clearSessionAllowances: (threadId, serverName) => {
+      const prefix = `${threadId}\0${mcpServerNameKey(serverName)}\0`;
+      for (const key of sessionAllowances)
+        if (key.startsWith(prefix)) sessionAllowances.delete(key);
     },
     isServerDisabled: (threadId, serverName) =>
       disabledServers.get(threadId)?.has(mcpServerNameKey(serverName)) ?? false,

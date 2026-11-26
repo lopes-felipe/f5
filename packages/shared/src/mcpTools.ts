@@ -46,7 +46,12 @@ export type McpToolPolicyChoice = McpToolPolicy | "block";
 
 /** Allow or Ask for a tool the server lets through; the tool's own entry wins. */
 export function mcpToolPolicy(server: McpServerDefinition, name: string): McpToolPolicy {
-  return server.toolPolicy?.[name] ?? server.defaultToolPolicy ?? "allow";
+  // Own entries only: `constructor` or `toString` must not resolve to Object.prototype.
+  const own =
+    server.toolPolicy && Object.hasOwn(server.toolPolicy, name)
+      ? server.toolPolicy[name]
+      : undefined;
+  return own ?? server.defaultToolPolicy ?? "allow";
 }
 
 export function mcpToolPolicyChoice(

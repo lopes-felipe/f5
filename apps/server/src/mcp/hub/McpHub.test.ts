@@ -49,6 +49,7 @@ import type {
   McpToolApprovalInput,
   McpToolCallLogEntry,
 } from "./McpHubGovernance.ts";
+import { withoutProviderMeta } from "./McpHubEndpoint.ts";
 import { HUB_SHARED_IDLE_MS, reconnectDelayMs } from "./McpHubUpstream.ts";
 import { memoryOAuthStorage, mcpOAuthKey } from "./McpOAuth.ts";
 
@@ -104,7 +105,10 @@ function stdioServers(report?: string): McpProjectServersConfig {
 
 /** The stdio fixture with extra settings, such as a tool policy. */
 function withFixture(
-  extra: Pick<McpServerDefinition, "toolPolicy" | "defaultToolPolicy">,
+  extra: Pick<
+    McpServerDefinition,
+    "toolPolicy" | "defaultToolPolicy" | "disabledTools" | "enabledTools"
+  >,
 ): McpProjectServersConfig {
   return { fixture: { ...stdioServers().fixture!, ...extra } };
 }
@@ -155,16 +159,34 @@ function makeFakeGovernance() {
   const allowances = new Set<string>();
   const disabled = new Set<string>();
   const listeners = new Set<(threadId: ThreadId) => void>();
+  // Tools of the first listing are pinned; any tool seen later is new.
+  let firstListing: Set<string> | undefined;
+  const hooks: { onAsk?: (() => void) | undefined } = {};
   const governance: McpHubGovernance = {
-    observeTools: (_server, _identity, tools) => observed.push(...tools.map((tool) => tool.name)),
-    pinState: (_server, _identity, tool) => (changed.has(tool) ? "changed" : "pinned"),
+    observeTools: (_server, _identity, tools) => {
+      firstListing ??= new Set(tools.map((tool) => tool.name));
+      observed.push(...tools.map((tool) => tool.name));
+    },
+    pinState: (_server, _identity, tool) =>
+      changed.has(tool)
+        ? "changed"
+        : firstListing && !firstListing.has(tool) && observed.includes(tool)
+          ? "new"
+          : "pinned",
+    acceptedDescription: (_identity, tool) => (changed.has(tool) ? "Accepted text" : undefined),
     requestApproval: async ({ signal: _signal, ...input }) => {
       asked.push(input);
+      hooks.onAsk?.();
       return answers.shift() ?? "decline";
     },
-    allowedForSession: (threadId, server, tool) => allowances.has(`${threadId}/${server}/${tool}`),
-    allowForSession: (threadId, server, tool) => {
-      allowances.add(`${threadId}/${server}/${tool}`);
+    allowedForSession: (threadId, server, tool, identity) =>
+      allowances.has(`${threadId}/${server}/${identity}/${tool}`),
+    allowForSession: (threadId, server, tool, identity) => {
+      allowances.add(`${threadId}/${server}/${identity}/${tool}`);
+    },
+    clearSessionAllowances: (threadId, server) => {
+      for (const key of allowances)
+        if (key.startsWith(`${threadId}/${server}/`)) allowances.delete(key);
     },
     isServerDisabled: (threadId, server) => disabled.has(`${threadId}/${server}`),
     onThreadServersChanged: (listener) => {
@@ -180,6 +202,7 @@ function makeFakeGovernance() {
     calls,
     observed,
     changed,
+    hooks,
     disable: (threadId: ThreadId, server: string) => {
       disabled.add(`${threadId}/${server}`);
       for (const listener of listeners) listener(threadId);
@@ -652,6 +675,105 @@ describe("F5 MCP hub", () => {
       await attachment.dispose();
       await governed.close();
     }
+  });
+
+  it("checks pins against the server's current tools, even when the provider never re-lists", async () => {
+    const governance = makeFakeGovernance();
+    const governed = await useGovernedHub(governance);
+    const attachment = governed.attach({
+      threadId: ThreadId.makeUnsafe("pin-thread"),
+      provider: "grok",
+      accountKey: "grok",
+      servers: stdioServers(),
+      environment: { PATH: process.env.PATH ?? "" },
+      cwd: root,
+    });
+    try {
+      const endpoint = attachment.endpoints[0]!;
+      const client = await connect(endpoint.url, endpoint.token);
+      await client.listTools();
+      // The server adds a tool and says its list changed; the provider calls it directly.
+      await client.callTool({ name: "add_tool", arguments: {} });
+      const answer = await client.callTool({ name: "added", arguments: {} });
+      expect(JSON.stringify(answer.content)).toContain("declined");
+      expect(governance.asked.at(-1)).toMatchObject({ toolName: "added", reason: "new" });
+
+      // A changed tool is listed with its accepted description until it is reviewed.
+      governance.changed.add("slow");
+      const slow = (await client.listTools()).tools.find((tool) => tool.name === "slow");
+      expect(slow?.description).toBe("Accepted text");
+    } finally {
+      await attachment.dispose();
+      await governed.close();
+    }
+  });
+
+  it("re-checks the toggle after an approval wait and blocks tools as soon as they are saved", async () => {
+    const governance = makeFakeGovernance();
+    const governed = await useGovernedHub(governance);
+    const threadId = ThreadId.makeUnsafe("recheck-thread");
+    const attachment = governed.attach({
+      threadId,
+      provider: "grok",
+      accountKey: "grok",
+      servers: withFixture({ toolPolicy: { echo: "ask" } }),
+      environment: { PATH: process.env.PATH ?? "" },
+      cwd: root,
+    });
+    try {
+      const endpoint = attachment.endpoints[0]!;
+      const client = await connect(endpoint.url, endpoint.token);
+      // The user turns the server off while the approval card is open, then accepts it.
+      governance.hooks.onAsk = () => governance.disable(threadId, "fixture");
+      governance.answers.push("accept");
+      const refused = await client.callTool({ name: "echo", arguments: { text: "late" } });
+      expect(JSON.stringify(refused.content)).toContain("turned off for this conversation");
+      expect(governance.calls.at(-1)).toMatchObject({ toolName: "echo", outcome: "turned-off" });
+    } finally {
+      await attachment.dispose();
+    }
+
+    const second = governed.attach({
+      threadId: ThreadId.makeUnsafe("block-thread"),
+      provider: "grok",
+      accountKey: "grok",
+      servers: withFixture({ toolPolicy: { echo: "ask" } }),
+      environment: { PATH: process.env.PATH ?? "" },
+      cwd: root,
+    });
+    try {
+      const endpoint = second.endpoints[0]!;
+      const client = await connect(endpoint.url, endpoint.token);
+      governance.hooks.onAsk = undefined;
+      governance.answers.push("acceptForSession");
+      await client.callTool({ name: "echo", arguments: { text: "a" } });
+      expect(second.asksBeforeCall!("fixture", "echo")).toBe(false);
+      // Saving a policy change ends the conversation allowance.
+      governed.refreshToolPolicies!(
+        undefined,
+        withFixture({ toolPolicy: { echo: "ask", slow: "ask" } }),
+      );
+      expect(second.asksBeforeCall!("fixture", "echo")).toBe(true);
+      // Saving Block hides the tool and refuses its calls without Apply.
+      governed.refreshToolPolicies!(undefined, withFixture({ disabledTools: ["hidden", "echo"] }));
+      expect((await client.listTools()).tools.map((tool) => tool.name)).not.toContain("echo");
+      const blocked = await client.callTool({ name: "echo", arguments: { text: "b" } });
+      expect(JSON.stringify(blocked.content)).toContain("turned off in F5's MCP settings");
+    } finally {
+      await second.dispose();
+      await governed.close();
+    }
+  });
+
+  it("never forwards a provider's reserved meta from a server's question", () => {
+    expect(
+      withoutProviderMeta({
+        message: "Allow?",
+        _meta: { codex_approval_kind: "mcp_tool_call", tool_name: "x", trace: "t" },
+      }),
+    ).toEqual({ message: "Allow?", _meta: { tool_name: "x", trace: "t" } });
+    const plain = { message: "Pick", _meta: { trace: "t" } };
+    expect(withoutProviderMeta(plain)).toBe(plain);
   });
 
   it("refuses Ask-policy tools when nobody can be asked", async () => {

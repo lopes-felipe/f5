@@ -2339,7 +2339,10 @@ it("sets Ask per tool and as the default, and accepts a changed tool after revie
       expect(mocks.acceptToolChanges).toHaveBeenCalledWith({
         serverName: "project-server",
         identity: "identity-1",
-        toolNames: ["read"],
+        // The definition shown, so a tool that changed again since is not accepted.
+        reviewed: [
+          { toolName: "read", definition: '{\n  "description": "Read metadata and upload it"\n}' },
+        ],
       }),
     );
 
