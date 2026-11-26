@@ -24,8 +24,10 @@ import {
   buildCodexThreadForkParams,
   buildCodexThreadOpenRequestParams,
   buildCodexTurnStartParams,
+  codexReadOnlyEnforcementUnderRequirements,
   codexReadOnlyPolicyDecision,
   codexReadOnlyThreadPolicyViolation,
+  readCodexAllowedApprovalPolicies,
   CODEX_ELICITATION_OPENED_METHOD,
   CODEX_ELICITATION_SETTLED_METHOD,
   CODEX_ONE_OFF_WORKER_IDLE_MS,
@@ -808,6 +810,34 @@ describe("codexReadOnlyThreadPolicyViolation", () => {
   });
 });
 
+describe("Codex requirements for read-only stages", () => {
+  it("reads the allowed approval policies, ignoring granular entries", () => {
+    expect(
+      readCodexAllowedApprovalPolicies({
+        requirements: { allowedApprovalPolicies: ["on-request", { granular: {} }, "never"] },
+      }),
+    ).toEqual(new Set(["on-request", "never"]));
+    expect(readCodexAllowedApprovalPolicies({ requirements: null })).toBeUndefined();
+    expect(
+      readCodexAllowedApprovalPolicies({ requirements: { allowedApprovalPolicies: null } }),
+    ).toBeUndefined();
+    expect(readCodexAllowedApprovalPolicies(undefined)).toBeUndefined();
+  });
+
+  it("runs a policy stage sandboxed only when untrusted is forbidden and never allowed", () => {
+    const allow = (...policies: string[]) => new Set(policies);
+    expect(codexReadOnlyEnforcementUnderRequirements("policy", allow("on-request", "never"))).toBe(
+      "sandbox",
+    );
+    expect(codexReadOnlyEnforcementUnderRequirements("policy", allow("untrusted"))).toBe("policy");
+    expect(codexReadOnlyEnforcementUnderRequirements("policy", allow("on-request"))).toBe("policy");
+    expect(codexReadOnlyEnforcementUnderRequirements("policy", undefined)).toBe("policy");
+    expect(codexReadOnlyEnforcementUnderRequirements("sandbox", allow("on-request"))).toBe(
+      "sandbox",
+    );
+  });
+});
+
 describe("codexReadOnlyPolicyDecision", () => {
   const command = (value: unknown, extra: Record<string, unknown> = {}) =>
     codexReadOnlyPolicyDecision("item/commandExecution/requestApproval", {
@@ -1183,6 +1213,73 @@ describe("startSession", () => {
           sandbox: "read-only",
           approvalPolicy: "never",
         });
+      } finally {
+        send.mockRestore();
+        await cleanupCodexFixture(manager, directory);
+      }
+    },
+  );
+
+  it.each([
+    // An organisation that forbids `untrusted` (MDM requirements.toml).
+    [["on-request", "never"], "sandbox"],
+    [["untrusted", "on-request", "never"], "policy"],
+    [null, "policy"],
+  ] as const)(
+    "runs a policy-enforced stage sandboxed when Codex's requirements allow %j only",
+    async (allowedApprovalPolicies, expected) => {
+      const directory = mkdtempSync(path.join(os.tmpdir(), "codex-readonly-requirements-"));
+      const binaryPath = path.join(directory, "codex.cjs");
+      writeFileSync(binaryPath, "#!/usr/bin/env node\nprocess.stdin.resume();\n", {
+        mode: 0o755,
+      });
+      const manager = new CodexAppServerManager();
+      vi.spyOn(
+        manager as unknown as { assertSupportedCodexCliVersion: () => string },
+        "assertSupportedCodexCliVersion",
+      ).mockReturnValue("0.170.0");
+      const events: Array<Record<string, unknown>> = [];
+      manager.on("event", (event) => events.push(event as unknown as Record<string, unknown>));
+      const sent: Array<[string, unknown]> = [];
+      const sandboxed = expected === "sandbox";
+      const send = vi
+        .spyOn(
+          manager as unknown as {
+            sendRequest: (context: unknown, method: string, params: unknown) => Promise<unknown>;
+          },
+          "sendRequest",
+        )
+        .mockImplementation(async (_context, method, params) => {
+          sent.push([method, params]);
+          if (method === "configRequirements/read")
+            return {
+              requirements: allowedApprovalPolicies === null ? null : { allowedApprovalPolicies },
+            };
+          if (method === "thread/start")
+            return {
+              thread: { id: "native-thread" },
+              sandbox: sandboxed
+                ? { type: "readOnly", networkAccess: false }
+                : { type: "dangerFullAccess" },
+              approvalPolicy: sandboxed ? "never" : "untrusted",
+            };
+          return {};
+        });
+      try {
+        await manager.startSession({
+          threadId: asThreadId("readonly-requirements"),
+          cwd: directory,
+          runtimeMode: "full-access",
+          workflowExecutionProfile: "unattended-readonly",
+          readOnlyEnforcement: "policy",
+          providerOptions: { codex: { binaryPath } },
+        });
+        expect(sent.find(([method]) => method === "thread/start")?.[1]).toMatchObject(
+          sandboxed
+            ? { sandbox: "read-only", approvalPolicy: "never" }
+            : { sandbox: "danger-full-access", approvalPolicy: "untrusted" },
+        );
+        expect(events.some((event) => event.method === "configWarning")).toBe(sandboxed);
       } finally {
         send.mockRestore();
         await cleanupCodexFixture(manager, directory);
