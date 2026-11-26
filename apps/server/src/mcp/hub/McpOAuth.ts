@@ -83,9 +83,11 @@ const recordEpochs = new Map<string, number>();
 export function bumpMcpOAuthEpoch(key: string): void {
   recordEpochs.set(key, (recordEpochs.get(key) ?? 0) + 1);
 }
-function recordEpoch(key: string): number {
+/** The record's current sign-out epoch; a sign-in captures it when it starts. */
+export function mcpOAuthEpoch(key: string): number {
   return recordEpochs.get(key) ?? 0;
 }
+const recordEpoch = mcpOAuthEpoch;
 
 interface SharedResponse {
   readonly status: number;
@@ -109,11 +111,59 @@ function readRefreshToken(body: unknown): string | undefined {
     : undefined;
 }
 
+const MAX_REDIRECTS = 10;
+
+function withoutHeaders(init: RequestInit | undefined, names: ReadonlyArray<string>) {
+  if (!init?.headers) return init;
+  const headers = new Headers(init.headers);
+  for (const name of names) headers.delete(name);
+  return { ...init, headers };
+}
+
+/**
+ * Follows redirects itself, so a hop to another origin goes without the server's own
+ * headers; fetch drops only standard credentials such as `Authorization` there.
+ */
+async function fetchKeepingHeadersOnOrigin(
+  base: FetchLike,
+  url: URL,
+  init: RequestInit | undefined,
+  origin: string,
+  names: ReadonlyArray<string>,
+): Promise<Response> {
+  let current = url;
+  let request = init;
+  for (let hop = 0; ; hop += 1) {
+    const response = await base(current, { ...request, redirect: "manual" });
+    const location = response.headers.get("location");
+    if (response.status < 300 || response.status > 399 || response.status === 304 || !location)
+      return response;
+    if (hop === MAX_REDIRECTS) throw new Error(`Too many redirects from ${url.origin}.`);
+    await response.body?.cancel().catch(() => undefined);
+    const next = new URL(location, current);
+    const method = (request?.method ?? "GET").toUpperCase();
+    // As fetch does: 303 (and 301/302 after a POST) continue as a GET without a body.
+    const toGet =
+      (response.status === 303 && method !== "HEAD") ||
+      ((response.status === 301 || response.status === 302) && method === "POST");
+    if (toGet) {
+      const headers = new Headers(request?.headers);
+      headers.delete("content-type");
+      headers.delete("content-length");
+      const { body: _body, ...rest } = request ?? {};
+      request = { ...rest, method: "GET", headers };
+    }
+    if (next.origin !== origin) request = withoutHeaders(request, names);
+    current = next;
+  }
+}
+
 /**
  * The fetch for one remote server's connection and its OAuth calls.
  *
  * - The server's own headers (API keys, cookies) go only to the server's origin,
- *   never to a metadata, registration or token endpoint on another host.
+ *   never to a metadata, registration or token endpoint on another host, not even
+ *   through a redirect.
  * - Connections that refresh the same token at once share one token request:
  *   servers rotate refresh tokens, so a second request with the old token would
  *   fail and could revoke the whole grant.
@@ -125,21 +175,22 @@ export function mcpOAuthFetch(
 ): FetchLike {
   const origin = new URL(serverUrl).origin;
   const names = resourceHeaderNames.map((name) => name.toLowerCase());
+  const send: FetchLike = (url, init) => {
+    const target = new URL(url.toString());
+    if (names.length === 0) return base(url, init);
+    if (target.origin !== origin) return base(url, withoutHeaders(init, names));
+    return fetchKeepingHeadersOnOrigin(base, target, init, origin, names);
+  };
   return async (url, init) => {
     const target = new URL(url.toString());
-    let request = init;
-    if (target.origin !== origin && names.length > 0 && init?.headers) {
-      const headers = new Headers(init.headers);
-      for (const name of names) headers.delete(name);
-      request = { ...init, headers };
-    }
+    const request = init;
     const refreshToken = readRefreshToken(request?.body);
-    if (refreshToken === undefined) return base(url, request);
+    if (refreshToken === undefined) return send(url, request);
     const shareKey = `${target.href}\u0000${refreshToken}`;
     let shared = sharedRefreshes.get(shareKey);
     if (!shared) {
       const pending = (async (): Promise<SharedResponse> => {
-        const response = await base(url, request);
+        const response = await send(url, request);
         return {
           status: response.status,
           statusText: response.statusText,
@@ -195,9 +246,11 @@ export function mcpOAuthServerUrl(definition: McpServerDefinition): string | und
 
 export function mcpOAuthExpiresAt(record: McpOAuthRecord | undefined): number | undefined {
   const expiresIn = record?.tokens?.expires_in;
-  return record?.tokensSavedAt !== undefined && typeof expiresIn === "number"
-    ? record.tokensSavedAt + expiresIn * 1000
-    : undefined;
+  const savedAt = record?.tokensSavedAt;
+  if (typeof savedAt !== "number" || typeof expiresIn !== "number") return undefined;
+  const expiresAt = savedAt + expiresIn * 1000;
+  // An out-of-range value has no date, and status reports it as an ISO string.
+  return Number.isNaN(new Date(expiresAt).getTime()) ? undefined : expiresAt;
 }
 
 /** Secret-store backed storage with a read cache, so tokens are not decrypted per request. */
@@ -206,17 +259,19 @@ export function secretStoreOAuthStorage(store: ServerSecretStoreShape): McpOAuth
   return {
     read: async (key) => {
       if (cache.has(key)) return cache.get(key) ?? undefined;
-      // A read that fails (for example a value that cannot be decrypted) is not cached,
-      // so a later read can succeed and a sign-in does not assume the record is empty.
-      const bytes = await Effect.runPromise(
-        store.get(key).pipe(Effect.orElseSucceed(() => undefined)),
-      );
-      if (bytes === undefined) return undefined;
+      // A read that fails (for example a value that cannot be decrypted) is an error, not
+      // a missing record: sign-out and registration writes must not treat it as empty.
+      // It is not cached, so a later read can succeed.
+      const bytes = await Effect.runPromise(store.get(key).pipe(Effect.result)).then((result) => {
+        if (result._tag === "Success") return result.success;
+        throw new Error(`The stored sign-in could not be read: ${result.failure.message}`);
+      });
       let record: McpOAuthRecord | null = null;
       if (bytes) {
         try {
           record = JSON.parse(new TextDecoder().decode(bytes)) as McpOAuthRecord;
         } catch {
+          // Unreadable JSON never becomes readable; a new sign-in replaces it.
           return undefined;
         }
       }
@@ -262,6 +317,8 @@ export interface McpOAuthProviderOptions {
     readonly redirectUrl: string;
     readonly state: string;
     readonly onAuthorizationUrl: (url: URL) => void;
+    /** The sign-out epoch when the sign-in started; a later sign-out rejects its tokens. */
+    readonly epoch?: number;
   };
 }
 
@@ -280,32 +337,44 @@ export class McpOAuthProvider implements OAuthClientProvider {
   /** Present only with a configured `oauthResource`; otherwise the SDK's own check applies. */
   readonly validateResourceURL?: () => Promise<URL | undefined>;
 
+  /**
+   * A registration this sign-in made. It is stored only with the tokens it earns, so
+   * an abandoned or failed sign-in leaves the working registration and tokens alone.
+   */
+  private stagedClient: OAuthClientInformationMixed | undefined;
+
   constructor(private readonly options: McpOAuthProviderOptions) {
     this.key = mcpOAuthKey(options.serverUrl, options.definition.oauthClientId);
-    this.readEpoch = recordEpoch(this.key);
+    this.readEpoch = options.interactive?.epoch ?? recordEpoch(this.key);
     const resource = options.definition.oauthResource;
     if (resource) this.validateResourceURL = async () => new URL(resource);
     // Without this method the SDK refuses dynamic registration, which keeps background
     // connections from registering clients with a redirect nobody listens on.
     if (options.interactive)
       this.saveClientInformation = async (information) => {
-        await this.update((record) => ({
-          ...record,
-          clientInformation: information,
-          redirectUrl: options.interactive!.redirectUrl,
-        }));
+        this.stagedClient = information;
       };
   }
 
+  private emptyRecord(): McpOAuthRecord {
+    return {
+      serverUrl: this.options.serverUrl,
+      ...(this.options.definition.oauthClientId
+        ? { clientId: this.options.definition.oauthClientId }
+        : {}),
+    };
+  }
+
   private async record(): Promise<McpOAuthRecord> {
-    return (
-      (await this.options.storage.read(this.key)) ?? {
-        serverUrl: this.options.serverUrl,
-        ...(this.options.definition.oauthClientId
-          ? { clientId: this.options.definition.oauthClientId }
-          : {}),
-      }
-    );
+    return (await this.options.storage.read(this.key)) ?? this.emptyRecord();
+  }
+
+  /**
+   * The stored record for a sign-in, which can replace a record it cannot read: the
+   * user is authorizing again, so nothing in that record is still needed.
+   */
+  private async recordForSignIn(): Promise<McpOAuthRecord | undefined> {
+    return this.options.storage.read(this.key).catch(() => undefined);
   }
 
   private update(change: (record: McpOAuthRecord) => McpOAuthRecord): Promise<void> {
@@ -351,6 +420,14 @@ export class McpOAuthProvider implements OAuthClientProvider {
   async clientInformation(): Promise<OAuthClientInformationMixed | undefined> {
     const configured = this.options.definition.oauthClientId;
     if (configured) return { client_id: configured };
+    const interactive = this.options.interactive;
+    if (interactive) {
+      if (this.stagedClient) return this.stagedClient;
+      // A registration made for another redirect is useless to servers that match it
+      // exactly, so this sign-in registers again (and stages that registration).
+      const stored = await this.recordForSignIn();
+      return stored?.redirectUrl === interactive.redirectUrl ? stored.clientInformation : undefined;
+    }
     const information = (await this.record()).clientInformation;
     // A background connection to a server nobody signed in to stops here, before the
     // SDK would try (and refuse) dynamic registration with an unrelated error.
@@ -362,20 +439,44 @@ export class McpOAuthProvider implements OAuthClientProvider {
   async tokens(): Promise<OAuthTokens | undefined> {
     // Each auth run starts here; token writes from this run must not outlive a sign-out.
     if (!this.options.interactive) this.readEpoch = recordEpoch(this.key);
-    const tokens = (await this.options.storage.read(this.key))?.tokens;
+    const record = this.options.interactive
+      ? await this.recordForSignIn()
+      : await this.options.storage.read(this.key);
+    const tokens = record?.tokens;
     this.readRefreshToken = tokens?.refresh_token;
     return tokens;
   }
 
   async saveTokens(tokens: OAuthTokens): Promise<void> {
     const epoch = this.readEpoch;
+    const refreshedFrom = this.readRefreshToken;
+    const interactive = this.options.interactive;
+    let saved = false;
     await withRecordLock(this.key, async () => {
       if (epoch !== recordEpoch(this.key))
         throw new UnauthorizedError("Signed out of this server while sign-in was finishing.");
+      if (interactive) {
+        const record = (await this.recordForSignIn()) ?? this.emptyRecord();
+        await this.options.storage.write(this.key, {
+          ...record,
+          ...(this.stagedClient
+            ? { clientInformation: this.stagedClient, redirectUrl: interactive.redirectUrl }
+            : {}),
+          tokens,
+          tokensSavedAt: Date.now(),
+        });
+        saved = true;
+        return;
+      }
       const record = await this.record();
+      // Another connection stored a newer rotation since this refresh started (two
+      // connections can share one refresh response); its tokens must not be replaced
+      // by ones the server has already rotated away.
+      if (record.tokens?.refresh_token !== refreshedFrom) return;
       await this.options.storage.write(this.key, { ...record, tokens, tokensSavedAt: Date.now() });
+      saved = true;
     });
-    this.readRefreshToken = tokens.refresh_token;
+    if (saved) this.readRefreshToken = tokens.refresh_token;
   }
 
   redirectToAuthorization(authorizationUrl: URL): void {
@@ -398,6 +499,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
       return;
     }
     if (scope === "discovery") return;
+    if (scope === "all" || scope === "client") this.stagedClient = undefined;
     const failedRefreshToken = this.readRefreshToken;
     this.readRefreshToken = undefined;
     await this.update((record) => {

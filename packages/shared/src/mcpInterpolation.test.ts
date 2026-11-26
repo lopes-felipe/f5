@@ -32,6 +32,17 @@ describe("interpolateMcpValue", () => {
 });
 
 describe("interpolateMcpServers", () => {
+  it("keeps a server named __proto__ as an ordinary entry", () => {
+    const servers = JSON.parse(
+      '{"__proto__": {"type": "http", "url": "https://${env:HOST}/mcp"}}',
+    ) as McpProjectServersConfig;
+    const result = interpolateMcpServers(servers, { HOST: "h.example" });
+    expect(Object.keys(result.servers)).toEqual(["__proto__"]);
+    expect(Object.getOwnPropertyDescriptor(result.servers, "__proto__")?.value).toMatchObject({
+      url: "https://h.example/mcp",
+    });
+  });
+
   const servers = {
     local: {
       type: "stdio",

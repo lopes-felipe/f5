@@ -102,6 +102,32 @@ describe("secrets encrypted at rest", () => {
       expect((await stat(secretFile(dir, "secret-store-key"))).mode & 0o777).toBe(0o600);
   });
 
+  it("never lets a read's migration overwrite a newer write", async () => {
+    const dir = await stateDir();
+    await run(
+      dir,
+      undefined,
+      Effect.gen(function* () {
+        yield* ServerSecretStore;
+      }),
+    );
+    for (let round = 0; round < 20; round += 1) {
+      await writeFile(secretFile(dir, "mcp-oauth-x"), "legacy-token", { mode: 0o600 });
+      const final = await run(
+        dir,
+        undefined,
+        Effect.gen(function* () {
+          const store = yield* ServerSecretStore;
+          yield* Effect.all([store.get("mcp-oauth-x"), store.set("mcp-oauth-x", text("newer"))], {
+            concurrency: "unbounded",
+          });
+          return decode(yield* store.get("mcp-oauth-x"));
+        }),
+      );
+      expect(final).toBe("newer");
+    }
+  });
+
   it("moves secrets from the headless key file to the desktop key", async () => {
     const dir = await stateDir();
     await run(

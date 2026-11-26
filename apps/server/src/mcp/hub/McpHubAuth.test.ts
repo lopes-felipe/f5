@@ -6,7 +6,13 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { McpProjectServersConfig, McpServerDefinition } from "@t3tools/contracts";
+import { Effect } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
+import {
+  SecretStoreError,
+  type ServerSecretStoreShape,
+} from "../../auth/Services/ServerSecretStore.ts";
 
 import { McpHubAuthManager } from "./McpHubAuth.ts";
 import { McpHubUpstream } from "./McpHubUpstream.ts";
@@ -16,6 +22,8 @@ import {
   memoryOAuthStorage,
   mcpOAuthFetch,
   mcpOAuthKey,
+  secretStoreOAuthStorage,
+  type McpOAuthStorage,
 } from "./McpOAuth.ts";
 
 /** An authorization server and a protected MCP server on one loopback port. */
@@ -216,6 +224,8 @@ describe("MCP hub sign-in", () => {
   });
 
   it("reports needs-auth, signs in through the loopback callback, and reconnects", async () => {
+    // A session is attached, so signing in reconnects it rather than waiting for use.
+    upstream.retain();
     await expect(upstream.listTools()).rejects.toThrow();
     expect(upstream.snapshot().state).toBe("needs-auth");
     // Background connections never register a client.
@@ -238,6 +248,7 @@ describe("MCP hub sign-in", () => {
     expect(page.status).toBe(200);
     expect(await page.text()).toContain("Signed in to protected");
     expect(reconnected).toEqual([mcpOAuthKey(`${fake.base}/mcp`, undefined)]);
+    expect(upstream.snapshot().state).toBe("ready");
 
     const tools = await upstream.listTools();
     expect(tools.map((tool) => tool.name)).toEqual(["whoami"]);
@@ -450,6 +461,142 @@ describe("MCP hub sign-in", () => {
     expect((await manager.status()).servers[0]).toMatchObject({ signedIn: true });
   });
 
+  /** A manager whose first authorization-server call waits until `release` is called. */
+  function gatedManager() {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let calls = 0;
+    const gated = new McpHubAuthManager({
+      storage,
+      hub: { reconnectOAuth: async () => 0 },
+      readServers: async () => ({ protected: definition }) as McpProjectServersConfig,
+      environment: {},
+      fetchFn: async (url, init) => {
+        calls += 1;
+        if (calls === 1) await gate;
+        return fetch(url, init);
+      },
+    });
+    return { gated, release, waiting: () => calls > 0 };
+  }
+
+  it("lets a new start replace one that is still discovering", async () => {
+    const { gated, release, waiting } = gatedManager();
+    try {
+      const first = gated.startSignIn("protected");
+      await expect.poll(waiting).toBe(true);
+      const secondStart = gated.startSignIn("protected");
+      release();
+      await expect(first).rejects.toThrow(/ended before the browser step/);
+      const second = await secondStart;
+      if (second.status !== "pending") throw new Error("expected a pending attempt");
+      expect((await gated.status()).servers[0]!.pending?.attemptId).toBe(second.attempt.attemptId);
+    } finally {
+      gated.close();
+    }
+  });
+
+  it("ends a start that is still discovering when the user signs out", async () => {
+    const { gated, release, waiting } = gatedManager();
+    try {
+      const starting = gated.startSignIn("protected");
+      await expect.poll(waiting).toBe(true);
+      expect(await gated.signOut("protected")).toEqual({ signedOut: false });
+      release();
+      await expect(starting).rejects.toThrow(/ended before the browser step/);
+      expect((await gated.status()).servers[0]!.pending).toBeUndefined();
+    } finally {
+      gated.close();
+    }
+  });
+
+  it("keeps the stored registration when a sign-in that registered again is abandoned", async () => {
+    const first = await signIn();
+    // Signed in, a start refreshes instead; signed out, it goes to the browser.
+    await manager.signOut("protected");
+    const key = mcpOAuthKey(definition.url!, undefined);
+    const before = structuredClone(storage.records.get(key)!);
+    const port = Number(new URL(first.redirectUrl).port);
+    const blocker = Http.createServer();
+    await new Promise<void>((resolve) => blocker.listen(port, "127.0.0.1", resolve));
+    try {
+      const second = await manager.startSignIn("protected");
+      if (second.status !== "pending") throw new Error("expected a pending attempt");
+      expect(fake.state.registrations).toBe(2);
+      manager.cancel(second.attempt.attemptId);
+      // The new registration was never stored; the old one is intact.
+      expect(storage.records.get(key)).toEqual(before);
+      // Finishing a new sign-in stores its registration with its tokens.
+      const third = await manager.startSignIn("protected");
+      if (third.status !== "pending") throw new Error("expected a pending attempt");
+      await manager.completeSignIn(
+        third.attempt.attemptId,
+        fake.approve(third.attempt.authorizationUrl),
+      );
+      expect(storage.records.get(key)?.redirectUrl).toBe(third.attempt.redirectUrl);
+    } finally {
+      await new Promise((resolve) => blocker.close(resolve));
+    }
+  });
+
+  it("does not replace tokens another connection rotated after this refresh began", async () => {
+    await signIn();
+    const key = mcpOAuthKey(definition.url!, undefined);
+    const refreshing = new McpOAuthProvider({ storage, serverUrl: definition.url!, definition });
+    const read = await refreshing.tokens();
+    const rotated = { ...read!, access_token: "at-other", refresh_token: "rt-other" };
+    await storage.write(key, { ...storage.records.get(key)!, tokens: rotated });
+    await refreshing.saveTokens({ ...read!, access_token: "at-late", refresh_token: "rt-late" });
+    expect(storage.records.get(key)?.tokens).toEqual(rotated);
+  });
+
+  it("treats an unreadable record as signed out for status but not for sign-out", async () => {
+    const failing: McpOAuthStorage = {
+      ...storage,
+      read: async () => {
+        throw new Error("The stored sign-in could not be read: locked");
+      },
+    };
+    const unreadable = new McpHubAuthManager({
+      storage: failing,
+      hub: undefined,
+      readServers: async () => ({ protected: definition }) as McpProjectServersConfig,
+      environment: {},
+    });
+    try {
+      expect((await unreadable.status()).servers[0]).toMatchObject({ signedIn: false });
+      await expect(unreadable.signOut("protected")).rejects.toThrow(/could not be read/);
+      // A new sign-in replaces the record it cannot read.
+      expect((await unreadable.startSignIn("protected")).status).toBe("pending");
+    } finally {
+      unreadable.close();
+    }
+  });
+
+  it("probes with the server's headers, and with a GET for SSE servers", async () => {
+    const probes: Array<{ method: string; headers: Headers }> = [];
+    const sse = { type: "sse", url: `${fake.base}/mcp`, headers: { "X-Team": "a" } } as const;
+    const probing = new McpHubAuthManager({
+      storage,
+      hub: undefined,
+      readServers: async () => ({ protected: sse }) as McpProjectServersConfig,
+      environment: {},
+      fetchFn: async (url, init) => {
+        if (new URL(url.toString()).pathname === "/mcp")
+          probes.push({ method: init?.method ?? "GET", headers: new Headers(init?.headers) });
+        return fetch(url, init);
+      },
+    });
+    try {
+      expect((await probing.startSignIn("protected")).status).toBe("pending");
+      expect(probes[0]?.method).toBe("GET");
+      expect(probes[0]?.headers.get("x-team")).toBe("a");
+      expect(probes[0]?.headers.get("accept")).toBe("text/event-stream");
+    } finally {
+      probing.close();
+    }
+  });
+
   it("answers a malformed callback request without failing", async () => {
     const started = await manager.startSignIn("protected");
     if (started.status !== "pending") throw new Error("expected a pending attempt");
@@ -484,6 +631,43 @@ describe("mcpOAuthFetch", () => {
     expect(seen[1]!.headers.get("accept")).toBe("application/json");
   });
 
+  it("drops the server's own headers when a redirect leaves its origin", async () => {
+    const seen: Array<{ url: string; headers: Headers; redirect?: RequestInit["redirect"] }> = [];
+    const base = async (url: string | URL, init?: RequestInit) => {
+      seen.push({
+        url: url.toString(),
+        headers: new Headers(init?.headers),
+        ...(init?.redirect ? { redirect: init.redirect } : {}),
+      });
+      if (url.toString().endsWith("/moved"))
+        return new Response(null, { status: 307, headers: { location: "/mcp" } });
+      if (url.toString().endsWith("/mcp"))
+        return new Response(null, {
+          status: 302,
+          headers: { location: "https://elsewhere.example.test/landing" },
+        });
+      return new Response("{}");
+    };
+    const fetchFn = mcpOAuthFetch("https://mcp.example.test/mcp", ["X-Tenant"], base);
+    const response = await fetchFn("https://mcp.example.test/moved", {
+      method: "POST",
+      headers: { "x-tenant": "acme", "content-type": "application/json" },
+      body: "{}",
+    });
+    expect(response.status).toBe(200);
+    expect(seen.map((call) => call.url)).toEqual([
+      "https://mcp.example.test/moved",
+      "https://mcp.example.test/mcp",
+      "https://elsewhere.example.test/landing",
+    ]);
+    expect(seen.every((call) => call.redirect === "manual")).toBe(true);
+    // Same origin keeps the header; the hop to another host goes without it, and the
+    // 302 after a POST continues as a bodiless GET.
+    expect(seen[1]!.headers.get("x-tenant")).toBe("acme");
+    expect(seen[2]!.headers.get("x-tenant")).toBeNull();
+    expect(seen[2]!.headers.get("content-type")).toBeNull();
+  });
+
   it("shares one refresh request per refresh token and retries a failed one", async () => {
     let calls = 0;
     let status = 200;
@@ -505,5 +689,36 @@ describe("mcpOAuthFetch", () => {
     await refresh("rt-failing");
     await refresh("rt-failing");
     expect(calls).toBe(3);
+  });
+});
+
+describe("secretStoreOAuthStorage", () => {
+  const storeReturning = (get: ServerSecretStoreShape["get"]): ServerSecretStoreShape => ({
+    get,
+    set: () => Effect.void,
+    remove: () => Effect.void,
+    list: () => Effect.succeed([]),
+    getOrCreateRandom: () => Effect.die("unused"),
+  });
+
+  it("fails a read the store cannot serve, and does not cache it", async () => {
+    let fail = true;
+    const storage = secretStoreOAuthStorage(
+      storeReturning(() =>
+        fail
+          ? Effect.fail(new SecretStoreError({ message: "cannot be decrypted" }))
+          : Effect.succeed(new TextEncoder().encode(JSON.stringify({ serverUrl: "https://x" }))),
+      ),
+    );
+    await expect(storage.read("k")).rejects.toThrow(/could not be read: cannot be decrypted/);
+    fail = false;
+    await expect(storage.read("k")).resolves.toEqual({ serverUrl: "https://x" });
+  });
+
+  it("reads unparseable JSON as no record", async () => {
+    const storage = secretStoreOAuthStorage(
+      storeReturning(() => Effect.succeed(new TextEncoder().encode("{not json"))),
+    );
+    await expect(storage.read("k")).resolves.toBeUndefined();
   });
 });

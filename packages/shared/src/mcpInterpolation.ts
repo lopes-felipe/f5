@@ -34,6 +34,11 @@ export function interpolateMcpValue(
   return { value: expanded, missing };
 }
 
+/** The variable names a value references with `${env:…}`. */
+export function mcpEnvReferenceNames(value: string): string[] {
+  return [...new Set(Array.from(value.matchAll(ENV_REFERENCE), (match) => match[1]!))];
+}
+
 export function hasMcpEnvReference(value: string | undefined): boolean {
   if (value === undefined) return false;
   ENV_REFERENCE.lastIndex = 0;
@@ -159,7 +164,8 @@ export function interpolateMcpServers(
   readonly servers: McpProjectServersConfig;
   readonly skipped: ReadonlyArray<McpInterpolationSkip>;
 } {
-  const resolved: Record<string, ServerDefinition> = {};
+  // A server named `__proto__` must stay a key, not replace the prototype.
+  const resolved: Record<string, ServerDefinition> = Object.create(null);
   const skipped: McpInterpolationSkip[] = [];
   for (const [name, server] of Object.entries(servers ?? {})) {
     if (!mcpInterpolatedFields(server).some(([, value]) => hasMcpEnvReference(value))) {
