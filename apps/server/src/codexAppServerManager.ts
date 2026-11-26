@@ -135,6 +135,10 @@ import {
   type JsonRpcStdinWriter,
 } from "./codex/JsonRpcStdinWriter.ts";
 import { resolveCodexHome } from "./os-jank.ts";
+import {
+  codexReadOnlySourceHome,
+  materializeCodexReadOnlyHome,
+} from "./codex/CodexReadOnlyHome.ts";
 import { resolveInvocation } from "./spawn/resolveCommand.ts";
 
 export function buildCodexSampleParams(
@@ -432,6 +436,11 @@ export interface CodexAppServerStartSessionInput {
   readonly readOnlyEnforcement?: ReadOnlyEnforcement;
   /** Internal: launch the app-server with Codex plugins (and marketplace auto-upgrade) off. */
   readonly disablePlugins?: boolean;
+  /**
+   * Internal: the rules-free Codex home a read-only workflow stage runs in (CodexReadOnlyHome.ts).
+   * Materialized from the instance's home before launch; only used with `workflowExecutionProfile`.
+   */
+  readonly readOnlyHomePath?: string;
   /** Internal: working directory of the app-server process, when it differs from the thread cwd. */
   readonly processCwd?: string;
 }
@@ -1517,7 +1526,22 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
       const codexOptions = readCodexProviderOptions(input);
       const codexBinaryPath = resolveCodexCommand(codexOptions.binaryPath);
-      const codexHomePath = resolveCodexHome({ homePath: codexOptions.homePath });
+      const instanceHomePath = resolveCodexHome({ homePath: codexOptions.homePath });
+      // A read-only stage runs in a home without the instance's `rules`: Codex runs commands an
+      // allow rule matches outside its sandbox, without asking F5.
+      const readOnlyHomePath =
+        input.workflowExecutionProfile && input.readOnlyHomePath
+          ? input.readOnlyHomePath
+          : undefined;
+      if (readOnlyHomePath)
+        await materializeCodexReadOnlyHome({
+          sourceHome: codexReadOnlySourceHome(
+            instanceHomePath,
+            input.processEnvironment ?? process.env,
+          ),
+          readOnlyHome: readOnlyHomePath,
+        });
+      const codexHomePath = readOnlyHomePath ?? instanceHomePath;
       const processCwd = input.processCwd ?? resolvedCwd;
       const cliVersion = await this.assertSupportedCodexCliVersion({
         processEnvironment: input.processEnvironment ?? process.env,
@@ -3917,6 +3941,12 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
   hasSession(threadId: ThreadId): boolean {
     const context = this.sessions.get(threadId);
     return context !== undefined && context.phase !== "draining";
+  }
+
+  /** The working directory of a read-only workflow stage's session, or undefined for any other. */
+  readOnlyStageCwd(threadId: ThreadId): string | undefined {
+    const context = this.sessions.get(threadId);
+    return context?.workflowExecutionProfile ? context.session.cwd : undefined;
   }
 
   /** Native discovery state: the skills catalog is Codex's session command catalog. */

@@ -145,7 +145,12 @@ import {
   isSyntheticOneOffThreadId,
 } from "../../codexAppServerManager.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
-import { ServerConfig } from "../../config.ts";
+import { resolveProviderHomesDir, ServerConfig } from "../../config.ts";
+import {
+  codexProjectRulesConflictMessage,
+  codexReadOnlyHomeDir,
+  findCodexProjectRulesConflict,
+} from "../../codex/CodexReadOnlyHome.ts";
 import type {
   PreviewMcpHttpServerShape,
   PreviewMcpSessionConfig,
@@ -2604,6 +2609,38 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           }
         }),
     );
+    /**
+     * Refuses a read-only stage in a workspace whose own Codex rules would let commands run
+     * without asking F5, or that F5 can't check with certainty (CodexReadOnlyHome.ts).
+     */
+    const assertCodexReadOnlyWorkspace = (
+      cwd: string | undefined,
+      operation: "startSession" | "sendTurn",
+    ) =>
+      Effect.tryPromise({
+        try: () =>
+          findCodexProjectRulesConflict(cwd ?? process.cwd(), {
+            homeDir: (options?.processEnvironment ?? process.env).HOME ?? userInfo().homedir,
+          }),
+        catch: (cause) =>
+          new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation,
+            issue: `Codex can't run read-only workflow stages here: F5 couldn't check the workspace's Codex rules (${toMessage(cause, "unknown error")}).`,
+          }),
+      }).pipe(
+        Effect.flatMap((conflict) =>
+          conflict
+            ? Effect.fail(
+                new ProviderAdapterValidationError({
+                  provider: PROVIDER,
+                  operation,
+                  issue: codexProjectRulesConflictMessage(conflict),
+                }),
+              )
+            : Effect.void,
+        ),
+      );
     const inheritsFastMode = (model: string | undefined) =>
       resolveCodexFastMode(
         undefined,
@@ -2706,6 +2743,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         // outside Codex's shell sandbox and Codex never asks before using them, so the user's
         // servers, the preview server and plugins would each be a way to write.
         const readOnlyStage = input.workflowExecutionProfile !== undefined;
+        if (readOnlyStage) yield* assertCodexReadOnlyWorkspace(input.cwd, "startSession");
         const baseProviderMcpServers = readOnlyStage ? undefined : providerOptions?.mcpServers;
         yield* Effect.try({
           try: () => {
@@ -3036,6 +3074,10 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             ? {
                 workflowExecutionProfile: input.workflowExecutionProfile,
                 disablePlugins: true,
+                readOnlyHomePath: codexReadOnlyHomeDir(
+                  resolveProviderHomesDir(serverConfig),
+                  boundInstanceId,
+                ),
                 // `policy` where Codex's sandbox can't start: F5 answers every command instead.
                 ...(input.readOnlyEnforcement
                   ? { readOnlyEnforcement: input.readOnlyEnforcement }
@@ -3106,6 +3148,9 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             deliveryCertainty: "not_sent",
             deliveryRetryable: false,
           });
+        // A rules file the workspace gained since the stage started would apply from now on.
+        const readOnlyCwd = manager.readOnlyStageCwd(input.threadId);
+        if (readOnlyCwd !== undefined) yield* assertCodexReadOnlyWorkspace(readOnlyCwd, "sendTurn");
         const codexAttachments = yield* Effect.forEach(
           (input.attachments ?? []).filter((attachment) => attachment.type === "image"),
           (attachment) =>

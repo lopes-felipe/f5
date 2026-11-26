@@ -307,3 +307,47 @@ Read-only Cursor stages launch with `CURSOR_CONFIG_DIR` set to
   keychain link when it finishes, and keeps the run folder for `report.json`.
 - **The per-user policy path** is `homedir()/.cursor/sandbox.json`.
   `CURSOR_CONFIG_DIR` doesn't move it, so a separate HOME is needed.
+
+## Codex read-only escalation (G1-G6)
+
+Run with `apps/server/integration/codexReadOnlyEscalationGate.mjs` on 2026-11-26:
+
+- **Codex:** `codex-cli 0.170.0`, bundled with F5, on darwin-arm64.
+- **Where:** F5's agent shell. It is itself inside a macOS sandbox, so Codex's sandbox fails to
+  start there (`sandbox-exec: sandbox_apply: Operation not permitted`, exit 71), as it does in
+  the desktop backend.
+- **Requirements:** the organisation's managed requirements allow only `on-request` and `never`.
+- **Mode:** the session ran as "ask on escalation": `approvalPolicy: "on-request"`, a read-only
+  thread sandbox, and turn `sandboxPolicy: { type: "readOnly", networkAccess: false }`.
+
+**Home:** the script's source home links a real sign-in and holds
+`rules/default.rules = prefix_rule(pattern=["touch"], decision="allow")`. The read-only home
+links every entry except `rules`, as `CodexReadOnlyHome.ts` does.
+
+| Gate       | Result     | Observed                                                                                                                                                                                                                                                                                                        |
+| ---------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| G1         | PASS       | `configRequirements/read` returns `allowedApprovalPolicies: ["on-request","never"]` and `allowedSandboxModes: ["workspace-write","read-only","danger-full-access"]`.                                                                                                                                            |
+| G2         | PASS       | `thread/start` reports `approvalPolicy: "on-request"` and `sandbox: {type: "readOnly", networkAccess: false}`.                                                                                                                                                                                                  |
+| G3         | PASS       | `git rev-parse HEAD` and `ls` each sent `item/commandExecution/requestApproval` by themselves once the sandbox failed, with `reason: "Allow running … outside the sandbox after the sandbox failed to start?"`, `command: "/bin/zsh -lc '…'"` and `kind: "command"`. Accepted, both returned their real output. |
+| G3b        | PASS       | `stat notes.txt`, which isn't on Codex's own safe list, asked only because the turn carried F5's escalation hint. The model reran it with escalation (`reason: "Allow the read-only stat command for notes.txt?"`).                                                                                             |
+| G3c        | PASS       | The escalation requests offer `accept`, `acceptWithExecpolicyAmendment` and `cancel`, but no `decline`. A plain `decline` is still taken: the item ends `declined`, nothing runs and the turn completes.                                                                                                        |
+| G4         | PASS       | `touch marker` ran in the sandbox that can't start, failed with exit 71, and Codex didn't offer to escalate it. No marker.                                                                                                                                                                                      |
+| G4 control | PASS       | The same turn with `rules` linked into the home: `touch marker` ran outside the sandbox with exit 0 and no approval request, and the marker appeared.                                                                                                                                                           |
+| G4b        | PASS       | An `apply_patch` edit sent `item/fileChange/requestApproval`. Declined, the file is unchanged.                                                                                                                                                                                                                  |
+| G4c        | PASS       | Web search returned a `webSearch` item (it runs server-side).                                                                                                                                                                                                                                                   |
+| G5         | unit tests | F5's `.codex/rules` guard (`CodexReadOnlyHome.test.ts`, `CodexAdapter.test.ts`).                                                                                                                                                                                                                                |
+| G6         | PASS       | After each session the read-only home's `auth.json` was still a link to the source (same inode), so F5 doesn't need to copy a sign-in back.                                                                                                                                                                     |
+
+What the runs mean for F5:
+
+- **Asking requires escalation:** Codex asks to rerun a command outside the broken sandbox by
+  itself only for its own safe commands. Any other command fails closed unless the model
+  escalates, so a policy-enforced Codex stage carries a one-line hint to do so.
+- **F5 must refuse with `decline`** even when the request doesn't offer it. `cancel` would end the
+  turn.
+- **Allow rules bypass F5 entirely:** an `allow` rule runs its command outside the sandbox with
+  no request at all (G4 control). That holds in every read-only mode, which is why read-only
+  stages use a home without `rules` and refuse a repository's own `.codex/rules`.
+- **Code mode doesn't skip approvals:** the model often runs commands through Codex's code-mode
+  `exec` tool, which calls `exec_command` from JavaScript. Those nested commands asked and failed
+  exactly like direct ones.

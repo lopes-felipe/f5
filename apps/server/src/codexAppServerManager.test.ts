@@ -3,7 +3,16 @@ import { describe, expect, it, vi } from "vitest";
 import { normalizeProviderRuntimeInfo } from "@t3tools/shared/runtimeInfo";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -1183,6 +1192,73 @@ describe("startSession", () => {
           sandbox: "read-only",
           approvalPolicy: "never",
         });
+      } finally {
+        send.mockRestore();
+        await cleanupCodexFixture(manager, directory);
+      }
+    },
+  );
+
+  it.each([true, false])(
+    "runs a read-only stage in the rules-free home and leaves other sessions in the instance home (read-only: %s)",
+    async (readOnly) => {
+      const directory = realpathSync(mkdtempSync(path.join(os.tmpdir(), "codex-readonly-home-")));
+      const binaryPath = path.join(directory, "codex.cjs");
+      writeFileSync(
+        binaryPath,
+        "#!/usr/bin/env node\nrequire('fs').writeFileSync(process.argv[1] + '.home', process.env.CODEX_HOME ?? '');\nprocess.stdin.resume();\n",
+        { mode: 0o755 },
+      );
+      const instanceHome = path.join(directory, "instance-home");
+      mkdirSync(path.join(instanceHome, "rules"), { recursive: true });
+      writeFileSync(path.join(instanceHome, "rules", "default.rules"), "allow");
+      writeFileSync(path.join(instanceHome, "auth.json"), "{}");
+      const readOnlyHome = path.join(directory, "codex-readonly", "codex");
+      const manager = new CodexAppServerManager();
+      const version = vi
+        .spyOn(
+          manager as unknown as { assertSupportedCodexCliVersion: () => string },
+          "assertSupportedCodexCliVersion",
+        )
+        .mockReturnValue("0.166.0");
+      const send = vi
+        .spyOn(
+          manager as unknown as {
+            sendRequest: (context: unknown, method: string, params: unknown) => Promise<unknown>;
+          },
+          "sendRequest",
+        )
+        .mockImplementation(async (_context, method) =>
+          method === "thread/start"
+            ? {
+                thread: { id: "native-thread" },
+                sandbox: { type: "readOnly", networkAccess: false },
+                approvalPolicy: "never",
+              }
+            : {},
+        );
+      try {
+        await manager.startSession({
+          threadId: asThreadId("readonly-home"),
+          cwd: directory,
+          runtimeMode: "full-access",
+          ...(readOnly ? { workflowExecutionProfile: "unattended-readonly" as const } : {}),
+          readOnlyHomePath: readOnlyHome,
+          providerOptions: { codex: { binaryPath, homePath: instanceHome } },
+        });
+        const expectedHome = readOnly ? readOnlyHome : instanceHome;
+        expect((version.mock.calls[0] as unknown[] | undefined)?.[0]).toMatchObject({
+          homePath: expectedHome,
+        });
+        await vi.waitFor(() =>
+          expect(readFileSync(`${binaryPath}.home`, "utf8")).toBe(expectedHome),
+        );
+        if (readOnly) {
+          expect(readdirSync(readOnlyHome)).toContain("auth.json");
+          expect(readdirSync(readOnlyHome)).not.toContain("rules");
+        } else {
+          expect(existsSync(readOnlyHome)).toBe(false);
+        }
       } finally {
         send.mockRestore();
         await cleanupCodexFixture(manager, directory);
@@ -4128,6 +4204,41 @@ describe("Codex server requests", () => {
         reason: "`touch` is not on the read-only allowlist",
       },
     });
+  });
+
+  it("never answers a read-only stage with a rule that would outlive the request", async () => {
+    const manager = new CodexAppServerManager();
+    const context = Object.assign(requestContext(manager), {
+      workflowExecutionProfile: "unattended-readonly",
+      readOnlyEnforcement: "policy",
+    });
+    const internals = manager as unknown as {
+      handleServerRequest: (context: unknown, request: Record<string, unknown>) => void;
+      writeMessage: (...args: unknown[]) => Promise<void>;
+    };
+    const writeMessage = vi.spyOn(internals, "writeMessage").mockResolvedValue();
+    // The shape Codex 0.170 sends after its sandbox failed to start (gate G3).
+    internals.handleServerRequest(context, {
+      id: 7,
+      method: "item/commandExecution/requestApproval",
+      params: {
+        kind: "command",
+        threadId: "thread_1",
+        turnId: "turn_1",
+        itemId: "item-7",
+        reason: "Allow running ls outside the sandbox after the sandbox failed to start?",
+        command: "/bin/zsh -lc ls",
+        proposedExecpolicyAmendment: ["ls"],
+        availableDecisions: [
+          "accept",
+          { acceptWithExecpolicyAmendment: { execpolicy_amendment: ["ls"] } },
+          "cancel",
+        ],
+      },
+    });
+    await vi.waitFor(() => expect(writeMessage).toHaveBeenCalledTimes(1));
+    // An execpolicy amendment or a session allowance would be written as a rule.
+    expect(writeMessage.mock.calls[0]?.[1]).toEqual({ id: 7, result: { decision: "accept" } });
   });
 
   it("leaves a sandboxed read-only stage's requests to the normal flow", () => {
