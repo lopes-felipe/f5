@@ -496,6 +496,10 @@
       "types": "./src/mcpInterpolation.ts",
       "import": "./src/mcpInterpolation.ts"
     },
+    "./mcpProviderSupport": {
+      "types": "./src/mcpProviderSupport.ts",
+      "import": "./src/mcpProviderSupport.ts"
+    },
     "./mcpValidation": {
       "types": "./src/mcpValidation.ts",
       "import": "./src/mcpValidation.ts"

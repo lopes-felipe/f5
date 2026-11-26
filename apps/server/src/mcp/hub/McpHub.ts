@@ -17,6 +17,7 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 import { stableMcpServersJson } from "@t3tools/shared/mcpConfig";
+import { filterEnabledMcpServers } from "@t3tools/shared/mcpTranslation";
 import {
   describeMcpInterpolationSkip,
   interpolateMcpServers,
@@ -207,8 +208,10 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
     definition: McpServerDefinition,
   ): UpstreamEntry => {
     const scope = defaultConnectionScope(definition);
+    // Settings-only fields never reach the server, so editing them reuses the connection.
+    const { description: _description, disabledProviders: _disabled, ...connected } = definition;
     const definitionHash = createHash("sha256")
-      .update(stableMcpServersJson({ entry: definition }))
+      .update(stableMcpServersJson({ entry: connected as McpServerDefinition }))
       .digest("hex")
       .slice(0, 24);
     // Session connections are never reused. Shared ones are per account, definition and
@@ -266,7 +269,11 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
         });
       return { endpoints, omitted, credentials: [], dispose: async () => {} };
     }
-    const interpolated = interpolateMcpServers(input.servers, input.environment);
+    // Servers turned off for this provider are left out silently, like disabled ones.
+    const interpolated = interpolateMcpServers(
+      filterEnabledMcpServers(input.servers, input.provider),
+      input.environment,
+    );
     for (const skip of interpolated.skipped)
       if (!input.reservedNames?.has(skip.name))
         omitted.push({ serverName: skip.name, reason: describeMcpInterpolationSkip(skip) });

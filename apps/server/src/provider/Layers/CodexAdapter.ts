@@ -2995,7 +2995,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         yield* Effect.try({
           try: () =>
             assertMcpServerLimit(
-              filterEnabledMcpServers(providerMcpServers),
+              filterEnabledMcpServers(providerMcpServers, "codex"),
               MCP_RUNTIME_SERVER_LIMIT,
             ),
           catch: (cause) =>
