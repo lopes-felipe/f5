@@ -109,7 +109,35 @@ it("excludes unused Darwin natives across all packages, preserving universal bui
   }
 });
 
-it("keeps the native helper, Lima and the VM pin out of app.asar", async () => {
+it("ships the Dock tile plug-in in Contents/PlugIns of macOS apps only, signed with the app", async () => {
+  const executable = "Contents/PlugIns/F5DockTile.docktileplugin/Contents/MacOS/F5DockTile";
+  for (const arch of ["arm64", "x64", "universal"] as const) {
+    const config = (await Effect.runPromise(
+      createBuildConfig("mac", "dmg", "F5", false, false, arch),
+    )) as {
+      mac: {
+        binaries: string[];
+        extendInfo: Record<string, unknown>;
+        extraFiles: Array<{ from: string; to: string }>;
+      };
+    };
+    // `to` is relative to Contents, and the Dock resolves the Info.plist name in PlugIns.
+    expect(config.mac.extraFiles).toEqual([{ from: "apps/desktop/dock-tile-bin", to: "PlugIns" }]);
+    expect(config.mac.extendInfo.NSDockTilePlugIn).toBe("F5DockTile.docktileplugin");
+    expect(config.mac.binaries).toContain(executable);
+  }
+  for (const [platform, target] of [
+    ["win", "nsis"],
+    ["linux", "AppImage"],
+  ] as const) {
+    const config = await Effect.runPromise(
+      createBuildConfig(platform, target, "F5", false, false, "x64"),
+    );
+    expect(JSON.stringify(config)).not.toMatch(/PlugIns|docktileplugin/);
+  }
+});
+
+it("keeps the native helper, Lima, the VM pin and the Dock tile plug-in out of app.asar", async () => {
   const excluded = (file: string) =>
     EXTRA_RESOURCE_EXCLUSIONS.some((glob) => matchesGlob(file, glob.slice(1)));
   for (const file of [
@@ -118,6 +146,8 @@ it("keeps the native helper, Lima and the VM pin out of app.asar", async () => {
     "apps/desktop/native-bin/lima/bin/limactl",
     "apps/desktop/native-bin/lima/share/lima/templates/default.yaml",
     "apps/desktop/vm-bin/linux-arm64-backend.json",
+    "apps/desktop/dock-tile-bin/F5DockTile.docktileplugin/Contents/MacOS/F5DockTile",
+    "apps/desktop/dock-tile-bin/F5DockTile.docktileplugin/Contents/Resources/classic.png",
   ])
     expect(excluded(file), file).toBe(true);
   expect(excluded("apps/desktop/dist-electron/main.js")).toBe(false);
@@ -141,7 +171,10 @@ it("signs limactl and carries the VM backend pin only in macOS arm64 builds", as
     const config = (await Effect.runPromise(
       createBuildConfig("mac", "dmg", "F5", false, false, arch),
     )) as { mac: { binaries: string[] } };
-    expect(config.mac.binaries).toEqual(["Contents/Resources/native/f5-computer-helper"]);
+    expect(config.mac.binaries).toEqual([
+      "Contents/Resources/native/f5-computer-helper",
+      "Contents/PlugIns/F5DockTile.docktileplugin/Contents/MacOS/F5DockTile",
+    ]);
     await expect(
       Effect.runPromise(createBuildConfig("mac", "dmg", "F5", false, false, arch, undefined, true)),
     ).rejects.toThrow(/Only macOS arm64/);
