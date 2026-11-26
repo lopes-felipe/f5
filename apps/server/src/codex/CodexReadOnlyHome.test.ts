@@ -1,10 +1,12 @@
 import {
+  link,
   lstat,
   mkdir,
   mkdtemp,
   readFile,
   readdir,
   readlink,
+  rename,
   rm,
   realpath,
   symlink,
@@ -105,11 +107,61 @@ describe("materializeCodexReadOnlyHome", () => {
     expect(await readlink(path.join(home, "sessions"))).toBe(path.join(source, "sessions"));
   });
 
-  posixOnly("starts without sign-in when the source home keeps it in the keyring", async () => {
+  posixOnly("never links a case variant of rules", async () => {
+    const { source, home } = await sourceHome();
+    await rename(path.join(source, "rules"), path.join(source, "Rules"));
+    await materializeCodexReadOnlyHome({ sourceHome: source, readOnlyHome: home });
+    expect((await readdir(home)).map((name) => name.toLowerCase())).not.toContain("rules");
+    await mkdir(path.join(home, "RULES"));
+    await materializeCodexReadOnlyHome({ sourceHome: source, readOnlyHome: home });
+    expect((await readdir(home)).map((name) => name.toLowerCase())).not.toContain("rules");
+  });
+
+  posixOnly("starts without auth.json when Codex keeps sign-in in a file by default", async () => {
     const { source, home } = await sourceHome();
     await rm(path.join(source, "auth.json"));
+    // A key under a table isn't the top-level setting.
+    await writeFile(
+      path.join(source, "config.toml"),
+      '[profiles.work]\ncli_auth_credentials_store = "keyring"\n',
+    );
     await materializeCodexReadOnlyHome({ sourceHome: source, readOnlyHome: home });
     expect(await readdir(home)).not.toContain("auth.json");
+  });
+
+  it.each(["keyring", "auto"])(
+    "refuses a sign-in kept only in the keyring (cli_auth_credentials_store = %s)",
+    async (store) => {
+      const { source, home } = await sourceHome();
+      await rm(path.join(source, "auth.json"));
+      await writeFile(
+        path.join(source, "config.toml"),
+        `model = "x"\ncli_auth_credentials_store = "${store}"\n`,
+      );
+      await expect(
+        materializeCodexReadOnlyHome({ sourceHome: source, readOnlyHome: home }),
+      ).rejects.toThrow(
+        `sign-in kept in your system keychain (cli_auth_credentials_store = "${store}"`,
+      );
+    },
+  );
+
+  posixOnly("links auth.json symbolically, never as a hard link, on Windows", async () => {
+    const { source, home } = await sourceHome();
+    await mkdir(home, { recursive: true });
+    // An earlier build's hard link: Codex refuses to replace a hard-linked credential file.
+    await link(path.join(source, "auth.json"), path.join(home, "auth.json"));
+    await materializeCodexReadOnlyHome({
+      sourceHome: source,
+      readOnlyHome: home,
+      platform: "win32",
+    });
+    expect((await lstat(path.join(home, "auth.json"))).isSymbolicLink()).toBe(true);
+    expect(await readlink(path.join(home, "auth.json"))).toBe(path.join(source, "auth.json"));
+    // Other files stay hard links there.
+    const config = await lstat(path.join(home, "config.toml"));
+    expect(config.isSymbolicLink()).toBe(false);
+    expect(config.ino).toBe((await lstat(path.join(source, "config.toml"))).ino);
   });
 
   posixOnly("ends with the same links when stages start together", async () => {
@@ -151,6 +203,7 @@ describe("findCodexProjectRulesConflict", () => {
     const repo = path.join(root, "repo");
     const cwd = path.join(repo, "packages", "app");
     await mkdir(path.join(repo, ".git"), { recursive: true });
+    await writeFile(path.join(repo, ".git", "HEAD"), "ref: refs/heads/main\n");
     await mkdir(cwd, { recursive: true });
     return { root, repo, cwd };
   }
@@ -191,10 +244,21 @@ describe("findCodexProjectRulesConflict", () => {
     expect((await findCodexProjectRulesConflict(cwd))?.file).toContain(cwd);
   });
 
-  it("skips the home folder's own .codex", async () => {
+  it("finds the project root as Codex does: a .git file, or a .git folder with HEAD", async () => {
+    const { root, repo, cwd } = await repository();
+    const outer = await writeRules(root, "x");
+    await writeFile(path.join(root, ".git"), "gitdir: elsewhere\n");
+    // A `.git` folder without HEAD isn't a marker, so Codex keeps walking up to `root`.
+    await rm(path.join(repo, ".git", "HEAD"));
+    expect((await findCodexProjectRulesConflict(cwd))?.file).toBe(outer);
+  });
+
+  it("checks a home folder's .codex when a repository is rooted there", async () => {
+    // Read-only stages run with F5's Codex home, so Codex reads `~/.codex` as a project layer of a
+    // repository rooted at the home folder.
     const { repo, cwd } = await repository();
-    await writeRules(repo, "x");
-    expect(await findCodexProjectRulesConflict(cwd, { homeDir: repo })).toBeUndefined();
+    const file = await writeRules(repo, "x");
+    expect((await findCodexProjectRulesConflict(cwd))?.file).toBe(file);
   });
 
   posixOnly("blocks a rules entry that isn't a regular file", async () => {

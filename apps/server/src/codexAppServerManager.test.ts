@@ -1312,7 +1312,7 @@ describe("startSession", () => {
       const binaryPath = path.join(directory, "codex.cjs");
       writeFileSync(
         binaryPath,
-        "#!/usr/bin/env node\nrequire('fs').writeFileSync(process.argv[1] + '.home', process.env.CODEX_HOME ?? '');\nprocess.stdin.resume();\n",
+        "#!/usr/bin/env node\nconst fs = require('fs');\nfs.writeFileSync(process.argv[1] + '.argv', JSON.stringify(process.argv.slice(2)));\nfs.writeFileSync(process.argv[1] + '.home', process.env.CODEX_HOME ?? '');\nprocess.stdin.resume();\n",
         { mode: 0o755 },
       );
       const instanceHome = path.join(directory, "instance-home");
@@ -1359,6 +1359,10 @@ describe("startSession", () => {
         await vi.waitFor(() =>
           expect(readFileSync(`${binaryPath}.home`, "utf8")).toBe(expectedHome),
         );
+        // File credentials and pinned project markers only for the read-only stage.
+        const argv = (JSON.parse(readFileSync(`${binaryPath}.argv`, "utf8")) as string[]).join(" ");
+        expect(argv.includes('-c project_root_markers=[".git"]')).toBe(readOnly);
+        expect(argv.includes('-c cli_auth_credentials_store="file"')).toBe(readOnly);
         if (readOnly) {
           expect(readdirSync(readOnlyHome)).toContain("auth.json");
           expect(readdirSync(readOnlyHome)).not.toContain("rules");

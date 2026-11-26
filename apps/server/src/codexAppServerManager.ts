@@ -136,6 +136,7 @@ import {
 } from "./codex/JsonRpcStdinWriter.ts";
 import { resolveCodexHome } from "./os-jank.ts";
 import {
+  CODEX_READ_ONLY_STAGE_CONFIG_ARGS,
   codexReadOnlySourceHome,
   materializeCodexReadOnlyHome,
 } from "./codex/CodexReadOnlyHome.ts";
@@ -1666,6 +1667,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         ...(input.mcpOAuthCallbackPort ? { mcpOAuthCallbackPort: input.mcpOAuthCallbackPort } : {}),
         ...(input.mcpOAuthCallbackUrl ? { mcpOAuthCallbackUrl: input.mcpOAuthCallbackUrl } : {}),
         ...(input.disablePlugins ? { disablePlugins: true } : {}),
+        // File credentials and pinned project markers keep the home's sign-in and the project
+        // rules guard exact (CodexReadOnlyHome.ts).
+        ...(readOnlyHomePath ? { extraConfigArgs: CODEX_READ_ONLY_STAGE_CONFIG_ARGS } : {}),
       });
       if (appServerCommand.dropped.length > 0) {
         await this.runPromise(

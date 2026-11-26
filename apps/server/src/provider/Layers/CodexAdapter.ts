@@ -2649,10 +2649,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
       operation: "startSession" | "sendTurn",
     ) =>
       Effect.tryPromise({
-        try: () =>
-          findCodexProjectRulesConflict(cwd ?? process.cwd(), {
-            homeDir: (options?.processEnvironment ?? process.env).HOME ?? userInfo().homedir,
-          }),
+        try: () => findCodexProjectRulesConflict(cwd ?? process.cwd()),
         catch: (cause) =>
           new ProviderAdapterValidationError({
             provider: PROVIDER,
