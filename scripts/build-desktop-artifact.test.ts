@@ -2,12 +2,18 @@ import { matchesGlob } from "node:path";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
-import { copyFile, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { DEVELOPMENT_ICON_OVERRIDES, PUBLISH_ICON_OVERRIDES } from "./lib/brand-assets";
+import {
+  APP_ICON_FILE_BY_PLATFORM,
+  BRAND_ASSET_PATHS,
+  DEVELOPMENT_ICON_OVERRIDES,
+  PUBLISH_ICON_OVERRIDES,
+} from "./lib/brand-assets";
 import { Effect } from "effect";
 import { describe, expect, it, vi } from "vitest";
 
+import { APP_ICON_IDS } from "@t3tools/contracts";
 import { CODEX_PROTOCOL_BASELINE_VERSION } from "@t3tools/shared/codexProtocolManifest";
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
 import {
@@ -15,6 +21,7 @@ import {
   DESKTOP_ASAR_UNPACK,
   EXTRA_RESOURCE_EXCLUSIONS,
   resolveMacFileExclusions,
+  stageProductionAppIcons,
   stageProductionWebIcons,
 } from "./build-desktop-artifact.ts";
 
@@ -35,6 +42,36 @@ it("stages production web icons when reusing a development server bundle", async
     expect(await readFile(join(stage, "dist/client/favicon.ico"))).not.toEqual(
       await readFile(join(root, "assets/dev/blueprint-web-favicon.ico")),
     );
+  } finally {
+    await rm(stage, { recursive: true, force: true });
+  }
+});
+
+it("stages each platform's production app icon choices over the development ones", async () => {
+  const root = fileURLToPath(new URL("..", import.meta.url));
+  const stage = await mkdtemp(join(tmpdir(), "f5-production-app-icons-"));
+  try {
+    for (const [platform, file] of Object.entries(APP_ICON_FILE_BY_PLATFORM) as Array<
+      ["mac" | "linux" | "win", string]
+    >) {
+      // A stale choice and a development file must both be gone afterwards.
+      await mkdir(join(stage, "app-icons/retired"), { recursive: true });
+      await mkdir(join(stage, "app-icons/classic"), { recursive: true });
+      await copyFile(
+        join(root, BRAND_ASSET_PATHS.developmentAppIconsDir, "classic", file),
+        join(stage, "app-icons/classic", file),
+      );
+      await Effect.runPromise(
+        stageProductionAppIcons(root, stage, platform).pipe(Effect.provide(NodeServices.layer)),
+      );
+      expect((await readdir(join(stage, "app-icons"))).toSorted()).toEqual(APP_ICON_IDS.toSorted());
+      for (const id of APP_ICON_IDS) {
+        expect(await readdir(join(stage, "app-icons", id))).toEqual([file]);
+        expect(await readFile(join(stage, "app-icons", id, file))).toEqual(
+          await readFile(join(root, BRAND_ASSET_PATHS.productionAppIconsDir, id, file)),
+        );
+      }
+    }
   } finally {
     await rm(stage, { recursive: true, force: true });
   }
