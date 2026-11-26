@@ -396,8 +396,21 @@ export async function findCodexProjectRulesConflict(
       break;
     }
   }
-  for (const directory of ancestors.slice(0, projectRoot + 1)) {
-    const rulesDir = nodePath.join(directory, ".codex", "rules");
+  return findCodexRulesInFolders(
+    ancestors.slice(0, projectRoot + 1).map((directory) => nodePath.join(directory, ".codex")),
+  );
+}
+
+/**
+ * The first rules file under any of these `.codex` folders, as `findCodexProjectRulesConflict`
+ * judges it. The manager also runs it on the project layers Codex itself reports, which follow
+ * managed config F5 can't read.
+ */
+export async function findCodexRulesInFolders(
+  dotCodexFolders: ReadonlyArray<string>,
+): Promise<CodexProjectRulesConflict | undefined> {
+  for (const folder of dotCodexFolders) {
+    const rulesDir = nodePath.join(folder, "rules");
     let entries: ReadonlyArray<string>;
     try {
       entries = await nodeFs.readdir(rulesDir);
@@ -417,6 +430,21 @@ export async function findCodexProjectRulesConflict(
     }
   }
   return undefined;
+}
+
+/** The `.codex` folders of the project layers in a `config/read` response with `includeLayers`. */
+export function codexProjectLayerFolders(response: unknown): ReadonlyArray<string> | undefined {
+  if (typeof response !== "object" || response === null) return undefined;
+  const layers = (response as { layers?: unknown }).layers;
+  if (!Array.isArray(layers)) return undefined;
+  const folders: string[] = [];
+  for (const layer of layers) {
+    const name = (layer as { name?: { type?: unknown; dotCodexFolder?: unknown } } | null)?.name;
+    if (name?.type !== "project") continue;
+    if (typeof name.dotCodexFolder !== "string") return undefined;
+    folders.push(name.dotCodexFolder);
+  }
+  return folders;
 }
 
 /** The refusal shown when a workspace's Codex rules can't be used in a read-only stage. */

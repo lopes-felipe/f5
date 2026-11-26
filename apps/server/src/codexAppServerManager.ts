@@ -136,8 +136,11 @@ import {
 } from "./codex/JsonRpcStdinWriter.ts";
 import { resolveCodexHome } from "./os-jank.ts";
 import {
+  codexProjectLayerFolders,
+  codexProjectRulesConflictMessage,
   codexReadOnlyStageConfigArgs,
   codexReadOnlySourceHome,
+  findCodexRulesInFolders,
   materializeCodexReadOnlyHome,
 } from "./codex/CodexReadOnlyHome.ts";
 import { resolveInvocation } from "./spawn/resolveCommand.ts";
@@ -1819,6 +1822,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
           input.readOnlyEnforcement ?? "sandbox",
         );
       else delete context.readOnlyMode;
+      if (readOnlyHomePath) await this.assertNoCodexProjectRules(context, input.cwd ?? processCwd);
       const threadOpenParams = buildCodexThreadOpenRequestParams({
         cliVersion,
         browserResume: !!input.browserResume,
@@ -5324,6 +5328,32 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         },
       },
     });
+  }
+
+  /**
+   * Refuses a read-only stage when a project layer Codex itself loads for `cwd` holds rules. The
+   * adapter's guard walks the folders Codex would use with the pinned project-root markers;
+   * managed config can still change the markers, so this asks Codex which `.codex` folders it
+   * reads. A Codex that can't say fails closed.
+   */
+  private async assertNoCodexProjectRules(
+    context: CodexSessionContext,
+    cwd: string,
+  ): Promise<void> {
+    let folders: ReadonlyArray<string> | undefined;
+    try {
+      folders = codexProjectLayerFolders(
+        await this.sendRequest(context, "config/read", { cwd, includeLayers: true }),
+      );
+    } catch (error) {
+      throw new Error(
+        `Codex couldn't list the project config it loads for this read-only stage (${error instanceof Error ? error.message : String(error)}).`,
+      );
+    }
+    if (!folders)
+      throw new Error("Codex didn't list the project config it loads for this read-only stage.");
+    const conflict = await findCodexRulesInFolders(folders);
+    if (conflict) throw new Error(codexProjectRulesConflictMessage(conflict));
   }
 
   /**
