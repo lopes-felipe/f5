@@ -138,6 +138,11 @@ export interface McpHubShape {
     threadId: ThreadId,
     serverName: string,
   ) => McpHubSessionServer | undefined;
+  /**
+   * Every hub server a conversation's live session uses, by name, for the composer's
+   * prompts and resources. Empty when the conversation has no live session.
+   */
+  readonly sessionServers?: (threadId: ThreadId) => ReadonlyMap<string, McpHubComposerServer>;
   /** Projects with live sessions (`undefined` for sessions without a project). */
   readonly attachedProjects?: () => ReadonlyArray<ProjectId | undefined>;
   /**
@@ -155,6 +160,12 @@ export interface McpHubShape {
 export type McpHubSessionServer = Pick<
   McpHubSlot,
   "appListTools" | "appCallTool" | "appReadResource"
+>;
+
+/** One conversation's hub server, as the composer uses it. */
+export type McpHubComposerServer = Pick<
+  McpHubSlot,
+  "listPrompts" | "getPrompt" | "complete" | "listResources" | "readResource"
 >;
 
 export class McpHub extends ServiceMap.Service<McpHub, McpHubShape>()("t3/mcp/hub/McpHub") {}
@@ -575,6 +586,14 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
     return match;
   };
 
+  const sessionServers = (threadId: ThreadId) => {
+    const matches = new Map<string, McpHubSlot>();
+    // Slots are kept in issue order, so the newest bound endpoint per name wins.
+    for (const slot of slots.values())
+      if (slot.threadId === threadId && slot.upstream) matches.set(slot.serverName, slot);
+    return matches;
+  };
+
   const attachedProjects = () => [
     ...new Set([...slots.values()].map((slot) => slot.sessionProjectId)),
   ];
@@ -599,6 +618,7 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
     oauthStorage: options.oauthStorage,
     reconnectOAuth,
     sessionServer,
+    sessionServers,
     attachedProjects,
     refreshToolPolicies,
     close,

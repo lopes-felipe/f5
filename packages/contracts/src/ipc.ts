@@ -285,6 +285,16 @@ import type {
   McpGetThreadServersRequest,
   McpSetThreadServerEnabledRequest,
   McpThreadServersResult,
+  McpListComposerPromptsRequest,
+  McpListComposerPromptsResult,
+  McpGetComposerPromptRequest,
+  McpGetComposerPromptResult,
+  McpCompleteComposerPromptRequest,
+  McpCompleteComposerPromptResult,
+  McpListComposerResourcesRequest,
+  McpListComposerResourcesResult,
+  McpReadComposerResourceRequest,
+  McpReadComposerResourceResult,
   McpGetProviderStatusRequest,
   McpGetEffectiveConfigRequest,
   McpGetProjectConfigRequest,
@@ -1368,6 +1378,22 @@ export interface NativeApi {
     setThreadServerEnabled: (
       input: McpSetThreadServerEnabledRequest,
     ) => Promise<McpThreadServersResult>;
+    listComposerPrompts: (
+      input: McpListComposerPromptsRequest,
+      context?: NativeRequestContext,
+    ) => Promise<McpListComposerPromptsResult>;
+    getComposerPrompt: (input: McpGetComposerPromptRequest) => Promise<McpGetComposerPromptResult>;
+    completeComposerPrompt: (
+      input: McpCompleteComposerPromptRequest,
+      context?: NativeRequestContext,
+    ) => Promise<McpCompleteComposerPromptResult>;
+    listComposerResources: (
+      input: McpListComposerResourcesRequest,
+      context?: NativeRequestContext,
+    ) => Promise<McpListComposerResourcesResult>;
+    readComposerResource: (
+      input: McpReadComposerResourceRequest,
+    ) => Promise<McpReadComposerResourceResult>;
     onStatusUpdated: (callback: (payload: McpStatusUpdatedPayload) => void) => () => void;
   };
   storage: {

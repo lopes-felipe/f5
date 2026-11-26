@@ -177,6 +177,11 @@ import {
   McpListActivityRequest,
   McpGetThreadServersRequest,
   McpSetThreadServerEnabledRequest,
+  McpListComposerPromptsRequest,
+  McpGetComposerPromptRequest,
+  McpCompleteComposerPromptRequest,
+  McpListComposerResourcesRequest,
+  McpReadComposerResourceRequest,
   McpReconnectServerRequest,
   McpReplaceCommonConfigRequest,
   McpReplaceProjectConfigRequest,
@@ -798,6 +803,11 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.mcpListActivity, McpListActivityRequest),
   tagRequestBody(WS_METHODS.mcpGetThreadServers, McpGetThreadServersRequest),
   tagRequestBody(WS_METHODS.mcpSetThreadServerEnabled, McpSetThreadServerEnabledRequest),
+  tagRequestBody(WS_METHODS.mcpListComposerPrompts, McpListComposerPromptsRequest),
+  tagRequestBody(WS_METHODS.mcpGetComposerPrompt, McpGetComposerPromptRequest),
+  tagRequestBody(WS_METHODS.mcpCompleteComposerPrompt, McpCompleteComposerPromptRequest),
+  tagRequestBody(WS_METHODS.mcpListComposerResources, McpListComposerResourcesRequest),
+  tagRequestBody(WS_METHODS.mcpReadComposerResource, McpReadComposerResourceRequest),
 
   // PR Hub methods
   tagRequestBody(PR_HUB_WS_METHODS.listAccounts, Schema.Struct({})),

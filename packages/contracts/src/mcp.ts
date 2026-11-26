@@ -148,6 +148,49 @@ export const McpSetThreadServerEnabledRequest = Schema.Struct({
 });
 export type McpSetThreadServerEnabledRequest = typeof McpSetThreadServerEnabledRequest.Type;
 
+/** Most resources the composer lists per server. */
+export const MCP_COMPOSER_RESOURCE_LIMIT = 200;
+/** Most text a resource adds to a message; longer text is cut with a note. */
+export const MCP_COMPOSER_RESOURCE_TEXT_BYTES = 256 * 1024;
+
+/** Prompts and resources come from the hub servers this conversation's session is using. */
+export const McpListComposerPromptsRequest = Schema.Struct({
+  threadId: ThreadId,
+});
+export type McpListComposerPromptsRequest = typeof McpListComposerPromptsRequest.Type;
+
+export const McpGetComposerPromptRequest = Schema.Struct({
+  threadId: ThreadId,
+  serverName: TrimmedNonEmptyString,
+  name: TrimmedNonEmptyString,
+  arguments: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+});
+export type McpGetComposerPromptRequest = typeof McpGetComposerPromptRequest.Type;
+
+/** Server-side suggestions for one prompt argument, given what is typed so far. */
+export const McpCompleteComposerPromptRequest = Schema.Struct({
+  threadId: ThreadId,
+  serverName: TrimmedNonEmptyString,
+  name: TrimmedNonEmptyString,
+  argument: TrimmedNonEmptyString,
+  value: Schema.String,
+  /** Arguments already filled, for servers whose suggestions depend on them. */
+  arguments: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+});
+export type McpCompleteComposerPromptRequest = typeof McpCompleteComposerPromptRequest.Type;
+
+export const McpListComposerResourcesRequest = Schema.Struct({
+  threadId: ThreadId,
+});
+export type McpListComposerResourcesRequest = typeof McpListComposerResourcesRequest.Type;
+
+export const McpReadComposerResourceRequest = Schema.Struct({
+  threadId: ThreadId,
+  serverName: TrimmedNonEmptyString,
+  uri: TrimmedNonEmptyString,
+});
+export type McpReadComposerResourceRequest = typeof McpReadComposerResourceRequest.Type;
+
 /** Without a project, common servers are listed and signed in. */
 export const McpGetHubAuthStatusRequest = Schema.Struct({
   projectId: Schema.optional(ProjectId),

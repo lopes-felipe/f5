@@ -455,6 +455,12 @@ import { McpRuntimeService } from "./mcp/McpRuntimeService.ts";
 import { McpHub } from "./mcp/hub/McpHub.ts";
 import { McpHubAuth } from "./mcp/hub/McpHubAuth.ts";
 import { McpHubGovernanceService } from "./mcp/hub/McpHubGovernanceLive.ts";
+import {
+  flattenPrompt,
+  listComposerPrompts,
+  listComposerResources,
+  shapeResourceContents,
+} from "./mcp/hub/mcpComposerContext.ts";
 import { reconcileCodexThreadSnapshots } from "./orchestration/codexSnapshotReconciliation.ts";
 import { makeHistoryRecoveredSessionSet } from "./orchestration/providerTerminalLifecycle.ts";
 import { redactServerSettingsForClient, ServerSettingsService } from "./serverSettings.ts";
@@ -1170,6 +1176,23 @@ export const createServer = Effect.fn(function* (
     yield* Effect.serviceOption(McpHubGovernanceService),
   );
   const projectMcpConfigService = yield* ProjectMcpConfigService;
+  /** The hub server a conversation's live session uses under `serverName`, for the composer. */
+  const composerServer = (threadId: ThreadId, serverName: string) => {
+    const server = mcpHub?.sessionServers?.(threadId).get(serverName);
+    return server
+      ? Effect.succeed(server)
+      : Effect.fail(
+          new RouteRequestError({
+            message: `'${serverName}' isn't available in this conversation. Start or resume the conversation first.`,
+          }),
+        );
+  };
+  const composerCall = <A>(run: (signal: AbortSignal) => Promise<A>) =>
+    Effect.tryPromise({
+      try: run,
+      catch: (error) =>
+        new RouteRequestError({ message: error instanceof Error ? error.message : String(error) }),
+    });
   const previewAutomationBroker = yield* PreviewAutomationBroker;
   const computerAutomationBroker = yield* Effect.serviceOption(ComputerAutomationBroker);
   const forgeAccounts = yield* Effect.serviceOption(ForgeAccounts);
@@ -8411,6 +8434,60 @@ export const createServer = Effect.fn(function* (
             message: "Turning MCP servers off per conversation is unavailable here.",
           });
         return yield* mcpHubGovernance.setThreadServerEnabled(body);
+      }
+
+      case WS_METHODS.mcpListComposerPrompts: {
+        const body = stripRequestTag(request.body);
+        const servers = mcpHub?.sessionServers?.(body.threadId);
+        if (!servers?.size) return { servers: [] };
+        return {
+          servers: yield* Effect.promise((signal) => listComposerPrompts(servers, signal)),
+        };
+      }
+
+      case WS_METHODS.mcpGetComposerPrompt: {
+        const body = stripRequestTag(request.body);
+        const server = yield* composerServer(body.threadId, body.serverName);
+        return yield* composerCall((signal) =>
+          server
+            .getPrompt({ name: body.name, arguments: { ...body.arguments } }, signal)
+            .then(flattenPrompt),
+        );
+      }
+
+      case WS_METHODS.mcpCompleteComposerPrompt: {
+        const body = stripRequestTag(request.body);
+        const server = yield* composerServer(body.threadId, body.serverName);
+        const result = yield* composerCall((signal) =>
+          server.complete(
+            {
+              ref: { type: "ref/prompt", name: body.name },
+              argument: { name: body.argument, value: body.value },
+              ...(body.arguments ? { context: { arguments: { ...body.arguments } } } : {}),
+            },
+            signal,
+          ),
+        );
+        return { values: result.completion.values.slice(0, 100) };
+      }
+
+      case WS_METHODS.mcpListComposerResources: {
+        const body = stripRequestTag(request.body);
+        const servers = mcpHub?.sessionServers?.(body.threadId);
+        if (!servers?.size) return { servers: [] };
+        return {
+          servers: yield* Effect.promise((signal) => listComposerResources(servers, signal)),
+        };
+      }
+
+      case WS_METHODS.mcpReadComposerResource: {
+        const body = stripRequestTag(request.body);
+        const server = yield* composerServer(body.threadId, body.serverName);
+        return yield* composerCall((signal) =>
+          server
+            .readResource({ uri: body.uri }, signal)
+            .then((result) => shapeResourceContents(result)),
+        );
       }
 
       default: {

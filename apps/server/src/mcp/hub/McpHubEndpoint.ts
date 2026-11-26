@@ -21,6 +21,17 @@ import {
   McpError,
   ReadResourceRequestSchema,
   type CallToolResult,
+  type CompleteRequest,
+  type CompleteResult,
+  type GetPromptRequest,
+  type GetPromptResult,
+  type ListPromptsRequest,
+  type ListPromptsResult,
+  type ListResourcesRequest,
+  type ListResourcesResult,
+  type ListResourceTemplatesRequest,
+  type ListResourceTemplatesResult,
+  type ReadResourceRequest,
   type ReadResourceResult,
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
@@ -283,11 +294,78 @@ export class McpHubSlot {
 
   /** MCP Apps: reads a `ui://` resource on this session's connection. */
   async appReadResource(uri: string, signal: AbortSignal): Promise<ReadResourceResult> {
+    return this.readResource({ uri }, signal);
+  }
+
+  /*
+   * Prompts and resources, for the provider and for the composer alike. A server
+   * turned off for this conversation offers none, and refuses reads.
+   */
+
+  async listPrompts(
+    params: ListPromptsRequest["params"],
+    signal: AbortSignal,
+  ): Promise<ListPromptsResult> {
+    if (!this.current || this.disabledHere()) return { prompts: [] };
+    const upstream = this.current;
+    const client = await upstreamClient(upstream);
+    if (!client.getServerCapabilities()?.prompts) return { prompts: [] };
+    return upstreamCall(upstream, () => client.listPrompts(params, { signal }));
+  }
+
+  async getPrompt(
+    params: GetPromptRequest["params"],
+    signal: AbortSignal,
+  ): Promise<GetPromptResult> {
     const upstream = this.requireUpstream();
+    if (this.disabledHere()) throw new McpError(ErrorCode.InvalidRequest, this.turnedOffMessage());
+    const client = await upstreamClient(upstream);
+    if (!client.getServerCapabilities()?.prompts)
+      throw new McpError(ErrorCode.MethodNotFound, "This server has no prompts.");
+    return upstreamCall(upstream, () => client.getPrompt(params, { signal }));
+  }
+
+  async complete(params: CompleteRequest["params"], signal: AbortSignal): Promise<CompleteResult> {
+    const upstream = this.requireUpstream();
+    if (this.disabledHere()) return { completion: { values: [], hasMore: false } };
+    const client = await upstreamClient(upstream);
+    if (!client.getServerCapabilities()?.completions)
+      return { completion: { values: [], hasMore: false } };
+    return upstreamCall(upstream, () => client.complete(params, { signal }));
+  }
+
+  async listResources(
+    params: ListResourcesRequest["params"],
+    signal: AbortSignal,
+  ): Promise<ListResourcesResult> {
+    if (!this.current || this.disabledHere()) return { resources: [] };
+    const upstream = this.current;
+    const client = await upstreamClient(upstream);
+    if (!client.getServerCapabilities()?.resources) return { resources: [] };
+    return upstreamCall(upstream, () => client.listResources(params, { signal }));
+  }
+
+  async listResourceTemplates(
+    params: ListResourceTemplatesRequest["params"],
+    signal: AbortSignal,
+  ): Promise<ListResourceTemplatesResult> {
+    if (!this.current || this.disabledHere()) return { resourceTemplates: [] };
+    const upstream = this.current;
+    const client = await upstreamClient(upstream);
+    if (!client.getServerCapabilities()?.resources) return { resourceTemplates: [] };
+    return upstreamCall(upstream, () => client.listResourceTemplates(params, { signal }));
+  }
+
+  async readResource(
+    params: ReadResourceRequest["params"],
+    signal: AbortSignal,
+  ): Promise<ReadResourceResult> {
+    const upstream = this.requireUpstream();
+    if (this.disabledHere()) throw new McpError(ErrorCode.InvalidRequest, this.turnedOffMessage());
     const client = await upstreamClient(upstream);
     if (!client.getServerCapabilities()?.resources)
       throw new McpError(ErrorCode.MethodNotFound, "This server has no resources.");
-    return upstreamCall(upstream, () => client.readResource({ uri }, { signal }));
+    return upstreamCall(upstream, () => client.readResource(params, { signal }));
   }
 
   authorizes(token: string | null | undefined): boolean {
@@ -499,65 +577,24 @@ export class McpHubSlot {
       }
     });
 
-    server.setRequestHandler(ListResourcesRequestSchema, async (request, extra) => {
-      if (!this.current) return { resources: [] };
-      const upstream = this.requireUpstream();
-      const client = await upstreamClient(upstream);
-      if (!client.getServerCapabilities()?.resources) return { resources: [] };
-      return upstreamCall(upstream, () =>
-        client.listResources(request.params, { signal: extra.signal }),
-      );
-    });
-
-    server.setRequestHandler(ListResourceTemplatesRequestSchema, async (request, extra) => {
-      if (!this.current) return { resourceTemplates: [] };
-      const upstream = this.requireUpstream();
-      const client = await upstreamClient(upstream);
-      if (!client.getServerCapabilities()?.resources) return { resourceTemplates: [] };
-      return upstreamCall(upstream, () =>
-        client.listResourceTemplates(request.params, { signal: extra.signal }),
-      );
-    });
-
-    server.setRequestHandler(ReadResourceRequestSchema, async (request, extra) => {
-      const upstream = this.requireUpstream();
-      const client = await upstreamClient(upstream);
-      if (!client.getServerCapabilities()?.resources)
-        throw new McpError(ErrorCode.MethodNotFound, "This server has no resources.");
-      return upstreamCall(upstream, () =>
-        client.readResource(request.params, { signal: extra.signal }),
-      );
-    });
-
-    server.setRequestHandler(ListPromptsRequestSchema, async (request, extra) => {
-      if (!this.current) return { prompts: [] };
-      const upstream = this.requireUpstream();
-      const client = await upstreamClient(upstream);
-      if (!client.getServerCapabilities()?.prompts) return { prompts: [] };
-      return upstreamCall(upstream, () =>
-        client.listPrompts(request.params, { signal: extra.signal }),
-      );
-    });
-
-    server.setRequestHandler(GetPromptRequestSchema, async (request, extra) => {
-      const upstream = this.requireUpstream();
-      const client = await upstreamClient(upstream);
-      if (!client.getServerCapabilities()?.prompts)
-        throw new McpError(ErrorCode.MethodNotFound, "This server has no prompts.");
-      return upstreamCall(upstream, () =>
-        client.getPrompt(request.params, { signal: extra.signal }),
-      );
-    });
-
-    server.setRequestHandler(CompleteRequestSchema, async (request, extra) => {
-      const upstream = this.requireUpstream();
-      const client = await upstreamClient(upstream);
-      if (!client.getServerCapabilities()?.completions)
-        return { completion: { values: [], hasMore: false } };
-      return upstreamCall(upstream, () =>
-        client.complete(request.params, { signal: extra.signal }),
-      );
-    });
+    server.setRequestHandler(ListResourcesRequestSchema, (request, extra) =>
+      this.listResources(request.params, extra.signal),
+    );
+    server.setRequestHandler(ListResourceTemplatesRequestSchema, (request, extra) =>
+      this.listResourceTemplates(request.params, extra.signal),
+    );
+    server.setRequestHandler(ReadResourceRequestSchema, (request, extra) =>
+      this.readResource(request.params, extra.signal),
+    );
+    server.setRequestHandler(ListPromptsRequestSchema, (request, extra) =>
+      this.listPrompts(request.params, extra.signal),
+    );
+    server.setRequestHandler(GetPromptRequestSchema, (request, extra) =>
+      this.getPrompt(request.params, extra.signal),
+    );
+    server.setRequestHandler(CompleteRequestSchema, (request, extra) =>
+      this.complete(request.params, extra.signal),
+    );
 
     return server;
   }
