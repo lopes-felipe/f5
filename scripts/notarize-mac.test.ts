@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 type RunResult = { status: number | null; stdout: string };
@@ -40,7 +41,8 @@ function harness(responses: Record<string, RunResult[]>) {
 }
 
 describe("verifyDockTilePlugIn", () => {
-  const plugIn = "/out/mac/F5.app/Contents/PlugIns/F5DockTile.docktileplugin";
+  // Joined like the hook joins them, so the test also runs on a Windows runner.
+  const plugIn = join("/out/mac/F5.app", "Contents/PlugIns/F5DockTile.docktileplugin");
 
   it("verifies the plug-in bundle's signature", () => {
     const { calls, deps } = harness({});
@@ -52,7 +54,7 @@ describe("verifyDockTilePlugIn", () => {
         return true;
       },
     });
-    expect(seen).toEqual([`${plugIn}/Contents/MacOS/F5DockTile`]);
+    expect(seen).toEqual([join(plugIn, "Contents/MacOS/F5DockTile")]);
     expect(calls).toEqual([{ command: "codesign", args: ["--verify", "--strict", plugIn] }]);
   });
 
