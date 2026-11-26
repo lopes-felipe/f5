@@ -6,7 +6,7 @@ import { copyFile, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { DEVELOPMENT_ICON_OVERRIDES, PUBLISH_ICON_OVERRIDES } from "./lib/brand-assets";
 import { Effect } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { CODEX_PROTOCOL_BASELINE_VERSION } from "@t3tools/shared/codexProtocolManifest";
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
@@ -113,6 +113,42 @@ it("signs limactl and carries the VM backend pin only in macOS arm64 builds", as
 it("bundles the audited Codex version and unpacks its native platform packages", () => {
   expect(serverPackageJson.dependencies["@openai/codex"]).toBe(CODEX_PROTOCOL_BASELINE_VERSION);
   expect(DESKTOP_ASAR_UNPACK).toContain("node_modules/@openai/codex-*/**/*");
+});
+
+// One-way: a build without the fuse cannot read cookies a build with it wrote. Changing a row
+// that is true to false destroys every affected user's cookies; changing false to true is a
+// deliberate rollout that needs its own packaged upgrade test.
+describe("cookie encryption fuse", () => {
+  it.each([
+    ["win", "nsis", true, true],
+    ["win", "nsis", false, true],
+    ["mac", "dmg", true, true],
+    ["mac", "dmg", false, false],
+    ["linux", "AppImage", true, false],
+    ["linux", "deb", false, false],
+  ] as const)("on %s %s (signed: %s) is %s", async (platform, target, signed, enabled) => {
+    // Signed builds validate that their credentials are present; the values are never used.
+    for (const name of [
+      "CSC_LINK",
+      "CSC_KEY_PASSWORD",
+      "APPLE_API_KEY",
+      "APPLE_API_KEY_ID",
+      "APPLE_API_ISSUER",
+      "AZURE_TRUSTED_SIGNING_PUBLISHER_NAME",
+      "AZURE_TRUSTED_SIGNING_ENDPOINT",
+      "AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME",
+      "AZURE_TRUSTED_SIGNING_ACCOUNT_NAME",
+    ])
+      vi.stubEnv(name, "test");
+    try {
+      const config = (await Effect.runPromise(
+        createBuildConfig(platform, target, "F5", signed, false),
+      )) as { electronFuses: { enableCookieEncryption: boolean } };
+      expect(config.electronFuses.enableCookieEncryption).toBe(enabled);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 });
 
 describe("desktop afterPack configuration", () => {
