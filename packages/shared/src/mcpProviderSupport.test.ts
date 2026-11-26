@@ -65,6 +65,15 @@ describe("mcpProviderSupport", () => {
     // A provider this version does not know is dropped, so the toggle can save.
     const unknown = { ...base, disabledProviders: ["future-agent"] } as McpServerDefinition;
     expect(setMcpProviderEnabled(unknown, "codex", false).disabledProviders).toEqual(["codex"]);
+    // Repeated names count once, so turning another provider off stays within the limit.
+    const repeated = {
+      ...base,
+      disabledProviders: Array.from({ length: 9 }, () => "codex"),
+    } as McpServerDefinition;
+    expect(setMcpProviderEnabled(repeated, "claudeAgent", false).disabledProviders).toEqual([
+      "codex",
+      "claudeAgent",
+    ]);
 
     const servers = { docs: offForCodex, other: base };
     expect(Object.keys(translateMcpForCodex(servers) ?? {})).toEqual(["other"]);

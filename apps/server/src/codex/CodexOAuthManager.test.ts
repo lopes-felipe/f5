@@ -558,6 +558,77 @@ describe("CodexOAuthManager", () => {
     });
   });
 
+  it("keeps a login that completes while the lease check is running", async () => {
+    const client = new FakeOauthClient();
+    let leaseActive = false;
+    let completeDuringLeaseCheck = false;
+    const published: unknown[] = [];
+
+    const dependencies = Layer.mergeAll(
+      Layer.succeed(ProviderService, makeProviderServiceStub()),
+      makeProjectMcpConfigServiceStub(),
+      Layer.succeed(CodexMcpEventBus, {
+        publishStatusUpdated: (payload) => Effect.sync(() => void published.push(payload)),
+        streamStatusUpdates: Stream.empty,
+      }),
+      Layer.succeed(CodexMcpSyncService, {
+        getStatus: ({ projectId }) => Effect.succeed({ projectId, support: "supported" as const }),
+      }),
+      Layer.succeed(CodexControlClientRegistry, {
+        getAdminClient: (_input) => Effect.die(new Error("unused in CodexOAuthManager tests")),
+        hasOauthLease: (_input) =>
+          Effect.promise(async () => {
+            if (!completeDuringLeaseCheck) return leaseActive;
+            // The login finishes (and releases its lease) while this check is in flight.
+            client.emit("notification", {
+              method: "mcpServer/oauthLogin/completed",
+              params: { name: request.serverName, success: true },
+            });
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            return false;
+          }),
+        acquireOauthClient: (_input) =>
+          Effect.sync(() => {
+            leaseActive = true;
+            return {
+              client: client as unknown as CodexControlClient,
+              release: Effect.sync(() => {
+                leaseActive = false;
+              }),
+            };
+          }),
+      }),
+    );
+    const layer = CodexOAuthManagerLive.pipe(Layer.provide(dependencies));
+
+    await withManagerRuntime(layer, async (runtime) => {
+      const pending = await runtime.runPromise(
+        Effect.gen(function* () {
+          const manager = yield* CodexOAuthManager;
+          return yield* manager.startLogin(request);
+        }),
+      );
+      expect(pending.status).toBe("pending");
+
+      completeDuringLeaseCheck = true;
+      const status = await runtime.runPromise(
+        Effect.gen(function* () {
+          const manager = yield* CodexOAuthManager;
+          return yield* manager.getStatus(request);
+        }),
+      );
+      expect(status.status).toBe("completed");
+      expect(status.error).toBeUndefined();
+      const stored = await runtime.runPromise(
+        Effect.gen(function* () {
+          const manager = yield* CodexOAuthManager;
+          return yield* manager.getStatus(request);
+        }),
+      );
+      expect(stored.status).toBe("completed");
+    });
+  });
+
   it("marks OAuth login completed before live MCP reload finishes", async () => {
     const client = new FakeOauthClient();
     let leaseActive = false;

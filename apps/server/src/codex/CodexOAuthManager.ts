@@ -293,6 +293,11 @@ const makeCodexOAuthManager = Effect.gen(function* () {
       if (hasLease) {
         return existing;
       }
+      // The login finished (or a new one started) while reconciliation and the lease
+      // check ran; the stored outcome wins over a timeout decided from stale reads.
+      if (pendingMetadataByKey.get(key) !== metadata) {
+        return statusByKey.get(key) ?? existing;
+      }
 
       const expiredStatus = makeFailedStatus(input, {
         startedAt: existing.startedAt ?? nowIso(),

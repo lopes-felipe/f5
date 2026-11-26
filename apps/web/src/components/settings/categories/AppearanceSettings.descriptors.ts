@@ -24,6 +24,13 @@ export const APPEARANCE_SETTINGS_DESCRIPTORS = [
     targetSelector: '[aria-label="Color theme library"]',
   },
   {
+    ...SETTINGS_ITEM_ROUTES["appearance.app-icon"],
+    label: "App icon",
+    description: "Choose the F5 icon, including the classic one.",
+    keywords: ["icon", "logo", "dock", "taskbar", "classic"],
+    targetSelector: '[aria-label="App icon"]',
+  },
+  {
     ...SETTINGS_ITEM_ROUTES["appearance.diff-colors"],
     label: "Diff colors",
     description: "Choose red and green or blue and orange diff colors.",

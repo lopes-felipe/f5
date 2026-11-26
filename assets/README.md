@@ -28,6 +28,27 @@ Windows ICOs contain 16, 32, 48, 64, 128 and 256px entries. Web favicons contain
 16, 32 and 48px entries, alongside 16/32px PNGs, a 180px touch icon and a 512px
 sidebar image. Desktop development resources contain 512px PNG, ICO and ICNS.
 
+## Icon choices
+
+Settings > Appearance offers ten icons. Each is a row of the VARIANTS table in the
+recipe: a tile, five row colours and an optional bloom, drawn on the same bar
+geometry. "lines" is the default and is the icon described above. "classic" is the
+exception: it is resized from assets/icon-classic.png, the previous hand-made
+artwork and the only input that is not drawn.
+
+For every id the recipe writes:
+
+- apps/web/public/app-icons/<id>.png (256px) and <id>-32.png, for the sidebar and
+  the browser tab;
+- assets/prod/app-icons/<id>/macos.png (512px padded face), linux.png (512px full
+  tile) and windows.ico, which packaging copies into the app for its platform;
+- the same three files with the development badge under
+  apps/desktop/resources/app-icons/<id>/.
+
+To add or change a choice, edit VARIANTS, add the id to APP_ICON_IDS in
+packages/contracts/src/appIcon.ts and its label in apps/web/src/appIcon.ts, then
+regenerate. scripts/brand-assets.test.ts fails when the two lists disagree.
+
 scripts/lib/brand-assets.ts selects production assets for publishing and
 development assets for local builds. The marketing site's favicons and 1024px
 icon in apps/marketing/public are copies of the production web assets, written by

@@ -58,22 +58,41 @@ class BrandGeometryTests(unittest.TestCase):
 
     def test_generated_artwork_matches_the_recipe(self):
         universal = Image.open(ROOT / "assets/prod/black-universal-1024.png").convert("RGBA")
+        self.assertBarColours(universal, RECIPE.DEFAULT_VARIANT)
         scale = 1024 / RECIPE.GRID
-        for y, colour, bars in RECIPE.ROWS:
-            for x, width in bars:
-                centre = (round((x + width / 2) * scale), round((y + RECIPE.ROW_HEIGHT / 2) * scale))
-                for actual, expected in zip(universal.getpixel(centre), RECIPE.rgb(colour)):
-                    self.assertLessEqual(abs(actual - expected), 6)
-        first, second = RECIPE.ROWS[0][0], RECIPE.ROWS[1][0]
+        first, second = RECIPE.BARS[0][0], RECIPE.BARS[1][0]
         gap = (round(20 * scale), round((first + RECIPE.ROW_HEIGHT + second) / 2 * scale))
         self.assertLess(max(universal.getpixel(gap)[:3]), 0x30)
+
+    def test_each_choice_is_drawn_from_its_table_row(self):
+        for name, variant in RECIPE.VARIANTS.items():
+            tile = Image.open(ROOT / f"assets/prod/app-icons/{name}/linux.png").convert("RGBA")
+            self.assertEqual(tile.size, (512, 512), name)
+            if "source" in variant:
+                source = Image.open(ROOT / variant["source"]).convert("RGBA")
+                self.assertSamePixels(tile, RECIPE.resize(RECIPE.resize(source, 1024), 512), name)
+            else:
+                self.assertBarColours(tile, name)
+        self.assertIn(RECIPE.DEFAULT_VARIANT, RECIPE.VARIANTS)
+
+    def assertBarColours(self, image, name):
+        scale = image.width / RECIPE.GRID
+        for y, colour, bars in RECIPE.rows(name):
+            for x, width in bars:
+                centre = (round((x + width / 2) * scale), round((y + RECIPE.ROW_HEIGHT / 2) * scale))
+                for actual, expected in zip(image.getpixel(centre), RECIPE.rgb(colour)):
+                    self.assertLessEqual(abs(actual - expected), 6, name)
 
     def test_committed_assets_match_a_fresh_run(self):
         with tempfile.TemporaryDirectory(prefix="f5-brand-drift-") as temporary:
             fresh = Path(temporary)
             RECIPE.generate(fresh, icns=False)
             generated = sorted(path.relative_to(fresh) for path in fresh.rglob("*") if path.is_file())
-            self.assertEqual(len(generated), 30)
+            # 30 files for the built-in icon, then 2 web and 2 x 3 desktop files per choice.
+            self.assertEqual(len(generated), 30 + 8 * len(RECIPE.VARIANTS))
+            for folder in ["apps/web/public/app-icons", "assets/prod/app-icons", "apps/desktop/resources/app-icons"]:
+                committed = sorted(path.relative_to(ROOT) for path in (ROOT / folder).rglob("*") if path.is_file())
+                self.assertEqual(committed, [path for path in generated if path.is_relative_to(folder)], folder)
             for relative in generated:
                 label = str(relative)
                 self.assertTrue((ROOT / relative).is_file(), label)

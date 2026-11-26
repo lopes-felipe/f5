@@ -17,8 +17,8 @@ import type {
   McpServerStatusesResult,
   ProjectId,
   ProviderKind,
-  ProviderInstanceId,
 } from "@t3tools/contracts";
+import { ProviderInstanceId } from "@t3tools/contracts";
 import { queryOptions } from "@tanstack/react-query";
 import { getWsConnectionState } from "../wsConnectionState";
 import { ensureNativeApi } from "../nativeApi";
@@ -430,12 +430,19 @@ export function mcpLoginStatusQueryOptions(input: {
   readonly instanceId?: ProviderInstanceId;
   readonly enabled?: boolean;
 }) {
+  // The server records a Claude server sign-in under the provider's default instance when
+  // none is given, and pushes its completion with that instance; the key must match it.
+  const instanceId =
+    input.instanceId ??
+    (input.provider === "claudeAgent" && input.serverName
+      ? ProviderInstanceId.make(input.provider)
+      : undefined);
   return queryOptions<McpLoginStatusResult>({
     queryKey: mcpQueryKeys.loginStatus(
       input.provider,
       input.projectId,
       input.serverName ?? null,
-      input.instanceId ?? null,
+      instanceId ?? null,
     ),
     enabled:
       (input.enabled ?? true) &&
