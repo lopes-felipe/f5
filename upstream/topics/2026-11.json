@@ -88036,14 +88036,16 @@
     },
     {
       "createdAt": "2026-11-26T11:10:32.890Z",
-      "decidedAt": "2026-11-26T20:46:13.179Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-26T21:19:22.552Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-39489",
+      "reason": "F5’s MCP thread tools do not let callers select an ACP-native session mode.",
+      "reasonKey": "not-applicable",
       "relatedTopics": [
         "pr-42106"
       ],
-      "status": "port",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "mcp",
