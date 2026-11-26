@@ -320,6 +320,9 @@ export class McpHubUpstream {
     const started = this.now();
     const attempt = (async () => {
       await this.options.authProvider?.prime();
+      // A stop or a newer connection while the stored sign-in was loading wins; no
+      // transport is opened for this one.
+      if (generation !== this.generation) throw new Error("The connection was replaced.");
       const transport = this.makeTransport();
       const client = new Client(
         { name: "f5-mcp-hub", version: "1.0.0" },

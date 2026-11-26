@@ -154,6 +154,21 @@ describe("mcpTranslation", () => {
     expect(mcpBearerRedactionValues(definition, {})).toEqual([]);
   });
 
+  it("redacts the values ${env:} references expand to and header credentials", () => {
+    expect(
+      mcpBearerRedactionValues(
+        {
+          url: "https://h.example/mcp?key=${env:URL_KEY}",
+          headers: { "X-Api-Key": "${env:API_KEY}", Authorization: "Token literal-token" },
+        },
+        { URL_KEY: "url-secret", API_KEY: " api-secret ", OTHER: "unused" },
+      ),
+    ).toEqual(["url-secret", " api-secret ", "api-secret", "literal-token"]);
+    expect(
+      mcpBearerRedactionValues({ env: { KEY: "${env:KEY:-fallback}" } }, { KEY: "stdio-secret" }),
+    ).toEqual(["stdio-secret"]);
+  });
+
   it.each(["http", "sse"] as const)(
     "omits Claude %s OAuth when no settings are configured",
     (type) => {

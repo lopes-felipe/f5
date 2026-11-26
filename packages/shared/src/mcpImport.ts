@@ -16,6 +16,7 @@ import {
 } from "./mcpServerName";
 import {
   convertBareEnvReferences,
+  hasMcpEnvReference,
   hasUnknownMcpReference,
   MCP_ENV_REFERENCE_SYNTAX,
   mapMcpInterpolatedFields,
@@ -430,6 +431,21 @@ export function parseImportedServers(text: string): McpProjectServersConfig {
   );
 }
 
+/** Whether a document is JSON(C): its first token after any comments opens an object. */
+function startsLikeJson(text: string): boolean {
+  let rest = text.trimStart();
+  for (;;) {
+    if (rest.startsWith("//")) {
+      const end = rest.indexOf("\n");
+      rest = end === -1 ? "" : rest.slice(end + 1).trimStart();
+    } else if (rest.startsWith("/*")) {
+      const end = rest.indexOf("*/");
+      if (end === -1) return false;
+      rest = rest.slice(end + 2).trimStart();
+    } else return rest.startsWith("{");
+  }
+}
+
 /** Loss-aware parsing for previews: invalid entries remain selectable only after repair. */
 export function parseMcpImport(
   text: string,
@@ -441,7 +457,7 @@ export function parseMcpImport(
 ): import("@t3tools/contracts").McpListImportCandidatesResult {
   type Issue = import("@t3tools/contracts").McpImportIssue;
   const issues: Issue[] = [];
-  const jsonInput = text.trim().startsWith("{");
+  const jsonInput = startsLikeJson(text);
   let document: unknown;
   try {
     document = jsonInput ? parseJsonOrJsonc(text) : parseToml(text);
@@ -594,13 +610,24 @@ export function parseMcpImport(
       for (const issue of validation) add(issue.field, issue.message, "error");
       const remoteUrl = server.type === "stdio" ? undefined : server.url;
       for (const [field, value] of mcpInterpolatedFields(server)) {
-        if (original.get(field) !== value)
+        const converted = original.get(field) !== value;
+        const conversion = `Converted \${VAR} references to ${MCP_ENV_REFERENCE_SYNTAX}; F5`;
+        // A repository config can point a URL or header at its own host, whether its
+        // references were converted or already written as ${MCP_ENV_REFERENCE_SYNTAX}
+        // (OpenCode's {env:NAME} is converted before this point).
+        if (
+          remoteUrl !== undefined &&
+          (field === "url" || field.startsWith("headers")) &&
+          (converted || hasMcpEnvReference(value))
+        )
           add(
             field,
-            // A repository config can point a URL or header at its own host.
-            remoteUrl !== undefined && (field === "url" || field.startsWith("headers"))
-              ? `Converted \${VAR} references to ${MCP_ENV_REFERENCE_SYNTAX}; F5 reads them from the account environment and sends the values to ${describeHost(remoteUrl)}. Import it only if you trust that server with those variables.`
-              : `Converted \${VAR} references to ${MCP_ENV_REFERENCE_SYNTAX}; F5 reads them from the account environment when the server starts.`,
+            `${converted ? conversion : "F5"} reads ${converted ? "them" : "its environment references"} from the account environment and sends the values to ${describeHost(remoteUrl)}. Import it only if you trust that server with those variables.`,
+          );
+        else if (converted)
+          add(
+            field,
+            `${conversion} reads them from the account environment when the server starts.`,
           );
         if (hasUnknownMcpReference(value))
           add(
