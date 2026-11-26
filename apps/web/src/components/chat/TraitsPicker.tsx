@@ -396,9 +396,12 @@ export const TraitsPicker = memo(function TraitsPicker({
           </span>
         ) : (
           <>
-            <span>{triggerLabel}</span>
+            {/* In a width-capped trigger the label truncates; the icons and chevron stay whole. */}
+            <span className="min-w-0 truncate" title={triggerLabel}>
+              {triggerLabel}
+            </span>
             <TraitsTriggerIcons icons={triggerIcons} />
-            <ChevronDownIcon aria-hidden="true" className="ms-auto size-3 opacity-60" />
+            <ChevronDownIcon aria-hidden="true" className="ms-auto size-3 shrink-0 opacity-60" />
           </>
         )}
       </MenuTrigger>

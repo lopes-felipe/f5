@@ -143,10 +143,13 @@ export const ClaudeTraitsPicker = memo(function ClaudeTraitsPicker(
           />
         }
       >
-        <span>{trigger.label}</span>
+        {/* In a width-capped trigger the label truncates; the icons and chevron stay whole. */}
+        <span className="min-w-0 truncate" title={trigger.label}>
+          {trigger.label}
+        </span>
         <TraitsTriggerIcons icons={trigger.icons} />
         {/* Pinned to the trailing edge when the trigger is wider than its content. */}
-        <ChevronDownIcon aria-hidden="true" className="ms-auto size-3 opacity-60" />
+        <ChevronDownIcon aria-hidden="true" className="ms-auto size-3 shrink-0 opacity-60" />
       </MenuTrigger>
       <MenuPopup align="start">
         <ClaudeTraitsMenuContent {...menuProps} />

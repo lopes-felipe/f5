@@ -30,12 +30,14 @@ import {
 const EMPTY_PROVIDERS: ReadonlyArray<ServerProvider> = [];
 const EMPTY_MODELS: ServerProvider["models"] = [];
 
-// The effort trigger fills its fixed-width field (the chevron pins to the trailing edge), so
-// every row's effort column lines up; long combined labels clip. The selected value is a
-// value, not a hint, so it gets full contrast.
+// The effort trigger fills its field (the chevron pins to the trailing edge) and long combined
+// labels truncate. The selected value is a value, not a hint, so it gets full contrast.
 const TRAITS_TRIGGER_CLASS_NAME =
   "h-7 w-full min-w-0 justify-start gap-1 overflow-hidden px-2 text-ui text-foreground";
-const TRAITS_FIELD_WIDTH_CLASS_NAME = "w-32 shrink-0";
+// The model is the choice that matters most, so it keeps a floor and the effort column gives
+// way first. Sibling rows share one structure, so they shrink alike and stay aligned.
+const MODEL_FIELD_MIN_WIDTH_CLASS_NAME = "min-w-32";
+const TRAITS_FIELD_WIDTH_CLASS_NAME = "w-32 min-w-20 shrink";
 
 /**
  * A Claude slot without an effort runs at the model's own default, since workflow dispatch
@@ -133,14 +135,26 @@ export function SlotRow(props: {
       data-slot="workflow-slot-row"
       role="group"
       aria-label={props.label}
-      className={cn("flex min-w-0 items-center gap-3", props.className)}
+      // In a narrow container (a phone-width dialog) the label moves above the fields, so the
+      // label column's width goes to the model field instead.
+      className={cn(
+        "flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 @sm/slot:flex-nowrap",
+        props.className,
+      )}
     >
-      <label className="w-24 shrink-0 truncate text-ui text-muted-foreground" title={props.label}>
+      <label
+        className="w-full shrink-0 truncate text-ui text-muted-foreground @sm/slot:w-24"
+        title={props.label}
+      >
         {props.label}
       </label>
       <div
         data-slot="workflow-slot-model"
-        className={cn(fieldShellClassName, "flex h-9 min-w-0 flex-1 items-center px-1")}
+        className={cn(
+          fieldShellClassName,
+          MODEL_FIELD_MIN_WIDTH_CLASS_NAME,
+          "flex h-9 flex-1 items-center px-1",
+        )}
       >
         <ProviderInstanceModelPicker
           providers={pickerProviders}
@@ -188,7 +202,11 @@ export function SlotRow(props: {
           />
         </div>
       ) : props.reserveTraitsColumn ? (
-        <span aria-hidden="true" className={TRAITS_FIELD_WIDTH_CLASS_NAME} />
+        <span
+          aria-hidden="true"
+          data-slot="workflow-slot-traits-reserved"
+          className={TRAITS_FIELD_WIDTH_CLASS_NAME}
+        />
       ) : null}
       {props.reserveTrailing ? (
         <div className="flex w-7 shrink-0 items-center justify-center">{props.trailing}</div>
@@ -200,10 +218,10 @@ export function SlotRow(props: {
   // The same tree with or without an error, so the row (and a focused picker in it) stays
   // mounted when the error appears or clears.
   return (
-    <div className="flex min-w-0 flex-col gap-1">
+    <div className="@container/slot flex min-w-0 flex-col gap-1">
       {row}
       {props.error ? (
-        <p role="alert" className="ps-27 text-2xs text-destructive-foreground">
+        <p role="alert" className="text-2xs text-destructive-foreground @sm/slot:ps-27">
           {props.error}
         </p>
       ) : null}

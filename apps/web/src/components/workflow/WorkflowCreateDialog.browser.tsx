@@ -663,6 +663,51 @@ describe("WorkflowCreateDialog", () => {
         .element()
         .querySelector<HTMLElement>("[data-slot='workflow-slot-traits'] button")!;
       expect(effortTrigger.className).not.toMatch(/bg-effort-/);
+      // Wide enough for one line: the label sits beside the model field.
+      const row = page.getByRole("group", { name: "With reasoning" }).element();
+      expect(row.querySelector("label")!.getBoundingClientRect().right).toBeLessThanOrEqual(
+        row.querySelector('[data-slot="workflow-slot-model"]')!.getBoundingClientRect().left,
+      );
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("moves the label above the fields in a phone-width container so the model stays readable", async () => {
+    const host = document.createElement("div");
+    // About the dialog's content width on a 375px phone.
+    host.style.width = "327px";
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <SlotRow
+        label="Author C"
+        provider="codex"
+        model="gpt-5-codex"
+        modelOptions={{ codex: { reasoningEffort: "high" } }}
+        modelOptionsByInstance={EMPTY_MODEL_OPTIONS_BY_INSTANCE}
+        reserveTraitsColumn
+        reserveTrailing
+        trailing={<button type="button" aria-label="Remove Author C" className="size-7" />}
+        onProviderModelChange={() => {}}
+        onModelOptionsChange={() => {}}
+      />,
+      { container: host },
+    );
+
+    try {
+      const row = page.getByRole("group", { name: "Author C" }).element();
+      const label = row.querySelector("label")!.getBoundingClientRect();
+      const model = row.querySelector('[data-slot="workflow-slot-model"]')!;
+      const traits = row
+        .querySelector('[data-slot="workflow-slot-traits"]')!
+        .getBoundingClientRect();
+      expect(label.bottom).toBeLessThanOrEqual(model.getBoundingClientRect().top);
+      // Model, effort and Remove still share one line.
+      expect(traits.top).toBe(model.getBoundingClientRect().top);
+      const modelName = model.querySelector<HTMLElement>("button span.truncate")!;
+      expect(modelName.textContent?.length).toBeGreaterThan(0);
+      expect(modelName.clientWidth).toBeGreaterThanOrEqual(64);
     } finally {
       await screen.unmount();
       host.remove();
@@ -1730,7 +1775,8 @@ describe("WorkflowCreateDialog", () => {
         onOpenChange={vi.fn()}
         onWorkflowCreated={vi.fn()}
       />,
-      { container: host },
+      // Ready Codex and Claude snapshots, so every row renders an effort field to align.
+      { container: host, providers: defaultTestProviders() },
     );
     const addAuthorButton = () => {
       const button = Array.from(document.querySelectorAll("button")).find(
@@ -1772,10 +1818,15 @@ describe("WorkflowCreateDialog", () => {
       const modelEdges = alignedRows.map((row) => rightEdge(row, "workflow-slot-model"));
       expect(modelEdges[0]).toBeDefined();
       expect(new Set(modelEdges).size).toBe(1);
-      const effortEdges = alignedRows
-        .map((row) => rightEdge(row, "workflow-slot-traits"))
-        .filter((edge) => edge !== undefined);
-      expect(new Set(effortEdges).size).toBeLessThanOrEqual(1);
+      // Author A and Merge render effort fields; Author C's provider has no effort control,
+      // so its row keeps the column as a reserved spacer. All three edges must match.
+      const effortEdges = [
+        rightEdge(slotRow("Author A"), "workflow-slot-traits"),
+        rightEdge(slotRow("Merge"), "workflow-slot-traits"),
+        rightEdge(slotRow("Author C"), "workflow-slot-traits-reserved"),
+      ];
+      expect(effortEdges).not.toContain(undefined);
+      expect(new Set(effortEdges).size).toBe(1);
       const estimate = document.querySelector('[data-slot="workflow-turn-estimate"]');
       if (!estimate) throw new Error("Turn estimate not found.");
       expect(

@@ -1270,7 +1270,8 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
               ) : null}
             </div>
             <div className="flex min-w-0 flex-col gap-4">
-              <section aria-label="Models" className="flex flex-col gap-2">
+              {/* A container, so the indents below follow SlotRow's own label breakpoint. */}
+              <section aria-label="Models" className="@container/models flex flex-col gap-2">
                 <SectionLabel as="h3">Models</SectionLabel>
                 {actors.map((row, index) => {
                   const selection = actorSelections[index]!;
@@ -1336,7 +1337,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                     />
                   );
                 })}
-                <div className="flex min-w-0 items-center ps-27">
+                <div className="flex min-w-0 items-center @sm/models:ps-27">
                   <Button
                     type="button"
                     size="xs"
@@ -1401,7 +1402,10 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                 {actorCount > 2 ? (
                   // The estimate covers the whole run, merge included, so it closes the
                   // section on its own line instead of wrapping beside "Add author".
-                  <p data-slot="workflow-turn-estimate" className="text-2xs text-muted-foreground">
+                  <p
+                    data-slot="workflow-turn-estimate"
+                    className="text-2xs text-muted-foreground @sm/models:ps-27"
+                  >
                     {formatWorkflowTurnEstimate(
                       workflowType,
                       actorCount,
