@@ -14,6 +14,10 @@ import type {
   McpToolSummary,
 } from "@t3tools/contracts";
 import { summarizeMcpTools } from "@t3tools/shared/mcpTools";
+import {
+  describeMcpInterpolationSkip,
+  interpolateMcpServers,
+} from "@t3tools/shared/mcpInterpolation";
 import { mcpBearerRedactionValues, mcpRemoteHeaders } from "@t3tools/shared/mcpTranslation";
 import { isMcpCredentialKey, createMcpDiagnosticsSanitizer } from "@t3tools/shared/mcpDiagnostics";
 import { Data, Effect } from "effect";
@@ -152,7 +156,12 @@ export function probeMcpServer(
     input.instanceId ?? execution.identity ?? "default",
     input.serverName.trim().toLowerCase(),
   ]);
-  const server = input.server;
+  const interpolation = interpolateMcpServers(
+    { [input.serverName]: input.server },
+    execution.environment,
+  );
+  const unresolved = interpolation.skipped[0];
+  const server = interpolation.servers[input.serverName] ?? input.server;
   const sanitizer = createMcpDiagnosticsSanitizer({ [input.serverName]: server }, [
     ...mcpBearerRedactionValues(server, execution.environment),
     ...Object.entries(execution.environment).flatMap(([name, value]) =>
@@ -167,6 +176,13 @@ export function probeMcpServer(
     authRequired: false,
   };
   return Effect.suspend<McpProbeServerResult, never, never>(() => {
+    if (unresolved)
+      return Effect.succeed({
+        ...empty,
+        ok: false,
+        durationMs: Date.now() - start,
+        error: `This server ${describeMcpInterpolationSkip(unresolved)}.`,
+      });
     if (active.has(key) || active.size >= MAX_CONCURRENT_PROBES)
       return Effect.succeed({
         ...empty,

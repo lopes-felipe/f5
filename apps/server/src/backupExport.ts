@@ -3,7 +3,13 @@ import { redactBackupSettings } from "./backupSettings.ts";
 import { randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import { copyFile, lstat, readFile, stat, writeFile } from "node:fs/promises";
-import { relative, resolve, sep } from "node:path";
+import { basename, relative, resolve, sep } from "node:path";
+import {
+  decryptSecretValue,
+  isEncryptedSecretName,
+  isEncryptedSecretValue,
+  SECRET_STORE_KEY_FILE,
+} from "./auth/secretStoreKey.ts";
 import { version as appVersion } from "../package.json" with { type: "json" };
 import { openRuntimeSqliteDatabase } from "./persistence/runtimeSqlite.ts";
 import { validateBackupDatabase } from "./backupDatabase.ts";
@@ -23,6 +29,8 @@ export async function buildBackupArchive(input: {
   stagingDir: string;
   includeSecrets: boolean;
   password?: string;
+  /** The profile's at-rest key (base64), so encrypted secrets export as plain values. */
+  secretStoreKey?: string;
 }): Promise<BackupManifest> {
   const { config, stagingDir, includeSecrets, password } = input;
   const restoreLimits = resolveBackupRestoreLimits();
@@ -133,10 +141,15 @@ export async function buildBackupArchive(input: {
       encrypt: false,
     });
   if (includeSecrets && config.secretsDir) {
+    const plainSecrets = await exportableSecrets(
+      config.secretsDir,
+      stagingDir,
+      input.secretStoreKey,
+    );
     for (const file of await listRegularFiles(config.secretsDir)) {
       entries.push({
         archivePath: archivePathForFile("secrets", config.secretsDir, file),
-        sourcePath: file,
+        sourcePath: plainSecrets.get(file) ?? file,
         encrypt: true,
       });
     }
@@ -162,4 +175,42 @@ export async function buildBackupArchive(input: {
     ...(password ? { password } : {}),
   });
   return writtenManifest;
+}
+
+/**
+ * Values encrypted at rest are tied to this profile's key, which never leaves the
+ * machine. Export them decrypted (the archive encrypts them with the backup
+ * password); restore re-encrypts plain values with the destination's key on first
+ * read. Returns staging copies by source path; a value that cannot be decrypted is
+ * exported as stored.
+ */
+export async function exportableSecrets(
+  secretsDir: string,
+  stagingDir: string,
+  configuredKey: string | undefined,
+): Promise<Map<string, string>> {
+  const keys: Uint8Array[] = [];
+  if (configuredKey) keys.push(Buffer.from(configuredKey, "base64"));
+  const fileKey = await readFile(resolve(secretsDir, `${SECRET_STORE_KEY_FILE}.bin`)).catch(
+    () => undefined,
+  );
+  if (fileKey?.length === 32) keys.push(fileKey);
+  const copies = new Map<string, string>();
+  for (const file of await listRegularFiles(secretsDir)) {
+    const filename = basename(file);
+    if (!filename.endsWith(".bin")) continue;
+    const name = filename.slice(0, -".bin".length);
+    if (!isEncryptedSecretName(name)) continue;
+    const bytes = await readFile(file);
+    if (!isEncryptedSecretValue(bytes)) continue;
+    for (const key of keys) {
+      const plain = decryptSecretValue(key, name, bytes);
+      if (plain === null) continue;
+      const copy = resolve(stagingDir, `secret-${copies.size}.bin`);
+      await writeFile(copy, plain, { mode: 0o600 });
+      copies.set(file, copy);
+      break;
+    }
+  }
+  return copies;
 }

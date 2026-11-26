@@ -66,6 +66,20 @@ describe("MCP status event scoping", () => {
     expect(isMcpQueryAffected(mcpQueryKeys.hubStatus(project), saved)).toBe(false);
   });
 
+  it("refreshes hub sign-in state on saves and hub events but not provider-account events", () => {
+    const project = ProjectId.makeUnsafe("project");
+    const hub = { scope: "common" as const, reason: "hub" as const, serverName: "docs" };
+    const saved = { scope: "project" as const, projectId: project, reason: "updated" as const };
+    expect(isMcpQueryAffected(mcpQueryKeys.hubAuth(null), hub)).toBe(true);
+    expect(isMcpQueryAffected(mcpQueryKeys.hubAuth(project), saved)).toBe(true);
+    const account = {
+      ...saved,
+      reason: "runtime" as const,
+      instanceId: ProviderInstanceId.make("work"),
+    };
+    expect(isMcpQueryAffected(mcpQueryKeys.hubAuth(project), account)).toBe(false);
+  });
+
   it("refreshes only configuration queries when a save is announced", () => {
     const project = ProjectId.makeUnsafe("project");
     const work = ProviderInstanceId.make("work");

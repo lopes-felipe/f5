@@ -67,6 +67,7 @@ import {
   SERVER_AUTH_TOKEN_ENV,
   SERVER_AUTH_TOKEN_ENV_NAMES,
 } from "./serverAuth";
+import { parseSecretStoreKey, SECRET_STORE_KEY_ENV } from "./auth/secretStoreKey";
 import {
   PROJECTION_TIMINGS_ENV,
   resolveAliasedBooleanEnv,
@@ -346,6 +347,9 @@ const ServerConfigLive = (input: CliInput) => {
       for (const envName of SERVER_AUTH_TOKEN_ENV_NAMES) {
         delete process.env[envName];
       }
+      // Same for the secret store key: ServerConfig keeps it, no child inherits it.
+      const secretStoreKey = parseSecretStoreKey(process.env[SECRET_STORE_KEY_ENV]);
+      delete process.env[SECRET_STORE_KEY_ENV];
       const autoBootstrapProjectFromCwd = resolveBooleanFlag(
         input.autoBootstrapProjectFromCwd,
         env.autoBootstrapProjectFromCwd ?? mode === "web",
@@ -413,6 +417,7 @@ const ServerConfigLive = (input: CliInput) => {
         devUrl,
         noBrowser,
         authToken,
+        ...(secretStoreKey ? { secretStoreKey } : {}),
         trustedProxies,
         autoBootstrapProjectFromCwd,
         logWebSocketEvents,
@@ -658,7 +663,7 @@ const makeServerProgram = (input: CliInput) =>
       config.host && !isWildcardHost(config.host)
         ? `http://${formatHostForUrl(config.host)}:${config.port}`
         : localUrl;
-    const { authToken, devUrl, ...safeConfig } = config;
+    const { authToken, devUrl, secretStoreKey: _secretStoreKey, ...safeConfig } = config;
     yield* Effect.logInfo("F5 running", {
       ...safeConfig,
       devUrl: devUrl?.origin,

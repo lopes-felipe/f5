@@ -83,8 +83,7 @@ export function McpHubStatusPanel({ projectId }: { readonly projectId: ProjectId
       <p className="font-medium text-foreground">Other agents</p>
       <p className="text-muted-foreground">
         {MCP_HUB_PROVIDER_LABELS.join(", ")} get these servers through F5 when a session starts.
-        Saved changes reach them in their next session. Servers that need sign-in are not available
-        to them yet.
+        Saved changes reach them in their next session.
       </p>
       {hubStatus.error ? (
         <p className="text-destructive">

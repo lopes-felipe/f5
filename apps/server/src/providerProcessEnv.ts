@@ -14,6 +14,7 @@ import * as Path from "node:path";
 import type { ActiveProfile, ProviderInstanceEnvironment } from "@t3tools/contracts";
 import { PROJECT_SCRIPT_ENV_NAMES } from "@t3tools/shared/projectScripts";
 import { SERVER_AUTH_TOKEN_ENV_NAMES } from "./serverAuth";
+import { SECRET_STORE_KEY_ENV } from "./auth/secretStoreKey";
 const BLOCKED_PROVIDER_ENV_PREFIXES = ["OTEL_", "F5_LAUNCHER_", "F5_UPDATE_"] as const;
 const BLOCKED_F5_SERVER_ENV = new Set<string>([
   "F5_STANDALONE",
@@ -42,6 +43,7 @@ function isBlockedProviderEnvKey(key: string): boolean {
     // The backend's own credential never reaches them either: a child holding it could connect
     // as a client, answer its own approval requests and open terminals.
     BLOCKED_F5_SERVER_ENV.has(normalizedKey) ||
+    normalizedKey === SECRET_STORE_KEY_ENV ||
     CODEX_PACKAGE_MANAGER_ENV.has(normalizedKey) ||
     BLOCKED_PROVIDER_ENV_PREFIXES.some((prefix) => normalizedKey.startsWith(prefix))
   );

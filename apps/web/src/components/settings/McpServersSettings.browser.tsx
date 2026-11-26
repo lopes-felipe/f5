@@ -11,7 +11,9 @@ import type {
   McpLoginStatusResult,
   McpProjectConfigResult,
   McpServerStatusesResult,
+  McpGetHubAuthStatusResult,
   McpGetHubStatusResult,
+  McpStartHubSignInResult,
   McpReconnectServerResult,
   McpProviderStatusResult,
   NativeApi,
@@ -169,6 +171,16 @@ function createNativeApiMock() {
   );
   const getHubStatus = vi.fn(async (): Promise<McpGetHubStatusResult> => ({ servers: [] }));
   const reconnectHubServer = vi.fn(async () => ({ reconnected: 1 }));
+  const getHubAuthStatus = vi.fn(async (): Promise<McpGetHubAuthStatusResult> => ({ servers: [] }));
+  const startHubSignIn = vi.fn(
+    async (): Promise<McpStartHubSignInResult> => ({ status: "signed-in" }),
+  );
+  const completeHubSignIn = vi.fn(async () => ({
+    status: "signed-in" as const,
+    serverName: "docs",
+    reconnected: 1,
+  }));
+  const signOutHubServer = vi.fn(async () => ({ signedOut: true }));
   const reconnectServer = vi.fn(
     async (): Promise<McpReconnectServerResult> => ({
       settingsConnectionReloaded: false,
@@ -242,6 +254,10 @@ function createNativeApiMock() {
       reconnectServer,
       getHubStatus,
       reconnectHubServer,
+      getHubAuthStatus,
+      startHubSignIn,
+      completeHubSignIn,
+      signOutHubServer,
       inspectServer,
       onStatusUpdated,
     },
@@ -254,6 +270,10 @@ function createNativeApiMock() {
     replaceProjectConfig,
     getHubStatus,
     reconnectHubServer,
+    getHubAuthStatus,
+    startHubSignIn,
+    completeHubSignIn,
+    signOutHubServer,
     replaceCommonConfig,
     getCommonConfig,
     getProjectConfig,
@@ -354,6 +374,73 @@ describe("McpServersSettings", () => {
           projectId: PROJECT_ID,
         }),
       );
+    } finally {
+      queryClient.clear();
+      await screen.unmount();
+    }
+  });
+
+  it("signs in to a hub server on click, finishes from a pasted address, and signs out", async () => {
+    const mocks = createNativeApiMock();
+    const attempt = {
+      attemptId: "attempt-1",
+      authorizationUrl: "https://auth.example.test/authorize?client_id=f5&state=s1",
+      redirectUrl: "http://127.0.0.1:43123/callback",
+      startedAt: "2026-11-25T12:00:00.000Z",
+    };
+    mocks.getHubAuthStatus.mockResolvedValue({
+      servers: [{ name: "docs", signedIn: false, refreshable: false }],
+    });
+    mocks.startHubSignIn.mockResolvedValue({ status: "pending", attempt });
+    const { screen, queryClient } = await renderSettings(false);
+    try {
+      const panel = page.getByRole("region", { name: "Sign-in for other agents" });
+      await expect.element(panel.getByText("Not signed in", { exact: true })).toBeVisible();
+      // Nothing opens until the user asks.
+      expect(mocks.openExternal).not.toHaveBeenCalled();
+      expect(mocks.getHubAuthStatus).toHaveBeenCalledWith({}, expect.anything());
+
+      mocks.getHubAuthStatus.mockResolvedValue({
+        servers: [{ name: "docs", signedIn: false, refreshable: false, pending: attempt }],
+      });
+      await panel.getByRole("button", { name: "Sign in", exact: true }).click();
+      await vi.waitFor(() =>
+        expect(mocks.openExternal).toHaveBeenCalledWith(attempt.authorizationUrl),
+      );
+      expect(mocks.startHubSignIn).toHaveBeenCalledWith({ serverName: "docs" });
+      await expect.element(panel.getByText("Waiting for browser", { exact: true })).toBeVisible();
+
+      const field = panel.getByRole("textbox", { name: "Redirected address for docs" });
+      await field.fill(`${attempt.redirectUrl}?code=abc&state=s1`);
+      mocks.getHubAuthStatus.mockResolvedValue({
+        servers: [
+          {
+            name: "docs",
+            signedIn: true,
+            refreshable: true,
+            expiresAt: "2026-11-25T13:00:00.000Z",
+          },
+        ],
+      });
+      await panel.getByRole("button", { name: "Finish sign-in" }).click();
+      await vi.waitFor(() =>
+        expect(mocks.completeHubSignIn).toHaveBeenCalledWith({
+          attemptId: "attempt-1",
+          redirectedUrl: `${attempt.redirectUrl}?code=abc&state=s1`,
+        }),
+      );
+      await expect.element(panel.getByText("Signed in", { exact: true })).toBeVisible();
+      await expect.element(panel.getByText("Renews automatically")).toBeVisible();
+      expect(mocks.openExternal).toHaveBeenCalledTimes(1);
+
+      mocks.getHubAuthStatus.mockResolvedValue({
+        servers: [{ name: "docs", signedIn: false, refreshable: false }],
+      });
+      await panel.getByRole("button", { name: "Sign out" }).click();
+      await vi.waitFor(() =>
+        expect(mocks.signOutHubServer).toHaveBeenCalledWith({ serverName: "docs" }),
+      );
+      await expect.element(panel.getByText("Not signed in", { exact: true })).toBeVisible();
     } finally {
       queryClient.clear();
       await screen.unmount();
