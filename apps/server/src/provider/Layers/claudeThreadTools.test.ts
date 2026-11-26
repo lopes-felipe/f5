@@ -5,7 +5,7 @@ import { Effect, Exit, Scope } from "effect";
 import { expect, it } from "vitest";
 import { makeThreadMcpBroker } from "../../mcp/threadMcpTools.ts";
 import { evaluateClaudeMandatoryPolicy } from "../claudeMandatoryPolicy.ts";
-import { isF5ThreadReadTool, makeClaudeThreadMcpServer } from "./claudeThreadTools.ts";
+import { isF5ReadOnlyThreadTool, makeClaudeThreadMcpServer } from "./claudeThreadTools.ts";
 
 it("keeps native thread tools available after a parent turn ends and revokes the runtime owner", async () => {
   const scope = await Effect.runPromise(Scope.make());
@@ -79,7 +79,7 @@ it("keeps html_render loaded in Claude's tool search and leaves html_preview def
   }
 });
 
-it("lists only thread_read on a read-only thread server", async () => {
+it("lists only the reading tools on a read-only thread server", async () => {
   const broker = await Effect.runPromise(makeThreadMcpBroker);
   const server = makeClaudeThreadMcpServer({
     broker,
@@ -94,26 +94,42 @@ it("lists only thread_read on a read-only thread server", async () => {
       server.config.instance.connect(serverTransport),
       client.connect(clientTransport),
     ]);
-    expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(["thread_read"]);
+    const tools = (await client.listTools()).tools;
+    expect(tools.map((tool) => tool.name).toSorted()).toEqual([
+      "ci_logs",
+      "pull_request_list",
+      "pull_request_read",
+      "pull_request_review_guide_read",
+      "repository_file_read",
+      "thread_read",
+    ]);
+    expect(tools.every((tool) => tool.annotations?.readOnlyHint === true)).toBe(true);
   } finally {
     await Promise.allSettled([client.close(), server.config.instance.close()]);
   }
 });
 
-it("recognizes only F5's own thread_read", () => {
+it("recognizes only F5's own read-only thread tools", () => {
   const tool = "mcp__f5_thread__thread_read";
-  expect(isF5ThreadReadTool(tool, undefined, "f5_thread")).toBe(true);
-  expect(isF5ThreadReadTool(tool, { source: "sdk", name: "f5_thread" }, "f5_thread")).toBe(true);
-  expect(isF5ThreadReadTool(tool, { source: "stdio", name: "f5_thread" }, "f5_thread")).toBe(false);
-  expect(isF5ThreadReadTool(tool, { source: "sdk", name: "other" }, "f5_thread")).toBe(false);
-  expect(isF5ThreadReadTool("mcp__f5_thread__thread_settle", undefined, "f5_thread")).toBe(false);
-  expect(isF5ThreadReadTool(tool, undefined, "f5_thread_2")).toBe(false);
+  expect(isF5ReadOnlyThreadTool(tool, undefined, "f5_thread")).toBe(true);
+  expect(isF5ReadOnlyThreadTool(tool, { source: "sdk", name: "f5_thread" }, "f5_thread")).toBe(
+    true,
+  );
+  expect(isF5ReadOnlyThreadTool(tool, { source: "stdio", name: "f5_thread" }, "f5_thread")).toBe(
+    false,
+  );
+  expect(isF5ReadOnlyThreadTool(tool, { source: "sdk", name: "other" }, "f5_thread")).toBe(false);
+  expect(isF5ReadOnlyThreadTool(tool, undefined, "f5_thread_2")).toBe(false);
+  for (const reader of ["pull_request_read", "ci_logs", "repository_file_read"])
+    expect(isF5ReadOnlyThreadTool(`mcp__f5_thread__${reader}`, undefined, "f5_thread")).toBe(true);
+  for (const writer of ["thread_settle", "pull_request_review", "pull_request_merge", "ci_rerun"])
+    expect(isF5ReadOnlyThreadTool(`mcp__f5_thread__${writer}`, undefined, "f5_thread")).toBe(false);
 
   // The workflow permission path allows F5's thread_read and denies an impersonator.
   const policy = {
     workflowExecutionProfile: "unattended-readonly" as const,
     allowReadOnlyMcpTool: (name: string, mcpServer?: { source: string; name: string }) =>
-      isF5ThreadReadTool(name, mcpServer, "f5_thread"),
+      isF5ReadOnlyThreadTool(name, mcpServer, "f5_thread"),
   };
   expect(
     evaluateClaudeMandatoryPolicy(policy, tool, { source: "sdk", name: "f5_thread" }),

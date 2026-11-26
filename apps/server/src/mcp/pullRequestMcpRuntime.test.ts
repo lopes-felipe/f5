@@ -6,8 +6,13 @@ import {
   type OrchestrationThread,
   type SourceControlPullRequestRef,
 } from "@t3tools/contracts";
+import {
+  formatSourceControlPullRequestKey,
+  parseSourceControlPullRequestKey,
+} from "@t3tools/shared/sourceControl";
 import type { PrHubAccountRuntime } from "../prHub/Layers/PrHubFederation";
-import { makePullRequestMcpHandler } from "./pullRequestMcpRuntime";
+import { SourceControlProviderError } from "../sourceControl/SourceControlProvider";
+import { makePullRequestMcpHandler, REPOSITORY_FILE_BYTE_LIMIT } from "./pullRequestMcpRuntime";
 
 const ref: SourceControlPullRequestRef = {
   provider: "github",
@@ -39,12 +44,28 @@ function fixture(
     comments?: readonly Record<string, unknown>[];
     reviewThreads?: readonly Record<string, unknown>[];
     pullRequests?: readonly Record<string, unknown>[];
+    /** False for a thread whose workspace has no recognized forge repository. */
+    home?: boolean;
+    /** The forge identity lookup fails with this error. */
+    identityError?: never;
+    content?: (input: {
+      ref: SourceControlPullRequestRef;
+      path: string;
+      revision?: string;
+    }) => unknown;
   } = {},
 ) {
   const prepared: ForgePrepareOperationInput[] = [];
+  const resolved: SourceControlPullRequestRef[] = [];
+  const contentReads: Array<{
+    ref: SourceControlPullRequestRef;
+    path: string;
+    revision?: string;
+  }> = [];
   const forge = options.provider ?? "github";
   let labels = ["old"];
   let checkReads = 0;
+  let identityLookups = 0;
   const runtime = {
     account: { generation: "forge-generation", login: "me" },
     provider: {
@@ -55,21 +76,63 @@ function fixture(
       listPullRequests: () => Effect.succeed(options.pullRequests ?? []),
       forgeCapabilities: { review: { reply: true, resolve: true } },
       getDiff: () => Effect.succeed(options.diff ?? ""),
+      ...(options.content
+        ? {
+            readRepositoryContent: (input: {
+              ref: SourceControlPullRequestRef;
+              path: string;
+              revision?: string;
+            }) =>
+              Effect.sync(() => {
+                contentReads.push(input);
+                return options.content!(input);
+              }),
+          }
+        : {}),
     },
   } as unknown as PrHubAccountRuntime;
   const never = () => Effect.die("Unexpected call");
   const handler = makePullRequestMcpHandler({
     git: {
-      status: () =>
-        Effect.succeed({
-          sourceControl: { kind: forge, host: ref.host, owner: "team", repository: "repo" },
-        } as Effect.Success<
-          ReturnType<Parameters<typeof makePullRequestMcpHandler>[0]["git"]["status"]>
-        >),
+      sourceControlIdentity: () => {
+        identityLookups += 1;
+        return options.identityError
+          ? Effect.fail(options.identityError)
+          : Effect.succeed(
+              (options.home === false
+                ? undefined
+                : {
+                    kind: forge,
+                    host: ref.host,
+                    owner: "team",
+                    repository: "repo",
+                  }) as Effect.Success<
+                ReturnType<
+                  Parameters<typeof makePullRequestMcpHandler>[0]["git"]["sourceControlIdentity"]
+                >
+              >,
+            );
+      },
       branchPullRequest: never,
     },
     engine: { dispatch: never },
-    federation: { parseUrl: never, resolve: () => Effect.succeed(runtime) },
+    federation: {
+      parseUrl: never,
+      resolve: ({ key }) =>
+        Effect.gen(function* () {
+          const target = parseSourceControlPullRequestKey(key ?? "");
+          if (target) resolved.push(target);
+          // Like the federation router: a host with no connected account is refused.
+          if (target && target.host !== ref.host)
+            return yield* new SourceControlProviderError({
+              provider: "github",
+              operation: "prHub.route",
+              kind: "forbidden",
+              detail: "No connected account for this host.",
+            });
+          return runtime;
+        }),
+    },
     extensions: {
       getChecks: () =>
         Effect.sync(() => {
@@ -113,7 +176,15 @@ function fixture(
       name: "pull_request_merge",
       input: { expectedHeadSha, stack: true, method: "squash" },
     });
-  return { call, merge, prepared, checkReads: () => checkReads };
+  return {
+    call,
+    merge,
+    prepared,
+    resolved,
+    contentReads,
+    checkReads: () => checkReads,
+    identityLookups: () => identityLookups,
+  };
 }
 
 describe("pull request MCP routing", () => {
@@ -155,6 +226,146 @@ describe("pull request MCP routing", () => {
       ),
     ).rejects.toThrow(/outside/u);
     expect(prepared).toEqual([]);
+  });
+
+  it("reads PRs without a home repository only on a connected forge host, never writes", async () => {
+    const { call, prepared, resolved } = fixture({ home: false, diff: "diff --git" });
+    await expect(
+      call({ name: "pull_request_read", input: { sections: ["diff"] } }),
+    ).resolves.toMatchObject({ diff: "diff --git" });
+    expect(resolved.at(-1)).toMatchObject({ host: "github.com", repository: "team/repo" });
+    await expect(
+      call({ name: "pull_request_read", input: {} }, { ...ref, host: "another.example" }),
+    ).rejects.toThrow(/No connected account/u);
+    await expect(
+      call({ name: "pull_request_merge", input: { expectedHeadSha: "current-head" } }),
+    ).rejects.toThrow(/no recognized forge/u);
+    expect(prepared).toEqual([]);
+  });
+
+  describe("repository_file_read", () => {
+    const file =
+      (text: string | null, binary = false) =>
+      () => ({
+        kind: "file" as const,
+        path: "src/a.ts",
+        size: text?.length ?? 2_000_000,
+        text,
+        binary,
+      });
+
+    it("reads a file at the named PR's head", async () => {
+      const { call, contentReads } = fixture({ content: file("export {};") });
+      await expect(
+        call({ name: "repository_file_read", input: { number: 12, path: "/src/a.ts" } }),
+      ).resolves.toEqual({
+        repository: "team/repo",
+        revision: "current-head",
+        path: "src/a.ts",
+        kind: "file",
+        size: 10,
+        text: "export {};",
+        truncated: false,
+      });
+      expect(contentReads).toEqual([
+        { ref: { ...ref, number: 12 }, path: "src/a.ts", revision: "current-head" },
+      ]);
+    });
+
+    it("looks the home repository up once per call, and fails the call when the lookup fails", async () => {
+      const once = fixture({
+        content: () => ({ kind: "directory", path: "", entries: [] }),
+      });
+      await once.call({
+        name: "repository_file_read",
+        input: { repository: "team/other", ref: "main" },
+      });
+      expect(once.identityLookups()).toBe(1);
+
+      const failing = fixture({
+        identityError: new SourceControlProviderError({
+          provider: "github",
+          operation: "identity",
+          kind: "generic",
+          detail: "git remote failed",
+        }) as never,
+        content: () => ({ kind: "directory", path: "", entries: [] }),
+      });
+      // Read-only tools must not fall back to "no home repository", which skips the host check.
+      await expect(failing.call({ name: "pull_request_read", input: {} })).rejects.toThrow();
+      expect(failing.resolved).toEqual([]);
+    });
+
+    it("lists a directory at an explicit revision of another repository on the forge", async () => {
+      const { call, contentReads } = fixture({
+        content: () => ({
+          kind: "directory",
+          path: "",
+          entries: [{ name: "src", type: "dir", size: 0 }],
+        }),
+      });
+      await expect(
+        call({ name: "repository_file_read", input: { repository: "team/other", ref: "main" } }),
+      ).resolves.toEqual({
+        repository: "team/other",
+        revision: "main",
+        path: "",
+        kind: "directory",
+        entries: [{ name: "src", type: "dir", size: 0 }],
+        truncated: false,
+      });
+      expect(contentReads[0]).toMatchObject({
+        ref: { repository: "team/other" },
+        revision: "main",
+      });
+    });
+
+    it("caps file text and withholds binary or missing content", async () => {
+      const big = fixture({ content: file("x".repeat(REPOSITORY_FILE_BYTE_LIMIT + 10)) });
+      const capped = (await big.call({
+        name: "repository_file_read",
+        input: { path: "big.txt" },
+      })) as { text: string; truncated: boolean };
+      expect(capped.truncated).toBe(true);
+      expect(capped.text).toHaveLength(REPOSITORY_FILE_BYTE_LIMIT);
+      await expect(
+        fixture({ content: file(null, true) }).call({
+          name: "repository_file_read",
+          input: { path: "logo.png" },
+        }),
+      ).resolves.toMatchObject({ text: null, note: expect.stringMatching(/Binary/u) });
+      await expect(
+        fixture({ content: file(null) }).call({
+          name: "repository_file_read",
+          input: { path: "huge.json" },
+        }),
+      ).resolves.toMatchObject({ text: null, note: expect.stringMatching(/too large/u) });
+    });
+
+    it("refuses traversal paths, unsupported forges and other hosts", async () => {
+      const { call, contentReads } = fixture({ content: file("x") });
+      for (const path of ["../secret", "src/../../x", "a//b", "a\\b"])
+        await expect(call({ name: "repository_file_read", input: { path } })).rejects.toThrow(
+          /repository root/u,
+        );
+      expect(contentReads).toEqual([]);
+      await expect(
+        fixture().call({ name: "repository_file_read", input: { path: "README.md" } }),
+      ).rejects.toThrow(/not supported for this forge/u);
+      const homeless = fixture({ home: false, content: file("x") });
+      await expect(
+        homeless.call({
+          name: "repository_file_read",
+          input: { pr: formatSourceControlPullRequestKey({ ...ref, host: "another.example" }) },
+        }),
+      ).rejects.toThrow(/No connected account/u);
+      await expect(
+        homeless.call({
+          name: "repository_file_read",
+          input: { pr: formatSourceControlPullRequestKey(ref), path: "README.md" },
+        }),
+      ).resolves.toMatchObject({ repository: "team/repo", revision: "current-head" });
+    });
   });
 
   it("replays a named CI rerun without looking up the failed check again", async () => {

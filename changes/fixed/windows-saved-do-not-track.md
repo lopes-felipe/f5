@@ -1,0 +1,1 @@
+- F5 desktop on Windows honors a saved `DO_NOT_TRACK` setting even when the launcher started before it was set.

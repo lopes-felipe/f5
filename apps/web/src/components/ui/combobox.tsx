@@ -170,6 +170,7 @@ function ComboboxPopup({
         sideOffset={sideOffset}
       >
         <span
+          data-slot="combobox-frame"
           className={cn(
             "relative flex max-h-full min-w-(--anchor-width) max-w-(--available-width) origin-(--transform-origin) rounded-lg border bg-popover shadow-lg/5 transition-[scale,opacity]",
             className,
@@ -177,7 +178,9 @@ function ComboboxPopup({
         >
           <ComboboxPrimitive.Popup
             finalFocus={finalFocus}
-            className="flex max-h-[min(var(--available-height),23rem)] flex-1 flex-col text-foreground"
+            // min-w-0: without it an unbreakable line (a long path) sets the
+            // popup's min-content width and the content spills past the frame.
+            className="flex max-h-[min(var(--available-height),23rem)] min-w-0 flex-1 flex-col text-foreground"
             data-slot="combobox-popup"
             {...ownerAttributes}
             {...props}

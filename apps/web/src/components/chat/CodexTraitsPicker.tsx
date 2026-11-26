@@ -211,7 +211,7 @@ function CodexTraitsMenuContentImpl(
   );
 }
 
-const CodexTraitsMenuContent = memo(CodexTraitsMenuContentImpl);
+export const CodexTraitsMenuContent = memo(CodexTraitsMenuContentImpl);
 
 export const CodexTraitsPicker = memo(function CodexTraitsPicker(
   props: {

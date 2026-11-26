@@ -350,6 +350,7 @@ import {
   useFavoritePresetShortcuts,
 } from "./chat/useFavoritePresetShortcuts";
 import { useWsConnectionState } from "../wsConnectionState";
+import { UnconfirmedSubmissionError } from "../wsTransport";
 import BranchToolbar, { BranchToolbarRow } from "./BranchToolbar";
 import {
   PlainGroupWorkspacePicker,
@@ -964,6 +965,10 @@ export default memo(function ChatView({
   const promptRef = useRef(prompt);
   const composerMentionsRef = useRef(composerDraft.mentions);
   const composerRedesign = useServerCapability("composer-redesign");
+  const getComposerTimeline = useCallback(() => {
+    const node = legendListRef.current?.getScrollableNode?.();
+    return node instanceof HTMLElement ? node : null;
+  }, []);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [isJumpingToLatest, setIsJumpingToLatest] = useState(false);
   // The tail when the reader left the end. The pill mounts after a debounce,
@@ -1675,6 +1680,7 @@ export default memo(function ChatView({
     selectedProviderModelOptions,
     selectedProviderModelOptionsForDispatch,
     selectedComposerEffort,
+    genericProviderTraitsMenuContent,
     genericProviderTraitsPicker,
     isClaudeUltrathink,
     showClaudeTraitsControls,
@@ -4311,19 +4317,20 @@ export default memo(function ChatView({
         return { ok: true as const, disposition: result.disposition };
       } catch (error) {
         const message = error instanceof Error ? error.message : input.failureMessage;
-        if (isTransportConnectionErrorMessage(message)) {
+        const resendStopped = error instanceof UnconfirmedSubmissionError;
+        if (resendStopped || isTransportConnectionErrorMessage(message)) {
           updateStorePendingTurnDispatch(input.command.threadId, (current) => {
             if (!current || current.commandId !== input.command.commandId) {
               return current;
             }
             return {
               ...current,
-              status: "awaiting-recovery",
-              awaitingRecoveryAfterEpoch: recoveryEpoch,
+              status: resendStopped ? "awaiting-user-action" : "awaiting-recovery",
+              awaitingRecoveryAfterEpoch: resendStopped ? null : recoveryEpoch,
             };
           });
           if (input.command.bootstrap) {
-            setThreadError(input.command.threadId, message);
+            if (!resendStopped) setThreadError(input.command.threadId, message);
           } else {
             toastManager.add({ type: "error", title: message });
           }
@@ -8342,6 +8349,7 @@ export default memo(function ChatView({
       content: (
         <PendingSendRecoveryBanner
           visible
+          retryDisabled={wsInteractionBlocked}
           onRetrySend={() => {
             void onRetryPendingTurnDispatch();
           }}
@@ -8494,6 +8502,7 @@ export default memo(function ChatView({
     selectedProviderModels,
     selectedProviderModelOptions,
     genericProviderTraitsPicker,
+    genericProviderTraitsMenuContent,
   };
   const composerModeControls: ComposerModeControls = {
     interactionMode,
@@ -9085,6 +9094,7 @@ export default memo(function ChatView({
                       onEditorFocus={typingGuard.onFocus}
                       onEditorBlur={typingGuard.onBlur}
                       redesignEnabled={composerRedesign}
+                      getTimeline={getComposerTimeline}
                       composerFormRef={composerFormRef}
                       composerEditorRef={composerEditorRef}
                       threadId={threadId}

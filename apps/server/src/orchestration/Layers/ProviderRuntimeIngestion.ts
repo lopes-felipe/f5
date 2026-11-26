@@ -2,6 +2,7 @@ import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { recoverRestartBackgroundWork } from "../../nextTurnQueue/restartMarkerCapture.ts";
 import { readMcpAppReferenceForTool, readMcpAppToolResult } from "@t3tools/shared/mcpApp";
 import { stringifyWithinBytes } from "@t3tools/shared/boundedJson";
+import { READ_ONLY_ENFORCEMENT_SUMMARY_CONFIG_KEY } from "@t3tools/shared/readOnlyEnforcement";
 import { commandCreatesPullRequest, detectCreatedPullRequest } from "@t3tools/shared/sourceControl";
 import { LosslessCommandAdmission } from "../commandAdmission.ts";
 import { startTerminalReceiptRetries } from "../terminalReceiptRecovery.ts";
@@ -1669,6 +1670,11 @@ export function runtimeEventToActivities(
       const instructionContractVersion = instructionProfile?.contractVersion;
       const instructionSupplementVersion = instructionProfile?.providerSupplementVersion;
       const instructionStrategy = instructionProfile?.strategy;
+      const readOnlyEnforcementSummary =
+        typeof config[READ_ONLY_ENFORCEMENT_SUMMARY_CONFIG_KEY] === "string" &&
+        config[READ_ONLY_ENFORCEMENT_SUMMARY_CONFIG_KEY].trim().length > 0
+          ? config[READ_ONLY_ENFORCEMENT_SUMMARY_CONFIG_KEY].trim()
+          : undefined;
 
       return [
         {
@@ -1676,7 +1682,7 @@ export function runtimeEventToActivities(
           createdAt: event.createdAt,
           tone: "info",
           kind: "runtime.configured",
-          summary: "Runtime configured",
+          summary: readOnlyEnforcementSummary ?? "Runtime configured",
           payload: compactThreadActivityPayload({
             kind: "runtime.configured",
             payload: {
