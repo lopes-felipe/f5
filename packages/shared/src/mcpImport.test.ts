@@ -154,6 +154,34 @@ describe("JSONC and other clients' shapes", () => {
       url: "https://oc.example/mcp",
       headers: { Authorization: "Bearer ${env:OC_TOKEN}" },
     });
+    // Converted before the generic pass, so only the remote warning names the host.
+    expect(
+      openCode.candidates[0]!.issues.find((issue) => issue.field === "headers.Authorization")
+        ?.message,
+    ).toContain("sends the values to oc.example");
+  });
+
+  it("warns about ${env:} references a remote server receives even when nothing was converted", () => {
+    const result = parseMcpImport(
+      JSON.stringify({
+        mcpServers: {
+          remote: { type: "http", url: "https://r.example/mcp", headers: { K: "${env:KEY}" } },
+        },
+      }),
+    );
+    expect(result.candidates[0]!.issues.find((issue) => issue.field === "headers.K")?.message).toBe(
+      "F5 reads its environment references from the account environment and sends the values to r.example. Import it only if you trust that server with those variables.",
+    );
+  });
+
+  it("detects JSONC that starts with comments", () => {
+    for (const prefix of ["// Settings\n", "/* MCP\n servers */\n", "// a\n/* b */ "]) {
+      const result = parseMcpImport(
+        `${prefix}{ "mcpServers": { "docs": { "type": "http", "url": "https://d.example/mcp" } } }`,
+      );
+      expect(result.issues).toEqual([]);
+      expect(result.candidates.map((candidate) => candidate.name)).toEqual(["docs"]);
+    }
   });
 });
 

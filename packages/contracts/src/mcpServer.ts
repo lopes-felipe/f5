@@ -24,13 +24,15 @@ const ENV_REFERENCE = /\$\{env:[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\}/gu;
 /**
  * A server URL that may contain `${env:NAME}` references, resolved when the server
  * starts. A URL that is one reference is accepted; otherwise it must parse with each
- * reference standing in for a host-safe placeholder.
+ * reference standing in for a host-safe placeholder, or for a digit where it is a port
+ * (`http://localhost:${env:PORT}/mcp`).
  */
 export const McpHttpUrlTemplate = TrimmedNonEmptyString.check(
   Schema.makeFilter(
     (value: string) =>
       /^\$\{env:[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\}$/u.test(value) ||
-      isHttpUrl(value.replace(ENV_REFERENCE, "x")),
+      isHttpUrl(value.replace(ENV_REFERENCE, "x")) ||
+      isHttpUrl(value.replace(ENV_REFERENCE, "1")),
   ),
 );
 const UnsupportedMcpField = Schema.optional(Schema.Undefined);

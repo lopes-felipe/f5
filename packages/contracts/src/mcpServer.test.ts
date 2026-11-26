@@ -26,6 +26,18 @@ describe("McpServerDefinition", () => {
     expect(parsed.oauthCallbackUrl).toBe("http://127.0.0.1:3118/callback");
   });
 
+  it("accepts ${env:} references in remote URLs, including the port", () => {
+    const decodeWrite = Schema.decodeUnknownSync(McpServerWriteDefinition);
+    for (const url of [
+      "${env:MCP_URL}",
+      "https://${env:HOST}/mcp",
+      "http://localhost:${env:PORT}/mcp",
+      "http://${env:HOST}:${env:PORT:-8080}/mcp",
+    ])
+      expect(decodeWrite({ type: "http", url }).type).toBe("http");
+    expect(() => decodeWrite({ type: "http", url: "ftp://${env:HOST}" })).toThrow();
+  });
+
   it("rejects stdio servers with remote-only fields", () => {
     expect(() =>
       decodeMcpServerDefinition({
