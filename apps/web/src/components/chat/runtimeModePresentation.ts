@@ -23,8 +23,8 @@ export interface RuntimeModePresentation {
 export const RUNTIME_MODE_PRESENTATION: Readonly<Record<RuntimeMode, RuntimeModePresentation>> = {
   "approval-required": {
     label: "Supervised",
-    description: "Asks before every edit and command.",
-    tag: "Asks for all",
+    description: "Asks before edits and commands.",
+    tag: "Asks first",
     icon: LockIcon,
     segmentClass: "bg-success",
     glowClass: "shadow-[0_0_10px_--theme(--color-success/60%)]",
@@ -32,8 +32,8 @@ export const RUNTIME_MODE_PRESENTATION: Readonly<Record<RuntimeMode, RuntimeMode
   },
   "auto-accept-edits": {
     label: "Accept edits",
-    description: "Edits apply on their own; asks before commands and other actions.",
-    tag: "Asks for commands",
+    description: "Edits apply on their own; asks before most other actions.",
+    tag: "Edits apply",
     icon: PenLineIcon,
     segmentClass: "bg-info",
     glowClass: "shadow-[0_0_10px_--theme(--color-info/60%)]",
