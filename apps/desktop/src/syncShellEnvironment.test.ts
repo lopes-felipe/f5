@@ -6,11 +6,13 @@ describe("syncShellEnvironment", () => {
   it("hydrates PATH and missing SSH_AUTH_SOCK from the login shell on macOS", async () => {
     const env: NodeJS.ProcessEnv = {
       SHELL: "/bin/zsh",
-      PATH: "/usr/bin",
+      PATH: "/tmp/fnm_multishells/inherited/bin:/usr/bin",
+      FNM_MULTISHELL_PATH: "/tmp/fnm_multishells/inherited",
     };
     const readEnvironment = vi.fn(() => ({
-      PATH: "/opt/homebrew/bin:/usr/bin",
+      PATH: "/tmp/fnm_multishells/desktop/bin:/tmp/fnm_multishells/inherited/bin:/opt/homebrew/bin:/usr/bin",
       __MISE_DIFF: "mise-diff",
+      FNM_MULTISHELL_PATH: "/tmp/fnm_multishells/desktop",
       SSH_AUTH_SOCK: "/tmp/secretive.sock",
     }));
 
@@ -24,6 +26,7 @@ describe("syncShellEnvironment", () => {
     expect(readEnvironment).toHaveBeenCalledWith("/bin/zsh", [
       "PATH",
       "__MISE_DIFF",
+      "FNM_MULTISHELL_PATH",
       "SSH_AUTH_SOCK",
       "LANG",
       "LC_ALL",
@@ -33,7 +36,8 @@ describe("syncShellEnvironment", () => {
       "NODE_EXTRA_CA_CERTS",
       "DO_NOT_TRACK",
     ]);
-    expect(env.PATH).toBe("/opt/homebrew/bin:/usr/bin");
+    expect(env.PATH).toBe("/tmp/fnm_multishells/desktop/bin:/opt/homebrew/bin:/usr/bin");
+    expect(env.FNM_MULTISHELL_PATH).toBe("/tmp/fnm_multishells/desktop");
     expect(env.SSH_AUTH_SOCK).toBe("/tmp/secretive.sock");
   });
 

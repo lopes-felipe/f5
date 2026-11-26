@@ -6,6 +6,35 @@ const PATH_CAPTURE_END = "__T3CODE_PATH_END__";
 const SHELL_ENV_NAME_PATTERN = /^[A-Z0-9_]+$/;
 const DEBUG_TRAP_SHELLS = new Set(["bash", "zsh", "sh", "ksh", "ksh93"]);
 
+export const LOGIN_SHELL_PATH_ENV_NAMES = ["PATH", "__MISE_DIFF", "FNM_MULTISHELL_PATH"] as const;
+
+export function applyLoginShellPath(
+  env: NodeJS.ProcessEnv,
+  shellEnvironment: Partial<Record<string, string>>,
+  inheritedMultishell: string | undefined,
+): boolean {
+  let path = shellEnvironment.PATH;
+  if (!path?.trim()) return false;
+
+  const multishell = shellEnvironment.FNM_MULTISHELL_PATH;
+  // The probe inherits PATH and fnm prepends a new multishell directory.
+  if (multishell && inheritedMultishell && multishell !== inheritedMultishell) {
+    path = path
+      .split(":")
+      .filter(
+        (entry) => entry !== inheritedMultishell && !entry.startsWith(inheritedMultishell + "/"),
+      )
+      .join(":");
+    if (!path.trim()) return false;
+  }
+
+  env.PATH = path;
+  if (multishell) env.FNM_MULTISHELL_PATH = multishell;
+  // mise needs its PATH record to avoid rebuilding PATH behind same-named wrappers.
+  if (shellEnvironment.__MISE_DIFF) env.__MISE_DIFF = shellEnvironment.__MISE_DIFF;
+  return true;
+}
+
 export function extractPathFromShellOutput(output: string): string | null {
   const startIndex = output.indexOf(PATH_CAPTURE_START);
   if (startIndex === -1) return null;

@@ -1,4 +1,9 @@
-import { readEnvironmentFromLoginShellAsync, ShellEnvironmentReader } from "@t3tools/shared/shell";
+import {
+  applyLoginShellPath,
+  LOGIN_SHELL_PATH_ENV_NAMES,
+  readEnvironmentFromLoginShellAsync,
+  type ShellEnvironmentReader,
+} from "@t3tools/shared/shell";
 import {
   applySavedWindowsDoNotTrack,
   ensureWindowsPathHydration,
@@ -43,9 +48,16 @@ export async function syncShellEnvironment(
   let prepared = false;
   try {
     const shell = env.SHELL ?? "/bin/zsh";
+    const inheritedMultishell = env.FNM_MULTISHELL_PATH;
     const shellEnvironment = await (options.readEnvironment ?? readEnvironmentFromLoginShellAsync)(
       shell,
-      ["PATH", "__MISE_DIFF", "SSH_AUTH_SOCK", ...LOCALE_NAMES, ...CA_TRUST_NAMES, "DO_NOT_TRACK"],
+      [
+        ...LOGIN_SHELL_PATH_ENV_NAMES,
+        "SSH_AUTH_SOCK",
+        ...LOCALE_NAMES,
+        ...CA_TRUST_NAMES,
+        "DO_NOT_TRACK",
+      ],
     );
 
     // An app launched from Finder misses an opt-out exported from the shell profile.
@@ -62,14 +74,7 @@ export async function syncShellEnvironment(
       }
     }
 
-    if (shellEnvironment.PATH?.trim()) {
-      prepared = true;
-      env.PATH = shellEnvironment.PATH;
-      // mise's record of the PATH entries it added. It must travel with the
-      // shell's PATH, or `mise x` can rebuild PATH behind a same-named wrapper
-      // (`exec mise x claude -- claude`) that then re-runs itself forever.
-      if (shellEnvironment.__MISE_DIFF) env.__MISE_DIFF = shellEnvironment.__MISE_DIFF;
-    }
+    prepared = applyLoginShellPath(env, shellEnvironment, inheritedMultishell);
 
     if (!env.SSH_AUTH_SOCK && shellEnvironment.SSH_AUTH_SOCK) {
       env.SSH_AUTH_SOCK = shellEnvironment.SSH_AUTH_SOCK;

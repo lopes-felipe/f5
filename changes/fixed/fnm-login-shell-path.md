@@ -1,0 +1,1 @@
+- On macOS, F5 replaces stale fnm directories in PATH when it reads the login shell environment.

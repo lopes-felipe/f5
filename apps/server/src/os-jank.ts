@@ -2,7 +2,11 @@ import * as OS from "node:os";
 import * as PathNode from "node:path";
 import { Effect, Path } from "effect";
 import { F5_HOME_DIR_NAME, USERDATA_STATE_DIR_NAME } from "@t3tools/shared/appStatePaths";
-import { readEnvironmentFromLoginShellAsync } from "@t3tools/shared/shell";
+import {
+  applyLoginShellPath,
+  LOGIN_SHELL_PATH_ENV_NAMES,
+  readEnvironmentFromLoginShellAsync,
+} from "@t3tools/shared/shell";
 import {
   applySavedWindowsDoNotTrack,
   ensureWindowsPathHydration,
@@ -48,14 +52,9 @@ export async function fixPath(
 
   try {
     const shell = env.SHELL ?? "/bin/zsh";
-    const result = await readEnvironmentFromLoginShellAsync(shell, ["PATH", "__MISE_DIFF"]);
-    if (result.PATH?.trim()) {
-      env.PATH = result.PATH;
-      // mise's record of the PATH entries it added. It must travel with the
-      // shell's PATH, or `mise x` can rebuild PATH behind a same-named wrapper
-      // (`exec mise x claude -- claude`) that then re-runs itself forever.
-      if (result.__MISE_DIFF) env.__MISE_DIFF = result.__MISE_DIFF;
-    }
+    const inheritedMultishell = env.FNM_MULTISHELL_PATH;
+    const result = await readEnvironmentFromLoginShellAsync(shell, LOGIN_SHELL_PATH_ENV_NAMES);
+    applyLoginShellPath(env, result, inheritedMultishell);
   } catch {
     // Silently ignore — keep default PATH
   }
