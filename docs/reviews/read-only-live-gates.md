@@ -325,8 +325,11 @@ Run with `apps/server/integration/codexReadOnlyEscalationGate.mjs` on 2026-11-26
   thread sandbox, and turn `sandboxPolicy: { type: "readOnly", networkAccess: false }`.
 
 **Home:** the script's source home links a real sign-in and holds
-`rules/default.rules = prefix_rule(pattern=["touch"], decision="allow")`. The read-only home
-links every entry except `rules`, as `CodexReadOnlyHome.ts` does.
+`rules/default.rules = prefix_rule(pattern=["touch"], decision="allow")`. The first runs built
+the read-only home with the script's own links (every entry except `rules`); the script now calls
+`materializeCodexReadOnlyHome`. A rerun with it on 2026-11-26 passed G1-G3b and G6 again, with
+G3 and G3b accepting only the exact commands. G4 was inconclusive in that rerun: no request and
+no marker, but no command item for `touch` either, while the model reported the sandbox failure.
 
 | Gate       | Result     | Observed                                                                                                                                                                                                                                                                                                        |
 | ---------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -340,7 +343,7 @@ links every entry except `rules`, as `CodexReadOnlyHome.ts` does.
 | G4b        | PASS       | An `apply_patch` edit sent `item/fileChange/requestApproval`. Declined, the file is unchanged.                                                                                                                                                                                                                  |
 | G4c        | PASS       | Web search returned a `webSearch` item (it runs server-side).                                                                                                                                                                                                                                                   |
 | G5         | unit tests | F5's `.codex/rules` guard (`CodexReadOnlyHome.test.ts`, `CodexAdapter.test.ts`).                                                                                                                                                                                                                                |
-| G6         | PASS       | After each session the read-only home's `auth.json` was still a link to the source (same inode), so F5 doesn't need to copy a sign-in back.                                                                                                                                                                     |
+| G6         | PASS       | After each session the read-only home's `auth.json` was still a link to the source. The sessions were short and likely never refreshed the token, so this doesn't show a refresh; Codex 0.170 resolves the link before replacing the file (`login/src/auth/storage.rs`), and F5 moves a newer real file back.   |
 
 What the runs mean for F5:
 

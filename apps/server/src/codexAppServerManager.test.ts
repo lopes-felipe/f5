@@ -1341,7 +1341,9 @@ describe("startSession", () => {
                 sandbox: { type: "readOnly", networkAccess: false },
                 approvalPolicy: "never",
               }
-            : {},
+            : method === "config/read"
+              ? { config: {}, origins: {}, layers: [] }
+              : {},
         );
       try {
         await manager.startSession({
@@ -1363,12 +1365,88 @@ describe("startSession", () => {
         const argv = (JSON.parse(readFileSync(`${binaryPath}.argv`, "utf8")) as string[]).join(" ");
         expect(argv.includes('-c project_root_markers=[".git"]')).toBe(readOnly);
         expect(argv.includes('-c cli_auth_credentials_store="file"')).toBe(readOnly);
+        // Only the read-only stage asks Codex which project layers it loads.
+        expect(
+          send.mock.calls.filter(([, method]) => method === "config/read").map(([, , p]) => p),
+        ).toEqual(readOnly ? [{ cwd: directory, includeLayers: true }] : []);
         if (readOnly) {
           expect(readdirSync(readOnlyHome)).toContain("auth.json");
           expect(readdirSync(readOnlyHome)).not.toContain("rules");
         } else {
           expect(existsSync(readOnlyHome)).toBe(false);
         }
+      } finally {
+        send.mockRestore();
+        await cleanupCodexFixture(manager, directory);
+      }
+    },
+  );
+
+  it.each(["rules", "unlisted", "failed"] as const)(
+    "refuses a read-only stage when Codex's own project layers can't be cleared (%s)",
+    async (scenario) => {
+      const directory = realpathSync(mkdtempSync(path.join(os.tmpdir(), "codex-readonly-layers-")));
+      const binaryPath = path.join(directory, "codex.cjs");
+      writeFileSync(binaryPath, "#!/usr/bin/env node\nprocess.stdin.resume();\n", { mode: 0o755 });
+      const instanceHome = path.join(directory, "instance-home");
+      mkdirSync(instanceHome, { recursive: true });
+      writeFileSync(path.join(instanceHome, "auth.json"), "{}");
+      // A layer managed `project_root_markers` would reach: above any `.git`, so F5's own walk
+      // doesn't see it.
+      const managedLayer = path.join(directory, "outer", ".codex");
+      mkdirSync(path.join(managedLayer, "rules"), { recursive: true });
+      writeFileSync(path.join(managedLayer, "rules", "default.rules"), "allow");
+      const manager = new CodexAppServerManager();
+      vi.spyOn(
+        manager as unknown as { assertSupportedCodexCliVersion: () => string },
+        "assertSupportedCodexCliVersion",
+      ).mockReturnValue("0.170.0");
+      const send = vi
+        .spyOn(
+          manager as unknown as {
+            sendRequest: (context: unknown, method: string, params: unknown) => Promise<unknown>;
+          },
+          "sendRequest",
+        )
+        .mockImplementation(async (_context, method) => {
+          if (method === "config/read") {
+            if (scenario === "failed") throw new Error("unknown method");
+            return {
+              config: {},
+              origins: {},
+              layers:
+                scenario === "rules"
+                  ? [
+                      { name: { type: "user", file: path.join(instanceHome, "config.toml") } },
+                      { name: { type: "project", dotCodexFolder: managedLayer } },
+                    ]
+                  : null,
+            };
+          }
+          return method === "thread/start"
+            ? {
+                thread: { id: "native-thread" },
+                sandbox: { type: "readOnly", networkAccess: false },
+                approvalPolicy: "never",
+              }
+            : {};
+        });
+      try {
+        await expect(
+          manager.startSession({
+            threadId: asThreadId(`readonly-layers-${scenario}`),
+            cwd: directory,
+            runtimeMode: "full-access",
+            workflowExecutionProfile: "unattended-readonly",
+            readOnlyHomePath: path.join(directory, "codex-readonly", "codex"),
+            providerOptions: { codex: { binaryPath, homePath: instanceHome } },
+          }),
+        ).rejects.toThrow(
+          scenario === "rules"
+            ? path.join(managedLayer, "rules", "default.rules")
+            : "project config it loads",
+        );
+        expect(send.mock.calls.some(([, method]) => method === "thread/start")).toBe(false);
       } finally {
         send.mockRestore();
         await cleanupCodexFixture(manager, directory);

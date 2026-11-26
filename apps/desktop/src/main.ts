@@ -40,15 +40,15 @@ import { assertUpdateCaller } from "./updateIpc";
 import {
   APP_ICON_ARGUMENT,
   APP_ICON_CHANGED_CHANNEL,
-  DOCK_TILE_CHANGED_SUFFIX,
-  DOCK_TILE_CHOICE_KEY,
   createAppIconController,
+  createDockChoicePublisher,
   readAppIconState,
   readDockStartedAt,
   registerAppIconIpc,
   writeAppIconState,
   type AppIconController,
 } from "./appIcon";
+import { APP_BUNDLE_ID } from "@t3tools/shared/appIdentity";
 import { revealSenderWindow } from "./revealWindow";
 import { createUpdateController } from "./updateController";
 import { hasCachedUpdate } from "./updateCache";
@@ -328,7 +328,7 @@ const DESKTOP_SCHEME = "t3";
 const ROOT_DIR = Path.resolve(__dirname, "../../..");
 const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL);
 const APP_DISPLAY_NAME = isDevelopment ? "F5 (Dev)" : "F5";
-const APP_USER_MODEL_ID = "io.github.lopesfelipe.f5";
+const APP_USER_MODEL_ID = APP_BUNDLE_ID;
 const USER_DATA_DIR_NAME = isDevelopment ? "f5-dev" : "f5";
 const LEGACY_USER_DATA_DIR_NAMES = isDevelopment
   ? ["T3 Code (Dev)", "t3code-dev"]
@@ -2890,15 +2890,9 @@ function appIcon(): AppIconController {
     writeState: (state) => writeAppIconState(statePath, state),
     iconPath: (id, file) => resolveResourcePath(`app-icons/${id}/${file}`),
     setDockIcon: (path) => app.dock?.setIcon(path),
-    publishDockChoice: (id) => {
-      systemPreferences.setUserDefault(DOCK_TILE_CHOICE_KEY, "string", id);
-      // The packaged app's bundle id is APP_USER_MODEL_ID (`appId` in the build config).
-      systemPreferences.postNotification(
-        `${APP_USER_MODEL_ID}${DOCK_TILE_CHANGED_SUFFIX}`,
-        {},
-        true,
-      );
-    },
+    // An empty image clears the override, so the Dock draws the bundle's icon again.
+    restoreDockIcon: () => app.dock?.setIcon(nativeImage.createEmpty()),
+    publishDockChoice: createDockChoicePublisher(systemPreferences, APP_BUNDLE_ID),
     setWindowIcons: (path) => {
       for (const window of BrowserWindow.getAllWindows())
         if (!window.isDestroyed()) window.setIcon(path);
@@ -2915,6 +2909,23 @@ function appIcon(): AppIconController {
   return appIconController;
 }
 
+/** When the in-app updater began installing this version; see configureAutoUpdater. */
+let updateInstallStartedAt: number | null = null;
+
+/**
+ * When this version was installed. The in-app updater's marker is written just before it
+ * installs. Otherwise the built-in icon file's status change time stands in: copying or
+ * extracting the app creates it anew, and LaunchServices only touches the bundle itself.
+ */
+function bundleInstalledAt(): number | null {
+  if (updateInstallStartedAt !== null) return updateInstallStartedAt;
+  try {
+    return FS.statSync(Path.join(process.resourcesPath, "icon.icns")).ctimeMs;
+  } catch {
+    return null;
+  }
+}
+
 /** After an update changed the built-in icon, a Dock that was already running keeps the old one. */
 function detectStaleDockIcon(existingInstallation: boolean): void {
   if (process.platform !== "darwin" || !app.isPackaged) return;
@@ -2929,10 +2940,11 @@ function detectStaleDockIcon(existingInstallation: boolean): void {
   void appIcon()
     .detectStaleDock({
       bundleIconHash,
+      installedAt: bundleInstalledAt(),
       updatedFrom: updateState.recentlyInstalled?.fromVersion ?? null,
       existingInstallation,
       now: Date.now(),
-      readDockStartedAt: () => readDockStartedAt(runFile, Date.now()),
+      readDockStartedAt: () => readDockStartedAt(runFile, Date.now(), process.getuid?.() ?? 0),
     })
     .catch((error) => console.warn("[desktop] Could not check the Dock icon", error));
 }
@@ -3152,7 +3164,13 @@ function updatePreferencesPath(): string {
 async function configureAutoUpdater(): Promise<void> {
   const preferencesPath = updatePreferencesPath();
   const channel = initializeUpdatePreferences(preferencesPath, app.getVersion());
+  try {
+    updateInstallStartedAt = FS.statSync(updateInstallMarkerPath()).mtimeMs;
+  } catch {
+    updateInstallStartedAt = null;
+  }
   const recentlyInstalled = consumeUpdateInstallMarker(updateInstallMarkerPath(), app.getVersion());
+  if (!recentlyInstalled) updateInstallStartedAt = null;
   const disabledReason = getAutoUpdateDisabledReason({
     isDevelopment,
     isPackaged: app.isPackaged,
@@ -4382,7 +4400,7 @@ function registerIpcHandlers(): void {
     if (claimed) setUpdateState(state);
     return claimed;
   });
-  registerAppIconIpc(ipcMain, appIcon(), assertUpdateSender);
+  registerAppIconIpc(ipcMain, appIcon(), (event) => assertUpdateCaller(event, runtimeForRenderer));
   ipcMain.removeHandler(UPDATE_DOWNLOAD_CHANNEL);
   ipcMain.handle(UPDATE_DOWNLOAD_CHANNEL, async (event) => {
     assertUpdateSender(event);
@@ -4751,9 +4769,10 @@ function createWindow(
   window.on("focus", () => {
     lastOpenedProfileId = runtime.profile.id;
   });
-  window.webContents.once("destroyed", () =>
-    appRendererWebContentsIds.delete(rendererWebContentsId),
-  );
+  window.webContents.once("destroyed", () => {
+    appRendererWebContentsIds.delete(rendererWebContentsId);
+    appIconController?.releaseCaller(rendererWebContentsId);
+  });
   window.webContents.on("will-attach-webview", (event, webPreferences, params) => {
     const partition = typeof params.partition === "string" ? params.partition : "";
     if (!browserStores.get(runtime.profile.id)?.profiles.ownsPartition(partition)) {
@@ -5160,6 +5179,7 @@ app.on("will-quit", (event) => {
   beginQuitting();
   // will-quit is emitted only after all renderer unload checks have succeeded.
   void cleanupBeforeExit().finally(() => {
+    appIconController?.publishDockChoiceAtQuit();
     shutdownComplete = true;
     writeDesktopLogHeader("shutdown complete");
     restoreStdIoCapture?.();

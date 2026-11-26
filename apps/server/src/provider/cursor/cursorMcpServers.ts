@@ -58,7 +58,9 @@ export function resolveCursorMcpServers(input: {
   const omitted: CursorMcpOmission[] = [];
   const ownedNames: string[] = [];
   const forHub: Record<string, McpProjectServersConfig[string]> = {};
-  for (const [name, definition] of Object.entries(filterEnabledMcpServers(input.projectServers))) {
+  for (const [name, definition] of Object.entries(
+    filterEnabledMcpServers(input.projectServers, "cursor"),
+  )) {
     if (reserved.has(name) || name.toLowerCase().startsWith(RESERVED_PREFIX)) {
       omitted.push({ name, reason: "uses a name reserved for F5's own tools" });
       continue;

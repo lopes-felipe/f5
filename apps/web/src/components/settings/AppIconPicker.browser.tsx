@@ -1,6 +1,7 @@
 import "../../index.css";
 import type { AppIconId, DesktopBridge } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { userEvent } from "vitest/browser";
 import { render } from "vitest-browser-react";
 
 import { AppIconEffects } from "../../appIcon";
@@ -21,31 +22,46 @@ function Harness() {
     <>
       <AppIconEffects />
       <F5Icon />
+      <button type="button">Before</button>
       <AppIconPicker />
+      <button type="button">After</button>
     </>
   );
 }
 
-function desktopBridge(initial: AppIconId, options: { dockPrompt?: boolean } = {}) {
+/**
+ * A desktop bridge as preload builds it. `current` starts as `initial` unless a different
+ * value is given, as when a window reloads after the choice changed.
+ */
+function desktopBridge(
+  initial: AppIconId,
+  options: { dockPrompt?: boolean; current?: AppIconId } = {},
+) {
   const listeners = new Set<(id: AppIconId) => void>();
+  let current = options.current ?? initial;
   const set = vi.fn(async (_id: AppIconId) => {});
   const restartDock = vi.fn(async () => {});
+  const dismissDockRefreshPrompt = vi.fn(async () => {});
   window.desktopBridge = {
     appIcon: {
       initial,
+      current: () => current,
       set,
       onChange: (listener: (id: AppIconId) => void) => {
         listeners.add(listener);
         return () => listeners.delete(listener);
       },
       claimDockRefreshPrompt: async () => options.dockPrompt ?? false,
+      dismissDockRefreshPrompt,
       restartDock,
     },
   } as unknown as DesktopBridge;
   return {
     set,
     restartDock,
+    dismissDockRefreshPrompt,
     announce: (id: AppIconId) => {
+      current = id;
       for (const listener of listeners) listener(id);
     },
   };
@@ -112,6 +128,33 @@ describe("AppIconPicker", () => {
     expect(mocks.toast).not.toHaveBeenCalled();
   });
 
+  it("shows the current choice in a reloaded window, not the one it was created with", async () => {
+    // The window argument still says Lines; the choice changed to Cobalt before the reload.
+    desktopBridge("lines", { current: "cobalt" });
+    const screen = await render(<Harness />);
+    await expect.element(screen.getByRole("radio", { name: "Cobalt" })).toBeChecked();
+    expect(logoPath()).toBe("/app-icons/cobalt.png");
+    expect(tabIcon().getAttribute("href")).toBe("/app-icons/cobalt-32.png");
+  });
+
+  it("works as one radio group from the keyboard", async () => {
+    const screen = await render(<Harness />);
+    await expect.element(screen.getByRole("radio", { name: "Lines" })).toBeChecked();
+    await screen.getByRole("button", { name: "Before" }).click();
+
+    // Tab enters the group on the selected option, not the first or every option.
+    await userEvent.keyboard("{Tab}");
+    await expect.element(screen.getByRole("radio", { name: "Lines" })).toHaveFocus();
+    await userEvent.keyboard("{ArrowRight}");
+    await expect.element(screen.getByRole("radio", { name: "Classic" })).toHaveFocus();
+    await expect.element(screen.getByRole("radio", { name: "Classic" })).toBeChecked();
+    await expect.poll(logoPath).toBe("/app-icons/classic.png");
+
+    // One Tab leaves the group.
+    await userEvent.keyboard("{Tab}");
+    await expect.element(screen.getByRole("button", { name: "After" })).toHaveFocus();
+  });
+
   it("reports a change the desktop app refused", async () => {
     const bridge = desktopBridge("lines");
     bridge.set.mockRejectedValueOnce(new Error("Unknown app icon"));
@@ -139,6 +182,16 @@ describe("AppIconPicker", () => {
     expect(bridge.restartDock).toHaveBeenCalledOnce();
   });
 
+  it("answers the Dock offer when its toast closes, and not before", async () => {
+    const bridge = desktopBridge("lines", { dockPrompt: true });
+    await render(<Harness />);
+    await expect.poll(() => mocks.toast.mock.calls.length).toBe(1);
+    expect(bridge.dismissDockRefreshPrompt).not.toHaveBeenCalled();
+    mocks.toast.mock.calls[0]![0].onClose();
+    expect(bridge.dismissDockRefreshPrompt).toHaveBeenCalledOnce();
+    expect(bridge.restartDock).not.toHaveBeenCalled();
+  });
+
   it("says nothing when the Dock is up to date", async () => {
     desktopBridge("lines");
     const screen = await render(<Harness />);
@@ -154,7 +207,7 @@ describe("AppIconPicker", () => {
       "Shown in the taskbar while F5 is open, and in the sidebar.",
     );
     expect(appIconHelpText(true, "Linux x86_64")).toBe(
-      "Shown in the taskbar while F5 is open, and in the sidebar.",
+      "Shown in the sidebar. Some Linux desktops also show it in the taskbar while F5 is open.",
     );
     expect(appIconHelpText(false, "MacIntel")).toBe("Shown in the sidebar and the browser tab.");
   });

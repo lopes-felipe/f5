@@ -4,6 +4,7 @@ import { useState } from "react";
 import { isWebUrl } from "../../../browser/webUrl";
 import { ensureNativeApi } from "../../../nativeApi";
 import { mcpLoginStatusQueryOptions, mcpQueryKeys } from "../../../lib/mcpReactQuery";
+import { useMcpStatusUpdates } from "../../../lib/useMcpStatusUpdates";
 import { Button } from "../../ui/button";
 import { readErrorMessage } from "./mcpSettingsHelpers";
 
@@ -21,6 +22,8 @@ export function useMcpSignIn(input: {
   readonly enabled: boolean;
 }) {
   const queryClient = useQueryClient();
+  // Sign-in status is pushed, not polled.
+  useMcpStatusUpdates();
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const statusQuery = useQuery(

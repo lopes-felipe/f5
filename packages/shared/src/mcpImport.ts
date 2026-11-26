@@ -2,6 +2,8 @@ import {
   McpServerDefinition,
   McpServerWriteDefinition,
   McpHttpUrlTemplate,
+  MCP_SERVER_DESCRIPTION_MAX_LENGTH,
+  isKnownProviderKind,
   type McpProjectServersConfig,
   type McpServerTransportType as TransportType,
 } from "@t3tools/contracts";
@@ -357,6 +359,24 @@ function decodeImportedServer(
         ? {
             oauthResource:
               readImportedString(value.oauthResource) ?? readImportedString(value.oauth_resource),
+          }
+        : {}),
+      // F5's own fields round-trip through its JSON export.
+      ...(readImportedString(value.description)
+        ? {
+            description: readImportedString(value.description)!.slice(
+              0,
+              MCP_SERVER_DESCRIPTION_MAX_LENGTH,
+            ),
+          }
+        : {}),
+      ...(readImportedStringArray(value.disabledProviders)?.some(isKnownProviderKind)
+        ? {
+            disabledProviders: [
+              ...new Set(
+                readImportedStringArray(value.disabledProviders)!.filter(isKnownProviderKind),
+              ),
+            ],
           }
         : {}),
     });

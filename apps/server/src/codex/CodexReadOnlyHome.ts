@@ -16,7 +16,7 @@
  * - `auth.json` is a symbolic link on every platform. Codex resolves symlinks before it replaces
  *   the file, so a refreshed token lands in the instance's own `auth.json`; it refuses to replace a
  *   hard-linked file, and a copy could rotate here and sign the user out of their own home.
- * - The stage runs with file credential storage (`CODEX_READ_ONLY_STAGE_CONFIG_ARGS`): a keyring
+ * - The stage runs with file credential storage (`codexReadOnlyStageConfigArgs`): a keyring
  *   entry is keyed by the canonical `CODEX_HOME`, so in `auto` mode a refresh would land in a
  *   second keyring entry and drop the `auth.json` link. A sign-in kept only in the keyring can't be
  *   shared with this home at all, so such an instance is refused.
@@ -44,17 +44,64 @@ const isExcludedEntry = (name: string) => EXCLUDED_ENTRY_NAMES.has(name.toLowerC
 const AUTH_FILE_NAME = "auth.json";
 
 /**
+ * Codex's SQLite databases and their side files. They are never linked: SQLite keeps a database's
+ * `-wal` and `-shm` next to the path it opened, so two processes reaching one database through
+ * different links (Windows hard links) can corrupt it. The stage opens them in the instance's home
+ * instead (`sqlite_home` below).
+ */
+const isSqliteEntry = (name: string) => /\.sqlite(?:-wal|-shm|-journal)?$/i.test(name);
+
+/**
+ * Locks that guard state the two homes share. They are created in the instance's home ahead of
+ * time, so both processes take the same lock even when the stage starts first.
+ */
+const SHARED_LOCK_DIRECTORIES = ["mcp-oauth-locks"] as const;
+const SHARED_LOCK_FILES = ["auth.lock"] as const;
+
+/**
  * Codex config for every read-only stage's app-server:
  * - file credential storage, so the linked `auth.json` stays the only credential (see above);
  * - the default project-root markers, so Codex reads project `.codex` layers from exactly the
- *   folders `findCodexProjectRulesConflict` checks. Managed config still wins over both.
+ *   folders `findCodexProjectRulesConflict` checks;
+ * - the SQLite folder the instance's own sessions use (`sharedSqliteHome`), so its databases are
+ *   opened through one path.
+ * Managed config still wins over all three. `environment` is the stage's child environment.
  */
-export const CODEX_READ_ONLY_STAGE_CONFIG_ARGS = [
-  "-c",
-  'cli_auth_credentials_store="file"',
-  "-c",
-  'project_root_markers=[".git"]',
-] as const satisfies ReadonlyArray<string>;
+export async function codexReadOnlyStageConfigArgs(
+  sourceHome: string,
+  environment: NodeJS.ProcessEnv,
+): Promise<ReadonlyArray<string>> {
+  const sqliteHome = await sharedSqliteHome(nodePath.resolve(sourceHome), environment);
+  return [
+    "-c",
+    'cli_auth_credentials_store="file"',
+    "-c",
+    'project_root_markers=[".git"]',
+    ...(sqliteHome ? ["-c", `sqlite_home=${JSON.stringify(sqliteHome)}`] : []),
+  ];
+}
+
+/**
+ * Where the stage must open SQLite to share the instance's databases, or undefined when Codex
+ * already resolves the same folder in both homes. Codex 0.170 uses `sqlite_home` from config, else
+ * `$CODEX_SQLITE_HOME`, else `CODEX_HOME`. The stage's `config.toml` is a link to the instance's,
+ * so an absolute `sqlite_home` and the inherited variable already agree; a relative `sqlite_home`
+ * resolves against the config's folder, and the `CODEX_HOME` default differs, so both are pinned to
+ * the instance's home.
+ */
+async function sharedSqliteHome(
+  source: string,
+  environment: NodeJS.ProcessEnv,
+): Promise<string | undefined> {
+  const configured = await topLevelConfigString(source, "sqlite_home");
+  if (configured !== undefined && configured.trim() !== "") {
+    const value = configured.trim();
+    return nodePath.isAbsolute(value) || value.startsWith("~")
+      ? undefined
+      : nodePath.resolve(source, value);
+  }
+  return environment.CODEX_SQLITE_HOME?.trim() ? undefined : source;
+}
 
 export class CodexReadOnlyHomeError extends Error {
   override readonly name = "CodexReadOnlyHomeError";
@@ -119,7 +166,12 @@ async function createLink(
       );
     }
   }
-  const info = await nodeFs.stat(target);
+  const info = await nodeFs.stat(target).catch((error: unknown) => {
+    // A broken link in the instance's home has nothing to share; skip it rather than refuse.
+    if (errorCode(error) === "ENOENT") return undefined;
+    throw error;
+  });
+  if (!info) return;
   if (info.isDirectory()) return nodeFs.symlink(target, link, "junction");
   try {
     await nodeFs.link(target, link);
@@ -127,6 +179,26 @@ async function createLink(
     if (errorCode(error) !== "EXDEV") throw error;
     await nodeFs.copyFile(target, link);
   }
+}
+
+/**
+ * Moves a real `auth.json` found in the read-only home over the instance's own when it is newer
+ * (or the instance has none), so relinking never discards a refreshed token. Codex 0.170 writes
+ * through the link, so this only matters if a later Codex replaced the link itself. A hard link to
+ * the instance's file is the same file and is left to the relink.
+ */
+async function keepNewerSignIn(
+  local: string,
+  source: string,
+  localInfo: Awaited<ReturnType<typeof nodeFs.lstat>>,
+): Promise<void> {
+  const sourceInfo = await nodeFs.stat(source).catch(() => undefined);
+  if (sourceInfo && hasKnownFileIdentity(localInfo.ino) && localInfo.ino === sourceInfo.ino) return;
+  if (sourceInfo && sourceInfo.mtimeMs >= localInfo.mtimeMs) return;
+  // Same directory as the destination, so the rename is atomic and never crosses a volume.
+  const staged = `${source}.f5-${process.pid}-${Date.now()}`;
+  await nodeFs.copyFile(local, staged);
+  await nodeFs.rename(staged, source);
 }
 
 /** Makes `link` a link to `target`, leaving a correct link alone. */
@@ -143,6 +215,8 @@ async function ensureLink(
     if (sameTarget(existing, target, platform)) return;
     await nodeFs.rm(link, { force: true });
   } else if (info) {
+    // A sign-in that ended up as a real file here may be the only fresh token: keep it.
+    if (entryName === AUTH_FILE_NAME && info.isFile()) await keepNewerSignIn(link, target, info);
     // A hard link is the right shape for other files on Windows, but never for `auth.json`.
     if (platform === "win32" && info.isFile() && entryName !== AUTH_FILE_NAME) {
       const targetInfo = await nodeFs.stat(target).catch(() => undefined);
@@ -167,15 +241,23 @@ async function ensureLink(
 }
 
 /**
- * The top-level `cli_auth_credentials_store` of the instance's `config.toml`, or undefined when it
- * isn't set there (Codex's default is `file`).
+ * A top-level string `key` of the instance's `config.toml`, or undefined when it isn't set before
+ * the first table.
  */
-async function configuredCredentialStore(source: string): Promise<string | undefined> {
+async function topLevelConfigString(source: string, key: string): Promise<string | undefined> {
   const text = await nodeFs.readFile(nodePath.join(source, "config.toml"), "utf8").catch(() => "");
+  const pattern = new RegExp(`^\\s*${key}\\s*=\\s*(?:"((?:[^"\\\\]|\\\\.)*)"|'([^']*)')`);
   for (const line of text.split(/\r?\n/)) {
     if (/^\s*\[/.test(line)) return undefined;
-    const match = /^\s*cli_auth_credentials_store\s*=\s*["']([^"']*)["']/.exec(line);
-    if (match) return match[1]!.trim().toLowerCase();
+    const match = pattern.exec(line);
+    if (!match) continue;
+    if (match[1] === undefined) return match[2];
+    try {
+      // TOML basic strings share JSON's common escapes; anything else is kept as written.
+      return JSON.parse(`"${match[1]}"`) as string;
+    } catch {
+      return match[1];
+    }
   }
   return undefined;
 }
@@ -191,15 +273,34 @@ async function materialize(input: {
     throw new CodexReadOnlyHomeError(
       "Codex's read-only stage home must be different from the instance's home.",
     );
+  // Never create the instance's home: without it there is no sign-in to share.
+  if (!(await lstatOrUndefined(source)))
+    throw new CodexReadOnlyHomeError(
+      `Codex can't run read-only workflow stages yet: its home folder ${source} doesn't exist. Sign in to Codex first.`,
+    );
   await nodeFs.mkdir(home, { recursive: true });
+  // Two paths to one folder (a symlinked parent, a junction) would turn the cleanup below on the
+  // instance's own `rules` and sessions.
+  const [sourceInfo, homeInfo] = await Promise.all([nodeFs.stat(source), nodeFs.stat(home)]);
+  const sameDirectory = hasKnownFileIdentity(sourceInfo.ino)
+    ? sourceInfo.ino === homeInfo.ino && sourceInfo.dev === homeInfo.dev
+    : sameTarget(await nodeFs.realpath(source), await nodeFs.realpath(home), input.platform);
+  if (sameDirectory)
+    throw new CodexReadOnlyHomeError(
+      `Codex's read-only stage home (${home}) is the instance's own home (${source}).`,
+    );
   await Promise.all(
-    KNOWN_SHARED_DIRECTORIES.map((directory) =>
+    [...KNOWN_SHARED_DIRECTORIES, ...SHARED_LOCK_DIRECTORIES].map((directory) =>
       nodeFs.mkdir(nodePath.join(source, directory), { recursive: true }),
     ),
   );
+  for (const file of SHARED_LOCK_FILES)
+    await nodeFs.writeFile(nodePath.join(source, file), "", { flag: "a" });
   const sourceEntries = await nodeFs.readdir(source);
   if (!sourceEntries.includes(AUTH_FILE_NAME)) {
-    const store = await configuredCredentialStore(source);
+    const store = (await topLevelConfigString(source, "cli_auth_credentials_store"))
+      ?.trim()
+      .toLowerCase();
     if (store === "keyring" || store === "auto")
       throw new CodexReadOnlyHomeError(
         `Codex can't run read-only workflow stages with a sign-in kept in your system keychain (cli_auth_credentials_store = "${store}" in ${nodePath.join(source, "config.toml")}): Codex ties it to its home folder, and these stages use a separate one. Set it to "file" and sign in to Codex again, or use another provider for this stage.`,
@@ -207,12 +308,13 @@ async function materialize(input: {
   }
   const wanted = new Set<string>(KNOWN_SHARED_DIRECTORIES);
   for (const name of sourceEntries) {
-    if (!isExcludedEntry(name) && !SHADOW_LOCAL_ENTRY_NAMES.has(name)) wanted.add(name);
+    if (!isExcludedEntry(name) && !SHADOW_LOCAL_ENTRY_NAMES.has(name) && !isSqliteEntry(name))
+      wanted.add(name);
   }
   // A rules file here would apply to every later read-only stage, for example one Codex wrote
-  // for an execpolicy amendment.
+  // for an execpolicy amendment. Database links from an earlier build go too.
   for (const name of await nodeFs.readdir(home)) {
-    if (isExcludedEntry(name))
+    if (isExcludedEntry(name) || isSqliteEntry(name))
       await nodeFs.rm(nodePath.join(home, name), { recursive: true, force: true });
   }
   for (const name of await nodeFs.readdir(home)) {
@@ -270,7 +372,7 @@ async function isProjectRoot(directory: string): Promise<boolean> {
 /**
  * The first project rules file that would apply in `cwd`, or undefined. Codex reads `.codex/`
  * project layers in every folder from the working directory up to the project root (the nearest
- * ancestor with a project-root marker, `CODEX_READ_ONLY_STAGE_CONFIG_ARGS`), or the working
+ * ancestor with a project-root marker, `codexReadOnlyStageConfigArgs`), or the working
  * directory alone without one. It skips only a `.codex` that is its own home, which in a read-only
  * stage is F5's, so your home folder's `.codex` counts as a project layer when a repository is
  * rooted there. Any non-empty `*.rules` file blocks, and so does one F5 can't read with certainty.
@@ -294,8 +396,21 @@ export async function findCodexProjectRulesConflict(
       break;
     }
   }
-  for (const directory of ancestors.slice(0, projectRoot + 1)) {
-    const rulesDir = nodePath.join(directory, ".codex", "rules");
+  return findCodexRulesInFolders(
+    ancestors.slice(0, projectRoot + 1).map((directory) => nodePath.join(directory, ".codex")),
+  );
+}
+
+/**
+ * The first rules file under any of these `.codex` folders, as `findCodexProjectRulesConflict`
+ * judges it. The manager also runs it on the project layers Codex itself reports, which follow
+ * managed config F5 can't read.
+ */
+export async function findCodexRulesInFolders(
+  dotCodexFolders: ReadonlyArray<string>,
+): Promise<CodexProjectRulesConflict | undefined> {
+  for (const folder of dotCodexFolders) {
+    const rulesDir = nodePath.join(folder, "rules");
     let entries: ReadonlyArray<string>;
     try {
       entries = await nodeFs.readdir(rulesDir);
@@ -315,6 +430,21 @@ export async function findCodexProjectRulesConflict(
     }
   }
   return undefined;
+}
+
+/** The `.codex` folders of the project layers in a `config/read` response with `includeLayers`. */
+export function codexProjectLayerFolders(response: unknown): ReadonlyArray<string> | undefined {
+  if (typeof response !== "object" || response === null) return undefined;
+  const layers = (response as { layers?: unknown }).layers;
+  if (!Array.isArray(layers)) return undefined;
+  const folders: string[] = [];
+  for (const layer of layers) {
+    const name = (layer as { name?: { type?: unknown; dotCodexFolder?: unknown } } | null)?.name;
+    if (name?.type !== "project") continue;
+    if (typeof name.dotCodexFolder !== "string") return undefined;
+    folders.push(name.dotCodexFolder);
+  }
+  return folders;
 }
 
 /** The refusal shown when a workspace's Codex rules can't be used in a read-only stage. */
