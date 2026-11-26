@@ -11,6 +11,7 @@ import type { ServerSecretStoreShape } from "../../auth/Services/ServerSecretSto
 import type { CodexMcpEventBus } from "../../codex/CodexMcpEventBus.ts";
 import type { makeMcpAccountExecutionResolver } from "../../mcp/accountExecution.ts";
 import { detectMcpImports } from "../../mcp/McpImportDetection.ts";
+import type { McpHub } from "../../mcp/hub/McpHub.ts";
 import { probeMcpServer } from "../../mcp/McpProbe.ts";
 import type { McpRuntimeService } from "../../mcp/McpRuntimeService.ts";
 import { resolveMcpSecrets } from "../../mcp/McpSecretResolver.ts";
@@ -37,6 +38,8 @@ type McpMethod =
   | typeof WS_METHODS.mcpReconnectServer
   | typeof WS_METHODS.mcpStartLogin
   | typeof WS_METHODS.mcpGetLoginStatus
+  | typeof WS_METHODS.mcpGetHubStatus
+  | typeof WS_METHODS.mcpReconnectHubServer
   | typeof WS_METHODS.mcpApplyToLiveSessions
   | typeof MCP_APPS_WS_METHODS.toolInfo
   | typeof MCP_APPS_WS_METHODS.callTool
@@ -46,6 +49,7 @@ type McpMethod =
 export interface McpRouteDependencies {
   readonly projectMcpConfigService: typeof ProjectMcpConfigService.Service;
   readonly mcpRuntimeService: typeof McpRuntimeService.Service;
+  readonly mcpHub: typeof McpHub.Service | undefined;
   readonly codexMcpEventBus: typeof CodexMcpEventBus.Service;
   readonly providerService: typeof ProviderService.Service;
   readonly profileSecrets: ServerSecretStoreShape;
@@ -80,6 +84,7 @@ const withoutTag = <Body extends { readonly _tag: string }>(body: Body) =>
 export const mcpRoutes = ({
   projectMcpConfigService,
   mcpRuntimeService,
+  mcpHub,
   codexMcpEventBus,
   providerService,
   profileSecrets,
@@ -278,6 +283,17 @@ export const mcpRoutes = ({
     Effect.gen(function* () {
       const body = yield* routePromise(() => resolveMcpAccount(withoutTag(request)));
       return yield* mcpRuntimeService.getLoginStatus(body);
+    }),
+
+  [WS_METHODS.mcpGetHubStatus]: (request) =>
+    Effect.succeed({ servers: mcpHub ? [...mcpHub.status(request.projectId)] : [] }),
+
+  [WS_METHODS.mcpReconnectHubServer]: (request) =>
+    Effect.gen(function* () {
+      const reconnected = mcpHub
+        ? yield* Effect.promise(() => mcpHub.reconnect(request.serverName, request.projectId))
+        : 0;
+      return { reconnected };
     }),
 
   [WS_METHODS.mcpApplyToLiveSessions]: (request) =>

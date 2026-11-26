@@ -425,6 +425,7 @@ import { CodexControlClientRegistry } from "./codex/CodexControlClientRegistry.t
 import { CodexMcpEventBus } from "./codex/CodexMcpEventBus.ts";
 import { ProjectMcpConfigService } from "./mcp/ProjectMcpConfigService.ts";
 import { McpRuntimeService } from "./mcp/McpRuntimeService.ts";
+import { McpHub } from "./mcp/hub/McpHub.ts";
 import { reconcileCodexThreadSnapshots } from "./orchestration/codexSnapshotReconciliation.ts";
 import { makeHistoryRecoveredSessionSet } from "./orchestration/providerTerminalLifecycle.ts";
 import { redactServerSettingsForClient, ServerSettingsService } from "./serverSettings.ts";
@@ -1121,6 +1122,7 @@ export const createServer = Effect.fn(function* (
   const serverSettings = yield* ServerSettingsService;
   const codexMcpEventBus = yield* CodexMcpEventBus;
   const mcpRuntimeService = yield* McpRuntimeService;
+  const mcpHub = Option.getOrUndefined(yield* Effect.serviceOption(McpHub));
   const projectMcpConfigService = yield* ProjectMcpConfigService;
   const previewAutomationBroker = yield* PreviewAutomationBroker;
   const computerAutomationBroker = yield* Effect.serviceOption(ComputerAutomationBroker);
@@ -4041,6 +4043,7 @@ export const createServer = Effect.fn(function* (
       mcpRoutes({
         projectMcpConfigService,
         mcpRuntimeService,
+        mcpHub,
         codexMcpEventBus,
         providerService,
         profileSecrets,
