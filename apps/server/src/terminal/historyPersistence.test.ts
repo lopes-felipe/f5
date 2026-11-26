@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { neutralizeInheritedHistory, readTerminalHistory } from "./historyPersistence";
-import { TERMINAL_HISTORY_MAX_BYTES } from "./BoundedTerminalHistory";
+import { BoundedTerminalHistory, TERMINAL_HISTORY_MAX_BYTES } from "./BoundedTerminalHistory";
 const directories: string[] = [];
 afterEach(() => {
   vi.restoreAllMocks();
@@ -37,6 +37,15 @@ it("restores recent complete lines and preserves CRLF and ANSI", async () => {
   const { history, truncated } = await readTerminalHistory(name, 2);
   expect(truncated).toBe(true);
   expect(history.value()).toBe("\u001b[32m世界\u001b[0m\r\nlast\n");
+});
+
+it("restores a truncated control string as replayable text without live parser state", async () => {
+  const name = file();
+  const retained = new BoundedTerminalHistory(5000, 24);
+  retained.append("\x1bPz" + "z".repeat(50) + "Å日本\u0085ready");
+  fs.writeFileSync(name, retained.value());
+  const { history } = await readTerminalHistory(name, 5000);
+  expect(history.snapshot()).toEqual({ history: "\x1bEready" });
 });
 
 it("uses a persistent decoder across short reads and closes the handle", async () => {

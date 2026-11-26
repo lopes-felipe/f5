@@ -183,6 +183,7 @@ export class BoundedTerminalHistory {
     this.cached = { history: "" };
   }
 
+  // Persist a replayable transcript because the file has no live parser state.
   value(): string {
     return this.materialize().history;
   }
@@ -214,7 +215,11 @@ export class BoundedTerminalHistory {
       ? [{ text: retained, offset: 0, bytes: this.bytes, newlines: this.newlines }]
       : [];
     this.head = 0;
-    const { data, state } = replayTerminalContinuation(this.sequenceState, retained, this.maxBytes);
+    const { data, state } = replayTerminalContinuation(
+      this.sequenceState,
+      retained,
+      this.maxBytes - this.bytes,
+    );
     this.cached = { history: data, ...(state ? { historySequenceState: state } : {}) };
     return this.cached;
   }

@@ -23,10 +23,8 @@ describe("BoundedTerminalHistory", () => {
     [8, "\u0084ready", "\x1bDready"],
     [8, "\u0085ready", "\x1bEready"],
     [8, "\u0088\r\tset", "\x1bH\r\tset"],
-    [8, "\u008dready", "\x1bMready"],
-    [8, "\u2140ready", "\x1bEready"],
-    [10, "\u2140ready", "\x1bE\ufffdready"],
-    [10, "\u1700ready", "\ufffdready"],
+    [8, "\u008dready", "ready"],
+    [16, "ÅÍ日本\u2140\x1b\\ready", "ready"],
   ])(
     "replays only the layout control and visible tail within %i bytes (%j)",
     (budget, tail, expected) => {
@@ -49,17 +47,13 @@ describe("BoundedTerminalHistory", () => {
     expect(snapshot.history).toBe("");
     const continuation = replayTerminalContinuation(snapshot.historySequenceState!, "payload");
     expect(continuation).toEqual({ state: snapshot.historySequenceState, data: "" });
-    expect(replayTerminalContinuation(continuation.state, "\u2140ready")).toEqual({
-      state: 0,
-      data: "\x1bE\ufffdready",
-    });
+    expect(replayTerminalContinuation(continuation.state, "\u2140ready")).toEqual(continuation);
     const splitCodePoint = "\u{45000}";
     const firstHalf = replayTerminalContinuation(continuation.state, splitCodePoint[0]!);
     expect(firstHalf.data).toBe("");
-    expect(replayTerminalContinuation(firstHalf.state, splitCodePoint[1]! + "ready")).toEqual({
-      state: 0,
-      data: "\x1bE\ufffd\ufffdready",
-    });
+    expect(replayTerminalContinuation(firstHalf.state, splitCodePoint[1]! + "ready")).toEqual(
+      continuation,
+    );
     history.append("\x1b");
     expect(replayTerminalContinuation(history.snapshot().historySequenceState!, "\\ready")).toEqual(
       {

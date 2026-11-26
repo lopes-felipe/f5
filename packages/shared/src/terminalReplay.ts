@@ -1,72 +1,75 @@
 const GROUND = 0;
 const ESCAPE = 1;
 const ESCAPE_INTERMEDIATE = 2;
-const CSI = 3;
-const CONTROL_STRING = 4;
+const CSI_ENTRY = 3;
+const DCS_PAYLOAD = 4;
 const OSC = 5;
 const STRING_ESCAPE = 6;
-const encoder = new TextEncoder();
+const APC = 7; // Also SOS and PM.
+const DCS_ENTRY = 8;
+const DCS_PARAM = 9;
+const DCS_INTERMEDIATE = 10;
+const DCS_IGNORE = 11;
+const CSI_PARAM = 12;
+const CSI_INTERMEDIATE = 13;
+const CSI_IGNORE = 14;
+const SPLIT_SURROGATE = 16;
 
-// The low three bits hold the parser mode. Higher bits hold a split surrogate.
-function nextState(
-  state: number,
-  unit: number,
-  onC1?: (byte: number, remainingBytes: number) => void,
-): number {
-  let mode = state & 7;
-  if (unit === 0x1b) {
-    return mode === CONTROL_STRING || mode === OSC ? STRING_ESCAPE : ESCAPE;
+// Track xterm's transitions that determine where omitted output ends. JavaScript
+// strings reach xterm as code points, so only actual C1 characters are controls.
+function nextState(state: number, code: number): number {
+  if (code === 0xfeff) return state; // xterm's string decoder skips BOMs.
+  if (code === 0x1b) {
+    return state === DCS_PAYLOAD || state === OSC || state === APC ? STRING_ESCAPE : ESCAPE;
   }
-  if (unit === 0x18 || unit === 0x1a || unit === 0x9c || (unit === 7 && mode === OSC)) {
+  if (code === 0x18 || code === 0x1a) return GROUND;
+  if (code >= 0x80 && code <= 0x9f) {
+    if (code === 0x90) return DCS_ENTRY;
+    if (code === 0x9b) return CSI_ENTRY;
+    if (code === 0x9d) return OSC;
+    if (code === 0x98 || code >= 0x9e) return APC;
     return GROUND;
   }
-  if (mode === STRING_ESCAPE) {
-    if (unit === 0x5c) return GROUND;
-    mode = ESCAPE;
+  if (state === STRING_ESCAPE) state = ESCAPE;
+  if (state === OSC) return code === 7 ? GROUND : OSC;
+  if (state === DCS_PAYLOAD || state === DCS_IGNORE || state === CSI_IGNORE) {
+    return state === CSI_IGNORE && code >= 0x40 && code < 0x7f ? GROUND : state;
   }
-  if (unit < 0x80) {
-    switch (mode) {
-      case ESCAPE:
-        if (unit < 0x20 || unit === 0x7f) return mode;
-        if (unit < 0x30) return ESCAPE_INTERMEDIATE;
-        if (unit === 0x5b) return CSI;
-        if (unit === 0x5d) return OSC;
-        return unit === 0x50 || unit === 0x58 || unit === 0x5e || unit === 0x5f
-          ? CONTROL_STRING
-          : GROUND;
-      case ESCAPE_INTERMEDIATE:
-        return unit >= 0x30 && unit !== 0x7f ? GROUND : mode;
-      case CSI:
-        return unit >= 0x40 && unit !== 0x7f ? GROUND : mode;
-      default:
-        return mode;
-    }
-  }
-
-  if (mode === OSC) return mode;
-  if (mode === GROUND && unit > 0x9f) return mode;
-  if (unit >= 0xd800 && unit <= 0xdbff) return mode | (unit << 3);
-  let codePoint = unit;
-  if (unit >= 0xdc00 && unit <= 0xdfff) {
-    if (state < 8) return mode;
-    codePoint = 0x10000 + (((state >> 3) - 0xd800) << 10) + unit - 0xdc00;
-  }
-  // In a discarded non-OSC sequence a UTF-8 continuation byte can act as C1.
-  for (let shift = codePoint > 0xffff ? 12 : codePoint > 0x7ff ? 6 : 0; shift >= 0; shift -= 6) {
-    const byte = 0x80 | ((codePoint >> shift) & 0x3f);
-    if (byte >= 0xa0) continue;
-    if (byte === 0x9d) return OSC;
-    if (byte === 0x9b) mode = CSI;
-    else if (byte === 0x90 || byte === 0x98 || byte >= 0x9e) mode = CONTROL_STRING;
-    else {
-      onC1?.(byte, shift / 6);
+  if (code >= 0xa0) return GROUND;
+  if (code < 0x20 || code === 0x7f) return state;
+  switch (state) {
+    case APC:
+      return APC;
+    case ESCAPE:
+      if (code < 0x30) return ESCAPE_INTERMEDIATE;
+      if (code === 0x5b) return CSI_ENTRY;
+      if (code === 0x5d) return OSC;
+      if (code === 0x50) return DCS_ENTRY;
+      return code === 0x58 || code === 0x5e || code === 0x5f ? APC : GROUND;
+    case ESCAPE_INTERMEDIATE:
+      return code < 0x30 ? state : GROUND;
+    case CSI_ENTRY:
+    case CSI_PARAM:
+    case CSI_INTERMEDIATE:
+      if (code >= 0x40) return GROUND;
+      if (code < 0x30) return CSI_INTERMEDIATE;
+      return state === CSI_INTERMEDIATE || (state === CSI_PARAM && code >= 0x3c)
+        ? CSI_IGNORE
+        : CSI_PARAM;
+    case DCS_ENTRY:
+    case DCS_PARAM:
+    case DCS_INTERMEDIATE:
+      if (code >= 0x40) return DCS_PAYLOAD;
+      if (code < 0x30) return DCS_INTERMEDIATE;
+      return state === DCS_INTERMEDIATE || (state === DCS_PARAM && code >= 0x3c)
+        ? DCS_IGNORE
+        : DCS_PARAM;
+    default:
       return GROUND;
-    }
   }
-  return mode;
 }
 
-/** Advance across evicted history, skipping printable runs in ground state. */
+/** Advance across evicted history, which is already aligned to code points. */
 export function terminalSequenceStateAfter(
   state: number,
   text: string,
@@ -88,34 +91,30 @@ export function terminalSequenceStateAfter(
   return state;
 }
 
-/** Skip omitted control payload and preserve C1 layout controls on the return to ground. */
-export function replayTerminalContinuation(state: number, data: string, maxBytes?: number) {
+/** Skip omitted payload, retaining layout controls that xterm executes. */
+export function replayTerminalContinuation(state: number, data: string, spareBytes = Infinity) {
   if (state === GROUND || !data) return { state, data };
-  let control = "";
-  let replacements = 0;
-  const onC1 = (byte: number, remainingBytes: number) => {
-    if (byte === 0x84 || byte === 0x85 || byte === 0x88 || byte === 0x8d) {
-      control = "\x1b" + String.fromCharCode(byte - 0x40);
-    }
-    replacements = remainingBytes;
-  };
   let end = 0;
+  if (state & SPLIT_SURROGATE) {
+    state &= ~SPLIT_SURROGATE;
+    const first = data.charCodeAt(0);
+    if (first >= 0xdc00 && first <= 0xdfff) end++;
+    state = nextState(state, 0xa0);
+  }
+  let control = "";
   while (state !== GROUND && end < data.length) {
-    const unit = data.charCodeAt(end);
-    if (state === STRING_ESCAPE && unit !== 0x5c) {
-      // The held ESC starts a new sequence. Within bounded history, only restore
-      // it when the preceding discarded payload freed a byte.
-      if (maxBytes === undefined || end > 0 || encoder.encode(data).byteLength < maxBytes) {
-        return { state: GROUND, data: "\x1b" + data.slice(end) };
-      }
+    const code = data.codePointAt(end)!;
+    if (state === STRING_ESCAPE && code !== 0x5c && (end > 0 || spareBytes > 0)) {
+      return { state: GROUND, data: "\x1b" + data.slice(end) };
     }
-    state = unit === 0x1b ? STRING_ESCAPE : nextState(state, unit, onC1);
-    end++;
+    if (code >= 0xd800 && code <= 0xdbff && end === data.length - 1) {
+      return { state: state | SPLIT_SURROGATE, data: "" };
+    }
+    state = code === 0x1b ? STRING_ESCAPE : nextState(state, code);
+    if (code === 0x84 || code === 0x85 || code === 0x88) {
+      control = "\x1b" + String.fromCharCode(code - 0x40);
+    }
+    end += code > 0xffff ? 2 : 1;
   }
-  const tail = data.slice(end);
-  if (maxBytes !== undefined && replacements > 0) {
-    const available = maxBytes - encoder.encode(tail).byteLength - control.length;
-    replacements = Math.min(replacements, Math.max(0, Math.floor(available / 3)));
-  }
-  return { state, data: control + "\ufffd".repeat(replacements) + tail };
+  return { state, data: control + data.slice(end) };
 }

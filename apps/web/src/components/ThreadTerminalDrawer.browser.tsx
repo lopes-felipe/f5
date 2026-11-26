@@ -253,22 +253,50 @@ describe("ThreadTerminalDrawer output and selection", () => {
     return { ...mounted, screen };
   }
 
-  it("preserves the next line when live output finishes an omitted control string", async () => {
-    const pending = "\x1bPz";
-    const mounted = await mountRunningTerminal({
-      history: "",
-      historySequenceState: terminalSequenceStateAfter(0, pending, 0, pending.length),
-    });
-    try {
-      mounted.output("omitted payload");
-      mounted.output("\u0085ready");
-      await mounted.parsed();
-      expect(mounted.active.buffer.active.getLine(0)?.translateToString(true)).toBe("");
-      expect(mounted.active.buffer.active.getLine(1)?.translateToString(true)).toBe("ready");
-    } finally {
-      await mounted.cleanup();
-    }
-  });
+  it.each([
+    ["\x1bPz", ["omitted payload", "\u0085ready"]],
+    ["\x1bPz", ["ÅÍ日本\u2140", "\x1b", "\\ready"]],
+    ["\x1bPz", ["\ud83d", "\ude42\u0085ready"]],
+    ["\x1bPz", ["\u008dready"]],
+    ["\x1b_omitted", ["Í日本 ready"]],
+    ["\x1b_omitted", ["\u0085ready"]],
+    ["\x1b]0;omitted", ["Å日本", "\u0085ready"]],
+    ["\x1b]0;omitted", ["Å日本", "\x1b", "\\ready"]],
+    ["\x1b[123", ["é rest"]],
+    ["\x1b[123", ["\ufeffmready"]],
+    ["\x1b[1;<", ["日本", "mready"]],
+    ["\x1bP123", ["é rest"]],
+  ] as const)(
+    "matches attached xterm after truncating %j and receiving %j",
+    async (pending, chunks) => {
+      const attached = new Terminal({ cols: 80, rows: 10 });
+      const mounted = await mountRunningTerminal({
+        history: "",
+        historySequenceState: terminalSequenceStateAfter(0, pending, 0, pending.length),
+      });
+      const view = (terminal: Terminal) => {
+        const buffer = terminal.buffer.active;
+        return {
+          cursor: [buffer.cursorX, buffer.cursorY],
+          lines: Array.from({ length: buffer.length }, (_, row) =>
+            buffer.getLine(row)?.translateToString(true),
+          ),
+        };
+      };
+      try {
+        await new Promise<void>((resolve) => attached.write(pending, resolve));
+        for (const chunk of chunks) {
+          mounted.output(chunk);
+          await new Promise<void>((resolve) => attached.write(chunk, resolve));
+          await mounted.parsed();
+          expect(view(mounted.active)).toEqual(view(attached));
+        }
+      } finally {
+        attached.dispose();
+        await mounted.cleanup();
+      }
+    },
+  );
 
   it("opens the delayed selection menu despite intervening output and uses shifted lines", async () => {
     let choose: (action: string) => void = () => {};
