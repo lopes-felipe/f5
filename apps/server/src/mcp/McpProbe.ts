@@ -1,4 +1,5 @@
 import { closeProbeProcess } from "./McpProbeProcess.ts";
+import { resolveInvocation } from "../spawn/resolveCommand.ts";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { homedir } from "node:os";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -48,10 +49,18 @@ export class ProbeStdioTransport implements Transport {
   setProtocolVersion(version: string) {
     this.protocolVersion = version;
   }
-  start(): Promise<void> {
-    if (this.child || this.closing)
-      return Promise.reject(new Error("Probe transport already started or closed."));
-    const child = spawn(this.command, this.args, {
+  async start(): Promise<void> {
+    if (this.child || this.closing) throw new Error("Probe transport already started or closed.");
+    // On Windows, `npx`, `pnpm dlx` and other npm commands are .cmd shims that
+    // `spawn` cannot run without a shell; resolve them like provider binaries.
+    const invocation =
+      process.platform === "win32"
+        ? await resolveInvocation(this.command, this.args, this.env, { cwd: this.cwd }).catch(
+            () => ({ file: this.command, args: this.args }),
+          )
+        : { file: this.command, args: this.args };
+    if (this.child || this.closing) throw new Error("Probe transport already started or closed.");
+    const child = spawn(invocation.file, [...invocation.args], {
       env: this.env,
       cwd: this.cwd,
       detached: process.platform !== "win32",

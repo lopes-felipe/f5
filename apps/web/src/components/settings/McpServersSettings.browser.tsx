@@ -360,6 +360,36 @@ describe("McpServersSettings", () => {
     }
   });
 
+  it("lists each per-session connection of one server and offers Reconnect unless connecting", async () => {
+    const mocks = createNativeApiMock();
+    const session = {
+      name: "files",
+      connectionScope: "session" as const,
+      transport: "stdio" as const,
+      attempts: 0,
+      attachedSessions: 1,
+      projectIds: [PROJECT_ID],
+      providers: ["pi" as const],
+    };
+    mocks.getHubStatus.mockResolvedValue({
+      servers: [
+        { ...session, id: "conn-a", state: "ready", toolCount: 2 },
+        { ...session, id: "conn-b", state: "connecting" },
+      ],
+    });
+    const { screen, queryClient } = await renderSettings();
+    try {
+      const panel = page.getByRole("region", { name: "Other agents" });
+      await expect.element(panel.getByText("Ready", { exact: true })).toBeVisible();
+      await expect.element(panel.getByText("Connecting", { exact: true })).toBeVisible();
+      expect(panel.getByRole("listitem").elements()).toHaveLength(2);
+      expect(panel.getByRole("button", { name: "Reconnect" }).elements()).toHaveLength(1);
+    } finally {
+      queryClient.clear();
+      await screen.unmount();
+    }
+  });
+
   it("shows no stuck provider badge without a selected project", async () => {
     const mocks = createNativeApiMock();
     const { screen, queryClient } = await renderSettings(false);

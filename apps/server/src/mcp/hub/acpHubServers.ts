@@ -11,6 +11,10 @@ import type { McpHubEndpoint, McpHubOmission } from "./McpHub.ts";
  * ACP entries for hub endpoints. Hub endpoints are always streamable HTTP, so
  * an agent with HTTP MCP connects directly; otherwise `t3 mcp-session-stdio`
  * relays stdio to the endpoint.
+ *
+ * The relay makes one request per POST and has no notification stream, so
+ * `list_changed` and progress notifications do not reach those agents; their
+ * catalog is the one listed at session start (documented in mcp-servers.md).
  */
 export function hubEndpointsToAcpServers(
   endpoints: ReadonlyArray<McpHubEndpoint>,
