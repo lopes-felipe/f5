@@ -12,10 +12,20 @@ const { HttpError } = createRequire(require.resolve("electron-updater"))(
   "builder-util-runtime",
 ) as { HttpError: new (statusCode: number, message?: string) => Error };
 
-/** `missing` tags 404 both channel files (a draft or bare tag); `failing` tags return 500. */
+/**
+ * `missing` tags 404 both channel files (a draft or bare tag); `failing` tags return 500;
+ * `betaOnly` tags return 500 for `beta-mac.yml` and 404 for `latest-mac.yml` (a healthy beta
+ * release that ships only beta channel files, hit by a transient error).
+ */
 function fixture(
   tags: string[],
-  options: { beta: boolean; missing?: string[]; failing?: string[]; network?: string[] },
+  options: {
+    beta: boolean;
+    missing?: string[];
+    failing?: string[];
+    network?: string[];
+    betaOnly?: string[];
+  },
 ) {
   const requests: string[] = [];
   const state = { missing: new Set(options.missing ?? []) };
@@ -50,6 +60,10 @@ function fixture(
           if (state.missing.has(tag)) throw new HttpError(404, "Not Found");
           if (options.failing?.includes(tag)) throw new HttpError(500, "Server Error");
           if (options.network?.includes(tag)) throw new Error("socket hang up");
+          if (options.betaOnly?.includes(tag))
+            throw path.endsWith("/beta-mac.yml")
+              ? new HttpError(500, "Server Error")
+              : new HttpError(404, "Not Found");
           const version = tag.slice(1);
           return `version: ${version}\nfiles:\n  - url: F5-${version}-arm64.zip\n    sha512: hash\n    size: 1\npath: F5-${version}-arm64.zip\nsha512: hash\nreleaseDate: '2026-01-01T00:00:00Z'\n`;
         },
@@ -109,6 +123,18 @@ describe("F5GitHubProvider beta feed fallback", () => {
     });
     expect(requests.some((path) => path.includes("/v0.1.13/"))).toBe(false);
     expect(requests.filter((path) => path.endsWith(".atom"))).toHaveLength(1);
+  });
+  it("never skips a release whose beta channel file failed transiently before the 404 fallback", async () => {
+    const { provider, requests, warnings } = fixture(["v0.1.14-beta.7", "v0.1.14-beta.6"], {
+      beta: true,
+      betaOnly: ["v0.1.14-beta.7"],
+    });
+    await expect(provider.getLatestVersion()).rejects.toMatchObject({
+      code: "ERR_UPDATER_CHANNEL_FILE_NOT_FOUND",
+      message: expect.stringContaining("/download/v0.1.14-beta.7/"),
+    });
+    expect(requests.some((path) => path.includes("/v0.1.14-beta.6/"))).toBe(false);
+    expect(warnings).toEqual([]);
   });
   it("leaves stable checks unchanged", async () => {
     const { provider, requests } = fixture(["v0.1.14-beta.6", "v0.1.13", "v0.1.12"], {

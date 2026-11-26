@@ -24,7 +24,7 @@ import {
   assertReleaseProfileAllowed,
 } from "../lib/release-profile.ts";
 import { CLI_TARGETS } from "@t3tools/shared/cliRelease";
-import { promotionProblems, remoteTagCommit } from "../lib/release-promotion.ts";
+import { draftSourceCommit, promotionProblems, remoteTagCommit } from "../lib/release-promotion.ts";
 import { parseDesktopUpdateManifest } from "../desktop-update-manifest.ts";
 import {
   validatePublicationQualification,
@@ -199,7 +199,7 @@ export async function publishCandidate(
     if (remoteTagExists(tag)) {
       git(["fetch", "origin", "refs/tags/" + tag + ":refs/tags/" + tag]);
       source = remoteSource(tag);
-    } else if (release.draft) source = release.target_commitish;
+    } else source = draftSourceCommit(release);
     if (source !== candidate.sourceSha || release.prerelease !== (candidate.kind === "beta"))
       throw new Error("Existing release/tag has a different identity");
     if (release.draft && release.assets.some((a) => a.state === "starter")) {
@@ -249,6 +249,9 @@ export async function publishCandidate(
   );
   beforePublish();
   if (!release) {
+    // A leftover tag at another commit can never be published under this version.
+    // Refuse before writing the draft and uploading; reserveTag rechecks for races.
+    assertTagAvailable(tag, candidate.sourceSha);
     const notes = join(directory, "..", "notes.md");
     writeFileSync(
       notes,
@@ -298,8 +301,12 @@ export async function publishCandidate(
   // The tag becomes public in releases.atom the moment it exists, and only repository
   // admins can delete `v*` tags. Create it only after every gate has passed, so an
   // abandoned draft never becomes the newest entry beta updaters resolve.
+  // Nothing between the ref POST and the PATCH may fail for avoidable reasons: a tag left
+  // on a draft is exactly what breaks beta update checks.
   reserveTag(tag, candidate.sourceSha);
   promoteRelease(release.id, candidate.kind === "beta");
+  // Public verification and later reconciliations resolve the release through this tag.
+  git(["fetch", "origin", "refs/tags/" + tag + ":refs/tags/" + tag]);
 }
 function remoteTagExists(tag: string): boolean {
   return git(["ls-remote", "--tags", "origin", "refs/tags/" + tag]).trim() !== "";
@@ -311,11 +318,15 @@ function remoteSource(tag: string): string {
       git(["ls-remote", "--tags", "origin", "refs/tags/" + name, "refs/tags/" + name + "^{}"]),
   });
 }
-function reserveTag(tag: string, sourceSha: string): void {
+/** Read-only: throws when the tag exists at another commit; returns whether it exists. */
+function assertTagAvailable(tag: string, sourceSha: string): boolean {
   const ref = optionalApi<{ object: { sha: string } }>("git/ref/tags/" + tag);
   if (ref && ref.object.sha !== sourceSha)
     throw new Error("Tag already points at a different commit");
-  if (!ref)
+  return ref !== undefined;
+}
+function reserveTag(tag: string, sourceSha: string): void {
+  if (!assertTagAvailable(tag, sourceSha))
     gh([
       "api",
       "--method",
@@ -326,8 +337,6 @@ function reserveTag(tag: string, sourceSha: string): void {
       "-f",
       "sha=" + sourceSha,
     ]);
-  // Public verification and later reconciliations resolve the release through this tag.
-  git(["fetch", "origin", "refs/tags/" + tag + ":refs/tags/" + tag]);
 }
 async function publicFetch(url: string, method = "GET"): Promise<Response> {
   for (let attempt = 0; ; attempt++) {

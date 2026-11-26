@@ -21,16 +21,29 @@ const CHANNEL_FILE_NOT_FOUND = "ERR_UPDATER_CHANNEL_FILE_NOT_FOUND";
 export class F5GitHubProvider extends GitHubProvider {
   private readonly appUpdater: AppUpdater;
   private readonly skippedTags = new Set<string>();
+  /**
+   * Tags whose channel-file requests failed with anything but a 404 during the current
+   * attempt. The stock provider swallows the first channel file's error and reports only
+   * the fallback's, so a 500 on `beta-mac.yml` followed by a 404 on `latest-mac.yml` must
+   * not read as "unpublished".
+   */
+  private readonly unhealthyTags: Set<string>;
 
   constructor(options: GithubOptions, updater: AppUpdater, runtimeOptions: ProviderRuntimeOptions) {
-    super(options, updater, runtimeOptions);
+    const unhealthyTags = new Set<string>();
+    super(options, updater, {
+      ...runtimeOptions,
+      executor: recordChannelFileFailures(runtimeOptions.executor, unhealthyTags),
+    });
     this.appUpdater = updater;
+    this.unhealthyTags = unhealthyTags;
   }
 
   override async getLatestVersion(): ReturnType<GitHubProvider["getLatestVersion"]> {
     this.skippedTags.clear();
     try {
       for (;;) {
+        this.unhealthyTags.clear();
         try {
           return await super.getLatestVersion();
         } catch (error) {
@@ -44,6 +57,7 @@ export class F5GitHubProvider extends GitHubProvider {
       }
     } finally {
       this.skippedTags.clear();
+      this.unhealthyTags.clear();
     }
   }
 
@@ -60,7 +74,41 @@ export class F5GitHubProvider extends GitHubProvider {
     if ((error as { code?: unknown } | null)?.code !== CHANNEL_FILE_NOT_FOUND) return null;
     if (this.skippedTags.size >= MAX_SKIPPED_FEED_TAGS) return null;
     const tag = channelFileTag(String((error as Error).message));
-    return tag !== null && !this.skippedTags.has(tag) ? tag : null;
+    if (tag === null || this.skippedTags.has(tag) || this.unhealthyTags.has(tag)) return null;
+    return tag;
+  }
+}
+
+type Executor = ProviderRuntimeOptions["executor"];
+
+/** Wraps the provider's executor to record which tags' downloads failed with a non-404. */
+function recordChannelFileFailures(executor: Executor, unhealthy: Set<string>): Executor {
+  const request: Executor["request"] = async (...args) => {
+    try {
+      return await executor.request(...args);
+    } catch (error) {
+      const tag = downloadTag(String(args[0]?.path ?? ""));
+      if (tag !== null && (error as { statusCode?: unknown } | null)?.statusCode !== 404)
+        unhealthy.add(tag);
+      throw error;
+    }
+  };
+  return new Proxy(executor, {
+    get(target, property) {
+      if (property === "request") return request;
+      const value: unknown = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+function downloadTag(path: string): string | null {
+  const match = /\/releases\/download\/([^/?#]+)\//.exec(path);
+  if (!match) return null;
+  try {
+    return decodeURIComponent(match[1]!);
+  } catch {
+    return null;
   }
 }
 

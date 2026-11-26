@@ -90,7 +90,8 @@ async function protectedSnapshot(
     // a rerun of the same candidate while an earlier verified attempt publishes.
     if (lease.candidateRun !== null) protectedRuns.add(lease.candidateRun);
   }
-  // Drafts reserve their version tag before creation; no release-history scan is needed.
+  // No release-history scan is needed: a draft exists only once its build has completed,
+  // so an abandoned tagless draft has no unfinished build left to protect.
   for (const run of activeRecords("release-upgrade.yml")) {
     if (
       run.repository.full_name !== repository ||

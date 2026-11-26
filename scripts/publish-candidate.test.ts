@@ -30,6 +30,7 @@ const state = vi.hoisted(() => ({
   /** The draft's own identity, independent of whether its tag exists. */
   releaseTag: "",
   releaseTarget: "",
+  failTagFetch: false,
   draft: true,
   exists: false,
   assets: [] as { id?: number; name: string; size: number; digest: string | null; state: string }[],
@@ -101,6 +102,8 @@ vi.mock("./release/release-github.ts", async (importOriginal) => {
     acceptanceOnlyCommit: () => false,
     runs: (workflow: string) => [fixtureRun(workflow === "ci.yml" ? 200 : 100, workflow)],
     git: (args: string[]) => {
+      if (args[0] === "fetch" && state.failTagFetch && args.some((a) => a.startsWith("refs/tags/")))
+        throw new Error("fetch failed");
       if (args[0] === "ls-remote")
         return state.tag ? (state.tagSource || state.source) + "\trefs/tags/" + state.tag : "";
       if (args[0] === "rev-list" && args.includes("-n")) return state.tagSource || state.source;
@@ -392,6 +395,7 @@ beforeEach(() => {
   state.tagSource = "";
   state.releaseTag = "";
   state.releaseTarget = "";
+  state.failTagFetch = false;
   state.draft = true;
   state.exists = false;
   state.assets = [];
@@ -662,6 +666,37 @@ describe("publisher integration with immutable platform fixtures", () => {
     state.tagSource = "c".repeat(40);
     const writes = state.writes.length;
     await expect(publishCandidate(candidate, directory)).rejects.toThrow("different identity");
+    expect(state.writes).toHaveLength(writes);
+  });
+  it("never reads a branch name in a tagless draft's target as its source", async () => {
+    const { candidate, directory } = await candidateFixture();
+    await assembleCandidate(candidate, directory);
+    state.interrupt = true;
+    await expect(publishCandidate(candidate, directory)).rejects.toThrow("interrupted");
+    state.releaseTarget = "main";
+    const writes = state.writes.length;
+    await expect(publishCandidate(candidate, directory)).rejects.toThrow("different identity");
+    expect(state.writes).toHaveLength(writes);
+  });
+  it("refuses a leftover tag at another commit before creating a draft", async () => {
+    const { candidate, directory } = await candidateFixture();
+    await assembleCandidate(candidate, directory);
+    state.tag = "v" + candidate.version;
+    state.tagSource = "c".repeat(40);
+    await expect(publishCandidate(candidate, directory)).rejects.toThrow("different commit");
+    expect(state.exists).toBe(false);
+    expect(state.writes).toEqual([]);
+  });
+  it("promotes before fetching the new tag, so a failed fetch never leaves a tagged draft", async () => {
+    const { candidate, directory } = await candidateFixture();
+    await assembleCandidate(candidate, directory);
+    state.failTagFetch = true;
+    await expect(publishCandidate(candidate, directory)).rejects.toThrow("fetch failed");
+    expect(state.tag).toBe("v" + candidate.version);
+    expect(state.draft).toBe(false);
+    state.failTagFetch = false;
+    const writes = state.writes.length;
+    await publishCandidate(candidate, directory);
     expect(state.writes).toHaveLength(writes);
   });
   it("assembles exact files once and resumes an interrupted draft without replacing assets", async () => {
