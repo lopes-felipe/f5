@@ -55,7 +55,7 @@ it("reads OpenCode SQLite and JSON without counting a migrated message twice", a
   }
 });
 
-it("reads Antigravity generation metadata from a read-only trajectory database", async () => {
+it("reads Antigravity metadata and resolves bare, effort-suffixed and numeric model names", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "f5-antigravity-usage-"));
   try {
     const nested = (id: number, bytes: number[]) => [(id << 3) | 2, bytes.length, ...bytes];
@@ -67,23 +67,58 @@ it("reads Antigravity generation metadata from a read-only trajectory database",
     const tag19 = metadata.indexOf((19 << 3) | 2);
     metadata.splice(tag19, 1, 0x9a, 0x01);
     metadata[1]! += 1;
+    const namedModel = (name: string, idBytes: number[]) =>
+      nested(1, [3 << 3, ...idBytes, 0x9a, 0x01, name.length, ...Buffer.from(name)]);
     const db = new DatabaseSync(path.join(root, "conversation.db"));
     try {
       db.exec("CREATE TABLE gen_metadata (idx INTEGER, data BLOB)");
       db.prepare("INSERT INTO gen_metadata VALUES (?, ?)").run(0, Buffer.from(metadata));
+      db.prepare("INSERT INTO gen_metadata VALUES (?, ?)").run(
+        1,
+        Buffer.from(namedModel("gemini-3.8-flash", [0xa6, 0x0a])),
+      );
+      db.prepare("INSERT INTO gen_metadata VALUES (?, ?)").run(
+        2,
+        Buffer.from(namedModel("gemini-3.8-flash-high", [0xa6, 0x0a])),
+      );
     } finally {
       db.close();
     }
+    const steps = new DatabaseSync(path.join(root, "a-steps.db"));
+    try {
+      steps.exec("CREATE TABLE steps (idx INTEGER, metadata BLOB)");
+      const insert = steps.prepare("INSERT INTO steps VALUES (?, ?)");
+      insert.run(3, Buffer.from(nested(9, [1 << 3, 0xa6, 0x0a, 2 << 3, 7])));
+      insert.run(4, Buffer.from(nested(9, [1 << 3, 0xf5, 0x0b, 2 << 3, 9])));
+    } finally {
+      steps.close();
+    }
     const result = await readAntigravityUsage(root, 50_000);
     expect(result.errors).toEqual([]);
-    expect(result.files.flatMap((file) => file.records)).toMatchObject([
-      {
-        model: "gemini-test",
-        sessionId: "conversation",
-        timestampMs: 100_000,
-        totals: { uncachedInputTokens: 20, cachedInputTokens: 10, outputTokens: 5 },
-      },
-    ]);
+    const records = result.files.flatMap((file) => file.records);
+    expect(records).toHaveLength(3);
+    expect(records).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          model: "gemini-3.8-flash",
+          totals: expect.objectContaining({ uncachedInputTokens: 7 }),
+        }),
+        expect.objectContaining({
+          model: "gemini-4-hydrogen",
+          totals: expect.objectContaining({ uncachedInputTokens: 9 }),
+        }),
+        expect.objectContaining({
+          model: "gemini-test",
+          sessionId: "conversation",
+          timestampMs: 100_000,
+          totals: expect.objectContaining({
+            uncachedInputTokens: 20,
+            cachedInputTokens: 10,
+            outputTokens: 5,
+          }),
+        }),
+      ]),
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

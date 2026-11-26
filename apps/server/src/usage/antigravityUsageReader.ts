@@ -98,6 +98,25 @@ const MODEL_IDS: Record<number, string> = {
   1018: "gemini-3-flash-preview",
   1084: "gemini-3-flash-preview",
   1047: "gemini-3-flash-preview",
+  1417: "gemini-4-argon",
+  1418: "gemini-4-argon",
+  1419: "gemini-4-argon",
+  1427: "gemini-4-carbon",
+  1437: "gemini-4-carbon",
+  1525: "gemini-4-hydrogen",
+  1526: "gemini-4-hydrogen",
+  1527: "gemini-4-hydrogen",
+  1532: "gemini-4-neon",
+  1533: "gemini-4-neon",
+  1537: "gemini-4-neon",
+  1667: "gemini-4-carbon",
+  1669: "gemini-4-hydrogen",
+};
+
+const GEMINI_ROUTING_MODELS: Readonly<Record<string, string>> = {
+  "gemini-pro-orchestrator-neon": "gemini-4-neon",
+  "gemini-pro-orchestrator-g1-pro": "gemini-4-argon",
+  "gemini-pro-orchestrator": "gemini-4-carbon",
 };
 
 function modelName(name: string, id: number): string {
@@ -109,7 +128,20 @@ function modelName(name: string, id: number): string {
     if (normalized.startsWith("claude-")) {
       return normalized
         .replace(/^claude-(4(?:\.\d+)?)-(sonnet|opus|haiku)/, "claude-$2-$1")
-        .replaceAll(".", "-");
+        .replaceAll(".", "-")
+        .replace(/-(?:extra-low|low|medium|high|thinking)$/, "");
+    }
+    if (normalized.startsWith("gemini-")) {
+      if (/^gemini-3-flash-(?:agent(?:-[ab])?|[ab])$/.test(normalized))
+        return "gemini-3-flash-preview";
+      const base = normalized.replace(
+        /-(?:extra-low|low|medium|high|tiered|control|thinking|agent|orchestrator|trial|n|r)$/,
+        "",
+      );
+      return (
+        GEMINI_ROUTING_MODELS[normalized] ??
+        (base === "gemini-3-flash" ? "gemini-3-flash-preview" : base)
+      );
     }
     return normalized;
   }
@@ -118,6 +150,7 @@ function modelName(name: string, id: number): string {
 
 interface Metadata {
   model: string;
+  namedModelId: number;
   timestampMs: number | null;
   usages: Fields[];
 }
@@ -136,11 +169,11 @@ function metadata(bytes: Uint8Array, step: boolean): Metadata {
     const retryUsage = bytesAt(fields(retry), 2);
     if (retryUsage !== undefined) usages.push(fields(retryUsage));
   }
+  const name = textAt(model, step ? 12 : 19) || textAt(model, step ? 8 : 21);
+  const id = numberAt(model, step ? 1 : 3);
   return {
-    model: modelName(
-      textAt(model, step ? 12 : 19) || textAt(model, step ? 8 : 21),
-      numberAt(model, step ? 1 : 3),
-    ),
+    model: modelName(name, id),
+    namedModelId: name ? id : 0,
     timestampMs: step
       ? (timestamp(nested(data, 8)) ?? timestamp(nested(data, 1)))
       : timestamp(nested(nested(data, 9), 4)),
@@ -162,6 +195,7 @@ interface UsageCandidate {
 async function readDatabase(
   path: string,
   fallbackTimestamp: number,
+  namedModels: Map<number, string | null>,
   signal?: AbortSignal,
   onInvalidRecord?: () => void,
 ): Promise<UsageCandidate[]> {
@@ -212,6 +246,14 @@ async function readDatabase(
     const sessionId = NodePath.basename(path, ".db");
     const records: UsageCandidate[] = [];
     const generationModels = new Map(generations.map(({ idx, entry }) => [idx, entry.model]));
+    for (const entries of [generations, steps]) {
+      for (const { entry } of entries) {
+        if (!entry.namedModelId) continue;
+        const previous = namedModels.get(entry.namedModelId);
+        if (previous === undefined) namedModels.set(entry.namedModelId, entry.model);
+        else if (previous !== entry.model) namedModels.set(entry.namedModelId, null);
+      }
+    }
     for (const [source, entries] of [
       ["step", steps],
       ["generation", generations],
@@ -282,6 +324,7 @@ export async function readAntigravityUsage(
   const files: Array<{ root: string; path: string; records: NativeUsageRecord[] }> = [];
   const errors: string[] = [];
   const identities = new Map<string, number>();
+  const namedModels = new Map<number, string | null>();
   const groups: Array<
     UsageCandidate & { parent: number; size: number; owner: number; fileIndex: number }
   > = [];
@@ -373,7 +416,7 @@ export async function readAntigravityUsage(
             if (!wal || wal.mtimeMs < sinceMs) continue;
           }
           let partial = false;
-          const candidates = await readDatabase(path, stat.mtimeMs, signal, () => {
+          const candidates = await readDatabase(path, stat.mtimeMs, namedModels, signal, () => {
             partial = true;
           });
           if (partial) errors.push(path);
@@ -392,7 +435,11 @@ export async function readAntigravityUsage(
   for (const root of roots) await walk(root, root);
   for (const [index, group] of groups.entries()) {
     if (group.parent === index && group.record.timestampMs >= sinceMs) {
-      files[group.fileIndex]!.records.push(group.record);
+      const id = /^antigravity-model-(\d+)$/.exec(group.record.model)?.[1];
+      const namedModel = id === undefined ? undefined : namedModels.get(Number(id));
+      files[group.fileIndex]!.records.push(
+        namedModel ? { ...group.record, model: namedModel } : group.record,
+      );
     }
   }
   signal?.throwIfAborted();
