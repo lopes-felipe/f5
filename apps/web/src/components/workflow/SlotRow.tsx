@@ -32,12 +32,15 @@ const EMPTY_MODELS: ServerProvider["models"] = [];
 
 // The effort trigger fills its field (the chevron pins to the trailing edge) and long combined
 // labels truncate. The selected value is a value, not a hint, so it gets full contrast.
+// `sm:px-2` overrides the generic picker's own `sm:px-3`, so every provider's label starts at
+// the same x.
 const TRAITS_TRIGGER_CLASS_NAME =
-  "h-7 w-full min-w-0 justify-start gap-1 overflow-hidden px-2 text-ui text-foreground";
+  "h-7 w-full min-w-0 justify-start gap-1 overflow-hidden px-2 sm:px-2 text-ui text-foreground";
 // The model is the choice that matters most, so it keeps a floor and the effort column gives
 // way first. Sibling rows share one structure, so they shrink alike and stay aligned.
 const MODEL_FIELD_MIN_WIDTH_CLASS_NAME = "min-w-32";
-const TRAITS_FIELD_WIDTH_CLASS_NAME = "w-32 min-w-20 shrink";
+// 112px fits "Extra High" and its chevron; longer combined labels truncate.
+const TRAITS_FIELD_WIDTH_CLASS_NAME = "w-28 min-w-20 shrink";
 
 /**
  * A Claude slot without an effort runs at the model's own default, since workflow dispatch
@@ -138,7 +141,7 @@ export function SlotRow(props: {
       // In a narrow container (a phone-width dialog) the label moves above the fields, so the
       // label column's width goes to the model field instead.
       className={cn(
-        "flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 @sm/slot:flex-nowrap",
+        "flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 @sm/slot:flex-nowrap",
         props.className,
       )}
     >
@@ -221,7 +224,7 @@ export function SlotRow(props: {
     <div className="@container/slot flex min-w-0 flex-col gap-1">
       {row}
       {props.error ? (
-        <p role="alert" className="text-2xs text-destructive-foreground @sm/slot:ps-27">
+        <p role="alert" className="text-2xs text-destructive-foreground @sm/slot:ps-26">
           {props.error}
         </p>
       ) : null}

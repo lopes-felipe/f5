@@ -1293,7 +1293,8 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                       providerUnavailableReason={workflowProviderUnavailableReason}
                       error={rowError}
                       reserveTraitsColumn
-                      reserveTrailing={actorCount > 2}
+                      // Always reserved, so adding a removable author never shifts the fields.
+                      reserveTrailing
                       onProviderModelChange={(provider, model) => {
                         updateActor(row.key, { provider, model, modelOptions: undefined });
                         if (preferenceSlot) {
@@ -1337,7 +1338,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                     />
                   );
                 })}
-                <div className="flex min-w-0 items-center @sm/models:ps-27">
+                <div className="flex min-w-0 items-center @sm/models:ps-26">
                   <Button
                     type="button"
                     size="xs"
@@ -1373,7 +1374,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                   providerUnavailableReason={workflowProviderUnavailableReason}
                   error={mergeProviderError}
                   reserveTraitsColumn
-                  reserveTrailing={actorCount > 2}
+                  reserveTrailing
                   onProviderModelChange={(provider, model) => {
                     setMergeProvider(provider);
                     setMergeModel(model);
@@ -1401,11 +1402,9 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                 />
                 {actorCount > 2 ? (
                   // The estimate covers the whole run, merge included, so it closes the
-                  // section on its own line instead of wrapping beside "Add author".
-                  <p
-                    data-slot="workflow-turn-estimate"
-                    className="text-2xs text-muted-foreground @sm/models:ps-27"
-                  >
+                  // section as a footer. It spans the full section width: indented to the
+                  // field column it wraps and leaves "merge" on a line of its own.
+                  <p data-slot="workflow-turn-estimate" className="text-2xs text-muted-foreground">
                     {formatWorkflowTurnEstimate(
                       workflowType,
                       actorCount,
