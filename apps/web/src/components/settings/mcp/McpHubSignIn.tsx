@@ -20,17 +20,26 @@ function describeExpiry(server: McpHubAuthServerStatus): string | null {
 function SignInRow({
   server,
   projectId,
+  statusUpdatedAt,
 }: {
   readonly server: McpHubAuthServerStatus;
   readonly projectId: ProjectId | null;
+  /** When the server's status was last fetched (epoch ms). */
+  readonly statusUpdatedAt: number;
 }) {
   const queryClient = useQueryClient();
   const [busy, setBusy] = useState<"start" | "finish" | "sign-out" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pasted, setPasted] = useState("");
-  const [started, setStarted] = useState<McpHubSignInAttempt | null>(null);
-  // The server's view wins once it has caught up; the local attempt covers the gap.
-  const attempt = server.pending ?? (server.signedIn ? null : started);
+  const [started, setStarted] = useState<{
+    readonly attempt: McpHubSignInAttempt;
+    readonly at: number;
+  } | null>(null);
+  // The server's view wins once it has caught up; the local attempt covers the gap
+  // until a status fetched after it shows the attempt ended (timed out or cancelled).
+  const localAttempt =
+    started && !(statusUpdatedAt > started.at && !server.pending) ? started.attempt : null;
+  const attempt = server.pending ?? (server.signedIn ? null : localAttempt);
   const scope = projectId ? { projectId } : {};
 
   const refresh = () =>
@@ -68,7 +77,7 @@ function SignInRow({
         ...scope,
       });
       if (result.status !== "pending") return;
-      setStarted(result.attempt);
+      setStarted({ attempt: result.attempt, at: Date.now() });
       setPasted("");
       // Opened only because the user clicked Sign in.
       await openPage(result.attempt.authorizationUrl);
@@ -76,10 +85,16 @@ function SignInRow({
 
   const finish = (current: McpHubSignInAttempt) =>
     run("finish", async () => {
-      await ensureNativeApi().mcp.completeHubSignIn({
-        attemptId: current.attemptId,
-        redirectedUrl: pasted.trim(),
-      });
+      try {
+        await ensureNativeApi().mcp.completeHubSignIn({
+          attemptId: current.attemptId,
+          redirectedUrl: pasted.trim(),
+        });
+      } catch (cause) {
+        // A failed completion ends the attempt on the server; start again from here.
+        setStarted(null);
+        throw cause;
+      }
       setStarted(null);
       setPasted("");
     });
@@ -184,7 +199,12 @@ export function McpHubSignInRow({
   if (!server) return null;
   return (
     <ul className="text-xs">
-      <SignInRow server={server} projectId={projectId} />
+      <SignInRow
+        key={`${projectId ?? "common"}:${server.name}`}
+        server={server}
+        projectId={projectId}
+        statusUpdatedAt={authStatus.dataUpdatedAt}
+      />
     </ul>
   );
 }
@@ -233,7 +253,12 @@ export function McpHubSignIn({
         </p>
       ) : server ? (
         <ul>
-          <SignInRow server={server} projectId={projectId} />
+          <SignInRow
+            key={`${projectId ?? "common"}:${server.name}`}
+            server={server}
+            projectId={projectId}
+            statusUpdatedAt={authStatus.dataUpdatedAt}
+          />
         </ul>
       ) : authStatus.data ? (
         <p className="text-muted-foreground">Sign-in applies to enabled HTTP and SSE servers.</p>
