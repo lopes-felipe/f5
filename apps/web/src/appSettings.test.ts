@@ -72,6 +72,20 @@ describe("parsePersistedAppSettings", () => {
     expect(parsePersistedAppSettings(JSON.stringify(parsed)).favorites).toEqual(favorites);
   });
 
+  it("defaults recent models to empty and keeps stored ones", () => {
+    expect(parsePersistedAppSettings(null).recentModels).toEqual([]);
+    expect(parsePersistedAppSettings(JSON.stringify({ themeId: "f5-black" })).recentModels).toEqual(
+      [],
+    );
+    const recentModels = [
+      { provider: "codex", model: "gpt-5.5" },
+      { provider: "claudeAgent", model: "claude-opus-5-5" },
+    ];
+    expect(parsePersistedAppSettings(JSON.stringify({ recentModels })).recentModels).toEqual(
+      recentModels,
+    );
+  });
+
   it("defaults and preserves local palette selections and opaque invalid theme sources", () => {
     expect(parsePersistedAppSettings(null).themeId).toBe("f5-black");
     const customThemes = [{ version: 99, raw: "keep me" }];

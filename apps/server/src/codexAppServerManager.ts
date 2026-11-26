@@ -37,7 +37,14 @@ import type {
   NativeOperationInput,
   NativeOperationInspectInput,
   NativeOperationRecord,
+  ReadOnlyEnforcement,
 } from "@t3tools/contracts";
+import {
+  classifyReadOnlyShellCommand,
+  isShellProgram,
+  READ_ONLY_WORKFLOW_ENVIRONMENT,
+  unwrapShellInvocation,
+} from "./provider/readOnlyWorkflowShell.ts";
 import {
   codexCommandApprovalDecision,
   readCodexCommandApprovalOffer,
@@ -249,6 +256,8 @@ interface CodexSessionContext {
   instructionContext?: Partial<SharedInstructionInput>;
   configuredBase?: Record<string, unknown>;
   workflowExecutionProfile?: ProviderSessionStartInput["workflowExecutionProfile"];
+  /** How the read-only workflow stage is enforced; see `codexReadOnlyStagePolicy`. */
+  readOnlyEnforcement?: ReadOnlyEnforcement;
   modelContextWindowCatalog: ReadonlyMap<string, number>;
   /** Capabilities this session's `model/list` reported, keyed by slug. */
   reportedModelCapabilities?: ReadonlyMap<string, ModelCapabilities>;
@@ -419,6 +428,8 @@ export interface CodexAppServerStartSessionInput {
   readonly processEnvironment?: NodeJS.ProcessEnv;
   readonly runtimeMode: RuntimeMode;
   readonly workflowExecutionProfile?: ProviderSessionStartInput["workflowExecutionProfile"];
+  /** How a read-only workflow stage is enforced; `policy` where Codex's sandbox can't start. */
+  readonly readOnlyEnforcement?: ReadOnlyEnforcement;
   /** Internal: launch the app-server with Codex plugins (and marketplace auto-upgrade) off. */
   readonly disablePlugins?: boolean;
   /** Internal: working directory of the app-server process, when it differs from the thread cwd. */
@@ -544,7 +555,10 @@ export function codexSessionAllowedResponse(
 }
 
 function codexApprovalResponse(
-  pendingRequest: PendingApprovalRequest,
+  pendingRequest: Pick<
+    PendingApprovalRequest,
+    "responseKind" | "elicitation" | "commandOffer" | "requestedPermissions"
+  >,
   decision: ProviderApprovalDecision,
 ): Record<string, unknown> {
   if (
@@ -742,6 +756,127 @@ export function mapCodexRuntimeMode(runtimeMode: RuntimeMode): {
  * (default 1 s, too short for cold `npx`/`uvx` servers). A hung server delays
  * only the first turn of a session, not its 30 s startup timeout.
  */
+/** The sandbox every turn of a read-only workflow stage runs under: no writes, no network. */
+export const CODEX_READ_ONLY_TURN_SANDBOX_POLICY = {
+  type: "readOnly",
+  networkAccess: false,
+} as const;
+
+const CODEX_POLICY_TURN_SANDBOX_POLICY = { type: "dangerFullAccess" } as const;
+
+/**
+ * How a read-only workflow stage's thread and turns are configured.
+ *
+ * - `sandbox` (default): Codex's read-only sandbox, and Codex never asks.
+ * - `policy`: the sandbox can't start here (F5's macOS desktop backend already runs inside one,
+ *   see `nestedSandboxProbe.ts`), so commands run unsandboxed and Codex asks before every
+ *   command outside its own read-only safe list. F5 answers each request with its command
+ *   classifier (`codexReadOnlyPolicyDecision`); edits and permission requests are refused.
+ */
+export function codexReadOnlyStagePolicy(enforcement: ReadOnlyEnforcement | undefined) {
+  return enforcement === "policy"
+    ? {
+        approvalPolicy: "untrusted" as const,
+        sandbox: "danger-full-access" as const,
+        sandboxPolicy: CODEX_POLICY_TURN_SANDBOX_POLICY,
+        approvalsReviewer: "user" as const,
+      }
+    : {
+        approvalPolicy: "never" as const,
+        sandbox: "read-only" as const,
+        sandboxPolicy: CODEX_READ_ONLY_TURN_SANDBOX_POLICY,
+        // Anything that still asks reaches F5, which refuses it in a workflow stage. Codex's
+        // auto-reviewer could approve it.
+        approvalsReviewer: "user" as const,
+      };
+}
+
+/**
+ * Why a thread/start or thread/resume response shows that Codex did not apply the read-only
+ * stage policy, or undefined when it did. Codex reports the effective policy as `sandbox` (older
+ * releases used `sandboxPolicy`); a release that reports neither cannot be checked here and is
+ * still bound by the per-turn `sandboxPolicy`. Under `policy` only the approval policy matters:
+ * F5's answers are the enforcement, so Codex must ask.
+ */
+export function codexReadOnlyThreadPolicyViolation(
+  response: unknown,
+  enforcement?: ReadOnlyEnforcement,
+): string | undefined {
+  const record = asObject(response);
+  if (!record) return undefined;
+  const expectedApprovalPolicy = codexReadOnlyStagePolicy(enforcement).approvalPolicy;
+  const sandbox = asObject(record.sandbox) ?? asObject(record.sandboxPolicy);
+  if (sandbox && enforcement !== "policy") {
+    const type = asString(sandbox.type) ?? "unknown";
+    if (type !== "readOnly") return `reported sandbox ${type}`;
+    if (sandbox.networkAccess !== false && sandbox.networkAccess !== undefined)
+      return "reported sandbox readOnly with network access";
+  }
+  const approvalPolicy = record.approvalPolicy;
+  if (approvalPolicy !== undefined && approvalPolicy !== expectedApprovalPolicy)
+    return `reported approval policy ${typeof approvalPolicy === "string" ? approvalPolicy : "granular"}`;
+  return undefined;
+}
+
+/** Emitted when F5 refused an approval request itself; the adapter reports it auto-declined. */
+export const CODEX_READ_ONLY_REFUSED_METHOD = "f5/readOnly/refused";
+
+const SHELL_ESCALATION_FIELDS = ["additionalPermissions", "networkApprovalContext"] as const;
+
+/**
+ * F5's answer to a Codex approval request in a policy-enforced read-only stage, or undefined to
+ * leave it to the normal flow (MCP elicitations, which the stage refuses as a violation).
+ * Commands are accepted only when F5's classifier proves them read-only, after unwrapping the
+ * `/bin/zsh -lc '…'` Codex reports them in; a command asking for more permissions or network is
+ * refused. File reads are accepted; file changes and permission requests are refused.
+ */
+export function codexReadOnlyPolicyDecision(
+  method: string,
+  params: unknown,
+): { readonly decision: "accept" | "decline"; readonly reason?: string } | undefined {
+  const record = asObject(params);
+  switch (method) {
+    case "item/fileRead/requestApproval":
+      return { decision: "accept" };
+    case "item/fileChange/requestApproval":
+    case "applyPatchApproval":
+      return { decision: "decline", reason: "file changes are not allowed" };
+    case "item/permissions/requestApproval":
+      return { decision: "decline", reason: "more permissions are not allowed" };
+    case "item/commandExecution/requestApproval":
+    case "execCommandApproval": {
+      if (SHELL_ESCALATION_FIELDS.some((field) => record?.[field] != null))
+        return { decision: "decline", reason: "more permissions are not allowed" };
+      const command = codexApprovalCommand(record?.command);
+      if (command === undefined) return { decision: "decline", reason: "no command to check" };
+      const verdict = classifyReadOnlyShellCommand(unwrapShellInvocation(command));
+      return verdict.readOnly
+        ? { decision: "accept" }
+        : { decision: "decline", reason: verdict.reason };
+    }
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * The command string of a request: v2 sends one string, the legacy request an argv. An argv is
+ * checked only in its `[shell, "-c" | "-lc", script]` form, or as a single literal program call.
+ */
+function codexApprovalCommand(value: unknown): string | undefined {
+  if (typeof value === "string") return value.trim() ? value : undefined;
+  const argv = asArray(value);
+  if (!argv || argv.length === 0 || !argv.every((entry) => typeof entry === "string"))
+    return undefined;
+  const words = argv as ReadonlyArray<string>;
+  if (words.length === 3 && (words[1] === "-c" || words[1] === "-lc") && isShellProgram(words[0]!))
+    return words[2];
+  // Anything a shell would read specially stays a refusal rather than a guess at quoting.
+  return words.every((word) => /^[\w@%+=:,./-][\w@%+=:,./~^-]*$/.test(word))
+    ? words.join(" ")
+    : undefined;
+}
+
 export const CODEX_THREAD_CONFIG = {
   mcp_optional_startup_grace_ms: 10_000,
   "features.concurrent_reasoning_summaries": true,
@@ -754,19 +889,24 @@ export function buildCodexThreadOpenRequestParams(input: {
   readonly cliVersion?: string | null;
   readonly runtimeMode: RuntimeMode;
   readonly workflowExecutionProfile?: ProviderSessionStartInput["workflowExecutionProfile"];
+  readonly readOnlyEnforcement?: ReadOnlyEnforcement;
   readonly serviceTier?: string;
   readonly browserResume?: boolean;
 }) {
+  const stagePolicy = input.workflowExecutionProfile
+    ? codexReadOnlyStagePolicy(input.readOnlyEnforcement)
+    : undefined;
   const overrides = {
     model: input.model ?? null,
     ...(input.serviceTier !== undefined ? { serviceTier: input.serviceTier } : {}),
     cwd: input.cwd ?? null,
     config: CODEX_THREAD_CONFIG,
-    ...(input.workflowExecutionProfile
+    // Same as every turn (buildCodexTurnStartParams).
+    ...(stagePolicy
       ? {
-          approvalPolicy: "never" as const,
-          sandbox: "read-only" as const,
-          approvalsReviewer: "auto_review" as const,
+          approvalPolicy: stagePolicy.approvalPolicy,
+          sandbox: stagePolicy.sandbox,
+          approvalsReviewer: stagePolicy.approvalsReviewer,
         }
       : mapCodexRuntimeMode(input.runtimeMode)),
   };
@@ -906,6 +1046,10 @@ export function buildCodexTurnStartParams(
     readonly instructionContext?: Partial<SharedInstructionInput> | undefined;
     readonly resumedContextSent?: boolean | undefined;
     readonly reportedModelCapabilities?: ReadonlyMap<string, ModelCapabilities> | undefined;
+    readonly workflowExecutionProfile?:
+      | ProviderSessionStartInput["workflowExecutionProfile"]
+      | undefined;
+    readonly readOnlyEnforcement?: ReadOnlyEnforcement | undefined;
   },
 ) {
   const turnInput: Array<
@@ -936,6 +1080,9 @@ export function buildCodexTurnStartParams(
     throw new Error("Turn input must include text or attachments.");
   }
 
+  const stagePolicy = state.workflowExecutionProfile
+    ? codexReadOnlyStagePolicy(state.readOnlyEnforcement)
+    : undefined;
   const turnStartParams: {
     threadId: string;
     input: Array<
@@ -957,9 +1104,23 @@ export function buildCodexTurnStartParams(
       };
     };
     additionalContext?: Record<string, CodexAdditionalContextEntry>;
+    approvalPolicy?: "never" | "untrusted";
+    approvalsReviewer?: "user";
+    sandboxPolicy?:
+      | typeof CODEX_READ_ONLY_TURN_SANDBOX_POLICY
+      | typeof CODEX_POLICY_TURN_SANDBOX_POLICY;
   } = {
     threadId: state.providerThreadId,
     input: turnInput,
+    // Every turn of a read-only workflow stage restates its policy, so a resumed or reused
+    // thread can never run with whatever policy it was opened with.
+    ...(stagePolicy
+      ? {
+          approvalPolicy: stagePolicy.approvalPolicy,
+          approvalsReviewer: stagePolicy.approvalsReviewer,
+          sandboxPolicy: stagePolicy.sandboxPolicy,
+        }
+      : {}),
   };
   const normalizedModel = resolveCodexModelForAccount(
     normalizeCodexModelSlug(input.model ?? state.model),
@@ -1369,6 +1530,10 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         buildProviderChildProcessEnv(input.processEnvironment ?? process.env, {
           ...input.mcpEnvironment,
           ...(codexHomePath ? { CODEX_HOME: codexHomePath } : {}),
+          // Unsandboxed, `git status` would refresh the index and hold its lock.
+          ...(input.workflowExecutionProfile && input.readOnlyEnforcement === "policy"
+            ? READ_ONLY_WORKFLOW_ENVIRONMENT
+            : {}),
         }),
         threadId,
       );
@@ -1516,6 +1681,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
             ),
           );
       context.workflowExecutionProfile = input.workflowExecutionProfile;
+      if (input.workflowExecutionProfile && input.readOnlyEnforcement)
+        context.readOnlyEnforcement = input.readOnlyEnforcement;
+      else delete context.readOnlyEnforcement;
       const threadOpenParams = buildCodexThreadOpenRequestParams({
         cliVersion,
         browserResume: !!input.browserResume,
@@ -1526,6 +1694,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         runtimeMode: input.runtimeMode ?? DEFAULT_RUNTIME_MODE,
         ...(input.workflowExecutionProfile
           ? { workflowExecutionProfile: input.workflowExecutionProfile }
+          : {}),
+        ...(context.readOnlyEnforcement
+          ? { readOnlyEnforcement: context.readOnlyEnforcement }
           : {}),
       });
       this.emitLifecycleEvent(
@@ -1614,6 +1785,20 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         threadOpenMethod,
         threadOpenResponse,
       );
+      if (input.workflowExecutionProfile) {
+        const violation = codexReadOnlyThreadPolicyViolation(
+          threadOpenResponse,
+          context.readOnlyEnforcement,
+        );
+        if (violation) {
+          await Effect.logError("codex read-only workflow session opened without its sandbox", {
+            threadId,
+            method: threadOpenMethod,
+            violation,
+          }).pipe(this.runPromise);
+          throw new Error(`Codex did not apply the read-only sandbox (${violation}).`);
+        }
+      }
       context.browserResumeRegistered =
         threadOpenMethod === "thread/start"
           ? !!threadOpenParams.start.dynamicTools
@@ -1791,6 +1976,8 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       instructionContext: context.instructionContext,
       resumedContextSent: context.resumedContextSent,
       reportedModelCapabilities: turnCapabilities,
+      workflowExecutionProfile: context.workflowExecutionProfile,
+      readOnlyEnforcement: context.readOnlyEnforcement,
     });
     if (input.audioFiles?.length && supportsCodexRelease6(context.cliVersion)) {
       const model = normalizeCodexModelSlug(turnStartParams.model);
@@ -3108,6 +3295,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         runtimeMode: context.session.runtimeMode,
         ...(context.workflowExecutionProfile
           ? { workflowExecutionProfile: context.workflowExecutionProfile }
+          : {}),
+        ...(context.readOnlyEnforcement
+          ? { readOnlyEnforcement: context.readOnlyEnforcement }
           : {}),
       },
       providerThreadId,
@@ -4501,6 +4691,59 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     }
   }
 
+  /**
+   * Answers an approval request of a policy-enforced read-only stage with F5's classifier
+   * (`codexReadOnlyPolicyDecision`), or returns false to leave it to the normal flow. An accepted
+   * request runs without a trace here, like Codex's own safe commands; a refused one is reported
+   * as auto-declined, so the stage counts it and fails only when the model keeps trying.
+   */
+  private answerReadOnlyPolicyRequest(
+    context: CodexSessionContext,
+    request: JsonRpcRequest,
+    approvalRequest: NonNullable<ReturnType<CodexAppServerManager["approvalRequestForMethod"]>>,
+    route: { readonly turnId?: TurnId | undefined; readonly itemId?: ProviderItemId | undefined },
+  ): boolean {
+    const verdict = codexReadOnlyPolicyDecision(request.method, request.params);
+    if (!verdict) return false;
+    const commandOffer =
+      approvalRequest.method === "item/commandExecution/requestApproval"
+        ? readCodexCommandApprovalOffer(request.params)
+        : undefined;
+    const offered = (decision: ProviderApprovalDecision) =>
+      !commandOffer?.decisions || commandOffer.decisions.has(decision);
+    const decision = verdict.decision === "accept" && offered("accept") ? "accept" : "decline";
+    // A request that offers no plain refusal (only `cancel`, which ends the turn) takes the
+    // normal path, where the stage refuses it as a violation.
+    if (!offered(decision)) return false;
+    this.writeServerRequestResponse(context, {
+      id: request.id,
+      result: codexApprovalResponse(
+        { responseKind: approvalRequest.responseKind, ...(commandOffer ? { commandOffer } : {}) },
+        decision,
+      ),
+    });
+    if (decision === "accept") return true;
+    this.emitEvent({
+      ...context.mcpEventIdentity,
+      id: EventId.makeUnsafe(timeOrderedUuid()),
+      kind: "notification",
+      provider: "codex",
+      threadId: context.session.threadId,
+      createdAt: new Date().toISOString(),
+      method: CODEX_READ_ONLY_REFUSED_METHOD,
+      turnId: route.turnId,
+      itemId: route.itemId,
+      requestId: ApprovalRequestId.makeUnsafe(randomUUID()),
+      requestKind: approvalRequest.requestKind,
+      payload: {
+        requestMethod: request.method,
+        ...(verdict.reason ? { reason: verdict.reason } : {}),
+        params: request.params,
+      },
+    });
+    return true;
+  }
+
   private handleServerRequest(context: CodexSessionContext, request: JsonRpcRequest): void {
     if (!this.isLiveContext(context)) return;
     if (
@@ -4557,6 +4800,13 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     }
     const approvalRequest = this.approvalRequestForMethod(request.method);
     const requestKind = approvalRequest?.requestKind;
+    if (
+      approvalRequest &&
+      context.workflowExecutionProfile &&
+      context.readOnlyEnforcement === "policy" &&
+      this.answerReadOnlyPolicyRequest(context, request, approvalRequest, route)
+    )
+      return;
     const sessionAllowance =
       (requestKind === "command" || requestKind === "file-change") &&
       asObject(request.params)?.kind !== "humanCommand"

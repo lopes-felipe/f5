@@ -31,6 +31,7 @@ import {
 } from "@t3tools/contracts";
 
 import { appendAttachedFilesToPrompt } from "../../lib/attachedFiles";
+import { toastManager } from "../ui/toast";
 import { serverQueryKeys } from "../../lib/serverReactQuery";
 import { isMacPlatform } from "../../lib/utils";
 import {
@@ -58,6 +59,29 @@ const nativeApiMocks = vi.hoisted(() => ({
     relativePath: input.relativePath,
     kind: "file" as const,
   })),
+  uploadAttachment: vi.fn(async (_baseUrl: string, threadId: string, file: File) => ({
+    uploadId: "00000000-0000-4000-8000-000000000001",
+    draftThreadId: threadId,
+    kind: "image" as const,
+    name: file.name,
+    mimeType: file.type,
+    sizeBytes: file.size,
+    contentHash: "hash",
+    expiresAt: "2099-01-01T00:00:00.000Z",
+  })),
+  materializeUploads: vi.fn(async (input: { threadId: string; uploadIds: string[] }) => ({
+    files: input.uploadIds.map((uploadId) => ({
+      uploadId,
+      path: `/state/workflow-attachments/${uploadId}/image.png`,
+    })),
+  })),
+  releaseUploads: vi.fn(async () => ({})),
+  discardMaterialized: vi.fn(async () => ({})),
+}));
+
+vi.mock("../../lib/attachmentUploadQueue", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../lib/attachmentUploadQueue")>()),
+  uploadAttachment: nativeApiMocks.uploadAttachment,
 }));
 
 vi.mock("../../nativeApi", () => {
@@ -104,6 +128,11 @@ vi.mock("../../nativeApi", () => {
     projects: {
       authorizeEntry: nativeApiMocks.authorizeEntry,
     },
+    attachments: {
+      materializeUploads: nativeApiMocks.materializeUploads,
+      releaseUploads: nativeApiMocks.releaseUploads,
+      discardMaterialized: nativeApiMocks.discardMaterialized,
+    },
   };
   return {
     ensureNativeApi: () => api,
@@ -148,6 +177,23 @@ import { WorkflowCreateDialog } from "./WorkflowCreateDialog";
 import { normalizeWorkflowSlotModelOptions } from "./workflowSlots";
 
 const desktopBridgePathByFileName = new Map<string, string>();
+
+/** The default `uploadAttachment` mock's id, and the path `materializeUploads` returns for it. */
+const FIRST_UPLOAD_ID = "00000000-0000-4000-8000-000000000001";
+const FIRST_UPLOAD_PATH = `/state/workflow-attachments/${FIRST_UPLOAD_ID}/image.png`;
+
+function uploadRecord(threadId: string, file: File, uploadId: string) {
+  return {
+    uploadId,
+    draftThreadId: threadId,
+    kind: "image" as const,
+    name: file.name,
+    mimeType: file.type,
+    sizeBytes: file.size,
+    contentHash: "hash",
+    expiresAt: "2099-01-01T00:00:00.000Z",
+  };
+}
 
 function createTestQueryClient(
   keybindings: ResolvedKeybindingsConfig = DEFAULT_RESOLVED_KEYBINDINGS,
@@ -266,14 +312,15 @@ function findProviderFieldButton(labelText: string): HTMLButtonElement {
 /** The select button of a model picker row whose display name is `name`. */
 function findModelRow(name: string): HTMLButtonElement | null {
   for (const row of document.querySelectorAll<HTMLElement>("[data-model-picker-row]")) {
-    const select = row.querySelectorAll<HTMLButtonElement>("button")[1];
-    if (select?.querySelector(".truncate")?.textContent?.trim() === name) return select;
+    const select = row.querySelector<HTMLButtonElement>("[data-model-picker-select]");
+    if (select?.querySelector("[data-model-picker-name]")?.textContent?.trim() === name)
+      return select;
   }
   return null;
 }
 
-/** The model picker rail entry for a provider's default instance. */
-function findRailInstance(provider: string): HTMLElement | null {
+/** The model picker filter chip for a provider's default instance. */
+function findProviderChip(provider: string): HTMLElement | null {
   return document.querySelector<HTMLElement>(
     `[data-model-picker-provider="instance:${defaultInstanceIdForDriver(ProviderDriverKind.make(provider))}"]`,
   );
@@ -465,6 +512,16 @@ async function dropFilesOnRequirement(files: File[]) {
   );
 }
 
+function pasteFilesOnRequirement(files: File[]) {
+  const dataTransfer = new DataTransfer();
+  for (const file of files) {
+    dataTransfer.items.add(file);
+  }
+  getRequirementEditorSurface().dispatchEvent(
+    new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: dataTransfer }),
+  );
+}
+
 describe("WorkflowCreateDialog", () => {
   beforeEach(() => {
     localStorage.clear();
@@ -506,6 +563,11 @@ describe("WorkflowCreateDialog", () => {
     nativeApiMocks.createInvestigationWorkflow.mockClear();
     nativeApiMocks.getConfig.mockClear();
     nativeApiMocks.authorizeEntry.mockClear();
+    nativeApiMocks.uploadAttachment.mockClear();
+    nativeApiMocks.materializeUploads.mockClear();
+    nativeApiMocks.releaseUploads.mockClear();
+    nativeApiMocks.discardMaterialized.mockClear();
+    vi.restoreAllMocks();
     useStore.setState({
       projects: [],
       threads: [],
@@ -555,7 +617,110 @@ describe("WorkflowCreateDialog", () => {
     }
   });
 
-  it("divides the model and effort pickers only when reasoning controls render", async () => {
+  it("lines up the model field of a row without reasoning when the effort column is reserved", async () => {
+    const host = document.createElement("div");
+    host.style.width = "480px";
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <>
+        <SlotRow
+          label="With reasoning"
+          provider="codex"
+          model="gpt-5-codex"
+          modelOptions={{ codex: { reasoningEffort: "high" } }}
+          modelOptionsByInstance={EMPTY_MODEL_OPTIONS_BY_INSTANCE}
+          reserveTraitsColumn
+          reserveTrailing
+          onProviderModelChange={() => {}}
+          onModelOptionsChange={() => {}}
+        />
+        <SlotRow
+          label="Without reasoning"
+          provider="cursor"
+          model="auto"
+          modelOptions={undefined}
+          modelOptionsByInstance={EMPTY_MODEL_OPTIONS_BY_INSTANCE}
+          reserveTraitsColumn
+          reserveTrailing
+          trailing={<button type="button" aria-label="Remove" className="size-7" />}
+          onProviderModelChange={() => {}}
+          onModelOptionsChange={() => {}}
+        />
+      </>,
+      { container: host },
+    );
+
+    try {
+      const modelRight = (name: string) =>
+        page
+          .getByRole("group", { name })
+          .element()
+          .querySelector('[data-slot="workflow-slot-model"]')!
+          .getBoundingClientRect().right;
+      expect(modelRight("Without reasoning")).toBe(modelRight("With reasoning"));
+      // The effort trigger is neutral in a slot: no effort-level tint.
+      const effortTrigger = page
+        .getByRole("group", { name: "With reasoning" })
+        .element()
+        .querySelector<HTMLElement>("[data-slot='workflow-slot-traits'] button")!;
+      expect(effortTrigger.className).not.toMatch(/bg-effort-/);
+      // The chevron sits at the trigger's trailing edge (inside its 8px padding), not right
+      // after the label.
+      const chevron = effortTrigger.querySelector("svg")!.getBoundingClientRect();
+      const triggerRect = effortTrigger.getBoundingClientRect();
+      expect(triggerRect.right - chevron.right).toBeLessThanOrEqual(10);
+      // Wide enough for one line: the label sits beside the model field.
+      const row = page.getByRole("group", { name: "With reasoning" }).element();
+      expect(row.querySelector("label")!.getBoundingClientRect().right).toBeLessThanOrEqual(
+        row.querySelector('[data-slot="workflow-slot-model"]')!.getBoundingClientRect().left,
+      );
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("moves the label above the fields in a phone-width container so the model stays readable", async () => {
+    const host = document.createElement("div");
+    // About the dialog's content width on a 375px phone.
+    host.style.width = "327px";
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <SlotRow
+        label="Author C"
+        provider="codex"
+        model="gpt-5-codex"
+        modelOptions={{ codex: { reasoningEffort: "high" } }}
+        modelOptionsByInstance={EMPTY_MODEL_OPTIONS_BY_INSTANCE}
+        reserveTraitsColumn
+        reserveTrailing
+        trailing={<button type="button" aria-label="Remove Author C" className="size-7" />}
+        onProviderModelChange={() => {}}
+        onModelOptionsChange={() => {}}
+      />,
+      { container: host },
+    );
+
+    try {
+      const row = page.getByRole("group", { name: "Author C" }).element();
+      const label = row.querySelector("label")!.getBoundingClientRect();
+      const model = row.querySelector('[data-slot="workflow-slot-model"]')!;
+      const traits = row
+        .querySelector('[data-slot="workflow-slot-traits"]')!
+        .getBoundingClientRect();
+      expect(label.bottom).toBeLessThanOrEqual(model.getBoundingClientRect().top);
+      // Model, effort and Remove still share one line.
+      expect(traits.top).toBe(model.getBoundingClientRect().top);
+      const modelName = model.querySelector<HTMLElement>("button span.truncate")!;
+      expect(modelName.textContent?.length).toBeGreaterThan(0);
+      expect(modelName.clientWidth).toBeGreaterThanOrEqual(64);
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("renders the effort field only when reasoning controls render", async () => {
     const host = document.createElement("div");
     document.body.append(host);
     const screen = await renderWithQueryClient(
@@ -585,9 +750,9 @@ describe("WorkflowCreateDialog", () => {
     try {
       const withReasoning = page.getByRole("group", { name: "With reasoning" }).element();
       const withoutReasoning = page.getByRole("group", { name: "Without reasoning" }).element();
-      expect(withReasoning.querySelector('[data-slot="workflow-slot-divider"]')).not.toBeNull();
+      expect(withReasoning.querySelector('[data-slot="workflow-slot-traits"]')).not.toBeNull();
       expect(withReasoning.querySelector("button[aria-haspopup='menu']")?.textContent).toBe("High");
-      expect(withoutReasoning.querySelector('[data-slot="workflow-slot-divider"]')).toBeNull();
+      expect(withoutReasoning.querySelector('[data-slot="workflow-slot-traits"]')).toBeNull();
       expect(withoutReasoning.querySelector("button[aria-haspopup='menu']")).toBeNull();
     } finally {
       await screen.unmount();
@@ -635,9 +800,14 @@ describe("WorkflowCreateDialog", () => {
 
     try {
       const row = page.getByRole("group", { name: "Cursor slot" }).element();
-      expect(row.querySelector('[data-slot="workflow-slot-divider"]')).not.toBeNull();
+      expect(row.querySelector('[data-slot="workflow-slot-traits"]')).not.toBeNull();
       const trigger = row.querySelector<HTMLElement>("button[aria-haspopup='menu']")!;
       expect(trigger.textContent).toContain("Medium");
+      // The generic picker's chevron also pins to the trailing edge of the effort field.
+      expect(
+        trigger.getBoundingClientRect().right -
+          trigger.querySelector("svg")!.getBoundingClientRect().right,
+      ).toBeLessThanOrEqual(10);
       trigger.click();
       await page.getByRole("menuitemradio", { name: /^High/ }).click();
       expect(onModelOptionsChange).toHaveBeenCalledWith({ cursor: { reasoning: "high" } });
@@ -685,7 +855,7 @@ describe("WorkflowCreateDialog", () => {
 
     try {
       const row = page.getByRole("group", { name: "OpenCode slot" }).element();
-      expect(row.querySelector('[data-slot="workflow-slot-divider"]')).toBeNull();
+      expect(row.querySelector('[data-slot="workflow-slot-traits"]')).toBeNull();
       expect(row.querySelector("button[aria-haspopup='menu']")).toBeNull();
     } finally {
       await screen.unmount();
@@ -796,15 +966,19 @@ describe("WorkflowCreateDialog", () => {
       findProviderFieldButton("Author A").click();
 
       await vi.waitFor(() => {
-        expect(findRailInstance("claudeAgent")).not.toBeNull();
+        expect(findProviderChip("claudeAgent")).not.toBeNull();
       });
 
-      findRailInstance("claudeAgent")?.click();
+      findProviderChip("claudeAgent")?.click();
 
       await vi.waitFor(() => {
         const rememberedOption = findModelRow("Claude Opus 4.7");
         expect(rememberedOption).not.toBeNull();
-        expect(rememberedOption?.textContent ?? "").not.toContain("Active");
+        expect(
+          rememberedOption
+            ?.closest("[data-model-picker-row]")
+            ?.hasAttribute("data-model-picker-active"),
+        ).toBe(false);
       });
 
       findModelRow("Claude Sonnet 4.6")?.click();
@@ -951,10 +1125,10 @@ describe("WorkflowCreateDialog", () => {
       findProviderFieldButton("Merge").click();
 
       await vi.waitFor(() => {
-        expect(findRailInstance("claudeAgent")).not.toBeNull();
+        expect(findProviderChip("claudeAgent")).not.toBeNull();
       });
 
-      findRailInstance("claudeAgent")?.click();
+      findProviderChip("claudeAgent")?.click();
 
       await vi.waitFor(() => {
         expect(findModelRow("Claude Sonnet 4.6")).not.toBeNull();
@@ -999,12 +1173,13 @@ describe("WorkflowCreateDialog", () => {
 
     try {
       findProviderFieldButton("Author A").click();
-      await vi.waitFor(() => expect(findRailInstance("antigravity")).not.toBeNull());
-      findRailInstance("antigravity")!.click();
+      await vi.waitFor(() => expect(findProviderChip("antigravity")).not.toBeNull());
+      findProviderChip("antigravity")!.click();
 
       await vi.waitFor(() => expect(findModelRow("Gemini 4 Neon")).not.toBeNull());
       const row = findModelRow("Gemini 4 Neon")!;
       expect(row.disabled).toBe(true);
+      // The reason shows in the row itself, not only as a tooltip.
       expect(row.textContent).toContain(READ_ONLY_WORKFLOW_UNCERTIFIED_ANTIGRAVITY_MESSAGE);
       expect(document.body.textContent).not.toContain("No models found");
 
@@ -1026,8 +1201,8 @@ describe("WorkflowCreateDialog", () => {
 
     try {
       findProviderFieldButton("Author A").click();
-      await vi.waitFor(() => expect(findRailInstance("antigravity")).not.toBeNull());
-      findRailInstance("antigravity")!.click();
+      await vi.waitFor(() => expect(findProviderChip("antigravity")).not.toBeNull());
+      findProviderChip("antigravity")!.click();
       await vi.waitFor(() => expect(findModelRow("Gemini 4 Neon")?.disabled).toBe(false));
       findModelRow("Gemini 4 Neon")!.click();
       await vi.waitFor(() =>
@@ -1071,7 +1246,7 @@ describe("WorkflowCreateDialog", () => {
 
     try {
       findProviderFieldButton("Author A").click();
-      await vi.waitFor(() => expect(findRailInstance("codex")).not.toBeNull());
+      await vi.waitFor(() => expect(findProviderChip("codex")).not.toBeNull());
       expect(
         document.querySelector('[data-model-picker-provider="instance:codex_work"]'),
       ).toBeNull();
@@ -1201,8 +1376,8 @@ describe("WorkflowCreateDialog", () => {
     );
     const chooseClaude = async (field: string, model: string) => {
       findProviderFieldButton(field).click();
-      await vi.waitFor(() => expect(findRailInstance("claudeAgent")).not.toBeNull());
-      findRailInstance("claudeAgent")!.click();
+      await vi.waitFor(() => expect(findProviderChip("claudeAgent")).not.toBeNull());
+      findProviderChip("claudeAgent")!.click();
       await vi.waitFor(() => expect(findModelRow(model)).not.toBeNull());
       findModelRow(model)!.click();
       await vi.waitFor(() =>
@@ -1210,7 +1385,7 @@ describe("WorkflowCreateDialog", () => {
           model.replace("Claude ", ""),
         ),
       );
-      await vi.waitFor(() => expect(findRailInstance("claudeAgent")).toBeNull());
+      await vi.waitFor(() => expect(findProviderChip("claudeAgent")).toBeNull());
     };
     try {
       await page.getByRole("button", { name: "Document", exact: true }).click();
@@ -1616,7 +1791,8 @@ describe("WorkflowCreateDialog", () => {
         onOpenChange={vi.fn()}
         onWorkflowCreated={vi.fn()}
       />,
-      { container: host },
+      // Ready Codex and Claude snapshots, so every row renders an effort field to align.
+      { container: host, providers: defaultTestProviders() },
     );
     const addAuthorButton = () => {
       const button = Array.from(document.querySelectorAll("button")).find(
@@ -1633,16 +1809,53 @@ describe("WorkflowCreateDialog", () => {
     try {
       await typeRequirementPrompt("Plan with more authors");
       expect(rowLabels()).toEqual(["Author A", "Author B"]);
+      const slotRow = (label: string) => {
+        const row = document.querySelector(
+          `[data-slot="workflow-slot-row"][aria-label="${label}"]`,
+        );
+        if (!row) throw new Error(`${label} row not found.`);
+        return row;
+      };
+      const rightEdge = (row: Element, slot: string) =>
+        row.querySelector(`[data-slot="${slot}"]`)?.getBoundingClientRect().right;
+      const authorAEdges = () => [
+        rightEdge(slotRow("Author A"), "workflow-slot-model"),
+        rightEdge(slotRow("Author A"), "workflow-slot-traits"),
+      ];
+      const edgesWithTwoAuthors = authorAEdges();
+      expect(edgesWithTwoAuthors).not.toContain(undefined);
 
       addAuthorButton().click();
       addAuthorButton().click();
       await vi.waitFor(() => {
         expect(rowLabels()).toEqual(["Author A", "Author B", "Author C", "Author D"]);
       });
+      // Adding removable authors doesn't shift the existing fields.
+      expect(authorAEdges()).toEqual(edgesWithTwoAuthors);
       expect(addAuthorButton().disabled).toBe(true);
       expect(document.body.textContent).toContain(
         "4 authors: 12 cross-reviews, 4 own-model reviews, 4 revisions, 1 merge",
       );
+      // Removable and fixed rows share one column grid, and the estimate closes the
+      // section after the merge row.
+      const alignedRows = [slotRow("Author A"), slotRow("Author C"), slotRow("Merge")];
+      const modelEdges = alignedRows.map((row) => rightEdge(row, "workflow-slot-model"));
+      expect(modelEdges[0]).toBeDefined();
+      expect(new Set(modelEdges).size).toBe(1);
+      // Author A and Merge render effort fields; Author C's provider has no effort control,
+      // so its row keeps the column as a reserved spacer. All three edges must match.
+      const effortEdges = [
+        rightEdge(slotRow("Author A"), "workflow-slot-traits"),
+        rightEdge(slotRow("Merge"), "workflow-slot-traits"),
+        rightEdge(slotRow("Author C"), "workflow-slot-traits-reserved"),
+      ];
+      expect(effortEdges).not.toContain(undefined);
+      expect(new Set(effortEdges).size).toBe(1);
+      const estimate = document.querySelector('[data-slot="workflow-turn-estimate"]');
+      if (!estimate) throw new Error("Turn estimate not found.");
+      expect(
+        slotRow("Merge").compareDocumentPosition(estimate) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
 
       const rowText = (label: string) =>
         document.querySelector(`[data-slot="workflow-slot-row"][aria-label="${label}"]`)
@@ -1853,6 +2066,270 @@ describe("WorkflowCreateDialog", () => {
     } finally {
       await screen.unmount();
       host.remove();
+    }
+  });
+
+  it("attaches a pasted path-less screenshot through a durable server copy", async () => {
+    const addToast = vi.spyOn(toastManager, "add");
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+    );
+    try {
+      pasteFilesOnRequirement([new File(["png"], "image.png", { type: "image/png" })]);
+
+      await vi.waitFor(() =>
+        expect(
+          page
+            .getByTitle(
+              "/state/workflow-attachments/00000000-0000-4000-8000-000000000001/image.png",
+            )
+            .elements(),
+        ).toHaveLength(1),
+      );
+      expect(nativeApiMocks.uploadAttachment).toHaveBeenCalledTimes(1);
+      const draftThreadId = nativeApiMocks.uploadAttachment.mock.calls[0]![1];
+      expect(draftThreadId).toMatch(/^workflow-draft-/);
+      expect(nativeApiMocks.materializeUploads).toHaveBeenCalledWith({
+        threadId: draftThreadId,
+        uploadIds: ["00000000-0000-4000-8000-000000000001"],
+      });
+      expect(addToast).not.toHaveBeenCalled();
+
+      await page.getByRole("button", { name: /Start workflow/ }).click();
+      await vi.waitFor(() => expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(1));
+      expect(nativeApiMocks.createWorkflow.mock.calls[0]?.[0].requirementPrompt).toContain(
+        "/state/workflow-attachments/00000000-0000-4000-8000-000000000001/image.png",
+      );
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("reports a failed pasted-file upload without adding a chip", async () => {
+    const addToast = vi.spyOn(toastManager, "add");
+    nativeApiMocks.uploadAttachment.mockRejectedValueOnce(new Error("Upload capacity is busy."));
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+    );
+    try {
+      pasteFilesOnRequirement([new File(["png"], "image.png", { type: "image/png" })]);
+
+      await vi.waitFor(() =>
+        expect(addToast).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "error",
+            title: "Couldn't attach the file.",
+            description: "Upload capacity is busy.",
+          }),
+        ),
+      );
+      // The toast fires in `catch`; the pending count clears in `finally`.
+      await vi.waitFor(() => expect(document.body.textContent ?? "").not.toContain("Attaching"));
+      expect(nativeApiMocks.materializeUploads).not.toHaveBeenCalled();
+      expect(document.querySelector('[data-slot="file-chip"]')).toBeNull();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("releases the uploads that succeeded when another file in the paste fails", async () => {
+    const addToast = vi.spyOn(toastManager, "add");
+    nativeApiMocks.uploadAttachment
+      .mockImplementationOnce(async (_baseUrl: string, threadId: string, file: File) =>
+        uploadRecord(threadId, file, FIRST_UPLOAD_ID),
+      )
+      .mockRejectedValueOnce(new Error("Upload timed out. Retry the file."));
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+    );
+    try {
+      pasteFilesOnRequirement([
+        new File(["png"], "one.png", { type: "image/png" }),
+        new File(["png"], "two.png", { type: "image/png" }),
+      ]);
+
+      await vi.waitFor(() =>
+        expect(addToast).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "error",
+            title: "Couldn't attach the files.",
+            description: "Upload timed out. Retry the file.",
+          }),
+        ),
+      );
+      expect(nativeApiMocks.materializeUploads).not.toHaveBeenCalled();
+      expect(nativeApiMocks.releaseUploads).toHaveBeenCalledWith({
+        threadId: expect.stringMatching(/^workflow-draft-/),
+        uploadIds: [FIRST_UPLOAD_ID],
+      });
+      expect(document.querySelector('[data-slot="file-chip"]')).toBeNull();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("releases the uploads and reports the error when saving them fails", async () => {
+    const addToast = vi.spyOn(toastManager, "add");
+    nativeApiMocks.materializeUploads.mockRejectedValueOnce(
+      new Error("Saved workflow attachments are using their full quota. Retry later."),
+    );
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+    );
+    try {
+      pasteFilesOnRequirement([new File(["png"], "image.png", { type: "image/png" })]);
+
+      await vi.waitFor(() =>
+        expect(addToast).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "error",
+            title: "Couldn't attach the file.",
+            description: "Saved workflow attachments are using their full quota. Retry later.",
+          }),
+        ),
+      );
+      expect(nativeApiMocks.releaseUploads).toHaveBeenCalledWith({
+        threadId: expect.stringMatching(/^workflow-draft-/),
+        uploadIds: [FIRST_UPLOAD_ID],
+      });
+      expect(document.querySelector('[data-slot="file-chip"]')).toBeNull();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("skips empty files and folders instead of uploading them", async () => {
+    const addToast = vi.spyOn(toastManager, "add");
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+    );
+    try {
+      await dropFilesOnRequirement([new File([], "folder", { type: "" })]);
+
+      await vi.waitFor(() =>
+        expect(addToast).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "warning",
+            title: "Empty files and folders can't be attached.",
+          }),
+        ),
+      );
+      expect(nativeApiMocks.uploadAttachment).not.toHaveBeenCalled();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("discards the saved copy when its chip is removed", async () => {
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+    );
+    try {
+      pasteFilesOnRequirement([new File(["png"], "image.png", { type: "image/png" })]);
+      await vi.waitFor(() =>
+        expect(document.querySelector('[data-slot="file-chip"]')).not.toBeNull(),
+      );
+
+      await page.getByRole("button", { name: `Remove ${FIRST_UPLOAD_PATH}` }).click();
+
+      await vi.waitFor(() =>
+        expect(nativeApiMocks.discardMaterialized).toHaveBeenCalledWith({
+          uploadIds: [FIRST_UPLOAD_ID],
+        }),
+      );
+      expect(document.querySelector('[data-slot="file-chip"]')).toBeNull();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("discards saved copies when the dialog closes without starting a workflow", async () => {
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+    );
+    pasteFilesOnRequirement([new File(["png"], "image.png", { type: "image/png" })]);
+    await vi.waitFor(() =>
+      expect(document.querySelector('[data-slot="file-chip"]')).not.toBeNull(),
+    );
+
+    await screen.unmount();
+
+    expect(nativeApiMocks.discardMaterialized).toHaveBeenCalledWith({
+      uploadIds: [FIRST_UPLOAD_ID],
+    });
+  });
+
+  it("keeps saved copies that a started workflow references", async () => {
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+    );
+    try {
+      pasteFilesOnRequirement([new File(["png"], "image.png", { type: "image/png" })]);
+      await vi.waitFor(() =>
+        expect(document.querySelector('[data-slot="file-chip"]')).not.toBeNull(),
+      );
+      await page.getByRole("button", { name: /Start workflow/ }).click();
+      await vi.waitFor(() => expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(1));
+    } finally {
+      await screen.unmount();
+    }
+    expect(nativeApiMocks.discardMaterialized).not.toHaveBeenCalled();
+  });
+
+  it("discards a copy that finishes saving after the dialog closed", async () => {
+    const addToast = vi.spyOn(toastManager, "add");
+    let finishUpload: (() => void) | undefined;
+    nativeApiMocks.uploadAttachment.mockImplementationOnce(
+      async (_baseUrl: string, threadId: string, file: File) => {
+        await new Promise<void>((resolve) => {
+          finishUpload = resolve;
+        });
+        return uploadRecord(threadId, file, FIRST_UPLOAD_ID);
+      },
+    );
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+    );
+    pasteFilesOnRequirement([new File(["png"], "image.png", { type: "image/png" })]);
+    await vi.waitFor(() => expect(finishUpload).toBeDefined());
+
+    await screen.unmount();
+    finishUpload?.();
+
+    await vi.waitFor(() =>
+      expect(nativeApiMocks.discardMaterialized).toHaveBeenCalledWith({
+        uploadIds: [FIRST_UPLOAD_ID],
+      }),
+    );
+    expect(addToast).not.toHaveBeenCalled();
+  });
+
+  it("blocks starting the workflow while a pasted file is still attaching", async () => {
+    let finishUpload: (() => void) | undefined;
+    nativeApiMocks.uploadAttachment.mockImplementationOnce(
+      async (_baseUrl: string, threadId: string, file: File) => {
+        await new Promise<void>((resolve) => {
+          finishUpload = resolve;
+        });
+        return uploadRecord(threadId, file, FIRST_UPLOAD_ID);
+      },
+    );
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+    );
+    try {
+      await typeRequirementPrompt("Look at this screenshot");
+      expect(createWorkflowButton().disabled).toBe(false);
+      pasteFilesOnRequirement([new File(["png"], "image.png", { type: "image/png" })]);
+
+      await vi.waitFor(() => expect(document.body.textContent ?? "").toContain("Attaching…"));
+      expect(createWorkflowButton().disabled).toBe(true);
+
+      finishUpload?.();
+      await vi.waitFor(() => expect(createWorkflowButton().disabled).toBe(false));
+      expect(document.body.textContent ?? "").not.toContain("Attaching…");
+    } finally {
+      await screen.unmount();
     }
   });
 
@@ -2203,6 +2680,64 @@ describe("WorkflowCreateDialog", () => {
       host.remove();
     }
   });
+
+  it("notes a file that was still attaching when the project changed and discards its copy", async () => {
+    const baseProject = useStore.getState().projects[0]!;
+    useStore.setState({
+      projects: [
+        baseProject,
+        { ...baseProject, id: "project-2" as ProjectId, name: "Second", cwd: "/repo/second" },
+      ],
+    });
+    let finishUpload: (() => void) | undefined;
+    nativeApiMocks.uploadAttachment.mockImplementationOnce(
+      async (_baseUrl: string, threadId: string, file: File) => {
+        await new Promise<void>((resolve) => {
+          finishUpload = resolve;
+        });
+        return uploadRecord(threadId, file, FIRST_UPLOAD_ID);
+      },
+    );
+    function Host() {
+      const [projectId, setProjectId] = useState("project-1" as ProjectId);
+      return (
+        <WorkflowCreateDialog
+          open
+          projectId={projectId}
+          onOpenChange={() => {}}
+          onProjectChange={setProjectId}
+        />
+      );
+    }
+
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(<Host />, { container: host });
+
+    try {
+      pasteFilesOnRequirement([new File(["png"], "image.png", { type: "image/png" })]);
+      await vi.waitFor(() => expect(document.body.textContent ?? "").toContain("Attaching…"));
+
+      await page.getByRole("combobox", { name: "Project: Project" }).click();
+      await page.getByRole("option", { name: "Second" }).click();
+
+      await expect
+        .element(page.getByText("File references were cleared for the new project."))
+        .toBeVisible();
+      expect(document.body.textContent ?? "").not.toContain("Attaching…");
+
+      finishUpload?.();
+      await vi.waitFor(() =>
+        expect(nativeApiMocks.discardMaterialized).toHaveBeenCalledWith({
+          uploadIds: [FIRST_UPLOAD_ID],
+        }),
+      );
+      expect(document.querySelector('[data-slot="file-chip"]')).toBeNull();
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
 });
 
 describe("reported workflow capabilities", () => {
@@ -2362,7 +2897,7 @@ it("walks an unsupported stored effort down, not to the default, and shows fast-
     // A model whose only control is Fast Mode still gets the traits control.
     const row = page.getByRole("group", { name: "Branch A" }).element();
     await vi.waitFor(() => {
-      expect(row.querySelector('[data-slot="workflow-slot-divider"]')).not.toBeNull();
+      expect(row.querySelector('[data-slot="workflow-slot-traits"]')).not.toBeNull();
     });
     row.querySelector<HTMLButtonElement>("button[aria-haspopup='menu']")?.click();
     await expect.element(page.getByRole("menuitemcheckbox", { name: /Fast Mode/ })).toBeVisible();

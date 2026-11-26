@@ -4,6 +4,7 @@ import * as NodePath from "node:path";
 const PATH_CAPTURE_START = "__T3CODE_PATH_START__";
 const PATH_CAPTURE_END = "__T3CODE_PATH_END__";
 const SHELL_ENV_NAME_PATTERN = /^[A-Z0-9_]+$/;
+const DEBUG_TRAP_SHELLS = new Set(["bash", "zsh", "sh", "ksh", "ksh93"]);
 
 export function extractPathFromShellOutput(output: string): string | null {
   const startIndex = output.indexOf(PATH_CAPTURE_START);
@@ -30,9 +31,10 @@ export function buildEnvironmentCaptureCommand(
   names: ReadonlyArray<string>,
 ): string {
   // Nushell rejects the POSIX probe (`||`), so it reads its environment natively.
-  const isNushell = NodePath.basename(shell).toLowerCase().startsWith("nu");
+  const executableName = NodePath.basename(shell).toLowerCase();
+  const isNushell = executableName.startsWith("nu");
 
-  return names
+  const capture = names
     .map((name) => {
       if (!SHELL_ENV_NAME_PATTERN.test(name)) {
         throw new Error(`Unsupported environment variable name: ${name}`);
@@ -66,6 +68,12 @@ export function buildEnvironmentCaptureCommand(
       ].join("; ");
     })
     .join("; ");
+
+  // DEBUG title hooks can echo the probe markers before printf writes them.
+  // Test support in a subshell because some shells exit on an unsupported trap.
+  return capture && DEBUG_TRAP_SHELLS.has(executableName)
+    ? `(trap - DEBUG) 2>/dev/null && trap - DEBUG; ${capture}`
+    : capture;
 }
 
 function extractEnvironmentValue(output: string, name: string): string | undefined {

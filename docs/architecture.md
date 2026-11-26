@@ -2,13 +2,14 @@
 
 > Contributors: how the server, providers, orchestration and persistence fit together.
 
-F5 runs as a **Node.js WebSocket server** that wraps one or more coding-agent providers and serves a React web app. F5 supports seven providers:
+F5 runs as a **Node.js WebSocket server** that wraps one or more coding-agent providers and serves a React web app. F5 supports eight built-in providers plus custom ACP agents:
 
 - **Codex** via `codex app-server` (JSON-RPC over stdio).
 - **Claude Code** via the `@anthropic-ai/claude-agent-sdk`.
-- **Cursor**, **Grok** and **Antigravity** via the Agent Client Protocol (ACP).
+- **Cursor**, **Grok**, **Antigravity**, and **Custom ACP agents** via the Agent Client Protocol (ACP).
 - **OpenCode** via its SDK against a local or external OpenCode server.
 - **Muse Code** via the Muse Session Protocol (MSP) and `@muse-code/sdk`.
+- **Pi** via its local RPC process.
 
 All providers are fronted by a shared `ProviderAdapter` interface so the UI, orchestration, and checkpoint layers stay provider-agnostic.
 

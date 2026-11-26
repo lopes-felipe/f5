@@ -28,7 +28,6 @@ export function homeSelectionKey(selection: HomeProjectSelection): string {
  * that project's new-thread defaults, as a new thread there would; a reload does too.
  */
 let seededSelection: string | null = null;
-let chosenEnvMode: { readonly selection: string; readonly mode: ThreadEnvMode } | null = null;
 
 interface HomeComposerTextState {
   /** The typed text; it outlives a trip to another page. */
@@ -39,11 +38,14 @@ interface HomeComposerTextState {
    * and reopened before the server answered: the text on screen is the one in flight.
    */
   readonly busy: "send" | "open" | null;
+  /** The workspace picked on Home for a given selection; null follows the project's default. */
+  readonly chosenEnvMode: { readonly selection: string; readonly mode: ThreadEnvMode } | null;
 }
 
 export const useHomeComposerTextStore = create<HomeComposerTextState>(() => ({
   text: "",
   busy: null,
+  chosenEnvMode: null,
 }));
 
 export const homeComposerDraft = {
@@ -52,10 +54,12 @@ export const homeComposerDraft = {
     seededSelection = selection;
   },
   /** The workspace picked on Home for this selection; null follows the project's default. */
-  envMode: (selection: string): ThreadEnvMode | null =>
-    chosenEnvMode?.selection === selection ? chosenEnvMode.mode : null,
+  envMode: (selection: string): ThreadEnvMode | null => {
+    const chosen = useHomeComposerTextStore.getState().chosenEnvMode;
+    return chosen?.selection === selection ? chosen.mode : null;
+  },
   setEnvMode: (selection: string, mode: ThreadEnvMode): void => {
-    chosenEnvMode = { selection, mode };
+    useHomeComposerTextStore.setState({ chosenEnvMode: { selection, mode } });
   },
   text: (): string => useHomeComposerTextStore.getState().text,
   setText: (text: string): void => {
@@ -73,8 +77,7 @@ export const homeComposerDraft = {
   },
   resetForTests: (): void => {
     seededSelection = null;
-    chosenEnvMode = null;
-    useHomeComposerTextStore.setState({ text: "", busy: null });
+    useHomeComposerTextStore.setState({ text: "", busy: null, chosenEnvMode: null });
   },
 };
 

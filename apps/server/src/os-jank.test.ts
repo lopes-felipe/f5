@@ -1,4 +1,5 @@
 import * as NodeOS from "node:os";
+import type { WindowsPathHydration } from "@t3tools/shared/windowsPath";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const readEnvironmentFromLoginShell = vi.fn(
@@ -6,11 +7,16 @@ const readEnvironmentFromLoginShell = vi.fn(
     PATH: "/login/shell/bin",
   }),
 );
-const ensureWindowsPathHydrated = vi.fn(async () => undefined);
+const ensureWindowsPathHydration = vi.fn(
+  async (): Promise<WindowsPathHydration> => ({ path: undefined, registryRead: false }),
+);
 vi.mock("@t3tools/shared/shell", () => ({
   readEnvironmentFromLoginShellAsync: readEnvironmentFromLoginShell,
 }));
-vi.mock("@t3tools/shared/windowsPath", () => ({ ensureWindowsPathHydrated }));
+vi.mock("@t3tools/shared/windowsPath", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@t3tools/shared/windowsPath")>()),
+  ensureWindowsPathHydration,
+}));
 
 const { fixPath, hydratePosixHome } = await import("./os-jank.ts");
 
@@ -50,7 +56,22 @@ describe("fixPath", () => {
       expect(env.PATH).toBe("/desktop/bin");
     }
     expect(readEnvironmentFromLoginShell).not.toHaveBeenCalled();
-    expect(ensureWindowsPathHydrated).not.toHaveBeenCalled();
+    expect(ensureWindowsPathHydration).not.toHaveBeenCalled();
+  });
+
+  it("imports the saved Windows opt-out when the server retries desktop preparation", async () => {
+    // A failed desktop probe leaves F5_SHELL_ENVIRONMENT_PREPARED out of the backend environment.
+    const env: NodeJS.ProcessEnv = { PATH: "C:\\Windows" };
+    ensureWindowsPathHydration.mockResolvedValueOnce({
+      path: env.PATH,
+      registryRead: true,
+      savedDoNotTrack: "1",
+    });
+
+    await fixPath(env, "win32");
+
+    expect(ensureWindowsPathHydration).toHaveBeenCalledOnce();
+    expect(env.DO_NOT_TRACK).toBe("1");
   });
 
   it("restores a missing HOME before probing the login shell", async () => {
@@ -83,7 +104,7 @@ describe("fixPath", () => {
     const env = { Path: "C:\\Windows" };
     const { signal } = new AbortController();
     await fixPath(env, "win32", signal);
-    expect(ensureWindowsPathHydrated).toHaveBeenCalledExactlyOnceWith(
+    expect(ensureWindowsPathHydration).toHaveBeenCalledExactlyOnceWith(
       env,
       expect.objectContaining({ platform: "win32", signal }),
     );

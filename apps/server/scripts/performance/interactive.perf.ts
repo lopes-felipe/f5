@@ -12,7 +12,6 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { setTimeout as delay } from "node:timers/promises";
 import { Effect, Exit, Layer, ManagedRuntime, Ref, Scope } from "effect";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import WebSocket, { WebSocketServer } from "ws";

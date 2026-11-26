@@ -13,7 +13,7 @@ import * as nodePath from "node:path";
 
 import {
   cursorChatsWorkspaceKey,
-  cursorConfigDir,
+  cursorCliConfigDir,
 } from "../src/provider/cursor/CursorNativeSessions";
 
 interface WorkspaceSummary {
@@ -53,7 +53,7 @@ async function readSession(configDir: string, sessionId: string, now: number) {
 
 async function main() {
   const json = process.argv.includes("--json");
-  const configDir = cursorConfigDir();
+  const configDir = cursorCliConfigDir();
   const now = Date.now();
   const ids = await nodeFs.readdir(nodePath.join(configDir, "acp-sessions")).catch(() => []);
   const byCwd = new Map<string, WorkspaceSummary>();

@@ -8,11 +8,11 @@ export function TraitsTriggerIcons(props: {
 }) {
   return props.icons.map((icon) =>
     icon === "fastMode" ? (
-      <span key={icon} title="Fast mode on" className="inline-flex">
+      <span key={icon} title="Fast mode on" className="inline-flex shrink-0">
         <FastModeTriggerIcon />
       </span>
     ) : (
-      <span key={icon} title="Ultracode on" className="inline-flex">
+      <span key={icon} title="Ultracode on" className="inline-flex shrink-0">
         <WorkflowIcon className="size-3 shrink-0" aria-label="Ultracode on" />
       </span>
     ),
