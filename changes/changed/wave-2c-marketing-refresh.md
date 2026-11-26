@@ -1,1 +1,0 @@
-- Refreshed the F5 marketing site with the Graphite + Cobalt palette, real product screenshots, the full provider matrix (8 built-in providers plus custom ACP agents), and fixed Linux download detection on the landing page.
