@@ -1,5 +1,5 @@
 import { assert, it } from "@effect/vitest";
-import { NodeServices } from "@effect/platform-node";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { DatabaseSync } from "node:sqlite";
 import { setTimeout } from "node:timers/promises";
 import { ServerConfig } from "../../config.ts";
@@ -7,6 +7,7 @@ import { antigravityProfileDirectory } from "../../provider/acp/AntigravityAcpSu
 import {
   EventId,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
   TurnId,
@@ -285,7 +286,10 @@ it.layer(SqliteClient.layerMemory())("External history summary integration", (it
                 ServerSettingsService.layerTest({
                   usageLocalProviderHistory: true,
                   providerInstances: {
-                    "disabled-antigravity": { driver: "antigravity", enabled: false },
+                    [ProviderInstanceId.make("disabled-antigravity")]: {
+                      driver: ProviderDriverKind.make("antigravity"),
+                      enabled: false,
+                    },
                   },
                 }),
                 ServerConfig.layerTest(process.cwd(), stateDir).pipe(
