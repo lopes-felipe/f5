@@ -12,11 +12,6 @@ import { CodexGeneratedImages } from "../codexGeneratedImages.ts";
 import { CodexTurnUsage } from "../codexTurnUsage.ts";
 import { makeCodexGeneratedImageStore } from "../codexGeneratedImageStore.ts";
 import { readMcpAppToolResult } from "@t3tools/shared/mcpApp";
-import {
-  READ_ONLY_ENFORCEMENT_CONFIG_KEY,
-  READ_ONLY_ENFORCEMENT_SUMMARY_CONFIG_KEY,
-  readOnlyEnforcementSummary,
-} from "@t3tools/shared/readOnlyEnforcement";
 import { snapshotMcpApp } from "../../mcpApps/McpAppSnapshot.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import {
@@ -83,7 +78,6 @@ import {
   RuntimeTaskId,
   SubagentActivityKind,
   ProviderApprovalDecision,
-  PROVIDER_DISPLAY_NAMES,
   ProviderInstanceId,
   ProviderItemId,
   ThreadId,
@@ -144,7 +138,6 @@ import { CodexAdapter, type CodexAdapterShape } from "../Services/CodexAdapter.t
 import {
   CODEX_ELICITATION_OPENED_METHOD,
   CODEX_ELICITATION_SETTLED_METHOD,
-  CODEX_READ_ONLY_ENFORCEMENT_CHANGED_METHOD,
   CODEX_READ_ONLY_REFUSED_METHOD,
   CodexAppServerManager,
   CodexJsonRpcError,
@@ -1887,28 +1880,6 @@ function mapToRuntimeEvents(
         payload: {
           requestType,
           ...(event.payload !== undefined ? { resolution: event.payload } : {}),
-        },
-      },
-    ];
-  }
-
-  if (event.method === CODEX_READ_ONLY_ENFORCEMENT_CHANGED_METHOD) {
-    // Codex's managed requirements left a policy-enforced stage only the sandbox: correct the
-    // "Read-only stage: …" line F5 recorded when the session started.
-    const enforcement = payload?.enforcement;
-    if (enforcement !== "sandbox" && enforcement !== "policy") return [];
-    return [
-      {
-        ...runtimeEventBase(event, canonicalThreadId),
-        type: "session.configured",
-        payload: {
-          config: {
-            [READ_ONLY_ENFORCEMENT_CONFIG_KEY]: enforcement,
-            [READ_ONLY_ENFORCEMENT_SUMMARY_CONFIG_KEY]: readOnlyEnforcementSummary(
-              enforcement,
-              PROVIDER_DISPLAY_NAMES.codex,
-            ),
-          },
         },
       },
     ];

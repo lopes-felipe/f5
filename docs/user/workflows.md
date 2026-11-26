@@ -134,6 +134,11 @@ shows the template, cost and per-step context.
     and F5 answers with the same command allowlist it uses for Cursor. File edits and requests
     for more permissions are refused. Antigravity launches without `--sandbox`, under the same
     allowlist.
+  - Commands F5 approves without a sandbox (Cursor always, Codex and Antigravity when
+    policy-enforced) can't run the repository's own Git helpers: an external diff, a diff
+    driver's command or textconv, a clean or smudge filter, an fsmonitor hook or a GPG program set
+    in its `.git/config`. Git refuses to run them, so a command that needs one fails. Helpers from
+    your own Git config, such as Git LFS's filters, still run.
   - If your organisation's Codex requirements (`allowed_approval_policies` or
     `allowed_sandbox_modes` in a managed `requirements.toml`) don't allow `untrusted` with
     `danger-full-access`, Codex can't be made to ask before every command:
@@ -145,7 +150,10 @@ shows the template, cost and per-step context.
     - With only `never` allowed, the stage stays in Codex's read-only sandbox, recorded as
       **sandboxed**, and the thread shows a configuration warning saying so. In the desktop app
       shell commands then fail, and the stage reads pull requests and files through F5's forge
-      tools.
+      tools. Those reach only what's pushed: a stage that must review unpushed local changes
+      needs a working shell, so run it with another provider.
+    - Allowing neither `untrusted`, `on-request` nor `never` leaves no mode F5 can use, and the
+      stage fails to start.
   - Claude runs in Plan mode, where Claude Code decides which commands only read.
   - OpenCode and Pi run with their write tools turned off.
   - Antigravity runs only on a certified runtime (see

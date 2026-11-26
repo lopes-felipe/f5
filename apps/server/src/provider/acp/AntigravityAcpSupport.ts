@@ -21,6 +21,8 @@ import {
 import { antigravityEditTargetsInWorkspace } from "./AntigravityEditLocation.ts";
 import { AntigravityInstallation } from "../AntigravityInstallation.ts";
 import { READ_ONLY_WORKFLOW_ENVIRONMENT } from "../readOnlyWorkflowShell.ts";
+import { readOnlyGitConfigPairs } from "../readOnlyGitConfig.ts";
+import { appendGitConfigPairs } from "../../git/gitConfigEnvironment.ts";
 import {
   ANTIGRAVITY_PERSONAL_AUTH,
   antigravityLaunchEnvironment,
@@ -374,6 +376,19 @@ export const makeAntigravityAcpRuntime = (input: {
       }),
       (directory) => Effect.promise(() => fs.rm(directory, { recursive: true, force: true })),
     );
+    // Without the sandbox, commands F5 approves run unsandboxed: the repository's own Git helpers
+    // must not run for them (readOnlyGitConfig.ts).
+    const readOnlyGitPairs =
+      input.readOnlyWorkflow === true && input.readOnlySandbox !== true
+        ? yield* Effect.tryPromise({
+            try: () => readOnlyGitConfigPairs(input.cwd),
+            catch: (cause) =>
+              new AcpErrors.AcpTransportError({
+                detail: cause instanceof Error ? cause.message : String(cause),
+                cause,
+              }),
+          })
+        : [];
     const context = yield* Layer.build(
       AcpSessionRuntime.layer({
         cwd: input.cwd,
@@ -399,21 +414,24 @@ export const makeAntigravityAcpRuntime = (input: {
           command: prepared.executable.executablePath,
           args: antigravityAcpArgs(prepared.home, input.readOnlySandbox === true),
           cwd: input.cwd,
-          env: {
-            ...antigravityEnvironment(
-              input.environment,
-              prepared.home,
-              prepared.executable.harnessPath,
-              prepared.browser,
-              auth,
-            ),
-            TMPDIR: tempDirectory,
-            TMP: tempDirectory,
-            TEMP: tempDirectory,
-            ...(input.readOnlySandbox === true || input.readOnlyWorkflow === true
-              ? READ_ONLY_WORKFLOW_ENVIRONMENT
-              : {}),
-          },
+          env: appendGitConfigPairs(
+            {
+              ...antigravityEnvironment(
+                input.environment,
+                prepared.home,
+                prepared.executable.harnessPath,
+                prepared.browser,
+                auth,
+              ),
+              TMPDIR: tempDirectory,
+              TMP: tempDirectory,
+              TEMP: tempDirectory,
+              ...(input.readOnlySandbox === true || input.readOnlyWorkflow === true
+                ? READ_ONLY_WORKFLOW_ENVIRONMENT
+                : {}),
+            },
+            readOnlyGitPairs,
+          ),
           extendEnv: false,
         },
         transformStdoutLine: (line) => {

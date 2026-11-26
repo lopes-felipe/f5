@@ -63,6 +63,7 @@ import {
   buildCodexModeInstructions,
   CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
   CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
+  CODEX_READ_ONLY_ESCALATION_HINT,
 } from "./provider/sharedAssistantContract";
 import { fingerprintSupportedSlashCommands } from "./provider/supportedSlashCommands";
 import { ElicitationRegistry } from "./provider/elicitationRegistry";
@@ -1455,14 +1456,31 @@ describe("startSession", () => {
   );
 
   it.each([
-    // An organisation that forbids `untrusted` (MDM requirements.toml).
-    [["on-request", "never"], "ask-on-escalation"],
-    [["never"], "sandbox"],
-    [["untrusted", "on-request", "never"], "ask-every-command"],
+    // An organisation that forbids `untrusted` (MDM requirements.toml), exactly as Codex 0.170
+    // reported it in gate G1 (docs/reviews/cursor-live-gates.md).
+    [
+      {
+        allowedApprovalPolicies: ["on-request", "never"],
+        allowedSandboxModes: ["workspace-write", "read-only", "danger-full-access"],
+      },
+      "ask-on-escalation",
+    ],
+    // `untrusted` allowed, but not the unsandboxed mode it needs.
+    [
+      {
+        allowedApprovalPolicies: ["untrusted", "on-request", "never"],
+        allowedSandboxModes: ["workspace-write", "read-only"],
+      },
+      "ask-on-escalation",
+    ],
+    [{ allowedApprovalPolicies: ["never"] }, "sandbox"],
+    [{ allowedApprovalPolicies: ["untrusted", "on-request", "never"] }, "ask-every-command"],
     [null, "ask-every-command"],
+    // A Codex without `configRequirements/read` keeps the requested mode.
+    ["read fails", "ask-every-command"],
   ] as const)(
-    "runs a policy-enforced stage under Codex requirements allowing %j as %s",
-    async (allowedApprovalPolicies, expected) => {
+    "runs a policy-enforced stage under Codex requirements %j as %s",
+    async (requirements, expected) => {
       const directory = mkdtempSync(path.join(os.tmpdir(), "codex-readonly-requirements-"));
       const binaryPath = path.join(directory, "codex.cjs");
       writeFileSync(binaryPath, "#!/usr/bin/env node\nprocess.stdin.resume();\n", {
@@ -1491,21 +1509,24 @@ describe("startSession", () => {
         )
         .mockImplementation(async (_context, method, params) => {
           sent.push([method, params]);
-          if (method === "configRequirements/read")
-            return {
-              requirements: allowedApprovalPolicies === null ? null : { allowedApprovalPolicies },
-            };
+          if (method === "configRequirements/read") {
+            if (requirements === "read fails")
+              throw new Error("configRequirements/read failed: Method not found");
+            return { requirements };
+          }
           if (method === "thread/start")
             return {
               thread: { id: "native-thread" },
               sandbox: { type: policy.sandbox === "read-only" ? "readOnly" : "dangerFullAccess" },
               approvalPolicy: policy.approvalPolicy,
             };
+          if (method === "turn/start") return { turn: { id: "turn-1" } };
           return {};
         });
       try {
-        await manager.startSession({
-          threadId: asThreadId("readonly-requirements"),
+        const threadId = asThreadId("readonly-requirements");
+        const session = await manager.startSession({
+          threadId,
           cwd: directory,
           runtimeMode: "full-access",
           workflowExecutionProfile: "unattended-readonly",
@@ -1513,13 +1534,27 @@ describe("startSession", () => {
           providerOptions: { codex: { binaryPath } },
         });
         expect(sent.find(([method]) => method === "thread/start")?.[1]).toMatchObject(policy);
-        // Only the forge-only fallback differs from the policy enforcement F5 recorded at start.
+        // Only the forge-only fallback differs from the policy enforcement F5 requested, and the
+        // session reports what the stage really runs under for ProviderService to record.
         expect(events.some((event) => event.method === "configWarning")).toBe(sandboxed);
-        expect(
-          events
-            .filter((event) => event.method === "f5/readOnly/enforcementChanged")
-            .map((event) => event.payload),
-        ).toEqual(sandboxed ? [{ enforcement: "sandbox" }] : []);
+        expect(session.readOnlyEnforcement).toBe(sandboxed ? "sandbox" : "policy");
+
+        // Every turn restates the mode's policy, and only "ask on escalation" tells the model
+        // to escalate: the fallback refuses escalations, and asking every command needs none.
+        await manager.sendTurn({ threadId, input: "Review the change" });
+        const turn = sent.find(
+          ([method]) => method === "turn/start",
+        )?.[1] as TurnStartContextParams & Record<string, unknown>;
+        expect(turn).toMatchObject({
+          approvalPolicy: policy.approvalPolicy,
+          sandboxPolicy:
+            policy.sandbox === "read-only"
+              ? { type: "readOnly", networkAccess: false }
+              : { type: "dangerFullAccess" },
+        });
+        expect(turn.additionalContext?.f5_workflow_escalation?.value).toBe(
+          expected === "ask-on-escalation" ? CODEX_READ_ONLY_ESCALATION_HINT : undefined,
+        );
       } finally {
         send.mockRestore();
         await cleanupCodexFixture(manager, directory);

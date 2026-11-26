@@ -1001,10 +1001,27 @@ it.effect.each([
   },
   // F5's macOS desktop backend runs in a Seatbelt sandbox, so Codex's can't start inside it.
   { nestedSandbox: false, enforcement: "policy", summary: "Read-only stage: policy-enforced" },
-])(
-  "records how a read-only workflow stage is enforced when its session starts (nested sandbox: $nestedSandbox)",
-  ({ nestedSandbox, enforcement, summary }) => {
+  // Codex's managed requirements left the requested policy stage only the sandbox: the line
+  // shows what the session reports, not what F5 asked for.
+  {
+    nestedSandbox: false,
+    enforcement: "policy",
+    effective: "sandbox",
+    summary: "Read-only stage: sandboxed (Codex native sandbox)",
+  },
+] as const)(
+  "records how a read-only workflow stage is enforced when its session starts (nested sandbox: $nestedSandbox, effective: $effective)",
+  ({ nestedSandbox, enforcement, summary, ...rest }) => {
+    const effective = "effective" in rest ? rest.effective : undefined;
     const codex = makeFakeCodexAdapter();
+    if (effective) {
+      const start = codex.startSession.getMockImplementation()!;
+      codex.startSession.mockImplementationOnce((input) =>
+        start(input).pipe(
+          Effect.map((session) => ({ ...session, readOnlyEnforcement: effective })),
+        ),
+      );
+    }
     const adapter = {
       ...codex.adapter,
       capabilities: { ...codex.adapter.capabilities, enforcesReadOnlyWorkflow: true },
@@ -1035,9 +1052,69 @@ it.effect.each([
       assert.equal(codex.startSession.mock.calls[0]?.[0].readOnlyEnforcement, enforcement);
       const event = Option.getOrThrow(yield* Fiber.join(configured));
       assert.deepEqual(event.type === "session.configured" ? event.payload.config : undefined, {
-        f5ReadOnlyEnforcement: enforcement,
+        f5ReadOnlyEnforcement: effective ?? enforcement,
         f5ReadOnlyEnforcementSummary: summary,
       });
+    }).pipe(Effect.provide(layer), Effect.scoped);
+  },
+);
+
+it.effect.each([
+  { effective: "sandbox", lines: ["sandbox", "sandbox"] },
+  { effective: undefined, lines: ["policy"] },
+] as const)(
+  "labels a recovered read-only stage again only when it runs stricter than requested (effective: $effective)",
+  ({ effective, lines }) => {
+    const codex = makeFakeCodexAdapter();
+    if (effective) {
+      const start = codex.startSession.getMockImplementation()!;
+      codex.startSession.mockImplementation((input) =>
+        start(input).pipe(
+          Effect.map((session) => ({ ...session, readOnlyEnforcement: effective })),
+        ),
+      );
+    }
+    const adapter = {
+      ...codex.adapter,
+      capabilities: { ...codex.adapter.capabilities, enforcesReadOnlyWorkflow: true },
+    };
+    const layer = makeProviderServiceLayerForAdapters(
+      new Map([["codex", adapter]]),
+      {},
+      {},
+      makeProjectMcpConfigServiceTestLayer({}),
+      { nestedSandboxAvailable: () => false },
+    );
+    return Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("recovered-read-only-stage");
+      const seen: Array<unknown> = [];
+      yield* Stream.runForEach(
+        Stream.filter(
+          provider.streamEvents,
+          (event) => event.type === "session.configured" && event.threadId === threadId,
+        ),
+        (event) =>
+          Effect.sync(() => {
+            if (event.type === "session.configured")
+              seen.push(event.payload.config.f5ReadOnlyEnforcement);
+          }),
+      ).pipe(Effect.forkChild);
+      yield* sleep(20);
+      yield* provider.startSession(threadId, {
+        threadId,
+        provider: "codex",
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "attended-readonly",
+      });
+      yield* codex.stopAll();
+      yield* provider.sendTurn({ threadId, input: "resume", attachments: [] });
+      yield* sleep(20);
+      // The recovered start asks for the recorded request again.
+      assert.equal(codex.startSession.mock.calls.length, 2);
+      assert.equal(codex.startSession.mock.calls[1]?.[0].readOnlyEnforcement, "policy");
+      assert.deepEqual(seen, [...lines]);
     }).pipe(Effect.provide(layer), Effect.scoped);
   },
 );

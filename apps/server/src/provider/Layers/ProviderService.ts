@@ -86,6 +86,7 @@ import {
   type ProviderRuntimeEvent,
   type ProviderSession,
   type ProviderSessionAction,
+  type ReadOnlyEnforcement,
   type ServerProvider,
   type ProviderTurnStartResult,
   type McpReloadResult,
@@ -688,6 +689,30 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             null,
           );
         yield* PubSub.publish(runtimeEventPubSub, event);
+      });
+
+    /** The thread's "Read-only stage: …" line, through `session.configured`. */
+    const publishReadOnlyEnforcement = (
+      session: ProviderSession,
+      providerInstanceId: ProviderInstanceId,
+      enforcement: ReadOnlyEnforcement,
+    ) =>
+      publishRuntimeEvent({
+        type: "session.configured",
+        eventId: EventId.makeUnsafe(timeOrderedUuid()),
+        provider: session.provider,
+        providerInstanceId,
+        threadId: session.threadId,
+        createdAt: new Date().toISOString(),
+        payload: {
+          config: {
+            [READ_ONLY_ENFORCEMENT_CONFIG_KEY]: enforcement,
+            [READ_ONLY_ENFORCEMENT_SUMMARY_CONFIG_KEY]: readOnlyEnforcementSummary(
+              enforcement,
+              PROVIDER_DISPLAY_NAMES[session.provider],
+            ),
+          },
+        },
       });
 
     const upsertSessionBinding = (
@@ -1576,6 +1601,20 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             generation: resumedGeneration,
           }),
         };
+        // A recovered stage keeps the line recorded at its start when it runs as requested. When
+        // the adapter ended up stricter (Codex requirements), the line says so again, since the
+        // binding records only the requested value.
+        const requestedEnforcement = recoveredInstructionContext?.readOnlyEnforcement;
+        if (
+          requestedEnforcement !== undefined &&
+          resumed.readOnlyEnforcement !== undefined &&
+          resumed.readOnlyEnforcement !== requestedEnforcement
+        )
+          yield* publishReadOnlyEnforcement(
+            resumed,
+            bindingInstanceId,
+            resumed.readOnlyEnforcement,
+          );
         yield* Effect.logInfo("provider service resumed provider session from persisted binding", {
           operation: input.operation,
           threadId: input.binding.threadId,
@@ -2004,25 +2043,15 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             inputCwd: input.cwd ?? null,
             sessionCwd: sessionWithInstance.cwd ?? null,
           });
-          if (readOnlyEnforcement !== undefined) {
-            yield* publishRuntimeEvent({
-              type: "session.configured",
-              eventId: EventId.makeUnsafe(timeOrderedUuid()),
-              provider: sessionWithInstance.provider,
-              providerInstanceId: requestedInstanceId,
-              threadId,
-              createdAt: new Date().toISOString(),
-              payload: {
-                config: {
-                  [READ_ONLY_ENFORCEMENT_CONFIG_KEY]: readOnlyEnforcement,
-                  [READ_ONLY_ENFORCEMENT_SUMMARY_CONFIG_KEY]: readOnlyEnforcementSummary(
-                    readOnlyEnforcement,
-                    PROVIDER_DISPLAY_NAMES[resolvedProvider],
-                  ),
-                },
-              },
-            });
-          }
+          // One line, after the start succeeded, with what the stage actually runs under (an
+          // adapter can end up stricter than requested). The binding keeps the requested value,
+          // so a later start asks for it again.
+          if (readOnlyEnforcement !== undefined)
+            yield* publishReadOnlyEnforcement(
+              sessionWithInstance,
+              requestedInstanceId,
+              sessionWithInstance.readOnlyEnforcement ?? readOnlyEnforcement,
+            );
 
           return sessionWithInstance;
         }).pipe(

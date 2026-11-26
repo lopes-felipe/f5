@@ -45,6 +45,7 @@ import {
   READ_ONLY_WORKFLOW_ENVIRONMENT,
   unwrapShellInvocation,
 } from "./provider/readOnlyWorkflowShell.ts";
+import { withReadOnlyGitConfig } from "./provider/readOnlyGitConfig.ts";
 import {
   codexCommandApprovalDecision,
   readCodexCommandApprovalOffer,
@@ -911,13 +912,6 @@ export function codexReadOnlyModeUnderRequirements(
 /** Emitted when F5 refused an approval request itself; the adapter reports it auto-declined. */
 export const CODEX_READ_ONLY_REFUSED_METHOD = "f5/readOnly/refused";
 
-/**
- * Emitted when a read-only stage's enforcement differs from what F5 recorded at start, because
- * Codex's managed requirements left only the sandbox (`codexReadOnlyModeUnderRequirements`).
- * Payload: `{ enforcement }`.
- */
-export const CODEX_READ_ONLY_ENFORCEMENT_CHANGED_METHOD = "f5/readOnly/enforcementChanged";
-
 const SHELL_ESCALATION_FIELDS = [
   "additionalPermissions",
   "networkApprovalContext",
@@ -1281,6 +1275,10 @@ export function buildCodexTurnStartParams(
     ...(state.instructionContext !== undefined
       ? { instructionContext: state.instructionContext }
       : {}),
+    // Decided by the mode Codex runs in, not the enforcement F5 requested: the sandbox fallback
+    // of a requested `policy` stage refuses every escalation.
+    codexReadOnlyEscalation:
+      state.workflowExecutionProfile !== undefined && state.readOnlyMode === "ask-on-escalation",
     includeResumedContext: !state.resumedContextSent,
   });
   if (!turnStartParams.model) {
@@ -1340,6 +1338,7 @@ function buildCodexTurnInstructions(input: {
   readonly model?: string;
   readonly effort?: string;
   readonly instructionContext?: Partial<SharedInstructionInput>;
+  readonly codexReadOnlyEscalation?: boolean;
   readonly includeResumedContext?: boolean;
 }): {
   collaborationMode: {
@@ -1367,6 +1366,7 @@ function buildCodexTurnInstructions(input: {
     ...(context?.workflowExecutionProfile
       ? { workflowExecutionProfile: context.workflowExecutionProfile }
       : {}),
+    ...(input.codexReadOnlyEscalation ? { codexReadOnlyEscalation: true } : {}),
     ...(context?.runtimeMode ? { runtimeMode: context.runtimeMode } : {}),
     ...(context?.projectMemories ? { projectMemories: context.projectMemories } : {}),
     ...(context?.integrationInstructions
@@ -1651,15 +1651,22 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         ...(signal ? { signal } : {}),
         ...(codexHomePath ? { homePath: codexHomePath } : {}),
       });
-      const childEnvironment = withBrowserOpenThreadToken(
-        buildProviderChildProcessEnv(input.processEnvironment ?? process.env, {
+      // Commands F5 approves run unsandboxed in a policy-enforced stage.
+      const unsandboxedReadOnly =
+        input.workflowExecutionProfile !== undefined && input.readOnlyEnforcement === "policy";
+      const baseChildEnvironment = buildProviderChildProcessEnv(
+        input.processEnvironment ?? process.env,
+        {
           ...input.mcpEnvironment,
           ...(codexHomePath ? { CODEX_HOME: codexHomePath } : {}),
           // Unsandboxed, `git status` would refresh the index and hold its lock.
-          ...(input.workflowExecutionProfile && input.readOnlyEnforcement === "policy"
-            ? READ_ONLY_WORKFLOW_ENVIRONMENT
-            : {}),
-        }),
+          ...(unsandboxedReadOnly ? READ_ONLY_WORKFLOW_ENVIRONMENT : {}),
+        },
+      );
+      const childEnvironment = withBrowserOpenThreadToken(
+        unsandboxedReadOnly
+          ? await withReadOnlyGitConfig(baseChildEnvironment, resolvedCwd)
+          : baseChildEnvironment,
         threadId,
       );
       const appServerCommand = buildCodexAppServerCommand({
@@ -2045,7 +2052,14 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       }).pipe(this.runPromise);
       this.emitLifecycleEvent(context, "session/ready", `Connected to thread ${providerThreadId}`);
       this.scheduleSkillsRefresh(context, { forceReload: false });
-      return { ...context.session };
+      return {
+        ...context.session,
+        // What the stage actually runs under, which ProviderService records and shows: Codex's
+        // requirements can leave a requested `policy` stage only the sandbox.
+        ...(context.readOnlyMode
+          ? { readOnlyEnforcement: codexReadOnlyModeEnforcement(context.readOnlyMode) }
+          : {}),
+      };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to start Codex session.";
       if (context && this.sessions.get(threadId) === context) {
@@ -5359,8 +5373,8 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
   /**
    * `codexReadOnlyModeUnderRequirements` for this session's Codex. A policy-enforced stage reads
    * the requirements first; a CLI without `configRequirements/read` keeps the request. When the
-   * stage ends up sandboxed instead, the thread gets a configuration warning saying why, and
-   * `CODEX_READ_ONLY_ENFORCEMENT_CHANGED_METHOD` corrects the enforcement F5 recorded at start.
+   * stage ends up sandboxed instead, the thread gets a configuration warning saying why, and the
+   * started session reports `readOnlyEnforcement: "sandbox"` for ProviderService to record.
    */
   private async readOnlyModeForRequirements(
     context: CodexSessionContext,
@@ -5379,24 +5393,20 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       }).pipe(this.runPromise);
     }
     const mode = codexReadOnlyModeUnderRequirements(requested, requirements);
-    const enforcement = codexReadOnlyModeEnforcement(mode);
-    if (enforcement === requested) return mode;
-    const notification = (method: string, payload: Record<string, unknown>) =>
-      this.emitEvent({
-        ...context.mcpEventIdentity,
-        id: EventId.makeUnsafe(timeOrderedUuid()),
-        kind: "notification",
-        provider: "codex",
-        threadId: context.session.threadId,
-        createdAt: new Date().toISOString(),
-        method,
-        payload,
-      });
-    notification(CODEX_READ_ONLY_ENFORCEMENT_CHANGED_METHOD, { enforcement });
-    notification("configWarning", {
-      summary:
-        "Read-only stage runs in Codex's read-only sandbox: your organisation's Codex requirements don't allow Codex to ask before running commands.",
-      details: `Allowed approval policies: ${[...(requirements?.allowedApprovalPolicies ?? [])].join(", ")}. Where Codex's sandbox can't start (F5's macOS desktop app), shell commands fail and the stage reads through F5's forge tools.`,
+    if (codexReadOnlyModeEnforcement(mode) === requested) return mode;
+    this.emitEvent({
+      ...context.mcpEventIdentity,
+      id: EventId.makeUnsafe(timeOrderedUuid()),
+      kind: "notification",
+      provider: "codex",
+      threadId: context.session.threadId,
+      createdAt: new Date().toISOString(),
+      method: "configWarning",
+      payload: {
+        summary:
+          "Read-only stage runs in Codex's read-only sandbox: your organisation's Codex requirements don't allow Codex to ask before running commands.",
+        details: `Allowed approval policies: ${[...(requirements?.allowedApprovalPolicies ?? [])].join(", ")}. Where Codex's sandbox can't start (F5's macOS desktop app), shell commands fail and the stage reads through F5's forge tools.`,
+      },
     });
     return mode;
   }

@@ -24,8 +24,16 @@ export interface InstructionProfile {
 export type SharedInstructionInput = {
   readonly interactionMode?: ProviderInteractionMode;
   readonly workflowExecutionProfile?: WorkflowTurnExecutionProfile;
-  /** Recorded on the binding for read-only stages: how the stage is kept read-only. */
+  /**
+   * Recorded on the binding for read-only stages: the enforcement F5 requested, which a recovered
+   * session requests again. What Codex actually applies can differ (`codexReadOnlyEscalation`).
+   */
   readonly readOnlyEnforcement?: ReadOnlyEnforcement;
+  /**
+   * Set by the Codex manager for a read-only stage that ended up in "ask on escalation" mode, the
+   * only mode where the model must escalate commands the sandbox can't run.
+   */
+  readonly codexReadOnlyEscalation?: boolean;
   readonly runtimeMode?: RuntimeMode;
   readonly projectTitle?: string;
   readonly threadTitle?: string;
@@ -827,10 +835,10 @@ export function splitUtf8Chunks(text: string, maxBytes: number, level = 0): stri
  * into zero-padded `_01`, `_02`, ... keys so they keep their order.
  */
 /**
- * Sent to a policy-enforced Codex read-only stage. Where Codex's sandbox can't start, Codex asks
- * to rerun only its own safe commands outside it; any other command fails unless the model
- * escalates it (docs/reviews/cursor-live-gates.md, gate G3b). Harmless when Codex asks before
- * every command anyway.
+ * Sent to a Codex read-only stage in "ask on escalation" mode. Where Codex's sandbox can't start,
+ * Codex asks to rerun only its own safe commands outside it; any other command fails unless the
+ * model escalates it (docs/reviews/cursor-live-gates.md, gate G3b). Not sent in the sandbox
+ * fallback, which refuses every escalation, nor when Codex asks before every command.
  */
 export const CODEX_READ_ONLY_ESCALATION_HINT =
   'If a shell command fails because the sandbox can\'t start, rerun it with `sandbox_permissions: "require_escalated"` and a short justification; F5 approves read-only commands and refuses the rest.';
@@ -847,7 +855,7 @@ export function buildCodexAdditionalContext(
     ["f5_workflow_contract", buildWorkflowHostContract(input.workflowExecutionProfile)],
     [
       "f5_workflow_escalation",
-      input.workflowExecutionProfile && input.readOnlyEnforcement === "policy"
+      input.workflowExecutionProfile && input.codexReadOnlyEscalation
         ? CODEX_READ_ONLY_ESCALATION_HINT
         : undefined,
     ],

@@ -147,6 +147,7 @@ import {
 } from "./EventNdjsonLogger.ts";
 import { buildProviderAttachmentRuntimeContext } from "../attachmentRuntimeContext.ts";
 import { READ_ONLY_WORKFLOW_ENVIRONMENT } from "../readOnlyWorkflowShell.ts";
+import { withReadOnlyGitConfig } from "../readOnlyGitConfig.ts";
 import {
   cursorProjectConfigConflictMessage,
   findCursorProjectConfigConflict,
@@ -912,12 +913,18 @@ export function makeCursorAdapter(
               });
             yield* assertCursorReadOnlyWorkspace(cwd, "startSession");
             readOnlyEnvironment = yield* Effect.tryPromise({
-              try: () =>
-                prepareCursorReadOnlyEnvironment({
-                  providerHomesDir: resolveProviderHomesDir(serverConfig),
-                  instanceId: boundInstanceId,
-                  environment: options?.environment ?? process.env,
-                }),
+              try: async () =>
+                withReadOnlyGitConfig(
+                  {
+                    ...(await prepareCursorReadOnlyEnvironment({
+                      providerHomesDir: resolveProviderHomesDir(serverConfig),
+                      instanceId: boundInstanceId,
+                      environment: options?.environment ?? process.env,
+                    })),
+                    ...READ_ONLY_WORKFLOW_ENVIRONMENT,
+                  },
+                  cwd,
+                ),
               catch: processError,
             });
           }
@@ -1063,7 +1070,7 @@ export function makeCursorAdapter(
             cursorSettings: effectiveCursorSettings,
             runtimeMode: input.workflowExecutionProfile ? "approval-required" : input.runtimeMode,
             ...(readOnlyEnvironment
-              ? { environment: { ...readOnlyEnvironment, ...READ_ONLY_WORKFLOW_ENVIRONMENT } }
+              ? { environment: readOnlyEnvironment }
               : options?.environment
                 ? { environment: options.environment }
                 : {}),

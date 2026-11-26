@@ -399,7 +399,10 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         const tempDir = yield* Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "cursor-acp-")));
         const envLogPath = path.join(tempDir, "env.ndjson");
         const wrapperPath = writeAcpWrapper(path.join(tempDir, "fake-agent"), mockAgentPath, {
-          envLog: { path: envLogPath, keys: ["GIT_OPTIONAL_LOCKS", "CURSOR_CONFIG_DIR"] },
+          envLog: {
+            path: envLogPath,
+            keys: ["GIT_OPTIONAL_LOCKS", "CURSOR_CONFIG_DIR", "GIT_CONFIG_COUNT"],
+          },
         });
         yield* serverSettings.updateSettings({
           providers: { cursor: { binaryPath: wrapperPath } },
@@ -424,6 +427,11 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
           launches.map((entry) => entry.GIT_OPTIONAL_LOCKS),
           ["0", process.env.GIT_OPTIONAL_LOCKS ?? null],
         );
+        // The read-only launch appends F5's Git helper overrides (readOnlyGitConfig.ts).
+        const [readOnlyCount, ordinaryCount] = launches.map((entry) =>
+          Number(entry.GIT_CONFIG_COUNT ?? 0),
+        );
+        assert.ok(readOnlyCount! > ordinaryCount!, `${readOnlyCount} > ${ordinaryCount}`);
         const readOnlyConfigDir = path.join(
           serverConfig.providerHomesDir ?? path.join(serverConfig.stateDir, "provider-homes"),
           "cursor-readonly",
