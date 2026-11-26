@@ -1,6 +1,6 @@
 /**
  * Cursor harness gates: the checked-in record of which Cursor behaviors have
- * passed their live gate (see `docs/reviews/cursor-live-gates.md`).
+ * passed their live gate (see `docs/reviews/read-only-live-gates.md`).
  *
  * A gate controls both UI exposure and server admission. A row that has not
  * passed disables only its own feature. Rows are added only from recorded live
@@ -29,7 +29,7 @@ export interface CursorAcpGates {
 export const CURSOR_ACP_GATES: CursorAcpGates = {
   planReplyOutcome: undefined,
   autoReviewMinimumVersion: undefined,
-  // Observed on CLI 2026.11.22-e9042b2 (docs/reviews/cursor-live-gates.md).
+  // Observed on CLI 2026.11.22-e9042b2 (docs/reviews/read-only-live-gates.md).
   catalogWithoutSession: true,
 };
 
@@ -51,7 +51,7 @@ export interface CursorSdkGateRow {
   /** `${process.platform}-${process.arch}`, for example `darwin-arm64`. */
   readonly platform: string;
   readonly features: ReadonlyArray<CursorSdkGateFeature>;
-  /** Evidence row in `docs/reviews/cursor-live-gates.md`. */
+  /** Evidence row in `docs/reviews/read-only-live-gates.md`. */
   readonly evidence: string;
 }
 

@@ -778,7 +778,7 @@ export const CODEX_READ_ONLY_TURN_SANDBOX_POLICY = {
 const CODEX_POLICY_TURN_SANDBOX_POLICY = { type: "dangerFullAccess" } as const;
 
 /**
- * How a read-only workflow stage runs Codex (docs/reviews/cursor-live-gates.md, "Codex read-only
+ * How a read-only workflow stage runs Codex (docs/reviews/read-only-live-gates.md, "Codex read-only
  * escalation"):
  *
  * - `sandbox`: Codex's read-only sandbox, and Codex never asks. Where that sandbox can't start
