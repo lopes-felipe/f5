@@ -13,6 +13,7 @@ import type {
   McpServerStatusesResult,
   McpGetHubAuthStatusResult,
   McpListActivityResult,
+  McpSearchCatalogResult,
   McpListToolPinsResult,
   McpGetHubStatusResult,
   McpStartHubSignInResult,
@@ -31,6 +32,7 @@ import { page } from "vitest/browser";
 import { render } from "vitest-browser-react";
 
 import { McpServersSettings } from "./McpServersSettings";
+import { toastManager } from "../ui/toast";
 
 const { copyToClipboard, nativeApiRef, hubMode } = vi.hoisted(() => ({
   copyToClipboard: vi.fn(),
@@ -192,6 +194,7 @@ function createNativeApiMock() {
   const signOutHubServer = vi.fn(async () => ({ signedOut: true }));
   const listToolPins = vi.fn(async (): Promise<McpListToolPinsResult> => ({ tools: [] }));
   const acceptToolChanges = vi.fn(async () => ({ accepted: 1 }));
+  const searchCatalog = vi.fn(async (): Promise<McpSearchCatalogResult> => ({ entries: [] }));
   const listActivity = vi.fn(
     async (): Promise<McpListActivityResult> => ({
       calls: [],
@@ -278,6 +281,7 @@ function createNativeApiMock() {
       listToolPins,
       acceptToolChanges,
       listActivity,
+      searchCatalog,
       inspectServer,
       onStatusUpdated,
     },
@@ -297,6 +301,7 @@ function createNativeApiMock() {
     listToolPins,
     acceptToolChanges,
     listActivity,
+    searchCatalog,
     replaceCommonConfig,
     getCommonConfig,
     getProjectConfig,
@@ -2272,6 +2277,62 @@ it("sets Ask per tool and as the default, and accepts a changed tool after revie
       ),
     );
   } finally {
+    queryClient.clear();
+    await screen.unmount();
+  }
+});
+
+it("fills the Add form from a catalog entry, asking for its secret before saving", async () => {
+  const mocks = createNativeApiMock();
+  mocks.searchCatalog.mockImplementation(async (input?: { query?: string }) => ({
+    entries: [
+      {
+        name: "io.github.acme/mcp-server-project-server",
+        title: input?.query ? `Notes for ${input.query}` : "Notes",
+        description: "Notes for agents",
+        version: "1.2.0",
+        remotes: [],
+        packages: [
+          {
+            registryType: "npm",
+            identifier: "@acme/notes",
+            version: "1.2.0",
+            environmentVariables: [{ name: "NOTES_TOKEN", required: true, secret: true }],
+            packageArguments: [],
+            runtimeArguments: [],
+          },
+        ],
+      },
+    ],
+  }));
+  const toastAdd = vi.spyOn(toastManager, "add");
+  const { screen, queryClient } = await renderSettings();
+  try {
+    await openAddServer("Catalog");
+    await page.getByRole("searchbox", { name: "Search the MCP Registry" }).fill("acme");
+    await vi.waitFor(() =>
+      expect(mocks.searchCatalog).toHaveBeenCalledWith({ query: "acme" }, expect.anything()),
+    );
+    await page.getByRole("button", { name: "Use Notes for acme: npm package" }).click();
+
+    // The scope already has `project-server`, so the catalog's name gets a suffix.
+    await expect.element(page.getByRole("tab", { name: "Form", selected: true })).toBeVisible();
+    await expect
+      .element(page.getByLabelText("Name", { exact: true }))
+      .toHaveValue("project-server-2");
+    await expect.element(page.getByLabelText("Command", { exact: true })).toHaveValue("npx");
+    await expect.element(page.getByLabelText("Argument 2", { exact: true })).toHaveValue("@acme/notes@1.2.0");
+    await expect.element(page.getByLabelText("Environment key 1", { exact: true })).toHaveValue("NOTES_TOKEN");
+    await expect.element(page.getByRole("checkbox", { name: "Secret" })).toBeChecked();
+    expect(toastAdd).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Review project-server-2 before saving",
+        description: "Store a secret for NOTES_TOKEN. Nothing runs until you save.",
+      }),
+    );
+    expect(mocks.replaceProjectConfig).not.toHaveBeenCalled();
+  } finally {
+    toastAdd.mockRestore();
     queryClient.clear();
     await screen.unmount();
   }

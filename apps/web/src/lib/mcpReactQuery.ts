@@ -241,7 +241,8 @@ export function isMcpQueryAffected(
   // Hub sign-in is profile-wide and local to read; provider-account events never change it.
   if (kind === "hubAuth") return event.instanceId === undefined;
   if (event.reason === "updated" && !isMcpConfigQuery(queryKey)) return false;
-  if (kind === "activity") return false;
+  // The call log is read on demand; the catalog is the registry's, not F5's.
+  if (kind === "activity" || kind === "catalog") return false;
   // Hub connection changes never touch provider observations, and vice versa.
   if (event.reason === "hub") return MCP_HUB_QUERY_KINDS.has(String(kind));
   if (MCP_HUB_QUERY_KINDS.has(String(kind)) && kind !== "hubStatus") return false;

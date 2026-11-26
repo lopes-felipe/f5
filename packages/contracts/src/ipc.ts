@@ -295,6 +295,8 @@ import type {
   McpListComposerResourcesResult,
   McpReadComposerResourceRequest,
   McpReadComposerResourceResult,
+  McpSearchCatalogRequest,
+  McpSearchCatalogResult,
   McpGetProviderStatusRequest,
   McpGetEffectiveConfigRequest,
   McpGetProjectConfigRequest,
@@ -1394,6 +1396,10 @@ export interface NativeApi {
     readComposerResource: (
       input: McpReadComposerResourceRequest,
     ) => Promise<McpReadComposerResourceResult>;
+    searchCatalog: (
+      input: McpSearchCatalogRequest,
+      context?: NativeRequestContext,
+    ) => Promise<McpSearchCatalogResult>;
     onStatusUpdated: (callback: (payload: McpStatusUpdatedPayload) => void) => () => void;
   };
   storage: {

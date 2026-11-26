@@ -148,6 +148,14 @@ export const McpSetThreadServerEnabledRequest = Schema.Struct({
 });
 export type McpSetThreadServerEnabledRequest = typeof McpSetThreadServerEnabledRequest.Type;
 
+/** Searches the official MCP Registry; only sent when the Catalog is opened or searched. */
+export const McpSearchCatalogRequest = Schema.Struct({
+  query: Schema.optional(Schema.String.check(Schema.isMaxLength(200))),
+  /** The `nextCursor` of the previous page. */
+  cursor: Schema.optional(Schema.String.check(Schema.isMaxLength(1024))),
+});
+export type McpSearchCatalogRequest = typeof McpSearchCatalogRequest.Type;
+
 /** Most resources the composer lists per server. */
 export const MCP_COMPOSER_RESOURCE_LIMIT = 200;
 /** Most text a resource adds to a message; longer text is cut with a note. */

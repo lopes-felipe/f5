@@ -455,6 +455,7 @@ import { McpRuntimeService } from "./mcp/McpRuntimeService.ts";
 import { McpHub } from "./mcp/hub/McpHub.ts";
 import { McpHubAuth } from "./mcp/hub/McpHubAuth.ts";
 import { McpHubGovernanceService } from "./mcp/hub/McpHubGovernanceLive.ts";
+import { makeMcpCatalog } from "./mcp/McpCatalog.ts";
 import {
   flattenPrompt,
   listComposerPrompts,
@@ -1187,6 +1188,8 @@ export const createServer = Effect.fn(function* (
           }),
         );
   };
+  // Registry pages are cached for an hour across every client of this server.
+  const mcpCatalog = makeMcpCatalog();
   const composerCall = <A>(run: (signal: AbortSignal) => Promise<A>) =>
     Effect.tryPromise({
       try: run,
@@ -8488,6 +8491,11 @@ export const createServer = Effect.fn(function* (
             .readResource({ uri: body.uri }, signal)
             .then((result) => shapeResourceContents(result)),
         );
+      }
+
+      case WS_METHODS.mcpSearchCatalog: {
+        const body = stripRequestTag(request.body);
+        return yield* composerCall((signal) => mcpCatalog.search(body, signal));
       }
 
       default: {

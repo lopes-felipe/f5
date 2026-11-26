@@ -304,6 +304,67 @@ export const McpThreadServersResult = Schema.Struct({
 });
 export type McpThreadServersResult = typeof McpThreadServersResult.Type;
 
+/** An environment variable or header a catalog entry asks for. */
+export const McpCatalogInput = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  description: Schema.optional(Schema.String),
+  required: Schema.Boolean,
+  secret: Schema.Boolean,
+  /** A fixed value the entry sets, which may contain `{placeholders}`. */
+  value: Schema.optional(Schema.String),
+  default: Schema.optional(Schema.String),
+});
+export type McpCatalogInput = typeof McpCatalogInput.Type;
+
+export const McpCatalogArgument = Schema.Struct({
+  type: Schema.Literals(["positional", "named"]),
+  name: Schema.optional(Schema.String),
+  value: Schema.optional(Schema.String),
+  default: Schema.optional(Schema.String),
+  valueHint: Schema.optional(Schema.String),
+  description: Schema.optional(Schema.String),
+  required: Schema.Boolean,
+  /** A flag that takes no value, such as `--read-only`. */
+  flag: Schema.Boolean,
+});
+export type McpCatalogArgument = typeof McpCatalogArgument.Type;
+
+export const McpCatalogRemote = Schema.Struct({
+  type: Schema.Literals(["http", "sse"]),
+  url: TrimmedNonEmptyString,
+  headers: Schema.Array(McpCatalogInput),
+});
+export type McpCatalogRemote = typeof McpCatalogRemote.Type;
+
+/** A package F5 can run over stdio. */
+export const McpCatalogPackage = Schema.Struct({
+  registryType: Schema.Literals(["npm", "pypi", "oci"]),
+  identifier: TrimmedNonEmptyString,
+  version: Schema.optional(Schema.String),
+  environmentVariables: Schema.Array(McpCatalogInput),
+  packageArguments: Schema.Array(McpCatalogArgument),
+  runtimeArguments: Schema.Array(McpCatalogArgument),
+});
+export type McpCatalogPackage = typeof McpCatalogPackage.Type;
+
+export const McpCatalogEntry = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  title: Schema.optional(Schema.String),
+  description: Schema.optional(Schema.String),
+  version: Schema.optional(Schema.String),
+  websiteUrl: Schema.optional(Schema.String),
+  repositoryUrl: Schema.optional(Schema.String),
+  remotes: Schema.Array(McpCatalogRemote),
+  packages: Schema.Array(McpCatalogPackage),
+});
+export type McpCatalogEntry = typeof McpCatalogEntry.Type;
+
+export const McpSearchCatalogResult = Schema.Struct({
+  entries: Schema.Array(McpCatalogEntry),
+  nextCursor: Schema.optional(Schema.String),
+});
+export type McpSearchCatalogResult = typeof McpSearchCatalogResult.Type;
+
 export const McpComposerPromptArgument = Schema.Struct({
   name: TrimmedNonEmptyString,
   description: Schema.optional(Schema.String),

@@ -154,6 +154,7 @@ export const RPC_METHOD_POLICY = {
   "mcp.completeComposerPrompt": READ,
   "mcp.listComposerResources": READ,
   "mcp.readComposerResource": READ,
+  "mcp.searchCatalog": READ,
   "mcp.reconnectServer": MUTATION_RT,
   "mcp.replaceCommonConfig": MUTATION,
   "mcp.replaceProjectConfig": MUTATION,

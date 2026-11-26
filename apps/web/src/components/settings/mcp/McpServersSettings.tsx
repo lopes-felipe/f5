@@ -60,8 +60,10 @@ import { reconnectMcpServer } from "./mcpActions";
 import {
   createEmptyDraft,
   decodeDraftServer,
+  draftFromCatalog,
   draftFromServer,
   hasAdvancedFields,
+  uniqueMcpServerName,
   rebaseDraft,
   toWritableProjectServers,
   type ServerDraft,
@@ -190,6 +192,16 @@ export function McpServersSettings(props: {
     const empty = createEmptyDraft();
     setDraft(empty);
     setDraftBase(empty);
+    setFormError(null);
+    setIsAdvancedOpen(false);
+  };
+  /** A new, unsaved server from the catalog: the form compares against an empty draft. */
+  const loadCatalogDraft = (next: ServerDraft) => {
+    setEditorEpoch((epoch) => epoch + 1);
+    setEditingServerName(null);
+    setOverriding(null);
+    setDraft(next);
+    setDraftBase(createEmptyDraft());
     setFormError(null);
     setIsAdvancedOpen(false);
   };
@@ -1239,6 +1251,22 @@ export function McpServersSettings(props: {
         title={overriding ? `Override ${overriding}` : "Add MCP server"}
         scopeLabel={scopeLabel}
         form={editor}
+        onCatalogChoose={(choice) => {
+          const name = uniqueMcpServerName(choice.name, activeServers);
+          loadCatalogDraft(draftFromCatalog({ ...choice, name }));
+          setAdding("form");
+          const asks = [
+            ...(choice.secretKeys.length > 0
+              ? [`Store a secret for ${choice.secretKeys.join(", ")}.`]
+              : []),
+            ...(choice.needsInput.length > 0 ? [`Fill in ${choice.needsInput.join(", ")}.`] : []),
+          ];
+          toastManager.add({
+            type: "info",
+            title: `Review ${name} before saving`,
+            description: [...asks, "Nothing runs until you save."].join(" "),
+          });
+        }}
         importProps={{
           scope,
           projectId: selectedProjectId,

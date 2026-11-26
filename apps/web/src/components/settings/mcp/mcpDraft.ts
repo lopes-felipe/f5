@@ -6,7 +6,9 @@ import {
   type McpServerTransportType,
 } from "@t3tools/contracts";
 import { Schema } from "effect";
+import type { McpCatalogDraft } from "@t3tools/shared/mcpCatalog";
 import {
+  mcpServerNameKey,
   normalizeServerName,
   readMcpServerNameProblem,
   trimToUndefined,
@@ -230,6 +232,45 @@ export function draftFromServer(
     oauthResource: server.oauthResource ?? "",
     description: server.description ?? "",
   };
+}
+
+/**
+ * A new draft from a catalog entry. Secret values become secret rows, so the form
+ * asks for a stored secret before it can save.
+ */
+export function draftFromCatalog(choice: McpCatalogDraft): ServerDraft {
+  const { original: _original, ...draft } = draftFromServer(choice.name, choice.server);
+  const secrets = new Set(choice.secretKeys);
+  const rows = (values: Record<string, string> | undefined) =>
+    values && Object.keys(values).some((key) => secrets.has(key))
+      ? JSON.stringify(
+          Object.entries(values).map(([key, value]) =>
+            secrets.has(key) ? { key, value, secret: true } : { key, value },
+          ),
+        )
+      : undefined;
+  const server = choice.server;
+  const env = server.type === "stdio" ? rows(server.env) : undefined;
+  const headers = server.type !== "stdio" ? rows(server.headers) : undefined;
+  return {
+    ...draft,
+    // Lines keep `<placeholder>` arguments readable for editing.
+    ...(server.type === "stdio" && server.args && server.args.every((arg) => !arg.includes("\n"))
+      ? { args: server.args.join("\n"), argsFormat: "lines" as const }
+      : {}),
+    ...(env !== undefined ? { env } : {}),
+    ...(headers !== undefined ? { headers } : {}),
+  };
+}
+
+/** `name`, or `name-2`, `name-3`… when the scope already has it (names compare case-insensitively). */
+export function uniqueMcpServerName(name: string, servers: McpProjectServersConfig): string {
+  const taken = new Set(Object.keys(servers).map(mcpServerNameKey));
+  if (!taken.has(mcpServerNameKey(name))) return name;
+  for (let suffix = 2; ; suffix += 1) {
+    const candidate = `${name.slice(0, 120)}-${suffix}`;
+    if (!taken.has(mcpServerNameKey(candidate))) return candidate;
+  }
 }
 
 /**

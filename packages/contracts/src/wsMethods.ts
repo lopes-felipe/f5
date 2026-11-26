@@ -236,6 +236,7 @@ export const WS_METHODS = {
   mcpCompleteComposerPrompt: "mcp.completeComposerPrompt",
   mcpListComposerResources: "mcp.listComposerResources",
   mcpReadComposerResource: "mcp.readComposerResource",
+  mcpSearchCatalog: "mcp.searchCatalog",
 } as const;
 
 // ── Push Event Channels ──────────────────────────────────────────────

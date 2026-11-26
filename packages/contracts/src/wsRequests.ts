@@ -182,6 +182,7 @@ import {
   McpCompleteComposerPromptRequest,
   McpListComposerResourcesRequest,
   McpReadComposerResourceRequest,
+  McpSearchCatalogRequest,
   McpReconnectServerRequest,
   McpReplaceCommonConfigRequest,
   McpReplaceProjectConfigRequest,
@@ -808,6 +809,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.mcpCompleteComposerPrompt, McpCompleteComposerPromptRequest),
   tagRequestBody(WS_METHODS.mcpListComposerResources, McpListComposerResourcesRequest),
   tagRequestBody(WS_METHODS.mcpReadComposerResource, McpReadComposerResourceRequest),
+  tagRequestBody(WS_METHODS.mcpSearchCatalog, McpSearchCatalogRequest),
 
   // PR Hub methods
   tagRequestBody(PR_HUB_WS_METHODS.listAccounts, Schema.Struct({})),
