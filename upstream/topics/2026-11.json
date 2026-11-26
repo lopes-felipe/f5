@@ -103824,11 +103824,13 @@
     },
     {
       "createdAt": "2026-11-25T11:13:32.025Z",
-      "decidedAt": "2026-11-26T20:46:13.179Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-26T21:20:14.240Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-42286",
-      "status": "port",
+      "reason": "F5 places the browser preview in a docked sidebar or a modal side sheet and has no floating preview over the bottom of the timeline.",
+      "reasonKey": "not-applicable",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "timeline",
