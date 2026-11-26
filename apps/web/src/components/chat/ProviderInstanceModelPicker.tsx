@@ -952,8 +952,11 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
       </PopoverTrigger>
       <PopoverPopup
         align="start"
+        // Docked, the list always opens above the trigger and shrinks to the room there
+        // (`--available-height`), so it never covers the selected model. Shifting on the
+        // side axis would slide it down over the trigger in short windows.
         {...(props.docked
-          ? { side: "top" as const, collisionAvoidance: { side: "shift", align: "shift" } as const }
+          ? { side: "top" as const, collisionAvoidance: { side: "none", align: "shift" } as const }
           : {})}
         className="border-0 bg-transparent p-0 shadow-none before:hidden [--viewport-inline-padding:0] *:data-[slot=popover-viewport]:p-0"
       >
