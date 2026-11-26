@@ -1,6 +1,7 @@
 import "../index.css";
 
 import { ThreadId, type TerminalEvent, type TerminalSessionSnapshot } from "@t3tools/contracts";
+import { terminalSequenceStateAfter } from "@t3tools/shared/terminalReplay";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { page } from "vitest/browser";
@@ -187,14 +188,16 @@ describe("ThreadTerminalDrawer height", () => {
   });
 });
 
-describe("ThreadTerminalDrawer selection actions", () => {
+describe("ThreadTerminalDrawer output and selection", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     api.terminal.snapshot.mockResolvedValue(null);
     api.contextMenu.show.mockReset().mockResolvedValue(null);
   });
 
-  async function mountSelection() {
+  async function mountRunningTerminal(
+    history: Pick<TerminalSessionSnapshot, "history" | "historySequenceState">,
+  ) {
     const snapshot: TerminalSessionSnapshot = {
       threadId: "thread-drawer-test",
       terminalId: "default",
@@ -204,7 +207,7 @@ describe("ThreadTerminalDrawer selection actions", () => {
       cwd: "/tmp",
       status: "running",
       pid: 123,
-      history: "",
+      ...history,
       exitCode: null,
       exitSignal: null,
       updatedAt: "2026-11-06T00:00:00.000Z",
@@ -236,13 +239,36 @@ describe("ThreadTerminalDrawer selection actions", () => {
         data,
         createdAt: snapshot.updatedAt,
       });
+    return { ...mounted, active, output, parsed };
+  }
+
+  async function mountSelection() {
+    const mounted = await mountRunningTerminal({ history: "" });
+    const { active, output, parsed } = mounted;
     output("\x1b[?1049h\x1b[H" + Array.from({ length: 10 }, (_, i) => "row " + i).join("\r\n"));
     await parsed();
     active.select(0, 6, 5);
     expect(active.getSelection()).toBe("row 6");
     const screen = active.element!.querySelector<HTMLElement>(".xterm-screen")!;
-    return { ...mounted, active, screen, output, parsed };
+    return { ...mounted, screen };
   }
+
+  it("preserves the next line when live output finishes an omitted control string", async () => {
+    const pending = "\x1bPz";
+    const mounted = await mountRunningTerminal({
+      history: "",
+      historySequenceState: terminalSequenceStateAfter(0, pending, 0, pending.length),
+    });
+    try {
+      mounted.output("omitted payload");
+      mounted.output("\u0085ready");
+      await mounted.parsed();
+      expect(mounted.active.buffer.active.getLine(0)?.translateToString(true)).toBe("");
+      expect(mounted.active.buffer.active.getLine(1)?.translateToString(true)).toBe("ready");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
 
   it("opens the delayed selection menu despite intervening output and uses shifted lines", async () => {
     let choose: (action: string) => void = () => {};

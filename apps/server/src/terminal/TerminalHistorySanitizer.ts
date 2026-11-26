@@ -7,6 +7,10 @@ export class TerminalHistorySanitizer {
   private stripString: boolean | null = null;
   private oversizedCsi = false;
 
+  get hasPendingStringEscape(): boolean {
+    return this.stringEsc;
+  }
+
   clear(): void {
     this.mode = "text";
     this.pending = "";
