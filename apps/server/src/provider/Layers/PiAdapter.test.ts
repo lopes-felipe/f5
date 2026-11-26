@@ -567,7 +567,7 @@ it("refuses read-only workflow sessions in a workspace with its own Pi extension
             expect(turn._tag).toBe("Failure");
             if (turn._tag === "Failure")
               expect(turn.failure.message).toContain(
-                `Pi can't run read-only workflow stages here: ${extensions} holds Pi extensions`,
+                `Pi can't run read-only workflow stages here: ${join(extensions, "tool.ts")} is a Pi extension`,
               );
             yield* adapter.stopSession(threadId);
             const start = yield* adapter
@@ -583,6 +583,36 @@ it("refuses read-only workflow sessions in a workspace with its own Pi extension
         ),
       );
       expect((await trace()).filter((record) => record.type === "prompt")).toHaveLength(0);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  }));
+
+it("keeps plan-mode chats working in a workspace with its own Pi extensions", async () =>
+  fixture(async ({ settings, options }) => {
+    const workspace = await realpath(await mkdtemp(join(tmpdir(), "f5-pi-plan-")));
+    try {
+      await mkdir(join(workspace, ".pi", "extensions"), { recursive: true });
+      await writeFile(join(workspace, ".pi", "extensions", "tool.ts"), "export default () => {}");
+      await run(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const adapter = yield* makePiAdapter(settings, options);
+            yield* adapter.startSession({
+              threadId,
+              cwd: workspace,
+              runtimeMode: "full-access",
+              interactionMode: "plan",
+            });
+            // Read-only, but not a workflow stage: the extension check doesn't apply.
+            const turn = yield* adapter
+              .sendTurn({ threadId, input: "Plan this", interactionMode: "plan" })
+              .pipe(Effect.result);
+            expect(turn._tag).toBe("Success");
+            yield* adapter.stopSession(threadId);
+          }),
+        ),
+      );
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }

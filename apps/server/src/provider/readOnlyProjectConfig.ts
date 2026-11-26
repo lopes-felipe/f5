@@ -15,7 +15,7 @@ import * as nodePath from "node:path";
 import { Effect } from "effect";
 
 import { ProviderAdapterValidationError } from "./Errors.ts";
-import { classifyReadOnlyShellCommand } from "./readOnlyWorkflowShell.ts";
+import { classifyReadOnlyShellCommand, isPlainReadProgram } from "./readOnlyWorkflowShell.ts";
 
 export interface ReadOnlyProjectConfigConflict {
   readonly file: string;
@@ -79,18 +79,38 @@ export async function checkProjectJson(
   return reason === undefined ? undefined : { file, reason };
 }
 
+/** Only a path that isn't there is absent; any other lookup error fails the check. */
+const isAbsent = (error: unknown) => {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return code === "ENOENT" || code === "ENOTDIR";
+};
+
 export async function pathExists(path: string): Promise<boolean> {
   return nodeFs.lstat(path).then(
     () => true,
-    () => false,
+    (error: unknown) => {
+      if (isAbsent(error)) return false;
+      throw error;
+    },
   );
 }
 
 export async function isDirectory(path: string): Promise<boolean> {
   return nodeFs.stat(path).then(
     (stats) => stats.isDirectory(),
-    () => false,
+    (error: unknown) => {
+      if (isAbsent(error)) return false;
+      throw error;
+    },
   );
+}
+
+/** A folder's entries, or none when it isn't there; any other error fails the check. */
+export async function readDirectoryIfPresent(path: string): Promise<ReadonlyArray<string>> {
+  return nodeFs.readdir(path).catch((error: unknown) => {
+    if (isAbsent(error)) return [];
+    throw error;
+  });
 }
 
 export const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -137,14 +157,22 @@ export async function projectDirectories(
   };
 }
 
-/** Whether git tracks `file` in the repository at `root`; false when git can't say. */
+/**
+ * Whether git tracks `file` in the repository at `root`. A git that can't answer (missing, timed
+ * out, a "dubious ownership" checkout) rejects, so the check fails closed instead of skipping a
+ * file that may be committed.
+ */
 export function isGitTracked(root: string, file: string): Promise<boolean> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     execFile(
       "git",
-      ["-C", root, "ls-files", "--error-unmatch", "--", nodePath.relative(root, file)],
+      ["-C", root, "ls-files", "-z", "--", nodePath.relative(root, file)],
       { timeout: 10_000, windowsHide: true },
-      (error) => resolve(!error),
+      (error, stdout) => {
+        if (error)
+          reject(new Error(`git couldn't tell whether ${file} is committed (${error.message})`));
+        else resolve(String(stdout).length > 0);
+      },
     );
   });
 }
@@ -195,8 +223,11 @@ const CLAUDE_WRITE_TOOLS = /^(?:Edit|Write|MultiEdit|NotebookEdit)(?:\(|$)/;
 
 /**
  * Whether a Claude `permissions.allow` rule would let a read-only stage write or run a command
- * F5's read-only allowlist wouldn't. Bash rules are checked with that allowlist after dropping a
- * trailing `*` or `:*`; any other wildcard can't be proven read-only.
+ * F5's read-only allowlist wouldn't. An exact Bash rule is checked with that allowlist. A rule
+ * ending in `*` or `:*` matches the prefix followed by any arguments, so it passes only when the
+ * prefix is a single program F5 accepts with any arguments (`cat:*`, not `git log:*` or
+ * `find:*`, whose arguments can write or run commands). Any other wildcard can't be proven
+ * read-only.
  */
 export function claudeAllowRuleBypassesReadOnly(rule: string): boolean {
   const trimmed = rule.trim();
@@ -204,74 +235,159 @@ export function claudeAllowRuleBypassesReadOnly(rule: string): boolean {
   if (trimmed === "Bash") return true;
   const bash = /^Bash\((.*)\)$/s.exec(trimmed);
   if (!bash) return false;
-  const pattern = bash[1]!.replace(/:?\*\s*$/, "").trim();
-  if (pattern === "" || pattern.includes("*")) return true;
-  return !classifyReadOnlyShellCommand(pattern).readOnly;
+  const body = bash[1]!.trim();
+  const prefix = /^(.*?)(?::\*|\s*\*)$/s.exec(body)?.[1]?.trim();
+  if (prefix !== undefined) return !/^[\w.[-]+$/.test(prefix) || !isPlainReadProgram(prefix);
+  if (body === "" || body.includes("*")) return true;
+  return !classifyReadOnlyShellCommand(body).readOnly;
+}
+
+/**
+ * Settings that make Claude Code run a command of the file's choosing, outside its tool
+ * permissions and hooks: credential and telemetry helpers, and the status line.
+ */
+const CLAUDE_COMMAND_SETTINGS = [
+  "apiKeyHelper",
+  "awsAuthRefresh",
+  "awsCredentialExport",
+  "otelHeadersHelper",
+  "statusLine",
+] as const;
+
+/**
+ * Environment variables a project may set for a read-only stage. Anything else could change what
+ * an approved command runs (`PATH`, `GIT_EXTERNAL_DIFF`, `PAGER`, `CLAUDE_CODE_SHELL_PREFIX`) or
+ * where Claude sends the code (`ANTHROPIC_BASE_URL`), so it is refused.
+ */
+const CLAUDE_SAFE_PROJECT_ENV = new Set([
+  "MAX_THINKING_TOKENS",
+  "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+  "MAX_MCP_OUTPUT_TOKENS",
+  "BASH_DEFAULT_TIMEOUT_MS",
+  "BASH_MAX_TIMEOUT_MS",
+  "BASH_MAX_OUTPUT_LENGTH",
+  "DISABLE_TELEMETRY",
+  "DISABLE_ERROR_REPORTING",
+  "DISABLE_AUTOUPDATER",
+  "DISABLE_NON_ESSENTIAL_MODEL_CALLS",
+  "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+]);
+
+/** Permission modes that let Claude act without asking. */
+const CLAUDE_PERMISSIVE_MODES = new Set(["acceptEdits", "bypassPermissions", "dontAsk", "auto"]);
+
+/**
+ * Why committed Claude settings would let a read-only stage run something F5 doesn't check, or
+ * undefined. Command settings, environment and the default mode count in every folder; allow rules
+ * only where Claude Code trusts the folder (`trusted`), since it ignores them elsewhere (gate L1).
+ */
+export function claudeProjectSettingsConflict(
+  config: unknown,
+  trusted: boolean,
+): string | undefined {
+  if (!isRecord(config)) return undefined;
+  const command = CLAUDE_COMMAND_SETTINGS.find((key) => config[key] !== undefined);
+  if (command) return `sets \`${command}\`, a command Claude Code runs without asking F5`;
+  if (config.env !== undefined) {
+    if (!isRecord(config.env)) return "sets `env` in a form F5 can't check";
+    const unsafe = Object.keys(config.env).find((key) => !CLAUDE_SAFE_PROJECT_ENV.has(key));
+    if (unsafe)
+      return `sets the environment variable \`${unsafe}\`, which can change what commands F5 approves actually run`;
+  }
+  const permissions = isRecord(config.permissions) ? config.permissions : undefined;
+  if (
+    typeof permissions?.defaultMode === "string" &&
+    CLAUDE_PERMISSIVE_MODES.has(permissions.defaultMode)
+  )
+    return `sets \`permissions.defaultMode\` to \`${permissions.defaultMode}\`, which lets Claude act without asking F5`;
+  if (!trusted || !Array.isArray(permissions?.allow)) return undefined;
+  const rule = permissions.allow.find(
+    (entry): entry is string => typeof entry === "string" && claudeAllowRuleBypassesReadOnly(entry),
+  );
+  return rule === undefined
+    ? undefined
+    : `allows \`${rule}\`, which Claude would run without asking F5 in this trusted folder`;
 }
 
 /**
  * Whether Claude Code trusts `cwd`: its global config (`$CLAUDE_CONFIG_DIR/.claude.json`, else
  * `~/.claude.json`) accepted the trust dialog for it or a parent. Claude Code ignores a project's
- * allow rules in a folder it doesn't trust.
+ * allow rules in a folder it doesn't trust. A missing config means nothing is trusted; one that
+ * exists but can't be read or parsed rejects, so the check fails closed. The folder is looked up
+ * as given and by its real path, with native and forward-slash separators.
  */
 export async function claudeWorkspaceTrusted(
   cwd: string,
   options: { readonly configFile: string },
 ): Promise<boolean> {
+  let text: string;
+  try {
+    text = await nodeFs.readFile(options.configFile, "utf8");
+  } catch (error) {
+    if (isAbsent(error)) return false;
+    throw error;
+  }
   let projects: unknown;
   try {
-    projects = (
-      JSON.parse(await nodeFs.readFile(options.configFile, "utf8")) as { projects?: unknown }
-    ).projects;
+    projects = (JSON.parse(text) as { projects?: unknown } | null)?.projects;
   } catch {
-    return false;
+    throw new Error(
+      `${options.configFile} isn't valid JSON, so F5 can't tell which folders Claude trusts`,
+    );
   }
   if (!isRecord(projects)) return false;
-  for (let directory = nodePath.resolve(cwd); ; ) {
-    const entry = projects[directory];
-    if (isRecord(entry) && entry.hasTrustDialogAccepted === true) return true;
-    const parent = nodePath.dirname(directory);
-    if (parent === directory) return false;
-    directory = parent;
+  const starts = new Set([nodePath.resolve(cwd)]);
+  starts.add(await nodeFs.realpath(cwd).catch(() => nodePath.resolve(cwd)));
+  for (const start of starts) {
+    for (let directory = start; ; ) {
+      for (const key of new Set([directory, directory.replaceAll("\\", "/")])) {
+        const entry = projects[key];
+        if (isRecord(entry) && entry.hasTrustDialogAccepted === true) return true;
+      }
+      const parent = nodePath.dirname(directory);
+      if (parent === directory) break;
+      directory = parent;
+    }
   }
+  return false;
 }
 
-export function claudeGlobalConfigFile(environment: NodeJS.ProcessEnv, homeDir: string): string {
-  const configDir = environment.CLAUDE_CONFIG_DIR?.trim();
+/**
+ * Claude Code's global config for a stage in `cwd`: `$CLAUDE_CONFIG_DIR/.claude.json`, resolved
+ * against `cwd` as the child resolves it (`resolveClaudeConfigDir`), else `~/.claude.json`.
+ */
+export function claudeGlobalConfigFile(
+  environment: NodeJS.ProcessEnv,
+  homeDir: string,
+  cwd: string,
+): string {
+  const configDir = environment.CLAUDE_CONFIG_DIR;
   return configDir
-    ? nodePath.join(configDir, ".claude.json")
+    ? nodePath.join(nodePath.resolve(cwd, configDir.normalize("NFC")), ".claude.json")
     : nodePath.join(homeDir, ".claude.json");
 }
 
 /**
  * The first committed Claude settings file that would let a read-only stage act without F5's
- * checks, or undefined. Only a workspace Claude Code trusts applies a project's allow rules, and
- * only files git tracks come from the repository: an untracked `settings.local.json` holds your
- * own approvals. Project hooks are switched off separately (`disableAllHooks`).
+ * checks, or undefined (`claudeProjectSettingsConflict`). In a repository only files git tracks
+ * come from it: an untracked `settings.local.json` holds your own approvals. Outside one (an
+ * exported tree) every settings file is treated as part of the code under review. Project hooks
+ * are switched off separately (`disableAllHooks`).
  */
 export async function findClaudeProjectConfigConflict(
   cwd: string,
   options: { readonly homeDir: string; readonly configFile: string },
 ): Promise<ReadOnlyProjectConfigConflict | undefined> {
-  if (!(await claudeWorkspaceTrusted(cwd, { configFile: options.configFile }))) return undefined;
+  const trusted = await claudeWorkspaceTrusted(cwd, { configFile: options.configFile });
   const { project, repositoryRoot } = await projectDirectories(cwd, { homeDir: options.homeDir });
-  if (!repositoryRoot) return undefined;
   for (const directory of project) {
     for (const name of ["settings.json", "settings.local.json"]) {
       const file = nodePath.join(directory, ".claude", name);
-      if (!(await pathExists(file)) || !(await isGitTracked(repositoryRoot, file))) continue;
-      const conflict = await checkProjectJson(file, "Claude", (config) => {
-        const allow =
-          isRecord(config) && isRecord(config.permissions) ? config.permissions.allow : undefined;
-        if (!Array.isArray(allow)) return undefined;
-        const rule = allow.find(
-          (entry): entry is string =>
-            typeof entry === "string" && claudeAllowRuleBypassesReadOnly(entry),
-        );
-        return rule === undefined
-          ? undefined
-          : `allows \`${rule}\`, which Claude would run without asking F5 in this trusted folder`;
-      });
+      if (!(await pathExists(file))) continue;
+      if (repositoryRoot && !(await isGitTracked(repositoryRoot, file))) continue;
+      const conflict = await checkProjectJson(file, "Claude", (config) =>
+        claudeProjectSettingsConflict(config, trusted),
+      );
       if (conflict) return conflict;
     }
   }
@@ -279,6 +395,34 @@ export async function findClaudeProjectConfigConflict(
 }
 
 // ── OpenCode (external servers only; F5's own servers ignore project config) ─────────
+
+/**
+ * Why a project `opencode.json` would make an external OpenCode server run a program of the
+ * repository's choosing, or undefined: plugins, local MCP servers (started when the workspace is
+ * opened, whatever the tool permissions), and LSP servers or formatters with their own command.
+ */
+export function openCodeProjectConfigConflict(config: unknown): string | undefined {
+  if (!isRecord(config)) return undefined;
+  if (hasEntries(config.plugin))
+    return "loads OpenCode plugins, which run code when OpenCode starts";
+  if (isRecord(config.mcp)) {
+    const local = Object.entries(config.mcp).find(
+      ([, server]) => isRecord(server) && server.type !== "remote" && server.enabled !== false,
+    );
+    if (local)
+      return `defines the local MCP server \`${local[0]}\`, which OpenCode starts with the workspace`;
+  }
+  for (const key of ["lsp", "formatter"] as const) {
+    const section = config[key];
+    if (!isRecord(section)) continue;
+    const custom = Object.entries(section).find(
+      ([, entry]) => isRecord(entry) && entry.command !== undefined && entry.disabled !== true,
+    );
+    if (custom)
+      return `defines the ${key === "lsp" ? "LSP server" : "formatter"} \`${custom[0]}\` with its own command, which OpenCode runs on files it reads or edits`;
+  }
+  return undefined;
+}
 
 export async function findOpenCodeProjectPluginConflict(
   cwd: string,
@@ -288,7 +432,7 @@ export async function findOpenCodeProjectPluginConflict(
   for (const directory of project) {
     for (const folder of ["plugin", "plugins"]) {
       const pluginDir = nodePath.join(directory, ".opencode", folder);
-      const entries = await nodeFs.readdir(pluginDir).catch(() => [] as string[]);
+      const entries = await readDirectoryIfPresent(pluginDir);
       const plugin = entries.find((name) => /\.(?:ts|js)$/.test(name));
       if (plugin)
         return {
@@ -305,10 +449,7 @@ export async function findOpenCodeProjectPluginConflict(
       const conflict = await checkProjectJson(
         nodePath.join(directory, name),
         "OpenCode",
-        (config) =>
-          isRecord(config) && hasEntries(config.plugin)
-            ? "loads OpenCode plugins, which run code when OpenCode starts"
-            : undefined,
+        openCodeProjectConfigConflict,
       );
       if (conflict) return conflict;
     }
@@ -318,15 +459,31 @@ export async function findOpenCodeProjectPluginConflict(
 
 // ── Pi ─────────────────────────────────────────────────────────────────────
 
+/**
+ * The first entry of a `.pi/extensions` folder Pi would load: a `.ts` or `.js` file, or a folder
+ * with an `index.ts`, `index.js` or `package.json` (whose `pi` manifest can name entry points).
+ * A README or `.gitkeep` loads nothing.
+ */
+async function firstPiExtension(extensions: string): Promise<string | undefined> {
+  for (const name of [...(await readDirectoryIfPresent(extensions))].sort()) {
+    const entry = nodePath.join(extensions, name);
+    if (/\.(?:ts|js)$/.test(name) && !(await isDirectory(entry))) return entry;
+    if (!(await isDirectory(entry))) continue;
+    for (const marker of ["package.json", "index.ts", "index.js"])
+      if (await pathExists(nodePath.join(entry, marker))) return entry;
+  }
+  return undefined;
+}
+
 export async function findPiProjectExtensionConflict(
   cwd: string,
   options: { readonly homeDir?: string } = {},
 ): Promise<ReadOnlyProjectConfigConflict | undefined> {
   const { project } = await projectDirectories(cwd, options);
   for (const directory of project) {
-    const extensions = nodePath.join(directory, ".pi", "extensions");
-    if ((await nodeFs.readdir(extensions).catch(() => [] as string[])).length > 0)
-      return { file: extensions, reason: "holds Pi extensions, which run code when Pi starts" };
+    const extension = await firstPiExtension(nodePath.join(directory, ".pi", "extensions"));
+    if (extension)
+      return { file: extension, reason: "is a Pi extension, which runs code when Pi starts" };
     const conflict = await checkProjectJson(
       nodePath.join(directory, ".pi", "settings.json"),
       "Pi",

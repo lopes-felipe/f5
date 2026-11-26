@@ -7629,8 +7629,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       );
 
     /**
-     * Refuses a read-only stage in a folder Claude Code trusts whose committed settings allow
-     * writes or commands past F5's read-only checks (readOnlyProjectConfig.ts). Project hooks are
+     * Refuses a read-only stage whose committed Claude settings would run commands, or allow
+     * writes or commands, past F5's read-only checks (readOnlyProjectConfig.ts). Project hooks are
      * switched off with `disableAllHooks` instead.
      */
     const assertClaudeReadOnlyWorkspace = (
@@ -7639,14 +7639,15 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       operation: "startSession" | "sendTurn",
     ) => {
       const homeDir = environment.HOME?.trim() || NodeOS.homedir();
+      const stageCwd = cwd ?? process.cwd();
       return assertReadOnlyProjectConfig({
         provider: PROVIDER,
         providerName: "Claude",
         operation,
         find: () =>
-          findClaudeProjectConfigConflict(cwd ?? process.cwd(), {
+          findClaudeProjectConfigConflict(stageCwd, {
             homeDir,
-            configFile: claudeGlobalConfigFile(environment, homeDir),
+            configFile: claudeGlobalConfigFile(environment, homeDir, stageCwd),
           }),
       });
     };
@@ -10045,17 +10046,22 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
     const sendTurn: ClaudeAdapterShape["sendTurn"] = (input) =>
       Effect.gen(function* () {
         // Committed settings the workspace gained since the stage started would apply from now on.
-        const readOnlyContext = sessions.get(input.threadId);
-        if (readOnlyContext?.workflowExecutionProfile)
-          yield* assertClaudeReadOnlyWorkspace(
-            readOnlyContext.startInput.cwd,
-            buildClaudeQueryEnv(
-              readOnlyContext.startInput.providerOptions?.claudeAgent,
-              options?.processEnvironment ?? process.env,
-            ),
-            "sendTurn",
-          );
-        const queued = yield* withThreadLock(input.threadId, queueTurnUnlocked(input)).pipe(
+        // Checked under the thread lock, which `startSession` also takes, so the session checked
+        // is the one the turn is queued into.
+        const checkThenQueue = Effect.gen(function* () {
+          const readOnlyContext = sessions.get(input.threadId);
+          if (readOnlyContext?.workflowExecutionProfile)
+            yield* assertClaudeReadOnlyWorkspace(
+              readOnlyContext.startInput.cwd,
+              buildClaudeQueryEnv(
+                readOnlyContext.startInput.providerOptions?.claudeAgent,
+                options?.processEnvironment ?? process.env,
+              ),
+              "sendTurn",
+            );
+          return yield* queueTurnUnlocked(input);
+        });
+        const queued = yield* withThreadLock(input.threadId, checkThenQueue).pipe(
           Effect.catchIf(
             (error): error is ClaudeQueryEndedBeforePrompt =>
               error instanceof ClaudeQueryEndedBeforePrompt,

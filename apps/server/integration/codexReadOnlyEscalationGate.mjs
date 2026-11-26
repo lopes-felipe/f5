@@ -138,9 +138,12 @@ const withDeadline = (promise, ms, label) => {
   });
   return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
 };
+let exited;
 const request = (method, params, ms = 60_000) =>
   withDeadline(
     new Promise((resolve, reject) => {
+      // After app-server is gone, a new request fails at once too.
+      if (exited) return reject(new Error(`${method}: app-server exited (${exited})`));
       const id = nextId++;
       pending.set(id, { resolve, reject, method });
       send({ jsonrpc: "2.0", id, method, ...(params === undefined ? {} : { params }) });
@@ -150,6 +153,7 @@ const request = (method, params, ms = 60_000) =>
   );
 // A request app-server will never answer fails at once instead of waiting for its deadline.
 child.on("exit", (code, signal) => {
+  exited = String(signal ?? code);
   for (const [id, entry] of pending) {
     pending.delete(id);
     entry.reject(new Error(`${entry.method}: app-server exited (${signal ?? code})`));
@@ -175,8 +179,8 @@ createInterface({ input: child.stdout }).on("line", (line) => {
     return;
   }
   if (message.id !== undefined) {
-    serverRequests.push({ method: message.method, params: message.params });
     const decision = decide(message.method, message.params ?? {});
+    serverRequests.push({ method: message.method, params: message.params, decision });
     send({ jsonrpc: "2.0", id: message.id, result: { decision } });
     return;
   }
@@ -245,13 +249,32 @@ const succeeded = (items, command, output) =>
       item.exitCode === 0 &&
       String(item.aggregatedOutput ?? "").includes(output),
   );
+// An approval request for exactly `command` was accepted, and the item it approved (by item id)
+// is that command, succeeded and printed `output`.
+const acceptedAndRan = (run, command, output) =>
+  run.requests.some(
+    (entry) =>
+      entry.method === "item/commandExecution/requestApproval" &&
+      entry.decision === "accept" &&
+      isExactly([command], commandText(entry.params)) &&
+      typeof entry.params?.itemId === "string" &&
+      succeeded(
+        run.items.filter((item) => item.id === entry.params.itemId),
+        command,
+        output,
+      ),
+  );
 const commandItems = (items) => items.filter((item) => item.type === "commandExecution");
 const replies = (items) =>
   items
     .filter((item) => item.type === "agentMessage")
     .map((item) => String(item.text ?? "").slice(0, 300));
 const describe = (requests) =>
-  requests.map((entry) => ({ method: entry.method, params: entry.params }));
+  requests.map((entry) => ({
+    method: entry.method,
+    decision: entry.decision,
+    params: entry.params,
+  }));
 
 try {
   await request(
@@ -301,11 +324,11 @@ try {
     // Each command must have asked, been accepted and returned its real output.
     const head = {
       asked: askedFor(g3.requests, "git rev-parse HEAD"),
-      ran: succeeded(g3.items, "git rev-parse HEAD", headSha),
+      ran: acceptedAndRan(g3, "git rev-parse HEAD", headSha),
     };
     const ls = {
       asked: askedFor(g3.requests, "ls"),
-      ran: succeeded(g3.items, "ls", "notes.txt"),
+      ran: acceptedAndRan(g3, "ls", "notes.txt"),
     };
     const askedG3 = head.asked || ls.asked;
     record(
@@ -324,7 +347,7 @@ try {
     );
     const asked = askedFor(g3b.requests, "stat notes.txt");
     // A diagnostic naming the file from a failed `stat` isn't output.
-    const output = succeeded(g3b.items, "stat notes.txt", "notes.txt");
+    const output = acceptedAndRan(g3b, "stat notes.txt", "notes.txt");
     record(
       "G3b",
       asked && output ? "PASS" : asked ? "INCONCLUSIVE" : "FAIL",

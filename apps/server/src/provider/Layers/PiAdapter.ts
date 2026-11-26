@@ -114,6 +114,8 @@ interface PiContext {
   readonly tools: Map<string, { name: string; args: unknown; done: boolean }>;
   readonly barriers: Map<string, Deferred.Deferred<unknown, PiRpcError>>;
   readonly readOnly: boolean;
+  /** A workflow stage, not just a plan-mode chat: only stages refuse repository extensions. */
+  readonly workflowStage: boolean;
   wake: PiNativeWake | null;
   wakeTimer: Fiber.Fiber<void> | undefined;
   lastTurnId: TurnId | undefined;
@@ -1073,6 +1075,7 @@ export const makePiAdapter = (settings: PiSettings, options: PiAdapterOptions) =
                     readOnly:
                       input.interactionMode === "plan" ||
                       input.workflowExecutionProfile !== undefined,
+                    workflowStage: input.workflowExecutionProfile !== undefined,
                     activeCommandId: undefined,
                     lastCommandId: undefined,
                     continuationEligible: false,
@@ -1224,7 +1227,12 @@ export const makePiAdapter = (settings: PiSettings, options: PiAdapterOptions) =
                   "Restart the Pi session before changing its read-only policy.",
                 );
               // Extensions the workspace gained since the stage started would load on a restart.
-              if (ctx.readOnly && ctx.session.cwd)
+              // Plan-mode chats are read-only too, but only workflow stages refuse extensions, as
+              // at start; a stage's turn counts even when it omits the profile.
+              if (
+                (ctx.workflowStage || input.workflowExecutionProfile !== undefined) &&
+                ctx.session.cwd
+              )
                 yield* assertPiReadOnlyWorkspace(ctx.session.cwd, "sendTurn");
               yield* applySelection(ctx, input);
               const attachments = input.resolvedAttachments ?? [];

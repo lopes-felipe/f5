@@ -480,7 +480,10 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         provider: PROVIDER,
         providerName: providerLabel,
         operation,
-        find: () => findAntigravityProjectHooksConflict(cwd, { homeDir: NodeOs.homedir() }),
+        find: () =>
+          findAntigravityProjectHooksConflict(cwd, {
+            homeDir: (options?.environment ?? process.env).HOME?.trim() || NodeOs.homedir(),
+          }),
       });
     /** Unavailable models and modes fail as validation errors before anything is sent. */
     const antigravityErrorMapper =
