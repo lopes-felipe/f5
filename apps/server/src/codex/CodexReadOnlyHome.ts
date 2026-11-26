@@ -2,7 +2,7 @@
  * Keeps Codex's execution-policy rules from letting commands past F5 in read-only workflow stages.
  *
  * Codex runs a command that matches an `allow` rule in a `.rules` file outside its sandbox and
- * without asking anyone (docs/reviews/cursor-live-gates.md, "Codex read-only escalation", G4
+ * without asking anyone (docs/reviews/read-only-live-gates.md, "Codex read-only escalation", G4
  * control). It loads rules from `$CODEX_HOME/rules` and from a project's `.codex/rules`, so either
  * would bypass F5's read-only policy in every enforcement mode.
  *
@@ -24,6 +24,10 @@ import {
   hasKnownFileIdentity,
   normalizeWindowsLinkPath,
 } from "../provider/Drivers/CodexHomeLayout.ts";
+import {
+  projectDirectories,
+  type ReadOnlyProjectConfigConflict,
+} from "../provider/readOnlyProjectConfig.ts";
 
 /** Entries of the instance's home a read-only stage never sees. */
 const EXCLUDED_ENTRY_NAMES: ReadonlySet<string> = new Set(["rules"]);
@@ -194,14 +198,7 @@ export async function materializeCodexReadOnlyHome(input: {
   }
 }
 
-export interface CodexProjectRulesConflict {
-  readonly file: string;
-  readonly reason: string;
-}
-
-async function exists(path: string): Promise<boolean> {
-  return (await lstatOrUndefined(path)) !== undefined;
-}
+export type CodexProjectRulesConflict = ReadOnlyProjectConfigConflict;
 
 /**
  * The first project rules file that would apply in `cwd`, or undefined. Codex reads `.codex/`
@@ -214,23 +211,8 @@ export async function findCodexProjectRulesConflict(
   cwd: string,
   options: { readonly homeDir?: string } = {},
 ): Promise<CodexProjectRulesConflict | undefined> {
-  const home = options.homeDir ? nodePath.resolve(options.homeDir) : undefined;
-  const ancestors: string[] = [];
-  for (let directory = nodePath.resolve(cwd); ; ) {
-    ancestors.push(directory);
-    const parent = nodePath.dirname(directory);
-    if (parent === directory) break;
-    directory = parent;
-  }
-  let repositoryRoot = 0;
-  for (const [index, directory] of ancestors.entries()) {
-    if (await exists(nodePath.join(directory, ".git"))) {
-      repositoryRoot = index;
-      break;
-    }
-  }
-  for (const directory of ancestors.slice(0, repositoryRoot + 1)) {
-    if (directory === home) continue;
+  const { project } = await projectDirectories(cwd, options);
+  for (const directory of project) {
     const rulesDir = nodePath.join(directory, ".codex", "rules");
     let entries: ReadonlyArray<string>;
     try {

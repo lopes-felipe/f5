@@ -155,17 +155,8 @@ shows the template, cost and per-step context.
     `unrestricted` or `auto-review` approval mode, and any other CLI setting besides display,
     model and account details. Your sign-in, rules, skills and MCP servers (read from your home
     folder) still load. F5 refuses every MCP call except its own read-only tools.
-  - **Repository config:** F5 can't override a repository's own Cursor files, so a read-only
-    Cursor stage won't start, and names the file, when the repository has:
-    - a `.cursor/cli.json` that sets anything but deny rules, such as an allowlist or a looser
-      approval mode;
-    - a `.cursor/hooks.json` with hooks, which run shell commands;
-    - a `.cursor/mcp.json` with servers, which Cursor can start without asking F5;
-    - any of these files that F5 can't read as strict JSON.
-
-    F5 checks again before every turn. A file another process adds mid-turn isn't caught until
-    the next turn.
-
+  - **Repository config:** see [repository config in read-only stages](#repository-config-in-read-only-stages)
+    below.
   - **Session history:** read-only Cursor sessions are recorded in F5's state folder
     (`provider-homes/cursor-readonly`), not `~/.cursor`, and included in backups of that folder.
   - **Team allowlists:** your team admin's allowlist is applied by Cursor's servers. F5 can't turn
@@ -174,6 +165,29 @@ shows the template, cost and per-step context.
 - Fetch stays allowed in read-only stages on Cursor and Antigravity, as for Codex and Claude plan
   mode. Text planted in the code under review could get the model to put repository content into
   a URL it fetches, so don't run workflows on code you don't trust with secrets in the workspace.
+
+### Repository config in read-only stages
+
+The code under review is untrusted, and a repository's own provider files can run commands, or
+allow them without asking F5. Read-only stages turn those files off where the provider allows it,
+and otherwise refuse to start, naming the file. F5 looks in the stage's folder and its parents up
+to the repository root (only the stage's folder outside a repository), never in your home folder,
+and checks again before every turn. A file another process adds mid-turn isn't caught until the
+next turn. Normal threads are unaffected.
+
+| Provider    | Turned off                                                                                   | Refused when the repository has                                                                                                                                                                                            |
+| ----------- | -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Claude      | All hooks, your own included; MCP servers other than F5's (`.mcp.json` and your Claude ones) | In a folder Claude Code trusts, a committed `.claude/settings.json` or `settings.local.json` whose `permissions.allow` lets Claude write, run a command outside F5's read-only list, or call an MCP tool                   |
+| Codex       | Your `rules` folder (see above)                                                              | A non-empty `.codex/rules/*.rules` file                                                                                                                                                                                    |
+| Cursor      | Your allowlist and approval mode (see above)                                                 | A `.cursor/cli.json` that sets anything but deny rules; a `.cursor/hooks.json` with hooks; a `.cursor/mcp.json` with servers                                                                                               |
+| OpenCode    | The repository's whole OpenCode config, `AGENTS.md` included, on the server F5 starts        | Only with an external server (**Server URL** set), which loaded it already: a plugin in `.opencode/plugin/` or `.opencode/plugins/`, or a `plugin` entry in `opencode.json`, `opencode.jsonc` or `.opencode/opencode.json` |
+| Pi          | Nothing                                                                                      | Files in `.pi/extensions/`, or `packages` or `extensions` in `.pi/settings.json`                                                                                                                                           |
+| Antigravity | Nothing                                                                                      | A `.agents/hooks.json` (or `_agents/hooks.json`) that defines hooks                                                                                                                                                        |
+
+Any of these JSON files that F5 can't read as strict JSON also blocks the stage. Claude Code
+ignores a repository's allow rules in a folder it doesn't trust, so those are checked only in
+trusted folders. Claude's project instructions (`CLAUDE.md`) and Antigravity's rules still load,
+since they only add instructions.
 
 <details>
 <summary>Options</summary>

@@ -1,6 +1,7 @@
 import { timeOrderedUuid } from "@t3tools/shared/ids";
 import type { NativeHistoryReconciliation } from "../ProviderNativeHistory.ts";
 import { randomUUID } from "node:crypto";
+import * as NodeOS from "node:os";
 import {
   ApprovalRequestId,
   EventId,
@@ -88,6 +89,10 @@ import {
 } from "../pi/PiHistory.ts";
 
 import { PiPromptQueue } from "../pi/PiPromptQueue.ts";
+import {
+  assertReadOnlyProjectConfig,
+  findPiProjectExtensionConflict,
+} from "../readOnlyProjectConfig.ts";
 import { updatePiExtensionStatuses } from "../pi/extensionStatuses.ts";
 
 interface PiContext {
@@ -171,6 +176,17 @@ export const makePiAdapter = (settings: PiSettings, options: PiAdapterOptions) =
             : requestError(method, `Pi ${method} failed. Refresh the session before retrying.`),
         ),
       );
+    /** Refuses a read-only stage in a workspace whose own Pi extensions would run code. */
+    const assertPiReadOnlyWorkspace = (cwd: string, operation: "startSession" | "sendTurn") =>
+      assertReadOnlyProjectConfig({
+        provider: "pi",
+        providerName: "Pi",
+        operation,
+        find: () =>
+          findPiProjectExtensionConflict(cwd, {
+            homeDir: options.environment.HOME?.trim() || NodeOS.homedir(),
+          }),
+      }).pipe(Effect.mapError((error) => requestError(operation, error.issue)));
     const stamp = (ctx: PiContext, body: EventBody): ProviderRuntimeEvent =>
       ({
         eventId: EventId.make(timeOrderedUuid()),
@@ -948,6 +964,8 @@ export const makePiAdapter = (settings: PiSettings, options: PiAdapterOptions) =
                   "startSession",
                   parsed.ok ? "A Pi workspace is required." : parsed.message,
                 );
+              if (input.workflowExecutionProfile)
+                yield* assertPiReadOnlyWorkspace(cwd, "startSession");
               const resume =
                 input.resumeCursor === undefined
                   ? undefined
@@ -1205,6 +1223,9 @@ export const makePiAdapter = (settings: PiSettings, options: PiAdapterOptions) =
                   "sendTurn",
                   "Restart the Pi session before changing its read-only policy.",
                 );
+              // Extensions the workspace gained since the stage started would load on a restart.
+              if (ctx.readOnly && ctx.session.cwd)
+                yield* assertPiReadOnlyWorkspace(ctx.session.cwd, "sendTurn");
               yield* applySelection(ctx, input);
               const attachments = input.resolvedAttachments ?? [];
               const images: { type: "image"; data: string; mimeType: string }[] = [];

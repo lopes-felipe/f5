@@ -124,6 +124,10 @@ import {
   ProviderAdapterSessionNotFoundError,
   ProviderAdapterValidationError,
 } from "../Errors.ts";
+import {
+  assertReadOnlyProjectConfig,
+  findAntigravityProjectHooksConflict,
+} from "../readOnlyProjectConfig.ts";
 import { acpPermissionOutcome, mapAcpToAdapterError } from "../acp/AcpAdapterSupport.ts";
 import {
   type AcpSessionRuntimeShape,
@@ -464,6 +468,20 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
     const providerLabel =
       PROVIDER === "acp" ? "Custom ACP agent" : PROVIDER === "antigravity" ? "Antigravity" : "Grok";
     const normalizeModel = options?.normalizeModel ?? resolveGrokAcpBaseModelId;
+    /**
+     * Refuses a read-only Antigravity stage in a workspace whose `.agents/hooks.json` defines
+     * hooks: Antigravity runs them as shell commands once the folder is trusted.
+     */
+    const assertAntigravityReadOnlyWorkspace = (
+      cwd: string,
+      operation: "startSession" | "sendTurn",
+    ) =>
+      assertReadOnlyProjectConfig({
+        provider: PROVIDER,
+        providerName: providerLabel,
+        operation,
+        find: () => findAntigravityProjectHooksConflict(cwd, { homeDir: NodeOs.homedir() }),
+      });
     /** Unavailable models and modes fail as validation errors before anything is sent. */
     const antigravityErrorMapper =
       (threadId: ThreadId, operation: "startSession" | "sendTurn") =>
@@ -899,6 +917,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             });
 
           const cwd = nodePath.resolve(input.cwd);
+          if (PROVIDER === "antigravity" && input.workflowExecutionProfile)
+            yield* assertAntigravityReadOnlyWorkspace(cwd, "startSession");
           // Read-only workflow sessions never start with native auto-approval.
           const startRuntimeMode: RuntimeMode =
             PROVIDER === "antigravity"
@@ -2282,6 +2302,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     issue:
                       "This message needs a different workflow profile than the running Antigravity turn. Wait for the turn to finish before sending it.",
                   });
+                // Hooks the workspace gained since the stage started would run from now on.
+                if (ctx.session.cwd)
+                  yield* assertAntigravityReadOnlyWorkspace(ctx.session.cwd, "sendTurn");
               }
               if (PROVIDER === "antigravity" && steeringTurnId === undefined) {
                 // Steers stay inside the running turn: no mode, model or level writes.

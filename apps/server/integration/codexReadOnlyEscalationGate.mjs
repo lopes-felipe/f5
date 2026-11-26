@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Live gates G1-G6 for Codex read-only workflow stages in "ask on escalation" mode
-// (`on-request` + Codex's read-only sandbox; docs/reviews/cursor-live-gates.md). Run it where
+// (`on-request` + Codex's read-only sandbox; docs/reviews/read-only-live-gates.md). Run it where
 // Codex's sandbox can't start, as in F5's macOS desktop backend: an agent's shell inside F5 is
 // itself sandboxed, so `sandbox_apply` fails there the same way. Each turn spends one Codex prompt.
 //

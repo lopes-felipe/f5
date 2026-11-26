@@ -1,5 +1,6 @@
 import { tmpdir } from "node:os";
-import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { ApprovalRequestId, type ProviderRuntimeEvent } from "@t3tools/contracts";
 import { Deferred, Effect, Exit, Fiber, Option, PubSub, Queue, Scope, Stream } from "effect";
 import { expect, it } from "vitest";
@@ -539,6 +540,52 @@ it("keeps read-only workflow sessions restricted and refuses a mode change befor
       )[0]?.readOnly,
     ).toBe(true);
     expect(records.filter((record) => record.type === "prompt")).toHaveLength(0);
+  }));
+
+it("refuses read-only workflow sessions in a workspace with its own Pi extensions", async () =>
+  fixture(async ({ settings, options, trace }) => {
+    const workspace = await realpath(await mkdtemp(join(tmpdir(), "f5-pi-ro-")));
+    const extensions = join(workspace, ".pi", "extensions");
+    try {
+      await run(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const adapter = yield* makePiAdapter(settings, options);
+            yield* adapter.startSession({
+              threadId,
+              cwd: workspace,
+              runtimeMode: "full-access",
+              workflowExecutionProfile: "unattended-readonly",
+            });
+            yield* Effect.promise(async () => {
+              await mkdir(extensions, { recursive: true });
+              await writeFile(join(extensions, "tool.ts"), "export default () => {}");
+            });
+            const turn = yield* adapter
+              .sendTurn({ threadId, input: "Must not send" })
+              .pipe(Effect.result);
+            expect(turn._tag).toBe("Failure");
+            if (turn._tag === "Failure")
+              expect(turn.failure.message).toContain(
+                `Pi can't run read-only workflow stages here: ${extensions} holds Pi extensions`,
+              );
+            yield* adapter.stopSession(threadId);
+            const start = yield* adapter
+              .startSession({
+                threadId,
+                cwd: workspace,
+                runtimeMode: "full-access",
+                workflowExecutionProfile: "unattended-readonly",
+              })
+              .pipe(Effect.result);
+            expect(start._tag).toBe("Failure");
+          }),
+        ),
+      );
+      expect((await trace()).filter((record) => record.type === "prompt")).toHaveLength(0);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
   }));
 
 it("requires model read-back and reports a known unsent prompt when selection diverges", async () =>
