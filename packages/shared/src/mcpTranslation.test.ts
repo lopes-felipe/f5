@@ -117,6 +117,25 @@ describe("mcpTranslation", () => {
     expect(isReservedMcpBearerEnvVar("GITHUB_TOKEN")).toBe(false);
   });
 
+  it("keeps the reserved variables F5 sets for its own Codex catalogs", () => {
+    const own = {
+      type: "http" as const,
+      url: "http://127.0.0.1:9/mcp",
+      bearerTokenEnvVar: "F5_PREVIEW_MCP_TOKEN_A",
+    };
+    const user = {
+      type: "http" as const,
+      url: "https://x.test/mcp",
+      bearerTokenEnvVar: "F5_BROWSER_OPEN_TOKEN",
+    };
+    const translated = translateMcpForCodex(
+      { own, user },
+      { ownBearerEnvVars: new Set(["F5_PREVIEW_MCP_TOKEN_A"]) },
+    );
+    expect(translated?.own?.bearer_token_env_var).toBe("F5_PREVIEW_MCP_TOKEN_A");
+    expect(translated?.user).not.toHaveProperty("bearer_token_env_var");
+  });
+
   it("builds remote headers with one precedence and redacts both forms of the token", () => {
     const definition = { bearerTokenEnvVar: "MCP_TOKEN", headers: { "X-Team": "a" } };
     expect(mcpRemoteHeaders(definition, { MCP_TOKEN: " tok " })).toEqual({

@@ -367,10 +367,15 @@ export function translateMcpForClaudeAgent(
 /**
  * With an account environment, `${env:…}` references are resolved first and a
  * server with an unset variable is left out (see `interpolateMcpServers`).
+ * `ownBearerEnvVars` names variables F5 itself sets for Codex (its own catalogs'
+ * credentials); only those may use a reserved prefix.
  */
 export function translateMcpForCodex(
   servers: McpProjectServersConfig | null | undefined,
-  options?: { readonly environment?: Readonly<Record<string, string | undefined>> },
+  options?: {
+    readonly environment?: Readonly<Record<string, string | undefined>>;
+    readonly ownBearerEnvVars?: ReadonlySet<string>;
+  },
 ): Record<string, CodexMcpServerEntry> | undefined {
   const translated = Object.create(null) as Record<string, CodexMcpServerEntry>;
   const resolved = options?.environment
@@ -378,9 +383,11 @@ export function translateMcpForCodex(
     : servers;
   for (const [name, definition] of Object.entries(filterEnabledMcpServers(resolved, "codex"))) {
     const normalized = normalizeCommonEntry(definition);
+    const bearerEnvVar = normalized.bearerTokenEnvVar;
     const shared = {
-      ...(normalized.bearerTokenEnvVar && !isReservedMcpBearerEnvVar(normalized.bearerTokenEnvVar)
-        ? { bearer_token_env_var: normalized.bearerTokenEnvVar }
+      ...(bearerEnvVar &&
+      (!isReservedMcpBearerEnvVar(bearerEnvVar) || options?.ownBearerEnvVars?.has(bearerEnvVar))
+        ? { bearer_token_env_var: bearerEnvVar }
         : {}),
       ...(typeof normalized.supportsParallelToolCalls === "boolean"
         ? { supports_parallel_tool_calls: normalized.supportsParallelToolCalls }
