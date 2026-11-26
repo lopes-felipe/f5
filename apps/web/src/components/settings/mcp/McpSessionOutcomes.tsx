@@ -20,8 +20,14 @@ export function McpSessionOutcomes(props: {
   const queryClient = useQueryClient();
   const [retryError, setRetryError] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
-  const [retryOutcomes, setRetryOutcomes] = useState<ReadonlyArray<McpSessionReloadOutcome>>();
-  const outcomes = retryOutcomes ?? props.outcomes;
+  // Retry results replace only their own conversation's row, and only until the next
+  // Apply or Reconnect delivers a new list.
+  const [retried, setRetried] = useState<{
+    readonly base: ReadonlyArray<McpSessionReloadOutcome> | undefined;
+    readonly byThread: ReadonlyMap<string, McpSessionReloadOutcome>;
+  }>();
+  const overrides = retried?.base === props.outcomes ? retried?.byThread : undefined;
+  const outcomes = props.outcomes?.map((outcome) => overrides?.get(outcome.threadId) ?? outcome);
   if (!outcomes?.length && !retryError) return null;
 
   const retry = (outcome: McpSessionReloadOutcome) => {
@@ -43,9 +49,16 @@ export function McpSessionOutcomes(props: {
             threadIds: [outcome.threadId],
             retryUnchanged: true,
           });
+    const base = props.outcomes;
     void request
       .then((result) => {
-        setRetryOutcomes(result.sessions);
+        setRetried((previous) => {
+          const byThread = new Map(
+            previous !== undefined && previous.base === base ? previous.byThread : [],
+          );
+          for (const session of result.sessions ?? []) byThread.set(session.threadId, session);
+          return { base, byThread };
+        });
         return queryClient.invalidateQueries({ queryKey: mcpQueryKeys.all });
       })
       .catch((error) => setRetryError(readErrorMessage(error, "Retry failed.")))

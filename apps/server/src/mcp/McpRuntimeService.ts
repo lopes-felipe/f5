@@ -85,6 +85,7 @@ import { ProviderService } from "../provider/Services/ProviderService.ts";
 import {
   filterEnabledMcpServers,
   isMcpServerServedTo,
+  mcpBearerRedactionValues,
   readCodexMcpOAuthCallbackConfig,
   translateMcpForCodex,
 } from "@t3tools/shared/mcpTranslation";
@@ -405,14 +406,18 @@ const makeMcpRuntimeService = Effect.gen(function* () {
       ),
     );
 
-  const setLoginStatus = (input: McpGetLoginStatusRequest, status: McpLoginStatusResult) => {
+  const setLoginStatus = (
+    input: McpGetLoginStatusRequest,
+    status: McpLoginStatusResult,
+    options: { readonly publish?: boolean } = {},
+  ) => {
     const key = loginStatusKey(input);
     clearLoginStatusTimer(key);
     const previous = loginStatuses.get(key);
     loginStatuses.set(key, status);
     // Settings no longer poll sign-in, so a failed attempt is announced like a completed
     // one (completions publish where they finish, with the applied config version).
-    if (status.status === "failed" && previous?.status === "pending")
+    if (options.publish !== false && status.status === "failed" && previous?.status === "pending")
       Effect.runFork(
         publishLoginCompletion({
           provider: input.provider,
@@ -561,9 +566,7 @@ const makeMcpRuntimeService = Effect.gen(function* () {
       const identity = yield* resolveExecution(input).pipe(Effect.option);
       const environment = Option.isSome(identity) ? identity.value.environment : {};
       const additionalValues = Object.values(effective.servers).flatMap((server) =>
-        server.bearerTokenEnvVar && environment[server.bearerTokenEnvVar]
-          ? [environment[server.bearerTokenEnvVar]!]
-          : [],
+        mcpBearerRedactionValues(server, environment),
       );
       return { servers: effective.servers, additionalValues };
     });
@@ -584,9 +587,7 @@ const makeMcpRuntimeService = Effect.gen(function* () {
         .readEffectiveRuntimeConfig(input.projectId)
         .pipe(Effect.mapError(runtimeError));
       const additionalValues = Object.values(effective.servers).flatMap((server) =>
-        server.bearerTokenEnvVar && identity.environment[server.bearerTokenEnvVar]
-          ? [identity.environment[server.bearerTokenEnvVar]!]
-          : [],
+        mcpBearerRedactionValues(server, identity.environment),
       );
       // This branch must precede provider preflight: a conversation read never creates a control client.
       const live = providerService.readMcpSessionStatuses
@@ -1039,7 +1040,8 @@ const makeMcpRuntimeService = Effect.gen(function* () {
       // A start rejected before reaching the provider restores the previous outcome.
       const release = Effect.sync(() => {
         if (loginStatuses.get(key) !== placeholder) return;
-        if (existing) setLoginStatus(input, existing);
+        // Restoring an earlier outcome is not a new sign-in result, so nothing is published.
+        if (existing) setLoginStatus(input, existing, { publish: false });
         else {
           clearLoginStatusTimer(key);
           loginStatuses.delete(key);

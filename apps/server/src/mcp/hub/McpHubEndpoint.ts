@@ -30,6 +30,8 @@ import type { McpHubUpstream } from "./McpHubUpstream.ts";
 
 /** A provider rarely holds more than one connection per endpoint; reconnects replace it. */
 const MAX_CONNECTIONS_PER_SLOT = 4;
+/** How long a provider's initialize waits for the upstream, to forward its instructions. */
+const INSTRUCTIONS_WAIT_MS = 5_000;
 
 interface DownstreamConnection {
   readonly transport: StreamableHTTPServerTransport;
@@ -176,6 +178,13 @@ export class McpHubSlot {
     }
     if (request.method !== "POST")
       return writeError(response, 400, "Initialize an MCP session with POST first.");
+    // The server's instructions arrive with the upstream's own initialize. Wait briefly
+    // so the provider's first connection carries them; a slow server never stalls it long.
+    // An unbound slot has no instructions to wait for.
+    await Promise.race([
+      (this.upstream?.ensureConnected() ?? Promise.resolve()).catch(() => undefined),
+      new Promise((resolve) => setTimeout(resolve, INSTRUCTIONS_WAIT_MS).unref()),
+    ]);
     // Oldest connections give way to new ones, so reconnects never exhaust the slot.
     while (this.connections.size >= MAX_CONNECTIONS_PER_SLOT) {
       const [oldest, connection] = this.connections.entries().next().value!;
@@ -297,6 +306,9 @@ export class McpHubSlot {
             : {}),
         })) as CallToolResult;
       } catch (error) {
+        // A lost session or revoked credential drops the connection for recovery; the
+        // call itself is not replayed, since it may have had side effects.
+        upstream.noteRequestFailure(client, error);
         if (extra.signal.aborted) throw error;
         return toolError(upstream.redact(messageOf(error)));
       } finally {
@@ -372,13 +384,17 @@ async function upstreamClient(upstream: McpHubUpstream) {
   return upstreamCall(upstream, () => upstream.ensureConnected());
 }
 
-/** Upstream failures reach the provider as redacted JSON-RPC errors. */
+/**
+ * Upstream failures reach the provider as redacted JSON-RPC errors. Structured `data`
+ * is dropped: it can echo credentials that message redaction would not see.
+ */
 async function upstreamCall<T>(upstream: McpHubUpstream, run: () => Promise<T>): Promise<T> {
+  const client = upstream.liveClient;
   try {
     return await run();
   } catch (error) {
-    if (error instanceof McpError)
-      throw new McpError(error.code, upstream.redact(error.message), error.data);
+    upstream.noteRequestFailure(client, error);
+    if (error instanceof McpError) throw new McpError(error.code, upstream.redact(error.message));
     throw new McpError(ErrorCode.InternalError, upstream.redact(messageOf(error)));
   }
 }

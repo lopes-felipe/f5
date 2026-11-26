@@ -90,7 +90,11 @@ import {
   verifyMusePermissionState,
 } from "../msp/MspSessionRuntime.ts";
 import { makeMspTransport } from "../msp/MspTransport.ts";
-import type { McpHubShape } from "../../mcp/hub/McpHub.ts";
+import {
+  describeMcpHubOmissions,
+  type McpHubOmission,
+  type McpHubShape,
+} from "../../mcp/hub/McpHub.ts";
 import {
   decodeMuseApproval,
   mapMuseApprovalChoices,
@@ -1189,12 +1193,17 @@ export function makeMuseAdapter(museSettings: MuseSettings, options?: MuseAdapte
         const servers = input.workflowExecutionProfile
           ? undefined
           : input.providerOptions?.mcpServers;
-        if (!hub?.available || !servers || Object.keys(servers).length === 0) return;
+        if (!servers || Object.keys(servers).length === 0) return [];
+        const skipAll = (reason: string): McpHubOmission[] =>
+          Object.keys(servers).map((serverName) => ({ serverName, reason }));
+        if (!hub) return skipAll("was skipped because F5's MCP hub is unavailable in this runtime");
         if (!mspHostAcceptsSessionMcp(host)) {
           yield* Effect.logInfo(
             "Skipping F5 MCP servers: this Muse Code host does not grant sessionMcp.",
           );
-          return;
+          return skipAll(
+            "was skipped because this Muse Code host does not accept session MCP servers",
+          );
         }
         const attachment = hub.attach({
           threadId: input.threadId,
@@ -1209,7 +1218,7 @@ export function makeMuseAdapter(museSettings: MuseSettings, options?: MuseAdapte
           sessionScope,
           Effect.promise(() => attachment.dispose()),
         );
-        if (attachment.endpoints.length === 0) return;
+        if (attachment.endpoints.length === 0) return attachment.omitted;
         host.connection.sessionConfig = {
           mcpServers: Object.fromEntries(
             attachment.endpoints.map((endpoint) => [
@@ -1223,6 +1232,7 @@ export function makeMuseAdapter(museSettings: MuseSettings, options?: MuseAdapte
             ]),
           ),
         };
+        return attachment.omitted;
       });
 
     /** Open (or resume) the MSP session; `fresh` reports why a resume was abandoned. */
@@ -1394,7 +1404,7 @@ export function makeMuseAdapter(museSettings: MuseSettings, options?: MuseAdapte
               Queue.offerUnsafe(notifications, notification);
             });
             yield* Scope.addFinalizer(sessionScope, Effect.sync(unsubscribe));
-            yield* attachHubServers(input, handle.host, cwd, sessionScope);
+            const hubOmissions = yield* attachHubServers(input, handle.host, cwd, sessionScope);
 
             const opened = yield* openSession({
               handle,
@@ -1589,6 +1599,16 @@ export function makeMuseAdapter(museSettings: MuseSettings, options?: MuseAdapte
               })),
               payload: { state: "ready", reason: "Muse Code session ready" },
             });
+            const mcpOmissions = describeMcpHubOmissions("Muse Code", hubOmissions);
+            if (mcpOmissions)
+              yield* offer({
+                type: "config.warning",
+                ...(yield* stamp({
+                  threadId: input.threadId,
+                  eventIdentity: input.mcpEventIdentity,
+                })),
+                payload: mcpOmissions,
+              });
             yield* offer({
               type: "thread.started",
               ...(yield* stamp({

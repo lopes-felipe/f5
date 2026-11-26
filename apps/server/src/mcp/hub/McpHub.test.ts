@@ -1,12 +1,21 @@
 import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { createServer, type Server as HttpServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
+  CallToolRequestSchema,
   ElicitRequestSchema,
+  ListResourcesRequestSchema,
+  ListToolsRequestSchema,
+  McpError,
+  ReadResourceRequestSchema,
   ToolListChangedNotificationSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import {
@@ -16,7 +25,7 @@ import {
   type McpStatusUpdatedPayload,
 } from "@t3tools/contracts";
 import { Effect, Exit, Scope } from "effect";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   makePreviewAutomationBroker,
@@ -26,8 +35,14 @@ import {
   makePreviewMcpHttpServer,
   type PreviewMcpHttpServerShape,
 } from "../PreviewMcpHttpServer.ts";
-import { defaultConnectionScope, makeMcpHub, type McpHubShape } from "./McpHub.ts";
+import {
+  defaultConnectionScope,
+  describeMcpHubOmissions,
+  makeMcpHub,
+  type McpHubShape,
+} from "./McpHub.ts";
 import { HUB_SHARED_IDLE_MS, reconnectDelayMs } from "./McpHubUpstream.ts";
+import { memoryOAuthStorage, mcpOAuthKey } from "./McpOAuth.ts";
 
 const fixture = fileURLToPath(new URL("../fixtures/hub-server.mjs", import.meta.url));
 const projectId = ProjectId.makeUnsafe("hub-project");
@@ -39,6 +54,7 @@ let hub: McpHubShape;
 let events: McpStatusUpdatedPayload[];
 let root: string;
 const clients: Client[] = [];
+const remoteFixtures: HttpServer[] = [];
 
 beforeEach(async () => {
   root = await realpath(await mkdtemp(join(tmpdir(), "f5-mcp-hub-")));
@@ -55,9 +71,15 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await Promise.allSettled(clients.splice(0).map((client) => client.close()));
+  vi.useRealTimers();
   await hub.close();
   await Effect.runPromise(Scope.close(scope, Exit.void));
-  await rm(root, { recursive: true, force: true });
+  for (const http of remoteFixtures.splice(0)) {
+    http.closeAllConnections();
+    await new Promise((resolve) => http.close(resolve));
+  }
+  // Windows keeps a just-exited child's working directory locked for a moment.
+  await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 function stdioServers(report?: string): McpProjectServersConfig {
@@ -83,7 +105,12 @@ async function connect(url: string, token: string): Promise<Client> {
   return client;
 }
 
-function attach(servers: McpProjectServersConfig, threadId = "thread-1", reserved?: string[]) {
+function attach(
+  servers: McpProjectServersConfig,
+  threadId = "thread-1",
+  reserved?: string[],
+  cwd = root,
+) {
   return hub.attach({
     threadId: ThreadId.makeUnsafe(threadId),
     projectId,
@@ -91,9 +118,52 @@ function attach(servers: McpProjectServersConfig, threadId = "thread-1", reserve
     accountKey: "grok",
     servers,
     environment: { PATH: process.env.PATH ?? "" },
-    cwd: root,
+    cwd,
     ...(reserved ? { reservedNames: new Set(reserved) } : {}),
   });
+}
+
+/**
+ * A stateless streamable HTTP MCP server whose tool names and failure status can
+ * change between requests, to model a restart (404), a revoked credential (401)
+ * or an upgrade that changes the catalog.
+ */
+async function startRemoteFixture() {
+  const state: { tools: string[]; failWith: number | undefined } = {
+    tools: ["one"],
+    failWith: undefined,
+  };
+  const http = createServer(async (req, res) => {
+    if (state.failWith !== undefined) {
+      res.writeHead(state.failWith).end("unavailable");
+      return;
+    }
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(chunk as Buffer);
+    const body = chunks.length > 0 ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : undefined;
+    const server = new Server(
+      { name: "remote-fixture", version: "1.0.0" },
+      { capabilities: { tools: {}, resources: {} } },
+    );
+    server.setRequestHandler(ListToolsRequestSchema, () => ({
+      tools: state.tools.map((name) => ({ name, inputSchema: { type: "object" as const } })),
+    }));
+    server.setRequestHandler(CallToolRequestSchema, (request) => ({
+      content: [{ type: "text", text: `called:${request.params.name}` }],
+    }));
+    server.setRequestHandler(ListResourcesRequestSchema, () => ({ resources: [] }));
+    server.setRequestHandler(ReadResourceRequestSchema, () => {
+      throw new McpError(-32002, `lookup failed for ${SECRET}`, { echoed: { header: SECRET } });
+    });
+    const transport = new StreamableHTTPServerTransport({});
+    res.on("close", () => void Promise.allSettled([transport.close(), server.close()]));
+    await server.connect(transport as Transport);
+    await transport.handleRequest(req, res, body);
+  });
+  await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve));
+  const { port } = http.address() as AddressInfo;
+  remoteFixtures.push(http);
+  return { state, url: `http://127.0.0.1:${port}/mcp` };
 }
 
 describe("F5 MCP hub", () => {
@@ -137,7 +207,7 @@ describe("F5 MCP hub", () => {
       roots: Array<{ uri: string }>;
     };
     expect(observed.cwd).toBe(root);
-    expect(observed.roots[0]?.uri).toBe(`file://${root}`);
+    expect(observed.roots[0]?.uri).toBe(pathToFileURL(root).href);
 
     const [status] = hub.status(projectId);
     expect(status).toMatchObject({
@@ -402,6 +472,127 @@ describe("F5 MCP hub", () => {
     expect(attachment.endpoints).toEqual([]);
     expect(attachment.omitted[0]?.serverName).toBe("fixture");
   });
+
+  it("reconnects a shared remote connection whose session expired and refreshes its tools", async () => {
+    const remote = await startRemoteFixture();
+    const attachment = await attach({ remote: { type: "http", url: remote.url } });
+    const endpoint = attachment.endpoints[0]!;
+    const client = await connect(endpoint.url, endpoint.token);
+    expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(["one"]);
+    let notified = false;
+    client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+      notified = true;
+    });
+
+    // The server restarts onto a build with other tools; the old session is gone.
+    remote.state.failWith = 404;
+    remote.state.tools = ["two"];
+    const failed = await client.callTool({ name: "one", arguments: {} });
+    expect(failed.isError).toBe(true);
+    expect(hub.status()[0]?.state).not.toBe("ready");
+
+    remote.state.failWith = undefined;
+    await expect.poll(() => hub.status()[0]?.state, { timeout: 5_000 }).toBe("ready");
+    await expect.poll(() => notified).toBe(true);
+    expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(["two"]);
+    expect(hub.status()[0]?.toolCount).toBe(1);
+    await attachment.dispose();
+  });
+
+  it("moves a remote connection to needs-auth when its credential is rejected after initialize", async () => {
+    const remote = await startRemoteFixture();
+    const attachment = await attach({ remote: { type: "http", url: remote.url } });
+    const endpoint = attachment.endpoints[0]!;
+    const client = await connect(endpoint.url, endpoint.token);
+    await client.listTools();
+    remote.state.failWith = 401;
+    const failed = await client.callTool({ name: "one", arguments: {} });
+    expect(failed.isError).toBe(true);
+    await expect.poll(() => hub.status()[0]?.state).toBe("needs-auth");
+    await attachment.dispose();
+  });
+
+  it("redacts upstream error messages and drops their structured data", async () => {
+    const remote = await startRemoteFixture();
+    const attachment = await attach({
+      remote: { type: "http", url: remote.url, headers: { "X-Api-Key": SECRET } },
+    });
+    const endpoint = attachment.endpoints[0]!;
+    const client = await connect(endpoint.url, endpoint.token);
+    const error = await client.readResource({ uri: "fixture://x" }).then(
+      () => undefined,
+      (cause: unknown) => cause as McpError,
+    );
+    expect(error).toBeInstanceOf(McpError);
+    expect(error!.code).toBe(-32002);
+    expect(error!.message).not.toContain(SECRET);
+    expect(error!.data).toBeUndefined();
+    await attachment.dispose();
+  });
+
+  it("reuses a shared connection when only settings-only fields change", async () => {
+    const url = "http://127.0.0.1:9/mcp";
+    const first = await attach({ remote: { type: "http", url, description: "Docs" } }, "thread-a");
+    const second = await attach(
+      { remote: { type: "http", url, description: "Team docs", disabledProviders: ["codex"] } },
+      "thread-b",
+    );
+    expect(hub.status(projectId)).toEqual([
+      expect.objectContaining({ name: "remote", attachedSessions: 2 }),
+    ]);
+    await Promise.all([first.dispose(), second.dispose()]);
+  });
+
+  it("keeps one shared connection per workspace folder", async () => {
+    const otherRoot = join(root, "other");
+    const servers: McpProjectServersConfig = {
+      remote: { type: "http", url: "http://127.0.0.1:9/mcp" },
+    };
+    const first = await attach(servers, "thread-a");
+    const second = await attach(servers, "thread-b", undefined, otherRoot);
+    const third = await attach(servers, "thread-c");
+    const statuses = hub.status(projectId);
+    expect(statuses).toHaveLength(2);
+    expect(new Set(statuses.map((status) => status.id)).size).toBe(2);
+    expect(statuses.map((status) => status.attachedSessions).sort()).toEqual([1, 2]);
+    await Promise.all([first.dispose(), second.dispose(), third.dispose()]);
+  });
+
+  it("gives OAuth only to remote servers without their own Authorization", async () => {
+    await hub.close();
+    hub = makeMcpHub({ listener, oauthStorage: memoryOAuthStorage() });
+    const withOAuth = hub;
+    {
+      const url = "http://127.0.0.1:9/mcp";
+      const input = {
+        threadId: ThreadId.makeUnsafe("thread-oauth"),
+        projectId,
+        provider: "grok" as const,
+        accountKey: "grok",
+        environment: { DOCS_TOKEN: "secret" },
+        cwd: root,
+      };
+      const keyed = withOAuth.attach({
+        ...input,
+        servers: { keyed: { type: "http", url, bearerTokenEnvVar: "DOCS_TOKEN" } },
+      });
+      expect(await withOAuth.reconnectOAuth(mcpOAuthKey(url, undefined))).toBe(0);
+      const open = withOAuth.attach({ ...input, servers: { open: { type: "http", url } } });
+      expect(await withOAuth.reconnectOAuth(mcpOAuthKey(url, undefined))).toBe(1);
+      await Promise.all([keyed.dispose(), open.dispose()]);
+    }
+  });
+
+  it("removes an idle shared connection when its idle timer fires", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const attachment = await attach({ remote: { type: "http", url: "http://127.0.0.1:9/mcp" } });
+    await attachment.dispose();
+    expect(hub.status()).toEqual([
+      expect.objectContaining({ name: "remote", state: "idle", attachedSessions: 0 }),
+    ]);
+    await vi.advanceTimersByTimeAsync(HUB_SHARED_IDLE_MS);
+    expect(hub.status()).toEqual([]);
+  });
 });
 
 describe("hub defaults", () => {
@@ -418,5 +609,23 @@ describe("hub defaults", () => {
       1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000,
     ]);
     expect(HUB_SHARED_IDLE_MS).toBe(300_000);
+  });
+
+  it("describes omitted servers for the conversation warning", () => {
+    expect(describeMcpHubOmissions("Pi", [])).toBeUndefined();
+    expect(
+      describeMcpHubOmissions("Grok", [
+        { serverName: "docs", reason: "uses a name the provider already has" },
+      ]),
+    ).toEqual({
+      summary: "F5 did not pass MCP server docs to Grok.",
+      details: "docs uses a name the provider already has.",
+    });
+    expect(
+      describeMcpHubOmissions("OpenCode", [
+        { serverName: "a", reason: "could not be added to OpenCode" },
+        { serverName: "b", reason: "could not be added to OpenCode" },
+      ])?.summary,
+    ).toBe("F5 did not pass 2 MCP servers to OpenCode.");
   });
 });
