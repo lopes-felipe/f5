@@ -5,6 +5,7 @@ import { parse } from "yaml";
 import { inventories } from "./ci-test-summary.ts";
 
 interface Job {
+  name?: string;
   env?: Record<string, string>;
   environment?: string;
   needs?: string[];
@@ -295,6 +296,41 @@ describe("CI workflow policy", () => {
     // Pull requests keep Windows build, workspace, integration and smoke coverage.
     expect(workflow.jobs["windows-build"]!.if).toBeUndefined();
   });
+  it("offers the Windows unit shards on demand without a result that could pass for CI", () => {
+    const onDemand = parse(
+      readFileSync(
+        new URL("../.github/workflows/windows-server-unit.yml", import.meta.url),
+        "utf8",
+      ),
+    ) as {
+      name: string;
+      on: Record<string, unknown>;
+      permissions: Record<string, string>;
+      env: Record<string, string>;
+      concurrency: Record<string, unknown>;
+      jobs: Record<string, Job>;
+    };
+    const ci = parse(
+      readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
+    ) as { name: string; env: Record<string, string> };
+    expect(onDemand.on).toEqual({ workflow_dispatch: null });
+    expect(onDemand.permissions).toEqual({ contents: "read" });
+    expect(onDemand.concurrency).toEqual({
+      group: "windows-server-unit-${{ github.ref }}",
+      "cancel-in-progress": true,
+    });
+    // The required check is matched by name on the commit. A green verdict from this
+    // subset must not be able to stand in for it, nor be read as a CI run.
+    expect(onDemand.name).not.toBe(ci.name);
+    expect(Object.keys(onDemand.jobs)).toEqual(["windows-server-unit"]);
+    for (const job of Object.values(onDemand.jobs)) expect(job.name).toBeUndefined();
+    expect(workflow.jobs["ci-result"]!.name).toBe("CI result");
+    // Same shards, workers and steps as the CI job, apart from its non-PR condition.
+    const { if: condition, ...ciJob } = workflow.jobs["windows-server-unit"]!;
+    expect(condition).toBe("github.event_name != 'pull_request'");
+    expect(onDemand.jobs["windows-server-unit"]).toEqual(ciJob);
+    expect(onDemand.env).toEqual(ci.env);
+  });
   it("retains the exact docs-only filter and bypasses it for main/nightly/manual runs", () => {
     const action = parse(
       readFileSync(new URL("../.github/actions/changes/action.yml", import.meta.url), "utf8"),
@@ -315,18 +351,30 @@ describe("CI workflow policy", () => {
     expect(verdict.if).toBeUndefined();
     expect(verdict.run).toBe('echo "heavy=$HEAVY" >> "$GITHUB_OUTPUT"');
 
-    // The expression uses only operators that mean the same in JavaScript, so the
-    // shipped text is evaluated here instead of a copy of its logic.
+    // The shipped text is evaluated here instead of a copy of its logic. Its operators
+    // mean the same in JavaScript with two exceptions this test works around: GitHub
+    // compares strings without regard to case (so only lowercase inputs are evaluated
+    // below), and reads a property of null as null (the event is always an object here).
     const expression = /^\$\{\{ (.+) \}\}$/.exec(verdict.env.HEAVY)![1]!;
-    expect(expression).toMatch(/^[\w.'()!=&| ]+$/);
+    expect(expression).toMatch(/^[\w.'()!=&|> ]+$/);
     const evaluate = new Function("github", "steps", "inputs", "return " + expression) as (
-      github: { event_name: string },
+      github: { event_name: string; event: { pull_request: { changed_files: number } | null } },
       steps: { paths: { outputs: Record<string, string> } },
       inputs: { unaffected_by: string },
     ) => boolean;
-    const heavy = (event: string, input: string, outputs: Record<string, boolean>) =>
+    const heavy = (
+      event: string,
+      input: string,
+      outputs: Record<string, boolean>,
+      changedFiles = 12,
+    ) =>
       evaluate(
-        { event_name: event },
+        {
+          event_name: event,
+          event: {
+            pull_request: event === "pull_request" ? { changed_files: changedFiles } : null,
+          },
+        },
         // A skipped filter step has no outputs; dorny/paths-filter writes 'true'/'false'.
         {
           paths: {
@@ -360,11 +408,28 @@ describe("CI workflow policy", () => {
     expect(heavy("pull_request", "", serverOnly)).toBe(true);
     // The browser fixture imports this server file, so changing it runs browser tests.
     expect(heavy("pull_request", "server", { ...serverOnly, server_read_by_web: true })).toBe(true);
-    // Unknown or misspelled apps never skip a job.
-    for (const input of ["desktop", "Web", "web ", "apps/web"]) {
+    // Unknown or misspelled apps never skip a job. A case variant such as `Web` is not
+    // in this list: on GitHub it equals `web` and skips like it.
+    for (const input of ["desktop", "web ", "apps/web", "webs"]) {
       expect(heavy("pull_request", input, webOnly), input).toBe(true);
       expect(heavy("pull_request", input, serverOnly), input).toBe(true);
     }
+    // The files API lists at most 3,000 files, so the filters cannot be trusted
+    // beyond that and every job runs, including for an apparently docs-only change.
+    for (const [input, outputs] of [
+      ["web", webOnly],
+      ["server", serverOnly],
+      ["", { code: false }],
+    ] as const) {
+      expect(heavy("pull_request", input, outputs, 2999), input).toBe(false);
+      expect(heavy("pull_request", input, outputs, 3000), input).toBe(true);
+      expect(heavy("pull_request", input, outputs, 4521), input).toBe(true);
+    }
+    // Every caller spells the app in lowercase, as the evaluation above assumes.
+    for (const job of Object.values(workflow.jobs))
+      for (const step of job.steps ?? [])
+        if (step.uses === "./.github/actions/changes")
+          expect(["web", "server", undefined]).toContain(step.with?.unaffected_by);
   });
   it("cancels obsolete packaging PRs without cancelling release rehearsals", () => {
     const release = parse(

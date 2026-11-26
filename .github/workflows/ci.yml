@@ -222,8 +222,9 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
   windows-server-unit:
     # Three Windows shards were the largest share of a pull request's runner time.
-    # Pull requests keep Windows coverage through windows-build; dispatch CI on a
-    # branch to run these shards before merge.
+    # Pull requests keep Windows coverage through windows-build; dispatch
+    # windows-server-unit.yml on a branch to run only these shards before merge. That
+    # workflow mirrors this job, so change both together.
     runs-on: windows-latest
     timeout-minutes: 20
     if: github.event_name != 'pull_request'
