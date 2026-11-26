@@ -456,6 +456,9 @@ import { McpHub } from "./mcp/hub/McpHub.ts";
 import { McpHubAuth } from "./mcp/hub/McpHubAuth.ts";
 import { McpHubGovernanceService } from "./mcp/hub/McpHubGovernanceLive.ts";
 import { makeMcpCatalog } from "./mcp/McpCatalog.ts";
+import { McpRepositoryServers, type McpRepositoryLayer } from "./mcp/McpRepositoryServers.ts";
+import { mergeMcpServerLayers } from "@t3tools/shared/mcpConfig";
+import { MCP_EFFECTIVE_SERVER_LIMIT, mcpServerNameKey } from "@t3tools/shared/mcpValidation";
 import {
   flattenPrompt,
   listComposerPrompts,
@@ -1190,6 +1193,36 @@ export const createServer = Effect.fn(function* (
   };
   // Registry pages are cached for an hour across every client of this server.
   const mcpCatalog = makeMcpCatalog();
+  const mcpRepositoryServers = Option.getOrUndefined(
+    yield* Effect.serviceOption(McpRepositoryServers),
+  );
+  /** Repository servers with their approval, and whether the project overrides or turns them off. */
+  const repositoryServersResult = (projectId: ProjectId, layer: McpRepositoryLayer) =>
+    projectMcpConfigService.readProjectStoredConfig(projectId).pipe(
+      Effect.mapError((error) => new RouteRequestError({ message: error.message })),
+      Effect.map((project) => {
+        const projectNames = new Set(Object.keys(project.servers).map(mcpServerNameKey));
+        const disabled = new Set((project.disabledCommonServers ?? []).map(mcpServerNameKey));
+        return {
+          projectId,
+          ...(layer.path ? { path: layer.path } : {}),
+          found: layer.found,
+          servers: layer.entries.map((entry) => ({
+            name: entry.name,
+            server: entry.server,
+            definitionHash: entry.definitionHash,
+            state: entry.approved
+              ? ("approved" as const)
+              : entry.changed
+                ? ("changed" as const)
+                : ("needs-approval" as const),
+            overridden: projectNames.has(mcpServerNameKey(entry.name)),
+            disabled: disabled.has(mcpServerNameKey(entry.name)),
+          })),
+          issues: [...layer.issues],
+        };
+      }),
+    );
   const composerCall = <A>(run: (signal: AbortSignal) => Promise<A>) =>
     Effect.tryPromise({
       try: run,
@@ -8496,6 +8529,57 @@ export const createServer = Effect.fn(function* (
       case WS_METHODS.mcpSearchCatalog: {
         const body = stripRequestTag(request.body);
         return yield* composerCall((signal) => mcpCatalog.search(body, signal));
+      }
+
+      case WS_METHODS.mcpGetRepositoryServers: {
+        const body = stripRequestTag(request.body);
+        if (!mcpRepositoryServers)
+          return { projectId: body.projectId, found: false, servers: [], issues: [] };
+        return yield* repositoryServersResult(
+          body.projectId,
+          yield* mcpRepositoryServers.readLayer(body.projectId),
+        );
+      }
+
+      case WS_METHODS.mcpSetRepositoryServerTrust: {
+        const body = stripRequestTag(request.body);
+        if (!mcpRepositoryServers)
+          return yield* new RouteRequestError({
+            message: "Repository MCP servers are unavailable here.",
+          });
+        if (body.trusted) {
+          // Approving counts toward the effective server limit, like any other layer.
+          const layer = yield* mcpRepositoryServers.readLayer(body.projectId);
+          const entry = layer.entries.find(
+            (candidate) => mcpServerNameKey(candidate.name) === mcpServerNameKey(body.serverName),
+          );
+          if (entry && !entry.approved) {
+            const [common, project] = yield* Effect.all([
+              projectMcpConfigService.readCommonStoredConfig(),
+              projectMcpConfigService.readProjectStoredConfig(body.projectId),
+            ]).pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+            const merged = mergeMcpServerLayers({
+              common: common.servers,
+              repository: { ...layer.approved, [entry.name]: entry.server },
+              project: project.servers,
+              disabledCommon: project.disabledCommonServers,
+            });
+            if (Object.keys(merged).length > MCP_EFFECTIVE_SERVER_LIMIT)
+              return yield* new RouteRequestError({
+                message: `Approving '${entry.name}' would exceed the ${MCP_EFFECTIVE_SERVER_LIMIT}-server limit for this project. Remove or turn off another server first.`,
+              });
+          }
+        }
+        const layer = yield* mcpRepositoryServers
+          .setTrust(body)
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+        // The effective configuration changed: settings, status and the hub re-read it.
+        yield* codexMcpEventBus.publishStatusUpdated({
+          scope: "project",
+          projectId: body.projectId,
+          reason: "updated",
+        });
+        return yield* repositoryServersResult(body.projectId, layer);
       }
 
       default: {

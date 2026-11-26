@@ -10,6 +10,7 @@ import type {
   McpThreadServersResult,
   McpListComposerPromptsResult,
   McpListComposerResourcesResult,
+  McpRepositoryServersResult,
   McpLoginStatusResult,
   McpProviderStatusResult,
   McpProjectConfigResult,
@@ -81,7 +82,24 @@ export const mcpQueryKeys = {
     ["mcp", "composerPrompts", { projectId: null, threadId }] as const,
   composerResources: (threadId: ThreadId) =>
     ["mcp", "composerResources", { projectId: null, threadId }] as const,
+  repositoryServers: (projectId: ProjectId) => ["mcp", "repositoryServers", { projectId }] as const,
 };
+
+/** `.mcp.json` servers and their approvals; refreshed with the stored configuration. */
+export function mcpRepositoryServersQueryOptions(input: {
+  readonly projectId: ProjectId;
+  readonly enabled?: boolean;
+}) {
+  return queryOptions<McpRepositoryServersResult>({
+    queryKey: mcpQueryKeys.repositoryServers(input.projectId),
+    enabled: input.enabled ?? true,
+    queryFn: async (context) =>
+      ensureNativeApi().mcp.getRepositoryServers(
+        { projectId: input.projectId },
+        rpcQueryContext(context),
+      ),
+  });
+}
 
 /** Hub queries refreshed by `hub` events (connections, pins, conversation toggles). */
 const MCP_HUB_QUERY_KINDS = new Set([
@@ -211,7 +229,12 @@ export function mcpHubStatusQueryOptions(input: {
   });
 }
 
-const MCP_CONFIG_QUERY_KINDS = new Set(["commonConfig", "projectConfig", "effectiveConfig"]);
+const MCP_CONFIG_QUERY_KINDS = new Set([
+  "commonConfig",
+  "projectConfig",
+  "effectiveConfig",
+  "repositoryServers",
+]);
 
 export function isMcpConfigQuery(queryKey: readonly unknown[]): boolean {
   return queryKey[0] === "mcp" && MCP_CONFIG_QUERY_KINDS.has(String(queryKey[1]));

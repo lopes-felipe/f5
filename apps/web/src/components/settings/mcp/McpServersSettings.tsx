@@ -48,6 +48,7 @@ import { McpConfirmDialog, McpDraftNavigationGuard, useMcpDraftGuard } from "./M
 import { McpExport } from "./McpExport";
 import { McpHubNotice } from "./McpHubNotice";
 import { McpObservedGroup } from "./McpObservedGroup";
+import { McpRepositoryServers } from "./McpRepositoryServers";
 import {
   McpServerDetailSheet,
   type McpDetailTab,
@@ -1042,6 +1043,10 @@ export function McpServersSettings(props: {
               ))}
             </ul>
           </section>
+        ) : null}
+
+        {scope === "project" && selectedProjectId ? (
+          <McpRepositoryServers projectId={selectedProjectId} />
         ) : null}
 
         {selectedProject ? (

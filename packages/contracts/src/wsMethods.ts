@@ -237,6 +237,8 @@ export const WS_METHODS = {
   mcpListComposerResources: "mcp.listComposerResources",
   mcpReadComposerResource: "mcp.readComposerResource",
   mcpSearchCatalog: "mcp.searchCatalog",
+  mcpGetRepositoryServers: "mcp.getRepositoryServers",
+  mcpSetRepositoryServerTrust: "mcp.setRepositoryServerTrust",
 } as const;
 
 // ── Push Event Channels ──────────────────────────────────────────────

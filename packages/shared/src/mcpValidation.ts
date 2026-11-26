@@ -181,9 +181,15 @@ export function validateMcpLayerMerge(input: {
   project: McpProjectServersConfig;
   baseCommon: McpProjectServersConfig;
   baseProject: McpProjectServersConfig;
+  /** Approved `.mcp.json` servers, which count toward the effective limit too. */
+  repository?: McpProjectServersConfig;
 }): void {
   const effective = mergeMcpServerLayers(input);
-  const previous = mergeMcpServerLayers({ common: input.baseCommon, project: input.baseProject });
+  const previous = mergeMcpServerLayers({
+    common: input.baseCommon,
+    repository: input.repository,
+    project: input.baseProject,
+  });
   const counts = (servers: McpProjectServersConfig) => [
     Object.keys(servers).length,
     Object.values(servers).filter((server) => server.enabled !== false).length,

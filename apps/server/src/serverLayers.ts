@@ -91,6 +91,7 @@ import { ProviderUpdateAdvisor } from "./provider/Services/ProviderUpdateAdvisor
 import { makeEventNdjsonLogger } from "./provider/Layers/EventNdjsonLogger";
 import { OpenCodeRuntimeLive } from "./provider/opencodeRuntime";
 import { ProjectMcpConfigServiceLive } from "./mcp/ProjectMcpConfigService";
+import { McpRepositoryServersLive } from "./mcp/McpRepositoryServers";
 import { ProjectMcpConfigService } from "./mcp/ProjectMcpConfigService";
 import { McpRuntimeService, McpRuntimeServiceLive } from "./mcp/McpRuntimeService";
 import { McpRuntimeDiagnosticsLive } from "./mcp/McpRuntimeDiagnostics";
@@ -214,9 +215,13 @@ export function makeServerProviderLayer(): Layer.Layer<
       Layer.provide(ProviderSessionRuntimeRepositoryLive),
     );
     const projectMcpConfigRepositoryLayer = ProjectMcpConfigRepositoryLive;
+    const mcpRepositoryServersLayer = McpRepositoryServersLive.pipe(
+      Layer.provide(ProjectionProjectRepositoryLive),
+    );
     const projectMcpConfigServiceLayer = ProjectMcpConfigServiceLive.pipe(
       Layer.provide(projectMcpConfigRepositoryLayer),
       Layer.provide(ServerSecretStoreLive),
+      Layer.provide(mcpRepositoryServersLayer),
     );
     const providerEventLoggersLayer = Layer.succeed(ProviderEventLoggers, {
       native: nativeEventLogger,
@@ -353,6 +358,7 @@ export function makeServerProviderLayer(): Layer.Layer<
       codexOAuthManagerLayer,
       mcpRuntimeServiceLayer,
       projectMcpConfigServiceLayer,
+      mcpRepositoryServersLayer,
       previewAutomationBrokerLayer,
       computerAutomationBrokerLayer,
       previewMcpHttpServerLayer,

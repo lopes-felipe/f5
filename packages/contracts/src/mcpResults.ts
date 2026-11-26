@@ -304,6 +304,35 @@ export const McpThreadServersResult = Schema.Struct({
 });
 export type McpThreadServersResult = typeof McpThreadServersResult.Type;
 
+/**
+ * A server from the project's `.mcp.json`. Only approved servers run; a changed
+ * definition needs approval again. `overridden` means a project server has its name.
+ */
+export const McpRepositoryServerState = Schema.Literals(["approved", "needs-approval", "changed"]);
+export type McpRepositoryServerState = typeof McpRepositoryServerState.Type;
+
+export const McpRepositoryServer = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  server: McpServerDefinition,
+  definitionHash: TrimmedNonEmptyString,
+  state: McpRepositoryServerState,
+  overridden: Schema.Boolean,
+  /** Turned off for this project by its opt-outs. */
+  disabled: Schema.Boolean,
+});
+export type McpRepositoryServer = typeof McpRepositoryServer.Type;
+
+export const McpRepositoryServersResult = Schema.Struct({
+  projectId: ProjectId,
+  /** The file read, when the project has a root folder. */
+  path: Schema.optional(Schema.String),
+  found: Schema.Boolean,
+  servers: Schema.Array(McpRepositoryServer),
+  /** Entries left out, and why (invalid, secret references, unreadable file). */
+  issues: Schema.Array(Schema.String),
+});
+export type McpRepositoryServersResult = typeof McpRepositoryServersResult.Type;
+
 /** An environment variable or header a catalog entry asks for. */
 export const McpCatalogInput = Schema.Struct({
   name: TrimmedNonEmptyString,

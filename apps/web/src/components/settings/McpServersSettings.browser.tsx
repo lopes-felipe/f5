@@ -14,6 +14,7 @@ import type {
   McpGetHubAuthStatusResult,
   McpListActivityResult,
   McpSearchCatalogResult,
+  McpRepositoryServersResult,
   McpListToolPinsResult,
   McpGetHubStatusResult,
   McpStartHubSignInResult,
@@ -195,6 +196,22 @@ function createNativeApiMock() {
   const listToolPins = vi.fn(async (): Promise<McpListToolPinsResult> => ({ tools: [] }));
   const acceptToolChanges = vi.fn(async () => ({ accepted: 1 }));
   const searchCatalog = vi.fn(async (): Promise<McpSearchCatalogResult> => ({ entries: [] }));
+  const getRepositoryServers = vi.fn(
+    async (): Promise<McpRepositoryServersResult> => ({
+      projectId: PROJECT_ID,
+      found: false,
+      servers: [],
+      issues: [],
+    }),
+  );
+  const setRepositoryServerTrust = vi.fn(
+    async (): Promise<McpRepositoryServersResult> => ({
+      projectId: PROJECT_ID,
+      found: false,
+      servers: [],
+      issues: [],
+    }),
+  );
   const listActivity = vi.fn(
     async (): Promise<McpListActivityResult> => ({
       calls: [],
@@ -282,6 +299,8 @@ function createNativeApiMock() {
       acceptToolChanges,
       listActivity,
       searchCatalog,
+      getRepositoryServers,
+      setRepositoryServerTrust,
       inspectServer,
       onStatusUpdated,
     },
@@ -302,6 +321,8 @@ function createNativeApiMock() {
     acceptToolChanges,
     listActivity,
     searchCatalog,
+    getRepositoryServers,
+    setRepositoryServerTrust,
     replaceCommonConfig,
     getCommonConfig,
     getProjectConfig,
@@ -2321,8 +2342,12 @@ it("fills the Add form from a catalog entry, asking for its secret before saving
       .element(page.getByLabelText("Name", { exact: true }))
       .toHaveValue("project-server-2");
     await expect.element(page.getByLabelText("Command", { exact: true })).toHaveValue("npx");
-    await expect.element(page.getByLabelText("Argument 2", { exact: true })).toHaveValue("@acme/notes@1.2.0");
-    await expect.element(page.getByLabelText("Environment key 1", { exact: true })).toHaveValue("NOTES_TOKEN");
+    await expect
+      .element(page.getByLabelText("Argument 2", { exact: true }))
+      .toHaveValue("@acme/notes@1.2.0");
+    await expect
+      .element(page.getByLabelText("Environment key 1", { exact: true }))
+      .toHaveValue("NOTES_TOKEN");
     await expect.element(page.getByRole("checkbox", { name: "Secret" })).toBeChecked();
     expect(toastAdd).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -2333,6 +2358,64 @@ it("fills the Add form from a catalog entry, asking for its secret before saving
     expect(mocks.replaceProjectConfig).not.toHaveBeenCalled();
   } finally {
     toastAdd.mockRestore();
+    queryClient.clear();
+    await screen.unmount();
+  }
+});
+
+it("lists .mcp.json servers and approves the reviewed definition", async () => {
+  const mocks = createNativeApiMock();
+  const pending = {
+    name: "repo-docs",
+    server: { type: "stdio" as const, command: "npx", args: ["-y", "docs-mcp"] },
+    definitionHash: "hash-1",
+    state: "needs-approval" as const,
+    overridden: false,
+    disabled: false,
+  };
+  mocks.getRepositoryServers.mockResolvedValue({
+    projectId: PROJECT_ID,
+    path: "/repo/.mcp.json",
+    found: true,
+    servers: [
+      pending,
+      { ...pending, name: "old-tool", definitionHash: "hash-2", state: "changed" },
+    ],
+    issues: ["leak: Secret references cannot be imported."],
+  });
+  const approved = {
+    projectId: PROJECT_ID,
+    path: "/repo/.mcp.json",
+    found: true,
+    servers: [{ ...pending, state: "approved" as const }],
+    issues: [],
+  };
+  mocks.setRepositoryServerTrust.mockImplementation(async () => {
+    mocks.getRepositoryServers.mockResolvedValue(approved);
+    return approved;
+  });
+  const { screen, queryClient } = await renderSettings();
+  try {
+    const section = page.getByRole("region", { name: "Repository servers" });
+    await expect.element(section).toHaveTextContent("/repo/.mcp.json");
+    await expect.element(section).toHaveTextContent("Needs approval");
+    await expect.element(section).toHaveTextContent("Changed");
+    await expect.element(section).toHaveTextContent("leak: Secret references cannot be imported.");
+
+    await section.getByRole("button", { name: "Review", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Approve repo-docs?" });
+    await expect.element(dialog).toHaveTextContent("npx");
+    await expect.element(dialog).toHaveTextContent("-y");
+    await dialog.getByRole("button", { name: "Approve" }).click();
+    expect(mocks.setRepositoryServerTrust).toHaveBeenCalledWith({
+      projectId: PROJECT_ID,
+      serverName: "repo-docs",
+      trusted: true,
+      definitionHash: "hash-1",
+    });
+    await expect.element(section).toHaveTextContent("Approved");
+    await expect.element(section.getByRole("button", { name: "Revoke" })).toBeVisible();
+  } finally {
     queryClient.clear();
     await screen.unmount();
   }

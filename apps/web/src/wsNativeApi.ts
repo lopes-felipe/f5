@@ -946,6 +946,8 @@ export function createWsNativeApi(): NativeApi {
       listComposerResources: requestMethod(WS_METHODS.mcpListComposerResources),
       readComposerResource: requestMethod(WS_METHODS.mcpReadComposerResource),
       searchCatalog: requestMethod(WS_METHODS.mcpSearchCatalog),
+      getRepositoryServers: requestMethod(WS_METHODS.mcpGetRepositoryServers),
+      setRepositoryServerTrust: requestMethod(WS_METHODS.mcpSetRepositoryServerTrust),
       onStatusUpdated: (callback) => {
         mcpStatusUpdatedListeners.add(callback);
         return () => {

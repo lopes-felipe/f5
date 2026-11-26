@@ -148,6 +148,24 @@ export const McpSetThreadServerEnabledRequest = Schema.Struct({
 });
 export type McpSetThreadServerEnabledRequest = typeof McpSetThreadServerEnabledRequest.Type;
 
+/** Servers from `<project root>/.mcp.json`, with whether each is approved. */
+export const McpGetRepositoryServersRequest = Schema.Struct({
+  projectId: ProjectId,
+});
+export type McpGetRepositoryServersRequest = typeof McpGetRepositoryServersRequest.Type;
+
+/**
+ * Approves or revokes one repository server. Approval names the definition hash the
+ * user reviewed, so a file changed since then is refused rather than approved unseen.
+ */
+export const McpSetRepositoryServerTrustRequest = Schema.Struct({
+  projectId: ProjectId,
+  serverName: TrimmedNonEmptyString,
+  trusted: Schema.Boolean,
+  definitionHash: Schema.optional(TrimmedNonEmptyString),
+});
+export type McpSetRepositoryServerTrustRequest = typeof McpSetRepositoryServerTrustRequest.Type;
+
 /** Searches the official MCP Registry; only sent when the Catalog is opened or searched. */
 export const McpSearchCatalogRequest = Schema.Struct({
   query: Schema.optional(Schema.String.check(Schema.isMaxLength(200))),
