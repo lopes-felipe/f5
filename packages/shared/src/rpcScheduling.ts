@@ -131,11 +131,9 @@ export const RPC_METHOD_POLICY = {
   "htmlRender.respond": MUTATION,
 
   "mcp.applyToLiveSessions": MUTATION_RT,
-  "mcp.getCodexStatus": READ,
   "mcp.getCommonConfig": READ,
   "mcp.getEffectiveConfig": READ,
   "mcp.getLoginStatus": READ,
-  "mcp.getOAuthStatus": READ,
   "mcp.getProjectConfig": READ,
   "mcp.getProviderStatus": READ,
   "mcp.getServerStatuses": READ,
@@ -143,11 +141,9 @@ export const RPC_METHOD_POLICY = {
   "mcp.listImportCandidates": READ,
   "mcp.probeServer": long(false, 75_000),
   "mcp.reconnectServer": MUTATION_RT,
-  "mcp.reloadProject": MUTATION,
   "mcp.replaceCommonConfig": MUTATION,
   "mcp.replaceProjectConfig": MUTATION,
   "mcp.startLogin": long(false, CODEX_MCP_OAUTH_LOGIN_REQUEST_TIMEOUT_MS),
-  "mcp.startOAuthLogin": long(false, CODEX_MCP_OAUTH_LOGIN_REQUEST_TIMEOUT_MS),
   "mcp.storeSecret": MUTATION,
 
   "mcpApps.callTool": MUTATION_RT,

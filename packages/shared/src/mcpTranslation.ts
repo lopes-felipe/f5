@@ -226,8 +226,77 @@ export function evaluateMcpToolFilter(
   }
 }
 
+type McpEnvironment = Readonly<Record<string, string | undefined>>;
+
+/**
+ * Variable prefixes a server's `bearerTokenEnvVar` may never name: F5's own
+ * capabilities (such as the browser-open token) and provider credentials live
+ * in the same environment, and a configured server would receive them.
+ */
+const RESERVED_BEARER_ENV_PREFIXES = [
+  "F5_",
+  "T3CODE_",
+  "ANTHROPIC_",
+  "CLAUDE_",
+  "AWS_",
+  "OPENAI_",
+  "CODEX_",
+] as const;
+
+export function isReservedMcpBearerEnvVar(name: string): boolean {
+  const upper = name.trim().toUpperCase();
+  return RESERVED_BEARER_ENV_PREFIXES.some((prefix) => upper.startsWith(prefix));
+}
+
+/**
+ * The bearer token a remote server's `bearerTokenEnvVar` names, trimmed; absent
+ * when the variable is unset, empty, or reserved.
+ */
+export function resolveMcpBearerToken(
+  definition: Pick<McpServerDefinition, "bearerTokenEnvVar">,
+  environment: McpEnvironment | undefined,
+): string | undefined {
+  const name = definition.bearerTokenEnvVar?.trim();
+  if (!name || isReservedMcpBearerEnvVar(name)) return undefined;
+  return environment?.[name]?.trim() || undefined;
+}
+
+/**
+ * Request headers for a remote server: its literal headers, plus
+ * `Authorization: Bearer <token>` from `bearerTokenEnvVar` unless a literal
+ * `Authorization` header is set (the literal header wins everywhere).
+ */
+export function mcpRemoteHeaders(
+  definition: Pick<McpServerDefinition, "headers" | "bearerTokenEnvVar">,
+  environment: McpEnvironment | undefined,
+): Record<string, string> | undefined {
+  const headers = normalizeStringRecord(definition.headers);
+  const bearer = resolveMcpBearerToken(definition, environment);
+  if (!bearer || Object.keys(headers ?? {}).some((key) => key.toLowerCase() === "authorization"))
+    return headers;
+  return { ...headers, Authorization: `Bearer ${bearer}` };
+}
+
+/** Values to redact for a server's bearer variable: the raw value and the token sent. */
+export function mcpBearerRedactionValues(
+  definition: Pick<McpServerDefinition, "bearerTokenEnvVar">,
+  environment: McpEnvironment | undefined,
+): string[] {
+  const name = definition.bearerTokenEnvVar?.trim();
+  const raw = name ? environment?.[name] : undefined;
+  if (!raw) return [];
+  const trimmed = raw.trim();
+  return trimmed && trimmed !== raw ? [raw, trimmed] : [raw];
+}
+
+/**
+ * `environment` is the account (provider process) environment. Claude has no
+ * `bearer_token_env_var`, so a server's `bearerTokenEnvVar` is resolved from it
+ * into an `Authorization` header, as Codex and Cursor do.
+ */
 export function translateMcpForClaudeAgent(
   servers: McpProjectServersConfig | null | undefined,
+  options?: { readonly environment?: Readonly<Record<string, string | undefined>> },
 ): Record<string, ClaudeAgentMcpServerConfig> | undefined {
   const translated = Object.create(null) as Record<string, ClaudeAgentMcpServerConfig>;
   for (const [name, definition] of Object.entries(filterEnabledMcpServers(servers))) {
@@ -254,11 +323,12 @@ export function translateMcpForClaudeAgent(
     if (!normalized.url) {
       continue;
     }
+    const headers = mcpRemoteHeaders(normalized, options?.environment);
     translated[name] = {
       type: definition.type,
       ...timeout,
       url: normalized.url,
-      ...(normalized.headers ? { headers: normalized.headers } : {}),
+      ...(headers ? { headers } : {}),
       ...(normalized.oauthClientId || normalized.oauthCallbackPort !== undefined
         ? {
             oauth: {
@@ -275,15 +345,22 @@ export function translateMcpForClaudeAgent(
   return Object.keys(translated).length > 0 ? { ...translated } : undefined;
 }
 
+/**
+ * `ownBearerEnvVars` names variables F5 itself sets for Codex (its own catalogs'
+ * credentials); only those may use a reserved prefix.
+ */
 export function translateMcpForCodex(
   servers: McpProjectServersConfig | null | undefined,
+  options?: { readonly ownBearerEnvVars?: ReadonlySet<string> },
 ): Record<string, CodexMcpServerEntry> | undefined {
   const translated = Object.create(null) as Record<string, CodexMcpServerEntry>;
   for (const [name, definition] of Object.entries(filterEnabledMcpServers(servers))) {
     const normalized = normalizeCommonEntry(definition);
+    const bearerEnvVar = normalized.bearerTokenEnvVar;
     const shared = {
-      ...(normalized.bearerTokenEnvVar
-        ? { bearer_token_env_var: normalized.bearerTokenEnvVar }
+      ...(bearerEnvVar &&
+      (!isReservedMcpBearerEnvVar(bearerEnvVar) || options?.ownBearerEnvVars?.has(bearerEnvVar))
+        ? { bearer_token_env_var: bearerEnvVar }
         : {}),
       ...(typeof normalized.supportsParallelToolCalls === "boolean"
         ? { supports_parallel_tool_calls: normalized.supportsParallelToolCalls }

@@ -173,17 +173,9 @@ describe("wsNativeApi", () => {
     requestMock.mockResolvedValue(state);
     await expect(api.mcp.startLogin(input)).resolves.toMatchObject(state);
     await expect(api.mcp.getLoginStatus(input)).resolves.toMatchObject(state);
-    await expect(api.mcp.startOAuthLogin(input)).resolves.toMatchObject({
-      authorizationUrl: state.authorizationUrl,
-    });
-    await expect(api.mcp.getOAuthStatus(input)).resolves.toMatchObject({
-      authorizationUrl: state.authorizationUrl,
-    });
     requestMock.mockResolvedValue({ ...state, authorizationUrl: "javascript:alert(1)" });
     await expect(api.mcp.startLogin(input)).rejects.toThrow();
     await expect(api.mcp.getLoginStatus(input)).rejects.toThrow();
-    await expect(api.mcp.startOAuthLogin(input)).rejects.toThrow();
-    await expect(api.mcp.getOAuthStatus(input)).rejects.toThrow();
   });
 
   it("allows worktree preparation to outlive the ordinary RPC timeout", async () => {

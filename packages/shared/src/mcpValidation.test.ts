@@ -3,7 +3,9 @@ import type { McpProjectServersConfig } from "@t3tools/contracts";
 import {
   assertMcpServerLimit,
   assertMcpRuntimeConfig,
+  isValidNewMcpServerName,
   mcpConfigErrorMessage,
+  sanitizeMcpServerName,
   MCP_RUNTIME_SERVER_LIMIT,
   normalizeMcpServersRecord,
   readMcpValidationIssues,
@@ -202,5 +204,51 @@ describe("MCP configuration correctness", () => {
     expect(issue.message).not.toContain("\n");
     expect(issue.message).not.toContain("Error:");
     expect(issue.message).toContain("HTTP/HTTPS");
+  });
+});
+
+describe("MCP server name rule", () => {
+  it("accepts the charset and rejects other characters and reserved prefixes", () => {
+    for (const name of ["github", "My-Server_2", "a".repeat(128)])
+      expect(isValidNewMcpServerName(name)).toBe(true);
+    for (const name of [
+      "my server",
+      "a.b",
+      "slash/name",
+      "",
+      "a".repeat(129),
+      "f5_x",
+      "F5_x",
+      "__f5",
+    ])
+      expect(isValidNewMcpServerName(name)).toBe(false);
+    expect(sanitizeMcpServerName(" my server.v2 ")).toBe("my_server_v2");
+    expect(sanitizeMcpServerName("f5_tools")).toBe("mcp_f5_tools");
+    expect(sanitizeMcpServerName("...")).toBe("server");
+    expect(isValidNewMcpServerName(sanitizeMcpServerName("__f5 thing"))).toBe(true);
+  });
+
+  it("rejects new and renamed names but keeps legacy names and inherited overrides", () => {
+    expect(() => validateMcpLayerWrite({}, { "my server": server })).toThrow(
+      "Invalid MCP server name",
+    );
+    const legacy: McpProjectServersConfig = { "my server": server };
+    // Editing a legacy entry under its existing name is allowed.
+    expect(
+      validateMcpLayerWrite(legacy, { "my server": { ...server, args: ["--x"] } })["my server"],
+    ).toMatchObject({ args: ["--x"] });
+    // Renaming it must satisfy the rule.
+    expect(() => validateMcpLayerWrite(legacy, { "my.server": server })).toThrow(
+      "Invalid MCP server name",
+    );
+    expect(validateMcpLayerWrite(legacy, { my_server: server })).toHaveProperty("my_server");
+    // Exact-name overrides of an inherited (common) legacy server are allowed in a project.
+    expect(
+      validateMcpLayerWrite({}, { "my server": server }, { inheritedNames: ["my server"] }),
+    ).toHaveProperty(["my server"]);
+    expect(readMcpValidationIssues(legacy)).toEqual([
+      expect.objectContaining({ kind: "compatibility", serverName: "my server" }),
+    ]);
+    expect(readMcpValidationIssues({ ok_name: server })).toEqual([]);
   });
 });
