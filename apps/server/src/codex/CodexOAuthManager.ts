@@ -312,6 +312,7 @@ const makeCodexOAuthManager = Effect.gen(function* () {
       metadata?.cleanupListeners();
       statusByKey.set(key, expiredStatus);
       pendingMetadataByKey.delete(key);
+      yield* publishStatusUpdated(input, metadata);
       return expiredStatus;
     });
 
@@ -402,6 +403,17 @@ const makeCodexOAuthManager = Effect.gen(function* () {
           reconcileInFlight: false,
         };
         pendingMetadataByKey.set(statusKeyFor(input), pendingMetadata);
+        // Nothing polls a pending sign-in any more: reconcile here until it settles, so a
+        // completion Codex never announces still finishes (and publishes) on its own.
+        runBackgroundTask(
+          Effect.gen(function* () {
+            while (pendingMetadataByKey.get(statusKeyFor(input)) === pendingMetadata) {
+              yield* Effect.sleep(OAUTH_RECONCILE_INTERVAL_MS);
+              if (pendingMetadataByKey.get(statusKeyFor(input)) !== pendingMetadata) return;
+              yield* readStatus(input);
+            }
+          }),
+        );
 
         notificationListener = ({
           method,

@@ -459,7 +459,9 @@ function readCodexMcpOAuthCallbackPorts(
   servers: McpProjectServersConfig | null | undefined,
 ): Array<{ readonly serverName: string; readonly port: number }> {
   const ports: Array<{ readonly serverName: string; readonly port: number }> = [];
-  for (const [serverName, definition] of Object.entries(filterEnabledMcpServers(servers))) {
+  for (const [serverName, definition] of Object.entries(
+    filterEnabledMcpServers(servers, "codex"),
+  )) {
     const normalized = normalizeCommonEntry(definition);
     if (normalized.oauthCallbackPort !== undefined) {
       ports.push({ serverName, port: normalized.oauthCallbackPort });
@@ -472,7 +474,9 @@ function readCodexMcpOAuthCallbackUrls(
   servers: McpProjectServersConfig | null | undefined,
 ): Array<{ readonly serverName: string; readonly url: string }> {
   const urls: Array<{ readonly serverName: string; readonly url: string }> = [];
-  for (const [serverName, definition] of Object.entries(filterEnabledMcpServers(servers))) {
+  for (const [serverName, definition] of Object.entries(
+    filterEnabledMcpServers(servers, "codex"),
+  )) {
     const normalized = normalizeCommonEntry(definition);
     if (normalized.oauthCallbackUrl !== undefined) {
       urls.push({ serverName, url: normalized.oauthCallbackUrl });

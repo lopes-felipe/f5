@@ -121,3 +121,31 @@ describe("lossless MCP editing", () => {
     expect(() => decodeDraftServer({ ...draft, argsFormat: "json" })).toThrow();
   });
 });
+
+describe("fields the form does not edit", () => {
+  it("takes them from the current saved entry, so a change saved elsewhere survives", () => {
+    const opened: McpServerDefinition = { type: "stdio", command: "docs" };
+    const draft = { ...draftFromServer("docs", opened), description: "Team docs" };
+    // Another window turned Claude off after this draft was opened.
+    const current: McpServerDefinition = { ...opened, disabledProviders: ["claudeAgent"] };
+    expect(decodeDraftServer(draft, current).server).toMatchObject({
+      description: "Team docs",
+      disabledProviders: ["claudeAgent"],
+    });
+  });
+
+  it("drops provider names this version does not know, so the entry stays writable", () => {
+    const saved = {
+      type: "stdio",
+      command: "docs",
+      disabledProviders: ["claudeAgent", "future-agent"],
+    } as unknown as McpServerDefinition;
+    expect(decodeDraftServer(draftFromServer("docs", saved)).server.disabledProviders).toEqual([
+      "claudeAgent",
+    ]);
+    const onlyUnknown = { ...saved, disabledProviders: ["future-agent"] } as McpServerDefinition;
+    expect(
+      decodeDraftServer(draftFromServer("docs", onlyUnknown)).server.disabledProviders,
+    ).toBeUndefined();
+  });
+});

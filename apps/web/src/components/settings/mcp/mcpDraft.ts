@@ -1,5 +1,6 @@
 import { readMcpKeyValueRows } from "./mcpEditorValues";
 import {
+  isKnownProviderKind,
   McpServerWriteDefinition,
   type McpProjectServersConfig,
   type McpProjectConfigResult,
@@ -247,7 +248,15 @@ export function rebaseDraft(
   return next as ServerDraft;
 }
 
-export function decodeDraftServer(draft: ServerDraft): {
+/**
+ * `current` is the saved entry the draft replaces, when it still exists: fields the
+ * form does not edit come from it, so a change saved elsewhere since the draft was
+ * opened is not reverted.
+ */
+export function decodeDraftServer(
+  draft: ServerDraft,
+  current?: McpProjectServersConfig[string],
+): {
   readonly name: string;
   readonly server: McpProjectServersConfig[string];
 } {
@@ -339,9 +348,14 @@ export function decodeDraftServer(draft: ServerDraft): {
       }
     }
   }
+  const base = current ?? draft.original?.server;
   for (const field of PRESERVED_FIELDS) {
-    const value = draft.original?.server[field];
-    if (value !== undefined) writable[field] = value;
+    const value =
+      field === "disabledProviders"
+        ? // Provider names this version does not know cannot be written back.
+          base?.disabledProviders?.filter(isKnownProviderKind)
+        : base?.[field];
+    if (value !== undefined && (!Array.isArray(value) || value.length > 0)) writable[field] = value;
   }
   return { name, server: Schema.decodeUnknownSync(McpServerWriteDefinition)(writable) };
 }

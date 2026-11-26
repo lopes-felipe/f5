@@ -70,7 +70,7 @@ Cursor, Grok, Antigravity, custom ACP agents, OpenCode, Muse Code, and Pi reach 
 - Agents without HTTP MCP support reach these servers through F5's stdio relay, which carries requests and responses but not server notifications: a server whose tool list changes during the session shows the new tools in the next session.
 - A server an agent does not get (for example because the agent lacks the transport it needs) is listed in a warning in the conversation.
 
-A server's Overview lists F5's connections in use, the agents and session counts using them, and any error, with **Reconnect** for any connection that is not connecting.
+A server's Overview lists F5's connections in use, the agents and session counts using them, and any error, with **Reconnect** for any connection that is not connecting. In common scope the status covers every project's connections for that name, project overrides included, and is labeled **Other agents, all projects**; Reconnect there restarts them all.
 
 ## Saved configuration and live status
 
@@ -80,7 +80,7 @@ Status for other agents is pushed by F5 as connections change. Codex and Claude 
 
 Failure reasons are shown with supplemental redaction. In a panel's Overview, expand **Connection details** to read or copy the error. Unsupported capabilities and incomplete listings are marked explicitly. Reading status never runs tools or fetches resource contents.
 
-The chat's MCP chip summarizes the session's servers: for Codex and Claude, the latest session generation; for other agents, F5's connections for this agent and project. Click it, or focus it and press Enter, for each server's name, state, error, a **Sign in** button when one is needed, and a link to the server's panel in MCP settings.
+The chat's MCP chip summarizes the session's servers: for Codex and Claude, the latest session generation; for other agents, F5's connections for this agent and project. Click it, or focus it and press Enter, for each server's name, state, error, a **Sign in** button when one is needed, and, for servers saved in F5, a link to the server's panel in MCP settings. For other agents, the counts cover every conversation of that agent in the project.
 
 ## Sign in
 

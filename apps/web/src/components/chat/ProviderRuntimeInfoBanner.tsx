@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { createMcpDiagnosticsSanitizer } from "@t3tools/shared/mcpDiagnostics";
+import { mcpServerNameKey } from "@t3tools/shared/mcpValidation";
 import { Popover, PopoverTrigger, PopoverPopup } from "../ui/popover";
 import { useQuery } from "@tanstack/react-query";
 import { mcpEffectiveConfigQueryOptions } from "../../lib/mcpReactQuery";
@@ -177,6 +178,8 @@ function McpRuntimeChip({
     config.isSuccess && !config.isFetching
       ? createMcpDiagnosticsSanitizer(config.data.servers)
       : null;
+  // Only servers saved in F5 have a settings panel to open.
+  const savedNames = new Set(Object.keys(config.data?.servers ?? {}).map(mcpServerNameKey));
   const needsSignIn = servers.filter((server) => server.status === "needs-auth").length;
   const signInLabel =
     needsSignIn > 0 ? `${needsSignIn} ${needsSignIn === 1 ? "needs" : "need"} sign-in` : null;
@@ -213,7 +216,7 @@ function McpRuntimeChip({
                       ? ` · ${server.toolCount} ${server.toolCount === 1 ? "tool" : "tools"}`
                       : ""}
                   </span>
-                  {server.name ? (
+                  {server.name && savedNames.has(mcpServerNameKey(server.name)) ? (
                     <Link
                       to="/settings"
                       search={{

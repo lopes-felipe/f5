@@ -404,6 +404,19 @@ describe("F5 MCP hub", () => {
     await attachment.dispose();
   });
 
+  it("reuses a shared connection when only settings-only fields change", async () => {
+    const url = "http://127.0.0.1:9/mcp";
+    const first = await attach({ remote: { type: "http", url, description: "Docs" } }, "thread-a");
+    const second = await attach(
+      { remote: { type: "http", url, description: "Team docs", disabledProviders: ["codex"] } },
+      "thread-b",
+    );
+    expect(hub.status(projectId)).toEqual([
+      expect.objectContaining({ name: "remote", attachedSessions: 2 }),
+    ]);
+    await Promise.all([first.dispose(), second.dispose()]);
+  });
+
   it("keeps one shared connection per workspace folder", async () => {
     const otherRoot = join(root, "other");
     const servers: McpProjectServersConfig = {

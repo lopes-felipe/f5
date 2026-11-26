@@ -381,6 +381,24 @@ describe("mcpTranslation", () => {
     ).toThrow(CodexMcpOAuthCallbackUrlConflictError);
   });
 
+  it("ignores callback settings of servers turned off for Codex", () => {
+    expect(
+      readCodexMcpOAuthCallbackUrl({
+        slack: {
+          type: "http",
+          url: "https://mcp.slack.com/mcp",
+          oauthCallbackUrl: "http://127.0.0.1:3118/callback",
+        },
+        observability: {
+          type: "http",
+          url: "https://observability.example.test/mcp",
+          oauthCallbackUrl: "http://127.0.0.1:4118/callback",
+          disabledProviders: ["codex"],
+        },
+      }),
+    ).toBe("http://127.0.0.1:3118/callback");
+  });
+
   it("does not reject port conflicts when reading only the callback URL", () => {
     expect(
       readCodexMcpOAuthCallbackUrl({

@@ -208,8 +208,10 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
     definition: McpServerDefinition,
   ): UpstreamEntry => {
     const scope = defaultConnectionScope(definition);
+    // Settings-only fields never reach the server, so editing them reuses the connection.
+    const { description: _description, disabledProviders: _disabled, ...connected } = definition;
     const definitionHash = createHash("sha256")
-      .update(stableMcpServersJson({ entry: definition }))
+      .update(stableMcpServersJson({ entry: connected as McpServerDefinition }))
       .digest("hex")
       .slice(0, 24);
     // Session connections are never reused. Shared ones are per account, definition and

@@ -25,9 +25,11 @@ export interface McpServerStatusSummary {
 
 export function hubStatusSources(
   entries: ReadonlyArray<McpHubServerStatus>,
+  /** Common scope sees every project's connections, overrides included. */
+  acrossProjects = false,
 ): ReadonlyArray<McpStatusSource> {
   return entries.map((entry) => ({
-    label: "Other agents",
+    label: acrossProjects ? "Other agents, all projects" : "Other agents",
     state:
       entry.state === "ready"
         ? "ready"
