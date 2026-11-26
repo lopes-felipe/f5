@@ -121,11 +121,18 @@ shows the template, cost and per-step context.
     and F5 answers with the same command allowlist it uses for Cursor. File edits and requests
     for more permissions are refused. Antigravity launches without `--sandbox`, under the same
     allowlist.
-  - If your organisation's Codex requirements don't allow the `untrusted` approval policy
-    (`allowed_approval_policies` in a managed `requirements.toml`), Codex can't be made to ask
-    before every command. The stage then stays in Codex's read-only sandbox, and the thread shows
-    a configuration warning saying so. In the desktop app, where that sandbox can't start, shell
-    commands fail and the stage reads pull requests and files through F5's forge tools.
+  - If your organisation's Codex requirements (`allowed_approval_policies` or
+    `allowed_sandbox_modes` in a managed `requirements.toml`) don't allow `untrusted` with
+    `danger-full-access`, Codex can't be made to ask before every command:
+    - With `on-request` allowed, the stage keeps Codex's read-only sandbox and asks only when a
+      command needs to run outside it. In the desktop app, where the sandbox can't start, Codex
+      asks to rerun each of its own safe commands (`ls`, `git status` and the like) outside it, and
+      F5 tells the model to request the same for any other command. F5 answers with its allowlist
+      as above. A command nobody asks about fails, so nothing runs unchecked.
+    - With only `never` allowed, the stage stays in Codex's read-only sandbox, recorded as
+      **sandboxed**, and the thread shows a configuration warning saying so. In the desktop app
+      shell commands then fail, and the stage reads pull requests and files through F5's forge
+      tools.
   - Claude runs in Plan mode, where Claude Code decides which commands only read.
   - OpenCode and Pi run with their write tools turned off.
   - Antigravity runs only on a certified runtime (see
