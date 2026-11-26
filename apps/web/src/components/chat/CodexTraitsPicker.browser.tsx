@@ -322,6 +322,27 @@ describe("CodexTraitsPicker", () => {
     }
   });
 
+  it("previews the keyboard-focused row once the pointer moves onto it", async () => {
+    const mounted = await mountPicker({ model: "gpt-6.1-sol", effort: "medium" });
+
+    try {
+      page.getByRole("button").element().focus();
+      await userEvent.keyboard("{ArrowDown}");
+      await vi.waitFor(() => {
+        expect(document.activeElement?.getAttribute("data-effort-level")).toBe("ultra");
+      });
+      expect(filledLevels()).toEqual(["medium", "low"]);
+
+      // The row already has focus, so no focus event fires; the pointer move alone previews it.
+      await page.getByRole("menuitemradio", { name: "Ultra" }).hover();
+      await vi.waitFor(() => {
+        expect(filledLevels()).toEqual(["ultra", "max", "xhigh", "high", "medium", "low"]);
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("keeps the shown effort when fast mode is toggled with reported capabilities", async () => {
     // Stored Ultra, reported [max, high, low] with default Low: the turn runs
     // at Max, so toggling fast mode must not drop the effort and fall to Low.

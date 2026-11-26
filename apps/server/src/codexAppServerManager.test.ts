@@ -24,6 +24,7 @@ import {
   buildCodexThreadForkParams,
   buildCodexThreadOpenRequestParams,
   buildCodexTurnStartParams,
+  codexReadOnlyPolicyDecision,
   codexReadOnlyThreadPolicyViolation,
   CODEX_ELICITATION_OPENED_METHOD,
   CODEX_ELICITATION_SETTLED_METHOD,
@@ -794,6 +795,72 @@ describe("codexReadOnlyThreadPolicyViolation", () => {
   ])("checks %j", (response, expected) => {
     expect(codexReadOnlyThreadPolicyViolation(response)).toBe(expected);
   });
+
+  it.each([
+    [{ sandbox: { type: "dangerFullAccess" }, approvalPolicy: "untrusted" }, undefined],
+    [{ sandbox: { type: "dangerFullAccess" } }, undefined],
+    [
+      { sandbox: { type: "dangerFullAccess" }, approvalPolicy: "never" },
+      "reported approval policy never",
+    ],
+  ])("requires Codex to ask under policy enforcement: %j", (response, expected) => {
+    expect(codexReadOnlyThreadPolicyViolation(response, "policy")).toBe(expected);
+  });
+});
+
+describe("codexReadOnlyPolicyDecision", () => {
+  const command = (value: unknown, extra: Record<string, unknown> = {}) =>
+    codexReadOnlyPolicyDecision("item/commandExecution/requestApproval", {
+      command: value,
+      ...extra,
+    });
+
+  it("accepts read-only commands, unwrapping the shell Codex reports them in", () => {
+    expect(command("git status")).toEqual({ decision: "accept" });
+    expect(command("/bin/zsh -lc 'git log --oneline -5 | head -3'")).toEqual({
+      decision: "accept",
+    });
+    expect(
+      codexReadOnlyPolicyDecision("execCommandApproval", {
+        command: ["/bin/bash", "-lc", "rg -n foo src"],
+      }),
+    ).toEqual({ decision: "accept" });
+    expect(
+      codexReadOnlyPolicyDecision("execCommandApproval", { command: ["git", "diff", "HEAD~1"] }),
+    ).toEqual({ decision: "accept" });
+  });
+
+  it("refuses writes, unknown programs and escalations", () => {
+    expect(command("/bin/zsh -lc 'touch marker'")).toMatchObject({ decision: "decline" });
+    expect(command("/bin/zsh -lc 'git status; rm -rf x'")).toMatchObject({
+      decision: "decline",
+    });
+    expect(command("zsh -c 'git status' extra")).toMatchObject({ decision: "decline" });
+    expect(command("git status", { additionalPermissions: { network: true } })).toEqual({
+      decision: "decline",
+      reason: "more permissions are not allowed",
+    });
+    expect(command(undefined)).toEqual({ decision: "decline", reason: "no command to check" });
+    expect(
+      codexReadOnlyPolicyDecision("execCommandApproval", { command: ["sh", "-c", "a", "b"] }),
+    ).toEqual({ decision: "decline", reason: "`sh` is not on the read-only allowlist" });
+    expect(
+      codexReadOnlyPolicyDecision("execCommandApproval", { command: ["cat", "a b", "$HOME"] }),
+    ).toEqual({ decision: "decline", reason: "no command to check" });
+  });
+
+  it("accepts file reads, refuses edits and permissions, and leaves elicitations alone", () => {
+    expect(codexReadOnlyPolicyDecision("item/fileRead/requestApproval", {})).toEqual({
+      decision: "accept",
+    });
+    for (const method of [
+      "item/fileChange/requestApproval",
+      "applyPatchApproval",
+      "item/permissions/requestApproval",
+    ])
+      expect(codexReadOnlyPolicyDecision(method, {})).toMatchObject({ decision: "decline" });
+    expect(codexReadOnlyPolicyDecision("mcpServer/elicitation/request", {})).toBeUndefined();
+  });
 });
 
 describe("Codex runtime-mode thread configuration", () => {
@@ -846,6 +913,24 @@ describe("Codex runtime-mode thread configuration", () => {
       expect(params.resume).toMatchObject({ excludeTurns: true });
     },
   );
+
+  it("opens a policy-enforced stage without a sandbox and with every command asking", () => {
+    const input = {
+      runtimeMode: "full-access",
+      workflowExecutionProfile: "unattended-readonly",
+      readOnlyEnforcement: "policy",
+      resumeThreadId: "provider-thread-1",
+    } as const;
+    const params = buildCodexThreadOpenRequestParams(input);
+    const expected = {
+      approvalPolicy: "untrusted",
+      sandbox: "danger-full-access",
+      approvalsReviewer: "user",
+    };
+    expect(params.start).toMatchObject(expected);
+    expect(params.resume).toMatchObject(expected);
+    expect(buildCodexThreadForkParams(input, "provider-thread-1")).toMatchObject(expected);
+  });
 });
 
 describe("readCodexAccountSnapshot", () => {
@@ -1778,6 +1863,19 @@ describe("sendTurn", () => {
       const ordinary = build({});
       expect(ordinary).not.toHaveProperty("sandboxPolicy");
       expect(ordinary).not.toHaveProperty("approvalPolicy");
+    });
+
+    it("restates the unsandboxed, always-asking policy on every turn of a policy stage", () => {
+      expect(
+        build(
+          {},
+          { workflowExecutionProfile: "unattended-readonly", readOnlyEnforcement: "policy" },
+        ),
+      ).toMatchObject({
+        approvalPolicy: "untrusted",
+        approvalsReviewer: "user",
+        sandboxPolicy: { type: "dangerFullAccess" },
+      });
     });
 
     it("sends the model default when no effort is given", () => {
@@ -3978,6 +4076,75 @@ describe("Codex server requests", () => {
     // Another runtime mode ends the allowance.
     (context.session as { runtimeMode: string }).runtimeMode = "approval-required";
     command(93);
+    expect(context.pendingApprovals.size).toBe(1);
+  });
+
+  it("answers a policy-enforced read-only stage's requests with F5's classifier", async () => {
+    const manager = new CodexAppServerManager();
+    const context = Object.assign(requestContext(manager), {
+      workflowExecutionProfile: "unattended-readonly",
+      readOnlyEnforcement: "policy",
+    });
+    const internals = manager as unknown as {
+      handleServerRequest: (context: unknown, request: Record<string, unknown>) => void;
+      writeMessage: (...args: unknown[]) => Promise<void>;
+    };
+    const writeMessage = vi.spyOn(internals, "writeMessage").mockResolvedValue();
+    const events: Array<Record<string, unknown>> = [];
+    manager.on("event", (event) => events.push(event as unknown as Record<string, unknown>));
+    const ask = (id: number, method: string, params: Record<string, unknown>) =>
+      internals.handleServerRequest(context, {
+        id,
+        method,
+        params: { threadId: "thread_1", turnId: "turn_1", itemId: `item-${id}`, ...params },
+      });
+
+    ask(1, "item/commandExecution/requestApproval", {
+      command: "/bin/zsh -lc 'git diff HEAD~1 --stat'",
+    });
+    ask(2, "item/commandExecution/requestApproval", { command: "/bin/zsh -lc 'touch marker'" });
+    ask(3, "execCommandApproval", { callId: "legacy", command: ["bash", "-lc", "rm -f x"] });
+    ask(4, "item/fileChange/requestApproval", {});
+
+    await vi.waitFor(() => expect(writeMessage).toHaveBeenCalledTimes(4));
+    expect(writeMessage.mock.calls.map(([, response]) => response)).toEqual([
+      { id: 1, result: { decision: "accept" } },
+      { id: 2, result: { decision: "decline" } },
+      { id: 3, result: { decision: "denied" } },
+      { id: 4, result: { decision: "decline" } },
+    ]);
+    // Nothing waits on the user, and only refusals are reported.
+    expect(context.pendingApprovals.size).toBe(0);
+    expect(events.map((event) => [event.method, event.requestKind])).toEqual([
+      ["f5/readOnly/refused", "command"],
+      ["f5/readOnly/refused", "command"],
+      ["f5/readOnly/refused", "file-change"],
+    ]);
+    expect(events[0]).toMatchObject({
+      turnId: "turn_1",
+      itemId: "item-2",
+      payload: {
+        requestMethod: "item/commandExecution/requestApproval",
+        reason: "`touch` is not on the read-only allowlist",
+      },
+    });
+  });
+
+  it("leaves a sandboxed read-only stage's requests to the normal flow", () => {
+    const manager = new CodexAppServerManager();
+    const context = Object.assign(requestContext(manager), {
+      workflowExecutionProfile: "unattended-readonly",
+      readOnlyEnforcement: "sandbox",
+    });
+    (
+      manager as unknown as {
+        handleServerRequest: (context: unknown, request: Record<string, unknown>) => void;
+      }
+    ).handleServerRequest(context, {
+      id: 5,
+      method: "item/commandExecution/requestApproval",
+      params: { threadId: "thread_1", turnId: "turn_1", itemId: "item-5", command: "git status" },
+    });
     expect(context.pendingApprovals.size).toBe(1);
   });
 

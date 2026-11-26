@@ -1089,9 +1089,14 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             grokSettings,
             runtimeMode: startRuntimeMode,
             // Only sessions started for read-only workflow turns may take workflow turns, so the
-            // sandbox is decided here, once, at launch.
+            // sandbox is decided here, once, at launch. A policy-enforced stage runs without it:
+            // the sandbox can't start on this host (F5's macOS desktop backend already runs in
+            // one), and F5's command policy decides every command instead.
             ...(PROVIDER === "antigravity" && input.workflowExecutionProfile
-              ? { readOnlySandbox: true }
+              ? {
+                  readOnlyWorkflow: true,
+                  readOnlySandbox: input.readOnlyEnforcement !== "policy",
+                }
               : {}),
             ...(options?.environment ? { environment: options.environment } : {}),
             childProcessSpawner,

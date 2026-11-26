@@ -318,6 +318,7 @@ import {
   searchWorkspaceEntries,
 } from "./workspaceEntries";
 import { makeProjectContentSearchManager } from "./projectContentSearch";
+import { WorkspaceSearchRestrictedError } from "./workspaceSearchRoot";
 import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
@@ -407,6 +408,12 @@ import {
   SLOW_RPC_ROUTE_MS,
   startEventLoopDelayMonitor,
 } from "./observability/serverHealth.ts";
+import {
+  buildSqliteInspectionSnapshot,
+  runDoctorDiagnostics,
+  type SqliteInspectionResult,
+} from "./diagnostics/doctor.ts";
+import { canonicalManagedWorktreesDirectories } from "./worktreesDirectoryPaths.ts";
 import {
   type BootstrapThreadDisposition,
   dispatchBootstrapTurnStart,
@@ -1000,6 +1007,14 @@ export class ServerLifecycleError extends Schema.TaggedErrorClass<ServerLifecycl
     cause: Schema.optional(Schema.Defect),
   },
 ) {}
+
+function workspaceSearchRouteError(cause: unknown, summary: string): RouteRequestError {
+  if (cause instanceof WorkspaceSearchRestrictedError) {
+    return new RouteRequestError({ message: cause.message, code: cause.code });
+  }
+  const detail = cause instanceof Error ? cause.message : String(cause);
+  return new RouteRequestError({ message: `${summary}: ${detail}` });
+}
 
 function toDeliveryRecoveryError(error: Error): RouteRequestError {
   return new RouteRequestError({
@@ -5944,10 +5959,7 @@ export const createServer = Effect.fn(function* (
         const body = stripRequestTag(request.body);
         return yield* Effect.tryPromise({
           try: () => listWorkspaceEntries(body),
-          catch: (cause) =>
-            new RouteRequestError({
-              message: `Failed to list workspace entries: ${String(cause)}`,
-            }),
+          catch: (cause) => workspaceSearchRouteError(cause, "Failed to list workspace entries"),
         });
       }
 
@@ -5955,10 +5967,7 @@ export const createServer = Effect.fn(function* (
         const body = stripRequestTag(request.body);
         return yield* Effect.tryPromise({
           try: () => searchWorkspaceEntries(body),
-          catch: (cause) =>
-            new RouteRequestError({
-              message: `Failed to search workspace entries: ${String(cause)}`,
-            }),
+          catch: (cause) => workspaceSearchRouteError(cause, "Failed to search workspace entries"),
         });
       }
 
@@ -6068,15 +6077,15 @@ export const createServer = Effect.fn(function* (
             }
           },
           catch: (cause) => {
-            const detail = cause instanceof Error ? cause.message : String(cause);
-            logger.warn("Project content search request failed", {
-              projectId: body.projectId,
-              threadId: body.threadId ?? null,
-              detail,
-            });
-            return new RouteRequestError({
-              message: `Project content search failed: ${detail}`,
-            });
+            const error = workspaceSearchRouteError(cause, "Project content search failed");
+            if (!(cause instanceof WorkspaceSearchRestrictedError)) {
+              logger.warn("Project content search request failed", {
+                projectId: body.projectId,
+                threadId: body.threadId ?? null,
+                detail: error.message,
+              });
+            }
+            return error;
           },
         });
       }
@@ -7154,6 +7163,106 @@ export const createServer = Effect.fn(function* (
 
       case WS_METHODS.serverGetHealth:
         return readServerHealth();
+
+      case WS_METHODS.serverGetDoctorReport: {
+        const providers = yield* providerAdvisoryProjection.getProviders;
+        // Run only O(1) PRAGMAs on the live SQLite connection so checking Doctor
+        // in Settings never blocks the main server event loop with a full-DB scan.
+        const [
+          pageSizeRows,
+          pageCountRows,
+          freelistRows,
+          autoVacuumRows,
+          journalRows,
+          migrationRows,
+          managedWorktreesDirs,
+        ] = yield* Effect.all([
+          sql<{ readonly page_size?: number }>`PRAGMA page_size`.pipe(
+            Effect.catch(() =>
+              Effect.succeed([] as ReadonlyArray<{ readonly page_size?: number }>),
+            ),
+          ),
+          sql<{ readonly page_count?: number }>`PRAGMA page_count`.pipe(
+            Effect.catch(() =>
+              Effect.succeed([] as ReadonlyArray<{ readonly page_count?: number }>),
+            ),
+          ),
+          sql<{ readonly freelist_count?: number }>`PRAGMA freelist_count`.pipe(
+            Effect.catch(() =>
+              Effect.succeed([] as ReadonlyArray<{ readonly freelist_count?: number }>),
+            ),
+          ),
+          sql<{ readonly auto_vacuum?: number }>`PRAGMA auto_vacuum`.pipe(
+            Effect.catch(() =>
+              Effect.succeed([] as ReadonlyArray<{ readonly auto_vacuum?: number }>),
+            ),
+          ),
+          sql<{ readonly journal_mode?: string }>`PRAGMA journal_mode`.pipe(
+            Effect.catch(() =>
+              Effect.succeed([] as ReadonlyArray<{ readonly journal_mode?: string }>),
+            ),
+          ),
+          sql<{
+            readonly count?: number;
+            readonly latest?: number | null;
+          }>`SELECT COUNT(*) AS count, MAX(migration_id) AS latest FROM effect_sql_migrations`.pipe(
+            Effect.catch(() =>
+              Effect.succeed(
+                [] as ReadonlyArray<{ readonly count?: number; readonly latest?: number | null }>,
+              ),
+            ),
+          ),
+          serverSettings.getSettings.pipe(
+            Effect.flatMap((settings) =>
+              canonicalManagedWorktreesDirectories(settings, serverConfig.worktreesDir),
+            ),
+            Effect.orElseSucceed(() => [serverConfig.worktreesDir]),
+          ),
+        ]);
+        const sqliteResult: SqliteInspectionResult =
+          pageSizeRows.length > 0 || pageCountRows.length > 0
+            ? {
+                kind: "ok",
+                snapshot: buildSqliteInspectionSnapshot({
+                  quickRows: null,
+                  pageSizeRow: pageSizeRows[0],
+                  pageCountRow: pageCountRows[0],
+                  freelistRow: freelistRows[0],
+                  autoVacuumRow: autoVacuumRows[0],
+                  journalRow: journalRows[0],
+                  migrationRow: migrationRows[0],
+                }),
+              }
+            : {
+                kind: "unavailable",
+                detail: "Live SQLite metadata PRAGMAs returned no rows.",
+              };
+        return yield* Effect.promise(() =>
+          runDoctorDiagnostics({
+            mode: serverConfig.mode,
+            stateDir: serverConfig.stateDir,
+            dbPath: serverConfig.dbPath,
+            worktreesDir: serverConfig.worktreesDir,
+            worktreesDirs: managedWorktreesDirs,
+            logsDir: serverConfig.logsDir,
+            attachmentsDir: serverConfig.attachmentsDir,
+            ...(serverConfig.profilesRoot ? { profilesRoot: serverConfig.profilesRoot } : {}),
+            ...(serverConfig.profile
+              ? {
+                  profileSlug: serverConfig.profile.slug,
+                  profileName: serverConfig.profile.name,
+                  isDefaultProfile: serverConfig.profile.isDefault,
+                }
+              : {}),
+            ...(serverConfig.host !== undefined ? { host: serverConfig.host } : {}),
+            port: serverConfig.port,
+            authEnabled: Boolean(serverConfig.authToken),
+            trustedProxyCount: serverConfig.trustedProxies?.length ?? 0,
+            liveProviders: providers,
+            inspectSqlite: async () => sqliteResult,
+          }),
+        );
+      }
 
       case WS_METHODS.serverGetConfig:
         const keybindingsConfig = yield* keybindingsManager.loadConfigState;

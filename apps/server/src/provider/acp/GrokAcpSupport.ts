@@ -35,6 +35,8 @@ export interface GrokAcpRuntimeInput extends Omit<
    * runtimes ignore it.
    */
   readonly readOnlySandbox?: boolean;
+  /** A read-only workflow session, sandboxed or not. Other ACP runtimes ignore it. */
+  readonly readOnlyWorkflow?: boolean;
 }
 
 /**

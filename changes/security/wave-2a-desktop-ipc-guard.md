@@ -1,2 +1,0 @@
-- Centralized Electron main-process app IPC handler registration (including credential bootstrap `desktop:get-ws-url`) behind a mandatory F5 app main-frame origin and ownership guard so preview webviews, HTML sandboxes, and foreign-origin navigations cannot invoke covered desktop channels.
-- Scrubbed `F5_AUTH_TOKEN` alongside `T3CODE_AUTH_TOKEN` from server process environment and child provider/terminal spawn environments, and isolated desktop/dev-runner launchers from inherited `F5_*` server variables.

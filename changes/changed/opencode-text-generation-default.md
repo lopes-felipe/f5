@@ -1,1 +1,0 @@
-- Text generation through OpenCode defaults to Big Pickle when you choose OpenCode without specifying a model.

@@ -115,6 +115,12 @@ shows the template, cost and per-step context.
     other sandbox, the stage fails to start. Its only MCP server is F5's read-only forge and
     thread catalog: your own Codex MCP servers, the preview browser and Codex plugins are left
     out, because Codex uses MCP tools without asking and they run outside the sandbox.
+  - In the macOS desktop app, Codex's and Antigravity's sandboxes can't start, because the app
+    already runs F5's backend inside a macOS sandbox. There the stage is **policy-enforced**:
+    Codex runs without its sandbox and asks before every command outside its own read-only list,
+    and F5 answers with the same command allowlist it uses for Cursor. File edits and requests
+    for more permissions are refused. Antigravity launches without `--sandbox`, under the same
+    allowlist.
   - Claude runs in Plan mode, where Claude Code decides which commands only read.
   - OpenCode and Pi run with their write tools turned off.
   - Antigravity runs only on a certified runtime (see
@@ -131,9 +137,10 @@ shows the template, cost and per-step context.
 - Cursor has no read-only sandbox yet, so F5 decides each of its permission requests in a read-only
   stage. Read, search, think and fetch tools run, and so do shell commands on the read-only
   allowlist that Antigravity also uses (see
-  [Antigravity](../providers/antigravity.md#read-only-workflow-turns)). Everything else is
-  refused and the model is told no; a turn with three refused operations fails the stage, on any
-  provider. Unlike Antigravity, Cursor is not certified per version, so F5 relies on Cursor
+  [Antigravity](../providers/antigravity.md#read-only-workflow-turns)). A script may set a
+  variable to a literal (`HEAD_SHA=abc123`) and use it later in the same command. Everything else
+  is refused and the model is told no; a turn with three refused operations fails the stage, on
+  any provider. Unlike Antigravity, Cursor is not certified per version, so F5 relies on Cursor
   labelling its tools' kinds correctly.
 - Fetch stays allowed in read-only stages on Cursor and Antigravity, as for Codex and Claude plan
   mode. Text planted in the code under review could get the model to put repository content into

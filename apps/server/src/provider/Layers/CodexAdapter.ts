@@ -138,6 +138,7 @@ import { CodexAdapter, type CodexAdapterShape } from "../Services/CodexAdapter.t
 import {
   CODEX_ELICITATION_OPENED_METHOD,
   CODEX_ELICITATION_SETTLED_METHOD,
+  CODEX_READ_ONLY_REFUSED_METHOD,
   CodexAppServerManager,
   CodexJsonRpcError,
   type CodexAppServerStartSessionInput,
@@ -1879,6 +1880,39 @@ function mapToRuntimeEvents(
     ];
   }
 
+  if (event.method === CODEX_READ_ONLY_REFUSED_METHOD && event.requestId) {
+    // The manager already refused it (a policy-enforced read-only stage): nothing is pending, so
+    // the request opens auto-declined and resolves at once, as on the ACP providers.
+    const requestMethod = asString(payload?.requestMethod) ?? "unknown";
+    const params = asObject(payload?.params);
+    const requestType = toRequestTypeFromMethod(requestMethod, params?.permissions);
+    const subject =
+      requestMethod === "applyPatchApproval" || requestMethod === "item/fileChange/requestApproval"
+        ? describePatchApproval(params)
+        : (asString(params?.command) ??
+          (Array.isArray(params?.command) ? params.command.join(" ") : undefined));
+    const reason = asString(payload?.reason);
+    const detail = subject && reason ? `${subject} (${reason})` : (subject ?? reason ?? undefined);
+    return [
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        type: "request.opened",
+        payload: {
+          requestType,
+          ...(detail ? { detail } : {}),
+          ...(params ? { args: params } : {}),
+          autoDeclined: true,
+        },
+      },
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        eventId: EventId.make(`${event.id}:resolved`),
+        type: "request.resolved",
+        payload: { requestType, decision: "decline" },
+      },
+    ];
+  }
+
   if (event.method === CODEX_ELICITATION_SETTLED_METHOD) {
     const receipt = payload?.receipt;
     if (receipt !== "resolved" && receipt !== "cancelled" && receipt !== "indeterminate") return [];
@@ -2991,7 +3025,14 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           // Without this the stage runs with the thread's runtime mode (full access when the
           // thread is Full access) instead of Codex's read-only sandbox.
           ...(input.workflowExecutionProfile
-            ? { workflowExecutionProfile: input.workflowExecutionProfile, disablePlugins: true }
+            ? {
+                workflowExecutionProfile: input.workflowExecutionProfile,
+                disablePlugins: true,
+                // `policy` where Codex's sandbox can't start: F5 answers every command instead.
+                ...(input.readOnlyEnforcement
+                  ? { readOnlyEnforcement: input.readOnlyEnforcement }
+                  : {}),
+              }
             : {}),
           ...(input.model !== undefined ? { model: input.model } : {}),
           ...codexServiceTierOptions(

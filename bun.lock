@@ -16,7 +16,7 @@
     },
     "apps/desktop": {
       "name": "@t3tools/desktop",
-      "version": "0.1.11",
+      "version": "0.1.12",
       "dependencies": {
         "dbus-next": "0.10.2",
         "effect": "catalog:",
@@ -49,7 +49,7 @@
     },
     "apps/server": {
       "name": "t3",
-      "version": "0.1.11",
+      "version": "0.1.12",
       "bin": {
         "f5": "./dist/index.mjs",
         "t3": "./dist/index.mjs",
@@ -98,7 +98,7 @@
     },
     "apps/web": {
       "name": "@t3tools/web",
-      "version": "0.1.11",
+      "version": "0.1.12",
       "dependencies": {
         "@base-ui/react": "^1.2.0",
         "@betteroffice/docx": "0.4.3",
@@ -111,7 +111,7 @@
         "@dnd-kit/utilities": "^3.2.2",
         "@fontsource-variable/inter": "^5.3.0",
         "@fontsource/jetbrains-mono": "^5.2.8",
-        "@legendapp/list": "3.0.0-beta.44",
+        "@legendapp/list": "3.7.3",
         "@lexical/react": "^0.41.0",
         "@pierre/diffs": "1.5.2",
         "@t3tools/contracts": "workspace:*",
@@ -172,7 +172,7 @@
     },
     "packages/contracts": {
       "name": "@t3tools/contracts",
-      "version": "0.1.11",
+      "version": "0.1.12",
       "dependencies": {
         "effect": "catalog:",
       },
@@ -202,7 +202,7 @@
     },
     "packages/shared": {
       "name": "@t3tools/shared",
-      "version": "0.1.11",
+      "version": "0.1.12",
       "dependencies": {
         "@t3tools/contracts": "workspace:*",
         "croner": "10.0.1",
@@ -607,7 +607,7 @@
 
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
 
-    "@legendapp/list": ["@legendapp/list@3.0.0-beta.44", "", { "dependencies": { "use-sync-external-store": "^1.5.0" }, "peerDependencies": { "react": "*" } }, "sha512-loGRve78NuZ5k8Z54ZSDNOtv3dVBM1SeBCRtm1EYtZiDIZ8SyMVcYpUGgFpGuNKk71+9/NuM9hvScrgf7+4E+A=="],
+    "@legendapp/list": ["@legendapp/list@3.7.3", "", { "dependencies": { "use-sync-external-store": "^1.5.0" }, "peerDependencies": { "react": "*" } }, "sha512-trGu1i4xo1+r6gG6GI3qrrZAfYHbB25uVj32/KnxhaQ7/eW4AqzhM5cW21Oye4dpg+180Ts1aejRuI8z6Xc4eg=="],
 
     "@lexical/clipboard": ["@lexical/clipboard@0.41.0", "", { "dependencies": { "@lexical/html": "0.41.0", "@lexical/list": "0.41.0", "@lexical/selection": "0.41.0", "@lexical/utils": "0.41.0", "lexical": "0.41.0" } }, "sha512-Ex5lPkb4NBBX1DCPzOAIeHBJFH1bJcmATjREaqpnTfxCbuOeQkt44wchezUA0oDl+iAxNZ3+pLLWiUju9icoSA=="],
 

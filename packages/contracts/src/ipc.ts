@@ -222,6 +222,7 @@ import type {
 } from "./providerInventory";
 import type {
   ServerConfig,
+  ServerDoctorReport,
   ServerHealth,
   ServerAddKeybindingInput,
   ServerHarnessValidationResult,
@@ -1270,6 +1271,8 @@ export interface NativeApi {
     getConfig: () => Promise<ServerConfig>;
     /** Slow routes, slow SQL statements and event-loop delay since the server started. */
     getHealth: () => Promise<ServerHealth>;
+    /** Point-in-time redacted diagnostic report across environment, database, providers, and storage. */
+    getDoctorReport: () => Promise<ServerDoctorReport>;
     updateSettings: (input: ServerSettingsPatch) => Promise<ServerSettings>;
     getProjectSettings: (input: { projectId: ProjectId }) => Promise<ProjectSettingsResult>;
     migrateClientSetting: (input: MigrateClientSettingInput) => Promise<MigrateClientSettingResult>;

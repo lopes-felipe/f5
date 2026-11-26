@@ -126,6 +126,7 @@ export const WS_METHODS = {
   serverReportClientDiagnostics: "server.reportClientDiagnostics",
   serverGetConfig: "server.getConfig",
   serverGetHealth: "server.getHealth",
+  serverGetDoctorReport: "server.getDoctorReport",
   serverUpdateSettings: "server.updateSettings",
   serverGetProjectSettings: "server.getProjectSettings",
   serverMigrateClientSetting: "server.migrateClientSetting",
