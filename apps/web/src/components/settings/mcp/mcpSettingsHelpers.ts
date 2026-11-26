@@ -1,6 +1,17 @@
 import type { McpApplyToLiveSessionsResult, McpProjectServersConfig } from "@t3tools/contracts";
 import { trimToUndefined } from "@t3tools/shared/mcpValidation";
 
+/** Agents that reach configured servers through F5's hub instead of their own client. */
+export const MCP_HUB_PROVIDER_LABELS = [
+  "Cursor",
+  "Grok",
+  "Antigravity",
+  "custom ACP agents",
+  "OpenCode",
+  "Muse Code",
+  "Pi",
+] as const;
+
 export function readErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message.trim().length > 0 ? error.message : fallback;
 }

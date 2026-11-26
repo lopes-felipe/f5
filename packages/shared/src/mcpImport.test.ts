@@ -99,6 +99,27 @@ describe("parseMcpImport name and interpolation warnings", () => {
 });
 
 describe("JSONC and other clients' shapes", () => {
+  it("round-trips F5's description and provider switches, dropping unknown providers", () => {
+    const servers = parseImportedServers(
+      JSON.stringify({
+        mcpServers: {
+          docs: {
+            type: "http",
+            url: "https://docs.test/mcp",
+            description: "  Product docs  ",
+            disabledProviders: ["codex", "future-agent", "codex"],
+          },
+          other: { type: "http", url: "https://o.test/mcp", disabledProviders: ["nope"] },
+        },
+      }),
+    );
+    expect(servers.docs).toMatchObject({
+      description: "Product docs",
+      disabledProviders: ["codex"],
+    });
+    expect(servers.other?.disabledProviders).toBeUndefined();
+  });
+
   it("strips comments and trailing commas but never touches strings", () => {
     const text = `{
   /* block */ "a": "https://x.example/a//b", // line

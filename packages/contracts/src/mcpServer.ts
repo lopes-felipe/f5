@@ -1,6 +1,7 @@
 import { FilesystemPath } from "./baseSchemas";
 import { Schema } from "effect";
 import { NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas";
+import { KNOWN_PROVIDER_KINDS, ProviderKind } from "./providerKind";
 
 export const McpServerTransportType = Schema.Literals(["stdio", "sse", "http"]);
 export type McpServerTransportType = typeof McpServerTransportType.Type;
@@ -58,7 +59,16 @@ const McpCommonServerFields = {
    * default for remote servers).
    */
   connectionScope: Schema.optional(McpConnectionScope),
+  /** Shown in settings; never sent to providers. */
+  description: Schema.optional(Schema.String),
+  /**
+   * Providers that do not get this server. Persisted values stay lenient so an
+   * unknown provider name never hides the server; writes accept known providers only.
+   */
+  disabledProviders: Schema.optional(McpStringArray),
 };
+
+export const MCP_SERVER_DESCRIPTION_MAX_LENGTH = 500;
 
 const McpStdioServerDefinition = Schema.Struct({
   type: Schema.Literal("stdio"),
@@ -92,15 +102,25 @@ export const McpProjectServersConfig = Schema.Record(Schema.String, McpServerDef
 export type McpProjectServersConfig = typeof McpProjectServersConfig.Type;
 
 // Writes validate changed entries; persisted decoding remains lenient for legacy repair.
+const McpWriteOnlyFields = {
+  oauthCallbackUrl: Schema.optional(McpHttpUrl),
+  description: Schema.optional(
+    TrimmedNonEmptyString.check(Schema.isMaxLength(MCP_SERVER_DESCRIPTION_MAX_LENGTH)),
+  ),
+  disabledProviders: Schema.optional(
+    Schema.Array(ProviderKind).check(Schema.isMaxLength(KNOWN_PROVIDER_KINDS.length)),
+  ),
+};
+
 export const McpServerWriteDefinition = Schema.Union([
   McpStdioServerDefinition.mapFields((fields) => ({
     ...fields,
-    oauthCallbackUrl: Schema.optional(McpHttpUrl),
+    ...McpWriteOnlyFields,
   })),
   McpRemoteServerDefinition.mapFields((fields) => ({
     ...fields,
     url: McpHttpUrlTemplate,
-    oauthCallbackUrl: Schema.optional(McpHttpUrl),
+    ...McpWriteOnlyFields,
   })),
 ]);
 export type McpServerWriteDefinition = typeof McpServerWriteDefinition.Type;
