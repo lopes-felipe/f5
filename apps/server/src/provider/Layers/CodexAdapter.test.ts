@@ -488,6 +488,17 @@ validationLayer("CodexAdapterLive validation", (it) => {
         validationManager.startSessionImpl.mock.calls.at(-1)?.[0].workflowExecutionProfile,
         "unattended-readonly",
       );
+      yield* adapter.startSession({
+        provider: "codex",
+        threadId: asThreadId("readonly-policy-stage"),
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "unattended-readonly",
+        readOnlyEnforcement: "policy",
+      });
+      assert.equal(
+        validationManager.startSessionImpl.mock.calls.at(-1)?.[0].readOnlyEnforcement,
+        "policy",
+      );
     }),
   );
 
@@ -2974,6 +2985,51 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         return;
       }
       assert.equal(firstEvent.value.payload.requestType, "file_read_approval");
+    }),
+  );
+
+  it.effect("reports a request F5 refused in a policy-enforced stage as auto-declined", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const next = yield* Stream.take(adapter.streamEvents, 2).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      lifecycleManager.emit("event", {
+        id: asEventId("policy-refused"),
+        kind: "notification",
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        createdAt: new Date().toISOString(),
+        method: "f5/readOnly/refused",
+        requestId: ApprovalRequestId.makeUnsafe("policy-refused"),
+        requestKind: "command",
+        payload: {
+          requestMethod: "item/commandExecution/requestApproval",
+          reason: "`touch` is not on the read-only allowlist",
+          params: { command: "/bin/zsh -lc 'touch marker'" },
+        },
+      } satisfies ProviderEvent);
+      const [opened, resolved] = Array.from(yield* Fiber.join(next));
+      assert.equal(opened?.type, "request.opened");
+      if (opened?.type !== "request.opened") return;
+      assert.deepEqual(
+        {
+          requestType: opened.payload.requestType,
+          detail: opened.payload.detail,
+          autoDeclined: opened.payload.autoDeclined,
+        },
+        {
+          requestType: "command_execution_approval",
+          detail: "/bin/zsh -lc 'touch marker' (`touch` is not on the read-only allowlist)",
+          autoDeclined: true,
+        },
+      );
+      assert.equal(resolved?.type, "request.resolved");
+      if (resolved?.type !== "request.resolved") return;
+      assert.equal(resolved.payload.decision, "decline");
+      assert.equal(resolved.requestId, opened.requestId);
+      assert.notEqual(resolved.eventId, opened.eventId);
     }),
   );
 

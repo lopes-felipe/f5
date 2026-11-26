@@ -470,6 +470,7 @@ it.layer(AntigravityAdapterTestLayer)("Antigravity native questions", (it) => {
         env: { F5_ACP_ANTIGRAVITY_PROFILE: "1" },
       });
       const sandboxed: Array<boolean | undefined> = [];
+      const readOnly: Array<boolean | undefined> = [];
       const adapter = yield* makeGrokAdapter(
         Schema.decodeSync(GrokSettings)({ binaryPath: wrapperPath }),
         {
@@ -478,6 +479,7 @@ it.layer(AntigravityAdapterTestLayer)("Antigravity native questions", (it) => {
           antigravity: { readOnlyWorkflowCertified: () => true },
           makeRuntime: (input) => {
             sandboxed.push(input.readOnlySandbox);
+            readOnly.push(input.readOnlyWorkflow);
             return GrokAcpSupport.makeGrokAcpRuntime(input);
           },
         },
@@ -496,9 +498,18 @@ it.layer(AntigravityAdapterTestLayer)("Antigravity native questions", (it) => {
         ...base,
         threadId: ThreadId.make("antigravity-sandbox-plain"),
       });
-      assert.deepEqual(sandboxed, [true, undefined]);
+      // Where the sandbox can't start, F5 resolves the stage to policy: no --sandbox.
+      yield* adapter.startSession({
+        ...base,
+        threadId: ThreadId.make("antigravity-sandbox-policy"),
+        workflowExecutionProfile: "unattended-readonly",
+        readOnlyEnforcement: "policy",
+      });
+      assert.deepEqual(sandboxed, [true, undefined, false]);
+      assert.deepEqual(readOnly, [true, undefined, true]);
       yield* adapter.stopSession(ThreadId.make("antigravity-sandbox-workflow"));
       yield* adapter.stopSession(ThreadId.make("antigravity-sandbox-plain"));
+      yield* adapter.stopSession(ThreadId.make("antigravity-sandbox-policy"));
     }).pipe(Effect.provide(AntigravityAdapterTestLayer), Effect.scoped),
   );
   rootIt.live("refuses workflow sessions on an uncertified or unknown Antigravity build", () =>

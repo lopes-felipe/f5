@@ -86,7 +86,8 @@ describe("classifyReadOnlyShellCommand", () => {
     "sleep 1 &",
     "/usr/bin/git status",
     "cat <<EOF\nhi\nEOF",
-    "X=1",
+    "X=1 >/dev/null",
+    "X=$(id)",
     // Mutating flags and subcommands
     "sed -i 's/a/b/' f",
     "sed -n 's/a/b/w out' f",
@@ -172,6 +173,88 @@ describe("classifyReadOnlyShellCommand", () => {
     "",
   ])("refuses %s", (command) => {
     expect(readOnly(command)).toBe(false);
+  });
+
+  describe("script-local variables", () => {
+    it.each([
+      // The shape of the scripts a Cursor reviewer was refused three times for.
+      'HEAD_SHA=9f2c1e7a\ngit show --stat "$HEAD_SHA"\ngit diff "$HEAD_SHA~1" "$HEAD_SHA" -- src | head -200',
+      "HEAD_SHA=9f2c1e7a; BASE=main; git log --oneline $BASE..$HEAD_SHA",
+      'REPO=doordash/pedregal && gh pr view 1 --repo "$REPO" --json title',
+      'PR=743438 REPO="doordash/pedregal"; gh pr diff ${PR} --repo $REPO',
+      'DIRNAME=src/provider; FILE="$DIRNAME/readOnly.ts"; sed -n 1,20p "$FILE"',
+      'MSG="two words"; echo "$MSG"',
+      "SHA=abc; if git cat-file -e $SHA; then git show $SHA; else echo missing; fi",
+      "SHA=abc; ( cd sub && git show $SHA )",
+      "head_sha=abc; git show $head_sha",
+    ])("allows %j", (command) => {
+      expect(classifyReadOnlyShellCommand(command)).toEqual({ readOnly: true });
+    });
+
+    it.each([
+      // Unknown, positional and special parameters.
+      ["git show $HEAD_SHA", "$HEAD_SHA is not set earlier in this command"],
+      ["git show $1", "arguments must be literal: no substitutions or special expansions"],
+      ["SHA=abc; git show ${SHA:-HEAD}", "no substitutions or special expansions"],
+      ["SHA=abc; git show ${#SHA}", "no substitutions or special expansions"],
+      // Set only conditionally, inside a compound, or for one command.
+      ["git status && SHA=abc; git show $SHA", "variables must be set on their own"],
+      ["if true; then SHA=abc; fi; git show $SHA", "variables must be set on their own"],
+      ["{ SHA=abc; }; git show $SHA", "variables must be set on their own"],
+      ["SHA=abc git show $SHA", "setting SHA is not allowed"],
+      ["git show $SHA; SHA=abc", "$SHA is not set earlier in this command"],
+      ["echo $SHA | SHA=abc", "$SHA is not set earlier in this command"],
+      // Values must be literal, and splitting or globbing values must be quoted.
+      ["SHA=$(git rev-parse HEAD); git show $SHA", "no command substitutions"],
+      ["SHA=`id`; git show $SHA", "no command substitutions"],
+      ["X=$HOME; cat $X", "$HOME is not set earlier in this command"],
+      ['MSG="a b"; echo $MSG', 'quote "$MSG"'],
+      ["GLOB='*'; ls $GLOB", 'quote "$GLOB"'],
+      ["E=''; git show $E", 'quote "$E"'],
+      ["A=(x y); echo $A", "A must be set to a literal value"],
+      ["A=x; A+=y; echo $A", "A must be set to a literal value"],
+      // The value is what gets classified.
+      ["F=--output=/tmp/x; git diff $F", "`git diff` flags that write or execute"],
+      ["P=push; git $P", "`git push` is not on the read-only allowlist"],
+      ["C=rm; $C x", "the command name must be literal"],
+    ])("refuses %j", (command, reason) => {
+      const verdict = classifyReadOnlyShellCommand(command);
+      expect(verdict.readOnly).toBe(false);
+      expect(verdict.readOnly === false && verdict.reason).toContain(reason);
+    });
+
+    it.each([
+      "PATH",
+      "HOME",
+      "IFS",
+      "TMPDIR",
+      "PAGER",
+      "MANPAGER",
+      "EDITOR",
+      "GIT_DIR",
+      "GIT_CONFIG_GLOBAL",
+      "GH_TOKEN",
+      "LD_PRELOAD",
+      "DYLD_INSERT_LIBRARIES",
+      "XDG_CONFIG_HOME",
+      "BASH_ENV",
+      "ZDOTDIR",
+      "LESSOPEN",
+      "RIPGREP_CONFIG_PATH",
+      "PYTHONPATH",
+      "JAVA_HOME",
+      "OUT_DIR",
+      "TAR_OPTIONS",
+      "path",
+      "fpath",
+      "home",
+      "mapfile",
+    ])("refuses setting the special variable %s", (name) => {
+      expect(classifyReadOnlyShellCommand(`${name}=x; echo ok`)).toEqual({
+        readOnly: false,
+        reason: `setting ${name} is not allowed: write the value literally instead`,
+      });
+    });
   });
 
   it("explains why a command was refused", () => {

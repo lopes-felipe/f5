@@ -182,6 +182,7 @@ import {
 import { computeProviderLaunchFingerprint } from "../providerLaunchFingerprint.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import { nestedSandboxAvailable } from "../nestedSandboxProbe.ts";
 import { PreviewAutomationBroker } from "../../mcp/PreviewAutomationBroker.ts";
 import {
   isProviderTerminalRuntimeEvent,
@@ -200,6 +201,8 @@ export interface ProviderServiceLiveOptions {
   readonly recordTerminalEvent?: (
     event: ProviderTerminalRuntimeEvent,
   ) => Effect.Effect<void, ProviderTerminalEventRepositoryError>;
+  /** Test seam for `nestedSandboxAvailable`: whether provider OS sandboxes can start here. */
+  readonly nestedSandboxAvailable?: () => boolean;
 }
 
 const PROVIDER_RUNTIME_EVENT_QUEUE_CAPACITY = 2_048;
@@ -765,6 +768,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         const enforcement = resolveReadOnlyEnforcement(provider, version, {
           target: runtimeBuildTarget(),
           osRelease: NodeOs.release(),
+          nestedSandbox: (options?.nestedSandboxAvailable ?? nestedSandboxAvailable)(),
         });
         if (enforcement !== undefined) return enforcement;
         return yield* toValidationError(
