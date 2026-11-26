@@ -115,6 +115,19 @@ shows the template, cost and per-step context.
     other sandbox, the stage fails to start. Its only MCP server is F5's read-only forge and
     thread catalog: your own Codex MCP servers, the preview browser and Codex plugins are left
     out, because Codex uses MCP tools without asking and they run outside the sandbox.
+  - Codex runs a command that an `allow` rule in a `.rules` file matches outside its sandbox,
+    without asking. Read-only Codex stages therefore use an F5-owned Codex home
+    (`provider-homes/codex-readonly`) that links your sign-in, settings and session history but
+    not your `rules` folder. A repository with its own non-empty `.codex/rules/*.rules`, between
+    the stage's folder and the repository root, can't run a read-only Codex stage, and F5 names
+    the file; it checks again before every turn. That includes `~/.codex/rules` when the
+    repository is rooted at your home folder. Your administrator's system rules
+    (`/etc/codex/rules`) still apply.
+  - These stages need Codex to keep your sign-in in `auth.json` (the default). A sign-in kept only
+    in your system keychain (`cli_auth_credentials_store = "keyring"` or `"auto"`) can't be
+    shared with F5's Codex home, so the stage won't start; set it to `"file"` and sign in again.
+    On Windows, linking the sign-in needs a symbolic link, which Windows allows with Developer
+    Mode on.
   - In the macOS desktop app, Codex's and Antigravity's sandboxes can't start, because the app
     already runs F5's backend inside a macOS sandbox. There the stage is **policy-enforced**:
     Codex runs without its sandbox and asks before every command outside its own read-only list,
