@@ -5185,10 +5185,10 @@ it.effect(
         runtimeMode: "full-access",
         providerOptions,
       });
+      // Configured servers reach Codex only through F5's hub, which this layer lacks.
       assert.deepEqual(Object.keys(lastStart().mcpServers ?? {}).toSorted(), [
         "f5_preview",
         "f5_thread",
-        "github",
       ]);
       assert.equal(lastStart().disablePlugins, undefined);
     }).pipe(Effect.provide(layer), Effect.scoped);
