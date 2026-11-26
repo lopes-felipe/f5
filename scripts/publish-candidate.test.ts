@@ -24,8 +24,12 @@ import {
 
 const state = vi.hoisted(() => ({
   source: "a".repeat(40),
+  /** The remote tag ref; only `git/refs` POSTs (or a test) set it. */
   tag: "",
   tagSource: "",
+  /** The draft's own identity, independent of whether its tag exists. */
+  releaseTag: "",
+  releaseTarget: "",
   draft: true,
   exists: false,
   assets: [] as { id?: number; name: string; size: number; digest: string | null; state: string }[],
@@ -59,7 +63,8 @@ vi.mock("./release/release-github.ts", async (importOriginal) => {
   const original = await importOriginal<typeof import("./release/release-github.ts")>();
   const release = () => ({
     id: 10,
-    tag_name: state.tag,
+    tag_name: state.releaseTag,
+    target_commitish: state.releaseTarget,
     draft: state.draft,
     prerelease: true,
     assets: state.assets,
@@ -97,7 +102,7 @@ vi.mock("./release/release-github.ts", async (importOriginal) => {
     runs: (workflow: string) => [fixtureRun(workflow === "ci.yml" ? 200 : 100, workflow)],
     git: (args: string[]) => {
       if (args[0] === "ls-remote")
-        return (state.tagSource || state.source) + "\trefs/tags/" + state.tag;
+        return state.tag ? (state.tagSource || state.source) + "\trefs/tags/" + state.tag : "";
       if (args[0] === "rev-list" && args.includes("-n")) return state.tagSource || state.source;
       if (args[0] === "show") return "2026-10-30T00:00:00Z";
       if (args[0] === "ls-tree") return Object.keys(state.sourceFiles).join("\n");
@@ -149,7 +154,10 @@ vi.mock("./release/release-github.ts", async (importOriginal) => {
         }
         if (args.includes("draft=true")) {
           state.exists = true;
-          state.tag = args.find((a) => a.startsWith("tag_name="))!.slice(9);
+          state.releaseTag = args.find((a) => a.startsWith("tag_name="))!.slice(9);
+          state.releaseTarget = args
+            .find((a) => a.startsWith("target_commitish="))!
+            .slice("target_commitish=".length);
           return JSON.stringify(release());
         }
         if (args.includes("draft=false")) {
@@ -223,7 +231,14 @@ vi.mock("./lib/release-profile.ts", async (importOriginal) => {
     ...original,
     fetchReleaseSummaries: () =>
       state.exists
-        ? [{ tag_name: state.tag, draft: state.draft, prerelease: true, assets: state.assets }]
+        ? [
+            {
+              tag_name: state.releaseTag,
+              draft: state.draft,
+              prerelease: true,
+              assets: state.assets,
+            },
+          ]
         : [],
   };
 });
@@ -375,6 +390,8 @@ beforeEach(() => {
   state.sourceFiles = {};
   state.tag = "";
   state.tagSource = "";
+  state.releaseTag = "";
+  state.releaseTarget = "";
   state.draft = true;
   state.exists = false;
   state.assets = [];
@@ -598,6 +615,54 @@ describe("publisher integration with immutable platform fixtures", () => {
     ).rejects.toThrow("newer passing");
     expect(state.draft).toBe(true);
     expect(state.writes.some((w) => w.includes("draft=false"))).toBe(false);
+    // An abandoned draft must not leave a public tag: releases.atom lists bare tags.
+    expect(state.tag).toBe("");
+    expect(state.writes.some((w) => w.includes("git/refs"))).toBe(false);
+  });
+  it("creates the draft tagless and the tag only after every gate, right before promotion", async () => {
+    const { candidate, directory } = await candidateFixture();
+    await assembleCandidate(candidate, directory);
+    let gates = 0;
+    await publishCandidate(candidate, directory, () => {
+      gates++;
+      expect(state.tag).toBe("");
+    });
+    expect(gates).toBe(2);
+    const draft = state.writes.findIndex((w) => w.includes("draft=true"));
+    expect(state.writes[draft]).toContain("target_commitish=" + candidate.sourceSha);
+    const refs = state.writes.flatMap((w, i) => (w.includes("git/refs") ? [i] : []));
+    const promote = state.writes.findIndex((w) => w.includes("draft=false"));
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toBeGreaterThan(draft);
+    expect(promote).toBe(refs[0]! + 1);
+    expect(state.tag).toBe("v" + candidate.version);
+    expect(state.tagSource).toBe(candidate.sourceSha);
+    expect(state.draft).toBe(false);
+  });
+  it("resumes a legacy draft whose tag already exists without posting another ref", async () => {
+    const { candidate, directory } = await candidateFixture();
+    await assembleCandidate(candidate, directory);
+    state.interrupt = true;
+    await expect(publishCandidate(candidate, directory)).rejects.toThrow("interrupted");
+    // Older publishers reserved the tag first and sent no target_commitish.
+    state.tag = state.releaseTag;
+    state.tagSource = candidate.sourceSha;
+    state.releaseTarget = "main";
+    const writes = state.writes.length;
+    await publishCandidate(candidate, directory);
+    expect(state.writes.slice(writes).some((w) => w.includes("git/refs"))).toBe(false);
+    expect(state.draft).toBe(false);
+  });
+  it("rejects a legacy draft whose existing tag names another source", async () => {
+    const { candidate, directory } = await candidateFixture();
+    await assembleCandidate(candidate, directory);
+    state.interrupt = true;
+    await expect(publishCandidate(candidate, directory)).rejects.toThrow("interrupted");
+    state.tag = state.releaseTag;
+    state.tagSource = "c".repeat(40);
+    const writes = state.writes.length;
+    await expect(publishCandidate(candidate, directory)).rejects.toThrow("different identity");
+    expect(state.writes).toHaveLength(writes);
   });
   it("assembles exact files once and resumes an interrupted draft without replacing assets", async () => {
     const { candidate, directory } = await candidateFixture();
@@ -608,9 +673,11 @@ describe("publisher integration with immutable platform fixtures", () => {
     state.interrupt = true;
     await expect(publishCandidate(candidate, directory)).rejects.toThrow("interrupted");
     expect(state.draft).toBe(true);
+    expect(state.tag).toBe("");
     const retained = state.assets.map((a) => ({ ...a }));
     await publishCandidate(candidate, directory);
     expect(state.draft).toBe(false);
+    expect(state.writes.filter((w) => w.includes("git/refs"))).toHaveLength(1);
     expect(state.assets.slice(0, retained.length)).toEqual(retained);
     const writes = state.writes.length;
     await publishCandidate(candidate, directory);
@@ -665,7 +732,9 @@ describe("publisher integration with immutable platform fixtures", () => {
     await assembleCandidate(first.candidate, first.directory);
     state.interrupt = true;
     await expect(publishCandidate(first.candidate, first.directory)).rejects.toThrow("interrupted");
-    const reserved = state.tagSource;
+    // The draft is tagless; its target_commitish is the reservation.
+    expect(state.tag).toBe("");
+    const reserved = state.releaseTarget;
     const retained = state.assets.map((asset) => ({ ...asset }));
     state.source = "b".repeat(40);
     const recovery = await candidateFixture();
@@ -674,7 +743,8 @@ describe("publisher integration with immutable platform fixtures", () => {
     await expect(publishCandidate(recovery.candidate, recovery.directory)).rejects.toThrow(
       "different identity",
     );
-    expect(state.tagSource).toBe(reserved);
+    expect(state.releaseTarget).toBe(reserved);
+    expect(state.tag).toBe("");
     expect(state.assets).toEqual(retained);
     expect(state.writes).toHaveLength(writes);
   });
@@ -686,6 +756,7 @@ describe("publisher integration with immutable platform fixtures", () => {
     expect(state.exists).toBe(true);
     expect(state.draft).toBe(true);
     expect(state.writes.some((write) => write.includes("draft=false"))).toBe(false);
+    expect(state.tag).toBe("");
   });
   it("checks certification after the final gate refreshes main's evidence snapshot", async () => {
     const { candidate, directory } = await candidateFixture();
@@ -699,6 +770,7 @@ describe("publisher integration with immutable platform fixtures", () => {
     expect(gates).toBe(2);
     expect(state.draft).toBe(true);
     expect(state.writes.some((write) => write.includes("draft=false"))).toBe(false);
+    expect(state.tag).toBe("");
   });
   it("publishes the exact requalification key and run with the unchanged candidate provenance", async () => {
     const { candidate, directory } = await candidateFixture();
