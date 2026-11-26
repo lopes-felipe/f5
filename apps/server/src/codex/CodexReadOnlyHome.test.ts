@@ -10,6 +10,7 @@ import {
   rm,
   realpath,
   symlink,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import * as os from "node:os";
@@ -18,9 +19,11 @@ import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  CodexReadOnlyHomeError,
   codexProjectRulesConflictMessage,
   codexReadOnlyHomeDir,
   codexReadOnlySourceHome,
+  codexReadOnlyStageConfigArgs,
   findCodexProjectRulesConflict,
   materializeCodexReadOnlyHome,
 } from "./CodexReadOnlyHome.ts";
@@ -107,6 +110,92 @@ describe("materializeCodexReadOnlyHome", () => {
     expect(await readlink(path.join(home, "sessions"))).toBe(path.join(source, "sessions"));
   });
 
+  posixOnly("opens SQLite in the source home and shares its locks from the start", async () => {
+    const { source, home } = await sourceHome();
+    for (const name of ["state_5.sqlite", "state_5.sqlite-wal", "state_5.sqlite-shm"])
+      await writeFile(path.join(source, name), "db");
+    await mkdir(home, { recursive: true });
+    await symlink(path.join(source, "state_5.sqlite"), path.join(home, "state_5.sqlite"));
+    await materializeCodexReadOnlyHome({ sourceHome: source, readOnlyHome: home });
+    const entries = await readdir(home);
+    expect(entries.filter((name) => name.includes(".sqlite"))).toEqual([]);
+    expect(await codexReadOnlyStageConfigArgs(source, {})).toContain(
+      `sqlite_home=${JSON.stringify(source)}`,
+    );
+    for (const lock of ["auth.lock", "mcp-oauth-locks"]) {
+      expect(await readlink(path.join(home, lock))).toBe(path.join(source, lock));
+    }
+  });
+
+  it("keeps a SQLite folder the instance already chose", async () => {
+    const { root, source } = await sourceHome();
+    const sqliteArgs = async (environment: NodeJS.ProcessEnv) =>
+      (await codexReadOnlyStageConfigArgs(source, environment)).filter((arg) =>
+        arg.startsWith("sqlite_home="),
+      );
+    // `$CODEX_SQLITE_HOME` reaches the stage unchanged.
+    expect(await sqliteArgs({ CODEX_SQLITE_HOME: path.join(root, "db") })).toEqual([]);
+    // So does an absolute `sqlite_home`, through the linked config.toml, and it beats the variable.
+    const absolute = path.join(root, "absolute-db");
+    await writeFile(
+      path.join(source, "config.toml"),
+      `sqlite_home = ${JSON.stringify(absolute)}\n[profiles.x]\n`,
+    );
+    expect(await sqliteArgs({})).toEqual([]);
+    // A relative one would resolve against the stage's own home, so it is pinned to the instance's.
+    await writeFile(path.join(source, "config.toml"), "sqlite_home = 'db'\n");
+    expect(await sqliteArgs({ CODEX_SQLITE_HOME: path.join(root, "db") })).toEqual([
+      `sqlite_home=${JSON.stringify(path.join(source, "db"))}`,
+    ]);
+    // A key inside a table isn't the top-level one.
+    await writeFile(path.join(source, "config.toml"), `[profiles.x]\nsqlite_home = "/elsewhere"\n`);
+    expect(await sqliteArgs({})).toEqual([`sqlite_home=${JSON.stringify(source)}`]);
+  });
+
+  posixOnly("refuses a stage home that is another path to the instance's home", async () => {
+    const { root, source } = await sourceHome();
+    await mkdir(path.join(source, "rules"), { recursive: true });
+    await writeFile(path.join(source, "rules", "default.rules"), "rule");
+    const alias = path.join(root, "alias");
+    await symlink(source, alias);
+    await expect(
+      materializeCodexReadOnlyHome({ sourceHome: source, readOnlyHome: alias }),
+    ).rejects.toBeInstanceOf(CodexReadOnlyHomeError);
+    expect(await readFile(path.join(source, "rules", "default.rules"), "utf8")).toBe("rule");
+    expect((await lstat(path.join(source, "sessions"))).isDirectory()).toBe(true);
+  });
+
+  posixOnly("moves a newer real auth.json back to the source before relinking", async () => {
+    const { source, home } = await sourceHome();
+    await materializeCodexReadOnlyHome({ sourceHome: source, readOnlyHome: home });
+    await rm(path.join(home, "auth.json"));
+    await writeFile(path.join(home, "auth.json"), '{"token":"fresh"}');
+    const later = new Date(Date.now() + 60_000);
+    await utimes(path.join(home, "auth.json"), later, later);
+    await materializeCodexReadOnlyHome({ sourceHome: source, readOnlyHome: home });
+    expect(await readFile(path.join(source, "auth.json"), "utf8")).toBe('{"token":"fresh"}');
+    expect((await lstat(path.join(home, "auth.json"))).isSymbolicLink()).toBe(true);
+
+    // An older local copy never overwrites the source.
+    await rm(path.join(home, "auth.json"));
+    await writeFile(path.join(home, "auth.json"), '{"token":"stale"}');
+    const earlier = new Date(Date.now() - 3_600_000);
+    await utimes(path.join(home, "auth.json"), earlier, earlier);
+    await materializeCodexReadOnlyHome({ sourceHome: source, readOnlyHome: home });
+    expect(await readFile(path.join(source, "auth.json"), "utf8")).toBe('{"token":"fresh"}');
+  });
+
+  it("refuses a source home that doesn't exist instead of creating it", async () => {
+    const root = await tempDir("f5-codex-ro-");
+    await expect(
+      materializeCodexReadOnlyHome({
+        sourceHome: path.join(root, "missing"),
+        readOnlyHome: path.join(root, "readonly"),
+      }),
+    ).rejects.toThrow("doesn't exist");
+    expect(await readdir(root)).toEqual([]);
+  });
+
   posixOnly("never links a case variant of rules", async () => {
     const { source, home } = await sourceHome();
     await rename(path.join(source, "rules"), path.join(source, "Rules"));
@@ -175,9 +264,11 @@ describe("materializeCodexReadOnlyHome", () => {
       [
         "archived_sessions",
         "auth.json",
+        "auth.lock",
         "cache",
         "config.toml",
         "logs",
+        "mcp-oauth-locks",
         "plugins",
         "sessions",
         "shell_snapshots",

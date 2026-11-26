@@ -1,16 +1,17 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // Live gates G1-G6 for Codex read-only workflow stages in "ask on escalation" mode
 // (`on-request` + Codex's read-only sandbox; docs/reviews/cursor-live-gates.md). Run it where
 // Codex's sandbox can't start, as in F5's macOS desktop backend: an agent's shell inside F5 is
 // itself sandboxed, so `sandbox_apply` fails there the same way. Each turn spends one Codex prompt.
+// It runs under Bun, which loads F5's TypeScript home helper directly.
 //
-//   node apps/server/integration/codexReadOnlyEscalationGate.mjs --auth <codex auth.json>
+//   bun apps/server/integration/codexReadOnlyEscalationGate.mjs --auth <codex auth.json>
 //     [--codex <binary>] [--root <dir>] [--model <slug>] [--gates G3,G3b,G3c,G4,G4b,G4c]
 //     [--link-rules]
 //
 // Everything happens in a fresh folder under ~/.f5-codex-gates (or --root): a source Codex home
-// whose auth.json is a symlink to --auth and whose rules/default.rules allows `touch`, a
-// read-only home that links every source entry except `rules` (as F5's read-only home does), and
+// whose auth.json is a symlink to --auth and whose rules/default.rules allows `touch`, the
+// read-only home F5 builds from it (materializeCodexReadOnlyHome: every entry except `rules`), and
 // a git workspace. Nothing outside the folder is written, except through the auth.json link when
 // Codex refreshes the sign-in.
 //
@@ -38,7 +39,6 @@ import {
   lstatSync,
   mkdirSync,
   readFileSync,
-  readdirSync,
   realpathSync,
   symlinkSync,
   writeFileSync,
@@ -88,12 +88,11 @@ writeFileSync(
   path.join(sourceHome, "rules", "default.rules"),
   'prefix_rule(pattern=["touch"], decision="allow")\n',
 );
-for (const directory of ["sessions", "sqlite", "cache", "log"])
-  mkdirSync(path.join(sourceHome, directory), { recursive: true });
-for (const entry of readdirSync(sourceHome)) {
-  if (entry === "rules" && !linkRules) continue;
-  symlinkSync(path.join(sourceHome, entry), path.join(readOnlyHome, entry));
-}
+// Built by F5's own helper, so the gate exercises the home a read-only stage really gets.
+const { codexReadOnlyStageConfigArgs, materializeCodexReadOnlyHome } =
+  await import("../src/codex/CodexReadOnlyHome.ts");
+await materializeCodexReadOnlyHome({ sourceHome, readOnlyHome });
+if (linkRules) symlinkSync(path.join(sourceHome, "rules"), path.join(readOnlyHome, "rules"));
 writeFileSync(path.join(workspace, "notes.txt"), "original\n");
 const git = (...args) =>
   execFileSync("git", args, { cwd: workspace, encoding: "utf8", stdio: "pipe" }).trim();
@@ -109,13 +108,14 @@ const record = (gate, verdict, detail) => {
   console.log(`${verdict.padEnd(12)} ${gate}  ${detail}`);
 };
 
-// The config F5 passes every read-only stage (CODEX_READ_ONLY_STAGE_CONFIG_ARGS).
+// The config F5 passes every read-only stage.
+const childEnvironment = { ...process.env, CODEX_HOME: readOnlyHome };
 const child = spawn(
   codexBinary,
-  ["app-server", "-c", 'cli_auth_credentials_store="file"', "-c", 'project_root_markers=[".git"]'],
+  ["app-server", ...(await codexReadOnlyStageConfigArgs(sourceHome, childEnvironment))],
   {
     cwd: workspace,
-    env: { ...process.env, CODEX_HOME: readOnlyHome },
+    env: childEnvironment,
     stdio: ["pipe", "pipe", "pipe"],
   },
 );
@@ -215,6 +215,36 @@ async function runTurn(threadId, text) {
 
 const commandText = (params) =>
   Array.isArray(params.command) ? params.command.join(" ") : String(params.command ?? "");
+// The script a command runs: the command itself, or the whole script of a `sh -c`, `bash -lc` or
+// `zsh -lc` wrapper.
+const shellScript = (text) => {
+  const trimmed = text.trim();
+  const wrapped = /^(?:\S*\/)?(?:ba|z)?sh -l?c (?:'([^']*)'|"([^"$`\\]*)"|([^\s'"]+))$/.exec(
+    trimmed,
+  );
+  return (wrapped ? (wrapped[1] ?? wrapped[2] ?? wrapped[3]) : trimmed).trim();
+};
+// True only when the command is exactly one of `allowed`, so `ls; touch x` never matches `ls`.
+const isExactly = (allowed, text) => allowed.includes(shellScript(text));
+const acceptOnly = (allowed) => (method, params) =>
+  method === "item/commandExecution/requestApproval" && isExactly(allowed, commandText(params))
+    ? "accept"
+    : "decline";
+const askedFor = (requests, command) =>
+  requests.some(
+    (entry) =>
+      entry.method === "item/commandExecution/requestApproval" &&
+      isExactly([command], commandText(entry.params)),
+  );
+// The command ran as asked, succeeded and printed `output`.
+const succeeded = (items, command, output) =>
+  items.some(
+    (item) =>
+      item.type === "commandExecution" &&
+      isExactly([command], String(item.command ?? "")) &&
+      item.exitCode === 0 &&
+      String(item.aggregatedOutput ?? "").includes(output),
+  );
 const commandItems = (items) => items.filter((item) => item.type === "commandExecution");
 const replies = (items) =>
   items
@@ -262,37 +292,21 @@ try {
 
   if (selected.has("G3")) {
     // G3: reads are accepted.
-    decide = (method, params) =>
-      method === "item/commandExecution/requestApproval" &&
-      /^(?:\S*\/)?(?:ba|z)?sh -l?c '?(?:git rev-parse HEAD|ls)\b|^(?:git rev-parse HEAD|ls)\b/.test(
-        commandText(params).trim(),
-      )
-        ? "accept"
-        : "decline";
+    decide = acceptOnly(["git rev-parse HEAD", "ls"]);
     const g3 = await runTurn(
       threadId,
       "Run the shell command `git rev-parse HEAD`, then the shell command `ls`, and reply with their exact output. Use only those two commands.",
     );
     const g3Commands = commandItems(g3.items);
     // Each command must have asked, been accepted and returned its real output.
-    const askedFor = (pattern) =>
-      g3.requests.some(
-        (entry) =>
-          entry.method === "item/commandExecution/requestApproval" &&
-          pattern.test(commandText(entry.params)),
-      );
-    const succeeded = (pattern, output) =>
-      g3Commands.some(
-        (item) =>
-          pattern.test(String(item.command ?? "")) &&
-          item.exitCode === 0 &&
-          String(item.aggregatedOutput ?? "").includes(output),
-      );
     const head = {
-      asked: askedFor(/git rev-parse HEAD/),
-      ran: succeeded(/git rev-parse HEAD/, headSha),
+      asked: askedFor(g3.requests, "git rev-parse HEAD"),
+      ran: succeeded(g3.items, "git rev-parse HEAD", headSha),
     };
-    const ls = { asked: askedFor(/\bls\b/), ran: succeeded(/\bls\b/, "notes.txt") };
+    const ls = {
+      asked: askedFor(g3.requests, "ls"),
+      ran: succeeded(g3.items, "ls", "notes.txt"),
+    };
     const askedG3 = head.asked || ls.asked;
     record(
       "G3",
@@ -303,23 +317,14 @@ try {
   if (selected.has("G3b")) {
     // G3b: a read outside Codex's own safe list doesn't ask by itself after the sandbox fails;
     // with F5's hint the model must escalate, and the request must reach the client.
-    decide = (method, params) =>
-      method === "item/commandExecution/requestApproval" &&
-      /\bstat notes\.txt\b/.test(commandText(params))
-        ? "accept"
-        : "decline";
+    decide = acceptOnly(["stat notes.txt"]);
     const g3b = await runTurn(
       threadId,
       `${ESCALATION_HINT}\n\nRun the shell command \`stat notes.txt\` and reply with its output. Use only that command.`,
     );
-    const asked = g3b.requests.some(
-      (entry) =>
-        entry.method === "item/commandExecution/requestApproval" &&
-        /\bstat notes\.txt\b/.test(commandText(entry.params)),
-    );
-    const output = commandItems(g3b.items).some((item) =>
-      String(item.aggregatedOutput ?? "").includes("notes.txt"),
-    );
+    const asked = askedFor(g3b.requests, "stat notes.txt");
+    // A diagnostic naming the file from a failed `stat` isn't output.
+    const output = succeeded(g3b.items, "stat notes.txt", "notes.txt");
     record(
       "G3b",
       asked && output ? "PASS" : asked ? "INCONCLUSIVE" : "FAIL",

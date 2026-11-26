@@ -136,7 +136,7 @@ import {
 } from "./codex/JsonRpcStdinWriter.ts";
 import { resolveCodexHome } from "./os-jank.ts";
 import {
-  CODEX_READ_ONLY_STAGE_CONFIG_ARGS,
+  codexReadOnlyStageConfigArgs,
   codexReadOnlySourceHome,
   materializeCodexReadOnlyHome,
 } from "./codex/CodexReadOnlyHome.ts";
@@ -1631,12 +1631,12 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         input.workflowExecutionProfile && input.readOnlyHomePath
           ? input.readOnlyHomePath
           : undefined;
-      if (readOnlyHomePath)
+      const readOnlySourceHome = readOnlyHomePath
+        ? codexReadOnlySourceHome(instanceHomePath, input.processEnvironment ?? process.env)
+        : undefined;
+      if (readOnlyHomePath && readOnlySourceHome)
         await materializeCodexReadOnlyHome({
-          sourceHome: codexReadOnlySourceHome(
-            instanceHomePath,
-            input.processEnvironment ?? process.env,
-          ),
+          sourceHome: readOnlySourceHome,
           readOnlyHome: readOnlyHomePath,
         });
       const codexHomePath = readOnlyHomePath ?? instanceHomePath;
@@ -1669,7 +1669,14 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         ...(input.disablePlugins ? { disablePlugins: true } : {}),
         // File credentials and pinned project markers keep the home's sign-in and the project
         // rules guard exact (CodexReadOnlyHome.ts).
-        ...(readOnlyHomePath ? { extraConfigArgs: CODEX_READ_ONLY_STAGE_CONFIG_ARGS } : {}),
+        ...(readOnlySourceHome
+          ? {
+              extraConfigArgs: await codexReadOnlyStageConfigArgs(
+                readOnlySourceHome,
+                childEnvironment,
+              ),
+            }
+          : {}),
       });
       if (appServerCommand.dropped.length > 0) {
         await this.runPromise(
