@@ -56,6 +56,7 @@ const ALLOWED_PAGER_VALUES = new Set(["", "cat"]);
 const PLAIN_READ_PROGRAMS = new Set([
   "cat",
   "head",
+  "nl",
   "wc",
   "ls",
   "pwd",
@@ -461,7 +462,7 @@ function resolveWord(
     parts: ReadonlyArray<WordPart | DoubleQuotedChild>,
     quoted: boolean,
   ): string | undefined => {
-    for (const part of parts) {
+    for (const [index, part] of parts.entries()) {
       switch (part.type) {
         case "Literal":
         case "SingleQuoted":
@@ -486,6 +487,16 @@ function resolveWord(
                 : undefined;
           if (name === undefined || !VARIABLE_NAME.test(name))
             return "arguments must be literal: no substitutions or special expansions";
+          // zsh, which Codex and the ACP agents run commands in, reads `$NAME:…` as history
+          // modifiers (`$X:s/a/--flag/` rewrites the value into any text) and `$NAME[…]` as a
+          // subscript, so the word would not be the literal checked here.
+          const next = parts[index + 1];
+          if (
+            part.type === "SimpleExpansion" &&
+            next?.type === "Literal" &&
+            (next.value.startsWith(":") || next.value.startsWith("["))
+          )
+            return `write \${${name}} with braces before \`${next.value[0]}\`: zsh reads $${name}${next.value[0]}… as a modifier or subscript`;
           const known = scope.get(name);
           if (known === undefined)
             return `$${name} is not set earlier in this command: set ${name}=value before using it, or write the value literally`;

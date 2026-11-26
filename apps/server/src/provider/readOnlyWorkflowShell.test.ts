@@ -187,6 +187,9 @@ describe("classifyReadOnlyShellCommand", () => {
       "SHA=abc; if git cat-file -e $SHA; then git show $SHA; else echo missing; fi",
       "SHA=abc; ( cd sub && git show $SHA )",
       "head_sha=abc; git show $head_sha",
+      // Braces, or a closing quote, end the name before `:` in zsh too.
+      'COMMIT=957a21b; git show "${COMMIT}:apps/desktop/src/appIcon.ts" | nl -ba | sed -n 1,40p',
+      'COMMIT=957a21b; git show "$COMMIT":apps/desktop/src/appIcon.ts',
     ])("allows %j", (command) => {
       expect(classifyReadOnlyShellCommand(command)).toEqual({ readOnly: true });
     });
@@ -213,6 +216,13 @@ describe("classifyReadOnlyShellCommand", () => {
       ["E=''; git show $E", 'quote "$E"'],
       ["A=(x y); echo $A", "A must be set to a literal value"],
       ["A=x; A+=y; echo $A", "A must be set to a literal value"],
+      // zsh rewrites `$NAME:…` (history modifiers) and `$NAME[…]` (subscripts): the value
+      // would not be the literal checked here.
+      ['X=a; git diff "$X:s/a/--output=pwned/"', "write ${X} with braces before `:`"],
+      ["X=a; git diff $X:s/a/--output=pwned/", "write ${X} with braces before `:`"],
+      ['Y=abc--output=pwned; git diff "$Y[4,-1]"', "write ${Y} with braces before `[`"],
+      ['COMMIT=957a21b; git show "$COMMIT:apps/x.ts"', "write ${COMMIT} with braces"],
+      ["X=a; Y=$X:h; echo $Y", "write ${X} with braces"],
       // The value is what gets classified.
       ["F=--output=/tmp/x; git diff $F", "`git diff` flags that write or execute"],
       ["P=push; git $P", "`git push` is not on the read-only allowlist"],
