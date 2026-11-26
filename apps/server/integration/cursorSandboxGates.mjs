@@ -54,6 +54,9 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
 
+// Node strips the types (Node 22.18+ / 23.6+ by default).
+import { sanitizeCursorCliConfig } from "../src/provider/cursor/CursorReadOnlyConfig.ts";
+
 const argv = process.argv.slice(2);
 const handshakeOnly = argv.includes("--handshake-only");
 const rootFlag = argv.indexOf("--root");
@@ -339,13 +342,11 @@ writeFileSync(
   path.join(userConfigDir, "cli-config.json"),
   JSON.stringify({ ...userCliConfig, approvalMode: "allowlist", permissions: ALLOW_NPM }),
 );
+// The read-only copy comes from the shipped sanitizer, starting from the unmodified user config,
+// so a PASS shows the CLI accepts exactly what production writes.
 writeFileSync(
   path.join(readOnlyConfigDir, "cli-config.json"),
-  JSON.stringify({
-    ...userCliConfig,
-    approvalMode: "allowlist",
-    permissions: { allow: [], deny: [] },
-  }),
+  JSON.stringify(sanitizeCursorCliConfig(userCliConfig)),
 );
 const npmGates = [
   // Control: without it, an allowlist entry in the wrong format would make C5 pass for nothing.
@@ -518,7 +519,29 @@ function commandText(entry) {
   );
 }
 
+/**
+ * Whether a permission request is for one of the gate's own steps: a shell call whose command is
+ * exactly one of the steps' backticked commands, or the fetch step's web fetch. Requests can
+ * arrive without `rawInput`, so the call's earlier `tool_call` update and its title are tried too.
+ */
+function isExpectedFixtureCall(toolCall, expectedCommands, knownCall) {
+  if (!toolCall || typeof toolCall !== "object") return false;
+  if ((toolCall.kind ?? knownCall?.kind) === "fetch") return true;
+  const candidates = [toolCall.rawInput, knownCall?.rawInput]
+    .map((raw) => (typeof raw?.command === "string" ? raw.command : undefined))
+    .concat([toolCall.title, knownCall?.title])
+    .filter((value) => typeof value === "string")
+    .map((value) => value.trim().replace(/^`(.*)`$/s, "$1"));
+  return candidates.some((command) => command !== "" && expectedCommands.has(command));
+}
+
 function acpSession(workspace, { planMode, steps, sandbox = true, extraEnv = {} }) {
+  const expectedCommands = new Set(
+    steps.flatMap((step) => {
+      const match = /^`([^`]+)`$/.exec(step);
+      return match ? [match[1]] : [];
+    }),
+  );
   return new Promise((resolve) => {
     const child = spawn(agent, [...(sandbox ? ["--sandbox", "enabled"] : []), "acp"], {
       cwd: workspace,
@@ -587,19 +610,32 @@ function acpSession(workspace, { planMode, steps, sandbox = true, extraEnv = {} 
       if (message.method === "session/request_permission") {
         const params = message.params ?? {};
         const options = Array.isArray(params.options) ? params.options : [];
-        const allow = options.find((option) => option.kind === "allow_once");
+        // Only the fixture's own steps are approved: a model that strays must not touch files or
+        // credentials outside the fixtures with this operator's account.
+        const expected = isExpectedFixtureCall(
+          params.toolCall,
+          expectedCommands,
+          toolCalls.get(params.toolCall?.toolCallId),
+        );
+        const choice = options.find(
+          (option) => option.kind === (expected ? "allow_once" : "reject_once"),
+        );
         // Everything the request carries, for C2's question of whether it tells sandboxed runs
         // from out-of-sandbox ones.
         permissionRequests.push({
           ...params,
           options: options.map(({ kind, optionId, name }) => ({ kind, optionId, name })),
-          answered: allow ? "allow once" : "cancelled (no allow_once option)",
+          answered: !expected
+            ? "refused (not a fixture step)"
+            : choice
+              ? "allow once"
+              : "cancelled (no allow_once option)",
         });
         return send({
           id: message.id,
           result: {
-            outcome: allow
-              ? { outcome: "selected", optionId: allow.optionId }
+            outcome: choice
+              ? { outcome: "selected", optionId: choice.optionId }
               : { outcome: "cancelled" },
           },
         });

@@ -150,9 +150,17 @@ command (title and raw input), never by assistant text:
   the call completed and printed a version.
 - **Fixture setup** runs Git without the caller's `GIT_*` variables, global or
   system config, hooks or signing, and stops at the first failure.
-- **Permission requests** are answered "allow once" only when the request offers
-  it, and cancelled otherwise. The report keeps each request in full, with its
-  options.
+- **Permission requests** are answered "allow once" only for the gate's own
+  steps: a shell call whose command is exactly one of the prompt's backticked
+  commands, or the fetch step. Anything else is refused ("reject once"), so a
+  model that strays can't touch files or credentials outside the fixtures. A
+  request is cancelled when it offers neither option. The report keeps each
+  request in full, with its options and the answer; a fixture step reported as
+  "refused (not a fixture step)" means Cursor described it differently, and the
+  gate needs a look before its verdict counts.
+- **Environment:** the script runs as the operator, with the operator's
+  keychain (C1 links it). It is not isolated with disposable credentials; the
+  allow-list above is what limits it.
 
 | Gate | Question                                                                                                                                                          | Result                                                                                              |
 | ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
@@ -206,26 +214,57 @@ Read-only Cursor stages launch with `CURSOR_CONFIG_DIR` set to
   `acp-sessions` and `chats` live in it. User MCP servers (`~/.cursor/mcp.json`),
   rules and skills are read from the home folder and still load. F5's read-only
   ACP policy refuses every MCP call except its own read-only tools.
-- **What F5 writes there:** a copy of the user's `cli-config.json` with an empty
-  allowlist and `approvalMode: "allowlist"`, rewritten at every start, and no
-  `permissions.json`. `approvalMode` also accepts `unrestricted` and
-  `auto-review`, and both let commands run without asking.
-- **Sign-in doesn't move:** credentials are in the keychain or `auth.json` under
-  HOME (macOS), `XDG_CONFIG_HOME` or `~/.config/cursor` (Linux), or `APPDATA`
-  (Windows), never in `CURSOR_CONFIG_DIR`. No keychain link is needed, unlike
-  the separate HOME in C1. In C5 the session signed in with `CURSOR_CONFIG_DIR`
-  pointing at a folder that held only the sanitized `cli-config.json`.
+- **What F5 writes there:** a copy of the user's `cli-config.json` that keeps
+  only display, model, account-display and privacy settings (`version`,
+  `editor`, `display`, `notifications`, `hints`, `model`, `modelParameters`,
+  `selectedModel`, `maxMode`, `hasChangedDefaultModel`, `exploreSubagentModel`,
+  `privacyCache`, `authInfo`), with an empty allowlist (deny rules kept) and
+  `approvalMode: "allowlist"`, rewritten at every start, and no
+  `permissions.json`. Every other key, including `sandbox`,
+  `autoAcceptWebSearch` and anything a later release adds, is dropped.
+  `approvalMode` also accepts `unrestricted` and `auto-review`, and both let
+  commands run without asking.
+- **Sign-in doesn't move:** in the 2026.11.22 bundle, credentials are in the OS
+  keychain (`AGENT_CLI_CREDENTIAL_STORE` unset) or `auth.json` under
+  `~/.cursor` (macOS), `$XDG_CONFIG_HOME/cursor` or `~/.config/cursor` (Linux),
+  or `%APPDATA%\Cursor` (Windows), never under `CURSOR_CONFIG_DIR`.
+  `cursorCredentialStoreKey` keys on `~/.cursor` plus the store selection for
+  that reason. Only darwin-arm64 with the keychain is verified live (C5
+  signed in with `CURSOR_CONFIG_DIR` pointing at a folder holding only the
+  sanitized `cli-config.json`). `AGENT_CLI_CREDENTIAL_STORE=file`, Linux and
+  Windows are read from the source only and still need a live run.
+- **Where read-only sessions are recorded:** `acp-sessions` and `chats` follow
+  `CURSOR_CONFIG_DIR`, so read-only sessions live under
+  `provider-homes/cursor-readonly/<instance id>`, not `~/.cursor`. Read-only
+  sessions recorded under `~/.cursor` before this change can't be resumed. F5
+  doesn't prune the folder, and backups that include `provider-homes` include
+  it.
 - **The 2026-11-26 C5 run needs a rerun.** Its read-only copy also carried the
   sandbox preset the script adds for C2-C4, which production doesn't add. The
-  script now builds C5 and C6 from the user's config exactly as production does,
-  and C6 always runs with C5 as its control.
+  script now builds C5's copy with the shipped `sanitizeCursorCliConfig` from
+  the unmodified user config, and C6 always runs with C5 as its control.
 - **Repository config:** the CLI also merges every `.cursor/cli.json` from the
   repository root down to the working directory into that config, using the
-  full schema. F5 can't override those files, so it refuses a read-only stage
-  when one between the working directory and the filesystem root sets
-  `permissions.allow` or an `approvalMode` other than `allowlist`. C6 showed
-  that ACP honours them: a repository allowlist ran `npm` without asking F5,
-  even with F5's config override in place.
+  full schema. C6 showed that ACP honours them: a repository allowlist ran `npm`
+  without asking F5, even with F5's config override in place. F5 can't override
+  those files, so a read-only stage is refused when, between the working
+  directory and the filesystem root, a `.cursor/cli.json`:
+  - sets anything but deny rules, an empty allowlist or `approvalMode:
+"allowlist"` (unknown keys included);
+  - isn't a regular file, can't be read, is over 256 KiB, or isn't strict JSON
+    (the CLI might read JSON with comments that F5 can't).
+- **Project hooks and MCP servers:** the CLI loads the workspace's
+  `.cursor/hooks.json` (hooks run shell commands) and starts the project's
+  `.cursor/mcp.json` servers once approved; approvals are kept per project in
+  the CLI's data dir, so an earlier interactive approval carries over. Neither
+  is a gate yet (C7/C8 would be), so a read-only stage is refused when either
+  file, from the working directory up to the repository root, defines any hook
+  or server, or can't be read as above. Your own `~/.cursor/hooks.json` and
+  `~/.cursor/mcp.json` are left alone.
+- **Known window:** the CLI reads the live workspace. F5 checks it at start and
+  again before every turn, but a concurrent writer in the same worktree can add
+  a project file between a check and the CLI reading it. No launch flag turns
+  off project config discovery in 2026.11.22.
 - **Team admin allowlists** come from Cursor's servers and stay out of F5's
   reach.
 

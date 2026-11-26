@@ -473,6 +473,33 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
     }),
   );
 
+  it.effect("refuses a read-only stage in a repository with project Cursor hooks", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const repo = yield* Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "cursor-repo-")));
+      yield* Effect.promise(async () => {
+        await mkdir(path.join(repo, ".git"), { recursive: true });
+        await mkdir(path.join(repo, ".cursor"), { recursive: true });
+        await writeFile(
+          path.join(repo, ".cursor", "hooks.json"),
+          JSON.stringify({ version: 1, hooks: { sessionStart: [{ command: "./x.sh" }] } }),
+        );
+      });
+      const error = yield* adapter
+        .startSession({
+          threadId: ThreadId.make("cursor-readonly-hooks-repo"),
+          provider: ProviderDriverKind.make("cursor"),
+          cwd: repo,
+          runtimeMode: "full-access",
+          workflowExecutionProfile: "unattended-readonly",
+          modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+        })
+        .pipe(Effect.flip);
+      assert.equal(error._tag, "ProviderAdapterValidationError");
+      assert.include(String((error as { issue?: string }).issue), "defines hooks");
+    }),
+  );
+
   it.effect("maps app plan mode onto the ACP plan session mode", () =>
     Effect.gen(function* () {
       const adapter = yield* CursorAdapter;
@@ -1900,6 +1927,45 @@ cursorAdapterHardeningTestLayer("CursorAdapterLive ACP hardening", (it) => {
         yield* Fiber.interrupt(fiber);
         yield* adapter.stopSession(threadId);
       }),
+  );
+
+  it.effect("checks the workspace again before every read-only turn", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("cursor-readonly-recheck");
+      const repo = yield* scopedTempDir("cursor-readonly-recheck-");
+      yield* Effect.promise(() => mkdir(path.join(repo, ".git")));
+      const wrapperPath = yield* Effect.promise(() => makeMockAgentWrapper({}));
+      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: repo,
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "unattended-readonly",
+        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+      });
+      // Another writer in the worktree adds an allowlist after the stage started.
+      yield* Effect.promise(async () => {
+        await mkdir(path.join(repo, ".cursor"));
+        await writeFile(
+          path.join(repo, ".cursor", "cli.json"),
+          JSON.stringify({ permissions: { allow: ["Shell(*)"] } }),
+        );
+      });
+      const error = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "review",
+          attachments: [],
+          workflowExecutionProfile: "unattended-readonly",
+        })
+        .pipe(Effect.flip);
+      assert.equal(error._tag, "ProviderAdapterValidationError");
+      assert.include(String((error as { issue?: string }).issue), "permissions.allow");
+      yield* adapter.stopSession(threadId);
+    }),
   );
 
   it.effect("replies to cursor/ask_question with an answered outcome keyed by option id", () =>
