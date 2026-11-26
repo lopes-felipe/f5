@@ -1,2 +1,0 @@
-- Antigravity file writes now show their diff, including new files, which Antigravity always marks as overwrites.
-- Antigravity edits in the latest turn no longer appear twice, once while running and once completed.

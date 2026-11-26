@@ -1,1 +1,0 @@
-- Expanding a collapsed work log near the bottom of a conversation keeps the heading in view.

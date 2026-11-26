@@ -6,6 +6,280 @@ Unreleased entries now live as one file each under [`changes/`](changes/README.m
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-11-26
+
+### Added
+
+- Codex hooks that need approval after a plugin changed are marked "Needs approval" in Settings →
+  Providers → Hooks, plugins and connectors, with Trust and Trust all buttons that approve the
+  contents shown, through Codex. Hooks that changed again before you confirm are not trusted. If
+  Codex cannot save the approval (for example because `config.toml` breaks an administrator
+  requirement), its error appears next to the hooks. Conversations that are already running pick
+  up the approval when their Codex session restarts.
+- A turn's "hook approval required" failures now show as one warning row naming the changed
+  plugins, with a link to review those hooks for the conversation's provider and project, instead
+  of one red card per hook.
+- Workflows can run with more than two actors: up to 4 authors, document authors or
+  investigators, and up to 6 reviewers for code review and upstream port review. With three or
+  more authors or investigators, each one cross-reviews every other one's work. At most 4 review
+  turns run at once, and the dialog shows how many turns the workflow will start, including the
+  reader review and polish of a Document workflow.
+- The workflow dialog can't start a run whose merge, synthesis or consolidation model, or enabled
+  Document reader model, is on a provider that can't run read-only workflow turns; the row says
+  why.
+- Document authors and investigators each need a different model. Long reviews and
+  investigations are excerpted fairly when the consolidation, synthesis or (with three or more
+  authors) revision prompt would be too long, and each excerpt is marked as shortened.
+- Antigravity can run read-only workflow turns on versions F5 has certified: workflow turns run in
+  Plan with Supervised access, and edits, commands, computer use and MCP tools are denied. No
+  version is certified yet, so Antigravity stays unavailable for review and document stages.
+- PR Hub can delete the source branch of a closed or merged GitLab merge request when GitLab permits it and the branch still points to the reviewed commit.
+- Usage can include OpenCode and Antigravity history from local stores and Cursor account history from your CLI login. Enable the sources under Usage → Pricing.
+- Right-click a draft thread in the sidebar or press Shift+F10 to copy its path or branch, open project settings, or discard it with Undo.
+- Usage shows cost by token type and speed, with details for each model. Enable model list prices to estimate costs when the provider omits them.
+- Setting `DO_NOT_TRACK=1` stops F5's background requests: automatic provider CLI update lookups,
+  the remote model manifest and file icons from jsDelivr (icons are drawn locally instead).
+  Update checks you start still run. On macOS the desktop app also picks up `DO_NOT_TRACK` from
+  your login shell.
+- Added `f5 doctor` (`--json` and `--bundle <path>`) CLI command and matching **System health check (Doctor)** card in Settings → General with one-click redacted support bundle export.
+- Improved Settings search to match category names, `F5_*` environment variables, and all built-in providers (`antigravity`, `pi`, `acp`), added result descriptions, a `/` shortcut hint, screen-reader result counts, and keyboard arrow navigation across settings categories.
+
+### Changed
+
+- Pull request diffs follow the changed-file tree order. The pull request and chat diff panels share a Hide test files toggle.
+- Text generation through OpenCode defaults to Big Pickle when you choose OpenCode without specifying a model.
+- F5 exports traces and metrics only to the OTLP collector set in **Settings → Diagnostics**.
+  `OTEL_EXPORTER_OTLP_*` endpoints and headers from the environment are now ignored, so a
+  workstation-wide collector no longer receives F5 data; F5 logs a warning at startup when they
+  are set. `OTEL_RESOURCE_ATTRIBUTES` still labels exported data, for example to replace the
+  host name.
+- Agents now start with `DISABLE_ERROR_REPORTING=1`, opting Claude Code and other CLIs that honor
+  it out of vendor crash reports. A value in your environment or a provider instance's
+  **Environment** setting still wins. Terminals and git are unchanged.
+- On Windows, terminal activity and storage checks now ask Windows only for the process details
+  they use, rather than every process's full command line.
+- New side chat and existing side chats in the composer's + menu show icons.
+- Compact conversation is available from the + menu when the composer is wide, not only from the
+  compact composer's controls menu.
+- A scroll-collapsed composer stays open while an attachment notice or failed upload needs your
+  attention, and expanding its attachments from the keyboard keeps focus in the composer.
+- Added first-class `F5_*` server and build environment variables (`F5_MODE`, `F5_PORT`, `F5_HOST`, `F5_NO_BROWSER`, `F5_AUTH_TOKEN`, `F5_LOG_WS_EVENTS`, `F5_LOG_THREAD_OPEN_TIMINGS`, `F5_LOG_PROJECTION_TIMINGS`, `F5_OBSERVABILITY_ENABLED`, `F5_WEB_SOURCEMAP`) while retaining `T3CODE_*` aliases as automatic fallbacks.
+- Migrated theme, Agents panel, model preferences, terminal state, and notification-prompt browser storage keys to the `f5:*` namespace with silent one-way fallback from legacy `t3code:*` keys.
+- Read-only workflow stages can read pull requests, CI logs, review guides and repository files
+  through F5's forge tools on Codex, Claude, Cursor, Antigravity and Pi. Write tools such as
+  merge, review and re-run stay out of those stages, including on Pi. The new `repository_file_read` tool
+  reads a file or lists a directory at a branch, commit or PR head on GitHub. These reads also work
+  when the stage's folder holds several repositories, as long as the PR's host has a connected
+  account.
+- Each read-only stage's thread records how it is kept read-only: sandboxed, or policy-enforced.
+- Antigravity read-only workflow stages launch in Antigravity's OS sandbox, so where the sandbox
+  can start their shell commands have no network and can't write outside the workspace.
+  Certification now covers a minimum Antigravity version per platform, so F5's automatic
+  Antigravity updates keep certified workflows available. Antigravity 1.5.15 and later is
+  certified on Apple silicon Macs, so it can run workflow reviews, investigations and document
+  stages there.
+- Refreshed the F5 marketing site with the Graphite + Cobalt palette, real product screenshots, the full provider matrix (8 built-in providers plus custom ACP agents), and fixed Linux download detection on the landing page.
+- Read-only workflow stages on Cursor and Antigravity accept `if`/`elif`/`else` blocks, `{ …; }`
+  groups and `( … )` subshells when every command inside only reads, such as
+  `if [ -d repo/.git ]; then git -C repo status; else echo "No repo"; fi`. Loops, `case` and
+  functions are still refused. Their commands also run with `GIT_OPTIONAL_LOCKS=0`, so an
+  approved `git status` no longer rewrites the index or holds `index.lock`.
+- The model picker opens on one list: your three most recent models, then Favorites, then every
+  provider's models. Chips under the search field narrow the list to Favorites or one provider
+  (`mod+shift+↑/↓` cycles them), and search stays inside the chosen chip. Each model takes one
+  line with its slug, older models fold under a "Legacy" row per provider, and `mod+1` to
+  `mod+9` always pick your favorites in order.
+- The composer's Access menu is a compact autonomy ladder: one line per mode, from Full access at
+  the top to Supervised at the bottom, with a coloured bar filled up to the current mode and a short
+  tag on each row. Highlighting a row previews its fill, and a caption under the rows describes
+  that mode. Modes the provider doesn't support stay listed as Unavailable, and the caption says
+  why. Opening the menu from the keyboard starts on the current mode.
+- Access modes use the same names everywhere: "Auto-accept edits" is now "Accept edits", and
+  Settings shows "Supervised" instead of "Ask for approval".
+- F5 has a new app icon: the name drawn as five coloured lines.
+- Upgraded `@legendapp/list` from prerelease `3.0.0-beta.44` to stable `3.7.3` across all virtualized web lists (message timeline, command palette, file browser, workspace picker, PR Hub, upstream topic list, model picker, and agent transcript).
+
+### Performance
+
+- Queued messages in projects with many repositories are sent sooner after a turn ends:
+  repositories that did not change are no longer re-scanned for the turn's checkpoint.
+- Inactive preview tabs stop painting between browser automation and recording operations.
+- Graduated React Compiler in `apps/web` from `annotation` mode to `infer` mode across production web sources so React components and hooks receive automatic memoization without manual `"use memo"` directives.
+- Fixed three Rules-of-React / mutable-module-global reads uncovered during full browser verification: opted the preloaded inline-diff Suspense shims in `MessagesTimeline` out of memoization (`"use no memo"`), subscribed `PrLinkedPanel` to `prHubAccount` via `useSyncExternalStore`, and moved Home composer `chosenEnvMode` into Zustand (`useHomeComposerTextStore`).
+
+### Removed
+
+- F5 no longer contains product analytics. The dormant usage telemetry inherited from T3 Code,
+  its anonymous ID and its startup heartbeat are gone, and F5 deletes the leftover `anonymous-id`
+  and heartbeat lock files on startup. [Privacy](docs/privacy.md) lists every request F5 still
+  makes on its own.
+
+### Fixed
+
+- Expanded command cards highlight more file reads and searches:
+  - `git show <rev>:<path>` reads, including ones narrowed with `sed -n` or `head`.
+  - `git grep -n` results.
+  - Commands that chain several reads and searches. Each read becomes its own highlighted file
+    block, results are grouped by file, and output from other commands in the chain stays plain
+    text. Before, one unrecognized command made the whole output plain.
+- Choosing a reasoning effort for an Antigravity model, or a thinking level for Pi or Muse, now
+  takes effect. Before, the menu stayed on the model's default and the turn ran at that level.
+- Antigravity, Pi and Muse are kept as the last-used provider, in recent models and in favorites
+  after F5 reloads.
+- An experimental Linux VM profile's window no longer stops at "Profile changed" once its VM is
+  up: the backend in the VM now reports the profile it serves. Profiles can't be created,
+  changed or deleted from inside a VM profile; its window says so and disables those controls.
+  Manage profiles from a host profile.
+- Expanded command cards highlight more agent commands:
+  - Searches over a file from another revision or piped from a read, such as
+    `git show main:a.ts | grep -n x` or `sed -n 40,80p a.ts | grep -n x`, are grouped under that
+    file with its real line numbers.
+  - Chains that print labels or counts (`echo "== x"`, `wc -l a.ts`) keep highlighting the reads and
+    searches around them.
+  - Commands that use shell variables (`H=abc123; git show ${H}:a.ts`) or `|| true` are followed.
+  - Reads of a file written earlier in the same command show the original file's name, as in
+    `git show A:a.ts > /tmp/a.ts` followed by `sed -n 1,9p /tmp/a.ts`.
+  - A whole-file read followed by a search (`cat a.ts; grep -rn x src`), a search that finds
+    nothing in the middle of a chain, and patterns with escaped backticks or `$` no longer turn
+    the rest of the output plain.
+  - One command the card cannot follow, such as `a || b`, no longer turns the output before it
+    plain.
+- The Cursor model picker now lists the models your Cursor account can use, with their effort,
+  context and fast-mode options. Choosing Auto works again on current Cursor CLIs.
+- Antigravity edits now show their own file and an exact diff. Before, every edit row listed all
+  of the turn's changed files, showed the same diff and read "0 files".
+- An Antigravity thread left idle for about 30 minutes no longer loses its next reply and shows
+  "Provider output is incomplete" again after every message.
+- Antigravity file writes now show their diff, including new files, which Antigravity always marks as overwrites.
+- Antigravity edits in the latest turn no longer appear twice, once while running and once completed.
+- Pasting a thread link uses the current selection in the composer, even when the cursor has just moved.
+- The Forgejo and Gitea reviewer picker loads the full list of eligible reviewers, including read-only collaborators where the forge supports reviewer lookup. It excludes the pull request author.
+- Open PDF previews keep their reading position while the agent works and while the preview URL renews. Editing the PDF refreshes the preview, and removing it shows that the file is unavailable.
+- Changing provider settings still triggers a fresh check after a previous check failed.
+- Automatic worktree cleanup keeps checkouts for threads waiting to resume after a usage limit.
+- OpenCode shows the provider’s payment error when an account is out of funds, without treating it as a temporary usage limit.
+- OpenCode sessions and generated text authenticate to password-protected servers, including local servers with a custom username. A missing stored password is reported before F5 starts or connects to the server.
+- Short-lived Pi discovery and text-generation processes skip the startup catalog refresh that could lose a rotated OAuth token.
+- Pi status identifies the default model and provider when that provider has no available models. Supported Pi versions can confirm whether credentials are missing.
+- Pi status warns when discovery finds no usable models.
+- Stopping a Pi turn clears queued native messages on supported Pi versions and shows how many were cleared.
+- GitHub requests, including code review posts, recover on their own a minute or so after GitHub
+  briefly rejects a valid token, instead of failing with "The GitHub credential was rejected"
+  until F5 restarts.
+- Enable **Follow worktree branch switches** in Git settings to update a conversation’s recorded branch after an external checkout. The setting is off by default.
+- GitLab inline review threads now show as outdated when their diff revision differs from the merge request’s current revision.
+- Unresolved GitLab overview discussions now appear as review findings in PR Hub.
+- GitLab merge requests show head pipeline status in PR Hub, and review filters can find requests with changes requested.
+- GitLab pull request watches now react when a comment is edited in place. Resolving a discussion no longer counts as a comment edit.
+- A branch tracking another local branch no longer displays that branch’s pull request.
+- Generated pull request titles and descriptions stay focused on the code changes when the supplied context includes follow-up requests.
+- Thread CLI help identifies the remote default branch as the base to pass for independent worktrees.
+- Opening a work group with earlier activity fetches a bounded page. Load earlier keeps paging until it reaches an earlier user message or the end of message history.
+- Brief WebSocket connection attempts and reconnects no longer flash a connection warning.
+- Earlier chat work remains visible as you page back, and hidden previews retain their active viewport.
+- Usage retains complete history after a partial scan and clears Cursor history when the login changes or becomes unavailable.
+- Losing internet access no longer shows a disconnect warning while the local F5 server remains reachable.
+- Drafts stay available while attachments are preparing, and Usage opens while list prices refresh.
+- An Antigravity turn that hits the account quota now shows the usage-limit notice with its reset
+  time and can schedule "continue" for after the reset, as Codex and Claude turns do. Before, it
+  showed a generic "Antigravity stopped this turn because of an error", or completed silently.
+- The workflow model pickers (New Workflow, Implement and upstream port review) now use the same
+  model picker and effort controls as the chat composer. Antigravity models are listed instead of
+  "No models found": in New Workflow and port review they stay disabled with "Read-only workflow
+  turns are not certified for this Antigravity version" until a version is certified, and the
+  Implement dialog can pick them. Codex Fast Mode stays available in workflow slots. Workflow slots
+  leave out traits a workflow turn can't use: Claude Ultrathink and Ultracode, and OpenCode and
+  Muse traits, which workflow turns never apply.
+- The model picker's search moves through results with the arrow keys and skips models that can't
+  be picked, so Enter picks the highlighted model rather than always the first result.
+- Copy and Save work for images embedded as data URLs.
+- New threads recover when the conversation loads before the server has saved the thread.
+- Checking out a fork pull request looks up the fork on the pull request's host.
+- Ctrl+Left and Ctrl+Right in the terminal send the shell's modified arrow keys on Windows and Linux.
+- Expanding a collapsed work log near the bottom of a conversation keeps the heading in view.
+- The Antigravity CLI no longer updates itself behind F5's back; F5 now disables its
+  auto-update with the value the CLI actually accepts.
+- Thoughts an agent such as Antigravity has between tool calls now show as compact Thought rows
+  instead of "Thought" plus "(empty response)" messages. A turn that ends on a thought without
+  ever replying says "Finished without a reply".
+- Cursor and Antigravity reviewers in workflows can run read-only commands such as `gh pr view`,
+  `gh pr diff` and `git log`, and fetch web pages, instead of failing with "Workflow read-only
+  profile violation". Anything that would change files is refused and the model keeps working; a
+  stage fails only after three refused operations in one turn. Claude read-only stages get the
+  same allowance instead of failing on the first refused tool.
+- A workflow stage that failed for a read-only violation stays failed even if the provider
+  finishes the turn afterwards, and shows the first violation instead of the last. A provider
+  that keeps working after the interrupt has its session stopped after 10 seconds.
+- Screenshots pasted into the New Workflow requirement field now attach as file chips instead of
+  showing "File attachments require the desktop app". F5 keeps a copy for 30 days so the workflow's
+  agents can open it.
+- An Antigravity turn stopped by the account quota now keeps its usage-limit notice, with the
+  reset countdown and the option to continue after the reset. Before, the turn showed a plain
+  error banner because its usage limit was cleared as soon as the turn ended.
+- Guarded theme and client-settings `localStorage` writes so switching themes or completing settings migration no longer throws when browser storage is restricted or full.
+- Bounded long-lived in-memory tracking maps in server runtime ingestion and the Claude adapter to prevent unbounded memory growth during extended uptime.
+- Memoized document sanitization and iframe source generation in the document preview viewer so zooming or changing themes no longer re-sanitizes the entire document on every click.
+- When Antigravity's saved sign-in expires between sessions, Usage now says so and asks you to
+  start an Antigravity turn to renew it. It keeps showing the last-known limits, including after a
+  restart, instead of claiming the installed version does not expose account usage.
+- Codex read-only workflow stages (reviews, investigations, documents) now run in Codex's
+  read-only sandbox with no network for shell commands. They used to run with the thread's access
+  mode, so only the prompt kept them from writing. A stage fails to start if Codex reports any
+  other sandbox.
+- Codex read-only workflow stages get only F5's read-only forge and thread tools. Your own Codex MCP
+  servers, the preview browser and Codex plugins are left out of those stages, since Codex uses MCP
+  tools without asking and they run outside its sandbox.
+- Read-only stages on Cursor and Antigravity allow F5's forge tools only when the call really
+  targets them, and Antigravity's own calls to those tools are no longer refused.
+- `repository_file_read` reads files whose names contain spaces, `#`, `:` or parentheses, and the
+  forge tools look up the thread's repository without running `git status`.
+- A pre-release of a certified provider version is no longer treated as certified, and an excluded
+  version also excludes its hotfix and build variants.
+- Read-only workflow stages on Antigravity and Cursor refuse a command that asks to run outside
+  the provider's sandbox, even when the command itself only reads. Before, an Antigravity
+  reviewer could retry an allowed command such as `gh api zen` with `BypassSandbox` and reach
+  the network from outside the sandbox.
+- The workspace picker no longer spills outside its popup when the checkout has a long path. The
+  path at the top is shortened in the middle, so the worktree folder name stays visible.
+- Messages that were sent just as the connection dropped stay pending and are retried
+  automatically up to twice after reconnecting, without adding the message twice.
+  If reconnection or synchronization fails, you can restore the draft.
+- Invalid provider settings, such as an out-of-range Claude auto-compact window, show an inline error while F5 keeps using the saved configuration. Resetting the provider clears rejected edits.
+- Shell hooks that update the terminal title no longer corrupt the environment F5 uses to find provider CLIs.
+- F5 desktop on Windows honors a saved `DO_NOT_TRACK` setting even when the launcher started before it was set.
+- Workspace filename and content search are unavailable when the project folder is your home
+  directory or a filesystem root. Open a subfolder to search it, or browse folders directly.
+- The Models section of the new-workflow dialog, the Implement dialog and the port review options
+  now show each model and its effort as two matching fields. Model names are left-aligned, the
+  columns line up on every row (including removable rows), and the run estimate sits on one line
+  under the merge row. In a phone-width dialog, the row label moves above its fields so the model
+  name stays readable.
+- Read-only workflow stages on Antigravity and Codex work in the macOS desktop app again. Their
+  sandboxes can't start inside the app's own sandbox, so every command failed with
+  `sandbox_apply: Operation not permitted`. F5 now checks once and, where the sandbox can't start,
+  runs these stages without it and approves only commands on its read-only allowlist. The stage
+  shows **Read-only stage: policy-enforced**.
+- Read-only stages on Cursor and Antigravity no longer refuse scripts that set a variable to a
+  literal and use it later, such as `HEAD_SHA=abc123` followed by `git show "$HEAD_SHA"`.
+  Variables like `PATH`, `HOME`, `PAGER` or `GIT_DIR` still can't be set.
+
+### Security
+
+- Provider logs no longer store API keys, access tokens, JWTs, `Bearer` and `Basic` credentials,
+  passwords in URLs or private keys that appear in agent output; they are written as
+  `[REDACTED]`.
+- The Upstream page and its remote-mismatch error no longer show a token or password embedded in
+  the upstream remote's URL.
+- Added defense-in-depth `Content-Security-Policy`, `Referrer-Policy`, and `Permissions-Policy` headers on static HTML responses and enforced Origin checks uniformly across all private `/api/` HTTP routes.
+- Capped active in-memory session and per-source authentication failure tracking maps in the server auth layer to guard against memory exhaustion under repeated login or failed-auth traffic.
+- Centralized Electron main-process app IPC handler registration (including credential bootstrap `desktop:get-ws-url`) behind a mandatory F5 app main-frame origin and ownership guard so preview webviews, HTML sandboxes, and foreign-origin navigations cannot invoke covered desktop channels.
+- Scrubbed `F5_AUTH_TOKEN` alongside `T3CODE_AUTH_TOKEN` from server process environment and child provider/terminal spawn environments, and isolated desktop/dev-runner launchers from inherited `F5_*` server variables.
+- On Windows and macOS, the desktop app now encrypts its cookies, including cookies imported into
+  the preview browser, with the operating system's key (DPAPI on Windows, the Keychain on macOS).
+  Cookies written or replaced after the update are encrypted; older ones keep working and are
+  encrypted the next time they change. Reinstalling an older F5 release afterwards loses these
+  cookies. Linux is unchanged for now.
+
 ## [0.1.11] - 2026-11-23
 
 ### Added
@@ -74,6 +348,16 @@ Unreleased entries now live as one file each under [`changes/`](changes/README.m
   composer's context meter now works for Antigravity threads.
 - Antigravity supports Auto-accept edits, the composer's Plan toggle, and Auto when the installed
   version offers its own reviewer.
+- Cursor threads show subagent task cards, keep the to-do list when Cursor sends partial updates,
+  and show images Cursor generates inside the workspace.
+- Cursor threads pick up the title Cursor assigns, pass non-image file attachments to Cursor, and
+  list the skills Cursor installs in `~/.cursor/skills-cursor`.
+- Remote project MCP servers are passed to Cursor, with a warning naming any server F5 left out.
+- For a Cursor CLI installed with Cursor's installer, the provider update notice now shows how to
+  update it (`agent update`).
+- In Plan mode, Antigravity's plan appears as F5's plan card, with Implement and refine, as it does for Claude, Codex and Cursor.
+- Antigravity asks its questions in F5's question card instead of in its reply. The card stays open, and Antigravity keeps waiting, until you answer or its turn ends.
+- Antigravity's own plan, task and walkthrough files show as "Updated artifact" entries, not as changed files in F5's profile folder.
 
 ### Changed
 
@@ -267,6 +551,34 @@ Unreleased entries now live as one file each under [`changes/`](changes/README.m
   trips the startup timeout while it keeps making progress.
 - macOS and Windows packages no longer carry a second, unused copy of the native helper inside
   the app archive.
+- Cursor questions now send the answers you picked instead of an empty reply, and skipping or
+  stopping tells Cursor the question was skipped or cancelled.
+- Cursor questions that arrive as permission prompts are no longer approved automatically in
+  full-access threads.
+- Cursor no longer leaves an abandoned session in `~/.cursor` for every commit message, PR text or
+  title F5 generates with it. That text is now generated in a private scratch folder, so project
+  rules do not apply to it.
+- Cursor shell commands that exit with an error now show as failed, and tools still running when a
+  turn is stopped or fails show as interrupted. Backgrounded commands stay open across turns until
+  Cursor reports them, and their updates stay with the turn that started them.
+- Cursor threads refuse runtime modes Cursor cannot enforce instead of silently running with
+  different permissions.
+- Steer now stays available for queued turns after the agent switches branch or worktree mid-turn,
+  instead of being disabled until the turn ends.
+- `grep -n`/`rg -n` results in expanded command cards are grouped by file and highlighted when
+  the output goes through `head`, `tail` or another `grep`/`rg` filter (such as `| grep -v test`),
+  instead of showing as plain text.
+- A message sent to Antigravity, Grok or Cursor no longer shows as queued for the whole turn. It
+  leaves the queue as soon as the agent starts working on it.
+- Command cards for Antigravity, Grok and Cursor now show the command's output instead of
+  "(no output)". A command Antigravity was not allowed to run shows the reason.
+- Antigravity and Grok commands that exit with a non-zero code now show as failed, with the exit
+  code, instead of completed.
+- Antigravity command cards are headed with Antigravity's own summary of the command, such as
+  "Inspect repository top-level layout", instead of a generic label.
+- Antigravity's 5-hour and weekly limits on the Usage page now show the pace marker, and the
+  composer's limits gauge shows Antigravity's most-used weekly limit.
+- Commands on command cards keep the same syntax colors when a card is expanded or collapsed.
 
 ### Security
 
