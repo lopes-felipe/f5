@@ -79,6 +79,7 @@ import { toCodexProviderStartOptions } from "../provider/codexProviderOptions.ts
 import { buildCodexCliEnvOverrides, runCodexCliCommand } from "../provider/providerCli.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
 import {
+  mcpBearerRedactionValues,
   readCodexMcpOAuthCallbackConfig,
   translateMcpForCodex,
 } from "@t3tools/shared/mcpTranslation";
@@ -502,9 +503,7 @@ const makeMcpRuntimeService = Effect.gen(function* () {
       const identity = yield* resolveExecution(input).pipe(Effect.option);
       const environment = Option.isSome(identity) ? identity.value.environment : {};
       const additionalValues = Object.values(effective.servers).flatMap((server) =>
-        server.bearerTokenEnvVar && environment[server.bearerTokenEnvVar]
-          ? [environment[server.bearerTokenEnvVar]!]
-          : [],
+        mcpBearerRedactionValues(server, environment),
       );
       return { servers: effective.servers, additionalValues };
     });
@@ -525,9 +524,7 @@ const makeMcpRuntimeService = Effect.gen(function* () {
         .readEffectiveRuntimeConfig(input.projectId)
         .pipe(Effect.mapError(runtimeError));
       const additionalValues = Object.values(effective.servers).flatMap((server) =>
-        server.bearerTokenEnvVar && identity.environment[server.bearerTokenEnvVar]
-          ? [identity.environment[server.bearerTokenEnvVar]!]
-          : [],
+        mcpBearerRedactionValues(server, identity.environment),
       );
       // This branch must precede provider preflight: a conversation read never creates a control client.
       const live = providerService.readMcpSessionStatuses

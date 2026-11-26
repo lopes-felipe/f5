@@ -12,7 +12,7 @@ import * as nodeFs from "node:fs/promises";
 import * as nodePath from "node:path";
 
 import type { McpProjectServersConfig } from "@t3tools/contracts";
-import { filterEnabledMcpServers } from "@t3tools/shared/mcpTranslation";
+import { filterEnabledMcpServers, mcpRemoteHeaders } from "@t3tools/shared/mcpTranslation";
 import type * as EffectAcpSchema from "effect-acp/schema";
 
 export interface CursorMcpOmission {
@@ -72,11 +72,7 @@ export function resolveCursorMcpServers(input: {
       });
       continue;
     }
-    const headers = { ...definition.headers };
-    const bearerVariable = definition.bearerTokenEnvVar?.trim();
-    const bearer = bearerVariable ? input.environment?.[bearerVariable]?.trim() : undefined;
-    if (bearer && !Object.keys(headers).some((key) => key.toLowerCase() === "authorization"))
-      headers.Authorization = `Bearer ${bearer}`;
+    const headers = mcpRemoteHeaders(definition, input.environment) ?? {};
     servers.push({ type: definition.type, name, url, headers: records(headers) });
     ownedNames.push(name);
     reserved.add(name);
