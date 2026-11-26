@@ -9,6 +9,17 @@ import {
   type ComputerAutomationBrokerRuntime,
 } from "../computer/ComputerAutomationBroker";
 
+const INITIALIZE = {
+  jsonrpc: "2.0",
+  id: 0,
+  method: "initialize",
+  params: {
+    protocolVersion: "2025-06-18",
+    capabilities: {},
+    clientInfo: { name: "test", version: "0.0.0" },
+  },
+};
+
 it.effect(
   "scopes bearer tokens to their catalog and never serves execute or consent over another endpoint",
   () =>
@@ -57,9 +68,20 @@ it.effect(
         }
         const post = (catalog: "preview" | "computer", token: string) =>
           Effect.promise(async () => {
+            const headers = {
+              authorization: `Bearer ${token}`,
+              "content-type": "application/json",
+            };
+            const init = await fetch(server.getUrl(catalog), {
+              method: "POST",
+              headers,
+              body: JSON.stringify(INITIALIZE),
+            });
+            await init.arrayBuffer();
+            const session = init.headers.get("mcp-session-id");
             const response = await fetch(server.getUrl(catalog), {
               method: "POST",
-              headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+              headers: { ...headers, ...(session ? { "mcp-session-id": session } : {}) },
               body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
             });
             return {
@@ -122,7 +144,9 @@ it.effect(
                 method,
                 ...(method === "tools/call"
                   ? { params: { name: "computer_type", arguments: { text: "fixture" } } }
-                  : {}),
+                  : method === "initialize"
+                    ? { params: INITIALIZE.params }
+                    : {}),
               }),
             });
             return {
@@ -142,7 +166,8 @@ it.effect(
         const second = (yield* post("initialize")).session!;
         assert.notEqual(second, first);
         assert.equal((yield* post("tools/call", first)).status, 404);
-        assert.equal((yield* post("tools/call")).status, 404);
+        // Without a session, only an initialize is served.
+        assert.equal((yield* post("tools/call")).status, 400);
         assert.equal(
           JSON.stringify((yield* post("tools/call", second)).body).includes("ReplayRejected"),
           false,

@@ -14,6 +14,39 @@ import {
   threadToolDefinitions,
 } from "./threadMcpTools.ts";
 
+const mcpSessions = new Map<string, string>();
+
+/** Posts one JSON-RPC message on the endpoint's MCP connection, opened on first use. */
+async function postMcp(url: string, credential: string, message: unknown): Promise<Response> {
+  const headers = { authorization: `Bearer ${credential}`, "content-type": "application/json" };
+  const key = `${url} ${credential}`;
+  let session = mcpSessions.get(key);
+  if (!session) {
+    const init = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 0,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          clientInfo: { name: "test", version: "0.0.0" },
+        },
+      }),
+    });
+    await init.arrayBuffer();
+    session = init.headers.get("mcp-session-id") ?? undefined;
+    if (session) mcpSessions.set(key, session);
+  }
+  return fetch(url, {
+    method: "POST",
+    headers: { ...headers, ...(session ? { "mcp-session-id": session } : {}) },
+    body: JSON.stringify(message),
+  });
+}
+
 it("tells agents to leave a rendered page on the thread's own background", () => {
   const description =
     THREAD_TOOL_DEFINITIONS.find((tool) => tool.name === "html_render")?.description ?? "";
@@ -133,18 +166,11 @@ it.effect(
         const token = Object.values(thread.env)[0]!;
         const invoke = (url: string, credential: string, method: string) =>
           Effect.promise(async () => {
-            const response = await fetch(url, {
-              method: "POST",
-              headers: {
-                authorization: `Bearer ${credential}`,
-                "content-type": "application/json",
-              },
-              body: JSON.stringify({
-                jsonrpc: "2.0",
-                id: 1,
-                method,
-                params: { name: "thread_status", arguments: { threadId: "spoof" } },
-              }),
+            const response = await postMcp(url, credential, {
+              jsonrpc: "2.0",
+              id: 1,
+              method,
+              params: { name: "thread_status", arguments: { threadId: "spoof" } },
             });
             return {
               status: response.status,
@@ -328,10 +354,11 @@ it.effect("serves a read-only HTTP thread session", () =>
       const token = Object.values(session.env)[0]!;
       const invoke = (method: string, params?: unknown) =>
         Effect.promise(async () => {
-          const response = await fetch(server.getUrl("thread"), {
-            method: "POST",
-            headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-            body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+          const response = await postMcp(server.getUrl("thread"), token, {
+            jsonrpc: "2.0",
+            id: 1,
+            method,
+            ...(params === undefined ? {} : { params }),
           });
           return (await response.json()) as {
             result?: { tools?: Array<{ name: string }>; isError?: boolean };

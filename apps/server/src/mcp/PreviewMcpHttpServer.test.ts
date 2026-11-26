@@ -1,4 +1,5 @@
 import { assert, it } from "@effect/vitest";
+import { LATEST_PROTOCOL_VERSION } from "@modelcontextprotocol/sdk/types.js";
 import { ThreadId } from "@t3tools/contracts";
 import { Effect, Fiber } from "effect";
 import { vi } from "vitest";
@@ -48,13 +49,88 @@ function postMcpHttp(
   });
 }
 
+function initializeRequest(id: number) {
+  return {
+    jsonrpc: "2.0",
+    id,
+    method: "initialize",
+    params: {
+      protocolVersion: "2025-06-18",
+      capabilities: {},
+      clientInfo: { name: "test", version: "0.0.0" },
+    },
+  };
+}
+
+const sessions = new Map<string, string>();
+
+/** The MCP connection for this endpoint and credential, opened on first use. */
+function sessionFor(url: string, token: string): Effect.Effect<string, never, never> {
+  return Effect.gen(function* () {
+    const key = `${url} ${token}`;
+    const existing = sessions.get(key);
+    if (existing) return existing;
+    const init = yield* postMcpHttp(url, token, initializeRequest(0));
+    assert.equal(init.status, 200);
+    assert.ok(init.sessionId);
+    sessions.set(key, init.sessionId);
+    return init.sessionId;
+  });
+}
+
 function postMcp(url: string, token: string, body: unknown): Effect.Effect<unknown, never, never> {
   return Effect.gen(function* () {
-    const response = yield* postMcpHttp(url, token, body);
+    const sessionId = yield* sessionFor(url, token);
+    const response = yield* postMcpHttp(url, token, body, "POST", {
+      "mcp-session-id": sessionId,
+    });
     assert.equal(response.status, 200);
     return response.body;
   });
 }
+
+it.effect("negotiates the protocol version up to the SDK's latest", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = makePreviewAutomationBroker();
+      const server = yield* makePreviewMcpHttpServer.pipe(
+        Effect.provideService(PreviewAutomationBroker, broker),
+      );
+      const session = server.createSessionConfig({ threadId: ThreadId.makeUnsafe("t") });
+      const token = Object.values(session.env)[0]!;
+      const initialize = (protocolVersion: string) =>
+        postMcpHttp(server.getUrl(), token, {
+          ...initializeRequest(1),
+          params: { ...initializeRequest(1).params, protocolVersion },
+        });
+      for (const version of [LATEST_PROTOCOL_VERSION, "2025-06-18", "2024-11-05"]) {
+        const reply = (yield* initialize(version)).body as {
+          result: { protocolVersion: string; serverInfo: { name: string } };
+        };
+        assert.equal(reply.result.protocolVersion, version);
+        assert.equal(reply.result.serverInfo.name, "F5 Preview");
+      }
+      const unknown = (yield* initialize("2099-01-01")).body as {
+        result: { protocolVersion: string };
+      };
+      assert.equal(unknown.result.protocolVersion, LATEST_PROTOCOL_VERSION);
+      // Clients that accept only JSON (`t3 mcp-session-stdio`) get JSON replies.
+      const jsonOnly = yield* postMcpHttp(server.getUrl(), token, initializeRequest(1), "POST", {
+        accept: "application/json",
+      });
+      assert.equal(jsonOnly.status, 200);
+      assert.ok(jsonOnly.sessionId);
+      // Requests need the connection's session, like any streamable HTTP server.
+      const unsessioned = yield* postMcpHttp(server.getUrl(), token, {
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/list",
+      });
+      assert.equal(unsessioned.status, 400);
+      session.dispose();
+    }),
+  ),
+);
 
 it.effect("serves preview MCP tools and routes calls through the broker", () =>
   Effect.scoped(
@@ -453,20 +529,22 @@ it.effect("routes the integration catalog to its proxy session and revokes it on
       assert.deepEqual(meta, { "x-codex-turn-metadata": { session_id: "s", turn_id: "t" } });
       assert.match(callId, /:2$/);
       // A client cancellation reaches the call it names, under the same connection key.
-      yield* postMcpHttp(url, token, {
-        jsonrpc: "2.0",
-        method: "notifications/cancelled",
-        params: { requestId: 2, reason: "user" },
-      });
+      yield* postMcpHttp(
+        url,
+        token,
+        {
+          jsonrpc: "2.0",
+          method: "notifications/cancelled",
+          params: { requestId: 2, reason: "user" },
+        },
+        "POST",
+        { "mcp-session-id": yield* sessionFor(url, token) },
+      );
       assert.deepEqual(cancelled, [callId]);
       // Each connection has its own id space: after a reconnect, a late cancel from the
       // old connection never names the new connection's call with the same id.
-      const first = yield* postMcpHttp(url, token, { jsonrpc: "2.0", id: 1, method: "initialize" });
-      const second = yield* postMcpHttp(url, token, {
-        jsonrpc: "2.0",
-        id: 1,
-        method: "initialize",
-      });
+      const first = yield* postMcpHttp(url, token, initializeRequest(1));
+      const second = yield* postMcpHttp(url, token, initializeRequest(1));
       assert.ok(first.sessionId && second.sessionId && first.sessionId !== second.sessionId);
       yield* postMcpHttp(
         url,
@@ -532,7 +610,7 @@ it.effect("serves the interaction catalog; a cancelled wait leaves the question 
       const token = Object.values(session.env)[0]!;
       const url = server.getUrl("interaction");
       assert.equal((yield* postMcpHttp(server.getUrl("thread"), token, {})).status, 401);
-      const init = yield* postMcpHttp(url, token, { jsonrpc: "2.0", id: 0, method: "initialize" });
+      const init = yield* postMcpHttp(url, token, initializeRequest(0));
       const instructions = (init.body as { result: { instructions?: string } }).result.instructions;
       assert.include(instructions ?? "", "wait_for_user_answer");
       // Each connection gets its own id space.
@@ -594,11 +672,7 @@ it.effect("serves the interaction catalog; a cancelled wait leaves the question 
       );
       yield* Effect.promise(() => vi.waitFor(() => assert.equal(outcomes.size, 2)));
       // A cancel from another connection with the same request id reaches nothing.
-      const other = yield* postMcpHttp(url, token, {
-        jsonrpc: "2.0",
-        id: 0,
-        method: "initialize",
-      });
+      const other = yield* postMcpHttp(url, token, initializeRequest(0));
       assert.notEqual(other.sessionId, init.sessionId);
       yield* postMcpHttp(
         url,
