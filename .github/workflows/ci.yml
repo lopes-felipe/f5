@@ -591,6 +591,10 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
           node scripts/build-computer-helper.ts --platform mac --arch universal --check
+      - name: Check Dock tile plug-in
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          node scripts/build-dock-tile.ts --arch universal --output "$RUNNER_TEMP/dock-tile" --check
       - name: Profile checks
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         env:
