@@ -98779,14 +98779,16 @@
     },
     {
       "createdAt": "2026-11-24T11:16:51.565Z",
-      "decidedAt": "2026-11-26T20:46:13.179Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-26T21:20:35.427Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-41610",
+      "reason": "F5’s Open in Editor action uses filesystem paths and does not generate SSH folder links for VS Code-family editors.",
+      "reasonKey": "not-applicable",
       "relatedTopics": [
         "pr-27236"
       ],
-      "status": "port",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "desktop",
