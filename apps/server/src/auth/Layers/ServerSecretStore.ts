@@ -1,6 +1,6 @@
 import * as Crypto from "node:crypto";
 
-import { Effect, FileSystem, Layer, Path, Predicate } from "effect";
+import { Effect, FileSystem, Layer, Path, Predicate, Semaphore } from "effect";
 import * as PlatformError from "effect/PlatformError";
 
 import { ServerConfig } from "../../config.ts";
@@ -152,13 +152,29 @@ export const makeServerSecretStore = Effect.gen(function* () {
       Effect.flatMap((key) => persist(name, encryptSecretValue(key, name, plain), overwrite)),
     );
 
+  // Writes to encrypted names take turns, so a read's migration or re-key rewrite
+  // cannot land after (and undo) a newer `set` or `remove` of the same value.
+  const encryptedWrites = yield* Semaphore.make(1);
+  const serialized = encryptedWrites.withPermits(1);
+  /** Rewrites a value read as `seen`, unless a write replaced or removed it since. */
+  const rewriteIfUnchanged = (name: string, seen: Uint8Array, plain: Uint8Array) =>
+    serialized(
+      readRaw(name).pipe(
+        Effect.flatMap((current) =>
+          current !== null && Buffer.compare(current, seen) === 0
+            ? writeEncrypted(name, plain, true)
+            : Effect.void,
+        ),
+      ),
+    ).pipe(Effect.ignore);
+
   const get: ServerSecretStoreShape["get"] = (name) =>
     readRaw(name).pipe(
       Effect.flatMap((bytes) => {
         if (bytes === null || !isEncryptedSecretName(name)) return Effect.succeed(bytes);
         if (!isEncryptedSecretValue(bytes))
           // Written before encryption; protect it now. A failed rewrite keeps the value usable.
-          return writeEncrypted(name, bytes, true).pipe(Effect.ignore, Effect.as(bytes));
+          return rewriteIfUnchanged(name, bytes, bytes).pipe(Effect.as(bytes));
         return decryptionKeys.pipe(
           Effect.flatMap((keys) => {
             for (const { key, current } of keys) {
@@ -166,7 +182,7 @@ export const makeServerSecretStore = Effect.gen(function* () {
               if (plain === null) continue;
               return current
                 ? Effect.succeed(plain)
-                : writeEncrypted(name, plain, true).pipe(Effect.ignore, Effect.as(plain));
+                : rewriteIfUnchanged(name, bytes, plain).pipe(Effect.as(plain));
             }
             return Effect.fail(
               new SecretStoreError({
@@ -179,7 +195,9 @@ export const makeServerSecretStore = Effect.gen(function* () {
     );
 
   const set: ServerSecretStoreShape["set"] = (name, value) =>
-    isEncryptedSecretName(name) ? writeEncrypted(name, value, true) : persist(name, value, true);
+    isEncryptedSecretName(name)
+      ? serialized(writeEncrypted(name, value, true))
+      : persist(name, value, true);
 
   const getOrCreateRandom: ServerSecretStoreShape["getOrCreateRandom"] = (name, bytes) =>
     isEncryptedSecretName(name)
@@ -202,7 +220,7 @@ export const makeServerSecretStore = Effect.gen(function* () {
         )
       : getOrCreateRandomRaw(name, bytes);
 
-  const remove: ServerSecretStoreShape["remove"] = (name) =>
+  const removeFile = (name: string) =>
     fileSystem.remove(resolveSecretPath(name)).pipe(
       Effect.catch((cause) =>
         cause.reason._tag === "NotFound"
@@ -215,6 +233,8 @@ export const makeServerSecretStore = Effect.gen(function* () {
             ),
       ),
     );
+  const remove: ServerSecretStoreShape["remove"] = (name) =>
+    isEncryptedSecretName(name) ? serialized(removeFile(name)) : removeFile(name);
 
   const list: ServerSecretStoreShape["list"] = (prefix) =>
     Effect.gen(function* () {
