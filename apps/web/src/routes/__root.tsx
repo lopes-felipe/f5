@@ -43,6 +43,7 @@ import { useRecoveryStateStore } from "../recoveryStateStore";
 import { useStore } from "../store";
 import { useTerminalStateStore } from "../terminalStateStore";
 
+import { AppIconEffects } from "../appIcon";
 import { type AppSettings, updateAppSettings, useAppSettingsSelector } from "../appSettings";
 import { HtmlPreviewHost } from "../components/HtmlPreviewHost";
 
@@ -110,6 +111,7 @@ function RootRouteView() {
         <ToastProvider position={toastPosition}>
           <AnchoredToastProvider>
             <EventRouter />
+            <AppIconEffects />
             <RunningThreadSync />
             <DesktopProjectBootstrap />
             <HtmlPreviewHost />

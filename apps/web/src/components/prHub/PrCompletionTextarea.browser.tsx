@@ -14,7 +14,10 @@ const completions = vi.hoisted(() =>
   ]),
 );
 vi.mock("../../nativeApi", () => ({ ensureNativeApi: () => ({ prHub: { completions } }) }));
-vi.mock("../../lib/prHubAccount", () => ({ getPrHubAccountGeneration: () => "generation-1" }));
+vi.mock("../../lib/prHubAccount", () => ({
+  getPrHubAccountGeneration: () => "generation-1",
+  usePrHubAccountSnapshot: () => ({ accountId: undefined, generation: "generation-1" }),
+}));
 
 function Composer() {
   const [value, setValue] = useState("Before  after");

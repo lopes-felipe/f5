@@ -10,7 +10,12 @@ import {
   SignInUrl,
 } from "./baseSchemas";
 import { ServerProviderAuthStatus } from "./server";
-import { McpServerDefinition, McpProjectServersConfig } from "./mcpServer";
+import {
+  McpConnectionScope,
+  McpServerDefinition,
+  McpProjectServersConfig,
+  McpServerTransportType,
+} from "./mcpServer";
 import { McpConfigScope } from "./mcpConfigScope";
 
 // Responses are separate from startup request schemas so browser bundles can omit unused definitions.
@@ -62,6 +67,8 @@ export type McpLiveSessionReloadFailure = typeof McpLiveSessionReloadFailure.Typ
 
 export const McpSessionReloadOutcome = Schema.Struct({
   threadId: ThreadId,
+  /** The conversation's project; set by Apply, which can span projects in common scope. */
+  projectId: Schema.optional(ProjectId),
   instanceId: ProviderInstanceId,
   generation: NonNegativeInt,
   requestedVersion: Schema.String,
@@ -123,6 +130,96 @@ export const McpCodexStatusResult = Schema.Struct({
   configVersion: Schema.optional(TrimmedNonEmptyString),
 });
 export type McpCodexStatusResult = typeof McpCodexStatusResult.Type;
+
+export const McpHubServerState = Schema.Literals([
+  "idle",
+  "connecting",
+  "ready",
+  "retrying",
+  "failed",
+  "needs-auth",
+  "stopped",
+]);
+export type McpHubServerState = typeof McpHubServerState.Type;
+
+/** One upstream connection owned by F5's MCP hub. */
+export const McpHubServerStatus = Schema.Struct({
+  /** Stable, opaque id of this connection (several can serve one server). */
+  id: Schema.optional(TrimmedNonEmptyString),
+  name: TrimmedNonEmptyString,
+  connectionScope: McpConnectionScope,
+  transport: McpServerTransportType,
+  state: McpHubServerState,
+  error: Schema.optional(TrimmedNonEmptyString),
+  serverInfo: Schema.optional(Schema.Struct({ name: Schema.String, version: Schema.String })),
+  protocolVersion: Schema.optional(TrimmedNonEmptyString),
+  toolCount: Schema.optional(NonNegativeInt),
+  resourceCount: Schema.optional(NonNegativeInt),
+  promptCount: Schema.optional(NonNegativeInt),
+  latencyMs: Schema.optional(NonNegativeInt),
+  lastConnectedAt: Schema.optional(IsoDateTime),
+  /** Failed connection attempts since the last success. */
+  attempts: NonNegativeInt,
+  /** Provider session endpoints currently routed to this connection. */
+  attachedSessions: NonNegativeInt,
+  projectIds: Schema.Array(ProjectId),
+  providers: Schema.Array(ProviderKind),
+});
+export type McpHubServerStatus = typeof McpHubServerStatus.Type;
+
+export const McpGetHubStatusResult = Schema.Struct({
+  servers: Schema.Array(McpHubServerStatus),
+});
+export type McpGetHubStatusResult = typeof McpGetHubStatusResult.Type;
+
+export const McpReconnectHubServerResult = Schema.Struct({
+  reconnected: NonNegativeInt,
+});
+export type McpReconnectHubServerResult = typeof McpReconnectHubServerResult.Type;
+
+export const McpHubSignInAttempt = Schema.Struct({
+  attemptId: TrimmedNonEmptyString,
+  /** Open this in a browser; F5 never opens it on its own. */
+  authorizationUrl: TrimmedNonEmptyString,
+  redirectUrl: TrimmedNonEmptyString,
+  startedAt: IsoDateTime,
+});
+export type McpHubSignInAttempt = typeof McpHubSignInAttempt.Type;
+
+/** OAuth state of one remote server; tokens are shared by every project with the same URL. */
+export const McpHubAuthServerStatus = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  signedIn: Schema.Boolean,
+  /** F5 can renew the access token without a new sign-in. */
+  refreshable: Schema.Boolean,
+  expiresAt: Schema.optional(IsoDateTime),
+  pending: Schema.optional(McpHubSignInAttempt),
+});
+export type McpHubAuthServerStatus = typeof McpHubAuthServerStatus.Type;
+
+export const McpGetHubAuthStatusResult = Schema.Struct({
+  servers: Schema.Array(McpHubAuthServerStatus),
+});
+export type McpGetHubAuthStatusResult = typeof McpGetHubAuthStatusResult.Type;
+
+export const McpStartHubSignInResult = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("signed-in") }),
+  Schema.Struct({ status: Schema.Literal("pending"), attempt: McpHubSignInAttempt }),
+]);
+export type McpStartHubSignInResult = typeof McpStartHubSignInResult.Type;
+
+export const McpCompleteHubSignInResult = Schema.Struct({
+  status: Schema.Literal("signed-in"),
+  serverName: TrimmedNonEmptyString,
+  /** Hub connections reconnected with the new tokens. */
+  reconnected: NonNegativeInt,
+});
+export type McpCompleteHubSignInResult = typeof McpCompleteHubSignInResult.Type;
+
+export const McpSignOutHubServerResult = Schema.Struct({
+  signedOut: Schema.Boolean,
+});
+export type McpSignOutHubServerResult = typeof McpSignOutHubServerResult.Type;
 
 export const McpApplyToLiveSessionsResult = Schema.Struct({
   scope: McpConfigScope,
@@ -300,6 +397,8 @@ export const McpImportCandidate = Schema.Struct({
   selectedByDefault: Schema.optional(Schema.Boolean),
   id: Schema.String,
   name: Schema.String,
+  /** The name in the source file when it was imported under another name. */
+  originalName: Schema.optional(Schema.String),
   source: Schema.String,
   server: Schema.optional(McpServerDefinition),
   issues: Schema.Array(McpImportIssue),

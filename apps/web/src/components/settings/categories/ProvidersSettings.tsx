@@ -80,6 +80,7 @@ export function ProvidersSettings() {
   const [isAddInstanceDialogOpen, setIsAddInstanceDialogOpen] = useState(false);
   const { focusedProviderInstanceId, focusedProviderInstanceProjectId } = useSettingsRouteContext();
   const [openInstanceDetails, setOpenInstanceDetails] = useState<Record<string, boolean>>({});
+  const [instanceResetCounts, setInstanceResetCounts] = useState<Record<string, number>>({});
   // A link to one instance's hooks (e.g. "Review hooks" in the work log) opens its card.
   const [expandedFocus, setExpandedFocus] = useState<string | null>(null);
   if (focusedProviderInstanceId && expandedFocus !== focusedProviderInstanceId) {
@@ -308,6 +309,10 @@ export function ProvidersSettings() {
         defaultInstanceId,
       ),
     });
+    setInstanceResetCounts((counts) => ({
+      ...counts,
+      [defaultInstanceId]: (counts[defaultInstanceId] ?? 0) + 1,
+    }));
   };
   const refreshProviders = () => {
     if (isRefreshingProviders) return;
@@ -431,7 +436,7 @@ export function ProvidersSettings() {
             const resetLabel = driverOption?.label ?? String(row.driver);
             return (
               <ProviderInstanceCard
-                key={row.instanceId}
+                key={`${row.instanceId}:${instanceResetCounts[row.instanceId] ?? 0}`}
                 instanceId={row.instanceId}
                 instance={row.instance}
                 driverOption={driverOption}

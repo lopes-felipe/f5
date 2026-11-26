@@ -100,6 +100,10 @@ describe("settings item descriptors", () => {
     );
     expect(filterSettingsItems("merge method")[0]?.id).toBe("git.merge-method");
     expect(filterSettingsItems("manage worktrees")[0]?.id).toBe("git.manage-worktrees");
+    expect(filterSettingsItems("doctor support bundle")[0]?.id).toBe("general.doctor");
+    expect(filterSettingsItems("sqlite quick_check")[0]?.id).toBe("general.doctor");
+    expect(filterSettingsItems("providers pi")[0]?.id).toBe("providers.instances");
+    expect(filterSettingsItems("providers antigravity")[0]?.id).toBe("providers.instances");
   });
 
   it("limits search to the items the current scope renders", () => {
@@ -224,6 +228,22 @@ describe("resolveSettingsSearch", () => {
     expect(resolveSettingsSearch({ item: "providers.instances", instanceProject: "p-1" })).toEqual({
       category: "providers",
       item: "providers.instances",
+    });
+  });
+
+  it("keeps an MCP server focus only on the MCP servers item", () => {
+    expect(resolveSettingsSearch({ item: "tools.mcp", server: "docs" })).toEqual({
+      category: "tools",
+      item: "tools.mcp",
+      server: "docs",
+    });
+    expect(resolveSettingsSearch({ item: "providers.instances", server: "docs" })).toEqual({
+      category: "providers",
+      item: "providers.instances",
+    });
+    expect(resolveSettingsSearch({ item: "tools.mcp", server: "x".repeat(300) })).toEqual({
+      category: "tools",
+      item: "tools.mcp",
     });
   });
 

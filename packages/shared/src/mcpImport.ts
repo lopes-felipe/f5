@@ -1,14 +1,160 @@
 import {
   McpServerDefinition,
   McpServerWriteDefinition,
-  McpHttpUrl,
+  McpHttpUrlTemplate,
+  MCP_SERVER_DESCRIPTION_MAX_LENGTH,
+  isKnownProviderKind,
   type McpProjectServersConfig,
   type McpServerTransportType as TransportType,
 } from "@t3tools/contracts";
 import { Schema } from "effect";
 import { parse as parseToml } from "smol-toml";
 
-import { normalizeServerName, mcpServerNameKey } from "./mcpServerName";
+import {
+  MCP_SERVER_NAME_RULE,
+  normalizeServerName,
+  readMcpServerNameProblem,
+  sanitizeMcpServerName,
+} from "./mcpServerName";
+import {
+  convertBareEnvReferences,
+  hasMcpEnvReference,
+  hasUnknownMcpReference,
+  MCP_ENV_REFERENCE_SYNTAX,
+  mapMcpInterpolatedFields,
+  mcpInterpolatedFields,
+} from "./mcpInterpolation";
+import { isReservedMcpBearerEnvVar } from "./mcpTranslation";
+
+function describeHost(url: string | undefined): string {
+  try {
+    return url ? new URL(url).host || "the server" : "the server";
+  } catch {
+    return "the server";
+  }
+}
+
+/**
+ * Removes `//` and block comments and trailing commas outside strings, so
+ * VS Code and OpenCode configuration (JSONC) parses as JSON.
+ */
+export function stripJsonComments(text: string): string {
+  /** Walks `source`, copying strings verbatim and letting `visit` handle everything else. */
+  const scan = (source: string, visit: (index: number) => [string, number]) => {
+    let output = "";
+    let index = 0;
+    while (index < source.length) {
+      if (source[index] === '"') {
+        let end = index + 1;
+        while (end < source.length && source[end] !== '"') end += source[end] === "\\" ? 2 : 1;
+        output += source.slice(index, end + 1);
+        index = end + 1;
+        continue;
+      }
+      const [text, next] = visit(index);
+      output += text;
+      index = next;
+    }
+    return output;
+  };
+  const withoutComments = scan(text, (index) => {
+    if (text.startsWith("//", index)) {
+      const end = text.indexOf("\n", index);
+      return ["", end === -1 ? text.length : end];
+    }
+    if (text.startsWith("/*", index)) {
+      const end = text.indexOf("*/", index + 2);
+      return [" ", end === -1 ? text.length : end + 2];
+    }
+    return [text[index]!, index + 1];
+  });
+  return scan(withoutComments, (index) => {
+    if (withoutComments[index] === ",") {
+      const following = withoutComments.slice(index + 1).trimStart()[0];
+      if (following === "}" || following === "]") return ["", index + 1];
+    }
+    return [withoutComments[index]!, index + 1];
+  });
+}
+
+/** Strict JSON first, so a JSON error message stays precise; JSONC only as a fallback. */
+function parseJsonOrJsonc(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    try {
+      return JSON.parse(stripJsonComments(text));
+    } catch {
+      throw error;
+    }
+  }
+}
+
+/** OpenCode writes `{env:NAME}`; F5's form is `${env:NAME}`. */
+function convertOpenCodeValue(value: unknown): unknown {
+  return typeof value === "string"
+    ? value.replace(/(?<!\$)\{env:([A-Za-z_][A-Za-z0-9_]*)\}/gu, "${env:$1}")
+    : value;
+}
+
+function convertOpenCodeRecord(value: unknown): unknown {
+  return isRecord(value)
+    ? Object.fromEntries(
+        Object.entries(value).map(([key, entry]) => [key, convertOpenCodeValue(entry)]),
+      )
+    : value;
+}
+
+/** OpenCode's `mcp` entries: `local` with a command array, or `remote` with a URL. */
+function convertOpenCodeServer(raw: unknown): unknown {
+  if (!isRecord(raw)) return raw;
+  const enabled = raw.enabled === false ? { enabled: false } : {};
+  if (raw.type === "local") {
+    const command = Array.isArray(raw.command) ? raw.command.map(convertOpenCodeValue) : [];
+    return {
+      type: "stdio",
+      command: command[0],
+      args: command.slice(1),
+      ...(raw.environment !== undefined ? { env: convertOpenCodeRecord(raw.environment) } : {}),
+      ...enabled,
+    };
+  }
+  if (raw.type === "remote")
+    return {
+      type: "http",
+      url: convertOpenCodeValue(raw.url),
+      ...(raw.headers !== undefined ? { headers: convertOpenCodeRecord(raw.headers) } : {}),
+      ...enabled,
+    };
+  return raw;
+}
+
+/** The server map of a Claude, Cursor, Codex, VS Code, or OpenCode document. */
+function readImportRoot(
+  document: Record<string, unknown>,
+  jsonInput: boolean,
+  requireServerMap = false,
+): Record<string, unknown> {
+  if (isRecord(document.mcpServers)) return document.mcpServers;
+  if (isRecord(document.mcp_servers)) return document.mcp_servers;
+  if (!jsonInput) return {};
+  // VS Code `.vscode/mcp.json`.
+  if (isRecord(document.servers)) return document.servers;
+  // OpenCode `opencode.json`.
+  if (
+    isRecord(document.mcp) &&
+    ("$schema" in document ||
+      Object.values(document.mcp).some(
+        (entry) => isRecord(entry) && (entry.type === "local" || entry.type === "remote"),
+      ))
+  )
+    return Object.fromEntries(
+      Object.entries(document.mcp).map(([name, entry]) => [name, convertOpenCodeServer(entry)]),
+    );
+  // A bare server map is accepted only from pasted text: a detected settings file
+  // without a server section holds preferences, not servers.
+  return requireServerMap ? {} : document;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -215,6 +361,24 @@ function decodeImportedServer(
               readImportedString(value.oauthResource) ?? readImportedString(value.oauth_resource),
           }
         : {}),
+      // F5's own fields round-trip through its JSON export.
+      ...(readImportedString(value.description)
+        ? {
+            description: readImportedString(value.description)!.slice(
+              0,
+              MCP_SERVER_DESCRIPTION_MAX_LENGTH,
+            ),
+          }
+        : {}),
+      ...(readImportedStringArray(value.disabledProviders)?.some(isKnownProviderKind)
+        ? {
+            disabledProviders: [
+              ...new Set(
+                readImportedStringArray(value.disabledProviders)!.filter(isKnownProviderKind),
+              ),
+            ],
+          }
+        : {}),
     });
   } catch {
     return null;
@@ -287,17 +451,36 @@ export function parseImportedServers(text: string): McpProjectServersConfig {
   );
 }
 
+/** Whether a document is JSON(C): its first token after any comments opens an object. */
+function startsLikeJson(text: string): boolean {
+  let rest = text.trimStart();
+  for (;;) {
+    if (rest.startsWith("//")) {
+      const end = rest.indexOf("\n");
+      rest = end === -1 ? "" : rest.slice(end + 1).trimStart();
+    } else if (rest.startsWith("/*")) {
+      const end = rest.indexOf("*/");
+      if (end === -1) return false;
+      rest = rest.slice(end + 2).trimStart();
+    } else return rest.startsWith("{");
+  }
+}
+
 /** Loss-aware parsing for previews: invalid entries remain selectable only after repair. */
 export function parseMcpImport(
   text: string,
   source = "Pasted configuration",
+  options: {
+    /** Detected files list servers only from a server section, never the whole document. */
+    readonly requireServerMap?: boolean;
+  } = {},
 ): import("@t3tools/contracts").McpListImportCandidatesResult {
   type Issue = import("@t3tools/contracts").McpImportIssue;
   const issues: Issue[] = [];
-  const jsonInput = text.trim().startsWith("{");
+  const jsonInput = startsLikeJson(text);
   let document: unknown;
   try {
-    document = jsonInput ? JSON.parse(text) : parseToml(text);
+    document = jsonInput ? parseJsonOrJsonc(text) : parseToml(text);
   } catch (error) {
     return {
       candidates: [],
@@ -315,23 +498,20 @@ export function parseMcpImport(
       candidates: [],
       issues: [{ field: "$", severity: "error", message: "Expected a configuration object." }],
     };
-  const root = isRecord(document.mcpServers)
-    ? document.mcpServers
-    : isRecord(document.mcp_servers)
-      ? document.mcp_servers
-      : jsonInput
-        ? document
-        : {};
-  const seen = new Set<string>();
+  const root = readImportRoot(document, jsonInput, options.requireServerMap);
   const candidates = Object.entries(root).map(([rawName, raw], index) => {
-    const name = normalizeServerName(rawName) ?? rawName;
+    const normalizedName = normalizeServerName(rawName);
+    const name =
+      normalizedName && readMcpServerNameProblem(normalizedName)
+        ? sanitizeMcpServerName(normalizedName)
+        : (normalizedName ?? rawName);
     const entryIssues: Issue[] = [];
     const add = (field: string, message: string, severity: "warning" | "error" = "warning") =>
       entryIssues.push({ serverName: name, field, severity, message });
-    if (!normalizeServerName(rawName))
+    if (!normalizedName)
       add("name", "Server name is required and must be at most 128 characters.", "error");
-    if (seen.has(mcpServerNameKey(name))) add("name", "Conflicting imported server name.", "error");
-    seen.add(mcpServerNameKey(name));
+    else if (name !== normalizedName)
+      add("name", `Imported as '${name}' instead of '${normalizedName}'. ${MCP_SERVER_NAME_RULE}`);
     let server: McpProjectServersConfig[string] | undefined;
     if (!isRecord(raw)) add("$", "Expected a server object.", "error");
     else {
@@ -416,7 +596,11 @@ export function parseMcpImport(
       const rawType = raw.type ?? raw.transport ?? raw.transportType;
       if (rawType !== undefined && !["stdio", "http", "sse", "sdk"].includes(String(rawType)))
         add("type", "Unsupported transport type.", "error");
-      if (typeof raw.url === "string" && !Schema.is(McpHttpUrl)(raw.url))
+      // `${VAR}` references are converted below, so validate the converted URL.
+      if (
+        typeof raw.url === "string" &&
+        !Schema.is(McpHttpUrlTemplate)(convertBareEnvReferences(raw.url))
+      )
         add("url", "Expected an HTTP or HTTPS URL.", "error");
       const inherited = {
         ...raw,
@@ -440,12 +624,51 @@ export function parseMcpImport(
       }
     }
     if (server) {
+      const original = new Map(mcpInterpolatedFields(server));
+      server = mapMcpInterpolatedFields(server, convertBareEnvReferences);
       const validation = readImportValidationIssues(server);
       for (const issue of validation) add(issue.field, issue.message, "error");
+      const remoteUrl = server.type === "stdio" ? undefined : server.url;
+      for (const [field, value] of mcpInterpolatedFields(server)) {
+        const converted = original.get(field) !== value;
+        const conversion = `Converted \${VAR} references to ${MCP_ENV_REFERENCE_SYNTAX}; F5`;
+        // A repository config can point a URL or header at its own host, whether its
+        // references were converted or already written as ${MCP_ENV_REFERENCE_SYNTAX}
+        // (OpenCode's {env:NAME} is converted before this point).
+        if (
+          remoteUrl !== undefined &&
+          (field === "url" || field.startsWith("headers")) &&
+          (converted || hasMcpEnvReference(value))
+        )
+          add(
+            field,
+            `${converted ? conversion : "F5"} reads ${converted ? "them" : "its environment references"} from the account environment and sends the values to ${describeHost(remoteUrl)}. Import it only if you trust that server with those variables.`,
+          );
+        else if (converted)
+          add(
+            field,
+            `${conversion} reads them from the account environment when the server starts.`,
+          );
+        if (hasUnknownMcpReference(value))
+          add(
+            field,
+            `Contains a \${...} reference that F5 passes literally. Only ${MCP_ENV_REFERENCE_SYNTAX} is expanded; replace it with a value or a stored secret.`,
+          );
+      }
+      if (server.type !== "stdio" && server.bearerTokenEnvVar) {
+        const variable = server.bearerTokenEnvVar.trim();
+        add(
+          "bearerTokenEnvVar",
+          isReservedMcpBearerEnvVar(variable)
+            ? `${variable} is reserved for F5 and provider credentials, so F5 never sends it to a server.`
+            : `Sends the value of the environment variable ${variable} to ${describeHost(server.url)} as a bearer token. Import it only if you trust that server with the variable.`,
+        );
+      }
     }
     return {
       id: `${source}:${index}:${name}`,
       name,
+      ...(normalizedName && name !== normalizedName ? { originalName: normalizedName } : {}),
       source,
       ...(server ? { server } : {}),
       issues: entryIssues,

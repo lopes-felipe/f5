@@ -12,6 +12,11 @@ import { CodexGeneratedImages } from "../codexGeneratedImages.ts";
 import { CodexTurnUsage } from "../codexTurnUsage.ts";
 import { makeCodexGeneratedImageStore } from "../codexGeneratedImageStore.ts";
 import { readMcpAppToolResult } from "@t3tools/shared/mcpApp";
+import {
+  READ_ONLY_ENFORCEMENT_CONFIG_KEY,
+  READ_ONLY_ENFORCEMENT_SUMMARY_CONFIG_KEY,
+  readOnlyEnforcementSummary,
+} from "@t3tools/shared/readOnlyEnforcement";
 import { snapshotMcpApp } from "../../mcpApps/McpAppSnapshot.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import {
@@ -78,6 +83,7 @@ import {
   RuntimeTaskId,
   SubagentActivityKind,
   ProviderApprovalDecision,
+  PROVIDER_DISPLAY_NAMES,
   ProviderInstanceId,
   ProviderItemId,
   ThreadId,
@@ -138,6 +144,8 @@ import { CodexAdapter, type CodexAdapterShape } from "../Services/CodexAdapter.t
 import {
   CODEX_ELICITATION_OPENED_METHOD,
   CODEX_ELICITATION_SETTLED_METHOD,
+  CODEX_READ_ONLY_ENFORCEMENT_CHANGED_METHOD,
+  CODEX_READ_ONLY_REFUSED_METHOD,
   CodexAppServerManager,
   CodexJsonRpcError,
   type CodexAppServerStartSessionInput,
@@ -1879,6 +1887,61 @@ function mapToRuntimeEvents(
     ];
   }
 
+  if (event.method === CODEX_READ_ONLY_ENFORCEMENT_CHANGED_METHOD) {
+    // Codex's managed requirements left a policy-enforced stage only the sandbox: correct the
+    // "Read-only stage: …" line F5 recorded when the session started.
+    const enforcement = payload?.enforcement;
+    if (enforcement !== "sandbox" && enforcement !== "policy") return [];
+    return [
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        type: "session.configured",
+        payload: {
+          config: {
+            [READ_ONLY_ENFORCEMENT_CONFIG_KEY]: enforcement,
+            [READ_ONLY_ENFORCEMENT_SUMMARY_CONFIG_KEY]: readOnlyEnforcementSummary(
+              enforcement,
+              PROVIDER_DISPLAY_NAMES.codex,
+            ),
+          },
+        },
+      },
+    ];
+  }
+
+  if (event.method === CODEX_READ_ONLY_REFUSED_METHOD && event.requestId) {
+    // The manager already refused it (a policy-enforced read-only stage): nothing is pending, so
+    // the request opens auto-declined and resolves at once, as on the ACP providers.
+    const requestMethod = asString(payload?.requestMethod) ?? "unknown";
+    const params = asObject(payload?.params);
+    const requestType = toRequestTypeFromMethod(requestMethod, params?.permissions);
+    const subject =
+      requestMethod === "applyPatchApproval" || requestMethod === "item/fileChange/requestApproval"
+        ? describePatchApproval(params)
+        : (asString(params?.command) ??
+          (Array.isArray(params?.command) ? params.command.join(" ") : undefined));
+    const reason = asString(payload?.reason);
+    const detail = subject && reason ? `${subject} (${reason})` : (subject ?? reason ?? undefined);
+    return [
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        type: "request.opened",
+        payload: {
+          requestType,
+          ...(detail ? { detail } : {}),
+          ...(params ? { args: params } : {}),
+          autoDeclined: true,
+        },
+      },
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        eventId: EventId.make(`${event.id}:resolved`),
+        type: "request.resolved",
+        payload: { requestType, decision: "decline" },
+      },
+    ];
+  }
+
   if (event.method === CODEX_ELICITATION_SETTLED_METHOD) {
     const receipt = payload?.receipt;
     if (receipt !== "resolved" && receipt !== "cancelled" && receipt !== "indeterminate") return [];
@@ -2545,6 +2608,8 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
     const serverConfig = yield* Effect.service(ServerConfig);
     const shutdown = yield* Effect.serviceOption(ServerShutdown);
     const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make(PROVIDER);
+    // `${env:…}` in MCP definitions resolve from the environment Codex runs in.
+    const mcpInterpolationEnv = { environment: options?.processEnvironment ?? process.env };
     const nativeEventLogger =
       options?.nativeEventLogger ??
       (options?.nativeEventLogPath !== undefined
@@ -2668,7 +2733,11 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           options?.defaultProviderOptions,
           input.providerOptions,
         );
-        const baseProviderMcpServers = providerOptions?.mcpServers;
+        // A read-only workflow stage gets only F5's read-only thread catalog. MCP tools run
+        // outside Codex's shell sandbox and Codex never asks before using them, so the user's
+        // servers, the preview server and plugins would each be a way to write.
+        const readOnlyStage = input.workflowExecutionProfile !== undefined;
+        const baseProviderMcpServers = readOnlyStage ? undefined : providerOptions?.mcpServers;
         yield* Effect.try({
           try: () => {
             assertMcpRuntimeConfig(input.providerOptions?.mcpServers, PROVIDER);
@@ -2685,7 +2754,9 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         previewMcpSessions.get(input.threadId)?.dispose();
         previewMcpSessions.delete(input.threadId);
         previewMcpSession =
-          serverConfig.mode === "desktop" && !isSyntheticOneOffThreadId(input.threadId)
+          serverConfig.mode === "desktop" &&
+          !readOnlyStage &&
+          !isSyntheticOneOffThreadId(input.threadId)
             ? options?.previewMcpHttpServer?.createSessionConfig({
                 threadId: input.threadId,
                 ...(input.providerInstanceId
@@ -2913,10 +2984,18 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                 ...(chromeServer ? { [CODEX_CHROME_SERVER_NAME]: chromeServer } : {}),
               }
             : baseProviderMcpServers;
+        const mcpEnvironment =
+          previewMcpSession || computerMcpSession || threadMcpSession
+            ? {
+                ...previewMcpSession?.env,
+                ...computerMcpSession?.env,
+                ...threadMcpSession?.env,
+              }
+            : undefined;
         yield* Effect.try({
           try: () =>
             assertMcpServerLimit(
-              filterEnabledMcpServers(providerMcpServers),
+              filterEnabledMcpServers(providerMcpServers, "codex"),
               MCP_RUNTIME_SERVER_LIMIT,
             ),
           catch: (cause) =>
@@ -2982,6 +3061,18 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             ? { effectiveModelCapabilities: options.getEffectiveModelCapabilities() }
             : {}),
           runtimeMode: input.runtimeMode,
+          // Without this the stage runs with the thread's runtime mode (full access when the
+          // thread is Full access) instead of Codex's read-only sandbox.
+          ...(input.workflowExecutionProfile
+            ? {
+                workflowExecutionProfile: input.workflowExecutionProfile,
+                disablePlugins: true,
+                // `policy` where Codex's sandbox can't start: F5 answers every command instead.
+                ...(input.readOnlyEnforcement
+                  ? { readOnlyEnforcement: input.readOnlyEnforcement }
+                  : {}),
+              }
+            : {}),
           ...(input.model !== undefined ? { model: input.model } : {}),
           ...codexServiceTierOptions(
             resolveCodexSelectionOptions({
@@ -2992,17 +3083,16 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             inheritsFastMode(input.model ?? input.modelSelection?.model),
           ),
           ...(providerMcpServers
-            ? { mcpServers: translateMcpForCodex(providerMcpServers) ?? {} }
-            : {}),
-          ...(previewMcpSession || computerMcpSession || threadMcpSession
             ? {
-                mcpEnvironment: {
-                  ...previewMcpSession?.env,
-                  ...computerMcpSession?.env,
-                  ...threadMcpSession?.env,
-                },
+                mcpServers:
+                  translateMcpForCodex(providerMcpServers, {
+                    ...mcpInterpolationEnv,
+                    // F5's own catalogs read their credentials from these variables.
+                    ownBearerEnvVars: new Set(Object.keys(mcpEnvironment ?? {})),
+                  }) ?? {},
               }
             : {}),
+          ...(mcpEnvironment ? { mcpEnvironment } : {}),
           ...(chromeInstructions ? { integrationInstructions: [chromeInstructions] } : {}),
           ...(mcpOAuthCallbackConfig.port
             ? { mcpOAuthCallbackPort: mcpOAuthCallbackConfig.port }
@@ -3030,7 +3120,9 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             Effect.sync(() => {
               launchedMcpConfigKeys.set(
                 input.threadId,
-                stableMcpConfigKey(translateMcpForCodex(baseProviderMcpServers) ?? {}),
+                stableMcpConfigKey(
+                  translateMcpForCodex(baseProviderMcpServers, mcpInterpolationEnv) ?? {},
+                ),
               );
             }),
           ),
@@ -3387,11 +3479,12 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
               issue: mcpConfigErrorMessage(cause),
             }),
         });
+        // What Codex is given: enabled servers whose variables resolve. A server left out
+        // for an unset variable is neither expected nor owned by this reload.
+        const translated = translateMcpForCodex(mcpServers, mcpInterpolationEnv) ?? {};
+        const desired = Object.keys(translated);
         const launched = launchedMcpConfigKeys.get(threadId);
-        if (
-          launched !== undefined &&
-          launched !== stableMcpConfigKey(translateMcpForCodex(mcpServers) ?? {})
-        ) {
+        if (launched !== undefined && launched !== stableMcpConfigKey(translated)) {
           // This also applies after login: never reload a launch config that differs
           // from the saved snapshot. Credentials take effect at the safe restart boundary.
           return restartRequiredMcpReload("Codex fixes its MCP servers when the session starts.");
@@ -3401,7 +3494,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           catch: (cause) => toRequestError(threadId, "config/mcpServer/reload", cause),
         });
         return summarizeMcpReload({
-          desired: Object.keys(filterEnabledMcpServers(mcpServers)),
+          desired,
           observed:
             statuses === undefined
               ? undefined
@@ -3410,7 +3503,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                     const decoded = decodeCodexMcpServerStatus(status);
                     return decoded ? [decoded] : [];
                   }),
-                  new Set(Object.keys(filterEnabledMcpServers(mcpServers))),
+                  new Set(desired),
                   builtInMcpServerNames(threadId),
                 ),
           sameName: codexServerNamesMatch,

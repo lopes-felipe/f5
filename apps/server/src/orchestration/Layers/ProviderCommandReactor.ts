@@ -147,7 +147,6 @@ import {
   ProviderCommandReactor,
   type ProviderCommandReactorShape,
 } from "../Services/ProviderCommandReactor.ts";
-import { toCodexProviderStartOptions } from "../../provider/codexProviderOptions.ts";
 import {
   readThreadPullRequestLinks,
   threadTitlePullRequestContext,
@@ -3590,10 +3589,6 @@ const make = Effect.gen(function* () {
             message: "Select an enabled Codex or Claude instance for MCP Apply.",
           });
         }
-        const codexProviderOptions = toCodexProviderStartOptions({
-          binaryPath: input.binaryPath,
-          homePath: input.homePath,
-        });
         const bindings =
           projectScopeProjectId !== null
             ? yield* providerSessionDirectory.listBindingsByProject(projectScopeProjectId)
@@ -3763,17 +3758,7 @@ const make = Effect.gen(function* () {
           }
 
           if (binding.provider === "codex") {
-            const persistedProviderOptions = readPersistedProviderOptions(binding.runtimePayload);
-            if (
-              codexProviderOptions &&
-              getProviderEnvironmentKey("codex", persistedProviderOptions) !==
-                getProviderEnvironmentKey("codex", codexProviderOptions)
-            ) {
-              skipped += 1;
-              continue;
-            }
-
-            const providerOptions = codexProviderOptions ?? persistedProviderOptions;
+            const providerOptions = readPersistedProviderOptions(binding.runtimePayload);
             const groupKey = `${binding.projectId}\u0000${resolveBindingInstanceId(binding)}\u0000${getProviderEnvironmentKey("codex", providerOptions)}`;
             const existingGroup = codexGroups.get(groupKey);
             if (existingGroup) {
@@ -3990,10 +3975,20 @@ const make = Effect.gen(function* () {
                 .pipe(Effect.catch(() => Effect.succeed(undefined)))
             : undefined;
 
+        // A common-scope Apply spans projects; each conversation names its own, so a retry
+        // can target it.
+        const projectByThread = new Map(
+          bindings.flatMap((binding) =>
+            binding.projectId ? [[binding.threadId, binding.projectId] as const] : [],
+          ),
+        );
         return {
           scope: input.scope,
           ...(responseProjectId !== undefined ? { projectId: responseProjectId } : {}),
-          sessions: sessionOutcomes,
+          sessions: sessionOutcomes.map((outcome) => {
+            const projectId = projectByThread.get(outcome.threadId);
+            return projectId ? { ...outcome, projectId } : outcome;
+          }),
           codexReloaded,
           claudeRestarted,
           claudeReconciled,

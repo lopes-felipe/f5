@@ -51,6 +51,7 @@ import { McpServersSettings } from "./McpServersSettings";
 import { useSettingsRouteContext } from "./SettingsRouteContext";
 import {
   ClaudeSubagentControls,
+  RUNTIME_MODE_LABELS,
   THREAD_TITLE_INSTRUCTIONS_HINT,
   THREAD_TITLE_INSTRUCTIONS_PLACEHOLDER,
 } from "./categories/ThreadsSettings";
@@ -424,10 +425,11 @@ export function ProjectThreadsOverrides() {
                 set("defaultRuntimeMode", e.target.value as typeof settings.defaultRuntimeMode)
               }
             >
-              <option value="full-access">Full access</option>
-              <option value="approval-required">Ask for approval</option>
-              <option value="auto-accept-edits">Accept edits</option>
-              <option value="auto">Auto</option>
+              {Object.entries(RUNTIME_MODE_LABELS).map(([mode, label]) => (
+                <option key={mode} value={mode}>
+                  {label}
+                </option>
+              ))}
             </select>
           }
         />
@@ -577,14 +579,14 @@ function ProjectThreadTitleInstructionsField({
 }
 
 export function ProjectToolsOverrides() {
-  const { selectedProjectSummary, hasProjects, settings } = useSettingsRouteContext();
+  const { selectedProjectSummary, hasProjects, projects, focusedMcpServer } =
+    useSettingsRouteContext();
   return (
     <McpServersSettings
       selectedProject={selectedProjectSummary}
       hasProjects={hasProjects}
-      codexBinaryPath={settings.codexBinaryPath}
-      codexHomePath={settings.codexHomePath}
-      claudeBinaryPath={settings.claudeBinaryPath}
+      projects={projects}
+      focusServer={focusedMcpServer}
     />
   );
 }

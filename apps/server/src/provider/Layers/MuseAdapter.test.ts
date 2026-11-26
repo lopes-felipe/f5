@@ -18,6 +18,7 @@ import { ServerConfig } from "../../config.ts";
 import { openMspHost } from "../msp/MspSessionRuntime.ts";
 import { memoryNativeCommandIdStore } from "../msp/nativeCommandIds.ts";
 import { MockMspHost, mspError } from "../msp/testing/mockMspHost.ts";
+import { makeFakeMcpHub } from "../../mcp/hub/testing/fakeMcpHub.ts";
 import type { MuseAdapterShape } from "../Services/MuseAdapter.ts";
 import { makeMuseAdapter, parseMuseResumeCursor } from "./MuseAdapter.ts";
 
@@ -27,6 +28,7 @@ interface Harness {
   readonly usageReports: import("../msp/MuseUsageLimits").MuseSubscriptionUsage[];
   readonly adapter: MuseAdapterShape;
   readonly hosts: MockMspHost[];
+  readonly hub: ReturnType<typeof makeFakeMcpHub>;
   configure: (host: MockMspHost) => void;
 }
 
@@ -38,6 +40,7 @@ const HarnessLayer = Layer.effect(
   MuseHarness,
   Effect.gen(function* () {
     const hosts: MockMspHost[] = [];
+    const hub = makeFakeMcpHub();
     const usageReports: import("../msp/MuseUsageLimits").MuseSubscriptionUsage[] = [];
     const harness: { configure: (host: MockMspHost) => void } = { configure: () => undefined };
     const adapter = yield* makeMuseAdapter(Schema.decodeSync(MuseSettings)({}), {
@@ -48,6 +51,7 @@ const HarnessLayer = Layer.effect(
       instanceId: INSTANCE,
       nativeCommandIds: memoryNativeCommandIdStore(),
       sessionOpenTimeoutMs: 1_000,
+      mcpHub: hub.hub,
       openHost: () =>
         Effect.promise(async () => {
           const mock = new MockMspHost();
@@ -61,6 +65,7 @@ const HarnessLayer = Layer.effect(
       adapter,
       usageReports,
       hosts,
+      hub,
       get configure() {
         return harness.configure;
       },
@@ -761,6 +766,63 @@ it.layer(HarnessLayer)("MuseAdapter", (it) => {
       assert.equal(params?.approvalMode, "promptUnmatched");
       assert.equal(params?.permissionProfile, undefined);
       yield* harness.adapter.stopSession(ephemeral);
+    }),
+  );
+
+  it.effect("gives a session its project MCP servers through the hub when the host grants it", () =>
+    Effect.gen(function* () {
+      const harness = yield* MuseHarness;
+      const mcpServers = {
+        docs: { type: "http", url: "https://docs.example/mcp" },
+        local: { type: "stdio", command: "node" },
+      } as const;
+      const startWithServers = (threadId: ThreadId) =>
+        harness.adapter.startSession({
+          threadId,
+          provider: "muse",
+          cwd: process.cwd(),
+          runtimeMode: "auto-accept-edits",
+          providerOptions: { mcpServers },
+        });
+
+      harness.configure = (host) => {
+        Object.assign(host.options, { grantedCapabilities: ["sessionMcp"] });
+      };
+      const granted = ThreadId.make("muse-hub-granted");
+      const attachesBefore = harness.hub.attaches.length;
+      yield* startWithServers(granted);
+      const host = harness.hosts.at(-1)!;
+      assert.deepEqual(host.requestsFor("initialize")[0]?.params.capabilities, {
+        requestedCapabilities: ["sessionMcp"],
+      });
+      assert.deepEqual(host.requestsFor("session/start")[0]?.params.config, {
+        mcpServers: {
+          docs: {
+            transport: "streamableHttp",
+            url: "http://127.0.0.1:9/mcp/user/docs",
+            headers: { Authorization: "Bearer token-docs" },
+            mode: "optional",
+          },
+          local: {
+            transport: "streamableHttp",
+            url: "http://127.0.0.1:9/mcp/user/local",
+            headers: { Authorization: "Bearer token-local" },
+            mode: "optional",
+          },
+        },
+      });
+      assert.equal(harness.hub.attaches.length, attachesBefore + 1);
+      const disposedBefore = harness.hub.disposed;
+      yield* harness.adapter.stopSession(granted);
+      assert.equal(harness.hub.disposed, disposedBefore + 1);
+
+      // Without the grant the host would ignore the servers, so none are attached.
+      harness.configure = () => undefined;
+      const refused = ThreadId.make("muse-hub-refused");
+      yield* startWithServers(refused);
+      assert.equal(harness.hosts.at(-1)!.requestsFor("session/start")[0]?.params.config, undefined);
+      assert.equal(harness.hub.attaches.length, attachesBefore + 1);
+      yield* harness.adapter.stopSession(refused);
     }),
   );
 

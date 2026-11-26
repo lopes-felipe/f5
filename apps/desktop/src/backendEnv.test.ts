@@ -26,15 +26,47 @@ describe("buildDesktopBackendEnv", () => {
 
     expect(env).toMatchObject({
       PATH: "/usr/bin",
-      T3CODE_MODE: "desktop",
-      T3CODE_NO_BROWSER: "1",
+      F5_MODE: "desktop",
+      F5_NO_BROWSER: "1",
       F5_SHELL_ENVIRONMENT_PREPARED: "1",
-      T3CODE_PORT: "3773",
+      F5_PORT: "3773",
       F5_STATE_DIR: "/tmp/t3-state",
       T3CODE_STATE_DIR: "/tmp/t3-state",
-      T3CODE_AUTH_TOKEN: "token-123",
+      F5_AUTH_TOKEN: "token-123",
       T3CODE_OBSERVABILITY_ENABLED: "true",
     });
+  });
+
+  it("strips conflicting inherited F5_* and T3CODE_* server variables", () => {
+    const env = buildDesktopBackendEnv(
+      {
+        PATH: "/usr/bin",
+        F5_MODE: "web",
+        F5_PORT: "9999",
+        F5_HOST: "0.0.0.0",
+        F5_NO_BROWSER: "0",
+        F5_AUTH_TOKEN: "inherited-token",
+        T3CODE_HOST: "0.0.0.0",
+        T3CODE_PORT: "8888",
+        T3CODE_AUTH_TOKEN: "legacy-token",
+      },
+      {
+        backendPort: 3773,
+        stateDir: "/tmp/t3-state",
+        stateDirSource: "default",
+        authToken: "desktop-token",
+      },
+    );
+
+    expect(env.F5_MODE).toBe("desktop");
+    expect(env.F5_PORT).toBe("3773");
+    expect(env.F5_NO_BROWSER).toBe("1");
+    expect(env.F5_AUTH_TOKEN).toBe("desktop-token");
+    expect(env.F5_HOST).toBeUndefined();
+    expect(env.T3CODE_HOST).toBeUndefined();
+    expect(env.T3CODE_PORT).toBeUndefined();
+    expect(env.T3CODE_AUTH_TOKEN).toBeUndefined();
+    expect(env.T3CODE_MODE).toBeUndefined();
   });
 
   it("lets the server repair PATH when the desktop shell probe captured none", () => {
@@ -53,6 +85,21 @@ describe("buildDesktopBackendEnv", () => {
       expect(env).not.toHaveProperty("F5_SHELL_ENVIRONMENT_PREPARED");
       expect(env.PATH).toBe("/usr/bin");
     }
+  });
+
+  it("passes this profile's secret store key and never an inherited one", () => {
+    const base = {
+      backendPort: 3773,
+      stateDir: "/tmp/t3-state",
+      stateDirSource: "default" as const,
+      authToken: "token-123",
+    };
+    const inherited = { PATH: "/usr/bin", F5_SECRET_STORE_KEY: "aa".repeat(32) };
+    expect(buildDesktopBackendEnv(inherited, base).F5_SECRET_STORE_KEY).toBeUndefined();
+    expect(
+      buildDesktopBackendEnv(inherited, { ...base, secretStoreKey: "bb".repeat(32) })
+        .F5_SECRET_STORE_KEY,
+    ).toBe("bb".repeat(32));
   });
 
   it("does not add observability enablement when it is absent", () => {

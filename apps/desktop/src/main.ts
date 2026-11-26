@@ -37,6 +37,18 @@ import { recoverUpdateSession, restoreUpdateWindows } from "./updateRecovery";
 import { createUpdaterInstallerAdapter } from "./updateInstallerAdapter";
 import { createUpdateInstaller } from "./updateInstall";
 import { assertUpdateCaller } from "./updateIpc";
+import {
+  APP_ICON_ARGUMENT,
+  APP_ICON_CHANGED_CHANNEL,
+  createAppIconController,
+  createDockChoicePublisher,
+  readAppIconState,
+  readDockStartedAt,
+  registerAppIconIpc,
+  writeAppIconState,
+  type AppIconController,
+} from "./appIcon";
+import { APP_BUNDLE_ID } from "@t3tools/shared/appIdentity";
 import { revealSenderWindow } from "./revealWindow";
 import { createUpdateController } from "./updateController";
 import { hasCachedUpdate } from "./updateCache";
@@ -58,7 +70,7 @@ import {
   VmSlotReservations,
 } from "./vm/vmBackendLauncher";
 import { VM_REFUSED_EXIT_CODE, VM_STOP_FAILED_EXIT_CODE } from "./vm/vmSupervisor";
-import { isLinuxVmProfile } from "@t3tools/shared/profileExecution";
+import { isLinuxVmProfile, profileExecutionEnvironment } from "@t3tools/shared/profileExecution";
 import { computerHostMetadata } from "@t3tools/shared/computerExecution";
 import {
   assertFileActionCaller,
@@ -67,6 +79,7 @@ import {
   macRevealLaunch,
   registerDesktopFileActions,
 } from "./fileActions";
+import { createAppIpcRegistrar } from "./ipcRegistry";
 import { profilePreviewPartition } from "./profileRuntime";
 import { CaptureShortcut } from "./snapShot/CaptureShortcut";
 import { captureBoundedPage } from "./preview/capture";
@@ -315,7 +328,7 @@ const DESKTOP_SCHEME = "t3";
 const ROOT_DIR = Path.resolve(__dirname, "../../..");
 const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL);
 const APP_DISPLAY_NAME = isDevelopment ? "F5 (Dev)" : "F5";
-const APP_USER_MODEL_ID = "io.github.lopesfelipe.f5";
+const APP_USER_MODEL_ID = APP_BUNDLE_ID;
 const USER_DATA_DIR_NAME = isDevelopment ? "f5-dev" : "f5";
 const LEGACY_USER_DATA_DIR_NAMES = isDevelopment
   ? ["T3 Code (Dev)", "t3code-dev"]
@@ -2857,6 +2870,85 @@ function resolveIconPath(ext: "ico" | "icns" | "png"): string | null {
   return resolveResourcePath(`icon.${ext}`);
 }
 
+function runFile(file: string, args: readonly string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    ChildProcess.execFile(file, [...args], { timeout: 5_000 }, (error, stdout) =>
+      error ? reject(error) : resolve(stdout),
+    );
+  });
+}
+
+let appIconController: AppIconController | null = null;
+/** The app icon people chose in Settings; one choice for every profile. */
+function appIcon(): AppIconController {
+  if (appIconController) return appIconController;
+  const statePath = Path.join(app.getPath("userData"), "app-icon.json");
+  appIconController = createAppIconController({
+    platform: process.platform,
+    isPackaged: app.isPackaged,
+    readState: () => readAppIconState(statePath),
+    writeState: (state) => writeAppIconState(statePath, state),
+    iconPath: (id, file) => resolveResourcePath(`app-icons/${id}/${file}`),
+    setDockIcon: (path) => app.dock?.setIcon(path),
+    // An empty image clears the override, so the Dock draws the bundle's icon again.
+    restoreDockIcon: () => app.dock?.setIcon(nativeImage.createEmpty()),
+    publishDockChoice: createDockChoicePublisher(systemPreferences, APP_BUNDLE_ID),
+    setWindowIcons: (path) => {
+      for (const window of BrowserWindow.getAllWindows())
+        if (!window.isDestroyed()) window.setIcon(path);
+    },
+    broadcast: (id) => {
+      for (const window of BrowserWindow.getAllWindows())
+        if (!window.isDestroyed() && appRendererWebContentsIds.has(window.webContents.id))
+          window.webContents.send(APP_ICON_CHANGED_CHANNEL, id);
+    },
+    restartDock: async () => void (await runFile("/usr/bin/killall", ["Dock"])),
+    later: (run, delayMs) => void setTimeout(run, delayMs),
+    log: (message) => console.warn(`[desktop] ${message}`),
+  });
+  return appIconController;
+}
+
+/** When the in-app updater began installing this version; see configureAutoUpdater. */
+let updateInstallStartedAt: number | null = null;
+
+/**
+ * When this version was installed. The in-app updater's marker is written just before it
+ * installs. Otherwise the built-in icon file's status change time stands in: copying or
+ * extracting the app creates it anew, and LaunchServices only touches the bundle itself.
+ */
+function bundleInstalledAt(): number | null {
+  if (updateInstallStartedAt !== null) return updateInstallStartedAt;
+  try {
+    return FS.statSync(Path.join(process.resourcesPath, "icon.icns")).ctimeMs;
+  } catch {
+    return null;
+  }
+}
+
+/** After an update changed the built-in icon, a Dock that was already running keeps the old one. */
+function detectStaleDockIcon(existingInstallation: boolean): void {
+  if (process.platform !== "darwin" || !app.isPackaged) return;
+  let bundleIconHash: string | null = null;
+  try {
+    bundleIconHash = Crypto.createHash("sha256")
+      .update(FS.readFileSync(Path.join(process.resourcesPath, "icon.icns")))
+      .digest("hex");
+  } catch (error) {
+    console.warn("[desktop] Could not read the built-in app icon", error);
+  }
+  void appIcon()
+    .detectStaleDock({
+      bundleIconHash,
+      installedAt: bundleInstalledAt(),
+      updatedFrom: updateState.recentlyInstalled?.fromVersion ?? null,
+      existingInstallation,
+      now: Date.now(),
+      readDockStartedAt: () => readDockStartedAt(runFile, Date.now(), process.getuid?.() ?? 0),
+    })
+    .catch((error) => console.warn("[desktop] Could not check the Dock icon", error));
+}
+
 /** Copy legacy Chromium data once, keeping the t3 renderer origin and backend state intact. */
 function resolveUserDataPath(): string {
   const appDataBase =
@@ -2895,12 +2987,7 @@ function configureAppIdentity(): void {
     app.setAppUserModelId(APP_USER_MODEL_ID);
   }
 
-  if (process.platform === "darwin" && !app.isPackaged && app.dock) {
-    const iconPath = resolveIconPath("png");
-    if (iconPath) {
-      app.dock.setIcon(iconPath);
-    }
-  }
+  appIcon().applyAtLaunch();
 }
 
 const updatePoller = createUpdatePoller(
@@ -3069,10 +3156,21 @@ function updateInstallMarkerPath(): string {
   return Path.join(app.getPath("userData"), "update-pending.json");
 }
 
+/** Written on the first launch, so its presence means F5 has run here before. */
+function updatePreferencesPath(): string {
+  return Path.join(app.getPath("userData"), "update-preferences.json");
+}
+
 async function configureAutoUpdater(): Promise<void> {
-  const preferencesPath = Path.join(app.getPath("userData"), "update-preferences.json");
+  const preferencesPath = updatePreferencesPath();
   const channel = initializeUpdatePreferences(preferencesPath, app.getVersion());
+  try {
+    updateInstallStartedAt = FS.statSync(updateInstallMarkerPath()).mtimeMs;
+  } catch {
+    updateInstallStartedAt = null;
+  }
   const recentlyInstalled = consumeUpdateInstallMarker(updateInstallMarkerPath(), app.getVersion());
+  if (!recentlyInstalled) updateInstallStartedAt = null;
   const disabledReason = getAutoUpdateDisabledReason({
     isDevelopment,
     isPackaged: app.isPackaged,
@@ -3190,6 +3288,28 @@ async function configureAutoUpdater(): Promise<void> {
 
   updatePoller.start(true);
 }
+/**
+ * One master key per host profile for the secrets its backend encrypts at rest, stored
+ * wrapped by the OS keychain beside the profile's state. A VM guest keeps its own key file.
+ */
+const secretStoreKeys = new Map<string, () => Buffer | undefined>();
+function secretStoreKeyHex(runtime: BackendRuntime): string | undefined {
+  if (profileExecutionEnvironment(runtime.profile) !== "host") return undefined;
+  let read = secretStoreKeys.get(runtime.profile.id);
+  if (!read) {
+    read = keychainConsentKey(
+      Path.join(profileStateDir(STATE_DIR, runtime.profile), "secret-store.key"),
+      {
+        available: () => safeStorage.isEncryptionAvailable(),
+        encrypt: (plain) => safeStorage.encryptString(plain),
+        decrypt: (encrypted) => safeStorage.decryptString(encrypted),
+      },
+    );
+    secretStoreKeys.set(runtime.profile.id, read);
+  }
+  return read()?.toString("hex");
+}
+
 function backendEnv(runtime: BackendRuntime = defaultBackend): NodeJS.ProcessEnv {
   return buildDesktopBackendEnv(process.env, {
     backendPort: runtime.backendPort,
@@ -3198,6 +3318,7 @@ function backendEnv(runtime: BackendRuntime = defaultBackend): NodeJS.ProcessEnv
     stateDirSource: STATE_DIR_CONFIG.source,
     authToken: runtime.backendAuthToken,
     shellEnvironmentPrepared,
+    secretStoreKey: secretStoreKeyHex(runtime),
   });
 }
 
@@ -4018,8 +4139,7 @@ function registerIpcHandlers(): void {
   });
   ipcMain.on("desktop:get-ws-url", (event) => {
     try {
-      if (event.senderFrame !== event.sender.mainFrame)
-        throw new Error("Only the owning main frame may bootstrap.");
+      authorizeAppMainFrame(event, "Backend connection requests");
       const runtime = runtimeForRenderer(event.sender.id);
       event.returnValue = getDesktopBackendWebSocketUrl(
         runtime.backendPort,
@@ -4050,7 +4170,11 @@ function registerIpcHandlers(): void {
       return action();
     });
   }
-  ipcMain.handle("desktop:take-prompt-links", (event) => {
+  const handleAppIpc = createAppIpcRegistrar({
+    ipcMain,
+    authorize: authorizeAppMainFrame,
+  });
+  handleAppIpc("desktop:take-prompt-links", "Prompt links", ({ event }) => {
     const runtime = runtimeForRenderer(event.sender.id);
     const links = promptLinks.take(runtime.profile.id);
     let profileCount = 1;
@@ -4062,34 +4186,34 @@ function registerIpcHandlers(): void {
     // With several profiles, the user is told which one the link opened in.
     return { links, profileName: profileCount > 1 ? runtime.profile.name : null };
   });
-  ipcMain.handle("desktop:take-app-activations", (event) => {
-    authorizeAppMainFrame(event, "Desktop activation");
+  handleAppIpc("desktop:take-app-activations", "Desktop activation", ({ event }) => {
     const runtime = runtimeForRenderer(event.sender.id);
     return takeAppActivations(appActivations, runtime.profile.id, event.sender.id);
   });
-  ipcMain.handle("desktop:complete-app-activation", (event, id: string, error?: string) => {
-    authorizeAppMainFrame(event, "Desktop activation");
-    const runtime = runtimeForRenderer(event.sender.id);
-    completeAppActivation(appActivations, runtime.profile.id, event.sender.id, id, error);
-  });
-  ipcMain.handle(DESKTOP_NOTIFICATION_SHOW_CHANNEL, (event, raw: unknown) => {
-    const profileId = authorizeAppMainFrame(event, "Notification");
+  handleAppIpc(
+    "desktop:complete-app-activation",
+    "Desktop activation",
+    ({ event }, id: string, error?: string) => {
+      const runtime = runtimeForRenderer(event.sender.id);
+      completeAppActivation(appActivations, runtime.profile.id, event.sender.id, id, error);
+    },
+  );
+  handleAppIpc(DESKTOP_NOTIFICATION_SHOW_CHANNEL, "Notification", ({ profileId }, raw: unknown) => {
     if (!Notification.isSupported()) return false;
     const input = parseDesktopNotificationInput(raw);
     if (!input) throw new Error("Invalid notification.");
     return desktopNotifications.show(profileId, input);
   });
-  ipcMain.handle(DESKTOP_NOTIFICATION_TAKE_ACTIVATIONS_CHANNEL, (event) => {
-    const profileId = authorizeAppMainFrame(event, "Notification activation");
-    return desktopNotifications.take(profileId, event.sender.id);
-  });
-  ipcMain.handle("desktop:switch-profile", async (event, id: unknown) => {
-    runtimeForRenderer(event.sender.id);
+  handleAppIpc(
+    DESKTOP_NOTIFICATION_TAKE_ACTIVATIONS_CHANNEL,
+    "Notification activation",
+    ({ event, profileId }) => desktopNotifications.take(profileId, event.sender.id),
+  );
+  handleAppIpc("desktop:switch-profile", "Profile switch", async (_ctx, id: unknown) => {
     if (typeof id !== "string") return false;
     return openProfile(id);
   });
-  ipcMain.handle("desktop:stop-profile", async (event, id: unknown) => {
-    runtimeForRenderer(event.sender.id);
+  handleAppIpc("desktop:stop-profile", "Profile stop", async (_ctx, id: unknown) => {
     if (typeof id !== "string") return false;
     const runtime = backends.get(id);
     if (!runtime) return true;
@@ -4098,8 +4222,7 @@ function registerIpcHandlers(): void {
       if (profileByWebContentsId.get(window.webContents.id) === id) window.close();
     return runtime.backendProcess === null;
   });
-  ipcMain.removeHandler(PICK_FOLDER_CHANNEL);
-  ipcMain.handle(PICK_FOLDER_CHANNEL, async () => {
+  handleAppIpc(PICK_FOLDER_CHANNEL, "Folder picker", async () => {
     const owner = BrowserWindow.getFocusedWindow() ?? mainWindow;
     const result = owner
       ? await dialog.showOpenDialog(owner, {
@@ -4112,8 +4235,7 @@ function registerIpcHandlers(): void {
     return result.filePaths[0] ?? null;
   });
 
-  ipcMain.removeHandler(CONFIRM_CHANNEL);
-  ipcMain.handle(CONFIRM_CHANNEL, async (_event, message: unknown) => {
+  handleAppIpc(CONFIRM_CHANNEL, "Confirm dialog", async (_ctx, message: unknown) => {
     if (typeof message !== "string") {
       return false;
     }
@@ -4122,8 +4244,7 @@ function registerIpcHandlers(): void {
     return showDesktopConfirmDialog(message, owner);
   });
 
-  ipcMain.removeHandler(SET_THEME_CHANNEL);
-  ipcMain.handle(SET_THEME_CHANNEL, async (_event, rawTheme: unknown) => {
+  handleAppIpc(SET_THEME_CHANNEL, "Theme updates", async (_ctx, rawTheme: unknown) => {
     const theme = getSafeTheme(rawTheme);
     if (!theme) {
       return;
@@ -4133,11 +4254,11 @@ function registerIpcHandlers(): void {
     else nativeTheme.themeSource = theme;
   });
 
-  ipcMain.removeHandler(CONTEXT_MENU_CHANNEL);
-  ipcMain.handle(
+  handleAppIpc(
     CONTEXT_MENU_CHANNEL,
+    "Context menu",
     async (
-      event,
+      { event },
       items: ContextMenuItem[],
       position?: { x: number; y: number },
       fileAction?: { editorTarget: string },
@@ -4189,52 +4310,48 @@ function registerIpcHandlers(): void {
     },
   );
 
-  ipcMain.removeHandler(READ_CLIPBOARD_TEXT_CHANNEL);
-  ipcMain.handle(READ_CLIPBOARD_TEXT_CHANNEL, (event, source: unknown) => {
-    if (
-      !profileByWebContentsId.has(event.sender.id) ||
-      event.senderFrame !== event.sender.mainFrame
-    )
-      throw new Error("Clipboard reads require an F5 application window.");
+  handleAppIpc(READ_CLIPBOARD_TEXT_CHANNEL, "Clipboard reads", (_ctx, source: unknown) => {
     if (source !== "clipboard" && source !== "selection")
       throw new Error("Invalid clipboard source.");
     if (source === "selection" && process.platform !== "linux") return "";
     return (source === "selection" ? clipboard.selection : clipboard).readText();
   });
 
-  ipcMain.removeHandler(COPY_IMAGE_CHANNEL);
-  ipcMain.handle(COPY_IMAGE_CHANNEL, async (event, rawBytes: unknown, snapshot: unknown) => {
-    authorizeAppMainFrame(event, "Image copy");
-    const bytes = readDesktopImageActionBytes(rawBytes);
-    const image = nativeImage.createFromBuffer(Buffer.from(bytes));
-    if (image.isEmpty()) {
-      throw new Error("F5 could not decode the image for copying.");
-    }
-    const formats: Record<string, Blob> = {
-      "image/png": new Blob([new Uint8Array(image.toPNG())]),
-    };
-    if (snapshot !== undefined) {
-      if (
-        typeof snapshot !== "object" ||
-        snapshot === null ||
-        !("html" in snapshot) ||
-        typeof snapshot.html !== "string" ||
-        snapshot.html.length > 256_000 ||
-        !("text" in snapshot) ||
-        typeof snapshot.text !== "string" ||
-        snapshot.text.length > 255
-      )
-        throw new Error("Invalid Snap Shot clipboard payload.");
-      formats["text/html"] = new Blob([snapshot.html], { type: "text/html" });
-      formats["text/plain"] = new Blob([snapshot.text], { type: "text/plain" });
-    }
-    await clipboard.write([new ClipboardItem(formats)]);
-  });
+  handleAppIpc(
+    COPY_IMAGE_CHANNEL,
+    "Image copy",
+    async (_ctx, rawBytes: unknown, snapshot: unknown) => {
+      const bytes = readDesktopImageActionBytes(rawBytes);
+      const image = nativeImage.createFromBuffer(Buffer.from(bytes));
+      if (image.isEmpty()) {
+        throw new Error("F5 could not decode the image for copying.");
+      }
+      const formats: Record<string, Blob> = {
+        "image/png": new Blob([new Uint8Array(image.toPNG())]),
+      };
+      if (snapshot !== undefined) {
+        if (
+          typeof snapshot !== "object" ||
+          snapshot === null ||
+          !("html" in snapshot) ||
+          typeof snapshot.html !== "string" ||
+          snapshot.html.length > 256_000 ||
+          !("text" in snapshot) ||
+          typeof snapshot.text !== "string" ||
+          snapshot.text.length > 255
+        )
+          throw new Error("Invalid Snap Shot clipboard payload.");
+        formats["text/html"] = new Blob([snapshot.html], { type: "text/html" });
+        formats["text/plain"] = new Blob([snapshot.text], { type: "text/plain" });
+      }
+      await clipboard.write([new ClipboardItem(formats)]);
+    },
+  );
 
-  ipcMain.removeHandler(DOWNLOAD_IMAGE_CHANNEL);
-  ipcMain.handle(
+  handleAppIpc(
     DOWNLOAD_IMAGE_CHANNEL,
-    async (_event, rawBytes: unknown, rawFilename: unknown) => {
+    "Image download",
+    async (_ctx, rawBytes: unknown, rawFilename: unknown) => {
       const bytes = readDesktopImageActionBytes(rawBytes);
       const filename = typeof rawFilename === "string" ? rawFilename : "image";
       const savedPath = await saveDesktopImageDownload({
@@ -4246,8 +4363,7 @@ function registerIpcHandlers(): void {
     },
   );
 
-  ipcMain.removeHandler(OPEN_EXTERNAL_CHANNEL);
-  ipcMain.handle(OPEN_EXTERNAL_CHANNEL, async (_event, rawUrl: unknown) => {
+  handleAppIpc(OPEN_EXTERNAL_CHANNEL, "External links", async (_ctx, rawUrl: unknown) => {
     const externalUrl = getSafeShellExternalUrl(rawUrl);
     if (!externalUrl) {
       return false;
@@ -4261,27 +4377,30 @@ function registerIpcHandlers(): void {
     }
   });
 
-  ipcMain.removeHandler(OPEN_THREAD_WINDOW_CHANNEL);
-  ipcMain.handle(OPEN_THREAD_WINDOW_CHANNEL, async (event, rawThreadId: unknown) => {
-    const threadId = normalizeThreadIdForDesktopWindow(rawThreadId);
-    if (!threadId) return false;
-    const now = Date.now();
-    const previous = lastOpenThreadWindowAtByRenderer.get(event.sender.id) ?? 0;
-    if (
-      now - previous < OPEN_THREAD_WINDOW_MIN_INTERVAL_MS ||
-      BrowserWindow.getAllWindows().length >= MAX_DESKTOP_WINDOWS
-    ) {
-      return false;
-    }
-    lastOpenThreadWindowAtByRenderer.set(event.sender.id, now);
-    try {
-      createWindow(threadId, runtimeForRenderer(event.sender.id));
-      return true;
-    } catch (error) {
-      console.error(`[desktop] failed to open thread window: ${formatErrorMessage(error)}`);
-      return false;
-    }
-  });
+  handleAppIpc(
+    OPEN_THREAD_WINDOW_CHANNEL,
+    "Thread windows",
+    async ({ event }, rawThreadId: unknown) => {
+      const threadId = normalizeThreadIdForDesktopWindow(rawThreadId);
+      if (!threadId) return false;
+      const now = Date.now();
+      const previous = lastOpenThreadWindowAtByRenderer.get(event.sender.id) ?? 0;
+      if (
+        now - previous < OPEN_THREAD_WINDOW_MIN_INTERVAL_MS ||
+        BrowserWindow.getAllWindows().length >= MAX_DESKTOP_WINDOWS
+      ) {
+        return false;
+      }
+      lastOpenThreadWindowAtByRenderer.set(event.sender.id, now);
+      try {
+        createWindow(threadId, runtimeForRenderer(event.sender.id));
+        return true;
+      } catch (error) {
+        console.error(`[desktop] failed to open thread window: ${formatErrorMessage(error)}`);
+        return false;
+      }
+    },
+  );
 
   const assertUpdateSender = (event: Electron.IpcMainInvokeEvent) =>
     assertUpdateCaller(event, runtimeForRenderer);
@@ -4321,6 +4440,7 @@ function registerIpcHandlers(): void {
     if (claimed) setUpdateState(state);
     return claimed;
   });
+  registerAppIconIpc(ipcMain, appIcon(), (event) => assertUpdateCaller(event, runtimeForRenderer));
   ipcMain.removeHandler(UPDATE_DOWNLOAD_CHANNEL);
   ipcMain.handle(UPDATE_DOWNLOAD_CHANNEL, async (event) => {
     assertUpdateSender(event);
@@ -4351,11 +4471,9 @@ function registerIpcHandlers(): void {
   });
 
   const previewHandle = (channel: string, run: (owner: number, ...args: unknown[]) => unknown) => {
-    ipcMain.removeHandler(channel);
-    ipcMain.handle(channel, (event, ...args) => {
-      runtimeForRenderer(event.sender.id);
-      return run(event.sender.id, ...args);
-    });
+    handleAppIpc(channel, "Preview controls", ({ event }, ...args: unknown[]) =>
+      run(event.sender.id, ...args),
+    );
   };
   const stringArg = (value: unknown) => {
     if (typeof value !== "string" || value.length > 200 || !value.trim())
@@ -4636,7 +4754,7 @@ function registerIpcHandlers(): void {
 function getIconOption(): { icon: string } | Record<string, never> {
   if (process.platform === "darwin") return {}; // macOS uses .icns from app bundle
   const ext = process.platform === "win32" ? "ico" : "png";
-  const iconPath = resolveIconPath(ext);
+  const iconPath = appIcon().windowIconPath() ?? resolveIconPath(ext);
   return iconPath ? { icon: iconPath } : {};
 }
 
@@ -4676,6 +4794,7 @@ function createWindow(
         ...profileWindowArguments(runtime.profile.id),
         `--f5-profile-environment=${runtime.profile.executionEnvironment ?? "host"}`,
         `--f5-system-locale=${systemLocale(app.getSystemLocale(), process.platform, process.env, (key) => systemPreferences.getUserDefault(key, "boolean"))}`,
+        `--${APP_ICON_ARGUMENT}=${appIcon().id()}`,
       ],
       preload: Path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -4691,9 +4810,10 @@ function createWindow(
   window.on("focus", () => {
     lastOpenedProfileId = runtime.profile.id;
   });
-  window.webContents.once("destroyed", () =>
-    appRendererWebContentsIds.delete(rendererWebContentsId),
-  );
+  window.webContents.once("destroyed", () => {
+    appRendererWebContentsIds.delete(rendererWebContentsId);
+    appIconController?.releaseCaller(rendererWebContentsId);
+  });
   window.webContents.on("will-attach-webview", (event, webPreferences, params) => {
     const partition = typeof params.partition === "string" ? params.partition : "";
     if (!browserStores.get(runtime.profile.id)?.profiles.ownsPartition(partition)) {
@@ -5100,6 +5220,7 @@ app.on("will-quit", (event) => {
   beginQuitting();
   // will-quit is emitted only after all renderer unload checks have succeeded.
   void cleanupBeforeExit().finally(() => {
+    appIconController?.publishDockChoiceAtQuit();
     shutdownComplete = true;
     writeDesktopLogHeader("shutdown complete");
     restoreStdIoCapture?.();
@@ -5195,7 +5316,9 @@ app
     configureApplicationMenu();
     registerDesktopProtocol();
     registerPromptLinkProtocol();
+    const existingInstallation = FS.existsSync(updatePreferencesPath());
     await configureAutoUpdater();
+    detectStaleDockIcon(existingInstallation);
     await initializeKeepAwake();
     const bootstrapReady = bootstrapGate.start(bootstrap);
     void bootstrapReady.catch((error) => {

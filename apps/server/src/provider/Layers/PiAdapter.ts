@@ -51,6 +51,11 @@ import type {
 import { parsePiCompactCommand } from "../pi/commands.ts";
 import { readPiCatalog, type PiCatalog } from "../pi/PiMetadata.ts";
 import { buildPiRpcLaunch, resolvePiLaunchArgs } from "../pi/launch.ts";
+import {
+  describeMcpHubOmissions,
+  type McpHubOmission,
+  type McpHubShape,
+} from "../../mcp/hub/McpHub.ts";
 import { materializePiMcpExtension } from "../pi/materializeExtension.ts";
 import { makePiRpcConnection, PiRpcError, type PiRpcConnection } from "../pi/PiRpc.ts";
 import {
@@ -128,8 +133,11 @@ export interface PiAdapterOptions {
   ) => Effect.Effect<boolean>;
   readonly onCatalog?: (catalog: PiCatalog) => Effect.Effect<void>;
   readonly beforeLaunch?: Effect.Effect<void, PiRpcError, Scope.Scope>;
+  readonly mcpHub?: McpHubShape;
   readonly createMcpSession?: (
     threadId: ThreadId,
+    /** Read-only workflow stages get only the thread tools that read. */
+    access: "full" | "read-only",
   ) => Effect.Effect<{ endpoint: string; authorizationHeader: string }, PiRpcError, Scope.Scope>;
 }
 type EventBody<E = ProviderRuntimeEvent> = E extends ProviderRuntimeEvent
@@ -958,13 +966,63 @@ export const makePiAdapter = (settings: PiSettings, options: PiAdapterOptions) =
                   if (!piVersionSupportsF5(version))
                     return yield* requestError("startSession", "Pi 0.80.5 or newer is required.");
                   const mcpSession = options.createMcpSession
-                    ? yield* options.createMcpSession(input.threadId)
+                    ? yield* options.createMcpSession(
+                        input.threadId,
+                        input.workflowExecutionProfile ? "read-only" : "full",
+                      )
                     : undefined;
+                  // Project MCP servers reach Pi through F5's hub; read-only workflow
+                  // turns never get them.
+                  const projectMcpServers = input.workflowExecutionProfile
+                    ? undefined
+                    : input.providerOptions?.mcpServers;
+                  const wantsHub =
+                    projectMcpServers !== undefined && Object.keys(projectMcpServers).length > 0;
+                  const hubAttachment =
+                    options.mcpHub && extensionPath !== undefined && wantsHub
+                      ? options.mcpHub.attach({
+                          threadId: input.threadId,
+                          ...(input.projectId ? { projectId: input.projectId } : {}),
+                          provider: "pi",
+                          accountKey: options.instanceId,
+                          servers: projectMcpServers,
+                          environment: options.environment,
+                          cwd,
+                          // The F5 bridge owns the `mcp__f5__` tool namespace.
+                          reservedNames: new Set(["f5"]),
+                        })
+                      : undefined;
+                  if (hubAttachment) {
+                    yield* Effect.addFinalizer(() => Effect.promise(() => hubAttachment.dispose()));
+                  }
+                  // Servers Pi did not get, reported once the session is configured.
+                  const hubOmissions: ReadonlyArray<McpHubOmission> = hubAttachment
+                    ? hubAttachment.omitted
+                    : wantsHub
+                      ? Object.keys(projectMcpServers).map((serverName) => ({
+                          serverName,
+                          reason:
+                            extensionPath === undefined
+                              ? "was skipped because the F5 Pi extension is unavailable"
+                              : "was skipped because F5's MCP hub is unavailable in this runtime",
+                        }))
+                      : [];
                   const launch = buildPiRpcLaunch({
                     launchArgs: parsed.args,
                     environment: options.environment,
                     extensionPath,
                     mcpSession,
+                    ...(hubAttachment
+                      ? {
+                          userMcpServers: hubAttachment.endpoints.map((endpoint) => ({
+                            name: endpoint.serverName,
+                            url: endpoint.url,
+                            token: endpoint.token,
+                            timeoutMs: endpoint.toolTimeoutMs,
+                            startupTimeoutMs: endpoint.startupTimeoutMs,
+                          })),
+                        }
+                      : {}),
                     runtimeMode: input.runtimeMode,
                     readOnly:
                       input.interactionMode === "plan" ||
@@ -1091,6 +1149,9 @@ export const makePiAdapter = (settings: PiSettings, options: PiAdapterOptions) =
                       },
                     },
                   });
+                  const mcpOmissions = describeMcpHubOmissions("Pi", hubOmissions);
+                  if (mcpOmissions)
+                    yield* emit(ctx, { type: "config.warning", payload: mcpOmissions });
                   if (options.onCatalog) yield* options.onCatalog(catalog);
                   return ctx.session;
                 }),

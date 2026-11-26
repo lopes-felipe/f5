@@ -108,14 +108,74 @@ shows the template, cost and per-step context.
 - Document authors, and investigators, must use different provider and model pairs. Feature
   authors may share one.
 - Muse Code and Grok can't run stages that need Plan mode or read-only turns.
-- Read-only stages can look at the preview browser but can't save screenshots.
-- Cursor has no read-only sandbox, so F5 decides each of its permission requests in a read-only
+- Read-only stages can look at the preview browser, except on Codex, but can't save screenshots.
+- Each read-only stage's thread records how it is kept read-only, as **Read-only stage:
+  sandboxed** or **Read-only stage: policy-enforced**:
+  - Codex runs in its read-only sandbox, with no network for shell commands. If Codex reports any
+    other sandbox, the stage fails to start. Its only MCP server is F5's read-only forge and
+    thread catalog: your own Codex MCP servers, the preview browser and Codex plugins are left
+    out, because Codex uses MCP tools without asking and they run outside the sandbox.
+  - In the macOS desktop app, Codex's and Antigravity's sandboxes can't start, because the app
+    already runs F5's backend inside a macOS sandbox. There the stage is **policy-enforced**:
+    Codex runs without its sandbox and asks before every command outside its own read-only list,
+    and F5 answers with the same command allowlist it uses for Cursor. File edits and requests
+    for more permissions are refused. Antigravity launches without `--sandbox`, under the same
+    allowlist.
+  - If your organisation's Codex requirements (`allowed_approval_policies` or
+    `allowed_sandbox_modes` in a managed `requirements.toml`) don't allow `untrusted` with
+    `danger-full-access`, Codex can't be made to ask before every command:
+    - With `on-request` allowed, the stage keeps Codex's read-only sandbox and asks only when a
+      command needs to run outside it. In the desktop app, where the sandbox can't start, Codex
+      asks to rerun each of its own safe commands (`ls`, `git status` and the like) outside it, and
+      F5 tells the model to request the same for any other command. F5 answers with its allowlist
+      as above. A command nobody asks about fails, so nothing runs unchecked.
+    - With only `never` allowed, the stage stays in Codex's read-only sandbox, recorded as
+      **sandboxed**, and the thread shows a configuration warning saying so. In the desktop app
+      shell commands then fail, and the stage reads pull requests and files through F5's forge
+      tools.
+  - Claude runs in Plan mode, where Claude Code decides which commands only read.
+  - OpenCode and Pi run with their write tools turned off.
+  - Antigravity runs only on a certified runtime (see
+    [Antigravity](../providers/antigravity.md#read-only-workflow-turns)).
+- Read-only stages read pull requests, CI logs, review guides and remote files through F5's forge
+  tools (`pull_request_read`, `pull_request_list`, `ci_logs`, `pull_request_review_guide_read` and
+  `repository_file_read`), since a sandboxed shell has no network. They can't use F5's write tools.
+  A stage whose folder holds several repositories can still read a PR by URL when its host has a
+  connected account. These tools can read any repository your connected account can see on that
+  host, private ones included. For Claude, Cursor and Antigravity that adds nothing their `gh`
+  reads and fetch couldn't already reach. For Codex it is the one route to private code, since its
+  shell has no network; together with Codex's web search, text planted in the code under review
+  could get it to leak private repository content.
+- Cursor has no read-only sandbox yet, so F5 decides each of its permission requests in a read-only
   stage. Read, search, think and fetch tools run, and so do shell commands on the read-only
   allowlist that Antigravity also uses (see
-  [Antigravity](../providers/antigravity.md#read-only-workflow-turns)). Everything else is
-  refused and the model is told no; a turn with three refused operations fails the stage, on any
-  provider. Unlike Antigravity, Cursor is not certified per version, so F5 relies on Cursor
+  [Antigravity](../providers/antigravity.md#read-only-workflow-turns)). A script may set a
+  variable to a literal (`HEAD_SHA=abc123`) and use it later in the same command. Everything else
+  is refused and the model is told no; a turn with three refused operations fails the stage, on
+  any provider. Unlike Antigravity, Cursor is not certified per version, so F5 relies on Cursor
   labelling its tools' kinds correctly.
+- F5 only sees the Cursor commands that Cursor asks about, so read-only Cursor stages run with an
+  F5-owned copy of your Cursor CLI config (`CURSOR_CONFIG_DIR`):
+  - **Ignored in these stages:** your allowlist (`permissions.allow`, `permissions.json`), an
+    `unrestricted` or `auto-review` approval mode, and any other CLI setting besides display,
+    model and account details. Your sign-in, rules, skills and MCP servers (read from your home
+    folder) still load. F5 refuses every MCP call except its own read-only tools.
+  - **Repository config:** F5 can't override a repository's own Cursor files, so a read-only
+    Cursor stage won't start, and names the file, when the repository has:
+    - a `.cursor/cli.json` that sets anything but deny rules, such as an allowlist or a looser
+      approval mode;
+    - a `.cursor/hooks.json` with hooks, which run shell commands;
+    - a `.cursor/mcp.json` with servers, which Cursor can start without asking F5;
+    - any of these files that F5 can't read as strict JSON.
+
+    F5 checks again before every turn. A file another process adds mid-turn isn't caught until
+    the next turn.
+
+  - **Session history:** read-only Cursor sessions are recorded in F5's state folder
+    (`provider-homes/cursor-readonly`), not `~/.cursor`, and included in backups of that folder.
+  - **Team allowlists:** your team admin's allowlist is applied by Cursor's servers. F5 can't turn
+    it off.
+
 - Fetch stays allowed in read-only stages on Cursor and Antigravity, as for Codex and Claude plan
   mode. Text planted in the code under review could get the model to put repository content into
   a URL it fetches, so don't run workflows on code you don't trust with secrets in the workspace.

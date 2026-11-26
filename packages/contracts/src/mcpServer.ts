@@ -1,6 +1,7 @@
 import { FilesystemPath } from "./baseSchemas";
 import { Schema } from "effect";
 import { NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas";
+import { KNOWN_PROVIDER_KINDS, ProviderKind } from "./providerKind";
 
 export const McpServerTransportType = Schema.Literals(["stdio", "sse", "http"]);
 export type McpServerTransportType = typeof McpServerTransportType.Type;
@@ -10,17 +11,34 @@ const McpStringArray = Schema.Array(TrimmedNonEmptyString);
 export const McpArgArray = Schema.Array(Schema.String);
 export type McpArgArray = typeof McpArgArray.Type;
 const McpPort = PositiveInt.check(Schema.isLessThanOrEqualTo(65535));
-export const McpHttpUrl = TrimmedNonEmptyString.check(
-  Schema.makeFilter((value: string) => {
-    try {
-      const url = new URL(value);
-      return url.protocol === "http:" || url.protocol === "https:";
-    } catch {
-      return false;
-    }
-  }),
+const isHttpUrl = (value: string) => {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+};
+export const McpHttpUrl = TrimmedNonEmptyString.check(Schema.makeFilter(isHttpUrl));
+const ENV_REFERENCE = /\$\{env:[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\}/gu;
+/**
+ * A server URL that may contain `${env:NAME}` references, resolved when the server
+ * starts. A URL that is one reference is accepted; otherwise it must parse with each
+ * reference standing in for a host-safe placeholder, or for a digit where it is a port
+ * (`http://localhost:${env:PORT}/mcp`).
+ */
+export const McpHttpUrlTemplate = TrimmedNonEmptyString.check(
+  Schema.makeFilter(
+    (value: string) =>
+      /^\$\{env:[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\}$/u.test(value) ||
+      isHttpUrl(value.replace(ENV_REFERENCE, "x")) ||
+      isHttpUrl(value.replace(ENV_REFERENCE, "1")),
+  ),
 );
 const UnsupportedMcpField = Schema.optional(Schema.Undefined);
+
+export const McpConnectionScope = Schema.Literals(["session", "shared"]);
+export type McpConnectionScope = typeof McpConnectionScope.Type;
 
 const McpCommonServerFields = {
   enabled: Schema.optional(Schema.Boolean),
@@ -35,7 +53,22 @@ const McpCommonServerFields = {
   oauthCallbackPort: Schema.optional(McpPort),
   oauthCallbackUrl: Schema.optional(TrimmedNonEmptyString),
   oauthResource: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * How F5's MCP hub connects: one connection per provider session (`session`,
+   * the default for stdio) or one per profile shared by sessions (`shared`, the
+   * default for remote servers).
+   */
+  connectionScope: Schema.optional(McpConnectionScope),
+  /** Shown in settings; never sent to providers. */
+  description: Schema.optional(Schema.String),
+  /**
+   * Providers that do not get this server. Persisted values stay lenient so an
+   * unknown provider name never hides the server; writes accept known providers only.
+   */
+  disabledProviders: Schema.optional(McpStringArray),
 };
+
+export const MCP_SERVER_DESCRIPTION_MAX_LENGTH = 500;
 
 const McpStdioServerDefinition = Schema.Struct({
   type: Schema.Literal("stdio"),
@@ -69,15 +102,25 @@ export const McpProjectServersConfig = Schema.Record(Schema.String, McpServerDef
 export type McpProjectServersConfig = typeof McpProjectServersConfig.Type;
 
 // Writes validate changed entries; persisted decoding remains lenient for legacy repair.
+const McpWriteOnlyFields = {
+  oauthCallbackUrl: Schema.optional(McpHttpUrl),
+  description: Schema.optional(
+    TrimmedNonEmptyString.check(Schema.isMaxLength(MCP_SERVER_DESCRIPTION_MAX_LENGTH)),
+  ),
+  disabledProviders: Schema.optional(
+    Schema.Array(ProviderKind).check(Schema.isMaxLength(KNOWN_PROVIDER_KINDS.length)),
+  ),
+};
+
 export const McpServerWriteDefinition = Schema.Union([
   McpStdioServerDefinition.mapFields((fields) => ({
     ...fields,
-    oauthCallbackUrl: Schema.optional(McpHttpUrl),
+    ...McpWriteOnlyFields,
   })),
   McpRemoteServerDefinition.mapFields((fields) => ({
     ...fields,
-    url: McpHttpUrl,
-    oauthCallbackUrl: Schema.optional(McpHttpUrl),
+    url: McpHttpUrlTemplate,
+    ...McpWriteOnlyFields,
   })),
 ]);
 export type McpServerWriteDefinition = typeof McpServerWriteDefinition.Type;

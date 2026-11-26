@@ -126,6 +126,7 @@ export const WS_METHODS = {
   serverReportClientDiagnostics: "server.reportClientDiagnostics",
   serverGetConfig: "server.getConfig",
   serverGetHealth: "server.getHealth",
+  serverGetDoctorReport: "server.getDoctorReport",
   serverUpdateSettings: "server.updateSettings",
   serverGetProjectSettings: "server.getProjectSettings",
   serverMigrateClientSetting: "server.migrateClientSetting",
@@ -221,11 +222,13 @@ export const WS_METHODS = {
   mcpReconnectServer: "mcp.reconnectServer",
   mcpStartLogin: "mcp.startLogin",
   mcpGetLoginStatus: "mcp.getLoginStatus",
-  mcpGetCodexStatus: "mcp.getCodexStatus",
-  mcpReloadProject: "mcp.reloadProject",
   mcpApplyToLiveSessions: "mcp.applyToLiveSessions",
-  mcpStartOAuthLogin: "mcp.startOAuthLogin",
-  mcpGetOAuthStatus: "mcp.getOAuthStatus",
+  mcpGetHubStatus: "mcp.getHubStatus",
+  mcpReconnectHubServer: "mcp.reconnectHubServer",
+  mcpGetHubAuthStatus: "mcp.getHubAuthStatus",
+  mcpStartHubSignIn: "mcp.startHubSignIn",
+  mcpCompleteHubSignIn: "mcp.completeHubSignIn",
+  mcpSignOutHubServer: "mcp.signOutHubServer",
 } as const;
 
 // ── Push Event Channels ──────────────────────────────────────────────

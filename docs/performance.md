@@ -1,15 +1,15 @@
-# Upstream performance baseline
+# Performance benchmarks and budgets
 
-> Contributors: the performance harness, baseline and the budgets changes must meet.
+> Contributors: F5's performance harness, regression budgets, and benchmark workloads.
 
 **Contents:** [Run server measurements](#run-server-measurements) · [Workloads and limits](#workloads-and-limits) · [Browser, transport and retained memory](#browser-transport-and-retained-memory) · [Reproducing the pinned baseline](#reproducing-the-pinned-baseline) · [Server performance and storage (roadmap 5.4)](#server-performance-and-storage-roadmap-54)
 
-The Phase 0 harness collects server component measurements and a production-browser,
-WebSocket and native-terminal soak. Both reports are required. The pinned original
-baseline is `290d261c9c9daa0c469b312d7f62dfd4ea9b9698`; use its runtime code and
-frozen dependencies when collecting it. This is measurement tooling, not a runtime
-performance port. Existing baseline failures remain failures until their approved
-Phase 2 fixes meet the gates.
+F5's performance harness collects both server component benchmarks and a production-browser,
+WebSocket, and native-terminal soak report. Changes targeting server or interactive performance
+compare before/after reports through `perf:compare` against the budgets below. The pinned original
+baseline is `290d261c9c9daa0c469b312d7f62dfd4ea9b9698`; use its runtime code and frozen dependencies
+when reproducing it (see [Reproducing the pinned baseline](#reproducing-the-pinned-baseline)).
+Existing baseline failures remain failures until their approved Phase 2 fixes meet the gates.
 
 ## Run server measurements
 

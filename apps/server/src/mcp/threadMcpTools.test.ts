@@ -169,6 +169,7 @@ it.effect(
             "pull_request_review",
             "pull_request_merge",
             "ci_logs",
+            "repository_file_read",
             "ci_rerun",
             "theme_read",
             "theme_set",
@@ -227,11 +228,21 @@ it("guides agents to chart data, follow the theme and leave the page unannounced
   assert.equal(height.maximum, 100_000);
   assert.include(height.description, "Pass contentHeight from html_preview");
 });
-it("lists only thread_read in the read-only catalog", () => {
+const READ_ONLY_CATALOG = [
+  "pull_request_read",
+  "pull_request_list",
+  "ci_logs",
+  "repository_file_read",
+  "thread_read",
+  "pull_request_review_guide_read",
+];
+it("lists only the reading tools in the read-only catalog", () => {
+  const tools = threadToolDefinitions("read-only");
   assert.deepStrictEqual(
-    threadToolDefinitions("read-only").map((tool) => tool.name),
-    ["thread_read"],
+    tools.map((tool) => tool.name),
+    READ_ONLY_CATALOG,
   );
+  for (const tool of tools) assert.isTrue(tool.annotations.readOnlyHint, tool.name);
   assert.strictEqual(threadToolDefinitions("full"), THREAD_TOOL_DEFINITIONS);
 });
 
@@ -341,11 +352,16 @@ it.effect("serves a read-only HTTP thread session", () =>
         });
       assert.deepStrictEqual(
         (yield* invoke("tools/list")).result?.tools?.map((tool) => tool.name),
-        ["thread_read"],
+        READ_ONLY_CATALOG,
       );
       assert.isTrue(
         (yield* invoke("tools/call", { name: "thread_settle", arguments: {} })).result?.isError,
       );
+      for (const writer of ["pull_request_merge", "pull_request_respond", "ci_rerun"])
+        assert.isTrue(
+          (yield* invoke("tools/call", { name: writer, arguments: { number: 1 } })).result?.isError,
+          writer,
+        );
       const read = yield* invoke("tools/call", {
         name: "thread_read",
         arguments: { threadId: "source-1" },

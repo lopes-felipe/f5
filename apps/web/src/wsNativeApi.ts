@@ -5,7 +5,6 @@ import {
   McpAppToolInfo,
   McpAppToolResult,
   McpLoginStatusResult,
-  McpOauthLoginStatusResult,
   ProjectIssueAssetUrlResult,
 } from "@t3tools/contracts";
 import { isWebUrl } from "./browser/webUrl";
@@ -63,6 +62,7 @@ import {
   ServerConfigUpdatedPayload,
   type ServerConfig,
   ServerConfigForwardCompatibleFields,
+  ServerDoctorReport,
   ServerHealth,
   ServerKeybindingMutationResult,
   type DiskSpaceStatus,
@@ -147,6 +147,7 @@ const decodeKeybindingMutationResult = Schema.decodeUnknownSync(ServerKeybinding
 // version can answer in another shape. The card reads nested fields; a shape it
 // does not know must fail the request, not the render.
 const decodeServerHealth = Schema.decodeUnknownSync(ServerHealth);
+const decodeServerDoctorReport = Schema.decodeUnknownSync(ServerDoctorReport);
 
 function decodeServerConfig(result: unknown): ServerConfig {
   return {
@@ -887,6 +888,8 @@ export function createWsNativeApi(): NativeApi {
         decodeServerConfig(await transport.request(WS_METHODS.serverGetConfig)),
       getHealth: async () =>
         decodeServerHealth(await transport.request(WS_METHODS.serverGetHealth)),
+      getDoctorReport: async () =>
+        decodeServerDoctorReport(await transport.request(WS_METHODS.serverGetDoctorReport)),
       getProjectSettings: requestMethod(WS_METHODS.serverGetProjectSettings),
       migrateClientSetting: (input) =>
         transport.request(WS_METHODS.serverMigrateClientSetting, input),
@@ -931,17 +934,13 @@ export function createWsNativeApi(): NativeApi {
         Schema.decodeUnknownSync(McpLoginStatusResult)(
           await transport.request(WS_METHODS.mcpGetLoginStatus, input),
         ),
-      getCodexStatus: requestMethod(WS_METHODS.mcpGetCodexStatus),
-      reloadProject: requestMethod(WS_METHODS.mcpReloadProject),
       applyToLiveSessions: requestMethod(WS_METHODS.mcpApplyToLiveSessions),
-      startOAuthLogin: async (input) =>
-        Schema.decodeUnknownSync(McpOauthLoginStatusResult)(
-          await transport.request(WS_METHODS.mcpStartOAuthLogin, input),
-        ),
-      getOAuthStatus: async (input) =>
-        Schema.decodeUnknownSync(McpOauthLoginStatusResult)(
-          await transport.request(WS_METHODS.mcpGetOAuthStatus, input),
-        ),
+      getHubStatus: requestMethod(WS_METHODS.mcpGetHubStatus),
+      reconnectHubServer: requestMethod(WS_METHODS.mcpReconnectHubServer),
+      getHubAuthStatus: requestMethod(WS_METHODS.mcpGetHubAuthStatus),
+      startHubSignIn: requestMethod(WS_METHODS.mcpStartHubSignIn),
+      completeHubSignIn: requestMethod(WS_METHODS.mcpCompleteHubSignIn),
+      signOutHubServer: requestMethod(WS_METHODS.mcpSignOutHubServer),
       onStatusUpdated: (callback) => {
         mcpStatusUpdatedListeners.add(callback);
         return () => {

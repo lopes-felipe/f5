@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { createMcpDiagnosticsSanitizer } from "@t3tools/shared/mcpDiagnostics";
+import { mcpServerNameKey } from "@t3tools/shared/mcpValidation";
 import { Popover, PopoverTrigger, PopoverPopup } from "../ui/popover";
 import { useQuery } from "@tanstack/react-query";
 import { mcpEffectiveConfigQueryOptions } from "../../lib/mcpReactQuery";
@@ -10,6 +11,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { ChevronDownIcon, KeyRoundIcon } from "lucide-react";
+import { McpHubSignInRow } from "../settings/mcp/McpHubSignIn";
 import { McpSignInControls } from "../settings/mcp/McpSignInButton";
 import { Fragment, memo, useRef, useState } from "react";
 import { cn } from "~/lib/utils";
@@ -176,6 +178,8 @@ function McpRuntimeChip({
     config.isSuccess && !config.isFetching
       ? createMcpDiagnosticsSanitizer(config.data.servers)
       : null;
+  // Only servers saved in F5 have a settings panel to open.
+  const savedNames = new Set(Object.keys(config.data?.servers ?? {}).map(mcpServerNameKey));
   const needsSignIn = servers.filter((server) => server.status === "needs-auth").length;
   const signInLabel =
     needsSignIn > 0 ? `${needsSignIn} ${needsSignIn === 1 ? "needs" : "need"} sign-in` : null;
@@ -204,9 +208,29 @@ function McpRuntimeChip({
         <div className="space-y-2 p-1">
           <div className="max-h-72 space-y-2 overflow-y-auto">
             {servers.map((server, index) => (
-              <div key={server.name ?? index}>
-                <p className="font-medium">
-                  {server.name ?? "Unnamed server"} · {server.status}
+              <div key={server.name ?? index} className="space-y-1">
+                <p className="flex flex-wrap items-baseline gap-x-2">
+                  <span className="font-medium">
+                    {server.name ?? "Unnamed server"} · {server.status}
+                    {server.status === "ready" && server.toolCount !== undefined
+                      ? ` · ${server.toolCount} ${server.toolCount === 1 ? "tool" : "tools"}`
+                      : ""}
+                  </span>
+                  {server.name && savedNames.has(mcpServerNameKey(server.name)) ? (
+                    <Link
+                      to="/settings"
+                      search={{
+                        category: "tools",
+                        ...(projectId ? { project: projectId } : {}),
+                        item: "tools.mcp",
+                        server: server.name,
+                      }}
+                      className="underline"
+                      aria-label={`${server.name} in MCP settings`}
+                    >
+                      Details
+                    </Link>
+                  ) : null}
                 </p>
                 {server.error ? (
                   <p className="whitespace-pre-wrap break-words">
@@ -215,17 +239,20 @@ function McpRuntimeChip({
                       : "Error details unavailable until configuration loads. Open MCP settings for details."}
                   </p>
                 ) : null}
-                {server.status === "needs-auth" &&
-                server.name &&
-                (provider === "claudeAgent" || provider === "codex") ? (
-                  <McpSignInControls
-                    provider={provider}
-                    instanceId={server.providerInstanceId}
-                    projectId={projectId ?? null}
-                    serverName={server.name}
-                    // Only Claude sign-in is routed through a conversation; Codex is account-scoped.
-                    threadId={provider === "claudeAgent" ? threadId : undefined}
-                  />
+                {server.status === "needs-auth" && server.name ? (
+                  provider === "claudeAgent" || provider === "codex" ? (
+                    <McpSignInControls
+                      provider={provider}
+                      instanceId={server.providerInstanceId}
+                      projectId={projectId ?? null}
+                      serverName={server.name}
+                      // Only Claude sign-in is routed through a conversation; Codex is account-scoped.
+                      threadId={provider === "claudeAgent" ? threadId : undefined}
+                    />
+                  ) : (
+                    // Other agents use F5's own sign-in, shared by every project.
+                    <McpHubSignInRow serverName={server.name} projectId={projectId ?? null} />
+                  )
                 ) : null}
               </div>
             ))}

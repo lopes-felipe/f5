@@ -9,7 +9,11 @@ import { createServer } from "node:http";
 import { Effect, Option } from "effect";
 import { afterEach, describe, it, expect } from "vitest";
 import { ProjectId, ProviderInstanceId } from "@t3tools/contracts";
-import { detectMcpImports, readMcpImportFile } from "./McpImportDetection.ts";
+import {
+  detectMcpImports,
+  otherClientConfigFiles,
+  readMcpImportFile,
+} from "./McpImportDetection.ts";
 import { probeMcpServer } from "./McpProbe.ts";
 import {
   collectMcpSecrets,
@@ -125,6 +129,95 @@ describe("MCP feature boundaries", () => {
       "codex",
     ]);
   });
+  it("offers Cursor, VS Code, Claude Desktop, and OpenCode servers without preselecting them", async () => {
+    const dir = await temp();
+    const project = join(dir, "project");
+    const xdg = join(dir, "xdg");
+    await mkdir(join(dir, ".cursor"), { recursive: true });
+    await mkdir(join(project, ".vscode"), { recursive: true });
+    await mkdir(join(xdg, "opencode"), { recursive: true });
+    await writeFile(
+      join(dir, ".cursor", "mcp.json"),
+      JSON.stringify({ mcpServers: { cursor_user: { command: "cursor-server" } } }),
+    );
+    await writeFile(
+      join(project, ".vscode", "mcp.json"),
+      `{
+  // VS Code allows comments and trailing commas.
+  "servers": { "vscode": { "type": "http", "url": "https://vscode.example/mcp", }, },
+  "inputs": [],
+}`,
+    );
+    await writeFile(
+      join(xdg, "opencode", "opencode.json"),
+      JSON.stringify({
+        $schema: "https://opencode.ai/config.json",
+        mcp: {
+          oc_local: { type: "local", command: ["npx", "server"], environment: { K: "{env:K}" } },
+          oc_remote: { type: "remote", url: "https://oc.example/mcp", enabled: false },
+        },
+      }),
+    );
+    const result = await detectMcpImports({
+      environment: { HOME: dir, XDG_CONFIG_HOME: xdg, CLAUDE_CONFIG_DIR: join(dir, "none") },
+      cwd: project,
+    });
+    expect(result.issues).toEqual([]);
+    expect(result.candidates.map((entry) => [entry.name, entry.selectedByDefault])).toEqual([
+      ["cursor_user", false],
+      ["oc_local", false],
+      ["oc_remote", false],
+      ["vscode", false],
+    ]);
+    expect(result.candidates[1]!.server).toEqual({
+      type: "stdio",
+      command: "npx",
+      args: ["server"],
+      env: { K: "${env:K}" },
+    });
+    expect(result.candidates[2]!.server).toMatchObject({ type: "http", enabled: false });
+    expect(result.candidates[3]!.server).toMatchObject({
+      type: "http",
+      url: "https://vscode.example/mcp",
+    });
+  });
+  it("lists other clients' configuration paths per platform", () => {
+    expect(
+      otherClientConfigFiles({ environment: {}, home: "/Users/a", cwd: "/w", platform: "darwin" }),
+    ).toEqual([
+      "/Users/a/.cursor/mcp.json",
+      "/Users/a/Library/Application Support/Claude/claude_desktop_config.json",
+      "/Users/a/.config/opencode/opencode.json",
+      "/Users/a/.config/opencode/opencode.jsonc",
+      "/w/.cursor/mcp.json",
+      "/w/.vscode/mcp.json",
+      "/w/opencode.json",
+      "/w/opencode.jsonc",
+    ]);
+    expect(
+      otherClientConfigFiles({
+        environment: { APPDATA: "C:\\Users\\a\\AppData\\Roaming" },
+        home: "C:\\Users\\a",
+        platform: "win32",
+      })[1],
+    ).toBe("C:\\Users\\a\\AppData\\Roaming\\Claude\\claude_desktop_config.json");
+  });
+  it("refuses to test a server that needs an unset environment variable", async () => {
+    const result = await Effect.runPromise(
+      probeMcpServer(
+        {
+          instanceId: ProviderInstanceId.make("codex"),
+          serverName: "needs-env",
+          server: { type: "http", url: "https://${env:F5_TEST_UNSET_HOST}/mcp" },
+        },
+        { environment: {}, cwd: tmpdir() },
+      ),
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      error: "This server needs the environment variable F5_TEST_UNSET_HOST, which is not set.",
+    });
+  });
   it("ignores Codex TOML without MCP servers during detection", async () => {
     const dir = await temp();
     await mkdir(join(dir, ".codex"));
@@ -204,7 +297,7 @@ describe("MCP feature boundaries", () => {
     // The first effect acquires admission before yielding to spawn.
     await new Promise((resolve) => setTimeout(resolve, 50));
     const second = await Effect.runPromise(probe());
-    expect(second.error).toBe("A test is already running.");
+    expect(second.error).toBe("This server is already being tested.");
     expect((await first).ok).toBe(false);
   });
   it("kills a forked grandchild after a successful probe", async () => {
@@ -296,7 +389,9 @@ describe("MCP feature boundaries", () => {
         execution,
       ),
     );
-    expect(result.error).toBe("A test is already running.");
+    expect(result.error).toBe(
+      "Too many tests are running (limit 4). Wait for one to finish and try again.",
+    );
     expect((await Promise.all(pending)).every((entry) => !entry.ok)).toBe(true);
   });
   it("recognizes HTTP 401 without beginning an authentication flow", async () => {

@@ -2,6 +2,7 @@ import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import type { ThreadId } from "@t3tools/contracts";
 import {
   callThreadTool,
+  READ_ONLY_THREAD_TOOL_NAMES,
   threadToolDefinitions,
   THREAD_TOOL_TIMEOUT_MS,
   type ThreadMcpBroker,
@@ -49,15 +50,21 @@ export function makeClaudeThreadMcpServer(input: {
 }
 
 /**
- * True only for F5's own `thread_read` on the thread server this session installed. Another
- * server with a look-alike name or a non-SDK source is not F5's.
+ * True only for one of F5's read-only thread tools (`thread_read` and the forge reads) on the
+ * thread server this session installed. Another server with a look-alike name or a non-SDK
+ * source is not F5's.
  */
-export function isF5ThreadReadTool(
+export function isF5ReadOnlyThreadTool(
   toolName: string,
   mcpServer: McpToolProvenance | undefined,
   serverName: string,
 ): boolean {
-  if (toolName !== `mcp__${serverName}__thread_read`) return false;
+  const prefix = `mcp__${serverName}__`;
+  if (
+    !toolName.startsWith(prefix) ||
+    !READ_ONLY_THREAD_TOOL_NAMES.has(toolName.slice(prefix.length))
+  )
+    return false;
   // Without provenance only the name identifies the server. `chooseServerName` picked a name no
   // configured server uses, so the name alone still points at F5's server.
   return mcpServer === undefined || (mcpServer.source === "sdk" && mcpServer.name === serverName);

@@ -1,5 +1,10 @@
 #!/usr/bin/env node
-import { DESKTOP_MAC_EXTEND_INFO } from "./lib/desktop-mac-info.ts";
+import { APP_BUNDLE_ID } from "@t3tools/shared/appIdentity";
+import {
+  DESKTOP_MAC_EXTEND_INFO,
+  DOCK_TILE_EXECUTABLE,
+  DOCK_TILE_PLUGIN,
+} from "./lib/desktop-mac-info.ts";
 import { CODEX_WINDOWS_SIGNING_EXCLUSIONS } from "./lib/codex-signing.ts";
 import { DESKTOP_PROTOCOLS } from "./lib/desktop-protocols.ts";
 import { withoutSigningCredentials } from "./lib/signing-environment.ts";
@@ -19,7 +24,11 @@ import {
   verifyStagedLockfile,
 } from "./verify-staged-lockfile.ts";
 import { RELEASE_UPDATE_REPOSITORY, verifyAppUpdateConfig } from "./lib/app-update-config.ts";
-import { BRAND_ASSET_PATHS, PUBLISH_ICON_OVERRIDES } from "./lib/brand-assets.ts";
+import {
+  APP_ICON_FILE_BY_PLATFORM,
+  BRAND_ASSET_PATHS,
+  PUBLISH_ICON_OVERRIDES,
+} from "./lib/brand-assets.ts";
 import { stagedDesktopDependencies } from "./lib/desktop-stage.ts";
 import { parseVmBackendPin, VM_BACKEND_MANIFEST_NAME } from "@t3tools/shared/vmBackendPin";
 import {
@@ -43,14 +52,19 @@ export const DESKTOP_ASAR_UNPACK = [
   "node_modules/@openai/codex-*/**/*",
 ] as const;
 
+/** Stage directory of the macOS Dock tile plug-in, copied to `Contents/PlugIns`. */
+const DOCK_TILE_STAGE_DIR = "apps/desktop/dock-tile-bin";
+
 /**
- * Stage directories copied into Resources through `extraResources`. Without these, the
- * default `**\/*` would also pack them into app.asar: a second, unsigned copy of the native
- * helper and Lima that only grows the download and the asar integrity hash.
+ * Stage directories copied into the app through `extraResources` or `extraFiles`. Without
+ * these, the default `**\/*` would also pack them into app.asar: a second, unsigned copy of
+ * the native helper, Lima and the Dock tile plug-in that only grows the download and the
+ * asar integrity hash.
  */
 export const EXTRA_RESOURCE_EXCLUSIONS = [
   "!apps/desktop/native-bin/**/*",
   "!apps/desktop/vm-bin/**/*",
+  `!${DOCK_TILE_STAGE_DIR}/**/*`,
 ] as const;
 
 export function resolveMacFileExclusions(arch?: typeof BuildArch.Type): string[] {
@@ -80,6 +94,27 @@ export const stageProductionWebIcons = Effect.fn("stageProductionWebIcons")(func
       path.join(repoRoot, override.sourceRelativePath),
       path.join(stageServerDir, override.targetRelativePath),
     );
+  }
+});
+/**
+ * The staged resources start as a copy of the development ones, whose app icon choices
+ * carry the development badge. Replace them with the production files this platform uses.
+ */
+export const stageProductionAppIcons = Effect.fn("stageProductionAppIcons")(function* (
+  repoRoot: string,
+  stageResourcesDir: string,
+  platform: typeof BuildPlatform.Type,
+) {
+  const path = yield* Path.Path;
+  const fs = yield* FileSystem.FileSystem;
+  const source = path.join(repoRoot, BRAND_ASSET_PATHS.productionAppIconsDir);
+  const target = path.join(stageResourcesDir, "app-icons");
+  const file = APP_ICON_FILE_BY_PLATFORM[platform];
+  yield* fs.remove(target, { recursive: true, force: true });
+  for (const id of yield* fs.readDirectory(source)) {
+    if (!(yield* fs.exists(path.join(source, id, file)))) continue;
+    yield* fs.makeDirectory(path.join(target, id), { recursive: true });
+    yield* fs.copyFile(path.join(source, id, file), path.join(target, id, file));
   }
 });
 const ProductionLinuxIconSource = Effect.zipWith(
@@ -521,9 +556,16 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     });
   }
   const buildConfig: Record<string, unknown> = {
-    appId: "io.github.lopesfelipe.f5",
+    appId: APP_BUNDLE_ID,
     electronFuses: {
       runAsNode: true, // Required by the sandboxed backend until it has a dedicated executable.
+      // Encrypts cookie values with the OS key (DPAPI, macOS Keychain). Existing plain cookies stay
+      // readable. One-way: once a build with it has run, turning it off leaves the store unreadable,
+      // so build-desktop-artifact.test.ts pins it. Off where the key can be unavailable at launch,
+      // which makes Chromium delete undecryptable cookies: unsigned macOS builds (Keychain access is
+      // tied to a signature that changes per build) and Linux (the backend is picked per launch and
+      // may be the fixed-key basic_text) until a Linux backend is pinned.
+      enableCookieEncryption: platform === "win" || (platform === "mac" && signed),
       enableNodeOptionsEnvironmentVariable: false,
       enableNodeCliInspectArguments: false,
       enableEmbeddedAsarIntegrityValidation: platform !== "linux",
@@ -583,6 +625,9 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       icon: "icon.icns",
       category: "public.app-category.developer-tools",
       extendInfo: DESKTOP_MAC_EXTEND_INFO,
+      // The Dock reads the plug-in as files, so it sits beside app.asar, not inside it.
+      // `to` is relative to the app's Contents folder.
+      extraFiles: [{ from: DOCK_TILE_STAGE_DIR, to: "PlugIns" }],
       ...(signed
         ? {
             hardenedRuntime: true,
@@ -600,6 +645,8 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
         : {}),
       binaries: [
         "Contents/Resources/native/f5-computer-helper",
+        // Signing a bundle's executable signs and seals the whole bundle.
+        `Contents/PlugIns/${DOCK_TILE_PLUGIN}/Contents/MacOS/${DOCK_TILE_EXECUTABLE}`,
         ...(linuxVm ? ["Contents/Resources/native/lima/bin/limactl"] : []),
       ],
     };
@@ -800,6 +847,31 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       yield* fs.copyFile(path.join(repoRoot, "scripts", hook), path.join(stageAppDir, hook));
   }
 
+  if (options.platform === "mac") {
+    const dockTileDir = path.join(stageAppDir, DOCK_TILE_STAGE_DIR);
+    yield* runCommand(
+      ChildProcess.make(
+        process.execPath,
+        [
+          path.join(repoRoot, "scripts/build-dock-tile.ts"),
+          "--arch",
+          options.arch,
+          "--output",
+          dockTileDir,
+        ],
+        { cwd: repoRoot, ...commandOutputOptions(options.verbose) },
+      ),
+    );
+    const executable = path.join(
+      dockTileDir,
+      DOCK_TILE_PLUGIN,
+      "Contents/MacOS",
+      DOCK_TILE_EXECUTABLE,
+    );
+    if (!(yield* fs.exists(executable)))
+      return yield* new BuildScriptError({ message: `Missing Dock tile plug-in: ${executable}` });
+  }
+
   // Linux VM profiles (Apple silicon only): the pinned Lima, and the pin of the linux-arm64
   // backend archive the app downloads from this version's release when a VM profile needs it.
   const linuxVm = options.platform === "mac" && options.arch === "arm64";
@@ -851,6 +923,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     );
   }
   yield* assertPlatformBuildResources(options.platform, stageResourcesDir, options.verbose);
+  yield* stageProductionAppIcons(repoRoot, stageResourcesDir, options.platform);
 
   // electron-builder is filtering out stageResourcesDir directory in the AppImage for production
   yield* fs.copy(stageResourcesDir, path.join(stageAppDir, "apps/desktop/prod-resources"));
@@ -871,7 +944,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
         renderWebAuthnSigningPlist(
           base,
           readMacProvisioningProfile(resolvedProfile),
-          "io.github.lopesfelipe.f5",
+          APP_BUNDLE_ID,
         ),
       catch: () =>
         new BuildScriptError({

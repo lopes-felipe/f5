@@ -2,6 +2,7 @@ import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { recoverRestartBackgroundWork } from "../../nextTurnQueue/restartMarkerCapture.ts";
 import { readMcpAppReferenceForTool, readMcpAppToolResult } from "@t3tools/shared/mcpApp";
 import { stringifyWithinBytes } from "@t3tools/shared/boundedJson";
+import { READ_ONLY_ENFORCEMENT_SUMMARY_CONFIG_KEY } from "@t3tools/shared/readOnlyEnforcement";
 import { commandCreatesPullRequest, detectCreatedPullRequest } from "@t3tools/shared/sourceControl";
 import { LosslessCommandAdmission } from "../commandAdmission.ts";
 import { startTerminalReceiptRetries } from "../terminalReceiptRecovery.ts";
@@ -1669,6 +1670,11 @@ export function runtimeEventToActivities(
       const instructionContractVersion = instructionProfile?.contractVersion;
       const instructionSupplementVersion = instructionProfile?.providerSupplementVersion;
       const instructionStrategy = instructionProfile?.strategy;
+      const readOnlyEnforcementSummary =
+        typeof config[READ_ONLY_ENFORCEMENT_SUMMARY_CONFIG_KEY] === "string" &&
+        config[READ_ONLY_ENFORCEMENT_SUMMARY_CONFIG_KEY].trim().length > 0
+          ? config[READ_ONLY_ENFORCEMENT_SUMMARY_CONFIG_KEY].trim()
+          : undefined;
 
       return [
         {
@@ -1676,7 +1682,7 @@ export function runtimeEventToActivities(
           createdAt: event.createdAt,
           tone: "info",
           kind: "runtime.configured",
-          summary: "Runtime configured",
+          summary: readOnlyEnforcementSummary ?? "Runtime configured",
           payload: compactThreadActivityPayload({
             kind: "runtime.configured",
             payload: {
@@ -2666,7 +2672,16 @@ const make = Effect.gen(function* () {
     Effect.forEach(pendingToolUpdates.threadIds(), flushToolUpdates, { discard: true }),
   );
   // Runtime error and terminal reports share one refresh, without blocking the serial worker.
+  const MAX_TRACKED_USAGE_FAILURE_THREADS = 1_024;
   const refreshedUsageFailures = new Map<ThreadId, string>();
+  const rememberRefreshedUsageFailure = (threadId: ThreadId, key: string): void => {
+    refreshedUsageFailures.delete(threadId);
+    refreshedUsageFailures.set(threadId, key);
+    if (refreshedUsageFailures.size > MAX_TRACKED_USAGE_FAILURE_THREADS) {
+      const oldest = refreshedUsageFailures.keys().next().value;
+      if (oldest !== undefined) refreshedUsageFailures.delete(oldest);
+    }
+  };
   let enqueueResolvedUsageLimit: (input: RuntimeIngestionInput) => Effect.Effect<void> = () =>
     Effect.void;
   const providerSessionDirectory = yield* ProviderSessionDirectory;
@@ -2783,6 +2798,7 @@ const make = Effect.gen(function* () {
    * 30-minute watchdog fires, writing durable activities and burning tokens the
    * whole time (`maxCostUsd` is only checked at stage entry).
    */
+  const MAX_TRACKED_UNATTENDED_DECLINE_THREADS = 1_024;
   const unattendedDeclineCounts = new Map<ThreadId, { readonly turnId: TurnId; count: number }>();
   const MAX_UNATTENDED_DECLINES_PER_TURN = 3;
 
@@ -2799,7 +2815,20 @@ const make = Effect.gen(function* () {
     Effect.sync(() => {
       const existing = unattendedDeclineCounts.get(threadId);
       const next = existing && existing.turnId === turnId ? existing.count + 1 : 1;
+      unattendedDeclineCounts.delete(threadId);
       unattendedDeclineCounts.set(threadId, { turnId, count: next });
+      if (unattendedDeclineCounts.size > MAX_TRACKED_UNATTENDED_DECLINE_THREADS) {
+        // Never evict a counter belonging to a still-running profiled turn;
+        // only evict completed/stale entries whose watchdog is no longer active.
+        for (const [candidateThreadId, entry] of unattendedDeclineCounts) {
+          if (candidateThreadId === threadId) continue;
+          const activeWatchdog = profiledTurnWatchdogs.get(candidateThreadId);
+          if (!activeWatchdog || activeWatchdog.turnId !== entry.turnId) {
+            unattendedDeclineCounts.delete(candidateThreadId);
+            if (unattendedDeclineCounts.size <= MAX_TRACKED_UNATTENDED_DECLINE_THREADS) break;
+          }
+        }
+      }
       return next;
     });
 
@@ -7200,7 +7229,7 @@ const make = Effect.gen(function* () {
         if (limit) {
           const key = `${limit.providerInstanceId}:${limit.turnId}`;
           if (refreshedUsageFailures.get(thread.id) !== key) {
-            refreshedUsageFailures.set(thread.id, key);
+            rememberRefreshedUsageFailure(thread.id, key);
             const failure = event;
             yield* Effect.forkIn(
               Effect.gen(function* () {

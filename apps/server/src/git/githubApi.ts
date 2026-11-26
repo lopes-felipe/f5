@@ -237,14 +237,25 @@ export function parseGitHubApiResponse(
   };
 }
 
-function requestEndpoint(input: Pick<GitHubApiRequest, "endpoint" | "query">): string {
+/** The endpoint as sent to GitHub, or an error when it's malformed. Exported for tests. */
+export function requestEndpoint(input: Pick<GitHubApiRequest, "endpoint" | "query">): string {
   const endpoint = input.endpoint.replace(/^\/(?!\/)/, "");
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_./%-]*$/.test(endpoint))
     throw new Error("Expected a relative GitHub API endpoint.");
-  const decoded = decodeURIComponent(endpoint);
+  // A percent-encoded character (a space, `#` or `:` in a file name, `/` in a branch name)
+  // stays encoded on the wire, so it can't change the request's structure. What is refused is
+  // a decoded path that walks up, a backslash or control character, or a second layer of
+  // encoding (`%252e`) that a later decode could turn into one.
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(endpoint);
+  } catch {
+    throw new Error("Invalid GitHub API endpoint.");
+  }
   if (
     decoded.split("/").some((part) => part === "." || part === "..") ||
-    /[\\\s?#{}:%]/.test(decoded)
+    /[\\\u0000-\u001f\u007f]/.test(decoded) ||
+    /%[0-9a-f]{2}/i.test(decoded)
   ) {
     throw new Error("Invalid GitHub API endpoint.");
   }

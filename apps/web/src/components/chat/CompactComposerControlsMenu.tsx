@@ -1,5 +1,5 @@
 import { ProviderInteractionMode, RuntimeMode, type ProviderKind } from "@t3tools/contracts";
-import { memo } from "react";
+import { memo, type ReactNode } from "react";
 import { BotIcon, EllipsisIcon, GaugeIcon, ListTodoIcon, NotebookPenIcon } from "lucide-react";
 import { Button } from "../ui/button";
 import { COMPOSER_CHIP_CLASS_NAME } from "./composer/composerChip";
@@ -26,6 +26,7 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
   runtimeMode: RuntimeMode;
   provider: ProviderKind;
   availableRuntimeModes?: ReadonlyArray<RuntimeMode> | undefined;
+  traitsMenuContent?: ReactNode;
   /** Context-window summary shown as an info row, since the meter is hidden when compact. */
   contextSummary?: string | null;
   onCompactConversation?: () => void;
@@ -62,6 +63,12 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
             <MenuDivider />
           </>
         ) : null}
+        {props.traitsMenuContent ? (
+          <>
+            {props.traitsMenuContent}
+            <MenuDivider />
+          </>
+        ) : null}
         {props.showInteractionModeToggle !== false ? (
           <>
             <MenuGroup>
@@ -88,7 +95,7 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
           </>
         ) : null}
         <MenuGroup>
-          <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Permissions</div>
+          <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Access</div>
           <RuntimeModeMenuItems
             disabled={props.disabled}
             provider={props.provider}

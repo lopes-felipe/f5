@@ -5,18 +5,18 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 
+import {
+  ANTIGRAVITY_READ_ONLY_WORKFLOW_CERTIFIED_RUNTIMES,
+  antigravityReadOnlySandboxCertified,
+  READ_ONLY_UNSUPPORTED_DRIVERS,
+  resolveReadOnlyEnforcement,
+} from "./readOnlyEnforcement";
+
 /**
- * Antigravity runtimes whose read-only workflow confinement passed the live certification in
- * `docs/providers/antigravity.md` (it sits beside the native-readers version floor in
- * `apps/server/src/provider/antigravityPrivateFormats.ts`). A run is certified for one exact
- * version on one build target (`runtimeBuildTarget`, such as `darwin-arm64`): each architecture
- * is a separately distributed build. Add an entry only with the evidence from that procedure: a
- * turn that executes a write without asking can never be certified.
+ * Antigravity certification rows live in `readOnlyEnforcement.ts` beside the other providers'.
+ * Each row is a floor: the certified release and every later one on that build target.
  */
-export const ANTIGRAVITY_READ_ONLY_WORKFLOW_CERTIFIED_RUNTIMES: ReadonlyArray<{
-  readonly version: string;
-  readonly target: string;
-}> = [];
+export { ANTIGRAVITY_READ_ONLY_WORKFLOW_CERTIFIED_RUNTIMES };
 
 /** This process's build target, `<platform>-<arch>` (such as `linux-x64`), when known. */
 export function runtimeBuildTarget(): string | undefined {
@@ -24,35 +24,33 @@ export function runtimeBuildTarget(): string | undefined {
   return runtime?.platform && runtime.arch ? `${runtime.platform}-${runtime.arch}` : undefined;
 }
 
-/** Providers that can never be confined to read-only workflow turns. */
-const READ_ONLY_WORKFLOW_UNSUPPORTED_DRIVERS: ReadonlySet<string> = new Set(["grok", "muse"]);
-
 export const READ_ONLY_WORKFLOW_UNCERTIFIED_ANTIGRAVITY_MESSAGE =
   "Read-only workflow turns are not certified for this Antigravity version.";
 
+/**
+ * Whether this Antigravity release is at or above a certified floor for `target` (and, on
+ * Windows, the host build can run Antigravity's sandbox).
+ */
 export function antigravityReadOnlyWorkflowCertified(
   version: string | null | undefined,
   target: string | undefined,
+  osRelease?: string,
 ): boolean {
-  const trimmed = version?.trim();
-  if (!trimmed || !target) return false;
-  return ANTIGRAVITY_READ_ONLY_WORKFLOW_CERTIFIED_RUNTIMES.some(
-    (entry) => entry.version === trimmed && entry.target === target,
-  );
+  return antigravityReadOnlySandboxCertified(version, { target, osRelease });
 }
 
 /**
  * Runtime-capability fact for one driver at one installed version on one build target
- * (`runtimeBuildTarget`).
+ * (`runtimeBuildTarget`). `osRelease` is the host's `os.release()`, required to trust a Windows
+ * certification.
  */
 export function driverSupportsReadOnlyWorkflowTurns(
   driver: string,
   version: string | null | undefined,
   target: string | undefined,
+  osRelease?: string,
 ): boolean {
-  if (READ_ONLY_WORKFLOW_UNSUPPORTED_DRIVERS.has(driver)) return false;
-  if (driver === "antigravity") return antigravityReadOnlyWorkflowCertified(version, target);
-  return true;
+  return resolveReadOnlyEnforcement(driver, version, { target, osRelease }) !== undefined;
 }
 
 /** Provider snapshot fields the workflow checks read. */
@@ -83,7 +81,7 @@ export function providerSupportsReadOnlyWorkflow(
   provider: ProviderKind,
   providers: ReadonlyArray<WorkflowProviderSnapshot>,
 ): boolean {
-  if (READ_ONLY_WORKFLOW_UNSUPPORTED_DRIVERS.has(provider)) return false;
+  if (READ_ONLY_UNSUPPORTED_DRIVERS.has(provider)) return false;
   if (provider !== "antigravity") return true;
   return (
     workflowProviderSnapshot(provider, providers)?.runtimeCapabilities?.readOnlyWorkflowTurns ===

@@ -1,1 +1,0 @@
-- Automatic worktree cleanup keeps checkouts for threads waiting to resume after a usage limit.

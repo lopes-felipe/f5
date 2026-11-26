@@ -159,21 +159,14 @@ export type DownloadAvailability =
     }
   | { readonly kind: "unavailable"; readonly note: string };
 
-export const MAC_PREVIEW_TAG = "v0.0.11-computer-use-preview.1";
-
 /**
  * Which platforms currently ship. Kept explicit so a release that lacks a
  * platform's installer shows a status rather than a misleading download.
  */
 export const DOWNLOAD_AVAILABILITY: Readonly<Record<DownloadTarget, DownloadAvailability>> = {
   "win-x64": { kind: "stable", suffix: "x64.exe" },
-  "mac-arm64": {
-    kind: "preview",
-    tag: MAC_PREVIEW_TAG,
-    asset: "F5-0.0.11-computer-use-preview.1-arm64.dmg",
-    note: "Preview: unsigned, not notarized, no automatic updates, replaces F5 (Alpha)",
-  },
-  "mac-x64": { kind: "unavailable", note: "Not yet available" },
+  "mac-arm64": { kind: "stable", suffix: "arm64.dmg" },
+  "mac-x64": { kind: "stable", suffix: "x64.dmg" },
   "linux-x64": { kind: "stable", suffix: "x86_64.AppImage" },
   "linux-deb-x64": { kind: "stable", suffix: "amd64.deb" },
 };

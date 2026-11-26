@@ -13,8 +13,26 @@ import { knownGithubHostsSync } from "./git/GithubCliProjection";
 import * as Path from "node:path";
 import type { ActiveProfile, ProviderInstanceEnvironment } from "@t3tools/contracts";
 import { PROJECT_SCRIPT_ENV_NAMES } from "@t3tools/shared/projectScripts";
-import { SERVER_AUTH_TOKEN_ENV } from "./serverAuth";
+import { SERVER_AUTH_TOKEN_ENV_NAMES } from "./serverAuth";
+import { SECRET_STORE_KEY_ENV } from "./auth/secretStoreKey";
 const BLOCKED_PROVIDER_ENV_PREFIXES = ["OTEL_", "F5_LAUNCHER_", "F5_UPDATE_"] as const;
+const BLOCKED_F5_SERVER_ENV = new Set<string>([
+  "F5_STANDALONE",
+  "F5_STANDALONE_DIR",
+  "F5_INSTALL_ROOT",
+  "F5_MODE",
+  "F5_PORT",
+  "F5_HOST",
+  "F5_NO_BROWSER",
+  "F5_AUTO_BOOTSTRAP_PROJECT_FROM_CWD",
+  "F5_STATE_DIR",
+  "F5_HOME",
+  "F5_LOG_WS_EVENTS",
+  "F5_LOG_THREAD_OPEN_TIMINGS",
+  "F5_LOG_PROJECTION_TIMINGS",
+  BROWSER_OPEN_TOKEN_ENV,
+  ...SERVER_AUTH_TOKEN_ENV_NAMES,
+]);
 const CODEX_PACKAGE_MANAGER_ENV = new Set<string>(CODEX_PACKAGE_MANAGER_ENV_NAMES);
 
 function isBlockedProviderEnvKey(key: string): boolean {
@@ -24,13 +42,8 @@ function isBlockedProviderEnvKey(key: string): boolean {
     // (for example, F5 started from another F5's terminal) never reaches F5's children.
     // The backend's own credential never reaches them either: a child holding it could connect
     // as a client, answer its own approval requests and open terminals.
-    [
-      "F5_STANDALONE",
-      "F5_STANDALONE_DIR",
-      "F5_INSTALL_ROOT",
-      BROWSER_OPEN_TOKEN_ENV,
-      SERVER_AUTH_TOKEN_ENV,
-    ].includes(normalizedKey) ||
+    BLOCKED_F5_SERVER_ENV.has(normalizedKey) ||
+    normalizedKey === SECRET_STORE_KEY_ENV ||
     CODEX_PACKAGE_MANAGER_ENV.has(normalizedKey) ||
     BLOCKED_PROVIDER_ENV_PREFIXES.some((prefix) => normalizedKey.startsWith(prefix))
   );
@@ -68,10 +81,16 @@ export function buildProviderChildProcessEnv(
   }
 
   for (const [key, value] of Object.entries(overrides)) {
-    if (CODEX_PACKAGE_MANAGER_ENV.has(key.toUpperCase())) continue;
+    const normalizedKey = key.toUpperCase();
+    if (
+      CODEX_PACKAGE_MANAGER_ENV.has(normalizedKey) ||
+      SERVER_AUTH_TOKEN_ENV_NAMES.some((name) => name === normalizedKey)
+    ) {
+      continue;
+    }
     if (process.platform === "win32") {
       for (const inherited of Object.keys(env))
-        if (inherited.toUpperCase() === key.toUpperCase()) delete env[inherited];
+        if (inherited.toUpperCase() === normalizedKey) delete env[inherited];
     }
     if (/^F5_(?:LAUNCHER_|UPDATE_|STANDALONE(?:_DIR)?$|INSTALL_ROOT$)/i.test(key)) continue;
     if (value === undefined) {

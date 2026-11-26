@@ -4,13 +4,7 @@ import {
   importAgentSessionProject,
   resolveAgentSessionHomes,
 } from "./project/AgentSessionImporter";
-import { desktopBusyThreadCount } from "./orchestration/sessionBusy.ts";
 import { startKeepAwake } from "./background/KeepAwake";
-import {
-  DESKTOP_ACTIVITY_PATH,
-  ORCHESTRATION_STARTUP_SNAPSHOT_PATH,
-  type DesktopBackendActivity,
-} from "@t3tools/shared/backendPaths";
 import { bindSubmissionTurnIds } from "./nextTurnQueue/submissionStatus.ts";
 import { cancelQueuedSubmission } from "./nextTurnQueue/cancelSubmission.ts";
 import { makeScheduledNotificationDelivery } from "./scheduledTasks/notificationDelivery.ts";
@@ -22,13 +16,11 @@ import { RouteRequestError, mapNextTurnQueueRouteError } from "./turnSubmissionE
 import { makeScheduledTaskService } from "./scheduledTasks/Service.ts";
 import { makeScheduledTaskStore, scheduleError } from "./scheduledTasks/Store.ts";
 import { McpAppService } from "./mcpApps/McpAppService.ts";
-import { MCP_APPS_WS_METHODS } from "@t3tools/contracts";
 import { ThreadSettlementService } from "./orchestration/Layers/ThreadSettlementService.ts";
 import { makeTurnGitStatusRefresh } from "./wsServer/turnGitStatusRefresh";
 import { THREAD_SETTLEMENT_WS_METHODS } from "@t3tools/contracts";
 import { PullRequestWatchService } from "./orchestration/Layers/PullRequestWatchService.ts";
-import { PR_WATCH_WS_METHODS, PR_WATCH_CHANGED_CHANNEL } from "@t3tools/contracts";
-import { HTML_RENDER_WS_METHODS } from "@t3tools/contracts";
+import { PR_WATCH_CHANGED_CHANNEL } from "@t3tools/contracts";
 import { makeHtmlPreviewBroker } from "./htmlRender/HtmlPreviewBroker.ts";
 import { makeHtmlRenderRuntime } from "./htmlRender/HtmlRenderRuntime.ts";
 import { ThreadMcpBroker } from "./mcp/threadMcpTools.ts";
@@ -41,19 +33,12 @@ import { ProjectionThreadMessageRepository } from "./persistence/Services/Projec
 import { ProjectionThreadProposedPlanRepository } from "./persistence/Services/ProjectionThreadProposedPlans.ts";
 import { PrHubFederation } from "./prHub/Layers/PrHubFederation.ts";
 import { PrHubReviewGuideService } from "./prHub/Layers/PrHubReviewGuideService.ts";
-import { publicOtlpConfiguration, resolveOtlpConfiguration } from "@t3tools/shared/observability";
-import { isDoNotTrackSet } from "@t3tools/shared/doNotTrack";
 import { registerShutdown, ServerShutdown } from "./shutdown.ts";
-import { streamFileHandle } from "./assetHttp.ts";
 import { makeSocketLiveness, closeSocketsWithin } from "./wsServer/socketLiveness.ts";
 import { makeClientDiagnosticsReporter } from "./observability/clientDiagnostics.ts";
 import { withProviderThreadAccess } from "./provider/providerThreadAccess.ts";
 import { makeMcpSecretWriter } from "./mcp/McpSecretWriter.ts";
-import { McpServerWriteDefinition } from "@t3tools/contracts";
 import { makeMcpAccountExecutionResolver } from "./mcp/accountExecution.ts";
-import { detectMcpImports } from "./mcp/McpImportDetection.ts";
-import { probeMcpServer } from "./mcp/McpProbe.ts";
-import { resolveMcpSecrets } from "./mcp/McpSecretResolver.ts";
 import {
   OrchestrationCommandInvariantError,
   OrchestrationOverloadError,
@@ -121,7 +106,7 @@ import {
   ProjectSkillSyncService,
   type ProjectSkillSyncServiceShape,
 } from "./orchestration/Services/ProjectSkillSyncService.ts";
-import { startScheduledBackups, readScheduledBackupStatus } from "./storage/scheduledBackups.ts";
+import { startScheduledBackups } from "./storage/scheduledBackups.ts";
 import { startDatabaseSnapshots } from "./storage/databaseSnapshots.ts";
 import { startDatabaseDamageTripwire } from "./storage/databaseDamageTripwire.ts";
 import { getDatabaseDamage } from "./persistence/databaseHealth.ts";
@@ -133,13 +118,7 @@ import {
   agentComputerUsePush,
   ComputerAutomationBroker,
 } from "./computer/ComputerAutomationBroker";
-import { computerPolicyChange } from "./computer/computerPolicyChange";
-import {
-  restoreChromeSessionSetup,
-  listChromeSessionSetups,
-  isChromeRuntimeSession,
-  reconcileChromeSessionSetups,
-} from "./provider/chromeSessionRuntimeFactory";
+import { reconcileChromeSessionSetups } from "./provider/chromeSessionRuntimeFactory";
 import { finishAcknowledgedNativeRewind } from "./orchestration/nativeRewindAcknowledgement.ts";
 import { readThreadPeek, readThreadPeeks } from "./orchestration/threadPeek.ts";
 import { ProviderValidationError } from "./provider/Errors.ts";
@@ -165,15 +144,11 @@ import { awaitActivation, waitForActivation, reportActive } from "./distribution
 import { ForgeAccounts } from "./sourceControl/accountRouting.ts";
 import { SourceControlProviderError } from "./sourceControl/SourceControlProvider.ts";
 import { PrHubExtensions } from "./prHub/PrHubExtensions.ts";
-import { prHubPeekErrorCode } from "./prHub/prHubPeekError.ts";
-import { withPrHubThreadLinks } from "./prHub/readModel.ts";
-import { createGitHubMediaProxy } from "./prHub/githubMediaProxy.ts";
 import { readAssetImageDimensions } from "./imageDimensions";
 import { makePreviewFileServer } from "./previewFileServer";
 import { MessageId } from "@t3tools/contracts";
 import {
   makeAttachmentUploads,
-  AttachmentUploadError,
   materializeErrorMessage,
   resolveWorkflowAttachmentsDir,
   sweepWorkflowAttachments,
@@ -192,7 +167,6 @@ import { protocolMatches, SERVER_BOOTSTRAP, UPGRADE_REQUIRED } from "./wsServer/
 import {
   BOOTSTRAP_THREAD_DELETED_ERROR_CODE,
   BOOTSTRAP_THREAD_NOT_CREATED_ERROR_CODE,
-  F5_PROTOCOL_HEADER,
   F5_PROTOCOL_QUERY,
   F5_UPGRADE_REQUIRED_CLOSE_CODE,
   type ServerRuntimeReadiness,
@@ -213,7 +187,6 @@ import {
   invalidExecutionDirectories,
 } from "./profiles/RepositorySharing";
 import { makeServerSecretStore } from "./auth/Layers/ServerSecretStore";
-import { integrationUnavailableDetail } from "@t3tools/shared/providerIntegrationCertification";
 import { ProfileRegistryStore, fallbackDefaultProfile } from "./profiles/ProfileRegistryStore";
 import {
   GUEST_PROFILE_MUTATION_REFUSAL,
@@ -231,12 +204,9 @@ import { ProviderAccountService } from "./profiles/ProviderAccountService";
  */
 import http from "node:http";
 import { createHash, randomUUID } from "node:crypto";
-import { promisify } from "node:util";
-import { gzip } from "node:zlib";
 import fsPromises from "node:fs/promises";
 import type { Duplex } from "node:stream";
 
-import Mime from "@effect/platform-node/Mime";
 import {
   AGENTS_WS_CHANNELS,
   AGENTS_WS_METHODS,
@@ -256,7 +226,6 @@ import {
   ORCHESTRATION_WS_METHODS,
   type OrchestrationGetStartupSnapshotInput,
   PR_HUB_WS_CHANNELS,
-  PR_HUB_WS_METHODS,
   ProjectId,
   type ProfileSummary,
   ThreadId,
@@ -266,7 +235,6 @@ import {
   WebSocketRequest,
   WsResponse,
   type WsPushEnvelopeBase,
-  type WorkflowPlatformCreateRunInput,
 } from "@t3tools/contracts";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -292,6 +260,7 @@ import {
 } from "effect";
 import { WebSocketServer, type WebSocket } from "ws";
 
+import { resolveAliasedBooleanEnv, THREAD_OPEN_TIMINGS_ENV } from "./envFlags.ts";
 import { createLogger } from "./logger";
 import { NextTurnQueueStore } from "./nextTurnQueue/Services/NextTurnQueueStore.ts";
 import { makeProjectionTurnRepository } from "./persistence/Layers/ProjectionTurns.ts";
@@ -301,11 +270,6 @@ import {
 } from "./nextTurnQueue/Services/NextTurnQueueDispatcher.ts";
 import { makeGlobalSearch } from "./globalSearch";
 import { makeBackupService } from "./backupService";
-import {
-  BUILTIN_WORKFLOW_TEMPLATES,
-  createWorkflowPlatformRun,
-  inspectWorkflowPlatformRun,
-} from "./workflowPlatform.ts";
 import { GitManager } from "./git/Services/GitManager.ts";
 import { TerminalManager, type TerminalError } from "./terminal/Services/Manager.ts";
 import { Keybindings } from "./keybindings";
@@ -318,6 +282,7 @@ import {
   searchWorkspaceEntries,
 } from "./workspaceEntries";
 import { makeProjectContentSearchManager } from "./projectContentSearch";
+import { WorkspaceSearchRestrictedError } from "./workspaceSearchRoot";
 import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
@@ -372,19 +337,12 @@ import { CheckpointStore } from "./checkpointing/Services/CheckpointStore";
 import { Open, OpenError, resolveAvailableEditors } from "./open";
 import { ServerConfig } from "./config";
 import { GitCore } from "./git/Services/GitCore.ts";
-import { IMMUTABLE_PRIVATE_CACHE_CONTROL, openContainedFile, serveAsset } from "./assetHttp";
-import { tryHandleProjectFaviconRequest } from "./projectFaviconRoute";
 import { makeWorkspaceAssetAuthorizer } from "./WorkspaceAssetAuthorizer";
 import { makeCheckedInProjectFileService } from "./project/CheckedInProjectFileService";
 import {
   ProjectSetupScriptRunner,
   type ProjectSetupScriptRunnerShape,
 } from "./project/Services/ProjectSetupScriptRunner.ts";
-import {
-  ATTACHMENTS_ROUTE_PREFIX,
-  normalizeAttachmentRelativePath,
-  resolveAttachmentRelativePath,
-} from "./attachmentPaths";
 import { resolveAttachmentPathById } from "./attachmentStore.ts";
 import {
   AttachmentIngressError,
@@ -395,18 +353,19 @@ import {
   type PreparedAttachmentIngress,
 } from "./attachmentIngress.ts";
 import { expandHomePath } from "./os-jank.ts";
-import {
-  increment,
-  previewRecordingFramesDroppedTotal,
-  websocketConnectionsTotal,
-} from "./observability/Metrics.ts";
+import { increment, websocketConnectionsTotal } from "./observability/Metrics.ts";
 import { observeRpcEffect } from "./observability/RpcInstrumentation.ts";
 import {
-  readServerHealth,
   recordSlowRpcRoute,
   SLOW_RPC_ROUTE_MS,
   startEventLoopDelayMonitor,
 } from "./observability/serverHealth.ts";
+import {
+  buildSqliteInspectionSnapshot,
+  runDoctorDiagnostics,
+  type SqliteInspectionResult,
+} from "./diagnostics/doctor.ts";
+import { canonicalManagedWorktreesDirectories } from "./worktreesDirectoryPaths.ts";
 import {
   type BootstrapThreadDisposition,
   dispatchBootstrapTurnStart,
@@ -424,12 +383,21 @@ import { makeServerReadiness } from "./wsServer/readiness.ts";
 import { routeFailureMessage } from "./wsServer/routeFailureMessage.ts";
 import { agentBridgeRoutes } from "./wsServer/routes/agentBridgeRoutes.ts";
 import { githubAccountRoutes } from "./wsServer/routes/githubAccountRoutes.ts";
+import { mcpRoutes } from "./wsServer/routes/mcpRoutes.ts";
+import { prHubRoutes } from "./wsServer/routes/prHubRoutes.ts";
+import { previewRoutes } from "./wsServer/routes/previewRoutes.ts";
 import { profileRoutes } from "./wsServer/routes/profileRoutes.ts";
 import { providerAccountRoutes } from "./wsServer/routes/providerAccountRoutes.ts";
 import { scheduledTaskRoutes } from "./wsServer/routes/scheduledTaskRoutes.ts";
+import { serverMetaRoutes } from "./wsServer/routes/serverMetaRoutes.ts";
+import { storageRoutes } from "./wsServer/routes/storageRoutes.ts";
 import { gitRoutes } from "./wsServer/routes/gitRoutes.ts";
 import { terminalRoutes } from "./wsServer/routes/terminalRoutes.ts";
 import { upstreamPortRoutes } from "./wsServer/routes/upstreamPortRoutes.ts";
+import { workflowRoutes } from "./wsServer/routes/workflowRoutes.ts";
+import { worktreeRoutes } from "./wsServer/routes/worktreeRoutes.ts";
+import { createHttpRequestListener } from "./wsServer/http/httpRequestHandler.ts";
+import { DESKTOP_RENDERER_ORIGIN } from "./wsServer/http/staticAssets.ts";
 import {
   answerFromTable,
   routePromise,
@@ -445,7 +413,6 @@ import {
 } from "./startupTiming.ts";
 import {
   AUTH_RATE_LIMITED_MESSAGE,
-  isPrivateHttpPath,
   makeServerAuth,
   REQUEST_HOST_NOT_ALLOWED_MESSAGE,
 } from "./serverAuth.ts";
@@ -457,37 +424,30 @@ import {
 } from "@t3tools/shared/providerInput";
 import { CodexControlClientRegistry } from "./codex/CodexControlClientRegistry.ts";
 import { CodexMcpEventBus } from "./codex/CodexMcpEventBus.ts";
-import { CodexMcpSyncService } from "./codex/CodexMcpSyncService.ts";
-import { CodexOAuthManager } from "./codex/CodexOAuthManager.ts";
 import { ProjectMcpConfigService } from "./mcp/ProjectMcpConfigService.ts";
 import { McpRuntimeService } from "./mcp/McpRuntimeService.ts";
-import { toCodexProviderStartOptions } from "./provider/codexProviderOptions.ts";
+import { McpHub } from "./mcp/hub/McpHub.ts";
+import { McpHubAuth } from "./mcp/hub/McpHubAuth.ts";
 import { reconcileCodexThreadSnapshots } from "./orchestration/codexSnapshotReconciliation.ts";
 import { makeHistoryRecoveredSessionSet } from "./orchestration/providerTerminalLifecycle.ts";
-import { redactServerSettingsForClient, ServerSettingsService } from "./serverSettings.ts";
-import {
-  makeEnvironmentThemeBackgrounds,
-  makeEnvironmentThemeTools,
-  THEME_BACKGROUND_ROUTE,
-} from "./environmentTheme.ts";
+import { ServerSettingsService } from "./serverSettings.ts";
+import { makeEnvironmentThemeBackgrounds, makeEnvironmentThemeTools } from "./environmentTheme.ts";
 import { DiskSpaceMonitor } from "./storage/DiskSpaceMonitor.ts";
 import { StorageMaintenance, type StorageMaintenanceShape } from "./storage/StorageMaintenance.ts";
 import {
   StorageCleanupWorker,
   type StorageCleanupWorkerShape,
 } from "./storage/StorageCleanupWorker.ts";
-import { listStorageAutomationAudit } from "./storage/automationAudit.ts";
 import {
   DefaultBranchAutoPull,
   type DefaultBranchAutoPullShape,
 } from "./git/DefaultBranchAutoPull.ts";
 import { makePreviewManager } from "./preview/Manager.ts";
-import { scanLocalServers, OwnedPreviewUrls } from "./preview/PortScanner.ts";
+import { OwnedPreviewUrls } from "./preview/PortScanner.ts";
 import { PreviewAutomationBroker } from "./mcp/PreviewAutomationBroker.ts";
 import { computerUseLease } from "./provider/computerUseLease.ts";
 import { PrHubAdvisoryService } from "./prHub/Services/PrHubAdvisoryService.ts";
 import { PrHubService } from "./prHub/Services/PrHubService.ts";
-import { cursorSdkHarnessHostAvailability } from "./provider/cursor/cursorHarnessDescriptor.ts";
 
 /**
  * ServerShape - Service API for server lifecycle control.
@@ -524,24 +484,6 @@ const clientDiagnosticsReporter = makeClientDiagnosticsReporter();
 const BACKEND_INCARNATION = process.env.F5_DESKTOP_BACKEND_INCARNATION || crypto.randomUUID();
 const MAX_RECONNECT_REPLAY_EVENTS = 128;
 const MAX_RECONNECT_REPLAY_BYTES = 512 * 1024;
-const gzipSnapshot = promisify(gzip);
-
-const DESKTOP_RENDERER_ORIGIN = "t3://app";
-const PRIVATE_CORS_METHODS = new Set(["GET", "POST"]);
-/** One list drives both preflight validation and `Access-Control-Allow-Headers`. */
-const PRIVATE_CORS_HEADER_NAMES = [
-  "Authorization",
-  "Content-Type",
-  "X-F5-Backup-Password",
-  F5_PROTOCOL_HEADER,
-  "X-F5-File-Name",
-  "X-F5-Upload-Client",
-] as const;
-const PRIVATE_CORS_HEADERS = new Set(
-  PRIVATE_CORS_HEADER_NAMES.map((header) => header.toLowerCase()),
-);
-const PRIVATE_CORS_ALLOW_HEADERS = PRIVATE_CORS_HEADER_NAMES.join(", ");
-
 const isServerNotRunningError = (error: Error): boolean => {
   const maybeCode = (error as NodeJS.ErrnoException).code;
   return (
@@ -979,8 +921,6 @@ export type ServerCoreRuntimeServices =
   | ServerSettingsService
   | CodexControlClientRegistry
   | CodexMcpEventBus
-  | CodexMcpSyncService
-  | CodexOAuthManager
   | McpRuntimeService
   | ProjectMcpConfigService
   | PreviewAutomationBroker
@@ -1005,6 +945,14 @@ export class ServerLifecycleError extends Schema.TaggedErrorClass<ServerLifecycl
     cause: Schema.optional(Schema.Defect),
   },
 ) {}
+
+function workspaceSearchRouteError(cause: unknown, summary: string): RouteRequestError {
+  if (cause instanceof WorkspaceSearchRestrictedError) {
+    return new RouteRequestError({ message: cause.message, code: cause.code });
+  }
+  const detail = cause instanceof Error ? cause.message : String(cause);
+  return new RouteRequestError({ message: `${summary}: ${detail}` });
+}
 
 function toDeliveryRecoveryError(error: Error): RouteRequestError {
   return new RouteRequestError({
@@ -1176,9 +1124,9 @@ export const createServer = Effect.fn(function* (
   const harnessValidation = yield* HarnessValidation;
   const serverSettings = yield* ServerSettingsService;
   const codexMcpEventBus = yield* CodexMcpEventBus;
-  const codexMcpSyncService = yield* CodexMcpSyncService;
-  const codexOAuthManager = yield* CodexOAuthManager;
   const mcpRuntimeService = yield* McpRuntimeService;
+  const mcpHub = Option.getOrUndefined(yield* Effect.serviceOption(McpHub));
+  const mcpHubAuth = Option.getOrUndefined(yield* Effect.serviceOption(McpHubAuth));
   const projectMcpConfigService = yield* ProjectMcpConfigService;
   const previewAutomationBroker = yield* PreviewAutomationBroker;
   const computerAutomationBroker = yield* Effect.serviceOption(ComputerAutomationBroker);
@@ -1251,8 +1199,8 @@ export const createServer = Effect.fn(function* (
   const shouldLogThreadOpenTimings =
     process.env.NODE_ENV !== "test" &&
     process.env.VITEST !== "true" &&
-    (process.env.T3CODE_LOG_THREAD_OPEN_TIMINGS === "1" ||
-      process.env.T3CODE_LOG_THREAD_OPEN_TIMINGS === "true");
+    resolveAliasedBooleanEnv(THREAD_OPEN_TIMINGS_ENV.primary, THREAD_OPEN_TIMINGS_ENV.legacy)
+      .enabled;
 
   function logOutgoingPush(push: WsPushEnvelopeBase, recipients: number) {
     if (!logWebSocketEvents || push.channel === WS_CHANNELS.providerAccountEvent) return;
@@ -2230,665 +2178,36 @@ export const createServer = Effect.fn(function* (
     });
 
   // HTTP server — serves static files or redirects to Vite dev server
-  const httpServer = http.createServer((req, res) => {
-    const respond = (
-      statusCode: number,
-      headers: Record<string, string>,
-      body?: string | Uint8Array,
-    ) => {
-      res.writeHead(statusCode, headers);
-      res.end(body);
-    };
-
-    void Effect.runPromise(
-      Effect.gen(function* () {
-        // Before anything else, static files included: a rebound page must not load the app
-        // under its own origin either.
-        if (!serverAuth.isRequestHostAllowed(req)) {
-          respond(
-            403,
-            { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" },
-            JSON.stringify({ error: REQUEST_HOST_NOT_ALLOWED_MESSAGE }),
-          );
-          return;
-        }
-        const url = new URL(req.url ?? "/", `http://localhost:${port}`);
-        // Workspace asset handles are capabilities: the URL is the credential, so
-        // they skip session auth but still need CORS for the renderer's fetch().
-        const isThemeBackgroundPath = url.pathname.startsWith(THEME_BACKGROUND_ROUTE);
-        const isCapabilityAssetPath =
-          isThemeBackgroundPath || url.pathname.startsWith("/api/workspace-assets/");
-        const isPrivatePath = isPrivateHttpPath(url.pathname) && !isCapabilityAssetPath;
-        const requestOrigin = req.headers.origin;
-        // Attachment URLs are also loaded by <img>, whose requests do not
-        // carry an Origin header. Keep those cache entries separate from
-        // authenticated CORS fetches used by copy and download actions.
-        if (isPrivatePath || isCapabilityAssetPath) {
-          res.setHeader("Vary", "Origin");
-        }
-        const isExplicitPrivateCorsOrigin =
-          requestOrigin === devUrl?.origin ||
-          (mode === "desktop" && requestOrigin === DESKTOP_RENDERER_ORIGIN);
-        if (
-          isCapabilityAssetPath &&
-          typeof requestOrigin === "string" &&
-          isExplicitPrivateCorsOrigin &&
-          (req.method === "GET" || req.method === "HEAD")
-        ) {
-          // No credentials: the handle alone authorizes the read.
-          res.setHeader("Access-Control-Allow-Origin", requestOrigin);
-          res.setHeader("Access-Control-Expose-Headers", "Content-Length, Content-Range");
-        }
-        const isAllowedPrivateCorsRequest =
-          isPrivatePath &&
-          typeof requestOrigin === "string" &&
-          isExplicitPrivateCorsOrigin &&
-          serverAuth.isWebSocketOriginAllowed(req);
-        if (isAllowedPrivateCorsRequest) {
-          res.setHeader("Access-Control-Allow-Credentials", "true");
-          res.setHeader("Access-Control-Allow-Origin", requestOrigin);
-          res.setHeader("Access-Control-Expose-Headers", "Content-Disposition, Content-Length");
-        }
-        if (req.method === "OPTIONS" && isPrivatePath) {
-          if (!isAllowedPrivateCorsRequest) {
-            respond(
-              403,
-              {
-                "Cache-Control": "no-store",
-                "Content-Type": "application/json; charset=utf-8",
-              },
-              JSON.stringify({ error: "CORS origin is not allowed." }),
-            );
-            return;
-          }
-
-          const requestedMethod = req.headers["access-control-request-method"]?.toUpperCase() ?? "";
-          const rawRequestedHeaders = req.headers["access-control-request-headers"];
-          const requestedHeaders = (
-            Array.isArray(rawRequestedHeaders)
-              ? rawRequestedHeaders.join(",")
-              : (rawRequestedHeaders ?? "")
-          )
-            .split(",")
-            .map((header) => header.trim().toLowerCase())
-            .filter((header) => header.length > 0);
-          if (
-            !PRIVATE_CORS_METHODS.has(requestedMethod) ||
-            requestedHeaders.some((header) => !PRIVATE_CORS_HEADERS.has(header))
-          ) {
-            respond(
-              403,
-              {
-                "Cache-Control": "no-store",
-                "Content-Type": "application/json; charset=utf-8",
-              },
-              JSON.stringify({ error: "CORS request method or headers are not allowed." }),
-            );
-            return;
-          }
-
-          res.setHeader(
-            "Vary",
-            "Origin, Access-Control-Request-Method, Access-Control-Request-Headers",
-          );
-          respond(204, {
-            "Access-Control-Allow-Headers": PRIVATE_CORS_ALLOW_HEADERS,
-            "Access-Control-Allow-Methods": "GET, POST",
-            "Cache-Control": "no-store",
-            "Content-Length": "0",
-          });
-          return;
-        }
-
-        const handledAuthRequest = yield* Effect.promise(() =>
-          serverAuth.handleHttpRequest(req, res, url),
-        );
-        if (handledAuthRequest) {
-          return;
-        }
-        if (isPrivatePath && !serverAuth.isHttpRequestAuthenticated(req)) {
-          // A locked-out client is told to wait, so it does not take its token for a wrong one.
-          const retryAfter = serverAuth.bearerRetryAfterSeconds(req);
-          respond(
-            retryAfter === null ? 401 : 429,
-            {
-              "Cache-Control": "no-store",
-              "Content-Type": "application/json; charset=utf-8",
-              ...(retryAfter === null ? {} : { "Retry-After": `${retryAfter}` }),
-            },
-            JSON.stringify({
-              error: retryAfter === null ? "Authentication required." : AUTH_RATE_LIMITED_MESSAGE,
-            }),
-          );
-          return;
-        }
-        if (
-          (url.pathname === ORCHESTRATION_STARTUP_SNAPSHOT_PATH ||
-            url.pathname.startsWith("/api/storage/") ||
-            url.pathname.startsWith("/api/attachments/")) &&
-          !serverAuth.isWebSocketOriginAllowed(req)
-        ) {
-          respond(
-            403,
-            { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" },
-            JSON.stringify({ error: "Request origin is not allowed." }),
-          );
-          return;
-        }
-
-        if (
-          isPrivatePath &&
-          !["GET", "HEAD", "OPTIONS"].includes(req.method ?? "") &&
-          !protocolMatches(req.headers[F5_PROTOCOL_HEADER.toLowerCase()])
-        ) {
-          respond(
-            426,
-            { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" },
-            JSON.stringify(UPGRADE_REQUIRED),
-          );
-          return;
-        }
-        if (isThemeBackgroundPath) {
-          const id = url.pathname.slice(THEME_BACKGROUND_ROUTE.length);
-          const settings = yield* serverSettings.getSettings.pipe(Effect.orElseSucceed(() => null));
-          const image =
-            req.method === "GET" && settings?.environmentThemes.some((theme) => theme.id === id)
-              ? yield* Effect.promise(() =>
-                  themeBackgrounds
-                    .read(
-                      id,
-                      url.searchParams.get("signature") ?? "",
-                      url.searchParams.get("revision") ?? "",
-                    )
-                    .catch(() => "unavailable" as const),
-                )
-              : null;
-          respond(
-            image === "unavailable" ? 503 : image ? 200 : 404,
-            {
-              "Cache-Control": "no-store",
-              "X-Content-Type-Options": "nosniff",
-              ...(image && image !== "unavailable" ? { "Content-Type": image.mime } : {}),
-            },
-            image === "unavailable" ? undefined : image?.bytes,
-          );
-          return;
-        }
-        if (url.pathname.startsWith("/api/html-renders/preview/")) {
-          const id = url.pathname.slice("/api/html-renders/preview/".length);
-          const html = /^[a-f0-9-]{36}$/.test(id) ? htmlPreviewBroker.readInput(id) : null;
-          const allowed = req.method === "GET" || req.method === "HEAD";
-          respond(
-            allowed ? (html === null ? 410 : 200) : 405,
-            {
-              "Cache-Control": "no-store",
-              "Content-Type": "text/plain; charset=utf-8",
-              "X-Content-Type-Options": "nosniff",
-              "Content-Security-Policy": "sandbox; default-src 'none'",
-            },
-            req.method === "HEAD" ? undefined : (html ?? "Preview expired."),
-          );
-          return;
-        }
-        if (url.pathname === "/api/prhub/media") {
-          const accounts = Option.isSome(forgeAccounts)
-            ? yield* forgeAccounts.value.listAccounts()
-            : [];
-          const accountId = url.searchParams.get("accountId");
-          const proxy = createGitHubMediaProxy({
-            configuredHosts: accounts
-              .filter((account) => account.provider === "github")
-              .map((account) => account.host),
-            resolveToken: async (host) => {
-              if (accountId) {
-                const account = accounts.find(
-                  (value) =>
-                    value.id === accountId && value.provider === "github" && value.host === host,
-                );
-                if (!account || Option.isNone(forgeAccounts)) return undefined;
-                return Effect.runPromise(forgeAccounts.value.getToken(account.id));
-              }
-              return (await githubAccount.token(host)) ?? undefined;
-            },
-          });
-          yield* Effect.promise(() => proxy(req, res));
-          return;
-        }
-        if (url.pathname === DESKTOP_ACTIVITY_PATH && req.method === "GET") {
-          const headers = {
-            "Cache-Control": "no-store",
-            "Content-Type": "application/json; charset=utf-8",
-          };
-          if (runtimeReadiness.state !== "ready") {
-            respond(503, headers, JSON.stringify({ state: runtimeReadiness.state }));
-            return;
-          }
-          const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
-          const model = yield* orchestrationEngine.getReadModel();
-          const pending = yield* agentBridgeTurns.listRecentPendingTurnStartThreadIds({
-            since: new Date(Date.now() - 600_000).toISOString(),
-          });
-          respond(
-            200,
-            headers,
-            JSON.stringify({
-              busyThreadCount: desktopBusyThreadCount(model, pending),
-            } satisfies DesktopBackendActivity),
-          );
-          return;
-        }
-        if (url.pathname === "/api/bootstrap" && req.method === "GET") {
-          respond(
-            200,
-            { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" },
-            JSON.stringify(SERVER_BOOTSTRAP),
-          );
-          return;
-        }
-        if (url.pathname === ORCHESTRATION_STARTUP_SNAPSHOT_PATH) {
-          const headers = {
-            "Cache-Control": "no-store",
-            "Content-Type": "application/json; charset=utf-8",
-            Vary: "Origin, Accept-Encoding",
-          };
-          if (req.method !== "GET") {
-            respond(405, { ...headers, Allow: "GET" });
-            return;
-          }
-          if (url.searchParams.get("incarnation") !== BACKEND_INCARNATION) {
-            respond(409, headers);
-            return;
-          }
-          const detailThreadId = url.searchParams.get("detailThreadId");
-          const parsedDetailThreadId =
-            detailThreadId === null
-              ? Option.none()
-              : Schema.decodeUnknownOption(ThreadId)(detailThreadId);
-          if (detailThreadId !== null && Option.isNone(parsedDetailThreadId)) {
-            respond(400, headers);
-            return;
-          }
-          yield* awaitOrchestrationRuntimeForRoute;
-          const snapshot = yield* readStartupSnapshot(
-            Option.isSome(parsedDetailThreadId)
-              ? { detailThreadId: parsedDetailThreadId.value }
-              : {},
-            "http",
-          );
-          const json = JSON.stringify(snapshot);
-          const acceptGzip = req.headers["accept-encoding"]
-            ?.split(",")
-            .some((encoding) =>
-              /^\s*gzip\s*(?:;\s*q=(?:1(?:\.0*)?|0\.\d*[1-9]\d*))?\s*$/i.test(encoding),
-            );
-          if (acceptGzip) {
-            const body = yield* Effect.tryPromise(() => gzipSnapshot(json));
-            respond(200, { ...headers, "Content-Encoding": "gzip" }, body);
-          } else {
-            respond(200, headers, json);
-          }
-          return;
-        }
-
-        if (url.pathname === "/api/storage/backup") {
-          if (req.method !== "GET") {
-            respond(405, { Allow: "GET", "Content-Type": "application/json; charset=utf-8" });
-            return;
-          }
-          const includeSecrets = url.searchParams.get("includeSecrets") === "1";
-          const passwordHeader = req.headers["x-f5-backup-password"];
-          const password = Array.isArray(passwordHeader) ? passwordHeader[0] : passwordHeader;
-          if (includeSecrets && (!password || password.length < 12)) {
-            respond(
-              400,
-              { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" },
-              JSON.stringify({
-                error: "Encrypted secret export requires a password of at least 12 characters.",
-              }),
-            );
-            return;
-          }
-          const filename = `f5-backup-${new Date().toISOString().slice(0, 10)}.f5backup`;
-          const exit = yield* Effect.exit(
-            backupService.exportArchive({
-              output: res,
-              includeSecrets,
-              ...(password ? { password } : {}),
-              onReady: ({ contentLength }) => {
-                res.writeHead(200, {
-                  "Cache-Control": "no-store",
-                  "Content-Disposition": `attachment; filename="${filename}"`,
-                  "Content-Length": contentLength,
-                  "Content-Type": "application/x-f5-backup",
-                  "X-Content-Type-Options": "nosniff",
-                });
-              },
-            }),
-          );
-          if (Exit.isFailure(exit)) {
-            if (!res.headersSent) {
-              const failure = Cause.squash(exit.cause);
-              respond(
-                500,
-                { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" },
-                JSON.stringify({
-                  error:
-                    failure instanceof Error ? failure.message : "Unable to create backup archive.",
-                }),
-              );
-            } else if (!res.destroyed) {
-              res.destroy();
-            }
-          }
-          return;
-        }
-
-        if (url.pathname === "/api/storage/restore") {
-          if (req.method !== "POST") {
-            respond(405, { Allow: "POST", "Content-Type": "application/json; charset=utf-8" });
-            return;
-          }
-          const passwordHeader = req.headers["x-f5-backup-password"];
-          const password = Array.isArray(passwordHeader) ? passwordHeader[0] : passwordHeader;
-          const contentLengthHeader = req.headers["content-length"];
-          const contentLength =
-            typeof contentLengthHeader === "string" ? Number(contentLengthHeader) : undefined;
-          if (
-            contentLength !== undefined &&
-            (!Number.isSafeInteger(contentLength) || contentLength < 0)
-          ) {
-            req.resume();
-            respond(
-              400,
-              { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" },
-              JSON.stringify({ error: "Backup upload has an invalid Content-Length header." }),
-            );
-            return;
-          }
-          if (
-            contentLength !== undefined &&
-            contentLength > backupService.restoreLimits.maxCompressedBytes
-          ) {
-            req.resume();
-            respond(
-              413,
-              { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" },
-              JSON.stringify({
-                error: "Backup upload exceeds the compressed restore size limit.",
-              }),
-            );
-            return;
-          }
-          const exit = yield* Effect.exit(
-            backupService.stageRestore({
-              source: req,
-              ...(password ? { password } : {}),
-              ...(contentLength !== undefined ? { contentLength } : {}),
-            }),
-          );
-          if (Exit.isFailure(exit)) {
-            const failure = Cause.squash(exit.cause);
-            const message =
-              failure instanceof Error ? failure.message : "Unable to validate and stage backup.";
-            respond(
-              400,
-              { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" },
-              JSON.stringify({ error: message }),
-            );
-            return;
-          }
-          respond(
-            202,
-            { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" },
-            JSON.stringify(exit.value),
-          );
-          return;
-        }
-        if (
-          url.pathname.startsWith("/api/attachments/uploads/") &&
-          (req.method === "GET" || req.method === "HEAD")
-        ) {
-          const id = url.pathname.slice("/api/attachments/uploads/".length);
-          const opened = yield* Effect.exit(attachmentUploads.openUpload(id));
-          if (Exit.isFailure(opened))
-            respond(410, { "Cache-Control": "no-store" }, "Upload expired. Re-attach the file.");
-          else
-            yield* Effect.promise(() =>
-              serveAsset(req, res, opened.value.file, opened.value.name).catch(() => {
-                if (!res.destroyed) res.destroy();
-              }),
-            );
-          return;
-        }
-        if (url.pathname === "/api/attachments/uploads" && req.method === "POST") {
-          const threadId = url.searchParams.get("threadId");
-          const client = req.headers["x-f5-upload-client"];
-          if (!threadId || threadId.length > 128 || !/^[a-zA-Z0-9_-]+$/u.test(threadId)) {
-            respond(
-              400,
-              { "Content-Type": "application/json" },
-              JSON.stringify({ error: "Invalid draft thread ID." }),
-            );
-            return;
-          }
-          const result = yield* Effect.exit(
-            attachmentUploads.upload({
-              req,
-              threadId: ThreadId.makeUnsafe(threadId),
-              ...(url.searchParams.get("source") === "pasted-text" ||
-              url.searchParams.get("source") === "snapshot"
-                ? { source: url.searchParams.get("source") as "pasted-text" | "snapshot" }
-                : {}),
-              clientId:
-                typeof client === "string" && client.length <= 128
-                  ? client
-                  : (req.socket.remoteAddress ?? "unknown"),
-            }),
-          );
-          if (Exit.isFailure(result)) {
-            const failure = Cause.squash(result.cause);
-            const status = Schema.is(AttachmentUploadError)(failure) ? failure.status : 500;
-            respond(
-              status,
-              {
-                "Content-Type": "application/json",
-                "Cache-Control": "no-store",
-                ...(status === 429 || status === 507 ? { "Retry-After": "2" } : {}),
-              },
-              JSON.stringify({
-                error: Schema.is(AttachmentUploadError)(failure)
-                  ? failure.message
-                  : "Attachment upload failed.",
-              }),
-            );
-          } else {
-            respond(
-              201,
-              { "Content-Type": "application/json", "Cache-Control": "no-store" },
-              JSON.stringify(result.value),
-            );
-          }
-          return;
-        }
-        if (
-          yield* Effect.promise(() =>
-            tryHandleProjectFaviconRequest(
-              url,
-              res,
-              workspaceAssetAuthorizer,
-              checkedInProjectFileService,
-              req,
-              serverAuth.externalRequestOrigin,
-            ),
-          )
-        ) {
-          return;
-        }
-
-        if (url.pathname.startsWith(ATTACHMENTS_ROUTE_PREFIX)) {
-          if (req.method !== "GET" && req.method !== "HEAD") {
-            respond(405, { Allow: "GET, HEAD" }, "Method not allowed");
-            return;
-          }
-          const rawRelativePath = url.pathname.slice(ATTACHMENTS_ROUTE_PREFIX.length);
-          const normalizedRelativePath = normalizeAttachmentRelativePath(rawRelativePath);
-          if (!normalizedRelativePath) {
-            respond(400, { "Content-Type": "text/plain" }, "Invalid attachment path");
-            return;
-          }
-
-          const isIdLookup =
-            !normalizedRelativePath.includes("/") && !normalizedRelativePath.includes(".");
-          const filePath = isIdLookup
-            ? resolveAttachmentPathById({
-                attachmentsDir: serverConfig.attachmentsDir,
-                attachmentId: normalizedRelativePath,
-              })
-            : resolveAttachmentRelativePath({
-                attachmentsDir: serverConfig.attachmentsDir,
-                relativePath: normalizedRelativePath,
-              });
-          if (!filePath) {
-            respond(
-              isIdLookup ? 404 : 400,
-              { "Content-Type": "text/plain" },
-              isIdLookup ? "Not Found" : "Invalid attachment path",
-            );
-            return;
-          }
-
-          const fileInfo = yield* fileSystem
-            .stat(filePath)
-            .pipe(Effect.catch(() => Effect.succeed(null)));
-          if (!fileInfo || fileInfo.type !== "File") {
-            respond(404, { "Content-Type": "text/plain" }, "Not Found");
-            return;
-          }
-
-          yield* Effect.promise(async () => {
-            try {
-              const file = await openContainedFile(
-                serverConfig.attachmentsDir,
-                path.relative(serverConfig.attachmentsDir, filePath),
-              );
-              await serveAsset(req, res, file, filePath, {
-                cacheControl: IMMUTABLE_PRIVATE_CACHE_CONTROL,
-              });
-            } catch {
-              if (res.headersSent) res.destroy();
-              else respond(404, { "Content-Type": "text/plain" }, "Not Found");
-            }
-          });
-          return;
-        }
-
-        // In dev mode, redirect to Vite dev server
-        if (devUrl) {
-          respond(302, { Location: devUrl.href });
-          return;
-        }
-
-        // Serve static files from the web app build
-        if (!staticDir) {
-          respond(
-            503,
-            { "Content-Type": "text/plain" },
-            "No static directory configured and no dev URL set.",
-          );
-          return;
-        }
-
-        const staticRoot = path.resolve(staticDir);
-        const staticRequestPath = url.pathname === "/" ? "/index.html" : url.pathname;
-        const rawStaticRelativePath = staticRequestPath.replace(/^[/\\]+/, "");
-        const hasRawLeadingParentSegment = rawStaticRelativePath.startsWith("..");
-        const staticRelativePath = path.normalize(rawStaticRelativePath).replace(/^[/\\]+/, "");
-        const hasPathTraversalSegment = staticRelativePath.startsWith("..");
-        if (
-          staticRelativePath.length === 0 ||
-          hasRawLeadingParentSegment ||
-          hasPathTraversalSegment ||
-          staticRelativePath.includes("\0")
-        ) {
-          respond(400, { "Content-Type": "text/plain" }, "Invalid static file path");
-          return;
-        }
-
-        const isWithinStaticRoot = (candidate: string) =>
-          candidate === staticRoot ||
-          candidate.startsWith(
-            staticRoot.endsWith(path.sep) ? staticRoot : `${staticRoot}${path.sep}`,
-          );
-
-        let filePath = path.resolve(staticRoot, staticRelativePath);
-        if (!isWithinStaticRoot(filePath)) {
-          respond(400, { "Content-Type": "text/plain" }, "Invalid static file path");
-          return;
-        }
-
-        const ext = path.extname(filePath);
-        if (!ext) {
-          filePath = path.resolve(filePath, "index.html");
-          if (!isWithinStaticRoot(filePath)) {
-            respond(400, { "Content-Type": "text/plain" }, "Invalid static file path");
-            return;
-          }
-        }
-
-        if (req.method !== "GET" && req.method !== "HEAD") {
-          respond(405, { Allow: "GET, HEAD" }, "Method not allowed");
-          return;
-        }
-        const fileInfo = yield* fileSystem
-          .stat(filePath)
-          .pipe(Effect.catch(() => Effect.succeed(null)));
-        if (!fileInfo || fileInfo.type !== "File") {
-          const wantsHtml =
-            req.headers["sec-fetch-mode"] === "navigate" ||
-            /(?:^|,)\s*text\/html(?:[;,]|$)/i.test(req.headers.accept ?? "");
-          const bundleRequest =
-            rawStaticRelativePath.startsWith("assets/") ||
-            /\.(?:[cm]?js|css|map|wasm|woff2?|ttf|otf|png|jpe?g|gif|svg|webp|ico)$/i.test(
-              rawStaticRelativePath,
-            );
-          if (!wantsHtml || bundleRequest) {
-            respond(404, { "Content-Type": "text/plain" }, "Not Found");
-            return;
-          }
-          filePath = path.resolve(staticRoot, "index.html");
-        }
-        const relative = path.relative(staticRoot, filePath);
-        const fingerprinted =
-          relative.startsWith(`assets${path.sep}`) && /-[a-zA-Z0-9_]{8,}\.[^.]+$/.test(relative);
-        const contentType = Mime.getType(filePath) ?? "application/octet-stream";
-        yield* Effect.promise(async () => {
-          try {
-            const file = await openContainedFile(staticRoot, relative);
-            await streamFileHandle(req, res, file, {
-              "Content-Type": contentType.startsWith("text/")
-                ? `${contentType}; charset=utf-8`
-                : contentType,
-              "Cache-Control": fingerprinted ? "public, max-age=31536000, immutable" : "no-cache",
-              "X-Content-Type-Options": "nosniff",
-              ...(contentType === "text/html"
-                ? {
-                    "Content-Security-Policy": "frame-ancestors 'none'",
-                    "X-Frame-Options": "DENY",
-                  }
-                : {}),
-            });
-          } catch {
-            if (res.headersSent) res.destroy();
-            else respond(404, { "Content-Type": "text/plain" }, "Not Found");
-          }
-        });
-      }),
-    ).catch(() => {
-      if (!res.headersSent) {
-        respond(500, { "Content-Type": "text/plain" }, "Internal Server Error");
-      }
-    });
-  });
+  const httpServer = http.createServer(
+    createHttpRequestListener({
+      port,
+      mode,
+      devUrl,
+      staticDir,
+      attachmentsDir: serverConfig.attachmentsDir,
+      backendIncarnation: BACKEND_INCARNATION,
+      serverAuth,
+      serverSettings,
+      themeBackgrounds,
+      htmlPreviewBroker,
+      forgeAccounts,
+      githubAccount,
+      getRuntimeReadiness: () => runtimeReadiness,
+      getAwaitOrchestrationEngine: () =>
+        Effect.map(
+          awaitOrchestrationRuntimeForRoute,
+          ({ orchestrationEngine }) => orchestrationEngine,
+        ),
+      getAgentBridgeTurns: () => agentBridgeTurns,
+      readStartupSnapshot: (body, transport) => readStartupSnapshot(body, transport),
+      backupService,
+      attachmentUploads,
+      getWorkspaceAssetAuthorizer: () => workspaceAssetAuthorizer,
+      getCheckedInProjectFileService: () => checkedInProjectFileService,
+      fileSystem,
+      path,
+    }),
+  );
   guardHttpResponseWriteErrors(httpServer, (code) => {
     void Effect.runPromise(
       Effect.logWarning("Unexpected HTTP response or upgrade write error", { code }),
@@ -3879,16 +3198,6 @@ export const createServer = Effect.fn(function* (
         ),
     }),
   );
-  /** Provider inventory routes: a project id to its workspace root; paths never come from the browser. */
-  const resolveProviderInventoryProjectRoot = (projectId: string | undefined) =>
-    Effect.gen(function* () {
-      if (!projectId) return undefined;
-      const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
-      const model = yield* orchestrationEngine.getReadModel();
-      const project = model.projects.find((p) => p.id === projectId && p.deletedAt === null);
-      if (!project) return yield* new RouteRequestError({ message: "Project not found." });
-      return project.workspaceRoot;
-    });
   const withTerminalThreadAccess = <A>(threadId: string, action: Effect.Effect<A, TerminalError>) =>
     Effect.gen(function* () {
       const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
@@ -4727,6 +4036,100 @@ export const createServer = Effect.fn(function* (
           }),
         ),
       }),
+    )
+    .and(
+      storageRoutes({
+        stateDir: serverConfig.stateDir,
+        path,
+        sql,
+        diskSpaceMonitor,
+        runtime: awaitOrchestrationRuntimeForRoute,
+      }),
+    )
+    .and(
+      worktreeRoutes({
+        runtime: awaitOrchestrationRuntimeForRoute,
+        publishNextTurnQueueSnapshot,
+      }),
+    )
+    .and(
+      workflowRoutes({
+        runtime: awaitOrchestrationRuntimeForRoute,
+      }),
+    )
+    .and(
+      prHubRoutes({
+        prHub,
+        prHubAdvisory,
+        prHubReviewGuide,
+        forgeAccounts,
+        prHubExtensions,
+        runtime: awaitOrchestrationRuntimeForRoute,
+      }),
+    )
+    .and(
+      mcpRoutes({
+        projectMcpConfigService,
+        mcpRuntimeService,
+        mcpHub,
+        mcpHubAuth,
+        codexMcpEventBus,
+        providerService,
+        profileSecrets,
+        storeMcpSecret,
+        resolveMcpFeatureExecution,
+        resolveMcpAccount,
+        runtime: awaitOrchestrationRuntimeForRoute,
+      }),
+    )
+    .and(
+      previewRoutes({
+        stateDir: serverConfig.stateDir,
+        fileSystem,
+        path,
+        previewManager,
+        previewAutomationBroker,
+        htmlPreviewBroker,
+        computerAutomationBroker,
+        ownedPreviewUrls,
+        pushBus,
+        providerService,
+        providerInstanceRegistry,
+        serverSettings,
+        previewAutomationClientIdsByWs,
+        previewAutomationHostIdByWs,
+        getPreviewAutomationHostId,
+        getServerPreviewAutomationClientId,
+        authorizedPreviewAutomationClientIds,
+      }),
+    )
+    .and(
+      serverMetaRoutes({
+        serverConfig,
+        cwd,
+        keybindingsConfigPath,
+        availableEditors,
+        sql,
+        clientDiagnosticsReporter,
+        currentRuntimeReadiness,
+        keybindingsManager,
+        providerAdvisoryProjection,
+        providerInstanceRegistry,
+        providerRegistry,
+        providerUpdateAdvisor,
+        harnessValidation,
+        serverSettings,
+        themeBackgrounds,
+        projectionProjects,
+        computerAutomationBroker,
+        getProjectSkillSyncServiceIfReady: Effect.gen(function* () {
+          const ready = yield* Deferred.isDone(orchestrationRuntime);
+          if (!ready) return Option.none();
+          const resolved = yield* Deferred.await(orchestrationRuntime).pipe(Effect.option);
+          return Option.map(resolved, (rt) => rt.projectSkillSyncService);
+        }),
+        runtime: awaitOrchestrationRuntimeForRoute,
+      }),
     ).table;
 
   const routeRequest = Effect.fnUntraced(function* (ws: WebSocket, request: WebSocketRequest) {
@@ -5515,262 +4918,6 @@ export const createServer = Effect.fn(function* (
         return yield* threadFileChangeQuery.getThreadFileChange(body);
       }
 
-      case ORCHESTRATION_WS_METHODS.createWorkflow: {
-        const { workflowService } = yield* awaitOrchestrationRuntimeForRoute;
-        const body = stripRequestTag(request.body);
-        const workflowId = yield* workflowService.createWorkflow(body).pipe(
-          Effect.mapError(
-            (cause) =>
-              new RouteRequestError({
-                message: `Failed to create workflow: ${String(cause)}`,
-              }),
-          ),
-        );
-        return { workflowId };
-      }
-
-      case ORCHESTRATION_WS_METHODS.archiveWorkflow: {
-        const { workflowService } = yield* awaitOrchestrationRuntimeForRoute;
-        const body = stripRequestTag(request.body);
-        yield* workflowService.archiveWorkflow(body.workflowId).pipe(
-          Effect.mapError(
-            (cause) =>
-              new RouteRequestError({
-                message: `Failed to archive workflow: ${String(cause)}`,
-              }),
-          ),
-        );
-        return undefined;
-      }
-
-      case ORCHESTRATION_WS_METHODS.unarchiveWorkflow: {
-        const { workflowService } = yield* awaitOrchestrationRuntimeForRoute;
-        const body = stripRequestTag(request.body);
-        yield* workflowService.unarchiveWorkflow(body.workflowId).pipe(
-          Effect.mapError(
-            (cause) =>
-              new RouteRequestError({
-                message: `Failed to unarchive workflow: ${String(cause)}`,
-              }),
-          ),
-        );
-        return undefined;
-      }
-
-      case ORCHESTRATION_WS_METHODS.createCodeReviewWorkflow: {
-        const { codeReviewWorkflowService } = yield* awaitOrchestrationRuntimeForRoute;
-        const body = stripRequestTag(request.body);
-        const workflowId = yield* codeReviewWorkflowService.createWorkflow(body).pipe(
-          Effect.mapError(
-            (cause) =>
-              new RouteRequestError({
-                message: `Failed to create code review workflow: ${String(cause)}`,
-              }),
-          ),
-        );
-        return { workflowId };
-      }
-
-      case ORCHESTRATION_WS_METHODS.createInvestigationWorkflow: {
-        const { investigationWorkflowService } = yield* awaitOrchestrationRuntimeForRoute;
-        const body = stripRequestTag(request.body);
-        const workflowId = yield* investigationWorkflowService.createWorkflow(body).pipe(
-          Effect.mapError(
-            (cause) =>
-              new RouteRequestError({
-                message: `Failed to create investigation workflow: ${String(cause)}`,
-              }),
-          ),
-        );
-        return { workflowId };
-      }
-
-      case ORCHESTRATION_WS_METHODS.archiveCodeReviewWorkflow: {
-        const { codeReviewWorkflowService } = yield* awaitOrchestrationRuntimeForRoute;
-        const body = stripRequestTag(request.body);
-        yield* codeReviewWorkflowService.archiveWorkflow(body.workflowId).pipe(
-          Effect.mapError(
-            (cause) =>
-              new RouteRequestError({
-                message: `Failed to archive code review workflow: ${String(cause)}`,
-              }),
-          ),
-        );
-        return undefined;
-      }
-
-      case ORCHESTRATION_WS_METHODS.archiveInvestigationWorkflow: {
-        const { investigationWorkflowService } = yield* awaitOrchestrationRuntimeForRoute;
-        const body = stripRequestTag(request.body);
-        yield* investigationWorkflowService.archiveWorkflow(body.workflowId).pipe(
-          Effect.mapError(
-            (cause) =>
-              new RouteRequestError({
-                message: `Failed to archive investigation workflow: ${String(cause)}`,
-              }),
-          ),
-        );
-        return undefined;
-      }
-
-      case ORCHESTRATION_WS_METHODS.unarchiveCodeReviewWorkflow: {
-        const { codeReviewWorkflowService } = yield* awaitOrchestrationRuntimeForRoute;
-        const body = stripRequestTag(request.body);
-        yield* codeReviewWorkflowService.unarchiveWorkflow(body.workflowId).pipe(
-          Effect.mapError(
-            (cause) =>
-              new RouteRequestError({
-                message: `Failed to unarchive code review workflow: ${String(cause)}`,
-              }),
-          ),
-        );
-        return undefined;
-      }
-
-      case ORCHESTRATION_WS_METHODS.unarchiveInvestigationWorkflow: {
-        const { investigationWorkflowService } = yield* awaitOrchestrationRuntimeForRoute;
-        const body = stripRequestTag(request.body);
-        yield* investigationWorkflowService.unarchiveWorkflow(body.workflowId).pipe(
-          Effect.mapError(
-            (cause) =>
-              new RouteRequestError({
-                message: `Failed to unarchive investigation workflow: ${String(cause)}`,
-              }),
-          ),
-        );
-        return undefined;
-      }
-
-      case ORCHESTRATION_WS_METHODS.deleteWorkflow: {
-        const { workflowService } = yield* awaitOrchestrationRuntimeForRoute;
-        const body = stripRequestTag(request.body);
-        return yield* workflowService.deleteWorkflow(body.workflowId, body.deleteThreads).pipe(
-          Effect.mapError(
-            (cause) =>
-              new RouteRequestError({
-                message: `Failed to delete workflow: ${String(cause)}`,
-              }),
-          ),
-        );
-      }
-
-      case ORCHESTRATION_WS_METHODS.deleteCodeReviewWorkflow: {
-        const { codeReviewWorkflowService } = yield* awaitOrchestrationRuntimeForRoute;
-        const body = stripRequestTag(request.body);
-        return yield* codeReviewWorkflowService
-          .deleteWorkflow(body.workflowId, body.deleteThreads)
-          .pipe(
-            Effect.mapError(
-              (cause) =>
-                new RouteRequestError({
-                  message: `Failed to delete code review workflow: ${String(cause)}`,
-                }),
-            ),
-          );
-      }
-
-      case ORCHESTRATION_WS_METHODS.deleteInvestigationWorkflow: {
-        const { investigationWorkflowService } = yield* awaitOrchestrationRuntimeForRoute;
-        const body = stripRequestTag(request.body);
-        return yield* investigationWorkflowService
-          .deleteWorkflow(body.workflowId, body.deleteThreads)
-          .pipe(
-            Effect.mapError(
-              (cause) =>
-                new RouteRequestError({
-                  message: `Failed to delete investigation workflow: ${String(cause)}`,
-                }),
-            ),
-          );
-      }
-
-      case ORCHESTRATION_WS_METHODS.skipDocumentReaderPass: {
-        const { workflowService } = yield* awaitOrchestrationRuntimeForRoute;
-        const body = stripRequestTag(request.body);
-        return yield* workflowService.skipDocumentReaderPass(body).pipe(
-          Effect.mapError(
-            (cause) =>
-              new RouteRequestError({
-                message: `Failed to finish without reader review: ${String(cause)}`,
-              }),
-          ),
-        );
-      }
-
-      case ORCHESTRATION_WS_METHODS.retryWorkflow: {
-        const { workflowService } = yield* awaitOrchestrationRuntimeForRoute;
-        const body = stripRequestTag(request.body);
-        return yield* workflowService.retryWorkflow(body).pipe(
-          Effect.mapError(
-            (cause) =>
-              new RouteRequestError({
-                message: `Failed to retry workflow: ${String(cause)}`,
-              }),
-          ),
-        );
-      }
-
-      case ORCHESTRATION_WS_METHODS.retryCodeReviewWorkflow: {
-        const { codeReviewWorkflowService } = yield* awaitOrchestrationRuntimeForRoute;
-        const body = stripRequestTag(request.body);
-        return yield* codeReviewWorkflowService.retryWorkflow(body).pipe(
-          Effect.mapError(
-            (cause) =>
-              new RouteRequestError({
-                message: `Failed to retry code review workflow: ${String(cause)}`,
-              }),
-          ),
-        );
-      }
-
-      case ORCHESTRATION_WS_METHODS.postCodeReviewWorkflow: {
-        const { codeReviewWorkflowService } = yield* awaitOrchestrationRuntimeForRoute;
-        const body = stripRequestTag(request.body);
-        return yield* codeReviewWorkflowService
-          .postWorkflow(body)
-          .pipe(Effect.mapError((cause) => new RouteRequestError({ message: cause.message })));
-      }
-
-      case ORCHESTRATION_WS_METHODS.retryInvestigationWorkflow: {
-        const { investigationWorkflowService } = yield* awaitOrchestrationRuntimeForRoute;
-        const body = stripRequestTag(request.body);
-        yield* investigationWorkflowService.retryWorkflow(body).pipe(
-          Effect.mapError(
-            (cause) =>
-              new RouteRequestError({
-                message: `Failed to retry investigation workflow: ${String(cause)}`,
-              }),
-          ),
-        );
-        return undefined;
-      }
-
-      case ORCHESTRATION_WS_METHODS.startImplementation: {
-        const { workflowService } = yield* awaitOrchestrationRuntimeForRoute;
-        const body = stripRequestTag(request.body);
-        yield* workflowService
-          .startImplementation({
-            workflowId: body.workflowId,
-            provider: body.provider,
-            model: body.model,
-            runtimeMode: body.runtimeMode,
-            codeReviewEnabled: body.codeReviewEnabled,
-            envMode: body.envMode,
-            ...(body.modelOptions ? { modelOptions: body.modelOptions } : {}),
-            ...(body.providerOptions ? { providerOptions: body.providerOptions } : {}),
-            ...(body.baseBranch ? { baseBranch: body.baseBranch } : {}),
-          })
-          .pipe(
-            Effect.mapError(
-              (cause) =>
-                new RouteRequestError({
-                  message: `Failed to start implementation: ${String(cause)}`,
-                }),
-            ),
-          );
-        return undefined;
-      }
-
       case WS_METHODS.projectsClone: {
         return yield* projectClones.start(stripRequestTag(request.body)).pipe(
           Effect.mapError(
@@ -5994,10 +5141,7 @@ export const createServer = Effect.fn(function* (
         const body = stripRequestTag(request.body);
         return yield* Effect.tryPromise({
           try: () => listWorkspaceEntries(body),
-          catch: (cause) =>
-            new RouteRequestError({
-              message: `Failed to list workspace entries: ${String(cause)}`,
-            }),
+          catch: (cause) => workspaceSearchRouteError(cause, "Failed to list workspace entries"),
         });
       }
 
@@ -6005,10 +5149,7 @@ export const createServer = Effect.fn(function* (
         const body = stripRequestTag(request.body);
         return yield* Effect.tryPromise({
           try: () => searchWorkspaceEntries(body),
-          catch: (cause) =>
-            new RouteRequestError({
-              message: `Failed to search workspace entries: ${String(cause)}`,
-            }),
+          catch: (cause) => workspaceSearchRouteError(cause, "Failed to search workspace entries"),
         });
       }
 
@@ -6118,15 +5259,15 @@ export const createServer = Effect.fn(function* (
             }
           },
           catch: (cause) => {
-            const detail = cause instanceof Error ? cause.message : String(cause);
-            logger.warn("Project content search request failed", {
-              projectId: body.projectId,
-              threadId: body.threadId ?? null,
-              detail,
-            });
-            return new RouteRequestError({
-              message: `Project content search failed: ${detail}`,
-            });
+            const error = workspaceSearchRouteError(cause, "Project content search failed");
+            if (!(cause instanceof WorkspaceSearchRestrictedError)) {
+              logger.warn("Project content search request failed", {
+                projectId: body.projectId,
+                threadId: body.threadId ?? null,
+                detail: error.message,
+              });
+            }
+            return error;
           },
         });
       }
@@ -6521,1175 +5662,10 @@ export const createServer = Effect.fn(function* (
         });
       }
 
-      case PR_HUB_WS_METHODS.claimNotifications:
-        return yield* prHub.claimNotifications(stripRequestTag(request.body));
-      case PR_HUB_WS_METHODS.acknowledgeNotifications:
-        yield* prHub.acknowledgeNotifications(stripRequestTag(request.body));
-        return yield* prHub.getOverview({
-          accountGeneration:
-            "accountGeneration" in request.body ? request.body.accountGeneration : undefined,
-        });
-      case PR_HUB_WS_METHODS.listAccounts:
-        if (Option.isNone(forgeAccounts)) throw new Error("Forge accounts are unavailable.");
-        return yield* forgeAccounts.value.listAccounts();
-      case PR_HUB_WS_METHODS.removeAccount:
-        if (Option.isNone(forgeAccounts)) throw new Error("Forge accounts are unavailable.");
-        return yield* forgeAccounts.value.removeAccount(request.body.accountId);
-      case PR_HUB_WS_METHODS.saveAccount:
-        if (Option.isNone(forgeAccounts)) throw new Error("Forge accounts are unavailable.");
-        return yield* forgeAccounts.value.saveAccount(stripRequestTag(request.body));
-      case PR_HUB_WS_METHODS.listAccountRouting:
-        if (Option.isNone(forgeAccounts)) throw new Error("Forge accounts are unavailable.");
-        return yield* forgeAccounts.value.listRouting();
-      case PR_HUB_WS_METHODS.removeAccountRouting:
-        if (Option.isNone(forgeAccounts)) throw new Error("Forge accounts are unavailable.");
-        return yield* forgeAccounts.value.removeRouting(stripRequestTag(request.body));
-      case PR_HUB_WS_METHODS.setAccountRouting:
-        if (Option.isNone(forgeAccounts)) throw new Error("Forge accounts are unavailable.");
-        return yield* forgeAccounts.value.setRouting(stripRequestTag(request.body));
-      case PR_HUB_WS_METHODS.peek:
-        if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
-        return yield* prHubExtensions.value.peek(stripRequestTag(request.body)).pipe(
-          Effect.mapError(
-            (error) =>
-              new RouteRequestError({
-                message: error.message,
-                code: prHubPeekErrorCode(error),
-              }),
-          ),
-        );
-      case PR_HUB_WS_METHODS.getStack:
-        if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
-        return yield* prHubExtensions.value.getStack(stripRequestTag(request.body));
-      case PR_HUB_WS_METHODS.getViewedFiles:
-        if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
-        return yield* prHubExtensions.value.getViewedFiles(stripRequestTag(request.body));
-      case PR_HUB_WS_METHODS.setViewedFile:
-        if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
-        return yield* prHubExtensions.value.setViewedFile(stripRequestTag(request.body));
-      case PR_HUB_WS_METHODS.getThreadLinks:
-        if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
-        return yield* prHubExtensions.value.getThreadLinks(request.body.threadId);
-      case PR_HUB_WS_METHODS.getThreadsForPr:
-        if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
-        return yield* prHubExtensions.value.getThreadsForPr(request.body.key);
-      case PR_HUB_WS_METHODS.prepareOperation:
-        if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
-        return yield* prHubExtensions.value.prepareOperation(stripRequestTag(request.body));
-      case PR_HUB_WS_METHODS.submitOperation:
-        if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
-        return yield* prHubExtensions.value.submitOperation(stripRequestTag(request.body));
-      case PR_HUB_WS_METHODS.getOperation:
-        if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
-        return yield* prHubExtensions.value.getOperation(stripRequestTag(request.body));
-      case PR_HUB_WS_METHODS.cancelOperation:
-        if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions unavailable.");
-        return yield* prHubExtensions.value.cancelOperation(stripRequestTag(request.body));
-      case PR_HUB_WS_METHODS.recoverOperation:
-        if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
-        return yield* prHubExtensions.value.recoverOperation(stripRequestTag(request.body));
-      case PR_HUB_WS_METHODS.listReviewerCandidates:
-        if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
-        return yield* prHubExtensions.value.listReviewerCandidates(stripRequestTag(request.body));
-      case PR_HUB_WS_METHODS.completions:
-        if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
-        return yield* prHubExtensions.value.completions(stripRequestTag(request.body));
-      case PR_HUB_WS_METHODS.getChecks:
-        if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
-        return yield* prHubExtensions.value.getChecks(stripRequestTag(request.body));
-      case PR_HUB_WS_METHODS.getCheckLog:
-        if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
-        return yield* prHubExtensions.value.getCheckLog(stripRequestTag(request.body));
-
-      case PR_HUB_WS_METHODS.getOverview:
-        return yield* prHub.getOverview(stripRequestTag(request.body));
-      case PR_HUB_WS_METHODS.listPullRequests: {
-        const page = yield* prHub.listPullRequests(stripRequestTag(request.body));
-        if (Option.isNone(prHubExtensions)) return page;
-        return yield* withPrHubThreadLinks(page, prHubExtensions.value.getThreadsForPrs);
-      }
-
-      case PR_HUB_WS_METHODS.refresh: {
-        const body = stripRequestTag(request.body);
-        yield* prHub.refreshNow(body);
-        return yield* prHub.getOverview({
-          accountGeneration:
-            "accountGeneration" in request.body ? request.body.accountGeneration : undefined,
-        });
-      }
-
-      case PR_HUB_WS_METHODS.approve: {
-        const body = stripRequestTag(request.body);
-        yield* prHub.approve(body);
-        return yield* prHub.getOverview({
-          accountGeneration:
-            "accountGeneration" in request.body ? request.body.accountGeneration : undefined,
-        });
-      }
-
-      case PR_HUB_WS_METHODS.requestChanges: {
-        const body = stripRequestTag(request.body);
-        yield* prHub.requestChanges(body);
-        return yield* prHub.getOverview({
-          accountGeneration:
-            "accountGeneration" in request.body ? request.body.accountGeneration : undefined,
-        });
-      }
-
-      case PR_HUB_WS_METHODS.comment: {
-        const body = stripRequestTag(request.body);
-        yield* prHub.comment(body);
-        return yield* prHub.getOverview({
-          accountGeneration:
-            "accountGeneration" in request.body ? request.body.accountGeneration : undefined,
-        });
-      }
-
-      case PR_HUB_WS_METHODS.merge: {
-        const body = stripRequestTag(request.body);
-        yield* prHub.merge(body);
-        return yield* prHub.getOverview({
-          accountGeneration:
-            "accountGeneration" in request.body ? request.body.accountGeneration : undefined,
-        });
-      }
-
-      case PR_HUB_WS_METHODS.markReady: {
-        const body = stripRequestTag(request.body);
-        yield* prHub.markReady(body);
-        return yield* prHub.getOverview({
-          accountGeneration:
-            "accountGeneration" in request.body ? request.body.accountGeneration : undefined,
-        });
-      }
-
-      case PR_HUB_WS_METHODS.reRequestReview: {
-        const body = stripRequestTag(request.body);
-        yield* prHub.reRequestReview(body);
-        return yield* prHub.getOverview({
-          accountGeneration:
-            "accountGeneration" in request.body ? request.body.accountGeneration : undefined,
-        });
-      }
-
-      case PR_HUB_WS_METHODS.snooze: {
-        const body = stripRequestTag(request.body);
-        yield* prHub.snooze(body);
-        return yield* prHub.getOverview({
-          accountGeneration:
-            "accountGeneration" in request.body ? request.body.accountGeneration : undefined,
-        });
-      }
-
-      case PR_HUB_WS_METHODS.unsnooze: {
-        const body = stripRequestTag(request.body);
-        yield* prHub.unsnooze(body);
-        return yield* prHub.getOverview({
-          accountGeneration:
-            "accountGeneration" in request.body ? request.body.accountGeneration : undefined,
-        });
-      }
-
-      case PR_HUB_WS_METHODS.ignore: {
-        const body = stripRequestTag(request.body);
-        yield* prHub.ignore(body);
-        return yield* prHub.getOverview({
-          accountGeneration:
-            "accountGeneration" in request.body ? request.body.accountGeneration : undefined,
-        });
-      }
-
-      case PR_HUB_WS_METHODS.unignore: {
-        const body = stripRequestTag(request.body);
-        yield* prHub.unignore(body);
-        return yield* prHub.getOverview({
-          accountGeneration:
-            "accountGeneration" in request.body ? request.body.accountGeneration : undefined,
-        });
-      }
-
-      case PR_HUB_WS_METHODS.bulkUpdate:
-        return yield* prHub.bulkUpdate(stripRequestTag(request.body));
-
-      case PR_HUB_WS_METHODS.acknowledgeAttention:
-        yield* prHub.acknowledgeAttention(stripRequestTag(request.body));
-        return yield* prHub.getOverview({
-          accountGeneration:
-            "accountGeneration" in request.body ? request.body.accountGeneration : undefined,
-        });
-
-      case PR_HUB_WS_METHODS.markSeen: {
-        const body = stripRequestTag(request.body);
-        yield* prHub.markSeen(body);
-        return yield* prHub.getOverview({
-          accountGeneration:
-            "accountGeneration" in request.body ? request.body.accountGeneration : undefined,
-        });
-      }
-
-      case PR_HUB_WS_METHODS.markNotified: {
-        const body = stripRequestTag(request.body);
-        yield* prHub.markNotified(body);
-        return yield* prHub.getOverview({
-          accountGeneration:
-            "accountGeneration" in request.body ? request.body.accountGeneration : undefined,
-        });
-      }
-
-      case PR_HUB_WS_METHODS.analyzeAdvisories: {
-        const body = stripRequestTag(request.body);
-        return yield* prHubAdvisory.analyzeAdvisories(body);
-      }
-
-      case MCP_APPS_WS_METHODS.toolInfo:
-        return yield* (yield* awaitOrchestrationRuntimeForRoute).mcpApps.toolInfo(
-          stripRequestTag(request.body),
-        );
-      case MCP_APPS_WS_METHODS.callTool:
-        return yield* (yield* awaitOrchestrationRuntimeForRoute).mcpApps.callTool(
-          stripRequestTag(request.body),
-        );
-      case MCP_APPS_WS_METHODS.readResource:
-        return yield* (yield* awaitOrchestrationRuntimeForRoute).mcpApps.readResource(
-          stripRequestTag(request.body),
-        );
-      case MCP_APPS_WS_METHODS.updateModelContext:
-        return yield* (yield* awaitOrchestrationRuntimeForRoute).mcpApps.updateModelContext(
-          stripRequestTag(request.body),
-        );
       case THREAD_SETTLEMENT_WS_METHODS.settleProjectIdle:
         return yield* (yield* awaitOrchestrationRuntimeForRoute).threadSettlement.settleProjectIdle(
           request.body.projectId,
         );
-      case PR_WATCH_WS_METHODS.list:
-        return yield* (yield* awaitOrchestrationRuntimeForRoute).pullRequestWatches.list(
-          request.body.threadId,
-        );
-      case PR_WATCH_WS_METHODS.start:
-        return yield* (yield* awaitOrchestrationRuntimeForRoute).pullRequestWatches.startWatch(
-          stripRequestTag(request.body),
-        );
-      case PR_WATCH_WS_METHODS.stop:
-        return yield* (yield* awaitOrchestrationRuntimeForRoute).pullRequestWatches.stopWatch(
-          stripRequestTag(request.body),
-        );
-      case PR_HUB_WS_METHODS.getReviewGuide:
-        return yield* prHubReviewGuide.get(stripRequestTag(request.body));
-      case PR_HUB_WS_METHODS.generateReviewGuide:
-        return yield* prHubReviewGuide.generate(stripRequestTag(request.body));
-
-      case PR_HUB_WS_METHODS.getAdvisories: {
-        const body = stripRequestTag(request.body);
-        return yield* prHubAdvisory.getAdvisories(body);
-      }
-
-      case PR_HUB_WS_METHODS.resolveLocalCheckout: {
-        const body = stripRequestTag(request.body);
-        return yield* prHub.resolveLocalCheckout(body);
-      }
-      case PR_HUB_WS_METHODS.listLocalCheckoutCandidates: {
-        const body = stripRequestTag(request.body);
-        return yield* prHub.listLocalCheckoutCandidates(body);
-      }
-
-      case PR_HUB_WS_METHODS.getDetail: {
-        const body = stripRequestTag(request.body);
-        return yield* prHub.getDetail(body);
-      }
-
-      case PR_HUB_WS_METHODS.getTimeline: {
-        const body = stripRequestTag(request.body);
-        return yield* prHub.getTimeline(body);
-      }
-
-      case PR_HUB_WS_METHODS.getUnresolvedThreads: {
-        const body = stripRequestTag(request.body);
-        return yield* prHub.getUnresolvedThreads(body);
-      }
-      case PR_HUB_WS_METHODS.prepareComment:
-        return yield* prHub.prepareComment(stripRequestTag(request.body));
-      case PR_HUB_WS_METHODS.submitComment:
-        return yield* prHub.submitComment(stripRequestTag(request.body));
-      case PR_HUB_WS_METHODS.getCommentOperation:
-        return yield* prHub.getCommentOperation(stripRequestTag(request.body));
-      case PR_HUB_WS_METHODS.recoverComment:
-        return yield* prHub.recoverComment(stripRequestTag(request.body));
-      case PR_HUB_WS_METHODS.prepareQuickReview:
-        return yield* prHub.prepareQuickReview(stripRequestTag(request.body));
-      case PR_HUB_WS_METHODS.prepareReview:
-        return yield* prHub.prepareReview(stripRequestTag(request.body));
-      case PR_HUB_WS_METHODS.submitReview:
-        return yield* prHub.submitReview(stripRequestTag(request.body));
-      case PR_HUB_WS_METHODS.getReviewOperation:
-        return yield* prHub.getReviewOperation(stripRequestTag(request.body));
-      case PR_HUB_WS_METHODS.track:
-        return yield* prHub.track(stripRequestTag(request.body));
-      case PR_HUB_WS_METHODS.recoverReview:
-        return yield* prHub.recoverReview(stripRequestTag(request.body));
-      case PR_HUB_WS_METHODS.cancelReviewPreparation:
-        return yield* prHub.cancelReviewPreparation(stripRequestTag(request.body));
-      case PR_HUB_WS_METHODS.replyReviewThread:
-        return yield* prHub.replyReviewThread(stripRequestTag(request.body));
-      case PR_HUB_WS_METHODS.recoverReply:
-        return yield* prHub.recoverReply(stripRequestTag(request.body));
-      case PR_HUB_WS_METHODS.getReplyDraft:
-        return yield* prHub.getReplyDraft(stripRequestTag(request.body));
-      case PR_HUB_WS_METHODS.saveReplyDraft:
-        return yield* prHub.saveReplyDraft(stripRequestTag(request.body));
-      case PR_HUB_WS_METHODS.getReplyOperation:
-        return yield* prHub.getReplyOperation(stripRequestTag(request.body));
-      case PR_HUB_WS_METHODS.getReviewThreads:
-        return yield* prHub.getReviewThreads(stripRequestTag(request.body));
-      case PR_HUB_WS_METHODS.setReviewThreadState:
-        return yield* prHub.setReviewThreadState(stripRequestTag(request.body));
-      case PR_HUB_WS_METHODS.getReviewDraft: {
-        return yield* prHub.getReviewDraft(stripRequestTag(request.body));
-      }
-      case PR_HUB_WS_METHODS.saveReviewDraft: {
-        return yield* prHub.saveReviewDraft(stripRequestTag(request.body));
-      }
-      case PR_HUB_WS_METHODS.getFiles: {
-        const body = stripRequestTag(request.body);
-        return yield* prHub.getFiles(body);
-      }
-      case PR_HUB_WS_METHODS.getChangeBreakdown: {
-        return yield* prHub.getChangeBreakdown(stripRequestTag(request.body));
-      }
-
-      case PR_HUB_WS_METHODS.updateComment: {
-        const body = stripRequestTag(request.body);
-        return yield* prHub.updateComment(body);
-      }
-
-      case PR_HUB_WS_METHODS.setReaction: {
-        const body = stripRequestTag(request.body);
-        return yield* prHub.setReaction(body);
-      }
-
-      case PR_HUB_WS_METHODS.changeReviewers: {
-        const body = stripRequestTag(request.body);
-        return yield* prHub.changeReviewers(body);
-      }
-
-      case PR_HUB_WS_METHODS.updateBranch: {
-        const body = stripRequestTag(request.body);
-        return yield* prHub.updateBranch(body);
-      }
-
-      case PR_HUB_WS_METHODS.clearData:
-        yield* prHub.clearData(stripRequestTag(request.body));
-        return yield* prHub.getOverview({
-          accountGeneration:
-            "accountGeneration" in request.body ? request.body.accountGeneration : undefined,
-        });
-
-      case WS_METHODS.previewOpen: {
-        const body = stripRequestTag(request.body);
-        return yield* previewManager.open(body).pipe(
-          Effect.mapError(
-            (error) =>
-              new RouteRequestError({
-                message: error.message,
-              }),
-          ),
-        );
-      }
-
-      case WS_METHODS.previewNavigate: {
-        const body = stripRequestTag(request.body);
-        return yield* previewManager.navigate(body).pipe(
-          Effect.mapError(
-            (error) =>
-              new RouteRequestError({
-                message: error.message,
-              }),
-          ),
-        );
-      }
-
-      case WS_METHODS.previewReportStatus: {
-        const body = stripRequestTag(request.body);
-        return yield* previewManager.reportStatus(body).pipe(
-          Effect.mapError(
-            (error) =>
-              new RouteRequestError({
-                message: error.message,
-              }),
-          ),
-        );
-      }
-
-      case WS_METHODS.previewReportRecordingMetrics: {
-        const body = stripRequestTag(request.body);
-        yield* increment(previewRecordingFramesDroppedTotal, {}, body.droppedFrames);
-        return undefined;
-      }
-
-      case WS_METHODS.previewRefresh: {
-        const body = stripRequestTag(request.body);
-        return yield* previewManager.refresh(body).pipe(
-          Effect.mapError(
-            (error) =>
-              new RouteRequestError({
-                message: error.message,
-              }),
-          ),
-        );
-      }
-
-      case WS_METHODS.previewClose: {
-        const body = stripRequestTag(request.body);
-        return yield* previewManager.close(body).pipe(
-          Effect.tap(() => previewAutomationBroker.clearTargets(body.threadId, body.tabId)),
-          Effect.mapError(
-            (error) =>
-              new RouteRequestError({
-                message: error.message,
-              }),
-          ),
-        );
-      }
-
-      case WS_METHODS.previewList: {
-        const body = stripRequestTag(request.body);
-        return yield* previewManager.list(body);
-      }
-
-      case WS_METHODS.previewListLocalServers: {
-        const servers = yield* Effect.tryPromise({
-          try: () => scanLocalServers(ownedPreviewUrls.urls),
-          catch: (cause) =>
-            new RouteRequestError({
-              message: `Failed to discover local servers: ${String(cause)}`,
-            }),
-        });
-        const result = { servers, scannedAt: new Date().toISOString() };
-        yield* pushBus.publishClient(ws, WS_CHANNELS.previewLocalServersUpdated, result);
-        return result;
-      }
-
-      case WS_METHODS.previewAutomationReportOwner: {
-        const body = stripRequestTag(request.body);
-        const clientId = getServerPreviewAutomationClientId(ws, body.clientId);
-        if (!body.supportsAutomation) {
-          yield* previewAutomationBroker.clearOwner(clientId, body.connectionId);
-          return {
-            clientId: body.clientId,
-            connectionId: body.connectionId ?? "preview-disabled",
-            leaseExpiresAt: new Date().toISOString(),
-          };
-        }
-        if (body.tabId) {
-          const previewList = yield* previewManager.list({ threadId: body.threadId });
-          const ownsTab = previewList.sessions.some((session) => session.tabId === body.tabId);
-          if (!ownsTab) {
-            yield* previewAutomationBroker.clearOwner(clientId, body.connectionId);
-            return {
-              clientId: body.clientId,
-              connectionId: body.connectionId ?? "preview-invalid-tab",
-              leaseExpiresAt: new Date().toISOString(),
-            };
-          }
-        }
-        return yield* previewAutomationBroker.reportOwner(
-          {
-            ...body,
-            clientId,
-            supportsAutomation: true,
-            focusedAt: new Date().toISOString(),
-          },
-          {
-            clientId,
-            rendererClientId: body.clientId,
-            hostId: getPreviewAutomationHostId(ws),
-            send: (automationRequest) =>
-              pushBus.publishClient(ws, WS_CHANNELS.previewAutomationRequest, automationRequest),
-          },
-        );
-      }
-
-      case WS_METHODS.previewAutomationClearOwner: {
-        const body = stripRequestTag(request.body);
-        const clientIds = previewAutomationClientIdsByWs.get(ws);
-        const serverClientId = clientIds?.get(body.clientId);
-        if (serverClientId) {
-          yield* previewAutomationBroker.clearOwner(serverClientId, body.connectionId);
-          clientIds?.delete(body.clientId);
-        }
-        return undefined;
-      }
-
-      case HTML_RENDER_WS_METHODS.host: {
-        const body = stripRequestTag(request.body);
-        if (body.available)
-          htmlPreviewBroker.register(getPreviewAutomationHostId(ws), {
-            push: (request) => pushBus.publishClient(ws, WS_CHANNELS.htmlRenderRequest, request),
-          });
-        else htmlPreviewBroker.unregister(getPreviewAutomationHostId(ws));
-        return undefined;
-      }
-      case HTML_RENDER_WS_METHODS.respond: {
-        const body = stripRequestTag(request.body);
-        htmlPreviewBroker.respond(getPreviewAutomationHostId(ws), body);
-        return undefined;
-      }
-      case WS_METHODS.previewAutomationRespond: {
-        const body = stripRequestTag(request.body);
-        yield* previewAutomationBroker.respond(
-          body,
-          authorizedPreviewAutomationClientIds(ws),
-          previewAutomationHostIdByWs.get(ws),
-        );
-        return undefined;
-      }
-
-      case WS_METHODS.previewAutomationSetPaused: {
-        const body = stripRequestTag(request.body);
-        if (!body.paused && Option.isSome(computerAutomationBroker)) {
-          const broker = computerAutomationBroker.value;
-          yield* Effect.try({
-            try: () => broker.assertRemoteResumeAllowed(body.threadId),
-            catch: () =>
-              new RouteRequestError({
-                message: "Resume computer control on the computer running F5.",
-              }),
-          });
-        }
-        yield* previewAutomationBroker.setPaused(body.threadId, body.paused);
-        if (Option.isSome(computerAutomationBroker))
-          computerAutomationBroker.value.setPaused(body.threadId, body.paused);
-        return undefined;
-      }
-
-      case WS_METHODS.computerChromeRelease: {
-        if (Option.isNone(computerAutomationBroker))
-          return { released: false, outcome: "not-holder" as const };
-        const broker = computerAutomationBroker.value;
-        const body = stripRequestTag(request.body);
-        // The same path preemption uses: only an idle holder in this profile gives way.
-        const outcome = yield* Effect.promise(() =>
-          broker.releaseChromeHolderOutcome(body.threadId),
-        );
-        return { released: outcome === "released", outcome };
-      }
-
-      case WS_METHODS.computerAccessRevoke:
-      case WS_METHODS.computerAccessList:
-      case WS_METHODS.computerAccessListRemembered:
-      case WS_METHODS.computerAccessForgetRemembered: {
-        if (Option.isNone(computerAutomationBroker))
-          return request.body._tag === WS_METHODS.computerAccessList ||
-            request.body._tag === WS_METHODS.computerAccessListRemembered
-            ? []
-            : undefined;
-        const access = computerAutomationBroker.value.access;
-        const body = stripRequestTag(request.body);
-        if (
-          request.body._tag === WS_METHODS.computerAccessRevoke &&
-          "threadId" in body &&
-          typeof body.threadId === "string" &&
-          "appId" in body &&
-          typeof body.appId === "string"
-        ) {
-          access.revoke(body.threadId, body.appId);
-          return undefined;
-        }
-        if (
-          request.body._tag === WS_METHODS.computerAccessList &&
-          "threadId" in body &&
-          typeof body.threadId === "string"
-        )
-          return access.grants(body.threadId);
-        if (
-          request.body._tag === WS_METHODS.computerAccessListRemembered &&
-          "projectId" in body &&
-          typeof body.projectId === "string"
-        )
-          return access.listRemembered(body.projectId);
-        if (
-          "projectId" in body &&
-          typeof body.projectId === "string" &&
-          "appId" in body &&
-          typeof body.appId === "string"
-        )
-          yield* Effect.promise(() =>
-            access.forgetRemembered(body.projectId as string, body.appId as string),
-          );
-        return undefined;
-      }
-      case WS_METHODS.claudeChromeRestoreNativeHost:
-      case WS_METHODS.codexChromeRestoreNativeHost: {
-        const body = stripRequestTag(request.body);
-        const provider =
-          request.body._tag === WS_METHODS.claudeChromeRestoreNativeHost ? "claude" : "codex";
-        const service = yield* ProviderService;
-        const sessions = yield* service.listSessions();
-        // Storage-only: works without a live runtime, after restarts and SDK upgrades.
-        return yield* restoreChromeSessionSetup({
-          stateDir: serverConfig.stateDir,
-          provider,
-          transactionId: body.transactionId,
-          broker: Option.getOrUndefined(computerAutomationBroker),
-          stopSessions: async () => {
-            for (const session of sessions)
-              if (
-                isChromeRuntimeSession(session.threadId) &&
-                ((provider === "claude" && session.provider === "claudeAgent") ||
-                  (provider === "codex" && session.provider === "codex"))
-              )
-                await Effect.runPromise(service.stopSession({ threadId: session.threadId }));
-          },
-        }).pipe(
-          Effect.provideService(FileSystem.FileSystem, fileSystem),
-          Effect.provideService(Path.Path, path),
-          Effect.catchDefect((cause) =>
-            Effect.fail(
-              new RouteRequestError({
-                message: cause instanceof Error ? cause.message : "Chrome restoration failed.",
-              }),
-            ),
-          ),
-        );
-      }
-      case WS_METHODS.chromeNativeHostListTransactions: {
-        const body = stripRequestTag(request.body);
-        return yield* listChromeSessionSetups(serverConfig.stateDir, body.provider).pipe(
-          Effect.provideService(FileSystem.FileSystem, fileSystem),
-          Effect.provideService(Path.Path, path),
-          Effect.catchDefect(() =>
-            Effect.fail(
-              new RouteRequestError({ message: "Chrome transactions could not be read." }),
-            ),
-          ),
-        );
-      }
-      case WS_METHODS.chromeGetReadiness: {
-        const body = stripRequestTag(request.body);
-        const instanceId = ProviderInstanceId.make(body.providerInstanceId);
-        const instance = yield* providerInstanceRegistry.getInstance(instanceId);
-        const settings = yield* serverSettings.getSettings;
-        const checkedAt = new Date().toISOString();
-        const provider = instance?.driverKind === "codex" ? "codex" : "claude";
-        const enabled =
-          provider === "claude" ? settings.enableClaudeInChrome : settings.enableCodexChrome;
-        // Disabled instances and settings answer cheaply without touching disk; a closed
-        // certification gate is static, so its reason is reported even while off.
-        if (!instance?.enabled || !enabled || !instance.adapter.getChromeReadiness) {
-          const reason =
-            instance && !instance.adapter.getChromeReadiness
-              ? "This agent has no provider-native Chrome integration."
-              : integrationUnavailableDetail(
-                  provider === "claude" ? "claude-chrome" : "codex-chrome",
-                  process.platform,
-                  process.arch,
-                );
-          return {
-            providerInstanceId: body.providerInstanceId,
-            provider,
-            eligibility: "off" as const,
-            ...(reason ? { reason } : {}),
-            checkedAt,
-          };
-        }
-        const readiness = yield* instance.adapter.getChromeReadiness();
-        return { providerInstanceId: body.providerInstanceId, provider, checkedAt, ...readiness };
-      }
-
-      case WS_METHODS.serverReportClientDiagnostics:
-        yield* clientDiagnosticsReporter.report(stripRequestTag(request.body));
-        return undefined;
-      case WS_METHODS.serverProbe:
-        // Lets a client holding requests notice readiness even if a push is lost.
-        return { runtime: currentRuntimeReadiness() };
-
-      case WS_METHODS.serverGetHealth:
-        return readServerHealth();
-
-      case WS_METHODS.serverGetConfig:
-        const keybindingsConfig = yield* keybindingsManager.loadConfigState;
-        const providers = yield* providerAdvisoryProjection.getProviders;
-        const settings = yield* serverSettings.getSettings.pipe(
-          Effect.map(redactServerSettingsForClient),
-        );
-        return {
-          cwd,
-          keybindingsConfigPath,
-          keybindings: keybindingsConfig.keybindings,
-          customKeybindings: keybindingsConfig.customKeybindings,
-          issues: keybindingsConfig.issues,
-          providers,
-          availableEditors,
-          settings,
-          diagnostics: publicOtlpConfiguration(
-            resolveOtlpConfiguration(settings.observability, process.env),
-          ),
-          cursorSdkHarness: cursorSdkHarnessHostAvailability(serverConfig),
-          ...(settings.environmentThemes.length
-            ? { themeBackgrounds: yield* Effect.promise(() => themeBackgrounds.paths(settings)) }
-            : {}),
-          privacy: { doNotTrack: isDoNotTrackSet(process.env) },
-        };
-
-      case WS_METHODS.serverGetProjectSettings: {
-        const { projectId } = stripRequestTag(request.body);
-        const projected = yield* projectionProjects.getById({ projectId });
-        if (Option.isNone(projected) || projected.value.deletedAt !== null)
-          return yield* new RouteRequestError({ message: "Project not found." });
-        const project = { ...projected.value, id: projected.value.projectId };
-        const global = yield* serverSettings.getSettings.pipe(
-          Effect.map(redactServerSettingsForClient),
-        );
-        const ready = yield* Deferred.isDone(orchestrationRuntime);
-        const runtime = ready
-          ? yield* Deferred.await(orchestrationRuntime).pipe(Effect.option)
-          : Option.none();
-        return {
-          ...(yield* readProjectSettings(global, project)),
-          skillScanWarnings: Option.isSome(runtime)
-            ? yield* runtime.value.projectSkillSyncService.getWarnings(projectId)
-            : [],
-        };
-      }
-      case WS_METHODS.serverMigrateClientSetting:
-        return yield* serverSettings.migrateClientSetting(request.body);
-      case WS_METHODS.serverUpdateSettings: {
-        const body = stripRequestTag(request.body);
-        if (body.projectSettingsOverrides) {
-          const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
-          const model = yield* orchestrationEngine.getReadModel();
-          for (const [id, value] of Object.entries(body.projectSettingsOverrides)) {
-            if (value !== null && !model.projects.some((p) => p.id === id && !p.deletedAt)) {
-              return yield* new RouteRequestError({
-                message: "Cannot override settings for a missing project.",
-              });
-            }
-          }
-        }
-        const update = serverSettings.updateSettings(body);
-        // Computer policy changes go through the broker's admission barrier before they persist:
-        // admissions close, revisions bump, host scopes drain, then the change applies. On a
-        // persistence failure the barrier reloads policies and reopens under a fresh revision.
-        // Only patches that change effective computer policy pass the barrier, and a project
-        // override change interrupts only that project's threads.
-        const change = Option.isSome(computerAutomationBroker)
-          ? computerPolicyChange(yield* serverSettings.getSettings, body)
-          : null;
-        const guarded =
-          change && Option.isSome(computerAutomationBroker)
-            ? Effect.promise(() =>
-                computerAutomationBroker.value.policyTransition(
-                  () => Effect.runPromise(Effect.exit(update)),
-                  change.global
-                    ? undefined
-                    : (projectId) => projectId !== undefined && change.projects.has(projectId),
-                ),
-              ).pipe(Effect.flatMap((exit) => exit))
-            : update;
-        return yield* guarded.pipe(
-          Effect.map(redactServerSettingsForClient),
-          Effect.mapError(
-            (error) =>
-              new RouteRequestError({
-                message: error.message,
-              }),
-          ),
-        );
-      }
-
-      case WS_METHODS.serverRefreshProviders: {
-        const { instanceId, discoverModels } = stripRequestTag(request.body);
-        // Only the Settings refresh asks for it: drivers with an expensive catalog discovery
-        // (Antigravity) run it then, never for health checks, session restarts, startup or
-        // periodic refreshes.
-        if (discoverModels === true)
-          for (const instance of yield* providerInstanceRegistry.listInstances)
-            if (instanceId === undefined || instance.instanceId === instanceId)
-              yield* instance.requestModelDiscovery ?? Effect.void;
-        if (instanceId) yield* providerRegistry.refreshInstance(instanceId);
-        else yield* providerRegistry.refresh();
-        const providers = yield* providerAdvisoryProjection.getProviders;
-        return { providers };
-      }
-
-      case WS_METHODS.serverCheckProviderUpdates: {
-        const body = stripRequestTag(request.body);
-        yield* providerUpdateAdvisor.refreshAdvisories({ mode: "explicit", ...body });
-        return { providers: yield* providerAdvisoryProjection.getProviders };
-      }
-
-      case WS_METHODS.serverRunProviderUpdate: {
-        const { instanceId } = stripRequestTag(request.body);
-        const result = yield* providerUpdateAdvisor
-          .runUpdate(instanceId)
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-        return { ...result, providers: yield* providerAdvisoryProjection.getProviders };
-      }
-
-      case WS_METHODS.serverCodexConfiguration: {
-        const body = stripRequestTag(request.body);
-        const instance = yield* providerInstanceRegistry.getInstance(body.instanceId);
-        if (!instance?.codexConfiguration)
-          return yield* new RouteRequestError({ message: "Select a configured Codex provider." });
-        const result = yield* instance.codexConfiguration(body.action).pipe(
-          Effect.ensuring(
-            body.action.type === "write" || body.action.type === "setDefault"
-              ? (instance.invalidateModelCatalog ?? Effect.void)
-              : Effect.void,
-          ),
-          Effect.mapError(
-            (error) => new RouteRequestError({ message: error.detail ?? error.message }),
-          ),
-        );
-        return result;
-      }
-      case WS_METHODS.serverSaveProviderFeedback: {
-        const body = stripRequestTag(request.body);
-        const instance = yield* providerInstanceRegistry.getInstance(body.instanceId);
-        if (!instance || instance.driverKind !== "codex" || !instance.saveFeedback)
-          return yield* new RouteRequestError({
-            message: "Feedback bundles are only available for a configured Codex provider.",
-          });
-        return yield* instance
-          .saveFeedback()
-          .pipe(
-            Effect.mapError(
-              (error) => new RouteRequestError({ message: error.detail ?? error.message }),
-            ),
-          );
-      }
-      case WS_METHODS.serverGetProviderInventory: {
-        const body = stripRequestTag(request.body);
-        const instance = yield* providerInstanceRegistry.getInstance(body.instanceId);
-        if (!instance) {
-          return yield* new RouteRequestError({ message: "Provider instance not found." });
-        }
-        const projectRoot = yield* resolveProviderInventoryProjectRoot(body.projectId);
-        const entries = instance.inventory
-          ? yield* instance
-              .inventory({ projectRoot })
-              .pipe(
-                Effect.mapError(
-                  (error) => new RouteRequestError({ message: error.detail ?? error.message }),
-                ),
-              )
-          : {
-              hooks: [],
-              plugins: [],
-              connectors: [],
-              agents: [],
-              warnings: ["This provider does not report an inventory."],
-            };
-        return {
-          instanceId: instance.instanceId,
-          driver: instance.driverKind,
-          generatedAt: new Date().toISOString(),
-          ...(body.projectId ? { projectId: body.projectId } : {}),
-          ...entries,
-        };
-      }
-      case WS_METHODS.serverTrustProviderHooks: {
-        const body = stripRequestTag(request.body);
-        const instance = yield* providerInstanceRegistry.getInstance(body.instanceId);
-        if (!instance || instance.driverKind !== "codex" || !instance.trustHooks)
-          return yield* new RouteRequestError({
-            message: "Hook approval is only available for a configured Codex provider.",
-          });
-        const projectRoot = yield* resolveProviderInventoryProjectRoot(body.projectId);
-        return yield* instance
-          .trustHooks({ projectRoot, hooks: body.hooks })
-          .pipe(
-            Effect.mapError(
-              (error) => new RouteRequestError({ message: error.detail ?? error.message }),
-            ),
-          );
-      }
-
-      case WS_METHODS.serverValidateHarnesses: {
-        const body = stripRequestTag(request.body);
-        const results = yield* harnessValidation
-          .validate(
-            body.providerOptions !== undefined
-              ? { providerOptions: body.providerOptions }
-              : undefined,
-          )
-          .pipe(
-            Effect.mapError((error) =>
-              error._tag === "ProviderValidationBusyError"
-                ? new RouteRequestError({
-                    message: error.message,
-                  })
-                : new RouteRequestError({
-                    message: "Harness validation failed.",
-                  }),
-            ),
-          );
-        return { results };
-      }
-
-      case WS_METHODS.serverUpsertKeybinding: {
-        const body = stripRequestTag(request.body);
-        const keybindingsConfig = yield* keybindingsManager.upsertKeybindingRule(body);
-        return keybindingsConfig;
-      }
-
-      case WS_METHODS.serverAddKeybinding: {
-        const body = stripRequestTag(request.body);
-        return yield* keybindingsManager.addKeybindingRule(body.rule).pipe(
-          Effect.mapError(
-            (error) =>
-              new RouteRequestError({
-                message: error.message,
-              }),
-          ),
-        );
-      }
-
-      case WS_METHODS.serverUpdateKeybinding: {
-        const body = stripRequestTag(request.body);
-        return yield* keybindingsManager.updateKeybindingRule(body).pipe(
-          Effect.mapError(
-            (error) =>
-              new RouteRequestError({
-                message: error.message,
-              }),
-          ),
-        );
-      }
-
-      case WS_METHODS.serverRemoveKeybinding: {
-        const body = stripRequestTag(request.body);
-        return yield* keybindingsManager.removeKeybindingRule(body).pipe(
-          Effect.mapError(
-            (error) =>
-              new RouteRequestError({
-                message: error.message,
-              }),
-          ),
-        );
-      }
-
-      case WS_METHODS.serverResetKeybindings: {
-        return yield* keybindingsManager.resetKeybindingRules.pipe(
-          Effect.mapError(
-            (error) =>
-              new RouteRequestError({
-                message: error.message,
-              }),
-          ),
-        );
-      }
-
-      case WS_METHODS.storageGetUsage: {
-        const { storageMaintenance } = yield* awaitOrchestrationRuntimeForRoute;
-        const body = stripRequestTag(request.body);
-        return yield* storageMaintenance.getUsage(body).pipe(
-          Effect.mapError(
-            (error) =>
-              new RouteRequestError({
-                message: error.message,
-              }),
-          ),
-        );
-      }
-
-      case WS_METHODS.storageGetStatus: {
-        const { storageMaintenance } = yield* awaitOrchestrationRuntimeForRoute;
-        return yield* storageMaintenance.getStatus;
-      }
-      case WS_METHODS.storageGetTargets: {
-        const { storageMaintenance } = yield* awaitOrchestrationRuntimeForRoute;
-        return yield* storageMaintenance
-          .getTargets(stripRequestTag(request.body))
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-      }
-      case WS_METHODS.storageGetOperation: {
-        const { storageMaintenance } = yield* awaitOrchestrationRuntimeForRoute;
-        return yield* storageMaintenance
-          .getOperation(stripRequestTag(request.body))
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-      }
-      case WS_METHODS.storageCleanup: {
-        const { storageMaintenance } = yield* awaitOrchestrationRuntimeForRoute;
-        const body = stripRequestTag(request.body);
-        const result = yield* storageMaintenance.acceptCleanup(body).pipe(
-          Effect.mapError(
-            (error) =>
-              new RouteRequestError({
-                message: error.message,
-              }),
-          ),
-        );
-        return result;
-      }
-
-      case WS_METHODS.storageGetDiskSpace: {
-        if (diskSpaceMonitor._tag === "None") {
-          return yield* new RouteRequestError({
-            message: "Free disk space monitoring is unavailable.",
-          });
-        }
-        const body = stripRequestTag(request.body);
-        return yield* diskSpaceMonitor.value.getStatus({ force: body.force ?? false });
-      }
-
-      case WS_METHODS.storageCancelCleanup: {
-        const { storageMaintenance } = yield* awaitOrchestrationRuntimeForRoute;
-        const body = stripRequestTag(request.body);
-        yield* storageMaintenance.cancel(body.operationId);
-        return undefined;
-      }
-
-      case WS_METHODS.storageScheduleCompaction: {
-        const { storageMaintenance } = yield* awaitOrchestrationRuntimeForRoute;
-        const body = stripRequestTag(request.body);
-        const result = yield* storageMaintenance
-          .scheduleCompaction(body.when)
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-        if (diskSpaceMonitor._tag === "Some") yield* diskSpaceMonitor.value.noteStorageChanged;
-        return result;
-      }
-
-      case WS_METHODS.storageAutomationDryRun: {
-        const { storageCleanupWorker, defaultBranchAutoPull } =
-          yield* awaitOrchestrationRuntimeForRoute;
-        const cleanup = yield* storageCleanupWorker.dryRun;
-        const pulls = yield* defaultBranchAutoPull.dryRun;
-        return { ...cleanup, targets: [...cleanup.targets, ...pulls] };
-      }
-
-      case WS_METHODS.storageAutomationAudit: {
-        const body = stripRequestTag(request.body);
-        const entries = yield* listStorageAutomationAudit(body.limit ?? 100, body.source).pipe(
-          Effect.mapError(
-            (error) => new RouteRequestError({ message: `Cannot read audit: ${error.message}` }),
-          ),
-        );
-        const scheduledBackupStatus = yield* Effect.tryPromise({
-          try: () => readScheduledBackupStatus(path.join(serverConfig.stateDir, "backups")),
-          catch: (cause) =>
-            new RouteRequestError({ message: `Cannot read backup status: ${String(cause)}` }),
-        });
-        return { entries, scheduledBackupStatus };
-      }
-
-      case WS_METHODS.worktreesMoveThread: {
-        const { workspaceTransition } = yield* awaitOrchestrationRuntimeForRoute;
-        return yield* workspaceTransition
-          .moveThread(stripRequestTag(request.body))
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-      }
-      case WS_METHODS.worktreesDiscardMovedChanges: {
-        const { workspaceTransition } = yield* awaitOrchestrationRuntimeForRoute;
-        return yield* workspaceTransition
-          .discardMovedChanges(stripRequestTag(request.body))
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-      }
-      case WS_METHODS.worktreesSwitchWorkspace: {
-        const { workspaceTransition } = yield* awaitOrchestrationRuntimeForRoute;
-        return yield* workspaceTransition.switchWorkspace(stripRequestTag(request.body)).pipe(
-          Effect.mapError(
-            (error) =>
-              new RouteRequestError({
-                message: error.message,
-                ...(error instanceof WorkspaceRequiresNewWorktreeError ? { code: error.code } : {}),
-              }),
-          ),
-        );
-      }
-      case WS_METHODS.worktreesGetTransition: {
-        const { workspaceTransition } = yield* awaitOrchestrationRuntimeForRoute;
-        return yield* workspaceTransition
-          .getTransition(stripRequestTag(request.body))
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-      }
-      case WS_METHODS.worktreesPreviewTransitionRecovery: {
-        const { workspaceTransition } = yield* awaitOrchestrationRuntimeForRoute;
-        return yield* workspaceTransition
-          .previewRecovery(stripRequestTag(request.body))
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-      }
-      case WS_METHODS.worktreesResolveTransition: {
-        const { workspaceTransition } = yield* awaitOrchestrationRuntimeForRoute;
-        return yield* workspaceTransition
-          .resolve(stripRequestTag(request.body))
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-      }
-      case WS_METHODS.worktreesList: {
-        const { worktreeManager } = yield* awaitOrchestrationRuntimeForRoute;
-        return yield* worktreeManager
-          .list(stripRequestTag(request.body))
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-      }
-      case WS_METHODS.worktreesInspect: {
-        const { worktreeManager } = yield* awaitOrchestrationRuntimeForRoute;
-        return yield* worktreeManager
-          .inspect(request.body)
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-      }
-      case WS_METHODS.worktreesRemove: {
-        const { worktreeManager } = yield* awaitOrchestrationRuntimeForRoute;
-        return yield* worktreeManager
-          .remove(request.body)
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-      }
-      case WS_METHODS.worktreesThreadState: {
-        const { worktreeManager } = yield* awaitOrchestrationRuntimeForRoute;
-        return yield* worktreeManager
-          .threadState(request.body)
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-      }
-      case WS_METHODS.worktreesSwitchAvailability: {
-        const { worktreeManager } = yield* awaitOrchestrationRuntimeForRoute;
-        return yield* worktreeManager
-          .switchAvailability(stripRequestTag(request.body))
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-      }
-      case WS_METHODS.worktreesRecover: {
-        const { worktreeManager } = yield* awaitOrchestrationRuntimeForRoute;
-        return yield* worktreeManager
-          .recover(request.body)
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-      }
-      case WS_METHODS.worktreeSetupSubscribe: {
-        const body = stripRequestTag(request.body);
-        const { worktreeSetup } = yield* awaitOrchestrationRuntimeForRoute;
-        const snapshot = yield* worktreeSetup.get(body.threadId);
-        return {
-          snapshot,
-          ...(snapshot
-            ? { generation: snapshot.generation, sequence: snapshot.sequence }
-            : yield* worktreeSetup.ordering(body.threadId)),
-        };
-      }
-
-      case WS_METHODS.worktreeSetupCancel:
-      case WS_METHODS.worktreeSetupRetry:
-      case WS_METHODS.worktreeSetupWorkLocally: {
-        const body = stripRequestTag(request.body);
-        const { worktreeSetup } = yield* awaitOrchestrationRuntimeForRoute;
-        const action =
-          request.body._tag === WS_METHODS.worktreeSetupCancel
-            ? worktreeSetup.cancel
-            : request.body._tag === WS_METHODS.worktreeSetupRetry
-              ? worktreeSetup.retry
-              : worktreeSetup.workLocally;
-        const snapshot = yield* action(body.threadId, body.expectedOperationId).pipe(
-          Effect.mapError(
-            (error) =>
-              new RouteRequestError({
-                message: error.message,
-                ...(error.code !== undefined ? { code: error.code } : {}),
-              }),
-          ),
-        );
-        yield* publishNextTurnQueueSnapshot(body.threadId).pipe(Effect.ignoreCause({ log: true }));
-        return {
-          snapshot,
-          ...(snapshot
-            ? { generation: snapshot.generation, sequence: snapshot.sequence }
-            : yield* worktreeSetup.ordering(body.threadId)),
-        };
-      }
 
       case WS_METHODS.nextTurnQueueList: {
         const body = stripRequestTag(request.body);
@@ -8109,387 +6085,6 @@ export const createServer = Effect.fn(function* (
               }),
           ),
         );
-      }
-
-      case WS_METHODS.workflowPlatformListTemplates:
-        return { templates: BUILTIN_WORKFLOW_TEMPLATES };
-
-      case WS_METHODS.workflowPlatformCreateRun: {
-        const { workflowService, codeReviewWorkflowService, investigationWorkflowService } =
-          yield* awaitOrchestrationRuntimeForRoute;
-        const body = stripRequestTag(request.body) as WorkflowPlatformCreateRunInput;
-        return yield* createWorkflowPlatformRun(body, {
-          planning: workflowService,
-          codeReview: codeReviewWorkflowService,
-          investigation: investigationWorkflowService,
-        }).pipe(
-          Effect.mapError(
-            (cause) =>
-              new RouteRequestError({ message: `Failed to create workflow run: ${String(cause)}` }),
-          ),
-        );
-      }
-
-      case WS_METHODS.workflowPlatformInspectRun: {
-        const body = stripRequestTag(request.body);
-        const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
-        const snapshot = yield* orchestrationEngine.getReadModel();
-        return yield* Effect.try({
-          try: () => ({
-            inspection: inspectWorkflowPlatformRun(body, snapshot),
-            ...(body.includeWorkflow
-              ? {
-                  workflowDetails:
-                    body.runKind === "planning"
-                      ? {
-                          runKind: "planning" as const,
-                          workflow: snapshot.planningWorkflows.find(
-                            (workflow) => workflow.id === body.workflowId,
-                          )!,
-                        }
-                      : body.runKind === "codeReview"
-                        ? {
-                            runKind: "codeReview" as const,
-                            workflow: snapshot.codeReviewWorkflows.find(
-                              (workflow) => workflow.id === body.workflowId,
-                            )!,
-                          }
-                        : {
-                            runKind: "investigation" as const,
-                            workflow: snapshot.investigationWorkflows.find(
-                              (workflow) => workflow.id === body.workflowId,
-                            )!,
-                          },
-                }
-              : {}),
-          }),
-          catch: (cause) =>
-            new RouteRequestError({ message: `Failed to inspect workflow run: ${String(cause)}` }),
-        });
-      }
-
-      case WS_METHODS.mcpGetProjectConfig: {
-        const body = stripRequestTag(request.body);
-        return yield* projectMcpConfigService.readProjectConfig(body.projectId).pipe(
-          Effect.mapError(
-            (error) =>
-              new RouteRequestError({
-                message: error.message,
-              }),
-          ),
-        );
-      }
-
-      case WS_METHODS.mcpGetCommonConfig:
-        return yield* projectMcpConfigService.readCommonConfig().pipe(
-          Effect.mapError(
-            (error) =>
-              new RouteRequestError({
-                message: error.message,
-              }),
-          ),
-        );
-
-      case WS_METHODS.mcpReplaceProjectConfig: {
-        const body = stripRequestTag(request.body);
-        const result = yield* projectMcpConfigService.replaceProjectConfig(body).pipe(
-          Effect.mapError(
-            (error) =>
-              new RouteRequestError({
-                message: error.message,
-              }),
-          ),
-        );
-        yield* codexMcpEventBus.publishStatusUpdated({
-          scope: "project",
-          projectId: body.projectId,
-          reason: "updated",
-          ...(result.version ? { configVersion: result.version } : {}),
-        });
-        return result;
-      }
-
-      case WS_METHODS.mcpReplaceCommonConfig: {
-        const body = stripRequestTag(request.body);
-        const result = yield* projectMcpConfigService.replaceCommonConfig(body).pipe(
-          Effect.mapError(
-            (error) =>
-              new RouteRequestError({
-                message: error.message,
-              }),
-          ),
-        );
-        yield* codexMcpEventBus.publishStatusUpdated({
-          scope: "common",
-          reason: "updated",
-          ...(result.version ? { configVersion: result.version } : {}),
-        });
-        return result;
-      }
-
-      case WS_METHODS.mcpGetEffectiveConfig: {
-        const body = stripRequestTag(request.body);
-        return yield* projectMcpConfigService.readEffectiveConfig(body.projectId).pipe(
-          Effect.mapError(
-            (error) =>
-              new RouteRequestError({
-                message: error.message,
-              }),
-          ),
-        );
-      }
-
-      case WS_METHODS.mcpGetProviderStatus: {
-        const requestBody = stripRequestTag(request.body);
-        const body = yield* profileCall(() => resolveMcpAccount(requestBody));
-        return yield* mcpRuntimeService.getProviderStatus(body).pipe(
-          Effect.mapError(
-            (error) =>
-              new RouteRequestError({
-                message: error.message,
-              }),
-          ),
-        );
-      }
-
-      case WS_METHODS.mcpGetServerStatuses: {
-        const requestBody = stripRequestTag(request.body);
-        const body = yield* profileCall(() => resolveMcpAccount(requestBody));
-        return yield* mcpRuntimeService.getServerStatuses(body).pipe(
-          Effect.mapError(
-            (error) =>
-              new RouteRequestError({
-                message: error.message,
-              }),
-          ),
-        );
-      }
-
-      case WS_METHODS.mcpListImportCandidates: {
-        const requestBody = stripRequestTag(request.body);
-        const body = yield* profileCall(() => resolveMcpAccount(requestBody));
-        const execution = yield* resolveMcpFeatureExecution(body).pipe(
-          Effect.mapError((error) => new RouteRequestError({ message: error.message })),
-        );
-        return yield* profileCall(() =>
-          detectMcpImports({
-            environment: execution.environment,
-            ...(body.projectId ? { cwd: execution.cwd } : {}),
-          }),
-        );
-      }
-
-      case WS_METHODS.mcpProbeServer: {
-        const requestBody = stripRequestTag(request.body);
-        if (!Schema.is(McpServerWriteDefinition)(requestBody.server))
-          return yield* new RouteRequestError({
-            message: "Invalid MCP draft. Check the command, HTTP URL, and options.",
-          });
-        const body = yield* profileCall(() => resolveMcpAccount(requestBody));
-        const execution = yield* resolveMcpFeatureExecution(body).pipe(
-          Effect.mapError((error) => new RouteRequestError({ message: error.message })),
-        );
-        const resolved = yield* resolveMcpSecrets(
-          { [body.serverName]: body.server },
-          profileSecrets,
-        );
-        const server = resolved.servers[body.serverName];
-        if (!server)
-          return {
-            ok: false,
-            durationMs: 0,
-            tools: [],
-            toolsTruncated: false,
-            resourceCount: 0,
-            promptCount: 0,
-            authRequired: false,
-            error: resolved.issues[0]?.message ?? "Stored secret is unavailable.",
-          };
-        return yield* probeMcpServer({ ...body, server }, execution);
-      }
-
-      case WS_METHODS.mcpStoreSecret: {
-        const { value } = stripRequestTag(request.body);
-        return yield* storeMcpSecret(value).pipe(
-          Effect.mapError((error) => new RouteRequestError({ message: error.message })),
-        );
-      }
-
-      case WS_METHODS.mcpInspectServer: {
-        const requestBody = stripRequestTag(request.body);
-        const body = yield* profileCall(() => resolveMcpAccount(requestBody));
-        return yield* mcpRuntimeService
-          .inspectServer(body)
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-      }
-
-      case WS_METHODS.mcpReconnectServer: {
-        const requestBody = stripRequestTag(request.body);
-        const body = yield* profileCall(() => resolveMcpAccount(requestBody));
-        const targetResult =
-          body.provider === "codex" && providerService.getMcpReconnectTargets
-            ? yield* providerService
-                .getMcpReconnectTargets(body)
-                .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })))
-            : { threadIds: [], failures: [] };
-        const targets = targetResult.threadIds;
-        const result = yield* mcpRuntimeService
-          .reconnectServer(body)
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-        if (body.provider === "claudeAgent") return result;
-        if (targets.length === 0)
-          return yield* mcpRuntimeService
-            .sanitizeReconnectResult(body, {
-              ...result,
-              failures: [...result.failures, ...targetResult.failures],
-            })
-            .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-        const { providerCommandReactor } = yield* awaitOrchestrationRuntimeForRoute;
-        const applied = yield* providerCommandReactor
-          .applyMcpConfigToLiveSessions({
-            scope: "project",
-            projectId: body.projectId,
-            instanceId: body.instanceId,
-            threadIds: targets,
-            retryUnchanged: true,
-          })
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-        yield* codexMcpEventBus.publishStatusUpdated({
-          scope: "project",
-          projectId: body.projectId,
-          ...(body.instanceId ? { instanceId: body.instanceId } : {}),
-          reason: "reloaded",
-        });
-        const sessions = applied.sessions ?? [];
-        return yield* mcpRuntimeService
-          .sanitizeReconnectResult(body, {
-            ...result,
-            sessionsMatched: targets.length,
-            sessionsReconnected: sessions.filter((session) => session.disposition === "applied")
-              .length,
-            sessions,
-            failures: [
-              ...result.failures,
-              ...targetResult.failures,
-              ...sessions
-                .filter((session) => session.disposition !== "applied")
-                .map((session) => ({
-                  threadId: session.threadId,
-                  message:
-                    session.result.errors.map((error) => error.message).join("; ") ||
-                    session.disposition,
-                })),
-            ],
-          })
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-      }
-
-      case WS_METHODS.mcpStartLogin: {
-        const requestBody = stripRequestTag(request.body);
-        const body = yield* profileCall(() => resolveMcpAccount(requestBody));
-        return yield* mcpRuntimeService.startLogin(body).pipe(
-          Effect.mapError(
-            (error) =>
-              new RouteRequestError({
-                message: error.message,
-              }),
-          ),
-        );
-      }
-
-      case WS_METHODS.mcpGetLoginStatus: {
-        const requestBody = stripRequestTag(request.body);
-        const body = yield* profileCall(() => resolveMcpAccount(requestBody));
-        return yield* mcpRuntimeService.getLoginStatus(body);
-      }
-
-      case WS_METHODS.mcpGetCodexStatus: {
-        const requestBody = stripRequestTag(request.body);
-        const body = yield* profileCall(() => resolveMcpAccount(requestBody));
-        const providerOptions = toCodexProviderStartOptions({
-          binaryPath: body.binaryPath,
-          homePath: body.homePath,
-        });
-        return yield* codexMcpSyncService.getStatus({
-          projectId: body.projectId,
-          ...(body.instanceId ? { instanceId: body.instanceId } : {}),
-          ...(providerOptions ? { providerOptions } : {}),
-        });
-      }
-
-      case WS_METHODS.mcpReloadProject: {
-        const requestBody = stripRequestTag(request.body);
-        const body = yield* profileCall(() => resolveMcpAccount(requestBody));
-        const providerOptions = toCodexProviderStartOptions({
-          binaryPath: body.binaryPath,
-          homePath: body.homePath,
-        });
-        yield* providerService.reloadMcpConfigForProject({
-          provider: "codex",
-          projectId: body.projectId,
-          ...(body.instanceId ? { instanceId: body.instanceId } : {}),
-          ...(providerOptions ? { providerOptions } : {}),
-        });
-        const status = yield* codexMcpSyncService.getStatus({
-          projectId: body.projectId,
-          ...(body.instanceId ? { instanceId: body.instanceId } : {}),
-          ...(providerOptions ? { providerOptions } : {}),
-        });
-        yield* codexMcpEventBus.publishStatusUpdated({
-          provider: "codex",
-          scope: "project",
-          projectId: body.projectId,
-          ...(body.instanceId ? { instanceId: body.instanceId } : {}),
-          reason: "reloaded",
-          ...(status.configVersion ? { configVersion: status.configVersion } : {}),
-        });
-        return status;
-      }
-
-      case WS_METHODS.mcpApplyToLiveSessions: {
-        const requestBody = stripRequestTag(request.body);
-        if (requestBody.binaryPath !== undefined || requestBody.homePath !== undefined)
-          return yield* new RouteRequestError({
-            message:
-              "Client-supplied provider executable and home paths are not accepted. Select a provider instance.",
-          });
-        const body = requestBody;
-        const { providerCommandReactor } = yield* awaitOrchestrationRuntimeForRoute;
-        const result = yield* providerCommandReactor.applyMcpConfigToLiveSessions(body).pipe(
-          Effect.mapError(
-            (error) =>
-              new RouteRequestError({
-                message: error.message,
-              }),
-          ),
-        );
-        yield* codexMcpEventBus.publishStatusUpdated({
-          scope: result.scope,
-          ...(body.instanceId ? { instanceId: body.instanceId } : {}),
-          ...(result.projectId ? { projectId: result.projectId } : {}),
-          reason: "applied",
-          ...(result.configVersion ? { configVersion: result.configVersion } : {}),
-        });
-        return result;
-      }
-
-      case WS_METHODS.mcpStartOAuthLogin: {
-        const requestBody = stripRequestTag(request.body);
-        const body = yield* profileCall(() => resolveMcpAccount(requestBody));
-        return yield* codexOAuthManager.startLogin(body).pipe(
-          Effect.mapError(
-            (error) =>
-              new RouteRequestError({
-                message: error.message,
-              }),
-          ),
-        );
-      }
-
-      case WS_METHODS.mcpGetOAuthStatus: {
-        const requestBody = stripRequestTag(request.body);
-        const body = yield* profileCall(() => resolveMcpAccount(requestBody));
-        return yield* codexOAuthManager.getStatus(body);
       }
 
       default: {
