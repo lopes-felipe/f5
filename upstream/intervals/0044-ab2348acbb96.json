@@ -1,0 +1,1445 @@
+{
+  "baseSha": "21a96989b07cf9156053880236a928e10baaeef8",
+  "commits": [
+    {
+      "pr": 43410,
+      "sha": "ab2348acbb96b38dfe59a1d90f6e8d8c33b683a4",
+      "subject": "fix(github): reading an issue costs one GraphQL query (#43410)",
+      "topic": "pr-43410"
+    },
+    {
+      "pr": 43383,
+      "sha": "6ac4edef8cd02ec655b999d213f18e149171a867",
+      "subject": "fix(web): Settings keybinding pills render platform modifiers and formatted key labels (#43383)",
+      "topic": "pr-43383"
+    },
+    {
+      "pr": 43380,
+      "sha": "147028a265951e2a8893411a11717838b50cd464",
+      "subject": "fix(acp): optional boolean and choice questions can be skipped (#43380)",
+      "topic": "pr-43233"
+    },
+    {
+      "pr": 43367,
+      "sha": "0df79074ad5f21478b616fe812746c0896ec90d7",
+      "subject": "fix(mobile): issue list row accessibility label says \"1 comment\" for one comment (#43367)",
+      "topic": "pr-43367"
+    },
+    {
+      "pr": 43352,
+      "sha": "12c11529242389fdd33a23c95d377a11613eb623",
+      "subject": "fix(mobile): keep workspace media below the iPad navigation bar (#43352)",
+      "topic": "pr-43352"
+    },
+    {
+      "pr": 43357,
+      "sha": "5fda4f7bff9717f6c873bbbf12531b07d397494d",
+      "subject": "fix(server): agent auto sends steer past an explicit queue (#43357)",
+      "topic": "pr-41461"
+    },
+    {
+      "pr": 43344,
+      "sha": "2a99314a4708d1c84d7a361445558eb7262c570f",
+      "subject": "fix(server): git action toast descriptions no longer end in half an emoji (#43344)",
+      "topic": "pr-43344"
+    },
+    {
+      "pr": 43359,
+      "sha": "cc61cdb1e434ec4468468487abee5c422b535be4",
+      "subject": "fix(opencode): recover prompts dropped by an early Stop (#43359)",
+      "topic": "pr-43359"
+    },
+    {
+      "pr": 43354,
+      "sha": "135e03b268f3dbfcb2edfd29790a4527100493d8",
+      "subject": "fix(web): label physical Android phones as devices (#43354)",
+      "topic": "pr-43354"
+    },
+    {
+      "pr": 43358,
+      "sha": "7891c7288cba98acade341da4bd6452dce9739fb",
+      "subject": "fix(web): copying a chat table as CSV keeps a space at line breaks (#43358)",
+      "topic": "pr-43358"
+    },
+    {
+      "pr": 43360,
+      "sha": "65fc371bd85280b533b701e6d3efe0988438117d",
+      "subject": "feat(web): copy paths from the file sidebar (#43360)",
+      "topic": "pr-43360"
+    },
+    {
+      "pr": 43353,
+      "sha": "d878f7b1924a3dc50ab9903364c8cb73149cbf11",
+      "subject": "fix(server): nested block elements in EPUB documents stay on separate lines (#43353)",
+      "topic": "pr-42816"
+    },
+    {
+      "pr": 43331,
+      "sha": "3fa136a5c541756fc4769cfb974798f006d1999b",
+      "subject": "fix(shared): chunked Markdown previews keep a link definition right after \"...\" frontmatter (#43331)",
+      "topic": "pr-43331"
+    },
+    {
+      "pr": 43337,
+      "sha": "fc1f1bafde2eac1455fe5c0723e502e30f5bb2d5",
+      "subject": "fix(web): notebook preview shows outputs that carry only text/markdown (#43337)",
+      "topic": "pr-43310"
+    },
+    {
+      "pr": 43342,
+      "sha": "6ea8886e8f9799135dc9c9c3befd90a731f7438b",
+      "subject": "fix(shared): an interrupted color code no longer prints its leftover characters in command output (#43342)",
+      "topic": "pr-43326"
+    },
+    {
+      "pr": 43318,
+      "sha": "8ec9f4399fdc51b8ca426ee88b547679c76790c3",
+      "subject": "fix(shared): thread links after code blocks containing triple backticks still render (#43318)",
+      "topic": "pr-43318"
+    },
+    {
+      "pr": 43330,
+      "sha": "30ad6c2806ead3715ba3454d440d84d714c08ddf",
+      "subject": "feat(skills): mobile release videos in the launch-video skill (#43330)",
+      "topic": "pr-43330"
+    },
+    {
+      "pr": 43320,
+      "sha": "8213d1dda2070544694e53cff1a16783279e2122",
+      "subject": "fix(mobile): keep the partial file warning below the iPad navigation bar (#43320)",
+      "topic": "pr-43320"
+    },
+    {
+      "pr": 43326,
+      "sha": "25525f948351757535decaaf8de43e952a7865b1",
+      "subject": "fix(shared): command output no longer prints half an emoji after an escape character (#43326)",
+      "topic": "pr-43326"
+    },
+    {
+      "pr": 43327,
+      "sha": "b5592c6061bcf334888b63e1c8111312aee7c0d8",
+      "subject": "fix(web): issue label picker search ignores leading and trailing spaces (#43327)",
+      "topic": "pr-43327"
+    },
+    {
+      "pr": 43308,
+      "sha": "00fa6cd60c09275046740153c6cfed5920d98a6e",
+      "subject": "fix(shared): keep pull request summary fields in compact tool output (#43308)",
+      "topic": "pr-43308"
+    },
+    {
+      "pr": 43312,
+      "sha": "c6df984916017c3e0bc4423b23be57f91433f299",
+      "subject": "fix(shared): escape literal SSH path punctuation when switching to HTTPS (#43312)",
+      "topic": "pr-43312"
+    },
+    {
+      "pr": 43319,
+      "sha": "8bbdd3366783449884645243a5b77666cb00844b",
+      "subject": "fix(shared): proposed plan titles ignore code comments and empty headings (#43319)",
+      "topic": "pr-43319"
+    },
+    {
+      "pr": 43307,
+      "sha": "852d86ee56a4ccf033d399775990972ac97265e0",
+      "subject": "fix(web): ZIP previews show each file's modified date as archived (#43307)",
+      "topic": "pr-43307"
+    },
+    {
+      "pr": 43316,
+      "sha": "b8ef0600d540b18cc880d7df3a4cee9610c11469",
+      "subject": "fix(web): shortcut editor reports conflicts for a true condition (#43316)",
+      "topic": "pr-43316"
+    },
+    {
+      "pr": 43310,
+      "sha": "cf29ce760a915a76a741504127cbcd736b02f5d4",
+      "subject": "fix(server): notebook outputs with only text/markdown are no longer dropped (#43310)",
+      "topic": "pr-43310"
+    },
+    {
+      "pr": 43304,
+      "sha": "2b0f633db3ba23e692750be2f578ecb089d6a852",
+      "subject": "fix(shared): context chips with `$` in their labels no longer break into raw Markdown as TeX math (#43304)",
+      "topic": "pr-43304"
+    },
+    {
+      "pr": 43301,
+      "sha": "cd414b81c1514df8cedf00d54b3e4cf7d918b160",
+      "subject": "fix(shared): unclosed brackets no longer swallow subsequent @-file link chips (#43301)",
+      "topic": "pr-43301"
+    },
+    {
+      "pr": 43302,
+      "sha": "57b0227d39eb5374de754bcaffd52c2f7e8d612d",
+      "subject": "fix(composer): open @, #, $, and / menus after CJK full-width spaces and NBSP (#43302)",
+      "topic": "pr-43302"
+    },
+    {
+      "pr": 43305,
+      "sha": "1d015a3794a6e5fcb96b969fe1addef43e8c8aae",
+      "subject": "fix(codex): recover prompts dropped by an early Stop (#43305)",
+      "topic": "pr-43305"
+    },
+    {
+      "pr": 43295,
+      "sha": "59d840c076af5f8a747bab816a27ff4aff819593",
+      "subject": "fix(web): dotnet build errors and PHP stack frames become terminal links (#43295)",
+      "topic": "pr-43088"
+    },
+    {
+      "pr": 43298,
+      "sha": "2e4c3b0490706d520286f03ce36066385dba5b47",
+      "subject": "fix(cli): reject negative counts for t3 thread show --messages (#43298)",
+      "topic": "pr-43298"
+    },
+    {
+      "pr": 43296,
+      "sha": "8f0f47b1ef5bcd10c3d596acf865866e679f36e5",
+      "subject": "fix(server): agents start on hosts without /bin/sh, such as Termux (#43296)",
+      "topic": "pr-43296"
+    },
+    {
+      "pr": 43290,
+      "sha": "39eb396fae50c1d1d1b37702befab4ab8a80d38a",
+      "subject": "fix(server): DOCX table rows keep the columns skipped by w:gridBefore (#43290)",
+      "topic": "pr-42911"
+    },
+    {
+      "pr": 43293,
+      "sha": "d451c500f555f980c708164560a879e17e917164",
+      "subject": "fix(web): an expanded question card wraps its header instead of clipping it (#43293)",
+      "topic": "pr-43293"
+    },
+    {
+      "pr": 43289,
+      "sha": "567aa0b14139509ffd0aa2bbeb8469513156052a",
+      "subject": "fix(client-runtime): unwrap uppercase or mixed-case shell executables like Bash.exe in command display text (#43289)",
+      "topic": "pr-43289"
+    },
+    {
+      "pr": 43285,
+      "sha": "0c4e7d8a4c16a8e78156bdf335ae717c263c6449",
+      "subject": "fix(shared): file links with #L line anchors in their label no longer duplicate the filename (#43285)",
+      "topic": "pr-43285"
+    },
+    {
+      "pr": 43282,
+      "sha": "5eaff03eaac953bc795ede5301b3c11d04ab5f43",
+      "subject": "fix(opencode): skills added after a project loads show in the $ and / menus (#43282)",
+      "topic": "pr-43282"
+    },
+    {
+      "pr": 43284,
+      "sha": "4f5d613a3db64df4ceadac918e0fa57d7c3e8811",
+      "subject": "fix(shared): file links wrapping images keep their disambiguating folder labels (#43284)",
+      "topic": "pr-43194"
+    },
+    {
+      "pr": 43245,
+      "sha": "5a563f8df459f9d45a9097e3ee40e526f39ccf8d",
+      "subject": "fix(web): open sidebar settle tooltips to the right instead of covering the row above (#43245)",
+      "topic": "pr-43245"
+    },
+    {
+      "pr": 43281,
+      "sha": "99879a87a97d725833d9a5cec8ca013334321e8c",
+      "subject": "fix(client-runtime): workflows load in browsers without URL.canParse or URL.parse (#43281)",
+      "topic": "pr-43281"
+    },
+    {
+      "pr": 43277,
+      "sha": "bcf2efdf0a183624da732b93a9067c2952976876",
+      "subject": "fix(client-runtime): shell scripts after -c -- are highlighted (#43277)",
+      "topic": "pr-43164"
+    },
+    {
+      "pr": 43278,
+      "sha": "66f7a6c2891742f72663054d7d46e2d0c2cb7c1b",
+      "subject": "fix(server): a Cursor request stopped before its first checkpoint survives the session closing (#43278)",
+      "topic": "pr-42938"
+    },
+    {
+      "pr": 43280,
+      "sha": "60375a5636110b2c20868b8254d639822d767450",
+      "subject": "fix(web): New worktree sends no longer wait on a layout command read (#43280)",
+      "topic": "pr-43280"
+    },
+    {
+      "pr": 43268,
+      "sha": "23057ddd0d6edf1fe931c8b2148d11cbff8ce803",
+      "subject": "fix(shared): highlight dotted capital I matches in message search (#43268)",
+      "topic": "pr-43268"
+    },
+    {
+      "pr": 43252,
+      "sha": "9ba025320d6b0aea456ebd232c662d18c9a5035b",
+      "subject": "fix(server): html_render refuses vmax and vb heights that grow the frame (#43252)",
+      "topic": "pr-43252"
+    },
+    {
+      "pr": 43260,
+      "sha": "5db3ecd1e3e95bc15a6e1ada807424ab2db4fc23",
+      "subject": "fix(mobile): crash screen error preview keeps emoji whole at the 300-character limit (#43260)",
+      "topic": "pr-43260"
+    },
+    {
+      "pr": 43244,
+      "sha": "336b8c70fc18f42ca8c7cff0feb38148ecf861f3",
+      "subject": "fix(web): restore outer shared tooltip when leaving a nested trigger (#43244)",
+      "topic": "pr-42671"
+    },
+    {
+      "pr": 43254,
+      "sha": "9c4ab6d47ad340f8286be083b26e18333fe96d1e",
+      "subject": "fix(web): rendered Markdown keeps its scroll position across files and threads (#43254)",
+      "topic": "pr-43254"
+    },
+    {
+      "pr": 43256,
+      "sha": "77cd243e6b5a09fa6e6bfc124bce19276ca74f65",
+      "subject": "fix(server): export server total counters as monotonic OTLP sums (#43256)",
+      "topic": "pr-43256"
+    },
+    {
+      "pr": 43214,
+      "sha": "3e0a40ff24b0e587ff8ff11aad5da574dcdfc7b3",
+      "subject": "fix(shared): files viewer opens GBK/GB18030 text instead of rejecting it (#43214)",
+      "topic": "pr-43214"
+    },
+    {
+      "pr": 43253,
+      "sha": "2cc5253241fb4d6d816aaefd94fb170ae383ad1b",
+      "subject": "fix(web,mobile): shared-agent force-stop message uses singular wording for 1 working thread (#43253)",
+      "topic": "pr-43253"
+    },
+    {
+      "pr": 43251,
+      "sha": "6ca7e667aba80bb17a6a5855cedeeae8f557a060",
+      "subject": "fix(acp): optional number and integer questions can be left blank (#43251)",
+      "topic": "pr-43233"
+    },
+    {
+      "pr": 43235,
+      "sha": "afc388c0524d0d1f3edd4ebf9c72c763f857e184",
+      "subject": "fix(web): file links with a line number open read-only files at that line (#43235)",
+      "topic": "pr-42442"
+    },
+    {
+      "pr": 43258,
+      "sha": "744ff6c8cb06bc9adc9fdecf604efed3df2406a3",
+      "subject": "fix(server): Antigravity ask_question shows the question as the card body (#43258)",
+      "topic": "pr-43258"
+    },
+    {
+      "pr": 43248,
+      "sha": "4e97609e3cfde9ac0f26272f380593bbfb53cd58",
+      "subject": "fix(server): separate EPUB contact blocks from surrounding text (#43248)",
+      "topic": "pr-42871"
+    },
+    {
+      "pr": 43255,
+      "sha": "b996cf206766519f9d2dff52e526098b19eaac97",
+      "subject": "fix(server): a daily workflow schedule written another way keeps its next run (#43255)",
+      "topic": "pr-43255"
+    },
+    {
+      "pr": 43250,
+      "sha": "e9f7acf679f1f45c39807fe360474c4896e895f9",
+      "subject": "fix(server): /goal resume with no paused OpenCode goal says so instead of asking to retry (#43250)",
+      "topic": "pr-42905"
+    },
+    {
+      "pr": 43049,
+      "sha": "d5d5c17ecb1c7289dc50a6ac602197560e8668bf",
+      "subject": "fix(web,mobile): approval cards show characters a screen would not draw (#43049)",
+      "topic": "pr-43049"
+    },
+    {
+      "pr": 43209,
+      "sha": "6c1e423d0ed1a6b75d0c4e0814d2189701fec6a8",
+      "subject": "perf(server): sample routine spans in local traces (#43209)",
+      "topic": "pr-43209"
+    },
+    {
+      "pr": 43238,
+      "sha": "4c34f1c56f6001fe52fb2d0e51944119d998031f",
+      "subject": "fix(web): composer image overflow button says \"Show 1 more image attachment\" (#43238)",
+      "topic": "pr-43238"
+    },
+    {
+      "pr": 43212,
+      "sha": "3ed650f9990a9c6e5720967030ca5eb19457e941",
+      "subject": "perf(server): track Claude descendants with the macOS resource monitor (#43212)",
+      "topic": "pr-43212"
+    },
+    {
+      "pr": 43230,
+      "sha": "36b9a06f098bd2e4c161dfdb00424503c829a54f",
+      "subject": "fix(server): preserve a checkout shared by a side chat on setup cancellation (#43230)",
+      "topic": "pr-43230"
+    },
+    {
+      "pr": 43234,
+      "sha": "9853cf885a11acfdc0b4acb8a8dd02a6a4c77bf9",
+      "subject": "fix(review-guide): preserve tabbed filenames in rendered excerpts (#43234)",
+      "topic": "pr-43234"
+    },
+    {
+      "pr": 43233,
+      "sha": "824474d7a34d558ba551ee031d9c910fd3cac5aa",
+      "subject": "fix(provider-acp): fold single-underscore <id>_other companion fields in elicitation forms (#43233)",
+      "topic": "pr-43233"
+    },
+    {
+      "pr": 43231,
+      "sha": "e380d41c2c1eda89e38a51445ca4aac90afb023e",
+      "subject": "fix(cli): use singular counts in one-span trace summaries (#43231)",
+      "topic": "pr-43231"
+    },
+    {
+      "sha": "7deb51b5503c172eb3abddc6f0efec701e685cd4",
+      "subject": "chore(mobile): bump app version to 2.4.0",
+      "topic": "c-7deb51b5503c"
+    },
+    {
+      "pr": 43227,
+      "sha": "83f475e7be2ece73264553a62e48821ed814b3a8",
+      "subject": "fix(server): keep EPUB asides separate from surrounding text (#43227)",
+      "topic": "pr-42871"
+    },
+    {
+      "pr": 43210,
+      "sha": "b97284227032101189ba23680e8812f1254febb4",
+      "subject": "feat(mobile): side chats, subagents and previews open in the Android inspector (#43210)",
+      "topic": "pr-43210"
+    },
+    {
+      "pr": 43224,
+      "sha": "0ccd7a886ea9ef87a79f87daad01f3fd921be7a4",
+      "subject": "fix(server): worktree containers are refused on Git before 2.36 (#43224)",
+      "topic": "pr-43224"
+    },
+    {
+      "pr": 43220,
+      "sha": "3157fe9ebf3651a43d73b448be211da090bae9cf",
+      "subject": "fix(web): pressing Escape while editing a PR title keeps the right panel sheet open (#43220)",
+      "topic": "pr-43118"
+    },
+    {
+      "pr": 43211,
+      "sha": "72ecf7d13d294f192d4e37a11fe42eeb69c48541",
+      "subject": "fix(client-runtime): uppercase Linear hosts open issues beside the thread (#43211)",
+      "topic": "pr-43211"
+    },
+    {
+      "pr": 43222,
+      "sha": "d846efc14357bc78a59e4190a52d7772e934937c",
+      "subject": "fix(web): sidebar linked-item hover cards show 8 items and open beside the row (#43222)",
+      "topic": "pr-43222"
+    },
+    {
+      "pr": 43195,
+      "sha": "72559e12fac21bbec022f0e64429809eb8ed2cdf",
+      "subject": "fix(web): cut failure messages and review findings no longer end in a space before the ellipsis (#43195)",
+      "topic": "pr-43076"
+    },
+    {
+      "pr": 43194,
+      "sha": "4c8a324e8fec28fe5f2c34a8a3551078d5aa5dc6",
+      "subject": "fix(shared): file links with escaped quotes in titles keep their folder labels (#43194)",
+      "topic": "pr-43194"
+    },
+    {
+      "pr": 43205,
+      "sha": "f727a75b59b72f540b0fdf3726d440e9f237b45a",
+      "subject": "fix(web): a draft moved to another machine takes that project's default workspace (#43205)",
+      "topic": "pr-43205"
+    },
+    {
+      "pr": 43206,
+      "sha": "a03c43363ba31f3699883e099b60cbf15d881016",
+      "subject": "docs(user): copy pass on user docs, add missing feature guides and onboarding index (#43206)",
+      "topic": "pr-43206"
+    },
+    {
+      "pr": 43190,
+      "sha": "f839ab40410de2db36b3fff07728fa64b6129682",
+      "subject": "fix(server): separate EPUB figure captions from nearby text (#43190)",
+      "topic": "pr-42871"
+    },
+    {
+      "pr": 43182,
+      "sha": "6d21ad2b25075b8246120aba5d478ba946a44fa8",
+      "subject": "fix(desktop): desktop update error messages no longer end in a broken emoji (#43182)",
+      "topic": "pr-43182"
+    },
+    {
+      "pr": 43191,
+      "sha": "8515b31c8db301ad4d6a7247578b161b3d72eb9e",
+      "subject": "feat(web): stop devices individually or all at once from the Device panel (#43191)",
+      "topic": "pr-43191"
+    },
+    {
+      "pr": 43181,
+      "sha": "be5b14d842f6075624d439b46f7bdb2b6172404f",
+      "subject": "fix(web): unknown shortcut conditions can incorrectly enable commands (#43181)",
+      "topic": "pr-43181"
+    },
+    {
+      "pr": 43176,
+      "sha": "be0b94683a42dc92b038434b6d3ee0a55c2f5a15",
+      "subject": "fix(client-runtime): workflow feed lines keep underscores in identifiers and paths (#43176)",
+      "topic": "pr-43176"
+    },
+    {
+      "pr": 43177,
+      "sha": "428684301aa466ee63cd211e195c864227f9333c",
+      "subject": "fix(server): preserve EPUB thematic breaks in attachment text (#43177)",
+      "topic": "pr-42871"
+    },
+    {
+      "pr": 43183,
+      "sha": "e75534b3e5658002b9a47c7881fa1efef9797fbd",
+      "subject": "fix(web): a full prompt stash no longer discards your oldest prompt (#43183)",
+      "topic": "pr-43183"
+    },
+    {
+      "pr": 43162,
+      "sha": "8468c7af685470c0c9e7f8894e06cb1495828315",
+      "subject": "feat(claude): show Auto as unavailable where Claude's settings turn it off (#43162)",
+      "topic": "pr-43162"
+    },
+    {
+      "pr": 43164,
+      "sha": "8ada2c0f1c8de70baa2755ab2a308728e1b23757",
+      "subject": "fix(client-runtime): shell commands with -- show their executable in the work log (#43164)",
+      "topic": "pr-43164"
+    },
+    {
+      "pr": 43166,
+      "sha": "0085217d1b66c8ccca28deb26bfb2f0e187cdab0",
+      "subject": "fix(server): preserve Unicode at the linked-issue context limit for thread titles (#43166)",
+      "topic": "pr-43166"
+    },
+    {
+      "pr": 43171,
+      "sha": "9f0557953342fae4980dcfa5808ad105bf83089a",
+      "subject": "fix(server): separate EPUB code blocks from nearby text (#43171)",
+      "topic": "pr-42871"
+    },
+    {
+      "pr": 43158,
+      "sha": "cbf5c7869680684569dde090ffe2bd13cf41d3d9",
+      "subject": "fix(server): keep numeric merge subjects from matching the wrong PR watch (#43158)",
+      "topic": "pr-43158"
+    },
+    {
+      "pr": 40380,
+      "sha": "54cee86c7e845464b7ca8bc033da5a560953147e",
+      "subject": "fix(mobile): Android keyboard state resyncs when the activity is recreated (#40380)",
+      "topic": "pr-40380"
+    },
+    {
+      "pr": 43140,
+      "sha": "7e629f3963a698f8c45b52b8caca7d90862901e1",
+      "subject": "fix(web): picker scrollbars match the list after you filter it (#43140)",
+      "topic": "pr-43140"
+    },
+    {
+      "pr": 40825,
+      "sha": "429e921198a7e21fb0e4dd66d053822b65b325e7",
+      "subject": "fix(mobile): attaching a photo on Android no longer fails while the + menu closes (#40825)",
+      "topic": "pr-40825"
+    },
+    {
+      "pr": 35011,
+      "sha": "84e8b8d03c579d5db69ad82738e144378b53649d",
+      "subject": "fix(mobile): Android subscription widget resizes down to 2×2 again (#35011)",
+      "topic": "pr-35011"
+    },
+    {
+      "pr": 43147,
+      "sha": "cb8b22cfa05ebac58d373df041c228de903c8b97",
+      "subject": "fix(web): Escape in a diff comment, review reply or issue title keeps the right panel sheet open (#43147)",
+      "topic": "pr-43118"
+    },
+    {
+      "pr": 43151,
+      "sha": "2d4ac16cf80526f9cef82284ace0b140067b8b88",
+      "subject": "fix(client-runtime): preserve distinct CP437 filenames in ZIP previews (#43151)",
+      "topic": "pr-43151"
+    },
+    {
+      "pr": 43149,
+      "sha": "750d81bd8d304026316e58811998e393117d95b5",
+      "subject": "fix(web): pressing Escape in the Environments map stack filter clears it without closing Settings (#43149)",
+      "topic": "pr-43017"
+    },
+    {
+      "pr": 43156,
+      "sha": "522b067dcdf3f73648dfa4db3d384e02efdafd9a",
+      "subject": "fix(server): separate EPUB block quotes from adjacent text (#43156)",
+      "topic": "pr-42911"
+    },
+    {
+      "pr": 43122,
+      "sha": "c7042abcd17759baf3639e6eae9bc8cff42c315e",
+      "subject": "fix(mobile): long thread and GitHub links wrap instead of cutting off (#43122)",
+      "topic": "pr-43122"
+    },
+    {
+      "pr": 37409,
+      "sha": "21aebbf7d9ec02d89c54e30e9a913f202b4d4f1f",
+      "subject": "fix(mobile): Keep a copied message's image when Android pastes plain text (#37409)",
+      "topic": "pr-37409"
+    },
+    {
+      "pr": 41993,
+      "sha": "65585f336ad21c3cbff58f7b3737d8f4faa3adc1",
+      "subject": "fix(mobile): Chinese Android dictation shows the microphone again (#41993)",
+      "topic": "pr-41993"
+    },
+    {
+      "pr": 43134,
+      "sha": "6378cabd192855f09b97fc2e5a29615bb6f5a098",
+      "subject": "fix(server): commented-out images no longer block HTML renders (#43134)",
+      "topic": "pr-43134"
+    },
+    {
+      "pr": 43148,
+      "sha": "de3ec238619f1f6f45e46df1e44efeb338792e7c",
+      "subject": "fix(mobile): folded Duo opens a thread picked while Back is still animating (#43148)",
+      "topic": "pr-43148"
+    },
+    {
+      "pr": 43133,
+      "sha": "44b787b5a020328381c34bf51d2773531d9c4e66",
+      "subject": "fix(web): pressing Escape while editing an issue title keeps the right panel sheet open (#43133)",
+      "topic": "pr-43118"
+    },
+    {
+      "pr": 43116,
+      "sha": "b888f3c3ba6e9ffcc395995ed492d4f08511d86f",
+      "subject": "fix(web): terminal excerpt titles follow the app language (#43116)",
+      "topic": "pr-42886"
+    },
+    {
+      "pr": 43035,
+      "sha": "923fe897d63cda5ea4da3648f4a3a2f85fc94cd3",
+      "subject": "fix(server): Claude threads in Auto ask about tools Claude sends back (#43035)",
+      "topic": "pr-43035"
+    },
+    {
+      "pr": 43132,
+      "sha": "84490014d10524612398e1fc820f5b9ce9b9a47d",
+      "subject": "fix(server): discover checked-out submodules with mixed-case path keys (#43132)",
+      "topic": "pr-43132"
+    },
+    {
+      "pr": 43139,
+      "sha": "4fd24866abeddd6a4411e4ff1ba51ba61798111d",
+      "subject": "fix(server): scheduled-task runs no longer un-snooze the thread they post into (#43139)",
+      "topic": "pr-43139"
+    },
+    {
+      "pr": 43120,
+      "sha": "17bc2597050334e7f7152938a935b90d87e35f78",
+      "subject": "fix(server): preserve EPUB columns after merged cells (#43120)",
+      "topic": "pr-42911"
+    },
+    {
+      "pr": 43117,
+      "sha": "7cfca0252cb0c686af4a73ab5047258c9efce3da",
+      "subject": "perf(web): sidebar rows skip re-rendering when a checks reread changes nothing (#43117)",
+      "topic": "pr-43117"
+    },
+    {
+      "pr": 43137,
+      "sha": "150a3c96996d64dcef3f6f680b607498c887b18f",
+      "subject": "perf(web): panel thread switches lay out the chat once before paint (#43137)",
+      "topic": "pr-43137"
+    },
+    {
+      "pr": 43114,
+      "sha": "9f96e22f39ed730e76a98177959ca4ea1a7f01a1",
+      "subject": "fix(server): separate inline EPUB image descriptions from words (#43114)",
+      "topic": "pr-42911"
+    },
+    {
+      "pr": 43128,
+      "sha": "bf20415ea654c6ee542362582e19db39325f3469",
+      "subject": "fix(server): log failure cause when checkpoint baseline capture fails (#43128)",
+      "topic": "pr-43128"
+    },
+    {
+      "pr": 43121,
+      "sha": "57d886b41e95ee3c6436ee02d0b233d905d5aff6",
+      "subject": "fix(web): workflow retry labels say \"21st try\" instead of \"21th try\" (#43121)",
+      "topic": "pr-43121"
+    },
+    {
+      "pr": 43118,
+      "sha": "a8f708de96627939e73fe8bb61eda361d3ae8e41",
+      "subject": "fix(web): pressing Escape in the PR markdown editor keeps the right panel sheet open (#43118)",
+      "topic": "pr-43118"
+    },
+    {
+      "pr": 43105,
+      "sha": "32e130c76d60bb50f0659cf381ab962621557ac0",
+      "subject": "fix(server): start extracted table rows on a new line (#43105)",
+      "topic": "pr-42871"
+    },
+    {
+      "pr": 43042,
+      "sha": "bed9141ec267f3f5e2b6bf61558de57ea9007883",
+      "subject": "fix(server): an HTML preview loads its files from the page's own folder only (#43042)",
+      "topic": "pr-43042"
+    },
+    {
+      "pr": 43115,
+      "sha": "c1b3254791f809402d256d33fd94ffe224b5cb98",
+      "subject": "fix(shared): empty frontmatter no longer hides document content (#43115)",
+      "topic": "pr-43115"
+    },
+    {
+      "pr": 43110,
+      "sha": "fbb6526db2764229498635985e6a776f80316100",
+      "subject": "fix(server): separate wrapped EPUB nested lists from parent text (#43110)",
+      "topic": "pr-42871"
+    },
+    {
+      "pr": 43039,
+      "sha": "cca1e3e1e7dcaf696002c72e2bb88b66da8f6f36",
+      "subject": "build(desktop): packaged app ignores Node inspector flags (#43039)",
+      "topic": "pr-43039"
+    },
+    {
+      "pr": 43095,
+      "sha": "539008aab955202593282ca01de64c1f09826b9b",
+      "subject": "fix(server): keep EPUB table columns aligned under merged cells (#43095)",
+      "topic": "pr-42871"
+    },
+    {
+      "pr": 43102,
+      "sha": "333cf311bcfeb3813385ead761080ae91a5286f1",
+      "subject": "fix(web): storage cleanup report says \"1 more result\" when one item is omitted (#43102)",
+      "topic": "pr-43102"
+    },
+    {
+      "pr": 43094,
+      "sha": "a03617a312ace8816d8deaed80ee268b3896ab08",
+      "subject": "fix(shared): inline code with a <placeholder> path segment stays plain code (#43094)",
+      "topic": "pr-43094"
+    },
+    {
+      "pr": 43097,
+      "sha": "0d2b8eda98efaf6fb2910c2adb93a6f15912f57e",
+      "subject": "fix(server): Antigravity usage stays priced when agy names one model with and without effort (#43097)",
+      "topic": "pr-43097"
+    },
+    {
+      "pr": 43096,
+      "sha": "d98c3e2de76002136fef0fde60411e70ee486103",
+      "subject": "fix(acp-registry): npm installs land in the managed prefix when npm is a shim (#43096)",
+      "topic": "pr-43096"
+    },
+    {
+      "pr": 43027,
+      "sha": "0d371444f39dc70d6fad76222a1fa86071fdb97b",
+      "subject": "fix(server): skip local status refreshes for unrelated Git ref changes (#43027)",
+      "topic": "pr-43027"
+    },
+    {
+      "pr": 43099,
+      "sha": "f0769f330dae2233e1e650335034ea445c99748a",
+      "subject": "fix(server): drop PostHog naming from telemetry  (#43099)",
+      "topic": "pr-43099"
+    },
+    {
+      "pr": 43088,
+      "sha": "51021b4888b0f61178d144e6ad1865a49d3ee53c",
+      "subject": "fix(web): grep matches under ./ or an absolute path become terminal links (#43088)",
+      "topic": "pr-43088"
+    },
+    {
+      "pr": 43079,
+      "sha": "fe7d0d0feed967dd1a703c9c6612b22477788ad3",
+      "subject": "fix(gitlab): checkouts cloned from altssh.gitlab.com match their merge requests (#43079)",
+      "topic": "pr-42330"
+    },
+    {
+      "pr": 43078,
+      "sha": "84fe59bb3b6bb7ddd0a4683d902812cb74a81665",
+      "subject": "fix(web): macOS Control-click keeps the terminal selection for Add to chat (#43078)",
+      "topic": "pr-43078"
+    },
+    {
+      "pr": 43076,
+      "sha": "152342da7d3a891fd0de1dd86ef9857fd60116b0",
+      "subject": "fix(web): truncated previews no longer end with a space before \"…\" (#43076)",
+      "topic": "pr-43076"
+    },
+    {
+      "pr": 43055,
+      "sha": "1485712d69c92af91bcf882e9770109d445cd5d4",
+      "subject": "fix(web): PR reply and load error links honor 'Open links in' (#43055)",
+      "topic": "pr-42873"
+    },
+    {
+      "pr": 43046,
+      "sha": "4f04b70bf81a451c29fd79105f78f6363c6a6934",
+      "subject": "fix(acp): Auto-accept edits approves file changes in the thread's folders and asks about the rest (#43046)",
+      "topic": "pr-43046"
+    },
+    {
+      "pr": 43077,
+      "sha": "6b09aea61df266268ac736f50e9156b52a1e0155",
+      "subject": "fix(server): Automatically pull keeps unviewed project roots current (#43077)",
+      "topic": "pr-43077"
+    },
+    {
+      "pr": 43040,
+      "sha": "f8b2fcbee5d82c3975112c7e5c3f7ec1b7e2e040",
+      "subject": "fix(relay): turn off Workers invocation logs (#43040)",
+      "topic": "pr-43040"
+    },
+    {
+      "pr": 43072,
+      "sha": "3eee3d48f1e05cbfa43476a085dc2b68ba60421e",
+      "subject": "fix(web): notebooks with blank language names no longer show empty separator dots (#43072)",
+      "topic": "pr-43072"
+    },
+    {
+      "pr": 43067,
+      "sha": "efcf9cb5bc94c0ae73e406405be2ab8f0bf0ff49",
+      "subject": "fix(terminal): avoid lone surrogates in long command labels (#43067)",
+      "topic": "pr-43067"
+    },
+    {
+      "pr": 43058,
+      "sha": "e057f7a770ffb9401152410aa549a898d88d5ce2",
+      "subject": "refactor(scripts): one benchmark per surface on a shared metrics core (#43058)",
+      "topic": "pr-42606"
+    },
+    {
+      "pr": 43060,
+      "sha": "6f44901b0296f6b0be416a1aa0349aa2fc1f0811",
+      "subject": "fix(web): the project icon picker search field stays put while typing (#43060)",
+      "topic": "pr-43060"
+    },
+    {
+      "pr": 43048,
+      "sha": "cbe475e5d6726da12c26358b3f5f451776b7c766",
+      "subject": "fix(server): DOCX attachment text keeps only one alternate-content choice (#43048)",
+      "topic": "pr-43048"
+    },
+    {
+      "pr": 40301,
+      "sha": "ef49296026f0851745b2021fb197c9d7c89ead39",
+      "subject": "fix(web): keep existing streaming text visible when reopening a thread (#40301)",
+      "topic": "pr-40301"
+    },
+    {
+      "pr": 43031,
+      "sha": "14e4a5097f1cdb8d62d02ad45a311a55248ea723",
+      "subject": "fix(desktop): long release-note items no longer end in a broken emoji (#43031)",
+      "topic": "pr-43031"
+    },
+    {
+      "pr": 43043,
+      "sha": "153671166c6a5a1d6181a7ecbf5c1345e10d339d",
+      "subject": "fix(server): a saved secret is kept only while its address stays the same (#43043)",
+      "topic": "pr-43043"
+    },
+    {
+      "pr": 42567,
+      "sha": "b76d0f023fa5a21772590e9533f6494dd9170441",
+      "subject": "fix(web): settings pages no longer flicker while switching sections (#42567)",
+      "topic": "pr-42567"
+    },
+    {
+      "pr": 43052,
+      "sha": "159bcd8e7df38d4dfc0272a58e1d34e3de06fa5f",
+      "subject": "fix(server): the background service prints how to pair instead of pairing details (#43052)",
+      "topic": "pr-43052"
+    },
+    {
+      "pr": 39489,
+      "sha": "9fe315079929ff719589254b3f1c1b4e26628999",
+      "subject": "fix(server): only a full-access MCP caller can pick an agent's own mode (#39489)",
+      "topic": "pr-39489"
+    },
+    {
+      "pr": 42975,
+      "sha": "eb9e8ae42fd78a8b0c439fa4067396104a4c21a4",
+      "subject": "feat(scripts): mobile:metrics benchmarks thread switches, tabs and memory on pool devices (#42975)",
+      "topic": "pr-42606"
+    },
+    {
+      "pr": 42671,
+      "sha": "ea3328c50c80c67c0ea4a55617f0680fb337af69",
+      "subject": "perf(web): one shared tooltip serves every trigger in the app (#42671)",
+      "topic": "pr-42671"
+    },
+    {
+      "pr": 43023,
+      "sha": "30a7aae9a37e179c274cfe77963207469a26e4ea",
+      "subject": "fix(server): forked Claude skills show their work in the subagent thread (#43023)",
+      "topic": "pr-43023"
+    },
+    {
+      "pr": 39408,
+      "sha": "5e9b58e809d18b4ddae7cad9a78a8efa030aa21e",
+      "subject": "fix(web): theme CSS shorthands with var() can no longer load remote files (#39408)",
+      "topic": "pr-39408"
+    },
+    {
+      "pr": 43028,
+      "sha": "357ee7ec9d9083a4193811a5b00414bd5248b769",
+      "subject": "fix(gitlab): group work item links, such as epics, are no longer read as issues (#43028)",
+      "topic": "pr-42605"
+    },
+    {
+      "pr": 42606,
+      "sha": "94af14b1f29779e7e3371ad18fd5960e31253fc3",
+      "subject": "feat(scripts): client-metrics benchmarks the web client: switches, interactions, renders and memory (#42606)",
+      "topic": "pr-42606"
+    },
+    {
+      "pr": 43024,
+      "sha": "2ae731530da21296dc999a275b948e25b9471014",
+      "subject": "perf(mobile): thread switches commit less and show their rows sooner (#43024)",
+      "topic": "pr-43024"
+    },
+    {
+      "pr": 42988,
+      "sha": "abc0c4ae55b6a94ac4b6618a660d6d58d1d4be0d",
+      "subject": "perf(web): the command palette filters without re-rendering every row (#42988)",
+      "topic": "pr-42988"
+    },
+    {
+      "pr": 43030,
+      "sha": "b9b1f5745be15dc6816f57037effb994fe52a676",
+      "subject": "fix(vcs): keep emoji intact in review commit subjects (#43030)",
+      "topic": "pr-43030"
+    },
+    {
+      "pr": 43007,
+      "sha": "520e670cb5ae0629a8fd865a3ca24b8c857ec4f8",
+      "subject": "fix(server): list physical Android phones on hosts without emulator tools (#43007)",
+      "topic": "pr-43007"
+    },
+    {
+      "pr": 43036,
+      "sha": "972bae6a61583fc7cca9f651cc0d6c89693694b8",
+      "subject": "fix(desktop): preview guests always run the app's own preload (#43036)",
+      "topic": "pr-43036"
+    },
+    {
+      "pr": 43018,
+      "sha": "000ea8109939217c54abe7ba1dc308287282753e",
+      "subject": "fix(web): Files tree opens a chain of single folders in one click (#43018)",
+      "topic": "pr-43018"
+    },
+    {
+      "pr": 43015,
+      "sha": "e6641e6ec6199de20a661eec195fd03033ee04a5",
+      "subject": "fix(web): PR author profile links honor 'Open links in' (#43015)",
+      "topic": "pr-42873"
+    },
+    {
+      "pr": 43008,
+      "sha": "bf961f8121c6336915ecf7b3f97ce6e68ab38fd7",
+      "subject": "fix(server): Claude no longer gets MCP app notes again after a server restart (#43008)",
+      "topic": "pr-43008"
+    },
+    {
+      "pr": 42999,
+      "sha": "82f22ef115b92b732a4abfbecb17fe9f4899f098",
+      "subject": "fix(server): asset responses pick their sandbox from the type they serve (#42999)",
+      "topic": "pr-42999"
+    },
+    {
+      "pr": 42535,
+      "sha": "c4d0e05d96517ac4e8a18bd69235da6efbedcf12",
+      "subject": "fix(server): agents below Full access ask before a push runs repository hooks (#42535)",
+      "topic": "pr-42535"
+    },
+    {
+      "pr": 42517,
+      "sha": "8987ba39d496ade970f27f7fcf04ffe6d09121f1",
+      "subject": "feat(workflows): a run can declare its subject and be found by it (#42517)",
+      "topic": "pr-42517"
+    },
+    {
+      "pr": 43017,
+      "sha": "605980d3971aa4f28257f9051019a7d033ba6569",
+      "subject": "fix(web): pressing Escape on the Environments map clears selection without closing Settings (#43017)",
+      "topic": "pr-43017"
+    },
+    {
+      "pr": 42940,
+      "sha": "74b5186f2ed99a60bd14664c1633e524aad6a94b",
+      "subject": "fix(terminal): finish shell startup after disconnect (#42940)",
+      "topic": "pr-42940"
+    },
+    {
+      "pr": 42986,
+      "sha": "9a3ad0bec2eec307b638309570159f29ff50905d",
+      "subject": "fix(web): recognize composerEmpty in keybinding settings (#42986)",
+      "topic": "pr-42986"
+    },
+    {
+      "pr": 43026,
+      "sha": "96423cb5e2614eeb7a033cc7b755795d88a9158a",
+      "subject": "fix(server): stop reading Antigravity usage limits from Google's internal APIs (#43026)",
+      "topic": "pr-43026"
+    },
+    {
+      "pr": 43014,
+      "sha": "cecbe8a89a18b429765bb63109ab848a72a45c7d",
+      "subject": "fix(shared): new thread titles no longer end with a space before \"...\" (#43014)",
+      "topic": "pr-43014"
+    },
+    {
+      "pr": 42991,
+      "sha": "dc5ae5ce632b47ece3faee01b46bd226911bd2e6",
+      "subject": "fix(web): empty ODS sheets show 0 columns instead of 1 (#42991)",
+      "topic": "pr-42991"
+    },
+    {
+      "pr": 43002,
+      "sha": "73c48a4341a966c29e6c2ad0663e64299d652656",
+      "subject": "fix(server): Antigravity sessions no longer mark an unscanned folder's skills as scanned (#43002)",
+      "topic": "pr-43002"
+    },
+    {
+      "pr": 42992,
+      "sha": "82e6b029800fd83cd16f9be47c282de48d423439",
+      "subject": "fix(mobile): an Issues list with nothing more to load no longer spins forever (#42992)",
+      "topic": "pr-42992"
+    },
+    {
+      "pr": 42996,
+      "sha": "0180628cf75eb9cd8ed371f7200d84c6f18f574a",
+      "subject": "fix(server): login-shell re-reads no longer pile up fnm multishell folders in PATH (#42996)",
+      "topic": "pr-42996"
+    },
+    {
+      "pr": 42981,
+      "sha": "9ea5044aef27b0b710857d8d1dc13240392cafc6",
+      "subject": "fix(server): images on drives Windows' native realpath cannot resolve preview again (#42981)",
+      "topic": "pr-42981"
+    },
+    {
+      "pr": 42914,
+      "sha": "60eed627d03da74a4cdbcca6798cc0b44d8575f7",
+      "subject": "fix(web): PR timeline \"Open activity on host\" buttons honor 'Open links in' (#42914)",
+      "topic": "pr-42873"
+    },
+    {
+      "pr": 42971,
+      "sha": "03c0b313156192c1cc239fce1a2cd4c20bcea28b",
+      "subject": "fix(antigravity): keep child skills visible under a root SKILL.md (#42971)",
+      "topic": "pr-42095"
+    },
+    {
+      "pr": 42974,
+      "sha": "09385a33ce967cac83fbd1a3b4cba9fcfe688de3",
+      "subject": "fix(shared): usage page says \"record was skipped\" for one malformed record (#42974)",
+      "topic": "pr-42974"
+    },
+    {
+      "pr": 42921,
+      "sha": "cbc3057f590203372b2070afdc97368ccca82403",
+      "subject": "fix(web,mobile): a running Read's image shows a loading frame, not \"Image unavailable\" (#42921)",
+      "topic": "pr-42921"
+    },
+    {
+      "pr": 42973,
+      "sha": "e242ed0e1ac7611abc2b23a24d4093924a0bbfba",
+      "subject": "fix(web): exact 1,024-column CSV and TSV files no longer show the truncated-columns banner (#42973)",
+      "topic": "pr-42973"
+    },
+    {
+      "pr": 42956,
+      "sha": "667cb3b25571fc3a1700f29d62453ed50acd5c7c",
+      "subject": "fix(contracts): pull request and issue errors reach clients behind T3 Connect (#42956)",
+      "topic": "pr-42956"
+    },
+    {
+      "pr": 40494,
+      "sha": "93b8dc3465ef829c8aa3b375190822550387d33f",
+      "subject": "fix(web): Antigravity settings show only the fields the chosen sign-in method uses (#40494)",
+      "topic": "pr-40494"
+    },
+    {
+      "pr": 42964,
+      "sha": "487a29b91659cf7d391fa61f3528e9c991e59cdc",
+      "subject": "fix(server): EPUB attachments keep their table captions for agents (#42964)",
+      "topic": "pr-42911"
+    },
+    {
+      "pr": 42962,
+      "sha": "f84c7168394eb8541ca928f09177bcd7b5495d1d",
+      "subject": "test(scripts): WSL archive fixture works with Git Bash tar on Windows (#42962)",
+      "topic": "pr-42962"
+    },
+    {
+      "pr": 42938,
+      "sha": "2313dfadad3398fd2a3ec9e267518af762ce0374",
+      "subject": "fix(server): resend a Cursor request a restart cut off before its first checkpoint (#42938)",
+      "topic": "pr-42938"
+    },
+    {
+      "pr": 42948,
+      "sha": "7d8c03fd999467843c70178fe655e05eeab2aeb5",
+      "subject": "fix(terminal): keep other input out of large bracketed pastes (#42948)",
+      "topic": "pr-42948"
+    },
+    {
+      "pr": 42955,
+      "sha": "b1360538c1c8a01329c2bc816a8a45a7fc325517",
+      "subject": "fix(server): DOCX merged table cells no longer shift later columns in attachment text (#42955)",
+      "topic": "pr-42911"
+    },
+    {
+      "pr": 42952,
+      "sha": "9df77f2125aaa3d442ee15beb43759bef3ab5f28",
+      "subject": "fix(server): expired buffered signals no longer wake workflows (#42952)",
+      "topic": "pr-42952"
+    },
+    {
+      "pr": 42925,
+      "sha": "3b827b4fb358e820f8871daeafbaaf3f1a2d57a9",
+      "subject": "fix(server): preserve image descriptions in EPUB attachment text (#42925)",
+      "topic": "pr-42911"
+    },
+    {
+      "pr": 42950,
+      "sha": "e36800e61babed824d055393d62fedc961e26e3b",
+      "subject": "fix(web): SQLite 1-byte BLOB previews show \"[blob: 1 byte]\" (#42950)",
+      "topic": "pr-42950"
+    },
+    {
+      "pr": 42873,
+      "sha": "6bb4e3d9d647cc5bf8ea15751a0caab931ae064f",
+      "subject": "fix(web): comment timestamps follow 'Open links in' (#42873)",
+      "topic": "pr-42873"
+    },
+    {
+      "pr": 42928,
+      "sha": "1c4622955aa6f961eddf7e024a741c0993013cbe",
+      "subject": "fix(mobile): keep CSV headings below the iPad navigation bar (#42928)",
+      "topic": "pr-42928"
+    },
+    {
+      "pr": 42897,
+      "sha": "a3a4592cf53e070aa4dc6f82f6c66ea977f03318",
+      "subject": "fix(web): release terminal reply ownership when the drawer closes (#42897)",
+      "topic": "pr-42897"
+    },
+    {
+      "pr": 42931,
+      "sha": "41d5875e5de1e1e790fccb945369df23a1d8dd2d",
+      "subject": "fix(server): Antigravity live sessions no longer overwrite default thinking levels (#42931)",
+      "topic": "pr-42931"
+    },
+    {
+      "pr": 42932,
+      "sha": "4568a1b7414585f9eae82a955a0d123da3d1ed47",
+      "subject": "fix(web): unsupported file preview no longer calls extensionless filenames a file type (#42932)",
+      "topic": "pr-42932"
+    },
+    {
+      "pr": 42911,
+      "sha": "4122ddbb16d7b08e0edfd40683003d0de2819a0e",
+      "subject": "fix(server): separate ruby readings in EPUB attachment text (#42911)",
+      "topic": "pr-42911"
+    },
+    {
+      "pr": 42927,
+      "sha": "867a9f0aec31d3629b779fb3dc70b2c4ade8e867",
+      "subject": "fix(terminal): keep line breaks when joining a running terminal (#42927)",
+      "topic": "pr-42927"
+    },
+    {
+      "pr": 42935,
+      "sha": "a76e5547844b11688454f8f41095597d196eccfe",
+      "subject": "test(web): Files panel Refresh test no longer fails on a late tree render (#42935)",
+      "topic": "pr-42935"
+    },
+    {
+      "pr": 42919,
+      "sha": "67918f51ccf79e8873349f3dc35c839689dba884",
+      "subject": "fix(web): Show more in Thread Details keeps every repository listed (#42919)",
+      "topic": "pr-42919"
+    },
+    {
+      "pr": 42918,
+      "sha": "9e385083d6255d4f4a94153ed25533f309f0da16",
+      "subject": "fix(client-runtime): a composer send right after Stop queues instead of failing to steer (#42918)",
+      "topic": "pr-42918"
+    },
+    {
+      "pr": 42900,
+      "sha": "0f55a0dc37aa0e79846106f9cf9f4df88cdb8b7c",
+      "subject": "fix(web): empty files and folders in archive previews show 0 bytes instead of 1 KB (#42900)",
+      "topic": "pr-42900"
+    },
+    {
+      "pr": 42891,
+      "sha": "b20bb177b5e077600e749147b394e953387d1169",
+      "subject": "fix(server): separate nested EPUB list items in attachment text (#42891)",
+      "topic": "pr-42871"
+    },
+    {
+      "pr": 42886,
+      "sha": "2891419b9301d89109c86814aeae639428705508",
+      "subject": "fix(web): localize terminal excerpt line ranges (#42886)",
+      "topic": "pr-42886"
+    },
+    {
+      "pr": 42889,
+      "sha": "83a7c75b88b45c8076a0c42cd442bed3b243f6a0",
+      "subject": "fix(web,mobile): adding a project from a draft's picker no longer leaves the draft behind (#42889)",
+      "topic": "pr-42889"
+    },
+    {
+      "pr": 42905,
+      "sha": "14cc3d1d38e42040a247a506d2a5586087b3adda",
+      "subject": "fix(server): OpenCode /goal length rejection names the limit (#42905)",
+      "topic": "pr-42905"
+    },
+    {
+      "pr": 42899,
+      "sha": "831f2408825c1c79ddb4e1256d8fe9ba9234befc",
+      "subject": "fix(server): extensionless empty ZIP files are detected as application/zip (#42899)",
+      "topic": "pr-42899"
+    },
+    {
+      "pr": 42904,
+      "sha": "aef22ed239b5947300d03d0d487c5d32cb4e5d7f",
+      "subject": "fix(server): t3 connect link says to restart a running server, not start t3 serve (#42904)",
+      "topic": "pr-42904"
+    },
+    {
+      "pr": 42884,
+      "sha": "acd4fc67b930b0a9be7799f3f986e0ec46bf7a14",
+      "subject": "fix(web): show Labs device preferences read-only for projects (#42884)",
+      "topic": "pr-42884"
+    },
+    {
+      "pr": 42872,
+      "sha": "3373a78606296baa9bb6e386c242da2f9ae32e04",
+      "subject": "fix(web): update terminal labels when the language changes (#42872)",
+      "topic": "pr-42872"
+    },
+    {
+      "pr": 42810,
+      "sha": "c14e9f9717739a03ad62289d82ba287bad64a5bf",
+      "subject": "fix(server): preserve split terminal control sequences across scrollback clears (#42810)",
+      "topic": "pr-42810"
+    },
+    {
+      "pr": 42882,
+      "sha": "e045a127e783c41b7ed91fcbc1d17810c7b8c459",
+      "subject": "fix(web): web search result links follow Open links in (#42882)",
+      "topic": "pr-42882"
+    },
+    {
+      "pr": 42915,
+      "sha": "b4a5a4927f371c5e6a9108f56f1c7884b510be79",
+      "subject": "fix(web): reading position survives a panel resize right after a thread opens (#42915)",
+      "topic": "pr-42915"
+    },
+    {
+      "pr": 42863,
+      "sha": "b61af8a5d2af5e514674bd85fe5a62e4ea8f9918",
+      "subject": "fix(web,mobile): mixed add/delete review selections no longer show backwards line ranges (#42863)",
+      "topic": "pr-42863"
+    },
+    {
+      "pr": 42875,
+      "sha": "45c011e218dccbb8d02c5408d00c6011ee07b9ec",
+      "subject": "fix(web): reopening a closed pull request tab keeps saved list filters (#42875)",
+      "topic": "pr-42875"
+    },
+    {
+      "pr": 42871,
+      "sha": "80cac28f5ad31fbf7e3d07dcfacf023b0d38a96d",
+      "subject": "fix(server): EPUB attachment text no longer includes hidden passages (#42871)",
+      "topic": "pr-42871"
+    },
+    {
+      "pr": 42879,
+      "sha": "9301770ae9e595a65e23d83702b86121c380e919",
+      "subject": "fix(mobile): / menu ranks an exact skill name above description matches (#42879)",
+      "topic": "pr-42879"
+    },
+    {
+      "pr": 42880,
+      "sha": "8783b9d2eaaf102dfd7374eef2ecc75c4b754907",
+      "subject": "fix(web): Restart agent session toast says the conversation is kept (#42880)",
+      "topic": "pr-42880"
+    },
+    {
+      "pr": 42870,
+      "sha": "9de5a941eaa42914da08984220daaccb2d971ad2",
+      "subject": "perf(web): Files panel Refresh reads only the folders on screen (#42870)",
+      "topic": "pr-42870"
+    },
+    {
+      "pr": 42876,
+      "sha": "172309c39c9525df0435141d74d4d9c0530b13e9",
+      "subject": "fix(web): timeline minimap no longer covers the Copy button when the chat lane is shifted left (#42876)",
+      "topic": "pr-42876"
+    },
+    {
+      "pr": 42835,
+      "sha": "6cca0b18646b172d00fc0d88e2a80021d6b55372",
+      "subject": "fix(github): count team review requests in the Reviewing filter (#42835)",
+      "topic": "pr-42835"
+    },
+    {
+      "pr": 42857,
+      "sha": "7814c9f884b2baff651c132ce38a077767de138d",
+      "subject": "fix(desktop): WSL-only backend no longer falls back to Windows when reg.exe is blocked by policy (#42857)",
+      "topic": "pr-42857"
+    },
+    {
+      "pr": 42855,
+      "sha": "f1efcfb4948542237f6e2ceb5389de9e23f9baea",
+      "subject": "fix(client-runtime): feedback trace shows \"1 character\", not \"1 characters\" (#42855)",
+      "topic": "pr-42855"
+    },
+    {
+      "pr": 42856,
+      "sha": "19a6e5b57be7b016e037f14ab05ec2c12f0d4853",
+      "subject": "fix(web): clicking outside a citation comment keeps its dictation (#42856)",
+      "topic": "pr-42856"
+    },
+    {
+      "pr": 42837,
+      "sha": "8f5fd287a42f589887c836cd77b9f4d636e45d30",
+      "subject": "fix(web,mobile): Usage says \"1 session\", not \"1 sessions\" (#42837)",
+      "topic": "pr-42837"
+    },
+    {
+      "pr": 42818,
+      "sha": "d2a9b77499c3157d7724bc180b844c5c9e5ec069",
+      "subject": "fix(server): linked workflow steps recover replies from older pages (#42818)",
+      "topic": "pr-42818"
+    },
+    {
+      "pr": 42852,
+      "sha": "aacdaba15c98743bd7b4ed1c7c1522aa49db0326",
+      "subject": "fix(web): panel resize handle no longer covers the chat scrollbar on touch devices (#42852)",
+      "topic": "pr-42852"
+    },
+    {
+      "pr": 42851,
+      "sha": "e3f7eb50856870fa52f5c2864294639a1f0fa2d2",
+      "subject": "fix(web): Changes pane explains a diff of only hidden test files (#42851)",
+      "topic": "pr-42851"
+    },
+    {
+      "pr": 42806,
+      "sha": "25bbfb34c85d993812b05c732b20fe94c88c530a",
+      "subject": "fix(release): preserve the web asset manifest (#42806)",
+      "topic": "pr-42806"
+    },
+    {
+      "pr": 42817,
+      "sha": "e6738fd8bcc8cf2e3026375d2299fde6edc81c94",
+      "subject": "fix(server): retain unfinished terminal sequences in attach history (#42817)",
+      "topic": "pr-41420"
+    },
+    {
+      "pr": 42827,
+      "sha": "c991a91ec6def51242fc9bdb8205b4be098d9b74",
+      "subject": "fix(web): GB18030 RTF files now preview instead of showing no preview (#42827)",
+      "topic": "pr-42230"
+    },
+    {
+      "pr": 42830,
+      "sha": "1c3f0ee88fc75440e173704cf45eae4d15f2cf95",
+      "subject": "fix(server): force-kill a relay client that ignores SIGTERM on restart (#42830)",
+      "topic": "pr-42830"
+    },
+    {
+      "pr": 42808,
+      "sha": "f7ec366acddb573c3b13dc2c7b575c0c62aed7e9",
+      "subject": "fix(server): preserve split terminal output when rejoining (#42808)",
+      "topic": "pr-41420"
+    },
+    {
+      "pr": 42816,
+      "sha": "e849afabb4c1aa600d5c5c33eb51e0fe080a2a4e",
+      "subject": "fix(server): EPUB glossary entries no longer run together in extracted text (#42816)",
+      "topic": "pr-42816"
+    },
+    {
+      "pr": 42824,
+      "sha": "2f7b7f03e32eaf38965246911e1af72d951ca934",
+      "subject": "fix(web): issue number in the Issue panel follows 'Open links in' (#42824)",
+      "topic": "pr-42824"
+    },
+    {
+      "pr": 42814,
+      "sha": "91d6c05ac439aa9677065a4fcecb7344e319952a",
+      "subject": "fix(server): threads deleted before upgrading are purged soon after startup (#42814)",
+      "topic": "pr-42119"
+    },
+    {
+      "pr": 42805,
+      "sha": "cef38e408d45b74a02f99da0ed3d400d97fd4182",
+      "subject": "fix(web): file picker highlights no longer break emoji in file names (#42805)",
+      "topic": "pr-42805"
+    },
+    {
+      "pr": 42791,
+      "sha": "c478fde9fe323fd6d10ef9a0b109b015546fb8e0",
+      "subject": "fix(web): bad workflow pane links no longer pick the first tab or crash (#42791)",
+      "topic": "pr-42791"
+    },
+    {
+      "pr": 42777,
+      "sha": "0f9bb6e0e76b525533538bcf3fc3939f0e3c3698",
+      "subject": "fix(mobile): iPad windowed composer sits on the keyboard, not its full height above (#42777)",
+      "topic": "pr-42777"
+    },
+    {
+      "pr": 42776,
+      "sha": "f7d6796019709464d1ce1c10a19620eb129f638a",
+      "subject": "fix(server): GB18030 RTF attachments no longer fail text extraction (#42776)",
+      "topic": "pr-42230"
+    },
+    {
+      "pr": 42771,
+      "sha": "3a63e0ca37a50d31f78b0188960557ff69964e76",
+      "subject": "fix(web): expanding linked issues no longer hides thread details sections (#42771)",
+      "topic": "pr-42771"
+    },
+    {
+      "pr": 42757,
+      "sha": "dca3ab2025c15cfa5907757229be894cbc04cd80",
+      "subject": "fix(web): held overlay and Usage shortcuts no longer flicker (#42757)",
+      "topic": "pr-42757"
+    },
+    {
+      "pr": 42755,
+      "sha": "f99eceb76dac7c8ee405a0c71dd9a5dd4a32d700",
+      "subject": "fix(web): reasoning previews no longer cut emojis in half (#42755)",
+      "topic": "pr-42755"
+    }
+  ],
+  "count": 239,
+  "createdAt": "2026-11-26T11:10:32.890Z",
+  "digest": "c2258bb60100d109a9f1209e7d527fc290afffa3fb0e088e520b9275fd18569c",
+  "interval": 44,
+  "schemaVersion": 8,
+  "selection": "first-parent",
+  "targetSha": "ab2348acbb96b38dfe59a1d90f6e8d8c33b683a4"
+}
