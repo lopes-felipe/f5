@@ -128,7 +128,19 @@ export function RuntimeModeMenuItems(props: {
         data-ladder-caption=""
         className="w-0 min-w-full space-y-1 px-2 pt-1.5 pb-1 text-muted-foreground text-xs"
       >
-        <p>{RUNTIME_MODE_PRESENTATION[previewMode ?? props.value].description}</p>
+        {/* Every description shares one grid cell, so the caption keeps the height of the longest.
+            The menu opens upwards: a caption that resized with the preview would shift the rows
+            under the pointer and flicker the highlight between two rows. */}
+        <div className="grid">
+          {LADDER_MODES.map((mode) => {
+            const shown = mode === (previewMode ?? props.value);
+            return (
+              <p key={mode} className={cn("col-start-1 row-start-1", !shown && "invisible")}>
+                {RUNTIME_MODE_PRESENTATION[mode].description}
+              </p>
+            );
+          })}
+        </div>
         {unsupportedReasons.map((reason) => (
           <p key={reason}>{reason}</p>
         ))}
