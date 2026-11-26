@@ -260,10 +260,17 @@ export const CodexTraitsPicker = memo(function CodexTraitsPicker(
         }
       >
         <span className="flex min-w-0 w-full items-center gap-2 overflow-hidden">
-          {triggerLabel}
+          {/* In a width-capped trigger the label truncates; the icon and chevron stay whole. */}
+          <span className="min-w-0 truncate" title={triggerLabel}>
+            {triggerLabel}
+          </span>
           {fastModeEnabled ? <FastModeTriggerIcon /> : null}
-          {/* Pinned to the trailing edge when the trigger is wider than its content. */}
-          <ChevronDownIcon aria-hidden="true" className="ms-auto size-3 shrink-0 opacity-60" />
+          {/* Pinned to the trailing edge when the trigger is wider than its content. The
+              wrapper carries the margin: the trigger's `[&_svg]:mx-0` would override it on
+              the icon itself. */}
+          <span aria-hidden="true" className="ms-auto inline-flex shrink-0">
+            <ChevronDownIcon className="size-3 opacity-60" />
+          </span>
         </span>
       </MenuTrigger>
       <MenuPopup align="start">

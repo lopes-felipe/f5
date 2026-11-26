@@ -663,6 +663,11 @@ describe("WorkflowCreateDialog", () => {
         .element()
         .querySelector<HTMLElement>("[data-slot='workflow-slot-traits'] button")!;
       expect(effortTrigger.className).not.toMatch(/bg-effort-/);
+      // The chevron sits at the trigger's trailing edge (inside its 8px padding), not right
+      // after the label.
+      const chevron = effortTrigger.querySelector("svg")!.getBoundingClientRect();
+      const triggerRect = effortTrigger.getBoundingClientRect();
+      expect(triggerRect.right - chevron.right).toBeLessThanOrEqual(10);
       // Wide enough for one line: the label sits beside the model field.
       const row = page.getByRole("group", { name: "With reasoning" }).element();
       expect(row.querySelector("label")!.getBoundingClientRect().right).toBeLessThanOrEqual(
@@ -797,6 +802,11 @@ describe("WorkflowCreateDialog", () => {
       expect(row.querySelector('[data-slot="workflow-slot-traits"]')).not.toBeNull();
       const trigger = row.querySelector<HTMLElement>("button[aria-haspopup='menu']")!;
       expect(trigger.textContent).toContain("Medium");
+      // The generic picker's chevron also pins to the trailing edge of the effort field.
+      expect(
+        trigger.getBoundingClientRect().right -
+          trigger.querySelector("svg")!.getBoundingClientRect().right,
+      ).toBeLessThanOrEqual(10);
       trigger.click();
       await page.getByRole("menuitemradio", { name: /^High/ }).click();
       expect(onModelOptionsChange).toHaveBeenCalledWith({ cursor: { reasoning: "high" } });
@@ -1793,18 +1803,6 @@ describe("WorkflowCreateDialog", () => {
     try {
       await typeRequirementPrompt("Plan with more authors");
       expect(rowLabels()).toEqual(["Author A", "Author B"]);
-
-      addAuthorButton().click();
-      addAuthorButton().click();
-      await vi.waitFor(() => {
-        expect(rowLabels()).toEqual(["Author A", "Author B", "Author C", "Author D"]);
-      });
-      expect(addAuthorButton().disabled).toBe(true);
-      expect(document.body.textContent).toContain(
-        "4 authors: 12 cross-reviews, 4 own-model reviews, 4 revisions, 1 merge",
-      );
-      // Removable and fixed rows share one column grid, and the estimate closes the
-      // section after the merge row.
       const slotRow = (label: string) => {
         const row = document.querySelector(
           `[data-slot="workflow-slot-row"][aria-label="${label}"]`,
@@ -1814,6 +1812,26 @@ describe("WorkflowCreateDialog", () => {
       };
       const rightEdge = (row: Element, slot: string) =>
         row.querySelector(`[data-slot="${slot}"]`)?.getBoundingClientRect().right;
+      const authorAEdges = () => [
+        rightEdge(slotRow("Author A"), "workflow-slot-model"),
+        rightEdge(slotRow("Author A"), "workflow-slot-traits"),
+      ];
+      const edgesWithTwoAuthors = authorAEdges();
+      expect(edgesWithTwoAuthors).not.toContain(undefined);
+
+      addAuthorButton().click();
+      addAuthorButton().click();
+      await vi.waitFor(() => {
+        expect(rowLabels()).toEqual(["Author A", "Author B", "Author C", "Author D"]);
+      });
+      // Adding removable authors doesn't shift the existing fields.
+      expect(authorAEdges()).toEqual(edgesWithTwoAuthors);
+      expect(addAuthorButton().disabled).toBe(true);
+      expect(document.body.textContent).toContain(
+        "4 authors: 12 cross-reviews, 4 own-model reviews, 4 revisions, 1 merge",
+      );
+      // Removable and fixed rows share one column grid, and the estimate closes the
+      // section after the merge row.
       const alignedRows = [slotRow("Author A"), slotRow("Author C"), slotRow("Merge")];
       const modelEdges = alignedRows.map((row) => rightEdge(row, "workflow-slot-model"));
       expect(modelEdges[0]).toBeDefined();
