@@ -7,6 +7,9 @@ import {
   type AcpAutomationCatalogs,
 } from "../acp/AcpAutomationCatalogs";
 import type { PreviewMcpHttpServerShape } from "../../mcp/PreviewMcpHttpServer";
+import type { McpHubShape } from "../../mcp/hub/McpHub";
+import { mcpSessionStdioLaunch } from "../../mcp/sessionStdioShim";
+import type { McpProjectServersConfig } from "@t3tools/contracts";
 import type { ComputerAutomationBrokerRuntime } from "../../computer/ComputerAutomationBroker";
 import { makeAutomationRuntimeEventPreparer } from "../prepareAutomationRuntimeEvent";
 import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
@@ -160,6 +163,8 @@ export interface CursorAdapterLiveOptions {
   /** Certification/test seam; production drivers leave this unset. */
   readonly automationCatalogVerification?: { preview?: boolean; computer?: boolean };
   readonly previewMcpHttpServer?: PreviewMcpHttpServerShape;
+  /** Serves project MCP servers (stdio included) through loopback endpoints. */
+  readonly mcpHub?: McpHubShape;
   readonly computerAutomationBroker?: ComputerAutomationBrokerRuntime;
   readonly environment?: NodeJS.ProcessEnv;
   readonly nativeEventLogPath?: string;
@@ -1022,10 +1027,35 @@ export function makeCursorAdapter(
                 sse: init.agentCapabilities?.mcpCapabilities?.sse === true,
               },
               environment: cursorEnvironment,
+              ...(options?.mcpHub?.available
+                ? {
+                    attachHub: (servers: McpProjectServersConfig) =>
+                      options.mcpHub!.attach({
+                        threadId: input.threadId,
+                        projectId: input.projectId,
+                        provider: PROVIDER,
+                        accountKey: boundInstanceId,
+                        servers,
+                        environment: cursorEnvironment,
+                        cwd,
+                        reservedNames: cursorMcpConfigNames,
+                      }),
+                    stdioLaunch: mcpSessionStdioLaunch(),
+                  }
+                : {}),
             });
             catalogs.registerForwardedCredentials(
               cursorMcpServerSecrets(resolved.servers, resolved.ownedNames),
             );
+            if (resolved.dispose) {
+              const dispose = resolved.dispose;
+              Effect.runFork(
+                Scope.addFinalizer(
+                  sessionScope,
+                  Effect.promise(() => dispose()),
+                ),
+              );
+            }
             mcpResolution = resolved;
             return resolved;
           };

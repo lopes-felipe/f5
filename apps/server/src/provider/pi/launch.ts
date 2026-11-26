@@ -5,6 +5,7 @@ import {
   F5_PI_MCP_BEARER_ENV,
   F5_PI_RUNTIME_MODE_ENV,
   F5_PI_MCP_EXTENSION_PATH_ENV,
+  F5_PI_MCP_SERVERS_ENV,
 } from "./PiEnvironment.ts";
 
 const RESERVED_PI_LAUNCH_ARGUMENTS = new Set([
@@ -220,12 +221,23 @@ function withoutToolSelectionArgs(args: ReadonlyArray<string>): ReadonlyArray<st
   return filtered;
 }
 
+export interface PiUserMcpServer {
+  readonly name: string;
+  readonly url: string;
+  readonly token: string;
+  readonly timeoutMs: number;
+  /** The server's startup timeout: the first listing waits this long plus a margin. */
+  readonly startupTimeoutMs?: number;
+}
+
 export function buildPiRpcLaunch(input: {
   readonly launchArgs: ReadonlyArray<string>;
   readonly environment: NodeJS.ProcessEnv;
   readonly mcpSession:
     | { readonly endpoint: string; readonly authorizationHeader: string }
     | undefined;
+  /** Project MCP servers routed through F5's hub; the F5 extension registers their tools. */
+  readonly userMcpServers?: ReadonlyArray<PiUserMcpServer>;
   readonly extensionPath: string | undefined;
   readonly ephemeral?: boolean;
   readonly shortLived?: boolean;
@@ -273,6 +285,7 @@ export function buildPiRpcLaunch(input: {
   delete environment[F5_PI_MCP_EXTENSION_PATH_ENV];
   delete environment[F5_PI_RUNTIME_MODE_ENV];
   delete environment[F5_PI_READ_ONLY_ENV];
+  delete environment[F5_PI_MCP_SERVERS_ENV];
 
   return {
     args,
@@ -287,6 +300,9 @@ export function buildPiRpcLaunch(input: {
             [F5_PI_RUNTIME_MODE_ENV]:
               input.runtimeMode === "auto" ? "approval-required" : input.runtimeMode,
           }
+        : {}),
+      ...(hasF5Extension && input.userMcpServers !== undefined && input.userMcpServers.length > 0
+        ? { [F5_PI_MCP_SERVERS_ENV]: JSON.stringify(input.userMcpServers) }
         : {}),
       ...(hasF5Mcp && input.mcpSession !== undefined
         ? {

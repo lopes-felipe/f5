@@ -3,6 +3,7 @@ import type {
   McpStatusUpdatedPayload,
   McpCommonConfigResult,
   McpEffectiveConfigResult,
+  McpGetHubStatusResult,
   McpLoginStatusResult,
   McpProviderStatusResult,
   McpProjectConfigResult,
@@ -37,7 +38,25 @@ export const mcpQueryKeys = {
     serverName: string | null,
     instanceId: ProviderInstanceId | null,
   ) => ["mcp", "loginStatus", provider, projectId, serverName, instanceId] as const,
+  hubStatus: (projectId: ProjectId | null) => ["mcp", "hubStatus", projectId] as const,
 };
+
+/** Hub status is pushed (reason `hub`), so it is never polled. */
+export function mcpHubStatusQueryOptions(input: {
+  readonly projectId: ProjectId | null;
+  readonly enabled?: boolean;
+}) {
+  return queryOptions<McpGetHubStatusResult>({
+    queryKey: mcpQueryKeys.hubStatus(input.projectId),
+    enabled: input.enabled ?? true,
+    meta: rpcQueryMeta("refresh-background"),
+    queryFn: async (context) =>
+      ensureNativeApi().mcp.getHubStatus(
+        input.projectId ? { projectId: input.projectId } : {},
+        rpcQueryContext(context),
+      ),
+  });
+}
 
 const MCP_CONFIG_QUERY_KINDS = new Set(["commonConfig", "projectConfig", "effectiveConfig"]);
 
@@ -67,6 +86,9 @@ export function isMcpQueryAffected(
   if (queryKey[0] !== "mcp") return false;
   if (event.reason === "updated" && !isMcpConfigQuery(queryKey)) return false;
   const kind = queryKey[1];
+  // Hub connection changes never touch provider observations, and vice versa.
+  if (event.reason === "hub") return kind === "hubStatus";
+  if (kind === "hubStatus") return event.reason !== "updated";
   const accountScoped = [
     "providerStatus",
     "serverStatuses",
