@@ -148,8 +148,12 @@ export const ClaudeTraitsPicker = memo(function ClaudeTraitsPicker(
           {trigger.label}
         </span>
         <TraitsTriggerIcons icons={trigger.icons} />
-        {/* Pinned to the trailing edge when the trigger is wider than its content. */}
-        <ChevronDownIcon aria-hidden="true" className="ms-auto size-3 shrink-0 opacity-60" />
+        {/* Pinned to the trailing edge when the trigger is wider than its content. The
+            wrapper carries the margin: Button's `[&_svg]` margin rule would override it on
+            the icon itself. */}
+        <span aria-hidden="true" className="ms-auto inline-flex shrink-0">
+          <ChevronDownIcon className="size-3 opacity-60" />
+        </span>
       </MenuTrigger>
       <MenuPopup align="start">
         <ClaudeTraitsMenuContent {...menuProps} />
