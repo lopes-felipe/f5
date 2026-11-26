@@ -1270,7 +1270,8 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
               ) : null}
             </div>
             <div className="flex min-w-0 flex-col gap-4">
-              <section aria-label="Models" className="flex flex-col gap-2">
+              {/* A container, so the indents below follow SlotRow's own label breakpoint. */}
+              <section aria-label="Models" className="@container/models flex flex-col gap-2">
                 <SectionLabel as="h3">Models</SectionLabel>
                 {actors.map((row, index) => {
                   const selection = actorSelections[index]!;
@@ -1291,6 +1292,8 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                       modelOptionsByInstance={modelOptionsByInstance}
                       providerUnavailableReason={workflowProviderUnavailableReason}
                       error={rowError}
+                      reserveTraitsColumn
+                      reserveTrailing={actorCount > 2}
                       onProviderModelChange={(provider, model) => {
                         updateActor(row.key, { provider, model, modelOptions: undefined });
                         if (preferenceSlot) {
@@ -1334,7 +1337,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                     />
                   );
                 })}
-                <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 ps-27">
+                <div className="flex min-w-0 items-center @sm/models:ps-27">
                   <Button
                     type="button"
                     size="xs"
@@ -1345,18 +1348,6 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                     <PlusIcon aria-hidden="true" className="size-3.5" />
                     {workflowAddActorLabel(workflowType)}
                   </Button>
-                  {actorCount > 2 ? (
-                    <p className="text-2xs text-muted-foreground">
-                      {formatWorkflowTurnEstimate(
-                        workflowType,
-                        actorCount,
-                        workflowType === "investigation"
-                          ? investigationSelfReviewEnabled
-                          : selfReviewEnabled,
-                        readerReviewEnabled,
-                      )}
-                    </p>
-                  ) : null}
                 </div>
                 {actorsOverMax ? (
                   <p role="alert" className="text-ui text-destructive-foreground">
@@ -1381,6 +1372,8 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                   // The merge is a read-only turn for every workflow type.
                   providerUnavailableReason={workflowProviderUnavailableReason}
                   error={mergeProviderError}
+                  reserveTraitsColumn
+                  reserveTrailing={actorCount > 2}
                   onProviderModelChange={(provider, model) => {
                     setMergeProvider(provider);
                     setMergeModel(model);
@@ -1406,6 +1399,23 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                     );
                   }}
                 />
+                {actorCount > 2 ? (
+                  // The estimate covers the whole run, merge included, so it closes the
+                  // section on its own line instead of wrapping beside "Add author".
+                  <p
+                    data-slot="workflow-turn-estimate"
+                    className="text-2xs text-muted-foreground @sm/models:ps-27"
+                  >
+                    {formatWorkflowTurnEstimate(
+                      workflowType,
+                      actorCount,
+                      workflowType === "investigation"
+                        ? investigationSelfReviewEnabled
+                        : selfReviewEnabled,
+                      readerReviewEnabled,
+                    )}
+                  </p>
+                ) : null}
               </section>
               {workflowType === "document" ? (
                 <div className="flex flex-col gap-3 rounded-lg border border-border p-3">

@@ -29,14 +29,69 @@ const DRIVER_TO_DOC_LABEL: Readonly<Record<string, string>> = {
 };
 
 /**
+ * Strips CommonMark inline code spans within a single non-fenced paragraph
+ * block in linear time, allowing spans to cross line endings inside the block.
+ */
+function stripInlineCodeInBlock(block: string): string {
+  const runs: Array<{ readonly start: number; readonly end: number; readonly len: number }> = [];
+  for (let i = 0; i < block.length; ) {
+    if (block[i] !== "`") {
+      i += 1;
+      continue;
+    }
+    const start = i;
+    while (i < block.length && block[i] === "`") i += 1;
+    runs.push({ start, end: i, len: i - start });
+  }
+  if (runs.length < 2) return block;
+
+  const byLen = new Map<number, number[]>();
+  for (let idx = 0; idx < runs.length; idx += 1) {
+    const len = runs[idx]!.len;
+    const list = byLen.get(len);
+    if (list) list.push(idx);
+    else byLen.set(len, [idx]);
+  }
+  const cursorByLen = new Map<number, number>();
+
+  let out = "";
+  let pos = 0;
+  for (let i = 0; i < runs.length; ) {
+    const run = runs[i]!;
+    const indices = byLen.get(run.len)!;
+    let cursor = cursorByLen.get(run.len) ?? 0;
+    while (cursor < indices.length && indices[cursor]! <= i) cursor += 1;
+    cursorByLen.set(run.len, cursor);
+
+    if (cursor < indices.length) {
+      const closeIdx = indices[cursor]!;
+      out += block.slice(pos, run.start);
+      pos = runs[closeIdx]!.end;
+      i = closeIdx + 1;
+    } else {
+      i += 1;
+    }
+  }
+  out += block.slice(pos);
+  return out;
+}
+
+/**
  * Strips fenced code blocks (CommonMark rules: closing fence must use the same
  * character, at least the opener's length, and only trailing whitespace) and
- * inline code spans so example links inside code are ignored.
+ * inline code spans (including multiline spans within a block) so example links
+ * inside code are ignored.
  */
 export function stripCodeBlocksAndInlineCode(markdown: string): string {
   const lines = markdown.split(/\r?\n/);
-  const kept: string[] = [];
+  const blocks: string[][] = [[]];
   let activeFence: { readonly char: string; readonly length: number } | null = null;
+
+  const pushBlockBoundary = () => {
+    if (blocks.at(-1)!.length > 0) {
+      blocks.push([]);
+    }
+  };
 
   for (const line of lines) {
     if (activeFence === null) {
@@ -47,11 +102,15 @@ export function stripCodeBlocksAndInlineCode(markdown: string): string {
         // CommonMark: backtick info strings cannot contain backticks.
         if (char !== "`" || !line.slice(openMatch[0].length).includes("`")) {
           activeFence = { char, length: marker.length };
+          pushBlockBoundary();
           continue;
         }
       }
-      // Strip inline code spans (`...`) on non-fenced lines.
-      kept.push(line.replace(/(`+)([^`]|(?!(?<!`)\1(?!`))`)*?\1/g, ""));
+      if (/^[ \t]*$/.test(line)) {
+        pushBlockBoundary();
+        continue;
+      }
+      blocks.at(-1)!.push(line);
     } else {
       const closePattern = new RegExp(
         `^[ ]{0,3}${activeFence.char}{${activeFence.length},}[ \\t]*$`,
@@ -62,20 +121,24 @@ export function stripCodeBlocksAndInlineCode(markdown: string): string {
     }
   }
 
-  return kept.join("\n");
+  return blocks
+    .filter((block) => block.length > 0)
+    .map((block) => stripInlineCodeInBlock(block.join("\n")))
+    .join("\n\n");
 }
 
 /**
  * Extracts inline and reference-style markdown link targets while supporting
- * one level of balanced parentheses (e.g. `foo(bar).md`) without nested
- * quantifiers.
+ * CommonMark angle-bracketed destinations (`<...>`) and one level of balanced
+ * parentheses (e.g. `foo(bar).md`) without nested quantifiers.
  */
 export function extractMarkdownLinkTargets(markdown: string): string[] {
   const targets: string[] = [];
   const cleaned = stripCodeBlocksAndInlineCode(markdown);
-  const inlinePattern = /!?\[[^\]]*\]\(((?:[^()\s]|\([^()\s]*\))+)(?:\s+"[^"]*")?\)/g;
+  const inlinePattern =
+    /!?\[[^\]]*\]\([ \t]*(?:<([^<>\r\n]+)>|((?:[^()\s]|\([^()\s]*\))+))(?:[ \t]+(?:"[^"]*"|'[^']*'))?[ \t]*\)/g;
   for (const match of cleaned.matchAll(inlinePattern)) {
-    const rawTarget = match[1];
+    const rawTarget = match[1] ?? match[2];
     if (rawTarget) targets.push(rawTarget);
   }
   const referenceDefPattern = /^[ ]{0,3}\[[^\]]+\]:[ \t]*(?:<([^>\r\n]+)>|([^\s]+))/gm;
@@ -135,7 +198,7 @@ export function findBrokenDocLinks(repoRoot: string): string[] {
       const decodedTarget = decodeLinkPathname(target);
       const resolved = path.resolve(path.dirname(file), decodedTarget);
       if (!existsSync(resolved)) {
-        broken.push(`${path.relative(repoRoot, file)} -> ${rawTarget}`);
+        broken.push(`${path.relative(repoRoot, file).replaceAll("\\", "/")} -> ${rawTarget}`);
       }
     }
   }

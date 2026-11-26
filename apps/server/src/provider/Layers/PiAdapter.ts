@@ -130,6 +130,8 @@ export interface PiAdapterOptions {
   readonly beforeLaunch?: Effect.Effect<void, PiRpcError, Scope.Scope>;
   readonly createMcpSession?: (
     threadId: ThreadId,
+    /** Read-only workflow stages get only the thread tools that read. */
+    access: "full" | "read-only",
   ) => Effect.Effect<{ endpoint: string; authorizationHeader: string }, PiRpcError, Scope.Scope>;
 }
 type EventBody<E = ProviderRuntimeEvent> = E extends ProviderRuntimeEvent
@@ -958,7 +960,10 @@ export const makePiAdapter = (settings: PiSettings, options: PiAdapterOptions) =
                   if (!piVersionSupportsF5(version))
                     return yield* requestError("startSession", "Pi 0.80.5 or newer is required.");
                   const mcpSession = options.createMcpSession
-                    ? yield* options.createMcpSession(input.threadId)
+                    ? yield* options.createMcpSession(
+                        input.threadId,
+                        input.workflowExecutionProfile ? "read-only" : "full",
+                      )
                     : undefined;
                   const launch = buildPiRpcLaunch({
                     launchArgs: parsed.args,

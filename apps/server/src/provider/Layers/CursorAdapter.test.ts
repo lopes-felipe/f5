@@ -389,6 +389,39 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
     }),
   );
 
+  it.effect("launches read-only workflow stages without optional Git locks", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const serverSettings = yield* ServerSettingsService;
+      const tempDir = yield* Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "cursor-acp-")));
+      const envLogPath = path.join(tempDir, "env.ndjson");
+      const wrapperPath = writeAcpWrapper(path.join(tempDir, "fake-agent"), mockAgentPath, {
+        envLog: { path: envLogPath, keys: ["GIT_OPTIONAL_LOCKS"] },
+      });
+      yield* serverSettings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      for (const [name, profiled] of [
+        ["cursor-readonly-git-locks", true],
+        ["cursor-ordinary-git-locks", false],
+      ] as const) {
+        const threadId = ThreadId.make(name);
+        yield* adapter.startSession({
+          threadId,
+          provider: ProviderDriverKind.make("cursor"),
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          ...(profiled ? { workflowExecutionProfile: "unattended-readonly" as const } : {}),
+          modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+        });
+        yield* adapter.stopSession(threadId);
+      }
+      const launches = yield* Effect.promise(() => readJsonLines(envLogPath));
+      assert.deepEqual(
+        launches.map((entry) => entry.GIT_OPTIONAL_LOCKS),
+        ["0", process.env.GIT_OPTIONAL_LOCKS ?? null],
+      );
+    }),
+  );
+
   it.effect("maps app plan mode onto the ACP plan session mode", () =>
     Effect.gen(function* () {
       const adapter = yield* CursorAdapter;

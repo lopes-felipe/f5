@@ -114,7 +114,7 @@ it("keeps the choices and request id across parent re-renders and a retry", asyn
   await page.getByRole("radio", { name: "One thread per topic" }).click();
   await page.getByRole("group", { name: "Port model", exact: true }).getByRole("button", { name: /Claude Sonnet 4.6/ }).click();
   // The picker row, by its full name: other controls can also show the bare model name.
-  await page.getByRole("button", { name: /^Claude Opus 4\.6 Claude · claude-opus-4-6/ }).click();
+  await page.getByRole("button", { name: /^Claude Opus 4\.6\s*claude-opus-4-6/ }).click();
   await active.rerender(harness);
   await expect.element(page.getByRole("radio", { name: "One thread per topic" })).toBeChecked();
   await expect.element(page.getByRole("group", { name: "Port model", exact: true }).getByRole("button", { name: /Claude Opus 4.6/ })).toBeInTheDocument();
@@ -217,7 +217,7 @@ it("sends each review slot's selection, freezes it for retry, and keeps workflow
   for (const name of ["Reviewer A", "Consolidation"]) {
     await page.getByRole("group", { name, exact: true }).getByRole("button", { name: /Claude Sonnet 4.6/ }).click();
     // The picker row, not a trigger already showing Opus.
-    await page.getByRole("button", { name: /^Claude Opus 4\.6 Claude/ }).click();
+    await page.getByRole("button", { name: /^Claude Opus 4\.6\s*claude-opus-4-6/ }).click();
     await expect.element(page.getByPlaceholder("Search models...")).not.toBeInTheDocument();
   }
   expect(getModelPreferences()).toEqual(preferences);

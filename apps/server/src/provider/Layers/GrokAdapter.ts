@@ -1,3 +1,4 @@
+import * as NodeOs from "node:os";
 import { acpPdfDocuments } from "../pdfDocuments.ts";
 import {
   driverSupportsReadOnlyWorkflowTurns,
@@ -1087,6 +1088,16 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           const acp = yield* (options?.makeRuntime ?? makeGrokAcpRuntime)({
             grokSettings,
             runtimeMode: startRuntimeMode,
+            // Only sessions started for read-only workflow turns may take workflow turns, so the
+            // sandbox is decided here, once, at launch. A policy-enforced stage runs without it:
+            // the sandbox can't start on this host (F5's macOS desktop backend already runs in
+            // one), and F5's command policy decides every command instead.
+            ...(PROVIDER === "antigravity" && input.workflowExecutionProfile
+              ? {
+                  readOnlyWorkflow: true,
+                  readOnlySandbox: input.readOnlyEnforcement !== "policy",
+                }
+              : {}),
             ...(options?.environment ? { environment: options.environment } : {}),
             childProcessSpawner,
             cwd,
@@ -1133,6 +1144,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   "antigravity",
                   launchedVersion,
                   runtimeBuildTarget(),
+                  NodeOs.release(),
                 ));
             if (!certified)
               return yield* new ProviderAdapterValidationError({
@@ -1395,6 +1407,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                       antigravityReadOnlyWorkflowDecision({
                         toolCall: params.toolCall,
                         computerRequest: Boolean(computerRequest),
+                        f5ThreadServerName: catalogs.readOnlyThreadServerName(),
                       }) === "allow"
                         ? selectPermissionOptionId(params, "accept")
                         : undefined;
@@ -2704,6 +2717,17 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     },
                   });
                 ctx.completedTurnId = prepared.turnId;
+                const usageLimit =
+                  nativeFailure?.class === "usage_limit"
+                    ? {
+                        windows: [],
+                        resetsAt: nativeFailure.resetAt ?? null,
+                        resetSource: nativeFailure.resetAt
+                          ? (nativeFailure.resetSource ?? ("provider" as const))
+                          : null,
+                        evidence: nativeFailure.evidence ?? ("typed" as const),
+                      }
+                    : undefined;
                 if (nativeFailure)
                   yield* offerRuntimeEvent({
                     type: "runtime.error",
@@ -2714,18 +2738,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     payload: {
                       class: "provider_error",
                       message: nativeFailure.message,
-                      ...(nativeFailure.class === "usage_limit"
-                        ? {
-                            usageLimit: {
-                              windows: [],
-                              resetsAt: nativeFailure.resetAt ?? null,
-                              resetSource: nativeFailure.resetAt
-                                ? (nativeFailure.resetSource ?? ("provider" as const))
-                                : null,
-                              evidence: nativeFailure.evidence ?? ("typed" as const),
-                            },
-                          }
-                        : {}),
+                      ...(usageLimit ? { usageLimit } : {}),
                     },
                   });
                 yield* offerRuntimeEvent({
@@ -2737,6 +2750,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   payload: {
                     state: turnState,
                     ...(nativeFailure ? { errorMessage: nativeFailure.message } : {}),
+                    // A failed turn's terminal sets the session's usage limit; without it the
+                    // limit the runtime error just recorded is cleared again.
+                    ...(usageLimit ? { usageLimit } : {}),
                     stopReason: result.stopReason ?? null,
                   },
                 });

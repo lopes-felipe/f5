@@ -152,6 +152,37 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
       }),
     );
 
+    it.effect("overrides inherited desktop F5_* mode and ws url in dev:server and dev:web", () =>
+      Effect.gen(function* () {
+        for (const mode of ["dev:server", "dev:web"] as const) {
+          const env = yield* createDevRunnerEnv({
+            mode,
+            baseEnv: {
+              F5_MODE: "desktop",
+              T3CODE_MODE: "desktop",
+              F5_DESKTOP_WS_URL: "ws://127.0.0.1:4999",
+              T3CODE_DESKTOP_WS_URL: "ws://127.0.0.1:4999",
+            },
+            serverOffset: 0,
+            webOffset: 0,
+            stateDir: undefined,
+            authToken: undefined,
+            noBrowser: undefined,
+            autoBootstrapProjectFromCwd: undefined,
+            logWebSocketEvents: undefined,
+            host: undefined,
+            port: undefined,
+            devUrl: undefined,
+          });
+
+          assert.equal(env.F5_MODE, "web");
+          assert.equal(env.T3CODE_MODE, "web");
+          assert.equal(env.F5_DESKTOP_WS_URL, undefined);
+          assert.equal(env.T3CODE_DESKTOP_WS_URL, undefined);
+        }
+      }),
+    );
+
     it.effect("does not force websocket logging on in dev mode when unset", () =>
       Effect.gen(function* () {
         const env = yield* createDevRunnerEnv({
