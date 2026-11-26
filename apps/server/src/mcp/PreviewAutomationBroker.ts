@@ -101,10 +101,12 @@ export type PreviewAutomationBrokerError =
   | PreviewAutomationUnavailableError;
 
 interface PendingRequest {
+  readonly threadId: ThreadId;
   readonly clientId: string;
   readonly rendererClientId: string;
   readonly connectionId: string;
   readonly timeout: ReturnType<typeof setTimeout>;
+  readonly invalidateTarget: (tabId?: PreviewTabId) => void;
   readonly resolve: (value: unknown) => void;
   readonly reject: (error: PreviewAutomationBrokerError) => void;
 }
@@ -115,6 +117,13 @@ interface LeasedOwner {
   readonly rendererClientId: string;
   readonly connectionId: string;
   readonly leaseExpiresAtMs: number;
+}
+
+interface SessionBinding {
+  readonly clientId: string;
+  readonly connectionId: string;
+  tabId: PreviewTabId | undefined;
+  tabSequence: number;
 }
 
 interface RegisteredHost {
@@ -143,6 +152,8 @@ const PREVIEW_OWNER_LEASE_MS = 30_000;
 const PREVIEW_OWNER_SWEEP_MS = 5_000;
 const DEFAULT_TIMEOUT_MS = 15_000;
 const BROKER_GRACE_MS = 2_000;
+const NO_ACTIVE_PREVIEW_TAB_MESSAGE =
+  "The browser preview does not have an active tab. Call preview_open first.";
 export const OWNER_REQUEST_MAX_WAIT_MS = 10_000;
 export const MAX_QUEUED_MUTATIONS_PER_THREAD = 32;
 
@@ -266,9 +277,9 @@ export function makePreviewAutomationBroker(
 ): PreviewAutomationBrokerShape {
   const owners = new Map<string, LeasedOwner>();
   const pending = new Map<string, PendingRequest>();
-  const sessionTargets = new Map<string, { tabId: PreviewTabId; connectionId: string }>();
   /** First owner that served an automation session; never reranked mid-session. */
-  const sessionOwners = new Map<string, { clientId: string; connectionId: string }>();
+  const sessionOwners = new Map<string, SessionBinding>();
+  let tabSequence = 0;
   const hosts = new Map<string, RegisteredHost>();
   const ownerRequests = new Map<ThreadId, OwnerRequest>();
   const mutationQueue = new AutomationQueue<PreviewAutomationBrokerError>({
@@ -305,8 +316,19 @@ export function makePreviewAutomationBroker(
   };
 
   const clearSessionTargetsForConnection = (connectionId: string): void => {
-    for (const [key, target] of sessionTargets) {
-      if (target.connectionId === connectionId) sessionTargets.delete(key);
+    for (const binding of sessionOwners.values()) {
+      if (binding.connectionId === connectionId) binding.tabId = undefined;
+    }
+  };
+
+  const clearOwnerTab = (leased: LeasedOwner): void => {
+    const current = owners.get(leased.client.clientId);
+    if (
+      leased.owner.tabId !== null &&
+      current?.connectionId === leased.connectionId &&
+      current.owner.tabId === leased.owner.tabId
+    ) {
+      owners.set(leased.client.clientId, { ...current, owner: { ...current.owner, tabId: null } });
     }
   };
 
@@ -474,26 +496,40 @@ export function makePreviewAutomationBroker(
   ): Promise<A> =>
     new Promise<A>((resolve, reject) => {
       const { owner, client } = leased;
-      if (sessionKey && !sessionOwners.has(sessionKey)) {
-        sessionOwners.set(sessionKey, {
+      let binding = sessionKey ? sessionOwners.get(sessionKey) : undefined;
+      if (sessionKey && !binding) {
+        binding = {
           clientId: client.clientId,
           connectionId: leased.connectionId,
-        });
+          tabId: undefined,
+          tabSequence: 0,
+        };
+        sessionOwners.set(sessionKey, binding);
       }
-      const mappedTarget = sessionKey ? sessionTargets.get(sessionKey) : undefined;
-      const mappedTabId =
-        mappedTarget?.connectionId === leased.connectionId ? mappedTarget.tabId : undefined;
-      const targetTabId = input.tabId ?? mappedTabId ?? owner.tabId ?? undefined;
-      if (sessionKey && input.tabId) {
-        sessionTargets.set(sessionKey, { tabId: input.tabId, connectionId: leased.connectionId });
-      }
+      const targetTabId = input.tabId ?? binding?.tabId ?? owner.tabId ?? undefined;
+      const requestSequence = ++tabSequence;
+      let closedTabs: Set<PreviewTabId> | undefined;
+      let clearedTargets = false;
+      const rememberTab = (tabId: PreviewTabId | undefined, replacing?: PreviewTabId) => {
+        if (
+          binding &&
+          sessionKey &&
+          sessionOwners.get(sessionKey) === binding &&
+          binding.tabSequence <= requestSequence &&
+          (replacing === undefined || binding.tabId === replacing)
+        ) {
+          binding.tabId = tabId;
+          binding.tabSequence = requestSequence;
+        }
+      };
+      const forgetMissingTab = () => {
+        if (targetTabId === undefined) return;
+        rememberTab(undefined, targetTabId);
+        if (owner.tabId === targetTabId) clearOwnerTab(leased);
+      };
 
       if (input.operation !== "open" && input.operation !== "status" && !targetTabId) {
-        reject(
-          new PreviewAutomationTabNotFoundError({
-            message: "The browser preview does not have an active tab. Call preview_open first.",
-          }),
-        );
+        reject(new PreviewAutomationTabNotFoundError({ message: NO_ACTIVE_PREVIEW_TAB_MESSAGE }));
         return;
       }
 
@@ -509,27 +545,43 @@ export function makePreviewAutomationBroker(
       }, brokerTimeoutMs);
 
       pending.set(requestId, {
+        threadId: input.threadId,
         clientId: client.clientId,
         rendererClientId: leased.rendererClientId,
         connectionId: leased.connectionId,
         timeout,
+        invalidateTarget: (tabId) => {
+          if (tabId === undefined) clearedTargets = true;
+          else (closedTabs ??= new Set()).add(tabId);
+        },
         resolve: (value) => {
-          if (
-            sessionKey &&
-            value &&
-            typeof value === "object" &&
-            "tabId" in value &&
-            typeof value.tabId === "string" &&
-            value.tabId.length > 0
-          ) {
-            sessionTargets.set(sessionKey, {
-              tabId: value.tabId as PreviewTabId,
-              connectionId: leased.connectionId,
-            });
+          const resultTabId =
+            value && typeof value === "object" && "tabId" in value ? value.tabId : undefined;
+          if (input.operation === "status" && resultTabId === null) {
+            forgetMissingTab();
+          } else {
+            const tabId =
+              typeof resultTabId === "string" && resultTabId.length > 0
+                ? (resultTabId as PreviewTabId)
+                : input.tabId;
+            if (tabId !== undefined && !clearedTargets && !closedTabs?.has(tabId)) {
+              rememberTab(tabId);
+            }
           }
           resolve(value as A);
         },
-        reject,
+        reject: (error) => {
+          if (error._tag === "PreviewAutomationTabNotFoundError") {
+            forgetMissingTab();
+            if (input.tabId === undefined && targetTabId !== undefined) {
+              reject(
+                new PreviewAutomationTabNotFoundError({ message: NO_ACTIVE_PREVIEW_TAB_MESSAGE }),
+              );
+              return;
+            }
+          }
+          reject(error);
+        },
       });
 
       void Effect.runPromise(
@@ -647,9 +699,21 @@ export function makePreviewAutomationBroker(
     clearTargets: (threadId, tabId) =>
       Effect.sync(() => {
         const prefix = `${threadId}\u0000`;
-        for (const [key, target] of sessionTargets) {
-          if (key.startsWith(prefix) && (tabId === undefined || target.tabId === tabId)) {
-            sessionTargets.delete(key);
+        for (const [key, binding] of sessionOwners) {
+          if (key.startsWith(prefix) && (tabId === undefined || binding.tabId === tabId)) {
+            binding.tabId = undefined;
+          }
+        }
+        // An in-flight reply may still name the closed tab.
+        for (const request of pending.values()) {
+          if (request.threadId === threadId) request.invalidateTarget(tabId);
+        }
+        for (const leased of owners.values()) {
+          if (
+            leased.owner.threadId === threadId &&
+            (tabId === undefined || leased.owner.tabId === tabId)
+          ) {
+            clearOwnerTab(leased);
           }
         }
       }),
@@ -774,9 +838,6 @@ export function makePreviewAutomationBroker(
         // Deleting the current key while iterating a Map is safe.
         for (const key of sessionOwners.keys()) {
           if (key.startsWith(prefix)) sessionOwners.delete(key);
-        }
-        for (const key of sessionTargets.keys()) {
-          if (key.startsWith(prefix)) sessionTargets.delete(key);
         }
         settleOwnerRequest(threadId, {
           error: new PreviewAutomationUnavailableError({

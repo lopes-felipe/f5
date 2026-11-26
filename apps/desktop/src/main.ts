@@ -1796,6 +1796,12 @@ async function pickPreviewElement(tabId: string): Promise<PreviewAnnotationPaylo
 function requirePreviewWebContents(tabId: unknown): Electron.WebContents {
   const guest = getPreviewWebContents(tabId);
   if (!guest) {
+    if (!lookupPreviewTabEntry(tabId)) {
+      throw taggedAutomationError(
+        "PreviewAutomationTabNotFoundError",
+        "The preview tab was closed.",
+      );
+    }
     throw new Error("Preview webview is not attached.");
   }
   return guest;
