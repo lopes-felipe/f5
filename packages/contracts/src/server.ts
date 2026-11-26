@@ -539,3 +539,62 @@ export const ServerHealth = Schema.Struct({
   slowStatements: Schema.Array(ServerHealthSlowOperation),
 });
 export type ServerHealth = typeof ServerHealth.Type;
+
+export const DoctorCheckStatus = Schema.Literals(["ok", "warn", "error"]);
+export type DoctorCheckStatus = typeof DoctorCheckStatus.Type;
+
+export const DoctorCheckCategory = Schema.Literals([
+  "environment",
+  "database",
+  "providers",
+  "storage",
+]);
+export type DoctorCheckCategory = typeof DoctorCheckCategory.Type;
+
+export const DoctorCheck = Schema.Struct({
+  id: Schema.String,
+  category: DoctorCheckCategory,
+  title: Schema.String,
+  status: DoctorCheckStatus,
+  summary: Schema.String,
+  detail: Schema.optional(Schema.String),
+  hint: Schema.optional(Schema.String),
+});
+export type DoctorCheck = typeof DoctorCheck.Type;
+
+export const DoctorProviderSummary = Schema.Struct({
+  id: Schema.String,
+  label: Schema.String,
+  status: Schema.Literals(["ready", "warning", "error", "missing", "disabled"]),
+  version: Schema.NullOr(Schema.String),
+  summary: Schema.String,
+});
+export type DoctorProviderSummary = typeof DoctorProviderSummary.Type;
+
+/**
+ * Point-in-time diagnostic report returned by `f5 doctor` and `server.getDoctorReport`.
+ * Scrubs common credentials, tokens, emails, and user home paths; review before sharing publicly.
+ */
+export const ServerDoctorReport = Schema.Struct({
+  generatedAt: IsoDateTime,
+  overallStatus: DoctorCheckStatus,
+  runtime: Schema.Struct({
+    appVersion: Schema.String,
+    platform: Schema.String,
+    arch: Schema.String,
+    runtimeKind: Schema.Literals(["node", "bun"]),
+    runtimeVersion: Schema.String,
+    profileSlug: Schema.String,
+    profileName: Schema.String,
+    isDefaultProfile: Schema.Boolean,
+    mode: Schema.Literals(["web", "desktop", "cli"]),
+  }),
+  counts: Schema.Struct({
+    ok: NonNegativeInt,
+    warn: NonNegativeInt,
+    error: NonNegativeInt,
+  }),
+  providers: Schema.Array(DoctorProviderSummary),
+  checks: Schema.Array(DoctorCheck),
+});
+export type ServerDoctorReport = typeof ServerDoctorReport.Type;
