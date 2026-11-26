@@ -829,7 +829,7 @@ export function splitUtf8Chunks(text: string, maxBytes: number, level = 0): stri
 /**
  * Sent to a policy-enforced Codex read-only stage. Where Codex's sandbox can't start, Codex asks
  * to rerun only its own safe commands outside it; any other command fails unless the model
- * escalates it (docs/reviews/cursor-live-gates.md, gate G3b). Harmless when Codex asks before
+ * escalates it (docs/reviews/read-only-live-gates.md, gate G3b). Harmless when Codex asks before
  * every command anyway.
  */
 export const CODEX_READ_ONLY_ESCALATION_HINT =

@@ -186,6 +186,9 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/changes
         id: changes
+        with:
+          # Server unit sources never import the web or marketing apps.
+          unaffected_by: web
       - uses: ./.github/actions/setup
         id: install
         if: steps.changes.outputs.heavy == 'true'
@@ -218,11 +221,12 @@ jobs:
       - uses: ./.github/actions/assert-clean-worktree
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
   windows-server-unit:
-    permissions:
-      contents: read
-      pull-requests: read
+    # Three Windows shards were the largest share of a pull request's runner time.
+    # Pull requests keep Windows coverage through windows-build; dispatch CI on a
+    # branch to run these shards before merge.
     runs-on: windows-latest
     timeout-minutes: 20
+    if: github.event_name != 'pull_request'
     strategy:
       fail-fast: false
       matrix:
@@ -236,11 +240,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ./.github/actions/changes
-        id: changes
       - uses: ./.github/actions/setup
         id: install
-        if: steps.changes.outputs.heavy == 'true'
       - name: Set diagnostic paths
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
@@ -261,7 +262,7 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: node scripts/ci-test-summary.ts server-unit-${{ matrix.shard }}
       - name: Upload test reports
-        if: always() && steps.changes.outputs.heavy == 'true'
+        if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: reports-${{ github.job }}-${{ runner.os }}-${{ strategy.job-index }}-${{ github.run_attempt }}
@@ -290,6 +291,10 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/changes
         id: changes
+        with:
+          # The one server source the browser suite imports is listed in the
+          # action's server_read_by_web filter.
+          unaffected_by: server
       - uses: ./.github/actions/setup
         id: install
         if: steps.changes.outputs.heavy == 'true'
@@ -552,6 +557,9 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/changes
         id: changes
+        with:
+          # Native helpers, descriptors and profile tests read no web sources.
+          unaffected_by: web
       - uses: ./.github/actions/setup
         id: install
         if: steps.changes.outputs.heavy == 'true'
