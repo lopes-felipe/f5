@@ -6,6 +6,56 @@ Unreleased entries now live as one file each under [`changes/`](changes/README.m
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-11-26
+
+### Changed
+
+- New and renamed MCP servers may use letters, numbers, `_` and `-`, and must not start with `f5_`
+  or `__f5`. Existing servers keep their names and show a rename warning, and import proposes a
+  valid name.
+- Importing MCP configuration now warns when a value contains a `${VAR}` reference, which F5 passes
+  to the server literally.
+
+### Performance
+
+- Fresh SQLite databases now bootstrap directly from a squashed baseline schema (migrations 1 to 174) in a single transaction instead of replaying every historical migration, speeding up fresh-install first launch and test database setup while keeping existing databases on the standard incremental upgrade path.
+- Saving MCP settings no longer re-checks live server status, which could start a Codex process
+  that launched every configured server. Use Refresh status or Apply to check again.
+- MCP status requests reuse the resolved configuration instead of re-reading stored secrets several
+  times per request.
+
+### Fixed
+
+- The composer's model picker no longer covers the selected model when the window is short. It
+  always opens above the model button and gets shorter to fit the space there.
+- Adding a third author in the new-workflow dialog no longer shifts the model and effort fields,
+  and the effort fields' chevrons sit at their right edge for every provider.
+- Cursor read-only workflow stages no longer run commands from your Cursor allowlist or under an
+  `unrestricted` or `auto-review` approval mode without F5 checking them. They start with an
+  F5-owned copy of your Cursor CLI config that keeps only display, model and account settings.
+  Their session history is kept in F5's state folder instead of `~/.cursor`.
+- Read-only Cursor stages refuse to start, naming the file, in a repository whose
+  `.cursor/cli.json` sets an allowlist, a looser approval mode or any setting other than deny
+  rules, whose `.cursor/hooks.json` defines hooks, or whose `.cursor/mcp.json` defines servers.
+  A file F5 can't read as strict JSON is refused too. F5 checks again before every turn.
+- MCP settings without a selected project no longer show a "Checking..." provider badge that never
+  finishes.
+- MCP settings now label the bearer token environment variable, OAuth client ID and OAuth callback
+  port as used by Codex and Claude, and mark a stdio server's working directory as ignored by
+  Claude.
+- A Claude MCP server's bearer token environment variable is now sent as an `Authorization`
+  header, as it already was for Codex and Cursor. A literal `Authorization` header wins for every
+  agent and for Test, and variables reserved for F5 and provider credentials (`F5_*`,
+  `ANTHROPIC_*`, `CLAUDE_*`, `AWS_*`, `OPENAI_*`, `CODEX_*`) are never sent. Import warns whenever
+  an entry sends a variable as a bearer token, and names the server it goes to.
+- Importing a server that is already saved under its original legacy name offers Replace, which
+  renames it, instead of adding a second copy. Two entries that import under the same name can
+  each be selected.
+- After a save, MCP settings no longer shows the previous configuration check's results as
+  current; it says the servers were not checked since the save.
+- Testing an MCP server while another test of the same server runs now says so, instead of
+  reporting the four-test limit as "A test is already running".
+
 ## [0.1.12] - 2026-11-26
 
 ### Added
