@@ -1,1 +1,0 @@
-- Upgraded `@legendapp/list` from prerelease `3.0.0-beta.44` to stable `3.7.3` across all virtualized web lists (message timeline, command palette, file browser, workspace picker, PR Hub, upstream topic list, model picker, and agent transcript).

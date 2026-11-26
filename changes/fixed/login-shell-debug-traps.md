@@ -1,1 +1,0 @@
-- Shell hooks that update the terminal title no longer corrupt the environment F5 uses to find provider CLIs.

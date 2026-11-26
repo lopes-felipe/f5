@@ -1,1 +1,0 @@
-- Brief WebSocket connection attempts and reconnects no longer flash a connection warning.
