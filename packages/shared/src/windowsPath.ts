@@ -344,3 +344,4 @@ export async function ensureWindowsPathHydration(
     registryRead: result.registryRead,
   };
 }
+// CI scope probe for #990; this branch is never merged.
