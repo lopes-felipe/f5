@@ -10,7 +10,7 @@ import { makeMcpAccountExecutionResolver } from "./accountExecution.ts";
 import { mcpServerNameKey } from "@t3tools/shared/mcpValidation";
 import { makeClaudeProcessEnvironment } from "../provider/Drivers/ClaudeHome";
 import { assertOAuthPortAvailable } from "../profiles/ProviderAccountService";
-import { ProviderInstanceId } from "@t3tools/contracts";
+import { ProviderInstanceId, type ProviderKind } from "@t3tools/contracts";
 import { ServerConfig } from "../config";
 import { instanceLock, ProfileBusyError } from "../profiles/InstanceLock";
 import * as NodePath from "node:path";
@@ -165,10 +165,22 @@ function readIdleLoginStatus(
   };
 }
 
-/** Whether `name` is one of F5's saved servers (Claude may report a normalized spelling). */
-function isConfiguredServer(servers: McpProjectServersConfig, name: string): boolean {
+/**
+ * The saved name of the server the hub serves to `provider` under `name` (Claude may
+ * report a normalized spelling), or undefined when the hub does not serve it: unknown,
+ * disabled, or turned off for that provider (a same-named provider server then stays
+ * the provider's own).
+ */
+function hubServedName(
+  servers: McpProjectServersConfig,
+  provider: ProviderKind,
+  name: string,
+): string | undefined {
   const key = mcpServerNameKey(name);
-  return Object.keys(servers).some((candidate) => mcpServerNameKey(candidate) === key);
+  return Object.entries(filterEnabledMcpServers(servers, provider)).find(
+    ([candidate, definition]) =>
+      definition.enabled !== false && mcpServerNameKey(candidate) === key,
+  )?.[0];
 }
 
 function supportsCodexOauthLogin(server: McpServerDefinition): boolean {
@@ -764,11 +776,10 @@ const makeMcpRuntimeService = Effect.gen(function* () {
         .readEffectiveRuntimeConfig(input.projectId)
         .pipe(Effect.mapError(runtimeError));
       const onHub = yield* nativeProvidersOnHub;
-      if (onHub && hub && isConfiguredServer(effective.servers, input.serverName)) {
+      const servedName = hubServedName(effective.servers, input.provider, input.serverName);
+      if (onHub && hub && servedName) {
         // The provider's connection is to F5's endpoint; the server's own is the hub's.
-        const reconnected = yield* Effect.promise(() =>
-          hub.reconnect(input.serverName, input.projectId),
-        );
+        const reconnected = yield* Effect.promise(() => hub.reconnect(servedName, input.projectId));
         return {
           settingsConnectionReloaded: false,
           sessionsMatched: reconnected,
@@ -1206,7 +1217,7 @@ const makeMcpRuntimeService = Effect.gen(function* () {
         const configured = yield* projectMcpConfigService
           .readEffectiveRuntimeConfig(input.projectId)
           .pipe(Effect.mapError(runtimeError));
-        if (isConfiguredServer(configured.servers, input.serverName))
+        if (hubServedName(configured.servers, input.provider, input.serverName))
           return yield* new McpRuntimeServiceError({
             message: `Codex and Claude reach '${input.serverName}' through F5 now. Sign in from the server's Sign-in tab in MCP settings; earlier Codex or Claude sign-ins are not carried over.`,
           });

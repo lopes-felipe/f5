@@ -56,6 +56,7 @@ export class McpHubSlot {
   private readonly pending = new Set<DownstreamConnection>();
   private unsubscribe: () => void = () => undefined;
   private closed = false;
+  private generation = 0;
 
   constructor(options: McpHubSlotOptions) {
     this.id = options.id;
@@ -71,6 +72,14 @@ export class McpHubSlot {
   }
 
   /**
+   * Changes whenever the endpoint is re-bound, so an MCP App approval reviewed
+   * against one connection never authorizes a call on its replacement.
+   */
+  get binding(): string {
+    return `${this.id}:${this.generation}`;
+  }
+
+  /**
    * Points the endpoint at another upstream (a saved change) or at none (the server
    * was removed), keeping the provider's connection. Providers are told the lists
    * changed so they list again.
@@ -83,6 +92,7 @@ export class McpHubSlot {
 
   private bind(upstream: McpHubUpstream | undefined): void {
     this.unsubscribe();
+    this.generation += 1;
     this.current = upstream;
     this.unsubscribe = upstream
       ? upstream.onListChanged((change) => this.notify(change))
@@ -103,6 +113,7 @@ export class McpHubSlot {
 
   /** The current upstream, or an error explaining that the server was removed. */
   private requireUpstream(): McpHubUpstream {
+    if (this.closed) throw new McpError(ErrorCode.InvalidRequest, "This MCP endpoint is closed.");
     if (this.current) return this.current;
     throw new McpError(
       ErrorCode.InvalidRequest,
@@ -116,8 +127,8 @@ export class McpHubSlot {
 
   /** MCP Apps: the tools this session's provider sees, read from the hub directly. */
   async appListTools(): Promise<Tool[]> {
-    const upstream = this.current;
-    if (!upstream) return [];
+    if (!this.current) return [];
+    const upstream = this.requireUpstream();
     return upstream.filterTools(await upstreamCall(upstream, () => upstream.listTools()));
   }
 
@@ -134,15 +145,22 @@ export class McpHubSlot {
         `The tool '${name}' is turned off in F5's MCP settings.`,
       );
     const client = await upstreamClient(upstream);
-    return upstreamCall(
-      upstream,
-      async () =>
-        (await client.callTool({ name, arguments: args }, undefined, {
-          signal,
-          timeout: upstream.toolTimeoutMs(),
-          resetTimeoutOnProgress: true,
-        })) as CallToolResult,
-    );
+    // Tracked like a provider call, so a question the server asks meanwhile is never
+    // forwarded to another conversation (an app has no way to answer it, so it is declined).
+    const release = upstream.trackCall({ threadId: this.threadId, startedAt: Date.now() });
+    try {
+      return await upstreamCall(
+        upstream,
+        async () =>
+          (await client.callTool({ name, arguments: args }, undefined, {
+            signal,
+            timeout: upstream.toolTimeoutMs(),
+            resetTimeoutOnProgress: true,
+          })) as CallToolResult,
+      );
+    } finally {
+      release();
+    }
   }
 
   /** MCP Apps: reads a `ui://` resource on this session's connection. */
@@ -275,15 +293,32 @@ export class McpHubSlot {
       const elicitation = server.getClientCapabilities()?.elicitation as
         | { readonly url?: object }
         | undefined;
+      const startedAt = Date.now();
       const release = upstream.trackCall({
         threadId: this.threadId,
-        startedAt: Date.now(),
+        startedAt,
         ...(elicitation
           ? {
               elicit: async (params, signal) => {
                 if (params.mode === "url" && !elicitation.url) return { action: "decline" };
-                return server.elicitInput(params, { signal, relatedRequestId: extra.requestId });
+                // A person may take a while: the question may use the call's remaining
+                // time, not the SDK's 60 s request default.
+                const remaining = startedAt + upstream.toolTimeoutMs() - Date.now();
+                return server.elicitInput(params, {
+                  signal,
+                  relatedRequestId: extra.requestId,
+                  timeout: Math.max(1_000, remaining),
+                });
               },
+              ...(elicitation.url
+                ? {
+                    completeElicitation: (elicitationId: string) => {
+                      void server
+                        .createElicitationCompletionNotifier(elicitationId)()
+                        .catch(() => undefined);
+                    },
+                  }
+                : {}),
             }
           : {}),
       });

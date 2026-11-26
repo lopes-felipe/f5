@@ -20,6 +20,7 @@ const noUpdate = (): McpHubAttachmentUpdate => ({
   added: [],
   addedEndpoints: [],
   endpoints: [],
+  timeoutRaised: [],
   omitted: [],
 });
 
@@ -209,6 +210,7 @@ describe("resolveCursorMcpServers", () => {
           omitted: [{ serverName: "events", reason: "could not start" }],
           credentials: [],
           update: noUpdate,
+          decline: () => undefined,
           dispose: async () => {
             disposed = true;
           },
@@ -259,6 +261,7 @@ describe("resolveCursorMcpServers", () => {
         omitted: [],
         credentials: [],
         update: noUpdate,
+        decline: () => undefined,
         dispose: async () => undefined,
       }),
     });

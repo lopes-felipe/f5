@@ -10,6 +10,7 @@ import type {
   McpConnectionScope,
   McpHubServerStatus,
   McpProjectServersConfig,
+  McpReloadResult,
   McpServerDefinition,
   McpStatusUpdatedPayload,
   ProjectId,
@@ -75,6 +76,11 @@ export interface McpHubAttachmentUpdate {
   /** The endpoints that route to a saved server after this update. */
   readonly endpoints: ReadonlyArray<McpHubEndpoint>;
   readonly omitted: ReadonlyArray<McpHubOmission>;
+  /**
+   * Changed servers whose tool timeout now exceeds the one their endpoint was issued
+   * with; a provider that fixed its own timeout at launch must restart to wait longer.
+   */
+  readonly timeoutRaised: ReadonlyArray<string>;
 }
 
 /**
@@ -95,6 +101,24 @@ export function describeMcpHubOmissions(
   };
 }
 
+/** Adds the servers an Apply left out to a provider's reload result, so none vanish silently. */
+export function withMcpHubOmissions<T extends McpReloadResult>(
+  result: T,
+  omitted: ReadonlyArray<McpHubOmission>,
+): T {
+  if (omitted.length === 0) return result;
+  return {
+    ...result,
+    errors: [
+      ...result.errors,
+      ...omitted.map((entry) => ({
+        server: entry.serverName,
+        message: `${entry.serverName} ${entry.reason}.`,
+      })),
+    ],
+  };
+}
+
 export interface McpHubAttachment {
   /** Every endpoint of this attachment, including ones added by `update`. */
   readonly endpoints: ReadonlyArray<McpHubEndpoint>;
@@ -111,6 +135,11 @@ export interface McpHubAttachment {
     servers: McpProjectServersConfig | null | undefined,
     options?: { readonly addEndpoints?: boolean },
   ) => McpHubAttachmentUpdate;
+  /**
+   * Unbinds servers the provider refused to install (a name its own settings or
+   * plugins already use), so neither the endpoint nor MCP Apps reach F5's server.
+   */
+  readonly decline: (serverNames: Iterable<string>) => void;
   /** Revokes the endpoints and releases their upstream connections. */
   readonly dispose: () => Promise<void>;
 }
@@ -165,7 +194,7 @@ export interface McpHubShape {
 /** One conversation's hub server, as MCP Apps use it. */
 export type McpHubSessionServer = Pick<
   McpHubSlot,
-  "appListTools" | "appCallTool" | "appReadResource"
+  "binding" | "appListTools" | "appCallTool" | "appReadResource"
 >;
 
 export class McpHub extends ServiceMap.Service<McpHub, McpHubShape>()("t3/mcp/hub/McpHub") {}
@@ -373,7 +402,9 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
             serverName: name,
             reason: "was skipped because F5's MCP hub is unavailable in this runtime",
           })),
+          timeoutRaised: [],
         }),
+        decline: () => {},
         dispose: async () => {},
       };
     }
@@ -419,11 +450,13 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
           addedEndpoints: [],
           endpoints: [],
           omitted: [],
+          timeoutRaised: [],
         };
       const next = resolveServers(input, servers);
       const changed: string[] = [];
       const removed: string[] = [];
       const added: string[] = [];
+      const timeoutRaised: string[] = [];
       for (const [serverName, record] of records) {
         const definition = next.wanted.get(serverName);
         if (!definition) {
@@ -443,6 +476,9 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
         bindEntry(input, record, entry);
         record.hash = hash;
         record.slot.rebind(entry.upstream);
+        const issued = endpoints.find((endpoint) => endpoint.serverName === serverName);
+        if (issued && entry.upstream.toolTimeoutMs() > issued.toolTimeoutMs)
+          timeoutRaised.push(serverName);
         if (previous) {
           previous.users.delete(record.slot.id);
           previous.upstream.release();
@@ -464,7 +500,17 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
         addedEndpoints,
         endpoints: endpoints.filter((endpoint) => records.get(endpoint.serverName)?.entry),
         omitted: next.omitted,
+        timeoutRaised,
       };
+    };
+    const decline = (serverNames: Iterable<string>) => {
+      if (disposed) return;
+      for (const serverName of serverNames) {
+        const record = records.get(serverName);
+        if (!record?.entry) continue;
+        unbindEntry(record);
+        record.slot.rebind(undefined);
+      }
     };
     return {
       endpoints,
@@ -473,6 +519,7 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
         return endpoints.map((endpoint) => endpoint.token);
       },
       update,
+      decline,
       dispose: async () => {
         if (disposed) return;
         disposed = true;

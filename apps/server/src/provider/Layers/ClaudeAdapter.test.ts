@@ -17623,6 +17623,51 @@ describe("F5 MCP hub", () => {
     }).pipe(Effect.provide(harness.layer));
   });
 
+  it.effect("leaves tool filters to the hub and unbinds a server Claude kept for its own", () => {
+    const fakeHub = makeFakeMcpHub({
+      omitted: [{ serverName: "later", reason: "needs ${env:LATER_TOKEN}, which is not set" }],
+    });
+    const harness = makeHarness({ mcpHub: fakeHub.hub });
+    const setMcpServers = vi.fn(async (servers: Record<string, unknown>) => ({
+      added: Object.keys(servers),
+      removed: [],
+      errors: {},
+    }));
+    Object.assign(harness.query, { setMcpServers });
+    const filtered = { docs: { ...hubServers.docs, disabledTools: ["write"] } };
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const threadId = ThreadId.makeUnsafe("claude-hub-filters");
+      yield* adapter.startSession({
+        threadId,
+        runtimeMode: "approval-required",
+        providerOptions: { mcpServers: filtered },
+      });
+      // The hub hides turned-off tools; a launch deny list would outlive a re-enable.
+      const launchedDenied = harness.getLastCreateQueryInput()!.options.disallowedTools ?? [];
+      assert.isFalse(launchedDenied.some((name) => name.startsWith("mcp__docs__")));
+
+      harness.query.mcpServerStatusValue = [
+        { name: "docs", status: "connected", source: "dynamic" },
+      ];
+      const reEnabled = yield* adapter.reloadMcpConfig!({
+        threadId,
+        mcpServers: { docs: hubServers.docs },
+      });
+      assert.isFalse(reEnabled.restartRequired);
+      // Left-out servers are named in the Apply result.
+      assert.isTrue(reEnabled.errors.some((error) => error.server === "later"));
+      assert.deepEqual(fakeHub.declined, []);
+
+      // A plugin server now holds the name: Claude keeps it, and F5's endpoint is unbound.
+      harness.query.mcpServerStatusValue = [
+        { name: "docs", status: "connected", source: "plugin" },
+      ];
+      yield* adapter.reloadMcpConfig!({ threadId, mcpServers: { docs: hubServers.docs } });
+      assert.deepEqual(fakeHub.declined, ["docs"]);
+    }).pipe(Effect.provide(harness.layer));
+  });
+
   it.effect("keeps the native server path when mcpNativePassthrough is on", () => {
     const fakeHub = makeFakeMcpHub();
     const harness = makeHarness({

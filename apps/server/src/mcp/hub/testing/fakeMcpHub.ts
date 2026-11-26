@@ -1,11 +1,20 @@
 import type { McpProjectServersConfig } from "@t3tools/contracts";
 
-import type { McpHubAttachInput, McpHubEndpoint, McpHubShape } from "../McpHub.ts";
+import type { McpHubAttachInput, McpHubEndpoint, McpHubOmission, McpHubShape } from "../McpHub.ts";
 
 /** Records attachments and issues one fixed endpoint per enabled server. */
-export function makeFakeMcpHub(options: { readonly available?: boolean } = {}) {
+export function makeFakeMcpHub(
+  options: {
+    readonly available?: boolean;
+    /** Servers every attach and update reports as left out. */
+    readonly omitted?: ReadonlyArray<McpHubOmission>;
+    /** Servers every update reports as needing a longer provider timeout. */
+    readonly timeoutRaised?: ReadonlyArray<string>;
+  } = {},
+) {
   const attaches: McpHubAttachInput[] = [];
   const updates: Array<McpProjectServersConfig | null | undefined> = [];
+  const declined: string[] = [];
   let disposed = 0;
   const hub: McpHubShape = {
     available: options.available ?? true,
@@ -27,7 +36,7 @@ export function makeFakeMcpHub(options: { readonly available?: boolean } = {}) {
         .map(([name, server]) => endpointFor(name, server));
       return {
         endpoints,
-        omitted: [],
+        omitted: options.omitted ?? [],
         get credentials() {
           return endpoints.map((endpoint) => endpoint.token);
         },
@@ -50,8 +59,12 @@ export function makeFakeMcpHub(options: { readonly available?: boolean } = {}) {
             endpoints: endpoints.filter((endpoint) =>
               next.some(([name]) => name === endpoint.serverName),
             ),
-            omitted: [],
+            omitted: options.omitted ?? [],
+            timeoutRaised: options.timeoutRaised ?? [],
           };
+        },
+        decline: (names) => {
+          declined.push(...names);
         },
         dispose: async () => {
           disposed += 1;
@@ -69,6 +82,7 @@ export function makeFakeMcpHub(options: { readonly available?: boolean } = {}) {
     hub,
     attaches,
     updates,
+    declined,
     get disposed() {
       return disposed;
     },
