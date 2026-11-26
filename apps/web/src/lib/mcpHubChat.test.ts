@@ -62,13 +62,11 @@ describe("hubServersForChat", () => {
     ]);
   });
 
-  it("serves Codex and Claude through the hub unless native passthrough is on", () => {
+  it("serves every provider's configured servers through the hub", () => {
     expect(isMcpHubProvider("cursor")).toBe(true);
-    expect(isMcpHubProvider("codex")).toBe(false);
-    expect(isMcpHubProvider("claudeAgent")).toBe(false);
-    expect(isMcpHubProvider("codex", true)).toBe(true);
-    expect(isMcpHubProvider("claudeAgent", true)).toBe(true);
-    expect(isMcpHubProvider(null, true)).toBe(false);
+    expect(isMcpHubProvider("codex")).toBe(true);
+    expect(isMcpHubProvider("claudeAgent")).toBe(true);
+    expect(isMcpHubProvider(null)).toBe(false);
   });
 });
 

@@ -247,8 +247,6 @@ export interface CodexAdapterLiveOptions {
   readonly instanceId?: ProviderInstanceId;
   /** F5's MCP hub; configured servers reach Codex through its endpoints. */
   readonly mcpHub?: McpHubShape;
-  /** True when Codex should get configured servers directly (`mcpNativePassthrough`). */
-  readonly mcpNativePassthrough?: Effect.Effect<boolean>;
 }
 
 function mergeCodexProviderOptions(
@@ -2626,7 +2624,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
     const computerMcpSessions = new Map<ThreadId, PreviewMcpSessionConfig>();
     const previewMcpSessions = new Map<ThreadId, PreviewMcpSessionConfig>();
     const threadMcpSessions = new Map<ThreadId, PreviewMcpSessionConfig>();
-    // Configured servers reach a session through these hub endpoints (unless passthrough).
+    // Configured servers reach a session only through these hub endpoints.
     const hubAttachments = new Map<ThreadId, McpHubAttachment>();
     const disposeHubAttachment = (threadId: ThreadId) => {
       const attachment = hubAttachments.get(threadId);
@@ -2635,13 +2633,6 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
     };
     manager.mcpHubAsksBeforeCall = (threadId, serverName, toolName) =>
       hubAttachments.get(threadId)?.asksBeforeCall?.(serverName, toolName) ?? false;
-    const useMcpHub = Effect.gen(function* () {
-      if (!options?.mcpHub?.available) return false;
-      const passthrough = options.mcpNativePassthrough
-        ? yield* options.mcpNativePassthrough.pipe(Effect.orElseSucceed(() => false))
-        : false;
-      return !passthrough;
-    });
     const automationGenerations = new Map<ThreadId, number | undefined>();
     // Sessions pin F5's MCP servers with `-c mcp_servers=...` at launch, so a
     // reload cannot change that set; a different desired set needs a restart.
@@ -2925,13 +2916,16 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         // Configured servers go through F5's hub: Codex gets loopback endpoints whose
         // credentials are environment variables, never the definitions or secrets.
         disposeHubAttachment(input.threadId);
+        // Without the hub, configured servers never reach Codex.
         let hubEnvironment: Record<string, string> | undefined;
-        let managedMcpServers = baseProviderMcpServers;
-        if (
-          baseProviderMcpServers &&
-          Object.keys(baseProviderMcpServers).length > 0 &&
-          (yield* useMcpHub)
-        ) {
+        let managedMcpServers: typeof baseProviderMcpServers;
+        const hasConfiguredServers =
+          baseProviderMcpServers !== undefined && Object.keys(baseProviderMcpServers).length > 0;
+        if (hasConfiguredServers && !options?.mcpHub?.available)
+          yield* Effect.logWarning(
+            "F5's MCP hub is unavailable; this Codex session starts without configured MCP servers",
+          );
+        if (hasConfiguredServers && options?.mcpHub?.available) {
           const attachment = options!.mcpHub!.attach({
             threadId: input.threadId,
             projectId: input.projectId,
@@ -2972,8 +2966,12 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             : managedMcpServers;
         yield* Effect.try({
           try: () =>
+            // Configured servers count whether or not the hub can serve them.
             assertMcpServerLimit(
-              filterEnabledMcpServers(providerMcpServers, "codex"),
+              filterEnabledMcpServers(
+                { ...baseProviderMcpServers, ...providerMcpServers },
+                "codex",
+              ),
               MCP_RUNTIME_SERVER_LIMIT,
             ),
           catch: (cause) =>
@@ -3482,35 +3480,14 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             sameName: codexServerNamesMatch,
           });
         }
-        const launched = launchedMcpConfigKeys.get(threadId);
-        if (
-          launched !== undefined &&
-          launched !==
-            stableMcpConfigKey(translateMcpForCodex(mcpServers, mcpInterpolationEnv) ?? {})
-        ) {
-          // This also applies after login: never reload a launch config that differs
-          // from the saved snapshot. Credentials take effect at the safe restart boundary.
-          return restartRequiredMcpReload("Codex fixes its MCP servers when the session starts.");
-        }
-        const statuses = yield* Effect.tryPromise({
-          try: () => manager.reloadMcpConfig(threadId),
-          catch: (cause) => toRequestError(threadId, "config/mcpServer/reload", cause),
-        });
-        return summarizeMcpReload({
-          desired: Object.keys(filterEnabledMcpServers(mcpServers, "codex")),
-          observed:
-            statuses === undefined
-              ? undefined
-              : observeCodexMcpServers(
-                  statuses.flatMap((status) => {
-                    const decoded = decodeCodexMcpServerStatus(status);
-                    return decoded ? [decoded] : [];
-                  }),
-                  new Set(Object.keys(filterEnabledMcpServers(mcpServers, "codex"))),
-                  builtInMcpServerNames(threadId),
-                ),
-          sameName: codexServerNamesMatch,
-        });
+        // A session launched without configured servers has no hub endpoints: servers
+        // added since need a restart, and without the hub none reach Codex at all.
+        const added = Object.keys(filterEnabledMcpServers(mcpServers, "codex"));
+        if (added.length > 0 && options?.mcpHub?.available)
+          return restartRequiredMcpReload(
+            `Codex gets new MCP servers when the session restarts (${added.join(", ")}).`,
+          );
+        return summarizeMcpReload({ desired: [], observed: undefined });
       });
 
     const stopAll: CodexAdapterShape["stopAll"] = () =>

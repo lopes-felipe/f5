@@ -21,13 +21,8 @@ export interface McpProviderSupport {
   readonly reasons: ReadonlyArray<string>;
 }
 
-/**
- * Providers that always reach configured servers through F5's MCP hub. Codex and Claude
- * do too unless the `mcpNativePassthrough` server setting is on.
- */
-export const MCP_HUB_PROVIDERS: ReadonlyArray<ProviderKind> = KNOWN_PROVIDER_KINDS.filter(
-  (provider) => provider !== "codex" && provider !== "claudeAgent",
-);
+/** Every provider reaches configured servers through F5's MCP hub. */
+export const MCP_HUB_PROVIDERS: ReadonlyArray<ProviderKind> = KNOWN_PROVIDER_KINDS;
 
 function setField(server: McpServerDefinition, field: keyof McpServerDefinition): boolean {
   const value = server[field];
@@ -35,65 +30,28 @@ function setField(server: McpServerDefinition, field: keyof McpServerDefinition)
   return !Array.isArray(value) || value.length > 0;
 }
 
-export interface McpProviderSupportOptions {
-  /**
-   * Codex and Claude reach configured servers through F5's hub (`mcpNativePassthrough`
-   * off), which runs the server itself: only what the agent's own client ignores remains.
-   */
-  readonly nativeProvidersOnHub?: boolean;
-}
-
-function limitations(
-  server: McpServerDefinition,
-  provider: ProviderKind,
-  options: McpProviderSupportOptions,
-): string[] {
-  const reasons: string[] = [];
-  // The hub passes parallel tool calls through to Codex's entry for its endpoint.
-  if (provider === "codex" && options.nativeProvidersOnHub) return reasons;
-  if (provider === "codex") {
-    if (server.type === "sse")
-      reasons.push("Connects with streamable HTTP, so SSE-only endpoints fail");
-    if (server.type === "stdio" && server.connectionScope === "shared")
-      reasons.push("Starts its own copy of the server in each session");
-    return reasons;
-  }
-  if (provider === "claudeAgent" && !options.nativeProvidersOnHub) {
-    if (server.type === "stdio" && setField(server, "cwd"))
-      reasons.push("Ignores the working directory; the server starts in the conversation's");
-    if (server.type === "stdio" && server.connectionScope === "shared")
-      reasons.push("Starts its own copy of the server in each session");
-    const ignored = [
-      setField(server, "startupTimeoutSec") && "startup timeout",
-      setField(server, "supportsParallelToolCalls") && "parallel tool calls",
-      setField(server, "scopes") && "OAuth scopes",
-      setField(server, "oauthCallbackUrl") && "OAuth callback URL",
-      setField(server, "oauthResource") && "OAuth resource",
-    ].filter((label): label is string => typeof label === "string");
-    if (ignored.length) reasons.push(`Ignores ${ignored.join(", ")}`);
-    return reasons;
-  }
-  if (setField(server, "supportsParallelToolCalls")) reasons.push("Ignores parallel tool calls");
-  return reasons;
+/**
+ * F5's hub runs every server itself, so only what an agent's own MCP client ignores
+ * remains. Codex honors parallel tool calls on its entry for the hub endpoint.
+ */
+function limitations(server: McpServerDefinition, provider: ProviderKind): string[] {
+  if (provider === "codex") return [];
+  return setField(server, "supportsParallelToolCalls") ? ["Ignores parallel tool calls"] : [];
 }
 
 export function mcpProviderSupport(
   server: McpServerDefinition,
   provider: ProviderKind,
-  options: McpProviderSupportOptions = {},
 ): McpProviderSupport {
   if (server.disabledProviders?.includes(provider))
     return { provider, support: "off", reasons: [] };
-  const reasons = limitations(server, provider, options);
+  const reasons = limitations(server, provider);
   return { provider, support: reasons.length ? "limited" : "supported", reasons };
 }
 
 /** One entry per known provider, Codex and Claude first. */
-export function mcpProviderMatrix(
-  server: McpServerDefinition,
-  options: McpProviderSupportOptions = {},
-): McpProviderSupport[] {
-  return KNOWN_PROVIDER_KINDS.map((provider) => mcpProviderSupport(server, provider, options));
+export function mcpProviderMatrix(server: McpServerDefinition): McpProviderSupport[] {
+  return KNOWN_PROVIDER_KINDS.map((provider) => mcpProviderSupport(server, provider));
 }
 
 /** The server with `provider` turned on or off; an empty list is removed. */

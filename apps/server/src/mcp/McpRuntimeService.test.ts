@@ -1,17 +1,13 @@
 import { ServerSettingsService } from "../serverSettings.ts";
-import { ProjectionProjectRepository } from "../persistence/Services/ProjectionProjects.ts";
-import { ProjectionProjectRepositoryLive } from "../persistence/Layers/ProjectionProjects.ts";
-import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 import * as NodePath from "@effect/platform-node/NodePath";
 import { describe, it, assert } from "@effect/vitest";
-import { Effect, Fiber, FileSystem, Layer, Path, Schema, Sink, Stream } from "effect";
+import { Effect, Fiber, FileSystem, Layer, Path, Sink, Stream } from "effect";
 import * as TestClock from "effect/testing/TestClock";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { vi } from "vitest";
 
 import {
-  ServerSettings,
   ProviderDriverKind,
   ProjectId,
   ThreadId,
@@ -20,9 +16,7 @@ import {
   type McpStatusUpdatedPayload,
   type ProviderSession,
 } from "@t3tools/contracts";
-import { CODEX_SSE_TRANSPORT_HINT } from "@t3tools/shared/mcpTranslation";
 import { ServerConfig } from "../config.ts";
-import * as instanceLocks from "../profiles/InstanceLock.ts";
 
 import type { CodexControlClient } from "../codex/CodexControlClient.ts";
 import { CodexControlClientRegistry } from "../codex/CodexControlClientRegistry.ts";
@@ -81,28 +75,6 @@ function mockSpawnerLayer(
       };
       return Effect.succeed(mockHandle(handler(cmd.args, cmd.options?.env)));
     }),
-  );
-}
-
-function hangingSpawnerLayer(onInterrupted: () => void = () => {}) {
-  return Layer.succeed(
-    ChildProcessSpawner.ChildProcessSpawner,
-    ChildProcessSpawner.make(() =>
-      Effect.succeed(
-        ChildProcessSpawner.makeHandle({
-          pid: ChildProcessSpawner.ProcessId(1),
-          exitCode: Effect.never.pipe(Effect.onInterrupt(() => Effect.sync(onInterrupted))),
-          isRunning: Effect.succeed(true),
-          kill: () => Effect.void,
-          stdin: Sink.drain,
-          stdout: Stream.empty,
-          stderr: Stream.empty,
-          all: Stream.empty,
-          getInputFd: () => Sink.drain,
-          getOutputFd: () => Stream.empty,
-        }),
-      ),
-    ),
   );
 }
 
@@ -294,7 +266,7 @@ function makeClaudeLoginProvider(options: {
 
 function makeRuntimeLayer(input?: {
   readonly servers?: McpProjectServersConfig;
-  /** Serves Codex and Claude through F5's hub (no `mcpNativePassthrough`). */
+  /** F5's hub, which serves configured servers to Codex and Claude. */
   readonly mcpHub?: McpHubShape;
   readonly published?: Array<McpStatusUpdatedPayload>;
   readonly runtimeConfigReadDelayMs?: number;
@@ -488,129 +460,6 @@ describe("McpRuntimeService", () => {
     );
   }
 
-  for (const state of [
-    "ready",
-    "starting",
-    "failed",
-    "cancelled",
-    "missing",
-    "disabled",
-    "login-required",
-  ] as const) {
-    it.effect(`adds the SSE transport hint to every non-ready state (${state})`, () =>
-      Effect.gen(function* () {
-        const service = yield* McpRuntimeService;
-        const result = yield* service.getServerStatuses({ provider: "codex", projectId });
-        const sse = result.statuses.find((server) => server.name === "sse");
-        const http = result.statuses.find((server) => server.name === "http");
-        assert.equal(sse?.message?.includes(CODEX_SSE_TRANSPORT_HINT) ?? false, state !== "ready");
-        assert.equal(http?.message?.includes(CODEX_SSE_TRANSPORT_HINT) ?? false, false);
-        if (state === "failed") assert.include(sse?.message, "fixture startup failure");
-      }).pipe(
-        Effect.provide(
-          makeRuntimeLayer({
-            servers: {
-              sse: {
-                type: "sse",
-                url: "https://example.test/sse",
-                enabled: state !== "disabled",
-              },
-              http: { type: "http", url: "https://example.test/mcp" },
-            },
-            controlStatuses:
-              state === "missing" || state === "disabled"
-                ? []
-                : [
-                    {
-                      name: "sse",
-                      ...(state === "login-required" ? {} : { startupStatus: state }),
-                      authStatus: state === "login-required" ? "notLoggedIn" : "oAuth",
-                      ...(state === "failed" ? { error: "fixture startup failure" } : {}),
-                    },
-                    {
-                      name: "http",
-                      ...(state === "login-required" ? {} : { startupStatus: state }),
-                      authStatus: state === "login-required" ? "notLoggedIn" : "oAuth",
-                    },
-                  ],
-            spawnerLayer: mockSpawnerLayer((args) =>
-              args.join(" ").endsWith("--version")
-                ? { stdout: "codex 1.2.3\n", stderr: "", code: 0 }
-                : { stdout: '{"loggedIn":true}\n', stderr: "", code: 0 },
-            ),
-          }),
-        ),
-      ),
-    );
-  }
-
-  it.effect(
-    "keeps CLI login status independent for two accounts on the same project and server",
-    () =>
-      Effect.gen(function* () {
-        const service = yield* McpRuntimeService;
-        const input = { provider: "codex" as const, projectId, serverName: "cli-server" };
-        const first = { ...input, instanceId: ProviderInstanceId.make("codex-personal") };
-        const second = { ...input, instanceId: ProviderInstanceId.make("codex-work") };
-        const pendingFirst = yield* service.startLogin(first);
-        assert.equal((yield* service.getLoginStatus(first)).status, "pending");
-        assert.equal((yield* service.getLoginStatus(second)).status, "idle");
-        const pendingSecond = yield* service.startLogin(second);
-        assert.notStrictEqual(pendingFirst, pendingSecond);
-        assert.strictEqual(yield* service.getLoginStatus(first), pendingFirst);
-        assert.strictEqual(yield* service.getLoginStatus(second), pendingSecond);
-      }).pipe(
-        Effect.provide(
-          makeRuntimeLayer({
-            servers: { "cli-server": { type: "stdio", command: "node" } },
-            spawnerLayer: hangingSpawnerLayer(),
-          }),
-        ),
-      ),
-  );
-
-  it.effect("records a complete failed CLI status when the OAuth lease is busy", () => {
-    const lease = vi
-      .spyOn(instanceLocks, "instanceLock")
-      .mockReturnValue(
-        Effect.fail(new instanceLocks.ProfileBusyError({ message: "fixture busy" })),
-      );
-    return Effect.gen(function* () {
-      const service = yield* McpRuntimeService;
-      const input = {
-        provider: "codex" as const,
-        projectId,
-        instanceId: ProviderInstanceId.make("codex-work"),
-        serverName: "cli-server",
-      };
-      const pending = yield* service.startLogin(input);
-      let status = yield* service.getLoginStatus(input);
-      while (status.status === "pending") {
-        yield* Effect.yieldNow;
-        status = yield* service.getLoginStatus(input);
-      }
-      assert.equal(status.status, "failed");
-      assert.equal(status.target, "server");
-      assert.equal(status.mode, "cli");
-      assert.equal(status.startedAt, pending.startedAt);
-      assert.isString(status.completedAt);
-      assert.include(status.error, "Another profile is signing in");
-    }).pipe(
-      Effect.provide(
-        makeRuntimeLayer({
-          servers: { "cli-server": { type: "stdio", command: "node" } },
-        }).pipe(
-          Layer.provide(
-            ServerConfig.layerTest("/tmp", { prefix: "f5-mcp-lease-test-" }).pipe(
-              Layer.provide(Layer.mergeAll(NodeFileSystem.layer, NodePath.layer)),
-            ),
-          ),
-        ),
-      ),
-      Effect.ensuring(Effect.sync(() => lease.mockRestore())),
-    );
-  });
-
   it.effect("reports Claude provider status as authenticated when preflight succeeds", () =>
     Effect.gen(function* () {
       const service = yield* McpRuntimeService;
@@ -669,48 +518,6 @@ describe("McpRuntimeService", () => {
     ),
   );
 
-  it.effect("matches Codex MCP server statuses case-insensitively", () =>
-    Effect.gen(function* () {
-      const service = yield* McpRuntimeService;
-      const statuses = yield* service.getServerStatuses({
-        provider: "codex",
-        projectId,
-      });
-
-      assert.strictEqual(statuses.statuses.length, 1);
-      assert.strictEqual(statuses.statuses[0]?.name, "Glean");
-      assert.strictEqual(statuses.statuses[0]?.state, "ready");
-    }).pipe(
-      Effect.provide(
-        makeRuntimeLayer({
-          servers: {
-            Glean: {
-              type: "http",
-              url: "https://example.test/mcp",
-            },
-          },
-          controlStatuses: [
-            {
-              name: "glean",
-              authStatus: "oAuth",
-              toolCount: 4,
-            },
-          ],
-          spawnerLayer: mockSpawnerLayer((args) => {
-            const joined = args.join(" ");
-            if (joined.endsWith("--version")) {
-              return { stdout: "codex 1.2.3\n", stderr: "", code: 0 };
-            }
-            if (joined.endsWith("login status")) {
-              return { stdout: '{"loggedIn":true}\n', stderr: "", code: 0 };
-            }
-            throw new Error(`Unexpected CLI args: ${joined}`);
-          }),
-        }),
-      ),
-    ),
-  );
-
   it.effect("keeps ambiguous provider names visible as conflicts without assigning readiness", () =>
     Effect.gen(function* () {
       const service = yield* McpRuntimeService;
@@ -755,12 +562,8 @@ describe("McpRuntimeService", () => {
     }).pipe(
       Effect.provide(
         makeRuntimeLayer({
-          servers: {
-            Observability: {
-              type: "http",
-              url: "https://example.test/mcp",
-            },
-          },
+          // Codex's own server: the admin client reports only those.
+          servers: {},
           controlStatuses: [
             {
               name: "Observability",
@@ -799,12 +602,8 @@ describe("McpRuntimeService", () => {
     }).pipe(
       Effect.provide(
         makeRuntimeLayer({
-          servers: {
-            Observability: {
-              type: "http",
-              url: "https://example.test/mcp",
-            },
-          },
+          // Codex's own server: the admin client reports only those.
+          servers: {},
           controlStatuses: [
             {
               name: "Observability",
@@ -841,12 +640,8 @@ describe("McpRuntimeService", () => {
     }).pipe(
       Effect.provide(
         makeRuntimeLayer({
-          servers: {
-            Observability: {
-              type: "http",
-              url: "https://example.test/mcp",
-            },
-          },
+          // Codex's own server: the admin client reports only those.
+          servers: {},
           controlStatuses: [
             {
               name: "Observability",
@@ -953,163 +748,6 @@ describe("McpRuntimeService", () => {
     );
   });
 
-  for (const change of ["fingerprint", "workspace"] as const) {
-    it.effect(`cancels pending CLI login after a ${change} change`, () => {
-      const instanceId = ProviderInstanceId.make("codex-work");
-      let interrupted = false;
-      const settingsLayer = ServerSettingsService.layerTest(
-        Schema.decodeUnknownSync(ServerSettings)({
-          providerInstances: {
-            [instanceId]: { driver: ProviderDriverKind.make("codex"), config: {} },
-          },
-        }),
-      );
-      const projectLayer = ProjectionProjectRepositoryLive.pipe(
-        Layer.provide(SqlitePersistenceMemory),
-      );
-      return Effect.gen(function* () {
-        const projects = yield* ProjectionProjectRepository;
-        const settings = yield* ServerSettingsService;
-        const service = yield* McpRuntimeService;
-        const project = {
-          projectId,
-          title: "MCP",
-          workspaceRoot: "/tmp/login-a",
-          defaultModel: null,
-          scripts: [],
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          deletedAt: null,
-        };
-        yield* projects.upsert(project);
-        const input = {
-          provider: "codex" as const,
-          projectId,
-          instanceId,
-          serverName: "cli-server",
-        };
-        assert.equal((yield* service.startLogin(input)).status, "pending");
-        yield* TestClock.adjust(1);
-        if (change === "workspace")
-          yield* projects.upsert({ ...project, workspaceRoot: "/tmp/login-b" });
-        else {
-          const current = yield* settings.getSettings;
-          yield* settings.updateSettings({
-            providerInstances: {
-              ...current.providerInstances,
-              [instanceId]: {
-                ...current.providerInstances[instanceId]!,
-                environment: [{ name: "ACCOUNT_LABEL", value: "changed" }],
-              },
-            },
-          });
-        }
-        yield* TestClock.adjust("2 seconds");
-        const status = yield* service.getLoginStatus(input);
-        assert.equal(status.status, "failed");
-        assert.include(status.error, "execution settings or project directory changed");
-        assert.equal(interrupted, true);
-      }).pipe(
-        Effect.provide(
-          makeRuntimeLayer({
-            servers: { "cli-server": { type: "stdio", command: "npx" } },
-            spawnerLayer: hangingSpawnerLayer(() => {
-              interrupted = true;
-            }),
-          }).pipe(Layer.provideMerge(settingsLayer), Layer.provideMerge(projectLayer)),
-        ),
-      );
-    });
-  }
-
-  it.effect("marks codex CLI login as failed after the timeout elapses", () =>
-    Effect.gen(function* () {
-      const service = yield* McpRuntimeService;
-
-      const pending = yield* service.startLogin({
-        provider: "codex",
-        projectId,
-        serverName: "cli-server",
-      });
-      assert.strictEqual(pending.status, "pending");
-
-      yield* TestClock.adjust("6 minutes");
-
-      const status = yield* service.getLoginStatus({
-        provider: "codex",
-        projectId,
-        serverName: "cli-server",
-      });
-      assert.strictEqual(status.status, "failed");
-      assert.strictEqual(status.error, "Codex MCP login timed out before completion.");
-    }).pipe(
-      Effect.provide(
-        makeRuntimeLayer({
-          servers: {
-            "cli-server": {
-              type: "stdio",
-              command: "npx",
-            },
-          },
-          spawnerLayer: hangingSpawnerLayer(),
-        }),
-      ),
-    ),
-  );
-
-  it.effect(
-    "routes HTTP codex login through OAuth even without oauthResource in the shared config",
-    () => {
-      const oauthStartCalls: Array<unknown> = [];
-      return Effect.gen(function* () {
-        const service = yield* McpRuntimeService;
-
-        const pending = yield* service.startLogin({
-          provider: "codex",
-          projectId,
-          serverName: "Glean",
-        });
-        assert.strictEqual(pending.mode, "oauth");
-        assert.strictEqual(pending.status, "pending");
-        assert.strictEqual(pending.authorizationUrl, "https://auth.example.test");
-        assert.strictEqual(oauthStartCalls.length, 1);
-
-        const status = yield* service.getLoginStatus({
-          provider: "codex",
-          projectId,
-          serverName: "Glean",
-        });
-        assert.strictEqual(status.mode, "oauth");
-        assert.strictEqual(status.status, "completed");
-        assert.strictEqual(status.message, "OAuth finished");
-      }).pipe(
-        Effect.provide(
-          makeRuntimeLayer({
-            servers: {
-              Glean: {
-                type: "http",
-                url: "https://example.test/mcp",
-              },
-            },
-            oauthStartStatus: {
-              status: "pending",
-              authorizationUrl: "https://auth.example.test",
-              startedAt: "2026-04-29T10:00:00.000Z",
-            },
-            oauthStatus: {
-              status: "completed",
-              authorizationUrl: "https://auth.example.test",
-              startedAt: "2026-04-29T10:00:00.000Z",
-              completedAt: "2026-04-29T10:00:10.000Z",
-              message: "OAuth finished",
-            },
-            oauthStartCalls,
-          }),
-        ),
-      );
-    },
-  );
-
   it.effect("maps OAuth-backed codex login status into the provider-aware response", () =>
     Effect.gen(function* () {
       const service = yield* McpRuntimeService;
@@ -1126,13 +764,8 @@ describe("McpRuntimeService", () => {
     }).pipe(
       Effect.provide(
         makeRuntimeLayer({
-          servers: {
-            "oauth-server": {
-              type: "http",
-              url: "https://example.test/mcp",
-              oauthResource: "https://example.test/oauth",
-            },
-          },
+          // One of Codex's own servers; F5's sign in through the hub.
+          servers: {},
           oauthStatus: {
             status: "completed",
             authorizationUrl: "https://auth.example.test",
@@ -1268,14 +901,26 @@ describe("with the hub serving Codex and Claude", () => {
     return Effect.gen(function* () {
       const runtime = yield* McpRuntimeService;
       for (const provider of ["codex", "claudeAgent"] as const) {
-        const refused = yield* runtime
-          .startLogin({ provider, projectId, serverName: "docs" })
-          .pipe(Effect.flip);
-        assert.include(refused.message, "through F5 now");
+        // Any spelling of a saved name, enabled or not.
+        for (const serverName of ["docs", "DOCS"]) {
+          const refused = yield* runtime
+            .startLogin({ provider, projectId, serverName })
+            .pipe(Effect.flip);
+          assert.include(refused.message, "through F5. Sign in from the server's Sign-in tab");
+        }
       }
       assert.equal(oauthStartCalls.length, 0);
     }).pipe(
-      Effect.provide(makeRuntimeLayer({ servers, mcpHub: makeFakeMcpHub().hub, oauthStartCalls })),
+      Effect.provide(
+        makeRuntimeLayer({
+          servers,
+          oauthStartCalls,
+          providerService: {
+            authenticateMcpServerForProject: () =>
+              Effect.die(new Error("F5's servers never sign in through Claude")),
+          },
+        }),
+      ),
     );
   });
 });
@@ -1346,7 +991,8 @@ it.effect(
       const error = yield* runtime.getServerStatuses(input).pipe(Effect.flip);
       assert.notInclude(error.message, "account-bearer-review-value");
       assert.include(error.message, "[redacted]");
-      const result = yield* runtime.reconnectServer({ ...input, serverName: "docs" });
+      // One of Claude's own servers: its reconnect goes through the provider.
+      const result = yield* runtime.reconnectServer({ ...input, serverName: "claude-own" });
       assert.notInclude(JSON.stringify(result), "account-bearer-review-value");
     }).pipe(
       Effect.provide(
@@ -1385,11 +1031,9 @@ it.effect(
 describe("Claude MCP sign-in", () => {
   const claudeLogin = { provider: "claudeAgent" as const, projectId, serverName: "docs" };
   const sourceThreadId = liveSession("claudeAgent").threadId;
+  // `docs` is one of Claude's own servers (a connector or plugin server), not F5's.
   const runtimeFor = (providerService: Partial<ProviderServiceShape>) =>
-    makeRuntimeLayer({
-      servers: { docs: { type: "http", url: "https://docs.example.test/mcp" } },
-      providerService,
-    });
+    makeRuntimeLayer({ servers: {}, providerService });
 
   it.effect("completes once the source session connects and reconnects the other sessions", () => {
     const { state, providerService } = makeClaudeLoginProvider({
@@ -1463,39 +1107,7 @@ describe("Claude MCP sign-in", () => {
         published.map((event) => [event.reason, event.provider]),
         [["login-completed", "claudeAgent"]],
       );
-    }).pipe(
-      Effect.provide(
-        makeRuntimeLayer({
-          servers: { docs: { type: "http", url: "https://docs.example.test/mcp" } },
-          providerService,
-          published,
-        }),
-      ),
-    );
-  });
-
-  it.effect("refuses sign-in for a server turned off for the provider", () => {
-    const { providerService } = makeClaudeLoginProvider({
-      authUrl: "https://auth.example.test/authorize",
-    });
-    return Effect.gen(function* () {
-      const service = yield* McpRuntimeService;
-      const error = yield* Effect.flip(service.startLogin(claudeLogin));
-      assert.match(error.message, /turned off for Claude/);
-    }).pipe(
-      Effect.provide(
-        makeRuntimeLayer({
-          servers: {
-            docs: {
-              type: "http",
-              url: "https://docs.example.test/mcp",
-              disabledProviders: ["claudeAgent"],
-            },
-          },
-          providerService,
-        }),
-      ),
-    );
+    }).pipe(Effect.provide(makeRuntimeLayer({ servers: {}, providerService, published })));
   });
 
   for (const ending of ["stopped", "replaced"] as const) {
@@ -1598,11 +1210,7 @@ describe("Claude MCP sign-in", () => {
       );
     }).pipe(
       Effect.provide(
-        makeRuntimeLayer({
-          servers: { docs: { type: "http", url: "https://docs.example.test/mcp" } },
-          providerService,
-          runtimeConfigReadDelayMs: 1_000,
-        }),
+        makeRuntimeLayer({ servers: {}, providerService, runtimeConfigReadDelayMs: 1_000 }),
       ),
     );
   });
@@ -1666,26 +1274,6 @@ describe("Claude MCP sign-in", () => {
       assert.equal(status.status, "failed");
       assert.include(status.error, "Start a conversation in this project");
     }).pipe(Effect.provide(runtimeFor(providerService)));
-  });
-
-  it.effect("releases the claimed sign-in when the server is disabled", () => {
-    const { state, providerService } = makeClaudeLoginProvider({
-      authUrl: "https://auth.example.test/authorize",
-    });
-    return Effect.gen(function* () {
-      const service = yield* McpRuntimeService;
-      const error = yield* service.startLogin(claudeLogin).pipe(Effect.flip);
-      assert.include(error.message, "disabled");
-      assert.equal((yield* service.getLoginStatus(claudeLogin)).status, "idle");
-      assert.equal(state.authCalls.length, 0);
-    }).pipe(
-      Effect.provide(
-        makeRuntimeLayer({
-          servers: { docs: { type: "http", url: "https://docs.example.test/mcp", enabled: false } },
-          providerService,
-        }),
-      ),
-    );
   });
 
   it.effect("keeps provider-scoped Claude login rejected and reports idle server status", () =>

@@ -36,19 +36,15 @@ export interface ResolvedCursorMcpServers {
 
 const RESERVED_PREFIX = "f5_";
 
-const records = (value: Record<string, string> | undefined) =>
-  Object.entries(value ?? {}).map(([name, entryValue]) => ({ name, value: entryValue }));
-
 export function resolveCursorMcpServers(input: {
   readonly automationServers: ReadonlyArray<EffectAcpSchema.McpServer>;
   readonly projectServers: McpProjectServersConfig | null | undefined;
   /** Server names already defined in Cursor's own user or project `mcp.json`. */
   readonly cursorConfigNames: ReadonlySet<string>;
   readonly capabilities: { readonly http: boolean; readonly sse: boolean };
-  readonly environment?: NodeJS.ProcessEnv;
   /**
-   * F5's MCP hub. When present, project servers (stdio included) are served
-   * through hub endpoints; without it only remote servers pass through.
+   * F5's MCP hub, which serves project servers (stdio included) as endpoints.
+   * Without it no project server reaches Cursor, and each is reported omitted.
    */
   readonly attachHub?: (servers: McpProjectServersConfig) => McpHubAttachment;
   readonly stdioLaunch?: McpSessionStdioLaunch | undefined;
@@ -72,34 +68,11 @@ export function resolveCursorMcpServers(input: {
       });
       continue;
     }
-    if (input.attachHub) {
-      forHub[name] = definition;
+    if (!input.attachHub) {
+      omitted.push({ name, reason: "needs F5's MCP hub, which is unavailable in this runtime" });
       continue;
     }
-    if (definition.type === "stdio") {
-      omitted.push({ name, reason: "is a stdio server, which F5 does not forward to Cursor ACP" });
-      continue;
-    }
-    const url = definition.url?.trim();
-    if (!url) {
-      omitted.push({ name, reason: "has no URL" });
-      continue;
-    }
-    if (definition.type === "http" ? !input.capabilities.http : !input.capabilities.sse) {
-      omitted.push({
-        name,
-        reason: `needs ${definition.type.toUpperCase()} MCP, which this Cursor CLI does not offer`,
-      });
-      continue;
-    }
-    const headers = { ...definition.headers };
-    const bearerVariable = definition.bearerTokenEnvVar?.trim();
-    const bearer = bearerVariable ? input.environment?.[bearerVariable]?.trim() : undefined;
-    if (bearer && !Object.keys(headers).some((key) => key.toLowerCase() === "authorization"))
-      headers.Authorization = `Bearer ${bearer}`;
-    servers.push({ type: definition.type, name, url, headers: records(headers) });
-    ownedNames.push(name);
-    reserved.add(name);
+    forHub[name] = definition;
   }
   if (!input.attachHub || Object.keys(forHub).length === 0) return { servers, omitted, ownedNames };
   const attachment = input.attachHub(forHub);

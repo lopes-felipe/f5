@@ -6,7 +6,7 @@ import {
 } from "@t3tools/contracts";
 import { Effect, Layer, ServiceMap } from "effect";
 
-import { codexAdminMcpConfig, makeNativeProvidersOnHub } from "../mcp/hub/nativeHubOptions.ts";
+import { CODEX_ADMIN_MCP_CONFIG } from "../mcp/hub/nativeHubOptions.ts";
 import { ProjectMcpConfigService } from "../mcp/ProjectMcpConfigService.ts";
 import { CodexControlClientRegistry } from "./CodexControlClientRegistry.ts";
 import { isMethodNotFoundError } from "./CodexControlClient.ts";
@@ -27,35 +27,34 @@ export class CodexMcpSyncService extends ServiceMap.Service<
 const makeCodexMcpSyncService = Effect.gen(function* () {
   const registry = yield* CodexControlClientRegistry;
   const projectMcpConfigService = yield* ProjectMcpConfigService;
-  const nativeProvidersOnHub = yield* makeNativeProvidersOnHub;
 
   return {
     getStatus: ({ projectId, providerOptions, instanceId }) =>
       projectMcpConfigService.readCodexServers(projectId).pipe(
         Effect.flatMap((stored) =>
-          Effect.flatMap(nativeProvidersOnHub, (onHub) =>
-            registry.getAdminClient({
+          registry
+            .getAdminClient({
               projectId,
               ...(instanceId ? { instanceId } : {}),
               ...(providerOptions ? { providerOptions } : {}),
-              // With the hub serving Codex, this client starts none of F5's servers.
-              ...codexAdminMcpConfig(stored, onHub),
-            }),
-          ).pipe(
-            Effect.map(
-              (client): McpCodexStatusResult => ({
-                projectId,
-                support: client.capabilities.listMcpServerStatus ? "supported" : "unsupported",
-                ...(client.capabilities.listMcpServerStatus
-                  ? {}
-                  : {
-                      supportMessage:
-                        "The installed Codex CLI does not expose MCP control/status RPCs.",
-                    }),
-                configVersion: stored.effectiveVersion,
-              }),
+              // F5's servers reach Codex through the hub; this client starts none of them.
+              ...CODEX_ADMIN_MCP_CONFIG,
+            })
+            .pipe(
+              Effect.map(
+                (client): McpCodexStatusResult => ({
+                  projectId,
+                  support: client.capabilities.listMcpServerStatus ? "supported" : "unsupported",
+                  ...(client.capabilities.listMcpServerStatus
+                    ? {}
+                    : {
+                        supportMessage:
+                          "The installed Codex CLI does not expose MCP control/status RPCs.",
+                      }),
+                  configVersion: stored.effectiveVersion,
+                }),
+              ),
             ),
-          ),
         ),
         Effect.catch((error): Effect.Effect<McpCodexStatusResult> => {
           if (isMethodNotFoundError(error)) {

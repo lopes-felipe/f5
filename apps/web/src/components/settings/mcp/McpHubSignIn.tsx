@@ -8,7 +8,7 @@ import { ensureNativeApi } from "../../../nativeApi";
 import { Badge } from "../../ui/badge";
 import { Button } from "../../ui/button";
 import { Input } from "../../ui/input";
-import { MCP_HUB_PROVIDER_LABELS, readErrorMessage } from "./mcpSettingsHelpers";
+import { readErrorMessage } from "./mcpSettingsHelpers";
 
 function describeExpiry(server: McpHubAuthServerStatus): string | null {
   if (!server.signedIn) return null;
@@ -197,36 +197,22 @@ export function McpHubSignInRow({
 export function McpHubSignIn({
   serverName,
   projectId,
-  nativeProvidersOnHub = false,
 }: {
   readonly serverName: string;
   readonly projectId: ProjectId | null;
-  /** Codex and Claude reach configured servers through F5 too (no native passthrough). */
-  readonly nativeProvidersOnHub?: boolean;
 }) {
   const authStatus = useQuery(mcpHubAuthQueryOptions({ projectId }));
   const server = authStatus.data?.servers.find((entry) => entry.name === serverName);
-  const agents = nativeProvidersOnHub
-    ? ["Codex", "Claude", ...MCP_HUB_PROVIDER_LABELS]
-    : MCP_HUB_PROVIDER_LABELS;
   return (
-    <section
-      aria-label={nativeProvidersOnHub ? "F5 sign-in" : "Sign-in for other agents"}
-      className="space-y-2 text-xs"
-    >
-      <p className="font-medium text-foreground">
-        {nativeProvidersOnHub ? "F5 sign-in" : "Other agents"}
+    <section aria-label="F5 sign-in" className="space-y-2 text-xs">
+      <p className="font-medium text-foreground">F5 sign-in</p>
+      <p className="text-muted-foreground">
+        F5 signs in for every agent. A sign-in is shared by every project that uses the same server.
       </p>
       <p className="text-muted-foreground">
-        F5 signs in for {agents.join(", ")}. A sign-in is shared by every project that uses the same
-        server.
+        Sign-ins Codex and Claude saved before they reached servers through F5 are not carried over,
+        so a server that needed one asks once more here.
       </p>
-      {nativeProvidersOnHub ? (
-        <p className="text-muted-foreground">
-          Codex and Claude reach this server through F5 now. Sign-ins they saved earlier are not
-          carried over, so a server that needed one asks once more here.
-        </p>
-      ) : null}
       {authStatus.error ? (
         <p className="text-destructive">
           {readErrorMessage(authStatus.error, "Failed to load sign-in state.")}

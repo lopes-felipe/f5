@@ -46,7 +46,6 @@ import { toastManager } from "../../ui/toast";
 import { McpAddServerDialog, type McpAddTab } from "./McpAddServerDialog";
 import { McpConfirmDialog, McpDraftNavigationGuard, useMcpDraftGuard } from "./McpDraftGuard";
 import { McpExport } from "./McpExport";
-import { McpHubNotice } from "./McpHubNotice";
 import { McpObservedGroup } from "./McpObservedGroup";
 import { McpRepositoryServers } from "./McpRepositoryServers";
 import {
@@ -972,8 +971,6 @@ export function McpServersSettings(props: {
             {actionError}
           </p>
         ) : null}
-
-        <McpHubNotice servers={effectiveConfigQuery.data?.servers ?? activeConfig?.servers} />
 
         <section
           aria-label={scope === "project" ? "Project servers" : "Common servers"}

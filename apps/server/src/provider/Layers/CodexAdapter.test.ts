@@ -420,12 +420,10 @@ const validationLayer = it.layer(
 
 const hubManager = new FakeCodexManager();
 const fakeHub = makeFakeMcpHub();
-let passthrough = false;
 const hubLayer = it.layer(
   makeCodexAdapterLive({
     manager: hubManager,
     mcpHub: fakeHub.hub,
-    mcpNativePassthrough: Effect.sync(() => passthrough),
   }).pipe(
     Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
     Layer.provideMerge(providerSessionDirectoryTestLayer),
@@ -502,28 +500,29 @@ hubLayer("CodexAdapterLive with F5's MCP hub", (it) => {
       }
     }),
   );
-
-  it.effect("keeps configured servers on Codex with mcpNativePassthrough", () =>
-    Effect.gen(function* () {
-      const adapter = yield* CodexAdapter;
-      const attaches = fakeHub.attaches.length;
-      passthrough = true;
-      try {
-        yield* adapter.startSession({
-          threadId: asThreadId("hub-passthrough"),
-          runtimeMode: "approval-required",
-          providerOptions: { mcpServers: { docs: { type: "stdio", command: "docs-server" } } },
-        });
-      } finally {
-        passthrough = false;
-      }
-      assert.equal(launched().mcpServers?.docs?.command, "docs-server");
-      assert.equal(fakeHub.attaches.length, attaches);
-    }),
-  );
 });
 
 validationLayer("CodexAdapterLive validation", (it) => {
+  it.effect("never gives Codex configured servers without F5's hub", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      yield* adapter.startSession({
+        threadId: asThreadId("no-hub"),
+        runtimeMode: "approval-required",
+        providerOptions: { mcpServers: { docs: { type: "stdio", command: "docs-server" } } },
+      });
+      const input = validationManager.startSessionImpl.mock.calls.at(-1)![0] as {
+        mcpServers?: Record<string, unknown>;
+      };
+      assert.equal(input.mcpServers?.docs, undefined);
+      const reloaded = yield* adapter.reloadMcpConfig!({
+        threadId: asThreadId("no-hub"),
+        mcpServers: { docs: { type: "stdio", command: "docs-server" } },
+      });
+      assert.equal(reloaded.restartRequired ?? false, false);
+    }),
+  );
+
   it.effect("rejects excessive MCP start and reload inputs before manager mutation", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;
@@ -550,29 +549,6 @@ validationLayer("CodexAdapterLive validation", (it) => {
           mcpServers,
         }).pipe(Effect.result);
         assert.equal(reloaded._tag, "Failure");
-        assert.equal(reload.mock.calls.length, 0);
-      } finally {
-        reload.mockRestore();
-      }
-    }),
-  );
-
-  it.effect("requires a restart before sending a reload RPC when launch MCP config differs", () =>
-    Effect.gen(function* () {
-      const adapter = yield* CodexAdapter;
-      const threadId = asThreadId("mcp-launch-key");
-      yield* adapter.startSession({
-        threadId,
-        runtimeMode: "approval-required",
-        providerOptions: { mcpServers: { docs: { type: "stdio", command: "old-command" } } },
-      });
-      const reload = vi.spyOn(validationManager, "reloadMcpConfig");
-      try {
-        const result = yield* adapter.reloadMcpConfig!({
-          threadId,
-          mcpServers: { docs: { type: "stdio", command: "new-command" } },
-        });
-        assert.equal(result.restartRequired, true);
         assert.equal(reload.mock.calls.length, 0);
       } finally {
         reload.mockRestore();
@@ -5085,7 +5061,9 @@ it.effect(
         runtimeMode: "full-access",
         providerOptions: { mcpServers: { node_repl: { type: "stdio", command: "mine" } } },
       });
-      assert.deepEqual(servers().node_repl, { type: "stdio", command: "mine" });
+      // F5 never substitutes its own node_repl; the user's reaches Codex only through
+      // the hub, which this adapter has none of.
+      assert.equal(servers().node_repl, undefined);
       assert.equal(broker.requestChromeSession.mock.calls.length, 2);
 
       // An automation's session never waits on a consent dialog nobody can answer.
