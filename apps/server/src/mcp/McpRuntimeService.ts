@@ -552,7 +552,9 @@ const makeMcpRuntimeService = Effect.gen(function* () {
               projectId: input.projectId,
               instanceId: identity.instanceId,
               mcpEffectiveConfigVersion: effective.effectiveVersion,
-              mcpServers: translateMcpForCodex(effective.servers) ?? {},
+              mcpServers:
+                // Pooled admin clients resolve `${env:…}` like `readCodexServers`.
+                translateMcpForCodex(effective.servers, { environment: process.env }) ?? {},
               ...(callback.port ? { mcpOAuthCallbackPort: callback.port } : {}),
               ...(callback.url ? { mcpOAuthCallbackUrl: callback.url } : {}),
             })
@@ -720,7 +722,9 @@ const makeMcpRuntimeService = Effect.gen(function* () {
           projectId: input.projectId,
           instanceId: identity.instanceId,
           mcpEffectiveConfigVersion: effective.effectiveVersion,
-          mcpServers: translateMcpForCodex(effective.servers) ?? {},
+          mcpServers:
+            // Pooled admin clients resolve `${env:…}` like `readCodexServers`.
+            translateMcpForCodex(effective.servers, { environment: process.env }) ?? {},
           ...(callback.port ? { mcpOAuthCallbackPort: callback.port } : {}),
           ...(callback.url ? { mcpOAuthCallbackUrl: callback.url } : {}),
         })
@@ -1194,7 +1198,8 @@ const makeMcpRuntimeService = Effect.gen(function* () {
       if (windowsValidationError) {
         return yield* windowsValidationError;
       }
-      const translatedServers = translateMcpForCodex(stored.servers) ?? {};
+      const translatedServers =
+        translateMcpForCodex(stored.servers, { environment: execution.environment }) ?? {};
       const oauthCallbackConfig = yield* readCodexMcpOAuthCallbackConfigOrError(stored.servers);
       const resolvedAccountEnvironment = execution.environment;
       const execute = runCodexCliCommand(

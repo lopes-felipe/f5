@@ -744,6 +744,42 @@ export function codexReadOnlyThreadPolicyViolation(
   return undefined;
 }
 
+/**
+ * The approval policies Codex's managed requirements allow (`configRequirements/read`), or
+ * undefined when nothing restricts them or the CLI can't say. Granular entries are ignored: F5
+ * never asks for one.
+ */
+export function readCodexAllowedApprovalPolicies(
+  response: unknown,
+): ReadonlySet<string> | undefined {
+  const allowed = asArray(asObject(asObject(response)?.requirements)?.allowedApprovalPolicies);
+  if (!allowed) return undefined;
+  return new Set(allowed.filter((entry): entry is string => typeof entry === "string"));
+}
+
+/**
+ * The enforcement a read-only stage can get under those requirements. A policy-enforced stage
+ * needs `untrusted`, so Codex asks before each command. An organisation that forbids it (for
+ * example `allowed_approval_policies = ["on-request", "never"]`) would make Codex fall back to
+ * `on-request`, which with no sandbox runs every command without asking. The stage then runs in
+ * Codex's read-only sandbox with `never` instead. Where that sandbox can't start, shell commands
+ * fail closed and the stage reads through F5's forge tools. Anything else is left as requested, and
+ * the fail-closed thread check refuses what Codex doesn't apply.
+ */
+export function codexReadOnlyEnforcementUnderRequirements(
+  requested: ReadOnlyEnforcement,
+  allowedApprovalPolicies: ReadonlySet<string> | undefined,
+): ReadOnlyEnforcement {
+  if (
+    requested === "policy" &&
+    allowedApprovalPolicies &&
+    !allowedApprovalPolicies.has("untrusted") &&
+    allowedApprovalPolicies.has("never")
+  )
+    return "sandbox";
+  return requested;
+}
+
 /** Emitted when F5 refused an approval request itself; the adapter reports it auto-declined. */
 export const CODEX_READ_ONLY_REFUSED_METHOD = "f5/readOnly/refused";
 

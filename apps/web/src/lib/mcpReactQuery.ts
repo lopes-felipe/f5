@@ -3,6 +3,7 @@ import type {
   McpStatusUpdatedPayload,
   McpCommonConfigResult,
   McpEffectiveConfigResult,
+  McpGetHubAuthStatusResult,
   McpGetHubStatusResult,
   McpLoginStatusResult,
   McpProviderStatusResult,
@@ -39,7 +40,25 @@ export const mcpQueryKeys = {
     instanceId: ProviderInstanceId | null,
   ) => ["mcp", "loginStatus", provider, projectId, serverName, instanceId] as const,
   hubStatus: (projectId: ProjectId | null) => ["mcp", "hubStatus", projectId] as const,
+  hubAuth: (projectId: ProjectId | null) => ["mcp", "hubAuth", projectId] as const,
 };
+
+/** Sign-in state follows saves (the server list) and hub events (sign-in, sign-out). */
+export function mcpHubAuthQueryOptions(input: {
+  readonly projectId: ProjectId | null;
+  readonly enabled?: boolean;
+}) {
+  return queryOptions<McpGetHubAuthStatusResult>({
+    queryKey: mcpQueryKeys.hubAuth(input.projectId),
+    enabled: input.enabled ?? true,
+    meta: rpcQueryMeta("refresh-background"),
+    queryFn: async (context) =>
+      ensureNativeApi().mcp.getHubAuthStatus(
+        input.projectId ? { projectId: input.projectId } : {},
+        rpcQueryContext(context),
+      ),
+  });
+}
 
 /** Hub status is pushed (reason `hub`), so it is never polled. */
 export function mcpHubStatusQueryOptions(input: {
@@ -84,8 +103,10 @@ export function isMcpQueryAffected(
   event: McpStatusUpdatedPayload,
 ): boolean {
   if (queryKey[0] !== "mcp") return false;
-  if (event.reason === "updated" && !isMcpConfigQuery(queryKey)) return false;
   const kind = queryKey[1];
+  // Hub sign-in is profile-wide and local to read; provider-account events never change it.
+  if (kind === "hubAuth") return event.instanceId === undefined;
+  if (event.reason === "updated" && !isMcpConfigQuery(queryKey)) return false;
   // Hub connection changes never touch provider observations, and vice versa.
   if (event.reason === "hub") return kind === "hubStatus";
   if (kind === "hubStatus") return event.reason !== "updated";

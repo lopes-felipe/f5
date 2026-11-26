@@ -12,7 +12,12 @@ export interface DesktopBackendEnvOptions {
   readonly authToken: string;
   /** Whether syncShellEnvironment actually captured PATH into the base env. */
   readonly shellEnvironmentPrepared?: boolean;
+  /** The profile's keychain-wrapped secret store key, as hex; absent without a keychain. */
+  readonly secretStoreKey?: string | undefined;
 }
+
+/** Read and removed by the backend at startup; see the server's `secretStoreKey.ts`. */
+export const SECRET_STORE_KEY_ENV = "F5_SECRET_STORE_KEY";
 
 export type DesktopStateDirSource = "explicit-state" | "home" | "default";
 
@@ -72,7 +77,8 @@ export function buildDesktopBackendEnv(
         }
       : {};
   // Strip inherited server/launcher variables so a parent shell's `F5_*` or
-  // `T3CODE_*` values cannot hijack this desktop backend's port, host, mode, or token.
+  // `T3CODE_*` values cannot hijack this desktop backend's port, host, mode, or token,
+  // and an inherited secret store key never reaches a profile it does not belong to.
   const {
     F5_SHELL_ENVIRONMENT_PREPARED: _inheritedMarker,
     F5_MODE: _inheritedF5Mode,
@@ -85,6 +91,7 @@ export function buildDesktopBackendEnv(
     T3CODE_HOST: _inheritedT3Host,
     F5_AUTH_TOKEN: _inheritedF5AuthToken,
     T3CODE_AUTH_TOKEN: _inheritedT3AuthToken,
+    [SECRET_STORE_KEY_ENV]: _inheritedKey,
     ...inheritedEnv
   } = baseEnv;
 
@@ -107,6 +114,7 @@ export function buildDesktopBackendEnv(
     F5_PORT: String(options.backendPort),
     ...stateDirEnv,
     F5_AUTH_TOKEN: options.authToken,
+    ...(options.secretStoreKey ? { [SECRET_STORE_KEY_ENV]: options.secretStoreKey } : {}),
     ...observability,
   };
 }
