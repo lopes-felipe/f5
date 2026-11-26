@@ -147,7 +147,8 @@ export function checkDockTile(plugIn: string): void {
       harness,
       join(sourceDir, "F5DockTileCheck.m"),
     ]);
-    run("check", harness, [app, dockTileChoices()[0]!]);
+    const [choice, other] = dockTileChoices();
+    run("check", harness, [app, choice!, other!]);
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
