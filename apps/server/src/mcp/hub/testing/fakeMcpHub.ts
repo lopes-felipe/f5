@@ -30,6 +30,7 @@ export function makeFakeMcpHub(options: { readonly available?: boolean } = {}) {
     status: () => [],
     reconnect: async () => 0,
     reconnectOAuth: async () => 0,
+    accountEnvironment: () => undefined,
     readStderrTail: () => undefined,
     close: async () => undefined,
   };

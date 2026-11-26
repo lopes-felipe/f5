@@ -17,7 +17,9 @@ import type {
   OAuthClientMetadata,
   OAuthTokens,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
+import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { McpServerDefinition } from "@t3tools/contracts";
+import { mcpRemoteHeaders } from "@t3tools/shared/mcpTranslation";
 import { Effect } from "effect";
 
 import type { ServerSecretStoreShape } from "../../auth/Services/ServerSecretStore.ts";
@@ -42,11 +44,148 @@ export interface McpOAuthStorage {
   readonly remove: (key: string) => Promise<void>;
 }
 
+/**
+ * Writes to one OAuth record run one at a time, so concurrent refreshes and
+ * sign-in steps never lose each other's changes.
+ */
+const recordLocks = new Map<string, Promise<unknown>>();
+function withRecordLock<A>(key: string, run: () => Promise<A>): Promise<A> {
+  const previous = recordLocks.get(key) ?? Promise.resolve();
+  const next = previous.then(run, run);
+  const settled = next.then(
+    () => undefined,
+    () => undefined,
+  );
+  recordLocks.set(key, settled);
+  void settled.then(() => {
+    if (recordLocks.get(key) === settled) recordLocks.delete(key);
+  });
+  return next;
+}
+
+/** Changes a stored record under its lock; a missing record stays missing. */
+export function updateMcpOAuthRecord(
+  storage: McpOAuthStorage,
+  key: string,
+  change: (record: McpOAuthRecord) => McpOAuthRecord,
+): Promise<void> {
+  return withRecordLock(key, async () => {
+    const record = await storage.read(key);
+    if (record) await storage.write(key, change(record));
+  });
+}
+
+/**
+ * Sign-out bumps a record's epoch; token writes that started before it are
+ * rejected, so an in-flight exchange or refresh cannot sign the user back in.
+ */
+const recordEpochs = new Map<string, number>();
+export function bumpMcpOAuthEpoch(key: string): void {
+  recordEpochs.set(key, (recordEpochs.get(key) ?? 0) + 1);
+}
+function recordEpoch(key: string): number {
+  return recordEpochs.get(key) ?? 0;
+}
+
+interface SharedResponse {
+  readonly status: number;
+  readonly statusText: string;
+  readonly headers: Array<[string, string]>;
+  readonly body: string;
+}
+/** Successful refresh responses stay shareable this long after they arrive. */
+const REFRESH_SHARE_MS = 30_000;
+const sharedRefreshes = new Map<string, Promise<SharedResponse>>();
+
+function readRefreshToken(body: unknown): string | undefined {
+  const params =
+    body instanceof URLSearchParams
+      ? body
+      : typeof body === "string"
+        ? new URLSearchParams(body)
+        : undefined;
+  return params?.get("grant_type") === "refresh_token"
+    ? (params.get("refresh_token") ?? undefined)
+    : undefined;
+}
+
+/**
+ * The fetch for one remote server's connection and its OAuth calls.
+ *
+ * - The server's own headers (API keys, cookies) go only to the server's origin,
+ *   never to a metadata, registration or token endpoint on another host.
+ * - Connections that refresh the same token at once share one token request:
+ *   servers rotate refresh tokens, so a second request with the old token would
+ *   fail and could revoke the whole grant.
+ */
+export function mcpOAuthFetch(
+  serverUrl: string,
+  resourceHeaderNames: ReadonlyArray<string>,
+  base: FetchLike = fetch,
+): FetchLike {
+  const origin = new URL(serverUrl).origin;
+  const names = resourceHeaderNames.map((name) => name.toLowerCase());
+  return async (url, init) => {
+    const target = new URL(url.toString());
+    let request = init;
+    if (target.origin !== origin && names.length > 0 && init?.headers) {
+      const headers = new Headers(init.headers);
+      for (const name of names) headers.delete(name);
+      request = { ...init, headers };
+    }
+    const refreshToken = readRefreshToken(request?.body);
+    if (refreshToken === undefined) return base(url, request);
+    const shareKey = `${target.href}\u0000${refreshToken}`;
+    let shared = sharedRefreshes.get(shareKey);
+    if (!shared) {
+      const pending = (async (): Promise<SharedResponse> => {
+        const response = await base(url, request);
+        return {
+          status: response.status,
+          statusText: response.statusText,
+          headers: [...response.headers.entries()],
+          body: await response.text(),
+        };
+      })();
+      shared = pending;
+      sharedRefreshes.set(shareKey, pending);
+      const forget = () => {
+        if (sharedRefreshes.get(shareKey) === pending) sharedRefreshes.delete(shareKey);
+      };
+      // Only a success is worth sharing after it arrives; a failure may be retried at once.
+      pending.then((result) => {
+        if (result.status >= 200 && result.status < 300)
+          setTimeout(forget, REFRESH_SHARE_MS).unref?.();
+        else forget();
+      }, forget);
+    }
+    const result = await shared;
+    return new Response(result.body, {
+      status: result.status,
+      statusText: result.statusText,
+      headers: result.headers,
+    });
+  };
+}
+
 export function mcpOAuthKey(serverUrl: string, clientId: string | undefined): string {
   const digest = createHash("sha256")
     .update(`${serverUrl}\u0000${clientId ?? ""}`)
     .digest("hex");
   return `mcp-oauth-${digest.slice(0, 40)}`;
+}
+
+/**
+ * Whether a remote server authenticates with its own `Authorization` (a literal
+ * header or a bearer variable that resolves). Such servers never use F5 sign-in.
+ */
+export function mcpUsesStaticAuthorization(
+  definition: McpServerDefinition,
+  environment: NodeJS.ProcessEnv,
+): boolean {
+  if (definition.type === "stdio") return false;
+  const headers = mcpRemoteHeaders(definition, environment);
+  return Object.keys(headers ?? {}).some((name) => name.toLowerCase() === "authorization");
 }
 
 /** The URL OAuth is keyed and discovered by; only remote servers sign in. */
@@ -67,13 +206,18 @@ export function secretStoreOAuthStorage(store: ServerSecretStoreShape): McpOAuth
   return {
     read: async (key) => {
       if (cache.has(key)) return cache.get(key) ?? undefined;
-      const bytes = await Effect.runPromise(store.get(key).pipe(Effect.orElseSucceed(() => null)));
+      // A read that fails (for example a value that cannot be decrypted) is not cached,
+      // so a later read can succeed and a sign-in does not assume the record is empty.
+      const bytes = await Effect.runPromise(
+        store.get(key).pipe(Effect.orElseSucceed(() => undefined)),
+      );
+      if (bytes === undefined) return undefined;
       let record: McpOAuthRecord | null = null;
       if (bytes) {
         try {
           record = JSON.parse(new TextDecoder().decode(bytes)) as McpOAuthRecord;
         } catch {
-          record = null;
+          return undefined;
         }
       }
       cache.set(key, record);
@@ -129,12 +273,16 @@ export interface McpOAuthProviderOptions {
 export class McpOAuthProvider implements OAuthClientProvider {
   readonly key: string;
   private verifier: string | undefined;
+  /** The refresh token this provider last read, and the epoch it read it in. */
+  private readRefreshToken: string | undefined;
+  private readEpoch: number;
   readonly saveClientInformation?: (information: OAuthClientInformationMixed) => Promise<void>;
   /** Present only with a configured `oauthResource`; otherwise the SDK's own check applies. */
   readonly validateResourceURL?: () => Promise<URL | undefined>;
 
   constructor(private readonly options: McpOAuthProviderOptions) {
     this.key = mcpOAuthKey(options.serverUrl, options.definition.oauthClientId);
+    this.readEpoch = recordEpoch(this.key);
     const resource = options.definition.oauthResource;
     if (resource) this.validateResourceURL = async () => new URL(resource);
     // Without this method the SDK refuses dynamic registration, which keeps background
@@ -160,8 +308,18 @@ export class McpOAuthProvider implements OAuthClientProvider {
     );
   }
 
-  private async update(change: (record: McpOAuthRecord) => McpOAuthRecord): Promise<void> {
-    await this.options.storage.write(this.key, change(await this.record()));
+  private update(change: (record: McpOAuthRecord) => McpOAuthRecord): Promise<void> {
+    return withRecordLock(this.key, async () => {
+      await this.options.storage.write(this.key, change(await this.record()));
+    });
+  }
+
+  /**
+   * Whether a failed connection may still recover without the user: the last
+   * read had a refresh token that has not been invalidated since.
+   */
+  get mayRefresh(): boolean {
+    return this.readRefreshToken !== undefined && this.readEpoch === recordEpoch(this.key);
   }
 
   get redirectUrl(): string {
@@ -202,11 +360,22 @@ export class McpOAuthProvider implements OAuthClientProvider {
   }
 
   async tokens(): Promise<OAuthTokens | undefined> {
-    return (await this.options.storage.read(this.key))?.tokens;
+    // Each auth run starts here; token writes from this run must not outlive a sign-out.
+    if (!this.options.interactive) this.readEpoch = recordEpoch(this.key);
+    const tokens = (await this.options.storage.read(this.key))?.tokens;
+    this.readRefreshToken = tokens?.refresh_token;
+    return tokens;
   }
 
   async saveTokens(tokens: OAuthTokens): Promise<void> {
-    await this.update((record) => ({ ...record, tokens, tokensSavedAt: Date.now() }));
+    const epoch = this.readEpoch;
+    await withRecordLock(this.key, async () => {
+      if (epoch !== recordEpoch(this.key))
+        throw new UnauthorizedError("Signed out of this server while sign-in was finishing.");
+      const record = await this.record();
+      await this.options.storage.write(this.key, { ...record, tokens, tokensSavedAt: Date.now() });
+    });
+    this.readRefreshToken = tokens.refresh_token;
   }
 
   redirectToAuthorization(authorizationUrl: URL): void {
@@ -229,7 +398,12 @@ export class McpOAuthProvider implements OAuthClientProvider {
       return;
     }
     if (scope === "discovery") return;
+    const failedRefreshToken = this.readRefreshToken;
+    this.readRefreshToken = undefined;
     await this.update((record) => {
+      // Another connection may have rotated the tokens since this one read them;
+      // its fresh tokens must survive this connection's rejected refresh.
+      if (scope === "tokens" && record.tokens?.refresh_token !== failedRefreshToken) return record;
       const { tokens: _tokens, tokensSavedAt: _savedAt, ...rest } = record;
       if (scope === "tokens") return rest;
       const { clientInformation: _client, ...withoutClient } = rest;

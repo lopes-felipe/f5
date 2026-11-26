@@ -389,3 +389,35 @@ it("preserves explicit empty identifier lists without turning whitespace into an
     ),
   ).toEqual({ shell: { type: "stdio", command: "node", args: [], disabledTools: [], scopes: [] } });
 });
+
+describe("environment references in imports", () => {
+  it("accepts bare ${VAR} URLs once converted and names the host for remote fields", () => {
+    const result = parseMcpImport(
+      JSON.stringify({
+        mcpServers: {
+          whole: { type: "http", url: "${MCP_URL}" },
+          host: {
+            type: "http",
+            url: "https://docs.example.com/${PATH_PART}",
+            headers: { "X-Key": "${DOCS_KEY}" },
+          },
+        },
+      }),
+    );
+    const [whole, host] = result.candidates;
+    expect(whole?.issues.filter((issue) => issue.severity === "error")).toEqual([]);
+    expect(whole?.server).toMatchObject({ url: "${env:MCP_URL}" });
+    expect(host?.server).toMatchObject({ headers: { "X-Key": "${env:DOCS_KEY}" } });
+    expect(host?.issues.find((issue) => issue.field === "headers.X-Key")?.message).toContain(
+      "sends the values to docs.example.com",
+    );
+  });
+
+  it("finds no servers in a detected settings file without a server section", () => {
+    const text = JSON.stringify({ theme: "dark", editor: { fontSize: 12 } });
+    expect(parseMcpImport(text, "settings.json", { requireServerMap: true }).candidates).toEqual(
+      [],
+    );
+    expect(parseMcpImport(text).candidates.length).toBeGreaterThan(0);
+  });
+});

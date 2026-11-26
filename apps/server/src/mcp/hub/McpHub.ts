@@ -31,6 +31,7 @@ import { McpHubSlot } from "./McpHubEndpoint.ts";
 import { McpHubUpstream } from "./McpHubUpstream.ts";
 import {
   McpOAuthProvider,
+  mcpUsesStaticAuthorization,
   mcpOAuthServerUrl,
   secretStoreOAuthStorage,
   type McpOAuthStorage,
@@ -113,6 +114,14 @@ export interface McpHubShape {
   readonly oauthStorage?: McpOAuthStorage | undefined;
   /** Reconnects every connection that signs in with this OAuth record (see `mcpOAuthKey`). */
   readonly reconnectOAuth: (oauthKey: string) => Promise<number>;
+  /**
+   * The account environment of a live session using the server (in the project when
+   * given), so sign-in resolves `${env:…}` the way that session does.
+   */
+  readonly accountEnvironment: (
+    serverName: string,
+    projectId?: ProjectId,
+  ) => NodeJS.ProcessEnv | undefined;
   readonly close: () => Promise<void>;
 }
 
@@ -136,6 +145,8 @@ interface UpstreamEntry {
   readonly id: string;
   /** Live attachments: slot id → who uses it. */
   readonly users: Map<string, { projectId?: ProjectId | undefined; provider: ProviderKind }>;
+  /** The account environment of the session that created the connection. */
+  readonly environment: NodeJS.ProcessEnv;
 }
 
 export interface McpHubOptions {
@@ -211,8 +222,10 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
     if (existing) return existing;
     const make = options.makeUpstream ?? ((value) => new McpHubUpstream(value));
     const oauthUrl = mcpOAuthServerUrl(definition);
+    // A server with its own Authorization never gets OAuth: a 401 must not start discovery
+    // that would carry its credentials to other hosts.
     const authProvider =
-      options.oauthStorage && oauthUrl
+      options.oauthStorage && oauthUrl && !mcpUsesStaticAuthorization(definition, input.environment)
         ? new McpOAuthProvider({ storage: options.oauthStorage, serverUrl: oauthUrl, definition })
         : undefined;
     const upstream = make({
@@ -235,6 +248,7 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
       key,
       id: createHash("sha256").update(key).digest("base64url").slice(0, 16),
       users: new Map(),
+      environment: input.environment,
     };
     upstreams.set(key, entry);
     return entry;
@@ -386,6 +400,15 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
     return entries.length;
   };
 
+  const accountEnvironment = (serverName: string, projectId?: ProjectId) => {
+    for (const entry of upstreams.values()) {
+      if (entry.upstream.name !== serverName) continue;
+      for (const user of entry.users.values())
+        if (projectId === undefined || user.projectId === projectId) return entry.environment;
+    }
+    return undefined;
+  };
+
   return {
     available,
     attach,
@@ -394,6 +417,7 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
     readStderrTail,
     oauthStorage: options.oauthStorage,
     reconnectOAuth,
+    accountEnvironment,
     close,
   };
 }

@@ -41,6 +41,7 @@ import {
   type McpHubShape,
 } from "./McpHub.ts";
 import { HUB_SHARED_IDLE_MS, reconnectDelayMs } from "./McpHubUpstream.ts";
+import { memoryOAuthStorage, mcpOAuthKey } from "./McpOAuth.ts";
 
 const fixture = fileURLToPath(new URL("../fixtures/hub-server.mjs", import.meta.url));
 const projectId = ProjectId.makeUnsafe("hub-project");
@@ -410,6 +411,31 @@ describe("F5 MCP hub", () => {
     expect(new Set(statuses.map((status) => status.id)).size).toBe(2);
     expect(statuses.map((status) => status.attachedSessions).sort()).toEqual([1, 2]);
     await Promise.all([first.dispose(), second.dispose(), third.dispose()]);
+  });
+
+  it("gives OAuth only to remote servers without their own Authorization", async () => {
+    await hub.close();
+    hub = makeMcpHub({ listener, oauthStorage: memoryOAuthStorage() });
+    const withOAuth = hub;
+    {
+      const url = "http://127.0.0.1:9/mcp";
+      const input = {
+        threadId: ThreadId.makeUnsafe("thread-oauth"),
+        projectId,
+        provider: "grok" as const,
+        accountKey: "grok",
+        environment: { DOCS_TOKEN: "secret" },
+        cwd: root,
+      };
+      const keyed = withOAuth.attach({
+        ...input,
+        servers: { keyed: { type: "http", url, bearerTokenEnvVar: "DOCS_TOKEN" } },
+      });
+      expect(await withOAuth.reconnectOAuth(mcpOAuthKey(url, undefined))).toBe(0);
+      const open = withOAuth.attach({ ...input, servers: { open: { type: "http", url } } });
+      expect(await withOAuth.reconnectOAuth(mcpOAuthKey(url, undefined))).toBe(1);
+      await Promise.all([keyed.dispose(), open.dispose()]);
+    }
   });
 
   it("removes an idle shared connection when its idle timer fires", async () => {

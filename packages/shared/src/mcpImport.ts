@@ -130,6 +130,7 @@ function convertOpenCodeServer(raw: unknown): unknown {
 function readImportRoot(
   document: Record<string, unknown>,
   jsonInput: boolean,
+  requireServerMap = false,
 ): Record<string, unknown> {
   if (isRecord(document.mcpServers)) return document.mcpServers;
   if (isRecord(document.mcp_servers)) return document.mcp_servers;
@@ -147,7 +148,9 @@ function readImportRoot(
     return Object.fromEntries(
       Object.entries(document.mcp).map(([name, entry]) => [name, convertOpenCodeServer(entry)]),
     );
-  return document;
+  // A bare server map is accepted only from pasted text: a detected settings file
+  // without a server section holds preferences, not servers.
+  return requireServerMap ? {} : document;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -431,6 +434,10 @@ export function parseImportedServers(text: string): McpProjectServersConfig {
 export function parseMcpImport(
   text: string,
   source = "Pasted configuration",
+  options: {
+    /** Detected files list servers only from a server section, never the whole document. */
+    readonly requireServerMap?: boolean;
+  } = {},
 ): import("@t3tools/contracts").McpListImportCandidatesResult {
   type Issue = import("@t3tools/contracts").McpImportIssue;
   const issues: Issue[] = [];
@@ -455,7 +462,7 @@ export function parseMcpImport(
       candidates: [],
       issues: [{ field: "$", severity: "error", message: "Expected a configuration object." }],
     };
-  const root = readImportRoot(document, jsonInput);
+  const root = readImportRoot(document, jsonInput, options.requireServerMap);
   const candidates = Object.entries(root).map(([rawName, raw], index) => {
     const normalizedName = normalizeServerName(rawName);
     const name =
@@ -553,7 +560,11 @@ export function parseMcpImport(
       const rawType = raw.type ?? raw.transport ?? raw.transportType;
       if (rawType !== undefined && !["stdio", "http", "sse", "sdk"].includes(String(rawType)))
         add("type", "Unsupported transport type.", "error");
-      if (typeof raw.url === "string" && !Schema.is(McpHttpUrlTemplate)(raw.url))
+      // `${VAR}` references are converted below, so validate the converted URL.
+      if (
+        typeof raw.url === "string" &&
+        !Schema.is(McpHttpUrlTemplate)(convertBareEnvReferences(raw.url))
+      )
         add("url", "Expected an HTTP or HTTPS URL.", "error");
       const inherited = {
         ...raw,
@@ -577,15 +588,19 @@ export function parseMcpImport(
       }
     }
     if (server) {
-      const validation = readImportValidationIssues(server);
-      for (const issue of validation) add(issue.field, issue.message, "error");
       const original = new Map(mcpInterpolatedFields(server));
       server = mapMcpInterpolatedFields(server, convertBareEnvReferences);
+      const validation = readImportValidationIssues(server);
+      for (const issue of validation) add(issue.field, issue.message, "error");
+      const remoteUrl = server.type === "stdio" ? undefined : server.url;
       for (const [field, value] of mcpInterpolatedFields(server)) {
         if (original.get(field) !== value)
           add(
             field,
-            `Converted \${VAR} references to ${MCP_ENV_REFERENCE_SYNTAX}; F5 reads them from the account environment when the server starts.`,
+            // A repository config can point a URL or header at its own host.
+            remoteUrl !== undefined && (field === "url" || field.startsWith("headers"))
+              ? `Converted \${VAR} references to ${MCP_ENV_REFERENCE_SYNTAX}; F5 reads them from the account environment and sends the values to ${describeHost(remoteUrl)}. Import it only if you trust that server with those variables.`
+              : `Converted \${VAR} references to ${MCP_ENV_REFERENCE_SYNTAX}; F5 reads them from the account environment when the server starts.`,
           );
         if (hasUnknownMcpReference(value))
           add(
