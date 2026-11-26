@@ -1,8 +1,8 @@
 import { assertOAuthPortAvailable } from "../profiles/ProviderAccountService";
 import {
-  type McpOauthLoginStatusRequest,
   McpOauthLoginStatusResult,
-  type McpStartOauthLoginRequest,
+  type ProjectId,
+  type ProviderInstanceId,
   type ProviderStartOptions,
 } from "@t3tools/contracts";
 import { CODEX_MCP_OAUTH_LOGIN_TIMEOUT_SEC } from "@t3tools/shared/codexOAuthTiming";
@@ -28,6 +28,19 @@ import {
 } from "./codexMcpServerStatus.ts";
 
 const OAUTH_RECONCILE_INTERVAL_MS = 5_000;
+
+/**
+ * Server-internal: McpRuntimeService builds this after resolving the account, so
+ * the executable and home come from the provider instance, never from a client.
+ */
+export interface McpOauthLoginStatusRequest {
+  readonly projectId: ProjectId;
+  readonly serverName: string;
+  readonly instanceId?: ProviderInstanceId | undefined;
+  readonly binaryPath?: string | undefined;
+  readonly homePath?: string | undefined;
+}
+export type McpStartOauthLoginRequest = McpOauthLoginStatusRequest;
 
 function nowIso(): string {
   return new Date().toISOString();

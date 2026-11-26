@@ -47,6 +47,27 @@ describe("Windows registry probe", () => {
     await expect(result).resolves.toEqual({ machine: "C:\\Machine Tools", user: "D:\\User Tools" });
   });
 
+  it.each([
+    ["0", "1", "0"],
+    [null, "1", "1"],
+    [" ", "1", "1"],
+    [null, null, undefined],
+  ])(
+    "selects the saved opt-out from User (%s) before Machine (%s)",
+    async (user, machine, expected) => {
+      const probe = mockPowerShell();
+      const result = readWindowsRegistryPaths({});
+      const complete = await probe.complete;
+      const script = vi.mocked(execFile).mock.calls[0]?.[1]?.at(-1);
+      expect(script).toContain("GetEnvironmentVariable('DO_NOT_TRACK', 'User')");
+      expect(script).toContain("GetEnvironmentVariable('DO_NOT_TRACK', 'Machine')");
+      complete(null, JSON.stringify([null, null, user, machine]));
+      await expect(result).resolves.toEqual(
+        expected === undefined ? {} : { savedDoNotTrack: expected },
+      );
+    },
+  );
+
   it("kills the probe on startup interruption and allows a later retry", async () => {
     const primary = mockPowerShell();
     const controller = new AbortController();

@@ -8,7 +8,42 @@ import {
 import { Schema } from "effect";
 import { parse as parseToml } from "smol-toml";
 
-import { normalizeServerName, mcpServerNameKey } from "./mcpServerName";
+import {
+  MCP_SERVER_NAME_RULE,
+  normalizeServerName,
+  readMcpServerNameProblem,
+  sanitizeMcpServerName,
+} from "./mcpServerName";
+import { isReservedMcpBearerEnvVar } from "./mcpTranslation";
+
+function describeHost(url: string | undefined): string {
+  try {
+    return url ? new URL(url).host || "the server" : "the server";
+  } catch {
+    return "the server";
+  }
+}
+
+/** `${VAR}` / `${VAR:-default}` references; F5 secret placeholders are handled separately. */
+const ENV_REFERENCE_PATTERN = /\$\{(?!f5-secret:)[^}]*\}/u;
+
+/** Fields whose values other clients expand from the environment but F5 passes literally. */
+function readUnexpandedEnvReferenceFields(server: McpProjectServersConfig[string]): string[] {
+  const fields: string[] = [];
+  const check = (field: string, value: string | undefined) => {
+    if (value !== undefined && ENV_REFERENCE_PATTERN.test(value)) fields.push(field);
+  };
+  if (server.type === "stdio") {
+    check("command", server.command);
+    server.args?.forEach((value, index) => check(`args.${index}`, value));
+    for (const [key, value] of Object.entries(server.env ?? {})) check(`env.${key}`, value);
+    check("cwd", server.cwd);
+  } else {
+    check("url", server.url);
+    for (const [key, value] of Object.entries(server.headers ?? {})) check(`headers.${key}`, value);
+  }
+  return fields;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -322,16 +357,19 @@ export function parseMcpImport(
       : jsonInput
         ? document
         : {};
-  const seen = new Set<string>();
   const candidates = Object.entries(root).map(([rawName, raw], index) => {
-    const name = normalizeServerName(rawName) ?? rawName;
+    const normalizedName = normalizeServerName(rawName);
+    const name =
+      normalizedName && readMcpServerNameProblem(normalizedName)
+        ? sanitizeMcpServerName(normalizedName)
+        : (normalizedName ?? rawName);
     const entryIssues: Issue[] = [];
     const add = (field: string, message: string, severity: "warning" | "error" = "warning") =>
       entryIssues.push({ serverName: name, field, severity, message });
-    if (!normalizeServerName(rawName))
+    if (!normalizedName)
       add("name", "Server name is required and must be at most 128 characters.", "error");
-    if (seen.has(mcpServerNameKey(name))) add("name", "Conflicting imported server name.", "error");
-    seen.add(mcpServerNameKey(name));
+    else if (name !== normalizedName)
+      add("name", `Imported as '${name}' instead of '${normalizedName}'. ${MCP_SERVER_NAME_RULE}`);
     let server: McpProjectServersConfig[string] | undefined;
     if (!isRecord(raw)) add("$", "Expected a server object.", "error");
     else {
@@ -442,10 +480,25 @@ export function parseMcpImport(
     if (server) {
       const validation = readImportValidationIssues(server);
       for (const issue of validation) add(issue.field, issue.message, "error");
+      for (const field of readUnexpandedEnvReferenceFields(server))
+        add(
+          field,
+          "Contains a ${VAR} reference. F5 passes it to the server literally and does not expand it; replace it with the value or a stored secret.",
+        );
+      if (server.type !== "stdio" && server.bearerTokenEnvVar) {
+        const variable = server.bearerTokenEnvVar.trim();
+        add(
+          "bearerTokenEnvVar",
+          isReservedMcpBearerEnvVar(variable)
+            ? `${variable} is reserved for F5 and provider credentials, so F5 never sends it to a server.`
+            : `Sends the value of the environment variable ${variable} to ${describeHost(server.url)} as a bearer token. Import it only if you trust that server with the variable.`,
+        );
+      }
     }
     return {
       id: `${source}:${index}:${name}`,
       name,
+      ...(normalizedName && name !== normalizedName ? { originalName: normalizedName } : {}),
       source,
       ...(server ? { server } : {}),
       issues: entryIssues,

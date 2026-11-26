@@ -263,13 +263,15 @@ import type { ElicitationSubmitInput, ElicitationSubmitResult } from "./elicitat
 import type {
   McpApplyToLiveSessionsRequest,
   McpApplyToLiveSessionsResult,
-  McpCodexStatusResult,
   McpCommonConfigResult,
   McpEffectiveConfigResult,
   McpGetCommonConfigRequest,
   McpGetLoginStatusRequest,
+  McpGetHubStatusRequest,
+  McpGetHubStatusResult,
+  McpReconnectHubServerRequest,
+  McpReconnectHubServerResult,
   McpGetProviderStatusRequest,
-  McpGetCodexStatusRequest,
   McpGetEffectiveConfigRequest,
   McpGetProjectConfigRequest,
   McpGetServerStatusesRequest,
@@ -284,16 +286,12 @@ import type {
   McpReconnectServerRequest,
   McpReconnectServerResult,
   McpLoginStatusResult,
-  McpOauthLoginStatusRequest,
-  McpOauthLoginStatusResult,
   McpProviderStatusResult,
   McpProjectConfigResult,
-  McpReloadProjectRequest,
   McpReplaceCommonConfigRequest,
   McpReplaceProjectConfigRequest,
   McpServerStatusesResult,
   McpStartLoginRequest,
-  McpStartOauthLoginRequest,
   McpStatusUpdatedPayload,
 } from "./mcp";
 import type {
@@ -1337,16 +1335,16 @@ export interface NativeApi {
     reconnectServer: (input: McpReconnectServerRequest) => Promise<McpReconnectServerResult>;
     startLogin: (input: McpStartLoginRequest) => Promise<McpLoginStatusResult>;
     getLoginStatus: (input: McpGetLoginStatusRequest) => Promise<McpLoginStatusResult>;
-    getCodexStatus: (
-      input: McpGetCodexStatusRequest,
-      context?: NativeRequestContext,
-    ) => Promise<McpCodexStatusResult>;
-    reloadProject: (input: McpReloadProjectRequest) => Promise<McpCodexStatusResult>;
     applyToLiveSessions: (
       input: McpApplyToLiveSessionsRequest,
     ) => Promise<McpApplyToLiveSessionsResult>;
-    startOAuthLogin: (input: McpStartOauthLoginRequest) => Promise<McpOauthLoginStatusResult>;
-    getOAuthStatus: (input: McpOauthLoginStatusRequest) => Promise<McpOauthLoginStatusResult>;
+    getHubStatus: (
+      input: McpGetHubStatusRequest,
+      context?: NativeRequestContext,
+    ) => Promise<McpGetHubStatusResult>;
+    reconnectHubServer: (
+      input: McpReconnectHubServerRequest,
+    ) => Promise<McpReconnectHubServerResult>;
     onStatusUpdated: (callback: (payload: McpStatusUpdatedPayload) => void) => () => void;
   };
   storage: {

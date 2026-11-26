@@ -6,6 +6,7 @@ import {
   F5_PI_MCP_BEARER_ENV,
   F5_PI_RUNTIME_MODE_ENV,
   F5_PI_MCP_EXTENSION_PATH_ENV,
+  F5_PI_MCP_SERVERS_ENV,
 } from "./PiEnvironment.ts";
 
 describe("Pi launch admission", () => {
@@ -78,6 +79,31 @@ describe("Pi launch admission", () => {
       [F5_PI_RUNTIME_MODE_ENV]: "approval-required",
     });
     expect(environment[F5_PI_MCP_BEARER_ENV]).toBe("old-secret");
+  });
+
+  it("hands hub servers to the F5 extension and never inherits them", () => {
+    const userMcpServers = [
+      { name: "docs", url: "http://127.0.0.1/mcp/user/a", token: "t", timeoutMs: 600_000 },
+    ];
+    const base = {
+      launchArgs: [],
+      environment: { PATH: "/bin", [F5_PI_MCP_SERVERS_ENV]: "[]" },
+      mcpSession: undefined,
+      userMcpServers,
+    };
+    expect(buildPiRpcLaunch({ ...base, extensionPath: undefined }).env).toEqual({
+      PATH: "/bin",
+    });
+    expect(
+      JSON.parse(
+        buildPiRpcLaunch({ ...base, extensionPath: "/f5.ts" }).env[F5_PI_MCP_SERVERS_ENV]!,
+      ),
+    ).toEqual(userMcpServers);
+    expect(
+      buildPiRpcLaunch({ ...base, extensionPath: "/f5.ts", userMcpServers: [] }).env[
+        F5_PI_MCP_SERVERS_ENV
+      ],
+    ).toBeUndefined();
   });
   it("removes explicit extensions and tool selectors before appending unattended restrictions", () => {
     const launch = buildPiRpcLaunch({

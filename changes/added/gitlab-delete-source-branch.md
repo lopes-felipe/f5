@@ -1,1 +1,0 @@
-- PR Hub can delete the source branch of a closed or merged GitLab merge request when GitLab permits it and the branch still points to the reviewed commit.

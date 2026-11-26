@@ -140,7 +140,15 @@ export function McpServerEditor({
               onChange={(value) => onDraftChange({ env: value })}
             />
             <label className="space-y-1">
-              <span className="text-xs font-medium text-foreground">Working directory</span>
+              <span className="text-xs font-medium text-foreground">
+                Working directory{" "}
+                <Badge
+                  variant="outline"
+                  title="Claude starts stdio servers in the conversation's working directory."
+                >
+                  Ignored by Claude
+                </Badge>
+              </span>
               <Input
                 className="font-mono"
                 value={draft.cwd}
@@ -179,7 +187,8 @@ export function McpServerEditor({
           <span>
             <span className="block text-xs font-medium text-foreground">Advanced options</span>
             <span className="block text-xs text-muted-foreground">
-              Tool timeout and tool filters apply to Codex and Claude. Other options apply to Codex.
+              Tool timeout, tool filters, the bearer token env var, OAuth client ID and callback
+              port apply to Codex and Claude. Other options apply to Codex.
             </span>
           </span>
           <Badge variant="outline">{isAdvancedOpen ? "Hide" : "Show"}</Badge>
@@ -189,7 +198,7 @@ export function McpServerEditor({
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="space-y-1">
                 <span className="text-xs font-medium text-foreground">
-                  Bearer token env var <Badge variant="outline">Codex only</Badge>
+                  Bearer token env var <Badge variant="outline">Codex + Claude</Badge>
                 </span>
                 <Input
                   className="font-mono"
@@ -203,7 +212,7 @@ export function McpServerEditor({
               </label>
               <label className="space-y-1">
                 <span className="text-xs font-medium text-foreground">
-                  OAuth client ID <Badge variant="outline">Codex only</Badge>
+                  OAuth client ID <Badge variant="outline">Codex + Claude</Badge>
                 </span>
                 <Input
                   className="font-mono"
@@ -218,7 +227,7 @@ export function McpServerEditor({
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="space-y-1">
                 <span className="text-xs font-medium text-foreground">
-                  OAuth callback port <Badge variant="outline">Codex only</Badge>
+                  OAuth callback port <Badge variant="outline">Codex + Claude</Badge>
                 </span>
                 <Input
                   className="font-mono"

@@ -14,7 +14,7 @@ import { PROVIDER_INSTANCE_SECRET_FIELDS } from "@t3tools/shared/serverSettings"
 import * as Path from "node:path";
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { cursorConfigDir } from "../provider/cursor/CursorNativeSessions.ts";
+import { cursorHomeDir } from "../provider/cursor/CursorNativeSessions.ts";
 import { Effect, Schema } from "effect";
 import {
   AntigravitySettings,
@@ -72,10 +72,12 @@ function strategyFor(driver: string) {
 }
 
 /**
- * The credential store a Cursor ACP instance's CLI signs in to: its effective
- * config dir (after profile and instance environment) plus the
- * `AGENT_CLI_CREDENTIAL_STORE` selection. SDK-harness instances never use the
- * CLI store and have none.
+ * The credential store a Cursor ACP instance's CLI signs in to: its `~/.cursor`
+ * (after profile and instance environment) plus the `AGENT_CLI_CREDENTIAL_STORE`
+ * selection. The CLI keys credentials on the OS user's keychain or a home-based
+ * `auth.json`, never on `CURSOR_CONFIG_DIR`, so read-only stages (which move only
+ * `CURSOR_CONFIG_DIR`) share their instance's sign-in. SDK-harness instances
+ * never use the CLI store and have none.
  */
 export function cursorCredentialStoreKey(
   instance: ProviderInstanceConfig,
@@ -85,7 +87,7 @@ export function cursorCredentialStoreKey(
   const decoded = Schema.decodeUnknownOption(CursorSettings)(instance.config ?? {});
   if (decoded._tag === "None" || decoded.value.harness !== "acp") return undefined;
   const environment = environmentFor(instance);
-  const configDir = cursorConfigDir(environment);
+  const configDir = cursorHomeDir(environment);
   let canonical = Path.resolve(configDir);
   try {
     canonical = realpathSync(configDir);

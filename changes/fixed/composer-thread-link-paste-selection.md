@@ -1,1 +1,0 @@
-- Pasting a thread link uses the current selection in the composer, even when the cursor has just moved.

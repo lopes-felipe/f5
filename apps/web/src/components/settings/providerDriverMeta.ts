@@ -1,8 +1,18 @@
 import {
+  AcpSettings,
   ANTIGRAVITY_AUTH_METHODS,
   ANTIGRAVITY_EXPOSED_AUTH_METHODS,
+  AntigravitySettings,
+  ClaudeSettings,
+  CodexSettings,
+  CursorSettings,
+  GrokSettings,
+  MuseSettings,
+  OpenCodeSettings,
+  PiSettings,
   ProviderDriverKind,
 } from "@t3tools/contracts";
+import type { Schema } from "effect";
 import {
   ACPRegistryIcon,
   Gemini,
@@ -26,10 +36,11 @@ import {
 export interface DriverFieldDef {
   readonly key: string;
   readonly label: string;
+  readonly schema: Schema.Decoder<unknown>;
   readonly placeholder?: string;
   readonly description?: string;
   readonly type?: "text" | "password" | "select";
-  readonly format?: "json-array" | "json-record";
+  readonly format?: "json-array" | "json-record" | "number";
   readonly required?: boolean;
   /** `select` choices. */
   readonly options?: ReadonlyArray<{ readonly value: string; readonly label: string }>;
@@ -76,6 +87,7 @@ export const DRIVER_OPTIONS: readonly DriverOption[] = [
     fields: [
       {
         key: "command",
+        schema: AcpSettings.fields.command,
         label: "Command",
         placeholder: "/path/to/agent",
         required: true,
@@ -83,6 +95,7 @@ export const DRIVER_OPTIONS: readonly DriverOption[] = [
       },
       {
         key: "args",
+        schema: AcpSettings.fields.args,
         label: "Arguments (JSON)",
         placeholder: '["--acp"]',
         format: "json-array",
@@ -90,6 +103,7 @@ export const DRIVER_OPTIONS: readonly DriverOption[] = [
       },
       {
         key: "env",
+        schema: AcpSettings.fields.env,
         label: "Environment defaults (JSON)",
         placeholder: '{"AGENT_HOME":"/path/to/home"}',
         format: "json-record",
@@ -106,12 +120,14 @@ export const DRIVER_OPTIONS: readonly DriverOption[] = [
     fields: [
       {
         key: "binaryPath",
+        schema: PiSettings.fields.binaryPath,
         label: "Binary path",
         placeholder: "pi",
         description: "Pi 0.80.5 or newer, installed on the server machine.",
       },
       {
         key: "launchArgs",
+        schema: PiSettings.fields.launchArgs,
         label: "Launch arguments",
         placeholder: "--provider vendor --model model-id",
         description:
@@ -128,6 +144,7 @@ export const DRIVER_OPTIONS: readonly DriverOption[] = [
     fields: [
       {
         key: "authMethod",
+        schema: AntigravitySettings.fields.authMethod,
         label: "Sign-in method",
         type: "select",
         defaultValue: "oauth-personal",
@@ -139,6 +156,7 @@ export const DRIVER_OPTIONS: readonly DriverOption[] = [
       },
       {
         key: "apiKey",
+        schema: AntigravitySettings.fields.apiKey,
         label: "Gemini API key",
         type: "password",
         redactedKey: "apiKeyRedacted",
@@ -156,6 +174,7 @@ export const DRIVER_OPTIONS: readonly DriverOption[] = [
     fields: [
       {
         key: "binaryPath",
+        schema: CodexSettings.fields.binaryPath,
         label: "Binary path",
         placeholder: "codex",
         description:
@@ -163,12 +182,14 @@ export const DRIVER_OPTIONS: readonly DriverOption[] = [
       },
       {
         key: "homePath",
+        schema: CodexSettings.fields.homePath,
         label: "CODEX_HOME path",
         placeholder: "~/.codex",
         description: "Custom Codex home and config directory.",
       },
       {
         key: "shadowHomePath",
+        schema: CodexSettings.fields.shadowHomePath,
         label: "Shadow home path",
         placeholder: "~/.codex-t3/personal",
         description:
@@ -176,6 +197,7 @@ export const DRIVER_OPTIONS: readonly DriverOption[] = [
       },
       {
         key: "launchArgs",
+        schema: CodexSettings.fields.launchArgs,
         label: "Launch arguments",
         placeholder: "e.g. --enable=feature-name",
         description:
@@ -190,6 +212,7 @@ export const DRIVER_OPTIONS: readonly DriverOption[] = [
     fields: [
       {
         key: "binaryPath",
+        schema: ClaudeSettings.fields.binaryPath,
         label: "Binary path",
         placeholder: "claude",
         description:
@@ -197,6 +220,7 @@ export const DRIVER_OPTIONS: readonly DriverOption[] = [
       },
       {
         key: "homePath",
+        schema: ClaudeSettings.fields.homePath,
         label: "Claude HOME path",
         placeholder: "~",
         description:
@@ -204,6 +228,7 @@ export const DRIVER_OPTIONS: readonly DriverOption[] = [
       },
       {
         key: "launchArgs",
+        schema: ClaudeSettings.fields.launchArgs,
         label: "Launch arguments",
         placeholder: "e.g. --chrome",
         description: "Additional CLI arguments passed on session start.",
@@ -218,12 +243,14 @@ export const DRIVER_OPTIONS: readonly DriverOption[] = [
     fields: [
       {
         key: "binaryPath",
+        schema: CursorSettings.fields.binaryPath,
         label: "Binary path",
         placeholder: "agent",
         description: "Path to the Cursor agent binary.",
       },
       {
         key: "apiEndpoint",
+        schema: CursorSettings.fields.apiEndpoint,
         label: "API endpoint",
         placeholder: "https://…",
         description: "Override the Cursor API endpoint for this instance.",
@@ -237,18 +264,21 @@ export const DRIVER_OPTIONS: readonly DriverOption[] = [
     fields: [
       {
         key: "binaryPath",
+        schema: OpenCodeSettings.fields.binaryPath,
         label: "Binary path",
         placeholder: "opencode",
         description: "Path to the OpenCode binary.",
       },
       {
         key: "serverUrl",
+        schema: OpenCodeSettings.fields.serverUrl,
         label: "Server URL",
         placeholder: "http://127.0.0.1:4096",
         description: "Leave blank to let T3 Code spawn the server when needed.",
       },
       {
         key: "serverPassword",
+        schema: OpenCodeSettings.fields.serverPassword,
         label: "Server password",
         placeholder: "Optional",
         type: "password",
@@ -264,6 +294,7 @@ export const DRIVER_OPTIONS: readonly DriverOption[] = [
     fields: [
       {
         key: "binaryPath",
+        schema: GrokSettings.fields.binaryPath,
         label: "Binary path",
         placeholder: "grok",
         description: "Path to the Grok CLI binary.",
@@ -278,6 +309,7 @@ export const DRIVER_OPTIONS: readonly DriverOption[] = [
     fields: [
       {
         key: "binaryPath",
+        schema: MuseSettings.fields.binaryPath,
         label: "Binary path",
         placeholder: "muse",
         description:
