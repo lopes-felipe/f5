@@ -4,9 +4,12 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
 import { Effect, Exit, FileSystem, Layer } from "effect";
 import { it, assert } from "@effect/vitest";
+import * as Semaphore from "effect/Semaphore";
+import { afterEach, vi } from "vitest";
 import { resolveOtlpConfiguration } from "@t3tools/shared/observability";
 import { ServerConfig } from "./config.ts";
 import { isOpenCodePasswordUnavailable } from "./serverSettingsSecrets.ts";
+import { makeProviderLimits } from "./usage/providerLimits.ts";
 import {
   ServerSettingsLiveWithSecretStore,
   ServerSettingsLive,
@@ -18,6 +21,7 @@ const layer = ServerSettingsLive.pipe(
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "f5-password-migration-" })),
   Layer.provideMerge(NodeServices.layer),
 );
+afterEach(() => vi.restoreAllMocks());
 it.effect("stores and preserves text generator keys outside settings", () =>
   Effect.gen(function* () {
     const settings = yield* ServerSettingsService;
@@ -332,6 +336,8 @@ it.effect("binds saved OpenCode passwords and text generator keys to their URLs"
     });
 
     const original = "https://example.test/v1";
+    yield* save(original);
+    assert.notInclude(yield* fs.readFileString(config.settingsPath!), "serverPasswordRedacted");
     yield* save(original, "saved-credential");
     yield* save("HTTPS://EXAMPLE.test:443/v1//");
     yield* assertCredentials("saved-credential");
@@ -358,17 +364,36 @@ it.effect("binds saved OpenCode passwords and text generator keys to their URLs"
 it.effect("clears a retained CLIProxyAPI key when its usage destination changes", () =>
   Effect.gen(function* () {
     const service = yield* ServerSettingsService;
+    const config = yield* ServerConfig;
+    const fs = yield* FileSystem.FileSystem;
     const id = ProviderInstanceId.make("antigravity_usage");
-    const driver = ProviderDriverKind.make("antigravity");
     const keyName = "F5_CLIPROXY_API_KEY";
-    const save = (hub: string, usage: string, key?: string) =>
+    const save = (
+      hub: string | undefined,
+      usage: string,
+      key?: string,
+      options: {
+        driver?: "antigravity" | "grok";
+        sensitiveHub?: "new" | "retained";
+        duplicateKey?: boolean;
+      } = {},
+    ) =>
       service.updateSettings({
         providerInstances: {
           [id]: {
-            driver,
+            driver: ProviderDriverKind.make(options.driver ?? "antigravity"),
             config: {},
             environment: [
-              { name: "F5_CLIPROXY_HUB_URL", value: hub, sensitive: false },
+              ...(hub === undefined
+                ? []
+                : [
+                    {
+                      name: "F5_CLIPROXY_HUB_URL",
+                      value: hub,
+                      sensitive: options.sensitiveHub !== undefined,
+                      valueRedacted: options.sensitiveHub === "retained",
+                    },
+                  ]),
               { name: "F5_CLIPROXY_USAGE_URL", value: usage, sensitive: false },
               {
                 name: keyName,
@@ -376,6 +401,9 @@ it.effect("clears a retained CLIProxyAPI key when its usage destination changes"
                 valueRedacted: key === undefined,
                 sensitive: true,
               },
+              ...(options.duplicateKey
+                ? [{ name: keyName, value: "", sensitive: true, valueRedacted: true }]
+                : []),
             ],
           },
         },
@@ -385,6 +413,12 @@ it.effect("clears a retained CLIProxyAPI key when its usage destination changes"
       const key = settings.providerInstances[id]?.environment?.find((row) => row.name === keyName);
       assert.equal(key?.value, expected);
       assert.equal(Boolean(key?.valueRedacted), Boolean(expected));
+      const files = yield* fs.readDirectory(config.secretsDir!);
+      const keyFileSuffix = "-" + Buffer.from(keyName).toString("base64url") + ".bin";
+      assert.equal(
+        files.some((file) => file.endsWith(keyFileSuffix)),
+        Boolean(expected),
+      );
     });
 
     const hub = "https://example.test/hub";
@@ -398,10 +432,51 @@ it.effect("clears a retained CLIProxyAPI key when its usage destination changes"
     yield* save("", usage);
     yield* assertKey("");
     yield* save("", usage, "usage-fixture");
+    yield* save("", usage + "/");
+    yield* assertKey("");
+    yield* save("", usage, "usage-fixture");
     yield* save("", usage + "?team=other");
     yield* assertKey("");
     yield* save("", usage, "replacement-fixture");
     yield* assertKey("replacement-fixture");
+
+    yield* save(hub, usage, "hub-fixture", { sensitiveHub: "new" });
+    yield* save("", usage, undefined, { sensitiveHub: "retained" });
+    yield* assertKey("hub-fixture");
+    yield* save(undefined, usage);
+    yield* assertKey("");
+    const fetcher = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => new Response(JSON.stringify({ windows: [] })));
+    const refresh = Effect.fnUntraced(function* () {
+      const settings = yield* service.getSettings;
+      const environment = settings.providerInstances[id]?.environment ?? [];
+      const capability = yield* makeProviderLimits({
+        provider: "antigravity",
+        instanceId: id,
+        displayName: "Usage fixture",
+        enabled: true,
+        environment: Object.fromEntries(environment.map(({ name, value }) => [name, value])),
+      });
+      yield* capability.refreshAccount!(yield* Semaphore.make(1));
+    });
+    yield* refresh();
+    assert.equal(fetcher.mock.calls.length, 0);
+    yield* save(undefined, usage, "fallback-fixture");
+    yield* refresh();
+    assert.equal(fetcher.mock.calls.length, 1);
+    assert.equal(String(fetcher.mock.calls[0]?.[0]), usage);
+    assert.equal(
+      new Headers(fetcher.mock.calls[0]?.[1]?.headers).get("authorization"),
+      "Bearer fallback-fixture",
+    );
+
+    yield* save(hub, "", "antigravity-fixture");
+    yield* save(hub + "/new", "", undefined, { driver: "grok" });
+    yield* assertKey("");
+    yield* save(hub, "", "grok-fixture", { driver: "grok" });
+    yield* save(hub + "/new", "", "new-grok-fixture", { driver: "grok", duplicateKey: true });
+    yield* assertKey("new-grok-fixture");
   }).pipe(Effect.provide(Layer.fresh(layer))),
 );
 

@@ -15,6 +15,7 @@ import { accountUsageIdentity } from "./accountUsage.ts";
 import { asRecord, asNonNegativeNumber, asTrimmedString, resetDate } from "./accountUsageJson.ts";
 import { mergeProviderUsageWindows } from "./providerUsageWindows.ts";
 import { makeAntigravityQuotaReader } from "./antigravityQuota.ts";
+import { cliProxyHubBasePath } from "./cliProxyHubUrl.ts";
 
 // The capability has an eight-second deadline; leave one second to publish collected quotas.
 const ANTIGRAVITY_READ_BUDGET_MS = 7_000;
@@ -298,8 +299,7 @@ async function openCliProxyHub(
     !(hub.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(hub.hostname))
   )
     throw new Error("Invalid hub URL.");
-  // Users often paste the hub's web panel URL, which ends in management.html.
-  hub.pathname = hub.pathname.replace(/(\/management\.html)?\/?$/i, "/");
+  hub.pathname = cliProxyHubBasePath(hub.pathname);
   const files = asRecord(
     await fetchJsonWithTimeout(
       new URL("v0/management/auth-files", hub).toString(),

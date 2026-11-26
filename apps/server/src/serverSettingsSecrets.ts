@@ -6,6 +6,7 @@ import type {
   ServerSettingsPatch,
 } from "@t3tools/contracts";
 import type { ServerSecretStoreShape } from "./auth/Services/ServerSecretStore.ts";
+import { cliProxyHubBasePath } from "./usage/cliProxyHubUrl.ts";
 import {
   PROVIDER_INSTANCE_SECRET_FIELDS,
   applyServerSettingsPatch,
@@ -37,19 +38,43 @@ function secretDestination(value: unknown): string {
 
 const cliProxyKey = "F5_CLIPROXY_API_KEY";
 
-function cliProxyDestination(instance: ProviderInstanceConfig): string {
-  const environment = new Map(instance.environment?.map(({ name, value }) => [name, value]));
-  const hub = environment.get("F5_CLIPROXY_HUB_URL") ?? process.env.F5_CLIPROXY_HUB_URL;
-  if (hub) return "hub:" + secretDestination(hub);
+function cliProxyDestination(
+  instance: ProviderInstanceConfig,
+  previous?: ProviderInstanceConfig,
+): string | undefined {
+  if (instance.driver !== "antigravity" && instance.driver !== "grok") return undefined;
+  const environment = instance.environment ?? [];
+  const readUrl = (name: string) => {
+    const row = environment.findLast((row) => row.name === name);
+    if (!row) return process.env[name] ?? "";
+    if (!row.sensitive || !row.valueRedacted) return row.value;
+    if (!previous) return row.value || undefined;
+    // A redacted row names the slot for this instance and variable. A replacement
+    // written by another row for that slot takes precedence over the saved value.
+    const supplied = environment.findLast(
+      (row) => row.name === name && row.sensitive && !row.valueRedacted && row.value,
+    );
+    const saved = previous.environment?.findLast((row) => row.name === name && row.sensitive);
+    return supplied?.value || saved?.value || undefined;
+  };
+  const hub = readUrl("F5_CLIPROXY_HUB_URL");
+  if (hub === undefined) return undefined;
+  if (hub) {
+    const url = URL.parse(hub);
+    if (url) url.pathname = cliProxyHubBasePath(url.pathname);
+    return "hub:" + (url?.href ?? hub);
+  }
   if (instance.driver !== "antigravity") return "";
-  const usage = environment.get("F5_CLIPROXY_USAGE_URL") ?? process.env.F5_CLIPROXY_USAGE_URL;
-  return usage ? "usage:" + secretDestination(usage) : "";
+  const usage = readUrl("F5_CLIPROXY_USAGE_URL");
+  if (usage === undefined) return undefined;
+  return usage ? "usage:" + (URL.parse(usage)?.href ?? usage) : "";
 }
 
-/** Clear retained credentials before resolving secret-store references in the patched settings. */
+/** Clear retained credentials before resolving references in the patched settings. */
 export function applySettingsPatchWithSecretDestinations(
   current: ServerSettings,
   patch: ServerSettingsPatch,
+  currentMaterialized: ServerSettings = current,
 ): { settings: ServerSettings; removals: SettingsSecretChange[] } {
   const next = applyServerSettingsPatch(current, patch);
   const removals: SettingsSecretChange[] = [];
@@ -65,8 +90,16 @@ export function applySettingsPatchWithSecretDestinations(
     ) {
       return config;
     }
+    if (
+      previous.serverPasswordRedacted !== true &&
+      !previous.serverPassword &&
+      config.serverPasswordRedacted !== true
+    ) {
+      return config;
+    }
     removals.push({ name, value: null });
-    return { ...config, serverPassword: "", serverPasswordRedacted: false };
+    const { serverPasswordRedacted: _omit, ...rest } = config;
+    return { ...rest, serverPassword: "" };
   };
 
   const opencode = patch.providers?.opencode
@@ -88,9 +121,9 @@ export function applySettingsPatchWithSecretDestinations(
         ? Object.fromEntries(
             Object.entries(next.providerInstances).map(([id, instance]) => {
               const previous = current.providerInstances[id as ProviderInstanceId];
-              if (previous?.driver !== instance.driver) return [id, instance];
               if (
                 instance.driver === "opencode" &&
+                previous?.driver === instance.driver &&
                 record(instance.config) &&
                 record(previous.config)
               ) {
@@ -108,22 +141,35 @@ export function applySettingsPatchWithSecretDestinations(
                   },
                 ];
               }
+              const environment = instance.environment;
+              const isRetainedKey = (row: NonNullable<typeof environment>[number]) =>
+                row.name === cliProxyKey && row.sensitive && row.valueRedacted;
               if (
-                (instance.driver === "antigravity" || instance.driver === "grok") &&
-                instance.environment?.some(
-                  (row) => row.name === cliProxyKey && row.valueRedacted,
-                ) &&
-                cliProxyDestination(instance) !== cliProxyDestination(previous)
+                previous &&
+                environment?.some(isRetainedKey) &&
+                (instance.driver === "antigravity" || instance.driver === "grok")
               ) {
+                const materialized =
+                  currentMaterialized.providerInstances[id as ProviderInstanceId];
+                const before = materialized && cliProxyDestination(materialized);
+                if (
+                  before !== undefined &&
+                  before === cliProxyDestination(instance, materialized)
+                ) {
+                  return [id, instance];
+                }
+                const replacement = environment.findLast(
+                  (row) => row.name === cliProxyKey && !row.valueRedacted && row.value,
+                );
                 return [
                   id,
                   {
                     ...instance,
-                    environment: instance.environment.map((row) =>
-                      row.name === cliProxyKey && row.valueRedacted
-                        ? { ...row, value: "", valueRedacted: false }
-                        : row,
-                    ),
+                    environment: replacement
+                      ? environment.filter((row) => row.name !== cliProxyKey || row === replacement)
+                      : environment.map((row) =>
+                          isRetainedKey(row) ? { ...row, value: "", valueRedacted: false } : row,
+                        ),
                   },
                 ];
               }
