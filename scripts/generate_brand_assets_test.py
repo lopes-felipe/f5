@@ -1,4 +1,4 @@
-"""Platform geometry and development distinction checks; requires the recipe's Pillow."""
+"""Artwork, platform geometry and development distinction checks; requires the recipe's Pillow."""
 import importlib.util
 from pathlib import Path
 import unittest
@@ -32,11 +32,24 @@ class BrandGeometryTests(unittest.TestCase):
             self.assertEqual(mac.size, (1024, 1024))
             self.assertEqual(mac.getpixel((50, 512))[3], 0)
             self.assertGreater(universal.getpixel((50, 512))[3], 200)
-            blue_pixels = sum(
-                a > 200 and b > 180 and b > r + 80
+            amber_pixels = sum(
+                a > 200 and r > 220 and 120 < g < 200 and b < 80
                 for r, g, b, a in mac.getdata()
             )
-            self.assertGreater(blue_pixels, 1000) if mode == "dev" else self.assertEqual(blue_pixels, 0)
+            self.assertGreater(amber_pixels, 1000) if mode == "dev" else self.assertEqual(amber_pixels, 0)
+
+    def test_generated_artwork_matches_the_recipe(self):
+        self.assertEqual((ROOT / "assets/prod/logo.svg").read_text(encoding="utf-8"), RECIPE.logo_svg())
+        universal = Image.open(ROOT / "assets/prod/black-universal-1024.png").convert("RGBA")
+        scale = 1024 / RECIPE.GRID
+        for y, colour, bars in RECIPE.ROWS:
+            x, width = bars[0]
+            centre = (round((x + width / 2) * scale), round((y + RECIPE.ROW_HEIGHT / 2) * scale))
+            for actual, expected in zip(universal.getpixel(centre), RECIPE.rgb(colour)):
+                self.assertLessEqual(abs(actual - expected), 6)
+        first, second = RECIPE.ROWS[0][0], RECIPE.ROWS[1][0]
+        gap = (round(20 * scale), round((first + RECIPE.ROW_HEIGHT + second) / 2 * scale))
+        self.assertLess(max(universal.getpixel(gap)[:3]), 0x30)
 
 
 if __name__ == "__main__":

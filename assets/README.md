@@ -1,15 +1,20 @@
 # Icon assets
 
-The preserved source is assets/icon.png. On macOS, regenerate with Python 3,
-Pillow 11.3.0, and Apple's iconutil:
+The icon is drawn by scripts/generate-brand-assets.py from the geometry table at
+the top of that file: "F5" spelled by five rows of bars, one colour per row, on a
+graphite tile. Every file below is generated, including assets/icon.png and
+assets/prod/logo.svg, so change the recipe rather than the files. On macOS,
+regenerate with Python 3, Pillow 11.3.0, and Apple's iconutil:
 
     python3 -m venv /tmp/f5-brand-tools
     /tmp/f5-brand-tools/bin/pip install Pillow==11.3.0
     /tmp/f5-brand-tools/bin/python scripts/generate-brand-assets.py
     /tmp/f5-brand-tools/bin/python scripts/generate_brand_assets_test.py
 
-The recipe uses RGBA and Lanczos resizing, preserving the source canvas and alpha.
-Production remains unbadged. Development adds a blue circular indicator with a
+The recipe draws a 4096px RGBA source at twice that size and resizes with Lanczos,
+keeping the tile's rounded corners transparent. assets/prod/logo.svg is the same
+drawing as a vector.
+Production remains unbadged. Development adds an amber circular indicator with a
 white outline. All platform sources use a 1024px canvas. Universal assets retain
 the source alpha; iOS assets apply a 224px rounded-corner mask. macOS assets keep
 an 824px face at (100, 100), with a soft shadow offset 8px downward inside the
@@ -20,4 +25,6 @@ Windows ICOs contain 16, 32, 48, 64, 128 and 256px entries. Web favicons contain
 sidebar image. Desktop development resources contain 512px PNG, ICO and ICNS.
 
 scripts/lib/brand-assets.ts selects production assets for publishing and
-development assets for local builds. The marketing site has separate assets.
+development assets for local builds. The marketing site's favicons and 1024px
+icon in apps/marketing/public are copies of the production web assets, written by
+the same recipe.
