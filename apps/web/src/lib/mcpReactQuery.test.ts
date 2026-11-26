@@ -50,6 +50,22 @@ describe("MCP status event scoping", () => {
     ).toBe(true);
   });
 
+  it("keeps hub connection changes apart from provider observations", () => {
+    const project = ProjectId.makeUnsafe("project");
+    const work = ProviderInstanceId.make("work");
+    const hub = { scope: "common" as const, reason: "hub" as const, serverName: "docs" };
+    expect(isMcpQueryAffected(mcpQueryKeys.hubStatus(project), hub)).toBe(true);
+    expect(isMcpQueryAffected(mcpQueryKeys.hubStatus(null), hub)).toBe(true);
+    expect(isMcpQueryAffected(mcpQueryKeys.serverStatuses("codex", project, work), hub)).toBe(
+      false,
+    );
+    expect(isMcpQueryAffected(mcpQueryKeys.projectConfig(project), hub)).toBe(false);
+    const applied = { scope: "project" as const, projectId: project, reason: "applied" as const };
+    expect(isMcpQueryAffected(mcpQueryKeys.hubStatus(project), applied)).toBe(true);
+    const saved = { scope: "project" as const, projectId: project, reason: "updated" as const };
+    expect(isMcpQueryAffected(mcpQueryKeys.hubStatus(project), saved)).toBe(false);
+  });
+
   it("refreshes only configuration queries when a save is announced", () => {
     const project = ProjectId.makeUnsafe("project");
     const work = ProviderInstanceId.make("work");

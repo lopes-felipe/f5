@@ -268,6 +268,10 @@ import type {
   McpEffectiveConfigResult,
   McpGetCommonConfigRequest,
   McpGetLoginStatusRequest,
+  McpGetHubStatusRequest,
+  McpGetHubStatusResult,
+  McpReconnectHubServerRequest,
+  McpReconnectHubServerResult,
   McpGetProviderStatusRequest,
   McpGetEffectiveConfigRequest,
   McpGetProjectConfigRequest,
@@ -1336,6 +1340,13 @@ export interface NativeApi {
     applyToLiveSessions: (
       input: McpApplyToLiveSessionsRequest,
     ) => Promise<McpApplyToLiveSessionsResult>;
+    getHubStatus: (
+      input: McpGetHubStatusRequest,
+      context?: NativeRequestContext,
+    ) => Promise<McpGetHubStatusResult>;
+    reconnectHubServer: (
+      input: McpReconnectHubServerRequest,
+    ) => Promise<McpReconnectHubServerResult>;
     onStatusUpdated: (callback: (payload: McpStatusUpdatedPayload) => void) => () => void;
   };
   storage: {

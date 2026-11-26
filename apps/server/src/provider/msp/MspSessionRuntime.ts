@@ -17,13 +17,14 @@ import {
   MuseClient,
   ProtocolError,
   readSessionDurability,
+  type CommandOptions,
   type ConnectionOptions,
   type DuplexTransport,
   type FingerprintWarning,
   type NotificationHandler,
   type SessionDurabilityProfile,
 } from "@muse-code/sdk";
-import type { InitializeResult, Notification } from "@muse-code/sdk/dist/src/msp.js";
+import type { InitializeResult, Notification, SessionConfig } from "@muse-code/sdk/dist/src/msp.js";
 import { Data } from "effect";
 import {
   MUSE_APPROVAL_MODE_BY_RUNTIME_MODE,
@@ -144,6 +145,22 @@ export class TappedConnection extends Connection {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
   }
+
+  /**
+   * Session configuration for the next `session/start` or `session/resume`. The SDK
+   * facade does not forward `config` yet, so the connection adds it on the wire.
+   */
+  sessionConfig: SessionConfig | undefined;
+
+  override command(
+    method: string,
+    params: Record<string, unknown>,
+    options?: CommandOptions,
+  ): Promise<Record<string, unknown>> {
+    const config =
+      method === "session/start" || method === "session/resume" ? this.sessionConfig : undefined;
+    return super.command(method, config ? { ...params, config } : params, options);
+  }
 }
 
 /** In-flight cap and timeouts for every request F5 originates. */
@@ -239,6 +256,11 @@ export interface MspHost {
 }
 
 /** Handshake on an open transport: initialize, pin check, durability, client. */
+/** Whether this host takes per-session MCP servers in `config.mcpServers`. */
+export function mspHostAcceptsSessionMcp(host: Pick<MspHost, "initializeResult">): boolean {
+  return host.initializeResult.grantedCapabilities?.includes("sessionMcp") === true;
+}
+
 export async function openMspHost(input: {
   readonly transport: DuplexTransport;
   readonly clientVersion: string;
@@ -254,6 +276,8 @@ export async function openMspHost(input: {
   const initializeResult = (await gate.run("initialize", MSP_REQUEST_TIMEOUT_MS, () =>
     connection.request("initialize", {
       clientInfo: { name: "F5", title: "F5", version: input.clientVersion },
+      // Lets F5 give one session the MCP servers it routes through its hub.
+      capabilities: { requestedCapabilities: ["sessionMcp"] },
     }),
   )) as unknown as InitializeResult;
   if (typeof initializeResult.schema?.fingerprint !== "string") {

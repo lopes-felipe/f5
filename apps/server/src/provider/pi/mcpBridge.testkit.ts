@@ -53,9 +53,20 @@ export async function loadMcpBridge(
     readonly beforeToolResponse?: () => Promise<void>;
     readonly toolHttpResponse?: { readonly status: number; readonly body: string };
     readonly inputSchema?: Record<string, unknown>;
+    /** Hub endpoints passed in F5_PI_MCP_SERVERS; a URL containing "down" refuses requests. */
+    readonly userMcpServers?: ReadonlyArray<{
+      name: string;
+      url: string;
+      token: string;
+      timeoutMs: number;
+      startupTimeoutMs?: number;
+    }>;
+    /** Overrides the "down" URL rule; tests can flip it to model a recovery. */
+    readonly isDown?: (url: string) => boolean;
   } = {},
 ) {
   const handlers = new Map<string, AgentStartHook>();
+  const allHandlers = new Map<string, AgentStartHook[]>();
   const tools: RegisteredTool[] = [];
   const requests: Array<{ readonly method: string; readonly params?: unknown }> = [];
   let activeTools = ["read"];
@@ -84,6 +95,15 @@ export async function loadMcpBridge(
     inputSchema: options.inputSchema ?? { type: "object", properties: {} },
     outputSchema: { type: "object", properties: { count: { type: "number" } } },
   }));
+  const abortTimeouts: number[] = [];
+  const processEnv: Record<string, string | undefined> = {
+    F5_PI_MCP_URL: "http://fixture.invalid/mcp",
+    F5_PI_MCP_BEARER_TOKEN: "fixture-token",
+    F5_PI_MCP_EXTENSION_PATH: "/fixture/pi-t3-extension.ts",
+    F5_PI_RUNTIME_MODE: options.runtimeMode,
+    F5_PI_READ_ONLY: options.readOnly ? "1" : undefined,
+    F5_PI_MCP_SERVERS: options.userMcpServers ? JSON.stringify(options.userMcpServers) : undefined,
+  };
   const source = NodeModule.stripTypeScriptTypes(
     PI_F5_MCP_EXTENSION_SOURCE.replace(/^import .*;$/gm, "").replace(
       "export default async function",
@@ -91,16 +111,17 @@ export async function loadMcpBridge(
     ),
   );
   await NodeVM.runInNewContext(`${source}\nf5McpExtension(pi)`, {
-    process: {
-      env: {
-        F5_PI_MCP_URL: "http://fixture.invalid/mcp",
-        F5_PI_MCP_BEARER_TOKEN: "fixture-token",
-        F5_PI_MCP_EXTENSION_PATH: "/fixture/pi-t3-extension.ts",
-        F5_PI_RUNTIME_MODE: options.runtimeMode,
-        F5_PI_READ_ONLY: options.readOnly ? "1" : undefined,
+    process: { env: processEnv },
+    setTimeout,
+    clearTimeout,
+    AbortSignal: Object.assign(Object.create(AbortSignal), {
+      any: AbortSignal.any.bind(AbortSignal),
+      abort: AbortSignal.abort.bind(AbortSignal),
+      timeout: (ms: number) => {
+        abortTimeouts.push(ms);
+        return AbortSignal.timeout(ms);
       },
-    },
-    AbortSignal,
+    }),
     Uint8Array,
     TextDecoder,
     NodePath,
@@ -110,6 +131,8 @@ export async function loadMcpBridge(
       transport: { body: string; headers: Record<string, string>; signal?: AbortSignal },
     ) => {
       transport.signal?.throwIfAborted();
+      if (options.isDown ? options.isDown(url) : url.includes("down"))
+        return new Response("unavailable", { status: 503 });
       transports.push({
         url,
         authorization: transport.headers.authorization!,
@@ -138,7 +161,10 @@ export async function loadMcpBridge(
     },
     pi: {
       registerCommand: () => undefined,
-      on: (name: string, handler: AgentStartHook) => handlers.set(name, handler),
+      on: (name: string, handler: AgentStartHook) => {
+        handlers.set(name, handler);
+        allHandlers.set(name, [...(allHandlers.get(name) ?? []), handler]);
+      },
       registerTool: (tool: RegisteredTool) => {
         if (options.allowsTool && !options.allowsTool(tool.name)) return;
         const index = tools.findIndex((current) => current.name === tool.name);
@@ -169,7 +195,10 @@ export async function loadMcpBridge(
   });
   return {
     handlers,
+    allHandlers,
     tools,
+    abortTimeouts,
+    processEnv,
     setBridgeSourcePath: (path: string) => {
       bridgeSourcePath = path;
     },
