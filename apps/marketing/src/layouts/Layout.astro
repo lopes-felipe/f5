@@ -7,8 +7,8 @@ interface Props {
 }
 
 const {
-  title = "F5",
-  description = "F5 — The best way to code with AI.",
+  title = "F5: Multi-model workspace for coding agents",
+  description = "A desktop and web workspace for coding agents where each step of a workflow can run on a different provider and model.",
 } = Astro.props;
 ---
 
@@ -20,7 +20,7 @@ const {
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap"
       rel="stylesheet"
     />
     <link rel="icon" href="/favicon.ico" sizes="48x48" />
@@ -31,28 +31,46 @@ const {
   </head>
   <body>
     <div class="page">
-      <nav class="nav">
-        <a href="/" class="nav-brand">
-          <img src="/icon.png" alt="F5" class="nav-icon" />
-        </a>
-        <a
-          href={REPOSITORY_URL}
-          target="_blank"
-          rel="noopener noreferrer"
-          class="nav-github"
-        >
-          GitHub
-          <span class="nav-github-arrow" aria-hidden="true">&#8599;</span>
-        </a>
-      </nav>
+      <header class="nav-wrap">
+        <nav class="nav" aria-label="Primary">
+          <a href="/" class="nav-brand">
+            <img src="/icon.png" alt="" class="nav-icon" aria-hidden="true" />
+            <span class="nav-name">F5</span>
+          </a>
+          <div class="nav-links">
+            <a href="/#workflows" class="nav-link">Workflows</a>
+            <a href="/#providers" class="nav-link">Providers</a>
+            <a href="/download" class="nav-link">Download</a>
+            <a
+              href={`${REPOSITORY_URL}/blob/main/docs/README.md`}
+              target="_blank"
+              rel="noopener noreferrer"
+              class="nav-link"
+            >
+              Docs
+            </a>
+            <a
+              href={REPOSITORY_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              class="nav-github"
+            >
+              GitHub
+              <span class="nav-github-arrow" aria-hidden="true">&#8599;</span>
+            </a>
+          </div>
+        </nav>
+      </header>
 
       <main class="main">
         <slot />
       </main>
 
       <footer class="footer">
-        <span class="footer-copy">&copy; {new Date().getFullYear()} F5</span>
+        <span class="footer-copy">&copy; {new Date().getFullYear()} F5 · MIT License</span>
         <div class="footer-links">
+          <a href="/download">Download</a>
+          <a href={`${REPOSITORY_URL}/blob/main/docs/README.md`} target="_blank" rel="noopener noreferrer">Docs</a>
           <a href={REPOSITORY_URL} target="_blank" rel="noopener noreferrer">GitHub</a>
           <a href="https://discord.gg/jn4EGJjrvv" target="_blank" rel="noopener noreferrer">Discord</a>
         </div>
@@ -63,11 +81,23 @@ const {
 
 <style is:global>
   :root {
-    --bg: #09090b;
-    --fg: #fafafa;
-    --fg-muted: #a1a1aa;
-    --fg-dim: #71717a;
-    --border: rgba(255, 255, 255, 0.08);
+    --chrome: oklch(0.155 0.006 260);
+    --bg: oklch(0.192 0.006 260);
+    --card: oklch(0.222 0.007 260);
+    --card-hover: oklch(0.25 0.008 260);
+    --fg: oklch(0.95 0.003 260);
+    --fg-muted: oklch(0.72 0.01 260);
+    --fg-dim: oklch(0.58 0.01 260);
+    --border: oklch(0.295 0.008 260);
+    --border-strong: oklch(0.37 0.01 260);
+    --primary: oklch(0.56 0.2 262);
+    --primary-hover: oklch(0.49 0.2 262);
+    --primary-fg: oklch(0.99 0 0);
+    --radius-md: 0.5rem;
+    --radius-lg: 0.75rem;
+    --radius-xl: 1rem;
+    --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    --font-mono: "JetBrains Mono", "SF Mono", "SFMono-Regular", Consolas, monospace;
   }
 
   * {
@@ -78,28 +108,23 @@ const {
 
   html {
     color-scheme: dark;
+    scroll-behavior: smooth;
   }
 
   body {
-    background: var(--bg);
+    background: radial-gradient(
+      ellipse 80% 50% at 50% -10%,
+      oklch(0.32 0.08 262 / 0.28),
+      transparent 70%
+    ),
+      var(--chrome);
     color: var(--fg);
-    font-family: "DM Sans", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    font-family: var(--font-sans);
+    font-feature-settings: "cv11", "ss01", "ss03";
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     min-height: 100vh;
     overflow-x: hidden;
-  }
-
-  body::after {
-    content: "";
-    position: fixed;
-    inset: 0;
-    pointer-events: none;
-    opacity: 0.035;
-    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-    background-repeat: repeat;
-    background-size: 256px 256px;
-    z-index: 9999;
   }
 
   a {
@@ -112,6 +137,10 @@ const {
     max-width: 100%;
   }
 
+  code {
+    font-family: var(--font-mono);
+  }
+
   @keyframes fade-in {
     from {
       opacity: 0;
@@ -122,109 +151,152 @@ const {
       transform: translateY(0);
     }
   }
+
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
 </style>
 
 <style>
-  /* ── Page ── */
-
   .page {
     min-height: 100vh;
     display: flex;
     flex-direction: column;
-    overflow-x: hidden;
+    overflow-x: clip;
   }
 
-  /* ── Navbar ── */
+  .nav-wrap {
+    width: 100%;
+    border-bottom: 1px solid oklch(0.295 0.008 260 / 0.6);
+    background: oklch(0.155 0.006 260 / 0.8);
+    backdrop-filter: blur(12px);
+    position: sticky;
+    top: 0;
+    z-index: 40;
+  }
 
   .nav {
+    max-width: 1120px;
+    margin: 0 auto;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 1.5rem 2.5rem;
-    opacity: 0.5;
-    transition: opacity 0.4s ease;
-  }
-
-  .nav:hover {
-    opacity: 1;
+    padding: 0.9rem 1.5rem;
+    gap: 1rem;
   }
 
   .nav-brand {
-    display: flex;
+    display: inline-flex;
     align-items: center;
+    gap: 0.6rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    font-size: 0.95rem;
   }
 
   .nav-icon {
-    width: 28px;
-    height: 28px;
+    width: 26px;
+    height: 26px;
     border-radius: 6px;
   }
 
-  .nav-github {
+  .nav-links {
     display: flex;
     align-items: center;
-    gap: 0.35rem;
-    color: var(--fg-muted);
-    font-size: 0.875rem;
-    transition: color 0.3s ease;
+    gap: 1.25rem;
   }
 
+  .nav-link,
+  .nav-github {
+    color: var(--fg-muted);
+    font-size: 0.85rem;
+    font-weight: 500;
+    transition: color 0.18s ease;
+  }
+
+  .nav-github {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+  }
+
+  .nav-link:hover,
   .nav-github:hover {
     color: var(--fg);
   }
 
   .nav-github-arrow {
     display: inline-block;
-    transition: transform 0.3s ease;
+    transition: transform 0.18s ease;
   }
 
   .nav-github:hover .nav-github-arrow {
-    transform: translateX(2px) translateY(-1px);
+    transform: translate(2px, -1px);
   }
-
-  /* ── Main content ── */
 
   .main {
     flex: 1;
     display: flex;
     flex-direction: column;
     align-items: center;
+    width: 100%;
   }
 
-  /* ── Footer ── */
-
   .footer {
+    width: 100%;
+    max-width: 1120px;
+    margin: 0 auto;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 1.5rem 2.5rem;
+    padding: 2rem 1.5rem;
+    border-top: 1px solid oklch(0.295 0.008 260 / 0.6);
     font-size: 0.8rem;
     color: var(--fg-dim);
+    gap: 1rem;
+    flex-wrap: wrap;
   }
 
   .footer-links {
     display: flex;
     gap: 1.25rem;
+    flex-wrap: wrap;
   }
 
   .footer-links a {
-    color: var(--fg-dim);
-    transition: color 0.3s ease;
+    color: var(--fg-muted);
+    transition: color 0.18s ease;
   }
 
   .footer-links a:hover {
     color: var(--fg);
   }
 
-  /* ── Mobile ── */
-
   @media (max-width: 640px) {
     .nav {
-      padding: 1.25rem;
+      padding: 0.85rem 1rem;
+    }
+
+    .nav-links {
+      gap: 0.85rem;
+    }
+
+    .nav-link:nth-child(1),
+    .nav-link:nth-child(2) {
+      display: none;
     }
 
     .footer {
-      padding: 1.25rem;
+      padding: 1.5rem 1rem;
     }
   }
 </style>

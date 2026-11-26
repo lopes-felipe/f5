@@ -13,8 +13,25 @@ import { knownGithubHostsSync } from "./git/GithubCliProjection";
 import * as Path from "node:path";
 import type { ActiveProfile, ProviderInstanceEnvironment } from "@t3tools/contracts";
 import { PROJECT_SCRIPT_ENV_NAMES } from "@t3tools/shared/projectScripts";
-import { SERVER_AUTH_TOKEN_ENV } from "./serverAuth";
+import { SERVER_AUTH_TOKEN_ENV_NAMES } from "./serverAuth";
 const BLOCKED_PROVIDER_ENV_PREFIXES = ["OTEL_", "F5_LAUNCHER_", "F5_UPDATE_"] as const;
+const BLOCKED_F5_SERVER_ENV = new Set<string>([
+  "F5_STANDALONE",
+  "F5_STANDALONE_DIR",
+  "F5_INSTALL_ROOT",
+  "F5_MODE",
+  "F5_PORT",
+  "F5_HOST",
+  "F5_NO_BROWSER",
+  "F5_AUTO_BOOTSTRAP_PROJECT_FROM_CWD",
+  "F5_STATE_DIR",
+  "F5_HOME",
+  "F5_LOG_WS_EVENTS",
+  "F5_LOG_THREAD_OPEN_TIMINGS",
+  "F5_LOG_PROJECTION_TIMINGS",
+  BROWSER_OPEN_TOKEN_ENV,
+  ...SERVER_AUTH_TOKEN_ENV_NAMES,
+]);
 const CODEX_PACKAGE_MANAGER_ENV = new Set<string>(CODEX_PACKAGE_MANAGER_ENV_NAMES);
 
 function isBlockedProviderEnvKey(key: string): boolean {
@@ -24,13 +41,7 @@ function isBlockedProviderEnvKey(key: string): boolean {
     // (for example, F5 started from another F5's terminal) never reaches F5's children.
     // The backend's own credential never reaches them either: a child holding it could connect
     // as a client, answer its own approval requests and open terminals.
-    [
-      "F5_STANDALONE",
-      "F5_STANDALONE_DIR",
-      "F5_INSTALL_ROOT",
-      BROWSER_OPEN_TOKEN_ENV,
-      SERVER_AUTH_TOKEN_ENV,
-    ].includes(normalizedKey) ||
+    BLOCKED_F5_SERVER_ENV.has(normalizedKey) ||
     CODEX_PACKAGE_MANAGER_ENV.has(normalizedKey) ||
     BLOCKED_PROVIDER_ENV_PREFIXES.some((prefix) => normalizedKey.startsWith(prefix))
   );
@@ -41,10 +52,15 @@ function isBlockedProviderEnvKey(key: string): boolean {
  * configuration. On managed machines that can redirect Codex / Claude logs and
  * traces to unrelated endpoints, producing noisy export errors and leaking
  * telemetry intended only for the parent shell or desktop app.
+ *
+ * Agent CLIs are also opted out of their vendors' crash reporting (see
+ * {@link applyProviderTelemetryOptOut}) unless `telemetryOptOut` is false, as it is for
+ * terminals and git.
  */
 export function buildProviderChildProcessEnv(
   baseEnv: NodeJS.ProcessEnv,
   overrides?: NodeJS.ProcessEnv,
+  options: { readonly telemetryOptOut?: boolean } = {},
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
 
@@ -55,15 +71,24 @@ export function buildProviderChildProcessEnv(
     env[key] = value;
   }
 
+  // Before the overrides, so a provider instance's own environment setting still wins.
+  if (options.telemetryOptOut !== false) applyProviderTelemetryOptOut(env);
+
   if (!overrides) {
     return env;
   }
 
   for (const [key, value] of Object.entries(overrides)) {
-    if (CODEX_PACKAGE_MANAGER_ENV.has(key.toUpperCase())) continue;
+    const normalizedKey = key.toUpperCase();
+    if (
+      CODEX_PACKAGE_MANAGER_ENV.has(normalizedKey) ||
+      SERVER_AUTH_TOKEN_ENV_NAMES.some((name) => name === normalizedKey)
+    ) {
+      continue;
+    }
     if (process.platform === "win32") {
       for (const inherited of Object.keys(env))
-        if (inherited.toUpperCase() === key.toUpperCase()) delete env[inherited];
+        if (inherited.toUpperCase() === normalizedKey) delete env[inherited];
     }
     if (/^F5_(?:LAUNCHER_|UPDATE_|STANDALONE(?:_DIR)?$|INSTALL_ROOT$)/i.test(key)) continue;
     if (value === undefined) {
@@ -73,6 +98,26 @@ export function buildProviderChildProcessEnv(
     env[key] = value;
   }
 
+  return env;
+}
+
+/**
+ * Vendor telemetry opt-outs that cost agent CLIs nothing: crash reporting. Codex is also
+ * opted out of analytics through `-c analytics.enabled=false`.
+ *
+ * `DO_NOT_TRACK` and `DISABLE_TELEMETRY` are deliberately not set. Claude Code treats either
+ * as "no feature-flag download", which disables Code Mode, Remote Control and every other
+ * flag-gated feature. F5 still forwards them when the user sets them.
+ */
+export const PROVIDER_TELEMETRY_OPT_OUT_ENV: Readonly<Record<string, string>> = {
+  DISABLE_ERROR_REPORTING: "1",
+};
+
+/** Sets each opt-out the environment does not already define, so a user's own value wins. */
+export function applyProviderTelemetryOptOut(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const defined = new Set(Object.keys(env).map((key) => key.toUpperCase()));
+  for (const [name, value] of Object.entries(PROVIDER_TELEMETRY_OPT_OUT_ENV))
+    if (!defined.has(name)) env[name] = value;
   return env;
 }
 
@@ -161,7 +206,11 @@ export function buildAccountExecutionEnvironment(input: {
       );
   }
   const environment = profileGithubEnvironment(
-    buildProviderChildProcessEnv(base, { ...instance, ...input.overrides }),
+    buildProviderChildProcessEnv(
+      base,
+      { ...instance, ...input.overrides },
+      { telemetryOptOut: input.purpose === "provider" },
+    ),
     input.stateDir,
   );
   if (input.purpose === "provider" || input.purpose === "terminal") {

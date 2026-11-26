@@ -64,18 +64,18 @@ for the full list.
 
 | CLI flag                 | Env var               | Notes                                                                    |
 | ------------------------ | --------------------- | ------------------------------------------------------------------------ |
-| `--mode <web\|desktop>`  | `T3CODE_MODE`         | Runtime mode.                                                            |
-| `--port <number>`        | `T3CODE_PORT`         | HTTP/WebSocket port.                                                     |
-| `--host <address>`       | `T3CODE_HOST`         | Bind interface/address.                                                  |
+| `--mode <web\|desktop>`  | `F5_MODE`             | Runtime mode (`T3CODE_MODE` still works as legacy alias).                |
+| `--port <number>`        | `F5_PORT`             | HTTP/WebSocket port (`T3CODE_PORT` still works as legacy alias).         |
+| `--host <address>`       | `F5_HOST`             | Bind interface/address (`T3CODE_HOST` still works as legacy alias).      |
 | `--home-dir <path>`      | `F5_HOME`             | Base directory for F5 state.                                             |
 | `--state-dir <path>`     | `F5_STATE_DIR`        | State directory.                                                         |
 | `--dev-url <url>`        | `VITE_DEV_SERVER_URL` | Dev web URL redirect/proxy target.                                       |
-| `--no-browser`           | `T3CODE_NO_BROWSER`   | Disable auto-open browser.                                               |
-| `--auth-token <token>`   | `T3CODE_AUTH_TOKEN`   | Remote HTTP and WebSocket token.                                         |
+| `--no-browser`           | `F5_NO_BROWSER`       | Disable auto-open browser (`T3CODE_NO_BROWSER` still works).             |
+| `--auth-token <token>`   | `F5_AUTH_TOKEN`       | Remote HTTP and WebSocket token (`T3CODE_AUTH_TOKEN` still works).       |
 | `--trusted-proxy <list>` | `F5_TRUSTED_PROXIES`  | Reverse proxies to believe: comma-separated IP addresses or CIDR ranges. |
 
-The older `T3CODE_HOME` and `T3CODE_STATE_DIR` still work, but `F5_HOME` and `F5_STATE_DIR` win
-when both are set.
+Legacy `T3CODE_*` aliases remain supported for backwards compatibility, and the matching `F5_*`
+variable always wins when both are set.
 
 **Token exchange.** The token is passed once in the URL fragment, which is never sent in HTTP
 requests or WebSocket URLs. The browser trades it for a short-lived HttpOnly session cookie and

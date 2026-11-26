@@ -38,6 +38,7 @@ export function searchSettingsItems(
   descriptors: ReadonlyArray<SettingsItemDescriptor>,
   query: string,
   limit = 24,
+  categoryLabels?: Readonly<Record<SettingsCategory, string>>,
 ): SettingsItemDescriptor[] {
   const normalizedQuery = normalizeSearchText(query);
   if (!normalizedQuery) return [];
@@ -48,7 +49,15 @@ export function searchSettingsItems(
       const normalizedLabel = normalizeSearchText(descriptor.label);
       const normalizedDescription = normalizeSearchText(descriptor.description);
       const normalizedKeywords = descriptor.keywords.map(normalizeSearchText);
-      const searchable = [normalizedLabel, normalizedDescription, ...normalizedKeywords];
+      const normalizedCategory = normalizeSearchText(
+        categoryLabels?.[descriptor.category] ?? descriptor.category,
+      );
+      const searchable = [
+        normalizedLabel,
+        normalizedDescription,
+        normalizedCategory,
+        ...normalizedKeywords,
+      ];
       if (!tokens.every((token) => searchable.some((candidate) => candidate.includes(token)))) {
         return null;
       }
@@ -59,6 +68,7 @@ export function searchSettingsItems(
       for (const token of tokens) {
         if (normalizedLabel.split(" ").some((word) => word.startsWith(token))) score += 80;
         if (normalizedDescription.includes(token)) score += 20;
+        if (normalizedCategory.includes(token)) score += 15;
         if (normalizedKeywords.some((keyword) => keyword === token)) score += 60;
         else if (normalizedKeywords.some((keyword) => keyword.includes(token))) score += 30;
       }

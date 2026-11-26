@@ -1,6 +1,6 @@
 # Architecture
 
-F5 is a Bun/Turbo monorepo that ships a desktop app, a web app, and a Node.js WebSocket backend that wraps one or more coding-agent providers (Codex, Claude Code, Cursor, OpenCode, Grok, Antigravity and Muse Code).
+F5 is a Bun/Turbo monorepo that ships a desktop app, a web app, and a Node.js WebSocket backend that wraps one or more coding-agent providers (Codex, Claude Code, Cursor, OpenCode, Grok, Antigravity, Muse Code, Pi and custom ACP agents).
 
 ```
 ├── apps/

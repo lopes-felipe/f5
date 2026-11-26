@@ -42,6 +42,7 @@ import { ProjectionThreadProposedPlanRepository } from "./persistence/Services/P
 import { PrHubFederation } from "./prHub/Layers/PrHubFederation.ts";
 import { PrHubReviewGuideService } from "./prHub/Layers/PrHubReviewGuideService.ts";
 import { publicOtlpConfiguration, resolveOtlpConfiguration } from "@t3tools/shared/observability";
+import { isDoNotTrackSet } from "@t3tools/shared/doNotTrack";
 import { registerShutdown, ServerShutdown } from "./shutdown.ts";
 import { streamFileHandle } from "./assetHttp.ts";
 import { makeSocketLiveness, closeSocketsWithin } from "./wsServer/socketLiveness.ts";
@@ -170,7 +171,13 @@ import { createGitHubMediaProxy } from "./prHub/githubMediaProxy.ts";
 import { readAssetImageDimensions } from "./imageDimensions";
 import { makePreviewFileServer } from "./previewFileServer";
 import { MessageId } from "@t3tools/contracts";
-import { makeAttachmentUploads, AttachmentUploadError } from "./attachmentUploads";
+import {
+  makeAttachmentUploads,
+  AttachmentUploadError,
+  materializeErrorMessage,
+  resolveWorkflowAttachmentsDir,
+  sweepWorkflowAttachments,
+} from "./attachmentUploads";
 import { GitCommandError } from "./git/Errors";
 import { readProjectSettings, isInsideProjectWorkspace } from "./project/projectSettings";
 import {
@@ -284,6 +291,7 @@ import {
 } from "effect";
 import { WebSocketServer, type WebSocket } from "ws";
 
+import { resolveAliasedBooleanEnv, THREAD_OPEN_TIMINGS_ENV } from "./envFlags.ts";
 import { createLogger } from "./logger";
 import { NextTurnQueueStore } from "./nextTurnQueue/Services/NextTurnQueueStore.ts";
 import { makeProjectionTurnRepository } from "./persistence/Layers/ProjectionTurns.ts";
@@ -386,7 +394,6 @@ import {
   prepareAttachmentIngress,
   type PreparedAttachmentIngress,
 } from "./attachmentIngress.ts";
-import { AnalyticsService } from "./telemetry/Services/AnalyticsService.ts";
 import { expandHomePath } from "./os-jank.ts";
 import {
   increment,
@@ -400,6 +407,12 @@ import {
   SLOW_RPC_ROUTE_MS,
   startEventLoopDelayMonitor,
 } from "./observability/serverHealth.ts";
+import {
+  buildSqliteInspectionSnapshot,
+  runDoctorDiagnostics,
+  type SqliteInspectionResult,
+} from "./diagnostics/doctor.ts";
+import { canonicalManagedWorktreesDirectories } from "./worktreesDirectoryPaths.ts";
 import {
   type BootstrapThreadDisposition,
   dispatchBootstrapTurnStart,
@@ -984,7 +997,6 @@ export type ServerRuntimeServices =
   | TerminalManager
   | Keybindings
   | Open
-  | AnalyticsService
   | NextTurnQueueStore;
 
 export class ServerLifecycleError extends Schema.TaggedErrorClass<ServerLifecycleError>()(
@@ -1198,6 +1210,7 @@ export const createServer = Effect.fn(function* (
     ),
   );
   const attachmentUploads = yield* makeAttachmentUploads(serverConfig.attachmentsDir);
+  const workflowAttachmentsDir = resolveWorkflowAttachmentsDir(serverConfig);
   const nextTurnQueueStore = yield* NextTurnQueueStore;
   const globalSearch = yield* makeGlobalSearch;
   const projectionProjects = yield* Effect.service(ProjectionProjectRepository).pipe(
@@ -1236,8 +1249,8 @@ export const createServer = Effect.fn(function* (
   const shouldLogThreadOpenTimings =
     process.env.NODE_ENV !== "test" &&
     process.env.VITEST !== "true" &&
-    (process.env.T3CODE_LOG_THREAD_OPEN_TIMINGS === "1" ||
-      process.env.T3CODE_LOG_THREAD_OPEN_TIMINGS === "true");
+    resolveAliasedBooleanEnv(THREAD_OPEN_TIMINGS_ENV.primary, THREAD_OPEN_TIMINGS_ENV.legacy)
+      .enabled;
 
   function logOutgoingPush(push: WsPushEnvelopeBase, recipients: number) {
     if (!logWebSocketEvents || push.channel === WS_CHANNELS.providerAccountEvent) return;
@@ -2346,9 +2359,8 @@ export const createServer = Effect.fn(function* (
           return;
         }
         if (
-          (url.pathname === ORCHESTRATION_STARTUP_SNAPSHOT_PATH ||
-            url.pathname.startsWith("/api/storage/") ||
-            url.pathname.startsWith("/api/attachments/")) &&
+          isPrivatePath &&
+          url.pathname.startsWith("/api/") &&
           !serverAuth.isWebSocketOriginAllowed(req)
         ) {
           respond(
@@ -2829,7 +2841,13 @@ export const createServer = Effect.fn(function* (
               "X-Content-Type-Options": "nosniff",
               ...(contentType === "text/html"
                 ? {
-                    "Content-Security-Policy": "frame-ancestors 'none'",
+                    // Keep `srcdoc` HTML renders and MCP app bridges working in browser/remote
+                    // mode (srcdoc inherits parent `default-src`/`script-src`) while blocking
+                    // plugin embeds, base-tag hijacking, and clickjacking.
+                    "Content-Security-Policy":
+                      "object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+                    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+                    "Referrer-Policy": "no-referrer",
                     "X-Frame-Options": "DENY",
                   }
                 : {}),
@@ -3007,6 +3025,18 @@ export const createServer = Effect.fn(function* (
     while (true) {
       yield* attachmentUploads.sweep.pipe(
         Effect.catch(() => Effect.logWarning("Attachment upload cleanup failed; will retry.")),
+      );
+      yield* Effect.tryPromise(() => sweepWorkflowAttachments(workflowAttachmentsDir)).pipe(
+        Effect.flatMap(({ failed }) =>
+          failed > 0
+            ? Effect.logWarning("Some workflow attachments could not be removed; will retry.", {
+                failed,
+              })
+            : Effect.void,
+        ),
+        Effect.catch((cause) =>
+          Effect.logWarning("Workflow attachment cleanup failed; will retry.", { cause }),
+        ),
       );
       yield* Effect.sleep("1 hour");
     }
@@ -6123,6 +6153,27 @@ export const createServer = Effect.fn(function* (
             ),
           );
       }
+      case WS_METHODS.attachmentsMaterializeUploads: {
+        const body = stripRequestTag(request.body);
+        return yield* attachmentUploads
+          .materialize(body.threadId, body.uploadIds, workflowAttachmentsDir)
+          .pipe(
+            Effect.mapError(
+              (cause) => new RouteRequestError({ message: materializeErrorMessage(cause) }),
+            ),
+          );
+      }
+      case WS_METHODS.attachmentsDiscardMaterialized: {
+        const body = stripRequestTag(request.body);
+        yield* attachmentUploads
+          .discardMaterialized(body.uploadIds, workflowAttachmentsDir)
+          .pipe(
+            Effect.mapError(
+              () => new RouteRequestError({ message: "Unable to remove saved attachments." }),
+            ),
+          );
+        return {};
+      }
       case WS_METHODS.attachmentsReleaseUploads: {
         const body = stripRequestTag(request.body);
         yield* attachmentUploads
@@ -7110,6 +7161,106 @@ export const createServer = Effect.fn(function* (
       case WS_METHODS.serverGetHealth:
         return readServerHealth();
 
+      case WS_METHODS.serverGetDoctorReport: {
+        const providers = yield* providerAdvisoryProjection.getProviders;
+        // Run only O(1) PRAGMAs on the live SQLite connection so checking Doctor
+        // in Settings never blocks the main server event loop with a full-DB scan.
+        const [
+          pageSizeRows,
+          pageCountRows,
+          freelistRows,
+          autoVacuumRows,
+          journalRows,
+          migrationRows,
+          managedWorktreesDirs,
+        ] = yield* Effect.all([
+          sql<{ readonly page_size?: number }>`PRAGMA page_size`.pipe(
+            Effect.catch(() =>
+              Effect.succeed([] as ReadonlyArray<{ readonly page_size?: number }>),
+            ),
+          ),
+          sql<{ readonly page_count?: number }>`PRAGMA page_count`.pipe(
+            Effect.catch(() =>
+              Effect.succeed([] as ReadonlyArray<{ readonly page_count?: number }>),
+            ),
+          ),
+          sql<{ readonly freelist_count?: number }>`PRAGMA freelist_count`.pipe(
+            Effect.catch(() =>
+              Effect.succeed([] as ReadonlyArray<{ readonly freelist_count?: number }>),
+            ),
+          ),
+          sql<{ readonly auto_vacuum?: number }>`PRAGMA auto_vacuum`.pipe(
+            Effect.catch(() =>
+              Effect.succeed([] as ReadonlyArray<{ readonly auto_vacuum?: number }>),
+            ),
+          ),
+          sql<{ readonly journal_mode?: string }>`PRAGMA journal_mode`.pipe(
+            Effect.catch(() =>
+              Effect.succeed([] as ReadonlyArray<{ readonly journal_mode?: string }>),
+            ),
+          ),
+          sql<{
+            readonly count?: number;
+            readonly latest?: number | null;
+          }>`SELECT COUNT(*) AS count, MAX(migration_id) AS latest FROM effect_sql_migrations`.pipe(
+            Effect.catch(() =>
+              Effect.succeed(
+                [] as ReadonlyArray<{ readonly count?: number; readonly latest?: number | null }>,
+              ),
+            ),
+          ),
+          serverSettings.getSettings.pipe(
+            Effect.flatMap((settings) =>
+              canonicalManagedWorktreesDirectories(settings, serverConfig.worktreesDir),
+            ),
+            Effect.orElseSucceed(() => [serverConfig.worktreesDir]),
+          ),
+        ]);
+        const sqliteResult: SqliteInspectionResult =
+          pageSizeRows.length > 0 || pageCountRows.length > 0
+            ? {
+                kind: "ok",
+                snapshot: buildSqliteInspectionSnapshot({
+                  quickRows: null,
+                  pageSizeRow: pageSizeRows[0],
+                  pageCountRow: pageCountRows[0],
+                  freelistRow: freelistRows[0],
+                  autoVacuumRow: autoVacuumRows[0],
+                  journalRow: journalRows[0],
+                  migrationRow: migrationRows[0],
+                }),
+              }
+            : {
+                kind: "unavailable",
+                detail: "Live SQLite metadata PRAGMAs returned no rows.",
+              };
+        return yield* Effect.promise(() =>
+          runDoctorDiagnostics({
+            mode: serverConfig.mode,
+            stateDir: serverConfig.stateDir,
+            dbPath: serverConfig.dbPath,
+            worktreesDir: serverConfig.worktreesDir,
+            worktreesDirs: managedWorktreesDirs,
+            logsDir: serverConfig.logsDir,
+            attachmentsDir: serverConfig.attachmentsDir,
+            ...(serverConfig.profilesRoot ? { profilesRoot: serverConfig.profilesRoot } : {}),
+            ...(serverConfig.profile
+              ? {
+                  profileSlug: serverConfig.profile.slug,
+                  profileName: serverConfig.profile.name,
+                  isDefaultProfile: serverConfig.profile.isDefault,
+                }
+              : {}),
+            ...(serverConfig.host !== undefined ? { host: serverConfig.host } : {}),
+            port: serverConfig.port,
+            authEnabled: Boolean(serverConfig.authToken),
+            trustedProxyCount: serverConfig.trustedProxies?.length ?? 0,
+            liveProviders: providers,
+            inspectSqlite: async () => sqliteResult,
+          }),
+        );
+      }
+
       case WS_METHODS.serverGetConfig:
         const keybindingsConfig = yield* keybindingsManager.loadConfigState;
         const providers = yield* providerAdvisoryProjection.getProviders;
@@ -7129,6 +7280,7 @@ export const createServer = Effect.fn(function* (
             resolveOtlpConfiguration(settings.observability, process.env),
           ),
           cursorSdkHarness: cursorSdkHarnessHostAvailability(serverConfig),
+          privacy: { doNotTrack: isDoNotTrackSet(process.env) },
         };
 
       case WS_METHODS.serverGetProjectSettings: {

@@ -12,6 +12,7 @@ import {
   ORCHESTRATION_WS_METHODS,
   ProfileId,
   ProjectId,
+  ServerDoctorReport,
   ServerHealth,
   ThreadId,
   UPSTREAM_PORTS_WS_METHODS,
@@ -573,7 +574,14 @@ describe("WebSocket Server", () => {
     expect(response.status).toBe(200);
     expect(await response.text()).toContain("static-root");
     expect(response.headers.get("cache-control")).toBe("no-cache");
-    expect(response.headers.get("content-security-policy")).toBe("frame-ancestors 'none'");
+    expect(response.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    expect(response.headers.get("content-security-policy")).toContain("object-src 'none'");
+    expect(response.headers.get("content-security-policy")).toContain("base-uri 'self'");
+    expect(response.headers.get("content-security-policy")).not.toContain("script-src");
+    expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(response.headers.get("permissions-policy")).toBe(
+      "camera=(), microphone=(), geolocation=()",
+    );
     expect(response.headers.get("x-frame-options")).toBe("DENY");
     fs.writeFileSync(path.join(staticDir, "index.html"), "<h1>updated app</h1>", "utf8");
     const refreshed = await fetch(`http://127.0.0.1:${port}/index.html`, {
@@ -581,7 +589,8 @@ describe("WebSocket Server", () => {
     });
     expect(refreshed.status).toBe(200);
     expect(refreshed.headers.get("cache-control")).toBe("no-cache");
-    expect(refreshed.headers.get("content-security-policy")).toBe("frame-ancestors 'none'");
+    expect(refreshed.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    expect(refreshed.headers.get("referrer-policy")).toBe("no-referrer");
     expect(refreshed.headers.get("x-frame-options")).toBe("DENY");
     expect(await refreshed.text()).toContain("updated app");
   });
@@ -627,11 +636,13 @@ describe("WebSocket Server", () => {
     expect(navigation.status).toBe(200);
     expect(await navigation.text()).toContain("Application shell");
     expect(navigation.headers.get("cache-control")).toBe("no-cache");
-    expect(navigation.headers.get("content-security-policy")).toBe("frame-ancestors 'none'");
+    expect(navigation.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    expect(navigation.headers.get("referrer-policy")).toBe("no-referrer");
     expect(navigation.headers.get("x-frame-options")).toBe("DENY");
     const htmlHead = await fetch(`http://127.0.0.1:${port}/index.html`, { method: "HEAD" });
     expect(htmlHead.status).toBe(200);
-    expect(htmlHead.headers.get("content-security-policy")).toBe("frame-ancestors 'none'");
+    expect(htmlHead.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    expect(htmlHead.headers.get("referrer-policy")).toBe("no-referrer");
     expect(htmlHead.headers.get("x-frame-options")).toBe("DENY");
     expect(await htmlHead.text()).toBe("");
     const request = await fetch(`http://127.0.0.1:${port}/thread/client-route`, {
@@ -1593,6 +1604,22 @@ describe("WebSocket Server", () => {
     }
   });
 
+  it("answers server.getDoctorReport with a schema-valid redacted diagnostic report", async () => {
+    h.server = await createTestServer();
+    const address = h.server.address();
+    if (!address || typeof address === "string") throw new Error("No server address");
+    const [ws] = await connectAndAwaitWelcome(address.port);
+    connections.push(ws);
+
+    const response = await sendRequest(ws, WS_METHODS.serverGetDoctorReport);
+    expect(response.error).toBeUndefined();
+    const report = Schema.decodeUnknownSync(ServerDoctorReport)(response.result);
+    expect(report.runtime.mode).toBe("web");
+    expect(report.checks.some((check) => check.id === "env.git")).toBe(true);
+    expect(report.checks.some((check) => check.id === "db.integrity")).toBe(true);
+    expect(report.counts.ok + report.counts.warn + report.counts.error).toBe(report.checks.length);
+  });
+
   it("reports runtime readiness in the welcome and the probe once the runtime is ready", async () => {
     h.server = await createTestServer();
     const address = h.server.address();
@@ -1928,6 +1955,13 @@ describe("WebSocket Server", () => {
       headers: { Authorization: "Bearer secret-token" },
     });
     expect(metadata.headers.get("cache-control")).toBe("no-store");
+    const foreignOriginBootstrap = await fetch(`${base}/api/bootstrap`, {
+      headers: {
+        Authorization: "Bearer secret-token",
+        Origin: "https://attacker.example",
+      },
+    });
+    expect(foreignOriginBootstrap.status).toBe(403);
     expect(await metadata.json()).toEqual(SERVER_BOOTSTRAP);
     for (const version of [undefined, "0", "999"]) {
       const response = await fetch(`${base}/api/storage/restore`, {

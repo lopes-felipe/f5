@@ -476,6 +476,11 @@ const RequestOpenedPayload = Schema.Struct({
   detail: Schema.optional(TrimmedNonEmptyStringSchema),
   args: Schema.optional(Schema.Unknown),
   requestedPermissions: Schema.optional(UnknownRecordSchema),
+  /**
+   * The adapter already refused this request under a read-only workflow profile; nothing is
+   * pending and the provider was told no. Recorded so the timeline shows the attempt.
+   */
+  autoDeclined: Schema.optional(Schema.Boolean),
 });
 export type RequestOpenedPayload = typeof RequestOpenedPayload.Type;
 

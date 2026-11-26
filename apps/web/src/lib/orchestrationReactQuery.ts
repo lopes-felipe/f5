@@ -69,7 +69,7 @@ export function threadDetailQueryOptions(threadId: ThreadId) {
     queryKey: orchestrationQueryKeys.threadDetails(threadId),
     queryFn: ({ signal }) => fetchThreadTailDetailsRpc(threadId, signal),
     gcTime: 30_000,
-    staleTime: Infinity,
+    staleTime: (query) => (query.state.data?.detailSequence === 0 ? 0 : Infinity),
   });
 }
 
@@ -274,8 +274,8 @@ async function fetchThreadTailDetailsRpc(
   priority: "interactive" | "background" = "interactive",
 ): Promise<OrchestrationThreadTailDetails> {
   const generation = useStore.getState().backendGeneration;
-  const historyGeneration = useStore.getState().threads.find((thread) => thread.id === threadId)
-    ?.history?.generation;
+  const initialThread = useStore.getState().threads.find((thread) => thread.id === threadId);
+  const historyGeneration = initialThread?.history?.generation;
   const api = ensureNativeApi();
   for (let attempt = 0; attempt < 2; attempt++) {
     // Interactive hydration never joins a background warm: that request may
@@ -289,8 +289,9 @@ async function fetchThreadTailDetailsRpc(
     if (
       signal?.aborted ||
       generation !== useStore.getState().backendGeneration ||
-      historyGeneration !==
-        useStore.getState().threads.find((thread) => thread.id === threadId)?.history?.generation
+      (initialThread !== undefined &&
+        historyGeneration !==
+          useStore.getState().threads.find((thread) => thread.id === threadId)?.history?.generation)
     ) {
       throw makeAbortError();
     }
@@ -580,7 +581,7 @@ async function fetchThreadDetailInternal(
 
   return queryClient.fetchQuery({
     ...threadDetailQueryOptions(threadId),
-    staleTime: options?.force ? 0 : Infinity,
+    ...(options?.force ? { staleTime: 0 } : {}),
   });
 }
 
@@ -1036,7 +1037,7 @@ export function useThreadDetail(threadId: ThreadId | null | undefined) {
     enabled: Boolean(threadId) && !detailsLoaded,
     gcTime: 30_000,
     // Revalidate cached absence when navigating back to an unlisted thread.
-    staleTime: threadExists ? Infinity : 0,
+    staleTime: (query) => (threadExists && query.state.data?.detailSequence !== 0 ? Infinity : 0),
     // A tail older than the shell cannot seed missing metadata safely.
     // Retry until a current tail arrives, without polling listed threads.
     refetchInterval: (query) =>
@@ -1066,7 +1067,7 @@ export function useThreadDetail(threadId: ThreadId | null | undefined) {
       hasOlderActivities: query.data.hasOlderActivities,
       hasOlderCommandExecutions: query.data.hasOlderCommandExecutions,
     });
-    if (!isProvisionalThreadDetail(query.data)) {
+    if (!threadExists || !isProvisionalThreadDetail(query.data)) {
       return;
     }
     void scheduleThreadDetailRefreshIfProvisional(queryClient, threadId, query.data).catch(
@@ -1077,7 +1078,7 @@ export function useThreadDetail(threadId: ThreadId | null | undefined) {
         console.warn("Failed to refresh provisional thread details.", { threadId, error });
       },
     );
-  }, [query.data, queryClient, syncThreadTailDetails, threadId]);
+  }, [query.data, queryClient, syncThreadTailDetails, threadExists, threadId]);
 
   useEffect(() => {
     if (!threadId || !query.isError || query.isFetching) {

@@ -106,13 +106,80 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
 
         assert.equal(env.F5_STATE_DIR, resolve("/tmp/override-state"));
         assert.equal(env.T3CODE_STATE_DIR, resolve("/tmp/override-state"));
+        assert.equal(env.F5_PORT, "4222");
         assert.equal(env.T3CODE_PORT, "4222");
         assert.equal(env.VITE_WS_URL, "ws://localhost:4222");
+        assert.equal(env.F5_NO_BROWSER, "1");
         assert.equal(env.T3CODE_NO_BROWSER, "1");
+        assert.equal(env.F5_AUTO_BOOTSTRAP_PROJECT_FROM_CWD, "0");
         assert.equal(env.T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD, "0");
+        assert.equal(env.F5_LOG_WS_EVENTS, "1");
         assert.equal(env.T3CODE_LOG_WS_EVENTS, "1");
+        assert.equal(env.F5_HOST, "0.0.0.0");
         assert.equal(env.T3CODE_HOST, "0.0.0.0");
         assert.equal(env.VITE_DEV_SERVER_URL, "http://localhost:7331/");
+      }),
+    );
+
+    it.effect("strips inherited conflicting F5_* server variables", () =>
+      Effect.gen(function* () {
+        const env = yield* createDevRunnerEnv({
+          mode: "dev",
+          baseEnv: {
+            F5_PORT: "9999",
+            F5_HOST: "0.0.0.0",
+            F5_AUTH_TOKEN: "leaked-token",
+            F5_MODE: "desktop",
+            F5_NO_BROWSER: "1",
+          },
+          serverOffset: 0,
+          webOffset: 0,
+          stateDir: undefined,
+          authToken: undefined,
+          noBrowser: undefined,
+          autoBootstrapProjectFromCwd: undefined,
+          logWebSocketEvents: undefined,
+          host: undefined,
+          port: 4333,
+          devUrl: undefined,
+        });
+
+        assert.equal(env.F5_PORT, "4333");
+        assert.equal(env.F5_MODE, "web");
+        assert.equal(env.F5_HOST, undefined);
+        assert.equal(env.F5_AUTH_TOKEN, undefined);
+        assert.equal(env.F5_NO_BROWSER, undefined);
+      }),
+    );
+
+    it.effect("overrides inherited desktop F5_* mode and ws url in dev:server and dev:web", () =>
+      Effect.gen(function* () {
+        for (const mode of ["dev:server", "dev:web"] as const) {
+          const env = yield* createDevRunnerEnv({
+            mode,
+            baseEnv: {
+              F5_MODE: "desktop",
+              T3CODE_MODE: "desktop",
+              F5_DESKTOP_WS_URL: "ws://127.0.0.1:4999",
+              T3CODE_DESKTOP_WS_URL: "ws://127.0.0.1:4999",
+            },
+            serverOffset: 0,
+            webOffset: 0,
+            stateDir: undefined,
+            authToken: undefined,
+            noBrowser: undefined,
+            autoBootstrapProjectFromCwd: undefined,
+            logWebSocketEvents: undefined,
+            host: undefined,
+            port: undefined,
+            devUrl: undefined,
+          });
+
+          assert.equal(env.F5_MODE, "web");
+          assert.equal(env.T3CODE_MODE, "web");
+          assert.equal(env.F5_DESKTOP_WS_URL, undefined);
+          assert.equal(env.T3CODE_DESKTOP_WS_URL, undefined);
+        }
       }),
     );
 

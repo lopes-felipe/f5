@@ -861,6 +861,43 @@ describe("wsNativeApi", () => {
     await expect(createWsNativeApi().server.getHealth()).rejects.toThrow();
   });
 
+  it("decodes server.getDoctorReport and rejects malformed shapes", async () => {
+    const report = {
+      generatedAt: "2026-11-24T22:00:00.000Z",
+      overallStatus: "ok",
+      runtime: {
+        appVersion: "0.1.11",
+        platform: "darwin",
+        arch: "arm64",
+        runtimeKind: "node",
+        runtimeVersion: "v22.16.0",
+        profileSlug: "default",
+        profileName: "Default",
+        isDefaultProfile: true,
+        mode: "web",
+      },
+      counts: { ok: 1, warn: 0, error: 0 },
+      providers: [],
+      checks: [
+        {
+          id: "env.git",
+          category: "environment",
+          title: "Git CLI",
+          status: "ok",
+          summary: "Found at /usr/bin/git.",
+        },
+      ],
+    };
+    const { createWsNativeApi } = await import("./wsNativeApi");
+
+    requestMock.mockResolvedValueOnce(report);
+    await expect(createWsNativeApi().server.getDoctorReport()).resolves.toEqual(report);
+    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.serverGetDoctorReport);
+
+    requestMock.mockResolvedValueOnce({ ...report, checks: undefined });
+    await expect(createWsNativeApi().server.getDoctorReport()).rejects.toThrow();
+  });
+
   it("drops unknown commands from keybinding mutation results", async () => {
     const shortcut = {
       key: "j",

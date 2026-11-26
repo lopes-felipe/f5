@@ -1,7 +1,11 @@
+import * as NodeOs from "node:os";
+import { runtimeBuildTarget } from "@t3tools/shared/workflowProviders";
 import {
-  driverSupportsReadOnlyWorkflowTurns,
-  runtimeBuildTarget,
-} from "@t3tools/shared/workflowProviders";
+  READ_ONLY_ENFORCEMENT_CONFIG_KEY,
+  READ_ONLY_ENFORCEMENT_SUMMARY_CONFIG_KEY,
+  readOnlyEnforcementSummary,
+  resolveReadOnlyEnforcement,
+} from "@t3tools/shared/readOnlyEnforcement";
 import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { MCP_APP_PROVIDERS } from "@t3tools/shared/mcpApp";
@@ -157,7 +161,6 @@ import {
   type EventNdjsonLogger,
   makeEventNdjsonLogger,
 } from "./EventNdjsonLogger.ts";
-import { AnalyticsService } from "../../telemetry/Services/AnalyticsService.ts";
 import {
   ProjectMcpConfigService,
   ProjectMcpConfigServiceError,
@@ -545,7 +548,6 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       done: Deferred.Deferred<void, import("../Errors").ProviderServiceError>;
     }
     const submissionCompletions = new Map<symbol, SubmissionCompletion>();
-    const analytics = yield* Effect.service(AnalyticsService);
     const canonicalEventLogger =
       options?.canonicalEventLogger ??
       (options?.canonicalEventLogPath !== undefined
@@ -748,24 +750,35 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       });
 
     /**
-     * Read-only workflow turns run only on providers that can confine the turn. Grok and Muse
-     * never can; Antigravity can only when this instance's runtime is certified.
+     * How a read-only workflow stage on this instance is kept read-only, or a validation error
+     * when it can't be. Grok and Muse never can; Antigravity can only on a certified runtime.
      */
-    const readOnlyWorkflowRejection = (
+    const resolveStageReadOnlyEnforcement = (
       operation: string,
       provider: ProviderKind,
       instanceId: ProviderInstanceId,
       profile: string | undefined,
     ) =>
       Effect.gen(function* () {
-        if (!profile?.endsWith("readonly")) return;
+        if (!profile?.endsWith("readonly")) return undefined;
         const version = (yield* readProviderSnapshot(instanceId))?.version ?? undefined;
-        if (driverSupportsReadOnlyWorkflowTurns(provider, version, runtimeBuildTarget())) return;
+        const enforcement = resolveReadOnlyEnforcement(provider, version, {
+          target: runtimeBuildTarget(),
+          osRelease: NodeOs.release(),
+        });
+        if (enforcement !== undefined) return enforcement;
         return yield* toValidationError(
           operation,
           `${PROVIDER_DISPLAY_NAMES[provider]} cannot enforce read-only workflow turns.`,
         );
       });
+    const readOnlyWorkflowRejection = (
+      operation: string,
+      provider: ProviderKind,
+      instanceId: ProviderInstanceId,
+      profile: string | undefined,
+    ) =>
+      resolveStageReadOnlyEnforcement(operation, provider, instanceId, profile).pipe(Effect.asVoid);
 
     /** Per-instance runtime-mode support from the status snapshot, when it narrows the default. */
     const readAvailableRuntimeModes = (instanceId: ProviderInstanceId) =>
@@ -1439,11 +1452,6 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               bindingStatus: input.binding.status ?? null,
               hasResumeCursor: existing.resumeCursor !== undefined,
             });
-            yield* analytics.record("provider.session.recovered", {
-              provider: existing.provider,
-              strategy: "adopt-existing",
-              hasResumeCursor: existing.resumeCursor !== undefined,
-            });
             return { adapter, session: adopted, orphanedTurnId: undefined } as const;
           }
         } else if (hasActiveSession) {
@@ -1571,11 +1579,6 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           bindingStatus: input.binding.status ?? null,
           hasResumeCursor: resumed.resumeCursor !== undefined,
         });
-        yield* analytics.record("provider.session.recovered", {
-          provider: resumed.provider,
-          strategy: "resume-thread",
-          hasResumeCursor: resumed.resumeCursor !== undefined,
-        });
         return { adapter, session: resumedWithCapabilities, orphanedTurnId } as const;
       }).pipe(
         withProviderAdmission(
@@ -1700,11 +1703,6 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                 }
 
                 yield* adapter.stopSession(input.threadId).pipe(
-                  Effect.tap(() =>
-                    analytics.record("provider.session.stopped", {
-                      provider: adapter.provider,
-                    }),
-                  ),
                   Effect.tapError((cause) =>
                     Effect.logWarning("provider.session.stop-stale-failed", {
                       threadId: input.threadId,
@@ -1777,7 +1775,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           const instanceInfo = yield* registry.getInstanceInfo(requestedInstanceId);
           const resolvedProvider = instanceInfo.driverKind as ProviderKind;
           metricProvider = resolvedProvider;
-          yield* readOnlyWorkflowRejection(
+          const readOnlyEnforcement = yield* resolveStageReadOnlyEnforcement(
             "ProviderService.startSession",
             resolvedProvider,
             requestedInstanceId,
@@ -1895,6 +1893,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               : undefined;
           const adapterInput = {
             ...input,
+            ...(readOnlyEnforcement !== undefined ? { readOnlyEnforcement } : {}),
             providerOptions: mergeResolvedMcpProviderOptions({
               providerOptions: input.providerOptions,
               projectMcpServers: resolvedProjectMcp?.servers,
@@ -1971,7 +1970,10 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                   mcpEffectiveConfigVersion: resolvedProjectMcp?.effectiveVersion ?? null,
                   launchFingerprint,
                   startConfig: persistedStartConfig,
-                  instructionContext: toInstructionContextFromSessionStartInput(input),
+                  instructionContext: {
+                    ...toInstructionContextFromSessionStartInput(input),
+                    ...(readOnlyEnforcement !== undefined ? { readOnlyEnforcement } : {}),
+                  },
                   clearMissingResumeCursor: input.discardResumeCursor === true || !sameProvenance,
                   sessionGeneration,
                 },
@@ -1998,13 +2000,25 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             inputCwd: input.cwd ?? null,
             sessionCwd: sessionWithInstance.cwd ?? null,
           });
-          yield* analytics.record("provider.session.started", {
-            provider: sessionWithInstance.provider,
-            runtimeMode: input.runtimeMode,
-            hasResumeCursor: sessionWithInstance.resumeCursor !== undefined,
-            hasCwd: typeof input.cwd === "string" && input.cwd.trim().length > 0,
-            hasModel: typeof input.model === "string" && input.model.trim().length > 0,
-          });
+          if (readOnlyEnforcement !== undefined) {
+            yield* publishRuntimeEvent({
+              type: "session.configured",
+              eventId: EventId.makeUnsafe(timeOrderedUuid()),
+              provider: sessionWithInstance.provider,
+              providerInstanceId: requestedInstanceId,
+              threadId,
+              createdAt: new Date().toISOString(),
+              payload: {
+                config: {
+                  [READ_ONLY_ENFORCEMENT_CONFIG_KEY]: readOnlyEnforcement,
+                  [READ_ONLY_ENFORCEMENT_SUMMARY_CONFIG_KEY]: readOnlyEnforcementSummary(
+                    readOnlyEnforcement,
+                    PROVIDER_DISPLAY_NAMES[resolvedProvider],
+                  ),
+                },
+              },
+            });
+          }
 
           return sessionWithInstance;
         }).pipe(
@@ -2826,13 +2840,6 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                   firstTurnSent: true,
                 },
               });
-              yield* analytics.record("provider.turn.sent", {
-                provider: routed.adapter.provider,
-                model: input.model,
-                interactionMode: input.interactionMode,
-                attachmentCount: input.attachments.length,
-                hasInput: typeof input.input === "string" && input.input.trim().length > 0,
-              });
               return turn;
             }),
           );
@@ -2949,9 +2956,6 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                 turnId,
               });
           }
-          yield* analytics.record("provider.turn.interrupted", {
-            provider: routed.adapter.provider,
-          });
         }).pipe(
           withMetrics({
             counter: providerTurnsTotal,
@@ -2998,10 +3002,6 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             "provider.request_id": input.requestId,
           });
           yield* routed.adapter.respondToRequest(routed.threadId, input.requestId, input.decision);
-          yield* analytics.record("provider.request.responded", {
-            provider: routed.adapter.provider,
-            decision: input.decision,
-          });
         }).pipe(
           withMetrics({
             counter: providerTurnsTotal,
@@ -3220,9 +3220,6 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               submissionCompletions.delete(id);
             }
           sessionEventIdentities.delete(input.threadId);
-          yield* analytics.record("provider.session.stopped", {
-            provider: routed.adapter.provider,
-          });
         }).pipe(
           withMetrics({
             counter: providerSessionsTotal,
@@ -3560,10 +3557,6 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               resumeCursor: session.resumeCursor,
               runtimePayload: toRuntimePayloadFromSession(session),
             });
-          yield* analytics.record("provider.conversation.rolled_back", {
-            provider: routed.adapter.provider,
-            turns: input.numTurns,
-          });
         }).pipe(
           withMetrics({
             counter: providerTurnsTotal,
@@ -3659,13 +3652,6 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             "ProviderService.runOneOffPrompt",
           ),
         );
-        yield* analytics.record("provider.one_off_prompt.ran", {
-          provider,
-          model: input.modelSelection?.model ?? input.model,
-          hasCwd: input.cwd !== undefined,
-          hasProviderOptions:
-            input.providerOptions !== undefined || persistedProviderOptions !== undefined,
-        });
         return result;
       });
 
@@ -4288,10 +4274,6 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         for (const completion of submissionCompletions.values())
           yield* Deferred.succeed(completion.done, undefined);
         submissionCompletions.clear();
-        yield* analytics.record("provider.sessions.stopped_all", {
-          sessionCount: bindings.length,
-        });
-        yield* analytics.flush;
         if (stopFailures.length > 0)
           return yield* new ProviderValidationError({
             operation: "ProviderService.stopAll",

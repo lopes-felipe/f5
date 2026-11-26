@@ -389,6 +389,39 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
     }),
   );
 
+  it.effect("launches read-only workflow stages without optional Git locks", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const serverSettings = yield* ServerSettingsService;
+      const tempDir = yield* Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "cursor-acp-")));
+      const envLogPath = path.join(tempDir, "env.ndjson");
+      const wrapperPath = writeAcpWrapper(path.join(tempDir, "fake-agent"), mockAgentPath, {
+        envLog: { path: envLogPath, keys: ["GIT_OPTIONAL_LOCKS"] },
+      });
+      yield* serverSettings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      for (const [name, profiled] of [
+        ["cursor-readonly-git-locks", true],
+        ["cursor-ordinary-git-locks", false],
+      ] as const) {
+        const threadId = ThreadId.make(name);
+        yield* adapter.startSession({
+          threadId,
+          provider: ProviderDriverKind.make("cursor"),
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          ...(profiled ? { workflowExecutionProfile: "unattended-readonly" as const } : {}),
+          modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+        });
+        yield* adapter.stopSession(threadId);
+      }
+      const launches = yield* Effect.promise(() => readJsonLines(envLogPath));
+      assert.deepEqual(
+        launches.map((entry) => entry.GIT_OPTIONAL_LOCKS),
+        ["0", process.env.GIT_OPTIONAL_LOCKS ?? null],
+      );
+    }),
+  );
+
   it.effect("maps app plan mode onto the ACP plan session mode", () =>
     Effect.gen(function* () {
       const adapter = yield* CursorAdapter;
@@ -1758,6 +1791,65 @@ cursorAdapterHardeningTestLayer("CursorAdapterLive ACP hardening", (it) => {
 
   const responsesFor = (lines: ReadonlyArray<Record<string, unknown>>) =>
     lines.filter((line) => "result" in line && !("method" in line));
+
+  it.effect(
+    "runs read-only commands in a workflow stage and refuses others without failing the turn",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* CursorAdapter;
+        const settings = yield* ServerSettingsService;
+        const threadId = ThreadId.make("cursor-workflow-permissions");
+        const tempDir = yield* scopedTempDir("cursor-workflow-permissions-");
+        const requestLogPath = path.join(tempDir, "requests.ndjson");
+        const wrapperPath = yield* Effect.promise(() =>
+          makeMockAgentWrapper({
+            T3_ACP_EMIT_TOOL_CALLS: "1",
+            T3_ACP_PERMISSION_REQUEST_COUNT: "2",
+            T3_ACP_PERMISSION_COMMAND: "gh pr view 743438 --repo x/y --json title",
+            T3_ACP_SECOND_PERMISSION_COMMAND: "rm -rf build",
+            T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+          }),
+        );
+        yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+        const { events, fiber } = yield* collectThreadEvents(threadId);
+        yield* adapter.startSession({
+          threadId,
+          provider: ProviderDriverKind.make("cursor"),
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          workflowExecutionProfile: "unattended-readonly",
+          modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+        });
+        // Nothing waits on F5: the read-only command runs and the other is refused at once.
+        yield* adapter.sendTurn({
+          threadId,
+          input: "review the PR",
+          attachments: [],
+          workflowExecutionProfile: "unattended-readonly",
+        });
+
+        const opened = events.filter((event) => event.type === "request.opened");
+        assert.equal(opened.length, 1);
+        const denied = opened[0];
+        assert.ok(denied?.type === "request.opened");
+        assert.equal(denied.payload.autoDeclined, true);
+        assert.include(denied.payload.detail ?? "", "rm -rf build");
+        assert.ok(
+          events.some(
+            (event) =>
+              event.type === "request.resolved" &&
+              event.requestId === denied.requestId &&
+              event.payload.decision === "decline",
+          ),
+        );
+        const outcomes = responsesFor(yield* Effect.promise(() => readJsonLines(requestLogPath)))
+          .map((line) => (line.result as { outcome?: { optionId?: string } } | undefined)?.outcome)
+          .flatMap((outcome) => (outcome?.optionId ? [outcome.optionId] : []));
+        assert.deepEqual(outcomes, ["allow-once", "reject-once"]);
+        yield* Fiber.interrupt(fiber);
+        yield* adapter.stopSession(threadId);
+      }),
+  );
 
   it.effect("replies to cursor/ask_question with an answered outcome keyed by option id", () =>
     Effect.gen(function* () {

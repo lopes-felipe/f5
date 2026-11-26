@@ -37,7 +37,7 @@ public static class F5StorageProcess {
 '@
 $ErrorActionPreference="Stop"
 $session=(Get-Process -Id $PID).SessionId
-$items=@(Get-CimInstance Win32_Process | Where-Object { $_.SessionId -eq $session -and $_.ExecutablePath } | ForEach-Object {
+$items=@(Get-CimInstance Win32_Process -Property ProcessId,Name,SessionId,ExecutablePath | Where-Object { $_.SessionId -eq $session -and $_.ExecutablePath } | ForEach-Object {
   $item=$_
   $cwd=$null
   # Protected/elevated unrelated processes must not poison the whole snapshot.

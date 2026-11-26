@@ -1476,6 +1476,7 @@ describe("WebSocket Server", () => {
     const resolvePullRequest = vi.fn(() => Effect.void as any);
     const preparePullRequestThread = vi.fn(() => Effect.void as any);
     const gitManager: GitManagerShape = {
+      sourceControlIdentity: () => Effect.succeed(undefined),
       branchPullRequest: () => Effect.succeed(null),
       status,
       resolvePullRequest,
@@ -1516,6 +1517,7 @@ describe("WebSocket Server", () => {
     };
 
     const gitManager: GitManagerShape = {
+      sourceControlIdentity: () => Effect.succeed(undefined),
       branchPullRequest: () => Effect.succeed(null),
       status: vi.fn(() => Effect.void as any),
       resolvePullRequest: vi.fn(() => Effect.succeed(resolvePullRequestResult)),
@@ -1565,6 +1567,7 @@ describe("WebSocket Server", () => {
       ),
     );
     const gitManager: GitManagerShape = {
+      sourceControlIdentity: () => Effect.succeed(undefined),
       branchPullRequest: () => Effect.succeed(null),
       status: vi.fn(() => Effect.void as any),
       resolvePullRequest: vi.fn(() => Effect.void as any),
