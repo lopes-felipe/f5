@@ -1,15 +1,15 @@
-# Upstream performance baseline
+# Performance benchmarks and budgets
 
-> Contributors: the performance harness, baseline and the budgets changes must meet.
+> Contributors: F5's performance harness, regression budgets, and benchmark workloads.
 
 **Contents:** [Run server measurements](#run-server-measurements) · [Workloads and limits](#workloads-and-limits) · [Browser, transport and retained memory](#browser-transport-and-retained-memory) · [Reproducing the pinned baseline](#reproducing-the-pinned-baseline) · [Server performance and storage (roadmap 5.4)](#server-performance-and-storage-roadmap-54)
 
-The Phase 0 harness collects server component measurements and a production-browser,
-WebSocket and native-terminal soak. Both reports are required. The pinned original
-baseline is `290d261c9c9daa0c469b312d7f62dfd4ea9b9698`; use its runtime code and
-frozen dependencies when collecting it. This is measurement tooling, not a runtime
-performance port. Existing baseline failures remain failures until their approved
-Phase 2 fixes meet the gates.
+F5's performance harness collects both server component benchmarks and a production-browser,
+WebSocket, and native-terminal soak report. Changes targeting server or interactive performance
+compare before/after reports through `perf:compare` against the budgets below. The pinned original
+baseline is `290d261c9c9daa0c469b312d7f62dfd4ea9b9698`; use its runtime code and frozen dependencies
+when reproducing it (see [Reproducing the pinned baseline](#reproducing-the-pinned-baseline)).
+Existing baseline failures remain failures until their approved Phase 2 fixes meet the gates.
 
 ## Run server measurements
 
@@ -433,11 +433,14 @@ blocked until rollback and then resumes.
 General settings includes a Diagnostics card for OTLP trace/metric destinations
 and collector headers. Restart F5 after editing these fields. Header values live
 in the profile secret store, and reads expose only their names and redaction
-markers. Explicit signal settings override `OTEL_EXPORTER_OTLP_*_ENDPOINT`, then
-`OTEL_EXPORTER_OTLP_ENDPOINT` with `/v1/traces` or `/v1/metrics` appended. JSON
-and protobuf HTTP protocols are supported. `OTEL_SDK_DISABLED=true` disables
-observability, and `OTEL_TRACES_EXPORTER=none` / `OTEL_METRICS_EXPORTER=none`
-disable external export per signal. Export is inactive without a destination.
+markers. F5 exports only to the collectors set in this card: it ignores
+`OTEL_EXPORTER_OTLP_*_ENDPOINT`, `OTEL_EXPORTER_OTLP_ENDPOINT` and the `*_HEADERS`
+variables, which usually configure other tools on the machine, and logs a warning
+at startup when they are set. `OTEL_RESOURCE_ATTRIBUTES` still labels exported
+data, for example to replace `host.name`. `OTEL_EXPORTER_OTLP_PROTOCOL` (or its per-signal form) still picks
+JSON or protobuf over HTTP. `OTEL_SDK_DISABLED=true` disables observability, and
+`OTEL_TRACES_EXPORTER=none` / `OTEL_METRICS_EXPORTER=none` disable external export
+per signal. Export is inactive without a destination.
 
 The Server health card below it needs no collector. `server.getHealth` returns
 what `observability/serverHealth.ts` has counted since the server process

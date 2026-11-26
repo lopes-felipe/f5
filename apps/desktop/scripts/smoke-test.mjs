@@ -838,9 +838,9 @@ finally:
   )
     throw new Error("Desktop attention badge was not updated");
   await page.evaluate(() => window.desktopBridge.setAttentionBadge(0));
-  // Without a PostHog key the server never creates an anonymous telemetry id.
+  // F5 has no telemetry; nothing may create the anonymous id the retired analytics used.
   if (existsSync(join(state, "anonymous-id")))
-    throw new Error("Telemetry created an anonymous id without a configured key");
+    throw new Error("Something created the retired telemetry anonymous id");
   const observeUnloadDialog = () => {};
   page.on("dialog", observeUnloadDialog);
   await page.evaluate(() => {

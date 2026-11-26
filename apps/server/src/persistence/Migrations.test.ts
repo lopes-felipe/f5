@@ -8,7 +8,14 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { describe, expect, it } from "vitest";
 
 import { repairUnreleasedScheduledTaskMigrations } from "./repairUnreleasedScheduledTaskMigrations.ts";
-import { LATEST_MIGRATION_ID, MIGRATIONS, runMigrations } from "./Migrations.ts";
+import { BASELINE_MIGRATION_ID } from "./BaselineSchema.ts";
+import {
+  applyBaselineSchemaIfFresh,
+  LATEST_MIGRATION_ID,
+  MIGRATIONS,
+  runIncrementalMigrations,
+  runMigrations,
+} from "./Migrations.ts";
 import { WorktreePreparationsLive } from "./Layers/WorktreePreparations.ts";
 import { WorktreePreparations } from "./Services/WorktreePreparations.ts";
 import * as SqliteClient from "./NodeSqliteClient.ts";
@@ -488,5 +495,201 @@ effectIt.layer(SqliteClient.layerMemory())("thread reference grants upgrade", (i
         { name: "ThreadReferenceGrants" },
       ]);
     }),
+  );
+});
+
+const inspectDatabaseSchema = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const master = yield* sql<{
+    readonly type: string;
+    readonly name: string;
+    readonly tbl_name: string;
+    readonly sql: string | null;
+  }>`
+    SELECT type, name, tbl_name, sql
+    FROM sqlite_master
+    WHERE name NOT LIKE 'sqlite_%'
+    ORDER BY type, name
+  `;
+
+  const userTables = master
+    .filter((row) => row.type === "table" && !row.name.startsWith("search_documents_fts_"))
+    .map((row) => row.name);
+
+  const tableInfo: Record<string, ReadonlyArray<Record<string, unknown>>> = {};
+  const foreignKeys: Record<string, ReadonlyArray<Record<string, unknown>>> = {};
+  const rowCounts: Record<string, number> = {};
+  for (const table of userTables) {
+    const quoted = `"${table.replaceAll('"', '""')}"`;
+    tableInfo[table] = yield* sql.unsafe<Record<string, unknown>>(`PRAGMA table_info(${quoted})`);
+    foreignKeys[table] = yield* sql.unsafe<Record<string, unknown>>(
+      `PRAGMA foreign_key_list(${quoted})`,
+    );
+    if (table !== "effect_sql_migrations") {
+      const [countRow] = yield* sql.unsafe<{ readonly count: number }>(
+        `SELECT COUNT(*) AS count FROM ${quoted}`,
+      );
+      rowCounts[table] = countRow?.count ?? 0;
+    }
+  }
+
+  const indexInfo: Record<string, ReadonlyArray<Record<string, unknown>>> = {};
+  for (const row of master) {
+    if (row.type === "index") {
+      const quoted = `"${row.name.replaceAll('"', '""')}"`;
+      indexInfo[row.name] = yield* sql.unsafe<Record<string, unknown>>(
+        `PRAGMA index_info(${quoted})`,
+      );
+    }
+  }
+
+  const appliedMigrations = yield* sql<{
+    readonly migration_id: number;
+    readonly name: string;
+  }>`
+    SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id
+  `;
+
+  const seeded = {
+    agentBridgeRevision: yield* sql`SELECT id, revision FROM agent_bridge_revision`,
+    prHubPublication: yield* sql`SELECT id, revision FROM pr_hub_publication`,
+    threadPinState: yield* sql`SELECT singleton_id, revision FROM projection_thread_pin_state`,
+    usageMetadata: yield* sql<{
+      readonly singleton_id: number;
+      readonly coverage_started_at: string;
+      readonly fact_cutover_at: string | null;
+    }>`SELECT singleton_id, coverage_started_at, fact_cutover_at FROM projection_usage_metadata`,
+    scheduledControl: yield* sql<{
+      readonly id: number;
+      readonly revision: number;
+      readonly enabled: number;
+      readonly ready: number;
+      readonly epoch: number;
+      readonly cutover_at: string;
+    }>`SELECT id, revision, enabled, ready, epoch, cutover_at FROM scheduled_control`,
+  };
+
+  return { master, tableInfo, foreignKeys, indexInfo, rowCounts, appliedMigrations, seeded };
+});
+
+describe("squashed baseline schema bootstrap", () => {
+  it("runs the baseline fast path on a fresh DB and matches incremental migrations 1..latest identically", async () => {
+    const baselineRuntime = ManagedRuntime.make(SqliteClient.layerMemory());
+    const incrementalRuntime = ManagedRuntime.make(SqliteClient.layerMemory());
+    try {
+      const { appliedFirst, appliedSecond, baselineTimestamps, baseline } =
+        await baselineRuntime.runPromise(
+          Effect.gen(function* () {
+            const appliedFirst = yield* applyBaselineSchemaIfFresh;
+            const appliedSecond = yield* applyBaselineSchemaIfFresh;
+            yield* runMigrations;
+            const sql = yield* SqlClient.SqlClient;
+            const baselineTimestamps = yield* sql<{ readonly created_at: string }>`
+              SELECT DISTINCT created_at FROM effect_sql_migrations
+              WHERE migration_id <= ${BASELINE_MIGRATION_ID}
+            `;
+            const baseline = yield* inspectDatabaseSchema;
+            return { appliedFirst, appliedSecond, baselineTimestamps, baseline };
+          }),
+        );
+      const incremental = await incrementalRuntime.runPromise(
+        Effect.gen(function* () {
+          yield* runIncrementalMigrations;
+          return yield* inspectDatabaseSchema;
+        }),
+      );
+
+      // Explicitly prove the baseline fast path executed once and skipped on re-run.
+      expect(appliedFirst).toBe(true);
+      expect(appliedSecond).toBe(false);
+      expect(baselineTimestamps).toHaveLength(1);
+
+      expect(baseline.master).toEqual(incremental.master);
+      expect(baseline.tableInfo).toEqual(incremental.tableInfo);
+      expect(baseline.foreignKeys).toEqual(incremental.foreignKeys);
+      expect(baseline.indexInfo).toEqual(incremental.indexInfo);
+      expect(baseline.rowCounts).toEqual(incremental.rowCounts);
+      expect(baseline.appliedMigrations).toEqual(incremental.appliedMigrations);
+
+      expect(baseline.seeded.agentBridgeRevision).toEqual(incremental.seeded.agentBridgeRevision);
+      expect(baseline.seeded.prHubPublication).toEqual(incremental.seeded.prHubPublication);
+      expect(baseline.seeded.threadPinState).toEqual(incremental.seeded.threadPinState);
+
+      // Compare every non-timestamp column of seeded singleton tables directly against incremental.
+      expect(baseline.seeded.usageMetadata).toHaveLength(incremental.seeded.usageMetadata.length);
+      expect(baseline.seeded.usageMetadata[0]?.singleton_id).toBe(
+        incremental.seeded.usageMetadata[0]?.singleton_id,
+      );
+      expect(baseline.seeded.usageMetadata[0]?.fact_cutover_at).toBe(
+        baseline.seeded.usageMetadata[0]?.coverage_started_at,
+      );
+      expect(baseline.seeded.usageMetadata[0]?.coverage_started_at).toMatch(
+        /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/,
+      );
+
+      expect(baseline.seeded.scheduledControl).toHaveLength(
+        incremental.seeded.scheduledControl.length,
+      );
+      const { cutover_at: baselineCutover, ...baselineControlNonTime } =
+        baseline.seeded.scheduledControl[0]!;
+      const { cutover_at: _incCutover, ...incrementalControlNonTime } =
+        incremental.seeded.scheduledControl[0]!;
+      expect(baselineControlNonTime).toEqual(incrementalControlNonTime);
+      expect(baselineCutover).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    } finally {
+      await baselineRuntime.dispose();
+      await incrementalRuntime.dispose();
+    }
+  });
+
+  it("serializes concurrent fresh-DB baseline bootstraps cleanly inside the IMMEDIATE transaction", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "f5-baseline-race-"));
+    const dbPath = join(tempDir, "concurrent.sqlite");
+    const runtime = ManagedRuntime.make(SqliteClient.layer({ filename: dbPath }));
+    try {
+      const [appliedA, appliedB] = await runtime.runPromise(
+        Effect.all([applyBaselineSchemaIfFresh, applyBaselineSchemaIfFresh], {
+          concurrency: "unbounded",
+        }),
+      );
+      // Exactly one fiber creates the baseline tables; the other acquires the transaction
+      // second, re-checks sqlite_master inside it, and skips the DDL cleanly.
+      expect([appliedA, appliedB].filter(Boolean)).toHaveLength(1);
+      await runtime.runPromise(
+        Effect.all([runMigrations, runMigrations], { concurrency: "unbounded" }),
+      );
+    } finally {
+      await runtime.dispose();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  effectIt.effect(
+    "applies subsequent migrations cleanly on top of a baseline-bootstrapped DB",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runMigrations;
+        const nextId = LATEST_MIGRATION_ID + 1;
+        expect(LATEST_MIGRATION_ID).toBeGreaterThanOrEqual(BASELINE_MIGRATION_ID);
+
+        const nextMigration = Effect.gen(function* () {
+          const db = yield* SqlClient.SqlClient;
+          yield* db`CREATE TABLE future_baseline_test (id INTEGER PRIMARY KEY)`;
+        });
+        yield* Migrator.make({})({
+          loader: Migrator.fromRecord({
+            ...MIGRATIONS,
+            [`${nextId}_FutureBaselineTest`]: nextMigration,
+          }),
+        });
+
+        expect(
+          yield* sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'future_baseline_test'`,
+        ).toEqual([{ name: "future_baseline_test" }]);
+        expect(
+          yield* sql`SELECT migration_id, name FROM effect_sql_migrations WHERE migration_id = ${nextId}`,
+        ).toEqual([{ migration_id: nextId, name: "FutureBaselineTest" }]);
+      }).pipe(Effect.provide(SqliteClient.layerMemory()), Effect.scoped),
   );
 });

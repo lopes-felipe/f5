@@ -33,7 +33,7 @@ retains the existing account, installation and active-session checks.
 
 Supervised mode asks before commands, writes and extension tools. Verified native
 read tools and the F5 catalog's annotated read tools continue without an approval.
-Auto-accept edits also permits native edit and write tools. Full access permits
+Accept edits also permits native edit and write tools. Full access permits
 tool calls. Read-only workflows block mutations before those permission rules and
 do not open a modal approval to grant a write. Changing that policy requires a
 session restart. Pi does not expose F5's AI approval reviewer, so Auto is unavailable.

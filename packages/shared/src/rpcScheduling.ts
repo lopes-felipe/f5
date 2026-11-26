@@ -82,6 +82,8 @@ export const RPC_METHOD_POLICY = {
 
   "attachments.cloneToUpload": MUTATION,
   "attachments.getUploads": READ,
+  "attachments.materializeUploads": MUTATION,
+  "attachments.discardMaterialized": MUTATION,
   "attachments.releaseUploads": MUTATION,
 
   "chrome.getReadiness": MUTATION,
@@ -373,6 +375,7 @@ export const RPC_METHOD_POLICY = {
   "server.checkProviderUpdates": MUTATION,
   "server.getClaudeTranscriptRepair": READ_RT,
   "server.getConfig": READ,
+  "server.getDoctorReport": READ,
   "server.getHealth": READ,
   "server.getProjectSettings": READ,
   "server.getProviderInventory": READ,

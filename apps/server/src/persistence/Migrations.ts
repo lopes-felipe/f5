@@ -99,7 +99,15 @@ import Migration0077 from "./Migrations/077_PrHubAttentionVersion.ts";
  */
 
 import * as Migrator from "effect/unstable/sql/Migrator";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as Layer from "effect/Layer";
+
+import {
+  BASELINE_DDL_STATEMENTS,
+  BASELINE_MIGRATION_ID,
+  BASELINE_SEED_STATEMENTS,
+  EFFECT_SQL_MIGRATIONS_TABLE_SQL,
+} from "./BaselineSchema.ts";
 
 // Import all migrations statically
 import Migration0001 from "./Migrations/001_OrchestrationEvents.ts";
@@ -413,18 +421,88 @@ const loader = Migrator.fromRecord(MIGRATIONS);
  */
 const run = Migrator.make({});
 
+const BASELINE_MIGRATION_ENTRIES: ReadonlyArray<{
+  readonly migrationId: number;
+  readonly name: string;
+}> = Object.keys(MIGRATIONS)
+  .map((key) => {
+    const separator = key.indexOf("_");
+    return {
+      migrationId: Number.parseInt(key.slice(0, separator), 10),
+      name: key.slice(separator + 1),
+    };
+  })
+  .filter((entry) => entry.migrationId <= BASELINE_MIGRATION_ID)
+  .toSorted((left, right) => left.migrationId - right.migrationId);
+
+if (LATEST_MIGRATION_ID < BASELINE_MIGRATION_ID) {
+  throw new Error(
+    `LATEST_MIGRATION_ID (${LATEST_MIGRATION_ID}) is behind BASELINE_MIGRATION_ID (${BASELINE_MIGRATION_ID}); regenerate BaselineSchema.ts.`,
+  );
+}
+
+/**
+ * Bootstraps a completely empty SQLite database directly to `BASELINE_MIGRATION_ID`
+ * in a single `BEGIN IMMEDIATE` transaction, recording all baseline migration IDs
+ * in `effect_sql_migrations`. The emptiness probe runs inside the transaction so
+ * concurrent openers cannot race into duplicate `CREATE TABLE` statements.
+ *
+ * @internal Exported for migration bootstrap tests.
+ */
+export const applyBaselineSchemaIfFresh = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const existingTables = yield* sql<{ readonly name: string }>`
+        SELECT name FROM sqlite_master
+        WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+        LIMIT 1
+      `;
+      if (existingTables.length > 0) {
+        return false;
+      }
+      for (const statement of BASELINE_DDL_STATEMENTS) {
+        yield* sql.unsafe(statement);
+      }
+      for (const statement of BASELINE_SEED_STATEMENTS) {
+        yield* sql.unsafe(statement);
+      }
+      yield* sql.unsafe(EFFECT_SQL_MIGRATIONS_TABLE_SQL);
+      for (const entry of BASELINE_MIGRATION_ENTRIES) {
+        yield* sql`
+          INSERT INTO effect_sql_migrations (migration_id, name)
+          VALUES (${entry.migrationId}, ${entry.name})
+        `;
+      }
+      return true;
+    }),
+  );
+});
+
+/**
+ * Run all migrations incrementally from scratch without the fresh-DB baseline
+ * fast path.
+ *
+ * @internal Test and baseline-regeneration helper only; production code must use `runMigrations`.
+ */
+export const runIncrementalMigrations = Effect.gen(function* () {
+  yield* run({ loader });
+});
+
 /**
  * Run all pending migrations.
  *
- * Creates the migrations tracking table (effect_sql_migrations) if it doesn't exist,
- * then runs any migrations with ID greater than the latest recorded migration.
- *
- * Returns array of [id, name] tuples for migrations that were run.
- *
- * @returns Effect containing array of executed migrations
+ * On a brand-new database, bootstraps directly from `BaselineSchema` (migrations
+ * 1..BASELINE_MIGRATION_ID) in a single transaction and then runs any newer
+ * incremental migrations. Existing databases skip the baseline and run any
+ * migrations with ID greater than the latest recorded migration.
  */
 export const runMigrations = Effect.gen(function* () {
   yield* Effect.log("Running migrations...");
+  const appliedBaseline = yield* applyBaselineSchemaIfFresh;
+  if (appliedBaseline) {
+    yield* Effect.log(`Applied squashed baseline schema (1..${BASELINE_MIGRATION_ID})`);
+  }
   yield* run({ loader });
   yield* Effect.log("Migrations ran successfully");
 });

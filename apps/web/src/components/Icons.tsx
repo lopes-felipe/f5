@@ -446,8 +446,7 @@ export const IntelliJIdeaIcon: Icon = (props) => {
   );
 };
 
-// TODO: Replace with official Kiro brand SVG once it is provided. For now this
-// is a simple stylized "K" glyph that mirrors the visual weight of sibling
+// Stylized monochrome "K" glyph matching the visual weight of sibling
 // editor icons (Cursor, Zed) in OpenInPicker.
 export const KiroIcon: Icon = (props) => (
   <svg {...props} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">

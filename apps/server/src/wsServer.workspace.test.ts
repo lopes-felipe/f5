@@ -677,6 +677,15 @@ describe("WebSocket Server", () => {
       ]),
       truncated: false,
     });
+    const restricted = await sendRequest(ws, WS_METHODS.projectsSearchEntries, {
+      cwd: path.parse(workspace).root,
+      query: "comp",
+      limit: 10,
+    });
+    expect(restricted.error).toEqual({
+      code: "WorkspaceSearchRestricted",
+      message: "Workspace search is unavailable at the filesystem root.",
+    });
   });
 
   it("creates a committed project from a name in the configured projects folder", async () => {
@@ -1476,6 +1485,7 @@ describe("WebSocket Server", () => {
     const resolvePullRequest = vi.fn(() => Effect.void as any);
     const preparePullRequestThread = vi.fn(() => Effect.void as any);
     const gitManager: GitManagerShape = {
+      sourceControlIdentity: () => Effect.succeed(undefined),
       branchPullRequest: () => Effect.succeed(null),
       status,
       resolvePullRequest,
@@ -1516,6 +1526,7 @@ describe("WebSocket Server", () => {
     };
 
     const gitManager: GitManagerShape = {
+      sourceControlIdentity: () => Effect.succeed(undefined),
       branchPullRequest: () => Effect.succeed(null),
       status: vi.fn(() => Effect.void as any),
       resolvePullRequest: vi.fn(() => Effect.succeed(resolvePullRequestResult)),
@@ -1565,6 +1576,7 @@ describe("WebSocket Server", () => {
       ),
     );
     const gitManager: GitManagerShape = {
+      sourceControlIdentity: () => Effect.succeed(undefined),
       branchPullRequest: () => Effect.succeed(null),
       status: vi.fn(() => Effect.void as any),
       resolvePullRequest: vi.fn(() => Effect.void as any),

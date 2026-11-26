@@ -346,11 +346,13 @@ import {
   resolveCurrentFavoritePresetIndex,
   type UsableFavoritePreset,
 } from "../favoritePresets";
+import { rememberRecentModel } from "../recentModels";
 import {
   applyFavoritePresetEffort,
   useFavoritePresetShortcuts,
 } from "./chat/useFavoritePresetShortcuts";
 import { useWsConnectionState } from "../wsConnectionState";
+import { UnconfirmedSubmissionError } from "../wsTransport";
 import BranchToolbar, { BranchToolbarRow } from "./BranchToolbar";
 import {
   PlainGroupWorkspacePicker,
@@ -965,6 +967,10 @@ export default memo(function ChatView({
   const promptRef = useRef(prompt);
   const composerMentionsRef = useRef(composerDraft.mentions);
   const composerRedesign = useServerCapability("composer-redesign");
+  const getComposerTimeline = useCallback(() => {
+    const node = legendListRef.current?.getScrollableNode?.();
+    return node instanceof HTMLElement ? node : null;
+  }, []);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [isJumpingToLatest, setIsJumpingToLatest] = useState(false);
   // The tail when the reader left the end. The pill mounts after a debounce,
@@ -1676,6 +1682,7 @@ export default memo(function ChatView({
     selectedProviderModelOptions,
     selectedProviderModelOptionsForDispatch,
     selectedComposerEffort,
+    genericProviderTraitsMenuContent,
     genericProviderTraitsPicker,
     isClaudeUltrathink,
     showClaudeTraitsControls,
@@ -3747,6 +3754,26 @@ export default memo(function ChatView({
     serverThread,
     threadId,
   ]);
+  // Every applied pick (picker, alt+tab, favorite shortcuts, draft or started thread)
+  // also leads the model picker's Recent list, so Recent starts with the model in use.
+  const [recentPick, setRecentPick] = useState<{ threadId: ThreadId } | null>(null);
+  const recordedRecentPick = useRef<typeof recentPick>(null);
+  useLayoutEffect(
+    () =>
+      subscribeComposerModelPicks((pickedThreadId) => {
+        if (pickedThreadId === threadId) setRecentPick({ threadId });
+      }),
+    [threadId],
+  );
+  useLayoutEffect(() => {
+    if (recentPick?.threadId !== threadId || recordedRecentPick.current === recentPick) return;
+    recordedRecentPick.current = recentPick;
+    if (noProviderAvailable) return;
+    rememberRecentModel(
+      selectedModelSelectionForDispatch.instanceId,
+      selectedModelSelectionForDispatch.model,
+    );
+  }, [noProviderAvailable, recentPick, selectedModelSelectionForDispatch, threadId]);
 
   // LegendList owns scroll state now; we keep a footer-resize observer only
   // to drive the compact composer footer layout (no scroll side effects).
@@ -4312,19 +4339,20 @@ export default memo(function ChatView({
         return { ok: true as const, disposition: result.disposition };
       } catch (error) {
         const message = error instanceof Error ? error.message : input.failureMessage;
-        if (isTransportConnectionErrorMessage(message)) {
+        const resendStopped = error instanceof UnconfirmedSubmissionError;
+        if (resendStopped || isTransportConnectionErrorMessage(message)) {
           updateStorePendingTurnDispatch(input.command.threadId, (current) => {
             if (!current || current.commandId !== input.command.commandId) {
               return current;
             }
             return {
               ...current,
-              status: "awaiting-recovery",
-              awaitingRecoveryAfterEpoch: recoveryEpoch,
+              status: resendStopped ? "awaiting-user-action" : "awaiting-recovery",
+              awaitingRecoveryAfterEpoch: resendStopped ? null : recoveryEpoch,
             };
           });
           if (input.command.bootstrap) {
-            setThreadError(input.command.threadId, message);
+            if (!resendStopped) setThreadError(input.command.threadId, message);
           } else {
             toastManager.add({ type: "error", title: message });
           }
@@ -8343,6 +8371,7 @@ export default memo(function ChatView({
       content: (
         <PendingSendRecoveryBanner
           visible
+          retryDisabled={wsInteractionBlocked}
           onRetrySend={() => {
             void onRetryPendingTurnDispatch();
           }}
@@ -8495,6 +8524,7 @@ export default memo(function ChatView({
     selectedProviderModels,
     selectedProviderModelOptions,
     genericProviderTraitsPicker,
+    genericProviderTraitsMenuContent,
   };
   const composerModeControls: ComposerModeControls = {
     interactionMode,
@@ -9088,6 +9118,7 @@ export default memo(function ChatView({
                       onEditorFocus={typingGuard.onFocus}
                       onEditorBlur={typingGuard.onBlur}
                       redesignEnabled={composerRedesign}
+                      getTimeline={getComposerTimeline}
                       composerFormRef={composerFormRef}
                       composerEditorRef={composerEditorRef}
                       threadId={threadId}

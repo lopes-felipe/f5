@@ -1,6 +1,7 @@
 export * from "./settingsRouting";
 import {
   LEGACY_SETTINGS_ITEM_ALIASES,
+  SETTINGS_CATEGORY_LABELS,
   type SettingsCategory,
   type SettingsScope,
 } from "./settingsRouting";
@@ -74,5 +75,6 @@ export function filterSettingsItems(
     SETTINGS_ITEM_DESCRIPTORS.filter((descriptor) => settingsItemVisibleInScope(descriptor, scope)),
     query,
     options.limit,
+    SETTINGS_CATEGORY_LABELS,
   );
 }

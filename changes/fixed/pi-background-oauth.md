@@ -1,1 +1,0 @@
-- Short-lived Pi discovery and text-generation processes skip the startup catalog refresh that could lose a rotated OAuth token.

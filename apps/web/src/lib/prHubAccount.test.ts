@@ -1,9 +1,61 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { assertPrHubAccountGeneration } from "./prHubAccount";
+import {
+  assertPrHubAccountGeneration,
+  getPrHubAccountSnapshot,
+  getPrHubDraftIdentity,
+  setPrHubAccount,
+  setPrHubAccountGeneration,
+  setPrHubSelectedAccountId,
+  subscribePrHubAccount,
+} from "./prHubAccount";
 import { prHubQueryKeys } from "./prHubReactQuery";
 import { PullRequestKey } from "@t3tools/contracts";
-import { getPrHubDraftIdentity, setPrHubAccount, setPrHubAccountGeneration } from "./prHubAccount";
-afterEach(() => setPrHubAccount(undefined));
+
+afterEach(() => {
+  setPrHubSelectedAccountId(undefined);
+  setPrHubAccount(undefined);
+});
+
+describe("PR Hub account snapshot store", () => {
+  it("keeps snapshot identity stable when unchanged, notifies on changes, and ignores no-op writes", () => {
+    const first = getPrHubAccountSnapshot();
+    expect(getPrHubAccountSnapshot()).toBe(first);
+
+    let notifications = 0;
+    const unsubscribe = subscribePrHubAccount(() => {
+      notifications += 1;
+    });
+    try {
+      // No-op write should not notify or allocate a new snapshot
+      setPrHubSelectedAccountId(undefined);
+      expect(notifications).toBe(0);
+      expect(getPrHubAccountSnapshot()).toBe(first);
+
+      setPrHubSelectedAccountId("acct-a");
+      expect(notifications).toBe(1);
+      const afterSelect = getPrHubAccountSnapshot();
+      expect(afterSelect).toEqual({ accountId: "acct-a", generation: undefined });
+      expect(afterSelect).not.toBe(first);
+
+      // Repeating the same selected account ID is a no-op
+      setPrHubSelectedAccountId("acct-a");
+      expect(notifications).toBe(1);
+      expect(getPrHubAccountSnapshot()).toBe(afterSelect);
+
+      // Updating generation notifies and updates snapshot
+      setPrHubAccount({ host: "github.com", viewerId: 1, generation: "gen-1" });
+      expect(notifications).toBe(2);
+      expect(getPrHubAccountSnapshot()).toEqual({ accountId: "acct-a", generation: "gen-1" });
+
+      // Setting identical generation is a no-op
+      setPrHubAccountGeneration("gen-1");
+      expect(notifications).toBe(2);
+    } finally {
+      unsubscribe();
+    }
+  });
+});
+
 describe("PR Hub account isolation", () => {
   it("rejects a response captured before an account switch", () => {
     setPrHubAccountGeneration("first");

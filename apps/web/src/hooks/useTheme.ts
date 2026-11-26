@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useSyncExternalStore } from "react";
+import { safeLocalStorageSetItem } from "../lib/safeStorage";
 import {
   applyThemeMode,
   getSystemPrefersDark,
@@ -17,8 +18,13 @@ type ThemeSnapshot = {
 let listeners: Array<() => void> = [];
 let lastSnapshot: ThemeSnapshot | null = null;
 let lastDesktopTheme: ThemeMode | null = null;
+let fallbackTheme: ThemeMode | null = null;
 function emitChange() {
   for (const listener of listeners) listener();
+}
+
+function currentThemeMode(): ThemeMode {
+  return fallbackTheme ?? readStoredThemeMode();
 }
 
 function applyTheme(theme: ThemeMode, suppressTransitions = false) {
@@ -42,10 +48,10 @@ function syncDesktopTheme(theme: ThemeMode) {
 }
 
 // Apply immediately on module load to prevent flash
-applyTheme(readStoredThemeMode());
+applyTheme(currentThemeMode());
 
 function getSnapshot(): ThemeSnapshot {
-  const theme = readStoredThemeMode();
+  const theme = currentThemeMode();
   const systemDark = theme === "system" ? getSystemPrefersDark() : false;
 
   if (lastSnapshot && lastSnapshot.theme === theme && lastSnapshot.systemDark === systemDark) {
@@ -62,14 +68,16 @@ function subscribe(listener: () => void): () => void {
   // Listen for system preference changes
   const mq = window.matchMedia(THEME_MODE_MEDIA_QUERY);
   const handleChange = () => {
-    if (readStoredThemeMode() === "system") applyTheme("system", true);
+    if (currentThemeMode() === "system") applyTheme("system", true);
     emitChange();
   };
   mq.addEventListener("change", handleChange);
 
-  // Listen for storage changes from other tabs
+  // Listen for storage changes from other tabs. Keep an unpersisted local
+  // selection (`fallbackTheme !== null`) intact until a subsequent local write
+  // succeeds, so queued storage events cannot overwrite it.
   const handleStorage = (e: StorageEvent) => {
-    if (e.key === THEME_MODE_STORAGE_KEY) {
+    if (e.key === THEME_MODE_STORAGE_KEY && fallbackTheme === null) {
       applyTheme(readStoredThemeMode(), true);
       emitChange();
     }
@@ -83,6 +91,13 @@ function subscribe(listener: () => void): () => void {
   };
 }
 
+export function setThemeMode(next: ThemeMode): void {
+  const persisted = safeLocalStorageSetItem(THEME_MODE_STORAGE_KEY, next);
+  fallbackTheme = persisted ? null : next;
+  applyTheme(next, true);
+  emitChange();
+}
+
 export function useTheme() {
   const snapshot = useSyncExternalStore(subscribe, getSnapshot);
   const theme = snapshot.theme;
@@ -90,9 +105,7 @@ export function useTheme() {
   const resolvedTheme = resolveThemeMode(theme);
 
   const setTheme = useCallback((next: ThemeMode) => {
-    localStorage.setItem(THEME_MODE_STORAGE_KEY, next);
-    applyTheme(next, true);
-    emitChange();
+    setThemeMode(next);
   }, []);
 
   // Keep DOM in sync on mount/change
@@ -101,4 +114,18 @@ export function useTheme() {
   }, [theme]);
 
   return { theme, setTheme, resolvedTheme } as const;
+}
+
+export function getThemeSnapshotForTests(): ThemeSnapshot {
+  return getSnapshot();
+}
+
+export function subscribeThemeForTests(listener: () => void): () => void {
+  return subscribe(listener);
+}
+
+export function resetThemeStateForTests(): void {
+  fallbackTheme = null;
+  lastSnapshot = null;
+  lastDesktopTheme = null;
 }

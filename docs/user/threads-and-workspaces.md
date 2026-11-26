@@ -78,7 +78,7 @@ its folder; archiving keeps it.
 
 ## While the agent works
 
-In Supervised and Auto-accept edits modes the agent stops for approval, and its questions wait for
+In Supervised and Accept edits modes the agent stops for approval, and its questions wait for
 your answer. Where the provider supports it, a message sent mid-turn can steer the turn instead of
 waiting (**Settings → Threads → Follow-up behavior**). **Stop generation** ends the turn.
 

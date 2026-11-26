@@ -1,1 +1,0 @@
-- OpenCode sessions and generated text authenticate to password-protected servers, including local servers with a custom username. A missing stored password is reported before F5 starts or connects to the server.

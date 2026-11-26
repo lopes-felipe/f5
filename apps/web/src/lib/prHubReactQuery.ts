@@ -39,10 +39,16 @@ export function cachedPrHubRows(client: QueryClient) {
     .flatMap(([, data]) => data?.pages.flatMap((page) => page.pullRequests) ?? []);
 }
 
-export function prHubPeekQueryOptions(url: string) {
-  const accountId = getPrHubSelectedAccountId();
+export interface PrHubAccountSnapshotArg {
+  readonly accountId?: string | undefined;
+  readonly generation?: string | undefined;
+}
+
+export function prHubPeekQueryOptions(url: string, snapshot?: PrHubAccountSnapshotArg) {
+  const accountId = snapshot ? snapshot.accountId : getPrHubSelectedAccountId();
+  const accountGeneration = snapshot ? snapshot.generation : getPrHubAccountGeneration();
   return queryOptions({
-    queryKey: ["prHub", "peek", getPrHubAccountGeneration(), accountId, url] as const,
+    queryKey: ["prHub", "peek", accountGeneration, accountId, url] as const,
     queryFn: () => ensureNativeApi().prHub.peek({ url, accountId }),
     staleTime: 60_000,
     retry: false,
@@ -53,12 +59,14 @@ export function prHubOverviewQueryOptions(
   stalledBefore?: string,
   /** Saved views to count; the queue passes its own, other readers pass none. */
   savedQueries: readonly PrHubSavedQuery[] = [],
+  snapshot?: PrHubAccountSnapshotArg,
 ) {
-  const accountId = getPrHubSelectedAccountId();
+  const accountId = snapshot ? snapshot.accountId : getPrHubSelectedAccountId();
+  const accountGeneration = snapshot ? snapshot.generation : getPrHubAccountGeneration();
   return queryOptions({
     queryKey: [
       ...prHubQueryKeys.overview,
-      getPrHubAccountGeneration(),
+      accountGeneration,
       stalledBefore,
       accountId,
       // Readers without saved views share one entry.

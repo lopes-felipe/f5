@@ -6,6 +6,7 @@ export const serverQueryKeys = {
   all: ["server"] as const,
   config: () => ["server", "config"] as const,
   health: () => ["server", "health"] as const,
+  doctorReport: () => ["server", "doctorReport"] as const,
 };
 
 /**
@@ -16,6 +17,20 @@ export function serverHealthQueryOptions() {
   return queryOptions({
     queryKey: serverQueryKeys.health(),
     queryFn: () => ensureNativeApi().server.getHealth(),
+    staleTime: 0,
+    refetchOnWindowFocus: false,
+  });
+}
+
+/**
+ * Runs only on explicit user action ("Run check") so opening Settings > General
+ * never triggers database or filesystem diagnostics automatically.
+ */
+export function serverDoctorReportQueryOptions() {
+  return queryOptions({
+    queryKey: serverQueryKeys.doctorReport(),
+    queryFn: () => ensureNativeApi().server.getDoctorReport(),
+    enabled: false,
     staleTime: 0,
     refetchOnWindowFocus: false,
   });

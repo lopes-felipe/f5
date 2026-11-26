@@ -17,6 +17,7 @@ import { Link } from "@tanstack/react-router";
 import { ChevronDownIcon, PlusIcon, Trash2Icon, XIcon } from "lucide-react";
 import { Fragment, useEffect, useId, useMemo, useState } from "react";
 import {
+  ClaudeSettings,
   isProviderDriverKind,
   type ProviderInstanceConfig,
   type ProviderInstanceEnvironmentVariable,
@@ -34,7 +35,7 @@ import { normalizeProviderAccentColor } from "../../providerInstances";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Collapsible, CollapsibleContent } from "../ui/collapsible";
-import { DraftInput } from "../ui/draft-input";
+import { DraftInput, type DraftInputProps } from "../ui/draft-input";
 import { ScrollArea } from "../ui/scroll-area";
 import { Switch } from "../ui/switch";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -62,6 +63,56 @@ import {
 } from "./providerStatus";
 
 const ENVIRONMENT_VARIABLE_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+
+const CLAUDE_COMPACT_WINDOW_FIELD = {
+  key: "autoCompactWindow",
+  label: "Auto-compact window",
+  schema: ClaudeSettings.fields.autoCompactWindow,
+  format: "number",
+  defaultValue: "0",
+} satisfies DriverFieldDef;
+
+function ProviderConfigDraftInput({
+  value,
+  onCommit,
+  "aria-describedby": descriptionId,
+  ...props
+}: Omit<DraftInputProps, "onCommit"> & {
+  readonly onCommit: (value: string) => string | undefined;
+}) {
+  const errorId = useId();
+  const [rejected, setRejected] = useState<{
+    value: string;
+    message: string;
+    savedValue: string;
+  }>();
+  if (rejected && rejected.savedValue !== value) {
+    setRejected(undefined);
+  }
+  return (
+    <>
+      <DraftInput
+        {...props}
+        value={rejected?.value ?? value}
+        aria-invalid={rejected ? true : undefined}
+        aria-describedby={
+          rejected ? [descriptionId, errorId].filter(Boolean).join(" ") : descriptionId
+        }
+        onCommit={(next) => {
+          const message = onCommit(next);
+          setRejected(
+            message === undefined ? undefined : { value: next, message, savedValue: value },
+          );
+        }}
+      />
+      {rejected ? (
+        <span id={errorId} role="alert" className="mt-1 block text-xs text-destructive">
+          {rejected.message} It was not saved.
+        </span>
+      ) : null}
+    </>
+  );
+}
 
 const REDACTED_EMAIL_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
 
@@ -609,12 +660,7 @@ export function ProviderInstanceCard({
           ? nextConfigBlobWithString(instance.config, field.key, "")
           : nextConfigBlobWithValue(instance.config, field.key, decoded);
     } catch (error) {
-      toastManager.add({
-        type: "error",
-        title: "Check provider configuration",
-        description: error instanceof Error ? error.message : "Invalid field value.",
-      });
-      return;
+      return error instanceof Error ? error.message : "Invalid field value.";
     }
     // A secret field's presence flag: blank keeps nothing to send; a new value replaces the
     // stored secret, and an explicit clear deletes it on the server.
@@ -622,6 +668,18 @@ export function ProviderInstanceCard({
       nextConfig = nextConfigBlobWithValue(nextConfig, field.redactedKey, false);
     const { config: _omit, ...rest } = instance;
     onUpdate(nextConfig !== undefined ? { ...rest, config: nextConfig } : rest);
+    return undefined;
+  };
+
+  const updateConfigFieldWithToast = (field: DriverFieldDef, value: string) => {
+    const error = updateConfigField(field, value);
+    if (error) {
+      toastManager.add({
+        type: "error",
+        title: "Check provider configuration",
+        description: error,
+      });
+    }
   };
 
   const updateCustomModels = (next: ReadonlyArray<CustomModelSetting>) => {
@@ -975,130 +1033,124 @@ export function ProviderInstanceCard({
                     }
                   />
                 </label>
-                <label className="block text-xs">
-                  Auto-compact window (tokens; 0 uses the CLI default)
-                  <input
-                    key={String(
-                      typeof instance.config === "object" &&
-                        instance.config !== null &&
-                        "autoCompactWindow" in instance.config
-                        ? instance.config.autoCompactWindow
-                        : 0,
-                    )}
-                    className="mt-1 block w-full rounded border p-2"
-                    type="number"
-                    min="0"
-                    step="1"
-                    defaultValue={
-                      typeof instance.config === "object" &&
-                      instance.config !== null &&
-                      "autoCompactWindow" in instance.config
-                        ? Number(instance.config.autoCompactWindow)
-                        : 0
+                <div>
+                  <label
+                    htmlFor={`provider-instance-${instanceId}-autoCompactWindow`}
+                    className="text-xs"
+                  >
+                    Auto-compact window (tokens; 0 uses the CLI default)
+                  </label>
+                  <ProviderConfigDraftInput
+                    id={`provider-instance-${instanceId}-autoCompactWindow`}
+                    className="mt-1"
+                    inputMode="numeric"
+                    value={
+                      readDriverConfigField(instance.config, CLAUDE_COMPACT_WINDOW_FIELD) ||
+                      CLAUDE_COMPACT_WINDOW_FIELD.defaultValue
                     }
-                    onBlur={(event) => {
-                      const value = Number(event.target.value);
-                      if (
-                        Number.isSafeInteger(value) &&
-                        (value === 0 || (value >= 100000 && value <= 1000000))
-                      )
-                        onUpdate({
-                          ...instance,
-                          config: nextConfigBlobWithValue(
-                            instance.config,
-                            "autoCompactWindow",
-                            value,
-                          ),
-                        });
-                    }}
+                    onCommit={(next) => updateConfigField(CLAUDE_COMPACT_WINDOW_FIELD, next)}
                   />
-                </label>
+                </div>
               </div>
             )}
             {driverOption?.fields
               .filter((field) =>
                 isDriverConfigFieldVisible(instance.config, field, driverOption.fields),
               )
-              .map((field) => (
-                <div key={field.key} className="border-t border-border/60 px-4 py-3 sm:px-5">
-                  <label htmlFor={`provider-instance-${instanceId}-${field.key}`} className="block">
-                    <span className="text-xs font-medium text-foreground">{field.label}</span>
-                    {field.type === "select" ? (
-                      <NativeSelect
-                        id={`provider-instance-${instanceId}-${field.key}`}
-                        className="mt-1.5 w-full"
-                        value={readDriverConfigField(instance.config, field)}
-                        onChange={(event) => updateConfigField(field, event.currentTarget.value)}
-                      >
-                        {(field.options ?? []).map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label}
-                          </option>
-                        ))}
-                      </NativeSelect>
-                    ) : (
-                      <DraftInput
-                        id={`provider-instance-${instanceId}-${field.key}`}
-                        className="mt-1.5"
-                        type={field.type === "password" ? "password" : undefined}
-                        autoComplete={field.type === "password" ? "off" : undefined}
-                        value={readDriverConfigField(instance.config, field)}
-                        onCommit={(next) => {
-                          // Leaving a stored secret's blank field untouched keeps the secret.
-                          if (
-                            !next &&
-                            hasStoredDriverSecret(instance.config, field) &&
-                            !readDriverConfigField(instance.config, field)
-                          )
-                            return;
-                          updateConfigField(field, next);
-                        }}
-                        placeholder={
-                          hasStoredDriverSecret(instance.config, field)
-                            ? "Stored - enter a new value to replace"
-                            : field.placeholder
-                        }
-                        disabled={
-                          field.key === "binaryPath" &&
-                          driverKind === "claudeAgent" &&
-                          isolatedProfile
-                        }
-                        spellCheck={false}
-                      />
-                    )}
-                    {hasStoredDriverSecret(instance.config, field) ? (
-                      <Button
-                        size="xs"
-                        variant="outline"
-                        className="mt-1.5"
-                        onClick={() => updateConfigField(field, "")}
-                      >
-                        Remove stored key
-                      </Button>
-                    ) : null}
-                    {field.key === "binaryPath" &&
-                    driverKind === "claudeAgent" &&
-                    isolatedProfile ? (
-                      <span className="mt-1 block text-xs text-muted-foreground">
-                        Isolated profiles use the bundled Claude runtime to keep keychain sign-ins
-                        separate.
-                      </span>
-                    ) : null}
-                    {field.description ? (
-                      <span className="mt-1 block text-xs text-muted-foreground">
-                        {field.description}
-                      </span>
-                    ) : null}
-                    {field.key === "binaryPath" && driverKind === "codex" ? (
-                      <span className="mt-1 block text-xs text-muted-foreground">
-                        Default binary paths now use bundled Codex {CODEX_PROTOCOL_BASELINE_VERSION}
-                        , which may be older than your PATH install. Set an absolute path to keep a
-                        newer CLI or wrapper.
-                      </span>
-                    ) : null}
-                  </label>
-                </div>
-              ))}
+              .map((field) => {
+                const inputId = `provider-instance-${instanceId}-${field.key}`;
+                const showIsolatedNote =
+                  field.key === "binaryPath" && driverKind === "claudeAgent" && isolatedProfile;
+                const showCodexNote = field.key === "binaryPath" && driverKind === "codex";
+                const descriptionId =
+                  showIsolatedNote || field.description || showCodexNote
+                    ? `${inputId}-description`
+                    : undefined;
+                return (
+                  <div key={field.key} className="border-t border-border/60 px-4 py-3 sm:px-5">
+                    <div>
+                      <label htmlFor={inputId} className="text-xs font-medium text-foreground">
+                        {field.label}
+                      </label>
+                      {field.type === "select" ? (
+                        <NativeSelect
+                          id={inputId}
+                          aria-describedby={descriptionId}
+                          className="mt-1.5 w-full"
+                          value={readDriverConfigField(instance.config, field)}
+                          onChange={(event) =>
+                            updateConfigFieldWithToast(field, event.currentTarget.value)
+                          }
+                        >
+                          {(field.options ?? []).map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </NativeSelect>
+                      ) : (
+                        <ProviderConfigDraftInput
+                          id={inputId}
+                          aria-describedby={descriptionId}
+                          className="mt-1.5"
+                          type={field.type === "password" ? "password" : undefined}
+                          autoComplete={field.type === "password" ? "off" : undefined}
+                          value={readDriverConfigField(instance.config, field)}
+                          onCommit={(next) => {
+                            // Leaving a stored secret's blank field untouched keeps the secret.
+                            if (
+                              !next &&
+                              hasStoredDriverSecret(instance.config, field) &&
+                              !readDriverConfigField(instance.config, field)
+                            )
+                              return;
+                            return updateConfigField(field, next);
+                          }}
+                          placeholder={
+                            hasStoredDriverSecret(instance.config, field)
+                              ? "Stored - enter a new value to replace"
+                              : field.placeholder
+                          }
+                          disabled={showIsolatedNote}
+                          spellCheck={false}
+                        />
+                      )}
+                      {hasStoredDriverSecret(instance.config, field) ? (
+                        <Button
+                          size="xs"
+                          variant="outline"
+                          className="mt-1.5"
+                          onClick={() => updateConfigFieldWithToast(field, "")}
+                        >
+                          Remove stored key
+                        </Button>
+                      ) : null}
+                      {descriptionId ? (
+                        <div id={descriptionId}>
+                          {showIsolatedNote ? (
+                            <span className="mt-1 block text-xs text-muted-foreground">
+                              Isolated profiles use the bundled Claude runtime to keep keychain
+                              sign-ins separate.
+                            </span>
+                          ) : null}
+                          {field.description ? (
+                            <span className="mt-1 block text-xs text-muted-foreground">
+                              {field.description}
+                            </span>
+                          ) : null}
+                          {showCodexNote ? (
+                            <span className="mt-1 block text-xs text-muted-foreground">
+                              Default binary paths now use bundled Codex{" "}
+                              {CODEX_PROTOCOL_BASELINE_VERSION}, which may be older than your PATH
+                              install. Set an absolute path to keep a newer CLI or wrapper.
+                            </span>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                );
+              })}
 
             {customBinary ? (
               <div className="border-t px-4 py-3">

@@ -20,6 +20,18 @@ async function readFont(src: string, signal: AbortSignal) {
   });
 }
 
+function readThemePalette(resolvedTheme: "light" | "dark") {
+  const tokens = getComputedStyle(document.documentElement);
+  return {
+    background:
+      tokens.getPropertyValue("--background").trim() ||
+      (resolvedTheme === "dark" ? "#09090b" : "#ffffff"),
+    foreground:
+      tokens.getPropertyValue("--foreground").trim() ||
+      (resolvedTheme === "dark" ? "#fafafa" : "#09090b"),
+  };
+}
+
 export default function FontViewer(props: { readonly src: string; readonly name: string }) {
   const { resolvedTheme } = useTheme();
   const [data, setData] = useState<string | null>(null);
@@ -57,9 +69,7 @@ export default function FontViewer(props: { readonly src: string; readonly name:
       </div>
     );
   if (!data) return <FileSurfaceLoading />;
-  const tokens = getComputedStyle(document.documentElement);
-  const background = tokens.getPropertyValue("--background");
-  const foreground = tokens.getPropertyValue("--foreground");
+  const { background, foreground } = readThemePalette(resolvedTheme);
   const srcDoc = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; font-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><style>@font-face{font-family:preview;src:url('${data}')}html{color-scheme:${resolvedTheme};background:${background};color:${foreground}}body{margin:0;padding:32px;font-family:preview;overflow-wrap:anywhere}h1{font-size:40px;font-weight:normal}p{line-height:1.4}small{font:12px monospace;display:block;opacity:.6;margin-bottom:8px}</style></head><body><h1>Font preview</h1><p style="font-size:24px">ABCDEFGHIJKLMNOPQRSTUVWXYZ<br>abcdefghijklmnopqrstuvwxyz<br>0123456789 !?&amp;@#%(){}[]</p>${[12, 16, 24, 40, 64].map((size) => `<p style="font-size:${size}px"><small>${size} px</small>The quick brown fox jumps over the lazy dog.</p>`).join("")}</body></html>`;
   return (
     <iframe title={props.name} srcDoc={srcDoc} sandbox="" className="min-h-0 flex-1 border-0" />

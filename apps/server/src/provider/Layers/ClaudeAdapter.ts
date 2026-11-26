@@ -30,7 +30,7 @@ import {
   type McpHubShape,
 } from "../../mcp/hub/McpHub.ts";
 import { hubAsksForClaudeTool, hubEndpointsForClaude } from "../../mcp/hub/providerHubServers.ts";
-import { isF5ThreadReadTool, makeClaudeThreadMcpServer } from "./claudeThreadTools.ts";
+import { isF5ReadOnlyThreadTool, makeClaudeThreadMcpServer } from "./claudeThreadTools.ts";
 import {
   makeClaudeAssistantText,
   extractAssistantTextBlocks,
@@ -360,6 +360,7 @@ import {
   readClaudeExecutableVersion,
 } from "../claudeExecutableVersion.ts";
 import { buildClaudeFlagPermissions } from "../claudeFlagPermissions.ts";
+import { resolveWorkflowAttachmentsDir } from "../../attachmentUploads.ts";
 import { makeMonotonicIsoClock } from "../monotonicEventClock.ts";
 import {
   isUuid,
@@ -2782,10 +2783,55 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
     const probeResumableClaudeSession =
       options?.probeResumableClaudeSession ?? probeClaudeSessionAvailability;
 
+    const MAX_TRACKED_RESUME_RECOVERY_THREADS = 1_024;
     const sessions = new Map<ThreadId, ClaudeSessionContext>();
     const pendingForks = new Set<ThreadId>();
-    const resumeFailures = new Map<ThreadId, number>();
-    const resumeRecoveryGenerations = new Map<ThreadId, unknown>();
+    const resumeRecoveryState = new Map<
+      ThreadId,
+      { readonly generation: unknown; readonly failures: number }
+    >();
+    const setResumeRecoveryState = (
+      threadId: ThreadId,
+      entry: { readonly generation: unknown; readonly failures: number },
+    ): void => {
+      resumeRecoveryState.delete(threadId);
+      resumeRecoveryState.set(threadId, entry);
+      if (resumeRecoveryState.size > MAX_TRACKED_RESUME_RECOVERY_THREADS) {
+        // Evict zero-failure entries first so threads with active resume-failure
+        // budgets keep their retry guard under high churn.
+        let evictKey: ThreadId | undefined;
+        for (const [candidate, candidateEntry] of resumeRecoveryState) {
+          if (candidate !== threadId && candidateEntry.failures === 0) {
+            evictKey = candidate;
+            break;
+          }
+        }
+        if (evictKey === undefined) {
+          for (const candidate of resumeRecoveryState.keys()) {
+            if (candidate !== threadId) {
+              evictKey = candidate;
+              break;
+            }
+          }
+        }
+        if (evictKey !== undefined) resumeRecoveryState.delete(evictKey);
+      }
+    };
+    const recordResumeFailure = (threadId: ThreadId, generation: unknown): number => {
+      const existing = resumeRecoveryState.get(threadId);
+      const failures = existing && existing.generation === generation ? existing.failures + 1 : 1;
+      setResumeRecoveryState(threadId, { generation, failures });
+      return failures;
+    };
+    const clearResumeFailures = (threadId: ThreadId): void => {
+      const existing = resumeRecoveryState.get(threadId);
+      if (!existing) return;
+      if (existing.generation === undefined) {
+        resumeRecoveryState.delete(threadId);
+      } else {
+        setResumeRecoveryState(threadId, { generation: existing.generation, failures: 0 });
+      }
+    };
     const settlementClock = yield* Clock.Clock;
     interface ThreadLockEntry {
       readonly semaphore: Semaphore.Semaphore;
@@ -3808,7 +3854,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const generation = context.recoveryMetadata.resumeRecoveryGeneration;
         context.recoveryMetadata =
           generation !== undefined ? { resumeRecoveryGeneration: generation } : {};
-        resumeFailures.delete(context.session.threadId);
+        clearResumeFailures(context.session.threadId);
         context.turns.length = 0;
         context.baseContextChars = 0;
         context.approximateConversationChars = 0;
@@ -5670,7 +5716,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
         context.lastAssistantUuid = message.uuid;
         context.resumeLatest = false;
-        resumeFailures.delete(context.session.threadId);
+        clearResumeFailures(context.session.threadId);
         context.pendingPrompts.length = 0;
         // Once new work is streamed, the old interruption must not be appended
         // after it, and undo must not hide a future repair.
@@ -6934,8 +6980,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           if (context.lastAssistantUuid)
             context.recoveryMetadata.missingResumePoint ??= requested ?? context.lastAssistantUuid;
           yield* updateResumeCursor(context);
-          const failures = (resumeFailures.get(threadId) ?? 0) + 1;
-          resumeFailures.set(threadId, failures);
+          const failures = recordResumeFailure(
+            threadId,
+            context.recoveryMetadata.resumeRecoveryGeneration,
+          );
           // Resuming from an older boundary would drop turns the user saw.
           if (forked) return yield* Effect.fail(new Error(CLAUDE_TRANSCRIPT_FORKED_MESSAGE));
           if (failures >= 3 || attempt > 0 || !context.resumeSessionId) {
@@ -7772,7 +7820,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                     ? selection.target
                     : undefined;
               if (!selected) {
-                resumeFailures.set(threadId, (resumeFailures.get(threadId) ?? 0) + 1);
+                recordResumeFailure(
+                  threadId,
+                  readClaudeRecoveryMetadata(input.resumeCursor).resumeRecoveryGeneration,
+                );
                 return yield* new ProviderAdapterProcessError({
                   provider: PROVIDER,
                   threadId,
@@ -7813,11 +7864,15 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           }
         }
         const generation = readClaudeRecoveryMetadata(input.resumeCursor).resumeRecoveryGeneration;
-        if (!resumeState?.resume || generation !== resumeRecoveryGenerations.get(threadId)) {
-          resumeFailures.delete(threadId);
-          resumeRecoveryGenerations.set(threadId, generation);
+        const existingRecovery = resumeRecoveryState.get(threadId);
+        if (!resumeState?.resume || generation !== existingRecovery?.generation) {
+          if (!resumeState?.resume && generation === undefined) {
+            resumeRecoveryState.delete(threadId);
+          } else {
+            setResumeRecoveryState(threadId, { generation, failures: 0 });
+          }
         }
-        const failures = resumeFailures.get(threadId) ?? 0;
+        const failures = resumeRecoveryState.get(threadId)?.failures ?? 0;
         if (resumeState?.resume && failures >= 3)
           return yield* new ProviderAdapterProcessError({
             provider: PROVIDER,
@@ -8143,7 +8198,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         // Set once the thread server is built below; only permission callbacks read it.
         let threadServerName: string | undefined;
         // Host MCP tools a read-only workflow stage may call: F5 preview observation and F5's
-        // own thread_read, each identified by exact server provenance.
+        // read-only thread tools (thread_read, forge reads), each identified by exact server
+        // provenance.
         const allowReadOnlyMcpTool = (
           toolName: string,
           mcpServer?: McpToolProvenance,
@@ -8152,7 +8208,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           (classifyF5PreviewTool(toolName, agentBrowserState, mcpServer) === "observe" &&
             !writesPreviewArtifact(toolName, toolInput)) ||
           (threadServerName !== undefined &&
-            isF5ThreadReadTool(toolName, mcpServer, threadServerName));
+            isF5ReadOnlyThreadTool(toolName, mcpServer, threadServerName));
         const canUseTool: CanUseTool = (toolName, toolInput, callbackOptions) =>
           Effect.runPromise(
             Effect.gen(function* () {
@@ -8382,6 +8438,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                     requestType,
                     detail,
                     args: { toolName, input: toolInput },
+                    // Denied below with a message the model sees; nothing is pending.
+                    autoDeclined: true,
                   },
                   providerRefs: nativeProviderRefs(context, {
                     providerItemId: callbackOptions.toolUseID,
@@ -8832,7 +8890,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           // With F5's compaction in charge, Claude must not compact behind F5's summaries.
           ...(providerOptions?.nativeCompaction === false ? { idleCompaction: false } : {}),
           permissions: buildClaudeFlagPermissions({
-            readExemptDirectories: [serverConfig.attachmentsDir, plansDirectory],
+            readExemptDirectories: [
+              serverConfig.attachmentsDir,
+              // Workflow prompts reference pasted files there by absolute path.
+              resolveWorkflowAttachmentsDir(serverConfig),
+              plansDirectory,
+            ],
             confineWritesToWorkspace: providerOptions?.confineWritesToWorkspace === true,
           }),
           ...claudeRuntimeSettings({
