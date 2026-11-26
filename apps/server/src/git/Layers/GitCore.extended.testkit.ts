@@ -1243,11 +1243,10 @@ it.layer(TestLayer)("git integration", (it) => {
         expect(yield* core.ensureWorktree({ cwd, path: target, branch: "lossless" })).toEqual({
           recreated: false,
         });
-        expect(
-          (yield* core
-            .ensureWorktree({ cwd, path: target, branch: initialBranch })
-            .pipe(Effect.exit))._tag,
-        ).toBe("Failure");
+        // The folder is the identity: another recorded branch is still this worktree.
+        expect(yield* core.ensureWorktree({ cwd, path: target, branch: initialBranch })).toEqual({
+          recreated: false,
+        });
         const plain = path.join(cwd, "ordinary");
         yield* (yield* FileSystem.FileSystem).makeDirectory(plain);
         expect(

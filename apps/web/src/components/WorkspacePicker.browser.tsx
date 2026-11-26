@@ -60,22 +60,31 @@ const onSetThreadBranch = vi.fn();
 const onDraftChange = vi.fn();
 let screen: Awaited<ReturnType<typeof render>> | undefined;
 let client: QueryClient;
+/** The branch each worktree folder is on; the project folder is on fix/sidebar. */
+const checkouts = new Map<string, string>();
 
 const linked = (...ids: string[]) =>
   ids.map((id) => ({ threadId: ThreadId.makeUnsafe(id), title: `Thread ${id}`, archived: false }));
 
 beforeEach(() => {
   vi.clearAllMocks();
-  api.git.listBranches.mockResolvedValue({
+  // Git answers per checkout: the trigger shows the branch its folder is on.
+  checkouts.clear();
+  checkouts.set("/wt/route", "fix/route");
+  const head = (cwd: string) => checkouts.get(cwd) ?? "fix/sidebar";
+  api.git.listBranches.mockImplementation(async ({ cwd }: { cwd: string }) => ({
     isRepo: true,
     hasOriginRemote: false,
     branches: [
-      { name: "fix/sidebar", current: true, isDefault: false, worktreePath: "/repo" },
-      { name: "main", current: false, isDefault: true, worktreePath: null },
-      { name: "fix/route", current: false, isDefault: false, worktreePath: "/wt/route" },
-    ],
-  });
-  api.git.status.mockResolvedValue({ branch: "fix/sidebar" });
+      { name: "fix/sidebar", isDefault: false, worktreePath: "/repo" },
+      { name: "main", isDefault: true, worktreePath: null },
+      { name: "fix/route", isDefault: false, worktreePath: "/wt/route" },
+      ...(["fix/sidebar", "fix/route"].includes(head(cwd))
+        ? []
+        : [{ name: head(cwd), isDefault: false, worktreePath: cwd }]),
+    ].map((branch) => ({ ...branch, current: branch.name === head(cwd) })),
+  }));
+  api.git.status.mockImplementation(async ({ cwd }: { cwd: string }) => ({ branch: head(cwd) }));
   api.git.checkout.mockResolvedValue(undefined);
   api.worktrees.list.mockResolvedValue({
     projects: [
@@ -133,6 +142,8 @@ const picker = (overrides: Partial<WorkspacePickerProps> = {}) => (
 
 async function open(overrides: Partial<WorkspacePickerProps> = {}, label = "Local · fix/sidebar") {
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (overrides.activeWorktreePath && overrides.activeThreadBranch)
+    checkouts.set(overrides.activeWorktreePath, overrides.activeThreadBranch);
   screen = await render(picker(overrides));
   const trigger = page.getByLabelText(`Workspace: ${label}`, { exact: true });
   await trigger.click();

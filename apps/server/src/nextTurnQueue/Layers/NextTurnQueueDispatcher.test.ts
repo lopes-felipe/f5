@@ -877,7 +877,7 @@ for (const scenario of [
 }
 
 for (const steering of [true, false]) {
-  it.effect(`lets only steers into the live turn through branch drift: ${steering}`, () => {
+  it.effect(`sends on a worktree whose branch the agent switched, steering: ${steering}`, () => {
     const target = path.join(os.tmpdir(), `f5-drift-${crypto.randomUUID()}`);
     const threadId = ThreadId.makeUnsafe(`queue-drift-${steering}`);
     const liveTurn = TurnId.makeUnsafe("live-turn");
@@ -937,14 +937,8 @@ for (const steering of [true, false]) {
       yield* dispatcher.notify(threadId);
       yield* dispatcher.drain;
       const queue = yield* store.listByThread(threadId);
-      if (steering) {
-        assert.equal(dispatched.length, 1);
-        assert.equal(queue.state.paused, false);
-      } else {
-        assert.equal(dispatched.length, 0);
-        assert.equal(queue.state.paused, true);
-        assert.equal(queue.state.pauseReasonCode, "worktree_missing");
-      }
+      assert.equal(dispatched.length, 1);
+      assert.equal(queue.state.paused, false);
     }).pipe(
       Effect.provide(makeTestLayer(git.service, target, thread)),
       Effect.ensuring(Effect.promise(() => fs.rm(target, { recursive: true, force: true }))),

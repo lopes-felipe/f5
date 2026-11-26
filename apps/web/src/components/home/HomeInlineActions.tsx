@@ -1,15 +1,7 @@
 import type { ProviderApprovalDecision, ThreadId } from "@t3tools/contracts";
-import { isScratchProject } from "@t3tools/shared/scratchProject";
 import { useQueryClient } from "@tanstack/react-query";
 import { ArrowUpIcon } from "lucide-react";
-import {
-  type FormEvent,
-  type KeyboardEvent,
-  type ReactNode,
-  type Ref,
-  useCallback,
-  useEffect,
-} from "react";
+import { type FormEvent, type KeyboardEvent, type Ref, useCallback, useEffect } from "react";
 
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { requestComposerFocus } from "../../composerFocusRequestStore";
@@ -27,14 +19,13 @@ import { useNextTurnQueueStore } from "../../nextTurnQueueStore";
 import { loadPendingApprovalRequestIds } from "../../notificationCenter/inlineApproval";
 import { buildPlanImplementationPrompt } from "../../proposedPlan";
 import type { PendingApproval } from "../../session-logic";
-import type { Project, Thread } from "../../types";
+import type { Thread } from "../../types";
 import { useServerMutationsAvailable } from "../../wsConnectionState";
 import {
   approvalOptionVariant,
   canApproveRequest,
   resolveApprovalOptions,
 } from "../chat/ComposerPendingApprovalActions";
-import { useChatViewBranchDriftGuard } from "../ChatViewBranchDriftGuard";
 import { Button } from "../ui/button";
 import { Kbd } from "../ui/kbd";
 import { toastManager } from "../ui/toast";
@@ -133,8 +124,6 @@ export interface HomeInlineActions {
     options?: Pick<ThreadReplyInput, "interactionMode" | "intent">,
   ) => Promise<boolean>;
   readonly resumeQueue: () => void;
-  /** Mounted by the preview: the branch question a send may have to ask first. */
-  readonly dialog: ReactNode;
 }
 
 /**
@@ -145,9 +134,7 @@ export interface HomeInlineActions {
  */
 export function useHomeInlineActions(input: {
   readonly thread: Thread;
-  readonly project: Project | undefined;
   readonly decision: HomeThreadDecision;
-  readonly cwd: string | undefined;
   /** Returns focus to the queue when the control that held it went away. */
   readonly focusQueue: () => void;
   /** Opens the thread, for a reply only its composer can send. */
@@ -157,12 +144,9 @@ export function useHomeInlineActions(input: {
   const queryClient = useQueryClient();
   const available = useServerMutationsAvailable();
   const streaming = useSettings((settings) => settings.enableAssistantStreaming, thread.projectId);
-  const { guardBranchDrift, branchDriftDialog } = useChatViewBranchDriftGuard(thread.id);
   const busy = useHomeInlineStore((state) => state.busyThreadIds.has(thread.id));
   // Requests closed from Home, in memory only: the store catches up through its events.
   const closedApprovals = useHomeInlineStore((state) => state.closedApprovals);
-  // A thread without a project has a folder but no repository to ask about its branch.
-  const gitCwd = isScratchProject(input.project) ? undefined : input.cwd;
 
   const run = useCallback(
     async <T,>(action: () => Promise<T>): Promise<T | undefined> => {
@@ -242,15 +226,6 @@ export function useHomeInlineActions(input: {
     ): Promise<boolean> => {
       if (!available) return false;
       const sent = await run(async () => {
-        if (thread.branch && gitCwd) {
-          const proceed = await guardBranchDrift({
-            cwd: gitCwd,
-            threadId: thread.id,
-            recordedBranch: thread.branch,
-            worktreePath: thread.worktreePath,
-          });
-          if (!proceed) return false;
-        }
         try {
           const outcome = await sendThreadReply({
             thread,
@@ -273,7 +248,7 @@ export function useHomeInlineActions(input: {
       });
       return sent === true;
     },
-    [available, gitCwd, guardBranchDrift, run, streaming, thread],
+    [available, run, streaming, thread],
   );
 
   const plan = decision.plan;
@@ -355,7 +330,6 @@ export function useHomeInlineActions(input: {
     implementPlan,
     reply,
     resumeQueue,
-    dialog: branchDriftDialog,
   };
 }
 

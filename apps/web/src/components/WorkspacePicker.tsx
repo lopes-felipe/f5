@@ -615,6 +615,11 @@ export function WorkspacePicker(props: WorkspacePickerProps) {
     activeThreadBranch,
     projectBranch,
     checkoutMissing,
+    // Known only once Git has answered for the worktree itself.
+    liveBranch:
+      state.kind === "worktree" && branchCwd === state.path && statusQuery.data
+        ? statusQuery.data.branch
+        : undefined,
   });
   const displayPath = state.kind === "worktree" ? state.path : projectCwd;
   const TriggerIcon = state.kind === "local" && !creatingWorktree ? FolderIcon : GitForkIcon;
@@ -852,7 +857,6 @@ function blockedReason(blockers: ReadonlyArray<{ kind: string; title: string | n
     queued: "queued messages",
     setup: "workspace setup",
     terminal: "open terminal",
-    thread: "uses this worktree",
     session: "agent session",
   };
   if (blockers.some((blocker) => blocker.kind === "unknown"))

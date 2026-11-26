@@ -38,14 +38,7 @@ export type WorktreesSwitchAvailabilityInput = typeof WorktreesSwitchAvailabilit
 export const WorktreesRecoverInput = Schema.Struct({
   threadId: ThreadId,
   expectedQueueRevision: NonNegativeInt,
-  action: Schema.Literals([
-    "recreate",
-    "recreateFromBase",
-    "useProjectCheckout",
-    "cancel",
-    "adoptCheckoutBranch",
-    "restoreRecordedBranch",
-  ]),
+  action: Schema.Literals(["recreate", "recreateFromBase", "useProjectCheckout", "cancel"]),
 });
 export type WorktreesRecoverInput = typeof WorktreesRecoverInput.Type;
 

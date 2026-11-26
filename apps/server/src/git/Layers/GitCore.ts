@@ -1595,19 +1595,19 @@ const makeGitCore = Effect.gen(function* () {
         if (yield* checkoutExists(input.path)) {
           const inspected = yield* inspectCheckoutIdentity(input.path);
           const common = yield* canonicalPath(yield* resolveCommonDir(input.cwd));
+          // The folder is the identity: an existing checkout is kept on whatever
+          // HEAD it is on, so a branch the agent switched to is never an error.
           if (
             !registration ||
             registration.isMain ||
             inspected.canonicalRoot !== target ||
-            inspected.commonDir !== common ||
-            inspected.branch !== input.branch ||
-            registration.branch !== input.branch
+            inspected.commonDir !== common
           ) {
             return yield* createGitCommandError(
               "GitCore.ensureWorktree",
               input.cwd,
               [],
-              "The target is not the registered checkout of the expected repository and branch.",
+              "The target is not a registered worktree of the expected repository.",
             );
           }
           return { recreated: false };
@@ -1646,17 +1646,14 @@ const makeGitCore = Effect.gen(function* () {
                 `Worktree branch ${input.branch} is missing.`,
               );
             }
-            if (
-              registration &&
-              (registration.branch !== input.branch ||
-                registration.isMain ||
-                registration.locked !== null)
-            ) {
+            // A stale registration may name a branch the checkout switched to
+            // before its folder was removed; only main and locked ones are kept.
+            if (registration && (registration.isMain || registration.locked !== null)) {
               return yield* createGitCommandError(
                 "GitCore.ensureWorktree",
                 input.cwd,
                 [],
-                "The missing worktree registration does not match the requested branch or is locked.",
+                "The missing worktree registration is locked or is the main checkout.",
               );
             }
             const other = entries.find(

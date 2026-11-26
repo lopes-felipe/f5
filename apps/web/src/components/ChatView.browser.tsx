@@ -4531,11 +4531,11 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
-  it("does not recreate from the default branch while another branch holds the path", async () => {
+  it("does not recreate from the default branch while something else holds the path", async () => {
     const mounted = await mountMissingWorktree(false, {
       threadState: () => ({
         type: "result",
-        result: { ...missingWorktreeState, directoryExists: true, registration: "otherBranch" },
+        result: { ...missingWorktreeState, directoryExists: true, registration: "foreign" },
       }),
     });
     try {
@@ -4545,7 +4545,7 @@ describe("ChatView timeline (full app)", () => {
         .element(recreate)
         .toHaveAttribute(
           "title",
-          "This checkout no longer matches the recorded worktree. Choose another workspace to continue.",
+          "The recorded folder no longer belongs to this repository. Choose another workspace to continue.",
         );
     } finally {
       await mounted.cleanup();

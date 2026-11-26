@@ -90,8 +90,6 @@ export interface WorktreeClaims {
     readonly cwd: string;
     readonly live?: boolean;
   }>;
-  /** Referencing threads that record a worktree path, and so a branch, for this checkout. */
-  readonly worktreeThreadIds?: ReadonlyArray<ThreadId>;
   /** False when pending turn starts could not be read because the service is missing. */
   readonly pendingTurnsChecked?: boolean;
 }
@@ -169,7 +167,6 @@ export const readWorktreeClaims = Effect.fn("readWorktreeClaims")(function* (pat
     target !== null && candidate !== null && pathContains(target, candidate);
   const readModel = yield* engine.getReadModel();
   const threadIds: ThreadId[] = [];
-  const worktreeThreadIds: ThreadId[] = [];
   const deletedThreadIds: ThreadId[] = [];
   const activeThreadIds: ThreadId[] = [];
   const setupThreadIds: ThreadId[] = [];
@@ -198,7 +195,6 @@ export const readWorktreeClaims = Effect.fn("readWorktreeClaims")(function* (pat
       continue;
     }
     threadIds.push(thread.id);
-    if (thread.worktreePath !== null) worktreeThreadIds.push(thread.id);
     const session = thread.session;
     if (
       session &&
@@ -352,7 +348,6 @@ export const readWorktreeClaims = Effect.fn("readWorktreeClaims")(function* (pat
     queuedThreadIds,
     terminals: liveTerminals,
     sessions: liveSessions,
-    worktreeThreadIds,
     pendingTurnsChecked: Option.isSome(turns),
   } satisfies WorktreeClaims;
 });
@@ -403,17 +398,17 @@ export interface InPlaceSwitchBlocker {
 }
 
 /**
- * What stops switching the branch of `usage`'s checkout in place. Live use
- * always blocks: running or pending turns, queued work, setup and transition
- * owners, and terminals. In the project folder, idle and archived local
- * threads and their idle provider sessions do not: they already follow the
- * folder's live branch. A managed worktree keeps the strict rule, because its
- * threads record a branch and would see a drift banner. `otherProfile` is
- * added by callers that check other profiles; this function is pure.
+ * What stops switching the branch of `usage`'s checkout in place. Only live
+ * use blocks: running or pending turns, queued work, setup and transition
+ * owners, terminals, and agent sessions that are starting or running. Idle and
+ * archived threads and their idle sessions do not, in the project folder and
+ * in a worktree alike: a thread follows whatever branch its folder is on.
+ * `otherProfile` is added by callers that check other profiles; this function
+ * is pure.
  */
 export function inPlaceSwitchBlockers(
   usage: WorktreeClaims,
-  options: { readonly requester: ThreadId | null; readonly projectCheckout: boolean },
+  options: { readonly requester: ThreadId | null },
 ): ReadonlyArray<InPlaceSwitchBlocker> {
   // Without the turn repository, accepted-but-undelivered turns are invisible;
   // refuse rather than let a wiring gap skip that check.
@@ -438,18 +433,9 @@ export function inPlaceSwitchBlockers(
     seen.add(key);
     blockers.push({ kind: "terminal", threadId: terminal.threadId });
   }
-  const live = new Set(blockers.map((blocker) => blocker.threadId));
-  if (!options.projectCheckout) {
-    for (const id of usage.threadIds) if (!live.has(id)) add("thread", id);
-    for (const session of usage.sessions) add("session", session.threadId);
-    return blockers;
-  }
-  // A thread that records a worktree path records a branch for this checkout
-  // and would see a drift banner, even when the path is also a project root.
-  for (const id of usage.worktreeThreadIds ?? []) if (!live.has(id)) add("thread", id);
-  // An idle session of a local thread follows the folder. A starting, connecting
-  // or running session is live use, and one whose thread is not a known
-  // reference (deleted or from elsewhere) is not proven idle.
+  // An idle session follows the folder. A starting, connecting or running
+  // session is live use, and one whose thread is not a known reference
+  // (deleted or from elsewhere) is not proven idle.
   const known = new Set<string>(usage.threadIds);
   for (const session of usage.sessions)
     if (session.live || !known.has(session.threadId)) add("session", session.threadId);
@@ -461,7 +447,6 @@ const SWITCH_BLOCKER_LABELS: Record<InPlaceSwitchBlockerKind, string> = {
   queued: "queued messages",
   setup: "workspace setup",
   terminal: "open terminal",
-  thread: "uses this worktree",
   session: "agent session",
   otherProfile: "another profile",
   unknown: "usage could not be verified",

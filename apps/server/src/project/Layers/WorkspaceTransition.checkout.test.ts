@@ -170,8 +170,9 @@ describe("workspace transition execution", { timeout: 60_000 }, () => {
     ).toBe("manual_pause");
   });
 
-  describe("restoring the recorded branch of a drifted worktree", () => {
-    const drifted = async () => {
+  describe("switching the branch of a worktree the agent already moved", () => {
+    // The thread still records `recorded`; its folder is on `agent-branch`.
+    const moved = async () => {
       const f = await fixture();
       const target = path.join(f.config.worktreesDir, "recorded");
       git(f.repo.root, "worktree", "add", "-q", "-b", "recorded", target, "main");
@@ -181,94 +182,42 @@ describe("workspace transition execution", { timeout: 60_000 }, () => {
         ),
       );
       git(target, "checkout", "-q", "-b", "agent-branch");
-      const restore = async () =>
+      const switchBack = async () =>
         f.runtime.runPromise(
-          f.manager
-            .recover({
-              threadId: f.threadId,
-              action: "restoreRecordedBranch",
-              expectedQueueRevision: (await f.runtime.runPromise(f.queue.listByThread(f.threadId)))
-                .state.revision,
-            })
-            .pipe(
-              Effect.flip,
-              Effect.map((error) => error.message),
-              Effect.orElseSucceed(() => null),
-            ),
+          f.transition.switchWorkspace(await f.request("checkout_branch", { branch: "recorded" })),
         );
-      return { f, target, restore };
+      return { f, target, switchBack };
     };
 
-    it("checks the branch out under the transition and resumes the paused queue item", async () => {
-      const { f, target, restore } = await drifted();
-      await fs.writeFile(path.join(target, "scratch.txt"), "wip");
-      expect(await restore()).toContain("Commit or stash");
-      await fs.rm(path.join(target, "scratch.txt"));
-      const at = new Date().toISOString();
-      await f.runtime.runPromise(
-        f.queue.insertSubmission({
-          submissionId: CommandId.makeUnsafe("drift-queued"),
-          itemId: CommandId.makeUnsafe("drift-queued"),
-          atHead: false,
-          requestHash: "drift-queued",
-          command: {
-            type: "thread.turn.start",
-            commandId: CommandId.makeUnsafe("drift-queued"),
-            threadId: f.threadId,
-            message: {
-              messageId: MessageId.makeUnsafe("drift-queued"),
-              role: "user",
-              text: "next",
-              attachments: [],
-            },
-            interactionMode: "default",
-            runtimeMode: "approval-required",
-            createdAt: at,
-          },
-        }),
-      );
-      await f.runtime.runPromise(
-        f.queue.setPaused({ threadId: f.threadId, paused: true, reasonCode: "worktree_missing" }),
-      );
-      // The paused message that exposed the drift does not block its own recovery.
-      expect(await restore()).toBeNull();
-      expect(git(target, "branch", "--show-current")).toBe("recorded");
-      const queue = await f.runtime.runPromise(f.queue.listByThread(f.threadId));
-      expect(queue.state.paused).toBe(false);
-      expect(queue.items).toHaveLength(1);
-    });
-
-    it("refuses while another conversation shares the checkout", async () => {
-      const { f, target, restore } = await drifted();
+    it("switches in place while an idle thread shares the worktree", async () => {
+      const { f, target, switchBack } = await moved();
       await f.create(ThreadId.makeUnsafe("peer"), "agent-branch", target);
-      // A managed worktree keeps the strict rule: an idle peer still blocks.
-      expect(await restore()).toMatch(/In use by Thread \(uses this worktree\)/);
-      expect(git(target, "branch", "--show-current")).toBe("agent-branch");
+      // Only live use blocks: the idle peer follows whatever branch the folder is on.
+      const result = await switchBack();
+      expect(result.error).toBeNull();
+      expect(result.phase).toBe("completed");
+      expect(git(target, "branch", "--show-current")).toBe("recorded");
     });
 
     it("refuses while an accepted turn waits for provider delivery", async () => {
-      const { f, target, restore } = await drifted();
+      const { f, target, switchBack } = await moved();
       await f.runtime.runPromise(
         Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient;
           yield* sql`INSERT INTO projection_turns(thread_id,state,requested_at,checkpoint_files_json) VALUES (${f.threadId},'pending','now','[]')`;
         }),
       );
-      expect(await restore()).toMatch(/active or pending turn/);
+      await expect(switchBack()).rejects.toThrow(/active or pending turn/);
       expect(git(target, "branch", "--show-current")).toBe("agent-branch");
     });
 
-    it("refuses during an in-progress Git operation or on a detached HEAD", async () => {
-      const { target, restore } = await drifted();
-      // A clean tree can still be mid-operation; switching would abandon its state.
-      git(target, "bisect", "start");
-      expect(await restore()).toMatch(/bisect in progress/);
-      git(target, "bisect", "reset");
+    it("refuses from a detached HEAD, whose commits a checkout would leave unreachable", async () => {
+      const { target, switchBack } = await moved();
       await fs.writeFile(path.join(target, "README.md"), "agent\n");
       git(target, "commit", "-qam", "agent change");
       git(target, "checkout", "-q", "--detach");
-      // The detached commit would be unreachable from the recorded branch.
-      expect(await restore()).toContain("detached HEAD");
+      const result = await switchBack();
+      expect(result.phase).toBe("failed");
       expect(git(target, "branch", "--show-current")).toBe("");
     });
   });

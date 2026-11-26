@@ -44,17 +44,14 @@ export const WorktreesThreadStateResult = Schema.Struct({
   worktreePath: Schema.NullOr(FilesystemPath),
   branch: Schema.NullOr(Schema.String),
   directoryExists: Schema.Boolean,
-  registration: Schema.Literals(["none", "matching", "stale", "otherBranch"]),
+  /**
+   * `matching`: this repository's worktree is at the recorded path, on any
+   * branch. `stale`: registered but the folder is gone. `foreign`: the path
+   * holds something that is not this repository's worktree.
+   */
+  registration: Schema.Literals(["none", "matching", "stale", "foreign"]),
   branchExists: Schema.Boolean,
   defaultBranch: Schema.NullOr(Schema.String),
-  /** The branch the recorded worktree is actually on; null when detached or missing. */
-  checkoutBranch: Schema.optional(Schema.NullOr(Schema.String)),
-  /** The recorded checkout is intact and only switched branches. */
-  branchDriftOnly: Schema.optional(Schema.Boolean),
-  /** Uncommitted changes in a drifted checkout; null when unknown. */
-  checkoutDirty: Schema.optional(Schema.NullOr(Schema.Boolean)),
-  /** The end-of-turn sync will re-record `checkoutBranch` for this thread. */
-  followsCheckoutAtTurnEnd: Schema.optional(Schema.Boolean),
 });
 export type WorktreesThreadStateResult = typeof WorktreesThreadStateResult.Type;
 
@@ -63,7 +60,6 @@ export const InPlaceSwitchBlockerKind = Schema.Literals([
   "queued",
   "setup",
   "terminal",
-  "thread",
   "session",
   "otherProfile",
   "unknown",

@@ -43,11 +43,7 @@ import {
   formatInPlaceSwitchBlockers,
   inPlaceSwitchBlockers,
 } from "../worktreeClaims.ts";
-import {
-  canonicalWorkspace,
-  inspectAttachableWorkspace,
-  isProjectCheckout,
-} from "../workspaceAttachment.ts";
+import { canonicalWorkspace, inspectAttachableWorkspace } from "../workspaceAttachment.ts";
 import { WorkspaceWriteContext } from "../workspaceTransitionContext.ts";
 import { WorktreePreparation } from "../Services/WorktreePreparation.ts";
 import { WorktreeSetupGate } from "../Services/WorktreeSetupGate.ts";
@@ -165,11 +161,7 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
         return yield* Effect.fail(new Error("Workspace usage could not be verified."));
       const foreign = usage.threadIds.filter((id) => id !== record.threadId);
       if (inPlace) {
-        const { project } = yield* context(record.threadId);
-        const blockers = inPlaceSwitchBlockers(usage, {
-          requester: record.threadId,
-          projectCheckout: yield* isProjectCheckout(yield* engine.getReadModel(), path, project.id),
-        });
+        const blockers = inPlaceSwitchBlockers(usage, { requester: record.threadId });
         if (blockers.length) {
           const model = yield* engine.getReadModel();
           return yield* Effect.fail(
