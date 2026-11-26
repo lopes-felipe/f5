@@ -22,7 +22,9 @@ Select a server to open its panel:
 - **Sign-in**: F5's sign-in (see [Sign in with F5](#sign-in-with-f5)), and, with [native passthrough](#native-passthrough), sign-in for the observed Codex or Claude account.
 - **Configuration**: the form, and the saved JSON with **Copy JSON**.
 
-**Add server** opens a dialog with three tabs: **Form**, **Paste JSON or TOML**, and **Import** (see [Import](#import)). Adding a server from the form opens its panel.
+**Add server** opens a dialog with four tabs: **Form**, **Catalog** (see [Catalog](#catalog)), **Paste JSON or TOML**, and **Import** (see [Import](#import)). Adding a server from the form opens its panel.
+
+In a project, servers listed in the repository's `.mcp.json` appear under **From this repository** (see [Repository servers](#repository-servers)).
 
 Above the server list, **Codex and Claude connect through F5** explains how Codex and Claude reach your servers and has the [native passthrough](#native-passthrough) switch. When a remote server is configured, it also says that sign-ins Codex and Claude saved earlier are not carried over.
 
@@ -35,6 +37,12 @@ Servers Codex or Claude configure themselves, F5's built-in servers, and servers
 MCP settings store server definitions in a common scope and a project scope. Common entries are inherited by every project and appear in a project under **Inherited from common**. There, the switch (**Use <name> in this project**) opts out of an inherited server without changing other projects, and **Override** opens the Add dialog with the common definition so you can save a project version.
 
 New and renamed servers may use letters, numbers, `_` and `-` (up to 128 characters), and must not start with `f5_` or `__f5`; tool names are built from the server name, and providers rewrite other characters. Saved servers with older names keep working and show a rename warning. Names are trimmed and compared without case. An exact-name project entry replaces the entire common definition; a differently cased alias is a conflict. Each scope accepts 16 entries, with at most 32 effective entries and four reserved slots for F5's built-in servers. An oversized legacy layer stays intact while you repair or remove entries; it cannot accept new names.
+
+### Repository servers
+
+A project can list servers in `.mcp.json` at its root folder (the same file Claude Code reads). F5 reads it from the project root only, not from each conversation's worktree, so there is one decision per project. These servers sit between common and project servers: a repository server replaces a common one of the same name, and a project server replaces a repository one. **Use <name> in this project** opt-outs apply to them too.
+
+A repository server never starts until you approve it. **From this repository** lists each server as **Needs approval**, **Approved** or **Changed**. **Review** shows exactly what it runs or reaches (command, arguments, environment, or URL and headers), and **Approve** approves that definition for this project. If the file later changes a server's definition, it is marked **Changed** and stops being used until you review and approve it again. **Revoke** withdraws an approval. Approved servers count toward the 32-server limit. Entries F5 cannot use are listed with the reason: invalid entries, entries with stored-secret references, and a `.mcp.json` that is a symbolic link. Like any added server, a newly approved one reaches running Codex and Claude conversations after [Apply](#apply-reconnect-and-test).
 
 Opt-outs compare names without case and remain recorded when a common server is removed. Reusing that name keeps the project opted out; explicitly enable it in that project if desired.
 
@@ -133,6 +141,12 @@ After saving, the banner says: **Saved. Codex and Claude sessions pick up MCP ch
 
 **Reconnect** is in a row's menu, and on a panel's Overview, for a failed, signed-out, or unknown server. A failed F5 connection is reconnected first. For a server F5 serves, Reconnect reconnects F5's connections to it. Otherwise (a server Codex or Claude configures itself, or native passthrough) it recovers connections used by running sessions for the selected project and account. Claude reconnects the selected owned server; Codex reloads its settings connection and applies through the normal session path, which can reload every MCP server in the affected sessions. The result distinguishes reconnected sessions, no running session using the server, and failures. Reconnect does not perform sign-in; use **Sign in** instead. A pending sign-in can be reopened without cancelling it if the browser fails to open.
 
+## Catalog
+
+The **Catalog** tab searches the official [MCP Registry](https://registry.modelcontextprotocol.io). F5 asks the registry only when you open the tab or search, and reuses results for an hour. Anyone can publish to the registry, so check a server (its **Source** link) before adding it. Results list the ways each server can be added: **Remote (HTTP)** or **Remote (SSE)**, **npm package** (`npx -y <package>@<version>`), **PyPI package** (`uvx <package>==<version>`), or **Container image** (`docker run -i --rm`). Other package types are not listed.
+
+Choosing one fills the form and switches to it; nothing is saved or started until you save. Declared arguments and environment variables are filled in where the registry gives a value, and required ones without a value are left for you to complete (arguments show a `<placeholder>`). Secret environment variables and headers become secret rows, so the form asks you to store each secret before it can save. If the scope already has the server's name, a suffix such as `-2` is added.
+
 ## Import
 
 In the Add server dialog, **Paste JSON or TOML** previews pasted F5/Claude JSON, Codex JSON, Codex TOML, VS Code JSON (`servers`), or OpenCode JSON (`mcp`). JSON with comments and trailing commas is accepted. **Import → Detect configurations** explicitly reads:
@@ -168,7 +182,14 @@ The **Activity** tab lists calls that went through F5: time, agent, tool, outcom
 
 ## Turning a server off for one conversation
 
-In the chat's MCP details, each server F5 serves has an **On in this conversation** switch. Turning it off hides the server's tools from that conversation and refuses its calls at once, without restarting the agent. Other conversations are not affected, and the choice is kept for the conversation.
+In the chat's MCP details, each server F5 serves has an **On in this conversation** switch. Turning it off hides the server's tools, prompts and resources from that conversation and refuses its calls at once, without restarting the agent. Other conversations are not affected, and the choice is kept for the conversation.
+
+## Prompts and resources in the composer
+
+In a conversation, the composer offers prompts and resources from the servers F5 serves to it. They come from the conversation's running session, so start or resume the conversation first.
+
+- **Prompts**: type `/` to see **MCP prompts** as `/<server>:<prompt>`. A prompt with arguments opens a short form, with suggestions from the server where it offers them. The prompt's text is inserted into the composer for you to review and edit; it is not sent. Images, audio and binary parts of a prompt are left out with a notice.
+- **Resources**: type `@` to see each server's resources (up to 200 per server) next to files and folders; typing filters them. A chosen text resource becomes a chip, and its current contents are read when you send and added after your message as fenced blocks. All resources in one message share 256 KiB of text; the rest is cut, with a note. Choosing an image resource attaches the image like a pasted one. Other binary content is left out with a notice.
 
 ## Environment variables
 
