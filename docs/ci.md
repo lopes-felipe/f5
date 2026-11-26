@@ -84,6 +84,8 @@ does not need to have passed: if it later fails, unpublished betas may wait unti
 newer eligible source passes rather than falling back to an intermediate commit.
 Cleanup leaves older runs alone when the newest eligible run has already completed
 without success.
+After cancelling a queued CI run it also cancels that commit's unfinished release
+candidate (`release.yml`), which could no longer publish; see [release.md](release.md).
 It preserves commits touching `release-intent.json`
 (including additions, removals and renames), so stable requests retain their exact-SHA
 qualification. True merge commits and truncated file lists are preserved because

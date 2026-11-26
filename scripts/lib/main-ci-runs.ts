@@ -13,16 +13,25 @@ export interface CommitPage {
   parents: { sha: string }[];
 }
 
-/** A main push run of `ci.yml` from this repository, never a fork or another workflow. */
-export function trustedMainCiRun(run: MainCiRunIdentity, repository: string): boolean {
+/** A main push run of one workflow file from this repository, never a fork or another workflow. */
+export function trustedMainPushRun(
+  run: MainCiRunIdentity,
+  repository: string,
+  workflow: string,
+): boolean {
   return (
-    run.path === ".github/workflows/ci.yml" &&
+    run.path === ".github/workflows/" + workflow &&
     run.event === "push" &&
     run.head_branch === "main" &&
     run.repository.full_name === repository &&
     run.head_repository?.full_name === repository &&
     /^[a-f0-9]{40}$/.test(run.head_sha)
   );
+}
+
+/** A main push run of `ci.yml` from this repository, never a fork or another workflow. */
+export function trustedMainCiRun(run: MainCiRunIdentity, repository: string): boolean {
+  return trustedMainPushRun(run, repository, "ci.yml");
 }
 
 /**

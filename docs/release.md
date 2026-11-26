@@ -44,6 +44,13 @@ CI queue cleanup supersedes older queued runs before their replacement passes.
 If that replacement later fails, intermediate sources whose CI was cancelled
 cannot qualify until manually rerun; publication may wait for a newer eligible
 main source to pass. Cleanup skips replacements already known to have failed.
+The same cleanup cancels the superseded source's unfinished candidate, since a
+source without a green CI run cannot publish and its packaging jobs would only
+hold runners. To bring such a source back, rerun both runs: `gh run rerun
+<ci-run-id>` and `gh run rerun <candidate-run-id>`. If only CI is rerun, the
+publisher reports the cancelled candidate as blocked and prints its rerun command.
+Sources that change `release-intent.json` are never superseded, so stable
+candidates are not affected.
 
 For a stable release:
 
