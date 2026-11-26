@@ -83,6 +83,27 @@ async function readUserJson(file: string): Promise<unknown> {
   }
 }
 
+/** Windows refuses a rename onto a file another rename (or reader) holds at that moment. */
+const TRANSIENT_RENAME_ERRORS = new Set(["EPERM", "EACCES", "EBUSY"]);
+
+/**
+ * `rename`, retried briefly on Windows when the target is momentarily held, for example by a
+ * concurrent start of the same instance replacing it with identical content.
+ */
+async function renameReplacing(source: string, target: string): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await nodeFs.rename(source, target);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (process.platform !== "win32" || attempt >= 20 || !TRANSIENT_RENAME_ERRORS.has(code ?? ""))
+        throw error;
+      await new Promise((resolve) => setTimeout(resolve, 10 + attempt * 10));
+    }
+  }
+}
+
 /**
  * Writes the read-only config dir and returns the environment to launch Cursor with. The copy is
  * rewritten on every start, so a setting the CLI saved into it during an earlier session doesn't
@@ -111,7 +132,7 @@ export async function prepareCursorReadOnlyEnvironment(input: {
       `${JSON.stringify(sanitizeCursorCliConfig(config), null, 2)}\n`,
       { mode: 0o600, flag: "wx" },
     );
-    await nodeFs.rename(temporary, target);
+    await renameReplacing(temporary, target);
   } catch (error) {
     await nodeFs.rm(temporary, { force: true });
     throw error;
