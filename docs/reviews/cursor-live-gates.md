@@ -162,14 +162,14 @@ command (title and raw input), never by assistant text:
   keychain (C1 links it). It is not isolated with disposable credentials; the
   allow-list above is what limits it.
 
-| Gate | Question                                                                                                                                                          | Result                                                                                              |
-| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| C1   | Does Cursor stay signed in under a separate HOME?                                                                                                                 | Pass on darwin-arm64, CLI 2026.11.22-e9042b2 (2026-11-25), only with `Library/Keychains` linked     |
-| C2   | With `--sandbox enabled` and plan mode, which commands send `session/request_permission`, and does a request tell sandboxed runs from out-of-sandbox ones?        | Every non-allowlisted command asks, including the `npm --version` trap; no sandbox (2026-11-25)     |
-| C3   | Under `workspace_readonly` with network denied: do workspace, `.git` and outside writes fail, `curl` fail, temp writes succeed and Cursor's own fetch still work? | Fail: every write landed and `curl` returned 200 (2026-11-25)                                       |
-| C4   | Does C3 still hold in a workspace whose own `.cursor/sandbox.json` asks for no sandbox and full network?                                                          | Fail, same as C3 (2026-11-25)                                                                       |
-| C5   | Launched like a production read-only stage, does `npm --version` ask F5 when the user's config allows `Shell(npm)` but `CURSOR_CONFIG_DIR` points at F5's copy?   | Pass (2026-11-26): it asked F5; control C5a ran `npm` without asking. Rerun pending (see below)     |
-| C6   | Does Cursor honour `permissions.allow` from the repository's `.cursor/cli.json` over ACP?                                                                         | Yes (2026-11-26): `npm` ran without asking despite F5's override, so the repository guard is needed |
+| Gate | Question                                                                                                                                                          | Result                                                                                                        |
+| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| C1   | Does Cursor stay signed in under a separate HOME?                                                                                                                 | Pass on darwin-arm64, CLI 2026.11.22-e9042b2 (2026-11-25), only with `Library/Keychains` linked               |
+| C2   | With `--sandbox enabled` and plan mode, which commands send `session/request_permission`, and does a request tell sandboxed runs from out-of-sandbox ones?        | Every non-allowlisted command asks, including the `npm --version` trap; no sandbox (2026-11-25)               |
+| C3   | Under `workspace_readonly` with network denied: do workspace, `.git` and outside writes fail, `curl` fail, temp writes succeed and Cursor's own fetch still work? | Fail: every write landed and `curl` returned 200 (2026-11-25)                                                 |
+| C4   | Does C3 still hold in a workspace whose own `.cursor/sandbox.json` asks for no sandbox and full network?                                                          | Fail, same as C3 (2026-11-25)                                                                                 |
+| C5   | Launched like a production read-only stage, does `npm --version` ask F5 when the user's config allows `Shell(npm)` but `CURSOR_CONFIG_DIR` points at F5's copy?   | Pass (2026-11-26): it asked F5; control C5a ran `npm` without asking. Rerun with the shipped sanitizer passed |
+| C6   | Does Cursor honour `permissions.allow` from the repository's `.cursor/cli.json` over ACP?                                                                         | Yes (2026-11-26): `npm` ran without asking despite F5's override, so the repository guard is needed           |
 
 **Outcome on CLI 2026.11.22-e9042b2: the ACP server has no sandbox.** The
 second run (2026-11-25) had the sandbox preset in `cli-config.json`,
@@ -239,10 +239,14 @@ Read-only Cursor stages launch with `CURSOR_CONFIG_DIR` set to
   sessions recorded under `~/.cursor` before this change can't be resumed. F5
   doesn't prune the folder, and backups that include `provider-homes` include
   it.
-- **The 2026-11-26 C5 run needs a rerun.** Its read-only copy also carried the
-  sandbox preset the script adds for C2-C4, which production doesn't add. The
-  script now builds C5's copy with the shipped `sanitizeCursorCliConfig` from
-  the unmodified user config, and C6 always runs with C5 as its control.
+- **C5 was rerun the same day with the shipped sanitizer.** The first run's
+  read-only copy also carried the sandbox preset the script adds for C2-C4,
+  which production doesn't add. The script now builds C5's copy with
+  `sanitizeCursorCliConfig` from the unmodified user config, and C6 always runs
+  with C5 as its control. The rerun (CLI 2026.11.22-e9042b2, darwin-arm64)
+  passed C1, C5a, C5 and C6 with the same outcomes. Its one permission request,
+  for `npm --version`, carried no `rawInput` and was matched to the fixture step
+  by its title.
 - **Repository config:** the CLI also merges every `.cursor/cli.json` from the
   repository root down to the working directory into that config, using the
   full schema. C6 showed that ACP honours them: a repository allowlist ran `npm`
