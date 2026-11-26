@@ -49,7 +49,8 @@ function connectDesktopSource() {
   desktopSource?.stop();
   desktopSource = null;
   if (!bridge) return null;
-  const source = { bridge, id: knownId(bridge.initial), stop: () => {} };
+  // `current` follows changes from the moment the page loaded, reloads included.
+  const source = { bridge, id: knownId(bridge.current()), stop: () => {} };
   source.stop = bridge.onChange((id) => {
     if (!isAppIconId(id) || id === source.id) return;
     source.id = id;
@@ -111,7 +112,7 @@ export function AppIconEffects(): null {
   useEffect(() => {
     const bridge = desktopBridge();
     if (!bridge) return;
-    // Not cancelled on unmount: the claim is spent once made, so its toast must still show.
+    // Not cancelled on unmount: the toast belongs to the window, not to this component.
     void bridge
       .claimDockRefreshPrompt()
       .then((claimed) => {
@@ -120,6 +121,15 @@ export function AppIconEffects(): null {
           type: "info",
           // An offer, so it stays until answered or dismissed.
           timeout: 0,
+          // Closing it answers the offer, whether by the action or the close button. Until
+          // then it counts as unanswered, so a reload or another window can show it again.
+          onClose: () => {
+            bridge
+              .dismissDockRefreshPrompt()
+              .catch((error: unknown) =>
+                console.warn("[app-icon] Dock offer dismissal failed", error),
+              );
+          },
           title: "F5 has a new icon",
           description:
             "The Dock is still showing the old one. Notification banners update after your next login.",

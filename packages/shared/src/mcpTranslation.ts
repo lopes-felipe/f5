@@ -5,6 +5,7 @@ import type {
   CodexMcpServerEntry,
   McpProjectServersConfig,
   McpServerDefinition,
+  ProviderKind,
 } from "@t3tools/contracts";
 import {
   normalizeOptionalString,
@@ -145,11 +146,22 @@ function toEntries(servers: McpProjectServersConfig | null | undefined): McpServ
     .filter((entry): entry is McpServerEntry => entry !== null);
 }
 
+/** False when the user turned this provider off for the server (`disabledProviders`). */
+export function isMcpServerServedTo(definition: McpServerDefinition, provider: ProviderKind) {
+  return !definition.disabledProviders?.includes(provider);
+}
+
+/** Enabled servers, and with `provider`, only those that provider is not turned off for. */
 export function filterEnabledMcpServers(
   servers: McpProjectServersConfig | null | undefined,
+  provider?: ProviderKind,
 ): Record<string, McpServerDefinition> {
   return Object.fromEntries(
-    toEntries(servers).filter(([, definition]) => definition.enabled !== false),
+    toEntries(servers).filter(
+      ([, definition]) =>
+        definition.enabled !== false &&
+        (provider === undefined || isMcpServerServedTo(definition, provider)),
+    ),
   );
 }
 
@@ -340,7 +352,9 @@ export function translateMcpForClaudeAgent(
   const resolved = options?.environment
     ? interpolateMcpServers(servers, options.environment).servers
     : servers;
-  for (const [name, definition] of Object.entries(filterEnabledMcpServers(resolved))) {
+  for (const [name, definition] of Object.entries(
+    filterEnabledMcpServers(resolved, "claudeAgent"),
+  )) {
     const normalized = normalizeCommonEntry(definition);
     // Claude ignores sub-second values, including the saved zero/default value.
     const timeout =
@@ -403,7 +417,7 @@ export function translateMcpForCodex(
   const resolved = options?.environment
     ? interpolateMcpServers(servers, options.environment).servers
     : servers;
-  for (const [name, definition] of Object.entries(filterEnabledMcpServers(resolved))) {
+  for (const [name, definition] of Object.entries(filterEnabledMcpServers(resolved, "codex"))) {
     const normalized = normalizeCommonEntry(definition);
     const bearerEnvVar = normalized.bearerTokenEnvVar;
     const shared = {
@@ -488,7 +502,9 @@ function readCodexMcpOAuthCallbackPorts(
   servers: McpProjectServersConfig | null | undefined,
 ): Array<{ readonly serverName: string; readonly port: number }> {
   const ports: Array<{ readonly serverName: string; readonly port: number }> = [];
-  for (const [serverName, definition] of Object.entries(filterEnabledMcpServers(servers))) {
+  for (const [serverName, definition] of Object.entries(
+    filterEnabledMcpServers(servers, "codex"),
+  )) {
     const normalized = normalizeCommonEntry(definition);
     if (normalized.oauthCallbackPort !== undefined) {
       ports.push({ serverName, port: normalized.oauthCallbackPort });
@@ -501,7 +517,9 @@ function readCodexMcpOAuthCallbackUrls(
   servers: McpProjectServersConfig | null | undefined,
 ): Array<{ readonly serverName: string; readonly url: string }> {
   const urls: Array<{ readonly serverName: string; readonly url: string }> = [];
-  for (const [serverName, definition] of Object.entries(filterEnabledMcpServers(servers))) {
+  for (const [serverName, definition] of Object.entries(
+    filterEnabledMcpServers(servers, "codex"),
+  )) {
     const normalized = normalizeCommonEntry(definition);
     if (normalized.oauthCallbackUrl !== undefined) {
       urls.push({ serverName, url: normalized.oauthCallbackUrl });

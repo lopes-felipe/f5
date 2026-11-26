@@ -94,16 +94,56 @@ async function notarizeAndStaple(app, env, { run = defaultRun, sleep = defaultSl
 }
 exports.notarizeAndStaple = notarizeAndStaple;
 
+/** Runs a command and returns its exit status with stdout and stderr together. */
+function captureRun(command, args) {
+  const result = spawnSync(command, args, { encoding: "utf8" });
+  return {
+    status: result.error ? null : result.status,
+    output: `${result.stdout ?? ""}${result.stderr ?? ""}`,
+  };
+}
+
+/** The signing details `codesign -dvvv` prints for the parts this check compares. */
+function signingDetails(output) {
+  const field = (name) => new RegExp(`^${name}=(.*)$`, "m").exec(output)?.[1]?.trim() ?? null;
+  return {
+    team: field("TeamIdentifier"),
+    timestamp: field("Timestamp"),
+    runtime: /^CodeDirectory .*flags=0x[0-9a-f]*\([^)]*\bruntime\b/m.test(output),
+  };
+}
+
 /**
  * The Dock tile plug-in (scripts/build-dock-tile.ts) must be in the app and signed as a
- * bundle. Checked here so a packaging mistake fails before the upload to Apple, by name.
+ * bundle by the app's own identity. An intact signature is not enough: clang leaves an ad
+ * hoc one that passes `--verify`. Checked here so a packaging mistake fails by name before
+ * the upload to Apple.
  */
-function verifyDockTilePlugIn(app, { run = defaultRun, exists = existsSync } = {}) {
+function verifyDockTilePlugIn(app, { run = captureRun, exists = existsSync } = {}) {
   const plugIn = join(app, "Contents/PlugIns/F5DockTile.docktileplugin");
   if (!exists(join(plugIn, "Contents/MacOS/F5DockTile")))
     throw new Error(`Packaged Dock tile plug-in missing: ${plugIn}`);
-  if (run("codesign", ["--verify", "--strict", plugIn]).status !== 0)
-    throw new Error(`Dock tile plug-in signing verification failed: ${plugIn}`);
+  const verified = run("codesign", ["--verify", "--strict", plugIn]);
+  if (verified.status !== 0)
+    throw new Error(`Dock tile plug-in signing verification failed: ${plugIn}\n${verified.output}`);
+  const plugInSigning = run("codesign", ["-dvvv", plugIn]);
+  const appSigning = run("codesign", ["-dvvv", app]);
+  const plugInDetails = signingDetails(plugInSigning.output);
+  const appTeam = signingDetails(appSigning.output).team;
+  const plugInTeam = plugInDetails.team === "not set" ? null : plugInDetails.team;
+  const problems = [
+    plugInSigning.status !== 0 && "its signature could not be read",
+    !plugInTeam && "it has no team identifier",
+    plugInTeam &&
+      plugInTeam !== appTeam &&
+      `its team ${plugInTeam} is not the app's ${appTeam ?? "(unreadable)"}`,
+    !plugInDetails.timestamp && "it has no secure timestamp",
+    !plugInDetails.runtime && "it is not signed with hardened runtime",
+  ].filter(Boolean);
+  if (problems.length > 0)
+    throw new Error(
+      `Dock tile plug-in is not signed for release (${problems.join("; ")}): ${plugIn}\n${plugInSigning.output}`,
+    );
 }
 exports.verifyDockTilePlugIn = verifyDockTilePlugIn;
 

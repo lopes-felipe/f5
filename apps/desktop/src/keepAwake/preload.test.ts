@@ -6,7 +6,7 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock("electron", () => ({
   contextBridge: { exposeInMainWorld: mocks.expose },
-  ipcRenderer: { sendSync: () => null, invoke: mocks.invoke },
+  ipcRenderer: { sendSync: () => null, invoke: mocks.invoke, on: () => {} },
   webUtils: {},
 }));
 afterEach(() => {

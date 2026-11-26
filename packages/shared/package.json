@@ -444,6 +444,10 @@
       "types": "./src/vmBackendPin.ts",
       "import": "./src/vmBackendPin.ts"
     },
+    "./appIdentity": {
+      "types": "./src/appIdentity.ts",
+      "import": "./src/appIdentity.ts"
+    },
     "./hostRuntime": {
       "types": "./src/hostRuntime.ts",
       "import": "./src/hostRuntime.ts"
@@ -491,6 +495,10 @@
     "./mcpInterpolation": {
       "types": "./src/mcpInterpolation.ts",
       "import": "./src/mcpInterpolation.ts"
+    },
+    "./mcpProviderSupport": {
+      "types": "./src/mcpProviderSupport.ts",
+      "import": "./src/mcpProviderSupport.ts"
     },
     "./mcpValidation": {
       "types": "./src/mcpValidation.ts",

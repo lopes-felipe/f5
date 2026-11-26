@@ -14,7 +14,11 @@ export function McpTestConnection(props: {
   projectId: ProjectId | null;
   instanceId: ProviderInstanceId;
   getServer: () => { name: string; server: McpServerDefinition };
-  onResult?: (result: McpProbeServerResult) => void;
+  /** `tested` is what this result describes, which may no longer be the saved definition. */
+  onResult?: (
+    result: McpProbeServerResult,
+    tested: { name: string; server: McpServerDefinition; instanceId: ProviderInstanceId },
+  ) => void;
   onOpenTools?: () => void;
 }) {
   const [showTools, setShowTools] = useState(false);
@@ -34,16 +38,17 @@ export function McpTestConnection(props: {
           setResult(null);
           try {
             const { name, server } = props.getServer();
+            const instanceId = props.instanceId;
             void ensureNativeApi()
               .mcp.probeServer({
                 ...(props.projectId ? { projectId: props.projectId } : {}),
-                instanceId: props.instanceId,
+                instanceId,
                 serverName: name,
                 server,
               })
               .then((value) => {
                 setResult(value);
-                props.onResult?.(value);
+                props.onResult?.(value, { name, server, instanceId });
               })
               .catch((cause) => setError(readErrorMessage(cause, "Test failed.")))
               .finally(() => setBusy(false));

@@ -17,6 +17,7 @@ import {
   ThreadId,
   ProviderInstanceId,
   type McpProjectServersConfig,
+  type McpStatusUpdatedPayload,
   type ProviderSession,
 } from "@t3tools/contracts";
 import { CODEX_SSE_TRANSPORT_HINT } from "@t3tools/shared/mcpTranslation";
@@ -291,6 +292,7 @@ function makeClaudeLoginProvider(options: {
 
 function makeRuntimeLayer(input?: {
   readonly servers?: McpProjectServersConfig;
+  readonly published?: Array<McpStatusUpdatedPayload>;
   readonly runtimeConfigReadDelayMs?: number;
   readonly providerService?: Partial<ProviderServiceShape>;
   readonly onControlClient?: () => void;
@@ -398,7 +400,10 @@ function makeRuntimeLayer(input?: {
         }),
         Layer.succeed(ProviderService, { ...makeProviderServiceStub(), ...input?.providerService }),
         Layer.succeed(CodexMcpEventBus, {
-          publishStatusUpdated: () => Effect.void,
+          publishStatusUpdated: (payload) =>
+            Effect.sync(() => {
+              input?.published?.push(payload);
+            }),
           streamStatusUpdates: Stream.empty,
         }),
         Layer.succeed(McpRuntimeDiagnostics, {
@@ -1379,20 +1384,60 @@ describe("Claude MCP sign-in", () => {
     }).pipe(Effect.provide(runtimeFor(providerService)));
   });
 
-  it.effect("times out after five minutes without a connection", () => {
+  it.effect("times out after five minutes without a connection, and announces it", () => {
     const { providerService } = makeClaudeLoginProvider({
       authUrl: "https://auth.example.test/authorize",
     });
+    const published: Array<McpStatusUpdatedPayload> = [];
     return Effect.gen(function* () {
       const service = yield* McpRuntimeService;
       yield* service.startLogin(claudeLogin);
       yield* TestClock.adjust("4 minutes");
       assert.equal((yield* service.getLoginStatus(claudeLogin)).status, "pending");
+      assert.deepEqual(published, []);
       yield* TestClock.adjust("2 minutes");
       const status = yield* service.getLoginStatus(claudeLogin);
       assert.equal(status.status, "failed");
       assert.equal(status.error, "Sign-in timed out. Try again.");
-    }).pipe(Effect.provide(runtimeFor(providerService)));
+      // Settings do not poll sign-in, so the failure is pushed.
+      yield* Effect.yieldNow;
+      assert.deepEqual(
+        published.map((event) => [event.reason, event.provider]),
+        [["login-completed", "claudeAgent"]],
+      );
+    }).pipe(
+      Effect.provide(
+        makeRuntimeLayer({
+          servers: { docs: { type: "http", url: "https://docs.example.test/mcp" } },
+          providerService,
+          published,
+        }),
+      ),
+    );
+  });
+
+  it.effect("refuses sign-in for a server turned off for the provider", () => {
+    const { providerService } = makeClaudeLoginProvider({
+      authUrl: "https://auth.example.test/authorize",
+    });
+    return Effect.gen(function* () {
+      const service = yield* McpRuntimeService;
+      const error = yield* Effect.flip(service.startLogin(claudeLogin));
+      assert.match(error.message, /turned off for Claude/);
+    }).pipe(
+      Effect.provide(
+        makeRuntimeLayer({
+          servers: {
+            docs: {
+              type: "http",
+              url: "https://docs.example.test/mcp",
+              disabledProviders: ["claudeAgent"],
+            },
+          },
+          providerService,
+        }),
+      ),
+    );
   });
 
   for (const ending of ["stopped", "replaced"] as const) {
