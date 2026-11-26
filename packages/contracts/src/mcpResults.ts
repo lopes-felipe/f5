@@ -349,6 +349,8 @@ export const McpImportCandidate = Schema.Struct({
   selectedByDefault: Schema.optional(Schema.Boolean),
   id: Schema.String,
   name: Schema.String,
+  /** The name in the source file when it was imported under another name. */
+  originalName: Schema.optional(Schema.String),
   source: Schema.String,
   server: Schema.optional(McpServerDefinition),
   issues: Schema.Array(McpImportIssue),

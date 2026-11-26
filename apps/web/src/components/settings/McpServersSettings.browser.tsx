@@ -398,14 +398,38 @@ describe("McpServersSettings", () => {
     }
   });
 
-  it("refreshes configuration but not live statuses after a save", async () => {
+  it("refreshes configuration but not live statuses after a save, and marks the old check", async () => {
     const mocks = createNativeApiMock();
+    mocks.getServerStatuses.mockImplementation(async ({ provider, projectId }) => ({
+      provider,
+      projectId,
+      support: "supported" as const,
+      source: "configurationCheck" as const,
+      desiredVersion: "effective-v1",
+      configVersion: "effective-v1",
+      statuses: [
+        {
+          name: "project-server",
+          state: "failed" as const,
+          authStatus: "unknown" as const,
+          error: "old endpoint failure",
+          toolCount: 0,
+          resourceCount: 0,
+          resourceTemplateCount: 0,
+        },
+      ],
+    }));
     const { screen, queryClient } = await renderSettings();
     try {
       await vi.waitFor(() => expect(mocks.getServerStatuses).toHaveBeenCalled());
       await vi.waitFor(() => expect(mocks.getEffectiveConfig).toHaveBeenCalled());
+      await vi.waitFor(() => expect(document.body.textContent).toContain("Failed"));
       const statusCalls = mocks.getServerStatuses.mock.calls.length;
       const effectiveCalls = mocks.getEffectiveConfig.mock.calls.length;
+      mocks.getEffectiveConfig.mockResolvedValue({
+        ...effectiveConfig,
+        effectiveVersion: "effective-v2",
+      });
       await page
         .getByRole("switch", { name: "Enable MCP server project-server", exact: true })
         .click();
@@ -413,6 +437,11 @@ describe("McpServersSettings", () => {
       await vi.waitFor(() =>
         expect(mocks.getEffectiveConfig.mock.calls.length).toBeGreaterThan(effectiveCalls),
       );
+      // The check described the configuration before the save: it is not shown as current.
+      await vi.waitFor(() =>
+        expect(document.body.textContent).toContain("Not checked since the last save"),
+      );
+      expect(document.body.textContent).not.toContain("Failed");
       await new Promise((resolve) => setTimeout(resolve, 100));
       expect(mocks.getServerStatuses.mock.calls.length).toBe(statusCalls);
     } finally {
@@ -1598,6 +1627,41 @@ it("previews import warnings and keeps conflicts until explicitly replaced", asy
           servers: {
             "project-server": { type: "stdio", command: "replacement" },
             remote: { type: "http", url: "https://example.test" },
+          },
+        }),
+      ),
+    );
+  } finally {
+    queryClient.clear();
+    await screen.unmount();
+  }
+});
+
+it("treats re-importing a stored legacy name as a conflict that Replace renames", async () => {
+  const mocks = createNativeApiMock();
+  mocks.getProjectConfig.mockResolvedValue({
+    ...projectConfig,
+    servers: { ...projectConfig.servers, "team.docs": { type: "stdio", command: "old" } },
+  });
+  const { screen, queryClient } = await renderSettings();
+  try {
+    await page.getByRole("button", { name: "Import configuration" }).click();
+    await page
+      .getByRole("textbox", { name: "Configuration to import" })
+      .fill(JSON.stringify({ mcpServers: { "team.docs": { command: "new" } } }));
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain("Already saved as 'team.docs'"),
+    );
+    // Kept by default: nothing would be added next to the stored server.
+    await expect.element(page.getByRole("button", { name: "Import 0 into project" })).toBeVisible();
+    await page.getByRole("combobox", { name: "Conflict for team_docs" }).selectOptions("replace");
+    await page.getByRole("button", { name: "Import 1 into project" }).click();
+    await vi.waitFor(() =>
+      expect(mocks.replaceProjectConfig).toHaveBeenCalledWith(
+        expect.objectContaining({
+          servers: {
+            "project-server": { type: "stdio", command: "project-command" },
+            team_docs: { type: "stdio", command: "new" },
           },
         }),
       ),

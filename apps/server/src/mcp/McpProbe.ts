@@ -13,6 +13,7 @@ import type {
   McpToolSummary,
 } from "@t3tools/contracts";
 import { summarizeMcpTools } from "@t3tools/shared/mcpTools";
+import { mcpBearerRedactionValues, mcpRemoteHeaders } from "@t3tools/shared/mcpTranslation";
 import { isMcpCredentialKey, createMcpDiagnosticsSanitizer } from "@t3tools/shared/mcpDiagnostics";
 import { Data, Effect } from "effect";
 
@@ -143,11 +144,8 @@ export function probeMcpServer(
     input.serverName.trim().toLowerCase(),
   ]);
   const server = input.server;
-  const bearer = server.bearerTokenEnvVar
-    ? execution.environment[server.bearerTokenEnvVar]
-    : undefined;
   const sanitizer = createMcpDiagnosticsSanitizer({ [input.serverName]: server }, [
-    ...(bearer ? [bearer] : []),
+    ...mcpBearerRedactionValues(server, execution.environment),
     ...Object.entries(execution.environment).flatMap(([name, value]) =>
       value && isMcpCredentialKey(name) ? [value] : [],
     ),
@@ -185,8 +183,10 @@ export function probeMcpServer(
           { capabilities: {} },
         );
         const controller = new AbortController();
-        const headers = new Headers(server.headers);
-        if (bearer) headers.set("Authorization", `Bearer ${bearer}`);
+        // The same precedence as every provider: a literal Authorization header wins.
+        const headers = new Headers(
+          server.type === "stdio" ? undefined : mcpRemoteHeaders(server, execution.environment),
+        );
         if (server.type === "stdio") {
           transport = new ProbeStdioTransport(
             server.command,

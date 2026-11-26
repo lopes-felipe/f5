@@ -80,7 +80,7 @@ After saving, the banner says: **Saved. Running sessions pick up MCP changes on 
 
 ## Connection test results
 
-**Test** checks either the saved server or the editor draft. A stdio test executes the configured command with the selected account's environment and the draft's environment overrides. Remote tests use the configured headers and bearer environment variable. Tests initialize the connection and list advertised tools, resources, and prompts; they never invoke tools or fetch resource contents. Tests have a 60-second deadline and clean up their child processes. Results show latency, server information, bounded tool summaries, and sanitized errors and stderr. Sign-in requirements remain owned by the provider; a test does not start OAuth.
+**Test** checks either the saved server or the editor draft. A stdio test executes the configured command with the selected account's environment and the draft's environment overrides. Remote tests use the configured headers and bearer environment variable, with the same rule as every agent: a literal `Authorization` header wins over the variable, and variables reserved for F5 and provider credentials (`F5_*`, `ANTHROPIC_*`, `CLAUDE_*`, `AWS_*`, `OPENAI_*`, `CODEX_*`) are never sent. Tests initialize the connection and list advertised tools, resources, and prompts; they never invoke tools or fetch resource contents. Tests have a 60-second deadline and clean up their child processes. Results show latency, server information, bounded tool summaries, and sanitized errors and stderr. Sign-in requirements remain owned by the provider; a test does not start OAuth.
 
 ## Tools
 
