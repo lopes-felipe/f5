@@ -75,7 +75,8 @@ it("stages each platform's production app icon choices over the development ones
   } finally {
     await rm(stage, { recursive: true, force: true });
   }
-});
+  // About 150 file operations; a Windows runner needs more than the default five seconds.
+}, 30_000);
 
 it("builds Debian and AppImage installers together without changing other targets", async () => {
   const config = await Effect.runPromise(
