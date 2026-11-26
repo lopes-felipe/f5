@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, writeFile, access } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -82,6 +82,23 @@ describe("prepareCursorReadOnlyEnvironment", () => {
     expect(await exists(path.join(directory, "permissions.json"))).toBe(false);
     // The user's own files are untouched.
     expect(await exists(path.join(userConfig, "permissions.json"))).toBe(true);
+  });
+
+  it("lets stages of one instance prepare the config at the same time", async () => {
+    const homes = await tempDir("cursor-provider-homes-");
+    const userConfig = await tempDir("cursor-user-config-");
+    const input = {
+      providerHomesDir: homes,
+      instanceId: "work",
+      environment: { CURSOR_CONFIG_DIR: userConfig },
+    };
+    await Promise.all(Array.from({ length: 8 }, () => prepareCursorReadOnlyEnvironment(input)));
+    const directory = path.join(homes, "cursor-readonly", "work");
+    expect(JSON.parse(await readFile(path.join(directory, "cli-config.json"), "utf8"))).toEqual({
+      approvalMode: "allowlist",
+      permissions: { allow: [], deny: [] },
+    });
+    expect((await readdir(directory)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
   });
 
   it("rewrites the copy on every start and removes a permissions.json left in it", async () => {

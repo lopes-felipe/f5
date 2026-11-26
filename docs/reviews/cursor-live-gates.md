@@ -141,7 +141,13 @@ command (title and raw input), never by assistant text:
 - **Temp writes are the positive control:** the run writes to both `/tmp` and
   `$TMPDIR`, records which landed, and needs at least one. Otherwise nothing
   shows the commands ran at all.
-- **`curl`** passes on `000` or a curl error and fails on `200`.
+- **`curl`** is scored per call. Any HTTP status fails. A transport error (`000`,
+  a curl error) passes only when the script's own unsandboxed request to the same
+  URL got an HTTP status, so an offline host stays inconclusive.
+- **Cursor's own fetch** must complete for C3 and C4 to pass.
+- **`npm --version`** (C2, C5, C6) counts as "asked F5" only when a permission
+  request names that call's `toolCallId`, and as "ran without asking" only when
+  the call completed and printed a version.
 - **Fixture setup** runs Git without the caller's `GIT_*` variables, global or
   system config, hooks or signing, and stops at the first failure.
 - **Permission requests** are answered "allow once" only when the request offers
@@ -154,7 +160,7 @@ command (title and raw input), never by assistant text:
 | C2   | With `--sandbox enabled` and plan mode, which commands send `session/request_permission`, and does a request tell sandboxed runs from out-of-sandbox ones?        | Every non-allowlisted command asks, including the `npm --version` trap; no sandbox (2026-11-25)     |
 | C3   | Under `workspace_readonly` with network denied: do workspace, `.git` and outside writes fail, `curl` fail, temp writes succeed and Cursor's own fetch still work? | Fail: every write landed and `curl` returned 200 (2026-11-25)                                       |
 | C4   | Does C3 still hold in a workspace whose own `.cursor/sandbox.json` asks for no sandbox and full network?                                                          | Fail, same as C3 (2026-11-25)                                                                       |
-| C5   | Launched like a production read-only stage, does `npm --version` ask F5 when the user's config allows `Shell(npm)` but `CURSOR_CONFIG_DIR` points at F5's copy?   | Pass (2026-11-26): it asked F5; control C5a ran `npm` without asking                                |
+| C5   | Launched like a production read-only stage, does `npm --version` ask F5 when the user's config allows `Shell(npm)` but `CURSOR_CONFIG_DIR` points at F5's copy?   | Pass (2026-11-26): it asked F5; control C5a ran `npm` without asking. Rerun pending (see below)     |
 | C6   | Does Cursor honour `permissions.allow` from the repository's `.cursor/cli.json` over ACP?                                                                         | Yes (2026-11-26): `npm` ran without asking despite F5's override, so the repository guard is needed |
 
 **Outcome on CLI 2026.11.22-e9042b2: the ACP server has no sandbox.** The
@@ -196,8 +202,10 @@ Read-only Cursor stages launch with `CURSOR_CONFIG_DIR` set to
 - **What follows `CURSOR_CONFIG_DIR`:** the CLI resolves its config dir as
   `CURSOR_CONFIG_DIR`, then `$XDG_CONFIG_HOME/cursor`, then `~/.cursor`
   (`cursor-config/dist/paths.js`). `cli-config.json` (`permissions.allow`,
-  `approvalMode`), `permissions.json` (`terminalAllowlist`, `autoRun`), user MCP
-  servers, hooks, `acp-sessions` and `chats` all live in it.
+  `approvalMode`), `permissions.json` (`terminalAllowlist`, `autoRun`),
+  `acp-sessions` and `chats` live in it. User MCP servers (`~/.cursor/mcp.json`),
+  rules and skills are read from the home folder and still load. F5's read-only
+  ACP policy refuses every MCP call except its own read-only tools.
 - **What F5 writes there:** a copy of the user's `cli-config.json` with an empty
   allowlist and `approvalMode: "allowlist"`, rewritten at every start, and no
   `permissions.json`. `approvalMode` also accepts `unrestricted` and
@@ -207,6 +215,10 @@ Read-only Cursor stages launch with `CURSOR_CONFIG_DIR` set to
   (Windows), never in `CURSOR_CONFIG_DIR`. No keychain link is needed, unlike
   the separate HOME in C1. In C5 the session signed in with `CURSOR_CONFIG_DIR`
   pointing at a folder that held only the sanitized `cli-config.json`.
+- **The 2026-11-26 C5 run needs a rerun.** Its read-only copy also carried the
+  sandbox preset the script adds for C2-C4, which production doesn't add. The
+  script now builds C5 and C6 from the user's config exactly as production does,
+  and C6 always runs with C5 as its control.
 - **Repository config:** the CLI also merges every `.cursor/cli.json` from the
   repository root down to the working directory into that config, using the
   full schema. F5 can't override those files, so it refuses a read-only stage
@@ -238,12 +250,13 @@ Read-only Cursor stages launch with `CURSOR_CONFIG_DIR` set to
 - **C4 exists because** the CLI folds the workspace's own `.cursor/sandbox.json`
   into the per-user policy. A repository under review must not be able to
   loosen a read-only stage's sandbox.
-- **A C4 pass needs a positive control before certification.** Run once with
-  the hostile workspace policy and no per-user `sandbox.json`, and show that
-  behaviour loosens (for example, `curl` returns 200). Otherwise a CLI that
-  ignores workspace policy files, or rejects `insecure_none`, passes C4 without
-  testing anything. On 2026.11.22 the sandbox never applied over ACP, so the
-  control wasn't run.
+- **A C4 pass needs a positive control before certification.** With no
+  per-user `sandbox.json`, run the same steps in two workspaces: one with the
+  hostile policy and one without. The hostile policy must change the result (for
+  example, `curl` returns 200 only there). A control that only shows `curl`
+  succeeding in the hostile workspace proves nothing: a CLI that ignores
+  workspace policy files and allows network by default gives the same result.
+  On 2026.11.22 the sandbox never applied over ACP, so the control wasn't run.
 - **Keychain exposure is a design risk for a production read-only HOME.** C1
   passes only with the whole login keychain folder linked, so sandboxed
   commands could run `security find-*-password`. Before any production use, add

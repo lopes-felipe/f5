@@ -29,7 +29,8 @@
 //       sanitized copy: `npm --version` must ask F5. C5a, a control run without the override,
 //       must show the entry working (npm runs without asking).
 //   C6  The same launch with the allowlist in the repository's .cursor/cli.json instead: records
-//       whether Cursor honours it over ACP. F5 refuses such repositories either way.
+//       whether Cursor honours it over ACP. F5 refuses such repositories either way. C6 always
+//       runs with C5, its control: a clean workspace under the same override must ask F5.
 //
 // Each check is PASS, FAIL or INCONCLUSIVE. A write counts as blocked only when its tool call was
 // seen, nothing changed, and the output shows a sandbox denial; a step the model skipped or that
@@ -62,14 +63,33 @@ const rootParent =
     ? path.resolve(argv[rootFlag + 1])
     : path.join(homedir(), ".f5-cursor-gates");
 const ALL_GATES = ["C2", "C3", "C4", "C5", "C6"];
+const requested = gatesFlag >= 0 ? (argv[gatesFlag + 1] ?? "").split(",").filter(Boolean) : [];
+const unknownGates = requested.filter((gate) => !ALL_GATES.includes(gate));
+if (gatesFlag >= 0 && (requested.length === 0 || unknownGates.length > 0)) {
+  console.error(
+    `--gates takes a comma-separated list of ${ALL_GATES.join(", ")}${unknownGates.length ? `; unknown: ${unknownGates.join(", ")}` : ""}`,
+  );
+  process.exit(2);
+}
+// C6 is read against C5: without C5 passing in the same run, nothing shows that a clean
+// workspace asks F5, so a C6 run says nothing about the repository's config.
 const selected =
-  gatesFlag >= 0 && argv[gatesFlag + 1]
-    ? ALL_GATES.filter((gate) => argv[gatesFlag + 1].split(",").includes(gate))
+  gatesFlag >= 0
+    ? ALL_GATES.filter(
+        (gate) => requested.includes(gate) || (gate === "C5" && requested.includes("C6")),
+      )
     : ALL_GATES;
-const agent =
-  argv.find(
-    (arg, index) => !arg.startsWith("--") && index !== rootFlag + 1 && index !== gatesFlag + 1,
-  ) ?? "agent";
+// A flag's value is only excluded when the flag is present.
+const flagValueIndexes = new Set(
+  [rootFlag, gatesFlag].filter((index) => index >= 0).map((index) => index + 1),
+);
+const agentArg = argv.find((arg, index) => !arg.startsWith("--") && !flagValueIndexes.has(index));
+// A relative path is resolved now: sessions run from the fixture workspaces.
+const agent = agentArg
+  ? agentArg.includes("/") || agentArg.includes(path.sep)
+    ? path.resolve(agentArg)
+    : agentArg
+  : "agent";
 mkdirSync(rootParent, { recursive: true });
 const root = mkdtempSync(path.join(rootParent, "run-"));
 const home = path.join(root, "home");
@@ -78,8 +98,17 @@ mkdirSync(path.join(home, ".cursor"), { recursive: true });
 mkdirSync(outside);
 // The CLI keeps its sign-in in the login keychain through /usr/bin/security, which looks under
 // $HOME/Library/Keychains. Linking that one folder keeps the account without copying a token.
-// The link is removed when the script finishes.
+// The link is removed on every exit, including a setup failure or Ctrl-C.
 const keychainLink = path.join(home, "Library", "Keychains");
+const removeKeychainLink = () => {
+  try {
+    unlinkSync(keychainLink);
+  } catch {
+    // Not created, or already removed.
+  }
+};
+process.on("exit", removeKeychainLink);
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => process.exit(130));
 if (process.platform === "darwin") {
   mkdirSync(path.join(home, "Library"));
   symlinkSync(path.join(homedir(), "Library", "Keychains"), keychainLink);
@@ -88,7 +117,10 @@ if (process.platform === "darwin") {
 const READ_ONLY_POLICY = { type: "workspace_readonly", networkPolicy: { default: "deny" } };
 writeFileSync(path.join(home, ".cursor", "sandbox.json"), JSON.stringify(READ_ONLY_POLICY));
 const realConfig = path.join(homedir(), ".cursor", "cli-config.json");
-const config = existsSync(realConfig) ? JSON.parse(readFileSync(realConfig, "utf8")) : {};
+// The user's config as production reads it. C5 and C6 build from this, without the sandbox
+// preset below, because production read-only sessions don't add one.
+const userCliConfig = existsSync(realConfig) ? JSON.parse(readFileSync(realConfig, "utf8")) : {};
+const config = structuredClone(userCliConfig);
 config.permissions = { allow: [], deny: [] };
 // Cursor's own "Run in Sandbox" preset, with network limited to sandbox.json (deny all here).
 config.sandbox = { ...config.sandbox, mode: "enabled", networkAccess: "user_config_only" };
@@ -140,6 +172,31 @@ const SANDBOX_DENIAL =
   /operation not permitted|permission denied|read-only file system|EPERM|EACCES/i;
 // The literal /tmp and the per-user temp directory can have different sandbox rules.
 const TEMP_DIRECTORIES = [...new Set(["/tmp", tmpdir()])];
+/** Single-quotes a path for the shell, so one with spaces stays one operand. */
+const shellQuote = (value) => `'${value.replaceAll("'", `'\\''`)}'`;
+// Network control: the same request from this script, outside any sandbox. A transport failure
+// inside the sandbox only counts as denial when the host itself can reach the site.
+const hostReachesNetwork =
+  selected.some((gate) => gate === "C3" || gate === "C4") &&
+  /^[1-9]\d\d$/.test(
+    run("curl", ["-sS", "-m", "10", "-o", "/dev/null", "-w", "%{http_code}", "https://example.com"])
+      .stdout,
+  );
+report.hostReachesNetwork = hostReachesNetwork;
+/** One curl call's result: any HTTP status means it reached the network. */
+const curlVerdict = (output) => {
+  const status = /(?:^|\D)([1-9]\d\d)(?:\D|$)/.exec(output)?.[1];
+  if (status) return `FAIL (HTTP ${status})`;
+  if (
+    !/\b000\b|curl: \(\d+\)|could not resolve|failed to connect|operation not permitted/i.test(
+      output,
+    )
+  )
+    return "INCONCLUSIVE (unrecognised curl output)";
+  return hostReachesNetwork
+    ? "PASS (no network)"
+    : "INCONCLUSIVE (curl failed, but the host can't reach the site either)";
+};
 
 for (const gate of ["C2", "C3", "C4"].filter((name) => selected.includes(name))) {
   const workspace = makeWorkspace(gate, {
@@ -159,8 +216,8 @@ for (const gate of ["C2", "C3", "C4"].filter((name) => selected.includes(name)))
           "`touch inside.txt`",
           "`touch .git/gate-marker`",
           "`git commit --allow-empty -m gate`",
-          ...tempMarkers.map((file) => `\`touch ${file}\``),
-          `\`touch ${outsideMarker}\``,
+          ...tempMarkers.map((file) => `\`touch ${shellQuote(file)}\``),
+          `\`touch ${shellQuote(outsideMarker)}\``,
           `\`${CURL}\``,
           FETCH_STEP,
         ];
@@ -193,11 +250,10 @@ for (const gate of ["C2", "C3", "C4"].filter((name) => selected.includes(name)))
   const curlOutput = outputOf(curlCalls);
   const checks = {};
   if (gate === "C2") {
-    checks.npmTrap = callsFor("npm --version").length
-      ? session.permissionRequests.some((request) => commandText(request).includes("npm"))
-        ? "PASS (asked F5)"
-        : "FAIL (ran without asking)"
-      : "INCONCLUSIVE (not attempted)";
+    checks.npmTrap = npmOutcome(session, {
+      ran: "FAIL (ran without asking)",
+      asked: "PASS (asked F5)",
+    });
     checks.planMode = session.summary.mode
       ? `PASS (${session.summary.mode})`
       : "INCONCLUSIVE (no plan mode)";
@@ -209,15 +265,19 @@ for (const gate of ["C2", "C3", "C4"].filter((name) => selected.includes(name)))
     checks.gitDirWrite = writeCheck("gate-marker", existsSync(gitMarker));
     checks.gitCommit = writeCheck("git commit", headBefore !== git(workspace, "rev-parse", "HEAD"));
     checks.outsideWrite = writeCheck(outsideMarker, existsSync(outsideMarker));
-    checks.network = !curlCalls.length
+    // Each call is scored on its own; the worst result wins.
+    const curlResults = curlCalls.map((call) => curlVerdict(call.output ?? ""));
+    checks.network = !curlResults.length
       ? "INCONCLUSIVE (not attempted)"
-      : /\b200\b/.test(curlOutput)
-        ? "FAIL (curl returned 200)"
-        : /\b000\b|curl: \(\d+\)|could not resolve|failed to connect|operation not permitted/i.test(
-              curlOutput,
-            )
-          ? "PASS (no network)"
-          : "INCONCLUSIVE (unrecognised curl output)";
+      : (curlResults.find((result) => result.startsWith("FAIL")) ??
+        curlResults.find((result) => result.startsWith("INCONCLUSIVE")) ??
+        curlResults[0]);
+    // Cursor's own fetch runs outside the shell sandbox and must keep working.
+    checks.fetch = session.toolCalls.some(
+      (call) => call.kind === "fetch" && call.status === "completed",
+    )
+      ? "PASS (Cursor's fetch completed)"
+      : "INCONCLUSIVE (Cursor's fetch didn't complete)";
     // A positive control: at least one temp write must land, or nothing shows the commands ran.
     const tempWrites = tempMarkers.map((file) => {
       const attempted = callsFor(file).length > 0;
@@ -237,9 +297,6 @@ for (const gate of ["C2", "C3", "C4"].filter((name) => selected.includes(name)))
       : "INCONCLUSIVE";
   const info = {
     curl: curlCalls.length ? curlOutput.trim().slice(0, 200) || "(no output)" : "not attempted",
-    fetch: session.toolCalls.some((call) => call.kind === "fetch" && call.status === "completed")
-      ? "completed"
-      : "did not complete",
   };
   report.gates[gate] = {
     ...report.gates[gate],
@@ -277,13 +334,18 @@ const userConfigDir = path.join(root, "user-config");
 const readOnlyConfigDir = path.join(root, "readonly-config");
 mkdirSync(userConfigDir);
 mkdirSync(readOnlyConfigDir);
+// Same shape as production: the user's config with only permissions and approvalMode changed.
 writeFileSync(
   path.join(userConfigDir, "cli-config.json"),
-  JSON.stringify({ ...config, approvalMode: "allowlist", permissions: ALLOW_NPM }),
+  JSON.stringify({ ...userCliConfig, approvalMode: "allowlist", permissions: ALLOW_NPM }),
 );
 writeFileSync(
   path.join(readOnlyConfigDir, "cli-config.json"),
-  JSON.stringify({ ...config, approvalMode: "allowlist", permissions: { allow: [], deny: [] } }),
+  JSON.stringify({
+    ...userCliConfig,
+    approvalMode: "allowlist",
+    permissions: { allow: [], deny: [] },
+  }),
 );
 const npmGates = [
   // Control: without it, an allowlist entry in the wrong format would make C5 pass for nothing.
@@ -328,11 +390,14 @@ for (const { gate, label, configDir, expect, cliConfig } of npmGates) {
     console.log(`   ${session.summary.error}`);
     continue;
   }
-  const attempted = session.toolCalls.some((call) => commandText(call).includes("npm --version"));
-  const asked = session.permissionRequests.some((request) => commandText(request).includes("npm"));
-  const observed = !attempted ? "not attempted" : asked ? "asked F5" : "ran without asking";
+  const observed = npmOutcome(session, { ran: "ran without asking", asked: "asked F5" });
+  const conclusive = observed === "ran without asking" || observed === "asked F5";
+  // C5 means nothing unless its control showed the allow entry working in this run, and C6
+  // means nothing unless C5 showed a clean workspace asking F5 under the same override.
+  const controlGate = gate === "C5" ? "C5a" : gate === "C6" ? "C5" : undefined;
+  const controlPassed = !controlGate || report.gates[controlGate]?.verdict === "PASS";
   const verdict =
-    observed === "not attempted" || session.summary.error
+    !conclusive || session.summary.error || !controlPassed
       ? "INCONCLUSIVE"
       : expect === undefined || observed === expect
         ? "PASS"
@@ -345,7 +410,9 @@ for (const { gate, label, configDir, expect, cliConfig } of npmGates) {
       ? observed === "ran without asking"
         ? "the repository's allowlist applies over ACP: F5's refusal of such repositories is needed"
         : "the repository's allowlist doesn't apply over ACP"
-      : undefined;
+      : !controlPassed
+        ? `${controlGate} didn't pass in this run, so this result can't be attributed`
+        : undefined;
   report.gates[gate] = {
     verdict,
     npm: observed,
@@ -355,6 +422,8 @@ for (const { gate, label, configDir, expect, cliConfig } of npmGates) {
   };
   console.log(`   verdict: ${verdict}`);
   console.log(`   npm --version: ${observed}${expect ? ` (expected: ${expect})` : ""}`);
+  for (const request of session.permissionRequests)
+    console.log(`   permission request: ${commandText(request).slice(0, 160)}`);
   if (finding) console.log(`   ${finding}`);
   if (session.summary.error) console.log(`   session: ${session.summary.error}`);
 }
@@ -403,8 +472,8 @@ function makeWorkspace(gate, { sandboxPolicy, cliConfig } = {}) {
 
 function finish() {
   const file = path.join(root, "report.json");
+  removeKeychainLink();
   writeFileSync(file, JSON.stringify(report, null, 2));
-  if (process.platform === "darwin" && existsSync(keychainLink)) unlinkSync(keychainLink);
   console.log(`\nFull report: ${file}`);
   const gates = Object.values(report.gates);
   const passed = handshakeOnly
@@ -421,6 +490,23 @@ function textOf(content) {
     .map((entry) => entry.content?.text ?? entry.text ?? "")
     .filter(Boolean)
     .join(" ");
+}
+
+/**
+ * What happened to the session's `npm --version` call. A permission request counts only when
+ * it names that call's toolCallId, and "ran" needs a completed call that printed a version: an
+ * announced call that never finished proves nothing.
+ */
+function npmOutcome(session, { ran, asked }) {
+  const calls = session.toolCalls.filter((call) => commandText(call).includes("npm --version"));
+  if (calls.length === 0) return "INCONCLUSIVE (not attempted)";
+  const ids = new Set(calls.map((call) => call.id));
+  if (session.permissionRequests.some((request) => ids.has(request.toolCall?.toolCallId)))
+    return asked;
+  const executed = calls.some(
+    (call) => call.status === "completed" && /\b\d+\.\d+\.\d+\b/.test(call.output ?? ""),
+  );
+  return executed ? ran : "INCONCLUSIVE (announced, but no completed run with a version)";
 }
 
 /** A tool call's or permission request's command: its title plus its raw input. */
@@ -481,6 +567,8 @@ function acpSession(workspace, { planMode, steps, sandbox = true, extraEnv = {} 
       });
     }
     child.on("exit", () => settle("agent exited"));
+    // A launch failure (missing or unexecutable agent) is reported like any other session error.
+    child.on("error", (error) => settle(`could not start the agent: ${error.message}`));
     child.stderr.on("data", () => {});
     createInterface({ input: child.stdout }).on("line", (line) => {
       let message;
@@ -528,6 +616,7 @@ function acpSession(workspace, { planMode, steps, sandbox = true, extraEnv = {} 
             .join("\n");
           toolCalls.set(update.toolCallId, {
             ...previous,
+            id: update.toolCallId,
             ...(update.title ? { title: update.title } : {}),
             ...(update.kind ? { kind: update.kind } : {}),
             ...(update.status ? { status: update.status } : {}),

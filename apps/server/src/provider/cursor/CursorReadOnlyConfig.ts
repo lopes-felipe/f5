@@ -17,6 +17,7 @@
  * repository whose `.cursor/cli.json` loosens approvals is refused, because F5 can't override it.
  * Team admin allowlists are applied server-side and stay out of F5's reach.
  */
+import { randomUUID } from "node:crypto";
 import * as nodeFs from "node:fs/promises";
 import * as nodeOs from "node:os";
 import * as nodePath from "node:path";
@@ -86,15 +87,20 @@ export async function prepareCursorReadOnlyEnvironment(input: {
   await nodeFs.mkdir(directory, { recursive: true, mode: 0o700 });
   await nodeFs.rm(nodePath.join(directory, "permissions.json"), { force: true });
   const target = nodePath.join(directory, "cli-config.json");
-  const temporary = `${target}.${process.pid}.${Date.now()}.tmp`;
-  await nodeFs.writeFile(
-    temporary,
-    `${JSON.stringify(sanitizeCursorCliConfig(config), null, 2)}\n`,
-    {
-      mode: 0o600,
-    },
-  );
-  await nodeFs.rename(temporary, target);
+  // Stages of the same instance can start at once (sessions lock per thread), so each write gets
+  // its own file, created exclusively, and the rename publishes a complete config.
+  const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await nodeFs.writeFile(
+      temporary,
+      `${JSON.stringify(sanitizeCursorCliConfig(config), null, 2)}\n`,
+      { mode: 0o600, flag: "wx" },
+    );
+    await nodeFs.rename(temporary, target);
+  } catch (error) {
+    await nodeFs.rm(temporary, { force: true });
+    throw error;
+  }
   return { ...input.environment, CURSOR_CONFIG_DIR: directory };
 }
 

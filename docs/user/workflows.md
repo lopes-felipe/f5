@@ -138,8 +138,9 @@ shows the template, cost and per-step context.
 - F5 only sees the Cursor commands that Cursor asks about, so read-only Cursor stages run with an
   F5-owned copy of your Cursor CLI config (`CURSOR_CONFIG_DIR`):
   - **Ignored in these stages:** your allowlist (`permissions.allow`, `permissions.json`) and an
-    `unrestricted` or `auto-review` approval mode. Your Cursor MCP servers, rules, skills and hooks
-    are left out too. Your sign-in and model settings still apply.
+    `unrestricted` or `auto-review` approval mode. Your sign-in, model settings, rules, skills and
+    MCP servers (read from your home folder) still load. F5 refuses every MCP call except its own
+    read-only tools.
   - **Repository config:** a repository whose `.cursor/cli.json` sets an allowlist or a looser
     approval mode can't run read-only Cursor stages. F5 can't override that file, so the stage
     fails to start and names the file.
