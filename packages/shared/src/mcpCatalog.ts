@@ -129,11 +129,17 @@ function packageServer(
   secretKeys: string[],
   needsInput: string[],
 ): McpServerDefinition {
+  // A leading dash would make the package name an option of the launcher.
+  if (pkg.identifier.startsWith("-"))
+    throw new Error(`'${pkg.identifier}' is not a package name F5 can run.`);
   const env = collectInputs(pkg.environmentVariables, secretKeys, needsInput);
   const base = BASE_RUNTIME_WORDS[pkg.registryType];
-  const runtime = pkg.runtimeArguments
-    .flatMap((argument) => argumentWords(argument, needsInput))
-    .filter((word) => !base.includes(word));
+  // Listings often repeat the launcher's own words (`run`, `-i`, `--rm`, `-y`): drop an
+  // argument that is exactly one of them, never a word that is another flag's value.
+  const runtime = pkg.runtimeArguments.flatMap((argument) => {
+    const words = argumentWords(argument, needsInput);
+    return words.length === 1 && base.includes(words[0]!) ? [] : words;
+  });
   // A container sees only the variables passed to it.
   const containerEnv =
     pkg.registryType === "oci" ? Object.keys(env ?? {}).flatMap((name) => ["-e", name]) : [];

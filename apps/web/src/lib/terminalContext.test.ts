@@ -1,5 +1,6 @@
 import { ThreadId } from "@t3tools/contracts";
 import { IMAGE_ONLY_BOOTSTRAP_PROMPT } from "@t3tools/shared/composerSendText";
+import { formatMcpResourceContext } from "@t3tools/shared/mcpComposer";
 import { getMessageTextLengthIssue } from "@t3tools/shared/providerInput";
 import { describe, expect, it } from "vitest";
 
@@ -146,6 +147,20 @@ describe("terminalContext", () => {
         },
       ],
     });
+  });
+
+  it("leaves MCP resource contents out of the displayed message and its copy text", () => {
+    const resources = formatMcpResourceContext([
+      { serverName: "docs", uri: "doc://a", text: "long resource body", truncated: false },
+    ]);
+    const prompt = appendTerminalContextsToPrompt(
+      `Summarize [@docs: a](mcp-resource://docs/doc%3A%2F%2Fa)\n\n${resources}`,
+      [makeContext()],
+    );
+    const displayed = deriveDisplayedUserMessageState(prompt);
+    expect(displayed.visibleText).toBe("Summarize [@docs: a](mcp-resource://docs/doc%3A%2F%2Fa)");
+    expect(displayed.copyText).not.toContain("long resource body");
+    expect(displayed.contextCount).toBe(1);
   });
 
   it("derives displayed user message state from terminal context prompts", () => {

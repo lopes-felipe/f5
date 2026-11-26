@@ -52,6 +52,13 @@ describe("MCP composer menu", () => {
     const [logo] = mcpResourceMenuItems(servers, "media");
     expect(logo).toMatchObject({ label: "Logo", description: "media · img://logo" });
     expect(isMcpImageResource(logo!)).toBe(true);
+    // Types F5 cannot attach as images are added as text instead.
+    const asType = (mimeType: string) => ({
+      ...logo!,
+      resource: { ...logo!.resource, mimeType },
+    });
+    expect(isMcpImageResource(asType("image/svg+xml"))).toBe(false);
+    expect(isMcpImageResource(asType("IMAGE/JPEG; charset=binary"))).toBe(true);
     expect(mcpResourceMenuItems(servers, "doc://7")[0]?.label).toBe("page-7");
   });
 

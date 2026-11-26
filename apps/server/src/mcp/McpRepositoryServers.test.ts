@@ -14,7 +14,7 @@ import {
   ProjectionProjectRepository,
   type ProjectionProjectRepositoryShape,
 } from "../persistence/Services/ProjectionProjects.ts";
-import { makeMcpRepositoryServers } from "./McpRepositoryServers.ts";
+import { makeMcpRepositoryServers, repositoryApprovalLimitIssue } from "./McpRepositoryServers.ts";
 
 const projectId = ProjectId.makeUnsafe("repo-project");
 
@@ -73,6 +73,8 @@ it.effect("lists .mcp.json servers as needing approval and runs only approved de
         assert.match(listed.issues.join("\n"), /^leak: /m);
         assert.deepStrictEqual(listed.approved, {});
         assert.equal(listed.version, "");
+        assert.deepStrictEqual(listed.withdrawn, ["docs"]);
+        assert.deepStrictEqual(repository.trustedProjects(), []);
 
         const docs = listed.entries[0]!;
         const stale = yield* Effect.flip(
@@ -93,6 +95,8 @@ it.effect("lists .mcp.json servers as needing approval and runs only approved de
         });
         assert.deepStrictEqual(Object.keys(approved.approved), ["docs"]);
         assert.notEqual(approved.version, "");
+        assert.deepStrictEqual(approved.withdrawn, []);
+        assert.deepStrictEqual(repository.trustedProjects(), [projectId]);
 
         // A new repository service reads the approval back from the database.
         const reloaded = yield* (yield* makeMcpRepositoryServers).readLayer(projectId);
@@ -111,13 +115,19 @@ it.effect("lists .mcp.json servers as needing approval and runs only approved de
           [["docs", false, true]],
         );
         assert.deepStrictEqual(changed.approved, {});
+        assert.deepStrictEqual(changed.withdrawn, ["docs"]);
+
+        // An approved server the file stops listing is withdrawn too, so live sessions drop it.
+        yield* Effect.promise(() => writeFile(path.join(root, ".mcp.json"), file({})));
+        assert.deepStrictEqual((yield* repository.readLayer(projectId)).withdrawn, ["docs"]);
 
         const revoked = yield* repository.setTrust({
           projectId,
           serverName: "docs",
           trusted: false,
         });
-        assert.isFalse(revoked.entries[0]!.changed);
+        assert.deepStrictEqual(revoked.withdrawn, []);
+        assert.deepStrictEqual(repository.trustedProjects(), []);
       }),
     );
   }).pipe(Effect.scoped),
@@ -146,3 +156,65 @@ it.effect("refuses a symlinked .mcp.json and projects it does not know", () =>
     );
   }).pipe(Effect.scoped),
 );
+
+it.effect("runs nothing from a repository when its approvals cannot be read", () =>
+  Effect.gen(function* () {
+    const root = yield* Effect.promise(() => mkdtemp(path.join(tmpdir(), "f5-mcp-repo-")));
+    yield* Effect.addFinalizer(() =>
+      Effect.promise(() => rm(root, { recursive: true, force: true })),
+    );
+    yield* Effect.promise(() =>
+      writeFile(path.join(root, ".mcp.json"), file({ docs: { command: "docs" } })),
+    );
+    yield* run(
+      root,
+      Effect.gen(function* () {
+        const repository = yield* makeMcpRepositoryServers;
+        const docs = (yield* repository.readLayer(projectId)).entries[0]!;
+        yield* repository.setTrust({
+          projectId,
+          serverName: "docs",
+          trusted: true,
+          definitionHash: docs.definitionHash,
+        });
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`DROP TABLE mcp_repository_trust`;
+        const restarted = yield* (yield* makeMcpRepositoryServers).readLayer(projectId);
+        assert.deepStrictEqual(restarted.approved, {});
+        assert.isFalse(restarted.entries[0]!.approved);
+      }),
+    );
+  }).pipe(Effect.scoped),
+);
+
+it("refuses an approval that would take the project past the effective limit", () => {
+  const entry = { type: "stdio" as const, command: "node" };
+  const servers = (prefix: string, count: number) =>
+    Object.fromEntries(Array.from({ length: count }, (_, i) => [`${prefix}${i}`, entry]));
+  const layer = {
+    found: true,
+    entries: [
+      { name: "docs", server: entry, definitionHash: "h", approved: false, changed: false },
+      { name: "kept", server: entry, definitionHash: "k", approved: true, changed: false },
+    ],
+    issues: [],
+    approved: { kept: entry },
+    version: "v",
+    withdrawn: ["docs"],
+  };
+  const full = { layer, common: servers("c", 16), project: servers("p", 15) };
+  assert.match(
+    repositoryApprovalLimitIssue({ ...full, serverName: "Docs" }) ?? "",
+    /Approving 'docs' would exceed the 32-server limit/,
+  );
+  // Already approved, unknown, or overriding a project entry of the same name: no growth.
+  assert.isUndefined(repositoryApprovalLimitIssue({ ...full, serverName: "kept" }));
+  assert.isUndefined(repositoryApprovalLimitIssue({ ...full, serverName: "missing" }));
+  assert.isUndefined(
+    repositoryApprovalLimitIssue({
+      ...full,
+      project: { ...servers("p", 14), docs: entry },
+      serverName: "docs",
+    }),
+  );
+});

@@ -152,6 +152,7 @@ import {
 } from "@t3tools/contracts";
 import {
   getMessageTextLengthIssue,
+  getMessageTextMaxChars,
   getThreadReferenceLimitIssue,
 } from "@t3tools/shared/providerInput";
 import { formatByteSize } from "@t3tools/shared/byteSize";
@@ -494,6 +495,8 @@ import {
   fitMcpResourceContext,
   formatMcpResourceContext,
   formatMcpResourceReference,
+  type McpResourceContextPart,
+  neutralizeMcpResourceReferences,
   uniqueMcpResourceReferences,
 } from "@t3tools/shared/mcpComposer";
 import {
@@ -5021,7 +5024,12 @@ export default memo(function ChatView({
       const at = snapshot.expandedCursor;
       const before = snapshot.value.slice(0, at);
       const separator = before.length > 0 && !/\s$/.test(before) ? " " : "";
-      return applyPromptReplacementRef.current(at, at, `${separator}${result.text}`);
+      // A server's prompt can never make F5 read another resource on send.
+      return applyPromptReplacementRef.current(
+        at,
+        at,
+        `${separator}${neutralizeMcpResourceReferences(result.text)}`,
+      );
     } catch (error) {
       toastManager.add({
         type: "error",
@@ -5900,7 +5908,7 @@ export default memo(function ChatView({
       }
     }
     // Chosen MCP resources are read now, so the message carries their current contents.
-    let mcpResourceContext = "";
+    let mcpResourceParts: McpResourceContextPart[] = [];
     const mcpResourceReferences = pendingSideQuestion
       ? []
       : uniqueMcpResourceReferences(promptForSend);
@@ -5918,11 +5926,9 @@ export default memo(function ChatView({
             ),
           ),
         );
-        mcpResourceContext = formatMcpResourceContext(
-          fitMcpResourceContext(
-            reads.flatMap((read) => read.parts),
-            MCP_COMPOSER_RESOURCE_TEXT_BYTES,
-          ),
+        mcpResourceParts = fitMcpResourceContext(
+          reads.flatMap((read) => read.parts),
+          MCP_COMPOSER_RESOURCE_TEXT_BYTES,
         );
         const omitted = reads.reduce((total, read) => total + read.omitted, 0);
         if (omitted > 0)
@@ -6055,18 +6061,40 @@ export default memo(function ChatView({
         projectSkills: activeProject?.skills,
         providerSkills: selectedProviderSnapshot?.skills,
       });
+    const attachedFilesReserve =
+      appendAttachedFilesToPrompt("", composerFilePathsSnapshot).length +
+      (composerFilePathsSnapshot.length > 0 ? 2 : 0);
+    // Resource text gets what the rest of the message leaves, so a large resource is
+    // cut with a note instead of blocking the send.
+    const mcpResourceContext = (() => {
+      if (sideChatCommand || mcpResourceParts.length === 0) return "";
+      const rest = appendTerminalContextsToPrompt(
+        rewrittenPromptForSend,
+        composerTerminalContextsSnapshot,
+        Number.MAX_SAFE_INTEGER,
+      );
+      const replyReserve = replyToForSend
+        ? serializeAssistantResponseContext(replyToForSend).length + 2
+        : 0;
+      return formatMcpResourceContext(
+        mcpResourceParts,
+        getMessageTextMaxChars(rest, sendLimits.maxInputChars) -
+          rest.length -
+          2 -
+          attachedFilesReserve -
+          replyReserve,
+      );
+    })();
     // Rewrite provider-specific runtime skill syntax before any send-time
     // context helpers append extra text ahead of the user's leading token.
     const messageTextWithContexts = appendTerminalContextsToPrompt(
       sideChatCommand
         ? (sideChatCommand[1] ?? "")
         : mcpResourceContext
-          ? `${rewrittenPromptForSend}\n\n${mcpResourceContext}`
+          ? `${rewrittenPromptForSend.trim()}\n\n${mcpResourceContext}`
           : rewrittenPromptForSend,
       composerTerminalContextsSnapshot,
-      sendLimits.maxInputChars -
-        appendAttachedFilesToPrompt("", composerFilePathsSnapshot).length -
-        (composerFilePathsSnapshot.length > 0 ? 2 : 0),
+      sendLimits.maxInputChars - attachedFilesReserve,
     );
     const messageTextForSend = appendAttachedFilesToPrompt(
       messageTextWithContexts,

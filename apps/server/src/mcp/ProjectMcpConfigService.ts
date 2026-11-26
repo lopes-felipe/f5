@@ -59,6 +59,8 @@ export interface StoredEffectiveMcpConfig {
   readonly projectVersion?: string;
   /** Changes when the approved `.mcp.json` servers do. */
   readonly repositoryVersion?: string;
+  /** `.mcp.json` server name keys F5 must no longer run (see `McpRepositoryLayer.withdrawn`). */
+  readonly withdrawnRepositoryServers?: ReadonlyArray<string>;
   readonly effectiveVersion: string;
   readonly servers: McpProjectServersConfig;
 }
@@ -303,6 +305,9 @@ const makeProjectMcpConfigService = Effect.gen(function* () {
             ...(commonConfig.version ? { commonVersion: commonConfig.version } : {}),
             ...(projectConfig.version ? { projectVersion: projectConfig.version } : {}),
             ...(repositoryLayer?.version ? { repositoryVersion: repositoryLayer.version } : {}),
+            ...(repositoryLayer?.withdrawn.length
+              ? { withdrawnRepositoryServers: repositoryLayer.withdrawn }
+              : {}),
             effectiveVersion: computeEffectiveMcpConfigVersion(servers),
             servers,
             issues: [
@@ -412,18 +417,31 @@ const makeProjectMcpConfigService = Effect.gen(function* () {
                 catch: validationError,
               });
             } else {
-              const projects = yield* listProjects();
-              for (const row of projects)
+              // Every project inherits the common layer: check it against the same three
+              // layers sessions use, including projects with only repository approvals.
+              const projects = new Map<ProjectId, McpProjectServersConfig>(
+                (yield* listProjects()).flatMap((row) =>
+                  row.projectId ? [[row.projectId, row.servers] as const] : [],
+                ),
+              );
+              for (const trusted of repositoryServers?.trustedProjects() ?? [])
+                if (!projects.has(trusted)) projects.set(trusted, {});
+              for (const [rowProjectId, projectServers] of projects) {
+                const repositoryLayer = repositoryServers
+                  ? yield* repositoryServers.readLayer(rowProjectId)
+                  : undefined;
                 yield* Effect.try({
                   try: () =>
                     validateMcpLayerMerge({
                       common: servers,
-                      project: row.servers,
+                      project: projectServers,
                       baseCommon: base.servers,
-                      baseProject: row.servers,
+                      baseProject: projectServers,
+                      ...(repositoryLayer ? { repository: repositoryLayer.approved } : {}),
                     }),
                   catch: validationError,
                 });
+              }
             }
             const saved = yield* repository
               .replaceIfVersionMatches({

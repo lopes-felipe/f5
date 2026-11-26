@@ -20,7 +20,11 @@ import {
   type McpGetComposerPromptResult,
   type McpReadComposerResourceResult,
 } from "@t3tools/contracts";
-import { markdownFence, truncateUtf8 } from "@t3tools/shared/mcpComposer";
+import {
+  MCP_COMPOSER_IMAGE_MIME_TYPES,
+  markdownFence,
+  truncateUtf8,
+} from "@t3tools/shared/mcpComposer";
 
 import type { McpHubComposerServer } from "./McpHub.ts";
 
@@ -31,7 +35,6 @@ const PROMPT_LIMIT = 200;
 const MAX_PAGES = 20;
 /** Images larger than this (as base64) are left out rather than sent over the socket. */
 const MAX_IMAGE_BASE64_LENGTH = 14 * 1024 * 1024;
-const IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -203,7 +206,7 @@ export function shapeResourceContents(
     if (
       blob &&
       mimeType &&
-      IMAGE_MIME_TYPES.has(mimeType) &&
+      MCP_COMPOSER_IMAGE_MIME_TYPES.has(mimeType) &&
       blob.length <= MAX_IMAGE_BASE64_LENGTH
     ) {
       contents.push({ kind: "image", uri: item.uri, mimeType, data: blob });

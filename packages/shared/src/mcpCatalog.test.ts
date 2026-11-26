@@ -148,4 +148,26 @@ describe("MCP catalog drafts", () => {
       env: { NOTES_TOKEN: "" },
     });
   });
+
+  it("keeps a runtime value that matches a launcher word, and refuses dash-led names", () => {
+    const pkg = {
+      registryType: "oci" as const,
+      identifier: "ghcr.io/acme/notes:1.0",
+      environmentVariables: [],
+      packageArguments: [],
+      runtimeArguments: [
+        { type: "named" as const, name: "-v", value: "run", required: true, flag: false },
+        { type: "positional" as const, value: "run", required: true, flag: false },
+      ],
+    };
+    const image = mcpCatalogDraft(entry({ packages: [pkg] }), { kind: "package", index: 0 });
+    // The repeated `run` is dropped; `-v run` keeps its value.
+    expect(image.server.args).toEqual(["run", "-i", "--rm", "-v", "run", "ghcr.io/acme/notes:1.0"]);
+    expect(() =>
+      mcpCatalogDraft(entry({ packages: [{ ...pkg, identifier: "--call=evil" }] }), {
+        kind: "package",
+        index: 0,
+      }),
+    ).toThrow(/not a package name F5 can run/);
+  });
 });

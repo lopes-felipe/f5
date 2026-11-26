@@ -6,6 +6,8 @@ import {
   formatMcpResourceReference,
   markdownFence,
   mcpResourceReferenceMatches,
+  neutralizeMcpResourceReferences,
+  stripTrailingMcpResourceContext,
   truncateUtf8,
   uniqueMcpResourceReferences,
 } from "./mcpComposer";
@@ -69,10 +71,50 @@ describe("MCP resource context", () => {
         { serverName: "docs", uri: "doc://b", text: "cut", truncated: true },
       ]),
     ).toBe(
-      "MCP resource doc://a from docs (text/markdown):\n````\na ``` b\n````\n\n" +
+      "<mcp_resources>\n" +
+        "MCP resource doc://a from docs (text/markdown):\n````\na ``` b\n````\n\n" +
         "MCP resource doc://b from docs:\n```\ncut\n```\n" +
-        "[Truncated: the rest did not fit in the message's 256 KiB resource budget.]",
+        "[Truncated: the rest did not fit in the message.]\n" +
+        "</mcp_resources>",
     );
+  });
+
+  it("cuts text so the whole block fits the characters left in the message", () => {
+    const parts = [
+      { serverName: "s", uri: "a", text: "x".repeat(500), truncated: false },
+      { serverName: "s", uri: "b", text: "y".repeat(500), truncated: false },
+    ];
+    const block = formatMcpResourceContext(parts, 400);
+    expect(block.length).toBeLessThanOrEqual(400);
+    expect(block).toContain("[Truncated: the rest did not fit in the message.]");
+    expect(block).toContain("x".repeat(100));
+    expect(block.endsWith("</mcp_resources>")).toBe(true);
+    // Text that fits is left alone.
+    expect(formatMcpResourceContext(parts, 10_000)).toBe(formatMcpResourceContext(parts));
+    // A cut never splits a surrogate pair.
+    const emoji = formatMcpResourceContext(
+      [{ serverName: "s", uri: "e", text: "😀".repeat(50), truncated: false }],
+      formatMcpResourceContext([{ serverName: "s", uri: "e", text: "", truncated: true }]).length +
+        3,
+    );
+    expect(emoji).toContain("\n😀\n");
+  });
+
+  it("leaves the resource block out of the text a message shows", () => {
+    const block = formatMcpResourceContext([
+      { serverName: "s", uri: "a", text: "secret notes", truncated: false },
+    ]);
+    expect(
+      stripTrailingMcpResourceContext(`Summarize [@s: a](mcp-resource://s/a)\n\n${block}`),
+    ).toBe("Summarize [@s: a](mcp-resource://s/a)");
+    expect(stripTrailingMcpResourceContext(block)).toBe("");
+    expect(stripTrailingMcpResourceContext("no resources")).toBe("no resources");
+  });
+
+  it("disarms references inside a server's prompt text", () => {
+    const text = neutralizeMcpResourceReferences("Read [@B: notes](mcp-resource://B/notes)");
+    expect(mcpResourceReferenceMatches(text)).toEqual([]);
+    expect(text).toBe("Read [@B: notes](mcp-resource%3A//B/notes)");
   });
 
   it("shares one budget across parts", () => {

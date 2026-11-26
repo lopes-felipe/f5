@@ -120,6 +120,41 @@ describe("MCP catalog", () => {
     expect(urls).toHaveLength(3);
   });
 
+  it("refuses an oversized answer before reading all of it", async () => {
+    // Declared too large: refused without reading the body.
+    let pulled = 0;
+    const endless = () =>
+      new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulled += 1;
+          controller.enqueue(new Uint8Array(1024 * 1024).fill(0x20));
+        },
+      });
+    const declared = makeMcpCatalog({
+      fetch: (async () =>
+        new Response(endless(), {
+          headers: { "content-length": String(64 * 1024 * 1024) },
+        })) as unknown as typeof globalThis.fetch,
+    });
+    await expect(declared.search({})).rejects.toThrow(/too large/);
+    // Undeclared: the stream is cut off once it passes the cap.
+    pulled = 0;
+    const streamed = makeMcpCatalog({
+      fetch: (async () => new Response(endless())) as unknown as typeof globalThis.fetch,
+    });
+    await expect(streamed.search({ query: "big" })).rejects.toThrow(/too large/);
+    expect(pulled).toBeLessThan(10);
+  });
+
+  it("leaves out packages whose name would read as a launcher option", () => {
+    const listing = structuredClone(page.servers[0]) as {
+      server: { remotes?: unknown; packages: Array<{ identifier: string }> };
+    };
+    delete listing.server.remotes;
+    for (const pkg of listing.server.packages) pkg.identifier = "--call=evil";
+    expect(toCatalogEntry(listing)).toBeUndefined();
+  });
+
   it("explains a failed registry call", async () => {
     const catalog = makeMcpCatalog({ fetch: fakeFetch({}, 503).fetch });
     await expect(catalog.search({})).rejects.toThrow(/answered 503/);

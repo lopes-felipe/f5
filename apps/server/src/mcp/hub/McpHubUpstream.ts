@@ -167,6 +167,9 @@ export class McpHubUpstream {
   private readonly urlElicitations = new Map<string, McpHubInFlightCall>();
   /** A released session connection stops once its calls in flight finish. */
   private stopWhenDrained = false;
+  /** The latest stop's close, so a later stop waits for the process to exit too. */
+  private stopping: Promise<void> | undefined;
+  private stopSettled = true;
 
   constructor(options: McpHubUpstreamOptions) {
     this.options = options;
@@ -396,8 +399,20 @@ export class McpHubUpstream {
     this.tools = undefined;
     this.toolsLoading = undefined;
     this.state = reason === "stopped" ? "stopped" : "idle";
+    this.stopSettled = false;
+    const closing = Promise.allSettled([this.stopping, client?.close(), transport?.close()]).then(
+      () => {
+        if (this.stopping === closing) this.stopSettled = true;
+      },
+    );
+    this.stopping = closing;
     this.options.onChange?.();
-    await Promise.allSettled([client?.close(), transport?.close()]);
+    await closing;
+  }
+
+  /** Stopped, with its process (if any) gone, and nothing left to wait for. */
+  get finished(): boolean {
+    return this.state === "stopped" && this.stopSettled && this.inFlight.size === 0;
   }
 
   private connect(): Promise<Client> {

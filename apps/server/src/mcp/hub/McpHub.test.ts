@@ -954,6 +954,34 @@ describe("F5 MCP hub", () => {
     }
   });
 
+  it("cuts a withdrawn repository server off from live sessions at once", async () => {
+    const attachment = attach(stdioServers(), "repository-thread");
+    const threadId = ThreadId.makeUnsafe("repository-thread");
+    try {
+      const endpoint = attachment.endpoints[0]!;
+      const client = await connect(endpoint.url, endpoint.token);
+      expect((await client.listTools()).tools.length).toBeGreaterThan(0);
+      // A withdrawn name the saved config still has (a project override) keeps serving.
+      hub.refreshToolPolicies!(projectId, stdioServers(), ["fixture"]);
+      expect(hub.sessionServers!(threadId).size).toBe(1);
+      // Without a withdrawn name, a missing server waits for Apply as before.
+      hub.refreshToolPolicies!(projectId, {}, []);
+      expect(hub.sessionServers!(threadId).size).toBe(1);
+
+      hub.refreshToolPolicies!(projectId, {}, ["FIXTURE"]);
+      expect(hub.sessionServers!(threadId).size).toBe(0);
+      expect(hub.sessionServer!(threadId, "fixture")).toBeUndefined();
+      expect((await client.listTools()).tools).toEqual([]);
+      const refused = await client.callTool({ name: "echo", arguments: { text: "x" } });
+      expect(refused.isError).toBe(true);
+      // Approving it again comes back through Apply.
+      expect(attachment.update(stdioServers()).changed).toEqual(["fixture"]);
+      expect(hub.sessionServers!(threadId).size).toBe(1);
+    } finally {
+      await attachment.dispose();
+    }
+  });
+
   it("re-binds MCP Apps identity, honours declined servers and refuses closed endpoints", async () => {
     const attachment = attach(stdioServers(), "apps-thread");
     const threadId = ThreadId.makeUnsafe("apps-thread");
