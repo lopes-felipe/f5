@@ -19,12 +19,16 @@ const antigravity = (readOnlyWorkflowTurns: boolean | undefined): WorkflowProvid
   }) as WorkflowProviderSnapshot;
 
 describe("read-only workflow providers", () => {
-  it("never certifies Grok or Muse, and certifies no Antigravity version yet", () => {
+  it("never certifies Grok or Muse, and certifies Antigravity 1.5.15+ on darwin-arm64 only", () => {
     expect(driverSupportsReadOnlyWorkflowTurns("grok", "1.0.0", "darwin-arm64")).toBe(false);
     expect(driverSupportsReadOnlyWorkflowTurns("muse", "1.0.0", "darwin-arm64")).toBe(false);
-    expect(driverSupportsReadOnlyWorkflowTurns("antigravity", "1.5.15", "darwin-arm64")).toBe(
+    expect(driverSupportsReadOnlyWorkflowTurns("antigravity", "1.5.15", "darwin-arm64")).toBe(true);
+    expect(driverSupportsReadOnlyWorkflowTurns("antigravity", "1.6.0", "darwin-arm64")).toBe(true);
+    expect(driverSupportsReadOnlyWorkflowTurns("antigravity", "1.5.13", "darwin-arm64")).toBe(
       false,
     );
+    expect(driverSupportsReadOnlyWorkflowTurns("antigravity", "1.5.15", "darwin-x64")).toBe(false);
+    expect(driverSupportsReadOnlyWorkflowTurns("antigravity", "1.5.15", "linux-arm64")).toBe(false);
     expect(driverSupportsReadOnlyWorkflowTurns("antigravity", null, "darwin-arm64")).toBe(false);
     expect(driverSupportsReadOnlyWorkflowTurns("codex", null, undefined)).toBe(true);
   });

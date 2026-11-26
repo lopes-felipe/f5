@@ -121,7 +121,6 @@ import { TextGenerationLive } from "./git/Layers/TextGenerationLive";
 import { ObservabilityLive } from "./observability/Layers/Observability";
 import { ProjectSetupScriptRunnerLive } from "./project/Layers/ProjectSetupScriptRunner";
 import { PtyAdapter } from "./terminal/Services/PTY";
-import { AnalyticsService } from "./telemetry/Services/AnalyticsService";
 import { ProjectionThreadCommandExecutionRepositoryLive } from "./persistence/Layers/ProjectionThreadCommandExecutions";
 import { ProjectionThreadFileChangeRepositoryLive } from "./persistence/Layers/ProjectionThreadFileChanges";
 import { CodexControlClientRegistryLive } from "./codex/CodexControlClientRegistry";
@@ -200,7 +199,6 @@ export function makeServerProviderLayer(): Layer.Layer<
   | Path.Path
   | ChildProcessSpawner.ChildProcessSpawner
   | HttpClient.HttpClient
-  | AnalyticsService
 > {
   return Effect.gen(function* () {
     const { providerEventLogPath } = yield* ServerConfig;

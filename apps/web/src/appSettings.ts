@@ -154,6 +154,7 @@ type PersistedAppSettingsValue = Record<string, unknown> & {
   readonly onboardingLiteStatus?: unknown;
   readonly favoriteModels?: unknown;
   readonly favorites?: unknown;
+  readonly recentModels?: unknown;
   readonly providerModelPreferences?: unknown;
   readonly enableGitStatusAutoRefresh?: unknown;
   readonly gitStatusAutoRefreshIntervalSeconds?: unknown;
@@ -399,6 +400,10 @@ export const AppSettingsSchema = Schema.Struct({
   usageHiddenProviders: Schema.Array(Schema.String).pipe(
     Schema.withConstructorDefault(() => Option.some([])),
     Schema.withDecodingDefault(() => []),
+  ),
+  composerCollapseOnScroll: Schema.Boolean.pipe(
+    Schema.withConstructorDefault(() => Option.some(true)),
+    Schema.withDecodingDefault(() => true),
   ),
   composerRichTextEnabled: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(true)),
@@ -657,6 +662,16 @@ export const AppSettingsSchema = Schema.Struct({
       model: TrimmedNonEmptyString,
       /** Pinned reasoning effort; makes the favorite a model + effort preset. */
       effort: Schema.optional(TrimmedNonEmptyString),
+    }),
+  ).pipe(
+    Schema.withConstructorDefault(() => Option.some([])),
+    Schema.withDecodingDefault(() => []),
+  ),
+  /** The last few models picked in the model picker, most recent first. */
+  recentModels: Schema.Array(
+    Schema.Struct({
+      provider: ProviderInstanceId,
+      model: TrimmedNonEmptyString,
     }),
   ).pipe(
     Schema.withConstructorDefault(() => Option.some([])),

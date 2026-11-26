@@ -18,7 +18,11 @@ import {
 import { HTML_RENDER_WS_METHODS, HtmlPreviewHostInput, HtmlPreviewResponse } from "./threadTools";
 import { ReportClientDiagnosticsInput } from "./server";
 import { Schema, Struct, Tuple } from "effect";
-import { AttachmentCloneToUploadInput, AttachmentUploadsInput } from "./attachmentUpload";
+import {
+  AttachmentCloneToUploadInput,
+  AttachmentDiscardMaterializedInput,
+  AttachmentUploadsInput,
+} from "./attachmentUpload";
 import { ProjectId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas";
 import {
   NATIVE_OPERATION_WS_METHODS,
@@ -575,6 +579,8 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.attachmentsCloneToUpload, AttachmentCloneToUploadInput),
   tagRequestBody(WS_METHODS.attachmentsGetUploads, AttachmentUploadsInput),
   tagRequestBody(WS_METHODS.attachmentsReleaseUploads, AttachmentUploadsInput),
+  tagRequestBody(WS_METHODS.attachmentsMaterializeUploads, AttachmentUploadsInput),
+  tagRequestBody(WS_METHODS.attachmentsDiscardMaterialized, AttachmentDiscardMaterializedInput),
   tagRequestBody(WS_METHODS.projectsReadFile, ProjectReadFileInput),
   tagRequestBody(WS_METHODS.projectsSetWatchedPaths, ProjectSetWatchedPathsInput),
   tagRequestBody(WS_METHODS.projectsOpenHtmlPreview, ProjectOpenHtmlPreviewInput),
@@ -660,6 +666,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.serverReportClientDiagnostics, ReportClientDiagnosticsInput),
   tagRequestBody(WS_METHODS.serverGetConfig, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverGetHealth, Schema.Struct({})),
+  tagRequestBody(WS_METHODS.serverGetDoctorReport, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverUpdateSettings, ServerSettingsPatch),
   tagRequestBody(WS_METHODS.serverGetProjectSettings, Schema.Struct({ projectId: ProjectId })),
   tagRequestBody(WS_METHODS.serverMigrateClientSetting, MigrateClientSettingInput.members[0]),

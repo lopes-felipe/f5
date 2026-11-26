@@ -143,6 +143,8 @@ import type {
   AttachmentUpload,
   AttachmentUploadsInput,
   AttachmentCloneToUploadInput,
+  AttachmentMaterializeUploadsResult,
+  AttachmentDiscardMaterializedInput,
 } from "./attachmentUpload";
 import type { ProjectId } from "./baseSchemas";
 import type {
@@ -220,6 +222,7 @@ import type {
 } from "./providerInventory";
 import type {
   ServerConfig,
+  ServerDoctorReport,
   ServerHealth,
   ServerAddKeybindingInput,
   ServerHarnessValidationResult,
@@ -1123,6 +1126,12 @@ export interface NativeApi {
     getUploads: (input: AttachmentUploadsInput) => Promise<Array<AttachmentUpload | null>>;
     releaseUploads: (input: AttachmentUploadsInput) => Promise<{}>;
     cloneToUpload: (input: AttachmentCloneToUploadInput) => Promise<AttachmentUpload>;
+    /** Copies draft uploads to durable server storage and returns their absolute paths. */
+    materializeUploads: (
+      input: AttachmentUploadsInput,
+    ) => Promise<AttachmentMaterializeUploadsResult>;
+    /** Deletes materialized copies that nothing references any more. */
+    discardMaterialized: (input: AttachmentDiscardMaterializedInput) => Promise<{}>;
   };
   profiles?: {
     githubLoginStart: () => Promise<import("./profile").GithubLoginStatus>;
@@ -1292,6 +1301,8 @@ export interface NativeApi {
     getConfig: () => Promise<ServerConfig>;
     /** Slow routes, slow SQL statements and event-loop delay since the server started. */
     getHealth: () => Promise<ServerHealth>;
+    /** Point-in-time redacted diagnostic report across environment, database, providers, and storage. */
+    getDoctorReport: () => Promise<ServerDoctorReport>;
     updateSettings: (input: ServerSettingsPatch) => Promise<ServerSettings>;
     getProjectSettings: (input: { projectId: ProjectId }) => Promise<ProjectSettingsResult>;
     migrateClientSetting: (input: MigrateClientSettingInput) => Promise<MigrateClientSettingResult>;

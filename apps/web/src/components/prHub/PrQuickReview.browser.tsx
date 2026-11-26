@@ -22,6 +22,7 @@ vi.mock("../../nativeApi", () => ({ ensureNativeApi: () => ({ prHub: api }) }));
 vi.mock("../../lib/prHubAccount", () => ({
   getPrHubAccountGeneration: () => auth.generation,
   getPrHubDraftIdentity: () => ["github.com", 1],
+  usePrHubAccountSnapshot: () => ({ accountId: undefined, generation: auth.generation }),
 }));
 const key = PullRequestKey.makeUnsafe("github:github.com/org/repo#1");
 const comparison = {

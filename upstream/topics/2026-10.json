@@ -61505,14 +61505,16 @@
     },
     {
       "createdAt": "2026-10-28T20:56:34.441Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
+      "decidedAt": "2026-11-25T15:00:00.000Z",
       "decidedBy": "user",
-      "epoch": 1,
+      "epoch": 2,
       "id": "pr-25869",
+      "reason": "Ported in #894, then reverted: f5 keeps its single-row footer with inline model, effort, mode, Access and Plan-panel chips, attachments in the + menu, collapse while scrolling, and a model picker that closes on select.",
+      "reasonKey": "declined-by-policy",
       "relatedTopics": [
         "pr-25909"
       ],
-      "status": "port",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "composer"

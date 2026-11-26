@@ -89,6 +89,7 @@ export interface GitHubCliShape {
   readonly getRepositoryCloneUrls: (input: {
     readonly cwd: string;
     readonly repository: string;
+    readonly pullRequestUrl?: string;
   }) => Effect.Effect<GitHubRepositoryCloneUrls, GitHubCliError>;
 
   /**

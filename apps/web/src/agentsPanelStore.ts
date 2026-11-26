@@ -2,8 +2,10 @@ import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
 import type { AgentsStatusFilter } from "./lib/agentsModel";
+import { createSafeZustandStorage } from "./lib/safeStorage";
 
-export const AGENTS_PANEL_STORAGE_KEY = "t3code:agents-panel:v1";
+export const LEGACY_AGENTS_PANEL_STORAGE_KEY = "t3code:agents-panel:v1";
+export const AGENTS_PANEL_STORAGE_KEY = "f5:agents-panel:v1";
 
 export type AgentsPanelScope = "thread" | "all";
 
@@ -16,23 +18,7 @@ export interface AgentsPanelPreferencesState {
   setStatusFilter: (filter: AgentsStatusFilter) => void;
 }
 
-const noopStorage = {
-  getItem: (_name: string) => null,
-  setItem: (_name: string, _value: string) => {},
-  removeItem: (_name: string) => {},
-};
-
-function getAgentsPanelStorage() {
-  if (
-    typeof localStorage !== "undefined" &&
-    typeof localStorage.getItem === "function" &&
-    typeof localStorage.setItem === "function" &&
-    typeof localStorage.removeItem === "function"
-  ) {
-    return localStorage;
-  }
-  return noopStorage;
-}
+const agentsPanelStorage = createSafeZustandStorage(LEGACY_AGENTS_PANEL_STORAGE_KEY);
 
 function normalizeScope(value: unknown): AgentsPanelScope {
   return value === "all" ? "all" : "thread";
@@ -56,7 +42,7 @@ export const useAgentsPanelStore = create<AgentsPanelPreferencesState>()(
     {
       name: AGENTS_PANEL_STORAGE_KEY,
       version: 1,
-      storage: createJSONStorage(getAgentsPanelStorage),
+      storage: createJSONStorage(() => agentsPanelStorage),
       partialize: (state) => ({
         scope: state.scope,
         backgroundTasksExpanded: state.backgroundTasksExpanded,

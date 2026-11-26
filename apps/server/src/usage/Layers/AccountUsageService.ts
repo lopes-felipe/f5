@@ -157,9 +157,18 @@ export const makeAccountUsageCapability = <E>(
                     };
                   }
                   // A successful empty snapshot replaces old data; only failed reads retain it.
-                  return section.outcome === "available"
-                    ? section
-                    : ({ ...section, snapshot: prior?.snapshot ?? null } as AccountUsageSection);
+                  if (section.outcome === "available") return section;
+                  if (section.kind === "provider-limits") {
+                    const previous = prior?.kind === "provider-limits" ? prior.snapshot : null;
+                    // A sign-out clears the live snapshot as history clears the persisted one,
+                    // and an attempt that named another account never keeps this one's data.
+                    const retain =
+                      section.errorCode !== "authentication-required" &&
+                      (section.accountFingerprint === undefined ||
+                        previous?.data.accountFingerprint === section.accountFingerprint);
+                    return { ...section, snapshot: retain ? previous : null };
+                  }
+                  return { ...section, snapshot: prior?.snapshot ?? null } as AccountUsageSection;
                 }),
               }));
             }),

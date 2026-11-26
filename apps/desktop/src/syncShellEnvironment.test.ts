@@ -31,9 +31,26 @@ describe("syncShellEnvironment", () => {
       "SSL_CERT_FILE",
       "SSL_CERT_DIR",
       "NODE_EXTRA_CA_CERTS",
+      "DO_NOT_TRACK",
     ]);
     expect(env.PATH).toBe("/opt/homebrew/bin:/usr/bin");
     expect(env.SSH_AUTH_SOCK).toBe("/tmp/secretive.sock");
+  });
+
+  it("imports DO_NOT_TRACK from the login shell without overriding an inherited value", async () => {
+    const fromShell: NodeJS.ProcessEnv = { SHELL: "/bin/zsh" };
+    await syncShellEnvironment(fromShell, {
+      platform: "darwin",
+      readEnvironment: () => ({ PATH: "/usr/bin", DO_NOT_TRACK: "1" }),
+    });
+    expect(fromShell.DO_NOT_TRACK).toBe("1");
+
+    const inherited: NodeJS.ProcessEnv = { SHELL: "/bin/zsh", DO_NOT_TRACK: "0" };
+    await syncShellEnvironment(inherited, {
+      platform: "darwin",
+      readEnvironment: () => ({ PATH: "/usr/bin", DO_NOT_TRACK: "1" }),
+    });
+    expect(inherited.DO_NOT_TRACK).toBe("0");
   });
 
   it("imports missing CA trust variables while retaining inherited trust", async () => {
@@ -178,13 +195,37 @@ describe("syncShellEnvironment", () => {
     );
   });
 
-  it("leaves Windows preparation incomplete when the registry PATH cannot be read", async () => {
+  it.each([
+    [{}, { DO_NOT_TRACK: "1" }],
+    [{ DO_NOT_TRACK: "" }, { DO_NOT_TRACK: "1" }],
+    [{ DO_NOT_TRACK: "  " }, { DO_NOT_TRACK: "1" }],
+    [{ DO_NOT_TRACK: "0" }, { DO_NOT_TRACK: "0" }],
+    [{ do_not_track: "0" }, { do_not_track: "0" }],
+  ])(
+    "applies the saved Windows opt-out only when absent from the launcher (%o)",
+    async (initial, expected) => {
+      const env: NodeJS.ProcessEnv = { Path: "C:\\Inherited", ...initial };
+      const prepared = await syncShellEnvironment(env, {
+        platform: "win32",
+        readWindowsRegistryPaths: async () => ({ savedDoNotTrack: "1" }),
+        windowsPathExists: async () => false,
+      });
+
+      expect(prepared).toBe(true);
+      expect(env).toEqual({ PATH: "C:\\Inherited", ...expected });
+    },
+  );
+
+  it.each([
+    ["is unavailable", async () => undefined],
+    ["times out", () => Promise.reject(new Error("powershell timed out"))],
+  ])("leaves Windows preparation incomplete when the registry read %s", async (_, readRegistry) => {
     const env: NodeJS.ProcessEnv = { Path: "C:\\Inherited" };
     const warn = vi.fn();
 
     const prepared = await syncShellEnvironment(env, {
       platform: "win32",
-      readWindowsRegistryPaths: () => Promise.reject(new Error("powershell timed out")),
+      readWindowsRegistryPaths: readRegistry,
       windowsPathExists: async () => false,
       warn,
     });
@@ -194,5 +235,6 @@ describe("syncShellEnvironment", () => {
       "Unable to read the Windows registry PATH; using the inherited PATH.",
     );
     expect(env.PATH).toBe("C:\\Inherited");
+    expect(env).not.toHaveProperty("DO_NOT_TRACK");
   });
 });

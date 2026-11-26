@@ -15,6 +15,7 @@ import {
   accountNeedsAuthentication,
   accountPlanLabel,
   accountQuotaWindows,
+  accountStaleLimitsNotice,
   accountStatusText,
   accountUpdatedAt,
 } from "./AccountUsageCards";
@@ -51,6 +52,8 @@ function AccountTile(props: {
   const plan = accountPlanLabel(account);
   const windows = account.enabled ? accountQuotaWindows(account) : [];
   const lead = glanceQuotaWindow(windows, nowMs);
+  // Retained bars stay usable-looking, so say when they are last-known.
+  const staleNotice = lead ? accountStaleLimitsNotice(account) : null;
   const others = lead
     ? windows.filter((window) => window.windowKey !== lead.windowKey && isLive(window, nowMs))
     : [];
@@ -127,6 +130,11 @@ function AccountTile(props: {
           >
             <UsageBar percent={used} tickPercent={pace?.elapsedPercent ?? null} tone={tone} />
           </div>
+          {staleNotice ? (
+            <p role="status" className="text-2xs text-warning-foreground">
+              {staleNotice}
+            </p>
+          ) : null}
           {others.length > 0 ? (
             <ul className="space-y-0.5 border-t border-border/50 pt-1.5 text-2xs text-muted-foreground">
               {others.map((window) => (

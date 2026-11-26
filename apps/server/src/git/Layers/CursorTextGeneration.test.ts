@@ -253,7 +253,9 @@ it.layer(CursorTextGenerationTestLayer)("CursorTextGenerationLive", (it) => {
       const config = Schema.decodeSync(CursorSettings)({ binaryPath: agentPath });
       const textGeneration = yield* makeCursorTextGeneration(
         config,
-        { ...process.env, HOME: home },
+        // The CLI's config dir (where sessions live) follows CURSOR_CONFIG_DIR and
+        // XDG_CONFIG_HOME first; CI runners set the latter.
+        { ...process.env, HOME: home, CURSOR_CONFIG_DIR: "", XDG_CONFIG_HOME: "" },
         { scratchDir },
       );
       const generated = yield* textGeneration.generateBranchName({

@@ -1,9 +1,9 @@
 import { ZapIcon } from "lucide-react";
-import { useEffect, useRef, useState, type FocusEvent } from "react";
 
 import { cn } from "~/lib/utils";
 import { MenuGroup, MenuRadioGroup, MenuRadioItem } from "../ui/menu";
 import { getEffortLevel, sortEffortOptions } from "./effortLevels";
+import { useLadderPreview } from "./useLadderPreview";
 
 export interface EffortMenuOption {
   readonly id: string;
@@ -34,14 +34,6 @@ export function FastModeTriggerIcon() {
   );
 }
 
-/** Keys that move the menu highlight; typeahead is any single printable key. */
-const NAVIGATION_KEYS = new Set(["ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"]);
-
-function focusedEffortLevel(event: FocusEvent<HTMLElement>): string | null {
-  if (!(event.target instanceof HTMLElement)) return null;
-  return event.target.closest<HTMLElement>("[data-effort-level]")?.dataset.effortLevel ?? null;
-}
-
 /**
  * Reasoning effort as a ranked "battery": highest level at the top, one
  * coloured segment per row, filled from the lowest level up to the selected
@@ -55,20 +47,7 @@ export function EffortMenuSection(props: {
   value: string | null;
   onValueChange: (value: string) => void;
 }) {
-  const [previewLevel, setPreviewLevel] = useState<string | null>(null);
-  // Opening the menu from the keyboard focuses the top row (the highest level).
-  // Only preview once the user actually moves the highlight, so the battery
-  // keeps showing the stored selection until then.
-  const navigatedRef = useRef(false);
-  useEffect(() => {
-    const markNavigated = (event: KeyboardEvent) => {
-      if (NAVIGATION_KEYS.has(event.key) || event.key.length === 1) {
-        navigatedRef.current = true;
-      }
-    };
-    document.addEventListener("keydown", markNavigated, true);
-    return () => document.removeEventListener("keydown", markNavigated, true);
-  }, []);
+  const { previewValue: previewLevel, groupProps } = useLadderPreview("effortLevel");
 
   const options = sortEffortOptions(props.options);
   const selectedIndex = options.findIndex((option) => option.id === props.value);
@@ -77,22 +56,7 @@ export function EffortMenuSection(props: {
   const fillIndex = previewIndex >= 0 ? previewIndex : selectedIndex;
 
   return (
-    <MenuGroup
-      onPointerMoveCapture={() => {
-        navigatedRef.current = true;
-      }}
-      onFocus={(event: FocusEvent<HTMLElement>) => {
-        if (navigatedRef.current) setPreviewLevel(focusedEffortLevel(event));
-      }}
-      onBlur={(event: FocusEvent<HTMLElement>) => {
-        if (
-          !(event.relatedTarget instanceof Node) ||
-          !event.currentTarget.contains(event.relatedTarget)
-        ) {
-          setPreviewLevel(null);
-        }
-      }}
-    >
+    <MenuGroup {...groupProps}>
       <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Reasoning effort</div>
       <MenuRadioGroup
         value={props.value ?? ""}

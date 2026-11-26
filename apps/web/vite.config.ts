@@ -13,7 +13,9 @@ import pkg from "./package.json" with { type: "json" };
 isolateTestHome();
 
 const port = Number(process.env.PORT ?? 5733);
-const sourcemapEnv = process.env.T3CODE_WEB_SOURCEMAP?.trim().toLowerCase();
+const sourcemapEnv = (process.env.F5_WEB_SOURCEMAP ?? process.env.T3CODE_WEB_SOURCEMAP)
+  ?.trim()
+  .toLowerCase();
 
 const buildSourcemap =
   sourcemapEnv === "1" || sourcemapEnv === "true"
@@ -33,11 +35,29 @@ export default defineConfig({
       autoCodeSplitting: true,
     }),
     react(),
-    // React Compiler, staged: annotation mode compiles only modules and
-    // components that opt in with a "use memo" directive (timeline rows,
-    // sidebar, Home, palette results, chat header). Switching to "infer"
-    // comes after a release without regressions.
-    babel({ presets: [reactCompilerPreset({ compilationMode: "annotation" })] }),
+    // React Compiler: infer mode automatically memoizes React components and
+    // hooks across apps/web/src (scoped to production web sources so non-React
+    // workspace packages and test harnesses are skipped by Babel). Query-suffixed
+    // route splits emitted by TanStack Router (`*.tsx?tsr-split=component`) need
+    // explicit TS/JSX parser overrides because Babel's default `**/*.tsx` glob
+    // omits query strings.
+    babel({
+      include: /[/\\]apps[/\\]web[/\\]src[/\\].*\.[tj]sx?(?:$|\?)/,
+      exclude: [
+        /[/\\]node_modules[/\\]/,
+        /\.(?:test|browser)\.[tj]sx?(?:$|\?)/,
+        // PR Hub components still read module-level account/generation globals
+        // during render across many panels; exclude until all PR Hub read paths
+        // receive reactive snapshot parameters.
+        /[/\\]components[/\\]prHub[/\\]/,
+        /[/\\]lib[/\\]prHub/,
+      ],
+      overrides: [
+        { include: /\.tsx\?/, parserOpts: { plugins: ["typescript", "jsx"] } },
+        { include: /\.ts\?/, parserOpts: { plugins: ["typescript"] } },
+      ],
+      presets: [reactCompilerPreset({ compilationMode: "infer" })],
+    }),
     tailwindcss(),
   ],
   optimizeDeps: {

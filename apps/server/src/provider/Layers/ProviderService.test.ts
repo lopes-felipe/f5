@@ -83,7 +83,6 @@ import {
   makeSqlitePersistenceLive,
   SqlitePersistenceMemory,
 } from "../../persistence/Layers/Sqlite.ts";
-import { AnalyticsService } from "../../telemetry/Services/AnalyticsService.ts";
 import { ServerConfig } from "../../config.ts";
 
 const providerServiceConfigLayer = ServerConfig.layerTest(
@@ -398,7 +397,6 @@ function makeProviderServiceLayer(options?: ProviderServiceLiveOptions) {
         Layer.provide(providerAdapterLayer),
         Layer.provide(directoryLayer),
         Layer.provide(makeProjectMcpConfigServiceTestLayer()),
-        Layer.provideMerge(AnalyticsService.layerTest),
       ),
       directoryLayer,
 
@@ -438,7 +436,6 @@ function makeProviderServiceLayerForAdapters(
       Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
       Layer.provide(directoryLayer),
       Layer.provide(mcpConfigLayer),
-      Layer.provideMerge(AnalyticsService.layerTest),
     ),
     directoryLayer,
     runtimeRepositoryLayer,
@@ -1000,6 +997,55 @@ for (const driver of ["grok", "antigravity"] as const)
     },
   );
 
+it.effect.each([
+  {
+    nestedSandbox: true,
+    enforcement: "sandbox",
+    summary: "Read-only stage: sandboxed (Codex native sandbox)",
+  },
+  // F5's macOS desktop backend runs in a Seatbelt sandbox, so Codex's can't start inside it.
+  { nestedSandbox: false, enforcement: "policy", summary: "Read-only stage: policy-enforced" },
+])(
+  "records how a read-only workflow stage is enforced when its session starts (nested sandbox: $nestedSandbox)",
+  ({ nestedSandbox, enforcement, summary }) => {
+    const codex = makeFakeCodexAdapter();
+    const adapter = {
+      ...codex.adapter,
+      capabilities: { ...codex.adapter.capabilities, enforcesReadOnlyWorkflow: true },
+    };
+    const layer = makeProviderServiceLayerForAdapters(
+      new Map([["codex", adapter]]),
+      {},
+      {},
+      makeProjectMcpConfigServiceTestLayer({}),
+      { nestedSandboxAvailable: () => nestedSandbox },
+    );
+    return Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("read-only-stage");
+      const configured = yield* Stream.runHead(
+        Stream.filter(
+          provider.streamEvents,
+          (event) => event.type === "session.configured" && event.threadId === threadId,
+        ),
+      ).pipe(Effect.forkChild);
+      yield* sleep(20);
+      yield* provider.startSession(threadId, {
+        threadId,
+        provider: "codex",
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "attended-readonly",
+      });
+      assert.equal(codex.startSession.mock.calls[0]?.[0].readOnlyEnforcement, enforcement);
+      const event = Option.getOrThrow(yield* Fiber.join(configured));
+      assert.deepEqual(event.type === "session.configured" ? event.payload.config : undefined, {
+        f5ReadOnlyEnforcement: enforcement,
+        f5ReadOnlyEnforcementSummary: summary,
+      });
+    }).pipe(Effect.provide(layer), Effect.scoped);
+  },
+);
+
 it.effect("persists Codex fork adoption before a failed final read", () => {
   const codex = makeFakeCodexAdapter();
   const adapter = {
@@ -1242,7 +1288,6 @@ it.effect("stamps and answers a startup form processed before the new binding is
       Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
       Layer.provide(gatedDirectoryLayer),
       Layer.provide(makeProjectMcpConfigServiceTestLayer()),
-      Layer.provideMerge(AnalyticsService.layerTest),
     ),
     NodeServices.layer,
   );
@@ -1571,7 +1616,6 @@ it.effect("ProviderServiceLive keeps persisted resumable sessions on startup", (
       Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
       Layer.provide(directoryLayer),
       Layer.provide(makeProjectMcpConfigServiceTestLayer()),
-      Layer.provide(AnalyticsService.layerTest),
     );
 
     yield* Effect.gen(function* () {
@@ -1626,7 +1670,6 @@ it.effect(
         Layer.provide(Layer.succeed(ProviderAdapterRegistry, firstRegistry)),
         Layer.provide(firstDirectoryLayer),
         Layer.provide(makeProjectMcpConfigServiceTestLayer()),
-        Layer.provide(AnalyticsService.layerTest),
       );
 
       const started = yield* Effect.gen(function* () {
@@ -1674,7 +1717,6 @@ it.effect(
         Layer.provide(Layer.succeed(ProviderAdapterRegistry, secondRegistry)),
         Layer.provide(secondDirectoryLayer),
         Layer.provide(makeProjectMcpConfigServiceTestLayer()),
-        Layer.provide(AnalyticsService.layerTest),
       );
 
       secondCodex.startSession.mockClear();
@@ -1750,7 +1792,6 @@ it.effect("ProviderServiceLive shutdown leaves settled stopped sessions untouche
       ),
       Layer.provide(ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer))),
       Layer.provide(makeProjectMcpConfigServiceTestLayer()),
-      Layer.provide(AnalyticsService.layerTest),
     );
     const liveThreadId = asThreadId("thread-live");
     yield* Effect.gen(function* () {
@@ -3631,7 +3672,6 @@ it.effect("does not mark an accepted running usage recovery for another restart 
       Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
       Layer.provide(directory),
       Layer.provide(makeProjectMcpConfigServiceTestLayer()),
-      Layer.provide(AnalyticsService.layerTest),
       Layer.provide(ServerSettingsService.layerTest({ resumeActiveTurnsAfterRestart: true })),
       Layer.provideMerge(persistence),
     );
@@ -4931,7 +4971,6 @@ it.effect("marks only an opted-in idle session's owned live background work for 
       ),
       Layer.provide(directory),
       Layer.provide(makeProjectMcpConfigServiceTestLayer()),
-      Layer.provide(AnalyticsService.layerTest),
       Layer.provide(
         ServerSettingsService.layerTest({
           resumeActiveTurnsAfterRestart: true,
@@ -5666,7 +5705,6 @@ it.effect("shows the MCP hub's approvals and answers them without the provider",
         Layer.provide(directoryLayer),
         Layer.provide(makeProjectMcpConfigServiceTestLayer()),
         Layer.provide(Layer.succeed(McpHubGovernanceService, governance)),
-        Layer.provideMerge(AnalyticsService.layerTest),
       ),
       NodeServices.layer,
     );

@@ -239,6 +239,7 @@ export const prepareAcpAutomationCatalogs = (input: {
       eventCredentials.length === 0 ? event : (scrubValue(event) as ProviderRuntimeEvent);
     const serverName = `f5_computer_${randomBytes(4).toString("hex")}`;
     let interactionServerName: string | undefined;
+    let readOnlyThreadServerName: string | undefined;
     /** Configs that reach the agent over stdio rather than HTTP. */
     const stdioConfigs = new Map<PreviewMcpSessionConfig, McpSessionStdioLaunch>();
     let computerCapable = input.computerCapableLineage === true;
@@ -447,6 +448,8 @@ export const prepareAcpAutomationCatalogs = (input: {
       agentBrowser: () => agentBrowserConfigPayload(state),
       /** The registered name of F5's question server, once offered to the agent. */
       interactionServerName: () => interactionServerName,
+      /** The generated name of the read-only thread server a workflow stage was offered. */
+      readOnlyThreadServerName: () => readOnlyThreadServerName,
       endTurn: (turnId: string) => {
         for (const config of configs) config.endTurn?.(turnId);
       },
@@ -469,10 +472,23 @@ export const prepareAcpAutomationCatalogs = (input: {
           configs.push(preview);
           state.preview = { serverName: preview.serverName, installed: true, verified: true };
         }
-        if (
+        if (input.preview?.supportsThreadCatalog && http && input.readOnlyWorkflow) {
+          // Read-only stages get only the reading thread tools, so forge reads replace the
+          // shell's network. The generated name lets the read-only permission policy tell
+          // this server from any server the user configured.
+          const thread = input.preview.createSessionConfig({
+            threadId: input.threadId,
+            provider: input.provider,
+            catalog: "thread",
+            threadAccess: "read-only",
+            serverName: `f5_thread_${randomBytes(4).toString("hex")}`,
+          });
+          for (const credential of Object.values(thread.env)) scrubber.register(credential);
+          configs.push(thread);
+          readOnlyThreadServerName = thread.serverName;
+        } else if (
           input.preview?.supportsThreadCatalog &&
           http &&
-          !input.readOnlyWorkflow &&
           (input.threadSession ?? input.ordinarySession)
         ) {
           const thread = input.preview.createSessionConfig({
