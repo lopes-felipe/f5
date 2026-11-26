@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
 import { RuntimeModePicker } from "./RuntimeModePicker";
+import { RUNTIME_MODE_PRESENTATION } from "./runtimeModePresentation";
 
 /** Modes whose ladder segment is currently filled, top row first. */
 function filledModes() {
@@ -14,8 +15,12 @@ function filledModes() {
   );
 }
 
+/** The caption's visible text; the descriptions not shown only reserve its height. */
 function caption() {
-  return document.querySelector("[data-ladder-caption]")?.textContent;
+  return [...document.querySelectorAll<HTMLElement>("[data-ladder-caption] p")]
+    .filter((line) => getComputedStyle(line).visibility !== "hidden")
+    .map((line) => line.textContent)
+    .join("");
 }
 
 function rowModes() {
@@ -39,12 +44,15 @@ describe("RuntimeModePicker", () => {
     value: RuntimeMode;
     onValueChange?: (value: RuntimeMode) => void;
   }) {
+    // Pinned to the bottom like the composer chip, so the menu opens upwards as it does in the app.
     mounted = await render(
-      <RuntimeModePicker
-        provider={props.provider ?? "claudeAgent"}
-        value={props.value}
-        onValueChange={props.onValueChange ?? (() => {})}
-      />,
+      <div style={{ position: "fixed", bottom: 16, right: 16 }}>
+        <RuntimeModePicker
+          provider={props.provider ?? "claudeAgent"}
+          value={props.value}
+          onValueChange={props.onValueChange ?? (() => {})}
+        />
+      </div>,
     );
   }
 
@@ -94,6 +102,26 @@ describe("RuntimeModePicker", () => {
       expect(filledModes()).toEqual(["auto-accept-edits", "approval-required"]);
       expect(caption()).toBe("Edits apply on their own; asks before most other actions.");
     });
+  });
+
+  it("keeps the rows in place while the caption previews modes of different lengths", async () => {
+    // The menu opens upwards, so a caption that grew with a longer description would push the
+    // rows up under the pointer and make the highlight flicker between two rows.
+    await mountPicker({ value: "approval-required" });
+    await page.getByRole("button").click();
+    const fullAccess = page.getByRole("menuitemradio", { name: /Full access/ });
+    await expect.element(fullAccess).toBeVisible();
+    const restingTop = fullAccess.element().getBoundingClientRect().top;
+
+    for (const mode of ["auto", "approval-required", "auto-accept-edits", "auto"] as const) {
+      await page
+        .getByRole("menuitemradio", { name: RUNTIME_MODE_PRESENTATION[mode].label })
+        .hover();
+      await vi.waitFor(() => {
+        expect(caption()).toBe(RUNTIME_MODE_PRESENTATION[mode].description);
+      });
+      expect(fullAccess.element().getBoundingClientRect().top).toBe(restingTop);
+    }
   });
 
   it("opens from the keyboard on the current mode and previews navigation from there", async () => {
