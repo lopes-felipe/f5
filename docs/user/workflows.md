@@ -120,19 +120,32 @@ shows the template, cost and per-step context.
     (`provider-homes/codex-readonly`) that links your sign-in, settings and session history but
     not your `rules` folder. A repository with its own non-empty `.codex/rules/*.rules`, between
     the stage's folder and the repository root, can't run a read-only Codex stage, and F5 names
-    the file; it checks again before every turn. Your administrator's system rules
+    the file; it checks again before every turn. That includes `~/.codex/rules` when the
+    repository is rooted at your home folder. Your administrator's system rules
     (`/etc/codex/rules`) still apply.
+  - These stages need Codex to keep your sign-in in `auth.json` (the default). A sign-in kept only
+    in your system keychain (`cli_auth_credentials_store = "keyring"` or `"auto"`) can't be
+    shared with F5's Codex home, so the stage won't start; set it to `"file"` and sign in again.
+    On Windows, linking the sign-in needs a symbolic link, which Windows allows with Developer
+    Mode on.
   - In the macOS desktop app, Codex's and Antigravity's sandboxes can't start, because the app
     already runs F5's backend inside a macOS sandbox. There the stage is **policy-enforced**:
     Codex runs without its sandbox and asks before every command outside its own read-only list,
     and F5 answers with the same command allowlist it uses for Cursor. File edits and requests
     for more permissions are refused. Antigravity launches without `--sandbox`, under the same
     allowlist.
-  - If your organisation's Codex requirements don't allow the `untrusted` approval policy
-    (`allowed_approval_policies` in a managed `requirements.toml`), Codex can't be made to ask
-    before every command. The stage then stays in Codex's read-only sandbox, and the thread shows
-    a configuration warning saying so. In the desktop app, where that sandbox can't start, shell
-    commands fail and the stage reads pull requests and files through F5's forge tools.
+  - If your organisation's Codex requirements (`allowed_approval_policies` or
+    `allowed_sandbox_modes` in a managed `requirements.toml`) don't allow `untrusted` with
+    `danger-full-access`, Codex can't be made to ask before every command:
+    - With `on-request` allowed, the stage keeps Codex's read-only sandbox and asks only when a
+      command needs to run outside it. In the desktop app, where the sandbox can't start, Codex
+      asks to rerun each of its own safe commands (`ls`, `git status` and the like) outside it, and
+      F5 tells the model to request the same for any other command. F5 answers with its allowlist
+      as above. A command nobody asks about fails, so nothing runs unchecked.
+    - With only `never` allowed, the stage stays in Codex's read-only sandbox, recorded as
+      **sandboxed**, and the thread shows a configuration warning saying so. In the desktop app
+      shell commands then fail, and the stage reads pull requests and files through F5's forge
+      tools.
   - Claude runs in Plan mode, where Claude Code decides which commands only read.
   - OpenCode and Pi run with their write tools turned off.
   - Antigravity runs only on a certified runtime (see
@@ -176,8 +189,8 @@ shows the template, cost and per-step context.
 The code under review is untrusted, and a repository's own provider files can run commands, or
 allow them without asking F5. Read-only stages turn those files off where the provider allows it,
 and otherwise refuse to start, naming the file. F5 looks in the stage's folder and its parents up
-to the repository root (only the stage's folder outside a repository), never in your home folder,
-and checks again before every turn. A file another process adds mid-turn isn't caught until the
+to the repository root (only the stage's folder outside a repository), skipping your home folder
+except for Codex (see above), and checks again before every turn. A file another process adds mid-turn isn't caught until the
 next turn. Normal threads are unaffected.
 
 | Provider    | Turned off                                                                                   | Refused when the repository has                                                                                                                                                                                            |

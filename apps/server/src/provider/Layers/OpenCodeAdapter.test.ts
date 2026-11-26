@@ -475,9 +475,12 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
             workflowExecutionProfile: "unattended-readonly",
           })
           .pipe(Effect.flip);
-        assert.match(
+        // A plain substring: Windows paths hold backslashes, which a RegExp reads as escapes.
+        assert.ok(
+          turnError.message.includes(
+            `OpenCode can't run read-only workflow stages here: ${plugin}`,
+          ),
           turnError.message,
-          new RegExp(`OpenCode can't run read-only workflow stages here: ${plugin}`),
         );
         assert.deepEqual(runtimeMock.state.promptCalls, []);
         const startError = yield* adapter

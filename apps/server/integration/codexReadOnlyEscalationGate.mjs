@@ -109,11 +109,16 @@ const record = (gate, verdict, detail) => {
   console.log(`${verdict.padEnd(12)} ${gate}  ${detail}`);
 };
 
-const child = spawn(codexBinary, ["app-server"], {
-  cwd: workspace,
-  env: { ...process.env, CODEX_HOME: readOnlyHome },
-  stdio: ["pipe", "pipe", "pipe"],
-});
+// The config F5 passes every read-only stage (CODEX_READ_ONLY_STAGE_CONFIG_ARGS).
+const child = spawn(
+  codexBinary,
+  ["app-server", "-c", 'cli_auth_credentials_store="file"', "-c", 'project_root_markers=[".git"]'],
+  {
+    cwd: workspace,
+    env: { ...process.env, CODEX_HOME: readOnlyHome },
+    stdio: ["pipe", "pipe", "pipe"],
+  },
+);
 let stderr = "";
 child.stderr.on("data", (chunk) => {
   stderr += chunk;
@@ -125,12 +130,32 @@ const serverRequests = [];
 let onNotification = () => {};
 
 const send = (message) => child.stdin.write(`${JSON.stringify(message)}\n`);
-const request = (method, params) =>
-  new Promise((resolve, reject) => {
-    const id = nextId++;
-    pending.set(id, { resolve, reject, method });
-    send({ jsonrpc: "2.0", id, method, ...(params === undefined ? {} : { params }) });
+/** Settles with `promise`, or rejects after `ms`; the timer never outlives the race. */
+const withDeadline = (promise, ms, label) => {
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out`)), ms);
   });
+  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
+};
+const request = (method, params, ms = 60_000) =>
+  withDeadline(
+    new Promise((resolve, reject) => {
+      const id = nextId++;
+      pending.set(id, { resolve, reject, method });
+      send({ jsonrpc: "2.0", id, method, ...(params === undefined ? {} : { params }) });
+    }),
+    ms,
+    method,
+  );
+// A request app-server will never answer fails at once instead of waiting for its deadline.
+child.on("exit", (code, signal) => {
+  for (const [id, entry] of pending) {
+    pending.delete(id);
+    entry.reject(new Error(`${entry.method}: app-server exited (${signal ?? code})`));
+  }
+  onNotification({ method: "f5/exited" });
+});
 
 // Decisions mirror F5's read-only policy: reads are accepted, writes and edits declined.
 let decide = () => "decline";
@@ -159,25 +184,27 @@ createInterface({ input: child.stdout }).on("line", (line) => {
   onNotification(message);
 });
 
-const timeout = (ms, label) =>
-  new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out`)), ms));
-
 async function runTurn(threadId, text) {
   const firstNotification = notifications.length;
   const firstRequest = serverRequests.length;
-  const completed = new Promise((resolve) => {
+  const completed = new Promise((resolve, reject) => {
     onNotification = (message) => {
       if (message.method === "turn/completed") resolve(message.params);
+      if (message.method === "f5/exited") reject(new Error("app-server exited during the turn"));
     };
   });
-  await request("turn/start", {
-    threadId,
-    input: [{ type: "text", text, text_elements: [] }],
-    approvalPolicy: "on-request",
-    sandboxPolicy: { type: "readOnly", networkAccess: false },
-    ...(model ? { model } : {}),
-  });
-  const turn = await Promise.race([completed, timeout(240_000, "turn")]);
+  // One deadline covers both the turn/start request and the turn itself.
+  const turn = await withDeadline(
+    request("turn/start", {
+      threadId,
+      input: [{ type: "text", text, text_elements: [] }],
+      approvalPolicy: "on-request",
+      sandboxPolicy: { type: "readOnly", networkAccess: false },
+      ...(model ? { model } : {}),
+    }).then(() => completed),
+    240_000,
+    "turn",
+  );
   const items = notifications
     .slice(firstNotification)
     .filter((message) => message.method === "item/completed")
@@ -197,13 +224,14 @@ const describe = (requests) =>
   requests.map((entry) => ({ method: entry.method, params: entry.params }));
 
 try {
-  await Promise.race([
-    request("initialize", {
+  await request(
+    "initialize",
+    {
       clientInfo: { name: "f5_gate", title: "F5 gate", version: "0.0.0" },
       capabilities: { experimentalApi: true },
-    }),
-    timeout(30_000, "initialize"),
-  ]);
+    },
+    30_000,
+  );
   send({ jsonrpc: "2.0", method: "initialized" });
 
   const requirements = await request("configRequirements/read", undefined).catch((error) => ({
@@ -246,16 +274,30 @@ try {
       "Run the shell command `git rev-parse HEAD`, then the shell command `ls`, and reply with their exact output. Use only those two commands.",
     );
     const g3Commands = commandItems(g3.items);
-    const sawHead = g3Commands.some((item) =>
-      String(item.aggregatedOutput ?? "").includes(headSha),
-    );
-    const askedG3 = g3.requests.some(
-      (entry) => entry.method === "item/commandExecution/requestApproval",
-    );
+    // Each command must have asked, been accepted and returned its real output.
+    const askedFor = (pattern) =>
+      g3.requests.some(
+        (entry) =>
+          entry.method === "item/commandExecution/requestApproval" &&
+          pattern.test(commandText(entry.params)),
+      );
+    const succeeded = (pattern, output) =>
+      g3Commands.some(
+        (item) =>
+          pattern.test(String(item.command ?? "")) &&
+          item.exitCode === 0 &&
+          String(item.aggregatedOutput ?? "").includes(output),
+      );
+    const head = {
+      asked: askedFor(/git rev-parse HEAD/),
+      ran: succeeded(/git rev-parse HEAD/, headSha),
+    };
+    const ls = { asked: askedFor(/\bls\b/), ran: succeeded(/\bls\b/, "notes.txt") };
+    const askedG3 = head.asked || ls.asked;
     record(
       "G3",
-      askedG3 && sawHead ? "PASS" : askedG3 ? "INCONCLUSIVE" : "FAIL",
-      `asked=${askedG3} sawHead=${sawHead} requests=${JSON.stringify(describe(g3.requests))} commands=${JSON.stringify(g3Commands.map((item) => ({ command: item.command, exitCode: item.exitCode, status: item.status, output: String(item.aggregatedOutput ?? "").slice(0, 300) })))}`,
+      head.asked && head.ran && ls.asked && ls.ran ? "PASS" : askedG3 ? "INCONCLUSIVE" : "FAIL",
+      `head=${JSON.stringify(head)} ls=${JSON.stringify(ls)} requests=${JSON.stringify(describe(g3.requests))} commands=${JSON.stringify(g3Commands.map((item) => ({ command: item.command, exitCode: item.exitCode, status: item.status, output: String(item.aggregatedOutput ?? "").slice(0, 300) })))}`,
     );
   }
   if (selected.has("G3b")) {
@@ -328,8 +370,12 @@ try {
         commandText(entry.params).includes("touch"),
     );
     const markerExists = existsSync(path.join(workspace, "marker"));
-    const sandboxFailed = replies(g4.items).some((text) =>
-      /exit code 71|not permitted|sandbox/i.test(text),
+    // The model's own claim that the sandbox refused doesn't count: the attempt must show up as
+    // a declined request or a failed `touch` command.
+    const sandboxFailed = commandItems(g4.items).some(
+      (item) =>
+        String(item.command ?? "").includes("touch") &&
+        (item.exitCode !== 0 || item.status === "failed" || item.status === "declined"),
     );
     const blocked = !markerExists && (askedG4 || sandboxFailed);
     record(
@@ -368,11 +414,16 @@ try {
       threadId,
       "Use web search to find the title of the IANA page at example.com and reply with it. Don't use shell commands.",
     );
-    const searched = g4c.items.some((item) => item.type === "webSearch");
+    const searches = g4c.items.filter((item) => item.type === "webSearch");
+    const searched = searches.some(
+      (item) => item.status === undefined || item.status === "completed",
+    );
+    // The page's title is "Example Domain": the reply must carry what the search found.
+    const found = replies(g4c.items).some((text) => /example domain/i.test(text));
     record(
       "G4c",
-      searched ? "PASS" : "INCONCLUSIVE",
-      `items=${JSON.stringify(g4c.items.map((item) => item.type))}`,
+      searched && found ? "PASS" : searches.length > 0 ? "INCONCLUSIVE" : "FAIL",
+      `searched=${searched} found=${found} searches=${JSON.stringify(searches.map((item) => ({ status: item.status, query: item.query })))} replies=${JSON.stringify(replies(g4c.items))}`,
     );
   }
 } catch (error) {

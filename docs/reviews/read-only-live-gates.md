@@ -371,4 +371,6 @@ repository's own config (`apps/server/src/provider/readOnlyProjectConfig.ts`).
 
 Every check also refuses a file F5 can't read as strict JSON, and runs again before every turn.
 F5 looks from the stage's folder up to the repository root and skips the home folder, whose
-provider files are your own settings.
+provider files are your own settings. Codex is the exception: a read-only stage runs with F5's
+Codex home, so Codex loads `~/.codex` as a project layer of a repository rooted at the home folder,
+and its guard checks it (`CodexReadOnlyHome.ts`).

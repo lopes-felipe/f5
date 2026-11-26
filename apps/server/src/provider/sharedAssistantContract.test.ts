@@ -13,6 +13,7 @@ import {
   CLAUDE_PLAN_MODE_EDITS,
   CLAUDE_SUPPLEMENT_VERSION,
   CODEX_ADDITIONAL_CONTEXT_MAX_BYTES,
+  CODEX_READ_ONLY_ESCALATION_HINT,
   CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
   CODEX_SUPPLEMENT_VERSION,
   SHARED_ASSISTANT_CONTRACT_VERSION,
@@ -68,6 +69,23 @@ describe("buildCodexAdditionalContext", () => {
       );
     }
     expect(context.f5_runtime_context?.value).toContain("- Active model: gpt-5.5");
+  });
+
+  it("tells a policy-enforced Codex read-only stage to escalate what the sandbox can't run", () => {
+    const policy = buildCodexAdditionalContext({
+      workflowExecutionProfile: "unattended-readonly",
+      readOnlyEnforcement: "policy",
+    });
+    const keys = Object.keys(policy);
+    expect(keys.at(-1)).toBe("f5_workflow_escalation");
+    expect(keys).toEqual(keys.toSorted());
+    expect(policy.f5_workflow_escalation?.value).toBe(CODEX_READ_ONLY_ESCALATION_HINT);
+    expect(policy.f5_workflow_escalation?.value).toContain('"require_escalated"');
+    for (const input of [
+      { workflowExecutionProfile: "unattended-readonly", readOnlyEnforcement: "sandbox" },
+      { readOnlyEnforcement: "policy" },
+    ] as const)
+      expect(buildCodexAdditionalContext(input)).not.toHaveProperty("f5_workflow_escalation");
   });
 
   it("omits the mode prompt, which travels in the collaboration mode", () => {

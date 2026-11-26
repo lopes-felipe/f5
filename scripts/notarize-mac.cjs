@@ -1,5 +1,5 @@
 const { spawnSync } = require("node:child_process");
-const { mkdtempSync, rmSync } = require("node:fs");
+const { existsSync, mkdtempSync, rmSync } = require("node:fs");
 const { tmpdir } = require("node:os");
 const { basename, dirname, join } = require("node:path");
 const verifyComputerHelper = require("./verify-computer-helper.cjs").default;
@@ -94,10 +94,24 @@ async function notarizeAndStaple(app, env, { run = defaultRun, sleep = defaultSl
 }
 exports.notarizeAndStaple = notarizeAndStaple;
 
+/**
+ * The Dock tile plug-in (scripts/build-dock-tile.ts) must be in the app and signed as a
+ * bundle. Checked here so a packaging mistake fails before the upload to Apple, by name.
+ */
+function verifyDockTilePlugIn(app, { run = defaultRun, exists = existsSync } = {}) {
+  const plugIn = join(app, "Contents/PlugIns/F5DockTile.docktileplugin");
+  if (!exists(join(plugIn, "Contents/MacOS/F5DockTile")))
+    throw new Error(`Packaged Dock tile plug-in missing: ${plugIn}`);
+  if (run("codesign", ["--verify", "--strict", plugIn]).status !== 0)
+    throw new Error(`Dock tile plug-in signing verification failed: ${plugIn}`);
+}
+exports.verifyDockTilePlugIn = verifyDockTilePlugIn;
+
 exports.default = async (context) => {
   await verifyComputerHelper(context);
   if (context.electronPlatformName !== "darwin") return;
   const app = join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`);
   verifyClaudeRuntime(context);
+  verifyDockTilePlugIn(app);
   await notarizeAndStaple(app, process.env);
 };
