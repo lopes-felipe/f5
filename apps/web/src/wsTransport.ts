@@ -117,6 +117,7 @@ const NON_RETRYABLE_QUERY_CODES = new Set([
   "RpcQueueFull",
   "RequestTooLarge",
   "ResponseEncodeFailed",
+  "WorkspaceSearchRestricted",
 ]);
 
 function serverStartFailedError(message: string | undefined): WsRequestError {
