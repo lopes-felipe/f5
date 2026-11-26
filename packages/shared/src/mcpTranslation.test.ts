@@ -9,6 +9,10 @@ import {
   readCodexMcpOAuthCallbackConfig,
   readCodexMcpOAuthCallbackPort,
   readCodexMcpOAuthCallbackUrl,
+  isReservedMcpBearerEnvVar,
+  mcpBearerRedactionValues,
+  mcpRemoteHeaders,
+  resolveMcpBearerToken,
   translateMcpForClaudeAgent,
   translateMcpForCodex,
 } from "./mcpTranslation";
@@ -47,6 +51,91 @@ describe("mcpTranslation", () => {
         }),
       ).toEqual({ server: { type, url: "https://example.test/mcp", oauth } });
     }
+  });
+
+  it("sends bearerTokenEnvVar to Claude as an Authorization header from the account environment", () => {
+    const remote = {
+      type: "http" as const,
+      url: "https://example.test/mcp",
+      bearerTokenEnvVar: "MCP_TOKEN",
+    };
+    expect(
+      translateMcpForClaudeAgent({ remote }, { environment: { MCP_TOKEN: " secret " } }),
+    ).toEqual({
+      remote: {
+        type: "http",
+        url: "https://example.test/mcp",
+        headers: { Authorization: "Bearer secret" },
+      },
+    });
+    // An explicit header wins, and an unset variable adds nothing.
+    expect(
+      translateMcpForClaudeAgent(
+        { remote: { ...remote, headers: { authorization: "Token literal" } } },
+        { environment: { MCP_TOKEN: "secret" } },
+      )?.remote,
+    ).toMatchObject({ headers: { authorization: "Token literal" } });
+    expect(translateMcpForClaudeAgent({ remote }, { environment: {} })?.remote).not.toHaveProperty(
+      "headers",
+    );
+    expect(translateMcpForClaudeAgent({ remote })?.remote).not.toHaveProperty("headers");
+  });
+
+  it("never sends reserved variables as bearer tokens, to Claude or Codex", () => {
+    const environment = {
+      F5_BROWSER_OPEN_TOKEN: "browser",
+      ANTHROPIC_API_KEY: "anthropic",
+      CLAUDE_CODE_OAUTH_TOKEN: "claude",
+      AWS_SECRET_ACCESS_KEY: "aws",
+    };
+    for (const name of Object.keys(environment)) {
+      expect(isReservedMcpBearerEnvVar(name)).toBe(true);
+      expect(isReservedMcpBearerEnvVar(name.toLowerCase())).toBe(true);
+      const remote = { type: "http" as const, url: "https://x.test/mcp", bearerTokenEnvVar: name };
+      expect(resolveMcpBearerToken(remote, environment)).toBeUndefined();
+      expect(translateMcpForClaudeAgent({ remote }, { environment })?.remote).not.toHaveProperty(
+        "headers",
+      );
+      expect(translateMcpForCodex({ remote })?.remote).not.toHaveProperty("bearer_token_env_var");
+    }
+    expect(isReservedMcpBearerEnvVar("GITHUB_TOKEN")).toBe(false);
+  });
+
+  it("keeps the reserved variables F5 sets for its own Codex catalogs", () => {
+    const own = {
+      type: "http" as const,
+      url: "http://127.0.0.1:9/mcp",
+      bearerTokenEnvVar: "F5_PREVIEW_MCP_TOKEN_A",
+    };
+    const user = {
+      type: "http" as const,
+      url: "https://x.test/mcp",
+      bearerTokenEnvVar: "F5_BROWSER_OPEN_TOKEN",
+    };
+    const translated = translateMcpForCodex(
+      { own, user },
+      { ownBearerEnvVars: new Set(["F5_PREVIEW_MCP_TOKEN_A"]) },
+    );
+    expect(translated?.own?.bearer_token_env_var).toBe("F5_PREVIEW_MCP_TOKEN_A");
+    expect(translated?.user).not.toHaveProperty("bearer_token_env_var");
+  });
+
+  it("builds remote headers with one precedence and redacts both forms of the token", () => {
+    const definition = { bearerTokenEnvVar: "MCP_TOKEN", headers: { "X-Team": "a" } };
+    expect(mcpRemoteHeaders(definition, { MCP_TOKEN: " tok " })).toEqual({
+      "X-Team": "a",
+      Authorization: "Bearer tok",
+    });
+    expect(
+      mcpRemoteHeaders(
+        { ...definition, headers: { AUTHORIZATION: "Token literal" } },
+        { MCP_TOKEN: "tok" },
+      ),
+    ).toEqual({ AUTHORIZATION: "Token literal" });
+    expect(mcpRemoteHeaders(definition, { MCP_TOKEN: "   " })).toEqual({ "X-Team": "a" });
+    expect(mcpBearerRedactionValues(definition, { MCP_TOKEN: " tok " })).toEqual([" tok ", "tok"]);
+    expect(mcpBearerRedactionValues(definition, { MCP_TOKEN: "tok" })).toEqual(["tok"]);
+    expect(mcpBearerRedactionValues(definition, {})).toEqual([]);
   });
 
   it.each(["http", "sse"] as const)(

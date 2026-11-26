@@ -3,7 +3,10 @@ import * as PathNode from "node:path";
 import { Effect, Path } from "effect";
 import { F5_HOME_DIR_NAME, USERDATA_STATE_DIR_NAME } from "@t3tools/shared/appStatePaths";
 import { readEnvironmentFromLoginShellAsync } from "@t3tools/shared/shell";
-import { ensureWindowsPathHydrated } from "@t3tools/shared/windowsPath";
+import {
+  applySavedWindowsDoNotTrack,
+  ensureWindowsPathHydration,
+} from "@t3tools/shared/windowsPath";
 
 // Service managers (launchd, systemd) can start the server without HOME. `gh`,
 // git and login shells then miss the user's config, so PR detection breaks.
@@ -33,11 +36,12 @@ export async function fixPath(
   // Repeating them costs a login shell, or seconds of PowerShell on Windows.
   if (env.F5_SHELL_ENVIRONMENT_PREPARED === "1") return;
   if (platform === "win32") {
-    await ensureWindowsPathHydrated(env, {
+    const { savedDoNotTrack } = await ensureWindowsPathHydration(env, {
       platform,
       ...(signal ? { signal } : {}),
       warn: (message) => console.warn(`[environment] ${message}`),
     });
+    applySavedWindowsDoNotTrack(env, savedDoNotTrack);
     return;
   }
   if (platform !== "darwin") return;

@@ -9,6 +9,7 @@
  */
 import { MuseSettings, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
 import { Duration, Effect, FileSystem, Schema, Stream } from "effect";
+import { mcpHubAdapterOption } from "../../mcp/hub/McpHub.ts";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -84,6 +85,7 @@ export const MuseDriver: ProviderDriver<MuseSettings, MuseDriverEnv> = {
         instanceId,
         environment: processEnv,
         clientVersion: serverVersion,
+        ...(yield* mcpHubAdapterOption),
         nativeCommandIds:
           sql._tag === "Some" ? sqlNativeCommandIdStore(sql.value) : memoryNativeCommandIdStore(),
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),

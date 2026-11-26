@@ -204,7 +204,7 @@ describe("MCP feature boundaries", () => {
     // The first effect acquires admission before yielding to spawn.
     await new Promise((resolve) => setTimeout(resolve, 50));
     const second = await Effect.runPromise(probe());
-    expect(second.error).toBe("A test is already running.");
+    expect(second.error).toBe("This server is already being tested.");
     expect((await first).ok).toBe(false);
   });
   it("kills a forked grandchild after a successful probe", async () => {
@@ -296,7 +296,9 @@ describe("MCP feature boundaries", () => {
         execution,
       ),
     );
-    expect(result.error).toBe("A test is already running.");
+    expect(result.error).toBe(
+      "Too many tests are running (limit 4). Wait for one to finish and try again.",
+    );
     expect((await Promise.all(pending)).every((entry) => !entry.ok)).toBe(true);
   });
   it("recognizes HTTP 401 without beginning an authentication flow", async () => {

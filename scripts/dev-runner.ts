@@ -206,15 +206,10 @@ export function createDevRunnerEnv({
       delete output.T3CODE_LOG_WS_EVENTS;
     }
 
-    if (mode === "dev") {
+    if (mode === "dev" || mode === "dev:server" || mode === "dev:web") {
       output.F5_MODE = "web";
       output.T3CODE_MODE = "web";
       delete output.F5_DESKTOP_WS_URL;
-      delete output.T3CODE_DESKTOP_WS_URL;
-    }
-
-    if (mode === "dev:server" || mode === "dev:web") {
-      output.T3CODE_MODE = "web";
       delete output.T3CODE_DESKTOP_WS_URL;
     }
 

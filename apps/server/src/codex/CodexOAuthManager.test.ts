@@ -1,10 +1,6 @@
 import { EventEmitter } from "node:events";
 
-import {
-  ProjectId,
-  type McpOauthLoginStatusRequest,
-  type ProviderSession,
-} from "@t3tools/contracts";
+import { ProjectId, type ProviderSession } from "@t3tools/contracts";
 import { CODEX_MCP_OAUTH_LOGIN_TIMEOUT_SEC } from "@t3tools/shared/codexOAuthTiming";
 import { Effect, Layer, ManagedRuntime, Stream } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -22,7 +18,11 @@ import {
 import { CodexMcpEventBus } from "./CodexMcpEventBus.ts";
 import { CodexMcpSyncService } from "./CodexMcpSyncService.ts";
 import * as OAuthCallbackPreflight from "./CodexOAuthCallbackPreflight.ts";
-import { CodexOAuthManager, CodexOAuthManagerLive } from "./CodexOAuthManager.ts";
+import {
+  CodexOAuthManager,
+  CodexOAuthManagerLive,
+  type McpOauthLoginStatusRequest,
+} from "./CodexOAuthManager.ts";
 
 const request: McpOauthLoginStatusRequest = {
   projectId: ProjectId.makeUnsafe("project-oauth"),

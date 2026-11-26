@@ -5,6 +5,10 @@ import os from "node:os";
 import path from "node:path";
 import { createLogger } from "./logger";
 import { runProcess } from "./processRunner";
+import {
+  assertWorkspaceSearchRootAllowed,
+  WorkspaceSearchRestrictedError,
+} from "./workspaceSearchRoot";
 
 import {
   type FilesystemBrowseInput,
@@ -181,13 +185,14 @@ async function loadFffModule(): Promise<FffModule | null> {
 }
 
 async function createWorkspaceFffIndex(cwd: string): Promise<WorkspaceFffIndex> {
+  const rootPath = await resolveWorkspaceIndexRoot(cwd);
   const fffModule = await loadFffModule();
   if (!fffModule) {
     throw new Error("Workspace typo-tolerant search module is unavailable.");
   }
 
   const created = fffModule.FileFinder.create({
-    basePath: cwd,
+    basePath: rootPath,
     disableMmapCache: true,
     disableContentIndexing: true,
     aiMode: false,
@@ -616,10 +621,7 @@ async function buildWorkspaceIndex(cwd: string, maxEntries: number): Promise<Wor
           return { relativeDir, dirents };
         } catch (error) {
           if (!relativeDir) {
-            throw new Error(
-              `Unable to scan workspace entries at '${cwd}': ${error instanceof Error ? error.message : "unknown error"}`,
-              { cause: error },
-            );
+            throw workspaceScanError(cwd, error);
           }
           return { relativeDir, dirents: null };
         }
@@ -698,6 +700,24 @@ async function buildWorkspaceIndex(cwd: string, maxEntries: number): Promise<Wor
   };
 }
 
+function workspaceScanError(cwd: string, cause: unknown): Error {
+  return new Error(
+    `Unable to scan workspace entries at '${cwd}': ${cause instanceof Error ? cause.message : "unknown error"}`,
+    { cause },
+  );
+}
+
+async function resolveWorkspaceIndexRoot(cwd: string): Promise<string> {
+  try {
+    const rootPath = await fs.realpath(cwd);
+    await assertWorkspaceSearchRootAllowed(rootPath);
+    return rootPath;
+  } catch (cause) {
+    if (cause instanceof WorkspaceSearchRestrictedError) throw cause;
+    throw workspaceScanError(cwd, cause);
+  }
+}
+
 async function getWorkspaceIndex(cwd: string, maxEntries: number): Promise<WorkspaceIndex> {
   const cached = workspaceIndexCache.get(cwd);
   if (
@@ -714,7 +734,8 @@ async function getWorkspaceIndex(cwd: string, maxEntries: number): Promise<Works
     return inFlight;
   }
 
-  const nextPromise = buildWorkspaceIndex(cwd, maxEntries)
+  const nextPromise = resolveWorkspaceIndexRoot(cwd)
+    .then((rootPath) => buildWorkspaceIndex(rootPath, maxEntries))
     .then((next) => {
       const current = workspaceIndexCache.get(cwd);
       if (!current || current.maxEntries <= next.maxEntries || !next.truncated) {
@@ -846,6 +867,7 @@ async function searchWorkspaceEntriesWithFff(params: {
       truncated: params.index.truncated || result.value.totalMatched > pageSize,
     };
   } catch (cause) {
+    if (cause instanceof WorkspaceSearchRestrictedError) throw cause;
     workspaceEntriesLogger.warn("Workspace typo-tolerant search unavailable for workspace", {
       cwd: params.cwd,
       cause: cause instanceof Error ? cause.message : String(cause),

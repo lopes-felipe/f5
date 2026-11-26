@@ -13,7 +13,7 @@ export interface HeroDownloadCta {
   readonly href: string;
 }
 
-const ARM_HINT_RE = /\b(arm|aarch64|arm64)\b/i;
+const ARM_HINT_RE = /\b(arm(?:v\d+[a-z]*)?|aarch64|arm64)\b/i;
 const X86_HINT_RE = /\b(x86|amd64|x64|x86_64|i[36]86)\b/i;
 
 /**

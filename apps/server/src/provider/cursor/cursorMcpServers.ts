@@ -2,7 +2,8 @@
  * MCP servers F5 passes to a Cursor session.
  *
  * Precedence: F5's automation servers (reserved names) first, then the
- * project's F5 MCP servers. Cursor's own `mcp.json` files are left to Cursor,
+ * project's F5 MCP servers, served through F5's MCP hub so stdio servers work
+ * too. Cursor's own `mcp.json` files are left to Cursor,
  * which applies its own approval to them; F5 never passes `--approve-mcps`
  * and never writes Cursor's config. Every omitted project server is reported
  * once, so a missing tool is never silent.
@@ -12,8 +13,12 @@ import * as nodeFs from "node:fs/promises";
 import * as nodePath from "node:path";
 
 import type { McpProjectServersConfig } from "@t3tools/contracts";
-import { filterEnabledMcpServers } from "@t3tools/shared/mcpTranslation";
+import { filterEnabledMcpServers, mcpRemoteHeaders } from "@t3tools/shared/mcpTranslation";
 import type * as EffectAcpSchema from "effect-acp/schema";
+
+import { hubEndpointsToAcpServers } from "../../mcp/hub/acpHubServers.ts";
+import type { McpHubAttachment } from "../../mcp/hub/McpHub.ts";
+import type { McpSessionStdioLaunch } from "../../mcp/sessionStdioShim.ts";
 
 export interface CursorMcpOmission {
   readonly name: string;
@@ -25,6 +30,8 @@ export interface ResolvedCursorMcpServers {
   readonly omitted: ReadonlyArray<CursorMcpOmission>;
   /** Project servers F5 passed and therefore owns; reattached in full on resume. */
   readonly ownedNames: ReadonlyArray<string>;
+  /** Revokes hub endpoints issued for this session. */
+  readonly dispose?: () => Promise<void>;
 }
 
 const RESERVED_PREFIX = "f5_";
@@ -39,11 +46,18 @@ export function resolveCursorMcpServers(input: {
   readonly cursorConfigNames: ReadonlySet<string>;
   readonly capabilities: { readonly http: boolean; readonly sse: boolean };
   readonly environment?: NodeJS.ProcessEnv;
+  /**
+   * F5's MCP hub. When present, project servers (stdio included) are served
+   * through hub endpoints; without it only remote servers pass through.
+   */
+  readonly attachHub?: (servers: McpProjectServersConfig) => McpHubAttachment;
+  readonly stdioLaunch?: McpSessionStdioLaunch | undefined;
 }): ResolvedCursorMcpServers {
   const servers: EffectAcpSchema.McpServer[] = [...input.automationServers];
   const reserved = new Set(input.automationServers.map((server) => server.name));
   const omitted: CursorMcpOmission[] = [];
   const ownedNames: string[] = [];
+  const forHub: Record<string, McpProjectServersConfig[string]> = {};
   for (const [name, definition] of Object.entries(filterEnabledMcpServers(input.projectServers))) {
     if (reserved.has(name) || name.toLowerCase().startsWith(RESERVED_PREFIX)) {
       omitted.push({ name, reason: "uses a name reserved for F5's own tools" });
@@ -54,6 +68,10 @@ export function resolveCursorMcpServers(input: {
         name,
         reason: "is already defined in Cursor's mcp.json, which Cursor applies",
       });
+      continue;
+    }
+    if (input.attachHub) {
+      forHub[name] = definition;
       continue;
     }
     if (definition.type === "stdio") {
@@ -72,16 +90,28 @@ export function resolveCursorMcpServers(input: {
       });
       continue;
     }
-    const headers = { ...definition.headers };
-    const bearerVariable = definition.bearerTokenEnvVar?.trim();
-    const bearer = bearerVariable ? input.environment?.[bearerVariable]?.trim() : undefined;
-    if (bearer && !Object.keys(headers).some((key) => key.toLowerCase() === "authorization"))
-      headers.Authorization = `Bearer ${bearer}`;
+    const headers = mcpRemoteHeaders(definition, input.environment) ?? {};
     servers.push({ type: definition.type, name, url, headers: records(headers) });
     ownedNames.push(name);
     reserved.add(name);
   }
-  return { servers, omitted, ownedNames };
+  if (!input.attachHub || Object.keys(forHub).length === 0) return { servers, omitted, ownedNames };
+  const attachment = input.attachHub(forHub);
+  const translated = hubEndpointsToAcpServers(attachment.endpoints, {
+    http: input.capabilities.http,
+    stdioLaunch: input.stdioLaunch,
+  });
+  servers.push(...translated.servers);
+  ownedNames.push(...translated.servers.map((server) => server.name));
+  for (const entry of [...attachment.omitted, ...translated.omitted])
+    omitted.push({
+      name: entry.serverName,
+      reason:
+        entry.reason === "needs HTTP MCP, which this agent does not offer"
+          ? "needs HTTP MCP, which this Cursor CLI does not offer"
+          : entry.reason,
+    });
+  return { servers, omitted, ownedNames, dispose: attachment.dispose };
 }
 
 /**

@@ -75,6 +75,43 @@ async function runServiceEffect<T, E, RepositoryError>(
 }
 
 describe("ProjectMcpConfigService", () => {
+  it("lets a project override a legacy-named common server by its exact name, and no other", async () => {
+    const projectId = ProjectId.makeUnsafe("project-mcp-legacy-override");
+    const { rows, layer } = makeRepositoryLayer();
+    // Saved before the name rule existed.
+    rows.set(scopeKey("common", null), {
+      scope: "common",
+      projectId: null,
+      version: "common-v1",
+      servers: { "team.docs": { type: "stdio", command: "node" } },
+      disabledCommonServers: [],
+      updatedAt: "2026-11-01T00:00:00.000Z",
+    });
+    const result = await runServiceEffect(
+      Effect.gen(function* () {
+        const service = yield* ProjectMcpConfigService;
+        const saved = yield* service.replaceProjectConfig({
+          projectId,
+          servers: { "team.docs": { type: "stdio", command: "deno" } },
+        });
+        const effective = yield* service.readEffectiveConfig(projectId);
+        const renamed = yield* service
+          .replaceProjectConfig({
+            projectId,
+            ...(saved.version ? { expectedVersion: saved.version } : {}),
+            servers: { "other.docs": { type: "stdio", command: "deno" } },
+          })
+          .pipe(Effect.flip);
+        return { effective, renamed };
+      }),
+      layer,
+    );
+    expect(result.effective.servers["team.docs"]).toMatchObject({ command: "deno" });
+    // A new legacy name in the project is still refused.
+    expect(result.renamed).toMatchObject({ code: "validation" });
+    expect(result.renamed.message).toMatch(/other\.docs|letters/i);
+  });
+
   it("reads raw common and project config and merges effective config with project precedence", async () => {
     const projectId = ProjectId.makeUnsafe("project-mcp-service-merge");
     const { layer } = makeRepositoryLayer();
@@ -758,6 +795,55 @@ it("keeps placeholders and their versions in storage while every runtime read re
       expect(JSON.stringify(stored)).not.toContain("private-resolved-value");
       expect(runtime.servers.docs?.headers?.Authorization).toBe("private-resolved-value");
       expect(runtime.effectiveVersion).toBe(stored.effectiveVersion);
+    }).pipe(
+      Effect.provide(
+        ProjectMcpConfigServiceLive.pipe(Layer.provide(layer), Layer.provide(secretStore)),
+      ),
+    ),
+  );
+});
+
+it("resolves stored secrets once per config version and again after a save", async () => {
+  const { layer } = makeRepositoryLayer();
+  const { ServerSecretStore } = await import("../auth/Services/ServerSecretStore.ts");
+  const id = "00000000-0000-4000-8000-000000000001";
+  let secretReads = 0;
+  const secretStore = Layer.succeed(ServerSecretStore, {
+    get: (name: string) =>
+      Effect.sync(() => {
+        if (name === `mcp-secret-${id}`) secretReads += 1;
+        return name === `mcp-secret-${id}` ? new TextEncoder().encode("resolved") : null;
+      }),
+    set: () => Effect.void,
+    list: () => Effect.succeed([]),
+    getOrCreateRandom: () => Effect.succeed(new Uint8Array()),
+    remove: () => Effect.void,
+  });
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const service = yield* ProjectMcpConfigService;
+      const projectId = ProjectId.makeUnsafe("secret-cache");
+      const server = {
+        type: "http" as const,
+        url: "https://example.test/mcp",
+        headers: { Authorization: "${f5-secret:" + id + "}" },
+      };
+      const saved = yield* service.replaceProjectConfig({ projectId, servers: { docs: server } });
+      const readsAfterSave = secretReads;
+      const first = yield* service.readEffectiveRuntimeConfig(projectId);
+      const second = yield* service.readEffectiveRuntimeConfig(projectId);
+      expect(second).toBe(first);
+      expect(secretReads).toBe(readsAfterSave + 1);
+      yield* service.replaceProjectConfig({
+        projectId,
+        ...(saved.version ? { expectedVersion: saved.version } : {}),
+        servers: { docs: { ...server, toolTimeoutSec: 30 } },
+      });
+      const readsAfterEdit = secretReads;
+      const third = yield* service.readEffectiveRuntimeConfig(projectId);
+      expect(third.servers.docs?.toolTimeoutSec).toBe(30);
+      expect(third.servers.docs?.headers?.Authorization).toBe("resolved");
+      expect(secretReads).toBe(readsAfterEdit + 1);
     }).pipe(
       Effect.provide(
         ProjectMcpConfigServiceLive.pipe(Layer.provide(layer), Layer.provide(secretStore)),

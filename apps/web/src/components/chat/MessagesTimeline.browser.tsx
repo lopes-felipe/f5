@@ -872,6 +872,11 @@ describe("MessagesTimeline (LegendList)", () => {
         const expanded = page.getByRole("button", { name, exact: true });
         await expect.element(expanded).toHaveAttribute("aria-expanded", "true");
         await waitForTimelineLayout(viewport);
+        // Wait past the 2-rAF expansion settle window to confirm LegendList does
+        // not re-arm `maintainScrollAtEnd` and snap back to the bottom.
+        for (let frame = 0; frame < 4; frame += 1) {
+          await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+        }
         expect(distanceFromEnd()).toBeGreaterThan(40);
         expect(Math.abs(expanded.element().getBoundingClientRect().top - top)).toBeLessThan(12);
         api!.setEntries([

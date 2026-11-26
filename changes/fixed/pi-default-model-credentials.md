@@ -1,2 +1,0 @@
-- Pi status identifies the default model and provider when that provider has no available models. Supported Pi versions can confirm whether credentials are missing.
-- Pi status warns when discovery finds no usable models.

@@ -60,7 +60,8 @@ import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { HttpResponse, http, ws } from "msw";
 import { setupWorker } from "msw/browser";
 import type { ReactNode } from "react";
-import { page, userEvent } from "vitest/browser";
+import type {} from "@vitest/browser-playwright"; // Types cdp() as a Playwright CDPSession.
+import { cdp, page, userEvent } from "vitest/browser";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { timelineScrollAnchors } from "./chat/timelineScrollAnchors";
 import { toastManager } from "./ui/toast";
@@ -1674,6 +1675,46 @@ async function waitForLayout(): Promise<void> {
   await nextFrame();
 }
 
+function composerTransitions(form: HTMLElement): CSSTransition[] {
+  return form
+    .getAnimations({ subtree: true })
+    .filter((animation): animation is CSSTransition => animation instanceof CSSTransition);
+}
+
+/** Waits until the composer's transitions have settled. */
+async function waitForComposerTransitions(form: HTMLElement): Promise<void> {
+  await nextFrame();
+  await Promise.all(
+    composerTransitions(form).map((transition) => {
+      transition.play();
+      return transition.finished.catch(() => undefined);
+    }),
+  );
+  await nextFrame();
+}
+
+/**
+ * Seeks the composer's transitions while CDP holds the animation clock, then waits
+ * until that frame's observers (the dock's end pin) have run.
+ * The transition must still exist: callers inspecting an early frame should
+ * hold the animation clock before triggering a change on a slow runner.
+ */
+async function seekComposerTransitions(form: HTMLElement, fraction: number): Promise<void> {
+  for (const transition of composerTransitions(form)) {
+    // Keep playState running: production uses it to clip the resizing editor,
+    // and a queued transitionrun must not observe an artificially paused state.
+    transition.currentTime = Number(transition.effect!.getComputedTiming().duration) * fraction;
+  }
+  await nextFrame();
+  await nextFrame();
+}
+
+async function setReducedMotion(value: "reduce" | "no-preference"): Promise<void> {
+  await cdp().send("Emulation.setEmulatedMedia", {
+    features: [{ name: "prefers-reduced-motion", value }],
+  });
+}
+
 async function setViewport(viewport: ViewportSpec): Promise<void> {
   await page.viewport(viewport.width, viewport.height);
   await waitForLayout();
@@ -1697,6 +1738,7 @@ async function waitForProductionStyles(): Promise<void> {
 async function waitForElement<T extends Element>(
   query: () => T | null,
   errorMessage: string,
+  timeout = 8_000,
 ): Promise<T> {
   let element: T | null = null;
   await vi.waitFor(
@@ -1705,7 +1747,7 @@ async function waitForElement<T extends Element>(
       expect(element, errorMessage).toBeTruthy();
     },
     {
-      timeout: 8_000,
+      timeout,
       interval: 16,
     },
   );
@@ -1745,10 +1787,11 @@ async function waitForComposerShell(): Promise<HTMLElement> {
   );
 }
 
-async function waitForSendButton(): Promise<HTMLButtonElement> {
+async function waitForSendButton(timeout?: number): Promise<HTMLButtonElement> {
   return waitForElement(
     () => document.querySelector<HTMLButtonElement>('button[aria-label="Send message"]'),
     "Unable to find send button.",
+    timeout,
   );
 }
 
@@ -1798,13 +1841,14 @@ function getStartImplementationRequests(): WsRequestEnvelope["body"][] {
   );
 }
 
-async function waitForButtonByText(text: string): Promise<HTMLButtonElement> {
+async function waitForButtonByText(text: string, timeout?: number): Promise<HTMLButtonElement> {
   return waitForElement(
     () =>
       Array.from(document.querySelectorAll("button")).find(
         (button) => button.textContent?.trim() === text,
       ) as HTMLButtonElement | null,
     `Unable to find ${text} button.`,
+    timeout,
   );
 }
 
@@ -3237,20 +3281,286 @@ describe("ChatView timeline (full app)", () => {
       return { mounted, editor, form, timeline, wheel };
     }
 
-    it("keeps the editor and attachments visible when scrolling the timeline", async () => {
+    it("scroll-collapses without remounting the editor or moving the reading anchor; blur does nothing", async () => {
+      const { mounted, editor, form, timeline, wheel } = await composerScrollFixture();
+      try {
+        editor.focus();
+        const selection = window.getSelection()!;
+        const text = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT).nextNode()!;
+        selection.setBaseAndExtent(text, 2, text, 8);
+        await waitForLayout();
+        timeline.scrollTop = (timeline.scrollHeight - timeline.clientHeight) / 2;
+        timeline.dispatchEvent(new Event("scroll"));
+        await waitForLayout();
+        expect(timeline.scrollHeight - timeline.clientHeight - timeline.scrollTop).toBeGreaterThan(
+          200,
+        );
+        const expandedHeight = form.getBoundingClientRect().height;
+        const scrollTop = timeline.scrollTop;
+        const anchor = Array.from(
+          timeline.querySelectorAll<HTMLElement>("[data-timeline-row-id]"),
+        ).find((row) => row.getBoundingClientRect().top >= timeline.getBoundingClientRect().top)!;
+        const anchorTop = anchor.getBoundingClientRect().top;
+        wheel();
+        await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("true"));
+        await waitForLayout();
+        expect(form.getBoundingClientRect().height).toBeLessThan(expandedHeight);
+        expect(await waitForComposerEditor()).toBe(editor);
+        expect(selection.toString()).toBe("ep thi");
+        expect(Math.abs(timeline.scrollTop - scrollTop)).toBeLessThanOrEqual(2);
+        expect(Math.abs(anchor.getBoundingClientRect().top - anchorTop)).toBeLessThanOrEqual(2);
+        wheel(); // A fresh momentum event immediately before editing.
+        editor.dispatchEvent(
+          new InputEvent("beforeinput", { bubbles: true, inputType: "insertText", data: "x" }),
+        );
+        wheel(); // Momentum from the gesture cannot immediately hide typing.
+        await waitForLayout();
+        expect(form.dataset.composerCollapsed).toBe("false");
+        expect(Math.abs(anchor.getBoundingClientRect().top - anchorTop)).toBeLessThanOrEqual(2);
+        editor.blur();
+        await waitForLayout();
+        expect(form.dataset.composerCollapsed).toBe("false");
+        expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toContain(
+          "Keep this draft",
+        );
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("keeps the composer expanded during IME and leaves open model menus usable at rest", async () => {
+      const { mounted, editor, form, wheel } = await composerScrollFixture();
+      try {
+        editor.focus();
+        editor.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+        wheel();
+        await waitForLayout();
+        expect(form.dataset.composerCollapsed).toBe("false");
+        editor.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        wheel();
+        await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("true"));
+        window.dispatchEvent(new Event("focus"));
+        editor.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+        await waitForLayout();
+        expect(form.dataset.composerCollapsed).toBe("true");
+        const modelButton = form.querySelector<HTMLElement>("[data-chat-provider-model-picker]");
+        expect(modelButton).toBeTruthy();
+        await page.elementLocator(modelButton!).click();
+        const menu = await waitForElement(
+          () =>
+            document.querySelector<HTMLElement>(
+              '[data-slot="popover-popup"], [data-slot="menu-popup"]',
+            ),
+          "Model menu missing",
+        );
+        wheel();
+        await waitForLayout();
+        expect(menu.isConnected).toBe(true);
+        editor.dispatchEvent(
+          new InputEvent("beforeinput", { bubbles: true, inputType: "insertText", data: "x" }),
+        );
+        await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("false"));
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        wheel();
+        await waitForLayout();
+        expect(menu.isConnected).toBe(true);
+        expect(form.dataset.composerCollapsed).toBe("false");
+        await userEvent.keyboard("{Escape}");
+        editor.dispatchEvent(
+          new ClipboardEvent("paste", { bubbles: true, clipboardData: new DataTransfer() }),
+        );
+        await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("false"));
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it.each(["capability", "setting"])(
+      "keeps the legacy expanded layout when disabled by %s",
+      async (disabledBy) => {
+        if (disabledBy === "setting") persistAppSettings({ composerCollapseOnScroll: false });
+        const { mounted, form, wheel } = await composerScrollFixture();
+        try {
+          if (disabledBy === "capability") setServerBootstrap(baseServerBootstrapFixture);
+          await waitForLayout();
+          wheel();
+          await waitForLayout();
+          expect(form.dataset.composerCollapsed).toBe("false");
+        } finally {
+          await mounted.cleanup();
+        }
+      },
+    );
+
+    it("expands a different draft after leaving a scroll-collapsed thread", async () => {
+      const { mounted, form, wheel } = await composerScrollFixture();
+      try {
+        wheel();
+        await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("true"));
+        await vi.waitFor(() =>
+          expect(mounted.router.options.context.queryClient.isFetching()).toBe(0),
+        );
+        const draftId = "phase-ten-other-draft" as ThreadId;
+        useComposerDraftStore.setState((state) => ({
+          draftThreadsByThreadId: {
+            ...state.draftThreadsByThreadId,
+            [draftId]: {
+              projectId: PROJECT_ID,
+              createdAt: NOW_ISO,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              branch: null,
+              worktreePath: null,
+              envMode: "local",
+            },
+          },
+        }));
+        useComposerDraftStore.getState().setPrompt(draftId, "A separate draft");
+        await mounted.router.navigate({ to: "/$threadId", params: { threadId: draftId } });
+        await vi.waitFor(() =>
+          expect(document.querySelector('[data-testid="composer-editor"]')?.textContent).toContain(
+            "A separate draft",
+          ),
+        );
+        expect(
+          document.querySelector<HTMLFormElement>("[data-chat-composer-form]")!.dataset
+            .composerCollapsed,
+        ).toBe("false");
+        await vi.waitFor(() =>
+          expect(mounted.router.options.context.queryClient.isFetching()).toBe(0),
+        );
+        expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toContain(
+          "Keep this draft",
+        );
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("keeps the last message visible through collapse and expansion at the end", async () => {
+      const { mounted, editor, form, timeline, wheel } = await composerScrollFixture();
+      try {
+        timeline.scrollTop = timeline.scrollHeight;
+        timeline.dispatchEvent(new Event("scroll"));
+        await waitForLayout();
+        wheel();
+        await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("true"));
+        await waitForComposerTransitions(form);
+        expect(
+          timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight,
+        ).toBeLessThanOrEqual(2);
+        let previousHeight = form.getBoundingClientRect().height;
+        // Hold time so a slow runner can't finish or skip the expansion before it is seeked.
+        await cdp().send("Animation.enable");
+        await cdp().send("Animation.setPlaybackRate", { playbackRate: 0 });
+        editor.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+        await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("false"));
+        await vi.waitFor(() => expect(form.hasAttribute("data-composer-resizing")).toBe(true));
+        for (const fraction of [0.05, 0.15, 0.5]) {
+          await seekComposerTransitions(form, fraction);
+          expect(form.getBoundingClientRect().height).toBeGreaterThan(previousHeight);
+          previousHeight = form.getBoundingClientRect().height;
+          expect(
+            timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight,
+          ).toBeLessThanOrEqual(2);
+        }
+        await cdp().send("Animation.setPlaybackRate", { playbackRate: 1 });
+        await waitForComposerTransitions(form);
+        expect(
+          timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight,
+        ).toBeLessThanOrEqual(2);
+      } finally {
+        await cdp().send("Animation.setPlaybackRate", { playbackRate: 1 });
+        await mounted.cleanup();
+      }
+    });
+
+    it("animates the same editor to one line and back", async () => {
+      const { mounted, editor, form, wheel } = await composerScrollFixture();
+      const transitioned: string[] = [];
+      const onTransitionRun = (event: TransitionEvent) => {
+        if (event.target === editor) transitioned.push(event.propertyName);
+      };
+      editor.addEventListener("transitionrun", onTransitionRun);
+      try {
+        const expandedHeight = editor.getBoundingClientRect().height;
+        const lineHeight = parseFloat(getComputedStyle(document.documentElement).fontSize) * 1.625;
+        expect(expandedHeight).toBeGreaterThan(lineHeight * 2);
+        wheel();
+        await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("true"));
+        await waitForComposerTransitions(form);
+        expect(transitioned).toContain("height");
+        expect(Math.abs(editor.getBoundingClientRect().height - lineHeight)).toBeLessThanOrEqual(1);
+        expect(await waitForComposerEditor()).toBe(editor);
+        transitioned.length = 0;
+        editor.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+        await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("false"));
+        await waitForComposerTransitions(form);
+        expect(transitioned).toContain("height");
+        expect(
+          Math.abs(editor.getBoundingClientRect().height - expandedHeight),
+        ).toBeLessThanOrEqual(1);
+      } finally {
+        editor.removeEventListener("transitionrun", onTransitionRun);
+        await mounted.cleanup();
+      }
+    });
+
+    it("expands a draft taller than the editor cap gradually, without a transient scrollbar", async () => {
+      const { mounted, editor, form, wheel } = await composerScrollFixture();
+      try {
+        useComposerDraftStore.getState().setPrompt(THREAD_ID, "A long draft line\n".repeat(60));
+        await vi.waitFor(() => expect(editor.scrollHeight).toBeGreaterThan(400));
+        expect(Math.abs(editor.getBoundingClientRect().height - 200)).toBeLessThanOrEqual(1);
+        wheel();
+        await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("true"));
+        await waitForComposerTransitions(form);
+        // Hold time before expanding; on a slow runner the transition can finish
+        // while the collapsed state is polled, leaving nothing to seek.
+        await cdp().send("Animation.enable");
+        await cdp().send("Animation.setPlaybackRate", { playbackRate: 0 });
+        editor.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+        await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("false"));
+        // Let transitionrun mark the running animation before seeking it.
+        await vi.waitFor(() => expect(form.hasAttribute("data-composer-resizing")).toBe(true));
+        await seekComposerTransitions(form, 0.05);
+        // Animating toward the uncapped draft height would already be clamped at 200px.
+        const early = editor.getBoundingClientRect().height;
+        expect(early).toBeGreaterThan(30);
+        expect(early).toBeLessThan(190);
+        expect(form.hasAttribute("data-composer-resizing")).toBe(true);
+        expect(getComputedStyle(editor).overflowY).toBe("hidden");
+        await seekComposerTransitions(form, 0.5);
+        expect(editor.getBoundingClientRect().height).toBeGreaterThan(early);
+        await cdp().send("Animation.setPlaybackRate", { playbackRate: 1 });
+        await waitForComposerTransitions(form);
+        expect(Math.abs(editor.getBoundingClientRect().height - 200)).toBeLessThanOrEqual(1);
+        expect(form.hasAttribute("data-composer-resizing")).toBe(false);
+        expect(getComputedStyle(editor).overflowY).toBe("auto");
+      } finally {
+        await cdp().send("Animation.setPlaybackRate", { playbackRate: 1 });
+        await mounted.cleanup();
+      }
+    });
+
+    it("snaps without transitions or the attachment fade under reduced motion", async () => {
+      await setReducedMotion("reduce");
       const { mounted, editor, form, wheel } = await composerScrollFixture();
       try {
         useComposerDraftStore.getState().setFilePaths(THREAD_ID, ["/repo/project/notes.md"]);
         await waitForLayout();
-        const height = editor.getBoundingClientRect().height;
-        wheel(-100);
-        await waitForLayout();
-        expect(await waitForComposerEditor()).toBe(editor);
-        expect(editor.getBoundingClientRect().height).toBe(height);
-        expect(
-          form.querySelector("[data-composer-attachment-tray]")!.getBoundingClientRect().height,
-        ).toBeGreaterThan(0);
+        wheel();
+        await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("true"));
+        const button = page.getByRole("button", { name: "1 attachment", exact: true }).element();
+        const tray = form.querySelector<HTMLElement>("[data-composer-attachment-tray]")!;
+        expect([editor, tray, button].flatMap((element) => element.getAnimations())).toEqual([]);
+        expect(form.hasAttribute("data-composer-resizing")).toBe(false);
+        const lineHeight = parseFloat(getComputedStyle(document.documentElement).fontSize) * 1.625;
+        expect(Math.abs(editor.getBoundingClientRect().height - lineHeight)).toBeLessThanOrEqual(1);
+        expect(tray.getBoundingClientRect().height).toBe(0);
       } finally {
+        await setReducedMotion("no-preference");
         await mounted.cleanup();
       }
     });
@@ -3317,6 +3627,40 @@ describe("ChatView timeline (full app)", () => {
       }
     });
 
+    it("ignores nested pane scrolling, zoom, and timeline selections before accumulating a gesture", async () => {
+      const { mounted, form, timeline, wheel } = await composerScrollFixture();
+      const pane = document.createElement("pre");
+      try {
+        pane.style.cssText = "height: 30px; overflow-y: auto; overscroll-behavior-y: contain";
+        pane.textContent = "Nested output\n".repeat(30);
+        timeline.append(pane);
+        wheel(-50, pane);
+        await waitForLayout();
+        expect(form.dataset.composerCollapsed).toBe("false");
+        pane.remove();
+        timeline.dispatchEvent(
+          new WheelEvent("wheel", { bubbles: true, deltaY: -50, ctrlKey: true }),
+        );
+        await waitForLayout();
+        expect(form.dataset.composerCollapsed).toBe("false");
+        const row = timeline.querySelector("[data-timeline-row-id]")!;
+        window.getSelection()!.selectAllChildren(row);
+        wheel(-50);
+        await waitForLayout();
+        expect(form.dataset.composerCollapsed).toBe("false");
+        window.getSelection()!.removeAllRanges();
+        wheel(-12);
+        // Both deltas must belong to the same 120 ms gesture, including on
+        // loaded CI runners where waiting for layout can exceed that interval.
+        expect(form.dataset.composerCollapsed).toBe("false");
+        wheel(-12);
+        await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("true"));
+      } finally {
+        pane.remove();
+        await mounted.cleanup();
+      }
+    });
+
     it("keeps command suggestions reachable inside the bounded composer", async () => {
       const { mounted, editor } = await composerScrollFixture();
       try {
@@ -3358,6 +3702,130 @@ describe("ChatView timeline (full app)", () => {
         });
         await page.elementLocator(editor).fill("");
         await vi.waitFor(() => expect(editor.hasAttribute("aria-activedescendant")).toBe(false));
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("labels a single hidden attachment and links its expansion control to the tray", async () => {
+      const { mounted, form, wheel } = await composerScrollFixture();
+      try {
+        useComposerDraftStore.getState().setFilePaths(THREAD_ID, ["/repo/project/notes.md"]);
+        await waitForLayout();
+        wheel();
+        await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("true"));
+        const button = page.getByRole("button", { name: "1 attachment", exact: true });
+        await expect.element(button).toHaveAttribute("aria-expanded", "false");
+        const trayId = button.element().getAttribute("aria-controls")!;
+        expect(document.getElementById(trayId)?.hasAttribute("data-composer-attachment-tray")).toBe(
+          true,
+        );
+        const tray = document.getElementById(trayId)!;
+        await waitForComposerTransitions(form);
+        expect(getComputedStyle(tray).visibility).toBe("hidden");
+        expect(tray.getBoundingClientRect().height).toBe(0);
+        // Hold time before the click. Playwright and React can take longer than
+        // 180ms on CI; seeking after a transition finished otherwise does nothing.
+        await cdp().send("Animation.enable");
+        await cdp().send("Animation.setPlaybackRate", { playbackRate: 0 });
+        await button.click();
+        await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("false"));
+        // Early in expansion the chips are full size inside a short tray; they
+        // must stay clipped to it rather than paint over the editor.
+        await seekComposerTransitions(form, 0.05);
+        expect(tray.getBoundingClientRect().height).toBeLessThan(tray.scrollHeight);
+        expect(getComputedStyle(tray).overflow).toBe("clip");
+        await cdp().send("Animation.setPlaybackRate", { playbackRate: 1 });
+        await waitForComposerTransitions(form);
+        expect(getComputedStyle(tray).visibility).toBe("visible");
+        expect(tray.getBoundingClientRect().height).toBeGreaterThan(0);
+      } finally {
+        await cdp().send("Animation.setPlaybackRate", { playbackRate: 1 });
+        await mounted.cleanup();
+      }
+    });
+
+    it("keeps keyboard focus in the composer after expanding hidden attachments", async () => {
+      const { mounted, form, wheel } = await composerScrollFixture();
+      try {
+        useComposerDraftStore.getState().setFilePaths(THREAD_ID, ["/repo/project/notes.md"]);
+        await waitForLayout();
+        wheel();
+        await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("true"));
+        page.getByRole("button", { name: "1 attachment", exact: true }).element().focus();
+        await userEvent.keyboard("{Enter}");
+        await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("false"));
+        await vi.waitFor(() => {
+          expect(document.activeElement).not.toBe(document.body);
+          expect(form.contains(document.activeElement)).toBe(true);
+        });
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("expands a resting composer when an attachment validation error arrives", async () => {
+      const { mounted, form, wheel } = await composerScrollFixture();
+      const image = createComposerImageAttachment({
+        id: "invalid-attachment",
+        name: "too-large.svg",
+      });
+      try {
+        wheel();
+        await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("true"));
+        useComposerDraftStore
+          .getState()
+          .addImage(THREAD_ID, { ...image, sizeBytes: Number.MAX_SAFE_INTEGER });
+        await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("false"));
+        await expect
+          .element(
+            page
+              .getByRole("alert")
+              .filter({ hasText: "An attachment exceeds the server size limit." }),
+          )
+          .toBeVisible();
+        wheel();
+        await waitForLayout();
+        expect(form.dataset.composerCollapsed).toBe("false");
+      } finally {
+        URL.revokeObjectURL(image.previewUrl);
+        await mounted.cleanup();
+      }
+    });
+
+    it("expands when history is removed without changing the timeline viewport", async () => {
+      const { mounted, form, wheel } = await composerScrollFixture();
+      try {
+        wheel();
+        await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("true"));
+        useStore.setState((state) => ({
+          threads: state.threads.map((thread) =>
+            thread.id === THREAD_ID
+              ? { ...thread, messages: [], activities: [], turns: [] }
+              : thread,
+          ),
+        }));
+        await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("false"));
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("never collapses an empty conversation without scrollable history", async () => {
+      const snapshot = createSnapshotForTargetUser({
+        targetMessageId: "empty-scroll" as MessageId,
+        targetText: "",
+        fillerPairCount: 0,
+      });
+      const mounted = await mountChatView({ viewport: DEFAULT_VIEWPORT, snapshot });
+      try {
+        const editor = await waitForComposerEditor();
+        const timeline = document.querySelector<HTMLElement>(
+          '[data-slot="messages-scroll-container"]',
+        )!;
+        timeline.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -100 }));
+        await waitForLayout();
+        expect(editor.closest("form")!.dataset.composerCollapsed).toBe("false");
       } finally {
         await mounted.cleanup();
       }
@@ -7948,6 +8416,69 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
+  it("offers Attach files in the + menu rather than as a separate footer button", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "attach-menu" as MessageId,
+        targetText: "existing",
+        fillerPairCount: 1,
+        targetPairIndex: 0,
+      }),
+    });
+    try {
+      await waitForComposerShell();
+      const footer = document.querySelector<HTMLElement>('[data-chat-composer-footer="true"]')!;
+      expect(
+        Array.from(footer.querySelectorAll("button")).some((button) =>
+          /attach files/i.test(button.getAttribute("aria-label") ?? button.textContent ?? ""),
+        ),
+      ).toBe(false);
+      await page.getByRole("button", { name: "Add", exact: true }).click();
+      await expect
+        .element(page.getByRole("menuitem", { name: "Attach files…", exact: true }))
+        .toBeVisible();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("offers Compact conversation at every composer width", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "compact-entry" as MessageId,
+        targetText: "existing",
+        fillerPairCount: 1,
+        targetPairIndex: 0,
+      }),
+    });
+    const compactItem = page.getByRole("menuitem", { name: "Compact conversation", exact: true });
+    try {
+      await waitForComposerShell();
+      // Wide: the + menu carries it.
+      await page.getByRole("button", { name: "Add", exact: true }).click();
+      await expect.element(compactItem).toBeVisible();
+      await userEvent.keyboard("{Escape}");
+      await expect.element(compactItem).not.toBeInTheDocument();
+
+      // Compact: the controls menu carries it, and the + menu does not repeat it.
+      await mounted.setViewport({ name: "narrow", width: 560, height: 1_100 });
+      const more = page.getByRole("button", { name: "More composer controls" });
+      await expect.element(more).toBeVisible();
+      await page.getByRole("button", { name: "Add", exact: true }).click();
+      await expect
+        .element(page.getByRole("menuitem", { name: "Attach files…", exact: true }))
+        .toBeVisible();
+      expect(compactItem.elements()).toHaveLength(0);
+      await userEvent.keyboard("{Escape}");
+      await more.click();
+      await expect.element(compactItem).toBeVisible();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("sends file-only drafts with workspace-relative attachment paths and a filename title fallback", async () => {
     const absoluteFilePath = "/repo/project/apps/web/src/components/file-only-send.tsx";
     useComposerDraftStore.setState({
@@ -9517,7 +10048,7 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
-  it("recovers a draft first send after reconnect when snapshot proves acceptance", async () => {
+  it("automatically resends a draft first send after reconnect with the same IDs", async () => {
     const sentText = "Recover this first send";
     let dispatchedMessageId: MessageId | null = null;
 
@@ -9545,6 +10076,7 @@ describe("ChatView timeline (full app)", () => {
         nextFixture.resolveWsRequest = (body, _client) => {
           const command = getSubmittedTurnCommand(body);
           if (!command) return null;
+          if (getDispatchCommandRequests("thread.turn.start").length > 1) return null;
 
           dispatchedMessageId = command.message?.messageId ?? null;
           nextFixture.snapshot = createSnapshotForTargetUser({
@@ -9559,7 +10091,7 @@ describe("ChatView timeline (full app)", () => {
     try {
       useComposerDraftStore.getState().setPrompt(THREAD_ID, sentText);
 
-      const sendButton = await waitForSendButton();
+      const sendButton = await waitForSendButton(16_000);
       await vi.waitFor(
         () => {
           expect(sendButton.disabled).toBe(false);
@@ -9571,6 +10103,12 @@ describe("ChatView timeline (full app)", () => {
       await vi.waitFor(
         () => {
           expect(dispatchedMessageId).not.toBeNull();
+          const [original, replay] = getDispatchCommandRequests("thread.turn.start");
+          expect(replay).toEqual(original);
+          expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(2);
+          expect(
+            usePendingTurnDispatchStore.getState().pendingByThreadId[THREAD_ID],
+          ).toBeUndefined();
           expect(useRecoveryStateStore.getState().recoveryEpoch).toBeGreaterThan(0);
           const recoveredThread = useStore
             .getState()
@@ -9659,7 +10197,7 @@ describe("ChatView timeline (full app)", () => {
     },
   );
 
-  it.each(["transport", "rejected"] as const)(
+  it.each(["accepted", "rejected"] as const)(
     "shows recovery actions after reconnect and retries the original command: %s",
     async (outcome) => {
       const sentText = "Retry this pending send";
@@ -9692,13 +10230,10 @@ describe("ChatView timeline (full app)", () => {
             if (!command) return null;
             firstCommandId ??= command.commandId ?? null;
             firstMessageId ??= command.message?.messageId ?? null;
-            if (
-              outcome === "rejected" &&
-              getDispatchCommandRequests("thread.turn.start").length > 1
-            ) {
-              return { type: "error", message: "Admission rejected" };
+            if (getDispatchCommandRequests("thread.turn.start").length <= 3) {
+              return { type: "close" };
             }
-            return { type: "close" };
+            return outcome === "rejected" ? { type: "error", message: "Admission rejected" } : null;
           };
         },
       });
@@ -9715,7 +10250,8 @@ describe("ChatView timeline (full app)", () => {
         );
         sendButton.click();
 
-        const retryButton = await waitForButtonByText("Retry send");
+        await waitForButtonByText("Retry send", 16_000);
+        expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(3);
         await vi.waitFor(
           () => {
             expect(firstMessageId).not.toBeNull();
@@ -9726,13 +10262,15 @@ describe("ChatView timeline (full app)", () => {
           { timeout: 12_000, interval: 16 },
         );
 
-        retryButton.click();
+        const retryButton = page.getByRole("button", { name: "Retry send", exact: true });
+        await expect.element(retryButton, { timeout: 8_000 }).toBeEnabled();
+        await retryButton.click();
 
         await vi.waitFor(
           () => {
             const dispatchRequests = getDispatchCommandRequests("thread.turn.start");
-            expect(dispatchRequests).toHaveLength(2);
-            const retriedCommand = dispatchRequests[1]?.command as
+            expect(dispatchRequests).toHaveLength(4);
+            const retriedCommand = dispatchRequests[3]?.command as
               | {
                   commandId?: string;
                   message?: { messageId?: MessageId };
@@ -9752,9 +10290,9 @@ describe("ChatView timeline (full app)", () => {
               );
               return;
             }
-            expect(useComposerDraftStore.getState().getDraftThread(THREAD_ID)?.promoting).toBe(
-              true,
-            );
+            expect(
+              usePendingTurnDispatchStore.getState().pendingByThreadId[THREAD_ID]?.acceptedSequence,
+            ).not.toBeNull();
             expect(document.querySelectorAll(`[data-message-id="${firstMessageId}"]`)).toHaveLength(
               1,
             );
@@ -9827,7 +10365,7 @@ describe("ChatView timeline (full app)", () => {
       );
       sendButton.click();
 
-      await waitForButtonByText("Restore draft");
+      await waitForButtonByText("Restore draft", 16_000);
       await mounted.router.navigate({
         to: "/$threadId",
         params: { threadId: otherThreadId },
@@ -9905,7 +10443,7 @@ describe("ChatView timeline (full app)", () => {
       const implementButton = await waitForButtonByText("Implement");
       implementButton.click();
 
-      await waitForButtonByText("Retry send");
+      await waitForButtonByText("Retry send", 16_000);
       expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.interactionMode).toBe(
         "default",
       );

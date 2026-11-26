@@ -1,3 +1,5 @@
+import { join as nodePathJoin } from "node:path";
+
 import type { ActiveProfile, ProfileId } from "@t3tools/contracts";
 import { profileStateDir, profilesRootDir } from "@t3tools/shared/profilePaths";
 import { fallbackDefaultProfile } from "@t3tools/shared/profileIdentity";
@@ -12,6 +14,13 @@ import { fallbackDefaultProfile } from "@t3tools/shared/profileIdentity";
 import { Effect, FileSystem, Layer, Path, ServiceMap } from "effect";
 
 export const DEFAULT_PORT = 3773;
+
+/** Where F5 keeps provider homes; configs built by hand (tests) may leave it unset. */
+export function resolveProviderHomesDir(
+  paths: Pick<ServerDerivedPaths, "providerHomesDir" | "stateDir">,
+): string {
+  return paths.providerHomesDir ?? nodePathJoin(paths.stateDir, "provider-homes");
+}
 
 export type RuntimeMode = "web" | "desktop";
 

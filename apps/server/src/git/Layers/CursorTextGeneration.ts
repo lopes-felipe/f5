@@ -35,7 +35,7 @@ import {
 } from "../../provider/acp/CursorAcpSupport.ts";
 import { CURSOR_ACP_CLIENT_INFO } from "../../provider/cursor/cursorAcpClientInfo.ts";
 import {
-  cursorConfigDir,
+  cursorCliConfigDir,
   deleteCursorAcpSession,
 } from "../../provider/cursor/CursorNativeSessions.ts";
 
@@ -98,7 +98,8 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
   options: CursorTextGenerationOptions = {},
 ) {
   const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const configDir = cursorConfigDir(environment);
+  // The CLI writes `acp-sessions` and `chats` under its config dir.
+  const configDir = cursorCliConfigDir(environment);
   const scratchDir = options.scratchDir;
   const ensureScratchDir = (operation: string) =>
     scratchDir === undefined

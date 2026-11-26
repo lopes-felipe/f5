@@ -29,6 +29,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ensureNativeApi } from "../../../nativeApi";
 import {
+  invalidateMcpConfigQueries,
   mcpCommonConfigQueryOptions,
   mcpEffectiveConfigQueryOptions,
   mcpProjectConfigQueryOptions,
@@ -45,6 +46,7 @@ import { McpServerEditor } from "./McpServerEditor";
 import { LazyMcpImportDialog as McpImportDialog } from "./LazyMcpImportDialog";
 import { McpExport } from "./McpExport";
 import { McpProviderStatusBadge } from "./McpStatus";
+import { McpHubStatusPanel } from "./McpHubStatusPanel";
 import {
   createEmptyDraft,
   toWritableProjectServers,
@@ -65,9 +67,6 @@ const EMPTY_PROJECT_SERVERS: McpProjectServersConfig = {};
 export function McpServersSettings(props: {
   readonly selectedProject: ProjectSummary | null;
   readonly hasProjects: boolean;
-  readonly codexBinaryPath: string;
-  readonly codexHomePath: string;
-  readonly claudeBinaryPath: string;
 }) {
   const queryClient = useQueryClient();
   const { copyToClipboard, isCopied } = useCopyToClipboard({
@@ -170,9 +169,6 @@ export function McpServersSettings(props: {
       instanceId: selectedInstanceId,
       projectId: selectedProjectId,
       ...(selectedThreadId ? { threadId: selectedThreadId } : {}),
-      ...(effectiveConfigQuery.data?.effectiveVersion
-        ? { desiredVersion: effectiveConfigQuery.data.effectiveVersion }
-        : {}),
       enabled: selectedProject !== null && Boolean(effectiveConfigQuery.data),
     }),
   );
@@ -203,7 +199,11 @@ export function McpServersSettings(props: {
                 : {}),
             }
           : undefined,
-    isPending: serverStatusesQuery.isPending,
+    // A disabled query stays "pending" forever, so loading follows fetch status instead.
+    isLoading:
+      effectiveConfigQuery.fetchStatus === "fetching" ||
+      serverStatusesQuery.fetchStatus === "fetching" ||
+      claudeProviderStatusQuery.fetchStatus === "fetching",
     error: serverStatusesQuery.error,
   };
   useEffect(() => setSavedContext(null), [selectedScope, selectedProjectId]);
@@ -255,14 +255,23 @@ export function McpServersSettings(props: {
       ),
     [codexCallbackSummaryServers, orderedServers],
   );
+  // Saving does not re-run the configuration check (it can launch every server), so a
+  // check made before the save describes another configuration: its rows are not shown.
+  const configurationCheckStale =
+    serverStatusesQuery.data?.source === "configurationCheck" &&
+    !!effectiveConfigQuery.data?.effectiveVersion &&
+    !!serverStatusesQuery.data.desiredVersion &&
+    serverStatusesQuery.data.desiredVersion !== effectiveConfigQuery.data.effectiveVersion;
   const serverStatusByName = useMemo(
     () =>
       new Map(
-        (serverStatusesQuery.data?.statuses ?? [])
-          .filter((status) => !status.ownership || status.ownership === "managed")
-          .map((status) => [status.name, status]),
+        configurationCheckStale
+          ? []
+          : (serverStatusesQuery.data?.statuses ?? [])
+              .filter((status) => !status.ownership || status.ownership === "managed")
+              .map((status) => [status.name, status]),
       ),
-    [serverStatusesQuery.data],
+    [serverStatusesQuery.data, configurationCheckStale],
   );
   const overriddenServerNames = useMemo(() => {
     if (selectedScope !== "common" || !selectedProjectId) {
@@ -316,7 +325,7 @@ export function McpServersSettings(props: {
         });
         setSavedContext(`${selectedScope}:${selectedProjectId}`);
         queryClient.setQueryData(mcpQueryKeys.commonConfig(), result);
-        await queryClient.invalidateQueries({ queryKey: mcpQueryKeys.all });
+        await invalidateMcpConfigQueries(queryClient);
         return result;
       }
 
@@ -331,7 +340,7 @@ export function McpServersSettings(props: {
       });
       setSavedContext(`${selectedScope}:${selectedProjectId}`);
       queryClient.setQueryData(mcpQueryKeys.projectConfig(selectedProject.id), result);
-      await queryClient.invalidateQueries({ queryKey: mcpQueryKeys.all });
+      await invalidateMcpConfigQueries(queryClient);
       return result;
     } finally {
       setIsSavingConfig(false);
@@ -409,7 +418,10 @@ export function McpServersSettings(props: {
         delete nextServers[editingServerName];
       }
       nextServers[name] = server;
-      const normalized = validateMcpLayerWrite(activeServers, nextServers);
+      const normalized = validateMcpLayerWrite(activeServers, nextServers, {
+        inheritedNames:
+          selectedScope === "project" ? Object.keys(commonConfigQuery.data?.servers ?? {}) : [],
+      });
       if (!normalized[name]) {
         throw new Error("The MCP server configuration is invalid.");
       }
@@ -569,13 +581,16 @@ export function McpServersSettings(props: {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <McpProviderStatusBadge
-            provider={selectedProvider}
-            status={providerStatusQuery.data}
-            source={serverStatusesQuery.data?.source}
-            isLoading={providerStatusQuery.isPending && !providerStatusQuery.data}
-            isApplying={isApplying}
-          />
+          {/* Provider status is per project; without one there is nothing to check. */}
+          {selectedProject ? (
+            <McpProviderStatusBadge
+              provider={selectedProvider}
+              status={providerStatusQuery.data}
+              source={serverStatusesQuery.data?.source}
+              isLoading={providerStatusQuery.isLoading && !providerStatusQuery.data}
+              isApplying={isApplying}
+            />
+          ) : null}
           <Button
             size="xs"
             variant="outline"
@@ -699,6 +714,7 @@ export function McpServersSettings(props: {
             {providerStatusQuery.data.supportMessage}
           </p>
         ) : null}
+        {selectedProjectId ? <McpHubStatusPanel projectId={selectedProjectId} /> : null}
         {selectedProject ? (
           <div className="space-y-2 rounded-lg border border-border p-3 text-xs">
             <div className="flex flex-wrap items-center gap-2">
@@ -745,8 +761,13 @@ export function McpServersSettings(props: {
                 : "Configuration check"}
             </p>
             {serverStatusesQuery.data?.source === "conversation" &&
-            serverStatusesQuery.data.appliedVersion !== serverStatusesQuery.data.desiredVersion ? (
+            serverStatusesQuery.data.appliedVersion !==
+              (effectiveConfigQuery.data?.effectiveVersion ??
+                serverStatusesQuery.data.desiredVersion) ? (
               <p>Saved changes are pending in this conversation.</p>
+            ) : null}
+            {configurationCheckStale ? (
+              <p>Not checked since the last save. Use Refresh status to check the saved servers.</p>
             ) : null}
             {selectedProvider === "claudeAgent" &&
             serverStatusesQuery.data?.source === "configurationCheck" ? (
@@ -852,9 +873,7 @@ export function McpServersSettings(props: {
                                   mcpQueryKeys.projectConfig(selectedProjectId),
                                   result,
                                 );
-                                return queryClient.invalidateQueries({
-                                  queryKey: mcpQueryKeys.all,
-                                });
+                                return invalidateMcpConfigQueries(queryClient);
                               })
                               .catch((cause) =>
                                 setProjectActionError(
@@ -925,8 +944,8 @@ export function McpServersSettings(props: {
               group="managed"
               servers={effectiveConfigQuery.data?.servers ?? activeServers}
               removedNames={
-                serverStatusesQuery.data?.statuses
-                  .filter(
+                (configurationCheckStale ? undefined : serverStatusesQuery.data?.statuses)
+                  ?.filter(
                     (status) =>
                       status.ownership === "managed" &&
                       !Object.keys(effectiveConfigQuery.data?.servers ?? {}).some(
@@ -1009,7 +1028,7 @@ export function McpServersSettings(props: {
                   : projectConfigQuery.data?.version
               }
               onImport={persistScopeServers}
-              onRefreshBase={() => queryClient.invalidateQueries({ queryKey: mcpQueryKeys.all })}
+              onRefreshBase={() => invalidateMcpConfigQueries(queryClient)}
             />
           </>
         ) : (

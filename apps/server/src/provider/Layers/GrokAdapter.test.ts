@@ -28,6 +28,7 @@ import { makeGrokAdapter, type GrokAdapterLiveOptions } from "./GrokAdapter.ts";
 import { TurnAcceptanceSignal } from "../deliveryAttemptContext.ts";
 import type { InteractionSession } from "../../mcp/interactionMcpTools.ts";
 import type { PreviewMcpHttpServerShape } from "../../mcp/PreviewMcpHttpServer.ts";
+import { makeFakeMcpHub } from "../../mcp/hub/testing/fakeMcpHub.ts";
 
 class GrokAdapter extends ServiceMap.Service<GrokAdapter, GrokAdapterShape>()(
   "t3/provider/Layers/GrokAdapter.test/GrokAdapter",
@@ -461,6 +462,57 @@ it.layer(AntigravityAdapterTestLayer)("Antigravity native questions", (it) => {
         yield* adapter.stopSession(threadId);
       }).pipe(Effect.provide(AntigravityAdapterTestLayer), Effect.scoped),
   );
+  rootIt.live("launches only read-only workflow sessions in Antigravity's sandbox", () =>
+    Effect.gen(function* () {
+      const dir = yield* Effect.promise(() =>
+        mkdtemp(path.join(os.tmpdir(), "antigravity-sandbox-")),
+      );
+      const wrapperPath = writeAcpWrapper(path.join(dir, "agent"), mockAgentPath, {
+        env: { F5_ACP_ANTIGRAVITY_PROFILE: "1" },
+      });
+      const sandboxed: Array<boolean | undefined> = [];
+      const readOnly: Array<boolean | undefined> = [];
+      const adapter = yield* makeGrokAdapter(
+        Schema.decodeSync(GrokSettings)({ binaryPath: wrapperPath }),
+        {
+          provider: "antigravity",
+          instanceId: ProviderInstanceId.make("antigravity"),
+          antigravity: { readOnlyWorkflowCertified: () => true },
+          makeRuntime: (input) => {
+            sandboxed.push(input.readOnlySandbox);
+            readOnly.push(input.readOnlyWorkflow);
+            return GrokAcpSupport.makeGrokAcpRuntime(input);
+          },
+        },
+      );
+      const base = {
+        provider: "antigravity" as const,
+        cwd: process.cwd(),
+        runtimeMode: "full-access" as const,
+      };
+      yield* adapter.startSession({
+        ...base,
+        threadId: ThreadId.make("antigravity-sandbox-workflow"),
+        workflowExecutionProfile: "unattended-readonly",
+      });
+      yield* adapter.startSession({
+        ...base,
+        threadId: ThreadId.make("antigravity-sandbox-plain"),
+      });
+      // Where the sandbox can't start, F5 resolves the stage to policy: no --sandbox.
+      yield* adapter.startSession({
+        ...base,
+        threadId: ThreadId.make("antigravity-sandbox-policy"),
+        workflowExecutionProfile: "unattended-readonly",
+        readOnlyEnforcement: "policy",
+      });
+      assert.deepEqual(sandboxed, [true, undefined, false]);
+      assert.deepEqual(readOnly, [true, undefined, true]);
+      yield* adapter.stopSession(ThreadId.make("antigravity-sandbox-workflow"));
+      yield* adapter.stopSession(ThreadId.make("antigravity-sandbox-plain"));
+      yield* adapter.stopSession(ThreadId.make("antigravity-sandbox-policy"));
+    }).pipe(Effect.provide(AntigravityAdapterTestLayer), Effect.scoped),
+  );
   rootIt.live("refuses workflow sessions on an uncertified or unknown Antigravity build", () =>
     Effect.gen(function* () {
       const dir = yield* Effect.promise(() =>
@@ -742,6 +794,26 @@ rootIt.live(
         (overtaken.completed.at(-1)?.payload as { state?: string } | undefined)?.state,
         "completed",
       );
+      // A typed quota stop with no reset: the terminal carries the same limit, so ingestion can
+      // resolve its reset from the account afterwards.
+      const typed = yield* runTurn(
+        { T3_ACP_PROMPT_RESPONSE_TEXT: "Working on it.", F5_ACP_STOP_REASON: "refusal" },
+        "agy-native-refusal",
+      );
+      assert.equal(typed.errors.length, 1);
+      const typedLimit = (typed.errors[0]?.payload as { usageLimit?: unknown } | undefined)
+        ?.usageLimit;
+      assert.deepEqual(typedLimit, {
+        windows: [],
+        resetsAt: null,
+        resetSource: null,
+        evidence: "typed",
+      });
+      const typedCompleted = typed.completed.at(-1)?.payload as
+        | { state?: string; usageLimit?: unknown }
+        | undefined;
+      assert.equal(typedCompleted?.state, "failed");
+      assert.deepEqual(typedCompleted?.usageLimit, typedLimit);
     }).pipe(
       Effect.provide(
         ServerConfig.layerTest(process.cwd(), { prefix: "f5-agy-native-notice-test-" }).pipe(
@@ -1482,10 +1554,12 @@ rootIt.layer(
       assert.isString(payload.usageLimit?.resetsAt);
       assert.equal(payload.usageLimit?.resetSource, "message");
       assert.equal(payload.usageLimit?.evidence, "message");
-      assert.equal(
-        (limited.completed.at(-1)?.payload as { state?: string } | undefined)?.state,
-        "failed",
-      );
+      const completedPayload = limited.completed.at(-1)?.payload as
+        | { state?: string; usageLimit?: unknown }
+        | undefined;
+      assert.equal(completedPayload?.state, "failed");
+      // The failed turn's terminal sets the session's limit, so it must carry the same one.
+      assert.deepEqual(completedPayload?.usageLimit, payload.usageLimit);
 
       // A notice split across chunks, after the model's own text, still reads whole.
       const split = yield* runTurn(
@@ -1973,6 +2047,51 @@ rootIt.layer(
         assert.include(meta?.antigravity?.systemPrompt?.append ?? "", "ask_user_question");
         yield* adapter.stopSession(threadId);
       }).pipe(Effect.scoped),
+  );
+
+  it.effect("passes project MCP servers as hub endpoints, over HTTP when the agent offers it", () =>
+    Effect.gen(function* () {
+      const fake = makeFakeMcpHub();
+      const mcpServers = {
+        docs: { type: "http", url: "https://docs.example/mcp" },
+        local: { type: "stdio", command: "node" },
+      } as const;
+      for (const http of [false, true]) {
+        const { adapter, requests } = yield* antigravityProfileAdapter({
+          env: http ? { ACP_MOCK_MCP_HTTP: "1" } : {},
+          options: () => ({ mcpHub: fake.hub, mcpSessionStdioLaunch: STDIO_LAUNCH }),
+        });
+        const threadId = ThreadId.make(`agy-hub-${http}`);
+        yield* adapter.startSession({
+          threadId,
+          provider: "antigravity",
+          cwd: process.cwd(),
+          runtimeMode: "approval-required",
+          providerOptions: { mcpServers },
+        });
+        const created = (yield* requests()).find((request) => request.method === "session/new");
+        const servers = created?.params?.mcpServers as ReadonlyArray<Record<string, unknown>>;
+        const local = servers.find((server) => server.name === "local");
+        assert.ok(servers.some((server) => server.name === "docs"));
+        if (http) {
+          assert.deepEqual(local, {
+            type: "http",
+            name: "local",
+            url: "http://127.0.0.1:9/mcp/user/local",
+            headers: [{ name: "Authorization", value: "Bearer token-local" }],
+          });
+        } else {
+          assert.equal(local?.command, "/opt/f5/f5");
+          assert.deepEqual(local?.env, [
+            { name: "F5_MCP_URL", value: "http://127.0.0.1:9/mcp/user/local" },
+            { name: "F5_MCP_TOKEN", value: "token-local" },
+          ]);
+        }
+        yield* adapter.stopSession(threadId);
+      }
+      assert.equal(fake.attaches.length, 2);
+      assert.equal(fake.disposed, 2);
+    }).pipe(Effect.scoped),
   );
 
   it.effect("sends no system prompt guidance to an agent that does not advertise it", () =>

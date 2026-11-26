@@ -4,6 +4,7 @@ import { AttachmentImage } from "../AttachmentImage";
 import { ThreadFindContext } from "./threadFindContext";
 import { watchThreadFindHighlights } from "./threadFindHighlights";
 import { HtmlRenderFrame } from "./HtmlRenderFrame";
+import { appIconUrl, useAppIcon } from "../../appIcon";
 import { recordTimelineRowRender } from "../../lib/performanceCounters";
 import { messageTextRevision, messageReasoningContent } from "../../lib/streamingTextRevision";
 import { computerToolHeading, previewToolHeading } from "@t3tools/shared/computerAction";
@@ -633,6 +634,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   // the end, send, or jump to latest.
   const [liveFollowEnabled, setLiveFollowEnabled] = useState(restoredAnchor?.atEnd ?? true);
   const liveFollowEnabledRef = useRef(restoredAnchor?.atEnd ?? true);
+  const expandingWorkGroupRef = useRef<string | null>(null);
+  const [workGroupExpansionSettling, setWorkGroupExpansionSettling] = useState(false);
   const [atEndThreshold, setAtEndThreshold] = useState(0);
   const manualScrollGenerationRef = useRef(0);
   const newestTurnDiffId = useMemo(
@@ -967,6 +970,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     if (followNextTailNonceRef.current === followNextTailNonce) return;
     followNextTailNonceRef.current = followNextTailNonce;
     setSelectedNavigationRowId(null);
+    expandingWorkGroupRef.current = null;
+    setWorkGroupExpansionSettling(false);
     isAtEndRef.current = true;
     liveFollowEnabledRef.current = true;
     setLiveFollowEnabled(true);
@@ -992,6 +997,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         if (hasNode && (fromScroll || isAtEnd)) lastScrollTopRef.current = node.scrollTop;
         physicallyAtEndRef.current = isAtEnd;
         setRailIsAtEnd(isAtEnd);
+        if (isAtEnd && expandingWorkGroupRef.current === null) {
+          setWorkGroupExpansionSettling(false);
+        }
         if (isAtEnd && (fromScroll || state.contentLength <= state.scrollLength)) {
           // Reaching the end by scrolling, or content that fits without
           // scrolling, resumes following.
@@ -1055,8 +1063,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   }, [listRef]);
 
   const disclosurePinsEndRef = useRef(false);
-  const expandingWorkGroupRef = useRef<string | null>(null);
-  const [workGroupExpansionSettling, setWorkGroupExpansionSettling] = useState(false);
   const endSettleFrameRef = useRef<number | null>(null);
   // A jump or scroll away from the end: stop following the tail now, and drop
   // any follow scroll or disclosure pin already queued for a later frame.
@@ -1070,10 +1076,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     liveFollowEnabledRef.current = false;
     setLiveFollowEnabled(false);
     disclosurePinsEndRef.current = false;
-    if (expandingWorkGroupRef.current !== null) {
-      expandingWorkGroupRef.current = null;
-      setWorkGroupExpansionSettling(false);
-    }
+    expandingWorkGroupRef.current = null;
+    setWorkGroupExpansionSettling(false);
     if (endSettleFrameRef.current !== null) {
       window.cancelAnimationFrame(endSettleFrameRef.current);
       endSettleFrameRef.current = null;
@@ -1264,9 +1268,13 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         disclosurePinsEndRef.current = false;
         if (expandingWorkGroupRef.current !== null) {
           expandingWorkGroupRef.current = null;
-          setWorkGroupExpansionSettling(false);
         }
         endSettleFrameRef.current = null;
+        // Keep `workGroupExpansionSettling` active while an expanded work group
+        // has moved the viewport away from the physical end: in @legendapp/list
+        // 3.7+, re-enabling `maintainScrollAtEnd` while `isFollowingEnd` is
+        // still set snaps immediately to the bottom. `syncIsAtEndFromListState`
+        // clears it once the viewport physically returns to the end.
         syncIsAtEndFromListState();
       });
     });
@@ -3789,10 +3797,16 @@ function McpServerIcon(props: { serverName: string; label: string }) {
       ) : kind === "claude" ? (
         <ClaudeAI className={glyphClassName} />
       ) : (
-        <img src="/favicon-32x32.png" alt="" className={cn(glyphClassName, "rounded-xs")} />
+        <AppIconGlyph className={cn(glyphClassName, "rounded-xs")} />
       )}
     </span>
   );
+}
+
+/** F5's own servers carry the app icon the person chose. */
+function AppIconGlyph(props: { className: string }) {
+  const { id } = useAppIcon();
+  return <img src={appIconUrl(id, 32)} alt="" className={props.className} />;
 }
 
 const MCP_CALL_STATUS_PRESENTATION: Record<

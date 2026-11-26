@@ -1,7 +1,12 @@
 import { mcpInspectServerQueryOptions } from "./mcpInspectionReactQuery";
 import { describe, expect, it } from "vitest";
 import { ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
-import { isMcpQueryAffected, mcpQueryKeys, shouldPollMcpRuntime } from "./mcpReactQuery";
+import {
+  isMcpConfigQuery,
+  isMcpQueryAffected,
+  mcpQueryKeys,
+  shouldPollMcpRuntime,
+} from "./mcpReactQuery";
 
 describe("MCP status event scoping", () => {
   it("invalidates only the named account when an instance is stamped", () => {
@@ -13,24 +18,21 @@ describe("MCP status event scoping", () => {
       instanceId: work,
       reason: "applied" as const,
     };
-    expect(
-      isMcpQueryAffected(mcpQueryKeys.serverStatuses("codex", project, work, null), event),
-    ).toBe(true);
-    expect(
-      isMcpQueryAffected(mcpQueryKeys.serverStatuses("codex", project, "personal", null), event),
-    ).toBe(false);
-    expect(isMcpQueryAffected(mcpQueryKeys.codexStatus(project, work, null), event)).toBe(true);
-    expect(isMcpQueryAffected(mcpQueryKeys.oauthStatus(project, "docs", work, null), event)).toBe(
+    const personal = ProviderInstanceId.make("personal");
+    expect(isMcpQueryAffected(mcpQueryKeys.serverStatuses("codex", project, work), event)).toBe(
       true,
     );
+    expect(isMcpQueryAffected(mcpQueryKeys.serverStatuses("codex", project, personal), event)).toBe(
+      false,
+    );
     expect(
-      isMcpQueryAffected(mcpQueryKeys.loginStatus("codex", project, "docs", work, null), event),
+      isMcpQueryAffected(mcpQueryKeys.loginStatus("codex", project, "docs", work), event),
     ).toBe(true);
     expect(
-      isMcpQueryAffected(mcpQueryKeys.loginStatus("codex", project, work, "personal", null), event),
+      isMcpQueryAffected(mcpQueryKeys.loginStatus("codex", project, "docs", personal), event),
     ).toBe(false);
     expect(
-      isMcpQueryAffected(mcpQueryKeys.loginStatus("codex", project, "docs", work, null), {
+      isMcpQueryAffected(mcpQueryKeys.loginStatus("codex", project, "docs", work), {
         ...event,
         projectId: ProjectId.makeUnsafe("other"),
       }),
@@ -38,14 +40,46 @@ describe("MCP status event scoping", () => {
     expect(isMcpQueryAffected(mcpQueryKeys.commonConfig(), event)).toBe(false);
     expect(
       isMcpQueryAffected(
-        mcpQueryKeys.serverStatuses("codex", ProjectId.makeUnsafe("other"), work, null),
+        mcpQueryKeys.serverStatuses("codex", ProjectId.makeUnsafe("other"), work),
         event,
       ),
     ).toBe(false);
     const { instanceId: _, ...unscoped } = event;
     expect(
-      isMcpQueryAffected(mcpQueryKeys.serverStatuses("codex", project, "personal", null), unscoped),
+      isMcpQueryAffected(mcpQueryKeys.serverStatuses("codex", project, personal), unscoped),
     ).toBe(true);
+  });
+
+  it("keeps hub connection changes apart from provider observations", () => {
+    const project = ProjectId.makeUnsafe("project");
+    const work = ProviderInstanceId.make("work");
+    const hub = { scope: "common" as const, reason: "hub" as const, serverName: "docs" };
+    expect(isMcpQueryAffected(mcpQueryKeys.hubStatus(project), hub)).toBe(true);
+    expect(isMcpQueryAffected(mcpQueryKeys.hubStatus(null), hub)).toBe(true);
+    expect(isMcpQueryAffected(mcpQueryKeys.serverStatuses("codex", project, work), hub)).toBe(
+      false,
+    );
+    expect(isMcpQueryAffected(mcpQueryKeys.projectConfig(project), hub)).toBe(false);
+    const applied = { scope: "project" as const, projectId: project, reason: "applied" as const };
+    expect(isMcpQueryAffected(mcpQueryKeys.hubStatus(project), applied)).toBe(true);
+    const saved = { scope: "project" as const, projectId: project, reason: "updated" as const };
+    expect(isMcpQueryAffected(mcpQueryKeys.hubStatus(project), saved)).toBe(false);
+  });
+
+  it("refreshes only configuration queries when a save is announced", () => {
+    const project = ProjectId.makeUnsafe("project");
+    const work = ProviderInstanceId.make("work");
+    const saved = { scope: "project" as const, projectId: project, reason: "updated" as const };
+    expect(isMcpQueryAffected(mcpQueryKeys.projectConfig(project), saved)).toBe(true);
+    expect(isMcpQueryAffected(mcpQueryKeys.effectiveConfig(project), saved)).toBe(true);
+    expect(isMcpQueryAffected(mcpQueryKeys.commonConfig(), saved)).toBe(true);
+    expect(isMcpQueryAffected(mcpQueryKeys.serverStatuses("codex", project, work), saved)).toBe(
+      false,
+    );
+    expect(isMcpQueryAffected(mcpQueryKeys.providerStatus("codex", project, work), saved)).toBe(
+      false,
+    );
+    expect(isMcpConfigQuery(mcpQueryKeys.loginStatus("codex", project, "docs", work))).toBe(false);
   });
 });
 

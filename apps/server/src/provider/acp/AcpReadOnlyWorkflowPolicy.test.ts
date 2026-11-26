@@ -27,6 +27,22 @@ describe("acpReadOnlyWorkflowDecision", () => {
     expect(decide({ kind: "execute", title: "`git status`" })).toBe("deny");
   });
 
+  it("denies a read-only command that asks to leave the sandbox (Antigravity shape)", () => {
+    // The live certification run on 2026-11-25: the model retried a sandboxed `gh api zen`
+    // with BypassSandbox, and approving it reached GitHub from outside the sandbox.
+    const toolCall = (rawInput: Record<string, unknown>) => ({
+      kind: "execute",
+      title: "gh api zen",
+      rawInput: { CommandLine: "gh api zen", WaitMsBeforeAsync: 10000, ...rawInput },
+    });
+    expect(decide(toolCall({ BypassSandbox: false }))).toBe("allow");
+    expect(decide(toolCall({}))).toBe("allow");
+    expect(decide(toolCall({ BypassSandbox: true }))).toBe("deny");
+    expect(decide(toolCall({ BypassSandbox: "true" }))).toBe("deny");
+    expect(decide(toolCall({ bypass_sandbox: 1 }))).toBe("deny");
+    expect(decide(toolCall({ dangerouslyDisableSandbox: true }))).toBe("deny");
+  });
+
   it("denies edits and unknown kinds", () => {
     for (const kind of ["edit", "delete", "move", "other", "switch_mode", undefined])
       expect(decide({ kind, title: "tool" })).toBe("deny");
@@ -36,6 +52,73 @@ describe("acpReadOnlyWorkflowDecision", () => {
     expect(decide({ kind: "read", title: "mcp__github__get_issue" })).toBe("deny");
     expect(decide({ kind: "execute", rawInput: { command: "ls", serverName: "x" } })).toBe("deny");
     expect(decide({ kind: "read", title: "screenshot" }, true)).toBe("deny");
+  });
+
+  it("allows only F5's read-only thread server among MCP calls, by its generated name", () => {
+    const f5ThreadServerName = "f5_thread_0a1b2c3d";
+    const decideWithF5 = (
+      toolCall: Parameters<typeof acpReadOnlyWorkflowDecision>[0]["toolCall"],
+    ) => acpReadOnlyWorkflowDecision({ toolCall, computerRequest: false, f5ThreadServerName });
+    expect(decideWithF5({ title: "mcp__f5_thread_0a1b2c3d__pull_request_read" })).toBe("allow");
+    expect(decideWithF5({ kind: "other", title: "MCP: f5_thread_0a1b2c3d / ci_logs" })).toBe(
+      "allow",
+    );
+    // Without an MCP signal the call is judged by its kind like any other.
+    expect(decideWithF5({ kind: "other", title: "f5_thread_0a1b2c3d: ci_logs" })).toBe("deny");
+    expect(
+      decideWithF5({
+        kind: "other",
+        rawInput: { serverName: f5ThreadServerName, tool: "ci_logs" },
+      }),
+    ).toBe("allow");
+    // Other servers, look-alike names and mutating kinds stay denied.
+    expect(decideWithF5({ title: "mcp__github__get_file_contents" })).toBe("deny");
+    expect(decideWithF5({ title: "mcp__f5_thread_0a1b2c3d9__ci_logs" })).toBe("deny");
+    expect(decideWithF5({ title: "mcp__f5_thread__ci_logs" })).toBe("deny");
+    expect(
+      decideWithF5({ rawInput: { server: "github", note: f5ThreadServerName }, title: "mcp_x" }),
+    ).toBe("deny");
+    expect(
+      decideWithF5({
+        kind: "execute",
+        title: "`echo mcp__f5_thread_0a1b2c3d__x`",
+        rawInput: { command: "echo mcp__f5_thread_0a1b2c3d__x > out" },
+      }),
+    ).toBe("deny");
+    // Antigravity's permission request: title `Run mcp_<server>_<tool>` and capitalised keys.
+    expect(
+      decideWithF5({
+        kind: "other",
+        title: "Run mcp_f5_thread_0a1b2c3d_ci_logs",
+        rawInput: { ServerName: f5ThreadServerName, ToolName: "ci_logs", Arguments: "{}" },
+      }),
+    ).toBe("allow");
+    expect(decideWithF5({ kind: "other", title: "Run mcp_f5_thread_0a1b2c3d_ci_logs" })).toBe(
+      "allow",
+    );
+    expect(
+      decideWithF5({
+        kind: "read",
+        title: "Run mcp_f5_certification_read_project_status",
+        rawInput: { ServerName: "f5_certification", ToolName: "read_project_status" },
+      }),
+    ).toBe("deny");
+    // F5's server, but a tool outside the read-only catalog.
+    expect(
+      decideWithF5({
+        kind: "other",
+        rawInput: { ServerName: f5ThreadServerName, ToolName: "pull_request_merge" },
+      }),
+    ).toBe("deny");
+    expect(decideWithF5({ title: "mcp__f5_thread_0a1b2c3d__pull_request_merge" })).toBe("deny");
+    // The F5 server named later in a title, where the model's arguments can appear.
+    expect(decideWithF5({ title: "mcp__github__create_issue (f5_thread_0a1b2c3d)" })).toBe("deny");
+    expect(decideWithF5({ title: "mcp__fs__write_file `mcp__f5_thread_0a1b2c3d__ci_logs`" })).toBe(
+      "deny",
+    );
+    expect(decideWithF5({ title: "mcp__f5_thread_0a1b2c3d__ci_logsx" })).toBe("deny");
+    // Without an attached server nothing MCP is allowed.
+    expect(decide({ title: "mcp__f5_thread_0a1b2c3d__pull_request_read" })).toBe("deny");
   });
 });
 
