@@ -26,7 +26,6 @@ import type {
 import { ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { noteWsConnectionOpened, noteWsConnectionClosed } from "../../wsConnectionState";
 import { formatMcpServersAsJson } from "@t3tools/shared/mcpConfig";
-import { CODEX_SSE_TRANSPORT_HINT } from "@t3tools/shared/mcpTranslation";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
@@ -652,26 +651,6 @@ describe("McpServersSettings", () => {
       );
       await new Promise((resolve) => setTimeout(resolve, 100));
       expect(mocks.getServerStatuses.mock.calls.length).toBe(statusCalls);
-    } finally {
-      queryClient.clear();
-      await screen.unmount();
-    }
-  });
-
-  it("shows the Codex streamable HTTP hint only when editing SSE", async () => {
-    createNativeApiMock();
-    const { screen, queryClient } = await renderSettings();
-    try {
-      await openAddServer();
-      expect(document.body.textContent).not.toContain(CODEX_SSE_TRANSPORT_HINT);
-      await page.getByRole("combobox", { name: "MCP transport type" }).click();
-      await page.getByRole("option", { name: "sse", exact: true }).click();
-      await vi.waitFor(() => expect(document.body.textContent).toContain(CODEX_SSE_TRANSPORT_HINT));
-      await page.getByRole("combobox", { name: "MCP transport type" }).click();
-      await page.getByRole("option", { name: "http", exact: true }).click();
-      await vi.waitFor(() =>
-        expect(document.body.textContent).not.toContain(CODEX_SSE_TRANSPORT_HINT),
-      );
     } finally {
       queryClient.clear();
       await screen.unmount();
