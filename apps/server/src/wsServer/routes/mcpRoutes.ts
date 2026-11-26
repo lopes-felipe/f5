@@ -12,6 +12,7 @@ import type { CodexMcpEventBus } from "../../codex/CodexMcpEventBus.ts";
 import type { makeMcpAccountExecutionResolver } from "../../mcp/accountExecution.ts";
 import { detectMcpImports } from "../../mcp/McpImportDetection.ts";
 import type { McpHub } from "../../mcp/hub/McpHub.ts";
+import type { McpHubAuth } from "../../mcp/hub/McpHubAuth.ts";
 import { probeMcpServer } from "../../mcp/McpProbe.ts";
 import type { McpRuntimeService } from "../../mcp/McpRuntimeService.ts";
 import { resolveMcpSecrets } from "../../mcp/McpSecretResolver.ts";
@@ -40,6 +41,10 @@ type McpMethod =
   | typeof WS_METHODS.mcpGetLoginStatus
   | typeof WS_METHODS.mcpGetHubStatus
   | typeof WS_METHODS.mcpReconnectHubServer
+  | typeof WS_METHODS.mcpGetHubAuthStatus
+  | typeof WS_METHODS.mcpStartHubSignIn
+  | typeof WS_METHODS.mcpCompleteHubSignIn
+  | typeof WS_METHODS.mcpSignOutHubServer
   | typeof WS_METHODS.mcpApplyToLiveSessions
   | typeof MCP_APPS_WS_METHODS.toolInfo
   | typeof MCP_APPS_WS_METHODS.callTool
@@ -50,6 +55,7 @@ export interface McpRouteDependencies {
   readonly projectMcpConfigService: typeof ProjectMcpConfigService.Service;
   readonly mcpRuntimeService: typeof McpRuntimeService.Service;
   readonly mcpHub: typeof McpHub.Service | undefined;
+  readonly mcpHubAuth: typeof McpHubAuth.Service | undefined;
   readonly codexMcpEventBus: typeof CodexMcpEventBus.Service;
   readonly providerService: typeof ProviderService.Service;
   readonly profileSecrets: ServerSecretStoreShape;
@@ -85,6 +91,7 @@ export const mcpRoutes = ({
   projectMcpConfigService,
   mcpRuntimeService,
   mcpHub,
+  mcpHubAuth,
   codexMcpEventBus,
   providerService,
   profileSecrets,
@@ -295,6 +302,34 @@ export const mcpRoutes = ({
         : 0;
       return { reconnected };
     }),
+
+  [WS_METHODS.mcpGetHubAuthStatus]: (request) =>
+    mcpHubAuth
+      ? mcpHubAuth
+          .status(request.projectId)
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })))
+      : Effect.succeed({ servers: [] }),
+
+  [WS_METHODS.mcpStartHubSignIn]: (request) =>
+    mcpHubAuth
+      ? mcpHubAuth
+          .startSignIn(withoutTag(request))
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })))
+      : Effect.fail(new RouteRequestError({ message: "MCP sign-in is unavailable here." })),
+
+  [WS_METHODS.mcpCompleteHubSignIn]: (request) =>
+    mcpHubAuth
+      ? mcpHubAuth
+          .completeSignIn(withoutTag(request))
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })))
+      : Effect.fail(new RouteRequestError({ message: "MCP sign-in is unavailable here." })),
+
+  [WS_METHODS.mcpSignOutHubServer]: (request) =>
+    mcpHubAuth
+      ? mcpHubAuth
+          .signOut(withoutTag(request))
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })))
+      : Effect.succeed({ signedOut: false }),
 
   [WS_METHODS.mcpApplyToLiveSessions]: (request) =>
     Effect.gen(function* () {

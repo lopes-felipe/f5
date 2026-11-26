@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseImportedServers, parseMcpImport } from "./mcpImport";
+import { parseImportedServers, parseMcpImport, stripJsonComments } from "./mcpImport";
 
 describe("parseMcpImport name and interpolation warnings", () => {
   it("proposes a sanitized name for names outside the allowed charset", () => {
@@ -64,14 +64,14 @@ describe("parseMcpImport name and interpolation warnings", () => {
     expect(message(1)).toContain("reserved");
   });
 
-  it("warns about ${VAR} references that F5 passes literally", () => {
+  it("converts ${VAR} references to ${env:VAR} and flags other references", () => {
     const result = parseMcpImport(
       JSON.stringify({
         mcpServers: {
           local: {
             command: "node",
-            args: ["--token", "${API_TOKEN}"],
-            env: { HOME_DIR: "${HOME}" },
+            args: ["--token", "${API_TOKEN}", "${workspaceFolder}/x"],
+            env: { HOME_DIR: "${HOME}", KEEP: "${env:KEEP}" },
           },
           remote: {
             type: "http",
@@ -82,14 +82,85 @@ describe("parseMcpImport name and interpolation warnings", () => {
         },
       }),
     );
-    const fields = (index: number) =>
-      result.candidates[index]!.issues.filter((issue) => issue.severity === "warning").map(
-        (issue) => issue.field,
+    const warnings = (index: number) =>
+      result.candidates[index]!.issues.filter((issue) => issue.severity === "warning");
+    expect(warnings(0).map((issue) => issue.field)).toEqual(["args.1", "args.2", "env.HOME_DIR"]);
+    expect(warnings(0)[1]!.message).toContain("passes literally");
+    expect(warnings(1).map((issue) => issue.field)).toEqual(["headers.Authorization"]);
+    expect(warnings(2)).toEqual([]);
+    expect(result.candidates[0]!.server).toMatchObject({
+      args: ["--token", "${env:API_TOKEN}", "${workspaceFolder}/x"],
+      env: { HOME_DIR: "${env:HOME}", KEEP: "${env:KEEP}" },
+    });
+    expect(result.candidates[1]!.server).toMatchObject({
+      headers: { Authorization: "Bearer ${env:TOKEN:-none}" },
+    });
+  });
+});
+
+describe("JSONC and other clients' shapes", () => {
+  it("strips comments and trailing commas but never touches strings", () => {
+    const text = `{
+  /* block */ "a": "https://x.example/a//b", // line
+  "b": ["/* not a comment */", "x",],
+}`;
+    expect(JSON.parse(stripJsonComments(text))).toEqual({
+      a: "https://x.example/a//b",
+      b: ["/* not a comment */", "x"],
+    });
+  });
+
+  it("reads pasted VS Code and OpenCode documents", () => {
+    const vscode = parseMcpImport(`{
+  "servers": { "docs": { "type": "sse", "url": "https://docs.example/sse" } }, // trailing
+}`);
+    expect(vscode.candidates.map((candidate) => [candidate.name, candidate.server?.type])).toEqual([
+      ["docs", "sse"],
+    ]);
+    const openCode = parseMcpImport(
+      JSON.stringify({
+        mcp: {
+          remote: {
+            type: "remote",
+            url: "https://oc.example/mcp",
+            headers: { Authorization: "Bearer {env:OC_TOKEN}" },
+          },
+        },
+      }),
+    );
+    expect(openCode.candidates[0]!.server).toEqual({
+      type: "http",
+      url: "https://oc.example/mcp",
+      headers: { Authorization: "Bearer ${env:OC_TOKEN}" },
+    });
+    // Converted before the generic pass, so only the remote warning names the host.
+    expect(
+      openCode.candidates[0]!.issues.find((issue) => issue.field === "headers.Authorization")
+        ?.message,
+    ).toContain("sends the values to oc.example");
+  });
+
+  it("warns about ${env:} references a remote server receives even when nothing was converted", () => {
+    const result = parseMcpImport(
+      JSON.stringify({
+        mcpServers: {
+          remote: { type: "http", url: "https://r.example/mcp", headers: { K: "${env:KEY}" } },
+        },
+      }),
+    );
+    expect(result.candidates[0]!.issues.find((issue) => issue.field === "headers.K")?.message).toBe(
+      "F5 reads its environment references from the account environment and sends the values to r.example. Import it only if you trust that server with those variables.",
+    );
+  });
+
+  it("detects JSONC that starts with comments", () => {
+    for (const prefix of ["// Settings\n", "/* MCP\n servers */\n", "// a\n/* b */ "]) {
+      const result = parseMcpImport(
+        `${prefix}{ "mcpServers": { "docs": { "type": "http", "url": "https://d.example/mcp" } } }`,
       );
-    expect(fields(0)).toEqual(["args.1", "env.HOME_DIR"]);
-    expect(fields(1)).toEqual(["headers.Authorization"]);
-    expect(fields(2)).toEqual([]);
-    expect(result.candidates.every((candidate) => candidate.server)).toBe(true);
+      expect(result.issues).toEqual([]);
+      expect(result.candidates.map((candidate) => candidate.name)).toEqual(["docs"]);
+    }
   });
 });
 
@@ -345,4 +416,36 @@ it("preserves explicit empty identifier lists without turning whitespace into an
       }),
     ),
   ).toEqual({ shell: { type: "stdio", command: "node", args: [], disabledTools: [], scopes: [] } });
+});
+
+describe("environment references in imports", () => {
+  it("accepts bare ${VAR} URLs once converted and names the host for remote fields", () => {
+    const result = parseMcpImport(
+      JSON.stringify({
+        mcpServers: {
+          whole: { type: "http", url: "${MCP_URL}" },
+          host: {
+            type: "http",
+            url: "https://docs.example.com/${PATH_PART}",
+            headers: { "X-Key": "${DOCS_KEY}" },
+          },
+        },
+      }),
+    );
+    const [whole, host] = result.candidates;
+    expect(whole?.issues.filter((issue) => issue.severity === "error")).toEqual([]);
+    expect(whole?.server).toMatchObject({ url: "${env:MCP_URL}" });
+    expect(host?.server).toMatchObject({ headers: { "X-Key": "${env:DOCS_KEY}" } });
+    expect(host?.issues.find((issue) => issue.field === "headers.X-Key")?.message).toContain(
+      "sends the values to docs.example.com",
+    );
+  });
+
+  it("finds no servers in a detected settings file without a server section", () => {
+    const text = JSON.stringify({ theme: "dark", editor: { fontSize: 12 } });
+    expect(parseMcpImport(text, "settings.json", { requireServerMap: true }).candidates).toEqual(
+      [],
+    );
+    expect(parseMcpImport(text).candidates.length).toBeGreaterThan(0);
+  });
 });

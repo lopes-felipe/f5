@@ -81,7 +81,7 @@ export const McpStatusUpdatedReason = Schema.Literals([
   "oauth-completed",
   "login-completed",
   "runtime",
-  /** An MCP hub connection changed state; only hub status queries need a refresh. */
+  /** An MCP hub connection or sign-in changed; only hub status and sign-in queries need a refresh. */
   "hub",
 ]);
 export type McpStatusUpdatedReason = typeof McpStatusUpdatedReason.Type;
@@ -108,6 +108,31 @@ export const McpReconnectHubServerRequest = Schema.Struct({
   projectId: Schema.optional(ProjectId),
 });
 export type McpReconnectHubServerRequest = typeof McpReconnectHubServerRequest.Type;
+
+/** Without a project, common servers are listed and signed in. */
+export const McpGetHubAuthStatusRequest = Schema.Struct({
+  projectId: Schema.optional(ProjectId),
+});
+export type McpGetHubAuthStatusRequest = typeof McpGetHubAuthStatusRequest.Type;
+
+export const McpStartHubSignInRequest = Schema.Struct({
+  serverName: TrimmedNonEmptyString,
+  projectId: Schema.optional(ProjectId),
+});
+export type McpStartHubSignInRequest = typeof McpStartHubSignInRequest.Type;
+
+export const McpCompleteHubSignInRequest = Schema.Struct({
+  attemptId: TrimmedNonEmptyString,
+  /** The address the browser was sent to after authorizing, pasted by the user. */
+  redirectedUrl: TrimmedNonEmptyString.check(Schema.isMaxLength(8192)),
+});
+export type McpCompleteHubSignInRequest = typeof McpCompleteHubSignInRequest.Type;
+
+export const McpSignOutHubServerRequest = Schema.Struct({
+  serverName: TrimmedNonEmptyString,
+  projectId: Schema.optional(ProjectId),
+});
+export type McpSignOutHubServerRequest = typeof McpSignOutHubServerRequest.Type;
 
 export const McpInspectServerRequest = Schema.Struct({
   ...McpGetServerStatusesRequest.fields,

@@ -827,6 +827,42 @@ export function codexReadOnlyThreadPolicyViolation(
   return undefined;
 }
 
+/**
+ * The approval policies Codex's managed requirements allow (`configRequirements/read`), or
+ * undefined when nothing restricts them or the CLI can't say. Granular entries are ignored: F5
+ * never asks for one.
+ */
+export function readCodexAllowedApprovalPolicies(
+  response: unknown,
+): ReadonlySet<string> | undefined {
+  const allowed = asArray(asObject(asObject(response)?.requirements)?.allowedApprovalPolicies);
+  if (!allowed) return undefined;
+  return new Set(allowed.filter((entry): entry is string => typeof entry === "string"));
+}
+
+/**
+ * The enforcement a read-only stage can get under those requirements. A policy-enforced stage
+ * needs `untrusted`, so Codex asks before each command. An organisation that forbids it (for
+ * example `allowed_approval_policies = ["on-request", "never"]`) would make Codex fall back to
+ * `on-request`, which with no sandbox runs every command without asking. The stage then runs in
+ * Codex's read-only sandbox with `never` instead. Where that sandbox can't start, shell commands
+ * fail closed and the stage reads through F5's forge tools. Anything else is left as requested, and
+ * the fail-closed thread check refuses what Codex doesn't apply.
+ */
+export function codexReadOnlyEnforcementUnderRequirements(
+  requested: ReadOnlyEnforcement,
+  allowedApprovalPolicies: ReadonlySet<string> | undefined,
+): ReadOnlyEnforcement {
+  if (
+    requested === "policy" &&
+    allowedApprovalPolicies &&
+    !allowedApprovalPolicies.has("untrusted") &&
+    allowedApprovalPolicies.has("never")
+  )
+    return "sandbox";
+  return requested;
+}
+
 /** Emitted when F5 refused an approval request itself; the adapter reports it auto-declined. */
 export const CODEX_READ_ONLY_REFUSED_METHOD = "f5/readOnly/refused";
 
@@ -1706,7 +1742,10 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
           );
       context.workflowExecutionProfile = input.workflowExecutionProfile;
       if (input.workflowExecutionProfile && input.readOnlyEnforcement)
-        context.readOnlyEnforcement = input.readOnlyEnforcement;
+        context.readOnlyEnforcement = await this.readOnlyEnforcementForRequirements(
+          context,
+          input.readOnlyEnforcement,
+        );
       else delete context.readOnlyEnforcement;
       const threadOpenParams = buildCodexThreadOpenRequestParams({
         cliVersion,
@@ -5213,6 +5252,46 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         },
       },
     });
+  }
+
+  /**
+   * `codexReadOnlyEnforcementUnderRequirements` for this session's Codex. A policy-enforced
+   * stage reads the requirements first; when it must run sandboxed instead, the thread gets a
+   * configuration warning saying why. A CLI without `configRequirements/read` keeps the request.
+   */
+  private async readOnlyEnforcementForRequirements(
+    context: CodexSessionContext,
+    requested: ReadOnlyEnforcement,
+  ): Promise<ReadOnlyEnforcement> {
+    if (requested !== "policy") return requested;
+    let allowed: ReadonlySet<string> | undefined;
+    try {
+      allowed = readCodexAllowedApprovalPolicies(
+        await this.sendRequest(context, "configRequirements/read", undefined),
+      );
+    } catch (error) {
+      await Effect.logWarning("codex configRequirements/read failed", {
+        threadId: context.session.threadId,
+        cause: error instanceof Error ? error.message : String(error),
+      }).pipe(this.runPromise);
+    }
+    const enforcement = codexReadOnlyEnforcementUnderRequirements(requested, allowed);
+    if (enforcement !== requested)
+      this.emitEvent({
+        ...context.mcpEventIdentity,
+        id: EventId.makeUnsafe(timeOrderedUuid()),
+        kind: "notification",
+        provider: "codex",
+        threadId: context.session.threadId,
+        createdAt: new Date().toISOString(),
+        method: "configWarning",
+        payload: {
+          summary:
+            "Read-only stage runs in Codex's read-only sandbox: your organisation's Codex requirements don't allow asking before every command.",
+          details: `Allowed approval policies: ${[...(allowed ?? [])].join(", ")}. Where Codex's sandbox can't start (F5's macOS desktop app), shell commands fail and the stage reads through F5's forge tools.`,
+        },
+      });
+    return enforcement;
   }
 
   private emitLifecycleEvent(

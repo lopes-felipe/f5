@@ -73,3 +73,4 @@ export * from "./threadSettlement";
 
 export * from "./mcpApps";
 export * from "./desktopAppActivation";
+export * from "./appIcon";

@@ -47,6 +47,7 @@ import { LazyMcpImportDialog as McpImportDialog } from "./LazyMcpImportDialog";
 import { McpExport } from "./McpExport";
 import { McpProviderStatusBadge } from "./McpStatus";
 import { McpHubStatusPanel } from "./McpHubStatusPanel";
+import { McpHubSignInPanel } from "./McpHubSignInPanel";
 import {
   createEmptyDraft,
   toWritableProjectServers,
@@ -715,6 +716,7 @@ export function McpServersSettings(props: {
           </p>
         ) : null}
         {selectedProjectId ? <McpHubStatusPanel projectId={selectedProjectId} /> : null}
+        <McpHubSignInPanel projectId={selectedProjectId} />
         {selectedProject ? (
           <div className="space-y-2 rounded-lg border border-border p-3 text-xs">
             <div className="flex flex-wrap items-center gap-2">
