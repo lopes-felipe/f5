@@ -276,6 +276,18 @@ export interface McpHubOptions {
 export function makeMcpHub(options: McpHubOptions): McpHubShape {
   const listener = options.listener;
   const available = Boolean(listener?.mount && listener.baseUrl);
+  /**
+   * Connections the hub stopped tracking that may still be stopping (draining calls or
+   * waiting for a process to exit); `close` waits for them too.
+   */
+  const released = new Set<McpHubUpstream>();
+  const forget = (key: string) => {
+    const entry = upstreams.get(key);
+    if (!entry) return;
+    upstreams.delete(key);
+    for (const upstream of released) if (upstream.finished) released.delete(upstream);
+    released.add(entry.upstream);
+  };
   const slots = new Map<string, McpHubSlot>();
   const upstreams = new Map<string, UpstreamEntry>();
   const changed = new Set<string>();
@@ -349,8 +361,7 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
         markChanged(serverName);
         // A stopped upstream with no users is forgotten so it never leaks.
         const entry = upstreams.get(key);
-        if (entry && entry.users.size === 0 && upstream.snapshot().state === "stopped")
-          upstreams.delete(key);
+        if (entry && entry.users.size === 0 && upstream.snapshot().state === "stopped") forget(key);
       },
     });
     const entry: UpstreamEntry = {
@@ -410,7 +421,7 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
     record.hash = undefined;
     entry.users.delete(record.slot.id);
     entry.upstream.release();
-    if (entry.users.size === 0 && entry.upstream.scope === "session") upstreams.delete(entry.key);
+    if (entry.users.size === 0 && entry.upstream.scope === "session") forget(entry.key);
   };
 
   const attach = (input: McpHubAttachInput): McpHubAttachment => {
@@ -520,7 +531,7 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
           previous.users.delete(record.slot.id);
           previous.upstream.release();
           if (previous.users.size === 0 && previous.upstream.scope === "session")
-            upstreams.delete(previous.key);
+            forget(previous.key);
         }
         changed.push(serverName);
       }
@@ -573,8 +584,7 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
             if (entry) {
               record.entry = undefined;
               entry.upstream.release();
-              if (entry.users.size === 0 && entry.upstream.scope === "session")
-                upstreams.delete(entry.key);
+              if (entry.users.size === 0 && entry.upstream.scope === "session") forget(entry.key);
             }
           }),
         );
@@ -650,7 +660,12 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
     const allUpstreams = [...upstreams.values()];
     upstreams.clear();
     await Promise.allSettled(allSlots.map((slot) => slot.close()));
-    await Promise.allSettled(allUpstreams.map((entry) => entry.upstream.stop()));
+    const retiring = [...released];
+    released.clear();
+    await Promise.allSettled([
+      ...allUpstreams.map((entry) => entry.upstream.stop()),
+      ...retiring.map((upstream) => upstream.stop()),
+    ]);
   };
 
   const reconnectOAuth = async (oauthKey: string): Promise<number> => {
