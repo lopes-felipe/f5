@@ -16,6 +16,7 @@ export function makeFakeMcpHub(options: { readonly available?: boolean } = {}) {
           token: `token-${name}`,
           transport: server.type,
           toolTimeoutMs: 600_000,
+          startupTimeoutMs: 30_000,
         }));
       return {
         endpoints,

@@ -81,7 +81,11 @@ import {
   toOpenCodeQuestionAnswers,
   type OpenCodeServerConnection,
 } from "../opencodeRuntime.ts";
-import type { McpHubShape } from "../../mcp/hub/McpHub.ts";
+import {
+  describeMcpHubOmissions,
+  type McpHubOmission,
+  type McpHubShape,
+} from "../../mcp/hub/McpHub.ts";
 import { hubEndpointsToOpenCodeServers } from "../../mcp/hub/openCodeHubServers.ts";
 import { normalizeSupportedSlashCommands } from "../supportedSlashCommands.ts";
 import { openCodeTodoPlan } from "../openCodeTodos.ts";
@@ -1489,17 +1493,23 @@ export function makeOpenCodeAdapter(
       client: OpencodeClient,
       sessionScope: Scope.Closeable,
     ) =>
+      // Resolves to the servers OpenCode did not get, so the session can say so.
       Effect.gen(function* () {
         const hub = options?.mcpHub;
         const servers = input.workflowExecutionProfile
           ? undefined
           : input.providerOptions?.mcpServers;
-        if (!hub?.available || !servers || Object.keys(servers).length === 0) return;
+        if (!servers || Object.keys(servers).length === 0) return [];
+        const skipAll = (reason: string): McpHubOmission[] =>
+          Object.keys(servers).map((serverName) => ({ serverName, reason }));
+        if (!hub) return skipAll("was skipped because F5's MCP hub is unavailable in this runtime");
         if (server.external) {
           yield* Effect.logInfo(
             "Skipping F5 MCP servers: an external OpenCode server does not take session-scoped servers.",
           );
-          return;
+          return skipAll(
+            "was skipped because an external OpenCode server does not take session-scoped servers",
+          );
         }
         const existing = yield* runOpenCodeSdk("mcp.status", (signal) =>
           client.mcp.status(undefined, { signal }),
@@ -1521,13 +1531,27 @@ export function makeOpenCodeAdapter(
           sessionScope,
           Effect.promise(() => attachment.dispose()),
         );
+        const omitted: McpHubOmission[] = [...attachment.omitted];
         for (const entry of hubEndpointsToOpenCodeServers(attachment.endpoints)) {
           yield* runOpenCodeSdk("mcp.add", (signal) => client.mcp.add(entry, { signal })).pipe(
             Effect.catch((error) =>
-              Effect.logWarning(`OpenCode could not add MCP server '${entry.name}'.`, error.detail),
+              Effect.logWarning(
+                `OpenCode could not add MCP server '${entry.name}'.`,
+                error.detail,
+              ).pipe(
+                Effect.tap(() =>
+                  Effect.sync(() =>
+                    omitted.push({
+                      serverName: entry.name,
+                      reason: "could not be added to OpenCode",
+                    }),
+                  ),
+                ),
+              ),
             ),
           );
         }
+        return omitted;
       });
 
     const startSessionUnlocked: OpenCodeAdapterShape["startSession"] = Effect.fn("startSession")(
@@ -1550,6 +1574,8 @@ export function makeOpenCodeAdapter(
           sessions.delete(input.threadId);
         }
 
+        // Project MCP servers OpenCode did not get, reported once the session starts.
+        let hubOmissions: ReadonlyArray<McpHubOmission> = [];
         const started = yield* Effect.gen(function* () {
           const sessionScope = yield* Scope.make();
           const startedExit = yield* Effect.exit(
@@ -1586,7 +1612,7 @@ export function makeOpenCodeAdapter(
                 ...(server.serverPassword ? { serverPassword: server.serverPassword } : {}),
                 ...(server.serverUsername ? { serverUsername: server.serverUsername } : {}),
               });
-              yield* attachHubServers(input, server, client, sessionScope);
+              hubOmissions = yield* attachHubServers(input, server, client, sessionScope);
               const permission = input.workflowExecutionProfile
                 ? buildOpenCodeWorkflowPermissionRules(input.workflowExecutionProfile)
                 : buildOpenCodePermissionRules(input.runtimeMode);
@@ -1771,6 +1797,13 @@ export function makeOpenCodeAdapter(
             providerThreadId: started.openCodeSession.id,
           },
         });
+        const mcpOmissions = describeMcpHubOmissions("OpenCode", hubOmissions);
+        if (mcpOmissions)
+          yield* emit({
+            ...(yield* buildEventBase({ ...context.eventIdentity, threadId: input.threadId })),
+            type: "config.warning",
+            payload: mcpOmissions,
+          });
 
         const commands = yield* loadOpenCodeCommands(started.client).pipe(
           Effect.orElseSucceed(() => []),

@@ -142,6 +142,8 @@ export type McpHubServerState = typeof McpHubServerState.Type;
 
 /** One upstream connection owned by F5's MCP hub. */
 export const McpHubServerStatus = Schema.Struct({
+  /** Stable, opaque id of this connection (several can serve one server). */
+  id: Schema.optional(TrimmedNonEmptyString),
   name: TrimmedNonEmptyString,
   connectionScope: McpConnectionScope,
   transport: McpServerTransportType,
