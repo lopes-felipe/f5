@@ -113,6 +113,7 @@ interface PendingRequest {
 
 interface LeasedOwner {
   readonly owner: PreviewAutomationOwner;
+  readonly invalidatedTabId?: PreviewTabId;
   readonly client: PreviewAutomationClient;
   readonly rendererClientId: string;
   readonly connectionId: string;
@@ -321,14 +322,14 @@ export function makePreviewAutomationBroker(
     }
   };
 
-  const clearOwnerTab = (leased: LeasedOwner): void => {
+  const invalidateOwnerTab = (leased: LeasedOwner): void => {
     const current = owners.get(leased.client.clientId);
     if (
       leased.owner.tabId !== null &&
       current?.connectionId === leased.connectionId &&
       current.owner.tabId === leased.owner.tabId
     ) {
-      owners.set(leased.client.clientId, { ...current, owner: { ...current.owner, tabId: null } });
+      owners.set(leased.client.clientId, { ...current, invalidatedTabId: leased.owner.tabId });
     }
   };
 
@@ -506,7 +507,8 @@ export function makePreviewAutomationBroker(
         };
         sessionOwners.set(sessionKey, binding);
       }
-      const targetTabId = input.tabId ?? binding?.tabId ?? owner.tabId ?? undefined;
+      const ownerTabId = owner.tabId === leased.invalidatedTabId ? undefined : owner.tabId;
+      const targetTabId = input.tabId ?? binding?.tabId ?? ownerTabId ?? undefined;
       const requestSequence = ++tabSequence;
       let closedTabs: Set<PreviewTabId> | undefined;
       let clearedTargets = false;
@@ -525,10 +527,18 @@ export function makePreviewAutomationBroker(
       const forgetMissingTab = () => {
         if (targetTabId === undefined) return;
         rememberTab(undefined, targetTabId);
-        if (owner.tabId === targetTabId) clearOwnerTab(leased);
+        if (owner.tabId === targetTabId) invalidateOwnerTab(leased);
+        for (const request of pending.values()) {
+          if (request.connectionId === leased.connectionId) request.invalidateTarget(targetTabId);
+        }
       };
 
-      if (input.operation !== "open" && input.operation !== "status" && !targetTabId) {
+      if (
+        input.operation !== "open" &&
+        input.operation !== "status" &&
+        !targetTabId &&
+        leased.invalidatedTabId === undefined
+      ) {
         reject(new PreviewAutomationTabNotFoundError({ message: NO_ACTIVE_PREVIEW_TAB_MESSAGE }));
         return;
       }
@@ -557,9 +567,7 @@ export function makePreviewAutomationBroker(
         resolve: (value) => {
           const resultTabId =
             value && typeof value === "object" && "tabId" in value ? value.tabId : undefined;
-          if (input.operation === "status" && resultTabId === null) {
-            forgetMissingTab();
-          } else {
+          if (resultTabId !== null) {
             const tabId =
               typeof resultTabId === "string" && resultTabId.length > 0
                 ? (resultTabId as PreviewTabId)
@@ -674,6 +682,9 @@ export function makePreviewAutomationBroker(
         const leaseExpiresAtMs = Date.now() + PREVIEW_OWNER_LEASE_MS;
         owners.set(client.clientId, {
           owner: { ...owner, connectionId },
+          ...(canRenew && previous.invalidatedTabId === owner.tabId
+            ? { invalidatedTabId: previous.invalidatedTabId }
+            : {}),
           client,
           rendererClientId,
           connectionId,
@@ -713,7 +724,7 @@ export function makePreviewAutomationBroker(
             leased.owner.threadId === threadId &&
             (tabId === undefined || leased.owner.tabId === tabId)
           ) {
-            clearOwnerTab(leased);
+            invalidateOwnerTab(leased);
           }
         }
       }),

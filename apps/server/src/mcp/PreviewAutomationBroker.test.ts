@@ -906,6 +906,69 @@ it.effect.each(["missing-tab", "successful-after-close"] as const)(
     }),
 );
 
+it.effect.each(["missing-tab", "close-one", "close-all", "unattached"] as const)(
+  "routes the next implicit request after %s",
+  (invalidation) =>
+    Effect.gen(function* () {
+      const broker = makePreviewAutomationBroker();
+      yield* Effect.addFinalizer(() => broker.shutdown);
+      const threadId = ThreadId.makeUnsafe("thread-fallback-before-owner-report");
+      const session = { threadId, automationSessionId: "session-a" };
+      const heldStatus = yield* Deferred.make<PreviewAutomationRequest>();
+      const heldSnapshot = yield* Deferred.make<PreviewAutomationRequest>();
+      const seen: PreviewAutomationRequest[] = [];
+      yield* reportAnsweringOwner(broker, {
+        clientId: "owner",
+        threadId,
+        seen,
+        answer: (request) => {
+          if (request.operation === "status") {
+            Deferred.doneUnsafe(heldStatus, Effect.succeed(request));
+            return undefined;
+          }
+          if (invalidation === "missing-tab" && request.tabId === "tab-1") {
+            Deferred.doneUnsafe(heldSnapshot, Effect.succeed(request));
+            return undefined;
+          }
+          return { tabId: "tab-2" };
+        },
+      });
+      const status = Effect.runPromise(
+        broker.invoke({ ...session, operation: "status", input: {} }),
+      );
+      const request = yield* Deferred.await(heldStatus);
+      if (invalidation === "missing-tab") {
+        const snapshot = Effect.runPromiseExit(
+          broker.invoke({ ...session, operation: "snapshot", input: {} }),
+        );
+        const next = yield* Deferred.await(heldSnapshot);
+        yield* broker.respond(
+          {
+            ...next,
+            ok: false,
+            error: { _tag: "PreviewAutomationTabNotFoundError", message: "The tab is gone." },
+          },
+          new Set(["owner"]),
+        );
+        assert.equal((yield* Effect.promise(() => snapshot))._tag, "Failure");
+      } else if (invalidation !== "unattached") {
+        yield* broker.clearTargets(threadId, invalidation === "close-one" ? "tab-1" : undefined);
+      }
+      yield* broker.respond(
+        {
+          ...request,
+          ok: true,
+          result: { tabId: invalidation === "unattached" ? null : "tab-1" },
+        },
+        new Set(["owner"]),
+      );
+      yield* Effect.promise(() => status);
+
+      yield* broker.invoke({ ...session, operation: "snapshot", input: {} });
+      assert.equal(seen.at(-1)?.tabId, invalidation === "unattached" ? "tab-1" : undefined);
+    }),
+);
+
 it.live("requests an owner from the most recently active desktop host and waits for it", () =>
   Effect.gen(function* () {
     const broker = makePreviewAutomationBroker();
