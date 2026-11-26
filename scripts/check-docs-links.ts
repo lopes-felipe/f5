@@ -16,17 +16,33 @@ const ROOT_DOCS = [
 /** Archive / generated subdirectories under `docs/` that are excluded from active link checks. */
 const SKIPPED_DOCS_SUBDIRS = new Set(["reviews", "computer-certification", "images", "internals"]);
 
-const DRIVER_TO_DOC_LABEL: Readonly<Record<string, string>> = {
-  CodexDriver: "Codex",
-  ClaudeDriver: "Claude Code",
-  CursorDriver: "Cursor",
-  OpenCodeDriver: "OpenCode",
-  GrokDriver: "Grok",
-  AntigravityDriver: "Antigravity",
-  MuseDriver: "Muse Code",
-  PiDriver: "Pi",
-  AcpDriver: "Custom ACP",
+const DRIVER_DOCS: Readonly<Record<string, { readonly label: string; readonly guide: string }>> = {
+  CodexDriver: { label: "Codex", guide: "docs/providers/codex.md" },
+  ClaudeDriver: { label: "Claude Code", guide: "docs/providers/claude.md" },
+  CursorDriver: { label: "Cursor", guide: "docs/providers/cursor.md" },
+  OpenCodeDriver: { label: "OpenCode", guide: "docs/providers/opencode.md" },
+  GrokDriver: { label: "Grok", guide: "docs/providers/grok.md" },
+  AntigravityDriver: { label: "Antigravity", guide: "docs/providers/antigravity.md" },
+  MuseDriver: { label: "Muse Code", guide: "docs/providers/muse.md" },
+  PiDriver: { label: "Pi", guide: "docs/providers/pi.md" },
+  AcpDriver: { label: "Custom ACP", guide: "docs/providers/acp.md" },
 };
+
+function isRegularFile(filePath: string): boolean {
+  try {
+    return statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function isDirectoryPath(dirPath: string): boolean {
+  try {
+    return statSync(dirPath).isDirectory();
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Strips CommonMark inline code spans within a single non-fenced paragraph
@@ -197,7 +213,10 @@ export function findBrokenDocLinks(repoRoot: string): string[] {
       }
       const decodedTarget = decodeLinkPathname(target);
       const resolved = path.resolve(path.dirname(file), decodedTarget);
-      if (!existsSync(resolved)) {
+      const valid = decodedTarget.endsWith("/")
+        ? isDirectoryPath(resolved)
+        : isRegularFile(resolved);
+      if (!valid) {
         broken.push(`${path.relative(repoRoot, file).replaceAll("\\", "/")} -> ${rawTarget}`);
       }
     }
@@ -208,8 +227,19 @@ export function findBrokenDocLinks(repoRoot: string): string[] {
 export function findUndocumentedBuiltInDrivers(repoRoot: string): string[] {
   const driversPath = path.join(repoRoot, "apps/server/src/provider/builtInDrivers.ts");
   const prereqsPath = path.join(repoRoot, "docs/provider-prerequisites.md");
+  const docsReadmePath = path.join(repoRoot, "docs/README.md");
   const driversSource = readFileSync(driversPath, "utf8");
   const prereqsSource = readFileSync(prereqsPath, "utf8");
+  const docsReadmeTargets = existsSync(docsReadmePath)
+    ? new Set(
+        extractMarkdownLinkTargets(readFileSync(docsReadmePath, "utf8")).map((target) =>
+          path.resolve(
+            path.dirname(docsReadmePath),
+            decodeLinkPathname(target.split("#")[0]?.split("?")[0] ?? ""),
+          ),
+        ),
+      )
+    : null;
 
   const arrayMatch = /BUILT_IN_DRIVERS[^=]*=\s*\[([\s\S]*?)\];/m.exec(driversSource);
   if (!arrayMatch?.[1]) {
@@ -222,15 +252,22 @@ export function findUndocumentedBuiltInDrivers(repoRoot: string): string[] {
 
   const missing: string[] = [];
   for (const driver of drivers) {
-    const label = DRIVER_TO_DOC_LABEL[driver];
-    if (!label) {
-      missing.push(`${driver}: missing DRIVER_TO_DOC_LABEL mapping in scripts/check-docs-links.ts`);
+    const info = DRIVER_DOCS[driver];
+    if (!info) {
+      missing.push(`${driver}: missing DRIVER_DOCS mapping in scripts/check-docs-links.ts`);
       continue;
     }
-    const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const escapedLabel = info.label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const cellPattern = new RegExp(`^\\|\\s*${escapedLabel}\\s*\\|`, "m");
     if (!cellPattern.test(prereqsSource)) {
-      missing.push(`${driver} (${label}) missing from docs/provider-prerequisites.md`);
+      missing.push(`${driver} (${info.label}) missing from docs/provider-prerequisites.md`);
+    }
+    const guideAbs = path.join(repoRoot, info.guide);
+    if (!isRegularFile(guideAbs)) {
+      missing.push(`${driver} (${info.label}) missing provider guide ${info.guide}`);
+    }
+    if (docsReadmeTargets && !docsReadmeTargets.has(guideAbs)) {
+      missing.push(`${driver} (${info.label}) guide ${info.guide} not linked from docs/README.md`);
     }
   }
   return missing;

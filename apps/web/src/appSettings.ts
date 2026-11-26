@@ -1,8 +1,10 @@
 import { useCallback, useMemo, useSyncExternalStore } from "react";
 import { Effect, Option, Schema, SchemaTransformation } from "effect";
 import {
+  AppIconId,
   CLAUDE_SUBAGENT_EFFORT_OPTIONS,
   type ClaudeSubagentEffort,
+  DEFAULT_APP_ICON_ID,
   DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER,
   isKnownProviderKind,
   PROJECT_LIST_ENTRIES_DEFAULT_LIMIT,
@@ -435,6 +437,11 @@ export const AppSettingsSchema = Schema.Struct({
   chatContentWidth: Schema.Literals(CHAT_CONTENT_WIDTH_OPTIONS).pipe(
     Schema.withConstructorDefault(() => Option.some(CHAT_CONTENT_WIDTH_DEFAULT)),
     Schema.withDecodingDefault(() => CHAT_CONTENT_WIDTH_DEFAULT),
+  ),
+  // Browsers only: the desktop app keeps one choice for every profile (see `appIcon.ts`).
+  appIcon: AppIconId.pipe(
+    Schema.withConstructorDefault(() => Option.some(DEFAULT_APP_ICON_ID)),
+    Schema.withDecodingDefault(() => DEFAULT_APP_ICON_ID),
   ),
   themeId: Schema.String.check(Schema.isMaxLength(64)).pipe(
     Schema.withConstructorDefault(() => Option.some(DEFAULT_THEME_ID)),
