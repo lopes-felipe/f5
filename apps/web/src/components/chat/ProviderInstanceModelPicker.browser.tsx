@@ -19,13 +19,37 @@ import { ProviderInstanceModelPicker } from "./ProviderInstanceModelPicker";
 
 const settingsMock = vi.hoisted(() => ({
   favorites: [] as Array<{ provider: string; model: string; effort?: string }>,
+  recentModels: [] as Array<{ provider: string; model: string }>,
   updateSettings: vi.fn(),
 }));
 
 vi.mock("../../hooks/useSettings", () => ({
-  useSettings: () => ({ favorites: settingsMock.favorites }),
+  useSettings: () => ({
+    favorites: settingsMock.favorites,
+    recentModels: settingsMock.recentModels,
+  }),
   useUpdateSettings: () => ({ updateSettings: settingsMock.updateSettings }),
 }));
+
+/** Rows of one section kind, in display order. */
+function sectionRows(section: "recent" | "favorites" | "provider"): HTMLElement[] {
+  return [
+    ...document.querySelectorAll<HTMLElement>(
+      `[data-model-picker-row][data-model-picker-section="${section}"]`,
+    ),
+  ];
+}
+
+function rowName(row: HTMLElement): string {
+  return row.querySelector("[data-model-picker-name]")?.textContent ?? "";
+}
+
+/** The visible section groups, by accessible name. */
+function groupNames(): string[] {
+  return [...document.querySelectorAll<HTMLElement>('section[role="group"]')].map(
+    (group) => group.getAttribute("aria-label") ?? "",
+  );
+}
 
 const CODEX_ID = defaultInstanceIdForDriver(ProviderDriverKind.make("codex"));
 const CLAUDE_ID = defaultInstanceIdForDriver(ProviderDriverKind.make("claudeAgent"));
@@ -61,6 +85,7 @@ afterEach(async () => {
   await active?.unmount();
   active = undefined;
   settingsMock.favorites = [];
+  settingsMock.recentModels = [];
   settingsMock.updateSettings.mockReset();
   await page.viewport(1024, 900);
 });
@@ -102,9 +127,9 @@ describe("ProviderInstanceModelPicker favorite presets", () => {
   it("lists one row per preset in favorites order with effort chips and jump keys", async () => {
     await renderPicker(vi.fn(), presets[2]!);
     const rows = () =>
-      [...document.querySelectorAll<HTMLElement>("[data-model-picker-row]")].map((row) => ({
+      sectionRows("favorites").map((row) => ({
         effort: row.querySelector("[data-model-picker-preset-effort]")?.textContent ?? null,
-        active: row.textContent?.includes("Active") ?? false,
+        active: row.hasAttribute("data-model-picker-active"),
         jump: row.querySelector("kbd")?.textContent ?? null,
       }));
     await expect.poll(() => rows().length).toBe(3);
@@ -114,22 +139,36 @@ describe("ProviderInstanceModelPicker favorite presets", () => {
       { effort: "high", active: false, jump: `${mod}2` },
       { effort: "xhigh", active: true, jump: `${mod}3` },
     ]);
+    // Number hints belong to Favorites only; provider rows carry none.
+    expect(sectionRows("provider").some((row) => row.querySelector("kbd"))).toBe(false);
   });
 
-  it("picks a preset row with mod+N and passes its preset", async () => {
+  it("picks a preset row with mod+N, passes its preset and records it as recent", async () => {
     const onChange = await renderPicker();
     await userEvent.keyboard(isMac ? "{Meta>}3{/Meta}" : "{Control>}3{/Control}");
     await expect
       .poll(() => onChange.mock.calls)
       .toEqual([[CLAUDE_ID, "claudeAgent", "claude-fable-5-1", presets[2]]]);
+    expect(settingsMock.updateSettings).toHaveBeenCalledWith({
+      recentModels: [{ provider: CLAUDE_ID, model: "claude-fable-5-1" }],
+    });
+  });
+
+  it("picks favorite N with mod+N from another chip and while searching", async () => {
+    const onChange = await renderPicker();
+    await page.getByRole("button", { name: "Cursor", exact: true }).click();
+    await page.getByPlaceholder("Search models...").fill("auto");
+    await userEvent.keyboard(isMac ? "{Meta>}1{/Meta}" : "{Control>}1{/Control}");
+    await expect
+      .poll(() => onChange.mock.calls)
+      .toEqual([[CODEX_ID, "codex", "gpt-5.6-sol", presets[0]]]);
   });
 
   it("keeps favorite numbers in a locked thread so mod+N matches ctrl+N", async () => {
     const onChange = await renderPicker(vi.fn(), null, CLAUDE_ID);
+    expect(document.querySelector("[data-model-picker-provider]")).toBeNull();
     const jumps = () =>
-      [...document.querySelectorAll<HTMLElement>("[data-model-picker-row]")].map(
-        (row) => row.querySelector("kbd")?.textContent ?? null,
-      );
+      sectionRows("favorites").map((row) => row.querySelector("kbd")?.textContent ?? null);
     await expect.poll(() => jumps().length).toBe(2);
     const mod = isMac ? "⌘" : "Ctrl+";
     // Favorite 1 is on Codex, hidden here; the Claude presets keep numbers 2 and 3.
@@ -168,12 +207,36 @@ describe("ProviderInstanceModelPicker favorite presets", () => {
       </TooltipProvider>,
     );
     await page.getByRole("button", { name: /Claude Fable 5.1/ }).click();
-    await expect.poll(() => document.querySelectorAll("[data-model-picker-row]").length).toBe(2);
+    await expect.poll(() => sectionRows("favorites").length).toBe(2);
     expect(document.querySelector("[data-model-picker-preset-effort]")).toBeNull();
     await userEvent.keyboard(isMac ? "{Meta>}2{/Meta}" : "{Control>}2{/Control}");
     await expect
       .poll(() => onChange.mock.calls)
       .toEqual([[CLAUDE_ID, "claudeAgent", "claude-fable-5-1"]]);
+  });
+
+  it("targets favorites, not list rows, with mod+N without favoritePresets", async () => {
+    settingsMock.favorites = presets;
+    const onChange = vi.fn();
+    active = await render(
+      <TooltipProvider delay={0}>
+        <ProviderInstanceModelPicker
+          instanceId={CLAUDE_ID}
+          model="claude-fable-5-1"
+          lockedInstanceId={null}
+          providers={PROVIDERS}
+          modelOptionsByInstance={MODELS}
+          keybindings={DEFAULT_RESOLVED_KEYBINDINGS}
+          onInstanceModelChange={onChange}
+        />
+      </TooltipProvider>,
+    );
+    await page.getByRole("button", { name: /Claude Fable 5.1/ }).click();
+    // On the Claude chip the first row is Claude Fable; favorite 1 is still the Codex model.
+    await page.getByRole("button", { name: "Claude", exact: true }).click();
+    await expect.poll(() => groupNames()).toEqual(["Claude models"]);
+    await userEvent.keyboard(isMac ? "{Meta>}1{/Meta}" : "{Control>}1{/Control}");
+    await expect.poll(() => onChange.mock.calls).toEqual([[CODEX_ID, "codex", "gpt-5.6-sol"]]);
   });
 });
 
@@ -306,7 +369,7 @@ describe("ProviderInstanceModelPicker", () => {
     await page.getByText("Claude Fable 5.1", { exact: true }).click();
     expect(onChange).toHaveBeenCalledWith(CLAUDE_ID, "claudeAgent", "claude-fable-5-1");
   });
-  it("restores provider-sidebar browsing and keeps cross-provider lab search", async () => {
+  it("opens on All, filters by provider chip and scopes search to the chip", async () => {
     active = await render(
       <TooltipProvider delay={0}>
         <ProviderInstanceModelPicker
@@ -315,36 +378,230 @@ describe("ProviderInstanceModelPicker", () => {
           lockedInstanceId={null}
           providers={PROVIDERS}
           modelOptionsByInstance={MODELS}
+          keybindings={DEFAULT_RESOLVED_KEYBINDINGS}
           onInstanceModelChange={() => {}}
         />
       </TooltipProvider>,
     );
 
     await page.getByRole("button", { name: /GPT-5.6 Sol/ }).click();
-    await expect.element(page.getByRole("group", { name: "OpenAI models" })).toBeInTheDocument();
-    expect(page.getByRole("group", { name: "Anthropic models" }).query()).toBeNull();
     await expect
-      .element(page.getByRole("button", { name: "Codex", exact: true }))
-      .toBeInTheDocument();
-    await expect
-      .element(page.getByRole("button", { name: "Claude", exact: true }))
-      .toBeInTheDocument();
-    await expect
-      .element(page.getByRole("button", { name: "Cursor", exact: true }))
-      .toBeInTheDocument();
+      .poll(() => groupNames())
+      .toEqual(["Codex models", "Claude models", "Cursor models"]);
+    const chips = () =>
+      [...document.querySelectorAll<HTMLElement>("[data-model-picker-provider]")].map((chip) => ({
+        id: chip.dataset.modelPickerProvider,
+        pressed: chip.getAttribute("aria-pressed") === "true",
+      }));
+    expect(chips()).toEqual([
+      { id: "all", pressed: true },
+      { id: "favorites", pressed: false },
+      { id: `instance:${CODEX_ID}`, pressed: false },
+      { id: `instance:${CLAUDE_ID}`, pressed: false },
+      { id: `instance:${CURSOR_ID}`, pressed: false },
+    ]);
 
     await page.getByRole("button", { name: "Cursor", exact: true }).click();
-    await expect.element(page.getByRole("group", { name: "Anthropic models" })).toBeInTheDocument();
-    await expect.element(page.getByRole("group", { name: "Cursor models" })).toBeInTheDocument();
-    expect(page.getByRole("group", { name: "OpenAI models" }).query()).toBeNull();
+    await expect.poll(() => groupNames()).toEqual(["Cursor models"]);
 
+    // Company search still works, but only inside the selected provider.
     await page.getByPlaceholder("Search models...").fill("Anthropic");
+    await expect.poll(() => sectionRows("provider").map(rowName)).toEqual(["Claude Opus 4.6"]);
 
-    await expect.element(page.getByText("Claude Sonnet 4.6")).toBeInTheDocument();
-    await expect.element(page.getByText("Claude Opus 4.6")).toBeInTheDocument();
-    expect(page.getByRole("group", { name: "OpenAI models" }).query()).toBeNull();
-    expect(page.getByRole("group", { name: "Cursor models" }).query()).toBeNull();
-    expect(page.getByRole("button", { name: "Cursor", exact: true }).query()).toBeNull();
+    await page.getByRole("button", { name: "All", exact: true }).click();
+    await expect
+      .poll(() => sectionRows("provider").map(rowName))
+      .toEqual(["Claude Sonnet 4.6", "Claude Fable 5.1", "Claude Opus 4.6"]);
+
+    await page.getByRole("button", { name: "Favorites", exact: true }).click();
+    await page.getByPlaceholder("Search models...").fill("");
+    await expect.element(page.getByText("No favorite models yet")).toBeVisible();
+  });
+
+  it("cycles the chips with the provider shortcuts and wraps around", async () => {
+    active = await render(
+      <TooltipProvider delay={0}>
+        <ProviderInstanceModelPicker
+          instanceId={CODEX_ID}
+          model={"gpt-5.6-sol" as ModelSlug}
+          lockedInstanceId={null}
+          providers={PROVIDERS}
+          modelOptionsByInstance={MODELS}
+          keybindings={DEFAULT_RESOLVED_KEYBINDINGS}
+          onInstanceModelChange={() => {}}
+        />
+      </TooltipProvider>,
+    );
+    await page.getByRole("button", { name: /GPT-5.6 Sol/ }).click();
+    await expect.element(page.getByPlaceholder("Search models...")).toHaveFocus();
+    const pressed = () =>
+      document.querySelector<HTMLElement>('[data-model-picker-provider][aria-pressed="true"]')
+        ?.dataset.modelPickerProvider;
+    const isMac = /Mac/u.test(navigator.platform);
+    const next = isMac
+      ? "{Meta>}{Shift>}{ArrowDown}{/Shift}{/Meta}"
+      : "{Control>}{Shift>}{ArrowDown}{/Shift}{/Control}";
+    const previous = isMac
+      ? "{Meta>}{Shift>}{ArrowUp}{/Shift}{/Meta}"
+      : "{Control>}{Shift>}{ArrowUp}{/Shift}{/Control}";
+
+    expect(pressed()).toBe("all");
+    await userEvent.keyboard(next);
+    await expect.poll(pressed).toBe("favorites");
+    await userEvent.keyboard(next);
+    await expect.poll(pressed).toBe(`instance:${CODEX_ID}`);
+    await userEvent.keyboard(previous);
+    await userEvent.keyboard(previous);
+    await expect.poll(pressed).toBe("all");
+    await userEvent.keyboard(previous);
+    await expect.poll(pressed).toBe(`instance:${CURSOR_ID}`);
+    await expect.poll(() => groupNames()).toEqual(["Cursor models"]);
+  });
+});
+
+describe("ProviderInstanceModelPicker recent models", () => {
+  function renderPicker(props: { recordRecents?: boolean } = {}) {
+    return render(
+      <TooltipProvider delay={0}>
+        <ProviderInstanceModelPicker
+          instanceId={CODEX_ID}
+          model={"gpt-5.6-sol" as ModelSlug}
+          lockedInstanceId={null}
+          providers={PROVIDERS}
+          modelOptionsByInstance={MODELS}
+          {...props}
+          onInstanceModelChange={() => {}}
+        />
+      </TooltipProvider>,
+    );
+  }
+
+  it("lists resolvable recent picks first, then favorites, then providers", async () => {
+    settingsMock.recentModels = [
+      { provider: CURSOR_ID, model: "auto" },
+      { provider: CLAUDE_ID, model: "claude-retired" },
+      { provider: CLAUDE_ID, model: "claude-sonnet-4-6" },
+    ];
+    settingsMock.favorites = [{ provider: CLAUDE_ID, model: "claude-fable-5-1" }];
+    active = await renderPicker();
+    await page.getByRole("button", { name: /GPT-5.6 Sol/ }).click();
+    await expect
+      .poll(() => groupNames())
+      .toEqual([
+        "Recent models",
+        "Favorites models",
+        "Codex models",
+        "Claude models",
+        "Cursor models",
+      ]);
+    // The retired model no longer resolves, so it is skipped.
+    expect(sectionRows("recent").map(rowName)).toEqual(["Auto", "Claude Sonnet 4.6"]);
+    expect(sectionRows("favorites").map(rowName)).toEqual(["Claude Fable 5.1"]);
+    // Recent and Favorites are hidden while searching.
+    await page.getByPlaceholder("Search models...").fill("claude");
+    await expect.poll(() => groupNames()).toEqual(["Claude models", "Cursor models"]);
+  });
+
+  it("records a pick at the front without duplicating it", async () => {
+    settingsMock.recentModels = [
+      { provider: CURSOR_ID, model: "auto" },
+      { provider: CLAUDE_ID, model: "claude-sonnet-4-6" },
+    ];
+    active = await renderPicker();
+    await page.getByRole("button", { name: /GPT-5.6 Sol/ }).click();
+    await page.getByPlaceholder("Search models...").fill("Sonnet");
+    await userEvent.keyboard("{Enter}");
+    expect(settingsMock.updateSettings).toHaveBeenCalledWith({
+      recentModels: [
+        { provider: CLAUDE_ID, model: "claude-sonnet-4-6" },
+        { provider: CURSOR_ID, model: "auto" },
+      ],
+    });
+  });
+
+  it("does not record when recordRecents is false", async () => {
+    active = await renderPicker({ recordRecents: false });
+    await page.getByRole("button", { name: /GPT-5.6 Sol/ }).click();
+    await page.getByPlaceholder("Search models...").fill("Sonnet");
+    await userEvent.keyboard("{Enter}");
+    expect(settingsMock.updateSettings).not.toHaveBeenCalled();
+  });
+});
+
+describe("ProviderInstanceModelPicker legacy models", () => {
+  const legacyModels = new Map([
+    [
+      CODEX_ID,
+      [
+        { slug: "gpt-5.6-sol", name: "GPT-5.6 Sol" },
+        { slug: "gpt-5-sol", name: "GPT-5 Sol", isLegacy: true },
+        { slug: "gpt-5-luna", name: "GPT-5 Luna", isLegacy: true },
+      ],
+    ],
+  ]);
+
+  function renderPicker(model: string) {
+    return render(
+      <TooltipProvider delay={0}>
+        <ProviderInstanceModelPicker
+          instanceId={CODEX_ID}
+          model={model as ModelSlug}
+          lockedInstanceId={null}
+          providers={PROVIDERS}
+          modelOptionsByInstance={legacyModels}
+          onInstanceModelChange={() => {}}
+        />
+      </TooltipProvider>,
+    );
+  }
+
+  const disclosure = () => document.querySelector<HTMLElement>("[data-model-picker-legacy]");
+
+  it("collapses legacy models behind a disclosure that expands by click or keyboard", async () => {
+    active = await renderPicker("gpt-5.6-sol");
+    await page.getByRole("button", { name: /GPT-5.6 Sol/ }).click();
+    await expect.poll(() => sectionRows("provider").map(rowName)).toEqual(["GPT-5.6 Sol"]);
+    expect(disclosure()?.textContent).toBe("Legacy2");
+    expect(disclosure()?.getAttribute("aria-expanded")).toBe("false");
+
+    disclosure()!.click();
+    await expect
+      .poll(() => sectionRows("provider").map(rowName))
+      .toEqual(["GPT-5.6 Sol", "GPT-5 Sol", "GPT-5 Luna"]);
+
+    // ArrowDown reaches the disclosure; ArrowLeft collapses and ArrowRight expands it.
+    const input = page.getByPlaceholder("Search models...").element() as HTMLElement;
+    input.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }),
+    );
+    await vi.waitFor(() => expect(disclosure()?.hasAttribute("data-highlighted")).toBe(true));
+    input.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true, cancelable: true }),
+    );
+    await expect.poll(() => sectionRows("provider").length).toBe(1);
+    input.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+    );
+    await expect.poll(() => sectionRows("provider").length).toBe(3);
+  });
+
+  it("keeps the disclosure open while a legacy model is active", async () => {
+    active = await renderPicker("gpt-5-luna");
+    await page.getByRole("button", { name: /GPT-5 Luna/ }).click();
+    await expect
+      .poll(() => sectionRows("provider").map(rowName))
+      .toEqual(["GPT-5.6 Sol", "GPT-5 Sol", "GPT-5 Luna"]);
+    expect(disclosure()?.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("shows legacy matches inline while searching", async () => {
+    active = await renderPicker("gpt-5.6-sol");
+    await page.getByRole("button", { name: /GPT-5.6 Sol/ }).click();
+    await page.getByPlaceholder("Search models...").fill("sol");
+    await expect
+      .poll(() => sectionRows("provider").map(rowName))
+      .toEqual(["GPT-5.6 Sol", "GPT-5 Sol"]);
+    expect(disclosure()).toBeNull();
   });
 });
 
@@ -390,6 +647,8 @@ it("keeps selected and fan-out unlisted models visible and reacts while open", a
   await expect.element(page.getByText("Fanout Model", { exact: true })).toBeVisible();
   await page.getByText("Fanout Model", { exact: true }).click({ modifiers: ["Shift"] });
   expect(onToggleModel).toHaveBeenCalledWith(CODEX_ID, "codex", "fanout");
+  // Fan-out toggles are not picks, so Recent stays untouched.
+  expect(settingsMock.updateSettings).not.toHaveBeenCalled();
   await active.rerender(picker("listed"));
   await expect.element(page.getByText("Fanout Model", { exact: true })).not.toBeInTheDocument();
   models.set(CODEX_ID, [
@@ -400,7 +659,7 @@ it("keeps selected and fan-out unlisted models visible and reacts while open", a
   await expect.element(page.getByText("Retired Model", { exact: true })).toBeVisible();
 });
 
-it("keeps an instance blocked by the caller in the rail with its rows disabled", async () => {
+it("keeps an instance blocked by the caller as a chip with its rows disabled", async () => {
   const isMac = /Mac/u.test(navigator.platform);
   const onChange = vi.fn();
   const reason = "Not allowed for this workflow stage.";
@@ -427,8 +686,8 @@ it("keeps an instance blocked by the caller in the rail with its rows disabled",
     [...document.querySelectorAll<HTMLElement>("[data-model-picker-row]")].find((row) =>
       row.textContent?.includes("Claude Sonnet 4.6"),
     );
-  await expect.poll(() => claudeRow()?.textContent ?? "").toContain(reason);
-  const select = claudeRow()!.querySelectorAll("button")[1]!;
+  await expect.poll(() => claudeRow()?.title ?? "").toBe(reason);
+  const select = claudeRow()!.querySelector<HTMLButtonElement>("[data-model-picker-select]")!;
   expect(select.disabled).toBe(true);
 
   select.click();

@@ -312,13 +312,14 @@ function findProviderFieldButton(labelText: string): HTMLButtonElement {
 /** The select button of a model picker row whose display name is `name`. */
 function findModelRow(name: string): HTMLButtonElement | null {
   for (const row of document.querySelectorAll<HTMLElement>("[data-model-picker-row]")) {
-    const select = row.querySelectorAll<HTMLButtonElement>("button")[1];
-    if (select?.querySelector(".truncate")?.textContent?.trim() === name) return select;
+    const select = row.querySelector<HTMLButtonElement>("[data-model-picker-select]");
+    if (select?.querySelector("[data-model-picker-name]")?.textContent?.trim() === name)
+      return select;
   }
   return null;
 }
 
-/** The model picker rail entry for a provider's default instance. */
+/** The model picker filter chip for a provider's default instance. */
 function findRailInstance(provider: string): HTMLElement | null {
   return document.querySelector<HTMLElement>(
     `[data-model-picker-provider="instance:${defaultInstanceIdForDriver(ProviderDriverKind.make(provider))}"]`,
@@ -865,7 +866,11 @@ describe("WorkflowCreateDialog", () => {
       await vi.waitFor(() => {
         const rememberedOption = findModelRow("Claude Opus 4.7");
         expect(rememberedOption).not.toBeNull();
-        expect(rememberedOption?.textContent ?? "").not.toContain("Active");
+        expect(
+          rememberedOption
+            ?.closest("[data-model-picker-row]")
+            ?.hasAttribute("data-model-picker-active"),
+        ).toBe(false);
       });
 
       findModelRow("Claude Sonnet 4.6")?.click();
@@ -1066,7 +1071,9 @@ describe("WorkflowCreateDialog", () => {
       await vi.waitFor(() => expect(findModelRow("Gemini 4 Neon")).not.toBeNull());
       const row = findModelRow("Gemini 4 Neon")!;
       expect(row.disabled).toBe(true);
-      expect(row.textContent).toContain(READ_ONLY_WORKFLOW_UNCERTIFIED_ANTIGRAVITY_MESSAGE);
+      expect(row.closest("[data-model-picker-row]")?.getAttribute("title")).toBe(
+        READ_ONLY_WORKFLOW_UNCERTIFIED_ANTIGRAVITY_MESSAGE,
+      );
       expect(document.body.textContent).not.toContain("No models found");
 
       row.click();
