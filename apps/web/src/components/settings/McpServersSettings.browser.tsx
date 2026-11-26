@@ -570,7 +570,7 @@ describe("McpServersSettings", () => {
       await openServer("project-server");
       const live = page.getByRole("region", { name: "Live status" });
       await expect.element(live.getByText("Connecting", { exact: true })).toBeVisible();
-      expect(live.getByText("F5", { exact: true }).elements()).toHaveLength(2);
+      expect(live.getByText("F5 connection", { exact: true }).elements()).toHaveLength(2);
       expect(live.getByRole("button", { name: "Reconnect", exact: true }).elements()).toHaveLength(
         1,
       );
