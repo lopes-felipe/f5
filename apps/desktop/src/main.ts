@@ -40,6 +40,8 @@ import { assertUpdateCaller } from "./updateIpc";
 import {
   APP_ICON_ARGUMENT,
   APP_ICON_CHANGED_CHANNEL,
+  DOCK_TILE_CHANGED_SUFFIX,
+  DOCK_TILE_CHOICE_KEY,
   createAppIconController,
   readAppIconState,
   readDockStartedAt,
@@ -2888,6 +2890,15 @@ function appIcon(): AppIconController {
     writeState: (state) => writeAppIconState(statePath, state),
     iconPath: (id, file) => resolveResourcePath(`app-icons/${id}/${file}`),
     setDockIcon: (path) => app.dock?.setIcon(path),
+    publishDockChoice: (id) => {
+      systemPreferences.setUserDefault(DOCK_TILE_CHOICE_KEY, "string", id);
+      // The packaged app's bundle id is APP_USER_MODEL_ID (`appId` in the build config).
+      systemPreferences.postNotification(
+        `${APP_USER_MODEL_ID}${DOCK_TILE_CHANGED_SUFFIX}`,
+        {},
+        true,
+      );
+    },
     setWindowIcons: (path) => {
       for (const window of BrowserWindow.getAllWindows())
         if (!window.isDestroyed()) window.setIcon(path);

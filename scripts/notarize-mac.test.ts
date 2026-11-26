@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 type RunResult = { status: number | null; stdout: string };
@@ -13,12 +14,13 @@ type Run = (
   },
 ) => RunResult;
 const require = createRequire(import.meta.url);
-const { notarizeAndStaple } = require("./notarize-mac.cjs") as {
+const { notarizeAndStaple, verifyDockTilePlugIn } = require("./notarize-mac.cjs") as {
   notarizeAndStaple(
     app: string,
     env: Record<string, string | undefined>,
     deps: { run: Run; sleep: (ms: number) => Promise<void> },
   ): Promise<void>;
+  verifyDockTilePlugIn(app: string, deps: { run: Run; exists: (path: string) => boolean }): void;
 };
 
 const env = { APPLE_API_KEY: "/tmp/key.p8", APPLE_API_KEY_ID: "KEY", APPLE_API_ISSUER: "ISSUER" };
@@ -37,6 +39,40 @@ function harness(responses: Record<string, RunResult[]>) {
   };
   return { calls, delays, deps: { run, sleep } };
 }
+
+describe("verifyDockTilePlugIn", () => {
+  // Joined like the hook joins them, so the test also runs on a Windows runner.
+  const plugIn = join("/out/mac/F5.app", "Contents/PlugIns/F5DockTile.docktileplugin");
+
+  it("verifies the plug-in bundle's signature", () => {
+    const { calls, deps } = harness({});
+    const seen: string[] = [];
+    verifyDockTilePlugIn("/out/mac/F5.app", {
+      run: deps.run,
+      exists: (path) => {
+        seen.push(path);
+        return true;
+      },
+    });
+    expect(seen).toEqual([join(plugIn, "Contents/MacOS/F5DockTile")]);
+    expect(calls).toEqual([{ command: "codesign", args: ["--verify", "--strict", plugIn] }]);
+  });
+
+  it("fails when the plug-in was not packaged, without calling codesign", () => {
+    const { calls, deps } = harness({});
+    expect(() =>
+      verifyDockTilePlugIn("/out/mac/F5.app", { run: deps.run, exists: () => false }),
+    ).toThrow(`Packaged Dock tile plug-in missing: ${plugIn}`);
+    expect(calls).toEqual([]);
+  });
+
+  it("fails when the plug-in is unsigned", () => {
+    const { deps } = harness({ codesign: [{ status: 1, stdout: "" }] });
+    expect(() =>
+      verifyDockTilePlugIn("/out/mac/F5.app", { run: deps.run, exists: () => true }),
+    ).toThrow("Dock tile plug-in signing verification failed");
+  });
+});
 
 describe("notarizeAndStaple", () => {
   it("submits with the API key and staples in the app directory", async () => {

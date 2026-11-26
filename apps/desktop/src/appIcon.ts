@@ -9,6 +9,13 @@ export const APP_ICON_CLAIM_DOCK_PROMPT_CHANNEL = "desktop:app-icon-claim-dock-p
 export const APP_ICON_RESTART_DOCK_CHANNEL = "desktop:app-icon-restart-dock";
 /** Window argument carrying the choice, so a new window never shows the default first. */
 export const APP_ICON_ARGUMENT = "f5-app-icon";
+/**
+ * How the Dock tile plug-in (native/dock-tile/F5DockTile.m) learns the choice, so a pinned
+ * Dock icon keeps it while F5 is quit: the id under this key in the app's own preferences,
+ * then a distributed notification named by the app's bundle id plus this suffix.
+ */
+export const DOCK_TILE_CHOICE_KEY = "F5AppIcon";
+export const DOCK_TILE_CHANGED_SUFFIX = ".app-icon-changed";
 
 /** The first build with the current built-in artwork, and when that artwork landed. */
 const CURRENT_ARTWORK_VERSION = "0.1.12-beta.42";
@@ -139,6 +146,8 @@ export interface AppIconPorts {
   /** The absolute path of a generated icon file, or null when it is missing. */
   iconPath(id: AppIconId, file: AppIconFile): string | null;
   setDockIcon(path: string): void;
+  /** Records the choice for the Dock tile plug-in and tells it to look. */
+  publishDockChoice(id: AppIconId): void;
   setWindowIcons(path: string): void;
   /** Tells every app window of every profile about the new choice. */
   broadcast(id: AppIconId): void;
@@ -174,6 +183,18 @@ export function createAppIconController(ports: AppIconPorts) {
     const path = ports.iconPath(state.id, "macos.png");
     if (path) ports.setDockIcon(path);
   };
+  /**
+   * Only a packaged macOS app carries the plug-in. A failure costs the icon shown while F5
+   * is quit, never the one shown now, so it is logged and the change carries on.
+   */
+  const publishDockChoice = () => {
+    if (!isMac || !ports.isPackaged) return;
+    try {
+      ports.publishDockChoice(state.id);
+    } catch (error) {
+      ports.log(`Could not record the app icon for the Dock: ${String(error)}`);
+    }
+  };
   /** The bundle's own icon renders best, so a packaged app only overrides it when it must. */
   const dockNeedsOverride = () =>
     !ports.isPackaged || state.id !== DEFAULT_APP_ICON_ID || dockStale;
@@ -188,10 +209,13 @@ export function createAppIconController(ports: AppIconPorts) {
     windowIconPath,
     applyAtLaunch(): void {
       if (isMac && dockNeedsOverride()) setDockIcon();
+      // Every launch, so the plug-in's record recovers if it was lost or never written.
+      publishDockChoice();
     },
     set(id: unknown): void {
       if (!isAppIconId(id)) throw new Error("Unknown app icon");
       if (id !== state.id) persist({ ...state, id });
+      publishDockChoice();
       if (isMac) setDockIcon();
       else {
         const path = windowIconPath();

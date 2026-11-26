@@ -7,6 +7,8 @@ import {
   APP_ICON_CLAIM_DOCK_PROMPT_CHANNEL,
   APP_ICON_RESTART_DOCK_CHANNEL,
   APP_ICON_SET_CHANNEL,
+  DOCK_TILE_CHANGED_SUFFIX,
+  DOCK_TILE_CHOICE_KEY,
   INITIAL_APP_ICON_STATE,
   bundleIconChangedAt,
   createAppIconController,
@@ -34,11 +36,13 @@ function harness(
     isPackaged?: boolean;
     state?: Partial<AppIconState>;
     missing?: boolean;
+    publishFails?: boolean;
   } = {},
 ) {
   let stored: AppIconState = { ...INITIAL_APP_ICON_STATE, ...options.state };
   const calls = {
     dock: [] as string[],
+    published: [] as string[],
     windows: [] as string[],
     broadcast: [] as string[],
     restarts: 0,
@@ -54,6 +58,10 @@ function harness(
     },
     iconPath: (id, file) => (options.missing ? null : `/icons/${id}/${file}`),
     setDockIcon: (path) => void calls.dock.push(path),
+    publishDockChoice: (id) => {
+      if (options.publishFails) throw new Error("no preferences");
+      calls.published.push(id);
+    },
     setWindowIcons: (path) => void calls.windows.push(path),
     broadcast: (id) => void calls.broadcast.push(id),
     restartDock: async () => void (calls.restarts += 1),
@@ -163,6 +171,7 @@ describe("choosing an icon", () => {
       },
       iconPath: (id, file) => `/icons/${id}/${file}`,
       setDockIcon: (path) => void calls.dock.push(path),
+      publishDockChoice: () => {},
       setWindowIcons: () => {},
       broadcast: (id) => void calls.broadcast.push(id),
       restartDock: async () => {},
@@ -174,6 +183,54 @@ describe("choosing an icon", () => {
     expect(calls.broadcast).toEqual(["glow"]);
     expect(calls.logs).toHaveLength(1);
     expect(controller.id()).toBe("lines");
+  });
+});
+
+describe("telling the Dock tile plug-in", () => {
+  it("records the choice at every packaged macOS launch and on every change", () => {
+    const { controller, calls } = harness({ state: { id: "classic" } });
+    controller.applyAtLaunch();
+    controller.set("mono");
+    // Back to the default too: the plug-in must stop drawing the earlier choice.
+    controller.set("lines");
+    expect(calls.published).toEqual(["classic", "mono", "lines"]);
+  });
+
+  it("records the default at launch, so a stale record cannot outlive the choice", () => {
+    const { controller, calls } = harness();
+    controller.applyAtLaunch();
+    expect(calls.published).toEqual(["lines"]);
+    expect(calls.dock).toEqual([]);
+  });
+
+  it.each([
+    ["an unpackaged macOS build", { isPackaged: false }],
+    ["Windows", { platform: "win32" }],
+    ["Linux", { platform: "linux" }],
+  ] as const)("does nothing in %s, which has no plug-in", (_name, options) => {
+    const { controller, calls } = harness(options);
+    controller.applyAtLaunch();
+    controller.set("glow");
+    expect(calls.published).toEqual([]);
+  });
+
+  it("still changes the icon when the record cannot be written", () => {
+    const { controller, calls, stored } = harness({ publishFails: true });
+    controller.applyAtLaunch();
+    controller.set("cool");
+    expect(stored().id).toBe("cool");
+    expect(calls.dock).toEqual(["/icons/cool/macos.png"]);
+    expect(calls.broadcast).toEqual(["cool"]);
+    expect(calls.logs).toEqual([
+      "Could not record the app icon for the Dock: Error: no preferences",
+      "Could not record the app icon for the Dock: Error: no preferences",
+    ]);
+  });
+
+  it("uses the key and notification suffix the plug-in reads", () => {
+    const plugIn = fs.readFileSync(join(__dirname, "../native/dock-tile/F5DockTile.m"), "utf8");
+    expect(plugIn).toContain(`F5ChoiceKey = @"${DOCK_TILE_CHOICE_KEY}"`);
+    expect(plugIn).toContain(`F5ChangedSuffix = @"${DOCK_TILE_CHANGED_SUFFIX}"`);
   });
 });
 
