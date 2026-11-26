@@ -43,7 +43,9 @@ All providers are fronted by a shared `ProviderAdapter` interface so the UI, orc
 
 - **Browser app**: The React app renders session state, owns the client-side WebSocket transport, and treats typed push events as the boundary between server runtime details and UI state.
 
-- **Server**: `apps/server` is the main coordinator. It serves the web app, accepts WebSocket requests, waits for startup readiness before welcoming clients, and sends all outbound pushes through a single ordered push path.
+- **Server**: `apps/server` is the main coordinator. [`wsServer.ts`][3] composes the HTTP request listener in [`apps/server/src/wsServer/http/`][19] (host/CORS/auth guards, capability assets, gzip startup snapshots, backup/restore, attachments, and static SPA serving with CSP headers), mounts domain RPC route tables from [`apps/server/src/wsServer/routes/`][20] via `routeTables(...).and(...).table`, waits for startup readiness before welcoming clients, and sends all outbound pushes through a single ordered push path.
+
+- **Persistence & Diagnostics**: SQLite runs in WAL mode with incremental auto-vacuum. Brand-new databases bootstrap directly from a squashed baseline schema ([`BaselineSchema.ts`][21]) in a single transaction (enforced for exact parity against incremental replay by `Migrations.test.ts`), while existing databases upgrade incrementally through `Migrations.ts`. Read-only self-checks and redacted support bundles are served by both `f5 doctor` and `server.getDoctorReport` ([`diagnostics/doctor.ts`][22]).
 
 - **Provider runtime**: Each provider process does the actual session work, for example `codex app-server` over JSON-RPC on stdio, a Claude Agent SDK session, an ACP agent process, an OpenCode server or `muse serve`. The server translates their native events into the app's shared orchestration model.
 
@@ -171,8 +173,12 @@ sequenceDiagram
 [16]: ../packages/shared/src/DrainableWorker.ts
 [17]: ../apps/server/src/nextTurnQueue/Layers/NextTurnQueueDispatcher.ts
 [18]: ../apps/server/src/orchestration/Layers/ProviderTurnDeliveryWorker.ts
+[19]: ../apps/server/src/wsServer/http/httpRequestHandler.ts
+[20]: ../apps/server/src/wsServer/routes/routeTable.ts
+[21]: ../apps/server/src/persistence/BaselineSchema.ts
+[22]: ../apps/server/src/diagnostics/doctor.ts
 
-Profiles isolate environments at the process boundary, with sibling registry/lock storage and separate state directories. See [Profiles](profiles.md).
+Profiles isolate environments at the process boundary, with sibling registry/lock storage and separate state directories. See [Profiles](profiles.md). For step-by-step extension checklists (adding a provider, workflow, or RPC method), see the [Contributor Playbook](provider-architecture.md#contributor-playbook).
 
 ## Retained orchestration message-content consumers
 

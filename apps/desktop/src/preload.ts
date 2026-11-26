@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
-import type { DesktopBridge } from "@t3tools/contracts";
+import type { AppIconId, DesktopBridge } from "@t3tools/contracts";
 import { createFileActionGesture } from "./fileActionGesture";
 import { createDesktopWsUrlReader } from "./desktopWsUrlReader";
 
@@ -165,6 +165,18 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       ipcRenderer.invoke("desktop-computer:revoke-integration-consent", integration),
   },
   getSystemLocale: () => systemLocale,
+  appIcon: {
+    // The main process only ever passes a known id.
+    initial: (argument("f5-app-icon") ?? "lines") as AppIconId,
+    set: (id) => ipcRenderer.invoke("desktop:app-icon-set", id),
+    onChange: (listener) => {
+      const handler = (_event: Electron.IpcRendererEvent, id: AppIconId) => listener(id);
+      ipcRenderer.on("desktop:app-icon-changed", handler);
+      return () => ipcRenderer.removeListener("desktop:app-icon-changed", handler);
+    },
+    claimDockRefreshPrompt: () => ipcRenderer.invoke("desktop:app-icon-claim-dock-prompt"),
+    restartDock: () => ipcRenderer.invoke("desktop:app-icon-restart-dock"),
+  },
   setQuitShortcutMode: (mode) => ipcRenderer.invoke("desktop:quit-mode", mode),
   setAttentionBadge: (count) => ipcRenderer.invoke("desktop:attention-badge", count),
   markStartup: (marker) => ipcRenderer.send("desktop:startup-marker", marker),

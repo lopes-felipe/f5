@@ -244,7 +244,10 @@ function createNativeApiMock() {
   const startLogin = vi.fn();
   const openExternal = vi.fn(async (_url: string) => undefined);
   const applyToLiveSessions = vi.fn(
-    async (input: { scope: "common" | "project"; projectId?: ProjectId }) => ({
+    async (input: {
+      scope: "common" | "project";
+      projectId?: ProjectId;
+    }): Promise<Awaited<ReturnType<NativeApi["mcp"]["applyToLiveSessions"]>>> => ({
       scope: input.scope,
       ...(input.projectId ? { projectId: input.projectId } : {}),
       codexReloaded: input.scope === "project" ? 1 : 2,
@@ -806,10 +809,12 @@ describe("McpServersSettings", () => {
       expect(mocks.getLoginStatus).toHaveBeenCalledTimes(initial);
       await page.getByRole("button", { name: "Login", exact: true }).click();
       await vi.waitFor(() => expect(document.body.textContent).toContain("Logging in..."));
-      // Pending sign-in is not polled either.
+      // Pending sign-in is not polled either: once the login's own refetch settles, not
+      // even one timer-driven read may follow.
+      await vi.waitFor(() => expect(queryClient.isFetching()).toBe(0));
       const pending = mocks.getLoginStatus.mock.calls.length;
       await interval();
-      expect(mocks.getLoginStatus.mock.calls.length).toBeLessThanOrEqual(pending + 1);
+      expect(mocks.getLoginStatus).toHaveBeenCalledTimes(pending);
       status = "completed";
       const listener = mocks.onStatusUpdated.mock.calls[0]![0];
       listener({
@@ -1471,6 +1476,159 @@ describe("McpServersSettings", () => {
       await expect
         .element(page.getByRole("tab", { name: "Overview" }))
         .toHaveAttribute("aria-selected", "true");
+    } finally {
+      queryClient.clear();
+      await screen.unmount();
+    }
+  });
+
+  it("keeps typing made while a new server saves, as unsaved changes", async () => {
+    const mocks = createNativeApiMock();
+    const save = mocks.replaceProjectConfig.getMockImplementation()!;
+    let release!: () => void;
+    mocks.replaceProjectConfig.mockImplementationOnce(async (input) => {
+      await new Promise<void>((resolve) => (release = resolve));
+      return save(input);
+    });
+    const { screen, queryClient } = await renderSettings();
+    try {
+      await openAddServer();
+      await page.getByRole("textbox", { name: "Name", exact: true }).fill("added");
+      const command = page.getByRole("textbox", { name: "Command", exact: true });
+      await command.fill("node a.js");
+      await addServerSubmit().click();
+      await vi.waitFor(() => expect(mocks.replaceProjectConfig).toHaveBeenCalled());
+      // The save is still running when the user changes the command.
+      await command.fill("node b.js");
+      release();
+      await expect.element(page.getByRole("heading", { name: "added", exact: true })).toBeVisible();
+      await expect
+        .element(page.getByRole("tab", { name: "Configuration" }))
+        .toHaveAttribute("aria-selected", "true");
+      await expect
+        .element(page.getByRole("textbox", { name: "Command", exact: true }))
+        .toHaveValue("node b.js");
+      expect(mocks.replaceProjectConfig).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          servers: expect.objectContaining({
+            added: expect.objectContaining({ command: "node a.js" }),
+          }),
+        }),
+      );
+    } finally {
+      queryClient.clear();
+      await screen.unmount();
+    }
+  });
+
+  it("labels Global reconnect for every project and retries a Global Apply where it ran", async () => {
+    const mocks = createNativeApiMock();
+    const otherProject = "project-2" as ProjectId;
+    mocks.getHubStatus.mockResolvedValue({
+      servers: [
+        {
+          name: "common-server",
+          connectionScope: "shared",
+          transport: "stdio",
+          state: "ready",
+          attempts: 0,
+          attachedSessions: 1,
+          projectIds: [otherProject],
+          providers: ["cursor"],
+        },
+      ],
+    });
+    mocks.applyToLiveSessions.mockImplementation(async (input) => ({
+      scope: input.scope,
+      ...(input.projectId ? { projectId: input.projectId } : {}),
+      codexReloaded: 0,
+      claudeRestarted: 0,
+      skipped: 0,
+      configVersion: "effective-v1",
+      sessions: [
+        {
+          threadId: ThreadId.makeUnsafe("thread-elsewhere"),
+          projectId: otherProject,
+          instanceId: ProviderInstanceId.make("work"),
+          generation: 1,
+          requestedVersion: "v1",
+          attemptedVersion: "v1",
+          disposition: "failed" as const,
+          result: { converged: false, restartRequired: false, servers: [], errors: [] },
+        },
+      ],
+    }));
+    const { screen, queryClient } = await renderSettings(false);
+    try {
+      await openServer("common-server");
+      const live = page.getByRole("region", { name: "Live status" });
+      await expect
+        .element(live.getByRole("button", { name: "Reconnect in all projects", exact: true }))
+        .toBeVisible();
+      await page.getByRole("button", { name: "Apply to live sessions", exact: true }).click();
+      // Common scope has no project observation, yet the conversation is listed.
+      await expect.element(page.getByText("thread-elsewhere · generation 1: failed")).toBeVisible();
+      await page.getByRole("button", { name: "Retry in this conversation" }).click();
+      await vi.waitFor(() =>
+        expect(mocks.applyToLiveSessions).toHaveBeenLastCalledWith({
+          scope: "project",
+          projectId: otherProject,
+          instanceId: ProviderInstanceId.make("work"),
+          threadIds: [ThreadId.makeUnsafe("thread-elsewhere")],
+          retryUnchanged: true,
+        }),
+      );
+    } finally {
+      queryClient.clear();
+      await screen.unmount();
+    }
+  });
+
+  it("opens read-only diagnostics for a saved server from Overview", async () => {
+    const mocks = createNativeApiMock();
+    const { screen, queryClient } = await renderSettings();
+    try {
+      await openServer("project-server");
+      expect(document.body.textContent).not.toContain("Copy diagnostics");
+      await page.getByText("Diagnostics", { exact: true }).click();
+      await expect
+        .element(page.getByRole("button", { name: "Copy diagnostics", exact: true }))
+        .toBeVisible();
+      expect(mocks.inspectServer).toHaveBeenCalled();
+      // A fixed section is not presented as a tab list without tabs.
+      expect(page.getByRole("tablist", { name: "Server inspector" }).elements()).toHaveLength(0);
+    } finally {
+      queryClient.clear();
+      await screen.unmount();
+    }
+  });
+
+  it("drops a connection check's tools once the saved definition changes", async () => {
+    const mocks = createNativeApiMock();
+    nativeApiRef.current!.mcp.probeServer = vi.fn(async () => ({
+      ok: true,
+      durationMs: 5,
+      tools: [{ name: "probed-tool", description: "From the checked definition" }],
+      toolsTruncated: false,
+      resourceCount: 0,
+      promptCount: 2,
+      authRequired: false,
+    }));
+    const { screen, queryClient } = await renderSettings();
+    try {
+      await openServer("project-server");
+      await page.getByRole("button", { name: "Test", exact: true }).click();
+      await page.getByRole("tab", { name: "Tools", exact: true }).click();
+      await expect.element(page.getByText("probed-tool", { exact: true })).toBeVisible();
+      await page.getByRole("tab", { name: "Overview", exact: true }).click();
+      // Another definition is saved (here, Pi is turned off): the check no longer applies.
+      await page
+        .getByRole("region", { name: "Providers" })
+        .getByRole("switch", { name: "Use project-server with Pi" })
+        .click();
+      await vi.waitFor(() => expect(mocks.replaceProjectConfig).toHaveBeenCalled());
+      await page.getByRole("tab", { name: "Tools", exact: true }).click();
+      await vi.waitFor(() => expect(document.body.textContent).not.toContain("probed-tool"));
     } finally {
       queryClient.clear();
       await screen.unmount();
