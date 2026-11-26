@@ -1,4 +1,5 @@
 import { gitConfigArgs, topLiteralGitPathspec } from "@t3tools/shared/git";
+import { stripRemoteUrlCredentials } from "@t3tools/shared/sourceControl";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { Option } from "effect";
 import {
@@ -1133,7 +1134,8 @@ const makeGitCore = Effect.gen(function* () {
   const ensureRemote: GitCoreShape["ensureRemote"] = (input) =>
     Effect.gen(function* () {
       const preferredName = sanitizeRemoteName(input.preferredName);
-      const normalizedTargetUrl = normalizeRemoteUrl(input.url);
+      const url = stripRemoteUrlCredentials(input.url);
+      const normalizedTargetUrl = normalizeRemoteUrl(url);
       const listRemoteFetchUrls = runGitStdout("GitCore.ensureRemote.listRemoteUrls", input.cwd, [
         "remote",
         "-v",
@@ -1159,7 +1161,7 @@ const makeGitCore = Effect.gen(function* () {
         "add",
         "--",
         remoteName,
-        input.url,
+        url,
       ]).pipe(
         Effect.as(remoteName),
         // A parallel launch for the same fork may have added it since the listing above.

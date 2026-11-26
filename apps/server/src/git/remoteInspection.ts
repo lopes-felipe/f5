@@ -1,3 +1,5 @@
+import { stripRemoteUrlCredentials } from "@t3tools/shared/sourceControl";
+
 export const NONINTERACTIVE_GIT_ENV = {
   GIT_TERMINAL_PROMPT: "0",
   GIT_ASKPASS: "echo",
@@ -17,7 +19,7 @@ export function parseRemoteFetchUrls(stdout: string): Map<string, string> {
     if (direction !== "fetch" || remoteName.length === 0 || remoteUrl.length === 0) {
       continue;
     }
-    remotes.set(remoteName, remoteUrl);
+    remotes.set(remoteName, stripRemoteUrlCredentials(remoteUrl));
   }
   return remotes;
 }

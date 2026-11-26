@@ -352,13 +352,13 @@ describe("GitCore unit", () => {
     ).toBe(1);
   });
 
-  it("lists every configured remote with its fetch URL", async () => {
+  it("lists every remote's fetch URL without embedded HTTP credentials", async () => {
     const scripted = makeScriptedGitService((input) => {
       if (argsEqual(input, ["rev-parse", "--git-common-dir"])) return { stdout: ".git\n" };
       if (argsEqual(input, ["remote", "-v"])) {
         return {
           stdout:
-            "origin\thttps://github.com/octo/repo.git (fetch)\norigin\thttps://github.com/octo/repo.git (push)\nupstream\tgit@gitlab.com:octo/repo.git (fetch)\nupstream\tgit@gitlab.com:octo/repo.git (push)\n",
+            "origin\thttps://user:password@github.com/octo/repo.git?token=fetch-secret (fetch)\norigin\thttps://github.com/octo/repo.git (push)\nupstream\tgit@gitlab.com:octo/repo.git (fetch)\nupstream\tgit@gitlab.com:octo/repo.git (push)\n",
         };
       }
       return {};
@@ -795,12 +795,12 @@ describe("GitCore unit", () => {
     });
   });
 
-  it("reuses a remote whose normalized fetch URL already matches", async () => {
+  it("reuses a remote when its fetch URL differs only by credentials or suffix", async () => {
     const scripted = makeScriptedGitService((input) =>
       argsEqual(input, ["remote", "-v"])
         ? {
             stdout:
-              "fork-alias https://github.com/octocat/f5.git (fetch)\nfork-alias git@github.com:octocat/f5.git (push)\n",
+              "fork-alias https://user:password@github.com/octocat/f5.git?token=fetch-secret (fetch)\nfork-alias git@github.com:octocat/f5.git (push)\n",
           }
         : {},
     );
@@ -818,7 +818,7 @@ describe("GitCore unit", () => {
     expect(scripted.calls.some((call) => call.args[1] === "add")).toBe(false);
   });
 
-  it("sanitizes and suffixes a conflicting preferred remote name", async () => {
+  it("stores a credential-free URL under a sanitized, unique remote name", async () => {
     const scripted = makeScriptedGitService((input) =>
       argsEqual(input, ["remote", "-v"])
         ? { stdout: "Octo-Cat https://github.com/other/repo (fetch)\n" }
@@ -830,7 +830,7 @@ describe("GitCore unit", () => {
       core.ensureRemote({
         cwd: process.cwd(),
         preferredName: " Octo Cat ",
-        url: "https://github.com/octocat/f5.git",
+        url: "https://user:password@github.com/octocat/f5.git?token=fetch-secret",
       }),
     );
 
