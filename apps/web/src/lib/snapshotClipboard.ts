@@ -1,4 +1,5 @@
 import { setAttachmentSource } from "./attachmentUploadQueue";
+import { safeLocalStorageGetItem, safeLocalStorageSetItem } from "./safeStorage";
 
 const marker = "data-f5-snapshot";
 const snapshotImageName = /^(window(?:-[a-f0-9-]+)?)\.(?:png|webp)$/i;
@@ -9,7 +10,7 @@ const receiptLimit = 16;
 
 function readReceipts(): readonly string[] {
   try {
-    const value: unknown = JSON.parse(localStorage.getItem(receiptKey) ?? "[]");
+    const value: unknown = JSON.parse(safeLocalStorageGetItem(receiptKey) ?? "[]");
     if (Array.isArray(value))
       return value.filter((entry): entry is string => typeof entry === "string");
   } catch {
@@ -35,14 +36,10 @@ async function rememberFragment(encoded: string): Promise<void> {
   }
   const receipt = await fragmentReceipt(encoded);
   if (!receipt) return;
-  try {
-    localStorage.setItem(
-      receiptKey,
-      JSON.stringify([...readReceipts(), receipt].slice(-receiptLimit)),
-    );
-  } catch {
-    // Keep the in-memory receipt when local storage is unavailable or full.
-  }
+  safeLocalStorageSetItem(
+    receiptKey,
+    JSON.stringify([...readReceipts(), receipt].slice(-receiptLimit)),
+  );
 }
 
 interface SnapshotAttachment {

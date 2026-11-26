@@ -1,6 +1,7 @@
 import { useLayoutEffect, useMemo } from "react";
 import type { ServerConfig } from "@t3tools/contracts";
 import { useQuery } from "@tanstack/react-query";
+import { safeLocalStorageGetItem, safeLocalStorageSetItem } from "../lib/safeStorage";
 import { serverConfigQueryOptions } from "../lib/serverReactQuery";
 import { cachePublishedTheme, readPublishedThemeCache } from "../publishedThemeCache";
 import { useThemeBackground } from "../themeBackground";
@@ -72,32 +73,28 @@ export function useThemePaletteSync(variant: ThemeVariant): ResolvedThemePalette
     select: (config) => config.settings,
   });
   useLayoutEffect(() => {
-    try {
-      if (
-        selection?.environmentThemeSelection.theme &&
-        localStorage.getItem("f5:applied-environment-theme") !==
-          selection.environmentThemeSelection.theme.generation
-      ) {
-        const { value, generation } = selection.environmentThemeSelection.theme;
-        const published = selection.environmentThemes.some((theme) => theme.id === value);
-        const themeId = published ? "published:" + value : value;
-        const target = resolveThemePalette(themeId, [], selection.environmentThemes);
-        if (target.id === themeId && (published || target.builtin)) {
-          updateAppSettings({ themeId });
-          if (readAppSettingsSnapshot().themeId === themeId)
-            localStorage.setItem("f5:applied-environment-theme", generation);
-        }
+    if (
+      selection?.environmentThemeSelection.theme &&
+      safeLocalStorageGetItem("f5:applied-environment-theme") !==
+        selection.environmentThemeSelection.theme.generation
+    ) {
+      const { value, generation } = selection.environmentThemeSelection.theme;
+      const published = selection.environmentThemes.some((theme) => theme.id === value);
+      const themeId = published ? "published:" + value : value;
+      const target = resolveThemePalette(themeId, [], selection.environmentThemes);
+      if (target.id === themeId && (published || target.builtin)) {
+        updateAppSettings({ themeId });
+        if (readAppSettingsSnapshot().themeId === themeId)
+          safeLocalStorageSetItem("f5:applied-environment-theme", generation);
       }
-      const appearance = selection?.environmentThemeSelection.appearance;
-      if (
-        appearance &&
-        localStorage.getItem("f5:applied-environment-appearance") !== appearance.generation
-      ) {
-        setThemeMode(appearance.value);
-        localStorage.setItem("f5:applied-environment-appearance", appearance.generation);
-      }
-    } catch {
-      // Existing local choices still apply when storage is unavailable.
+    }
+    const appearance = selection?.environmentThemeSelection.appearance;
+    if (
+      appearance &&
+      safeLocalStorageGetItem("f5:applied-environment-appearance") !== appearance.generation
+    ) {
+      setThemeMode(appearance.value);
+      safeLocalStorageSetItem("f5:applied-environment-appearance", appearance.generation);
     }
   }, [selection]);
   useLayoutEffect(() => {
