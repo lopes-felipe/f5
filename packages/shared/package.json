@@ -526,6 +526,7 @@
     },
     "./mcpTools": "./src/mcpTools.ts",
     "./mcpSecrets": "./src/mcpSecrets.ts",
+    "./mcpComposer": "./src/mcpComposer.ts",
     "./cronSchedule": {
       "types": "./src/cronSchedule.ts",
       "import": "./src/cronSchedule.ts"

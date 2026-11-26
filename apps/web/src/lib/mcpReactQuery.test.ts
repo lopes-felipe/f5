@@ -75,6 +75,10 @@ describe("MCP status event scoping", () => {
     expect(isMcpQueryAffected(mcpQueryKeys.threadServers(thread), hub)).toBe(true);
     expect(isMcpQueryAffected(mcpQueryKeys.toolPins("docs"), applied)).toBe(false);
     expect(isMcpQueryAffected(mcpQueryKeys.threadServers(thread), applied)).toBe(false);
+    // A server connecting or being turned off changes what the composer can offer.
+    expect(isMcpQueryAffected(mcpQueryKeys.composerPrompts(thread), hub)).toBe(true);
+    expect(isMcpQueryAffected(mcpQueryKeys.composerResources(thread), hub)).toBe(true);
+    expect(isMcpQueryAffected(mcpQueryKeys.composerPrompts(thread), applied)).toBe(false);
     expect(isMcpQueryAffected(mcpQueryKeys.activity("docs", null), hub)).toBe(false);
     expect(isMcpQueryAffected(mcpQueryKeys.activity("docs", null), applied)).toBe(false);
   });

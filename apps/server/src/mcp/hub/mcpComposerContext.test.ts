@@ -6,9 +6,7 @@ import {
   flattenPrompt,
   listComposerPrompts,
   listComposerResources,
-  markdownFence,
   shapeResourceContents,
-  truncateUtf8,
 } from "./mcpComposerContext.ts";
 
 function fakeServer(overrides: Partial<McpHubComposerServer>): McpHubComposerServer {
@@ -144,16 +142,5 @@ describe("composer resources", () => {
       ],
       omitted: 1,
     });
-  });
-
-  it("never splits a character when cutting text", () => {
-    // "é" is two bytes in UTF-8; three bytes keeps one "é" and drops the half of the next.
-    expect(truncateUtf8("éé", 3)).toEqual({ text: "é", truncated: true });
-    expect(truncateUtf8("éé", 4)).toEqual({ text: "éé", truncated: false });
-  });
-
-  it("fences text with a fence longer than any backtick run inside it", () => {
-    expect(markdownFence("plain")).toBe("```");
-    expect(markdownFence("has ```` four")).toBe("`````");
   });
 });

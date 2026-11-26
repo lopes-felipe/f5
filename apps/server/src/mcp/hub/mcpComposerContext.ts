@@ -20,6 +20,7 @@ import {
   type McpGetComposerPromptResult,
   type McpReadComposerResourceResult,
 } from "@t3tools/contracts";
+import { markdownFence, truncateUtf8 } from "@t3tools/shared/mcpComposer";
 
 import type { McpHubComposerServer } from "./McpHub.ts";
 
@@ -143,13 +144,6 @@ export async function listComposerResources(
   });
 }
 
-/** A Markdown fence longer than any backtick run inside `text`. */
-export function markdownFence(text: string): string {
-  let longest = 0;
-  for (const match of text.matchAll(/`+/g)) longest = Math.max(longest, match[0].length);
-  return "`".repeat(Math.max(3, longest + 1));
-}
-
 function fenced(label: string, text: string): string {
   const fence = markdownFence(text);
   return `${label}\n${fence}\n${text}\n${fence}`;
@@ -178,16 +172,6 @@ export function flattenPrompt(result: GetPromptResult): McpGetComposerPromptResu
     }
   }
   return { text: parts.join("\n\n"), omitted };
-}
-
-/** Cuts UTF-8 text to `bytes` without splitting a character. */
-export function truncateUtf8(text: string, bytes: number): { text: string; truncated: boolean } {
-  const encoded = new TextEncoder().encode(text);
-  if (encoded.length <= bytes) return { text, truncated: false };
-  let end = Math.max(0, bytes);
-  // Step back past continuation bytes (10xxxxxx) to a character boundary.
-  while (end > 0 && (encoded[end]! & 0xc0) === 0x80) end -= 1;
-  return { text: new TextDecoder().decode(encoded.subarray(0, end)), truncated: true };
 }
 
 /**

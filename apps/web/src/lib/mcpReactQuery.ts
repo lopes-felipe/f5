@@ -8,6 +8,8 @@ import type {
   McpListActivityResult,
   McpListToolPinsResult,
   McpThreadServersResult,
+  McpListComposerPromptsResult,
+  McpListComposerResourcesResult,
   McpLoginStatusResult,
   McpProviderStatusResult,
   McpProjectConfigResult,
@@ -75,10 +77,57 @@ export const mcpQueryKeys = {
     ["mcp", "activity", { projectId: null, serverName, threadId }] as const,
   threadServers: (threadId: ThreadId) =>
     ["mcp", "threadServers", { projectId: null, threadId }] as const,
+  composerPrompts: (threadId: ThreadId) =>
+    ["mcp", "composerPrompts", { projectId: null, threadId }] as const,
+  composerResources: (threadId: ThreadId) =>
+    ["mcp", "composerResources", { projectId: null, threadId }] as const,
 };
 
 /** Hub queries refreshed by `hub` events (connections, pins, conversation toggles). */
-const MCP_HUB_QUERY_KINDS = new Set(["hubStatus", "toolPins", "threadServers"]);
+const MCP_HUB_QUERY_KINDS = new Set([
+  "hubStatus",
+  "toolPins",
+  "threadServers",
+  "composerPrompts",
+  "composerResources",
+]);
+
+/** How long the composer reuses a conversation's prompt and resource lists. */
+const COMPOSER_LIST_STALE_MS = 30_000;
+
+/** Prompts from the hub servers this conversation's session uses; read when `/` opens. */
+export function mcpComposerPromptsQueryOptions(input: {
+  readonly threadId: ThreadId | null;
+  readonly enabled?: boolean;
+}) {
+  return queryOptions<McpListComposerPromptsResult>({
+    queryKey: mcpQueryKeys.composerPrompts(input.threadId ?? ("" as ThreadId)),
+    enabled: (input.enabled ?? true) && input.threadId !== null,
+    staleTime: COMPOSER_LIST_STALE_MS,
+    queryFn: async (context) =>
+      ensureNativeApi().mcp.listComposerPrompts(
+        { threadId: input.threadId! },
+        rpcQueryContext(context),
+      ),
+  });
+}
+
+/** Resources from the same servers; read when `@` opens. */
+export function mcpComposerResourcesQueryOptions(input: {
+  readonly threadId: ThreadId | null;
+  readonly enabled?: boolean;
+}) {
+  return queryOptions<McpListComposerResourcesResult>({
+    queryKey: mcpQueryKeys.composerResources(input.threadId ?? ("" as ThreadId)),
+    enabled: (input.enabled ?? true) && input.threadId !== null,
+    staleTime: COMPOSER_LIST_STALE_MS,
+    queryFn: async (context) =>
+      ensureNativeApi().mcp.listComposerResources(
+        { threadId: input.threadId! },
+        rpcQueryContext(context),
+      ),
+  });
+}
 
 export function mcpToolPinsQueryOptions(input: {
   readonly serverName: string;
@@ -195,7 +244,7 @@ export function isMcpQueryAffected(
   if (kind === "activity") return false;
   // Hub connection changes never touch provider observations, and vice versa.
   if (event.reason === "hub") return MCP_HUB_QUERY_KINDS.has(String(kind));
-  if (kind === "toolPins" || kind === "threadServers") return false;
+  if (MCP_HUB_QUERY_KINDS.has(String(kind)) && kind !== "hubStatus") return false;
   if (kind === "hubStatus") return event.reason !== "updated";
   const accountScoped = [
     "providerStatus",
