@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readFile, realpath, stat } from "node:fs/promises";
+import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -9,6 +9,7 @@ import { usageHistoryCutoff } from "./museHistory.ts";
 import { readOpenCodeUsage } from "./opencodeUsageReader.ts";
 import { readAntigravityUsage } from "./antigravityUsageReader.ts";
 import { cursorAccountIdentity, readCursorAccountUsage } from "./cursorUsageReader.ts";
+import { antigravityProfilesDirectory } from "../provider/acp/AntigravityAcpSupport.ts";
 
 function canonical(directory: string) {
   const absolute = path.resolve(directory);
@@ -68,26 +69,79 @@ export function makeAntigravityUsageHistory(
     discover: Effect.promise(() => canonical(profileDirectory)),
     scan: (_, retention) =>
       Effect.tryPromise(async (signal) => {
-        const directories = await Promise.all(
-          roots.map(async (root) => {
-            const nested = path.join(root, "conversations");
-            const hasNested = await stat(nested).then(
-              (entry) => entry.isDirectory(),
-              () => false,
-            );
-            return canonical(hasNested ? nested : root);
-          }),
-        );
-        const result = await readAntigravityUsage(
-          [...new Set(directories)],
-          cutoff(retention),
-          signal,
-        );
-        if (result.errors.length) {
-          throw new Error("Antigravity usage history could not be read.");
-        }
-        return result.files.flatMap(({ records }) => records);
+        const directories = await Promise.all(roots.map(antigravityConversationDirectory));
+        const files = await scanAntigravityHistory(directories, retention, signal);
+        return files.flatMap(({ records }) => records);
       }),
+  });
+}
+
+async function antigravityConversationDirectory(root: string) {
+  const nested = path.join(root, "conversations");
+  const hasNested = await stat(nested).then(
+    (entry) => entry.isDirectory(),
+    () => false,
+  );
+  return canonical(hasNested ? nested : root);
+}
+
+async function scanAntigravityHistory(
+  directories: string[],
+  retention: Parameters<typeof cutoff>[0],
+  signal: AbortSignal,
+) {
+  const { files, errors } = await readAntigravityUsage(
+    [...new Set(directories)],
+    cutoff(retention),
+    signal,
+  );
+  if (errors.length) throw new Error("Antigravity usage history could not be read.");
+  return files;
+}
+
+export function makeRetiredAntigravityUsageHistory<E>(
+  stateDir: string,
+  configuredProfiles: Effect.Effect<ReadonlySet<string>, E>,
+) {
+  const profiles = antigravityProfilesDirectory(stateDir);
+  return makeNativeHistoryCapability({
+    provider: "antigravity",
+    displayName: "Antigravity",
+    enabled: true,
+    discover: Effect.promise(() => canonical(profiles)),
+    scan: (directory, retention) =>
+      Effect.flatMap(configuredProfiles, (configured) =>
+        Effect.tryPromise(async (signal) => {
+          const entries = await readdir(directory, { withFileTypes: true }).catch(
+            (error: NodeJS.ErrnoException) => {
+              if (error.code === "ENOENT") return [];
+              throw error;
+            },
+          );
+          const profileByRoot = new Map<string, string>();
+          for (const entry of entries) {
+            signal.throwIfAborted();
+            if (
+              !entry.isDirectory() ||
+              !/^[a-f0-9]{64}$/.test(entry.name) ||
+              configured.has(entry.name)
+            )
+              continue;
+            const profile = path.join(directory, entry.name);
+            const root = await antigravityConversationDirectory(
+              path.join(profile, "antigravity-acp"),
+            );
+            if (root.startsWith(profile + path.sep)) profileByRoot.set(root, entry.name);
+          }
+          const files = await scanAntigravityHistory([...profileByRoot.keys()], retention, signal);
+          return files.flatMap(({ root, records }) =>
+            records.map((record) => ({
+              ...record,
+              retiredAntigravityProfile: profileByRoot.get(root)!,
+            })),
+          );
+        }),
+      ),
   });
 }
 

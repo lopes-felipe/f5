@@ -1,4 +1,9 @@
 import { assert, it } from "@effect/vitest";
+import { NodeServices } from "@effect/platform-node";
+import { DatabaseSync } from "node:sqlite";
+import { setTimeout } from "node:timers/promises";
+import { ServerConfig } from "../../config.ts";
+import { antigravityProfileDirectory } from "../../provider/acp/AntigravityAcpSupport.ts";
 import {
   EventId,
   ProjectId,
@@ -211,6 +216,89 @@ it.layer(SqliteClient.layerMemory())("Muse history summary integration", (it) =>
 });
 
 it.layer(SqliteClient.layerMemory())("External history summary integration", (it) => {
+  it.effect("counts removed Antigravity profiles even with no enabled instances", () =>
+    Effect.gen(function* () {
+      yield* Migration0001;
+      yield* Migration0005;
+      yield* Migration0068;
+      yield* Migration0071;
+      yield* Migration0073;
+      yield* Migration0161;
+      yield* Migration0175;
+      yield* Migration0116;
+      const stateDir = yield* Effect.acquireRelease(
+        Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "f5-retired-antigravity-"))),
+        (directory) => Effect.promise(() => rm(directory, { recursive: true, force: true })),
+      );
+      yield* Effect.promise(async () => {
+        for (const instance of ["removed-antigravity", "disabled-antigravity"]) {
+          const directory = path.join(
+            antigravityProfileDirectory(stateDir, instance),
+            "antigravity-acp",
+            "conversations",
+          );
+          await mkdir(directory, { recursive: true });
+          const db = new DatabaseSync(path.join(directory, instance + ".db"));
+          try {
+            db.exec("CREATE TABLE steps (idx INTEGER, metadata BLOB)");
+            db.prepare("INSERT INTO steps VALUES (?, ?)").run(
+              0,
+              new Uint8Array([0x4a, 4, 0x10, 100, 0x18, 7]),
+            );
+          } finally {
+            db.close();
+          }
+        }
+      });
+      yield* TestClock.setTime(Date.now() + 1_000);
+      const registry = {
+        listInstances: Effect.succeed([]),
+        listUnavailable: Effect.succeed([]),
+      } as unknown as typeof ProviderInstanceRegistry.Service;
+      yield* Effect.gen(function* () {
+        const usage = yield* UsageService;
+        const query = usage.getSummary({ provider: "antigravity", range: "24h", timeZone: "UTC" });
+        let summary = yield* query;
+        for (
+          let attempt = 0;
+          attempt < 100 && summary.nativeHistoryStatus === "refreshing";
+          attempt++
+        ) {
+          yield* Effect.promise(() => setTimeout(20));
+          summary = yield* query;
+        }
+        assert.equal(summary.nativeHistoryStatus, "ready");
+        assert.equal(summary.metrics.nativeInferenceCount, 1);
+        assert.equal(summary.metrics.totalTokens, 107);
+        const filtered = yield* usage.getSummary({
+          range: "24h",
+          timeZone: "UTC",
+          hiddenProviders: ["antigravity"],
+        });
+        assert.equal(filtered.metrics.totalTokens, 0);
+      }).pipe(
+        Effect.provide(
+          UsageServiceLive.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                Layer.succeed(ProviderInstanceRegistry, registry),
+                ServerSettingsService.layerTest({
+                  usageLocalProviderHistory: true,
+                  providerInstances: {
+                    "disabled-antigravity": { driver: "antigravity", enabled: false },
+                  },
+                }),
+                ServerConfig.layerTest(process.cwd(), stateDir).pipe(
+                  Layer.provide(NodeServices.layer),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }),
+  );
+
   it.effect("reconciles recorded turns with matching external history from each provider", () =>
     Effect.gen(function* () {
       yield* Migration0001;
