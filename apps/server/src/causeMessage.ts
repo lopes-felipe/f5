@@ -14,3 +14,4 @@ export function userFacingCauseMessage(
     ? `${message.slice(0, Math.max(0, maxLength - 1))}…`
     : message;
 }
+// CI scope probe for #990; this branch is never merged.
