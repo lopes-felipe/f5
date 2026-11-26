@@ -4,6 +4,7 @@
  * through the hub's loopback endpoints.
  */
 import { homedir } from "node:os";
+import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import { pathToFileURL } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
@@ -23,6 +24,7 @@ import { createMcpDiagnosticsSanitizer, isMcpCredentialKey } from "@t3tools/shar
 import { mcpBearerRedactionValues, mcpRemoteHeaders } from "@t3tools/shared/mcpTranslation";
 
 import { ProbeStdioTransport } from "../McpProbe.ts";
+import { mcpOAuthFetch, type McpOAuthProvider } from "./McpOAuth.ts";
 
 export const HUB_STDERR_LIMIT = 64 * 1024;
 const HUB_MAX_MESSAGE_BYTES = 16 * 1024 * 1024;
@@ -75,11 +77,14 @@ export interface McpHubUpstreamOptions {
   readonly setTimer?: (callback: () => void, ms: number) => ReturnType<typeof setTimeout>;
   readonly clearTimer?: (timer: ReturnType<typeof setTimeout>) => void;
   readonly makeTransport?: (definition: McpServerDefinition) => Transport;
+  /** OAuth for a remote server: refreshes tokens; a server without them reports needs-auth. */
+  readonly authProvider?: McpOAuthProvider;
 }
 
-/** 401s from the SDK surface as UnauthorizedError, a `code` of 401, or only in the message. */
+/** 401s from the SDK surface as UnauthorizedError (whose `name` stays "Error"), a `code` of 401, or only in the message. */
 export function isMcpAuthError(error: unknown): boolean {
   return (
+    error instanceof UnauthorizedError ||
     (error instanceof Error && error.name === "UnauthorizedError") ||
     !!(error && typeof error === "object" && "code" in error && error.code === 401) ||
     /\b401\b|unauthorized/i.test(error instanceof Error ? error.message : "")
@@ -248,6 +253,11 @@ export class McpHubUpstream {
   }
 
   /** Drops the current connection and retry budget, then connects again. */
+  /** The OAuth record this connection signs in with, if it uses OAuth. */
+  get oauthKey(): string | undefined {
+    return this.options.authProvider?.key;
+  }
+
   async reconnect(): Promise<void> {
     await this.stop("restart");
     const generation = this.generation;
@@ -309,6 +319,10 @@ export class McpHubUpstream {
     this.options.onChange?.();
     const started = this.now();
     const attempt = (async () => {
+      await this.options.authProvider?.prime();
+      // A stop or a newer connection while the stored sign-in was loading wins; no
+      // transport is opened for this one.
+      if (generation !== this.generation) throw new Error("The connection was replaced.");
       const transport = this.makeTransport();
       const client = new Client(
         { name: "f5-mcp-hub", version: "1.0.0" },
@@ -396,7 +410,10 @@ export class McpHubUpstream {
     this.lastError = this.sanitize(
       error instanceof Error ? error.message : "The MCP server could not be reached.",
     ).slice(0, 2_000);
-    if (isMcpAuthError(error)) {
+    // An auth failure while a refresh token is still valid (a token endpoint that was
+    // briefly down, or another connection that just rotated the tokens) is retried;
+    // only a connection with nothing left to refresh needs the user to sign in.
+    if (isMcpAuthError(error) && !this.options.authProvider?.mayRefresh) {
       this.state = "needs-auth";
       this.options.onChange?.();
       return;
@@ -404,7 +421,7 @@ export class McpHubUpstream {
     this.attempts += 1;
     // Retries run after 1, 2, 4, 8 and 16 seconds; the next failure is final.
     if (this.attempts > HUB_RECONNECT_ATTEMPTS || this.attachments === 0) {
-      this.state = "failed";
+      this.state = isMcpAuthError(error) ? "needs-auth" : "failed";
       this.options.onChange?.();
       return;
     }
@@ -523,8 +540,19 @@ export class McpHubUpstream {
         definition.cwd ?? this.options.cwd ?? this.options.environment.HOME ?? homedir(),
         { stderrLimit: HUB_STDERR_LIMIT, maxPendingBytes: HUB_MAX_MESSAGE_BYTES },
       );
-    const headers = new Headers(mcpRemoteHeaders(definition, this.options.environment));
-    const options = { requestInit: { headers } };
+    const resourceHeaders = mcpRemoteHeaders(definition, this.options.environment) ?? {};
+    const headers = new Headers(resourceHeaders);
+    const authProvider = this.options.authProvider;
+    const options = {
+      requestInit: { headers },
+      ...(authProvider
+        ? {
+            authProvider,
+            // OAuth calls can reach other hosts; the server's own headers stay on its origin.
+            fetch: mcpOAuthFetch(definition.url, Object.keys(resourceHeaders)),
+          }
+        : {}),
+    };
     return definition.type === "sse"
       ? (new SSEClientTransport(new URL(definition.url), options) as Transport)
       : (new StreamableHTTPClientTransport(new URL(definition.url), options) as Transport);

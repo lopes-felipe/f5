@@ -37,6 +37,16 @@ import { recoverUpdateSession, restoreUpdateWindows } from "./updateRecovery";
 import { createUpdaterInstallerAdapter } from "./updateInstallerAdapter";
 import { createUpdateInstaller } from "./updateInstall";
 import { assertUpdateCaller } from "./updateIpc";
+import {
+  APP_ICON_ARGUMENT,
+  APP_ICON_CHANGED_CHANNEL,
+  createAppIconController,
+  readAppIconState,
+  readDockStartedAt,
+  registerAppIconIpc,
+  writeAppIconState,
+  type AppIconController,
+} from "./appIcon";
 import { revealSenderWindow } from "./revealWindow";
 import { createUpdateController } from "./updateController";
 import { hasCachedUpdate } from "./updateCache";
@@ -58,7 +68,7 @@ import {
   VmSlotReservations,
 } from "./vm/vmBackendLauncher";
 import { VM_REFUSED_EXIT_CODE, VM_STOP_FAILED_EXIT_CODE } from "./vm/vmSupervisor";
-import { isLinuxVmProfile } from "@t3tools/shared/profileExecution";
+import { isLinuxVmProfile, profileExecutionEnvironment } from "@t3tools/shared/profileExecution";
 import { computerHostMetadata } from "@t3tools/shared/computerExecution";
 import {
   assertFileActionCaller,
@@ -2858,6 +2868,64 @@ function resolveIconPath(ext: "ico" | "icns" | "png"): string | null {
   return resolveResourcePath(`icon.${ext}`);
 }
 
+function runFile(file: string, args: readonly string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    ChildProcess.execFile(file, [...args], { timeout: 5_000 }, (error, stdout) =>
+      error ? reject(error) : resolve(stdout),
+    );
+  });
+}
+
+let appIconController: AppIconController | null = null;
+/** The app icon people chose in Settings; one choice for every profile. */
+function appIcon(): AppIconController {
+  if (appIconController) return appIconController;
+  const statePath = Path.join(app.getPath("userData"), "app-icon.json");
+  appIconController = createAppIconController({
+    platform: process.platform,
+    isPackaged: app.isPackaged,
+    readState: () => readAppIconState(statePath),
+    writeState: (state) => writeAppIconState(statePath, state),
+    iconPath: (id, file) => resolveResourcePath(`app-icons/${id}/${file}`),
+    setDockIcon: (path) => app.dock?.setIcon(path),
+    setWindowIcons: (path) => {
+      for (const window of BrowserWindow.getAllWindows())
+        if (!window.isDestroyed()) window.setIcon(path);
+    },
+    broadcast: (id) => {
+      for (const window of BrowserWindow.getAllWindows())
+        if (!window.isDestroyed() && appRendererWebContentsIds.has(window.webContents.id))
+          window.webContents.send(APP_ICON_CHANGED_CHANNEL, id);
+    },
+    restartDock: async () => void (await runFile("/usr/bin/killall", ["Dock"])),
+    later: (run, delayMs) => void setTimeout(run, delayMs),
+    log: (message) => console.warn(`[desktop] ${message}`),
+  });
+  return appIconController;
+}
+
+/** After an update changed the built-in icon, a Dock that was already running keeps the old one. */
+function detectStaleDockIcon(existingInstallation: boolean): void {
+  if (process.platform !== "darwin" || !app.isPackaged) return;
+  let bundleIconHash: string | null = null;
+  try {
+    bundleIconHash = Crypto.createHash("sha256")
+      .update(FS.readFileSync(Path.join(process.resourcesPath, "icon.icns")))
+      .digest("hex");
+  } catch (error) {
+    console.warn("[desktop] Could not read the built-in app icon", error);
+  }
+  void appIcon()
+    .detectStaleDock({
+      bundleIconHash,
+      updatedFrom: updateState.recentlyInstalled?.fromVersion ?? null,
+      existingInstallation,
+      now: Date.now(),
+      readDockStartedAt: () => readDockStartedAt(runFile, Date.now()),
+    })
+    .catch((error) => console.warn("[desktop] Could not check the Dock icon", error));
+}
+
 /** Copy legacy Chromium data once, keeping the t3 renderer origin and backend state intact. */
 function resolveUserDataPath(): string {
   const appDataBase =
@@ -2896,12 +2964,7 @@ function configureAppIdentity(): void {
     app.setAppUserModelId(APP_USER_MODEL_ID);
   }
 
-  if (process.platform === "darwin" && !app.isPackaged && app.dock) {
-    const iconPath = resolveIconPath("png");
-    if (iconPath) {
-      app.dock.setIcon(iconPath);
-    }
-  }
+  appIcon().applyAtLaunch();
 }
 
 const updatePoller = createUpdatePoller(
@@ -3070,8 +3133,13 @@ function updateInstallMarkerPath(): string {
   return Path.join(app.getPath("userData"), "update-pending.json");
 }
 
+/** Written on the first launch, so its presence means F5 has run here before. */
+function updatePreferencesPath(): string {
+  return Path.join(app.getPath("userData"), "update-preferences.json");
+}
+
 async function configureAutoUpdater(): Promise<void> {
-  const preferencesPath = Path.join(app.getPath("userData"), "update-preferences.json");
+  const preferencesPath = updatePreferencesPath();
   const channel = initializeUpdatePreferences(preferencesPath, app.getVersion());
   const recentlyInstalled = consumeUpdateInstallMarker(updateInstallMarkerPath(), app.getVersion());
   const disabledReason = getAutoUpdateDisabledReason({
@@ -3191,6 +3259,28 @@ async function configureAutoUpdater(): Promise<void> {
 
   updatePoller.start(true);
 }
+/**
+ * One master key per host profile for the secrets its backend encrypts at rest, stored
+ * wrapped by the OS keychain beside the profile's state. A VM guest keeps its own key file.
+ */
+const secretStoreKeys = new Map<string, () => Buffer | undefined>();
+function secretStoreKeyHex(runtime: BackendRuntime): string | undefined {
+  if (profileExecutionEnvironment(runtime.profile) !== "host") return undefined;
+  let read = secretStoreKeys.get(runtime.profile.id);
+  if (!read) {
+    read = keychainConsentKey(
+      Path.join(profileStateDir(STATE_DIR, runtime.profile), "secret-store.key"),
+      {
+        available: () => safeStorage.isEncryptionAvailable(),
+        encrypt: (plain) => safeStorage.encryptString(plain),
+        decrypt: (encrypted) => safeStorage.decryptString(encrypted),
+      },
+    );
+    secretStoreKeys.set(runtime.profile.id, read);
+  }
+  return read()?.toString("hex");
+}
+
 function backendEnv(runtime: BackendRuntime = defaultBackend): NodeJS.ProcessEnv {
   return buildDesktopBackendEnv(process.env, {
     backendPort: runtime.backendPort,
@@ -3199,6 +3289,7 @@ function backendEnv(runtime: BackendRuntime = defaultBackend): NodeJS.ProcessEnv
     stateDirSource: STATE_DIR_CONFIG.source,
     authToken: runtime.backendAuthToken,
     shellEnvironmentPrepared,
+    secretStoreKey: secretStoreKeyHex(runtime),
   });
 }
 
@@ -4280,6 +4371,7 @@ function registerIpcHandlers(): void {
     if (claimed) setUpdateState(state);
     return claimed;
   });
+  registerAppIconIpc(ipcMain, appIcon(), assertUpdateSender);
   ipcMain.removeHandler(UPDATE_DOWNLOAD_CHANNEL);
   ipcMain.handle(UPDATE_DOWNLOAD_CHANNEL, async (event) => {
     assertUpdateSender(event);
@@ -4593,7 +4685,7 @@ function registerIpcHandlers(): void {
 function getIconOption(): { icon: string } | Record<string, never> {
   if (process.platform === "darwin") return {}; // macOS uses .icns from app bundle
   const ext = process.platform === "win32" ? "ico" : "png";
-  const iconPath = resolveIconPath(ext);
+  const iconPath = appIcon().windowIconPath() ?? resolveIconPath(ext);
   return iconPath ? { icon: iconPath } : {};
 }
 
@@ -4632,6 +4724,7 @@ function createWindow(
       additionalArguments: [
         ...profileWindowArguments(runtime.profile.id),
         `--f5-system-locale=${systemLocale(app.getSystemLocale(), process.platform, process.env, (key) => systemPreferences.getUserDefault(key, "boolean"))}`,
+        `--${APP_ICON_ARGUMENT}=${appIcon().id()}`,
       ],
       preload: Path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -5151,7 +5244,9 @@ app
     configureApplicationMenu();
     registerDesktopProtocol();
     registerPromptLinkProtocol();
+    const existingInstallation = FS.existsSync(updatePreferencesPath());
     await configureAutoUpdater();
+    detectStaleDockIcon(existingInstallation);
     await initializeKeepAwake();
     const bootstrapReady = bootstrapGate.start(bootstrap);
     void bootstrapReady.catch((error) => {

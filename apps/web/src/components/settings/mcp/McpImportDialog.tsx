@@ -142,13 +142,15 @@ export function McpImportDialog(props: {
               value={text}
               onChange={(event) => setText(event.target.value)}
               className="min-h-36 font-mono text-xs"
-              placeholder="Paste F5/Claude JSON or Codex JSON/TOML"
+              placeholder="Paste F5, Claude, Cursor, VS Code, or OpenCode JSON, or Codex TOML"
             />
           ) : (
             <>
               <p className="text-xs text-muted-foreground">
-                Reads Claude user and project configuration, this project's .mcp.json, and the
-                selected account's Codex config. Nothing is applied automatically.
+                Reads Claude user and project configuration, this project's .mcp.json, the selected
+                account's Codex config, and Cursor, VS Code, Claude Desktop, and OpenCode
+                configuration. Servers from other clients start unselected. Nothing is applied
+                automatically.
               </p>
               <Button
                 size="sm"

@@ -83,6 +83,7 @@ import type {
   AgentBridgeTaskControlInput,
   BotTask,
 } from "./agentBridge";
+import type { DesktopAppIconBridge } from "./appIcon";
 import type { DesktopComputerAutomationBridge } from "./computerAutomation";
 import type {
   UpstreamAcceptSuggestionsInput,
@@ -270,7 +271,15 @@ import type {
   McpGetHubStatusRequest,
   McpGetHubStatusResult,
   McpReconnectHubServerRequest,
+  McpGetHubAuthStatusRequest,
+  McpStartHubSignInRequest,
+  McpCompleteHubSignInRequest,
+  McpSignOutHubServerRequest,
   McpReconnectHubServerResult,
+  McpGetHubAuthStatusResult,
+  McpStartHubSignInResult,
+  McpCompleteHubSignInResult,
+  McpSignOutHubServerResult,
   McpGetProviderStatusRequest,
   McpGetEffectiveConfigRequest,
   McpGetProjectConfigRequest,
@@ -850,6 +859,7 @@ export interface DesktopBridge {
   completeAppActivation?: (id: string, error?: string) => Promise<void>;
   readonly keepAwake?: DesktopKeepAwakeBridge;
   readonly notifications?: DesktopNotificationsBridge;
+  readonly appIcon?: DesktopAppIconBridge;
   htmlPreview?: (input: HtmlPreviewRequest) => Promise<HtmlPreviewResult>;
   /** Consent for terminals and agents opening login URLs; requests arrive only on macOS. */
   browserOpen?: DesktopBrowserOpenBridge;
@@ -1345,6 +1355,13 @@ export interface NativeApi {
     reconnectHubServer: (
       input: McpReconnectHubServerRequest,
     ) => Promise<McpReconnectHubServerResult>;
+    getHubAuthStatus: (
+      input: McpGetHubAuthStatusRequest,
+      context?: NativeRequestContext,
+    ) => Promise<McpGetHubAuthStatusResult>;
+    startHubSignIn: (input: McpStartHubSignInRequest) => Promise<McpStartHubSignInResult>;
+    completeHubSignIn: (input: McpCompleteHubSignInRequest) => Promise<McpCompleteHubSignInResult>;
+    signOutHubServer: (input: McpSignOutHubServerRequest) => Promise<McpSignOutHubServerResult>;
     onStatusUpdated: (callback: (payload: McpStatusUpdatedPayload) => void) => () => void;
   };
   storage: {

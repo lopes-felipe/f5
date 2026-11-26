@@ -1,4 +1,5 @@
 import { normalizeServerName } from "./mcpServerName";
+import { interpolateMcpServers, mcpEnvReferenceNames } from "./mcpInterpolation";
 import type {
   ClaudeAgentMcpServerConfig,
   CodexMcpServerEntry,
@@ -277,29 +278,69 @@ export function mcpRemoteHeaders(
   return { ...headers, Authorization: `Bearer ${bearer}` };
 }
 
-/** Values to redact for a server's bearer variable: the raw value and the token sent. */
+/** The parts of a definition that can carry credentials, raw or expanded. */
+type McpRedactionSource = Pick<McpServerDefinition, "bearerTokenEnvVar"> & {
+  readonly url?: string | undefined;
+  readonly command?: string | undefined;
+  readonly args?: ReadonlyArray<string> | undefined;
+  readonly cwd?: string | undefined;
+  readonly env?: Readonly<Record<string, string>> | undefined;
+  readonly headers?: Readonly<Record<string, string>> | undefined;
+};
+
+/**
+ * Values to redact for a server, beyond its literal `env` and `headers`:
+ *
+ * - its bearer variable, raw and as the token sent;
+ * - every variable its `${env:…}` references expand to, so an expanded API key in a
+ *   header or URL is redacted even where only the configured definition is at hand;
+ * - the credential after a header's scheme (`Token abc` → `abc`), which errors may
+ *   quote without the scheme.
+ */
 export function mcpBearerRedactionValues(
-  definition: Pick<McpServerDefinition, "bearerTokenEnvVar">,
+  definition: McpRedactionSource,
   environment: McpEnvironment | undefined,
 ): string[] {
+  const values: string[] = [];
+  const add = (value: string | undefined) => {
+    if (!value) return;
+    const trimmed = value.trim();
+    for (const candidate of trimmed && trimmed !== value ? [value, trimmed] : [value])
+      if (!values.includes(candidate)) values.push(candidate);
+  };
   const name = definition.bearerTokenEnvVar?.trim();
-  const raw = name ? environment?.[name] : undefined;
-  if (!raw) return [];
-  const trimmed = raw.trim();
-  return trimmed && trimmed !== raw ? [raw, trimmed] : [raw];
+  if (name) add(environment?.[name]);
+  const headers = Object.values(definition.headers ?? {});
+  const fields = [
+    definition.url,
+    definition.command,
+    definition.cwd,
+    ...(definition.args ?? []),
+    ...Object.values(definition.env ?? {}),
+    ...headers,
+  ];
+  for (const field of fields)
+    if (field) for (const variable of mcpEnvReferenceNames(field)) add(environment?.[variable]);
+  for (const header of headers)
+    if (!header.includes("${")) add(/^\s*[A-Za-z][\w.+-]*\s+(\S.*)$/u.exec(header)?.[1]);
+  return values;
 }
 
 /**
  * `environment` is the account (provider process) environment. Claude has no
  * `bearer_token_env_var`, so a server's `bearerTokenEnvVar` is resolved from it
  * into an `Authorization` header, as Codex and Cursor do.
+ * `${env:…}` references are resolved from it too; a server with an unset variable is left out.
  */
 export function translateMcpForClaudeAgent(
   servers: McpProjectServersConfig | null | undefined,
   options?: { readonly environment?: Readonly<Record<string, string | undefined>> },
 ): Record<string, ClaudeAgentMcpServerConfig> | undefined {
   const translated = Object.create(null) as Record<string, ClaudeAgentMcpServerConfig>;
-  for (const [name, definition] of Object.entries(filterEnabledMcpServers(servers))) {
+  const resolved = options?.environment
+    ? interpolateMcpServers(servers, options.environment).servers
+    : servers;
+  for (const [name, definition] of Object.entries(filterEnabledMcpServers(resolved))) {
     const normalized = normalizeCommonEntry(definition);
     // Claude ignores sub-second values, including the saved zero/default value.
     const timeout =
@@ -346,15 +387,23 @@ export function translateMcpForClaudeAgent(
 }
 
 /**
+ * With an account environment, `${env:…}` references are resolved first and a
+ * server with an unset variable is left out (see `interpolateMcpServers`).
  * `ownBearerEnvVars` names variables F5 itself sets for Codex (its own catalogs'
  * credentials); only those may use a reserved prefix.
  */
 export function translateMcpForCodex(
   servers: McpProjectServersConfig | null | undefined,
-  options?: { readonly ownBearerEnvVars?: ReadonlySet<string> },
+  options?: {
+    readonly environment?: Readonly<Record<string, string | undefined>>;
+    readonly ownBearerEnvVars?: ReadonlySet<string>;
+  },
 ): Record<string, CodexMcpServerEntry> | undefined {
   const translated = Object.create(null) as Record<string, CodexMcpServerEntry>;
-  for (const [name, definition] of Object.entries(filterEnabledMcpServers(servers))) {
+  const resolved = options?.environment
+    ? interpolateMcpServers(servers, options.environment).servers
+    : servers;
+  for (const [name, definition] of Object.entries(filterEnabledMcpServers(resolved))) {
     const normalized = normalizeCommonEntry(definition);
     const bearerEnvVar = normalized.bearerTokenEnvVar;
     const shared = {
