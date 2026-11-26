@@ -486,6 +486,8 @@ export function accountStatusText(account: UsageAccount): string | null {
   if (!account.enabled)
     return `${providerLabel(account.provider)} is disabled in provider settings.`;
   for (const section of account.sections) {
+    if (section.outcome === "unsupported" && account.provider === "antigravity")
+      return "Subscription quota is unavailable for Antigravity.";
     if (section.outcome === "unsupported")
       return `This installed ${providerLabel(account.provider)} version does not expose account usage and rate limits.`;
     if (section.errorCode) return accountErrorMessage(account.provider, section.errorCode);

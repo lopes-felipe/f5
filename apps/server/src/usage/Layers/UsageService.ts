@@ -106,7 +106,12 @@ function shadowAccounts(unavailable: ReadonlyArray<ServerProvider>): Array<Usage
         : entry.driver === "claudeAgent"
           ? [emptyAccountSection("claude-usage")]
           : [emptyAccountSection("provider-limits")]
-      ).map((section) => ({ ...section, errorCode: "temporary-failure" as const })),
+      ).map((section) =>
+        entry.driver === "antigravity"
+          ? // An unavailable instance also must not hydrate retired subscription limits.
+            { ...section, outcome: "unsupported" as const, errorCode: "unsupported" as const }
+          : { ...section, errorCode: "temporary-failure" as const },
+      ),
     }));
 }
 

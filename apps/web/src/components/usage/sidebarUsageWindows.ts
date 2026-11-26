@@ -2,8 +2,8 @@ import type { UsageAccount } from "@t3tools/contracts";
 import { quotaWindowsFromSection, type QuotaWindow } from "@t3tools/shared/usageLimit";
 
 /**
- * Prefer the account-wide weekly quota over a model-specific weekly limit. Without one
- * (Antigravity's separate Gemini and Claude & GPT pools), show the tightest weekly window.
+ * Prefer the account-wide weekly quota over a model-specific weekly limit. Without one,
+ * show the tightest weekly window.
  */
 export function sidebarWeeklyUsageWindow(windows: ReadonlyArray<QuotaWindow>) {
   const weekly = windows.filter((window) => window.durationMinutes === 10_080);
