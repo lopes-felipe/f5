@@ -1,8 +1,14 @@
 import { Effect } from "effect";
-import type { ServerSettings } from "@t3tools/contracts";
+import type {
+  ProviderInstanceConfig,
+  ProviderInstanceId,
+  ServerSettings,
+  ServerSettingsPatch,
+} from "@t3tools/contracts";
 import type { ServerSecretStoreShape } from "./auth/Services/ServerSecretStore.ts";
 import {
   PROVIDER_INSTANCE_SECRET_FIELDS,
+  applyServerSettingsPatch,
   providerInstanceSecretField,
   type ProviderInstanceSecretField,
 } from "@t3tools/shared/serverSettings";
@@ -20,6 +26,130 @@ export const providerInstanceSecretName = (secret: ProviderInstanceSecretField, 
   `${secret.secretPrefix}${Buffer.from(id).toString("base64url")}`;
 const record = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
+
+function secretDestination(value: unknown): string {
+  const url = typeof value === "string" ? value.trim() : "";
+  const parsed = URL.parse(url);
+  if (!parsed) return url;
+  parsed.pathname = parsed.pathname.replace(/\/+$/, "");
+  return parsed.href;
+}
+
+const cliProxyKey = "F5_CLIPROXY_API_KEY";
+
+function cliProxyDestination(instance: ProviderInstanceConfig): string {
+  const environment = new Map(instance.environment?.map(({ name, value }) => [name, value]));
+  const hub = environment.get("F5_CLIPROXY_HUB_URL") ?? process.env.F5_CLIPROXY_HUB_URL;
+  if (hub) return "hub:" + secretDestination(hub);
+  if (instance.driver !== "antigravity") return "";
+  const usage = environment.get("F5_CLIPROXY_USAGE_URL") ?? process.env.F5_CLIPROXY_USAGE_URL;
+  return usage ? "usage:" + secretDestination(usage) : "";
+}
+
+/** Clear retained credentials before resolving secret-store references in the patched settings. */
+export function applySettingsPatchWithSecretDestinations(
+  current: ServerSettings,
+  patch: ServerSettingsPatch,
+): { settings: ServerSettings; removals: SettingsSecretChange[] } {
+  const next = applyServerSettingsPatch(current, patch);
+  const removals: SettingsSecretChange[] = [];
+  const clearMovedPassword = (
+    config: Record<string, unknown>,
+    previous: Record<string, unknown>,
+    suppliedPassword: unknown,
+    name: string,
+  ) => {
+    if (
+      (typeof suppliedPassword === "string" && suppliedPassword.trim()) ||
+      secretDestination(config.serverUrl) === secretDestination(previous.serverUrl)
+    ) {
+      return config;
+    }
+    removals.push({ name, value: null });
+    return { ...config, serverPassword: "", serverPasswordRedacted: false };
+  };
+
+  const opencode = patch.providers?.opencode
+    ? clearMovedPassword(
+        next.providers.opencode,
+        current.providers.opencode,
+        patch.providers.opencode.serverPassword,
+        globalName,
+      )
+    : next.providers.opencode;
+  return {
+    settings: {
+      ...next,
+      providers: {
+        ...next.providers,
+        opencode: opencode as ServerSettings["providers"]["opencode"],
+      },
+      providerInstances: patch.providerInstances
+        ? Object.fromEntries(
+            Object.entries(next.providerInstances).map(([id, instance]) => {
+              const previous = current.providerInstances[id as ProviderInstanceId];
+              if (previous?.driver !== instance.driver) return [id, instance];
+              if (
+                instance.driver === "opencode" &&
+                record(instance.config) &&
+                record(previous.config)
+              ) {
+                const suppliedConfig = patch.providerInstances?.[id as ProviderInstanceId]?.config;
+                return [
+                  id,
+                  {
+                    ...instance,
+                    config: clearMovedPassword(
+                      instance.config,
+                      previous.config,
+                      record(suppliedConfig) ? suppliedConfig.serverPassword : undefined,
+                      providerInstanceSecretName(opencodeSecret, id),
+                    ),
+                  },
+                ];
+              }
+              if (
+                (instance.driver === "antigravity" || instance.driver === "grok") &&
+                instance.environment?.some(
+                  (row) => row.name === cliProxyKey && row.valueRedacted,
+                ) &&
+                cliProxyDestination(instance) !== cliProxyDestination(previous)
+              ) {
+                return [
+                  id,
+                  {
+                    ...instance,
+                    environment: instance.environment.map((row) =>
+                      row.name === cliProxyKey && row.valueRedacted
+                        ? { ...row, value: "", valueRedacted: false }
+                        : row,
+                    ),
+                  },
+                ];
+              }
+              return [id, instance];
+            }),
+          )
+        : next.providerInstances,
+      textGenerators: patch.textGenerators
+        ? Object.fromEntries(
+            Object.entries(next.textGenerators).map(([id, generator]) => {
+              const previous = current.textGenerators[id as ProviderInstanceId];
+              const moved =
+                previous &&
+                (previous.kind !== generator.kind ||
+                  secretDestination(previous.baseUrl) !== secretDestination(generator.baseUrl));
+              return [
+                id,
+                moved && !generator.apiKey ? { ...generator, apiKeyRedacted: false } : generator,
+              ];
+            }),
+          )
+        : next.textGenerators,
+    },
+    removals,
+  };
+}
 
 /** Persist references only; inline values take precedence over an old reference. */
 export function prepareSettingsSecrets(

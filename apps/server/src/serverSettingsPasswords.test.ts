@@ -1,4 +1,5 @@
 import { SecretStoreError, ServerSecretStore } from "./auth/Services/ServerSecretStore.ts";
+import { SECRET_STORE_KEY_FILE } from "./auth/secretStoreKey.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
 import { Effect, Exit, FileSystem, Layer } from "effect";
@@ -146,14 +147,19 @@ it.layer(layer)("OpenCode password persistence", (it) => {
         providerInstances: {
           [id]: {
             driver: ProviderDriverKind.make("opencode"),
-            config: { serverPassword: "", serverUrl: "https://new.example.test" },
+            config: {
+              serverPassword: "",
+              serverUrl: "https://example.test",
+              binaryPath: "/opt/opencode",
+            },
           },
         },
       });
       assert.equal(updated.providers.opencode.serverPassword, "global-password");
       assert.deepEqual(updated.providerInstances[id]?.config, {
         serverPassword: "instance-password",
-        serverUrl: "https://new.example.test",
+        serverUrl: "https://example.test",
+        binaryPath: "/opt/opencode",
       });
       assert.notInclude(yield* fs.readFileString(config.settingsPath!), "instance-password");
     }),
@@ -284,6 +290,120 @@ it.layer(layer)("OpenCode password persistence", (it) => {
     }),
   );
 });
+
+it.effect("binds saved OpenCode passwords and text generator keys to their URLs", () =>
+  Effect.gen(function* () {
+    const service = yield* ServerSettingsService;
+    const config = yield* ServerConfig;
+    const fs = yield* FileSystem.FileSystem;
+    const opencode = ProviderInstanceId.make("opencode_remote");
+    const textGenerator = ProviderInstanceId.make("textgen_remote");
+    const save = (url: string, password?: string) =>
+      service.updateSettings({
+        providers: {
+          opencode: {
+            serverUrl: url,
+            ...(password === undefined ? {} : { serverPassword: password }),
+          },
+        },
+        providerInstances: {
+          [opencode]: {
+            driver: ProviderDriverKind.make("opencode"),
+            config: { serverUrl: url, serverPassword: password ?? "" },
+          },
+        },
+        textGenerators: {
+          [textGenerator]: {
+            kind: "openaiCompatible",
+            label: "Remote",
+            baseUrl: url,
+            apiKey: password ?? "",
+            apiKeyRedacted: !password,
+            models: ["model"],
+            enabled: true,
+          },
+        },
+      });
+    const assertCredentials = Effect.fnUntraced(function* (expected: string) {
+      const settings = yield* service.getSettings;
+      assert.equal(settings.providers.opencode.serverPassword, expected);
+      assert.propertyVal(settings.providerInstances[opencode]?.config, "serverPassword", expected);
+      assert.equal(settings.textGenerators[textGenerator]?.apiKey, expected);
+    });
+
+    const original = "https://example.test/v1";
+    yield* save(original, "saved-credential");
+    yield* save("HTTPS://EXAMPLE.test:443/v1//");
+    yield* assertCredentials("saved-credential");
+    for (const url of [
+      "https://elsewhere.test/v1",
+      "https://example.test:8443/v1",
+      "https://example.test/V1",
+    ]) {
+      yield* save(original, "saved-credential");
+      yield* save(url);
+      yield* assertCredentials("");
+      const files = yield* fs.readDirectory(config.secretsDir!);
+      assert.deepEqual(
+        files.filter((file) => file !== SECRET_STORE_KEY_FILE + ".bin"),
+        [],
+      );
+    }
+    yield* save(original, "saved-credential");
+    yield* save("https://example.test/v2", "saved-credential");
+    yield* assertCredentials("saved-credential");
+  }).pipe(Effect.provide(Layer.fresh(layer))),
+);
+
+it.effect("clears a retained CLIProxyAPI key when its usage destination changes", () =>
+  Effect.gen(function* () {
+    const service = yield* ServerSettingsService;
+    const id = ProviderInstanceId.make("antigravity_usage");
+    const driver = ProviderDriverKind.make("antigravity");
+    const keyName = "F5_CLIPROXY_API_KEY";
+    const save = (hub: string, usage: string, key?: string) =>
+      service.updateSettings({
+        providerInstances: {
+          [id]: {
+            driver,
+            config: {},
+            environment: [
+              { name: "F5_CLIPROXY_HUB_URL", value: hub, sensitive: false },
+              { name: "F5_CLIPROXY_USAGE_URL", value: usage, sensitive: false },
+              {
+                name: keyName,
+                value: key ?? "",
+                valueRedacted: key === undefined,
+                sensitive: true,
+              },
+            ],
+          },
+        },
+      });
+    const assertKey = Effect.fnUntraced(function* (expected: string) {
+      const settings = yield* service.getSettings;
+      const key = settings.providerInstances[id]?.environment?.find((row) => row.name === keyName);
+      assert.equal(key?.value, expected);
+      assert.equal(Boolean(key?.valueRedacted), Boolean(expected));
+    });
+
+    const hub = "https://example.test/hub";
+    const usage = "https://example.test/usage";
+    yield* save(hub, "", "management-fixture");
+    yield* save("https://EXAMPLE.test:443/hub/", "");
+    yield* assertKey("management-fixture");
+    yield* save("https://example.test/other-hub", "");
+    yield* assertKey("");
+    yield* save(hub, "", "management-fixture");
+    yield* save("", usage);
+    yield* assertKey("");
+    yield* save("", usage, "usage-fixture");
+    yield* save("", usage + "?team=other");
+    yield* assertKey("");
+    yield* save("", usage, "replacement-fixture");
+    yield* assertKey("replacement-fixture");
+  }).pipe(Effect.provide(Layer.fresh(layer))),
+);
 
 it.layer(layer)("Removed OpenCode credentials", (it) => {
   it.effect(
