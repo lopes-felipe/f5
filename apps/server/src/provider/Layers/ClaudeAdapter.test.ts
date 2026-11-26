@@ -1409,6 +1409,79 @@ describe("ClaudeAdapter agent browser", () => {
   );
 
   it.effect(
+    "sends bearer variables only over the control channel and never reserved variables",
+    () => {
+      const directory = mkdtempSync(path.join(os.tmpdir(), "f5-claude-bearer-"));
+      const binaryPath = writeCliScript(
+        path.join(directory, "claude"),
+        `process.stdout.write("2.1.317 (Claude Code)\\n");`,
+      );
+      const harness = makeHarness({
+        processEnvironment: {
+          ...process.env,
+          DOCS_TOKEN: "  docs-bearer-fixture  ",
+          ANTHROPIC_API_KEY: "anthropic-key-fixture",
+        },
+      });
+      const setMcpServers = vi.fn(async () => ({ added: [], removed: [], errors: {} }));
+      Object.assign(harness.query, { setMcpServers });
+      const servers = {
+        docs: {
+          type: "http" as const,
+          url: "https://docs.example.invalid/mcp",
+          bearerTokenEnvVar: "DOCS_TOKEN",
+        },
+        browser: {
+          type: "http" as const,
+          url: "https://browser.example.invalid/mcp",
+          bearerTokenEnvVar: "F5_BROWSER_OPEN_TOKEN",
+        },
+        anthropic: {
+          type: "http" as const,
+          url: "https://anthropic.example.invalid/mcp",
+          bearerTokenEnvVar: "ANTHROPIC_API_KEY",
+        },
+      };
+      const delivered = (call: number) =>
+        (setMcpServers.mock.calls as unknown as Array<[Record<string, { headers?: object }>]>)[
+          call
+        ]![0];
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          runtimeMode: "full-access",
+          providerOptions: { claudeAgent: { binaryPath }, mcpServers: servers },
+        });
+        assert.equal(harness.getLastCreateQueryInput()!.options.mcpServersDelivery, "argv");
+        // Launch MCP config becomes --mcp-config argv; the token must not be in it.
+        assert.equal(
+          JSON.stringify(harness.getLastCreateQueryInput()!.options.mcpServers ?? {}).includes(
+            "docs-bearer-fixture",
+          ),
+          false,
+        );
+        assert.deepEqual(delivered(0).docs?.headers, {
+          Authorization: "Bearer docs-bearer-fixture",
+        });
+        assert.equal(delivered(0).browser?.headers, undefined);
+        assert.equal(delivered(0).anthropic?.headers, undefined);
+        yield* adapter.reloadMcpConfig!({ threadId: THREAD_ID, mcpServers: servers });
+        const reloaded = delivered(setMcpServers.mock.calls.length - 1);
+        assert.deepEqual(reloaded.docs?.headers, { Authorization: "Bearer docs-bearer-fixture" });
+        assert.equal(reloaded.browser?.headers, undefined);
+        assert.equal(
+          JSON.stringify(setMcpServers.mock.calls).includes("anthropic-key-fixture"),
+          false,
+        );
+      }).pipe(
+        Effect.ensuring(Effect.sync(() => rmSync(directory, { recursive: true, force: true }))),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
+  it.effect(
     "auto-allows observation and grants mutation once per session after verification",
     () => {
       const { harness } = makeBrowserHarness();
@@ -17547,6 +17620,51 @@ describe("F5 MCP hub", () => {
       const afterRemoval = setMcpServers.mock.calls.at(-1)![0];
       assert.deepEqual(Object.keys(afterRemoval), ["search"]);
       assert.equal(fakeHub.attaches.length, 1);
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  it.effect("leaves tool filters to the hub and unbinds a server Claude kept for its own", () => {
+    const fakeHub = makeFakeMcpHub({
+      omitted: [{ serverName: "later", reason: "needs ${env:LATER_TOKEN}, which is not set" }],
+    });
+    const harness = makeHarness({ mcpHub: fakeHub.hub });
+    const setMcpServers = vi.fn(async (servers: Record<string, unknown>) => ({
+      added: Object.keys(servers),
+      removed: [],
+      errors: {},
+    }));
+    Object.assign(harness.query, { setMcpServers });
+    const filtered = { docs: { ...hubServers.docs, disabledTools: ["write"] } };
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const threadId = ThreadId.makeUnsafe("claude-hub-filters");
+      yield* adapter.startSession({
+        threadId,
+        runtimeMode: "approval-required",
+        providerOptions: { mcpServers: filtered },
+      });
+      // The hub hides turned-off tools; a launch deny list would outlive a re-enable.
+      const launchedDenied = harness.getLastCreateQueryInput()!.options.disallowedTools ?? [];
+      assert.isFalse(launchedDenied.some((name) => name.startsWith("mcp__docs__")));
+
+      harness.query.mcpServerStatusValue = [
+        { name: "docs", status: "connected", source: "dynamic" },
+      ];
+      const reEnabled = yield* adapter.reloadMcpConfig!({
+        threadId,
+        mcpServers: { docs: hubServers.docs },
+      });
+      assert.isFalse(reEnabled.restartRequired);
+      // Left-out servers are named in the Apply result.
+      assert.isTrue(reEnabled.errors.some((error) => error.server === "later"));
+      assert.deepEqual(fakeHub.declined, []);
+
+      // A plugin server now holds the name: Claude keeps it, and F5's endpoint is unbound.
+      harness.query.mcpServerStatusValue = [
+        { name: "docs", status: "connected", source: "plugin" },
+      ];
+      yield* adapter.reloadMcpConfig!({ threadId, mcpServers: { docs: hubServers.docs } });
+      assert.deepEqual(fakeHub.declined, ["docs"]);
     }).pipe(Effect.provide(harness.layer));
   });
 

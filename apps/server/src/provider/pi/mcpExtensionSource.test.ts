@@ -4,7 +4,7 @@ import * as NodePath from "node:path";
 import * as NodeOS from "node:os";
 import * as NodeModule from "node:module";
 import * as NodeVM from "node:vm";
-import { assert, describe, expect, it } from "@effect/vitest";
+import { assert, describe, expect, it, vi } from "@effect/vitest";
 
 import { PI_F5_MCP_EXTENSION_SOURCE } from "./mcpExtensionSource.ts";
 import { loadMcpBridge } from "./mcpBridge.testkit.ts";
@@ -539,8 +539,38 @@ describe("Pi hub MCP servers", () => {
       (event: unknown, ctx: { ui: { notify: (message: string) => void } }) => Promise<void>
     >;
     await hubSessionStart!({}, { ui: { notify: (message) => notices.push(message) } });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(notices).toContain("MCP servers unavailable: gone");
+    await vi.waitFor(() => expect(notices).toContain("MCP servers unavailable: gone"));
+  });
+
+  it("waits for the server's startup timeout and drops the hub tokens from the environment", async () => {
+    const bridge = await loadMcpBridge({
+      modern: true,
+      userMcpServers: [{ ...userMcpServers[0]!, startupTimeoutMs: 90_000 }],
+    });
+    expect(bridge.abortTimeouts).toContain(120_000);
+    expect(bridge.processEnv.F5_PI_MCP_SERVERS).toBeUndefined();
+    expect(bridge.tools.map((tool) => tool.name)).toContain("mcp__docs__thread_status");
+  });
+
+  it("retries a server that failed at load when the session starts", async () => {
+    let down = true;
+    const bridge = await loadMcpBridge({
+      modern: true,
+      userMcpServers: [userMcpServers[0]!],
+      isDown: (url) => down && url.includes("/user/docs"),
+    });
+    expect(bridge.tools.some((tool) => tool.name.startsWith("mcp__docs__"))).toBe(false);
+
+    down = false;
+    const notices: string[] = [];
+    const [hubSessionStart] = bridge.allHandlers.get("session_start")! as unknown as Array<
+      (event: unknown, ctx: { ui: { notify: (message: string) => void } }) => Promise<void>
+    >;
+    await hubSessionStart!({}, { ui: { notify: (message) => notices.push(message) } });
+    await vi.waitFor(() =>
+      expect(bridge.tools.map((tool) => tool.name)).toContain("mcp__docs__thread_status"),
+    );
+    expect(notices).toEqual([]);
   });
 
   it("asks before running a hub tool even when it claims to be read-only", async () => {

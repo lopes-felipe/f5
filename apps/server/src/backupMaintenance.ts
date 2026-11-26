@@ -22,6 +22,7 @@ export type BackupExportConfig = Pick<
   | "secretsDir"
   | "profile"
   | "profilesRoot"
+  | "secretStoreKey"
 >;
 interface BackupMaintenanceInput {
   readonly config: BackupExportConfig;
@@ -106,10 +107,15 @@ export function runBackupMaintenance(
         secretsDir,
         profile,
         profilesRoot,
+        secretStoreKey,
       } = input.config;
       child.stdin.end(
         JSON.stringify({
           ...input,
+          // Like the password, the at-rest key travels only over the private pipe.
+          ...(input.includeSecrets && secretStoreKey
+            ? { secretStoreKey: Buffer.from(secretStoreKey).toString("base64") }
+            : {}),
           config: {
             dbPath,
             stateDir,

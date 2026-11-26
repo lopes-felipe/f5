@@ -87,8 +87,10 @@ export function hubEndpointsForCodex(
 
 /**
  * Claude entries for hub endpoints, with the per-session credential as a header.
- * The SDK passes these on Claude's command line; the credential only reaches this
- * session's loopback endpoint and is revoked when the session ends.
+ * Header-bearing servers never reach Claude's command line: the SDK delivers them
+ * over `initialize`, or F5 sends them over the control channel for older CLIs (see
+ * `createClaudeQueryWithPrivateMcp`). The credential only reaches this session's
+ * loopback endpoint and is revoked when the session ends.
  */
 export function hubEndpointsForClaude(
   endpoints: ReadonlyArray<McpHubEndpoint>,

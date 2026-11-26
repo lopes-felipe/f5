@@ -9,6 +9,7 @@ const endpoint = (serverName: string): McpHubEndpoint => ({
   token: "t",
   transport: "http",
   toolTimeoutMs: 1000,
+  startupTimeoutMs: 30_000,
 });
 
 describe("one prompt per hub tool call", () => {

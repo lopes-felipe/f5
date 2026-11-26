@@ -11,6 +11,7 @@ import {
 } from "../Services/ServerSecretStore.ts";
 import {
   decryptSecretValue,
+  ENCRYPTED_SECRET_PREFIXES,
   encryptSecretValue,
   isEncryptedSecretName,
   isEncryptedSecretValue,
@@ -231,6 +232,24 @@ export const makeServerSecretStore = Effect.gen(function* () {
         (cause) => new SecretStoreError({ message: "Failed to list secrets.", cause }),
       ),
     );
+
+  // With a keychain key, values an earlier headless run left under the key file are
+  // moved onto the keychain key, and the key file is removed once nothing needs it.
+  if (configuredKey)
+    yield* Effect.gen(function* () {
+      if ((yield* readRaw(SECRET_STORE_KEY_FILE)) === null) return;
+      let dependents = 0;
+      for (const prefix of ENCRYPTED_SECRET_PREFIXES)
+        for (const { name } of yield* list(prefix)) {
+          // `get` rewrites a value it could only decrypt with the file key.
+          yield* get(name).pipe(Effect.ignore);
+          const stored = yield* readRaw(name);
+          if (stored && decryptSecretValue(configuredKey, name, stored) === null) dependents += 1;
+        }
+      if (dependents > 0) return;
+      yield* remove(SECRET_STORE_KEY_FILE);
+      fileKey = undefined;
+    }).pipe(Effect.ignore);
 
   return {
     list,

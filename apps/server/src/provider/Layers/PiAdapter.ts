@@ -51,7 +51,11 @@ import type {
 import { parsePiCompactCommand } from "../pi/commands.ts";
 import { readPiCatalog, type PiCatalog } from "../pi/PiMetadata.ts";
 import { buildPiRpcLaunch, resolvePiLaunchArgs } from "../pi/launch.ts";
-import type { McpHubShape } from "../../mcp/hub/McpHub.ts";
+import {
+  describeMcpHubOmissions,
+  type McpHubOmission,
+  type McpHubShape,
+} from "../../mcp/hub/McpHub.ts";
 import { materializePiMcpExtension } from "../pi/materializeExtension.ts";
 import { makePiRpcConnection, PiRpcError, type PiRpcConnection } from "../pi/PiRpc.ts";
 import {
@@ -967,11 +971,10 @@ export const makePiAdapter = (settings: PiSettings, options: PiAdapterOptions) =
                   const projectMcpServers = input.workflowExecutionProfile
                     ? undefined
                     : input.providerOptions?.mcpServers;
+                  const wantsHub =
+                    projectMcpServers !== undefined && Object.keys(projectMcpServers).length > 0;
                   const hubAttachment =
-                    options.mcpHub?.available &&
-                    extensionPath !== undefined &&
-                    projectMcpServers &&
-                    Object.keys(projectMcpServers).length > 0
+                    options.mcpHub && extensionPath !== undefined && wantsHub
                       ? options.mcpHub.attach({
                           threadId: input.threadId,
                           ...(input.projectId ? { projectId: input.projectId } : {}),
@@ -987,6 +990,18 @@ export const makePiAdapter = (settings: PiSettings, options: PiAdapterOptions) =
                   if (hubAttachment) {
                     yield* Effect.addFinalizer(() => Effect.promise(() => hubAttachment.dispose()));
                   }
+                  // Servers Pi did not get, reported once the session is configured.
+                  const hubOmissions: ReadonlyArray<McpHubOmission> = hubAttachment
+                    ? hubAttachment.omitted
+                    : wantsHub
+                      ? Object.keys(projectMcpServers).map((serverName) => ({
+                          serverName,
+                          reason:
+                            extensionPath === undefined
+                              ? "was skipped because the F5 Pi extension is unavailable"
+                              : "was skipped because F5's MCP hub is unavailable in this runtime",
+                        }))
+                      : [];
                   const launch = buildPiRpcLaunch({
                     launchArgs: parsed.args,
                     environment: options.environment,
@@ -999,6 +1014,7 @@ export const makePiAdapter = (settings: PiSettings, options: PiAdapterOptions) =
                             url: endpoint.url,
                             token: endpoint.token,
                             timeoutMs: endpoint.toolTimeoutMs,
+                            startupTimeoutMs: endpoint.startupTimeoutMs,
                           })),
                         }
                       : {}),
@@ -1128,6 +1144,9 @@ export const makePiAdapter = (settings: PiSettings, options: PiAdapterOptions) =
                       },
                     },
                   });
+                  const mcpOmissions = describeMcpHubOmissions("Pi", hubOmissions);
+                  if (mcpOmissions)
+                    yield* emit(ctx, { type: "config.warning", payload: mcpOmissions });
                   if (options.onCatalog) yield* options.onCatalog(catalog);
                   return ctx.session;
                 }),

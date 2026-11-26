@@ -45,6 +45,8 @@ import type { McpHubUpstream } from "./McpHubUpstream.ts";
 
 /** A provider rarely holds more than one connection per endpoint; reconnects replace it. */
 const MAX_CONNECTIONS_PER_SLOT = 4;
+/** How long a provider's initialize waits for the upstream, to forward its instructions. */
+const INSTRUCTIONS_WAIT_MS = 5_000;
 
 interface DownstreamConnection {
   readonly transport: StreamableHTTPServerTransport;
@@ -80,6 +82,7 @@ export class McpHubSlot {
   private unsubscribe: () => void = () => undefined;
   private readonly unsubscribeThread: () => void;
   private closed = false;
+  private generation = 0;
 
   constructor(options: McpHubSlotOptions) {
     this.id = options.id;
@@ -185,6 +188,14 @@ export class McpHubSlot {
   }
 
   /**
+   * Changes whenever the endpoint is re-bound, so an MCP App approval reviewed
+   * against one connection never authorizes a call on its replacement.
+   */
+  get binding(): string {
+    return `${this.id}:${this.generation}`;
+  }
+
+  /**
    * Points the endpoint at another upstream (a saved change) or at none (the server
    * was removed), keeping the provider's connection. Providers are told the lists
    * changed so they list again.
@@ -197,6 +208,7 @@ export class McpHubSlot {
 
   private bind(upstream: McpHubUpstream | undefined): void {
     this.unsubscribe();
+    this.generation += 1;
     this.current = upstream;
     this.unsubscribe = upstream
       ? upstream.onListChanged((change) => this.notify(change))
@@ -217,6 +229,7 @@ export class McpHubSlot {
 
   /** The current upstream, or an error explaining that the server was removed. */
   private requireUpstream(): McpHubUpstream {
+    if (this.closed) throw new McpError(ErrorCode.InvalidRequest, "This MCP endpoint is closed.");
     if (this.current) return this.current;
     throw new McpError(
       ErrorCode.InvalidRequest,
@@ -230,8 +243,8 @@ export class McpHubSlot {
 
   /** MCP Apps: the tools this session's provider sees, read from the hub directly. */
   async appListTools(): Promise<Tool[]> {
-    const upstream = this.current;
-    if (!upstream || this.disabledHere()) return [];
+    if (!this.current || this.disabledHere()) return [];
+    const upstream = this.requireUpstream();
     return this.listAllowedTools(upstream);
   }
 
@@ -253,6 +266,9 @@ export class McpHubSlot {
       );
     const client = await upstreamClient(upstream);
     const startedAt = Date.now();
+    // Tracked like a provider call, so a question the server asks meanwhile is never
+    // forwarded to another conversation (an app has no way to answer it, so it is declined).
+    const release = upstream.trackCall({ threadId: this.threadId, startedAt });
     try {
       const result = await upstreamCall(
         upstream,
@@ -274,6 +290,8 @@ export class McpHubSlot {
         messageOf(error),
       );
       throw error;
+    } finally {
+      release();
     }
   }
 
@@ -314,6 +332,13 @@ export class McpHubSlot {
     }
     if (request.method !== "POST")
       return writeError(response, 400, "Initialize an MCP session with POST first.");
+    // The server's instructions arrive with the upstream's own initialize. Wait briefly
+    // so the provider's first connection carries them; a slow server never stalls it long.
+    // An unbound slot has no instructions to wait for.
+    await Promise.race([
+      (this.upstream?.ensureConnected() ?? Promise.resolve()).catch(() => undefined),
+      new Promise((resolve) => setTimeout(resolve, INSTRUCTIONS_WAIT_MS).unref()),
+    ]);
     // Oldest connections give way to new ones, so reconnects never exhaust the slot.
     while (this.connections.size >= MAX_CONNECTIONS_PER_SLOT) {
       const [oldest, connection] = this.connections.entries().next().value!;
@@ -447,13 +472,29 @@ export class McpHubSlot {
         | undefined;
       const release = upstream.trackCall({
         threadId: this.threadId,
-        startedAt: Date.now(),
+        startedAt,
         ...(elicitation
           ? {
               elicit: async (params, signal) => {
                 if (params.mode === "url" && !elicitation.url) return { action: "decline" };
-                return server.elicitInput(params, { signal, relatedRequestId: extra.requestId });
+                // A person may take a while: the question may use the call's remaining
+                // time, not the SDK's 60 s request default.
+                const remaining = startedAt + upstream.toolTimeoutMs() - Date.now();
+                return server.elicitInput(params, {
+                  signal,
+                  relatedRequestId: extra.requestId,
+                  timeout: Math.max(1_000, remaining),
+                });
               },
+              ...(elicitation.url
+                ? {
+                    completeElicitation: (elicitationId: string) => {
+                      void server
+                        .createElicitationCompletionNotifier(elicitationId)()
+                        .catch(() => undefined);
+                    },
+                  }
+                : {}),
             }
           : {}),
       });
@@ -484,6 +525,9 @@ export class McpHubSlot {
         );
         return result;
       } catch (error) {
+        // A lost session or revoked credential drops the connection for recovery; the
+        // call itself is not replayed, since it may have had side effects.
+        upstream.noteRequestFailure(client, error);
         const message = upstream.redact(messageOf(error));
         this.record(
           name,
@@ -567,13 +611,17 @@ async function upstreamClient(upstream: McpHubUpstream) {
   return upstreamCall(upstream, () => upstream.ensureConnected());
 }
 
-/** Upstream failures reach the provider as redacted JSON-RPC errors. */
+/**
+ * Upstream failures reach the provider as redacted JSON-RPC errors. Structured `data`
+ * is dropped: it can echo credentials that message redaction would not see.
+ */
 async function upstreamCall<T>(upstream: McpHubUpstream, run: () => Promise<T>): Promise<T> {
+  const client = upstream.liveClient;
   try {
     return await run();
   } catch (error) {
-    if (error instanceof McpError)
-      throw new McpError(error.code, upstream.redact(error.message), error.data);
+    upstream.noteRequestFailure(client, error);
+    if (error instanceof McpError) throw new McpError(error.code, upstream.redact(error.message));
     throw new McpError(ErrorCode.InternalError, upstream.redact(messageOf(error)));
   }
 }

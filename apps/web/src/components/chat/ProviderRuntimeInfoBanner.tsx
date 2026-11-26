@@ -242,6 +242,8 @@ function McpRuntimeChip({
   const disabledHere = new Set(
     (threadServers.data?.disabledServers ?? []).map((name) => mcpServerNameKey(name)),
   );
+  // Only servers saved in F5 have a settings panel to open.
+  const savedNames = new Set(Object.keys(config.data?.servers ?? {}).map(mcpServerNameKey));
   const needsSignIn = servers.filter((server) => server.status === "needs-auth").length;
   const signInLabel =
     needsSignIn > 0 ? `${needsSignIn} ${needsSignIn === 1 ? "needs" : "need"} sign-in` : null;
@@ -278,7 +280,7 @@ function McpRuntimeChip({
                       ? ` · ${server.toolCount} ${server.toolCount === 1 ? "tool" : "tools"}`
                       : ""}
                   </span>
-                  {server.name ? (
+                  {server.name && savedNames.has(mcpServerNameKey(server.name)) ? (
                     <Link
                       to="/settings"
                       search={{

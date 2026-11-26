@@ -11,7 +11,12 @@ import { randomBytes } from "node:crypto";
 import * as Http from "node:http";
 import type { AddressInfo } from "node:net";
 
-import { auth, type OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
+import {
+  auth,
+  extractResourceMetadataUrl,
+  type OAuthClientProvider,
+} from "@modelcontextprotocol/sdk/client/auth.js";
+import { LATEST_PROTOCOL_VERSION } from "@modelcontextprotocol/sdk/types.js";
 import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type {
   McpCompleteHubSignInResult,
@@ -33,10 +38,13 @@ import { CodexMcpEventBus } from "../../codex/CodexMcpEventBus.ts";
 import { ProjectMcpConfigService } from "../ProjectMcpConfigService.ts";
 import { McpHub, type McpHubShape } from "./McpHub.ts";
 import {
+  bumpMcpOAuthEpoch,
   McpOAuthProvider,
   mcpOAuthExpiresAt,
   mcpOAuthKey,
   mcpOAuthServerUrl,
+  mcpUsesStaticAuthorization,
+  updateMcpOAuthRecord,
   type McpOAuthStorage,
 } from "./McpOAuth.ts";
 
@@ -55,15 +63,21 @@ interface Attempt {
   readonly state: string;
   readonly provider: OAuthClientProvider;
   readonly info: McpHubSignInAttempt;
+  /** Bound to the attempt's deadline, so a stalled endpoint cannot outlive it. */
+  readonly fetchFn: FetchLike;
+  readonly resourceMetadataUrl: URL | undefined;
   readonly close: () => void;
   completing?: Promise<McpCompleteHubSignInResult>;
 }
 
 export interface McpHubAuthManagerOptions {
   readonly storage: McpOAuthStorage | undefined;
-  readonly hub: Pick<McpHubShape, "reconnectOAuth"> | undefined;
+  readonly hub:
+    | (Pick<McpHubShape, "reconnectOAuth"> & Partial<Pick<McpHubShape, "accountEnvironment">>)
+    | undefined;
   /** The effective servers for a project, or the common servers without one. */
   readonly readServers: (projectId?: ProjectId) => Promise<McpProjectServersConfig>;
+  /** Used when no live session gives the server's account environment. */
   readonly environment?: NodeJS.ProcessEnv;
   readonly publish?: (payload: McpStatusUpdatedPayload) => void;
   /** Test seam for the authorization server's HTTP calls. */
@@ -78,8 +92,23 @@ function callbackPage(title: string, detail: string): string {
   return `<!doctype html><meta charset="utf-8"><title>${escape(title)}</title><body style="font-family:system-ui;margin:3rem"><h1 style="font-size:1.25rem">${escape(title)}</h1><p>${escape(detail)}</p></body>`;
 }
 
+/** The port of a loopback redirect URL, which F5 can listen on itself. */
+function loopbackPort(url: string | undefined): number | undefined {
+  if (!url) return undefined;
+  try {
+    const parsed = new URL(url);
+    if (!["127.0.0.1", "localhost", "[::1]"].includes(parsed.hostname) || !parsed.port)
+      return undefined;
+    return Number(parsed.port);
+  } catch {
+    return undefined;
+  }
+}
+
 export class McpHubAuthManager {
   private readonly attempts = new Map<string, Attempt>();
+  /** Cleanup for attempts that are still discovering, before they are registered. */
+  private readonly starting = new Map<string, () => void>();
   private readonly now: () => number;
 
   constructor(private readonly options: McpHubAuthManagerOptions) {
@@ -91,6 +120,36 @@ export class McpHubAuthManager {
     return this.options.storage;
   }
 
+  /** The environment `${env:…}` resolves against, the same one the server's sessions use. */
+  private environmentFor(serverName: string, projectId?: ProjectId): NodeJS.ProcessEnv {
+    return (
+      this.options.hub?.accountEnvironment?.(serverName, projectId) ??
+      this.options.environment ??
+      process.env
+    );
+  }
+
+  private resolveOne(
+    serverName: string,
+    configured: McpServerDefinition,
+    projectId?: ProjectId,
+  ):
+    | { definition: McpServerDefinition; serverUrl: string; environment: NodeJS.ProcessEnv }
+    | { problem: string } {
+    const environment = this.environmentFor(serverName, projectId);
+    const resolved = interpolateMcpServers({ [serverName]: configured }, environment);
+    const skip = resolved.skipped[0];
+    if (skip) return { problem: `MCP server ${serverName} ${describeMcpInterpolationSkip(skip)}.` };
+    const definition = resolved.servers[serverName] ?? configured;
+    const serverUrl = mcpOAuthServerUrl(definition);
+    if (!serverUrl) return { problem: `MCP server ${serverName} runs locally and has no sign-in.` };
+    if (mcpUsesStaticAuthorization(definition, environment))
+      return {
+        problem: `MCP server ${serverName} uses its configured Authorization and has no sign-in.`,
+      };
+    return { definition, serverUrl, environment };
+  }
+
   private async resolveServer(
     serverName: string,
     projectId?: ProjectId,
@@ -98,25 +157,21 @@ export class McpHubAuthManager {
     const servers = await this.options.readServers(projectId);
     const configured = servers[serverName];
     if (!configured) throw fail(`MCP server ${serverName} is not configured here.`);
-    const resolved = interpolateMcpServers(
-      { [serverName]: configured },
-      this.options.environment ?? process.env,
-    );
-    const skip = resolved.skipped[0];
-    if (skip) throw fail(`MCP server ${serverName} ${describeMcpInterpolationSkip(skip)}.`);
-    const definition = resolved.servers[serverName] ?? configured;
-    const serverUrl = mcpOAuthServerUrl(definition);
-    if (!serverUrl) throw fail(`MCP server ${serverName} runs locally and has no sign-in.`);
-    return { definition, serverUrl };
+    const resolved = this.resolveOne(serverName, configured, projectId);
+    if ("problem" in resolved) throw fail(resolved.problem);
+    return resolved;
   }
 
   async status(projectId?: ProjectId): Promise<McpGetHubAuthStatusResult> {
     const servers = await this.options.readServers(projectId);
-    const resolved = interpolateMcpServers(servers, this.options.environment ?? process.env);
     const result: Array<McpGetHubAuthStatusResult["servers"][number]> = [];
-    for (const [name, definition] of Object.entries(resolved.servers)) {
-      const serverUrl = mcpOAuthServerUrl(definition);
-      if (!serverUrl || definition.enabled === false) continue;
+    for (const [name, configured] of Object.entries(servers)) {
+      if (configured.enabled === false) continue;
+      // Local servers, servers with their own Authorization and servers whose
+      // variables do not resolve have nothing to sign in to.
+      const resolved = this.resolveOne(name, configured, projectId);
+      if ("problem" in resolved) continue;
+      const { definition, serverUrl } = resolved;
       const key = mcpOAuthKey(serverUrl, definition.oauthClientId);
       const record = this.options.storage ? await this.options.storage.read(key) : undefined;
       const expiresAt = mcpOAuthExpiresAt(record);
@@ -141,39 +196,98 @@ export class McpHubAuthManager {
 
     const id = randomBytes(12).toString("base64url");
     const state = randomBytes(24).toString("base64url");
-    const listener = await this.listen(id, definition.oauthCallbackPort);
-    const redirectUrl = definition.oauthCallbackUrl ?? `http://127.0.0.1:${listener.port}/callback`;
+    const record = await storage.read(key);
+    const configuredRedirect = definition.oauthCallbackUrl;
+    // A loopback callback URL names the port to listen on. Otherwise reuse the port
+    // the stored registration was made for, so servers that match redirect URIs
+    // exactly keep accepting it; fall back to any free port.
+    const fixedPort = definition.oauthCallbackPort ?? loopbackPort(configuredRedirect);
+    const callbackPath =
+      configuredRedirect && loopbackPort(configuredRedirect) !== undefined
+        ? new URL(configuredRedirect).pathname
+        : "/callback";
+    const reusePort = fixedPort === undefined ? loopbackPort(record?.redirectUrl) : undefined;
+    const listener =
+      reusePort !== undefined
+        ? await this.listen(id, reusePort, callbackPath).catch(() =>
+            this.listen(id, undefined, callbackPath),
+          )
+        : await this.listen(id, fixedPort, callbackPath);
+    const redirectUrl = configuredRedirect ?? `http://127.0.0.1:${listener.port}/callback`;
+
+    // One deadline covers discovery, registration, the browser and the code exchange,
+    // and the listener is tracked from the moment it opens.
+    const deadline = new AbortController();
+    let ended = false;
+    const end = (reason = "This sign-in attempt was cancelled.") => {
+      if (ended) return;
+      ended = true;
+      clearTimeout(timer);
+      deadline.abort(fail(reason));
+      listener.close();
+      this.starting.delete(id);
+      this.attempts.delete(id);
+    };
+    const timer = setTimeout(
+      () => end("This sign-in attempt timed out. Start sign-in again."),
+      SIGN_IN_ATTEMPT_TTL_MS,
+    );
+    timer.unref?.();
+    this.starting.set(id, end);
+    const base = this.options.fetchFn ?? fetch;
+    const fetchFn: FetchLike = (url, init) =>
+      base(url, {
+        ...init,
+        signal: init?.signal ? AbortSignal.any([init.signal, deadline.signal]) : deadline.signal,
+      });
+
     let authorizationUrl: URL | undefined;
-    const provider = new McpOAuthProvider({
-      storage,
-      serverUrl,
-      definition,
-      interactive: {
-        redirectUrl,
-        state,
-        onAuthorizationUrl: (url) => {
-          authorizationUrl = url;
-        },
-      },
-    });
     let outcome: Awaited<ReturnType<typeof auth>>;
+    let resourceMetadataUrl: URL | undefined;
+    let provider: McpOAuthProvider;
     try {
+      // A registration made for another redirect is useless to servers that match it
+      // exactly; register again unless the client ID is configured.
+      if (
+        !definition.oauthClientId &&
+        record?.clientInformation &&
+        record.redirectUrl !== redirectUrl
+      )
+        await updateMcpOAuthRecord(storage, key, (current) => {
+          const { clientInformation: _client, redirectUrl: _redirect, ...rest } = current;
+          return rest;
+        });
+      provider = new McpOAuthProvider({
+        storage,
+        serverUrl,
+        definition,
+        interactive: {
+          redirectUrl,
+          state,
+          onAuthorizationUrl: (url) => {
+            authorizationUrl = url;
+          },
+        },
+      });
+      resourceMetadataUrl = await this.probeResourceMetadata(serverUrl, fetchFn);
       outcome = await auth(provider, {
         serverUrl,
         ...(definition.scopes?.length ? { scope: definition.scopes.join(" ") } : {}),
-        ...(this.options.fetchFn ? { fetchFn: this.options.fetchFn } : {}),
+        ...(resourceMetadataUrl ? { resourceMetadataUrl } : {}),
+        fetchFn,
       });
     } catch (error) {
-      listener.close();
+      end();
       throw fail(`Could not start sign-in for ${serverName}: ${readMessage(error)}`);
     }
+    if (ended)
+      throw fail("This sign-in attempt ended before the browser step. Start sign-in again.");
     if (outcome === "AUTHORIZED" || !authorizationUrl) {
-      listener.close();
+      end();
       await this.signedIn(serverName, key);
       return { status: "signed-in" };
     }
-    const timer = setTimeout(() => this.cancel(id), SIGN_IN_ATTEMPT_TTL_MS);
-    timer.unref?.();
+    this.starting.delete(id);
     const info: McpHubSignInAttempt = {
       attemptId: id,
       authorizationUrl: authorizationUrl.toString(),
@@ -188,12 +302,44 @@ export class McpHubAuthManager {
       state,
       provider,
       info,
-      close: () => {
-        clearTimeout(timer);
-        listener.close();
-      },
+      fetchFn,
+      resourceMetadataUrl,
+      close: () => end(),
     });
     return { status: "pending", attempt: info };
+  }
+
+  /**
+   * The protected-resource metadata URL from the server's 401 challenge. Servers may
+   * advertise it only there, and background connections already honour it.
+   */
+  private async probeResourceMetadata(
+    serverUrl: string,
+    fetchFn: FetchLike,
+  ): Promise<URL | undefined> {
+    try {
+      const response = await fetchFn(serverUrl, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 0,
+          method: "initialize",
+          params: {
+            protocolVersion: LATEST_PROTOCOL_VERSION,
+            capabilities: {},
+            clientInfo: { name: "F5", version: "1" },
+          },
+        }),
+      });
+      await response.body?.cancel().catch(() => undefined);
+      return response.status === 401 ? extractResourceMetadataUrl(response) : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   /** Finishes an attempt from the redirected URL, whether the browser or the user brought it. */
@@ -228,7 +374,10 @@ export class McpHubAuthManager {
         const outcome = await auth(attempt.provider, {
           serverUrl: attempt.serverUrl,
           authorizationCode: code,
-          ...(this.options.fetchFn ? { fetchFn: this.options.fetchFn } : {}),
+          ...(attempt.resourceMetadataUrl
+            ? { resourceMetadataUrl: attempt.resourceMetadataUrl }
+            : {}),
+          fetchFn: attempt.fetchFn,
         });
         if (outcome !== "AUTHORIZED") throw new Error("The server did not issue tokens.");
       } catch (error) {
@@ -247,11 +396,16 @@ export class McpHubAuthManager {
     const { definition, serverUrl } = await this.resolveServer(serverName, projectId);
     const key = mcpOAuthKey(serverUrl, definition.oauthClientId);
     for (const attempt of this.attempts.values()) if (attempt.key === key) this.cancel(attempt.id);
-    const record = await storage.read(key);
-    if (!record?.tokens) return { signedOut: false };
+    // Token writes already in flight (a code exchange or a refresh) are rejected from here on.
+    bumpMcpOAuthEpoch(key);
+    let hadTokens = false;
     // The client registration is kept, so signing in again skips registration.
-    const { tokens: _tokens, tokensSavedAt: _savedAt, ...rest } = record;
-    await storage.write(key, rest);
+    await updateMcpOAuthRecord(storage, key, (record) => {
+      hadTokens = Boolean(record.tokens);
+      const { tokens: _tokens, tokensSavedAt: _savedAt, ...rest } = record;
+      return rest;
+    });
+    if (!hadTokens) return { signedOut: false };
     await this.options.hub?.reconnectOAuth(key);
     this.options.publish?.({ scope: "common", reason: "hub", serverName });
     return { signedOut: true };
@@ -266,6 +420,7 @@ export class McpHubAuthManager {
 
   close(): void {
     for (const id of this.attempts.keys()) this.cancel(id);
+    for (const end of this.starting.values()) end();
   }
 
   private async signedIn(serverName: string, key: string): Promise<number> {
@@ -275,11 +430,21 @@ export class McpHubAuthManager {
   }
 
   /** A loopback listener for one attempt; it answers only the redirect for that attempt. */
-  private listen(attemptId: string, port: number | undefined) {
+  private listen(attemptId: string, port: number | undefined, callbackPath: string) {
     return new Promise<{ port: number; close: () => void }>((resolve, reject) => {
       const server = Http.createServer((request, response) => {
-        const target = new URL(request.url ?? "/", "http://127.0.0.1");
-        if (request.method !== "GET" || !target.searchParams.has("state")) {
+        let target: URL;
+        try {
+          target = new URL(request.url ?? "/", "http://127.0.0.1");
+        } catch {
+          response.writeHead(400).end();
+          return;
+        }
+        if (
+          request.method !== "GET" ||
+          target.pathname !== callbackPath ||
+          !target.searchParams.has("state")
+        ) {
           response.writeHead(404).end();
           return;
         }

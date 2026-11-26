@@ -142,6 +142,8 @@ export type McpHubServerState = typeof McpHubServerState.Type;
 
 /** One upstream connection owned by F5's MCP hub. */
 export const McpHubServerStatus = Schema.Struct({
+  /** Stable, opaque id of this connection (several can serve one server). */
+  id: Schema.optional(TrimmedNonEmptyString),
   name: TrimmedNonEmptyString,
   connectionScope: McpConnectionScope,
   transport: McpServerTransportType,
@@ -480,6 +482,8 @@ export const McpImportCandidate = Schema.Struct({
   selectedByDefault: Schema.optional(Schema.Boolean),
   id: Schema.String,
   name: Schema.String,
+  /** The name in the source file when it was imported under another name. */
+  originalName: Schema.optional(Schema.String),
   source: Schema.String,
   server: Schema.optional(McpServerDefinition),
   issues: Schema.Array(McpImportIssue),

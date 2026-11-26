@@ -41,7 +41,11 @@ import {
 } from "../acp/AntigravityInteraction.ts";
 import type { InteractionOutcome, InteractionSession } from "../../mcp/interactionMcpTools.ts";
 import { mcpSessionStdioLaunch, type McpSessionStdioLaunch } from "../../mcp/sessionStdioShim.ts";
-import type { McpHubShape } from "../../mcp/hub/McpHub.ts";
+import {
+  describeMcpHubOmissions,
+  type McpHubOmission,
+  type McpHubShape,
+} from "../../mcp/hub/McpHub.ts";
 import { hubEndpointsToAcpServers } from "../../mcp/hub/acpHubServers.ts";
 import {
   type AntigravityTurnFailure,
@@ -1092,6 +1096,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           const projectMcpServers = input.workflowExecutionProfile
             ? undefined
             : input.providerOptions?.mcpServers;
+          // Servers the agent did not get, reported once the session is ready.
+          let hubOmissions: ReadonlyArray<McpHubOmission> = [];
           const withHubServers =
             (automation: typeof catalogs.mcpServers) =>
             (
@@ -1099,12 +1105,14 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             ): ReadonlyArray<EffectAcpSchema.McpServer> => {
               const base = automation(init);
               const hub = options?.mcpHub;
-              if (
-                !hub?.available ||
-                !projectMcpServers ||
-                Object.keys(projectMcpServers).length === 0
-              )
+              if (!projectMcpServers || Object.keys(projectMcpServers).length === 0) return base;
+              if (!hub) {
+                hubOmissions = Object.keys(projectMcpServers).map((serverName) => ({
+                  serverName,
+                  reason: "was skipped because F5's MCP hub is unavailable in this runtime",
+                }));
                 return base;
+              }
               const attachment = hub.attach({
                 threadId: input.threadId,
                 projectId: input.projectId,
@@ -1130,6 +1138,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 http: init.agentCapabilities?.mcpCapabilities?.http === true,
                 stdioLaunch,
               });
+              hubOmissions = [...attachment.omitted, ...translated.omitted];
               return [...base, ...translated.servers];
             };
 
@@ -2129,6 +2138,15 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             threadId: input.threadId,
             payload: { state: "ready", reason: `${providerLabel} ACP session ready` },
           });
+          const mcpOmissions = describeMcpHubOmissions(providerLabel, hubOmissions);
+          if (mcpOmissions)
+            yield* offerRuntimeEvent({
+              type: "config.warning",
+              ...(yield* makeEventStamp(ctx)),
+              provider: PROVIDER,
+              threadId: input.threadId,
+              payload: mcpOmissions,
+            });
           yield* offerRuntimeEvent({
             type: "thread.started",
             ...(yield* makeEventStamp(ctx)),
