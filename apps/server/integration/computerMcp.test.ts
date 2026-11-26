@@ -27,14 +27,37 @@ it("serves the complete computer catalog through consent, image, input, interrup
         });
         const token = Object.values(session.env)[0]!;
         let nextRpcId = 0;
+        let mcpSession: string | null = null;
         const rpc = async (method: string, params: unknown = {}, id = ++nextRpcId) => {
           const response = await fetch(server.getUrl("computer"), {
             method: "POST",
-            headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+            headers: {
+              authorization: `Bearer ${token}`,
+              "content-type": "application/json",
+              ...(mcpSession ? { "mcp-session-id": mcpSession } : {}),
+            },
             body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
           });
           return { status: response.status, body: (await response.json()) as any };
         };
+        mcpSession = yield* Effect.promise(async () => {
+          const response = await fetch(server.getUrl("computer"), {
+            method: "POST",
+            headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+            body: JSON.stringify({
+              jsonrpc: "2.0",
+              id: 0,
+              method: "initialize",
+              params: {
+                protocolVersion: "2025-06-18",
+                capabilities: {},
+                clientInfo: { name: "test", version: "0.0.0" },
+              },
+            }),
+          });
+          await response.arrayBuffer();
+          return response.headers.get("mcp-session-id");
+        });
         yield* Effect.promise(async () => {
           expect((await rpc("tools/list")).body.result.tools).toHaveLength(19);
           expect(
