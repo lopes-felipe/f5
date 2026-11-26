@@ -209,6 +209,14 @@ describe("ProviderInstanceModelPicker favorite presets", () => {
     await page.getByRole("button", { name: /Claude Fable 5.1/ }).click();
     await expect.poll(() => sectionRows("favorites").length).toBe(2);
     expect(document.querySelector("[data-model-picker-preset-effort]")).toBeNull();
+    // Favorites that differ only by effort collapse to one row, so numbers follow the rows.
+    const mod = isMac ? "⌘" : "Ctrl+";
+    expect(sectionRows("favorites").map((row) => row.querySelector("kbd")?.textContent)).toEqual([
+      `${mod}1`,
+      `${mod}2`,
+    ]);
+    await userEvent.keyboard(isMac ? "{Meta>}3{/Meta}" : "{Control>}3{/Control}");
+    expect(onChange).not.toHaveBeenCalled();
     await userEvent.keyboard(isMac ? "{Meta>}2{/Meta}" : "{Control>}2{/Control}");
     await expect
       .poll(() => onChange.mock.calls)
@@ -460,7 +468,16 @@ describe("ProviderInstanceModelPicker", () => {
 });
 
 describe("ProviderInstanceModelPicker recent models", () => {
-  function renderPicker(props: { recordRecents?: boolean } = {}) {
+  function renderPicker(
+    props: {
+      recordRecents?: boolean;
+      modelOptionsByInstance?: ReadonlyMap<
+        ProviderInstanceId,
+        ReadonlyArray<{ slug: string; name: string; isUnlisted?: boolean }>
+      >;
+      onInstanceModelChange?: () => unknown;
+    } = {},
+  ) {
     return render(
       <TooltipProvider delay={0}>
         <ProviderInstanceModelPicker
@@ -468,9 +485,9 @@ describe("ProviderInstanceModelPicker recent models", () => {
           model={"gpt-5.6-sol" as ModelSlug}
           lockedInstanceId={null}
           providers={PROVIDERS}
-          modelOptionsByInstance={MODELS}
-          {...props}
-          onInstanceModelChange={() => {}}
+          modelOptionsByInstance={props.modelOptionsByInstance ?? MODELS}
+          {...(props.recordRecents === undefined ? {} : { recordRecents: props.recordRecents })}
+          onInstanceModelChange={props.onInstanceModelChange ?? (() => {})}
         />
       </TooltipProvider>,
     );
@@ -525,6 +542,89 @@ describe("ProviderInstanceModelPicker recent models", () => {
     await page.getByPlaceholder("Search models...").fill("Sonnet");
     await userEvent.keyboard("{Enter}");
     expect(settingsMock.updateSettings).not.toHaveBeenCalled();
+  });
+
+  it("does not record a pick the caller refuses", async () => {
+    const onChange = vi.fn(() => null);
+    active = await renderPicker({ onInstanceModelChange: onChange });
+    await page.getByRole("button", { name: /GPT-5.6 Sol/ }).click();
+    await page.getByPlaceholder("Search models...").fill("Sonnet");
+    await userEvent.keyboard("{Enter}");
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(settingsMock.updateSettings).not.toHaveBeenCalled();
+  });
+
+  it("records the slug the caller applied", async () => {
+    active = await renderPicker({ onInstanceModelChange: () => "claude-fable-5-1" });
+    await page.getByRole("button", { name: /GPT-5.6 Sol/ }).click();
+    await page.getByPlaceholder("Search models...").fill("Sonnet");
+    await userEvent.keyboard("{Enter}");
+    expect(settingsMock.updateSettings).toHaveBeenCalledWith({
+      recentModels: [{ provider: CLAUDE_ID, model: "claude-fable-5-1" }],
+    });
+  });
+
+  it("hides a recent model the catalog unlisted and drops it on the next pick", async () => {
+    settingsMock.recentModels = [
+      { provider: CLAUDE_ID, model: "claude-sonnet-4-6" },
+      { provider: CURSOR_ID, model: "auto" },
+      { provider: CLAUDE_ID, model: "claude-gone" },
+    ];
+    const models = new Map<
+      ProviderInstanceId,
+      ReadonlyArray<{ slug: string; name: string; isUnlisted?: boolean }>
+    >(MODELS);
+    models.set(CLAUDE_ID, [
+      { slug: "claude-sonnet-4-6", name: "Claude Sonnet 4.6", isUnlisted: true },
+      { slug: "claude-fable-5-1", name: "Claude Fable 5.1" },
+    ]);
+    active = await renderPicker({ modelOptionsByInstance: models });
+    await page.getByRole("button", { name: /GPT-5.6 Sol/ }).click();
+    await expect.poll(() => sectionRows("recent").map(rowName)).toEqual(["Auto"]);
+    await page.getByPlaceholder("Search models...").fill("Fable");
+    await userEvent.keyboard("{Enter}");
+    // The model that left the catalog stops taking a slot; the unlisted one is still offered.
+    expect(settingsMock.updateSettings).toHaveBeenCalledWith({
+      recentModels: [
+        { provider: CLAUDE_ID, model: "claude-fable-5-1" },
+        { provider: CLAUDE_ID, model: "claude-sonnet-4-6" },
+        { provider: CURSOR_ID, model: "auto" },
+      ],
+    });
+  });
+});
+
+describe("ProviderInstanceModelPicker controlled open", () => {
+  it("starts fresh when reopened through the controlled open prop", async () => {
+    const picker = (open: boolean) => (
+      <TooltipProvider delay={0}>
+        <ProviderInstanceModelPicker
+          open={open}
+          instanceId={CODEX_ID}
+          model={"gpt-5.6-sol" as ModelSlug}
+          lockedInstanceId={null}
+          providers={PROVIDERS}
+          modelOptionsByInstance={MODELS}
+          onInstanceModelChange={() => {}}
+        />
+      </TooltipProvider>
+    );
+    active = await render(picker(true));
+    await page.getByRole("button", { name: "Cursor", exact: true }).click();
+    await page.getByPlaceholder("Search models...").fill("auto");
+    await expect.poll(() => groupNames()).toEqual(["Cursor models"]);
+
+    // `modelPicker.toggle` closes and reopens through `open`, never through `onOpenChange`.
+    await active.rerender(picker(false));
+    await expect.element(page.getByPlaceholder("Search models...")).not.toBeInTheDocument();
+    await active.rerender(picker(true));
+    await expect.element(page.getByPlaceholder("Search models...")).toHaveValue("");
+    await expect
+      .poll(() => groupNames())
+      .toEqual(["Codex models", "Claude models", "Cursor models"]);
+    expect(
+      document.querySelector('[data-model-picker-provider][aria-pressed="true"]')?.textContent,
+    ).toBe("All");
   });
 });
 
@@ -592,6 +692,19 @@ describe("ProviderInstanceModelPicker legacy models", () => {
       .poll(() => sectionRows("provider").map(rowName))
       .toEqual(["GPT-5.6 Sol", "GPT-5 Sol", "GPT-5 Luna"]);
     expect(disclosure()?.getAttribute("aria-expanded")).toBe("true");
+    // Held open, so it offers no toggle and the arrow keys skip it.
+    expect((disclosure() as HTMLButtonElement).disabled).toBe(true);
+    const input = page.getByPlaceholder("Search models...").element() as HTMLElement;
+    for (let index = 0; index < 5; index += 1)
+      input.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }),
+      );
+    await vi.waitFor(() =>
+      expect(
+        document.querySelector("[data-model-picker-row][data-highlighted]")?.textContent,
+      ).toContain("GPT-5 Luna"),
+    );
+    expect(disclosure()?.hasAttribute("data-highlighted")).toBe(false);
   });
 
   it("shows legacy matches inline while searching", async () => {
@@ -687,6 +800,8 @@ it("keeps an instance blocked by the caller as a chip with its rows disabled", a
       row.textContent?.includes("Claude Sonnet 4.6"),
     );
   await expect.poll(() => claudeRow()?.title ?? "").toBe(reason);
+  // Shown in place of the slug, so it is visible without hovering and read with the row.
+  expect(claudeRow()!.querySelector("[data-model-picker-select]")?.textContent).toContain(reason);
   const select = claudeRow()!.querySelector<HTMLButtonElement>("[data-model-picker-select]")!;
   expect(select.disabled).toBe(true);
 

@@ -320,7 +320,7 @@ function findModelRow(name: string): HTMLButtonElement | null {
 }
 
 /** The model picker filter chip for a provider's default instance. */
-function findRailInstance(provider: string): HTMLElement | null {
+function findProviderChip(provider: string): HTMLElement | null {
   return document.querySelector<HTMLElement>(
     `[data-model-picker-provider="instance:${defaultInstanceIdForDriver(ProviderDriverKind.make(provider))}"]`,
   );
@@ -858,10 +858,10 @@ describe("WorkflowCreateDialog", () => {
       findProviderFieldButton("Author A").click();
 
       await vi.waitFor(() => {
-        expect(findRailInstance("claudeAgent")).not.toBeNull();
+        expect(findProviderChip("claudeAgent")).not.toBeNull();
       });
 
-      findRailInstance("claudeAgent")?.click();
+      findProviderChip("claudeAgent")?.click();
 
       await vi.waitFor(() => {
         const rememberedOption = findModelRow("Claude Opus 4.7");
@@ -1017,10 +1017,10 @@ describe("WorkflowCreateDialog", () => {
       findProviderFieldButton("Merge").click();
 
       await vi.waitFor(() => {
-        expect(findRailInstance("claudeAgent")).not.toBeNull();
+        expect(findProviderChip("claudeAgent")).not.toBeNull();
       });
 
-      findRailInstance("claudeAgent")?.click();
+      findProviderChip("claudeAgent")?.click();
 
       await vi.waitFor(() => {
         expect(findModelRow("Claude Sonnet 4.6")).not.toBeNull();
@@ -1065,15 +1065,14 @@ describe("WorkflowCreateDialog", () => {
 
     try {
       findProviderFieldButton("Author A").click();
-      await vi.waitFor(() => expect(findRailInstance("antigravity")).not.toBeNull());
-      findRailInstance("antigravity")!.click();
+      await vi.waitFor(() => expect(findProviderChip("antigravity")).not.toBeNull());
+      findProviderChip("antigravity")!.click();
 
       await vi.waitFor(() => expect(findModelRow("Gemini 4 Neon")).not.toBeNull());
       const row = findModelRow("Gemini 4 Neon")!;
       expect(row.disabled).toBe(true);
-      expect(row.closest("[data-model-picker-row]")?.getAttribute("title")).toBe(
-        READ_ONLY_WORKFLOW_UNCERTIFIED_ANTIGRAVITY_MESSAGE,
-      );
+      // The reason shows in the row itself, not only as a tooltip.
+      expect(row.textContent).toContain(READ_ONLY_WORKFLOW_UNCERTIFIED_ANTIGRAVITY_MESSAGE);
       expect(document.body.textContent).not.toContain("No models found");
 
       row.click();
@@ -1094,8 +1093,8 @@ describe("WorkflowCreateDialog", () => {
 
     try {
       findProviderFieldButton("Author A").click();
-      await vi.waitFor(() => expect(findRailInstance("antigravity")).not.toBeNull());
-      findRailInstance("antigravity")!.click();
+      await vi.waitFor(() => expect(findProviderChip("antigravity")).not.toBeNull());
+      findProviderChip("antigravity")!.click();
       await vi.waitFor(() => expect(findModelRow("Gemini 4 Neon")?.disabled).toBe(false));
       findModelRow("Gemini 4 Neon")!.click();
       await vi.waitFor(() =>
@@ -1139,7 +1138,7 @@ describe("WorkflowCreateDialog", () => {
 
     try {
       findProviderFieldButton("Author A").click();
-      await vi.waitFor(() => expect(findRailInstance("codex")).not.toBeNull());
+      await vi.waitFor(() => expect(findProviderChip("codex")).not.toBeNull());
       expect(
         document.querySelector('[data-model-picker-provider="instance:codex_work"]'),
       ).toBeNull();
@@ -1269,8 +1268,8 @@ describe("WorkflowCreateDialog", () => {
     );
     const chooseClaude = async (field: string, model: string) => {
       findProviderFieldButton(field).click();
-      await vi.waitFor(() => expect(findRailInstance("claudeAgent")).not.toBeNull());
-      findRailInstance("claudeAgent")!.click();
+      await vi.waitFor(() => expect(findProviderChip("claudeAgent")).not.toBeNull());
+      findProviderChip("claudeAgent")!.click();
       await vi.waitFor(() => expect(findModelRow(model)).not.toBeNull());
       findModelRow(model)!.click();
       await vi.waitFor(() =>
@@ -1278,7 +1277,7 @@ describe("WorkflowCreateDialog", () => {
           model.replace("Claude ", ""),
         ),
       );
-      await vi.waitFor(() => expect(findRailInstance("claudeAgent")).toBeNull());
+      await vi.waitFor(() => expect(findProviderChip("claudeAgent")).toBeNull());
     };
     try {
       await page.getByRole("button", { name: "Document", exact: true }).click();

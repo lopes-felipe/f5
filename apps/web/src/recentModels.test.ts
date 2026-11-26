@@ -1,7 +1,7 @@
 import { ProviderInstanceId } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 
-import { isMostRecentModel, MAX_RECENT_MODELS, recordRecentModel } from "./recentModels";
+import { isSameRecentModels, MAX_RECENT_MODELS, recordRecentModel } from "./recentModels";
 
 const codex = ProviderInstanceId.make("codex");
 const claude = ProviderInstanceId.make("claudeAgent");
@@ -46,16 +46,31 @@ describe("recordRecentModel", () => {
     expect(recents).toHaveLength(MAX_RECENT_MODELS);
     expect(recents.map((entry) => entry.model)).toEqual(["d", "c", "b"]);
   });
+
+  it("drops stale entries so they stop taking slots", () => {
+    const recents = [
+      { provider: codex, model: "retired" },
+      { provider: claude, model: "claude-opus-5-5" },
+      { provider: codex, model: "gpt-5.5" },
+    ];
+    expect(
+      recordRecentModel(recents, work, "gpt-5.5", (entry) => entry.model === "retired"),
+    ).toEqual([
+      { provider: work, model: "gpt-5.5" },
+      { provider: claude, model: "claude-opus-5-5" },
+      { provider: codex, model: "gpt-5.5" },
+    ]);
+  });
 });
 
-describe("isMostRecentModel", () => {
-  it("matches only the first entry", () => {
+describe("isSameRecentModels", () => {
+  it("compares entries in order", () => {
     const recents = [
       { provider: codex, model: "gpt-5.5" },
       { provider: claude, model: "claude-opus-5-5" },
     ];
-    expect(isMostRecentModel(recents, codex, "gpt-5.5")).toBe(true);
-    expect(isMostRecentModel(recents, claude, "claude-opus-5-5")).toBe(false);
-    expect(isMostRecentModel([], codex, "gpt-5.5")).toBe(false);
+    expect(isSameRecentModels(recents, [...recents])).toBe(true);
+    expect(isSameRecentModels(recents, [...recents].reverse())).toBe(false);
+    expect(isSameRecentModels(recents, recents.slice(0, 1))).toBe(false);
   });
 });

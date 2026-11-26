@@ -14,7 +14,7 @@ import {
   removeFavoritePreset,
   toggleModelFavorite,
 } from "~/favoritePresets";
-import { isMostRecentModel, recordRecentModel } from "~/recentModels";
+import { isSameRecentModels, type RecentModel, recordRecentModel } from "~/recentModels";
 import {
   type ModelSlug,
   type ProviderDriverKind,
@@ -60,8 +60,8 @@ interface InstanceModelItem extends ModelPickerModelOption {
   readonly instance: ProviderInstanceEntry;
   /** Set on Favorites rows: the stored preset, which may pin an effort. */
   readonly preset?: FavoritePreset | undefined;
-  /** Zero-based favorite number shared with `model.favorite.N`, across all instances. */
-  readonly presetIndex?: number | undefined;
+  /** Zero-based `mod+N` number of a usable Favorites row. */
+  readonly jumpIndex?: number | undefined;
 }
 
 /** Which rows the list shows: everything, only favorites, or one provider instance. */
@@ -86,6 +86,8 @@ interface LegacyRowEntry {
   readonly instanceId: ProviderInstanceId;
   readonly count: number;
   readonly expanded: boolean;
+  /** Held open because a legacy model is active or selected, so it cannot collapse. */
+  readonly forced: boolean;
 }
 
 type RowEntry = ModelRowEntry | LegacyRowEntry;
@@ -176,7 +178,11 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
   triggerVariant?: VariantProps<typeof buttonVariants>["variant"] | undefined;
   triggerClassName?: string | undefined;
   onOpenChange?: ((open: boolean) => void) | undefined;
-  /** `preset` is the picked Favorites row's stored preset, only with `favoritePresets`. */
+  /**
+   * `preset` is the picked Favorites row's stored preset, only with `favoritePresets`.
+   * Return null to refuse the pick, or the slug actually applied; Recent records only
+   * accepted picks, under the applied slug. Any other return counts as accepted as-is.
+   */
   onInstanceModelChange: (
     instanceId: ProviderInstanceId,
     driver: ProviderDriverKind,
@@ -204,7 +210,11 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
    * restriction). Its rows stay listed, disabled with the reason, and it keeps its chip.
    */
   instanceUnavailableReason?: ((instance: ProviderInstanceEntry) => string | null) | undefined;
-  /** Picks are remembered in Recent unless this is false (for example in settings). */
+  /**
+   * Picks are remembered in Recent unless this is false. Settings pickers choose a
+   * configuration, not the model to talk to, so they still list Recent (a quick way to
+   * reach the models in use) without adding their choice to it.
+   */
   recordRecents?: boolean;
 }) {
   const settings = useSettings(selectPickerSettings);
@@ -225,6 +235,19 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
   const listRef = useRef<HTMLDivElement>(null);
   const chipsRef = useRef<HTMLDivElement>(null);
   const isOpen = props.open ?? uncontrolledOpen;
+  // Every open starts on All, with no search, nothing highlighted and legacy collapsed,
+  // however it opened: the trigger, or a controlled `open` such as `modelPicker.toggle`.
+  // Adjusting during render (not in an effect) keeps the stale list from flashing.
+  const [renderedOpen, setRenderedOpen] = useState(isOpen);
+  if (renderedOpen !== isOpen) {
+    setRenderedOpen(isOpen);
+    if (isOpen) {
+      setFilter(ALL_FILTER);
+      setSearch("");
+      setHighlightedKey(null);
+      setExpandedLegacy(new Set());
+    }
+  }
   const entries = useMemo(
     () => sortProviderInstanceEntries(deriveProviderInstanceEntries(props.providers)),
     [props.providers],
@@ -258,8 +281,6 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
   );
   const isSearching = search.trim().length > 0;
 
-  // Favorite numbers follow the stored order across every instance, so `mod+N` here and
-  // `model.favorite.N` name the same favorite even when a locked thread hides other instances.
   const usablePresets = useMemo(
     () => listUsableFavoritePresets(settings.favorites, entries, props.modelOptionsByInstance),
     [entries, props.modelOptionsByInstance, settings.favorites],
@@ -272,20 +293,6 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
       },
     [props.modelOptionsByInstance],
   );
-  // `mod+N` always targets favorite N, whatever the filter or search shows.
-  const jumpTargets = useMemo((): ReadonlyArray<InstanceModelItem | undefined> => {
-    const visibleIds = new Set(visibleEntries.map((entry) => entry.instanceId));
-    return Array.from({ length: 9 }, (_, index) => {
-      const preset = usablePresets[index];
-      if (!preset || !visibleIds.has(preset.instance.instanceId)) return undefined;
-      return {
-        ...optionFor(preset.instance.instanceId, preset.model),
-        instance: preset.instance,
-        presetIndex: index,
-        ...(props.favoritePresets ? { preset: preset.favorite } : {}),
-      };
-    });
-  }, [optionFor, props.favoritePresets, usablePresets, visibleEntries]);
   const jumpLabelByIndex = useMemo(
     () =>
       Array.from({ length: 9 }, (_, index) => {
@@ -305,14 +312,20 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
       out.push(item);
     };
     const visibleIds = new Set(visibleEntries.map((entry) => entry.instanceId));
+    // With presets, numbers follow the stored order across every instance, so `mod+N` here
+    // and `model.favorite.N` name the same preset even when a locked thread hides some.
+    // Without presets each model is listed once, so rows are numbered as shown.
+    let shownCount = 0;
     usablePresets.forEach((preset, presetIndex) => {
       if (!visibleIds.has(preset.instance.instanceId)) return;
+      const before = out.length;
       push({
         ...optionFor(preset.instance.instanceId, preset.model),
         instance: preset.instance,
-        presetIndex,
+        jumpIndex: props.favoritePresets ? presetIndex : shownCount,
         ...(props.favoritePresets ? { preset: preset.favorite } : {}),
       });
+      if (out.length > before) shownCount += 1;
     });
     // Favorites on an unavailable instance stay visible (disabled) after the usable ones.
     for (const favorite of settings.favorites) {
@@ -326,21 +339,44 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
     }
     return out;
   }, [optionFor, props.favoritePresets, settings.favorites, usablePresets, visibleEntries]);
+  // `mod+N` always targets favorite N, whatever the filter or search shows.
+  const jumpTargets = useMemo(
+    (): ReadonlyArray<InstanceModelItem | undefined> =>
+      Array.from({ length: 9 }, (_, index) =>
+        favoriteItems.find((item) => item.jumpIndex === index),
+      ),
+    [favoriteItems],
+  );
 
-  // Recent picks that still resolve to a visible instance and an offered model.
+  // Slugs on an instance that stay listed even when unlisted: the active and fan-out models.
+  const selectedSlugsFor = useCallback(
+    (instanceId: ProviderInstanceId): Set<string> => {
+      const slugs = new Set(
+        (props.selectedModels ?? [])
+          .filter((selected) => selected.instanceId === instanceId)
+          .map((selected) => selected.model),
+      );
+      if (instanceId === activeInstanceId) slugs.add(props.model);
+      return slugs;
+    },
+    [activeInstanceId, props.model, props.selectedModels],
+  );
+
+  // Recent picks that still resolve to a visible instance and a model the picker lists.
   const recentItems = useMemo((): InstanceModelItem[] => {
     const out: InstanceModelItem[] = [];
     for (const recent of recentModels) {
       const instance = visibleEntries.find((entry) => entry.instanceId === recent.provider);
       if (!instance) continue;
-      const option = props.modelOptionsByInstance
-        .get(instance.instanceId)
-        ?.find((candidate) => candidate.slug === recent.model);
+      const option = filterPickerVisibleModels(
+        props.modelOptionsByInstance.get(instance.instanceId) ?? [],
+        selectedSlugsFor(instance.instanceId),
+      ).find((candidate) => candidate.slug === recent.model);
       if (!option) continue;
       out.push({ ...option, instance });
     }
     return out;
-  }, [props.modelOptionsByInstance, recentModels, visibleEntries]);
+  }, [props.modelOptionsByInstance, recentModels, selectedSlugsFor, visibleEntries]);
 
   const sections = useMemo((): PickerSection[] => {
     const modelRow = (item: InstanceModelItem, section: SectionKind): ModelRowEntry => ({
@@ -383,12 +419,7 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
           ? visibleEntries
           : chipEntries;
     for (const instance of providerEntries) {
-      const selectedSlugs = new Set(
-        (props.selectedModels ?? [])
-          .filter((selected) => selected.instanceId === instance.instanceId)
-          .map((selected) => selected.model),
-      );
-      if (instance.instanceId === activeInstanceId) selectedSlugs.add(props.model);
+      const selectedSlugs = selectedSlugsFor(instance.instanceId);
       const items = filterPickerVisibleModels(
         props.modelOptionsByInstance.get(instance.instanceId) ?? [],
         selectedSlugs,
@@ -411,15 +442,15 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
           rows.push(...legacy.map((item) => modelRow(item, "provider")));
         } else {
           // A legacy model that is in use keeps the disclosure open so it stays visible.
-          const expanded =
-            expandedLegacy.has(instance.instanceId) ||
-            legacy.some((item) => selectedSlugs.has(item.slug));
+          const forced = legacy.some((item) => selectedSlugs.has(item.slug));
+          const expanded = forced || expandedLegacy.has(instance.instanceId);
           rows.push({
             kind: "legacy",
             key: `legacy\0${instance.instanceId}`,
             instanceId: instance.instanceId,
             count: legacy.length,
             expanded,
+            forced,
           });
           if (expanded) rows.push(...legacy.map((item) => modelRow(item, "provider")));
         }
@@ -435,7 +466,6 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
     }
     return out;
   }, [
-    activeInstanceId,
     chipEntries,
     effectiveFilter,
     expandedLegacy,
@@ -443,11 +473,10 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
     favoriteKeys,
     isSearching,
     props.lockedInstanceId,
-    props.model,
     props.modelOptionsByInstance,
-    props.selectedModels,
     recentItems,
     search,
+    selectedSlugsFor,
     visibleEntries,
   ]);
   const rowEntries = useMemo(() => sections.flatMap((section) => section.rows), [sections]);
@@ -478,11 +507,6 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
     (open: boolean) => {
       props.onOpenChange?.(open);
       if (props.open === undefined) setUncontrolledOpen(open);
-      // Every open starts on All, with no search, at the top of the list.
-      setFilter(ALL_FILTER);
-      setSearch("");
-      setHighlightedKey(null);
-      setExpandedLegacy(new Set());
     },
     [props.onOpenChange, props.open],
   );
@@ -514,9 +538,9 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
   const rowUnavailableReason = (instance: ProviderInstanceEntry): string | null =>
     unavailableReason(instance) ?? props.instanceUnavailableReason?.(instance) ?? null;
 
-  // Arrow keys move over the rows that can be picked and the legacy disclosures.
-  const navigableEntries = rowEntries.filter(
-    (entry) => entry.kind === "legacy" || rowUnavailableReason(entry.item.instance) === null,
+  // Arrow keys move over the rows that can be picked and the legacy disclosures that toggle.
+  const navigableEntries = rowEntries.filter((entry) =>
+    entry.kind === "legacy" ? !entry.forced : rowUnavailableReason(entry.item.instance) === null,
   );
   const highlightedEntry =
     navigableEntries.find((entry) => entry.key === highlightedKey) ??
@@ -554,6 +578,14 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
     });
   };
 
+  // A stored pick is stale once its instance's loaded catalog no longer offers the model.
+  // Instances this picker doesn't know about are left alone: callers may pass a subset.
+  const isStaleRecent = (recent: RecentModel): boolean => {
+    if (!entries.some((entry) => entry.instanceId === recent.provider)) return false;
+    const options = props.modelOptionsByInstance.get(recent.provider) ?? [];
+    return options.length > 0 && !options.some((option) => option.slug === recent.model);
+  };
+
   const selectModel = (item: InstanceModelItem, additive = false) => {
     if (props.disabled || rowUnavailableReason(item.instance) !== null) return;
     const resolved = resolveSelectableModel(
@@ -567,21 +599,24 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
       props.onToggleModel(item.instance.instanceId, item.instance.driverKind, resolved);
       return;
     }
-    if (item.preset)
-      props.onInstanceModelChange(
+    const applied = item.preset
+      ? props.onInstanceModelChange(
+          item.instance.instanceId,
+          item.instance.driverKind,
+          resolved,
+          item.preset,
+        )
+      : props.onInstanceModelChange(item.instance.instanceId, item.instance.driverKind, resolved);
+    // A caller returns null when it refused the pick, or the slug it applied instead.
+    if (props.recordRecents !== false && applied !== null) {
+      const appliedModel = typeof applied === "string" && applied.length > 0 ? applied : resolved;
+      const next = recordRecentModel(
+        recentModels,
         item.instance.instanceId,
-        item.instance.driverKind,
-        resolved,
-        item.preset,
+        appliedModel,
+        isStaleRecent,
       );
-    else props.onInstanceModelChange(item.instance.instanceId, item.instance.driverKind, resolved);
-    if (
-      props.recordRecents !== false &&
-      !isMostRecentModel(recentModels, item.instance.instanceId, resolved)
-    ) {
-      void updateSettings({
-        recentModels: recordRecentModel(recentModels, item.instance.instanceId, resolved),
-      });
+      if (!isSameRecentModels(next, recentModels)) void updateSettings({ recentModels: next });
     }
     setOpen(false);
   };
@@ -655,8 +690,8 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
     const Icon = PROVIDER_ICON_BY_PROVIDER[item.instance.driverKind];
     const isMixedSection = section !== "provider";
     const jumpLabel =
-      section === "favorites" && item.presetIndex !== undefined && !reason
-        ? (jumpLabelByIndex[item.presetIndex] ?? null)
+      section === "favorites" && item.jumpIndex !== undefined && !reason
+        ? (jumpLabelByIndex[item.jumpIndex] ?? null)
         : null;
     const presetEffort = item.preset?.effort;
     const fanOutSelected = isFanOutSelected(item);
@@ -721,8 +756,15 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
               </span>
             ) : null}
           </span>
-          <span className="ml-auto min-w-0 shrink-[2] truncate pl-2 text-right font-mono text-2xs text-muted-foreground">
-            {item.slug}
+          {/* A disabled row says why in place of its slug, so it is visible and announced. */}
+          <span
+            className={cn(
+              "ml-auto min-w-0 shrink-[2] truncate pl-2 text-right text-2xs text-muted-foreground",
+              !reason && "font-mono",
+            )}
+            data-model-picker-reason={reason ? true : undefined}
+          >
+            {reason ?? item.slug}
           </span>
           {jumpLabel ? (
             <kbd className="shrink-0 font-sans text-2xs text-faint-foreground tabular-nums">
@@ -775,11 +817,15 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
         data-model-picker-legacy={entry.instanceId}
         data-highlighted={isHighlighted ? "true" : undefined}
         aria-expanded={entry.expanded}
+        // Held open while a legacy model is in use, so there is nothing to toggle.
+        disabled={entry.forced}
+        title={entry.forced ? "Shown while a legacy model is selected" : undefined}
         className={cn(
-          "flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-2xs text-muted-foreground hover:text-foreground",
+          "flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-2xs text-muted-foreground",
+          entry.forced ? "cursor-default" : "hover:text-foreground",
           isHighlighted && "bg-muted text-foreground",
         )}
-        onMouseMove={isHighlighted ? undefined : () => setHighlightedKey(entry.key)}
+        onMouseMove={isHighlighted || entry.forced ? undefined : () => setHighlightedKey(entry.key)}
         onClick={() => {
           setLegacyExpanded(entry.instanceId, !entry.expanded);
           searchRef.current?.focus();
@@ -936,6 +982,8 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
                   onChange={(event) => {
                     setSearch(event.target.value);
                     setHighlightedKey(null);
+                    // Enter picks the first result, so keep it in view.
+                    if (scrollRef.current) scrollRef.current.scrollTop = 0;
                   }}
                   onKeyDown={(event) => {
                     // Composition keys belong to the IME, and a key the window shortcut

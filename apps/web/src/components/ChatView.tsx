@@ -345,6 +345,7 @@ import {
   resolveCurrentFavoritePresetIndex,
   type UsableFavoritePreset,
 } from "../favoritePresets";
+import { rememberRecentModel } from "../recentModels";
 import {
   applyFavoritePresetEffort,
   useFavoritePresetShortcuts,
@@ -3752,6 +3753,26 @@ export default memo(function ChatView({
     serverThread,
     threadId,
   ]);
+  // Every applied pick (picker, alt+tab, favorite shortcuts, draft or started thread)
+  // also leads the model picker's Recent list, so Recent starts with the model in use.
+  const [recentPick, setRecentPick] = useState<{ threadId: ThreadId } | null>(null);
+  const recordedRecentPick = useRef<typeof recentPick>(null);
+  useLayoutEffect(
+    () =>
+      subscribeComposerModelPicks((pickedThreadId) => {
+        if (pickedThreadId === threadId) setRecentPick({ threadId });
+      }),
+    [threadId],
+  );
+  useLayoutEffect(() => {
+    if (recentPick?.threadId !== threadId || recordedRecentPick.current === recentPick) return;
+    recordedRecentPick.current = recentPick;
+    if (noProviderAvailable) return;
+    rememberRecentModel(
+      selectedModelSelectionForDispatch.instanceId,
+      selectedModelSelectionForDispatch.model,
+    );
+  }, [noProviderAvailable, recentPick, selectedModelSelectionForDispatch, threadId]);
 
   // LegendList owns scroll state now; we keep a footer-resize observer only
   // to drive the compact composer footer layout (no scroll side effects).
