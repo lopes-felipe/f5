@@ -237,18 +237,29 @@ export function draftFromServer(
  * Moves a draft onto a newer saved version of its server. Fields the user has not
  * changed take the new saved values; edited fields keep the user's text. A switch
  * flipped elsewhere (enabled, a tool, a provider) is then not reverted by saving the form.
+ *
+ * `baseline` is what "not changed" is measured against: the draft that was submitted,
+ * when a save of this form completes. Without it, the saved entry the draft was opened
+ * on. Measuring against the submitted draft keeps typing made while the save ran, even
+ * typing that returns a field to its old value.
  */
 export function rebaseDraft(
   draft: ServerDraft,
   name: string,
   server: McpProjectServersConfig[string],
+  baseline?: ServerDraft,
 ): ServerDraft {
   if (!draft.original) return draft;
-  const before = draftFromServer(draft.original.name, draft.original.server);
+  const before = baseline ?? draftFromServer(draft.original.name, draft.original.server);
   const after = draftFromServer(name, server);
   const next: Record<string, unknown> = { ...draft, original: after.original };
+  // The argument text is read in its format, so the two move together or not at all.
+  const argsUnchanged = draft.args === before.args && draft.argsFormat === before.argsFormat;
   for (const key of Object.keys(after) as Array<keyof ServerDraft>) {
-    if (key !== "original" && draft[key] === before[key]) next[key] = after[key];
+    if (key === "original") continue;
+    const unchanged =
+      key === "args" || key === "argsFormat" ? argsUnchanged : draft[key] === before[key];
+    if (unchanged) next[key] = after[key];
   }
   return next as ServerDraft;
 }

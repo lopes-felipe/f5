@@ -68,6 +68,13 @@ describe("McpSessionOutcomes", () => {
       expect(retries.elements()).toHaveLength(2);
       await retries.first().click();
       await expect.element(page.getByText("thread-a · generation 1: applied")).toBeVisible();
+      // The retry targets only the clicked conversation.
+      expect(mocks.reconnectServer).toHaveBeenCalledWith({
+        projectId: ProjectId.makeUnsafe("project"),
+        instanceId,
+        serverName: "docs",
+        threadIds: [ThreadId.makeUnsafe("thread-a")],
+      });
       // The other failure keeps its row and its retry.
       await expect.element(page.getByText("thread-b · generation 1: failed")).toBeVisible();
       expect(retries.elements()).toHaveLength(1);
@@ -75,6 +82,37 @@ describe("McpSessionOutcomes", () => {
       // A new Apply or Reconnect result replaces the retried rows.
       await screen.rerender(view([outcome("thread-a", "deferred")]));
       await expect.element(page.getByText("thread-a · generation 1: deferred")).toBeVisible();
+    } finally {
+      queryClient.clear();
+      await screen.unmount();
+    }
+  });
+
+  it("shows a retry failure only with the list it was issued for", async () => {
+    const queryClient = new QueryClient();
+    let reject!: (error: Error) => void;
+    mocks.reconnectServer.mockReset();
+    mocks.reconnectServer.mockReturnValue(new Promise((_, fail) => (reject = fail)));
+    const view = (outcomes: ReadonlyArray<McpSessionReloadOutcome>) => (
+      <QueryClientProvider client={queryClient}>
+        <McpSessionOutcomes
+          outcomes={outcomes}
+          action="reconnect"
+          projectId={ProjectId.makeUnsafe("project")}
+          instanceId={instanceId}
+          serverName="docs"
+        />
+      </QueryClientProvider>
+    );
+    const screen = await render(view([outcome("thread-a", "failed")]));
+    try {
+      await page.getByRole("button", { name: "Retry in this conversation" }).click();
+      // A new Apply result arrives while the retry is still running, then the retry fails.
+      await screen.rerender(view([outcome("thread-b", "deferred")]));
+      reject(new Error("socket closed"));
+      await expect.element(page.getByText("thread-b · generation 1: deferred")).toBeVisible();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(page.getByText("socket closed").elements()).toHaveLength(0);
     } finally {
       queryClient.clear();
       await screen.unmount();

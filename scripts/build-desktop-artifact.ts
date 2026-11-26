@@ -19,7 +19,11 @@ import {
   verifyStagedLockfile,
 } from "./verify-staged-lockfile.ts";
 import { RELEASE_UPDATE_REPOSITORY, verifyAppUpdateConfig } from "./lib/app-update-config.ts";
-import { BRAND_ASSET_PATHS, PUBLISH_ICON_OVERRIDES } from "./lib/brand-assets.ts";
+import {
+  APP_ICON_FILE_BY_PLATFORM,
+  BRAND_ASSET_PATHS,
+  PUBLISH_ICON_OVERRIDES,
+} from "./lib/brand-assets.ts";
 import { stagedDesktopDependencies } from "./lib/desktop-stage.ts";
 import { parseVmBackendPin, VM_BACKEND_MANIFEST_NAME } from "@t3tools/shared/vmBackendPin";
 import {
@@ -80,6 +84,27 @@ export const stageProductionWebIcons = Effect.fn("stageProductionWebIcons")(func
       path.join(repoRoot, override.sourceRelativePath),
       path.join(stageServerDir, override.targetRelativePath),
     );
+  }
+});
+/**
+ * The staged resources start as a copy of the development ones, whose app icon choices
+ * carry the development badge. Replace them with the production files this platform uses.
+ */
+export const stageProductionAppIcons = Effect.fn("stageProductionAppIcons")(function* (
+  repoRoot: string,
+  stageResourcesDir: string,
+  platform: typeof BuildPlatform.Type,
+) {
+  const path = yield* Path.Path;
+  const fs = yield* FileSystem.FileSystem;
+  const source = path.join(repoRoot, BRAND_ASSET_PATHS.productionAppIconsDir);
+  const target = path.join(stageResourcesDir, "app-icons");
+  const file = APP_ICON_FILE_BY_PLATFORM[platform];
+  yield* fs.remove(target, { recursive: true, force: true });
+  for (const id of yield* fs.readDirectory(source)) {
+    if (!(yield* fs.exists(path.join(source, id, file)))) continue;
+    yield* fs.makeDirectory(path.join(target, id), { recursive: true });
+    yield* fs.copyFile(path.join(source, id, file), path.join(target, id, file));
   }
 });
 const ProductionLinuxIconSource = Effect.zipWith(
@@ -858,6 +883,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     );
   }
   yield* assertPlatformBuildResources(options.platform, stageResourcesDir, options.verbose);
+  yield* stageProductionAppIcons(repoRoot, stageResourcesDir, options.platform);
 
   // electron-builder is filtering out stageResourcesDir directory in the AppImage for production
   yield* fs.copy(stageResourcesDir, path.join(stageAppDir, "apps/desktop/prod-resources"));

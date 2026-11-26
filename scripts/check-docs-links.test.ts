@@ -15,8 +15,35 @@ describe("documentation hygiene", () => {
     expect(findBrokenDocLinks(repoRoot)).toEqual([]);
   });
 
-  it("documents every built-in provider driver in docs/provider-prerequisites.md", () => {
+  it("documents every built-in provider driver in prerequisites, provider guides, and docs/README.md", () => {
     expect(findUndocumentedBuiltInDrivers(repoRoot)).toEqual([]);
+  });
+
+  it("reports missing provider guides, directories at guide paths, and missing docs/README.md links", () => {
+    const tmpRoot = mkdtempSync(path.join(os.tmpdir(), "f5-provider-docs-"));
+    try {
+      mkdirSync(path.join(tmpRoot, "apps/server/src/provider"), { recursive: true });
+      mkdirSync(path.join(tmpRoot, "docs/providers/grok.md"), { recursive: true });
+      writeFileSync(
+        path.join(tmpRoot, "apps/server/src/provider/builtInDrivers.ts"),
+        "export const BUILT_IN_DRIVERS = [GrokDriver, OpenCodeDriver];\n",
+      );
+      writeFileSync(
+        path.join(tmpRoot, "docs/provider-prerequisites.md"),
+        "| Provider | Install |\n| --- | --- |\n| Grok | cli |\n| OpenCode | cli |\n",
+      );
+      writeFileSync(path.join(tmpRoot, "docs/README.md"), "[Grok](providers/grok.md)\n");
+
+      expect(findUndocumentedBuiltInDrivers(tmpRoot)).toEqual([
+        "GrokDriver (Grok) missing provider guide docs/providers/grok.md",
+        "OpenCodeDriver (OpenCode) missing provider guide docs/providers/opencode.md",
+        "OpenCodeDriver (OpenCode) guide docs/providers/opencode.md not linked from docs/README.md",
+      ]);
+      // Directory at a non-trailing-slash markdown link path must also be flagged as broken.
+      expect(findBrokenDocLinks(tmpRoot)).toEqual(["docs/README.md -> providers/grok.md"]);
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
   });
 
   it("respects CommonMark fence matching, tilde fences, single/multiline inline code, balanced parens, angle-bracketed destinations, and reference links", () => {

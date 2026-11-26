@@ -83,6 +83,7 @@ import type {
   AgentBridgeTaskControlInput,
   BotTask,
 } from "./agentBridge";
+import type { DesktopAppIconBridge } from "./appIcon";
 import type { DesktopComputerAutomationBridge } from "./computerAutomation";
 import type {
   UpstreamAcceptSuggestionsInput,
@@ -867,6 +868,7 @@ export interface DesktopBridge {
   completeAppActivation?: (id: string, error?: string) => Promise<void>;
   readonly keepAwake?: DesktopKeepAwakeBridge;
   readonly notifications?: DesktopNotificationsBridge;
+  readonly appIcon?: DesktopAppIconBridge;
   htmlPreview?: (input: HtmlPreviewRequest) => Promise<HtmlPreviewResult>;
   /** Consent for terminals and agents opening login URLs; requests arrive only on macOS. */
   browserOpen?: DesktopBrowserOpenBridge;

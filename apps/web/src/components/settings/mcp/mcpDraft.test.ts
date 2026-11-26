@@ -115,6 +115,31 @@ describe("lossless MCP editing", () => {
     expect(rebased.disabledTools).toBe("a\nb");
     expect(decodeDraftServer(rebased).server).toEqual({ ...newer, command: "bun" });
   });
+  it("keeps typing made while a save ran, even a return to the old value", () => {
+    const saved: McpServerDefinition = { type: "stdio", command: "a" };
+    const submitted = { ...draftFromServer("files", saved), command: "b", cwd: "/w" };
+    // While the save runs the user types the old command again; cwd stays as submitted.
+    const typed = { ...submitted, command: "a" };
+    const stored: McpServerDefinition = { type: "stdio", command: "b", cwd: "/w" };
+    const rebased = rebaseDraft(typed, "files", stored, submitted);
+    expect(rebased.command).toBe("a");
+    expect(rebased.cwd).toBe("/w");
+    expect(rebased.original?.server).toEqual(stored);
+  });
+  it("moves argument text and its format together", () => {
+    const saved: McpServerDefinition = { type: "stdio", command: "node", args: ["x"] };
+    const opened = draftFromServer("files", saved);
+    expect(opened.argsFormat).toBe("json");
+    // Another save removed the arguments; this draft still holds edited JSON arguments.
+    const edited = { ...opened, args: '["x","y"]' };
+    const rebased = rebaseDraft(edited, "files", { type: "stdio", command: "node" });
+    expect(rebased.args).toBe('["x","y"]');
+    expect(rebased.argsFormat).toBe("json");
+    expect(decodeDraftServer(rebased).server.args).toEqual(["x", "y"]);
+    // Untouched arguments follow the newer save, format included.
+    const untouched = rebaseDraft(opened, "files", { type: "stdio", command: "node" });
+    expect([untouched.args, untouched.argsFormat]).toEqual(["", "lines"]);
+  });
   it("uses explicit argument formats so a leading bracket is a valid line argument", () => {
     const draft = { ...createEmptyDraft(), name: "shell", command: "node", args: "[literal\n" };
     expect(decodeDraftServer(draft).server.args).toEqual(["[literal", ""]);
