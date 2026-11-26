@@ -16,6 +16,7 @@ export function makeFakeMcpHub(options: { readonly available?: boolean } = {}) {
           token: `token-${name}`,
           transport: server.type,
           toolTimeoutMs: 600_000,
+          startupTimeoutMs: 30_000,
         }));
       return {
         endpoints,
@@ -29,6 +30,7 @@ export function makeFakeMcpHub(options: { readonly available?: boolean } = {}) {
     status: () => [],
     reconnect: async () => 0,
     reconnectOAuth: async () => 0,
+    accountEnvironment: () => undefined,
     readStderrTail: () => undefined,
     close: async () => undefined,
   };

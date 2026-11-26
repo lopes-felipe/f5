@@ -2,6 +2,24 @@ import { describe, expect, it } from "vitest";
 import type { McpServerDefinition } from "@t3tools/contracts";
 import { createEmptyDraft, decodeDraftServer, draftFromServer, rebaseDraft } from "./mcpDraft";
 
+describe("legacy server names", () => {
+  const legacy: McpServerDefinition = { type: "stdio", command: "node" };
+
+  it("keeps a stored legacy name, including an Override of a legacy common server", () => {
+    // Edit and Override both start from the stored server.
+    expect(decodeDraftServer(draftFromServer("team.docs", legacy)).name).toBe("team.docs");
+  });
+
+  it("refuses a legacy name for a new or renamed server", () => {
+    expect(() =>
+      decodeDraftServer({ ...createEmptyDraft(), name: "team.docs", command: "node" }),
+    ).toThrow();
+    expect(() =>
+      decodeDraftServer({ ...draftFromServer("team.docs", legacy), name: "other.docs" }),
+    ).toThrow();
+  });
+});
+
 describe("lossless MCP editing", () => {
   it.each([undefined, false, true])(
     "round-trips the parallel tool calls setting %s",

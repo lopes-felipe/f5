@@ -9,6 +9,10 @@ import {
   readCodexMcpOAuthCallbackConfig,
   readCodexMcpOAuthCallbackPort,
   readCodexMcpOAuthCallbackUrl,
+  isReservedMcpBearerEnvVar,
+  mcpBearerRedactionValues,
+  mcpRemoteHeaders,
+  resolveMcpBearerToken,
   translateMcpForClaudeAgent,
   translateMcpForCodex,
 } from "./mcpTranslation";
@@ -91,6 +95,44 @@ describe("mcpTranslation", () => {
       "headers",
     );
     expect(translateMcpForClaudeAgent({ remote })?.remote).not.toHaveProperty("headers");
+  });
+
+  it("never sends reserved variables as bearer tokens, to Claude or Codex", () => {
+    const environment = {
+      F5_BROWSER_OPEN_TOKEN: "browser",
+      ANTHROPIC_API_KEY: "anthropic",
+      CLAUDE_CODE_OAUTH_TOKEN: "claude",
+      AWS_SECRET_ACCESS_KEY: "aws",
+    };
+    for (const name of Object.keys(environment)) {
+      expect(isReservedMcpBearerEnvVar(name)).toBe(true);
+      expect(isReservedMcpBearerEnvVar(name.toLowerCase())).toBe(true);
+      const remote = { type: "http" as const, url: "https://x.test/mcp", bearerTokenEnvVar: name };
+      expect(resolveMcpBearerToken(remote, environment)).toBeUndefined();
+      expect(translateMcpForClaudeAgent({ remote }, { environment })?.remote).not.toHaveProperty(
+        "headers",
+      );
+      expect(translateMcpForCodex({ remote })?.remote).not.toHaveProperty("bearer_token_env_var");
+    }
+    expect(isReservedMcpBearerEnvVar("GITHUB_TOKEN")).toBe(false);
+  });
+
+  it("builds remote headers with one precedence and redacts both forms of the token", () => {
+    const definition = { bearerTokenEnvVar: "MCP_TOKEN", headers: { "X-Team": "a" } };
+    expect(mcpRemoteHeaders(definition, { MCP_TOKEN: " tok " })).toEqual({
+      "X-Team": "a",
+      Authorization: "Bearer tok",
+    });
+    expect(
+      mcpRemoteHeaders(
+        { ...definition, headers: { AUTHORIZATION: "Token literal" } },
+        { MCP_TOKEN: "tok" },
+      ),
+    ).toEqual({ AUTHORIZATION: "Token literal" });
+    expect(mcpRemoteHeaders(definition, { MCP_TOKEN: "   " })).toEqual({ "X-Team": "a" });
+    expect(mcpBearerRedactionValues(definition, { MCP_TOKEN: " tok " })).toEqual([" tok ", "tok"]);
+    expect(mcpBearerRedactionValues(definition, { MCP_TOKEN: "tok" })).toEqual(["tok"]);
+    expect(mcpBearerRedactionValues(definition, {})).toEqual([]);
   });
 
   it.each(["http", "sse"] as const)(

@@ -100,7 +100,7 @@ export async function detectMcpImports(input: {
       const text = await readMcpImportFile(filename);
       if (text === null) continue;
       if (filename !== claudeState) {
-        const parsed = parseMcpImport(text, filename);
+        const parsed = parseMcpImport(text, filename, { requireServerMap: true });
         candidates.push(...parsed.candidates.map((entry) => ({ ...entry, selectedByDefault })));
         issues.push(...parsed.issues);
         continue;

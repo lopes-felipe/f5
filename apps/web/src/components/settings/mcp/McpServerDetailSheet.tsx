@@ -189,9 +189,10 @@ export function McpServerDetailSheet(props: {
               ) : null}
               <section aria-label="Live status" className="space-y-2">
                 <p className="font-medium text-foreground">Live status</p>
-                {props.hubEntries.map((entry) => (
+                {props.hubEntries.map((entry, index) => (
                   <div
-                    key={entry.connectionScope}
+                    // Several connections can serve one server (one per session for stdio).
+                    key={entry.id ?? `${entry.connectionScope}:${index}`}
                     className="space-y-1 rounded-md border border-border px-2 py-1.5"
                   >
                     <div className="flex flex-wrap items-center gap-2">
@@ -223,7 +224,8 @@ export function McpServerDetailSheet(props: {
                           .filter(Boolean)
                           .join(" · ")}
                       </span>
-                      {entry.state === "failed" || entry.state === "retrying" ? (
+                      {/* A connection can look ready while its session is gone; any settled state can be reconnected. */}
+                      {entry.state !== "connecting" ? (
                         <Button
                           size="xs"
                           variant="outline"

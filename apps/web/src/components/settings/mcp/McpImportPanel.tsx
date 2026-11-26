@@ -48,10 +48,14 @@ export function McpImportPanel(props: {
           : { candidates: [], issues: [] },
     [props.source, detected, text],
   );
-  const conflict = (entry: McpImportCandidate) =>
-    Object.keys(props.servers).find(
-      (name) => mcpServerNameKey(name) === mcpServerNameKey(entry.name),
-    );
+  // A stored entry under the imported name, or under the source's original name (a
+  // legacy name that was imported under a valid one); replacing that one renames it.
+  const conflict = (entry: McpImportCandidate) => {
+    const stored = Object.keys(props.servers);
+    const named = (candidate: string) =>
+      stored.find((name) => mcpServerNameKey(name) === mcpServerNameKey(candidate));
+    return named(entry.name) ?? (entry.originalName ? named(entry.originalName) : undefined);
+  };
   const selected = (entry: McpImportCandidate) =>
     choices[entry.id] ??
     (entry.selectedByDefault !== false &&
@@ -66,9 +70,7 @@ export function McpImportPanel(props: {
     let invalid = false;
     const includedNames = new Set<string>();
     for (const entry of parsed.candidates) {
-      const existing = Object.keys(props.servers).find(
-        (name) => mcpServerNameKey(name) === mcpServerNameKey(entry.name),
-      );
+      const existing = conflict(entry);
       if (existing) conflicts++;
       const include =
         choices[entry.id] ??
@@ -175,7 +177,9 @@ export function McpImportPanel(props: {
             <p className="break-all text-muted-foreground">{entry.source}</p>
             {conflict(entry) ? (
               <label>
-                Same-name conflict:{" "}
+                {mcpServerNameKey(conflict(entry)!) === mcpServerNameKey(entry.name)
+                  ? "Same-name conflict:"
+                  : `Already saved as '${conflict(entry)}'; Replace renames it:`}{" "}
                 <select
                   aria-label={`Conflict for ${entry.name}`}
                   value={replace[entry.id] ? "replace" : "keep"}

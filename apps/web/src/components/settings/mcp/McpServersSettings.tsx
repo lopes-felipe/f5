@@ -259,6 +259,13 @@ export function McpServersSettings(props: {
     }),
   );
   const observation = serverStatusesQuery.data;
+  // Saving does not re-run the configuration check (it can launch every server), so a
+  // check made before the save describes another configuration: its rows are not shown.
+  const configurationCheckStale =
+    observation?.source === "configurationCheck" &&
+    !!effectiveConfigQuery.data?.effectiveVersion &&
+    !!observation.desiredVersion &&
+    observation.desiredVersion !== effectiveConfigQuery.data.effectiveVersion;
   const providerStatus =
     account.provider === "claudeAgent" && observation?.source === "configurationCheck"
       ? claudeProviderStatusQuery.data
@@ -342,11 +349,13 @@ export function McpServersSettings(props: {
   const observedByName = useMemo(
     () =>
       new Map(
-        (observation?.statuses ?? [])
-          .filter((status) => !status.ownership || status.ownership === "managed")
-          .map((status) => [status.name, status]),
+        configurationCheckStale
+          ? []
+          : (observation?.statuses ?? [])
+              .filter((status) => !status.ownership || status.ownership === "managed")
+              .map((status) => [status.name, status]),
       ),
-    [observation],
+    [observation, configurationCheckStale],
   );
   const statusFor = (name: string, server: McpProjectServersConfig[string]) => {
     const status = summarizeMcpServerStatus(server, [
@@ -1082,6 +1091,11 @@ export function McpServersSettings(props: {
                   ? `Observed in ${threads.find((thread) => thread.id === observation.threadId)?.title ?? observation.threadId} at ${observation.observedAt ? new Date(observation.observedAt).toLocaleTimeString() : "unknown time"}`
                   : "Configuration check"}
               </p>
+              {configurationCheckStale ? (
+                <p>
+                  Not checked since the last save. Use Refresh status to check the saved servers.
+                </p>
+              ) : null}
               {observation?.source === "conversation" &&
               observation.appliedVersion !==
                 (effectiveConfigQuery.data?.effectiveVersion ?? observation.desiredVersion) ? (
@@ -1100,15 +1114,17 @@ export function McpServersSettings(props: {
                 group="managed"
                 servers={effectiveConfigQuery.data?.servers ?? activeServers}
                 removedNames={
-                  observation?.statuses
-                    .filter(
-                      (status) =>
-                        status.ownership === "managed" &&
-                        !Object.keys(effectiveConfigQuery.data?.servers ?? {}).some(
-                          (name) => mcpServerNameKey(name) === mcpServerNameKey(status.name),
-                        ),
-                    )
-                    .map((status) => status.name) ?? []
+                  configurationCheckStale
+                    ? []
+                    : (observation?.statuses
+                        .filter(
+                          (status) =>
+                            status.ownership === "managed" &&
+                            !Object.keys(effectiveConfigQuery.data?.servers ?? {}).some(
+                              (name) => mcpServerNameKey(name) === mcpServerNameKey(status.name),
+                            ),
+                        )
+                        .map((status) => status.name) ?? [])
                 }
                 observation={observation}
                 projectId={selectedProjectId}
