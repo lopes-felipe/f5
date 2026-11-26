@@ -104,7 +104,7 @@ describe("project content search", () => {
       });
       expect(onCall).toHaveBeenCalledWith({
         type: "initialize",
-        rootPath: fs.realpathSync(workspaceRoot),
+        rootPath: fs.realpathSync.native(workspaceRoot),
       });
     } finally {
       await manager.dispose();

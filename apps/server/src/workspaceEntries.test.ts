@@ -19,7 +19,7 @@ const tempDirs: string[] = [];
 function makeTempDir(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   tempDirs.push(dir);
-  return fs.realpathSync(dir);
+  return fs.realpathSync.native(dir);
 }
 
 function writeFile(cwd: string, relativePath: string, contents = ""): void {
