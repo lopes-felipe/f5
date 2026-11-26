@@ -20,6 +20,7 @@ import {
   DialogPopup,
   DialogTitle,
 } from "../../ui/dialog";
+import { mcpRepositoryCredentialUses } from "./mcpRepositoryCredentials";
 import { readErrorMessage } from "./mcpSettingsHelpers";
 
 const STATE_LABELS: Record<McpRepositoryServer["state"], string> = {
@@ -34,9 +35,17 @@ function summary(server: McpRepositoryServer["server"]): string {
     : `${server.type.toUpperCase()} ${server.url}`;
 }
 
+/** Fields shown in their own rows; every other field is listed under its own name. */
+const DETAILED_FIELDS = new Set(["type", "command", "args", "cwd", "env", "url", "headers"]);
+
 /** What the server will run or reach, in full, for the approval decision. */
 function DefinitionDetails(props: { server: McpRepositoryServer["server"] }) {
   const { server } = props;
+  const credentialUses = mcpRepositoryCredentialUses(server);
+  const otherRows: Array<[string, string]> = Object.entries(server)
+    .filter(([key, value]) => !DETAILED_FIELDS.has(key) && value !== undefined)
+    .toSorted(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => [key, typeof value === "string" ? value : JSON.stringify(value)]);
   const rows: Array<[string, string]> =
     server.type === "stdio"
       ? [
@@ -61,16 +70,34 @@ function DefinitionDetails(props: { server: McpRepositoryServer["server"] }) {
           ],
         ];
   return (
-    <dl className="grid gap-2 text-xs">
-      {rows.map(([label, value]) => (
-        <div key={label} className="grid gap-0.5">
-          <dt className="font-medium text-foreground">{label}</dt>
-          <dd className="whitespace-pre-wrap break-all rounded-md bg-muted px-2 py-1 font-mono">
-            {value}
-          </dd>
+    <div className="grid gap-3">
+      {credentialUses.length ? (
+        <div
+          role="alert"
+          aria-label="Values from your environment"
+          className="rounded-md border border-warning/40 bg-warning/10 px-2 py-1.5 text-xs"
+        >
+          <p className="font-medium text-foreground">
+            Sends values from your environment to this server
+          </p>
+          <ul className="mt-1 list-disc space-y-0.5 pl-4 font-mono">
+            {credentialUses.map((use) => (
+              <li key={use}>{use}</li>
+            ))}
+          </ul>
         </div>
-      ))}
-    </dl>
+      ) : null}
+      <dl className="grid gap-2 text-xs">
+        {[...rows, ...otherRows].map(([label, value]) => (
+          <div key={label} className="grid gap-0.5">
+            <dt className="font-medium text-foreground">{label}</dt>
+            <dd className="whitespace-pre-wrap break-all rounded-md bg-muted px-2 py-1 font-mono">
+              {value}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </div>
   );
 }
 

@@ -1,5 +1,6 @@
 import { PROVIDER_SEND_TURN_MAX_INPUT_CHARS, type ThreadId } from "@t3tools/contracts";
 import { isImageOnlyBootstrapPrompt } from "@t3tools/shared/composerSendText";
+import { stripTrailingMcpResourceContext } from "@t3tools/shared/mcpComposer";
 import { getMessageTextMaxChars } from "@t3tools/shared/providerInput";
 import { extractTrailingAttachedFiles } from "./attachedFiles";
 
@@ -257,13 +258,15 @@ export function deriveDisplayedUserMessageState(prompt: string): DisplayedUserMe
     isImageOnlyBootstrapPrompt(prompt) ? "" : prompt,
   );
   const extractedContexts = extractTrailingTerminalContexts(extractedAttachedFiles.promptText);
+  // MCP resource contents read on send stay out of the bubble; the chips name them.
+  const visibleText = stripTrailingMcpResourceContext(extractedContexts.promptText);
   const copyText = buildDisplayedUserMessageCopyText({
-    visibleText: extractedContexts.promptText,
+    visibleText,
     contexts: extractedContexts.contexts,
     attachedFilePaths: extractedAttachedFiles.filePaths,
   });
   return {
-    visibleText: extractedContexts.promptText,
+    visibleText,
     copyText,
     contextCount: extractedContexts.contextCount,
     previewTitle: extractedContexts.previewTitle,

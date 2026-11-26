@@ -117,6 +117,11 @@ function toPackage(value: unknown): McpCatalogPackage | undefined {
   const transport = record(pkg?.transport)?.type;
   if (!pkg || !identifier || !registryType || !REGISTRY_TYPES.has(registryType)) return undefined;
   if (transport !== undefined && transport !== "stdio") return undefined;
+  // A leading dash would make the identifier an option of npx, uvx or docker.
+  if (identifier.startsWith("-")) return undefined;
+  // `fileSha256` is not read: npx, uvx and docker fetch these packages from their own
+  // registries, which check integrity; F5 never downloads the file it would describe.
+  // MCPB packages, where the hash is the only check, are not offered.
   return {
     registryType: registryType as McpCatalogPackage["registryType"],
     identifier,
@@ -150,6 +155,35 @@ export function toCatalogEntry(value: unknown): McpCatalogEntry | undefined {
   };
 }
 
+/** The body as text, refused as soon as it passes `maxBytes` (declared or streamed). */
+async function readCappedText(response: Response, maxBytes: number): Promise<string> {
+  const tooLarge = () => new Error("The MCP Registry's answer was too large.");
+  const declared = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await response.body?.cancel().catch(() => {});
+    throw tooLarge();
+  }
+  if (!response.body) {
+    const body = await response.text();
+    if (Buffer.byteLength(body) > maxBytes) throw tooLarge();
+    return body;
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => {});
+      throw tooLarge();
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
 export function makeMcpCatalog(options: McpCatalogOptions = {}): McpCatalog {
   const fetchImpl = options.fetch ?? globalThis.fetch;
   const now = options.now ?? Date.now;
@@ -177,9 +211,7 @@ export function makeMcpCatalog(options: McpCatalogOptions = {}): McpCatalog {
     });
     if (!response.ok)
       throw new Error(`The MCP Registry answered ${response.status}. Try again later.`);
-    const body = await response.text();
-    if (body.length > MAX_RESPONSE_BYTES)
-      throw new Error("The MCP Registry's answer was too large.");
+    const body = await readCappedText(response, MAX_RESPONSE_BYTES);
     let parsed: unknown;
     try {
       parsed = JSON.parse(body);

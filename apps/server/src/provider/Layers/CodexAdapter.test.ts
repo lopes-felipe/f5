@@ -47,6 +47,7 @@ import {
 } from "./CodexAdapter.ts";
 import { CodexChromeSession } from "../codexChromeSession.ts";
 import { makeFakeMcpHub } from "../../mcp/hub/testing/fakeMcpHub.ts";
+import type { McpHubOmission } from "../../mcp/hub/McpHub.ts";
 import { normalizeTurnUsage } from "../../usage/usageMetrics.ts";
 import {
   NotificationAdmission,
@@ -419,7 +420,8 @@ const validationLayer = it.layer(
 );
 
 const hubManager = new FakeCodexManager();
-const fakeHub = makeFakeMcpHub();
+const hubOmitted: McpHubOmission[] = [];
+const fakeHub = makeFakeMcpHub({ omitted: hubOmitted });
 const hubLayer = it.layer(
   makeCodexAdapterLive({
     manager: hubManager,
@@ -467,6 +469,65 @@ hubLayer("CodexAdapterLive with F5's MCP hub", (it) => {
     }),
   );
 
+  it.effect("warns about left-out servers once configured and releases endpoints on exit", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const threadId = asThreadId("hub-exit");
+      hubOmitted.push({
+        serverName: "secret-docs",
+        reason: "needs ${env:DOCS_TOKEN}, which is not set",
+      });
+      try {
+        yield* adapter.startSession({
+          threadId,
+          runtimeMode: "approval-required",
+          providerOptions: { mcpServers: { docs: { type: "stdio", command: "docs" } } },
+        });
+      } finally {
+        hubOmitted.length = 0;
+      }
+      const events = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId),
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      hubManager.emit("event", {
+        id: asEventId("evt-hub-configured"),
+        kind: "session",
+        provider: "codex",
+        createdAt: new Date().toISOString(),
+        method: "session/configured",
+        threadId,
+        payload: { config: { model: "gpt" } },
+      } satisfies ProviderEvent);
+      const collected = [...(yield* Fiber.join(events))];
+      assert.deepEqual(
+        collected.map((event) => event.type),
+        ["session.configured", "config.warning"],
+      );
+      const warning = collected[1]!;
+      if (warning.type === "config.warning") {
+        assert.equal(warning.payload.summary, "F5 did not pass MCP server secret-docs to Codex.");
+        assert.match(warning.payload.details ?? "", /DOCS_TOKEN/);
+      }
+
+      // The process exits on its own: its hub endpoints go with it.
+      const disposedBefore = fakeHub.disposed;
+      hubManager.emit("event", {
+        id: asEventId("evt-hub-exited"),
+        kind: "session",
+        provider: "codex",
+        createdAt: new Date().toISOString(),
+        method: "session/exited",
+        threadId,
+      } satisfies ProviderEvent);
+      for (let attempt = 0; attempt < 50 && fakeHub.disposed === disposedBefore; attempt++)
+        yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 10)));
+      assert.equal(fakeHub.disposed, disposedBefore + 1);
+    }),
+  );
+
   it.effect("applies edits on the hub and restarts only for added servers", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;
@@ -493,8 +554,18 @@ hubLayer("CodexAdapterLive with F5's MCP hub", (it) => {
             more: { type: "stdio", command: "more" },
           },
         });
+        // Edits in the same Apply still reach Codex before the restart.
         assert.equal(added.restartRequired, true);
-        assert.equal(reload.mock.calls.length, 1);
+        assert.equal(reload.mock.calls.length, 2);
+
+        // An Apply with no F5 change still reloads, so Codex's own servers pick up
+        // sign-ins and edits.
+        const unchanged = yield* adapter.reloadMcpConfig!({
+          threadId,
+          mcpServers: { docs: { type: "stdio", command: "new" } },
+        });
+        assert.equal(unchanged.restartRequired, false);
+        assert.equal(reload.mock.calls.length, 3);
       } finally {
         reload.mockRestore();
       }

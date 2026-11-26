@@ -38,7 +38,6 @@ import { useMcpStatusUpdates } from "../../../lib/useMcpStatusUpdates";
 import { ensureNativeApi } from "../../../nativeApi";
 import { useProfileState } from "../../../profileState";
 import { useThreadSummaries } from "../../../threadSelectors";
-import { onServerWelcome } from "../../../wsNativeApi";
 import { useWsConnectionState } from "../../../wsConnectionState";
 import { Button } from "../../ui/button";
 import { Dialog, DialogDescription, DialogPopup, DialogTitle } from "../../ui/dialog";
@@ -272,6 +271,13 @@ export function McpServersSettings(props: {
     }),
   );
   const observation = serverStatusesQuery.data;
+  // Saving does not re-run the configuration check (it can launch every server), so a
+  // check made before the save describes another configuration: its rows are not shown.
+  const configurationCheckStale =
+    observation?.source === "configurationCheck" &&
+    !!effectiveConfigQuery.data?.effectiveVersion &&
+    !!observation.desiredVersion &&
+    observation.desiredVersion !== effectiveConfigQuery.data.effectiveVersion;
   const providerStatus =
     account.provider === "claudeAgent" && observation?.source === "configurationCheck"
       ? claudeProviderStatusQuery.data
@@ -295,19 +301,6 @@ export function McpServersSettings(props: {
     : undefined;
 
   useMcpStatusUpdates();
-  useEffect(
-    () =>
-      onServerWelcome(() => {
-        void queryClient
-          .cancelQueries({
-            queryKey: mcpQueryKeys.all,
-            predicate: (query) =>
-              query.state.data === undefined && query.state.fetchStatus === "fetching",
-          })
-          .then(() => queryClient.invalidateQueries({ queryKey: mcpQueryKeys.all }));
-      }),
-    [queryClient],
-  );
   useEffect(() => {
     if (!selectedThreadId) return;
     const error = serverStatusesQuery.error;
@@ -355,15 +348,17 @@ export function McpServersSettings(props: {
   const observedByName = useMemo(
     () =>
       new Map(
-        (observation?.statuses ?? [])
-          .filter((status) => !status.ownership || status.ownership === "managed")
-          .map((status) => [status.name, status]),
+        configurationCheckStale
+          ? []
+          : (observation?.statuses ?? [])
+              .filter((status) => !status.ownership || status.ownership === "managed")
+              .map((status) => [status.name, status]),
       ),
-    [observation],
+    [observation, configurationCheckStale],
   );
   const statusFor = (name: string, server: McpProjectServersConfig[string]) => {
     const status = summarizeMcpServerStatus(server, [
-      ...hubStatusSources(hubByName.get(name) ?? EMPTY_HUB),
+      ...hubStatusSources(hubByName.get(name) ?? EMPTY_HUB, selectedProjectId === null),
       observedStatusSource(account.label, observedByName.get(name)),
     ]);
     // Failure reasons can echo configured secrets; rows show them redacted.
@@ -468,6 +463,13 @@ export function McpServersSettings(props: {
         : undefined;
     if (own) openDetail(own, "scope", "overview");
     else if (inherited) openDetail(inherited, "inherited", "overview");
+    else
+      // Built-in servers and servers from a provider's own configuration have no F5 entry.
+      toastManager.add({
+        type: "info",
+        title: `${target} is not an MCP server saved in F5`,
+        description: "It comes from F5 itself or from the provider's own configuration.",
+      });
     // openDetail reads the latest servers; the link opens once per target.
   }, [props.focusServer, activeConfig, commonConfigQuery.data, scope]);
   const closeSurfaces = () =>
@@ -502,7 +504,10 @@ export function McpServersSettings(props: {
         );
       const submittedDraft = draft;
       const submittedScope = `${scope}:${selectedProjectId}`;
-      const { name, server } = decodeDraftServer(draft);
+      const { name, server } = decodeDraftServer(
+        draft,
+        editing !== null ? activeServers[editing] : undefined,
+      );
       const nextServers = toWritableProjectServers(activeServers);
       const collision = Object.keys(nextServers).find(
         (other) => other !== editing && mcpServerNameKey(other) === mcpServerNameKey(name),
@@ -1099,6 +1104,11 @@ export function McpServersSettings(props: {
                   ? `Observed in ${threads.find((thread) => thread.id === observation.threadId)?.title ?? observation.threadId} at ${observation.observedAt ? new Date(observation.observedAt).toLocaleTimeString() : "unknown time"}`
                   : "Configuration check"}
               </p>
+              {configurationCheckStale ? (
+                <p>
+                  Not checked since the last save. Use Refresh status to check the saved servers.
+                </p>
+              ) : null}
               {observation?.source === "conversation" &&
               observation.appliedVersion !==
                 (effectiveConfigQuery.data?.effectiveVersion ?? observation.desiredVersion) ? (
@@ -1117,15 +1127,17 @@ export function McpServersSettings(props: {
                 group="managed"
                 servers={effectiveConfigQuery.data?.servers ?? activeServers}
                 removedNames={
-                  observation?.statuses
-                    .filter(
-                      (status) =>
-                        status.ownership === "managed" &&
-                        !Object.keys(effectiveConfigQuery.data?.servers ?? {}).some(
-                          (name) => mcpServerNameKey(name) === mcpServerNameKey(status.name),
-                        ),
-                    )
-                    .map((status) => status.name) ?? []
+                  configurationCheckStale
+                    ? []
+                    : (observation?.statuses
+                        .filter(
+                          (status) =>
+                            status.ownership === "managed" &&
+                            !Object.keys(effectiveConfigQuery.data?.servers ?? {}).some(
+                              (name) => mcpServerNameKey(name) === mcpServerNameKey(status.name),
+                            ),
+                        )
+                        .map((status) => status.name) ?? [])
                 }
                 observation={observation}
                 projectId={selectedProjectId}

@@ -10,7 +10,11 @@ import {
   type ProjectMcpConfigRecord,
   type ProjectMcpConfigRepositoryShape,
 } from "../persistence/Services/ProjectMcpConfigs.ts";
-import { ProjectMcpConfigService, ProjectMcpConfigServiceLive } from "./ProjectMcpConfigService.ts";
+import {
+  ProjectMcpConfigService,
+  type ProjectMcpConfigServiceError,
+  ProjectMcpConfigServiceLive,
+} from "./ProjectMcpConfigService.ts";
 
 function scopeKey(scope: "common" | "project", projectId: string | null): string {
   return scope === "common" ? "common" : `project:${projectId ?? ""}`;
@@ -75,6 +79,43 @@ async function runServiceEffect<T, E, RepositoryError>(
 }
 
 describe("ProjectMcpConfigService", () => {
+  it("lets a project override a legacy-named common server by its exact name, and no other", async () => {
+    const projectId = ProjectId.makeUnsafe("project-mcp-legacy-override");
+    const { rows, layer } = makeRepositoryLayer();
+    // Saved before the name rule existed.
+    rows.set(scopeKey("common", null), {
+      scope: "common",
+      projectId: null,
+      version: "common-v1",
+      servers: { "team.docs": { type: "stdio", command: "node" } },
+      disabledCommonServers: [],
+      updatedAt: "2026-11-01T00:00:00.000Z",
+    });
+    const result = await runServiceEffect(
+      Effect.gen(function* () {
+        const service = yield* ProjectMcpConfigService;
+        const saved = yield* service.replaceProjectConfig({
+          projectId,
+          servers: { "team.docs": { type: "stdio", command: "deno" } },
+        });
+        const effective = yield* service.readEffectiveConfig(projectId);
+        const renamed = yield* service
+          .replaceProjectConfig({
+            projectId,
+            ...(saved.version ? { expectedVersion: saved.version } : {}),
+            servers: { "other.docs": { type: "stdio", command: "deno" } },
+          })
+          .pipe(Effect.flip);
+        return { effective, renamed };
+      }),
+      layer,
+    );
+    expect(result.effective.servers["team.docs"]).toMatchObject({ command: "deno" });
+    // A new legacy name in the project is still refused.
+    expect(result.renamed).toMatchObject({ code: "validation" });
+    expect(result.renamed.message).toMatch(/other\.docs|letters/i);
+  });
+
   it("reads raw common and project config and merges effective config with project precedence", async () => {
     const projectId = ProjectId.makeUnsafe("project-mcp-service-merge");
     const { layer } = makeRepositoryLayer();
@@ -870,4 +911,104 @@ it("allows unrelated edits, opt-outs and disabling with unchanged missing secret
     }),
     layer,
   );
+});
+
+describe("repository servers in the effective config", () => {
+  const entry = { type: "stdio" as const, command: "node" };
+  const servers = (prefix: string, count: number) =>
+    Object.fromEntries(Array.from({ length: count }, (_, i) => [`${prefix}${i}`, entry]));
+
+  async function withRepository(
+    state: { approved: McpProjectServersConfig; version: string; withdrawn: string[] },
+    trustedProjects: ProjectId[],
+    run: (
+      service: typeof ProjectMcpConfigService.Service,
+      rows: Map<string, ProjectMcpConfigRecord>,
+    ) => Effect.Effect<void, ProjectMcpConfigServiceError>,
+  ) {
+    const { McpRepositoryServers } = await import("./McpRepositoryServers.ts");
+    const { layer, rows } = makeRepositoryLayer();
+    const repositoryServers = Layer.succeed(McpRepositoryServers, {
+      readLayer: () =>
+        Effect.sync(() => ({
+          found: true,
+          entries: [],
+          issues: [],
+          approved: state.approved,
+          version: state.version,
+          withdrawn: state.withdrawn,
+        })),
+      trustedProjects: () => trustedProjects,
+      setTrust: () => Effect.die("unused"),
+    });
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* run(yield* ProjectMcpConfigService, rows);
+      }).pipe(
+        Effect.provide(
+          ProjectMcpConfigServiceLive.pipe(Layer.provide(layer), Layer.provide(repositoryServers)),
+        ),
+      ),
+    );
+  }
+
+  it("merges approved servers between the layers and re-reads when approvals change", async () => {
+    const projectId = ProjectId.makeUnsafe("repository-merge");
+    const state = {
+      approved: {
+        shared: { ...entry, args: ["repository"] },
+        docs: entry,
+      } as McpProjectServersConfig,
+      version: "v1",
+      withdrawn: ["revoked"],
+    };
+    await withRepository(state, [projectId], (service) =>
+      Effect.gen(function* () {
+        yield* service.replaceCommonConfig({
+          servers: { shared: { ...entry, args: ["common"] }, lint: entry },
+        });
+        yield* service.replaceProjectConfig({
+          projectId,
+          servers: { docs: { ...entry, args: ["project"] } },
+          disabledCommonServers: ["lint"],
+        });
+        const stored = yield* service.readEffectiveStoredConfig(projectId);
+        // The repository beats common, the project beats the repository, opt-outs still apply.
+        expect(stored.servers.shared?.args).toEqual(["repository"]);
+        expect(stored.servers.docs?.args).toEqual(["project"]);
+        expect(stored.servers.lint?.enabled).toBe(false);
+        expect(stored.repositoryVersion).toBe("v1");
+        expect(stored.withdrawnRepositoryServers).toEqual(["revoked"]);
+
+        const first = yield* service.readEffectiveRuntimeConfig(projectId);
+        expect(yield* service.readEffectiveRuntimeConfig(projectId)).toBe(first);
+        // A revoked approval changes the layer version, so the cached runtime config is dropped.
+        state.approved = { docs: entry };
+        state.version = "v2";
+        const next = yield* service.readEffectiveRuntimeConfig(projectId);
+        expect(next).not.toBe(first);
+        expect(next.servers.shared?.args).toEqual(["common"]);
+      }),
+    );
+  });
+
+  it("counts approved repository servers when a common save grows every project", async () => {
+    const projectId = ProjectId.makeUnsafe("repository-limit");
+    const state = { approved: servers("r", 16), version: "v1", withdrawn: [] };
+    await withRepository(state, [projectId], (service) =>
+      Effect.gen(function* () {
+        const common = yield* service.replaceCommonConfig({ servers: servers("c", 15) });
+        yield* service.replaceProjectConfig({ projectId, servers: servers("p", 1) });
+        // 15 common + 16 approved + 1 project = 32; one more common entry would make 33.
+        const refused = yield* service
+          .replaceCommonConfig({
+            ...(common.version ? { expectedVersion: common.version } : {}),
+            servers: servers("c", 16),
+          })
+          .pipe(Effect.result);
+        expect(refused._tag).toBe("Failure");
+        expect(JSON.stringify(refused)).toContain("effective limit");
+      }),
+    );
+  });
 });

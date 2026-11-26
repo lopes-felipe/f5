@@ -20,6 +20,7 @@ const noUpdate = (): McpHubAttachmentUpdate => ({
   added: [],
   addedEndpoints: [],
   endpoints: [],
+  timeoutRaised: [],
   omitted: [],
 });
 
@@ -190,10 +191,12 @@ describe("resolveCursorMcpServers", () => {
               token: `token-${name}`,
               transport: servers[name]!.type,
               toolTimeoutMs: 600_000,
+              startupTimeoutMs: 30_000,
             })),
           omitted: [{ serverName: "events", reason: "could not start" }],
           credentials: [],
           update: noUpdate,
+          decline: () => undefined,
           dispose: async () => {
             disposed = true;
           },
@@ -238,11 +241,13 @@ describe("resolveCursorMcpServers", () => {
             token: "secret-token",
             transport: "stdio",
             toolTimeoutMs: 600_000,
+            startupTimeoutMs: 30_000,
           },
         ],
         omitted: [],
         credentials: [],
         update: noUpdate,
+        decline: () => undefined,
         dispose: async () => undefined,
       }),
     });

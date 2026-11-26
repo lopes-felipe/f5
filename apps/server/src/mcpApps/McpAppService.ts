@@ -37,18 +37,28 @@ const encode = (value: unknown, maxBytes: number) =>
     },
     catch: () => new McpAppError({ message: "This MCP app request exceeds its size limit." }),
   });
-/** MCP App routes on a hub server; session identity still comes from the provider. */
+/**
+ * MCP App routes on a hub server. The session identity comes from the provider plus
+ * the endpoint's binding, so an Apply that re-binds the endpoint invalidates approvals
+ * reviewed against the previous connection.
+ */
 const hubMcpApps = (
   server: McpHubSessionServer,
   apps: ProviderMcpApps<ProviderServiceError>,
 ): ProviderMcpApps<ProviderServiceError | McpAppError> => ({
-  identity: apps.identity,
+  identity: (threadId) =>
+    apps.identity(threadId).pipe(Effect.map((identity) => `${identity}|hub:${server.binding}`)),
   listTools: () => Effect.tryPromise({ try: () => server.appListTools(), catch: failure }),
-  callTool: ({ tool, arguments: args }) =>
-    Effect.tryPromise({
-      try: (signal) => server.appCallTool(tool, args, signal),
-      catch: failure,
-    }),
+  callTool: ({ tool, arguments: args, sessionIdentity }) =>
+    // Re-checked at dispatch: nothing may re-bind between the identity check and the call.
+    sessionIdentity.endsWith(`|hub:${server.binding}`)
+      ? Effect.tryPromise({
+          try: (signal) => server.appCallTool(tool, args, signal),
+          catch: failure,
+        })
+      : Effect.fail(
+          new McpAppError({ message: "The app session changed. Review the tool call again." }),
+        ),
   readResource: ({ uri }) =>
     Effect.tryPromise({
       try: (signal) => {

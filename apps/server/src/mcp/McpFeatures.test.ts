@@ -484,7 +484,11 @@ describe("MCP feature boundaries", () => {
     expect(embedded.servers.cli?.args).toEqual(["--token=private-value"]);
     expect(embedded.servers.cli?.env?.AUTH).toBe("Bearer private-value");
     expect(embedded.servers.remote?.url).toBe("https://example.com/mcp?key=private-value");
-    expect(resolvedMcpSecretsIn("--token=private-value")).toEqual(["private-value"]);
+    // The whole field and the value itself, longest first.
+    expect(resolvedMcpSecretsIn("--token=private-value")).toEqual([
+      "--token=private-value",
+      "private-value",
+    ]);
     await Effect.runPromise(collectMcpSecrets(store, servers));
     expect(removed).toEqual(["mcp-secret-stale"]);
   });

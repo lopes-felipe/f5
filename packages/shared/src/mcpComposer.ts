@@ -1,10 +1,19 @@
 /**
  * MCP resources in the composer. A chosen resource is held in the prompt as a
  * Markdown link, `[@<server>: <label>](mcp-resource://<server>/<uri>)`, shown as
- * a chip; on send its contents are read and appended as fenced context blocks.
+ * a chip; on send its contents are read and appended as fenced context blocks,
+ * wrapped in one `<mcp_resources>` block so a message's display can leave them out.
  */
 
 const REFERENCE_SCHEME = "mcp-resource://";
+
+/** Image types the composer attaches from an MCP resource; others cannot be attached. */
+export const MCP_COMPOSER_IMAGE_MIME_TYPES: ReadonlySet<string> = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+]);
 const MAX_LABEL_LENGTH = 60;
 const REFERENCE_PATTERN = /\[@([^[\]\n]{1,200})\]\(mcp-resource:\/\/([^\s()/]+)\/([^\s()]+)\)/g;
 
@@ -75,6 +84,15 @@ export function mcpResourceReferenceMatches(text: string): McpResourceReference[
   });
 }
 
+/**
+ * Text from an MCP server (such as a prompt) with resource references disarmed, so it
+ * can never make F5 read another resource on send. Only references the user chose
+ * from the menu stay live.
+ */
+export function neutralizeMcpResourceReferences(text: string): string {
+  return text.replaceAll(REFERENCE_SCHEME, "mcp-resource%3A//");
+}
+
 /** Each distinct resource once, in the order it first appears. */
 export function uniqueMcpResourceReferences(text: string): McpResourceReference[] {
   const seen = new Set<string>();
@@ -117,16 +135,63 @@ export function fitMcpResourceContext(
   });
 }
 
-/** Blocks appended to a message: one per text part, noting when text was cut. */
-export function formatMcpResourceContext(parts: ReadonlyArray<McpResourceContextPart>): string {
-  return parts
-    .map((part) => {
-      const fence = markdownFence(part.text);
-      const kind = part.mimeType ? ` (${part.mimeType})` : "";
-      const note = part.truncated
-        ? "\n[Truncated: the rest did not fit in the message's 256 KiB resource budget.]"
-        : "";
-      return `MCP resource ${part.uri} from ${part.serverName}${kind}:\n${fence}\n${part.text}\n${fence}${note}`;
-    })
-    .join("\n\n");
+const CONTEXT_OPEN = "<mcp_resources>";
+const CONTEXT_CLOSE = "</mcp_resources>";
+const TRUNCATED_NOTE = "\n[Truncated: the rest did not fit in the message.]";
+
+/** Cuts text to `chars` UTF-16 units without splitting a surrogate pair. */
+function truncateChars(text: string, chars: number): { text: string; truncated: boolean } {
+  if (text.length <= chars) return { text, truncated: false };
+  let end = Math.max(0, chars);
+  const last = text.charCodeAt(end - 1);
+  if (end > 0 && last >= 0xd800 && last <= 0xdbff) end -= 1;
+  return { text: text.slice(0, end), truncated: true };
+}
+
+function formatPart(part: McpResourceContextPart, fence = markdownFence(part.text)): string {
+  const kind = part.mimeType ? ` (${part.mimeType})` : "";
+  const note = part.truncated ? TRUNCATED_NOTE : "";
+  return `MCP resource ${part.uri} from ${part.serverName}${kind}:\n${fence}\n${part.text}\n${fence}${note}`;
+}
+
+const wrapContext = (blocks: ReadonlyArray<string>) =>
+  `${CONTEXT_OPEN}\n${blocks.join("\n\n")}\n${CONTEXT_CLOSE}`;
+
+/**
+ * The block appended to a message: one fenced part per text part, noting when text
+ * was cut. With `maxChars`, the text is cut further (in order) so the whole block
+ * fits in that many characters, whenever its headers alone do.
+ */
+export function formatMcpResourceContext(
+  parts: ReadonlyArray<McpResourceContextPart>,
+  maxChars = Number.POSITIVE_INFINITY,
+): string {
+  if (parts.length === 0) return "";
+  const full = wrapContext(parts.map((part) => formatPart(part)));
+  if (full.length <= maxChars) return full;
+  // Headers, fences and notes for every part; a cut never lengthens a part's fence.
+  const overhead = wrapContext(
+    parts.map((part) =>
+      formatPart({ ...part, text: "", truncated: true }, markdownFence(part.text)),
+    ),
+  ).length;
+  let remaining = Math.max(0, maxChars - overhead);
+  return wrapContext(
+    parts.map((part) => {
+      const cut = truncateChars(part.text, remaining);
+      remaining -= cut.text.length;
+      return formatPart(cut.truncated ? { ...part, text: cut.text, truncated: true } : part);
+    }),
+  );
+}
+
+/**
+ * `text` without the trailing resource block `formatMcpResourceContext` appended, for
+ * showing and copying a sent message as the user wrote it.
+ */
+export function stripTrailingMcpResourceContext(text: string): string {
+  if (!text.trimEnd().endsWith(CONTEXT_CLOSE)) return text;
+  const opening = `${CONTEXT_OPEN}\n`;
+  const start = text.startsWith(opening) ? 0 : text.indexOf(`\n\n${opening}`);
+  return start < 0 ? text : text.slice(0, start).replace(/\n+$/, "");
 }

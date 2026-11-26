@@ -889,6 +889,9 @@ describe("with the hub serving Codex and Claude", () => {
       });
       assert.deepEqual(reconnects, [["docs", projectId]]);
       assert.equal(controlClients, 0);
+      // Claude's normalized spelling reconnects the saved name.
+      yield* runtime.reconnectServer({ provider: "claudeAgent", projectId, serverName: "DOCS" });
+      assert.deepEqual(reconnects.at(-1), ["docs", projectId]);
     }).pipe(
       Effect.provide(
         makeRuntimeLayer({ servers, mcpHub, onControlClient: () => controlClients++ }),
@@ -922,6 +925,32 @@ describe("with the hub serving Codex and Claude", () => {
         }),
       ),
     );
+  });
+
+  it.effect("leaves a server turned off for the provider to the provider's own", () => {
+    const reconnects: string[] = [];
+    const fake = makeFakeMcpHub();
+    const mcpHub: McpHubShape = {
+      ...fake.hub,
+      reconnect: async (serverName) => {
+        reconnects.push(serverName);
+        return 1;
+      },
+    };
+    const offForCodex = { docs: { ...servers.docs, disabledProviders: ["codex" as const] } };
+    return Effect.gen(function* () {
+      const runtime = yield* McpRuntimeService;
+      // Not the hub's refusal: the request goes on to Codex's own same-named server
+      // (whose control client this fake does not provide).
+      const login = yield* Effect.exit(
+        runtime.startLogin({ provider: "codex", projectId, serverName: "docs" }),
+      );
+      assert.notInclude(JSON.stringify(login), "through F5 now");
+      yield* Effect.exit(
+        runtime.reconnectServer({ provider: "codex", projectId, serverName: "docs" }),
+      );
+      assert.deepEqual(reconnects, []);
+    }).pipe(Effect.provide(makeRuntimeLayer({ servers: offForCodex, mcpHub })));
   });
 });
 

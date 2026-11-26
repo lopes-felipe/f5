@@ -10,6 +10,7 @@ import type {
   McpConnectionScope,
   McpHubServerStatus,
   McpProjectServersConfig,
+  McpReloadResult,
   McpServerDefinition,
   McpStatusUpdatedPayload,
   ProjectId,
@@ -18,6 +19,7 @@ import type {
 } from "@t3tools/contracts";
 import { stableMcpServersJson } from "@t3tools/shared/mcpConfig";
 import { filterEnabledMcpServers } from "@t3tools/shared/mcpTranslation";
+import { mcpServerNameKey } from "@t3tools/shared/mcpValidation";
 import {
   describeMcpInterpolationSkip,
   interpolateMcpServers,
@@ -35,6 +37,7 @@ import type { McpHubGovernance } from "./McpHubGovernance.ts";
 import { McpHubUpstream } from "./McpHubUpstream.ts";
 import {
   McpOAuthProvider,
+  mcpUsesStaticAuthorization,
   mcpOAuthServerUrl,
   secretStoreOAuthStorage,
   type McpOAuthStorage,
@@ -53,6 +56,8 @@ export interface McpHubEndpoint {
   readonly transport: McpServerDefinition["type"];
   /** How long one tool call may run, so clients with their own timeout can match it. */
   readonly toolTimeoutMs: number;
+  /** How long the first request may wait for the server to start. */
+  readonly startupTimeoutMs: number;
 }
 
 export interface McpHubOmission {
@@ -75,6 +80,47 @@ export interface McpHubAttachmentUpdate {
   /** The endpoints that route to a saved server after this update. */
   readonly endpoints: ReadonlyArray<McpHubEndpoint>;
   readonly omitted: ReadonlyArray<McpHubOmission>;
+  /**
+   * Changed servers whose tool timeout now exceeds the one their endpoint was issued
+   * with; a provider that fixed its own timeout at launch must restart to wait longer.
+   */
+  readonly timeoutRaised: ReadonlyArray<string>;
+}
+
+/**
+ * The `config.warning` payload for project servers an agent did not get, so a
+ * missing tool is never silent. Undefined when nothing was left out.
+ */
+export function describeMcpHubOmissions(
+  agentLabel: string,
+  omitted: ReadonlyArray<McpHubOmission>,
+): { readonly summary: string; readonly details: string } | undefined {
+  if (omitted.length === 0) return undefined;
+  return {
+    summary:
+      omitted.length === 1
+        ? `F5 did not pass MCP server ${omitted[0]!.serverName} to ${agentLabel}.`
+        : `F5 did not pass ${omitted.length} MCP servers to ${agentLabel}.`,
+    details: omitted.map((entry) => `${entry.serverName} ${entry.reason}.`).join("\n"),
+  };
+}
+
+/** Adds the servers an Apply left out to a provider's reload result, so none vanish silently. */
+export function withMcpHubOmissions<T extends McpReloadResult>(
+  result: T,
+  omitted: ReadonlyArray<McpHubOmission>,
+): T {
+  if (omitted.length === 0) return result;
+  return {
+    ...result,
+    errors: [
+      ...result.errors,
+      ...omitted.map((entry) => ({
+        server: entry.serverName,
+        message: `${entry.serverName} ${entry.reason}.`,
+      })),
+    ],
+  };
 }
 
 export interface McpHubAttachment {
@@ -98,6 +144,11 @@ export interface McpHubAttachment {
    * the provider's own prompt for the same call can be answered without showing it.
    */
   readonly asksBeforeCall?: (serverName: string, toolName: string) => boolean;
+  /**
+   * Unbinds servers the provider refused to install (a name its own settings or
+   * plugins already use), so neither the endpoint nor MCP Apps reach F5's server.
+   */
+  readonly decline: (serverNames: Iterable<string>) => void;
   /** Revokes the endpoints and releases their upstream connections. */
   readonly dispose: () => Promise<void>;
 }
@@ -148,18 +199,29 @@ export interface McpHubShape {
   /**
    * Applies saved tool policy to every live session of `projectId` (or of no project),
    * without Apply or a restart: Ask and Allow changes take effect on the next call.
+   * Servers named in `withdrawn` (`.mcp.json` name keys no longer approved) that the
+   * saved config no longer has are cut off from those sessions at once.
    */
   readonly refreshToolPolicies?: (
     projectId: ProjectId | undefined,
     servers: McpProjectServersConfig,
+    withdrawn?: ReadonlyArray<string>,
   ) => void;
+  /**
+   * The account environment of a live session using the server (in the project when
+   * given), so sign-in resolves `${env:…}` the way that session does.
+   */
+  readonly accountEnvironment: (
+    serverName: string,
+    projectId?: ProjectId,
+  ) => NodeJS.ProcessEnv | undefined;
   readonly close: () => Promise<void>;
 }
 
 /** One conversation's hub server, as MCP Apps use it. */
 export type McpHubSessionServer = Pick<
   McpHubSlot,
-  "appListTools" | "appCallTool" | "appReadResource"
+  "binding" | "appListTools" | "appCallTool" | "appReadResource"
 >;
 
 /** One conversation's hub server, as the composer uses it. */
@@ -202,8 +264,12 @@ export function defaultConnectionScope(definition: McpServerDefinition): McpConn
 interface UpstreamEntry {
   readonly upstream: McpHubUpstream;
   readonly key: string;
+  /** Opaque status id; the key itself names the account and must not leave the server. */
+  readonly id: string;
   /** Live attachments: slot id → who uses it. */
   readonly users: Map<string, { projectId?: ProjectId | undefined; provider: ProviderKind }>;
+  /** The account environment of the session that created the connection. */
+  readonly environment: NodeJS.ProcessEnv;
 }
 
 export interface McpHubOptions {
@@ -225,7 +291,21 @@ export interface McpHubOptions {
 export function makeMcpHub(options: McpHubOptions): McpHubShape {
   const listener = options.listener;
   const available = Boolean(listener?.mount && listener.baseUrl);
+  /**
+   * Connections the hub stopped tracking that may still be stopping (draining calls or
+   * waiting for a process to exit); `close` waits for them too.
+   */
+  const released = new Set<McpHubUpstream>();
+  const forget = (key: string) => {
+    const entry = upstreams.get(key);
+    if (!entry) return;
+    upstreams.delete(key);
+    for (const upstream of released) if (upstream.finished) released.delete(upstream);
+    released.add(entry.upstream);
+  };
   const slots = new Map<string, McpHubSlot>();
+  /** Unbinds one live slot from its connection, by slot id. */
+  const detachers = new Map<string, () => void>();
   const upstreams = new Map<string, UpstreamEntry>();
   const changed = new Set<string>();
   let flushTimer: ReturnType<typeof setTimeout> | undefined;
@@ -270,17 +350,21 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
   ): UpstreamEntry => {
     const scope = defaultConnectionScope(definition);
     const definitionHash = hashDefinition(definition);
-    // Session connections are never reused; shared ones are per account and definition.
+    // Session connections are never reused. Shared ones are per account, definition and
+    // workspace root: the root is what the server sees in `roots/list`, so a session in
+    // another project or worktree never gets the first session's checkout.
     const key =
       scope === "session"
         ? `session\0${randomBytes(12).toString("hex")}`
-        : `shared\0${input.accountKey}\0${serverName}\0${definitionHash}`;
+        : `shared\0${input.accountKey}\0${input.cwd}\0${serverName}\0${definitionHash}`;
     const existing = upstreams.get(key);
     if (existing) return existing;
     const make = options.makeUpstream ?? ((value) => new McpHubUpstream(value));
     const oauthUrl = mcpOAuthServerUrl(definition);
+    // A server with its own Authorization never gets OAuth: a 401 must not start discovery
+    // that would carry its credentials to other hosts.
     const authProvider =
-      options.oauthStorage && oauthUrl
+      options.oauthStorage && oauthUrl && !mcpUsesStaticAuthorization(definition, input.environment)
         ? new McpOAuthProvider({ storage: options.oauthStorage, serverUrl: oauthUrl, definition })
         : undefined;
     const upstream = make({
@@ -294,11 +378,16 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
         markChanged(serverName);
         // A stopped upstream with no users is forgotten so it never leaks.
         const entry = upstreams.get(key);
-        if (entry && entry.users.size === 0 && upstream.snapshot().state === "stopped")
-          upstreams.delete(key);
+        if (entry && entry.users.size === 0 && upstream.snapshot().state === "stopped") forget(key);
       },
     });
-    const entry: UpstreamEntry = { upstream, key, users: new Map() };
+    const entry: UpstreamEntry = {
+      upstream,
+      key,
+      id: createHash("sha256").update(key).digest("base64url").slice(0, 16),
+      users: new Map(),
+      environment: input.environment,
+    };
     upstreams.set(key, entry);
     return entry;
   };
@@ -349,7 +438,7 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
     record.hash = undefined;
     entry.users.delete(record.slot.id);
     entry.upstream.release();
-    if (entry.users.size === 0 && entry.upstream.scope === "session") upstreams.delete(entry.key);
+    if (entry.users.size === 0 && entry.upstream.scope === "session") forget(entry.key);
   };
 
   const attach = (input: McpHubAttachInput): McpHubAttachment => {
@@ -357,7 +446,7 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
     if (!available || closed) {
       const omitted = Object.keys(input.servers ?? {}).map((name) => ({
         serverName: name,
-        reason: "F5's MCP hub is unavailable in this runtime",
+        reason: "was skipped because F5's MCP hub is unavailable in this runtime",
       }));
       return {
         endpoints,
@@ -371,9 +460,11 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
           endpoints: [],
           omitted: Object.keys(servers ?? {}).map((name) => ({
             serverName: name,
-            reason: "F5's MCP hub is unavailable in this runtime",
+            reason: "was skipped because F5's MCP hub is unavailable in this runtime",
           })),
+          timeoutRaised: [],
         }),
+        decline: () => {},
         dispose: async () => {},
       };
     }
@@ -398,12 +489,18 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
       const record: AttachedSlot = { slot, entry: undefined, hash: hashDefinition(definition) };
       bindEntry(input, record, entry);
       records.set(serverName, record);
+      detachers.set(id, () => {
+        if (disposed || !record.entry) return;
+        unbindEntry(record);
+        record.slot.rebind(undefined);
+      });
       const endpoint: McpHubEndpoint = {
         serverName,
         url: `${listener!.baseUrl}${MCP_HUB_PATH_PREFIX}${id}`,
         token,
         transport: definition.type,
         toolTimeoutMs: entry.upstream.toolTimeoutMs(),
+        startupTimeoutMs: entry.upstream.startupTimeoutMs(),
       };
       endpoints.push(endpoint);
       return endpoint;
@@ -422,11 +519,13 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
           addedEndpoints: [],
           endpoints: [],
           omitted: [],
+          timeoutRaised: [],
         };
       const next = resolveServers(input, servers);
       const changed: string[] = [];
       const removed: string[] = [];
       const added: string[] = [];
+      const timeoutRaised: string[] = [];
       for (const [serverName, record] of records) {
         const definition = next.wanted.get(serverName);
         if (!definition) {
@@ -447,11 +546,14 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
         bindEntry(input, record, entry);
         record.hash = hash;
         record.slot.rebind(entry.upstream);
+        const issued = endpoints.find((endpoint) => endpoint.serverName === serverName);
+        if (issued && entry.upstream.toolTimeoutMs() > issued.toolTimeoutMs)
+          timeoutRaised.push(serverName);
         if (previous) {
           previous.users.delete(record.slot.id);
           previous.upstream.release();
           if (previous.users.size === 0 && previous.upstream.scope === "session")
-            upstreams.delete(previous.key);
+            forget(previous.key);
         }
         changed.push(serverName);
       }
@@ -468,7 +570,17 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
         addedEndpoints,
         endpoints: endpoints.filter((endpoint) => records.get(endpoint.serverName)?.entry),
         omitted: next.omitted,
+        timeoutRaised,
       };
+    };
+    const decline = (serverNames: Iterable<string>) => {
+      if (disposed) return;
+      for (const serverName of serverNames) {
+        const record = records.get(serverName);
+        if (!record?.entry) continue;
+        unbindEntry(record);
+        record.slot.rebind(undefined);
+      }
     };
     return {
       endpoints,
@@ -481,20 +593,21 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
         const record = records.get(serverName);
         return !disposed && record?.entry !== undefined && record.slot.asksBeforeCall(toolName);
       },
+      decline,
       dispose: async () => {
         if (disposed) return;
         disposed = true;
         await Promise.allSettled(
           [...records.values()].map(async (record) => {
             slots.delete(record.slot.id);
+            detachers.delete(record.slot.id);
             const entry = record.entry;
             if (entry) entry.users.delete(record.slot.id);
             await record.slot.close();
             if (entry) {
               record.entry = undefined;
               entry.upstream.release();
-              if (entry.users.size === 0 && entry.upstream.scope === "session")
-                upstreams.delete(entry.key);
+              if (entry.users.size === 0 && entry.upstream.scope === "session") forget(entry.key);
             }
           }),
         );
@@ -515,8 +628,12 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
       .filter((entry) => entry.users.size > 0 || entry.upstream.snapshot().state !== "stopped")
       .map((entry) => {
         const snapshot = entry.upstream.snapshot();
-        const users = [...entry.users.values()];
+        // A project's view counts and names only its own sessions.
+        const users = [...entry.users.values()].filter(
+          (user) => projectId === undefined || user.projectId === projectId,
+        );
         return {
+          id: entry.id,
           name: entry.upstream.name,
           connectionScope: entry.upstream.scope,
           transport: entry.upstream.definition.type,
@@ -534,7 +651,7 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
             : {}),
           ...(snapshot.lastConnectedAt ? { lastConnectedAt: snapshot.lastConnectedAt } : {}),
           attempts: snapshot.attempts,
-          attachedSessions: entry.users.size,
+          attachedSessions: users.length,
           projectIds: [
             ...new Set(users.flatMap((user) => (user.projectId ? [user.projectId] : []))),
           ],
@@ -563,10 +680,16 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
     if (flushTimer) clearTimeout(flushTimer);
     const allSlots = [...slots.values()];
     slots.clear();
+    detachers.clear();
     const allUpstreams = [...upstreams.values()];
     upstreams.clear();
     await Promise.allSettled(allSlots.map((slot) => slot.close()));
-    await Promise.allSettled(allUpstreams.map((entry) => entry.upstream.stop()));
+    const retiring = [...released];
+    released.clear();
+    await Promise.allSettled([
+      ...allUpstreams.map((entry) => entry.upstream.stop()),
+      ...retiring.map((upstream) => upstream.stop()),
+    ]);
   };
 
   const reconnectOAuth = async (oauthKey: string): Promise<number> => {
@@ -601,12 +724,26 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
   const refreshToolPolicies = (
     projectId: ProjectId | undefined,
     servers: McpProjectServersConfig,
+    withdrawn: ReadonlyArray<string> = [],
   ) => {
-    for (const slot of slots.values()) {
+    const withdrawnKeys = new Set(withdrawn.map(mcpServerNameKey));
+    for (const slot of [...slots.values()]) {
       if (slot.sessionProjectId !== projectId) continue;
       const definition = servers[slot.serverName];
       if (definition) slot.setToolPolicy(definition);
+      // A revoked or changed repository server is a trust decision, not a connection
+      // edit: it stops serving live sessions instead of waiting for Apply.
+      else if (withdrawnKeys.has(mcpServerNameKey(slot.serverName))) detachers.get(slot.id)?.();
     }
+  };
+
+  const accountEnvironment = (serverName: string, projectId?: ProjectId) => {
+    for (const entry of upstreams.values()) {
+      if (entry.upstream.name !== serverName) continue;
+      for (const user of entry.users.values())
+        if (projectId === undefined || user.projectId === projectId) return entry.environment;
+    }
+    return undefined;
   };
 
   return {
@@ -621,6 +758,7 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
     sessionServers,
     attachedProjects,
     refreshToolPolicies,
+    accountEnvironment,
     close,
   };
 }
@@ -649,10 +787,15 @@ export const McpHubLive = Layer.effect(
     if (bus && configService) {
       const savedServers = (projectId: ProjectId | undefined) =>
         projectId
-          ? configService
-              .readEffectiveStoredConfig(projectId)
-              .pipe(Effect.map((config) => config.servers))
-          : configService.readCommonStoredConfig().pipe(Effect.map((config) => config.servers));
+          ? configService.readEffectiveStoredConfig(projectId).pipe(
+              Effect.map((config) => ({
+                servers: config.servers,
+                withdrawn: config.withdrawnRepositoryServers ?? [],
+              })),
+            )
+          : configService
+              .readCommonStoredConfig()
+              .pipe(Effect.map((config) => ({ servers: config.servers, withdrawn: [] })));
       const refresh = (event: McpStatusUpdatedPayload) =>
         Effect.forEach(
           (hub.attachedProjects?.() ?? []).filter(
@@ -662,7 +805,9 @@ export const McpHubLive = Layer.effect(
           ),
           (projectId) =>
             savedServers(projectId).pipe(
-              Effect.map((servers) => hub.refreshToolPolicies?.(projectId, servers)),
+              Effect.map(({ servers, withdrawn }) =>
+                hub.refreshToolPolicies?.(projectId, servers, withdrawn),
+              ),
               Effect.catch(() => Effect.void),
             ),
           { discard: true },

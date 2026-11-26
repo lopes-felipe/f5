@@ -456,9 +456,12 @@ import { McpHub } from "./mcp/hub/McpHub.ts";
 import { McpHubAuth } from "./mcp/hub/McpHubAuth.ts";
 import { McpHubGovernanceService } from "./mcp/hub/McpHubGovernanceLive.ts";
 import { makeMcpCatalog } from "./mcp/McpCatalog.ts";
-import { McpRepositoryServers, type McpRepositoryLayer } from "./mcp/McpRepositoryServers.ts";
-import { mergeMcpServerLayers } from "@t3tools/shared/mcpConfig";
-import { MCP_EFFECTIVE_SERVER_LIMIT, mcpServerNameKey } from "@t3tools/shared/mcpValidation";
+import {
+  McpRepositoryServers,
+  repositoryApprovalLimitIssue,
+  type McpRepositoryLayer,
+} from "./mcp/McpRepositoryServers.ts";
+import { mcpServerNameKey } from "@t3tools/shared/mcpValidation";
 import {
   flattenPrompt,
   listComposerPrompts,
@@ -8441,8 +8444,9 @@ export const createServer = Effect.fn(function* (
 
       case WS_METHODS.mcpAcceptToolChanges: {
         const body = stripRequestTag(request.body);
-        const accepted = mcpHubGovernance ? yield* mcpHubGovernance.acceptToolChanges(body) : 0;
-        return { accepted };
+        return mcpHubGovernance
+          ? yield* mcpHubGovernance.acceptToolChanges(body)
+          : { accepted: 0, stale: 0 };
       }
 
       case WS_METHODS.mcpListActivity: {
@@ -8548,27 +8552,19 @@ export const createServer = Effect.fn(function* (
             message: "Repository MCP servers are unavailable here.",
           });
         if (body.trusted) {
-          // Approving counts toward the effective server limit, like any other layer.
-          const layer = yield* mcpRepositoryServers.readLayer(body.projectId);
-          const entry = layer.entries.find(
-            (candidate) => mcpServerNameKey(candidate.name) === mcpServerNameKey(body.serverName),
-          );
-          if (entry && !entry.approved) {
-            const [common, project] = yield* Effect.all([
-              projectMcpConfigService.readCommonStoredConfig(),
-              projectMcpConfigService.readProjectStoredConfig(body.projectId),
-            ]).pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-            const merged = mergeMcpServerLayers({
-              common: common.servers,
-              repository: { ...layer.approved, [entry.name]: entry.server },
-              project: project.servers,
-              disabledCommon: project.disabledCommonServers,
-            });
-            if (Object.keys(merged).length > MCP_EFFECTIVE_SERVER_LIMIT)
-              return yield* new RouteRequestError({
-                message: `Approving '${entry.name}' would exceed the ${MCP_EFFECTIVE_SERVER_LIMIT}-server limit for this project. Remove or turn off another server first.`,
-              });
-          }
+          const [layer, common, project] = yield* Effect.all([
+            mcpRepositoryServers.readLayer(body.projectId),
+            projectMcpConfigService.readCommonStoredConfig(),
+            projectMcpConfigService.readProjectStoredConfig(body.projectId),
+          ]).pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+          const issue = repositoryApprovalLimitIssue({
+            layer,
+            serverName: body.serverName,
+            common: common.servers,
+            project: project.servers,
+            disabledCommon: project.disabledCommonServers,
+          });
+          if (issue) return yield* new RouteRequestError({ message: issue });
         }
         const layer = yield* mcpRepositoryServers
           .setTrust(body)

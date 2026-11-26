@@ -34,6 +34,7 @@ import {
   EventId,
   ORCHESTRATION_WS_CHANNELS,
   ORCHESTRATION_WS_METHODS,
+  PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   PR_HUB_WS_METHODS,
   type OrchestrationFileChange,
   type OrchestrationGetThreadCommandExecutionResult,
@@ -8236,7 +8237,8 @@ describe("ChatView timeline (full app)", () => {
                   {
                     kind: "text",
                     uri: "doc://guide",
-                    text: "Use short sentences.",
+                    // Larger than a whole message: cut to fit instead of blocking the send.
+                    text: `Use short sentences.\n${"x".repeat(150_000)}`,
                     truncated: false,
                   },
                 ],
@@ -8294,9 +8296,12 @@ describe("ChatView timeline (full app)", () => {
           expect(command?.message?.text).toContain(
             "Follow [@docs: Style guide](mcp-resource://docs/",
           );
-          expect(command?.message?.text).toContain(
-            "MCP resource doc://guide from docs:\n```\nUse short sentences.\n```",
+          const text = command?.message?.text ?? "";
+          expect(text).toContain(
+            "MCP resource doc://guide from docs:\n```\nUse short sentences.\n",
           );
+          expect(text).toContain("[Truncated: the rest did not fit in the message.]");
+          expect(text.length).toBeLessThanOrEqual(PROVIDER_SEND_TURN_MAX_INPUT_CHARS);
         },
         { timeout: 8_000, interval: 16 },
       );

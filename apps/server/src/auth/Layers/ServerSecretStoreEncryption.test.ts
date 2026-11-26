@@ -62,7 +62,9 @@ describe("secrets encrypted at rest", () => {
     const onDisk = await readFile(secretFile(dir, "mcp-secret-a"));
     expect(isEncryptedSecretValue(onDisk)).toBe(true);
     expect(onDisk.includes(Buffer.from("token-value"))).toBe(false);
-    expect((await stat(secretFile(dir, "mcp-secret-a"))).mode & 0o777).toBe(0o600);
+    // Windows has no POSIX modes.
+    if (process.platform !== "win32")
+      expect((await stat(secretFile(dir, "mcp-secret-a"))).mode & 0o777).toBe(0o600);
     expect((await readFile(secretFile(dir, "other-secret"))).toString()).toBe("plain-value");
     // With a configured key no fallback key file is written.
     await expect(stat(secretFile(dir, "secret-store-key"))).rejects.toThrow();
@@ -96,7 +98,8 @@ describe("secrets encrypted at rest", () => {
     expect(read).toBe("legacy-token");
     expect(isEncryptedSecretValue(await readFile(secretFile(dir, "mcp-oauth-x")))).toBe(true);
     // Headless: the key lives in a 0600 file in the secrets directory.
-    expect((await stat(secretFile(dir, "secret-store-key"))).mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32")
+      expect((await stat(secretFile(dir, "secret-store-key"))).mode & 0o777).toBe(0o600);
   });
 
   it("moves secrets from the headless key file to the desktop key", async () => {
@@ -120,8 +123,8 @@ describe("secrets encrypted at rest", () => {
     expect(read).toBe("value-b");
     const after = await readFile(secretFile(dir, "mcp-secret-b"));
     expect(after.equals(before)).toBe(false);
-    // The rewritten value no longer needs the key file.
-    await rm(secretFile(dir, "secret-store-key"));
+    // Nothing needs the key file any more, so the store removed it.
+    await expect(stat(secretFile(dir, "secret-store-key"))).rejects.toThrow();
     expect(
       await run(
         dir,

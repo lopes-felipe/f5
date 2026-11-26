@@ -12,9 +12,13 @@ import { lstat } from "node:fs/promises";
 import path from "node:path";
 
 import type { McpProjectServersConfig, ProjectId } from "@t3tools/contracts";
-import { stableMcpServersJson } from "@t3tools/shared/mcpConfig";
+import { mergeMcpServerLayers, stableMcpServersJson } from "@t3tools/shared/mcpConfig";
 import { parseMcpImport } from "@t3tools/shared/mcpImport";
-import { MCP_SERVERS_PER_SCOPE, mcpServerNameKey } from "@t3tools/shared/mcpValidation";
+import {
+  MCP_EFFECTIVE_SERVER_LIMIT,
+  MCP_SERVERS_PER_SCOPE,
+  mcpServerNameKey,
+} from "@t3tools/shared/mcpValidation";
 import { Effect, Layer, Option, Schema, ServiceMap } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -22,6 +26,31 @@ import { ProjectionProjectRepository } from "../persistence/Services/ProjectionP
 import { readMcpImportFile } from "./McpImportDetection.ts";
 
 export const MCP_REPOSITORY_FILE = ".mcp.json";
+
+/**
+ * Why approving `serverName` must be refused, or `undefined`: approving counts toward
+ * the project's effective server limit, like any other layer.
+ */
+export function repositoryApprovalLimitIssue(input: {
+  readonly layer: McpRepositoryLayer;
+  readonly serverName: string;
+  readonly common: McpProjectServersConfig;
+  readonly project: McpProjectServersConfig;
+  readonly disabledCommon?: ReadonlyArray<string> | undefined;
+}): string | undefined {
+  const key = mcpServerNameKey(input.serverName);
+  const entry = input.layer.entries.find((candidate) => mcpServerNameKey(candidate.name) === key);
+  if (!entry || entry.approved) return undefined;
+  const merged = mergeMcpServerLayers({
+    common: input.common,
+    repository: { ...input.layer.approved, [entry.name]: entry.server },
+    project: input.project,
+    disabledCommon: input.disabledCommon,
+  });
+  return Object.keys(merged).length > MCP_EFFECTIVE_SERVER_LIMIT
+    ? `Approving '${entry.name}' would exceed the ${MCP_EFFECTIVE_SERVER_LIMIT}-server limit for this project. Remove or turn off another server first.`
+    : undefined;
+}
 
 export interface McpRepositoryEntry {
   readonly name: string;
@@ -41,6 +70,12 @@ export interface McpRepositoryLayer {
   readonly approved: McpProjectServersConfig;
   /** Changes whenever the approved layer does; empty when nothing is approved. */
   readonly version: string;
+  /**
+   * Name keys F5 must no longer run from this repository: servers in the file that are
+   * not approved (revoked, never approved or changed), and approved names the file no
+   * longer lists. Live sessions still using one are cut off.
+   */
+  readonly withdrawn: ReadonlyArray<string>;
 }
 
 export class McpRepositoryTrustError extends Schema.TaggedErrorClass<McpRepositoryTrustError>()(
@@ -51,6 +86,8 @@ export class McpRepositoryTrustError extends Schema.TaggedErrorClass<McpReposito
 export interface McpRepositoryServersShape {
   /** Never fails: an unreadable or invalid file is reported in `issues`. */
   readonly readLayer: (projectId: ProjectId) => Effect.Effect<McpRepositoryLayer>;
+  /** Projects with at least one approval, whether or not the file still lists it. */
+  readonly trustedProjects: () => ReadonlyArray<ProjectId>;
   readonly setTrust: (input: {
     readonly projectId: ProjectId;
     readonly serverName: string;
@@ -80,6 +117,7 @@ const EMPTY_LAYER: McpRepositoryLayer = {
   issues: [],
   approved: {},
   version: "",
+  withdrawn: [],
 };
 
 interface ParsedFile {
@@ -168,8 +206,9 @@ export const makeMcpRepositoryServers = Effect.gen(function* () {
 
   const readLayer = (projectId: ProjectId): Effect.Effect<McpRepositoryLayer> =>
     Effect.gen(function* () {
+      const trustedKeys = [...(trust.get(projectId)?.keys() ?? [])];
       const root = yield* projectRoot(projectId);
-      if (!root) return EMPTY_LAYER;
+      if (!root) return { ...EMPTY_LAYER, withdrawn: trustedKeys };
       const filename = path.join(root, MCP_REPOSITORY_FILE);
       const read = yield* Effect.tryPromise({
         try: () => readRepositoryFile(filename, files.get(projectId)),
@@ -194,6 +233,7 @@ export const makeMcpRepositoryServers = Effect.gen(function* () {
           path: filename,
           found: read.error !== undefined,
           issues: read.error ? [read.error] : [],
+          withdrawn: trustedKeys,
         };
       const approvedHashes = trust.get(projectId);
       const approved: Record<string, McpProjectServersConfig[string]> = {};
@@ -211,6 +251,11 @@ export const makeMcpRepositoryServers = Effect.gen(function* () {
         };
       });
       const approvedNames = Object.keys(approved);
+      const listed = new Set(entries.map((entry) => mcpServerNameKey(entry.name)));
+      const withdrawn = [
+        ...entries.filter((entry) => !entry.approved).map((entry) => mcpServerNameKey(entry.name)),
+        ...trustedKeys.filter((key) => !listed.has(key)),
+      ];
       return {
         path: filename,
         found: true,
@@ -220,6 +265,7 @@ export const makeMcpRepositoryServers = Effect.gen(function* () {
         version: approvedNames.length
           ? createHash("sha256").update(stableMcpServersJson(approved)).digest("hex").slice(0, 16)
           : "",
+        withdrawn,
       };
     });
 
@@ -259,7 +305,12 @@ export const makeMcpRepositoryServers = Effect.gen(function* () {
       return yield* readLayer(input.projectId);
     });
 
-  return { readLayer, setTrust } satisfies McpRepositoryServersShape;
+  const trustedProjects = () =>
+    [...trust.entries()]
+      .filter(([, byName]) => byName.size > 0)
+      .map(([projectId]) => projectId as ProjectId);
+
+  return { readLayer, trustedProjects, setTrust } satisfies McpRepositoryServersShape;
 });
 
 export const McpRepositoryServersLive = Layer.effect(

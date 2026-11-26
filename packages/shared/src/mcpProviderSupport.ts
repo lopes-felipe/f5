@@ -7,6 +7,7 @@
  * @module mcpProviderSupport
  */
 import {
+  isKnownProviderKind,
   KNOWN_PROVIDER_KINDS,
   type McpServerDefinition,
   type ProviderKind,
@@ -60,7 +61,10 @@ export function setMcpProviderEnabled<T extends McpServerDefinition>(
   provider: ProviderKind,
   enabled: boolean,
 ): T {
-  const others = (server.disabledProviders ?? []).filter((entry) => entry !== provider);
+  // Names this version does not know cannot be written back, so they are dropped.
+  const others = (server.disabledProviders ?? []).filter(
+    (entry) => entry !== provider && isKnownProviderKind(entry),
+  );
   const disabledProviders = enabled ? others : [...others, provider];
   const { disabledProviders: _previous, ...rest } = server;
   return (disabledProviders.length ? { ...rest, disabledProviders } : rest) as T;

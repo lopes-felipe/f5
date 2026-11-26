@@ -1,4 +1,5 @@
 import { closeProbeProcess } from "./McpProbeProcess.ts";
+import { resolveInvocation } from "../spawn/resolveCommand.ts";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { homedir } from "node:os";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -17,8 +18,10 @@ import {
   describeMcpInterpolationSkip,
   interpolateMcpServers,
 } from "@t3tools/shared/mcpInterpolation";
+import { mcpBearerRedactionValues, mcpRemoteHeaders } from "@t3tools/shared/mcpTranslation";
 import { isMcpCredentialKey, createMcpDiagnosticsSanitizer } from "@t3tools/shared/mcpDiagnostics";
 import { Data, Effect } from "effect";
+import { resolvedMcpSecretsIn } from "./mcpResolvedSecrets.ts";
 
 /** The SDK's stdio transport does not own a process group. Probes must also reap descendants. */
 export class ProbeStdioTransport implements Transport {
@@ -51,10 +54,18 @@ export class ProbeStdioTransport implements Transport {
   setProtocolVersion(version: string) {
     this.protocolVersion = version;
   }
-  start(): Promise<void> {
-    if (this.child || this.closing)
-      return Promise.reject(new Error("Probe transport already started or closed."));
-    const child = spawn(this.command, this.args, {
+  async start(): Promise<void> {
+    if (this.child || this.closing) throw new Error("Probe transport already started or closed.");
+    // On Windows, `npx`, `pnpm dlx` and other npm commands are .cmd shims that
+    // `spawn` cannot run without a shell; resolve them like provider binaries.
+    const invocation =
+      process.platform === "win32"
+        ? await resolveInvocation(this.command, this.args, this.env, { cwd: this.cwd }).catch(
+            () => ({ file: this.command, args: this.args }),
+          )
+        : { file: this.command, args: this.args };
+    if (this.child || this.closing) throw new Error("Probe transport already started or closed.");
+    const child = spawn(invocation.file, [...invocation.args], {
       env: this.env,
       cwd: this.cwd,
       detached: process.platform !== "win32",
@@ -152,11 +163,10 @@ export function probeMcpServer(
   );
   const unresolved = interpolation.skipped[0];
   const server = interpolation.servers[input.serverName] ?? input.server;
-  const bearer = server.bearerTokenEnvVar
-    ? execution.environment[server.bearerTokenEnvVar]
-    : undefined;
   const sanitizer = createMcpDiagnosticsSanitizer({ [input.serverName]: server }, [
-    ...(bearer ? [bearer] : []),
+    ...mcpBearerRedactionValues(server, execution.environment),
+    // Stored secrets resolved into arguments or the URL, which a server may echo back.
+    ...resolvedMcpSecretsIn(JSON.stringify([server.type === "stdio" ? server.args : server.url])),
     ...Object.entries(execution.environment).flatMap(([name, value]) =>
       value && isMcpCredentialKey(name) ? [value] : [],
     ),
@@ -201,8 +211,10 @@ export function probeMcpServer(
           { capabilities: {} },
         );
         const controller = new AbortController();
-        const headers = new Headers(server.headers);
-        if (bearer) headers.set("Authorization", `Bearer ${bearer}`);
+        // The same precedence as every provider: a literal Authorization header wins.
+        const headers = new Headers(
+          server.type === "stdio" ? undefined : mcpRemoteHeaders(server, execution.environment),
+        );
         if (server.type === "stdio") {
           transport = new ProbeStdioTransport(
             server.command,

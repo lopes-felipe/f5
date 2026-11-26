@@ -62,6 +62,9 @@ describe("mcpProviderSupport", () => {
     expect(mcpProviderSupport(offForCodex, "codex").support).toBe("off");
     expect(setMcpProviderEnabled(offForCodex, "codex", false).disabledProviders).toEqual(["codex"]);
     expect(setMcpProviderEnabled(offForCodex, "codex", true)).toEqual(base);
+    // A provider this version does not know is dropped, so the toggle can save.
+    const unknown = { ...base, disabledProviders: ["future-agent"] } as McpServerDefinition;
+    expect(setMcpProviderEnabled(unknown, "codex", false).disabledProviders).toEqual(["codex"]);
 
     const servers = { docs: offForCodex, other: base };
     expect(Object.keys(translateMcpForCodex(servers) ?? {})).toEqual(["other"]);

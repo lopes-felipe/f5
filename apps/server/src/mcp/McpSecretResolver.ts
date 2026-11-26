@@ -8,7 +8,7 @@ import {
 } from "@t3tools/shared/mcpSecrets";
 import { Data, Effect } from "effect";
 import type { ServerSecretStoreShape } from "../auth/Services/ServerSecretStore.ts";
-import { rememberResolvedMcpSecret } from "./mcpResolvedSecrets.ts";
+import { rememberResolvedMcpField, rememberResolvedMcpSecret } from "./mcpResolvedSecrets.ts";
 
 class McpSecretValidationError extends Data.TaggedError("McpSecretValidationError")<{
   message: string;
@@ -51,7 +51,15 @@ export function resolveMcpSecrets(
         }
         return secret;
       };
-      const replace = (value: string) => replaceMcpSecretReferences(value, lookup);
+      const replace = (value: string, encode = false) => {
+        const next = replaceMcpSecretReferences(value, (id) => {
+          const secret = lookup(id);
+          // A secret in a URL is encoded, so `/ ? # @` in it cannot change the URL's parts.
+          return secret === undefined || !encode ? secret : encodeURIComponent(secret);
+        });
+        if (next !== value) rememberResolvedMcpField(next);
+        return next;
+      };
       const replaceRecord = (values: Record<string, string> | undefined) =>
         values
           ? Object.fromEntries(Object.entries(values).map(([key, value]) => [key, replace(value)]))
@@ -60,8 +68,8 @@ export function resolveMcpSecrets(
         ...server,
         ...(server.env ? { env: replaceRecord(server.env) } : {}),
         ...(server.headers ? { headers: replaceRecord(server.headers) } : {}),
-        ...(server.args ? { args: server.args.map(replace) } : {}),
-        ...(server.url ? { url: replace(server.url) } : {}),
+        ...(server.args ? { args: server.args.map((arg) => replace(arg)) } : {}),
+        ...(server.url ? { url: replace(server.url, true) } : {}),
       } as McpProjectServersConfig[string];
       if (missing)
         issues.push({
