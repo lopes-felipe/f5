@@ -26,8 +26,9 @@ ROWS = [
     (85, "#f06acb", [(15, 19), (68, 45)]),
 ]
 # Development builds carry this badge, in 1024px canvas coordinates.
-DEV_BADGE_BOX = (736, 736, 960, 960)
+DEV_BADGE_BOX = (752, 752, 976, 976)
 DEV_BADGE_FILL = "#ff9f0a"
+ICNS_SIZES = [16, 32, 128, 256, 512]
 
 
 def resize(image, size):
@@ -61,8 +62,7 @@ def draw_source(size):
     tile = Image.merge("RGB", [ramp_channel(*ends) for ends in zip(rgb(TILE_TOP), rgb(TILE_BOTTOM))])
     outer = rounded_mask(0, TILE_RADIUS)
     ring = ImageChops.subtract(outer, rounded_mask(HAIRLINE_WIDTH, TILE_RADIUS - HAIRLINE_WIDTH))
-    hairline = ring.point(lambda value: round(value * HAIRLINE_OPACITY))
-    tile.paste(Image.new("RGB", (canvas, canvas), "white"), mask=hairline)
+    tile.paste("white", mask=ring.point(lambda value: round(value * HAIRLINE_OPACITY)))
     draw = ImageDraw.Draw(tile)
     for y, colour, bars in ROWS:
         for x, width in bars:
@@ -117,10 +117,14 @@ def platform_image(image, platform):
     return shadow
 
 
-def generate():
+def generate(root=ROOT, icns=True):
+    """Write every asset under `root`; `icns=False` skips the one that needs macOS iconutil."""
+    for directory in ["assets/prod", "assets/dev", "apps/web/public", "apps/marketing/public"]:
+        (root / directory).mkdir(parents=True, exist_ok=True)
+    (root / "apps/desktop/resources").mkdir(parents=True, exist_ok=True)
     source = draw_source(4096)
-    source.save(ROOT / "assets/icon.png", optimize=True)
-    (ROOT / "assets/prod/logo.svg").write_text(logo_svg(), encoding="utf-8")
+    source.save(root / "assets/icon.png", optimize=True)
+    (root / "assets/prod/logo.svg").write_text(logo_svg(), encoding="utf-8")
     production = resize(source, 1024)
     development = production.copy()
     ImageDraw.Draw(development).ellipse(DEV_BADGE_BOX, fill=DEV_BADGE_FILL, outline="white", width=16)
@@ -128,7 +132,7 @@ def generate():
         ("prod", production, "black", "t3-black"),
         ("dev", development, "blueprint", "blueprint"),
     ]:
-        directory = ROOT / "assets" / mode
+        directory = root / "assets" / mode
         for platform in ["ios", "macos", "universal"]:
             platform_image(image, platform).save(directory / f"{prefix}-{platform}-1024.png")
         for size in [16, 32]:
@@ -137,22 +141,24 @@ def generate():
         image.save(directory / f"{web}-web-favicon.ico", sizes=[(n, n) for n in [16, 32, 48]])
         windows = "t3-black" if mode == "prod" else prefix
         image.save(directory / f"{windows}-windows.ico", sizes=[(n, n) for n in [16, 32, 48, 64, 128, 256]])
-    for public, icon_size in [(ROOT / "apps/web/public", 512), (ROOT / "apps/marketing/public", 1024)]:
+    for public, icon_size in [(root / "apps/web/public", 512), (root / "apps/marketing/public", 1024)]:
         for source_name, target in [
             ("t3-black-web-favicon.ico", "favicon.ico"),
             ("t3-black-web-favicon-16x16.png", "favicon-16x16.png"),
             ("t3-black-web-favicon-32x32.png", "favicon-32x32.png"),
             ("t3-black-web-apple-touch-180.png", "apple-touch-icon.png"),
         ]:
-            shutil.copyfile(ROOT / "assets/prod" / source_name, public / target)
+            shutil.copyfile(root / "assets/prod" / source_name, public / target)
         resize(production, icon_size).save(public / "icon.png")
-    resources = ROOT / "apps/desktop/resources"
+    resources = root / "apps/desktop/resources"
     resize(platform_image(development, "macos"), 512).save(resources / "icon.png")
-    shutil.copyfile(ROOT / "assets/dev/blueprint-windows.ico", resources / "icon.ico")
+    shutil.copyfile(root / "assets/dev/blueprint-windows.ico", resources / "icon.ico")
+    if not icns:
+        return
     with tempfile.TemporaryDirectory(prefix="f5-icons-") as temporary:
         iconset = Path(temporary) / "icon.iconset"
         iconset.mkdir()
-        for size in [16, 32, 128, 256, 512]:
+        for size in ICNS_SIZES:
             resize(platform_image(development, "macos"), size).save(iconset / f"icon_{size}x{size}.png")
             resize(platform_image(development, "macos"), size * 2).save(iconset / f"icon_{size}x{size}@2x.png")
         subprocess.run(["iconutil", "-c", "icns", str(iconset), "-o", str(resources / "icon.icns")], check=True)

@@ -11,6 +11,10 @@ regenerate with Python 3, Pillow 11.3.0, and Apple's iconutil:
     /tmp/f5-brand-tools/bin/python scripts/generate-brand-assets.py
     /tmp/f5-brand-tools/bin/python scripts/generate_brand_assets_test.py
 
+The test regenerates everything into a temporary directory and compares it with
+the committed files, pixel by pixel. CI runs it in the static job, so a recipe
+change that is committed without its regenerated files fails there.
+
 The recipe draws a 4096px RGBA source at twice that size and resizes with Lanczos,
 keeping the tile's rounded corners transparent. assets/prod/logo.svg is the same
 drawing as a vector.
