@@ -119,6 +119,13 @@ export interface ReadOnlyEnforcementHost {
   readonly target: string | undefined;
   /** `os.release()` of that machine; needed to trust a Windows certification. */
   readonly osRelease?: string | undefined;
+  /**
+   * False when the provider can't start its OS sandbox from this process. F5's macOS desktop
+   * backend already runs inside a Seatbelt sandbox, and macOS refuses to start a second one
+   * inside it (`sandbox_apply: Operation not permitted`), so Codex's and Antigravity's sandboxes
+   * fail every command there. Undefined means not checked, and is treated as available.
+   */
+  readonly nestedSandbox?: boolean | undefined;
 }
 
 export interface ReadOnlyEnforcementTables {
@@ -147,6 +154,9 @@ export const READ_ONLY_UNSUPPORTED_DRIVERS: ReadonlySet<string> = new Set(["grok
  * needs a certified runtime: its certification also proves every write reaches F5 as a request,
  * so an uncertified one can't fall back to policy. Claude, OpenCode, Pi and any other driver
  * are policy-enforced.
+ *
+ * Where a provider sandbox can't start (`host.nestedSandbox === false`), Codex, a certified
+ * Antigravity and Cursor run without it and F5's command policy decides each command instead.
  */
 export function resolveReadOnlyEnforcement(
   driver: string,
@@ -155,12 +165,14 @@ export function resolveReadOnlyEnforcement(
   tables: ReadOnlyEnforcementTables = {},
 ): ReadOnlyEnforcement | undefined {
   if (READ_ONLY_UNSUPPORTED_DRIVERS.has(driver)) return undefined;
+  const sandboxOr = (fallback: ReadOnlyEnforcement) =>
+    host.nestedSandbox === false ? fallback : "sandbox";
   switch (driver) {
     case "codex":
-      return "sandbox";
+      return sandboxOr("policy");
     case "antigravity":
       return antigravityReadOnlySandboxCertified(version, host, tables.antigravity)
-        ? "sandbox"
+        ? sandboxOr("policy")
         : undefined;
     case "cursor":
       return readOnlyRuntimeCertified(
@@ -168,7 +180,7 @@ export function resolveReadOnlyEnforcement(
         version,
         host.target,
       )
-        ? "sandbox"
+        ? sandboxOr("policy")
         : "policy";
     default:
       return "policy";

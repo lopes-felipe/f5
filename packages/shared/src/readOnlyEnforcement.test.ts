@@ -149,6 +149,29 @@ describe("resolveReadOnlyEnforcement", () => {
     ).toBe("policy");
     expect(resolveReadOnlyEnforcement("cursor", "2026.11.22", host)).toBe("policy");
   });
+
+  it("falls back to policy where a provider sandbox can't start", () => {
+    const nested = { ...host, nestedSandbox: false };
+    const cursor = [{ minimumVersion: "2026.11.22-e9042b2", target: "darwin-arm64" }];
+    expect(resolveReadOnlyEnforcement("codex", undefined, nested)).toBe("policy");
+    expect(
+      resolveReadOnlyEnforcement("antigravity", "1.5.15", nested, { antigravity: FLOOR }),
+    ).toBe("policy");
+    // An uncertified Antigravity stays unavailable: certification is what shows its commands
+    // reach F5 at all.
+    expect(
+      resolveReadOnlyEnforcement("antigravity", "1.5.12", nested, { antigravity: FLOOR }),
+    ).toBeUndefined();
+    expect(resolveReadOnlyEnforcement("cursor", "2026.11.22-e9042b2", nested, { cursor })).toBe(
+      "policy",
+    );
+    expect(resolveReadOnlyEnforcement("claudeAgent", "2.0.0", nested)).toBe("policy");
+    expect(resolveReadOnlyEnforcement("grok", "1.0.0", nested)).toBeUndefined();
+    // A confirmed working sandbox behaves like an unchecked one.
+    expect(resolveReadOnlyEnforcement("codex", undefined, { ...host, nestedSandbox: true })).toBe(
+      "sandbox",
+    );
+  });
 });
 
 describe("readOnlyEnforcementSummary", () => {

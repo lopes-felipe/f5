@@ -13,9 +13,9 @@ import {
 } from "unbash";
 
 /**
- * Whether a shell command only reads, for read-only workflow stages on providers that have no
- * OS sandbox (Cursor, Antigravity). Codex enforces read-only with its sandbox and Claude with its
- * native plan-mode classifier; these providers hand every command to F5 instead.
+ * Whether a shell command only reads, for read-only workflow stages without an OS sandbox: Cursor,
+ * and Antigravity and Codex where their sandbox can't start (F5's macOS desktop app). Claude enforces read-only with its native plan-mode classifier; these providers
+ * hand every command to F5 instead.
  *
  * The classifier fails closed: anything it cannot prove read-only is refused, and the model is
  * told no and can try a simpler command. Only plain commands joined by `|`, `&&`, `||` and `;`,
@@ -155,6 +155,41 @@ const GH_API_ACCEPT_HEADER = /^accept\s*:/i;
 
 const SED_PRINT_SCRIPT = /^(\d+|\$)(,(\d+|\$))?p$/;
 
+const SHELL_PROGRAM = /^(?:(?:\/usr)?\/bin\/)?(?:ba|z|da)?sh$/;
+
+/** `sh`, `bash`, `zsh` or `dash`, bare or in `/bin` or `/usr/bin`. */
+export function isShellProgram(program: string): boolean {
+  return SHELL_PROGRAM.test(program);
+}
+
+/**
+ * The script inside `/bin/zsh -lc '<script>'`, the form Codex reports a shell command in, or the
+ * command unchanged when it isn't one. Only a lone shell call with `-c`, `-lc` or `-l -c` and one
+ * literal script is unwrapped; the script is then classified like any other command, and
+ * anything else is classified as written (where a shell is not on the allowlist).
+ */
+export function unwrapShellInvocation(command: string): string {
+  let script;
+  try {
+    script = parse(command);
+  } catch {
+    return command;
+  }
+  if ((script.errors && script.errors.length > 0) || script.commands.length !== 1) return command;
+  const statement = script.commands[0]!;
+  const node = statement.command;
+  if (statement.background || node.type !== "Command" || node.prefix.length > 0) return command;
+  if (!node.name || !isStaticWord(node.name) || !isShellProgram(node.name.value)) return command;
+  const args: string[] = [];
+  for (const entry of node.suffix) {
+    if (entry.type !== "Word" || !isStaticWord(entry)) return command;
+    args.push(entry.value);
+  }
+  if (args.length === 2 && (args[0] === "-c" || args[0] === "-lc")) return args[1]!;
+  if (args.length === 3 && args[0] === "-l" && args[1] === "-c") return args[2]!;
+  return command;
+}
+
 export function classifyReadOnlyShellCommand(command: string): ReadOnlyShellClassification {
   if (command.trim().length === 0) return refuse("empty command");
   let script;
@@ -165,11 +200,303 @@ export function classifyReadOnlyShellCommand(command: string): ReadOnlyShellClas
   }
   if (script.errors && script.errors.length > 0) return refuse("command could not be parsed");
   if (script.commands.length === 0) return refuse("empty command");
+  const scope: ShellScope = new Map();
   for (const statement of script.commands) {
-    const verdict = classifyStatement(statement);
+    const verdict = classifyTopLevelStatement(statement, scope);
     if (!verdict.readOnly) return verdict;
   }
   return READ_ONLY;
+}
+
+/**
+ * Script-local variables set earlier in the command, with their literal values. A model often
+ * writes `HEAD_SHA=abc123` once and then `git show "$HEAD_SHA"`; each later `$HEAD_SHA` is
+ * classified as the literal it stands for. A variable counts only when it is certainly set before
+ * use: a statement of its own at the top level, or the first command of a top-level `&&`/`||`
+ * chain. Its value must itself be literal (or built from earlier such variables).
+ */
+type ShellScope = Map<string, string>;
+
+/**
+ * Names a shell, or a program F5 allows, gives a meaning to. Setting one in the shell changes an
+ * exported value children inherit (`GIT_DIR`, `PAGER`, `LD_PRELOAD`) or the shell's own behavior
+ * (`IFS`, `PATH`, zsh's `path` array), so these are refused rather than tracked. Compared in upper
+ * case, so `home` and `Path` are refused too.
+ */
+const SPECIAL_VARIABLES = new Set([
+  "_",
+  "PATH",
+  "HOME",
+  "IFS",
+  "ENV",
+  "CDPATH",
+  "SHELL",
+  "SHELLOPTS",
+  "GLOBIGNORE",
+  "FIGNORE",
+  "PS1",
+  "PS2",
+  "PS3",
+  "PS4",
+  "PROMPT",
+  "RPROMPT",
+  "PROMPT_COMMAND",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "PWD",
+  "OLDPWD",
+  "USER",
+  "LOGNAME",
+  "MAIL",
+  "MAILCHECK",
+  "INPUTRC",
+  "TERM",
+  "TERMINFO",
+  "TERMCAP",
+  "PAGER",
+  "EDITOR",
+  "VISUAL",
+  "BROWSER",
+  "OPTIND",
+  "OPTARG",
+  "REPLY",
+  "NULLCMD",
+  "READNULLCMD",
+  "FUNCNEST",
+  "EXECIGNORE",
+  "POSIXLY_CORRECT",
+  "TIMEFORMAT",
+  "SECONDS",
+  "RANDOM",
+  "LINENO",
+  "COLUMNS",
+  "LINES",
+]);
+const SPECIAL_VARIABLE_PREFIXES = [
+  "LD_",
+  "DYLD_",
+  "GIT_",
+  "GH_",
+  "GITHUB_",
+  "GLAMOUR_",
+  "XDG_",
+  "NODE_",
+  "NPM_",
+  "YARN_",
+  "BUN_",
+  "PYTHON",
+  "PERL",
+  "RUBY",
+  "JAVA",
+  "LESS",
+  "RIPGREP_",
+  "FZF_",
+  "FD_",
+  "JQ_",
+  "SSH_",
+  "GPG",
+  "GNUPG",
+  "SSL_",
+  "CURL_",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "ALL_PROXY",
+  "NO_PROXY",
+  "BASH",
+  "ZSH",
+  "HIST",
+  "LC_",
+  "TERM",
+];
+const SPECIAL_VARIABLE_SUFFIXES = [
+  "PATH",
+  "HOME",
+  "DIR",
+  "PAGER",
+  "EDITOR",
+  "_CONFIG",
+  "_OPTS",
+  "_OPTIONS",
+  "_ARGS",
+  "_FLAGS",
+  "_COMMAND",
+  "_CMD",
+  "_PROGRAM",
+  "_SHELL",
+  "_PROXY",
+];
+/** zsh's lowercase special parameters, several tied to an uppercase one (`path` is `PATH`). */
+const ZSH_SPECIAL_PARAMETERS = new Set([
+  "path",
+  "cdpath",
+  "fpath",
+  "manpath",
+  "mailpath",
+  "module_path",
+  "psvar",
+  "watch",
+  "histchars",
+  "prompt",
+  "argv",
+  "status",
+  "pipestatus",
+  "options",
+  "signals",
+  "parameters",
+  "commands",
+  "functions",
+  "aliases",
+  "galiases",
+  "saliases",
+  "builtins",
+  "jobstates",
+  "jobtexts",
+  "jobdirs",
+  "nameddirs",
+  "userdirs",
+  "dirstack",
+  "funcstack",
+  "history",
+  "historywords",
+  "modules",
+  "reswords",
+  "terminfo",
+  "termcap",
+  "widgets",
+  "keymaps",
+  "mapfile",
+  "match",
+  "mbegin",
+  "mend",
+  "reply",
+  "zle_highlight",
+]);
+
+function isSpecialVariable(name: string): boolean {
+  if (ZSH_SPECIAL_PARAMETERS.has(name)) return true;
+  const upper = name.toUpperCase();
+  return (
+    SPECIAL_VARIABLES.has(upper) ||
+    SPECIAL_VARIABLE_PREFIXES.some((prefix) => upper.startsWith(prefix)) ||
+    SPECIAL_VARIABLE_SUFFIXES.some((suffix) => upper.endsWith(suffix))
+  );
+}
+
+/** `NAME=value …` with nothing else: no program, redirection or argument. */
+function assignmentOnly(node: Statement["command"]): Command | undefined {
+  return node.type === "Command" &&
+    !node.name &&
+    node.suffix.length === 0 &&
+    node.prefix.length > 0 &&
+    node.prefix.every((entry) => entry.type === "Assignment")
+    ? node
+    : undefined;
+}
+
+/** Adds an assignment-only command's variables to `scope`, left to right like the shell. */
+function bindVariables(command: Command, scope: ShellScope): ReadOnlyShellClassification {
+  for (const entry of command.prefix) {
+    if (entry.type !== "Assignment") return refuse("a command name is required");
+    const name = entry.name;
+    if (isSpecialVariable(name))
+      return refuse(`setting ${name} is not allowed: write the value literally instead`);
+    if (entry.append || entry.index !== undefined || entry.value.type !== "Word")
+      return refuse(`${name} must be set to a literal value: write the value literally instead`);
+    const value = resolveWord(entry.value, scope, { splits: false });
+    if (!value.ok) return refuse(value.reason);
+    scope.set(name, value.value);
+  }
+  return READ_ONLY;
+}
+
+function classifyTopLevelStatement(
+  statement: Statement,
+  scope: ShellScope,
+): ReadOnlyShellClassification {
+  if (statement.background) return refuse("background commands are not allowed");
+  const node = statement.command;
+  const assignments = assignmentOnly(node);
+  if (assignments) return bindVariables(assignments, scope);
+  const leading = node.type === "AndOr" && node.commands[0] && assignmentOnly(node.commands[0]);
+  if (node.type === "AndOr" && leading) {
+    const bound = bindVariables(leading, scope);
+    if (!bound.readOnly) return bound;
+    for (const entry of node.commands.slice(1)) {
+      const verdict = classifyPipelineNode(entry, 0, scope);
+      if (!verdict.readOnly) return verdict;
+    }
+    return READ_ONLY;
+  }
+  return classifyStatement(statement, 0, scope);
+}
+
+type ResolvedWord =
+  | { readonly ok: true; readonly value: string }
+  | { readonly ok: false; readonly reason: string };
+
+const VARIABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/** An unquoted value with any of these would be split into words or matched as a glob. */
+const SPLITS_OR_GLOBS = /[\s*?[\]]/;
+
+/**
+ * A word's value with the scope's variables expanded, or why it can't be known. Any other
+ * expansion (command substitution, `$1`, `${X:-y}`, unknown variables) is refused. `splits` is
+ * false for assignment values, which the shell neither splits nor globs; elsewhere an unquoted
+ * variable must expand to exactly one plain word.
+ */
+function resolveWord(
+  word: Word,
+  scope: ReadonlyMap<string, string>,
+  options: { readonly splits: boolean },
+): ResolvedWord {
+  if (!word.parts) return { ok: true, value: word.value };
+  let value = "";
+  const visit = (
+    parts: ReadonlyArray<WordPart | DoubleQuotedChild>,
+    quoted: boolean,
+  ): string | undefined => {
+    for (const part of parts) {
+      switch (part.type) {
+        case "Literal":
+        case "SingleQuoted":
+        case "AnsiCQuoted":
+          value += part.value;
+          continue;
+        case "DoubleQuoted":
+        case "LocaleString": {
+          const failure = visit(part.parts, true);
+          if (failure) return failure;
+          continue;
+        }
+        case "SimpleExpansion":
+        case "ParameterExpansion": {
+          const name =
+            part.type === "SimpleExpansion"
+              ? part.text.slice(1)
+              : part.prefix === undefined &&
+                  part.index === undefined &&
+                  part.operation === undefined
+                ? part.parameter
+                : undefined;
+          if (name === undefined || !VARIABLE_NAME.test(name))
+            return "arguments must be literal: no substitutions or special expansions";
+          const known = scope.get(name);
+          if (known === undefined)
+            return `$${name} is not set earlier in this command: set ${name}=value before using it, or write the value literally`;
+          if (!quoted && options.splits && (known === "" || SPLITS_OR_GLOBS.test(known)))
+            return `quote "$${name}": its value is empty or has spaces or wildcards`;
+          value += known;
+          continue;
+        }
+        default:
+          return "arguments must be literal: no command substitutions or other expansions";
+      }
+    }
+    return undefined;
+  };
+  const failure = visit(word.parts, false);
+  return failure === undefined ? { ok: true, value } : { ok: false, reason: failure };
 }
 
 /**
@@ -179,32 +506,40 @@ export function classifyReadOnlyShellCommand(command: string): ReadOnlyShellClas
 const MAX_COMPOUND_DEPTH = 8;
 const MAX_ELIF_CLAUSES = 32;
 
-function classifyStatement(statement: Statement, depth = 0): ReadOnlyShellClassification {
+function classifyStatement(
+  statement: Statement,
+  depth: number,
+  scope: ShellScope,
+): ReadOnlyShellClassification {
   if (statement.background) return refuse("background commands are not allowed");
   const node = statement.command;
   if (node.type === "AndOr") {
     for (const entry of node.commands) {
-      const verdict = classifyPipelineNode(entry, depth);
+      const verdict = classifyPipelineNode(entry, depth, scope);
       if (!verdict.readOnly) return verdict;
     }
     return READ_ONLY;
   }
-  return classifyPipelineNode(node, depth);
+  return classifyPipelineNode(node, depth, scope);
 }
 
-function classifyPipelineNode(node: PipelineNode, depth: number): ReadOnlyShellClassification {
+function classifyPipelineNode(
+  node: PipelineNode,
+  depth: number,
+  scope: ShellScope,
+): ReadOnlyShellClassification {
   if (node.type === "Pipeline") {
     if (node.operators.some((operator) => operator !== "|"))
       return refuse("only plain `|` pipes are allowed");
     for (const entry of node.commands) {
-      const verdict = classifyCommandNode(entry, depth);
+      const verdict = classifyCommandNode(entry, depth, scope);
       if (!verdict.readOnly) return verdict;
     }
     return READ_ONLY;
   }
   if (node.type === "Time" || node.type === "Negation")
     return refuse(`${node.type} commands are not allowed`);
-  return classifyCommandNode(node, depth);
+  return classifyCommandNode(node, depth, scope);
 }
 
 /**
@@ -213,24 +548,28 @@ function classifyPipelineNode(node: PipelineNode, depth: number): ReadOnlyShellC
  * command's. Loops, `case`, functions, coprocesses and `[[ ]]`/`(( ))` stay refused: a loop can
  * run without end and the others add expansions this classifier does not inspect.
  */
-function classifyCommandNode(node: CommandNode, depth: number): ReadOnlyShellClassification {
+function classifyCommandNode(
+  node: CommandNode,
+  depth: number,
+  scope: ShellScope,
+): ReadOnlyShellClassification {
   switch (node.type) {
     case "Command":
-      return classifyCommand(node);
+      return classifyCommand(node, scope);
     case "Redirected": {
       for (const redirection of node.redirects) {
         const verdict = classifyRedirection(redirection);
         if (!verdict.readOnly) return verdict;
       }
-      return classifyCommandNode(node.command, depth);
+      return classifyCommandNode(node.command, depth, scope);
     }
     case "If":
       if (depth >= MAX_COMPOUND_DEPTH) return refuse("commands are nested too deeply");
-      return classifyIfChain(node, depth + 1);
+      return classifyIfChain(node, depth + 1, scope);
     case "BraceGroup":
     case "Subshell":
       if (depth >= MAX_COMPOUND_DEPTH) return refuse("commands are nested too deeply");
-      return classifyCompoundList(node.body, depth + 1);
+      return classifyCompoundList(node.body, depth + 1, scope);
     default:
       return refuse(`${node.type} commands are not allowed`);
   }
@@ -240,31 +579,40 @@ function classifyCommandNode(node: CommandNode, depth: number): ReadOnlyShellCla
  * An `if` and its `elif` clauses, which unbash stores as an `If` in the previous clause's `else`.
  * Walked in a loop so a flat chain neither counts as nesting nor recurses per clause.
  */
-function classifyIfChain(node: If, depth: number): ReadOnlyShellClassification {
+function classifyIfChain(node: If, depth: number, scope: ShellScope): ReadOnlyShellClassification {
   let clause: If = node;
   for (let clauses = 1; ; clauses += 1) {
     if (clauses > MAX_ELIF_CLAUSES) return refuse("too many `elif` clauses");
     for (const list of [clause.clause, clause.then]) {
-      const verdict = classifyCompoundList(list, depth);
+      const verdict = classifyCompoundList(list, depth, scope);
       if (!verdict.readOnly) return verdict;
     }
     const rest = clause.else;
     if (rest === undefined) return READ_ONLY;
-    if (rest.type !== "If") return classifyCompoundList(rest, depth);
+    if (rest.type !== "If") return classifyCompoundList(rest, depth, scope);
     clause = rest;
   }
 }
 
-function classifyCompoundList(list: CompoundList, depth: number): ReadOnlyShellClassification {
+function classifyCompoundList(
+  list: CompoundList,
+  depth: number,
+  scope: ShellScope,
+): ReadOnlyShellClassification {
   if (list.commands.length === 0) return refuse("empty command");
   for (const statement of list.commands) {
-    const verdict = classifyStatement(statement, depth);
+    const verdict = classifyStatement(statement, depth, scope);
     if (!verdict.readOnly) return verdict;
   }
   return READ_ONLY;
 }
 
-function classifyCommand(command: Command): ReadOnlyShellClassification {
+function classifyCommand(command: Command, scope: ShellScope): ReadOnlyShellClassification {
+  // Variables count only where they are certainly set before use (classifyTopLevelStatement).
+  if (assignmentOnly(command))
+    return refuse(
+      "variables must be set on their own at the top level, or first in an `&&` chain: or write the value literally",
+    );
   for (const entry of command.prefix) {
     if (entry.type === "Assignment") {
       const isPager = PAGER_ASSIGNMENTS.has(entry.name);
@@ -291,20 +639,22 @@ function classifyCommand(command: Command): ReadOnlyShellClassification {
   const program = name.value;
   if (program.includes("/")) return refuse("programs must be named without a path");
 
-  // Every argument must be literal. A substitution runs a command, a variable could expand to a
-  // flag that writes or executes, and `echo $GH_TOKEN` would put a secret in the model's context.
-  // `cmd NAME=value` is a plain argument for every allowed program.
+  // Every argument must be literal, or a variable this command set to a literal earlier, which
+  // is checked as the value it stands for. A substitution runs a command, any other variable could
+  // expand to a flag that writes or executes, and `echo $GH_TOKEN` would put a secret in the
+  // model's context. `cmd NAME=value` is a plain argument for every allowed program.
   const args: string[] = [];
   for (const entry of command.suffix) {
     if (entry.type === "Assignment") {
-      if (!(entry.value.type === "Word" && isStaticWord(entry.value)))
-        return refuse("arguments must be literal");
+      if (entry.value.type !== "Word") return refuse("arguments must be literal");
+      const value = resolveWord(entry.value, scope, { splits: true });
+      if (!value.ok) return refuse(value.reason);
       continue;
     }
     if (entry.type !== "Word") continue;
-    if (!isStaticWord(entry))
-      return refuse("arguments must be literal: no variables or substitutions");
-    args.push(entry.value);
+    const value = resolveWord(entry, scope, { splits: true });
+    if (!value.ok) return refuse(value.reason);
+    args.push(value.value);
   }
 
   if (PLAIN_READ_PROGRAMS.has(program)) return READ_ONLY;

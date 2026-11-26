@@ -77,23 +77,30 @@ requires Windows 11 24H2 (build 26100) or later, because Antigravity's sandbox s
 nothing on older builds. Google also requires the August 2026 Windows update, which F5 can't
 check.
 
-F5 doesn't check that the sandbox actually starts on each machine. Where it can't, Antigravity
-runs commands without it and F5's per-command policy below is the only control:
+The sandbox can't start everywhere:
 
+- **macOS:** Seatbelt can't start inside another sandbox, and F5's desktop app runs its backend
+  inside one. Every sandboxed command would fail with `sandbox_apply: Operation not permitted`.
+  F5 checks this once per backend process (`apps/server/src/provider/nestedSandboxProbe.ts`).
+  When the check fails, read-only sessions launch without `--sandbox`, F5's per-command policy
+  below is the only control, and the stage is recorded as **policy-enforced**. In practice that
+  is the desktop app; `bun dev` and a server started from a terminal keep the sandbox.
 - **Linux:** the namespace sandbox needs unprivileged user namespaces, which Ubuntu 23.10 and
-  later restrict by default.
-- **macOS:** Seatbelt can't start inside another sandbox.
+  later restrict by default. F5 doesn't check this.
 - **Windows:** AppContainer needs the build and update above.
+
+Where the sandbox can't start and F5 doesn't detect it, Antigravity runs commands without it and
+F5's per-command policy is still the control.
 
 Before adding a Linux or Windows row, record what `agy --sandbox` does on such a host. If it
 runs unsandboxed without saying so, add a per-host check like the Windows build check.
 
 On a certified version, F5 keeps every workflow turn read-only:
 
-- The session launches with `agy acp --sandbox`. Its shell commands run in Antigravity's OS
-  sandbox (Seatbelt on macOS, namespaces on Linux, AppContainer on Windows), with no network and
-  no writes outside the workspace, where the sandbox can start (see above). Ordinary sessions
-  never use the sandbox.
+- The session launches with `agy acp --sandbox` where the sandbox can start (see above). Its
+  shell commands run in Antigravity's OS sandbox (Seatbelt on macOS, namespaces on Linux,
+  AppContainer on Windows), with no network and no writes outside the workspace. Ordinary
+  sessions never use the sandbox.
 - The session runs as **Supervised**, whatever the thread's access mode is.
 - Before each workflow prompt F5 switches the session to Plan and checks that Antigravity
   reports Plan. If it doesn't, the turn stops before anything is sent. Workflow turns never fall
@@ -102,9 +109,12 @@ On a certified version, F5 keeps every workflow turn read-only:
   `gh pr view`, `gh pr diff`, `gh api` GET requests, `git log`/`diff`/`show`, `rg` and `cat`,
   joined by pipes, `&&`, `||` or `;`, with output redirected to `/dev/null` at most. They may
   sit inside `if`/`elif`/`else`, `{ …; }` or `( … )` when every command inside reads; loops,
-  `case` and functions are refused. Arguments
-  must be literal (no variables or substitutions), and commands that never exit, such as
-  `tail -f`, are refused. Cursor uses the same allowlist, in
+  `case` and functions are refused. Arguments must be literal: no substitutions, and no variables
+  except ones the same command set to a literal first (`HEAD_SHA=abc123` on its own line or
+  first in an `&&` chain, then `git show "$HEAD_SHA"`), which are checked as the value they stand
+  for. Variables a shell or an allowed program gives a meaning to, such as `PATH`, `HOME`, `IFS`,
+  `PAGER` or anything starting with `GIT_` or `GH_`, can't be set. Commands that never exit, such
+  as `tail -f`, are refused. Cursor uses the same allowlist, in
   `apps/server/src/provider/readOnlyWorkflowShell.ts`. Commands that need the network, such as
   `gh`, fail inside the sandbox even when F5 approves them. When a command fails there,
   Antigravity may offer to run it again outside the sandbox (`BypassSandbox`). F5 always
