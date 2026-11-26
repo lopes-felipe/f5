@@ -140,11 +140,15 @@ import {
   readCodexAccountSnapshot,
   mapCodexRuntimeMode,
   CODEX_READ_ONLY_TURN_SANDBOX_POLICY,
+  type CodexReadOnlyMode,
+  type CodexReadOnlyRequirements,
   codexReadOnlyStagePolicy,
+  codexReadOnlyModeEnforcement,
   codexReadOnlyThreadPolicyViolation,
-  readCodexAllowedApprovalPolicies,
-  codexReadOnlyEnforcementUnderRequirements,
+  readCodexRequirements,
+  codexReadOnlyModeUnderRequirements,
   CODEX_READ_ONLY_REFUSED_METHOD,
+  CODEX_READ_ONLY_ENFORCEMENT_CHANGED_METHOD,
   codexReadOnlyPolicyDecision,
   CODEX_THREAD_CONFIG,
   buildCodexThreadOpenRequestParams,
@@ -213,11 +217,15 @@ export {
   readCodexAccountSnapshot,
   mapCodexRuntimeMode,
   CODEX_READ_ONLY_TURN_SANDBOX_POLICY,
+  type CodexReadOnlyMode,
+  type CodexReadOnlyRequirements,
   codexReadOnlyStagePolicy,
+  codexReadOnlyModeEnforcement,
   codexReadOnlyThreadPolicyViolation,
-  readCodexAllowedApprovalPolicies,
-  codexReadOnlyEnforcementUnderRequirements,
+  readCodexRequirements,
+  codexReadOnlyModeUnderRequirements,
   CODEX_READ_ONLY_REFUSED_METHOD,
+  CODEX_READ_ONLY_ENFORCEMENT_CHANGED_METHOD,
   codexReadOnlyPolicyDecision,
   CODEX_THREAD_CONFIG,
   buildCodexThreadOpenRequestParams,
@@ -481,12 +489,12 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
             ),
           );
       context.workflowExecutionProfile = input.workflowExecutionProfile;
-      if (input.workflowExecutionProfile && input.readOnlyEnforcement)
-        context.readOnlyEnforcement = await this.readOnlyEnforcementForRequirements(
+      if (input.workflowExecutionProfile)
+        context.readOnlyMode = await this.readOnlyModeForRequirements(
           context,
-          input.readOnlyEnforcement,
+          input.readOnlyEnforcement ?? "sandbox",
         );
-      else delete context.readOnlyEnforcement;
+      else delete context.readOnlyMode;
       const threadOpenParams = buildCodexThreadOpenRequestParams({
         cliVersion,
         browserResume: !!input.browserResume,
@@ -498,9 +506,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         ...(input.workflowExecutionProfile
           ? { workflowExecutionProfile: input.workflowExecutionProfile }
           : {}),
-        ...(context.readOnlyEnforcement
-          ? { readOnlyEnforcement: context.readOnlyEnforcement }
-          : {}),
+        ...(context.readOnlyMode ? { readOnlyMode: context.readOnlyMode } : {}),
       });
       this.emitLifecycleEvent(
         context,
@@ -591,7 +597,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       if (input.workflowExecutionProfile) {
         const violation = codexReadOnlyThreadPolicyViolation(
           threadOpenResponse,
-          context.readOnlyEnforcement,
+          context.readOnlyMode,
         );
         if (violation) {
           await Effect.logError("codex read-only workflow session opened without its sandbox", {
@@ -780,7 +786,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       resumedContextSent: context.resumedContextSent,
       reportedModelCapabilities: turnCapabilities,
       workflowExecutionProfile: context.workflowExecutionProfile,
-      readOnlyEnforcement: context.readOnlyEnforcement,
+      readOnlyMode: context.readOnlyMode,
     });
     if (input.audioFiles?.length && supportsCodexRelease6(context.cliVersion)) {
       const model = normalizeCodexModelSlug(turnStartParams.model);
@@ -2099,9 +2105,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         ...(context.workflowExecutionProfile
           ? { workflowExecutionProfile: context.workflowExecutionProfile }
           : {}),
-        ...(context.readOnlyEnforcement
-          ? { readOnlyEnforcement: context.readOnlyEnforcement }
-          : {}),
+        ...(context.readOnlyMode ? { readOnlyMode: context.readOnlyMode } : {}),
       },
       providerThreadId,
       boundaryTurnId!,
@@ -3515,16 +3519,19 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     const offered = (decision: ProviderApprovalDecision) =>
       !commandOffer?.decisions || commandOffer.decisions.has(decision);
     const decision = verdict.decision === "accept" && offered("accept") ? "accept" : "decline";
-    // A request that offers no plain refusal (only `cancel`, which ends the turn) takes the
-    // normal path, where the stage refuses it as a violation.
-    if (!offered(decision)) return false;
-    this.writeServerRequestResponse(context, {
-      id: request.id,
-      result: codexApprovalResponse(
-        { responseKind: approvalRequest.responseKind, ...(commandOffer ? { commandOffer } : {}) },
-        decision,
-      ),
-    });
+    // Escalation requests offer `accept`, an execpolicy amendment and `cancel`, but no `decline`.
+    // Codex still takes a plain `decline` (gate G3c), while `cancel` would end the turn.
+    const result =
+      decision === "decline" && approvalRequest.responseKind === "decision"
+        ? { decision: "decline" }
+        : codexApprovalResponse(
+            {
+              responseKind: approvalRequest.responseKind,
+              ...(commandOffer ? { commandOffer } : {}),
+            },
+            decision,
+          );
+    this.writeServerRequestResponse(context, { id: request.id, result });
     if (decision === "accept") return true;
     this.emitEvent({
       ...context.mcpEventIdentity,
@@ -3606,7 +3613,8 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     if (
       approvalRequest &&
       context.workflowExecutionProfile &&
-      context.readOnlyEnforcement === "policy" &&
+      context.readOnlyMode !== undefined &&
+      context.readOnlyMode !== "sandbox" &&
       this.answerReadOnlyPolicyRequest(context, request, approvalRequest, route)
     )
       return;
@@ -3989,18 +3997,19 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
   }
 
   /**
-   * `codexReadOnlyEnforcementUnderRequirements` for this session's Codex. A policy-enforced
-   * stage reads the requirements first; when it must run sandboxed instead, the thread gets a
-   * configuration warning saying why. A CLI without `configRequirements/read` keeps the request.
+   * `codexReadOnlyModeUnderRequirements` for this session's Codex. A policy-enforced stage reads
+   * the requirements first; a CLI without `configRequirements/read` keeps the request. When the
+   * stage ends up sandboxed instead, the thread gets a configuration warning saying why, and
+   * `CODEX_READ_ONLY_ENFORCEMENT_CHANGED_METHOD` corrects the enforcement F5 recorded at start.
    */
-  private async readOnlyEnforcementForRequirements(
+  private async readOnlyModeForRequirements(
     context: CodexSessionContext,
     requested: ReadOnlyEnforcement,
-  ): Promise<ReadOnlyEnforcement> {
-    if (requested !== "policy") return requested;
-    let allowed: ReadonlySet<string> | undefined;
+  ): Promise<CodexReadOnlyMode> {
+    if (requested !== "policy") return "sandbox";
+    let requirements: CodexReadOnlyRequirements | undefined;
     try {
-      allowed = readCodexAllowedApprovalPolicies(
+      requirements = readCodexRequirements(
         await this.sendRequest(context, "configRequirements/read", undefined),
       );
     } catch (error) {
@@ -4009,8 +4018,10 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         cause: error instanceof Error ? error.message : String(error),
       }).pipe(this.runPromise);
     }
-    const enforcement = codexReadOnlyEnforcementUnderRequirements(requested, allowed);
-    if (enforcement !== requested)
+    const mode = codexReadOnlyModeUnderRequirements(requested, requirements);
+    const enforcement = codexReadOnlyModeEnforcement(mode);
+    if (enforcement === requested) return mode;
+    const notification = (method: string, payload: Record<string, unknown>) =>
       this.emitEvent({
         ...context.mcpEventIdentity,
         id: EventId.makeUnsafe(timeOrderedUuid()),
@@ -4018,14 +4029,16 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         provider: "codex",
         threadId: context.session.threadId,
         createdAt: new Date().toISOString(),
-        method: "configWarning",
-        payload: {
-          summary:
-            "Read-only stage runs in Codex's read-only sandbox: your organisation's Codex requirements don't allow asking before every command.",
-          details: `Allowed approval policies: ${[...(allowed ?? [])].join(", ")}. Where Codex's sandbox can't start (F5's macOS desktop app), shell commands fail and the stage reads through F5's forge tools.`,
-        },
+        method,
+        payload,
       });
-    return enforcement;
+    notification(CODEX_READ_ONLY_ENFORCEMENT_CHANGED_METHOD, { enforcement });
+    notification("configWarning", {
+      summary:
+        "Read-only stage runs in Codex's read-only sandbox: your organisation's Codex requirements don't allow Codex to ask before running commands.",
+      details: `Allowed approval policies: ${[...(requirements?.allowedApprovalPolicies ?? [])].join(", ")}. Where Codex's sandbox can't start (F5's macOS desktop app), shell commands fail and the stage reads through F5's forge tools.`,
+    });
+    return mode;
   }
 
   private emitLifecycleEvent(
