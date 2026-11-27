@@ -48,8 +48,10 @@ async function protectedSnapshot(
 ): Promise<{ sources: Set<string>; runs: Set<number>; selecting: boolean }> {
   const sources = new Set<string>(),
     protectedRuns = new Set<number>();
-  // Read-only tokens may not see draft releases. Every automation draft reserves
-  // its immutable tag first, so protect all version-tagged sources independently.
+  // Read-only tokens may not see draft releases. Protect every version-tagged source
+  // (published releases and drafts reserved by older publishers). New drafts get their
+  // tag only right before promotion; until then the active publisher's lease below
+  // protects them, and a draft only exists once its build has completed.
   for (const tag of git(["for-each-ref", "--format=%(refname:short)", "refs/tags/v*"]).split("\n"))
     if (/^v\d+\.\d+\.\d+(?:-beta\.\d+)?$/.test(tag)) sources.add(git(["rev-list", "-n", "1", tag]));
   for (const run of activeRecords("release-publish.yml", ["in_progress"]).filter(
@@ -88,7 +90,8 @@ async function protectedSnapshot(
     // a rerun of the same candidate while an earlier verified attempt publishes.
     if (lease.candidateRun !== null) protectedRuns.add(lease.candidateRun);
   }
-  // Drafts reserve their version tag before creation; no release-history scan is needed.
+  // No release-history scan is needed: a draft exists only once its build has completed,
+  // so an abandoned tagless draft has no unfinished build left to protect.
   for (const run of activeRecords("release-upgrade.yml")) {
     if (
       run.repository.full_name !== repository ||

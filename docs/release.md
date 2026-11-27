@@ -92,8 +92,10 @@ changelog fragments that landed since the failed preparation into the same
 version's section. Its merge pins a new commit. Published versions, tags and assets are never replaced. Dependency,
 signature, hash, upgrade, missing certification and expired-artifact failures block
 publication. Missing artifacts require explicit recovery, not an implicit rebuild.
-Once publication has reserved a version's immutable tag, resume that exact
-candidate's publication; a recovery PR cannot move the reserved tag to another source.
+Once publication has reserved a version (its draft, which records the exact source
+commit, or its immutable tag), resume that exact candidate's publication; a recovery PR
+cannot move the reservation to another source. Preparation refuses a version that a
+draft or tag already reserves.
 
 To abandon a pending request, open an explicit withdrawal PR:
 
@@ -106,7 +108,7 @@ from the publication queue, and restore package versions to the remaining stable
 base. An invalid or deleted historical intent can be acknowledged by its exact
 commit SHA instead; comma-separated targets are supported. Reverting an intent
 never repins a previously seen UUID. A reserved tag remains immutable; after
-abandoning it, prepare a higher unused stable version. Required static CI checks
+abandoning it (or an unpublished draft), prepare a higher unused stable version. Required static CI checks
 the PR merge result, package versions and pending-request constraints. Require
 CODEOWNERS review and up-to-date `CI result` checks for intent edits.
 
@@ -121,8 +123,9 @@ stable preferences, beta clients retain beta preferences, and no path downgrades
   It uses pinned runtimes, Bun/Electron/builder caches and the Windows Rust cache.
   Every main merge starts its candidate, including signing and notarization.
   The independent release coordinator stops unfinished obsolete betas only after
-  a newer main source passes every required CI job. Stable requests, matching
-  reserved tags and active upgrade proofs remain protected. A publisher records
+  a newer main source passes every required CI job. Stable requests, version-tagged
+  sources and active upgrade proofs remain protected. Sources of abandoned tagless
+  drafts are not: a draft exists only after its build completed. A publisher records
   when selection finishes, including an explicit no-candidate marker while a
   newer build is pending. Selected builds are normally already complete; the
   lease additionally protects a rerun of that build while publication continues.
@@ -158,9 +161,13 @@ stable preferences, beta clients retain beta preferences, and no path downgrades
   against existing candidate artifacts. Only affected upgrade checks rerun; no
   shipping artifact is rebuilt. The proof binds the candidate run/attempt and
   baseline fingerprint.
-- Publication creates an exact-SHA tag and draft, uploads only missing assets,
-  verifies uploaded sizes and API SHA-256 digests, preserves the existing provider
-  certification policy, then undrafts. A matching complete published release is
+- Publication refuses a leftover tag at another commit, creates a tagless draft whose
+  `target_commitish` is the exact source SHA, uploads only missing assets, verifies
+  uploaded sizes and API SHA-256 digests and preserves the existing provider
+  certification policy. Only after every gate passes does it create the exact-SHA tag,
+  immediately followed by undrafting. `releases.atom` lists bare tags, so a tag on an
+  abandoned draft would capture every beta update check; only admins can delete `v*`
+  tags. Desktop beta checks also skip feed entries whose channel files return 404. A matching complete published release is
   success on retry. Mismatched existing assets block rather than overwrite.
   A retry can remove an expected incomplete `starter` upload from its matching
   draft before uploading it again. Complete assets and public releases are never
@@ -197,7 +204,8 @@ The desktop profile and asset contract remain in `scripts/lib/release-profile.ts
 exists, neither preparation nor publication may revert to Windows-only.
 
 Publication checks that every certifying integration record's evidence commit is in
-the candidate's history, before any tag or draft is created and again after uploads.
+the candidate's history, before the draft is created and again after uploads, before
+the tag is created.
 Per-build operator acceptance is not required: a certified record ships in every build
 that embeds it, and its runtime checks (signatures, identity, inventory digest) still
 close the integration when anything drifts. The mounted runtime smoke is not

@@ -13,6 +13,7 @@ import {
   isShellProgram,
   unwrapShellInvocation,
 } from "../readOnlyWorkflowShell.ts";
+import type { ReadOnlyGitGuard } from "../readOnlyGitConfig.ts";
 import {
   codexCommandApprovalDecision,
   type CodexCommandApprovalOffer,
@@ -184,6 +185,8 @@ export interface CodexSessionContext {
   workflowExecutionProfile?: ProviderSessionStartInput["workflowExecutionProfile"];
   /** How the read-only workflow stage runs Codex; see `CodexReadOnlyMode`. */
   readOnlyMode?: CodexReadOnlyMode;
+  /** Checks the repositories a command's Git calls reach before F5 approves it. */
+  readOnlyGitGuard?: ReadOnlyGitGuard;
   modelContextWindowCatalog: ReadonlyMap<string, number>;
   /** Capabilities this session's `model/list` reported, keyed by slug. */
   reportedModelCapabilities?: ReadonlyMap<string, ModelCapabilities>;
@@ -829,13 +832,6 @@ export function codexReadOnlyModeUnderRequirements(
 /** Emitted when F5 refused an approval request itself; the adapter reports it auto-declined. */
 export const CODEX_READ_ONLY_REFUSED_METHOD = "f5/readOnly/refused";
 
-/**
- * Emitted when a read-only stage's enforcement differs from what F5 recorded at start, because
- * Codex's managed requirements left only the sandbox (`codexReadOnlyModeUnderRequirements`).
- * Payload: `{ enforcement }`.
- */
-export const CODEX_READ_ONLY_ENFORCEMENT_CHANGED_METHOD = "f5/readOnly/enforcementChanged";
-
 const SHELL_ESCALATION_FIELDS = [
   "additionalPermissions",
   "networkApprovalContext",
@@ -885,6 +881,27 @@ export function codexReadOnlyPolicyDecision(
     default:
       return undefined;
   }
+}
+
+/**
+ * The script of a command request as the classifier reads it, and the folder Codex says it
+ * starts in, for the check of the repositories its Git calls reach (`ReadOnlyGitGuard`).
+ * Undefined for a request that isn't a command.
+ */
+export function codexApprovalShellCommand(
+  method: string,
+  params: unknown,
+): { readonly script: string; readonly cwd?: string } | undefined {
+  if (method !== "item/commandExecution/requestApproval" && method !== "execCommandApproval")
+    return undefined;
+  const record = asObject(params);
+  const command = codexApprovalCommand(record?.command);
+  if (command === undefined) return undefined;
+  const cwd = record?.cwd;
+  return {
+    script: unwrapShellInvocation(command),
+    ...(typeof cwd === "string" && cwd.length > 0 ? { cwd } : {}),
+  };
 }
 
 /**
@@ -1199,6 +1216,10 @@ export function buildCodexTurnStartParams(
     ...(state.instructionContext !== undefined
       ? { instructionContext: state.instructionContext }
       : {}),
+    // Decided by the mode Codex runs in, not the enforcement F5 requested: the sandbox fallback
+    // of a requested `policy` stage refuses every escalation.
+    codexReadOnlyEscalation:
+      state.workflowExecutionProfile !== undefined && state.readOnlyMode === "ask-on-escalation",
     includeResumedContext: !state.resumedContextSent,
   });
   if (!turnStartParams.model) {
@@ -1258,6 +1279,7 @@ export function buildCodexTurnInstructions(input: {
   readonly model?: string;
   readonly effort?: string;
   readonly instructionContext?: Partial<SharedInstructionInput>;
+  readonly codexReadOnlyEscalation?: boolean;
   readonly includeResumedContext?: boolean;
 }): {
   collaborationMode: {
@@ -1285,6 +1307,7 @@ export function buildCodexTurnInstructions(input: {
     ...(context?.workflowExecutionProfile
       ? { workflowExecutionProfile: context.workflowExecutionProfile }
       : {}),
+    ...(input.codexReadOnlyEscalation ? { codexReadOnlyEscalation: true } : {}),
     ...(context?.runtimeMode ? { runtimeMode: context.runtimeMode } : {}),
     ...(context?.projectMemories ? { projectMemories: context.projectMemories } : {}),
     ...(context?.integrationInstructions
