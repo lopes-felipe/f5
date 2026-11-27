@@ -64,7 +64,7 @@ describe("CodexMcpSyncService", () => {
       }),
     );
 
-  it("starts none of F5's servers in the admin client while the hub serves Codex", async () => {
+  it("starts none of F5's servers in the admin client", async () => {
     const projectId = ProjectId.makeUnsafe("project-sync-hub");
     const registryInputs: CodexControlClientAccessInput[] = [];
     const layer = CodexMcpSyncServiceLive.pipe(
@@ -84,7 +84,7 @@ describe("CodexMcpSyncService", () => {
     ]);
   });
 
-  it("reads project-scoped MCP config and passes it into the control registry", async () => {
+  it("reports the saved config version and passes provider options, never F5's servers", async () => {
     const projectId = ProjectId.makeUnsafe("project-sync-service");
     const registryInputs: CodexControlClientAccessInput[] = [];
     const layer = CodexMcpSyncServiceLive.pipe(
@@ -118,15 +118,8 @@ describe("CodexMcpSyncService", () => {
             binaryPath: "/tmp/codex",
           },
         },
-        mcpEffectiveConfigVersion: "mcp-version-9",
-        mcpServers: {
-          filesystem: {
-            type: "stdio",
-            command: "npx",
-          },
-        },
-        mcpOAuthCallbackPort: 3118,
-        mcpOAuthCallbackUrl: "http://127.0.0.1:3118/callback",
+        mcpEffectiveConfigVersion: CODEX_ADMIN_HUB_CONFIG_VERSION,
+        mcpServers: {},
       },
     ]);
   });

@@ -1,14 +1,18 @@
 import type { ProviderKind } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
+import { useMemo } from "react";
 
+import { useNowIso } from "../../lib/nowTicker";
 import { cn } from "../../lib/utils";
-import { deriveWorkLogEntries } from "../../session-logic";
+import { deriveWorkLogEntries, formatElapsed } from "../../session-logic";
 import { resolveThreadStatusPillForThread, type ThreadStatusPill } from "../../threadStatus";
 import type { Thread } from "../../types";
 import { ModelChip } from "../chat/ModelChip";
 import { normalizedWorkEntryHeading } from "../chat/MessagesTimeline.logic";
+import { formatCompactTokens } from "../chat/composer/contextMeter.logic";
 import { ThreadStatusPillBadge } from "../thread/ThreadStatusPillBadge";
 import { WorkflowStateGlyph } from "./WorkflowStateGlyph";
+import type { StepTelemetry } from "./workflowTelemetry";
 import type { WorkflowTimelineStep } from "./workflowTimelineTypes";
 
 export interface WorkflowStepCardModel {
@@ -65,6 +69,22 @@ export function resolveWorkflowStepCardModel(input: {
   };
 }
 
+function LiveStepElapsed(props: { readonly startIso: string }) {
+  const nowIso = useNowIso(true);
+  const label = formatElapsed(props.startIso, nowIso);
+  return label ? <span data-slot="workflow-step-elapsed">{label}</span> : null;
+}
+
+function StepElapsed(props: { readonly telemetry: StepTelemetry }) {
+  if (props.telemetry.isLive && props.telemetry.startIso) {
+    return <LiveStepElapsed startIso={props.telemetry.startIso} />;
+  }
+  if (props.telemetry.elapsedLabel) {
+    return <span data-slot="workflow-step-elapsed">{props.telemetry.elapsedLabel}</span>;
+  }
+  return null;
+}
+
 /**
  * One workflow step: status, role label and model, linking to the step's
  * thread. `row` is the dense list form; `card` is the board form, which also
@@ -74,13 +94,27 @@ export function WorkflowStepCard(props: {
   readonly step: WorkflowTimelineStep;
   readonly thread: Thread | null | undefined;
   readonly variant?: "row" | "card" | undefined;
+  readonly telemetry?: StepTelemetry | undefined;
 }) {
   const variant = props.variant ?? "row";
-  const { step } = props;
+  const { step, telemetry } = props;
+  const activities = props.thread?.activities;
+  const latestTurnId = props.thread?.latestTurn?.turnId;
+  const memoizedActivity = useMemo(() => {
+    if (variant !== "card" || !activities || activities.length === 0 || step.state !== "active") {
+      return null;
+    }
+    const entries = deriveWorkLogEntries(activities, latestTurnId ?? undefined);
+    const latest = entries.at(-1);
+    if (!latest) return null;
+    const heading = normalizedWorkEntryHeading(latest);
+    return heading.length > 0 ? heading : null;
+  }, [activities, latestTurnId, step.state, variant]);
+
   const model = resolveWorkflowStepCardModel({
     step,
     thread: props.thread,
-    includeActivity: variant === "card",
+    includeActivity: false,
   });
   const dimmed = step.state === "pending" || step.state === "skipped";
 
@@ -98,6 +132,13 @@ export function WorkflowStepCard(props: {
     />
   ) : null;
 
+  const hasStepTelemetry =
+    telemetry !== undefined &&
+    ((telemetry.isLive && telemetry.startIso !== null) ||
+      telemetry.elapsedLabel !== null ||
+      telemetry.contextTokens !== null ||
+      telemetry.isBottleneck);
+
   const content =
     variant === "card" ? (
       <>
@@ -113,7 +154,7 @@ export function WorkflowStepCard(props: {
           </span>
         </span>
         {modelChip ? <span className="flex min-w-0 ps-6">{modelChip}</span> : null}
-        {model.activity ? (
+        {memoizedActivity ? (
           <span
             data-slot="workflow-step-activity"
             className="flex min-w-0 items-center gap-1.5 ps-6 text-2xs text-muted-foreground"
@@ -122,7 +163,26 @@ export function WorkflowStepCard(props: {
               aria-hidden="true"
               className="size-1.5 shrink-0 rounded-full bg-info motion-safe:animate-status-pulse"
             />
-            <span className="truncate">{model.activity}</span>
+            <span className="truncate">{memoizedActivity}</span>
+          </span>
+        ) : null}
+        {hasStepTelemetry ? (
+          <span
+            data-slot="workflow-step-telemetry"
+            className="flex flex-wrap items-center gap-x-2 gap-y-1 ps-6 text-2xs text-muted-foreground tabular-nums"
+          >
+            <StepElapsed telemetry={telemetry} />
+            {telemetry.contextTokens !== null ? (
+              <span>{formatCompactTokens(telemetry.contextTokens)}</span>
+            ) : null}
+            {telemetry.isBottleneck ? (
+              <span
+                data-slot="workflow-step-bottleneck"
+                className="rounded-full bg-warning/10 px-1.5 py-0.5 text-2xs font-medium text-warning-foreground"
+              >
+                Slowest
+              </span>
+            ) : null}
           </span>
         ) : null}
       </>

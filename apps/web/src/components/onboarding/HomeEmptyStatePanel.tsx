@@ -9,7 +9,7 @@ import {
   ShieldCheckIcon,
   SparklesIcon,
 } from "lucide-react";
-import type { ComponentType, ReactNode, SVGProps } from "react";
+import { type ComponentType, type ReactNode, type SVGProps, useState } from "react";
 
 import { APP_BASE_NAME } from "../../branding";
 import {
@@ -33,6 +33,7 @@ import { SectionLabel } from "../ui/section-label";
 import { Skeleton } from "../ui/skeleton";
 import { HarnessValidationPanel } from "./HarnessValidationPanel";
 import { ProjectHistoryImportPanel } from "./ProjectHistoryImportPanel";
+import { ProviderSetupWizard } from "./ProviderSetupWizard";
 
 type AccentToken = "info" | "success" | "warning" | "attention";
 
@@ -227,6 +228,7 @@ export function HomeEmptyStatePanel() {
   const { settings, updateSettings } = useAppSettings();
   const { displayProfile, mode, showProfileOverwriteWarning } = useOnboardingLiteState();
   const startupReady = useStartupReady();
+  const [quickSetupHidden, setQuickSetupHidden] = useState(false);
 
   if (!startupReady || mode === "loading") {
     return <HomeStartupSkeleton />;
@@ -266,6 +268,9 @@ export function HomeEmptyStatePanel() {
             })}
           </div>
 
+          {!quickSetupHidden ? (
+            <ProviderSetupWizard onDismiss={() => setQuickSetupHidden(true)} />
+          ) : null}
           <HarnessValidationPanel />
           <ProjectHistoryImportPanel />
 

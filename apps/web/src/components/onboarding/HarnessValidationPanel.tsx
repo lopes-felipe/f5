@@ -251,7 +251,7 @@ const HarnessRow = memo(function HarnessRow({
             <span className="flex size-4 items-center justify-center" aria-hidden="true">
               {isPending ? (
                 <LoaderCircleIcon
-                  className="size-4 animate-spin text-primary"
+                  className="size-4 motion-safe:animate-spin text-primary"
                   aria-label="Checking"
                   role="img"
                 />
@@ -458,7 +458,7 @@ export function HarnessValidationPanel() {
 
         <Button className="shrink-0" disabled={mutation.isPending} onClick={runValidation}>
           {mutation.isPending ? (
-            <LoaderCircleIcon className="size-4 animate-spin" />
+            <LoaderCircleIcon className="size-4 motion-safe:animate-spin" />
           ) : hasTriggered ? (
             <RefreshCcwIcon className="size-4" />
           ) : (
@@ -492,7 +492,10 @@ export function HarnessValidationPanel() {
         >
           {summary.kind === "pending" ? (
             <span className="inline-flex items-center gap-1.5">
-              <LoaderCircleIcon className="size-3 animate-spin text-primary" aria-hidden="true" />
+              <LoaderCircleIcon
+                className="size-3 motion-safe:animate-spin text-primary"
+                aria-hidden="true"
+              />
               {summary.label}
             </span>
           ) : (

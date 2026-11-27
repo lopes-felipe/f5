@@ -1803,7 +1803,7 @@ export default memo(function ChatView({
     return null;
   }, [threadActivities]);
   // Servers F5's hub serves report their status from the hub; Codex and Claude report
-  // their own servers (and every server with native passthrough) as thread activities.
+  // the servers they configure themselves as thread activities.
   const hubMcpServers = useMcpHubChatServers(sessionProvider, activeThread?.projectId ?? null);
   const mcpRuntimeSummary = useMemo(() => {
     const { servers, hubNames } = mergeChatMcpServers(hubMcpServers, [

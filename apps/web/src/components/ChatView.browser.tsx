@@ -9238,6 +9238,13 @@ describe("ChatView timeline (full app)", () => {
     });
 
     try {
+      await expect.element(page.getByTestId("new-thread-button")).toBeInTheDocument();
+      await vi.waitFor(() =>
+        expect(wsRequests.some((request) => request._tag === WS_METHODS.serverGetConfig)).toBe(
+          true,
+        ),
+      );
+      await waitForLayout();
       const useMetaForMod = isMacPlatform(navigator.platform);
       window.dispatchEvent(
         new KeyboardEvent("keydown", {

@@ -7,9 +7,12 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import {
   CLAUDE_DELEGATION_TOOLS,
+  CLAUDE_READ_ONLY_NATIVE_TOOLS,
+  CLAUDE_SHELL_COMMAND_TOOLS,
   CLAUDE_WORKSPACE_MUTATION_TOOLS,
   canonicalClaudeToolName,
   claudeMandatoryPolicyOptions,
+  claudeReadOnlyShellRefusal,
   evaluateClaudeMandatoryHookPolicy,
   evaluateClaudeMandatoryPolicy,
   isClaudePlanModeWorkspaceEdit,
@@ -52,7 +55,7 @@ describe("mandatory Claude policy before native permissions", () => {
       expect(result).toMatchObject({ hookSpecificOutput: { permissionDecision: "deny" } });
     },
   );
-  it.each(["Bash", "mcp__allow__read", "Agent", "WebFetch"])(
+  it.each(["Agent", "WebFetch"])(
     "leaves %s to native plan-mode evaluation in read-only workflows",
     async (name) => {
       const calls: string[] = [];
@@ -74,6 +77,226 @@ describe("mandatory Claude policy before native permissions", () => {
       ).toContain("not permitted");
     },
   );
+  describe("shell commands and MCP tools in read-only workflows", () => {
+    const policy = {
+      workflowExecutionProfile: "unattended-readonly" as const,
+      allowReadOnlyMcpTool: (name: string) => name === "mcp__f5_preview__preview_snapshot",
+    };
+    const runHook = async (name: string, toolInput: unknown, denied: string[] = []) =>
+      claudeMandatoryPolicyOptions(policy, undefined, async (input) => {
+        denied.push(input.tool_name);
+      }).hooks!.PreToolUse![0]!.hooks[0]!(
+        { ...hookInput(name), tool_input: toolInput },
+        undefined,
+        {
+          signal: new AbortController().signal,
+        },
+      );
+    const denial = (reason: string) => ({
+      hookSpecificOutput: {
+        permissionDecision: "deny",
+        permissionDecisionReason: expect.stringContaining(reason),
+      },
+    });
+
+    // An allow rule (`Bash(python3:*)`, `Bash(touch:*)`) is applied after the hook, so the hook
+    // has to be the one that refuses.
+    it.each([
+      ['python3 -c \'open("x", "w")\'', "`python3` is not on the read-only allowlist"],
+      ["touch x", "`touch` is not on the read-only allowlist"],
+      ["git log > log.txt", "F5 refused this command, so it did not run"],
+      ["git fetch origin", "F5 refused this command, so it did not run"],
+    ])("the hook denies `%s` with the classifier's reason", async (command, reason) => {
+      const denied: string[] = [];
+      expect(await runHook("Bash", { command }, denied)).toMatchObject(denial(reason));
+      expect(denied).toEqual(["Bash"]);
+      expect(claudeReadOnlyShellRefusal("Bash", { command })).toBeTypeOf("string");
+    });
+
+    it.each([
+      "git log --oneline -5",
+      "git show HEAD:README.md | nl -ba",
+      "cd apps && git grep -n x",
+    ])("the hook and canUseTool's policy both pass `%s`", async (command) => {
+      const denied: string[] = [];
+      expect(await runHook("Bash", { command }, denied)).toEqual({});
+      expect(denied).toEqual([]);
+      expect(evaluateClaudeMandatoryPolicy(policy, "Bash", undefined, { command })).toBeUndefined();
+      expect(claudeReadOnlyShellRefusal("Bash", { command })).toBeUndefined();
+    });
+
+    it("tells Claude not to retry a refused command", async () => {
+      expect(await runHook("Bash", { command: "touch x" })).toMatchObject(
+        denial("Do not retry it: rewrite it as a command that only reads"),
+      );
+    });
+
+    it("classifies a Monitor command like a Bash one", async () => {
+      expect(await runHook("Monitor", { command: "git status --short" })).toEqual({});
+      expect(await runHook("Monitor", { command: "bun run dev" })).toMatchObject(
+        denial("`bun` is not on the read-only allowlist"),
+      );
+    });
+
+    it("refuses PowerShell, which the classifier can't read", async () => {
+      expect(await runHook("PowerShell", { command: "Get-Content x" })).toMatchObject(
+        denial("use the Bash tool"),
+      );
+    });
+
+    it.each([[{}], [{ command: "" }], [{ command: 7 }], [undefined]])(
+      "denies a shell call that reports no command: %j",
+      async (toolInput) => {
+        expect(await runHook("Bash", toolInput)).toMatchObject(
+          denial("the command to run was not reported"),
+        );
+      },
+    );
+
+    it("denies an MCP tool outside F5's read-only set and passes one inside it", async () => {
+      const denied: string[] = [];
+      expect(await runHook("mcp__allow__read", {}, denied)).toMatchObject(
+        denial("Tool 'mcp__allow__read' is not permitted in a read-only workflow stage."),
+      );
+      expect(denied).toEqual(["mcp__allow__read"]);
+      expect(await runHook("mcp__f5_preview__preview_snapshot", {})).toEqual({});
+    });
+
+    it("denies a tool an MCP server provides under another name", () => {
+      expect(
+        evaluateClaudeMandatoryHookPolicy(policy, "lookup", {
+          mcpServer: { name: "other", source: "project" },
+        }),
+      ).toContain("not permitted");
+    });
+
+    it("refuses a Monitor WebSocket with a reason of its own", async () => {
+      for (const toolInput of [
+        { ws: { url: "wss://example.invalid/feed" } },
+        { url: "wss://example.invalid/feed" },
+        { ws: { url: "wss://example.invalid/feed" }, command: "git status" },
+      ])
+        expect(await runHook("Monitor", toolInput)).toMatchObject(
+          denial("Monitor can't open a WebSocket in a read-only stage"),
+        );
+    });
+
+    // An allow rule naming one of these (`"allow": ["EnterWorktree", "RemoteTrigger"]`) skips
+    // `canUseTool`, so the hook has to refuse them.
+    it.each([
+      "EnterWorktree",
+      "ExitWorktree",
+      "CronCreate",
+      "RemoteTrigger",
+      "ScheduleWakeup",
+      "Artifact",
+      "SendMessage",
+      "PushNotification",
+      "Workflow",
+      "SomeToolALaterRuntimeAdds",
+    ])("the hook denies %s, which changes something outside the stage", async (name) => {
+      const denied: string[] = [];
+      expect(await runHook(name, {}, denied)).toMatchObject(
+        denial(`Tool '${name}' is not permitted in a read-only workflow stage.`),
+      );
+      expect(denied).toEqual([name]);
+    });
+
+    it("denies an MCP server's tool that takes a built-in tool's name", () => {
+      for (const name of ["Skill", "WebFetch", "Agent"])
+        expect(
+          evaluateClaudeMandatoryHookPolicy(policy, name, {
+            mcpServer: { name: "other", source: "project" },
+          }),
+        ).toContain("not permitted");
+    });
+
+    // Every built-in tool is decided on purpose: a tool a later runtime adds lands in `denied`
+    // and fails this test until someone puts it on a list.
+    it("sorts every built-in tool into allowed, left to native evaluation, or denied", () => {
+      const sorted = { allowed: [] as string[], native: [] as string[], denied: [] as string[] };
+      for (const name of BUILTIN_TOOL_NAMES) {
+        const hook = evaluateClaudeMandatoryHookPolicy(policy, name, { toolInput: {} });
+        const full = evaluateClaudeMandatoryPolicy(policy, name, undefined, {});
+        sorted[hook !== undefined ? "denied" : full === undefined ? "allowed" : "native"].push(
+          name,
+        );
+      }
+      expect(sorted.allowed).toEqual([
+        "EnterPlanMode",
+        "Glob",
+        "Grep",
+        "Read",
+        "TaskCreate",
+        "TaskGet",
+        "TaskList",
+        "TaskUpdate",
+        "TodoWrite",
+        "ToolSearch",
+      ]);
+      expect(sorted.native.toSorted()).toEqual([...CLAUDE_READ_ONLY_NATIVE_TOOLS].toSorted());
+      expect(sorted.denied).toEqual([
+        "Artifact",
+        "AskUserQuestion",
+        "Bash",
+        "ClaudeDesign",
+        "CronCreate",
+        "CronDelete",
+        "Edit",
+        "EndConversation",
+        "EnterWorktree",
+        "ExitPlanMode",
+        "ExitWorktree",
+        "Monitor",
+        "NotebookEdit",
+        "OfferChromeSetup",
+        "PowerShell",
+        "Projects",
+        "propose_skills",
+        "PushNotification",
+        "RemoteTrigger",
+        "ScheduleWakeup",
+        "SendFeedback",
+        "SendMessage",
+        "SendUserFile",
+        "SetGoal",
+        "ShareOnboardingGuide",
+        "ShowOnboardingRolePicker",
+        "Workflow",
+        "Write",
+      ]);
+    });
+
+    it("says nothing about a tool that runs no shell command", () => {
+      expect(claudeReadOnlyShellRefusal("Read", { command: "touch x" })).toBeUndefined();
+      expect(claudeReadOnlyShellRefusal("WebFetch", {})).toBeUndefined();
+    });
+
+    it("leaves shell commands alone outside a workflow stage", async () => {
+      const options = claudeMandatoryPolicyOptions({});
+      expect(
+        await options.hooks!.PreToolUse![0]!.hooks[0]!(
+          { ...hookInput("Bash"), tool_input: { command: "touch x" } },
+          undefined,
+          { signal: new AbortController().signal },
+        ),
+      ).toEqual({});
+    });
+
+    it("denies when the policy itself throws", async () => {
+      const options = claudeMandatoryPolicyOptions({
+        workflowExecutionProfile: "unattended-readonly",
+        allowReadOnlyMcpTool: () => {
+          throw new Error("preview registry unavailable");
+        },
+      });
+      expect(
+        await options.hooks!.PreToolUse![0]!.hooks[0]!(hookInput("mcp__x__y"), undefined, {
+          signal: new AbortController().signal,
+        }),
+      ).toMatchObject(denial("F5 could not verify that this tool is allowed."));
+    });
+  });
   it("allows plan-file writes but no other file edits in read-only workflows", () => {
     const policy = {
       workflowExecutionProfile: "attended-readonly" as const,
@@ -259,6 +482,8 @@ describe("mandatory Claude policy before native permissions", () => {
   it("only names tools the bundled runtime still has (or a legacy alias of one)", () => {
     const builtins = new Set<string>(BUILTIN_TOOL_NAMES);
     for (const name of CLAUDE_WORKSPACE_MUTATION_TOOLS) expect(builtins, name).toContain(name);
+    for (const name of CLAUDE_SHELL_COMMAND_TOOLS) expect(builtins, name).toContain(name);
+    for (const name of CLAUDE_READ_ONLY_NATIVE_TOOLS) expect(builtins, name).toContain(name);
     for (const name of CLAUDE_DELEGATION_TOOLS)
       expect(builtins.has(name) || builtins.has(LEGACY_TOOL_NAME_ALIASES[name] ?? ""), name).toBe(
         true,

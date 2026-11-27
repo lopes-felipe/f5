@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, realpath, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -8,9 +8,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   assertReadOnlyProjectConfig,
-  claudeAllowRuleBypassesReadOnly,
-  claudeGlobalConfigFile,
-  claudeWorkspaceTrusted,
   findAntigravityProjectHooksConflict,
   findClaudeProjectConfigConflict,
   findOpenCodeProjectPluginConflict,
@@ -98,139 +95,64 @@ describe("assertReadOnlyProjectConfig", () => {
   });
 });
 
-describe("claudeAllowRuleBypassesReadOnly", () => {
-  it.each([
-    ["Bash", true],
-    ["Bash(*)", true],
-    ["Bash(touch:*)", true],
-    ["Bash(npm run *)", true],
-    ["Bash(terraform apply:*)", true],
-    ["Edit", true],
-    ["Write(src/**)", true],
-    ["MultiEdit", true],
-    ["NotebookEdit", true],
-    ["mcp__github__create_issue", true],
-    // A prefix rule matches any arguments, and these programs' arguments can write or run code.
-    ["Bash(git log:*)", true],
-    ["Bash(git diff:*)", true],
-    ["Bash(find:*)", true],
-    ["Bash(sed:*)", true],
-    ["Bash(ls -la:*)", true],
-    ["Bash(cat:*)", false],
-    ["Bash(ls *)", false],
-    ["Bash(git status)", false],
-    ["Bash(git log --oneline)", false],
-    ["Read", false],
-    ["WebFetch(domain:example.com)", false],
-  ])("%s → %s", (rule, expected) => {
-    expect(claudeAllowRuleBypassesReadOnly(rule)).toBe(expected);
-  });
-});
-
 describe("findClaudeProjectConfigConflict", () => {
-  async function trustedRepository(trusted = true) {
-    const layout = await repository();
-    const configFile = path.join(layout.root, ".claude.json");
+  // F5's mandatory hook decides shell commands, MCP tools and edits before Claude Code applies
+  // an allow rule (claudeMandatoryPolicy.ts), so no allow rule stops a stage.
+  it("accepts committed allow rules, whatever they allow", async () => {
+    const { repo, cwd, homeDir } = await repository();
+    const settings = path.join(repo, ".claude", "settings.json");
     await write(
-      configFile,
+      settings,
       JSON.stringify({
-        projects: { [layout.repo]: { hasTrustDialogAccepted: trusted } },
+        permissions: {
+          allow: ["Bash", "Bash(touch:*)", "Bash(python3:*)", "Edit", "mcp__github__create_issue"],
+          deny: ["Bash(rm:*)"],
+        },
       }),
     );
-    return { ...layout, configFile };
-  }
+    gitAdd(repo, settings);
+    expect(await findClaudeProjectConfigConflict(cwd, { homeDir })).toBeUndefined();
+  });
 
-  it("refuses a committed allow rule in a trusted folder", async () => {
-    const { repo, cwd, homeDir, configFile } = await trustedRepository();
-    const settings = path.join(repo, ".claude", "settings.json");
+  it("accepts your own allow rules in a folder that isn't a repository", async () => {
+    // A multi-repository workspace folder: its `settings.local.json` holds your approvals.
+    const root = await tempDir("f5-ro-claude-workspace-");
     await write(
-      settings,
-      JSON.stringify({ permissions: { allow: ["Bash(cat:*)", "Bash(touch:*)"] } }),
+      path.join(root, ".claude", "settings.local.json"),
+      JSON.stringify({ permissions: { allow: ["Bash(python3:*)", "Bash(k:*)"] } }),
     );
-    gitAdd(repo, settings);
-    expect(await findClaudeProjectConfigConflict(cwd, { homeDir, configFile })).toEqual({
-      file: settings,
-      reason:
-        "allows `Bash(touch:*)`, which Claude would run without asking F5 in this trusted folder",
-    });
+    expect(
+      await findClaudeProjectConfigConflict(root, { homeDir: path.join(root, "home") }),
+    ).toBeUndefined();
   });
 
-  it("ignores allow rules in a folder Claude Code doesn't trust", async () => {
-    const { repo, cwd, homeDir, configFile } = await trustedRepository(false);
-    const settings = path.join(repo, ".claude", "settings.json");
-    await write(settings, JSON.stringify({ permissions: { allow: ["Bash"] } }));
-    gitAdd(repo, settings);
-    expect(await findClaudeProjectConfigConflict(cwd, { homeDir, configFile })).toBeUndefined();
-  });
-
-  it("ignores untracked local settings, deny rules and read-only allow rules", async () => {
-    const { repo, cwd, homeDir, configFile } = await trustedRepository();
+  it("ignores untracked local settings", async () => {
+    const { repo, cwd, homeDir } = await repository();
     await write(
       path.join(repo, ".claude", "settings.local.json"),
-      JSON.stringify({ permissions: { allow: ["Bash"] } }),
+      JSON.stringify({ apiKeyHelper: "./bin/key" }),
     );
-    const settings = path.join(cwd, ".claude", "settings.json");
-    await write(
-      settings,
-      JSON.stringify({ permissions: { allow: ["Bash(git status)"], deny: ["Bash"] } }),
-    );
-    gitAdd(repo, settings);
-    expect(await findClaudeProjectConfigConflict(cwd, { homeDir, configFile })).toBeUndefined();
+    expect(await findClaudeProjectConfigConflict(cwd, { homeDir })).toBeUndefined();
   });
 
   it("refuses a committed settings file that isn't strict JSON", async () => {
-    const { repo, cwd, homeDir, configFile } = await trustedRepository();
+    const { repo, cwd, homeDir } = await repository();
     const settings = path.join(repo, ".claude", "settings.json");
     await write(settings, "{ // comment\n}");
     gitAdd(repo, settings);
-    const conflict = await findClaudeProjectConfigConflict(cwd, { homeDir, configFile });
+    const conflict = await findClaudeProjectConfigConflict(cwd, { homeDir });
     expect(conflict?.file).toBe(settings);
     expect(conflict?.reason).toContain("isn't strict JSON");
   });
 
-  it("reads trust from CLAUDE_CONFIG_DIR, and from a trusted parent", async () => {
-    const { root, cwd } = await repository();
-    expect(claudeGlobalConfigFile({ CLAUDE_CONFIG_DIR: "/profile" }, "/home", "/stage")).toBe(
-      path.join(path.resolve("/profile"), ".claude.json"),
-    );
-    // A relative CLAUDE_CONFIG_DIR resolves against the stage's folder, as the child resolves it.
-    expect(claudeGlobalConfigFile({ CLAUDE_CONFIG_DIR: "profile" }, "/home", "/stage")).toBe(
-      path.join(path.resolve("/stage", "profile"), ".claude.json"),
-    );
-    expect(claudeGlobalConfigFile({}, "/home", "/stage")).toBe(path.join("/home", ".claude.json"));
-    const configFile = path.join(root, "config.json");
-    await write(
-      configFile,
-      JSON.stringify({ projects: { [root]: { hasTrustDialogAccepted: true } } }),
-    );
-    expect(await claudeWorkspaceTrusted(cwd, { configFile })).toBe(true);
-    expect(await claudeWorkspaceTrusted(cwd, { configFile: path.join(root, "missing") })).toBe(
-      false,
-    );
-  });
-
-  it("looks trust up by the folder's real path and fails on an unreadable config", async () => {
-    const { root, repo } = await repository();
-    const alias = path.join(root, "alias");
-    await symlink(repo, alias);
-    const configFile = path.join(root, "config.json");
-    await write(
-      configFile,
-      JSON.stringify({ projects: { [repo]: { hasTrustDialogAccepted: true } } }),
-    );
-    expect(await claudeWorkspaceTrusted(alias, { configFile })).toBe(true);
-    await write(configFile, "{ partly written");
-    await expect(claudeWorkspaceTrusted(repo, { configFile })).rejects.toThrow("isn't valid JSON");
-  });
-
-  it("refuses command settings, unsafe env and permissive modes even in an untrusted folder", async () => {
-    const { repo, cwd, homeDir, configFile } = await trustedRepository(false);
+  it("refuses command settings, unsafe env and permissive modes", async () => {
+    const { repo, cwd, homeDir } = await repository();
     const settings = path.join(repo, ".claude", "settings.json");
     await write(settings, "{}");
     gitAdd(repo, settings);
     const reasonFor = async (config: unknown) => {
       await write(settings, JSON.stringify(config));
-      return (await findClaudeProjectConfigConflict(cwd, { homeDir, configFile }))?.reason;
+      return (await findClaudeProjectConfigConflict(cwd, { homeDir }))?.reason;
     };
     expect(await reasonFor({ apiKeyHelper: "./bin/key" })).toContain("`apiKeyHelper`");
     expect(await reasonFor({ awsAuthRefresh: "aws sso login" })).toContain("`awsAuthRefresh`");
@@ -252,12 +174,7 @@ describe("findClaudeProjectConfigConflict", () => {
     const settings = path.join(root, ".claude", "settings.local.json");
     await write(settings, JSON.stringify({ apiKeyHelper: "./key" }));
     expect(
-      (
-        await findClaudeProjectConfigConflict(root, {
-          homeDir: path.join(root, "home"),
-          configFile: path.join(root, "missing.json"),
-        })
-      )?.file,
+      (await findClaudeProjectConfigConflict(root, { homeDir: path.join(root, "home") }))?.file,
     ).toBe(settings);
   });
 
@@ -267,10 +184,7 @@ describe("findClaudeProjectConfigConflict", () => {
     await write(path.join(root, ".git"), "gitdir: /nonexistent/f5-gitdir\n");
     await write(path.join(root, ".claude", "settings.json"), "{}");
     await expect(
-      findClaudeProjectConfigConflict(root, {
-        homeDir: path.join(root, "home"),
-        configFile: path.join(root, "missing.json"),
-      }),
+      findClaudeProjectConfigConflict(root, { homeDir: path.join(root, "home") }),
     ).rejects.toThrow("couldn't tell whether");
   });
 });

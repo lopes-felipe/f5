@@ -20,7 +20,6 @@ import {
   describeMcpHubOmissions,
   withMcpHubOmissions,
   type McpHubAttachment,
-  type McpHubAttachmentUpdate,
 } from "../../mcp/hub/McpHub.ts";
 import { hubAsksForClaudeTool, hubEndpointsForClaude } from "../../mcp/hub/providerHubServers.ts";
 import { isF5ReadOnlyThreadTool, makeClaudeThreadMcpServer } from "./claudeThreadTools.ts";
@@ -73,11 +72,7 @@ import {
   effectiveClaudeApprovalDecision,
 } from "../claudeApprovalPresentation.ts";
 import { ElicitationRegistry, type ElicitationTerminalReceipt } from "../elicitationRegistry.ts";
-import {
-  reconcileClaudeMcpServers,
-  stableMcpConfigKey,
-  claudeObservedMcpStatus,
-} from "../mcpReconcile.ts";
+import { reconcileClaudeMcpServers, claudeObservedMcpStatus } from "../mcpReconcile.ts";
 import {
   CLAUDE_AUTO_UNAVAILABLE_WARNING,
   claudeAutoModeRecheck,
@@ -96,6 +91,7 @@ import { randomUUID } from "node:crypto";
 import {
   CLAUDE_PLAN_MODE_EDIT_DENIAL,
   claudeMandatoryPolicyOptions,
+  claudeReadOnlyShellRefusal,
   evaluateClaudeMandatoryPolicy,
   isClaudePlanModeWorkspaceEdit,
   type McpToolProvenance,
@@ -202,9 +198,7 @@ import {
 import { assertNever } from "@t3tools/shared/exhaustive";
 import { timeOrderedUuid } from "@t3tools/shared/ids";
 import {
-  buildMcpToolFilters,
-  claudeDisallowedMcpToolNames,
-  evaluateMcpToolFilter,
+  filterEnabledMcpServers,
   translateMcpForClaudeAgent,
 } from "@t3tools/shared/mcpTranslation";
 import {
@@ -256,7 +250,6 @@ import {
 import { hasClaudeManagedMcpConfig } from "../claudeInventory.ts";
 import {
   assertReadOnlyProjectConfig,
-  claudeGlobalConfigFile,
   findClaudeProjectConfigConflict,
 } from "../readOnlyProjectConfig.ts";
 import { ClaudeAdapter, type ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
@@ -299,8 +292,10 @@ import {
 import {
   claudeHookOnFailureSupported,
   claudeMcpServersDelivery,
+  claudeReadOnlyStageRuntimeConflict,
   readClaudeExecutableVersion,
 } from "../claudeExecutableVersion.ts";
+import { READ_ONLY_WORKFLOW_ENVIRONMENT } from "../readOnlyWorkflowShell.ts";
 import { buildClaudeFlagPermissions } from "../claudeFlagPermissions.ts";
 import { resolveWorkflowAttachmentsDir } from "../../attachmentUploads.ts";
 import { makeMonotonicIsoClock } from "../monotonicEventClock.ts";
@@ -4919,7 +4914,6 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               });
               context.mcpStatusEmitted?.clear();
               yield* startMcpStatusWatcher(context);
-              context.activeDisallowedTools = recoveryOptions.disallowedTools ?? [];
               for (const message of context.pendingPrompts)
                 yield* Queue.offer(context.promptQueue, { type: "message", message });
               context.recovering = false;
@@ -5511,28 +5505,25 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       );
 
     /**
-     * Refuses a read-only stage whose committed Claude settings would run commands, or allow
-     * writes or commands, past F5's read-only checks (readOnlyProjectConfig.ts). Project hooks are
-     * switched off with `disableAllHooks` instead.
+     * Refuses a read-only stage whose committed Claude settings would run a command outside its
+     * tool calls, or change what an approved one runs (readOnlyProjectConfig.ts). Allow rules
+     * need no check: the mandatory hook decides shell commands, MCP tools and edits before Claude
+     * Code applies them. Project hooks are switched off with `disableAllHooks`.
      */
     const assertClaudeReadOnlyWorkspace = (
       cwd: string | undefined,
       environment: NodeJS.ProcessEnv,
       operation: "startSession" | "sendTurn",
-    ) => {
-      const homeDir = environment.HOME?.trim() || NodeOS.homedir();
-      const stageCwd = cwd ?? process.cwd();
-      return assertReadOnlyProjectConfig({
+    ) =>
+      assertReadOnlyProjectConfig({
         provider: PROVIDER,
         providerName: "Claude",
         operation,
         find: () =>
-          findClaudeProjectConfigConflict(stageCwd, {
-            homeDir,
-            configFile: claudeGlobalConfigFile(environment, homeDir, stageCwd),
+          findClaudeProjectConfigConflict(cwd ?? process.cwd(), {
+            homeDir: environment.HOME?.trim() || NodeOS.homedir(),
           }),
       });
-    };
 
     const startSessionUnlocked: ClaudeAdapterShape["startSession"] = (input) => {
       let disposeComputer: (() => void) | undefined;
@@ -5577,10 +5568,15 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const rawResumeCandidate = readClaudeResumeCandidate(input.resumeCursor);
         // Built once so the resume preflight and the CLI launch see the same env.
         const queryEnvironment = withBrowserOpenThreadToken(
-          buildClaudeQueryEnv(
-            input.providerOptions?.claudeAgent,
-            options?.processEnvironment ?? process.env,
-          ),
+          {
+            ...buildClaudeQueryEnv(
+              input.providerOptions?.claudeAgent,
+              options?.processEnvironment ?? process.env,
+            ),
+            // F5's classifier approves `git status`, which would otherwise refresh the index
+            // and hold its lock, as it does for the other providers' stages.
+            ...(input.workflowExecutionProfile ? READ_ONLY_WORKFLOW_ENVIRONMENT : {}),
+          },
           threadId,
         );
         if (input.workflowExecutionProfile)
@@ -6101,14 +6097,6 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 } satisfies PermissionResult;
               }
 
-              const mcpDenial = evaluateMcpToolFilter(
-                context.mcpToolFilters,
-                context.ownedMcpServerNames,
-                toolName,
-                callbackOptions.mcpServer,
-              );
-              if (mcpDenial)
-                return { behavior: "deny", message: mcpDenial } satisfies PermissionResult;
               const mandatoryDenial = evaluateClaudeMandatoryPolicy(
                 {
                   subagentsEnabled: providerOptions?.subagentsEnabled,
@@ -6287,22 +6275,26 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               }
 
               if (input.workflowExecutionProfile) {
-                if (
-                  !evaluateClaudeMandatoryPolicy(
-                    {
-                      workflowExecutionProfile: input.workflowExecutionProfile,
-                      allowReadOnlyMcpTool,
-                    },
-                    toolName,
-                    callbackOptions.mcpServer,
-                    toolInput,
-                  )
-                ) {
+                // The same policy the mandatory hook applies to shell and MCP tools; a shell
+                // command F5's read-only classifier accepts runs, like on the other providers.
+                const denial = evaluateClaudeMandatoryPolicy(
+                  {
+                    workflowExecutionProfile: input.workflowExecutionProfile,
+                    allowReadOnlyMcpTool,
+                  },
+                  toolName,
+                  callbackOptions.mcpServer,
+                  toolInput,
+                );
+                if (!denial) {
                   return { behavior: "allow", updatedInput: toolInput } satisfies PermissionResult;
                 }
                 const requestId = ApprovalRequestId.makeUnsafe(yield* Random.nextUUIDv4);
                 const requestType = classifyRequestType(toolName);
-                const detail = summarizeToolRequest(toolName, toolInput);
+                // What was asked, then why: `<command> (<reason>)`, as on the other providers.
+                const shellRefusal = claudeReadOnlyShellRefusal(toolName, toolInput);
+                const subject = summarizeToolRequest(toolName, toolInput);
+                const detail = shellRefusal ? `${subject} (${shellRefusal})` : subject;
                 const stamp = yield* makeEventStamp(context);
                 yield* offerRuntimeEvent({
                   type: "request.opened",
@@ -6348,10 +6340,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                     providerItemId: callbackOptions.toolUseID,
                   }),
                 });
-                return {
-                  behavior: "deny",
-                  message: `Tool '${toolName}' is not permitted in a read-only workflow stage.`,
-                } satisfies PermissionResult;
+                return { behavior: "deny", message: denial } satisfies PermissionResult;
               }
               const removalDenial = claudeRemovalSafetyDenial(
                 toolName,
@@ -6531,15 +6520,6 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               }
 
               if (decision === "accept" || decision === "acceptForSession") {
-                // A live reload can change the filter while an approval is open.
-                const mcpDenial = evaluateMcpToolFilter(
-                  context.mcpToolFilters,
-                  context.ownedMcpServerNames,
-                  toolName,
-                  callbackOptions.mcpServer,
-                );
-                if (mcpDenial)
-                  return { behavior: "deny", message: mcpDenial } satisfies PermissionResult;
                 // Consent can stay open while the user pauses or changes policy.
                 // Revalidate the main-owned Chrome lease after the approval wait.
                 if (isClaudeInChromeTool(toolName)) {
@@ -6619,10 +6599,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         // session into a more permissive SDK mode.
         const permissionMode = input.workflowExecutionProfile ? "plan" : runtimePermissionMode;
         const configuredMcpServers = input.providerOptions?.mcpServers;
-        const passthrough = options?.mcpNativePassthrough
-          ? yield* options.mcpNativePassthrough.pipe(Effect.orElseSucceed(() => false))
-          : false;
-        if (options?.mcpHub?.available && !passthrough) {
+        if (options?.mcpHub?.available) {
           // Claude connects to F5's hub endpoints; the hub runs the servers in the
           // conversation's directory and holds their secrets and sign-ins. Attached
           // even with no servers, so servers added mid-session also use the hub.
@@ -6636,12 +6613,16 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             cwd: input.cwd ?? process.cwd(),
           });
         }
+        // Configured servers only reach Claude through the hub.
         const translatedMcpServers = mcpHubAttachment
           ? translateMcpForClaudeAgent(
               hubEndpointsForClaude(mcpHubAttachment.endpoints, configuredMcpServers),
             )
-          : translateMcpForClaudeAgent(configuredMcpServers, { environment: queryEnvironment });
-        const mcpToolFilters = buildMcpToolFilters(input.providerOptions?.mcpServers);
+          : undefined;
+        if (!mcpHubAttachment && Object.keys(configuredMcpServers ?? {}).length > 0)
+          yield* Effect.logWarning(
+            "F5's MCP hub is unavailable; this Claude session starts without configured MCP servers",
+          );
         // Preview tools are installed in every interactive desktop session; each
         // call checks live policy. Launch-flag capabilities read policy here.
         const previewServer = agentBrowserBroker
@@ -6787,8 +6768,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(showThinkingSummaries !== undefined ? { showThinkingSummaries } : {}),
           // A repository's hooks run unsandboxed and without asking, even in a folder Claude Code
           // doesn't trust. Flag settings can only switch off every hook, the user's included; F5's
-          // own hooks are SDK callbacks and keep working.
-          ...(input.workflowExecutionProfile ? { disableAllHooks: true } : {}),
+          // own hooks are SDK callbacks and keep working. A skill's inline shell commands run
+          // while the skill loads, with no tool call for F5's hook to refuse.
+          ...(input.workflowExecutionProfile
+            ? { disableAllHooks: true, disableSkillShellExecution: true }
+            : {}),
         };
         const configuredBase = {
           ...(selectedModel ? { model: selectedModel } : {}),
@@ -6877,6 +6861,16 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           customBinaryPath,
           customExecutableVersion,
         );
+        const readOnlyRuntimeConflict = input.workflowExecutionProfile
+          ? claudeReadOnlyStageRuntimeConflict(customBinaryPath, customExecutableVersion)
+          : undefined;
+        if (readOnlyRuntimeConflict !== undefined) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "startSession",
+            issue: readOnlyRuntimeConflict,
+          });
+        }
         const mcpServersDelivery = claudeMcpServersDelivery(
           customBinaryPath,
           customExecutableVersion,
@@ -6948,26 +6942,16 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               workflowExecutionProfile: input.workflowExecutionProfile,
               subagentsEnabled: providerOptions?.subagentsEnabled,
               allowReadOnlyMcpTool,
-              evaluateDynamic: async (toolName, mcpServer, call) => {
-                const context = sessions.get(threadId);
-                const denial = evaluateMcpToolFilter(
-                  context?.mcpToolFilters ?? mcpToolFilters,
-                  context?.ownedMcpServerNames ?? new Set(Object.keys(translatedMcpServers ?? {})),
-                  toolName,
-                  mcpServer,
-                );
-                return (
-                  denial ??
-                  Effect.runPromise(
-                    evaluateAgentBrowserToolPolicy(threadId, toolName, {
-                      input: call.input.tool_input,
-                      mcpServer,
-                      toolUseId: call.input.tool_use_id,
-                      signal: call.signal,
-                    }),
-                  )
-                );
-              },
+              // F5's hub enforces configured servers' tool lists itself.
+              evaluateDynamic: async (toolName, mcpServer, call) =>
+                Effect.runPromise(
+                  evaluateAgentBrowserToolPolicy(threadId, toolName, {
+                    input: call.input.tool_input,
+                    mcpServer,
+                    toolUseId: call.input.tool_use_id,
+                    signal: call.signal,
+                  }),
+                ),
               plansDirectory,
               failClosed: hookFailClosed,
             },
@@ -6992,15 +6976,6 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           systemPrompt,
           planModeInstructions,
         } satisfies ClaudeQueryOptions;
-        const mandatoryDisallowedTools = queryOptions.disallowedTools ?? [];
-        // The hub already hides turned-off tools, so a fixed deny list would only keep a
-        // re-enabled tool blocked until restart.
-        queryOptions.disallowedTools = [
-          ...new Set([
-            ...mandatoryDisallowedTools,
-            ...(mcpHubAttachment ? [] : claudeDisallowedMcpToolNames(mcpToolFilters)),
-          ]),
-        ];
         const threadServer = options?.threadMcpBroker
           ? makeClaudeThreadMcpServer({
               broker: options.threadMcpBroker,
@@ -7301,8 +7276,6 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           promptQueue,
           query: queryRuntime,
           queryOptions,
-          mandatoryDisallowedTools,
-          activeDisallowedTools: queryOptions.disallowedTools,
           pendingPrompts: [],
           recovering: false,
           recoveryMetadata: {
@@ -7325,7 +7298,6 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           pendingUserInputs,
           elicitations,
           ownedMcpServerNames: new Set(Object.keys(translatedMcpServers ?? {})),
-          mcpToolFilters,
           internalMcpServers,
           ...(mcpHubAttachment ? { mcpHubAttachment } : {}),
           turns: (resumeState?.turnBoundaries ?? []).map((boundary) => ({
@@ -8229,9 +8201,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             }),
         });
         const context = yield* requireSession(threadId);
-        let desired = (translateMcpForClaudeAgent(mcpServers, {
-          environment: context.processEnvironment,
-        }) ?? {}) as Record<string, McpServerConfig>;
+        const served = filterEnabledMcpServers(mcpServers, PROVIDER);
         yield* Effect.try({
           try: () =>
             assertMcpServerLimit(
@@ -8241,7 +8211,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                     ([name]) => !context.ownedMcpServerNames.has(name),
                   ),
                 ),
-                ...desired,
+                ...served,
               },
               MCP_RUNTIME_SERVER_LIMIT,
             ),
@@ -8252,28 +8222,19 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               issue: mcpConfigErrorMessage(cause),
             }),
         });
-        let hubOmitted: McpHubAttachmentUpdate["omitted"] = [];
-        if (context.mcpHubAttachment) {
-          // Edits and removals re-bind this session's hub endpoints; new servers get
-          // new endpoints. Unchanged entries keep their URL, so Claude keeps them connected.
-          const update = context.mcpHubAttachment.update(mcpServers, { addEndpoints: true });
-          hubOmitted = update.omitted;
-          desired = (translateMcpForClaudeAgent(
-            hubEndpointsForClaude(update.endpoints, mcpServers),
-          ) ?? {}) as Record<string, McpServerConfig>;
-        }
+        // Edits and removals re-bind this session's hub endpoints; new servers get new
+        // endpoints. Unchanged entries keep their URL, so Claude keeps them connected.
+        // Without the hub, configured servers never reach Claude.
+        const update = context.mcpHubAttachment?.update(mcpServers, { addEndpoints: true });
+        const hubOmitted = update?.omitted ?? [];
+        const desired = (
+          update
+            ? (translateMcpForClaudeAgent(hubEndpointsForClaude(update.endpoints, mcpServers)) ??
+              {})
+            : {}
+        ) as Record<string, McpServerConfig>;
         const owned = context.ownedMcpServerNames;
         context.mcpObservationEpoch = (context.mcpObservationEpoch ?? 0) + 1;
-        // Restrict existing and lingering servers before any provider I/O.
-        context.mcpToolFilters = buildMcpToolFilters(mcpServers);
-        context.queryOptions.disallowedTools = [
-          ...new Set([
-            ...context.mandatoryDisallowedTools,
-            ...(context.mcpHubAttachment
-              ? []
-              : claudeDisallowedMcpToolNames(context.mcpToolFilters)),
-          ]),
-        ];
         const outcome = yield* Effect.tryPromise({
           try: () =>
             reconcileClaudeMcpServers({
@@ -8307,24 +8268,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           else delete context.queryOptions.mcpServers;
         }
         yield* startMcpStatusWatcher(context);
-        const denyListChanged =
-          stableMcpConfigKey([...context.activeDisallowedTools].sort()) !==
-          stableMcpConfigKey([...context.queryOptions.disallowedTools].sort());
-        const result = withMcpHubOmissions(outcome.result, hubOmitted);
-        return denyListChanged
-          ? {
-              ...result,
-              converged: false,
-              restartRequired: true,
-              errors: [
-                ...result.errors,
-                {
-                  message:
-                    "Claude must restart to update its MCP tool deny list. The live F5 MCP filters already enforce the saved settings.",
-                },
-              ],
-            }
-          : result;
+        return withMcpHubOmissions(outcome.result, hubOmitted);
       });
 
     const respondToUserInput: ClaudeAdapterShape["respondToUserInput"] = (

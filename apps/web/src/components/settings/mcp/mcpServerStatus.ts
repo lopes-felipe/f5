@@ -29,7 +29,7 @@ export function hubStatusSources(
   acrossProjects = false,
 ): ReadonlyArray<McpStatusSource> {
   return entries.map((entry) => ({
-    // F5's own connections, which serve every agent unless native passthrough is on.
+    // F5's own connections, which serve every agent.
     label: acrossProjects ? "F5, all projects" : "F5",
     state:
       entry.state === "ready"

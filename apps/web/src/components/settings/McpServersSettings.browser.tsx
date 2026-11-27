@@ -26,7 +26,6 @@ import type {
 import { ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { noteWsConnectionOpened, noteWsConnectionClosed } from "../../wsConnectionState";
 import { formatMcpServersAsJson } from "@t3tools/shared/mcpConfig";
-import { CODEX_SSE_TRANSPORT_HINT } from "@t3tools/shared/mcpTranslation";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
@@ -35,18 +34,11 @@ import { render } from "vitest-browser-react";
 import { McpServersSettings } from "./McpServersSettings";
 import { toastManager } from "../ui/toast";
 
-const { copyToClipboard, nativeApiRef, hubMode } = vi.hoisted(() => ({
+const { copyToClipboard, nativeApiRef } = vi.hoisted(() => ({
   copyToClipboard: vi.fn(),
   nativeApiRef: {
     current: undefined as NativeApi | undefined,
   },
-  // Most tests cover Codex's and Claude's own sign-in, which native passthrough keeps.
-  hubMode: { nativeProvidersOnHub: false },
-}));
-
-vi.mock("../../lib/mcpHubChat", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../lib/mcpHubChat")>()),
-  useNativeProvidersOnHub: () => hubMode.nativeProvidersOnHub,
 }));
 
 vi.mock("../../hooks/useCopyToClipboard", () => ({
@@ -415,12 +407,10 @@ describe("McpServersSettings", () => {
     noteWsConnectionClosed();
     copyToClipboard.mockReset();
     nativeApiRef.current = undefined;
-    hubMode.nativeProvidersOnHub = false;
     document.body.innerHTML = "";
   });
 
   it("sends Codex and Claude sign-in to F5 and says earlier sign-ins are not carried over", async () => {
-    hubMode.nativeProvidersOnHub = true;
     const mocks = createNativeApiMock();
     mocks.getHubAuthStatus.mockResolvedValue({
       servers: [{ name: "docs", signedIn: false, refreshable: false }],
@@ -435,25 +425,13 @@ describe("McpServersSettings", () => {
     });
     const { screen } = await renderSettings(false);
     try {
-      const notice = page.getByRole("region", { name: "How Codex and Claude connect" });
-      await expect.element(notice.getByText("Codex and Claude connect through F5")).toBeVisible();
-      await expect
-        .element(notice.getByText(/Sign-ins Codex and Claude saved earlier are not carried over/))
-        .toBeVisible();
-      await expect
-        .element(
-          notice.getByRole("switch", {
-            name: "Let Codex and Claude connect to servers themselves",
-          }),
-        )
-        .not.toBeChecked();
+      // The passthrough switch is gone.
+      expect(document.body.textContent).not.toContain("connect to servers themselves");
 
       await openServer("docs", "Sign-in");
       const panel = page.getByRole("region", { name: "F5 sign-in" });
-      await expect.element(panel.getByText(/F5 signs in for Codex, Claude, Cursor/)).toBeVisible();
-      await expect
-        .element(panel.getByText(/Codex and Claude reach this server through F5 now/))
-        .toBeVisible();
+      await expect.element(panel.getByText(/F5 signs in for every agent/)).toBeVisible();
+      await expect.element(panel.getByText(/Sign-ins Codex and Claude saved before/)).toBeVisible();
       await expect.element(panel.getByText("Not signed in", { exact: true })).toBeVisible();
       // The agents' own sign-in is not offered for a server F5 serves them.
       expect(mocks.startLogin).not.toHaveBeenCalled();
@@ -540,7 +518,7 @@ describe("McpServersSettings", () => {
     const { screen, queryClient } = await renderSettings(false);
     try {
       await openServer("docs", "Sign-in");
-      const panel = page.getByRole("region", { name: "Sign-in for other agents" });
+      const panel = page.getByRole("region", { name: "F5 sign-in" });
       await expect.element(panel.getByText("Not signed in", { exact: true })).toBeVisible();
       // Nothing opens until the user asks.
       expect(mocks.openExternal).not.toHaveBeenCalled();
@@ -650,22 +628,23 @@ describe("McpServersSettings", () => {
     mocks.getProjectConfig.mockResolvedValue({
       ...projectConfig,
       servers: {
-        "project-server": { type: "stdio", command: "project-command", cwd: "/srv" },
+        "project-server": {
+          type: "stdio",
+          command: "project-command",
+          cwd: "/srv",
+          supportsParallelToolCalls: true,
+        },
       },
     });
     const { screen, queryClient } = await renderSettings();
     try {
       await openServer("project-server");
       const matrix = page.getByRole("region", { name: "Providers" });
-      // Claude ignores the working directory; other providers support every set field.
-      await expect.element(matrix.getByText("Limited", { exact: true })).toBeVisible();
-      await expect
-        .element(
-          matrix.getByText(
-            "Ignores the working directory; the server starts in the conversation's",
-          ),
-        )
-        .toBeVisible();
+      // The hub runs the server, so only what an agent's own client ignores is Limited;
+      // Codex alone honors parallel tool calls.
+      await expect.element(matrix.getByText("Limited", { exact: true }).first()).toBeVisible();
+      await expect.element(matrix.getByText("Ignores parallel tool calls").first()).toBeVisible();
+      expect(matrix.element().textContent).not.toContain("working directory");
       expect(document.body.textContent).not.toContain("Codex only");
       await matrix.getByRole("switch", { name: "Use project-server with Pi" }).click();
       await vi.waitFor(() =>
@@ -676,6 +655,7 @@ describe("McpServersSettings", () => {
                 type: "stdio",
                 command: "project-command",
                 cwd: "/srv",
+                supportsParallelToolCalls: true,
                 disabledProviders: ["pi"],
               },
             },
@@ -735,99 +715,6 @@ describe("McpServersSettings", () => {
       expect(document.body.textContent).not.toContain("Failed");
       await new Promise((resolve) => setTimeout(resolve, 100));
       expect(mocks.getServerStatuses.mock.calls.length).toBe(statusCalls);
-    } finally {
-      queryClient.clear();
-      await screen.unmount();
-    }
-  });
-
-  it("shows the Codex streamable HTTP hint only when editing SSE", async () => {
-    createNativeApiMock();
-    const { screen, queryClient } = await renderSettings();
-    try {
-      await openAddServer();
-      expect(document.body.textContent).not.toContain(CODEX_SSE_TRANSPORT_HINT);
-      await page.getByRole("combobox", { name: "MCP transport type" }).click();
-      await page.getByRole("option", { name: "sse", exact: true }).click();
-      await vi.waitFor(() => expect(document.body.textContent).toContain(CODEX_SSE_TRANSPORT_HINT));
-      await page.getByRole("combobox", { name: "MCP transport type" }).click();
-      await page.getByRole("option", { name: "http", exact: true }).click();
-      await vi.waitFor(() =>
-        expect(document.body.textContent).not.toContain(CODEX_SSE_TRANSPORT_HINT),
-      );
-    } finally {
-      queryClient.clear();
-      await screen.unmount();
-    }
-  });
-
-  it("never polls login and refreshes it when completion is pushed", async () => {
-    const mocks = createNativeApiMock();
-    let status: McpLoginStatusResult["status"] = "idle";
-    mocks.getLoginStatus.mockImplementation(async ({ provider, projectId, serverName }) => ({
-      target: "server",
-      mode: "cli",
-      provider,
-      projectId,
-      ...(serverName ? { serverName } : {}),
-      status,
-    }));
-    mocks.getServerStatuses.mockResolvedValue({
-      provider: "codex",
-      projectId: PROJECT_ID,
-      support: "supported",
-      configVersion: "effective-v1",
-      statuses: [
-        {
-          name: "project-server",
-          state: "login-required",
-          authStatus: "unauthenticated",
-          toolCount: 0,
-          resourceCount: 0,
-          resourceTemplateCount: 0,
-        },
-      ],
-    });
-    mocks.startLogin.mockImplementation(async () => {
-      status = "pending";
-      return {
-        target: "server",
-        mode: "cli",
-        provider: "codex",
-        projectId: PROJECT_ID,
-        serverName: "project-server",
-        status,
-      };
-    });
-    const { screen, queryClient } = await renderSettings();
-    const interval = () => new Promise((resolve) => setTimeout(resolve, 2_200));
-    try {
-      await openServer("project-server", "Sign-in");
-      await vi.waitFor(() => expect(mocks.getLoginStatus).toHaveBeenCalled());
-      const initial = mocks.getLoginStatus.mock.calls.length;
-      await interval();
-      expect(mocks.getLoginStatus).toHaveBeenCalledTimes(initial);
-      await page.getByRole("button", { name: "Login", exact: true }).click();
-      await vi.waitFor(() => expect(document.body.textContent).toContain("Logging in..."));
-      // Pending sign-in is not polled either: once the login's own refetch settles, not
-      // even one timer-driven read may follow.
-      await vi.waitFor(() => expect(queryClient.isFetching()).toBe(0));
-      const pending = mocks.getLoginStatus.mock.calls.length;
-      await interval();
-      expect(mocks.getLoginStatus).toHaveBeenCalledTimes(pending);
-      status = "completed";
-      const listener = mocks.onStatusUpdated.mock.calls[0]![0];
-      listener({
-        provider: "codex",
-        scope: "project",
-        projectId: PROJECT_ID,
-        reason: "login-completed",
-      });
-      await vi.waitFor(() => expect(document.body.textContent).not.toContain("Logging in..."), {
-        timeout: 3_000,
-      });
-      // One subscription however many views use MCP status.
-      expect(mocks.onStatusUpdated).toHaveBeenCalledTimes(1);
     } finally {
       queryClient.clear();
       await screen.unmount();
@@ -897,170 +784,6 @@ describe("McpServersSettings", () => {
     }
   });
 
-  it("shows Connect for a failed Codex OAuth MCP server and starts OAuth login", async () => {
-    const mocks = createNativeApiMock();
-    const observabilityServer = {
-      type: "http" as const,
-      url: "https://observability.example.test/v1/mcp",
-    };
-
-    mocks.getProjectConfig.mockResolvedValue({
-      ...projectConfig,
-      servers: {
-        ...projectConfig.servers,
-        Observability: observabilityServer,
-      },
-    });
-    mocks.getEffectiveConfig.mockResolvedValue({
-      ...effectiveConfig,
-      servers: {
-        ...effectiveConfig.servers,
-        Observability: observabilityServer,
-      },
-    });
-    mocks.getServerStatuses.mockResolvedValue({
-      provider: "codex",
-      projectId: PROJECT_ID,
-      support: "supported",
-      configVersion: "effective-v1",
-      statuses: [
-        {
-          name: "project-server",
-          state: "ready",
-          authStatus: "authenticated",
-          toolCount: 1,
-          resourceCount: 0,
-          resourceTemplateCount: 0,
-        },
-        {
-          name: "Observability",
-          state: "failed",
-          authStatus: "authenticated",
-          toolCount: 0,
-          resourceCount: 0,
-          resourceTemplateCount: 0,
-          message:
-            "OAuth token refresh failed: Failed to parse server response, when send initialize request",
-        },
-      ],
-    });
-    mocks.getLoginStatus.mockImplementation(async ({ provider, projectId, serverName }) => ({
-      target: serverName ? ("server" as const) : ("provider" as const),
-      mode: serverName === "Observability" ? ("oauth" as const) : ("cli" as const),
-      provider,
-      projectId,
-      ...(serverName ? { serverName } : {}),
-      status: "idle" as const,
-    }));
-    mocks.startLogin.mockResolvedValue({
-      target: "server",
-      mode: "oauth",
-      provider: "codex",
-      projectId: PROJECT_ID,
-      serverName: "Observability",
-      status: "pending",
-      authorizationUrl: "https://auth.example.test",
-    });
-
-    const { screen, queryClient } = await renderSettings();
-
-    try {
-      await vi.waitFor(() => {
-        expect(document.body.textContent).toContain("Observability");
-      });
-      // The row shows the failure; sign-in lives on the panel's Sign-in tab.
-      await expect
-        .element(page.getByText("OAuth token refresh failed", { exact: false }))
-        .toBeVisible();
-      await openServer("Observability", "Sign-in");
-
-      await page.getByRole("button", { name: "Connect", exact: true }).click();
-
-      await vi.waitFor(() => {
-        expect(mocks.startLogin).toHaveBeenCalledWith({
-          provider: "codex",
-          instanceId: "codex",
-          projectId: PROJECT_ID,
-          serverName: "Observability",
-        });
-      });
-      expect(mocks.openExternal).toHaveBeenCalledWith("https://auth.example.test");
-    } finally {
-      queryClient.clear();
-      await screen.unmount();
-    }
-  });
-
-  it("shows OAuth startup failures without opening the browser", async () => {
-    const mocks = createNativeApiMock();
-    const observabilityServer = {
-      type: "http" as const,
-      url: "https://observability.example.test/v1/mcp",
-    };
-
-    mocks.getProjectConfig.mockResolvedValue({
-      ...projectConfig,
-      servers: {
-        ...projectConfig.servers,
-        Observability: observabilityServer,
-      },
-    });
-    mocks.getEffectiveConfig.mockResolvedValue({
-      ...effectiveConfig,
-      servers: {
-        ...effectiveConfig.servers,
-        Observability: observabilityServer,
-      },
-    });
-    mocks.getServerStatuses.mockResolvedValue({
-      provider: "codex",
-      projectId: PROJECT_ID,
-      support: "supported",
-      configVersion: "effective-v1",
-      statuses: [
-        {
-          name: "Observability",
-          state: "failed",
-          authStatus: "authenticated",
-          toolCount: 0,
-          resourceCount: 0,
-          resourceTemplateCount: 0,
-        },
-      ],
-    });
-    mocks.getLoginStatus.mockImplementation(async ({ provider, projectId, serverName }) => ({
-      target: serverName ? ("server" as const) : ("provider" as const),
-      mode: serverName === "Observability" ? ("oauth" as const) : ("cli" as const),
-      provider,
-      projectId,
-      ...(serverName ? { serverName } : {}),
-      status: "idle" as const,
-    }));
-    mocks.startLogin.mockRejectedValue(
-      new Error("OAuth callback listener is not reachable at http://127.0.0.1:3118/callback."),
-    );
-
-    const { screen, queryClient } = await renderSettings();
-
-    try {
-      await vi.waitFor(() => {
-        expect(document.body.textContent).toContain("Observability");
-      });
-      await openServer("Observability", "Sign-in");
-
-      await page.getByRole("button", { name: "Connect", exact: true }).click();
-
-      await vi.waitFor(() => {
-        expect(document.body.textContent).toContain(
-          "OAuth callback listener is not reachable at http://127.0.0.1:3118/callback.",
-        );
-      });
-      expect(mocks.openExternal).not.toHaveBeenCalled();
-    } finally {
-      queryClient.clear();
-      await screen.unmount();
-    }
-  });
   it("keeps editing, toggling, and removing connected through the extracted components", async () => {
     const mocks = createNativeApiMock();
     const { screen, queryClient } = await renderSettings();
@@ -1902,7 +1625,7 @@ it("shows Claude CLI preflight failures without starting a conversation", async 
   }
 });
 
-it("offers Claude sign-in for managed and external needs-auth servers via the observed conversation", async () => {
+it("offers Claude sign-in for its own needs-auth servers via the observed conversation", async () => {
   const mocks = createNativeApiMock();
   const threadId = ThreadId.make("claude-conversation");
   const needsAuth = {
@@ -1918,10 +1641,7 @@ it("offers Claude sign-in for managed and external needs-auth servers via the ob
     support: "supported",
     configVersion: "effective-v1",
     ...(input.provider === "claudeAgent" ? { source: "conversation" as const, threadId } : {}),
-    statuses: [
-      { name: "project-server", ownership: "managed" as const, ...needsAuth },
-      { name: "linear", ownership: "external" as const, ...needsAuth },
-    ],
+    statuses: [{ name: "linear", ownership: "external" as const, ...needsAuth }],
   }));
   mocks.startLogin.mockImplementation(async (input: { serverName: string }) => ({
     target: "server",
@@ -1935,21 +1655,6 @@ it("offers Claude sign-in for managed and external needs-auth servers via the ob
   const { screen, queryClient } = await renderSettings();
   try {
     await page.getByRole("combobox", { name: "Status account" }).selectOptions("claudeAgent");
-    await openServer("project-server", "Sign-in");
-    await page.getByRole("button", { name: "Sign in", exact: true }).click();
-    await vi.waitFor(() =>
-      expect(mocks.startLogin).toHaveBeenCalledWith({
-        provider: "claudeAgent",
-        instanceId: "claudeAgent",
-        projectId: PROJECT_ID,
-        serverName: "project-server",
-        threadId,
-      }),
-    );
-    await vi.waitFor(() =>
-      expect(mocks.openExternal).toHaveBeenCalledWith("https://auth.example.test/project-server"),
-    );
-    await page.getByRole("button", { name: "Close", exact: true }).click();
     await openProviderManaged();
     await page.getByRole("button", { name: "Sign in to linear", exact: true }).click();
     await vi.waitFor(() =>
@@ -2103,7 +1808,7 @@ it("observes only the selected conversation, refreshes on runtime push, and load
     queryClient.clear();
   }
 });
-it("refreshes selected runtime after reconnect and offers reopening pending sign-in", async () => {
+it("refreshes selected runtime after reconnect", async () => {
   const mocks = createNativeApiMock();
   mocks.getServerStatuses.mockResolvedValue({
     provider: "codex",
@@ -2121,22 +1826,10 @@ it("refreshes selected runtime after reconnect and offers reopening pending sign
       },
     ],
   });
-  mocks.getLoginStatus.mockResolvedValue({
-    provider: "codex",
-    projectId: PROJECT_ID,
-    target: "server",
-    mode: "oauth",
-    serverName: "project-server",
-    status: "pending",
-    authorizationUrl: "https://auth.example.test/pending",
-  });
   const { screen, queryClient } = await renderSettings();
   try {
-    await openServer("project-server", "Sign-in");
-    await page.getByRole("button", { name: "Reopen sign-in", exact: true }).click();
-    expect(mocks.openExternal).toHaveBeenCalledWith("https://auth.example.test/pending");
+    await openServer("project-server");
     const before = mocks.getServerStatuses.mock.calls.length;
-    await page.getByRole("tab", { name: "Overview", exact: true }).click();
     await page.getByRole("button", { name: "Reconnect in Codex", exact: true }).click();
     await vi.waitFor(() =>
       expect(mocks.reconnectServer).toHaveBeenCalledWith({

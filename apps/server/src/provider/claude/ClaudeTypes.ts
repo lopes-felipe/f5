@@ -44,7 +44,6 @@ import {
   TurnId,
   type UserInputQuestion,
 } from "@t3tools/contracts";
-import { type McpToolFilters } from "@t3tools/shared/mcpTranslation";
 import { Deferred, Effect, Fiber, Queue } from "effect";
 
 import { ProviderAdapterRequestError } from "../Errors.ts";
@@ -270,9 +269,6 @@ export interface ClaudeSessionContext {
   promptQueue: Queue.Queue<PromptQueueItem>;
   query: ClaudeQueryRuntime;
   readonly queryOptions: ClaudeQueryOptions;
-  readonly mandatoryDisallowedTools: ReadonlyArray<string>;
-  /** SDK deny list installed on the live query; recovery options can be newer. */
-  activeDisallowedTools: ReadonlyArray<string>;
   readonly pendingPrompts: SDKUserMessage[];
   recovering: boolean;
   recoveryMetadata: ReturnType<typeof readClaudeRecoveryMetadata>;
@@ -294,7 +290,6 @@ export interface ClaudeSessionContext {
   readonly elicitations: ElicitationRegistry;
   /** Dynamic MCP servers F5 set on this query; the only ones reconcile may replace or remove. */
   ownedMcpServerNames: ReadonlySet<string>;
-  mcpToolFilters: McpToolFilters;
   mcpStatusFiber?: Fiber.Fiber<void>;
   mcpStatusEmitted?: Map<string, string>;
   mcpObservationEpoch?: number;
@@ -303,7 +298,7 @@ export interface ClaudeSessionContext {
   /** App session identity; a new MCP observation epoch invalidates approvals. */
   mcpAppIdentity?: { readonly epoch: number; readonly id: string };
   readonly internalMcpServers: NonNullable<ClaudeQueryOptions["mcpServers"]>;
-  /** This session's F5 MCP hub endpoints; absent in passthrough mode or with no servers. */
+  /** This session's F5 MCP hub endpoints; absent without the hub or with no servers. */
   mcpHubAttachment?: McpHubAttachment;
   /** Set once the start-time warning about servers the hub left out was sent. */
   mcpHubOmissionsReported?: boolean;
@@ -478,8 +473,6 @@ export interface ClaudeAdapterLiveOptions {
   readonly reportedModelCapabilities?: ClaudeReportedModelCapabilitiesLookup;
   /** Serves F5's configured MCP servers to sessions as loopback endpoints. */
   readonly mcpHub?: McpHubShape;
-  /** Read at each session start; true hands Claude the servers themselves (one release). */
-  readonly mcpNativePassthrough?: Effect.Effect<boolean>;
 }
 
 export interface ClaudeSessionProbeInput {
