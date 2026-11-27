@@ -157,6 +157,7 @@ import {
 } from "../acp/AcpReadOnlyRefusalFollowUp.ts";
 import {
   ACP_HIDDEN_TOOL_INPUTS_DETAIL,
+  acpReadOnlyGitRefusal,
   acpReadOnlyRefusalDetail,
   acpRequestWithoutToolCallId,
 } from "../acp/AcpReadOnlyWorkflowPolicy.ts";
@@ -166,6 +167,7 @@ import {
   AntigravityModeUnavailableError,
   antigravityAdvertisedModes,
   antigravityApprovalDecision,
+  antigravityReadOnlyGitGuard,
   antigravityReadOnlyWorkflowVerdict,
   antigravityWorkflowRuntimeMode,
   enterAntigravityWorkflowPlanMode,
@@ -1507,8 +1509,20 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                       computerRequest: Boolean(computerRequest),
                       f5ThreadServerName: catalogs.readOnlyThreadServerName(),
                     });
-                    const allowOnce =
+                    // A command the policy allows can still run a program a repository's Git
+                    // config names; that reason is recorded with the refusal like any other, and
+                    // an agent that ends its turn on it is told it too.
+                    const gitRefusal =
                       verdict.decision === "allow"
+                        ? yield* Effect.promise(() =>
+                            acpReadOnlyGitRefusal(
+                              antigravityReadOnlyGitGuard(acp),
+                              params.toolCall,
+                            ),
+                          )
+                        : undefined;
+                    const allowOnce =
+                      verdict.decision === "allow" && gitRefusal === undefined
                         ? selectPermissionOptionId(params, "accept")
                         : undefined;
                     if (allowOnce !== undefined)
@@ -1516,7 +1530,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     const refusalReason =
                       verdict.decision === "deny"
                         ? verdict.reason
-                        : "Antigravity offered no way to approve it once";
+                        : (gitRefusal ?? "Antigravity offered no way to approve it once");
                     const deniedRequest = parsePermissionRequest(params);
                     if (live && !computerRequest) {
                       // Text the agent wrote before asking is still queued for the event

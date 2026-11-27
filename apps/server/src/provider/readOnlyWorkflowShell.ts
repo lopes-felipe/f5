@@ -28,11 +28,56 @@ export type ReadOnlyShellClassification =
   | { readonly readOnly: false; readonly reason: string };
 
 /**
- * Added to the environment of providers whose read-only stages use this classifier. `git status`
- * otherwise refreshes the index and holds `index.lock`, which can fail a concurrent Git command in
- * the same worktree.
+ * Added to the environment of providers whose read-only stages use this classifier:
+ *
+ * - `GIT_OPTIONAL_LOCKS=0`: `git status` otherwise refreshes the index and holds `index.lock`,
+ *   which can fail a concurrent Git command in the same worktree;
+ * - `GIT_PAGER=cat`: on a terminal Git pipes `log`, `diff` and `show` through the pager named in
+ *   `core.pager` or `pager.<command>`, which a repository's own config can set to any program.
+ *   The variable outranks both;
+ * - `GIT_NO_LAZY_FETCH=1`: in a partial clone a read of a missing object otherwise fetches it
+ *   from the promisor remote, which reaches the network and writes to the object store.
  */
-export const READ_ONLY_WORKFLOW_ENVIRONMENT = { GIT_OPTIONAL_LOCKS: "0" } as const;
+export const READ_ONLY_WORKFLOW_ENVIRONMENT = {
+  GIT_OPTIONAL_LOCKS: "0",
+  GIT_PAGER: "cat",
+  GIT_NO_LAZY_FETCH: "1",
+} as const;
+
+/**
+ * What an accepted command does with directories, in the order it is written: a `cd` and its
+ * target (undefined when the form has no single target, such as zsh's `cd old new`), or a `git`
+ * call and its `-C` directories. `readOnlyGitConfig.ts` works out from these which repositories
+ * the command's Git calls can read.
+ */
+export type ReadOnlyShellDirectoryUse =
+  | { readonly kind: "cd"; readonly path: string | undefined }
+  | { readonly kind: "git"; readonly path: ReadonlyArray<string> };
+
+/** Filled while `readOnlyShellDirectoryUses` runs the classifier, which is synchronous. */
+let directoryUses: ReadOnlyShellDirectoryUse[] | undefined;
+
+/** The `cd` and `git` calls of a command the classifier accepts, or undefined when it refuses. */
+export function readOnlyShellDirectoryUses(
+  command: string,
+): ReadonlyArray<ReadOnlyShellDirectoryUse> | undefined {
+  const uses: ReadOnlyShellDirectoryUse[] = [];
+  directoryUses = uses;
+  try {
+    return classifyReadOnlyShellCommand(command).readOnly ? uses : undefined;
+  } finally {
+    directoryUses = undefined;
+  }
+}
+
+/** Where `cd <args>` goes: `~` for none, undefined for a form with no single written target. */
+function cdTarget(args: ReadonlyArray<string>): string | undefined {
+  const operands = [...args];
+  while (operands.length > 0 && /^-[LPqs]+$/.test(operands[0]!)) operands.shift();
+  if (operands[0] === "--") operands.shift();
+  if (operands.length === 0) return "~";
+  return operands.length === 1 ? operands[0] : undefined;
+}
 
 const READ_ONLY: ReadOnlyShellClassification = { readOnly: true };
 const refuse = (reason: string): ReadOnlyShellClassification => ({ readOnly: false, reason });
@@ -914,6 +959,7 @@ function classifyProgram(
   program: string,
   args: ReadonlyArray<string>,
 ): ReadOnlyShellClassification {
+  if (program === "cd") directoryUses?.push({ kind: "cd", path: cdTarget(args) });
   if (PLAIN_READ_PROGRAMS.has(program)) return READ_ONLY;
 
   switch (program) {
@@ -1133,10 +1179,12 @@ function classifyBase64(args: ReadonlyArray<string>): ReadOnlyShellClassificatio
 
 function classifyGit(args: ReadonlyArray<string>): ReadOnlyShellClassification {
   let index = 0;
+  const directories: string[] = [];
   while (index < args.length && args[index]!.startsWith("-")) {
     const arg = args[index]!;
     if (arg === "-C") {
       if (index + 1 >= args.length) return refuse("`git -C` needs a directory");
+      directories.push(args[index + 1]!);
       index += 2;
       continue;
     }
@@ -1147,6 +1195,7 @@ function classifyGit(args: ReadonlyArray<string>): ReadOnlyShellClassification {
     if (arg === "--version" && args.length === 1) return READ_ONLY;
     return refuse(`\`git ${arg}\` is not allowed`);
   }
+  directoryUses?.push({ kind: "git", path: directories });
   const subcommand = args[index];
   if (subcommand === undefined) return refuse("a git subcommand is required");
   const rest = args.slice(index + 1);

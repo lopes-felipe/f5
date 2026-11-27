@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   acpExecuteCommand,
+  acpExecuteDirectory,
+  acpReadOnlyGitRefusal,
   acpReadOnlyRefusalDetail,
   acpReadOnlyWorkflowDecision,
   acpReadOnlyWorkflowVerdict,
@@ -248,6 +250,59 @@ describe("acpReadOnlyWorkflowDecision", () => {
     expect(decideWithF5({ title: "mcp__f5_thread_0a1b2c3d__ci_logsx" })).toBe("deny");
     // Without an attached server nothing MCP is allowed.
     expect(decide({ title: "mcp__f5_thread_0a1b2c3d__pull_request_read" })).toBe("deny");
+  });
+});
+
+describe("acpReadOnlyGitRefusal", () => {
+  const asked: Array<[string, string | undefined]> = [];
+  const guard = {
+    pairs: [],
+    refusal: async (command: string, cwd?: string) => {
+      asked.push([command, cwd]);
+      return command.includes("other")
+        ? "the Git config of /other sets `diff.external`"
+        : undefined;
+    },
+  };
+
+  it("asks the guard about a shell command, with the folder the request names", async () => {
+    asked.length = 0;
+    expect(
+      await acpReadOnlyGitRefusal(guard, {
+        kind: "execute",
+        rawInput: { command: "git -C other diff", cwd: "/stage" },
+      }),
+    ).toBe("the Git config of /other sets `diff.external`");
+    expect(
+      await acpReadOnlyGitRefusal(guard, {
+        kind: "execute",
+        rawInput: { CommandLine: "git status", Cwd: "/stage/sub" },
+      }),
+    ).toBeUndefined();
+    expect(asked).toEqual([
+      ["git -C other diff", "/stage"],
+      ["git status", "/stage/sub"],
+    ]);
+  });
+
+  it("has nothing to check without a guard, a shell command or a command string", async () => {
+    asked.length = 0;
+    expect(
+      await acpReadOnlyGitRefusal(undefined, { kind: "execute", rawInput: { command: "git log" } }),
+    ).toBeUndefined();
+    expect(await acpReadOnlyGitRefusal(guard, { kind: "read", rawInput: {} })).toBeUndefined();
+    expect(await acpReadOnlyGitRefusal(guard, { kind: "execute", rawInput: {} })).toBeUndefined();
+    expect(asked).toEqual([]);
+  });
+
+  it("reads the folder under the names providers use", () => {
+    expect(acpExecuteDirectory({ cwd: "/a" })).toBe("/a");
+    expect(acpExecuteDirectory({ Cwd: "/b" })).toBe("/b");
+    expect(acpExecuteDirectory({ working_directory: "/c" })).toBe("/c");
+    expect(acpExecuteDirectory({ workingDirectory: "/d" })).toBe("/d");
+    expect(acpExecuteDirectory({ cwd: "  " })).toBeUndefined();
+    expect(acpExecuteDirectory({ cwd: 7 })).toBeUndefined();
+    expect(acpExecuteDirectory(undefined)).toBeUndefined();
   });
 });
 
