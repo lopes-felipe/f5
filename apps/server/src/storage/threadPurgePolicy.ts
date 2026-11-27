@@ -48,6 +48,9 @@ export const threadPurgePolicy: Readonly<
   thread_settlement_hooks: { kind: "cascade" },
   mcp_app_instances: { kind: "cascade" },
   mcp_app_model_context: { kind: "cascade" },
+  mcp_thread_server_overrides: { kind: "cascade" },
+  // The MCP call log has no foreign key, so it outlives a deleted thread until purge.
+  mcp_tool_calls: { kind: "explicit" },
   search_documents: { kind: "explicit" },
   usage_limit_resumes: { kind: "cascade" },
   usage_limit_resume_streaks: { kind: "cascade" },
@@ -165,6 +168,8 @@ export const threadPurgeHandlers = {
     sql`DELETE FROM orchestration_event_compaction WHERE rowid IN (SELECT rowid FROM orchestration_event_compaction WHERE thread_id = ${threadId} LIMIT 500) RETURNING rowid`,
   search_documents: (sql: SqlClient.SqlClient, threadId: ThreadId) =>
     sql`DELETE FROM search_documents WHERE rowid IN (SELECT rowid FROM search_documents WHERE thread_id = ${threadId} LIMIT 500) RETURNING rowid`,
+  mcp_tool_calls: (sql: SqlClient.SqlClient, threadId: ThreadId) =>
+    sql`DELETE FROM mcp_tool_calls WHERE rowid IN (SELECT rowid FROM mcp_tool_calls WHERE thread_id = ${threadId} LIMIT 500) RETURNING rowid`,
   pr_hub_reply_drafts: (sql: SqlClient.SqlClient, threadId: ThreadId) =>
     sql`DELETE FROM pr_hub_reply_drafts WHERE rowid IN (SELECT rowid FROM pr_hub_reply_drafts WHERE thread_id = ${threadId} LIMIT 500) RETURNING rowid`,
   provider_submission_provenance: (sql: SqlClient.SqlClient, threadId: ThreadId) =>

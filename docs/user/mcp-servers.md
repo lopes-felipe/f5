@@ -16,7 +16,8 @@ The page follows the settings scope switcher: **Global** edits common servers, a
 Select a server to open its panel:
 
 - **Overview**: live status for F5's connections and for the observed Codex or Claude account, a connection **Test**, the [provider matrix](#provider-support), and the sessions using the server, with **Apply to live sessions**.
-- **Tools**: per-tool switches (see [Tools](#tools)).
+- **Tools**: Allow, Ask or Block per tool, the default for the rest, and tools to review (see [Tools](#tools)).
+- **Activity**: recent calls through F5, the last day's error rate and latency, and the server's stderr (see [Activity](#activity)).
 - **Prompts and resources**: prompt and resource counts from the last connection test and from F5's own connection, and resource metadata from the observed account.
 - **Sign-in**: F5's sign-in (see [Sign in with F5](#sign-in-with-f5)), and, with [native passthrough](#native-passthrough), sign-in for the observed Codex or Claude account.
 - **Configuration**: the form, and the saved JSON with **Copy JSON**.
@@ -151,7 +152,27 @@ Files must be regular files of at most 1 MiB, and symbolic links are not followe
 
 ## Tools
 
-A server's **Tools** tab lets you disable individual tools. Switches change the disabled-tools list. Leave enabled tools empty to allow all tools. A disabled-tools entry takes precedence when a tool is listed in both lists. A non-empty enabled-tools list still restricts availability and cannot be broadened by a switch; edit that list under Advanced. Live tool data is preferred, with the last connection test as a fallback. Saving does not prove that a running conversation has applied the configuration. Apply to all live sessions to reconcile immediately, or let sessions pick up the saved version at their next message. Readiness and the applied configuration version are separate observations.
+A server's **Tools** tab sets each tool to **Allow**, **Ask** or **Block**:
+
+- **Allow** runs the tool when the agent calls it (the agent's own approval rules still apply).
+- **Ask** shows an approval in the conversation before every call, for every agent and in every mode, including Full access. Choose **Allow once**, **Allow in this conversation**, or **Deny**. When Codex or Claude would ask about the same call, F5 answers their prompt for you, so you are asked once, except in read-only workflow stages and plan mode without approvals, which still refuse the call. An approval waits up to ten minutes; Codex and Claude wait that much longer for hub tools, so the time you take does not count against the tool's timeout. The server is started or connected only after you allow the call. If you turn the server off, block the tool or remove the server while the approval is open, the call is refused even if you then allow it. Saving a policy change ends **Allow in this conversation** for that server, and so does a change of its URL or command.
+- **Block** hides the tool from agents and refuses its calls, in running conversations too. It is stored in the disabled-tools list.
+
+**Tools without their own setting** sets the default, Allow or Ask, for every tool you have not set yourself. A non-empty enabled-tools list still restricts availability and cannot be broadened here; edit that list under Advanced. A disabled-tools entry takes precedence when a tool is in both lists. Live tool data is preferred, with the last connection test as a fallback.
+
+Policy is enforced by F5's hub, so it covers every agent that reaches the server through F5 (see [How agents connect](#how-agents-connect)). With [native passthrough](#native-passthrough), Codex and Claude reach servers themselves and only Block applies to them. Saving a policy change reaches running conversations at once, without Apply or reconnecting the server; other changes still follow [Apply](#apply-reconnect-and-test).
+
+### Tool review
+
+The first time F5 lists a server's tools, it records each tool's name, description and input schema. If a server later changes any of them, the tool is marked **Changed** and F5 asks before every call to it, even if it is set to Allow, until you review it. **Tools to review** shows what was accepted next to what the server reports now; **Accept change** records the new definition. Until a change is accepted, agents see the tool with its accepted description. Tools that appear after the first listing are marked **New**, and F5 asks before every call to them until you mark them reviewed. F5 checks a call against the tools the server reports now, so a tool redefined after the agent last listed tools still asks. Accepting records the definition you reviewed; if the tool changed again before you clicked, F5 keeps asking and you review it again. A server whose URL or command changes starts a new record; a stored secret in that URL or command is not part of the record, so rotating it keeps your reviews and is never shown.
+
+## Activity
+
+The **Activity** tab lists calls that went through F5 (in a project scope, only that project's): time, agent, tool, outcome, duration, how the call was approved, and a short, redacted error summary. Arguments and results are never stored. It also shows, for the last 24 hours, the number of calls that reached the server, their error rate, and median and 95th-percentile latency (refused and declined calls are not counted), and the server's recent stderr output (redacted). F5 keeps 30 days of calls, and at most 50,000. **Refresh** reads the latest calls.
+
+## Turning a server off for one conversation
+
+In the chat's MCP details, each server F5 serves has an **On in this conversation** switch. Turning it off hides the server's tools from that conversation and refuses its calls at once, without restarting the agent. Other conversations are not affected, and the choice is kept for the conversation.
 
 ## Environment variables
 
@@ -159,7 +180,9 @@ The command, arguments, environment values, working directory, URL, and header v
 
 ## Stored secrets
 
-Environment and header values can be marked **Secret**, then stored explicitly. F5 replaces each value with a whole-value `${f5-secret:<uuid>}` reference. Replacing a secret creates a new UUID. Stored values are masked in the editor and omitted from MCP JSON exports. Imports reject these references because they cannot transfer the underlying secret.
+Environment and header values can be marked **Secret**, then stored explicitly. F5 replaces each value with a `${f5-secret:<uuid>}` reference. Replacing a secret creates a new UUID. Stored values are masked in the editor and omitted from MCP JSON exports. Imports reject these references because they cannot transfer the underlying secret.
+
+A reference can also sit inside a longer value, such as `Bearer ${f5-secret:<uuid>}`, and in arguments and the URL. **Store a secret for an argument or URL**, under the arguments or the URL, stores a value and gives you its reference to paste. References are allowed only in environment and header values, arguments and URLs. Secrets in arguments and URLs are redacted from F5's own error messages and stderr.
 
 Secrets live in permission-restricted files in the profile's secrets directory (directory mode 0700, file mode 0600). The backup system includes that directory only when you explicitly choose password-encrypted secret backups. MCP secrets and OAuth tokens are encrypted at rest with AES-256-GCM under a profile key. In the desktop app, the key is protected by the operating system's keychain and handed to the backend when it starts. A headless server keeps the key in a `secret-store-key.bin` file (mode 0600) in the same directory, which protects against copies of individual secret files but not against someone who can read the whole directory. Values written by older versions are re-encrypted the first time they are read. Encryption is not a full credential vault: the running backend can decrypt every value. Plaintext values in the configuration stay unchanged until you store them as secrets. On Linux, the desktop app hands the key to the backend in its environment, which the backend clears at startup but which other processes of the same user can still read from `/proc/<pid>/environ`, as with the backend's auth token. A password-encrypted backup holds secret values decrypted, so a restore on another machine re-encrypts them with that machine's key. Codex receives MCP servers on its command line, which other local users can see with `ps`: a header or environment value that uses a stored secret or `${env:…}` appears there expanded, so put header tokens in a bearer token environment variable instead. Stored secrets are substituted before `${env:…}` references are expanded, so a secret value that itself contains `${env:NAME}` is expanded too.
 
