@@ -1,2 +1,0 @@
-- Graduated React Compiler in `apps/web` from `annotation` mode to `infer` mode across production web sources so React components and hooks receive automatic memoization without manual `"use memo"` directives.
-- Fixed three Rules-of-React / mutable-module-global reads uncovered during full browser verification: opted the preloaded inline-diff Suspense shims in `MessagesTimeline` out of memoization (`"use no memo"`), subscribed `PrLinkedPanel` to `prHubAccount` via `useSyncExternalStore`, and moved Home composer `chosenEnvMode` into Zustand (`useHomeComposerTextStore`).
