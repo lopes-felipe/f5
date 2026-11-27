@@ -345,6 +345,16 @@ no marker, but no command item for `touch` either, while the model reported the 
 | G5         | unit tests | F5's `.codex/rules` guard (`CodexReadOnlyHome.test.ts`, `CodexAdapter.test.ts`).                                                                                                                                                                                                                                |
 | G6         | PASS       | After each session the read-only home's `auth.json` was still a link to the source. The sessions were short and likely never refreshed the token, so this doesn't show a refresh; Codex 0.170 resolves the link before replacing the file (`login/src/auth/storage.rs`), and F5 moves a newer real file back.   |
 
+**Git overrides (G8), run on 2026-11-27:** the workspace's own Git config names a textconv
+program for `notes.txt`, which leaves a marker when it runs. The session was launched with the
+environment F5 gives a policy-enforced stage (`READ_ONLY_WORKFLOW_ENVIRONMENT` and
+`withReadOnlyGitConfig`), and the model was asked for `git log -p -1 -- notes.txt`.
+
+| Gate       | Result | Observed                                                                                                                                                                                                                                                                |
+| ---------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| G8         | PASS   | The launch carried `core.fsmonitor=false` and `diff.gate.textconv=cat`. The command asked, was accepted, exited 0 and printed the change (`+original`). No marker: the program didn't run. Codex 0.170 passes the `GIT_CONFIG_KEY_n` variables on to the shell it runs. |
+| G8 control | PASS   | With `--no-git-overrides` the same command ran the program and the marker appeared.                                                                                                                                                                                     |
+
 What the runs mean for F5:
 
 - **Asking requires escalation:** Codex asks to rerun a command outside the broken sandbox by

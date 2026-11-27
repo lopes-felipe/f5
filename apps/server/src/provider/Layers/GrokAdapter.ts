@@ -155,6 +155,7 @@ import {
   AntigravityModeUnavailableError,
   antigravityAdvertisedModes,
   antigravityApprovalDecision,
+  antigravityReadOnlyGitGuard,
   antigravityReadOnlyWorkflowDecision,
   antigravityWorkflowRuntimeMode,
   enterAntigravityWorkflowPlanMode,
@@ -168,6 +169,7 @@ import {
   type AntigravityThinkingLevels,
 } from "../acp/AntigravityAcpSupport.ts";
 import { antigravityStepLayoutVerified } from "../antigravityPrivateFormats.ts";
+import { acpReadOnlyGitRefusal } from "../acp/AcpReadOnlyWorkflowPolicy.ts";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { canonicalJson } from "../../canonicalJsonHash.ts";
 import { makeAcpNativeLoggers, redactAcpLogPayload } from "../acp/AcpNativeLogging.ts";
@@ -1484,12 +1486,21 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   if (readOnlyWorkflowProfile) {
                     // Runs before the access-mode policy, saved grants and Full access, and
                     // never prompts: a workflow turn either reads or is refused.
-                    const allowOnce =
+                    const allowed =
                       antigravityReadOnlyWorkflowDecision({
                         toolCall: params.toolCall,
                         computerRequest: Boolean(computerRequest),
                         f5ThreadServerName: catalogs.readOnlyThreadServerName(),
-                      }) === "allow"
+                      }) === "allow";
+                    // A command the policy allows can still run a program a repository's Git
+                    // config names; the reason is recorded with the refusal.
+                    const gitRefusal = allowed
+                      ? yield* Effect.promise(() =>
+                          acpReadOnlyGitRefusal(antigravityReadOnlyGitGuard(acp), params.toolCall),
+                        )
+                      : undefined;
+                    const allowOnce =
+                      allowed && gitRefusal === undefined
                         ? selectPermissionOptionId(params, "accept")
                         : undefined;
                     if (allowOnce !== undefined)
@@ -1509,9 +1520,11 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                         permissionRequest: deniedRequest,
                         detail: computerRequest
                           ? "Tool inputs hidden while computer control is enabled"
-                          : (deniedRequest.detail ??
-                            encodeJsonStringForDiagnostics(deniedParams)?.slice(0, 2000) ??
-                            "[unserializable params]"),
+                          : `${
+                              deniedRequest.detail ??
+                              encodeJsonStringForDiagnostics(deniedParams)?.slice(0, 2000) ??
+                              "[unserializable params]"
+                            }${gitRefusal === undefined ? "" : ` (${gitRefusal})`}`,
                         args: deniedParams,
                         source: "acp.jsonrpc",
                         method: "session/request_permission",
