@@ -64,6 +64,30 @@ describe("mcpProviderSupport", () => {
     ).toBe("supported");
   });
 
+  it("drops the native-path limits once the hub serves Codex and Claude", () => {
+    const server: McpServerDefinition = {
+      type: "stdio",
+      command: "node",
+      cwd: "/srv",
+      connectionScope: "shared",
+      startupTimeoutSec: 30,
+      supportsParallelToolCalls: true,
+    };
+    const onHub = { nativeProvidersOnHub: true };
+    expect(mcpProviderSupport(server, "codex", onHub)).toEqual({
+      provider: "codex",
+      support: "supported",
+      reasons: [],
+    });
+    expect(mcpProviderSupport(server, "claudeAgent", onHub).reasons).toEqual([
+      "Ignores parallel tool calls",
+    ]);
+    expect(mcpProviderSupport({ type: "sse", url: "https://x.test" }, "codex", onHub).support).toBe(
+      "supported",
+    );
+    expect(mcpProviderSupport(server, "codex").support).toBe("limited");
+  });
+
   it("turns providers off and on, and translators leave off servers out", () => {
     const base: McpServerDefinition = { type: "http", url: "https://x.test/mcp" };
     const offForCodex = setMcpProviderEnabled(base, "codex", false);

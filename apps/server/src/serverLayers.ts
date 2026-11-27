@@ -269,9 +269,12 @@ export function makeServerProviderLayer(): Layer.Layer<
       Layer.provide(serverSettingsLayer),
       Layer.provide(ProjectionProjectRepositoryLive),
     );
+    // Codex admin clients carry no F5 servers while the hub serves Codex sessions.
     const codexMcpSyncServiceLayer = CodexMcpSyncServiceLive.pipe(
       Layer.provide(codexControlClientRegistryLayer),
       Layer.provide(projectMcpConfigServiceLayer),
+      Layer.provide(mcpHubLayer),
+      Layer.provide(serverSettingsLayer),
     );
     const providerServiceLayer = makeProviderServiceLive({
       ...(canonicalEventLogger ? { canonicalEventLogger } : {}),
@@ -307,6 +310,8 @@ export function makeServerProviderLayer(): Layer.Layer<
       Layer.provide(codexMcpSyncServiceLayer),
       Layer.provide(codexMcpEventBusLayer),
       Layer.provide(projectMcpConfigServiceLayer),
+      Layer.provide(mcpHubLayer),
+      Layer.provide(serverSettingsLayer),
     );
     const mcpRuntimeServiceLayer = McpRuntimeServiceLive.pipe(
       Layer.provide(ProjectionProjectRepositoryLive),
@@ -318,6 +323,7 @@ export function makeServerProviderLayer(): Layer.Layer<
       Layer.provide(codexOAuthManagerLayer),
       Layer.provide(codexMcpEventBusLayer),
       Layer.provide(projectMcpConfigServiceLayer),
+      Layer.provide(mcpHubLayer),
     );
     return Layer.mergeAll(
       ProviderContinuationRequestsLive,

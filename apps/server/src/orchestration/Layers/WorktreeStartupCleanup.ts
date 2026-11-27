@@ -88,6 +88,23 @@ export const cleanupStaleWorktrees = Effect.fn("server.startup.worktree.cleanup"
             Effect.ignore,
           );
         }
+      } else if (readiness._tag === "Success" && Option.isSome(queue)) {
+        // An older version paused the queue because the folder was on another
+        // branch. The folder is this thread's worktree and it is there, so
+        // that pause has nothing left to wait for. Other pauses are kept.
+        const store = queue.value;
+        yield* store.listByThread(thread.id).pipe(
+          Effect.flatMap(({ state }) =>
+            state.paused && state.pauseReasonCode === "worktree_missing"
+              ? store.setPaused({
+                  threadId: thread.id,
+                  paused: false,
+                  expectedRevision: state.revision,
+                })
+              : Effect.void,
+          ),
+          Effect.ignore,
+        );
       }
       if (!probe.exists || readiness === null || readiness._tag === "Failure") {
         preservedCount += 1;

@@ -704,6 +704,11 @@ export const ServerSettings = Schema.Struct({
   /** Allow agents to request control of apps. Each app still requires approval. */
   enableAgentComputerUse: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   autoPullDefaultBranch: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  /**
+   * Gives Codex and Claude sessions the configured MCP servers directly instead of
+   * F5's MCP hub endpoints. Temporary escape hatch while the hub replaces that path.
+   */
+  mcpNativePassthrough: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   /** Extends existing GitHub shell PR linking to GitLab; opt-in automatic behavior. */
   autoLinkShellCreatedMergeRequests: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   /** Upstream tracking schedule and models. Local only; a checked-in file never sets it. */
@@ -901,6 +906,7 @@ export const ServerSettingsPatch = Schema.Struct({
   enableClaudeInChrome: Schema.optionalKey(Schema.Boolean),
   enableCodexChrome: Schema.optionalKey(Schema.Boolean),
   enableAgentComputerUse: Schema.optionalKey(Schema.Boolean),
+  mcpNativePassthrough: Schema.optionalKey(Schema.Boolean),
   computerUseBackend: Schema.optionalKey(Schema.Literals(["auto", "f5"])),
   computerUseExecutionMode: Schema.optionalKey(ComputerUseExecutionMode),
   computerUsePasswordMasking: Schema.optionalKey(ComputerPasswordMasking),

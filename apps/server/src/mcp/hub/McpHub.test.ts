@@ -11,6 +11,8 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
   CallToolRequestSchema,
+  ElicitationCompleteNotificationSchema,
+  ElicitRequestSchema,
   ListResourcesRequestSchema,
   ListToolsRequestSchema,
   McpError,
@@ -180,7 +182,14 @@ describe("F5 MCP hub", () => {
     const client = await connect(endpoint.url, endpoint.token);
     expect(client.getServerVersion()?.name).toBe("fixture");
     const tools = await client.listTools();
-    expect(tools.tools.map((tool) => tool.name)).toEqual(["echo", "slow", "add_tool"]);
+    expect(tools.tools.map((tool) => tool.name)).toEqual([
+      "echo",
+      "slow",
+      "add_tool",
+      "ask",
+      "ask_url",
+      "wait",
+    ]);
 
     const echoed = await client.callTool({ name: "echo", arguments: { text: "hi" } });
     expect(echoed.content).toEqual([{ type: "text", text: "echo:hi" }]);
@@ -330,6 +339,271 @@ describe("F5 MCP hub", () => {
     } finally {
       await attachment.dispose();
     }
+  });
+
+  it("applies saved changes to a live session's endpoints without a new endpoint", async () => {
+    const attachment = attach(stdioServers());
+    try {
+      const endpoint = attachment.endpoints[0]!;
+      const client = await connect(endpoint.url, endpoint.token);
+      expect((await client.listTools()).tools.map((tool) => tool.name)).toContain("slow");
+      let changes = 0;
+      client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+        changes += 1;
+      });
+
+      // Unchanged definitions keep their connection.
+      expect(attachment.update(stdioServers())).toEqual({
+        changed: [],
+        removed: [],
+        added: [],
+        addedEndpoints: [],
+        endpoints: [endpoint],
+        omitted: [],
+        timeoutRaised: [],
+      });
+
+      // A changed definition moves the same endpoint to a new connection.
+      const edited = {
+        fixture: { ...stdioServers().fixture!, disabledTools: ["hidden", "slow"] },
+        later: { type: "stdio" as const, command: process.execPath, args: [fixture] },
+      };
+      expect(attachment.update(edited)).toEqual({
+        changed: ["fixture"],
+        removed: [],
+        added: ["later"],
+        addedEndpoints: [],
+        endpoints: [endpoint],
+        omitted: [],
+        timeoutRaised: [],
+      });
+      await expect.poll(() => changes).toBeGreaterThan(0);
+      expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual([
+        "echo",
+        "add_tool",
+        "ask",
+        "ask_url",
+        "wait",
+      ]);
+      expect(hub.status(projectId)).toHaveLength(1);
+
+      // A removed server lists nothing and refuses calls on the kept endpoint.
+      const removal = attachment.update({});
+      expect(removal.removed).toEqual(["fixture"]);
+      expect(removal.endpoints).toEqual([]);
+      expect((await client.listTools()).tools).toEqual([]);
+      const refused = await client.callTool({ name: "echo", arguments: { text: "x" } });
+      expect(refused.isError).toBe(true);
+      expect(hub.status(projectId)).toEqual([]);
+
+      // Saving it again routes the endpoint to a fresh connection.
+      expect(attachment.update(stdioServers()).changed).toEqual(["fixture"]);
+      const echoed = await client.callTool({ name: "echo", arguments: { text: "back" } });
+      expect(echoed.content).toEqual([{ type: "text", text: "echo:back" }]);
+
+      // Providers that take new servers mid-session get endpoints for them.
+      const growth = attachment.update(edited, { addEndpoints: true });
+      expect(growth.added).toEqual(["later"]);
+      expect(growth.addedEndpoints.map((entry) => entry.serverName)).toEqual(["later"]);
+      expect(growth.endpoints.map((entry) => entry.serverName)).toEqual(["fixture", "later"]);
+      expect(attachment.endpoints).toHaveLength(2);
+      const added = growth.addedEndpoints[0]!;
+      const laterClient = await connect(added.url, added.token);
+      const laterEcho = await laterClient.callTool({ name: "echo", arguments: { text: "new" } });
+      expect(laterEcho.content).toEqual([{ type: "text", text: "echo:new" }]);
+      await laterClient.close();
+      // A later update sees the added server as already present.
+      expect(attachment.update(edited, { addEndpoints: true }).added).toEqual([]);
+    } finally {
+      await attachment.dispose();
+    }
+  });
+
+  it("lets MCP Apps reach a conversation's hub server directly", async () => {
+    const attachment = attach(stdioServers(), "apps-thread");
+    try {
+      const server = hub.sessionServer!(ThreadId.makeUnsafe("apps-thread"), "fixture")!;
+      expect(server).toBeDefined();
+      expect(hub.sessionServer!(ThreadId.makeUnsafe("other-thread"), "fixture")).toBeUndefined();
+      const tools = (await server.appListTools()).map((tool) => tool.name);
+      expect(tools).toContain("echo");
+      expect(tools).not.toContain("hidden");
+      const signal = new AbortController().signal;
+      const called = await server.appCallTool("echo", { text: "app" }, signal);
+      expect(called.content).toEqual([{ type: "text", text: "echo:app" }]);
+      await expect(server.appCallTool("hidden", {}, signal)).rejects.toThrow(/turned off/);
+      const read = await server.appReadResource("fixture://readme", signal);
+      expect(read.contents[0]).toMatchObject({ text: "fixture readme" });
+    } finally {
+      await attachment.dispose();
+    }
+    expect(hub.sessionServer!(ThreadId.makeUnsafe("apps-thread"), "fixture")).toBeUndefined();
+  });
+
+  it("forwards a server's question to the provider whose call is waiting", async () => {
+    const attachment = attach(stdioServers());
+    try {
+      const endpoint = attachment.endpoints[0]!;
+      const asking = new Client(
+        { name: "provider", version: "1" },
+        { capabilities: { elicitation: {} } },
+      );
+      asking.setRequestHandler(ElicitRequestSchema, (request) => {
+        expect(request.params.message).toBe("Pick a color");
+        return { action: "accept" as const, content: { color: "teal" } };
+      });
+      await asking.connect(
+        new StreamableHTTPClientTransport(new URL(endpoint.url), {
+          requestInit: { headers: { Authorization: `Bearer ${endpoint.token}` } },
+        }) as Transport,
+      );
+      clients.push(asking);
+      const answered = await asking.callTool({ name: "ask", arguments: {} });
+      expect(answered.content).toEqual([{ type: "text", text: "accept:teal" }]);
+
+      // A provider connection without elicitation gets a declined question.
+      const plain = await connect(endpoint.url, endpoint.token);
+      const declined = await plain.callTool({ name: "ask", arguments: {} });
+      expect(declined.content).toEqual([{ type: "text", text: "decline:" }]);
+    } finally {
+      await attachment.dispose();
+    }
+  });
+
+  it("forwards a URL-mode question and its completion notice to the provider that showed it", async () => {
+    const attachment = attach(stdioServers());
+    try {
+      const endpoint = attachment.endpoints[0]!;
+      const completed: string[] = [];
+      const asking = new Client(
+        { name: "provider", version: "1" },
+        { capabilities: { elicitation: { form: {}, url: {} } } },
+      );
+      asking.setRequestHandler(ElicitRequestSchema, (request) => {
+        expect(request.params).toMatchObject({ mode: "url", url: "https://example.test/finish" });
+        return { action: "accept" as const };
+      });
+      asking.setNotificationHandler(ElicitationCompleteNotificationSchema, (notification) => {
+        completed.push(notification.params.elicitationId);
+      });
+      await asking.connect(
+        new StreamableHTTPClientTransport(new URL(endpoint.url), {
+          requestInit: { headers: { Authorization: `Bearer ${endpoint.token}` } },
+        }) as Transport,
+      );
+      clients.push(asking);
+      const answered = await asking.callTool({ name: "ask_url", arguments: {} });
+      expect(answered.content).toEqual([{ type: "text", text: "url:accept" }]);
+      await expect.poll(() => completed).toEqual(["fixture-elicitation"]);
+
+      // A provider that only takes forms gets the URL question declined.
+      const formOnly = new Client(
+        { name: "provider", version: "1" },
+        { capabilities: { elicitation: {} } },
+      );
+      formOnly.setRequestHandler(ElicitRequestSchema, () => ({ action: "accept" as const }));
+      await formOnly.connect(
+        new StreamableHTTPClientTransport(new URL(endpoint.url), {
+          requestInit: { headers: { Authorization: `Bearer ${endpoint.token}` } },
+        }) as Transport,
+      );
+      clients.push(formOnly);
+      const declined = await formOnly.callTool({ name: "ask_url", arguments: {} });
+      expect(declined.content).toEqual([{ type: "text", text: "url:decline" }]);
+    } finally {
+      await attachment.dispose();
+    }
+  });
+
+  it("never forwards a question from one conversation's app call to another conversation", async () => {
+    const shared = {
+      fixture: { ...stdioServers().fixture!, connectionScope: "shared" as const },
+    };
+    const first = attach(shared, "thread-a");
+    const second = attach(shared, "thread-b");
+    try {
+      expect(hub.status(projectId)).toHaveLength(1);
+      const endpoint = second.endpoints[0]!;
+      let asked = 0;
+      const provider = new Client(
+        { name: "provider", version: "1" },
+        { capabilities: { elicitation: {} } },
+      );
+      provider.setRequestHandler(ElicitRequestSchema, () => {
+        asked += 1;
+        return { action: "accept" as const, content: { color: "red" } };
+      });
+      await provider.connect(
+        new StreamableHTTPClientTransport(new URL(endpoint.url), {
+          requestInit: { headers: { Authorization: `Bearer ${endpoint.token}` } },
+        }) as Transport,
+      );
+      clients.push(provider);
+      // Thread B has a call waiting while thread A's app asks a question.
+      const waiting = provider.callTool({ name: "wait", arguments: { ms: 1_500 } });
+      await expect.poll(() => hub.status(projectId)[0]?.state).toBe("ready");
+      const app = hub.sessionServer!(ThreadId.makeUnsafe("thread-a"), "fixture")!;
+      const answer = await app.appCallTool("ask", {}, new AbortController().signal);
+      expect(answer.content).toEqual([{ type: "text", text: "decline:" }]);
+      expect(asked).toBe(0);
+      expect((await waiting).content).toEqual([{ type: "text", text: "waited" }]);
+    } finally {
+      await first.dispose();
+      await second.dispose();
+    }
+  });
+
+  it("lets a call finish on a connection an Apply replaced, and reports a raised timeout", async () => {
+    const servers = { fixture: { ...stdioServers().fixture!, toolTimeoutSec: 30 } };
+    const attachment = attach(servers);
+    try {
+      const endpoint = attachment.endpoints[0]!;
+      const client = await connect(endpoint.url, endpoint.token);
+      const running = client.callTool({ name: "wait", arguments: { ms: 500 } });
+      await expect.poll(() => hub.status(projectId)[0]?.state).toBe("ready");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const update = attachment.update({
+        fixture: { ...servers.fixture, toolTimeoutSec: 120 },
+      });
+      expect(update.changed).toEqual(["fixture"]);
+      expect(update.timeoutRaised).toEqual(["fixture"]);
+      expect((await running).content).toEqual([{ type: "text", text: "waited" }]);
+      // A lower timeout needs nothing from the provider.
+      expect(
+        attachment.update({ fixture: { ...servers.fixture, toolTimeoutSec: 10 } }).timeoutRaised,
+      ).toEqual([]);
+    } finally {
+      await attachment.dispose();
+    }
+  });
+
+  it("re-binds MCP Apps identity, honours declined servers and refuses closed endpoints", async () => {
+    const attachment = attach(stdioServers(), "apps-thread");
+    const threadId = ThreadId.makeUnsafe("apps-thread");
+    const server = hub.sessionServer!(threadId, "fixture")!;
+    try {
+      const before = server.binding;
+      attachment.update({
+        fixture: { ...stdioServers().fixture!, disabledTools: ["hidden", "slow"] },
+      });
+      expect(server.binding).not.toBe(before);
+
+      // A server the provider refused to install is reached neither way.
+      attachment.decline(["fixture"]);
+      expect(hub.sessionServer!(threadId, "fixture")).toBeUndefined();
+      expect(await server.appListTools()).toEqual([]);
+      const endpoint = attachment.endpoints[0]!;
+      const client = await connect(endpoint.url, endpoint.token);
+      expect((await client.listTools()).tools).toEqual([]);
+      expect(attachment.update(stdioServers()).changed).toEqual(["fixture"]);
+    } finally {
+      await attachment.dispose();
+    }
+    // A reference kept past dispose cannot restart the server.
+    await expect(
+      server.appCallTool("echo", { text: "late" }, new AbortController().signal),
+    ).rejects.toThrow(/closed/);
+    expect(hub.status(projectId)).toEqual([]);
   });
 
   it("omits every server when no listener can mount hub endpoints", async () => {

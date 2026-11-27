@@ -7,6 +7,7 @@ import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { isScratchProject } from "@t3tools/shared/scratchProject";
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { Effect } from "effect";
+import * as NodePath from "node:path";
 import type { GitCoreShape } from "../git/Services/GitCore.ts";
 import { canonicalWorktreePath, isTemporaryWorktreeBranch } from "../git/worktreePaths.ts";
 import { OrchestrationCommandInvariantError } from "../orchestration/Errors.ts";
@@ -84,9 +85,11 @@ const recordObservedBranch = (
       expectedWorktreePath: thread.worktreePath,
     };
     const prepare = deps.git.prepareObservedWorktreeBranch;
-    // Between turns a worktree's preparation receipts move to the new branch in
-    // the same transaction. A turn that is ending, and the project folder,
-    // which has no receipt, only re-record the branch.
+    // Between turns the checkout is verified again inside the write, and a
+    // worktree group's own record and its members' receipts move to the new
+    // branch in the same transaction. A single worktree has nothing else to
+    // move. A turn that is ending, and the project folder, only re-record the
+    // branch.
     if (prepare && thread.worktreePath !== null && !turnIsActive(thread)) {
       const prepared = yield* prepare({
         projectRoot: project.workspaceRoot,
@@ -95,6 +98,8 @@ const recordObservedBranch = (
         previousBranch: thread.branch,
         branch,
       });
+      // A group that is not on the branch as a whole has nothing to record yet.
+      if (prepared === null) return false;
       yield* deps.engine.dispatch({ ...command, worktreePath: thread.worktreePath }).pipe(
         Effect.provideService(WorkspaceWriteContext, {
           expected: {
@@ -138,11 +143,39 @@ export const syncObservedBranch = (deps: ObservedBranchDeps, threadId: ThreadId)
     return yield* recordObservedBranch(deps, found.thread, found.project, head);
   }).pipe(Effect.catch(() => Effect.succeed(false)));
 
+const pathSegments = (value: string) => NodePath.resolve(value).split(NodePath.sep);
+
 /**
- * Records `branch` for every thread whose worktree is the checkout at `cwd`,
- * including the owner of a worktree group that has `cwd` as a member. Threads
- * with a running turn are left to the end-of-turn sync, so a rebase that moves
- * HEAD repeatedly is recorded once.
+ * The threads whose worktree could be `cwd` or a folder above it, judged by
+ * name alone: a worktree's own folder name is one of the segments of any path
+ * at or below it, whichever way the folders above it are linked. This keeps a
+ * status read from resolving every worktree in the profile on disk.
+ */
+export const observedCheckoutCandidates = <
+  Thread extends Pick<ReadModelThread, "branch" | "deletedAt" | "worktreePath">,
+>(
+  threads: ReadonlyArray<Thread>,
+  paths: ReadonlyArray<string>,
+  branch: string,
+) => {
+  const segments = new Set(paths.flatMap(pathSegments));
+  return threads.filter(
+    (thread) =>
+      thread.deletedAt === null &&
+      thread.worktreePath !== null &&
+      thread.branch !== branch &&
+      segments.has(NodePath.basename(NodePath.resolve(thread.worktreePath))),
+  );
+};
+
+/**
+ * Records `branch` for every thread whose worktree is the checkout at `cwd`.
+ * Threads with a running turn are left to the end-of-turn sync, so a rebase
+ * that moves HEAD repeatedly is recorded once.
+ *
+ * A worktree group with a root follows its root, so a member that moves on its
+ * own records nothing. A group made of members alone is reached through any of
+ * them, and moves once all of them are on the branch.
  *
  * Local threads are not swept here: one project folder can back hundreds of
  * them, so each follows the folder when its own turn starts or ends.
@@ -151,12 +184,10 @@ export const syncObservedCheckout = (deps: ObservedBranchDeps, cwd: string, bran
   Effect.gen(function* () {
     if (isTemporaryWorktreeBranch(branch)) return;
     const model = yield* deps.engine.getReadModel();
-    const candidates = model.threads.filter(
-      (thread) =>
-        thread.deletedAt === null && thread.worktreePath !== null && thread.branch !== branch,
-    );
-    if (candidates.length === 0) return;
+    if (!model.threads.some((thread) => thread.deletedAt === null && thread.worktreePath !== null))
+      return;
     const canonical = yield* Effect.tryPromise(() => canonicalWorktreePath(cwd));
+    const candidates = observedCheckoutCandidates(model.threads, [cwd, canonical], branch);
     const targets: ReadModelThread[] = [];
     let memberOwner: ReadModelThread | undefined;
     for (const candidate of candidates) {
@@ -172,6 +203,7 @@ export const syncObservedCheckout = (deps: ObservedBranchDeps, cwd: string, bran
       const group = yield* deps.git.readWorktreeGroup(candidatePath);
       if (
         group?.threadId === candidate.id &&
+        !group.root &&
         group.members.some((member) => member.path === canonical)
       )
         memberOwner = candidate;

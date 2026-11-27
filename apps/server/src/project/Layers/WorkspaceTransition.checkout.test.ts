@@ -197,6 +197,12 @@ describe("workspace transition execution", { timeout: 60_000 }, () => {
       expect(result.error).toBeNull();
       expect(result.phase).toBe("completed");
       expect(git(target, "branch", "--show-current")).toBe("recorded");
+      // The peer is re-recorded with the switch itself, before any status read:
+      // a later restore of a removed folder must not bring back the old branch.
+      const peer = (await f.runtime.runPromise(f.engine.getReadModel())).threads.find(
+        (thread) => thread.id === "peer",
+      );
+      expect(peer?.branch).toBe("recorded");
     });
 
     it("refuses while an accepted turn waits for provider delivery", async () => {

@@ -44,6 +44,7 @@ import {
   inPlaceSwitchBlockers,
 } from "../worktreeClaims.ts";
 import { canonicalWorkspace, inspectAttachableWorkspace } from "../workspaceAttachment.ts";
+import { syncObservedCheckout } from "../observedBranch.ts";
 import { WorkspaceWriteContext } from "../workspaceTransitionContext.ts";
 import { appendWorkspaceNote } from "../workspaceNotes.ts";
 import { WorktreePreparation } from "../Services/WorktreePreparation.ts";
@@ -893,6 +894,19 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
       );
       if (completed.intent === "move_to_new_worktree")
         return yield* locked(completed, releaseMoveRef(completed));
+      // Idle threads that share the worktree follow it now. Left to the next
+      // status read, one of them could recreate a removed folder on the old branch.
+      if (
+        (completed.intent === "checkout_branch" ||
+          completed.intent === "create_branch_and_checkout") &&
+        completed.result?.worktreePath &&
+        completed.result.branch
+      )
+        yield* syncObservedCheckout(
+          { engine, git },
+          completed.result.worktreePath,
+          completed.result.branch,
+        ).pipe(Effect.ignore);
       return completed;
     });
   const resumeMissingPause = (record: WorkspaceTransitionSnapshot) =>

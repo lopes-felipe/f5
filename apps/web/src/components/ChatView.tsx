@@ -1,15 +1,6 @@
 import { ThreadFindBar } from "./chat/ThreadFindBar";
-import {
-  codeReviewReviewers,
-  findPlanningBranch,
-  investigationCrossReviews,
-  investigationInvestigators,
-  planningBranches,
-  planReviewReviewerBranchId,
-  requireInvestigator,
-} from "@t3tools/shared/workflowParticipants";
 import { attachmentSources } from "../lib/attachmentUploadQueue";
-import { useMcpHubChatServers } from "../lib/mcpHubChat";
+import { mergeChatMcpServers, useMcpHubChatServers } from "../lib/mcpHubChat";
 import { composerModelMentionItems } from "./chat/composerModelMentions";
 import { formatComposerModelMention } from "@t3tools/shared/composerModelMentions";
 import { useFreshSessionStore } from "../freshSessionStore";
@@ -133,12 +124,10 @@ import {
   type ProjectId,
   type ProjectScript,
   type ModelSlug,
-  type ModelSelection,
   type NativeOperationCommand,
   type ResolvedKeybindingsConfig,
   type ProviderApprovalDecision,
   type ServerProvider,
-  type ProviderKind,
   type ProviderInstanceId,
   type ProviderModelOptions,
   ThreadId,
@@ -146,7 +135,6 @@ import {
   OrchestrationThreadActivity,
   RuntimeMode,
   ProviderInteractionMode,
-  type WorkflowModelSlot,
   defaultInstanceIdForDriver,
   ProviderDriverKind,
 } from "@t3tools/contracts";
@@ -302,9 +290,6 @@ import {
   DEFAULT_THREAD_TERMINAL_ID,
   MAX_TERMINALS_PER_GROUP,
   type ChatMessage,
-  type CodeReviewWorkflow,
-  type InvestigationWorkflow,
-  type PlanningWorkflow,
   type TaskItem as ThreadTaskItem,
   type TurnDiffSummary,
 } from "../types";
@@ -333,12 +318,7 @@ import { isTerminalFocused } from "../lib/terminalFocus";
 import { createTerminalCloseRepeatGuard } from "../lib/terminalCloseShortcut";
 import { isKeyboardEventComposing } from "../lib/keyboardComposition";
 import { recordModelSelection } from "../modelPreferencesStore";
-import {
-  selectServerSettings,
-  type UnifiedWebSettings,
-  useSettings,
-  useUpdateSettings,
-} from "../hooks/useSettings";
+import { selectServerSettings, useSettings, useUpdateSettings } from "../hooks/useSettings";
 import {
   type FavoritePreset,
   type FavoritePresetSelection,
@@ -386,7 +366,7 @@ import { resolveThreadStatusPillForThread } from "../threadStatus";
 import { newCommandId, newMessageId, newThreadId } from "~/lib/utils";
 import { wasBootstrapThreadRolledBack } from "~/lib/bootstrapErrors";
 import { ensureNativeApi, readNativeApi } from "~/nativeApi";
-import { type AppSettings, useAppSettingsSelector } from "../appSettings";
+import { useAppSettingsSelector } from "../appSettings";
 import {
   type ComposerImageAttachment,
   type DraftThreadEnvMode,
@@ -484,9 +464,23 @@ import { shouldShowWorktreeSetupCard, WorktreeSetupCard } from "./chat/WorktreeS
 import { useWorktreeSetup } from "../hooks/useWorktreeSetup";
 import { runFanOut, toggleFanOutModel, type FanOutAttempt, type FanOutModel } from "./chat/fanOut";
 
-const EMPTY_FAN_OUT: ReadonlyArray<FanOutModel> = [];
+import {
+  resolvePlanningWorkflowThreadSlot,
+  resolveCodeReviewWorkflowThreadSlot,
+  resolveInvestigationWorkflowThreadSlot,
+  extendReplacementRangeForTrailingSpace,
+  syncTerminalContextsByIds,
+  terminalContextIdListsEqual,
+  summarizeTaskCounts,
+  deriveFallbackTasksFromPlan,
+  isEventInDialogKeybindingContext,
+  providerKindForDriver,
+  selectChatViewSettings,
+  selectFavoritePresets,
+} from "./chat/chatViewHelpers";
 import { useCreateProjectBackedDraftThread } from "../hooks/useCreateProjectBackedDraftThread";
 import { EMPTY_QUEUE_THREAD_STATE, useNextTurnQueueStore } from "../nextTurnQueueStore";
+const EMPTY_FAN_OUT: ReadonlyArray<FanOutModel> = [];
 
 import { ComposerCommandItem } from "./chat/ComposerCommandMenu";
 
@@ -547,6 +541,9 @@ import {
   IMAGE_ONLY_BOOTSTRAP_PROMPT,
   isImageOnlyBootstrapPrompt,
 } from "@t3tools/shared/composerSendText";
+import { CODEX_NATIVE_ASIDE_COMMAND } from "@t3tools/shared/slashCommands";
+import { openNewSideChat } from "../lib/sideChats";
+import { sendThreadReply } from "../lib/sendThreadReply";
 
 const ATTACHMENT_PREVIEW_HANDOFF_TTL_MS = 5000;
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
@@ -575,107 +572,6 @@ const COMPOSER_WORKSPACE_AREA = workspaceAreaProps("composer", 2, "Message input
 
 type NativeApiClient = NonNullable<ReturnType<typeof readNativeApi>>;
 type PendingTurnDispatch = PendingTurnDispatchState;
-
-function resolvePlanningWorkflowThreadSlot(
-  workflow: PlanningWorkflow,
-  threadId: ThreadId,
-): WorkflowModelSlot | null {
-  if (
-    workflow.readerPass?.readerThreadId === threadId ||
-    workflow.readerPass?.previousReaderThreadIds?.includes(threadId)
-  )
-    return workflow.readerSlot ?? null;
-  const branches = planningBranches(workflow);
-  const author = branches.find((branch) => branch.authorThreadId === threadId);
-  if (author) {
-    return author.authorSlot;
-  }
-  if (workflow.merge.threadId === threadId) {
-    return workflow.merge.mergeSlot;
-  }
-  for (const branch of branches) {
-    const review = branch.reviews.find((entry) => entry.threadId === threadId);
-    if (review) {
-      const reviewerId = planReviewReviewerBranchId(workflow, branch.branchId, review);
-      return findPlanningBranch(workflow, reviewerId)?.authorSlot ?? null;
-    }
-  }
-  if (workflow.implementation?.threadId === threadId) {
-    return workflow.implementation.implementationSlot;
-  }
-  const codeReview = workflow.implementation?.codeReviews.find(
-    (review) => review.threadId === threadId,
-  );
-  return codeReview?.reviewerSlot ?? null;
-}
-
-function resolveCodeReviewWorkflowThreadSlot(
-  workflow: CodeReviewWorkflow,
-  threadId: ThreadId,
-): WorkflowModelSlot | null {
-  const reviewer = codeReviewReviewers(workflow).find(
-    (entry) => entry.reviewer.threadId === threadId,
-  );
-  if (reviewer) {
-    return reviewer.reviewer.slot;
-  }
-  if (workflow.consolidation.threadId === threadId) {
-    return workflow.consolidation.slot;
-  }
-  return null;
-}
-
-function resolveInvestigationWorkflowThreadSlot(
-  workflow: InvestigationWorkflow,
-  threadId: ThreadId,
-): WorkflowModelSlot | null {
-  const investigator = investigationInvestigators(workflow).find(
-    ({ investigator: entry }) =>
-      entry.investigationThreadId === threadId || entry.selfReviewThreadId === threadId,
-  );
-  if (investigator) {
-    return investigator.investigator.slot;
-  }
-  // A cross-review runs on its reviewer's model.
-  const crossReview = investigationCrossReviews(workflow).find(
-    (view) => view.threadId === threadId,
-  );
-  if (crossReview) {
-    return requireInvestigator(workflow, crossReview.reviewerId).slot;
-  }
-  if (workflow.synthesis.threadId === threadId) {
-    return workflow.synthesis.slot;
-  }
-  return null;
-}
-
-const extendReplacementRangeForTrailingSpace = (
-  text: string,
-  rangeEnd: number,
-  replacement: string,
-): number => {
-  if (!replacement.endsWith(" ")) {
-    return rangeEnd;
-  }
-  return text[rangeEnd] === " " ? rangeEnd + 1 : rangeEnd;
-};
-
-const syncTerminalContextsByIds = (
-  contexts: ReadonlyArray<TerminalContextDraft>,
-  ids: ReadonlyArray<string>,
-): TerminalContextDraft[] => {
-  const contextsById = new Map(contexts.map((context) => [context.id, context]));
-  return ids.flatMap((id) => {
-    const context = contextsById.get(id);
-    return context ? [context] : [];
-  });
-};
-
-const terminalContextIdListsEqual = (
-  contexts: ReadonlyArray<TerminalContextDraft>,
-  ids: ReadonlyArray<string>,
-): boolean =>
-  contexts.length === ids.length && contexts.every((context, index) => context.id === ids[index]);
 
 type ChatHeaderPanelStateProp = "diffState" | "filesState" | "agentsState" | "previewState";
 
@@ -715,48 +611,6 @@ function ChatHeaderWithPanelState(
   );
 }
 
-function summarizeTaskCounts(tasks: ReadonlyArray<ThreadTaskItem>): string {
-  const counts = {
-    pending: 0,
-    in_progress: 0,
-    completed: 0,
-  } satisfies Record<ThreadTaskItem["status"], number>;
-
-  for (const task of tasks) {
-    counts[task.status] += 1;
-  }
-
-  return (
-    [
-      counts.in_progress > 0 ? `${counts.in_progress} active` : null,
-      counts.pending > 0 ? `${counts.pending} pending` : null,
-      counts.completed > 0 ? `${counts.completed} done` : null,
-    ]
-      .filter((entry): entry is string => entry !== null)
-      .join(" · ") || "No tasks"
-  );
-}
-
-function deriveFallbackTasksFromPlan(
-  activePlan: ReturnType<typeof deriveActivePlanState>,
-): ThreadTaskItem[] {
-  if (!activePlan || activePlan.steps.length === 0) {
-    return [];
-  }
-
-  return activePlan.steps.map((step, index) => ({
-    id: `plan-step:${index}`,
-    content: step.step,
-    activeForm: step.step,
-    status:
-      step.status === "completed"
-        ? "completed"
-        : step.status === "inProgress"
-          ? "in_progress"
-          : "pending",
-  }));
-}
-
 interface ChatViewProps {
   embedded?: boolean;
   threadId: ThreadId;
@@ -764,83 +618,6 @@ interface ChatViewProps {
   liveAgentCount: number;
   focusTimelineEntryId?: string | undefined;
   focusTimelineEntryKind?: "message" | "activity" | undefined;
-}
-
-const DIALOG_POPUP_SELECTOR = '[data-slot="dialog-popup"]';
-const DIALOG_PORTALED_POPUP_SELECTOR = [
-  '[data-slot="combobox-positioner"]',
-  '[data-slot="combobox-popup"]',
-  '[data-slot="menu-positioner"]',
-  '[data-slot="menu-popup"]',
-  '[data-slot="popover-positioner"]',
-  '[data-slot="popover-popup"]',
-  '[data-slot="select-positioner"]',
-  '[data-slot="select-popup"]',
-].join(",");
-
-function isEventInDialogKeybindingContext(event: globalThis.KeyboardEvent): boolean {
-  const eventTarget = event.target instanceof Node ? event.target : null;
-  const eventTargetElement =
-    event.target instanceof Element ? event.target : eventTarget?.parentElement;
-  if (eventTargetElement?.closest(DIALOG_POPUP_SELECTOR)) {
-    return true;
-  }
-
-  if (!document.querySelector(DIALOG_POPUP_SELECTOR)) {
-    return false;
-  }
-
-  return Boolean(eventTargetElement?.closest(DIALOG_PORTALED_POPUP_SELECTOR));
-}
-
-function providerKindForDriver(driver: ProviderDriverKind): ProviderKind | null {
-  return driver === "codex" ||
-    driver === "claudeAgent" ||
-    driver === "cursor" ||
-    driver === "opencode" ||
-    driver === "grok" ||
-    driver === "antigravity"
-    ? (driver as ProviderKind)
-    : null;
-}
-
-// ChatView reads settings through these selectors, so a write to any other setting keeps
-// the selection's identity and does not re-render the conversation.
-function selectChatViewSettings(settings: AppSettings) {
-  return {
-    alwaysExpandAgentCommandTranscripts: settings.alwaysExpandAgentCommandTranscripts,
-    claudeBinaryPath: settings.claudeBinaryPath,
-    claudeLaunchArgs: settings.claudeLaunchArgs,
-    claudeProjectSettings: settings.claudeProjectSettings,
-    claudeSubagentDefaults: settings.claudeSubagentDefaults,
-    codexBinaryPath: settings.codexBinaryPath,
-    codexHomePath: settings.codexHomePath,
-    compactChatLayout: settings.compactChatLayout,
-    codexThreadTitleModel: settings.codexThreadTitleModel,
-    customClaudeModels: settings.customClaudeModels,
-    customCodexModels: settings.customCodexModels,
-    customGrokModels: settings.customGrokModels,
-    followUpBehavior: settings.followUpBehavior,
-    gitStatusAutoRefreshIntervalSeconds: settings.gitStatusAutoRefreshIntervalSeconds,
-    openFileLinksInPanel: settings.openFileLinksInPanel,
-    proactivePanelsEnabled: settings.proactivePanelsEnabled,
-    providerModelPreferences: settings.providerModelPreferences,
-    runtimeWarningVisibility: settings.runtimeWarningVisibility,
-    screenReaderAnnouncements: settings.screenReaderAnnouncements,
-    sendShortcut: settings.sendShortcut,
-    showAgentCommandTranscripts: settings.showAgentCommandTranscripts,
-    showFileChangeDiffsInline: settings.showFileChangeDiffsInline,
-    showPromptCacheIndicator: settings.showPromptCacheIndicator,
-    showProviderRuntimeMetadata: settings.showProviderRuntimeMetadata,
-    tasksPanelAutoOpen: settings.tasksPanelAutoOpen,
-    timestampFormat: settings.timestampFormat,
-    workLogFilter: settings.workLogFilter,
-    workLogMode: settings.workLogMode,
-  };
-}
-
-function selectFavoritePresets(settings: UnifiedWebSettings): ReadonlyArray<FavoritePreset> {
-  return settings.favorites;
 }
 
 // Memoized: props are primitives, so streamed tokens and panel updates only re-render this
@@ -1988,13 +1765,13 @@ export default memo(function ChatView({
 
     return null;
   }, [threadActivities]);
-  // Agents other than Codex and Claude reach MCP servers through F5's hub, which
-  // reports their status; Codex and Claude report it as thread activities.
+  // Servers F5's hub serves report their status from the hub; Codex and Claude report
+  // their own servers (and every server with native passthrough) as thread activities.
   const hubMcpServers = useMcpHubChatServers(sessionProvider, activeThread?.projectId ?? null);
   const mcpRuntimeSummary = useMemo(() => {
-    const servers = hubMcpServers?.length
-      ? hubMcpServers
-      : [...latestMcpStatusActivities(threadActivities).values()];
+    const { servers, hubNames } = mergeChatMcpServers(hubMcpServers, [
+      ...latestMcpStatusActivities(threadActivities).values(),
+    ]);
 
     if (servers.length === 0) {
       return null;
@@ -2004,6 +1781,7 @@ export default memo(function ChatView({
     return {
       summary: `${connectedCount}/${servers.length} connected`,
       servers,
+      hubNames,
     };
   }, [hubMcpServers, threadActivities]);
   const openRewindOperationIds = useMemo(
@@ -8650,6 +8428,7 @@ export default memo(function ChatView({
                         provider={sessionProvider ?? selectedProviderByThreadId ?? null}
                         entries={providerRuntimeInfoEntries}
                         mcpServers={mcpRuntimeSummary?.servers}
+                        mcpHubServerNames={mcpRuntimeSummary?.hubNames}
                         projectId={activeThread.projectId}
                         threadId={activeThread.id}
                         className="hidden @[36rem]/header-actions:flex"
@@ -8715,6 +8494,7 @@ export default memo(function ChatView({
                     provider={sessionProvider ?? selectedProviderByThreadId ?? null}
                     entries={providerRuntimeInfoEntries}
                     mcpServers={mcpRuntimeSummary?.servers}
+                    mcpHubServerNames={mcpRuntimeSummary?.hubNames}
                     projectId={activeThread.projectId}
                     threadId={activeThread.id}
                   />
@@ -9274,6 +9054,3 @@ export default memo(function ChatView({
     </OpenLinkThread.Provider>
   );
 });
-import { CODEX_NATIVE_ASIDE_COMMAND } from "@t3tools/shared/slashCommands";
-import { openNewSideChat } from "../lib/sideChats";
-import { sendThreadReply } from "../lib/sendThreadReply";
