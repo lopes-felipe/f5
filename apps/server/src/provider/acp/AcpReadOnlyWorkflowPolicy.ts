@@ -1,4 +1,5 @@
 import { READ_ONLY_THREAD_TOOL_NAMES } from "../../mcp/threadMcpTools.ts";
+import type { ReadOnlyGitGuard } from "../readOnlyGitConfig.ts";
 import { classifyReadOnlyShellCommand } from "../readOnlyWorkflowShell.ts";
 
 /**
@@ -125,6 +126,36 @@ export function acpExecuteCommand(rawInput: unknown): string | undefined {
   const record = rawInput as Record<string, unknown>;
   const value = record.command ?? record.CommandLine ?? record.command_line ?? record.commandLine;
   return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+/** The folder an `execute` request says its command starts in, when it names one. */
+export function acpExecuteDirectory(rawInput: unknown): string | undefined {
+  if (typeof rawInput !== "object" || rawInput === null || Array.isArray(rawInput))
+    return undefined;
+  const record = rawInput as Record<string, unknown>;
+  const value =
+    record.cwd ??
+    record.Cwd ??
+    record.working_directory ??
+    record.workingDirectory ??
+    record.workdir;
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+/**
+ * Why a shell command `acpReadOnlyWorkflowDecision` allows must still be refused, or undefined:
+ * one of the repositories its Git calls reach defines a program Git would run
+ * (`ReadOnlyGitGuard`). Stages in a sandbox have no guard.
+ */
+export function acpReadOnlyGitRefusal(
+  guard: ReadOnlyGitGuard | undefined,
+  toolCall: AcpReadOnlyWorkflowToolCall,
+): Promise<string | undefined> {
+  const command =
+    guard && toolCall.kind === "execute" ? acpExecuteCommand(toolCall.rawInput) : undefined;
+  return guard && command !== undefined
+    ? guard.refusal(command, acpExecuteDirectory(toolCall.rawInput))
+    : Promise.resolve(undefined);
 }
 
 /**
