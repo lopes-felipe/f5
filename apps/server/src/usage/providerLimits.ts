@@ -252,13 +252,15 @@ export function makeProviderLimits(input: {
   if (input.provider === "antigravity") {
     // Publish no subscription snapshot, even when history holds one from an older F5 release.
     return Effect.sync(() => {
+      const fetchedAt = new Date().toISOString();
       const section: AccountUsageSection = input.antigravityBilledPerToken
         ? {
             ...emptyAccountSection("provider-limits"),
             kind: "provider-limits",
             outcome: "available",
+            lastAttemptAt: fetchedAt,
             snapshot: {
-              fetchedAt: new Date().toISOString(),
+              fetchedAt,
               data: { windows: [], plan: "Billed per token" },
             },
           }

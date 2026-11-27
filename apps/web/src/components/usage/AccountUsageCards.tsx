@@ -645,7 +645,13 @@ export function AccountUsageCard(props: {
               key={section.kind}
               first={index === 0}
               label={SECTION_LABELS[section.kind]}
-              meta={<SectionMeta section={section} />}
+              meta={
+                account.provider === "antigravity" &&
+                section.kind === "provider-limits" &&
+                section.snapshot?.data.plan === "Billed per token" ? null : (
+                  <SectionMeta section={section} />
+                )
+              }
             >
               <AccountSectionBody
                 account={account}

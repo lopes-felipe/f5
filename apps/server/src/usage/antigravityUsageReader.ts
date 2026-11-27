@@ -132,6 +132,7 @@ function modelName(name: string, id: number): string {
         .replace(/-(?:extra-low|low|medium|high|thinking)$/, "");
     }
     if (normalized.startsWith("gemini-")) {
+      if (normalized === "gemini-2.5-flash-thinking") return normalized;
       if (/^gemini-3-flash-(?:agent(?:-[ab])?|[ab])$/.test(normalized))
         return "gemini-3-flash-preview";
       const base = normalized.replace(

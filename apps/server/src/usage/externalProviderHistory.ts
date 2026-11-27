@@ -133,14 +133,28 @@ export function makeRetiredAntigravityUsageHistory<E>(
             );
             if (root.startsWith(profile + path.sep)) profileByRoot.set(root, entry.name);
           }
-          const files = await scanAntigravityHistory([...profileByRoot.keys()], retention, signal);
-          return files.flatMap(({ root, records }) =>
-            records.map((record) => ({
-              ...record,
-              retiredAntigravityProfile: profileByRoot.get(root)!,
-            })),
+          const result = await readAntigravityUsage(
+            [...profileByRoot.keys()],
+            cutoff(retention),
+            signal,
           );
-        }),
+          return {
+            errors: result.errors.length,
+            records: result.files.flatMap(({ root, records }) =>
+              records.map((record) => ({
+                ...record,
+                retiredAntigravityProfile: profileByRoot.get(root)!,
+              })),
+            ),
+          };
+        }).pipe(
+          Effect.tap(({ errors }) =>
+            errors > 0
+              ? Effect.logWarning("Some retired Antigravity history could not be read", { errors })
+              : Effect.void,
+          ),
+          Effect.map(({ records }) => records),
+        ),
       ),
   });
 }

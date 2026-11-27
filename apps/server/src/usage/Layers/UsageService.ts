@@ -13,6 +13,7 @@ import {
 import { Clock, Effect, Layer, Option, Schema } from "effect";
 import { ServerConfig } from "../../config.ts";
 import { antigravityProfileKey } from "../../provider/acp/AntigravityAcpSupport.ts";
+import { deriveProviderInstanceConfigMap } from "../../provider/Layers/ProviderInstanceRegistryHydration.ts";
 import { makeRetiredAntigravityUsageHistory } from "../externalProviderHistory.ts";
 
 import * as Semaphore from "effect/Semaphore";
@@ -128,7 +129,7 @@ const make = Effect.gen(function* () {
   const serverConfig = Option.getOrUndefined(yield* Effect.serviceOption(ServerConfig));
   const configuredAntigravityProfiles = (settings: ServerSettings) =>
     new Set(
-      Object.entries(settings.providerInstances)
+      Object.entries(deriveProviderInstanceConfigMap(settings))
         .filter(([, config]) => config.driver === "antigravity")
         .map(([id]) => antigravityProfileKey(id)),
     );

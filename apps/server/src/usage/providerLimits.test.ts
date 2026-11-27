@@ -278,6 +278,11 @@ it.each([
     );
     expect(fetchMock).not.toHaveBeenCalled();
     expect(after).toEqual(before);
+    if (billedPerToken) {
+      const section = after.sections[0];
+      expect(section?.lastAttemptAt).toEqual(expect.any(String));
+      expect(section?.lastAttemptAt).toBe(section?.snapshot?.fetchedAt);
+    }
     expect(after.sections).toMatchObject(
       billedPerToken
         ? [{ outcome: "available", snapshot: { data: { windows: [], plan: "Billed per token" } } }]

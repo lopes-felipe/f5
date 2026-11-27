@@ -67,8 +67,8 @@ it("reads Antigravity metadata and resolves bare, effort-suffixed and numeric mo
     const tag19 = metadata.indexOf((19 << 3) | 2);
     metadata.splice(tag19, 1, 0x9a, 0x01);
     metadata[1]! += 1;
-    const namedModel = (name: string, idBytes: number[]) =>
-      nested(1, [3 << 3, ...idBytes, 0x9a, 0x01, name.length, ...Buffer.from(name)]);
+    const namedModel = (name: string, idBytes: number[], tokens: number[] = []) =>
+      nested(1, [3 << 3, ...idBytes, 0x9a, 0x01, name.length, ...Buffer.from(name), ...tokens]);
     const db = new DatabaseSync(path.join(root, "conversation.db"));
     try {
       db.exec("CREATE TABLE gen_metadata (idx INTEGER, data BLOB)");
@@ -81,6 +81,10 @@ it("reads Antigravity metadata and resolves bare, effort-suffixed and numeric mo
         2,
         Buffer.from(namedModel("gemini-3.8-flash-high", [0xa6, 0x0a])),
       );
+      db.prepare("INSERT INTO gen_metadata VALUES (?, ?)").run(
+        3,
+        Buffer.from(namedModel("gemini-2.5-flash-thinking", [0xb9, 0x02], nested(4, [2 << 3, 11]))),
+      );
     } finally {
       db.close();
     }
@@ -90,13 +94,20 @@ it("reads Antigravity metadata and resolves bare, effort-suffixed and numeric mo
       const insert = steps.prepare("INSERT INTO steps VALUES (?, ?)");
       insert.run(3, Buffer.from(nested(9, [1 << 3, 0xa6, 0x0a, 2 << 3, 7])));
       insert.run(4, Buffer.from(nested(9, [1 << 3, 0xf5, 0x0b, 2 << 3, 9])));
+      insert.run(5, Buffer.from(nested(9, [1 << 3, 0xb9, 0x02, 2 << 3, 13])));
     } finally {
       steps.close();
     }
     const result = await readAntigravityUsage(root, 50_000);
     expect(result.errors).toEqual([]);
     const records = result.files.flatMap((file) => file.records);
-    expect(records).toHaveLength(3);
+    expect(records).toHaveLength(5);
+    expect(
+      records
+        .filter((record) => record.model === "gemini-2.5-flash-thinking")
+        .map((record) => record.totals.uncachedInputTokens)
+        .sort((a, b) => a - b),
+    ).toEqual([11, 13]);
     expect(records).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
