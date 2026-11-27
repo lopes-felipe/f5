@@ -555,6 +555,51 @@ const VARIABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** An unquoted value with any of these would be split into words or matched as a glob. */
 const SPLITS_OR_GLOBS = /[\s*?[\]]/;
 
+/** A line continuation: the shell removes it before it reads what follows. */
+const LINE_CONTINUATIONS = /^(?:\\\n)+/;
+/**
+ * What may follow a `$` that the parser left as text and still be text in zsh (checked against
+ * `zsh -f` 5.9 for every printable character): the end of the text, white space, a backslash that
+ * escapes the next character, or one of these.
+ */
+const AFTER_LITERAL_DOLLAR = /^(?:$|[\s\\%,./:;\])}|])/;
+const ZSH_DOLLAR_REASON =
+  "a `$` here must start `$NAME` or `${NAME}`: zsh expands forms such as `$=NAME`, `$~NAME` and `$^NAME`";
+
+/**
+ * Whether unquoted or double-quoted source text holds a `$` that zsh would expand although the
+ * parser, which follows bash, read it as text. zsh takes a flag between `$` and the name
+ * (`$=X` splits the value, `$~X` globs it, `$^X` distributes it), so `git diff $=X` passes X's
+ * value, not the four characters checked here, and `echo $~GH_TOKEN` prints the token. `raw` is
+ * the text as written: the parser's value has lost the backslashes that tell `\$` from `$`.
+ */
+function hasUnparsedDollar(raw: string): boolean {
+  for (let index = 0; index < raw.length; index += 1) {
+    if (raw[index] === "\\") {
+      index += 1;
+      continue;
+    }
+    if (raw[index] !== "$") continue;
+    if (!AFTER_LITERAL_DOLLAR.test(raw.slice(index + 1).replace(LINE_CONTINUATIONS, "")))
+      return true;
+  }
+  return false;
+}
+
+/** `hasUnparsedDollar` for a whole word. Single-quoted and `$'…'` text is exempt: `$` is text there. */
+function wordHasUnparsedDollar(word: Word): boolean {
+  if (!word.parts) return hasUnparsedDollar(word.text);
+  const visit = (parts: ReadonlyArray<WordPart | DoubleQuotedChild>): boolean =>
+    parts.some((part) =>
+      part.type === "Literal"
+        ? hasUnparsedDollar(part.text)
+        : part.type === "DoubleQuoted" || part.type === "LocaleString"
+          ? visit(part.parts)
+          : false,
+    );
+  return visit(word.parts);
+}
+
 /**
  * A word's value with the scope's variables expanded, or why it can't be known. Any other
  * expansion (command substitution, `$1`, `${X:-y}`, unknown variables) is refused. `splits` is
@@ -573,6 +618,7 @@ function resolveWord(
     readonly unset?: ReadonlySet<string>;
   },
 ): ResolvedWord {
+  if (wordHasUnparsedDollar(word)) return { ok: false, reason: ZSH_DOLLAR_REASON };
   if (!word.parts) return { ok: true, value: word.value, present: true };
   let value = "";
   // Whether anything but an unset variable contributes: quotes make an (empty) argument too.
@@ -610,14 +656,16 @@ function resolveWord(
             return "arguments must be literal: no substitutions or special expansions";
           // zsh, which Codex and the ACP agents run commands in, reads `$NAME:…` as history
           // modifiers (`$X:s/a/--flag/` rewrites the value into any text) and `$NAME[…]` as a
-          // subscript, so the word would not be the literal checked here.
+          // subscript, so the word would not be the literal checked here. The text as written
+          // decides: `$NAME\:h` is the value followed by a literal `:h`, while a line
+          // continuation before the `:` changes nothing.
           const next = parts[index + 1];
-          if (
-            part.type === "SimpleExpansion" &&
-            next?.type === "Literal" &&
-            (next.value.startsWith(":") || next.value.startsWith("["))
-          )
-            return `write \${${name}} with braces before \`${next.value[0]}\`: zsh reads $${name}${next.value[0]}… as a modifier or subscript`;
+          const delimiter =
+            part.type === "SimpleExpansion" && next?.type === "Literal"
+              ? next.text.replace(LINE_CONTINUATIONS, "")[0]
+              : undefined;
+          if (delimiter === ":" || delimiter === "[")
+            return `write \${${name}} with braces before \`${delimiter}\`: zsh reads $${name}${delimiter}… as a modifier or subscript`;
           const known = scope.get(name);
           if (known === undefined)
             return `$${name} is not set earlier in this command: set ${name}=value before using it, or write the value literally`;
@@ -1265,7 +1313,7 @@ function classifyGhApi(args: ReadonlyArray<string>): ReadOnlyShellClassification
 
 /** A word with no expansion of any kind: its value is exactly what the program receives. */
 function isStaticWord(word: Word): boolean {
-  return (word.parts ?? []).every(isStaticPart);
+  return !wordHasUnparsedDollar(word) && (word.parts ?? []).every(isStaticPart);
 }
 
 function isStaticPart(part: WordPart | DoubleQuotedChild): boolean {

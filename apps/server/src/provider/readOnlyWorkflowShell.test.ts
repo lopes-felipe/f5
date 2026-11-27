@@ -187,6 +187,15 @@ describe("classifyReadOnlyShellCommand", () => {
       // Braces, or a closing quote, end the name before `:` in zsh too.
       'COMMIT=957a21b; git show "${COMMIT}:apps/desktop/src/appIcon.ts" | nl -ba | sed -n 1,40p',
       'COMMIT=957a21b; git show "$COMMIT":apps/desktop/src/appIcon.ts',
+      // An escaped `:` or `[` is text in zsh, not a modifier or a subscript.
+      "REV=HEAD; git show $REV\\:README.md",
+      "X=a; echo $X\\[1]",
+      // A `$` that ends a pattern, or stands before punctuation, is text in zsh too.
+      'rg -n "^import$" src',
+      'rg -n "foo$|bar$" src',
+      "rg -n foo$ src",
+      "echo \\$=X",
+      "echo '$=X' '$~X'",
     ])("allows %j", (command) => {
       expect(classifyReadOnlyShellCommand(command)).toEqual({ readOnly: true });
     });
@@ -222,6 +231,23 @@ describe("classifyReadOnlyShellCommand", () => {
       ['Y=abc--output=pwned; git diff "$Y[4,-1]"', "write ${Y} with braces before `[`"],
       ['COMMIT=957a21b; git show "$COMMIT:apps/x.ts"', "write ${COMMIT} with braces"],
       ["X=a; Y=$X:h; echo $Y", "write ${X} with braces"],
+      // A line continuation doesn't separate the name from its modifier.
+      ["X=a/b; echo $X\\\n:h", "write ${X} with braces before `:`"],
+      // zsh parameter flags, which a bash parser reads as text: `$=X` splits X's value, `$~X`
+      // globs it and `$^X` distributes it, so git would get `--output=pwned`.
+      ["X=--output=pwned; git diff $=X", "zsh expands forms such as `$=NAME`"],
+      ['X=--output=pwned; git diff "$=X"', "zsh expands forms such as `$=NAME`"],
+      ['X=--output=pwned; git diff "$~X"', "zsh expands forms such as `$=NAME`"],
+      ["X=--output=pwned; git diff $^X", "zsh expands forms such as `$=NAME`"],
+      ["X=--output=pwned; git diff $==X", "zsh expands forms such as `$=NAME`"],
+      ["X=--output=pwned; git diff $\\\n=X", "zsh expands forms such as `$=NAME`"],
+      ["X=a; Y=$=X; echo $Y", "zsh expands forms such as `$=NAME`"],
+      // The same forms read an inherited variable, whatever its name.
+      ["echo $~GH_TOKEN", "zsh expands forms such as `$=NAME`"],
+      ['echo "$=GH_TOKEN"', "zsh expands forms such as `$=NAME`"],
+      ["cat $+X", "zsh expands forms such as `$=NAME`"],
+      ["git diff > $=X", "redirection targets must be literal"],
+      ["$=X status", "the command name must be literal"],
       // The value is what gets classified.
       ["F=--output=/tmp/x; git diff $F", "`git diff` flags that write or execute"],
       ["P=push; git $P", "`git push` is not on the read-only allowlist"],
