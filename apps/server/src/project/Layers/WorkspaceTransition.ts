@@ -62,6 +62,8 @@ import {
 
 const digest = canonicalJsonHash;
 const INTERRUPTED = "The workspace switch was interrupted before it finished.";
+/** How long a read waits for an interrupted switch to settle before it answers anyway. */
+const ORPHAN_READ_WAIT = "2 seconds";
 interface SettleOptions {
   /** Why the switch stopped. Kept on the row and returned to whoever started it. */
   readonly reason: string;
@@ -156,10 +158,26 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
     transitionIsUnsettled(record) &&
     !workers.has(record.operationId) &&
     !owners.has(record.operationId);
-  const readTransition = (threadId: ThreadId) =>
+  /**
+   * Settling takes the folder's locks and reads Git. A new switch waits for it
+   * however long it takes. A plain read waits only briefly: behind an unrelated
+   * long worktree operation in the same repository it returns the row as it
+   * is, the settling carries on, and everyone watching the thread is notified
+   * once it is done.
+   */
+  const readTransition = (threadId: ThreadId, wait: "settled" | "briefly") =>
     Effect.gen(function* () {
       const record = yield* store.forThread(threadId);
-      return record && orphaned(record) ? yield* settleOrphan(record) : record;
+      if (!record || !orphaned(record)) return record;
+      if (wait === "settled") return yield* settleOrphan(record);
+      const settling = yield* Effect.forkIn(Effect.exit(settleOrphan(record)), scope, {
+        startImmediately: true,
+      });
+      const exit = yield* Fiber.join(settling).pipe(Effect.timeoutOption(ORPHAN_READ_WAIT));
+      if (Option.isNone(exit)) return record;
+      return Exit.isSuccess(exit.value)
+        ? exit.value.value
+        : yield* Effect.failCause(exit.value.cause);
     });
   const context = (threadId: ThreadId) =>
     Effect.gen(function* () {
@@ -370,7 +388,11 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
     });
   // Private refs belong to the repository, so cleanup must work after archive/delete
   // and even when the original project checkout no longer exists.
-  const releaseRetainedMove = (initial: WorkspaceTransitionRecord) =>
+  const releaseRetainedMove = (
+    initial: WorkspaceTransitionRecord,
+    /** Why the move stopped, when the caller knows more than "it did not finish". */
+    reason?: string,
+  ) =>
     withRepositoryLifecycleLock(
       config.baseDir,
       initial.source.repository,
@@ -386,7 +408,9 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
         if (record.phase !== "completed")
           record = yield* store.update(record, {
             phase: "cancelled",
-            error: `The move did not finish. Kept ${folderName(record.target.path)}${record.target.branch ? ` on ${record.target.branch}` : ""}; the project folder is unchanged.`,
+            error:
+              reason ??
+              `The move did not finish. Kept ${folderName(record.target.path)}${record.target.branch ? ` on ${record.target.branch}` : ""}; the project folder is unchanged.`,
           });
         return yield* releaseMoveRef(record, repository);
       }),
@@ -404,7 +428,7 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
         let record = yield* currentRecord(initial.operationId);
         const retained: string[] = [];
         // Someone else finished or ended the move while this waited for the locks.
-        if (!transitionIsUnsettled(record)) return { record, kept: retained };
+        if (!transitionIsUnsettled(record)) return { record, kept: retained, changed: false };
         const move = record.moveData;
         if (move && record.mutationAttempted) {
           const receipt = yield* git.readWorktreePreparation(record.target.path);
@@ -491,7 +515,7 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
             (retained.length && !/[.!?]$/.test(message) ? `${message}.` : message) +
             keptText(record, retained),
         });
-        return { record, kept: retained };
+        return { record, kept: retained, changed: true };
       }),
     );
   /** Ends a row that is still unsettled; one that someone else ended is returned as it is. */
@@ -513,7 +537,8 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
       initial,
       Effect.gen(function* () {
         let record = yield* currentRecord(initial.operationId);
-        if (!transitionIsUnsettled(record)) return record;
+        // Someone else finished or ended the switch while this waited for the locks.
+        if (!transitionIsUnsettled(record)) return { record, changed: false };
         const inPlace =
           record.intent === "checkout_branch" || record.intent === "create_branch_and_checkout";
         const restoring = record.intent === "recreate" || record.intent === "recreate_from_base";
@@ -525,24 +550,39 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
             project.workspaceRoot,
             record.target.path,
           ).pipe(Effect.option);
-          if (
+          // An in-place switch changed the thread's own folder, so the record
+          // follows Git whatever else is true. A restore is recorded only for
+          // the checkout it asked for: on its branch, prepared for this thread,
+          // and free of the claims a finished switch checks before it commits.
+          // Anything else at that path is left alone and the switch did not happen.
+          const accepted =
             Option.isSome(checkout) &&
-            (!inPlace || checkout.value.branch === record.target.branch)
-          ) {
+            checkout.value.branch === record.target.branch &&
+            (inPlace ||
+              ((yield* git
+                .readWorktreePreparation(record.target.path)
+                .pipe(Effect.orElseSucceed(() => null)))?.owner === `thread:${record.threadId}` &&
+                Exit.isSuccess(
+                  yield* validateClaims(record, record.target.path, false).pipe(Effect.exit),
+                )));
+          if (accepted && Option.isSome(checkout)) {
             // A row an older version parked is active again only for this commit.
             if (record.phase === "needs_recovery")
               record = yield* store.update(record, { phase: "applying" });
             // A commit that is refused, or that dies, leaves the thread where it was.
             const committed = yield* commit(record, checkout.value).pipe(Effect.exit);
             if (Exit.isSuccess(committed) && committed.value.phase === "completed")
-              return committed.value;
+              return { record: committed.value, changed: true };
           }
         }
-        return yield* end(record.operationId, {
-          phase: options.phase,
-          error: options.reason,
-          ...options.patch,
-        });
+        return {
+          record: yield* end(record.operationId, {
+            phase: options.phase,
+            error: options.reason,
+            ...options.patch,
+          }),
+          changed: true,
+        };
       }),
     );
   /**
@@ -551,8 +591,10 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
    * row that ended holds nothing. Nothing is asked; a switch nobody is waiting
    * on, and anything a move had to leave behind, is reported in the timeline.
    */
-  const settle = (initial: WorkspaceTransitionRecord, options: SettleOptions) =>
+  const settle = (stale: WorkspaceTransitionRecord, options: SettleOptions) =>
     Effect.gen(function* () {
+      // The caller may hold a copy read before someone else settled the row.
+      const initial = yield* currentRecord(stale.operationId);
       if (!transitionIsUnsettled(initial)) return initial;
       let kept: ReadonlyArray<string> = [];
       const decided =
@@ -560,15 +602,15 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
           ? Effect.gen(function* () {
               // An archived or deleted thread keeps its copy; only the private ref is released.
               if (Option.isNone(yield* context(initial.threadId).pipe(Effect.option)))
-                return yield* releaseRetainedMove(initial);
+                return { record: yield* releaseRetainedMove(initial), changed: true };
               const rolledBack = yield* rollbackMove(initial, options.reason, options.phase);
               kept = rolledBack.kept;
-              return rolledBack.record;
+              return rolledBack;
             })
           : settleInFolder(initial, options);
       // Settling can fail too (Git, the locks, a thread that is gone). The row still
       // ends, because the thread record already names a workspace that exists.
-      const settled = yield* decided.pipe(
+      const { record: settled, changed } = yield* decided.pipe(
         Effect.catchCause((cause) => {
           if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause);
           const failure = Cause.squash(cause);
@@ -576,21 +618,35 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
           const ended = end(initial.operationId, {
             phase: "cancelled",
             error: `${options.reason} ${detail}`,
-          });
+          }).pipe(Effect.map((record) => ({ record, changed: true })));
           if (initial.intent !== "move_to_new_worktree") return ended;
           if (initial.mutationAttempted) kept = [`it could not be cleaned up (${detail})`];
           // The copy stays for the user; only the private snapshot ref is released.
-          return releaseRetainedMove(initial).pipe(Effect.catchCause(() => ended));
+          // The row keeps why the move stopped and why it could not be cleaned
+          // up; whether the copy is still there is not known at this point.
+          const stopped = /[.!?]$/.test(options.reason) ? options.reason : `${options.reason}.`;
+          const target = `${folderName(initial.target.path)}${initial.target.branch ? ` on ${initial.target.branch}` : ""}`;
+          return releaseRetainedMove(
+            initial,
+            initial.mutationAttempted
+              ? `${stopped} Cleaning up failed (${detail}), so ${target} may still be there. The project folder is unchanged.`
+              : `${stopped} ${detail}`,
+          ).pipe(
+            Effect.map((record) => ({ record, changed: true })),
+            Effect.catchCause(() => ended),
+          );
         }),
       );
+      // Someone else settled it first, and reported it: say nothing twice.
+      if (!changed) return settled;
       if (settled.phase === "completed") {
-        const restored = settled.intent === "recreate" || settled.intent === "recreate_from_base";
         if (options.announce)
           yield* appendWorkspaceNote(engine, settled.threadId, {
             summary: finishedSummary(settled),
           });
-        // The worktree is back, but its caller is told it worked: say what did not.
-        else if (restored && options.phase === "failed")
+        // The folder is on the new branch, or the worktree is back, and the
+        // caller is told it worked: say what was refused or failed after that.
+        else if (options.phase === "failed")
           yield* appendWorkspaceNote(engine, settled.threadId, {
             tone: "error",
             summary: `${finishedSummary(settled)}, but a later step failed: ${options.reason}`,
@@ -1002,12 +1058,36 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
           (existing.phase === "failed" || existing.phase === "cancelled") &&
           !existing.mutationAttempted
         )
-          return yield* start(yield* locked(existing, store.reactivate(existing)));
+          return yield* start(
+            yield* locked(
+              existing,
+              Effect.gen(function* () {
+                // The target is planned again, as the folder is now. The first
+                // plan is checked against the folder before anything changes, so
+                // a folder that moved on would fail every attempt the same way.
+                const attaching =
+                  existing.intent === "attach_existing" ||
+                  existing.intent === "use_project_checkout";
+                if (!attaching) return yield* store.reactivate(existing);
+                const { project } = yield* context(existing.threadId);
+                const target = identity(
+                  yield* inspectAttachableWorkspace(
+                    git,
+                    config,
+                    project.workspaceRoot,
+                    existing.target.path,
+                    existing.intent === "attach_existing" ? existing.request.branch : undefined,
+                  ),
+                );
+                return yield* store.reactivate(existing, { target });
+              }),
+            ),
+          );
         return existing;
       }
       // An earlier switch nobody is running any more is settled first, so it
       // never refuses this one. Only a switch that is running right now does.
-      yield* readTransition(input.threadId);
+      yield* readTransition(input.threadId, "settled");
       const { thread, project } = yield* context(input.threadId);
       // Branches and worktrees belong to a Git checkout; a thread without a project has neither.
       if (isScratchProject(project))
@@ -1220,15 +1300,34 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
       yield* Effect.gen(function* () {
         // Stop the worker first, so nothing changes Git while the row is settled.
         if (worker) yield* Fiber.interrupt(worker.fiber);
-        let settled = yield* settle(yield* currentRecord(record.operationId), {
+        const settled = yield* settle(yield* currentRecord(record.operationId), {
           reason: "The workspace switch was cancelled.",
           phase: "cancelled",
           announce: false,
         });
         // A move that was ended elsewhere keeps its copy but not its private snapshot ref.
-        if (holdsMoveRef(settled)) settled = yield* releaseRetainedMove(settled);
-        if (worker) yield* Deferred.succeed(worker.result, settled);
-      }).pipe(Effect.ensuring(Effect.sync(() => cancelling.delete(record.operationId))));
+        return holdsMoveRef(settled) ? yield* releaseRetainedMove(settled) : settled;
+      }).pipe(
+        // The worker's caller is answered however this ends. The worker left that
+        // to this cancel, so a cancel that fails, or is itself interrupted (the
+        // client that asked for it went away), must not leave the caller waiting.
+        Effect.onExit((exit) =>
+          Effect.gen(function* () {
+            cancelling.delete(record.operationId);
+            if (!worker) return;
+            if (Exit.isSuccess(exit)) return yield* Deferred.succeed(worker.result, exit.value);
+            const live = yield* store
+              .get(record.operationId)
+              .pipe(Effect.orElseSucceed(() => null));
+            yield* live && !transitionIsUnsettled(live)
+              ? Deferred.succeed(worker.result, live)
+              : Deferred.fail(
+                  worker.result,
+                  new Error("The workspace switch stopped before it finished. Try again."),
+                );
+          }),
+        ),
+      );
     });
   yield* store.reconcile;
   for (const initial of yield* store.unfinishedMoves) {
@@ -1413,7 +1512,7 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
         Effect.map((record) => workspaceTransitionSnapshot(record)),
       ),
     getTransition: ({ threadId }) =>
-      readTransition(threadId).pipe(
+      readTransition(threadId, "briefly").pipe(
         Effect.map((record) => (record ? workspaceTransitionSnapshot(record) : null)),
       ),
     cancel,

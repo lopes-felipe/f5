@@ -4,7 +4,7 @@ import {
   type WorkspaceTransitionSnapshot,
   type WorktreesSwitchWorkspaceInput,
 } from "@t3tools/contracts";
-import { Effect } from "effect";
+import { Deferred, Effect, Fiber } from "effect";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -176,7 +176,10 @@ describe("workspace transition execution", { timeout: 60_000 }, () => {
       f.runtime.runPromise(
         f.transition.moveThread({ threadId: f.threadId, branch: "move-recovery" }),
       ),
-    ).rejects.toThrow(/Kept .* on move-recovery/);
+      // The caller gets why the move stopped and why it could not be cleaned up.
+    ).rejects.toThrow(
+      /^crash after applied\. Cleaning up failed \(rollback unavailable\), so \S+ on move-recovery may still be there\. The project folder is unchanged\.$/,
+    );
     const record = (await f.runtime.runPromise(f.store.forThread(f.threadId)))!;
     expect(record.phase).toBe("cancelled");
     expect(await f.runtime.runPromise(f.store.forThread(f.threadId, true))).toBeNull();
@@ -235,9 +238,17 @@ describe("workspace transition execution", { timeout: 60_000 }, () => {
     ]);
   });
 
-  it.each([true, false])(
-    "settles an interrupted restore by whether the worktree is back: %s",
-    async (restored) => {
+  it.each([
+    // The worker recreated the worktree for this thread and was cut off after that.
+    { found: "the worktree it restored", restored: true },
+    { found: "nothing", restored: false },
+    // Something else is at the path. A finished switch would have refused it,
+    // so settling must not record it either.
+    { found: "a worktree on another branch", restored: false },
+    { found: "a worktree it did not create", restored: false },
+  ] as const)(
+    "settles an interrupted restore by what is at the path: $found",
+    async ({ found, restored }) => {
       const f = await fixture();
       const target = path.join(f.config.worktreesDir, "gone");
       git(f.repo.root, "worktree", "add", "-q", "-b", "gone", target, "main");
@@ -259,16 +270,31 @@ describe("workspace transition execution", { timeout: 60_000 }, () => {
         phase: "applying",
         mutationAttempted: true,
       });
-      if (restored) {
+      if (found === "the worktree it restored")
+        await f.runtime.runPromise(
+          Effect.gen(function* () {
+            yield* (yield* GitCore).ensureWorktree({
+              owner: `thread:${f.threadId}`,
+              cwd: f.repo.root,
+              path: target,
+              branch: "gone",
+              submodules: "none",
+            });
+          }),
+        );
+      else if (found !== "nothing") {
         git(f.repo.root, "worktree", "prune");
-        git(f.repo.root, "worktree", "add", "-q", target, "gone");
+        if (found === "a worktree on another branch")
+          git(f.repo.root, "worktree", "add", "-q", "-b", "elsewhere", target, "main");
+        else git(f.repo.root, "worktree", "add", "-q", target, "gone");
       }
       await f.runtime.runPromise(Effect.scoped(makeWorkspaceTransition));
       expect((await f.runtime.runPromise(f.store.get(record.operationId)))?.phase).toBe(
         restored ? "completed" : "failed",
       );
-      // Either way the thread still names its worktree; the next send restores a missing one.
-      expect((await thread(f)).worktreePath).toBe(worktreePath);
+      // Either way the thread still names its worktree and its branch; the
+      // next send restores a missing one.
+      expect(await thread(f)).toMatchObject({ worktreePath, branch: "gone" });
       expect(await f.runtime.runPromise(f.store.forThread(f.threadId, true))).toBeNull();
       expect((await notes(f)).at(-1)).toEqual(
         restored
@@ -277,6 +303,89 @@ describe("workspace transition execution", { timeout: 60_000 }, () => {
       );
     },
   );
+
+  it("records a branch switch that Git finished even when the commit was refused, and says so", async () => {
+    const f = await fixture();
+    git(f.repo.root, "branch", "topic");
+    // A terminal opens in the folder after the checkout, so the commit is refused.
+    f.phaseHook.current = (phase) => {
+      if (phase !== "applied") return;
+      f.phaseHook.current = null;
+      f.world.terminals.push({
+        threadId: f.threadId,
+        terminalId: "shell",
+        cwd: f.repo.root,
+        status: "running",
+      });
+    };
+    const result = await f.runtime.runPromise(
+      f.transition.switchWorkspace(await f.request("checkout_branch", { branch: "topic" })),
+    );
+    // The folder is on the new branch, so the thread is too: the record follows Git.
+    expect(git(f.repo.root, "branch", "--show-current")).toBe("topic");
+    expect(result.phase).toBe("completed");
+    expect((await thread(f)).branch).toBe("topic");
+    // The refusal is not lost: the timeline carries it.
+    const [tone, summary] = (await notes(f)).at(-1)!;
+    expect(tone).toBe("error");
+    expect(summary).toMatch(/^Switched to topic, but a later step failed: .*terminal/i);
+  });
+
+  it("answers the caller of a switch whose cancel was itself cut off", async () => {
+    const f = await fixture();
+    const target = path.join(f.config.worktreesDir, "held");
+    git(f.repo.root, "worktree", "add", "-q", "-b", "held", target, "main");
+    await f.runtime.runPromise(
+      f.transition.switchWorkspace(await f.request("attach_existing", { targetPath: target })),
+    );
+    await fs.rm(target, { recursive: true });
+    f.mutationControl.block = true;
+    const caller = f.runtime.runPromise(
+      f.transition.switchWorkspace(await f.request("recreate")).pipe(Effect.result),
+    );
+    await f.runtime.runPromise(Deferred.await(f.mutationEntered));
+    // The client that asked for the cancel goes away while it is still running.
+    const cancelling = f.runtime.runFork(f.transition.cancel(f.threadId));
+    await f.runtime.runPromise(Fiber.interrupt(cancelling));
+    // The worker left its answer to the cancel; the caller still gets one.
+    const answered = await Promise.race([
+      caller,
+      new Promise<"waiting">((resolve) => setTimeout(() => resolve("waiting"), 5_000)),
+    ]);
+    expect(answered).not.toBe("waiting");
+    // Whatever the answer was, nothing is held: the next switch runs.
+    await vi.waitFor(async () =>
+      expect(
+        (await f.runtime.runPromise(f.transition.getTransition({ threadId: f.threadId })))?.phase,
+      ).toMatch(/failed|cancelled/),
+    );
+    f.mutationControl.block = false;
+    const next = await f.runtime.runPromise(
+      f.transition.switchWorkspace(await f.request("use_project_checkout")),
+    );
+    expect(next.phase).toBe("completed");
+  });
+
+  it("reports an interrupted switch once however many readers find it", async () => {
+    const f = await fixture();
+    const source = await projectCheckout(f);
+    await interrupted(f, {
+      intent: "checkout_branch",
+      branch: "topic",
+      source,
+      target: { ...source, branch: "topic" },
+      phase: "stopping",
+      mutationAttempted: false,
+    });
+    git(f.repo.root, "branch", "topic");
+    // Every open window reads the thread's switch at once.
+    await Promise.all(
+      Array.from({ length: 6 }, () =>
+        f.runtime.runPromise(f.transition.getTransition({ threadId: f.threadId })),
+      ),
+    );
+    expect(await notes(f)).toEqual([["error", "Switching to topic did not finish."]]);
+  });
 
   it("leaves the thread where it was when attaching was cut off, and ends a switch whose thread is gone", async () => {
     const f = await fixture();

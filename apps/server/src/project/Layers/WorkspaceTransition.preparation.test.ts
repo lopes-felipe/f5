@@ -444,6 +444,9 @@ describe("workspace transition execution", { timeout: 60_000 }, () => {
     const transitionId = `work-locally:${operationId}`;
     expect((await f.runtime.runPromise(f.store.get(transitionId)))?.phase).toBe("failed");
     expect(await f.runtime.runPromise(f.store.forThread(f.threadId, true))).toBeNull();
+    // The project folder moves on before the retry. The retry plans against the
+    // folder as it is now; the first plan would be refused the same way every time.
+    git(f.repo.root, "commit", "--allow-empty", "-qm", "moved on");
     const settled = await f.runtime.runPromise(f.setupService.workLocally(f.threadId, operationId));
     expect(settled?.phase).toBe("cancelled_kept");
     expect((await f.runtime.runPromise(f.store.get(transitionId)))?.phase).toBe("completed");
