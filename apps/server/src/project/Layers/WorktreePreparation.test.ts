@@ -42,8 +42,11 @@ const fixture = (
     owner?: string;
     branchExists?: boolean;
     resolvedBase?: string;
+    /** The branch the checkout's HEAD is on, when not the recorded one; null is detached. */
+    head?: string | null;
   } = {},
 ) => {
+  const head = options.head === undefined ? input.branch : options.head;
   const world = makeWorld();
   world.projects.push({
     ...project("project", projectRoot),
@@ -74,16 +77,16 @@ const fixture = (
           ...status,
           canonicalRoot: input.worktreePath,
           commonDir: Path.join(projectRoot, ".git"),
-          branch: input.branch,
+          branch: head,
           headSha: "base",
           ignoredTruncated: options.ignoredTruncated ?? false,
           registration: {
             path,
             canonicalPath: path,
-            branch: input.branch,
+            branch: head,
             headSha: "base",
             isMain: false,
-            detached: false,
+            detached: head === null,
             bare: false,
             locked: null,
             prunable: null,
@@ -322,6 +325,30 @@ describe("durable thread worktree preparation", () => {
         expect(startOwnedSetupScript).toHaveBeenCalledTimes(1);
         expect((yield* receipts.latest(input.worktreePath))?.phase).toBe("setup_failed");
         yield* Deferred.succeed(exited, 0);
+      }),
+    );
+  });
+  it.each([
+    ["another branch", "agent-branch"],
+    ["a detached HEAD", null],
+  ])("runs the setup script in a worktree the agent left on %s", async (_name, head) => {
+    // The folder is the worktree's identity: its setup still belongs to it.
+    await fixture({ phase: "setup_failed", head }).run(({ service, receipts, exited }) =>
+      Effect.gen(function* () {
+        yield* service.prepare({ ...input, retry: true });
+        expect(startOwnedSetupScript).toHaveBeenCalledTimes(1);
+        yield* Deferred.succeed(exited, 0);
+        yield* waitForPhase(receipts, "completed");
+      }),
+    );
+  });
+  it("does not adopt a creation that was cut off once the checkout has left its branch", async () => {
+    await fixture({ phase: "allocated", head: "agent-branch" }).run(({ service, receipts }) =>
+      Effect.gen(function* () {
+        const exit = yield* service.prepare({ ...input, retry: true }).pipe(Effect.exit);
+        expect(exit._tag).toBe("Failure");
+        expect(startOwnedSetupScript).not.toHaveBeenCalled();
+        expect((yield* receipts.latest(input.worktreePath))?.phase).toBe("allocated");
       }),
     );
   });

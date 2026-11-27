@@ -87,9 +87,14 @@ export const makeWorktreePreparationService = Effect.gen(function* () {
                 )
                   return null;
                 const inspected = yield* git.inspectCheckout(path);
+                // The folder and its repository are the checkout's identity.
+                // The agent may have left it on another branch or a detached
+                // HEAD, and its setup still belongs to it. Only a creation
+                // that was cut off must still be on the branch it was made
+                // for: that is part of showing nothing has touched it since.
                 if (
                   inspected.commonDir !== receipt.repositoryIdentity ||
-                  inspected.branch !== input.branch ||
+                  (receipt.phase === "allocated" && inspected.branch !== input.branch) ||
                   inspected.canonicalRoot !== path ||
                   !inspected.registration
                 )
