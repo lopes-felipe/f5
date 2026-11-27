@@ -2258,6 +2258,58 @@ describe("deriveWorkLogEntries", () => {
     expect(entries.map((entry) => entry.id)).toEqual(["global-warning", "latest-tool"]);
   });
 
+  it("keeps a branch change the folder made between turns visible after later turns", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "branch-changed",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "workspace.branch-changed",
+        summary: "Now on topic (was main)",
+        tone: "info",
+      }),
+      makeActivity({
+        id: "latest-tool",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        turnId: "turn-2",
+        kind: "tool.completed",
+        summary: "Ran command",
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities, TurnId.makeUnsafe("turn-2"));
+    expect(entries.map((entry) => entry.id)).toEqual(["branch-changed", "latest-tool"]);
+    expect(entries[0]?.label).toBe("Now on topic (was main)");
+  });
+
+  it("keeps a workspace note visible after later turns", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "switch-unfinished",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "workspace.note",
+        summary: "Switching to topic did not finish.",
+        tone: "error",
+      }),
+      makeActivity({
+        id: "latest-tool",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        turnId: "turn-2",
+        kind: "tool.completed",
+        summary: "Ran command",
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities, TurnId.makeUnsafe("turn-2"));
+    expect(entries.map((entry) => entry.id)).toEqual(["switch-unfinished", "latest-tool"]);
+    expect(entries[0]?.label).toBe("Switching to topic did not finish.");
+    // The filter that lists what went wrong includes it.
+    expect(
+      deriveWorkLogEntries(activities, TurnId.makeUnsafe("turn-2"), { filter: "issues" }).map(
+        (entry) => entry.id,
+      ),
+    ).toEqual(["switch-unfinished"]);
+  });
+
   it("keeps completed historical file_change entries visible across later turns", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

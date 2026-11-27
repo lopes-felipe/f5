@@ -1,12 +1,14 @@
-import { CommandId, EventId, type ThreadId } from "@t3tools/contracts";
+import {
+  CommandId,
+  EventId,
+  type ThreadId,
+  WORKSPACE_NOTE_ACTIVITY_KIND,
+} from "@t3tools/contracts";
 import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { Effect } from "effect";
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
 
-/** The thread's folder moved to another branch. */
-export const WORKSPACE_BRANCH_CHANGED_ACTIVITY_KIND = "workspace.branch-changed";
-/** Anything else F5 did to, or could not do to, a thread's workspace on its own. */
-export const WORKSPACE_NOTE_ACTIVITY_KIND = "workspace.note";
+export { WORKSPACE_NOTE_ACTIVITY_KIND };
 
 export interface WorkspaceNote {
   readonly kind?: string;

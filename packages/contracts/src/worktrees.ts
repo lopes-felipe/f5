@@ -6,6 +6,14 @@ export * from "./worktreeTransitionSchemas";
 export * from "./worktreesResults";
 export * from "./worktreesInventory";
 
+/** Thread activity kind: the thread's folder moved to another branch. */
+export const WORKSPACE_BRANCH_CHANGED_ACTIVITY_KIND = "workspace.branch-changed";
+/**
+ * Thread activity kind: anything else F5 did to, or could not do to, a thread's
+ * workspace on its own, such as a switch that did not finish.
+ */
+export const WORKSPACE_NOTE_ACTIVITY_KIND = "workspace.note";
+
 export const WorktreesInspectInput = Schema.Struct({ projectId: ProjectId, path: FilesystemPath });
 export type WorktreesInspectInput = typeof WorktreesInspectInput.Type;
 
