@@ -2382,6 +2382,12 @@ describe("WebSocket Server", () => {
           await options.beforeRestart?.(ws, script.command);
           // Let the throttled activity write land before the restart.
           await new Promise((resolve) => setTimeout(resolve, 700));
+          // "Started" is the turn being accepted. Wait until the provider has
+          // it too: a turn caught between the two waits out the queue's
+          // five-minute pending-turn rule after a restart, which is not what
+          // these cases are about.
+          if (options.agentStarted)
+            await vi.waitFor(() => expect(sentTurns).toHaveLength(1), SLOW_WAIT);
           for (const socket of connections.splice(0)) socket.close();
           await closeTestServer();
           h.server = null;
@@ -2473,6 +2479,7 @@ describe("WebSocket Server", () => {
           );
           expect(fs.existsSync(script.again)).toBe(false);
           expect(queue).toEqual(expect.objectContaining({ paused: false }));
+          // The turn the agent already had is not sent a second time.
           expect(sentTurns).toHaveLength(1);
         });
 

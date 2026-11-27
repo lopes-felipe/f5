@@ -282,6 +282,12 @@ export const makeWorktreeSetup = Effect.gen(function* () {
   const runFork = Effect.runForkWith(services);
 
   const tracked = new Map<ThreadId, Tracked>();
+  /**
+   * The server is stopping and is about to stop the setup scripts itself. A
+   * script that ends this way did not fail: its setup stays as it was, and the
+   * next start reports the script as interrupted.
+   */
+  let shuttingDown = false;
   const persistLocks = new Map<ThreadId, Semaphore.Semaphore>();
 
   const persistLock = (threadId: ThreadId) => {
@@ -1111,6 +1117,8 @@ export const makeWorktreeSetup = Effect.gen(function* () {
         const entry = tracked.get(threadId);
         if (entry) entry.script = owned;
         const completion = owned.exit.pipe(
+          // Stopped by the shutdown: record nothing and wait to be interrupted.
+          Effect.flatMap((code) => (shuttingDown ? Effect.never : Effect.succeed(code))),
           Effect.tap(finishReceipt),
           Effect.flatMap((code) =>
             Effect.sync(() =>
@@ -2106,11 +2114,14 @@ export const makeWorktreeSetup = Effect.gen(function* () {
   const startup: WorktreeSetupShape["startup"] = Effect.gen(function* () {
     // Owned setup scripts run in their own process group; stop them with the server.
     yield* Effect.addFinalizer(() =>
-      Effect.forEach(
-        [...tracked.values()],
-        (entry) => (entry.script ? entry.script.kill : Effect.void),
-        { discard: true, concurrency: "unbounded" },
-      ),
+      Effect.suspend(() => {
+        shuttingDown = true;
+        return Effect.forEach(
+          [...tracked.values()],
+          (entry) => (entry.script ? entry.script.kill : Effect.void),
+          { discard: true, concurrency: "unbounded" },
+        );
+      }),
     );
     yield* preparation.startup;
     const rows = yield* sql
