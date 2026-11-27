@@ -2059,12 +2059,14 @@ cursorAdapterHardeningTestLayer("CursorAdapterLive ACP hardening", (it) => {
       for (const repo of [stage, other]) execFileSync("git", ["init", "-q", repo]);
       // F5's overrides cover the stage's own repository, not this one.
       execFileSync("git", ["-C", other, "config", "diff.external", "./helper.sh"]);
+      // Written as the shell reads it: a backslash would escape the next character.
+      const refusedCommand = `git -C ${other.replaceAll("\\", "/")} diff`;
       const requestLogPath = path.join(tempDir, "requests.ndjson");
       const wrapperPath = yield* Effect.promise(() =>
         makeMockAgentWrapper({
           T3_ACP_EMIT_TOOL_CALLS: "1",
           T3_ACP_PERMISSION_REQUEST_COUNT: "2",
-          T3_ACP_PERMISSION_COMMAND: `git -C ${other} diff`,
+          T3_ACP_PERMISSION_COMMAND: refusedCommand,
           T3_ACP_SECOND_PERMISSION_COMMAND: "git status --short",
           T3_ACP_REQUEST_LOG_PATH: requestLogPath,
         }),
@@ -2091,7 +2093,7 @@ cursorAdapterHardeningTestLayer("CursorAdapterLive ACP hardening", (it) => {
       const denied = opened[0];
       assert.ok(denied?.type === "request.opened");
       assert.equal(denied.payload.autoDeclined, true);
-      assert.include(denied.payload.detail ?? "", `git -C ${other} diff`);
+      assert.include(denied.payload.detail ?? "", refusedCommand);
       // The model is told which setting it was.
       assert.include(denied.payload.detail ?? "", "sets `diff.external`");
       const outcomes = responsesFor(yield* Effect.promise(() => readJsonLines(requestLogPath)))

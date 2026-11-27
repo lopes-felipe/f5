@@ -228,11 +228,18 @@ describe("READ_ONLY_WORKFLOW_ENVIRONMENT", () => {
 
 describe("makeReadOnlyGitGuard", () => {
   /**
+   * A path as a shell command writes it. The guard reads commands as POSIX shell, where a
+   * backslash escapes the next character, so a Windows path is written with forward slashes.
+   */
+  const written = (value: string) => value.replaceAll("\\", "/");
+
+  /**
    * A stage folder that is a repository without helpers, next to a second repository, with
-   * `git` bound to a folder and the isolated environment.
+   * `git` bound to a folder and the isolated environment. The native realpath expands a
+   * Windows short name such as `RUNNER~1`, as Git does in the paths it prints.
    */
   function workspace() {
-    const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "f5-readonly-git-guard-")));
+    const root = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "f5-readonly-git-guard-")));
     const environment: NodeJS.ProcessEnv = {
       PATH: process.env.PATH,
       HOME: root,
@@ -271,8 +278,8 @@ describe("makeReadOnlyGitGuard", () => {
     expect(guard.pairs).toEqual([["core.fsmonitor", "false"]]);
     for (const command of [
       "git status --short",
-      `git -C ${other} log --oneline -1`,
-      `cd ${other} && git diff`,
+      `git -C ${written(other)} log --oneline -1`,
+      `cd ${written(other)} && git diff`,
       "git -C ../other diff",
       // Your own global helpers are not the repository's.
       "git diff | head -5",
@@ -285,18 +292,21 @@ describe("makeReadOnlyGitGuard", () => {
     const other = init("other");
     git(other, ["config", "diff.external", "./x.sh"]);
     const guard = await makeReadOnlyGitGuard(stage, environment);
-    expect(await guard.refusal(`cd ${other} && cat notes.txt`)).toBeUndefined();
-    expect(await guard.refusal(`cd ${other} && git commit -m x`)).toBeUndefined();
+    expect(await guard.refusal(`cd ${written(other)} && cat notes.txt`)).toBeUndefined();
+    expect(await guard.refusal(`cd ${written(other)} && git commit -m x`)).toBeUndefined();
   });
 
   it.each([
-    ["git -C <other> diff", (other: string) => `git -C ${other} diff`],
+    ["git -C <other> diff", (other: string) => `git -C ${written(other)} diff`],
     ["git -C ../other log -p", () => "git -C ../other log -p"],
-    ["cd <other> && git diff", (other: string) => `cd ${other} && git diff`],
-    ["cd <other>; git status", (other: string) => `cd ${other}; git status --short`],
+    ["cd <other> && git diff", (other: string) => `cd ${written(other)} && git diff`],
+    ["cd <other>; git status", (other: string) => `cd ${written(other)}; git status --short`],
     ["cd .. && git -C other show", () => "cd .. && git -C other show HEAD"],
-    ["a folder in a variable", (other: string) => `D=${other}; git -C $D diff`],
-    ["git -C <a> -C <b>", (other: string) => `git -C ${path.dirname(other)} -C other diff`],
+    ["a folder in a variable", (other: string) => `D=${written(other)}; git -C $D diff`],
+    [
+      "git -C <a> -C <b>",
+      (other: string) => `git -C ${written(path.dirname(other))} -C other diff`,
+    ],
   ])("refuses Git in another repository that defines a helper: %s", async (_name, command) => {
     const { stage, init, git, environment } = workspace();
     const other = init("other");
@@ -362,7 +372,9 @@ describe("makeReadOnlyGitGuard", () => {
     const refusal = await guard.refusal("git status --short");
     expect(refusal).toContain("`filter.x.clean`");
     expect(refusal).toContain(moduleDirectory);
-    expect(await guard.refusal(`cd ${root} && git -C stage diff`)).toContain("`filter.x.clean`");
+    expect(await guard.refusal(`cd ${written(root)} && git -C stage diff`)).toContain(
+      "`filter.x.clean`",
+    );
   });
 
   it("refuses Git in a repository that tracks a nested repository with a helper", async () => {
@@ -398,7 +410,7 @@ describe("makeReadOnlyGitGuard", () => {
     const other = init("other");
     writeFileSync(path.join(other, ".git", "config"), "[core\n");
     const guard = await makeReadOnlyGitGuard(stage, environment);
-    expect(await guard.refusal(`git -C ${other} status`)).toContain(
+    expect(await guard.refusal(`git -C ${written(other)} status`)).toContain(
       `F5 couldn't read the Git config of ${other}`,
     );
   });

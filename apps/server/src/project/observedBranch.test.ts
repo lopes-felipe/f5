@@ -35,9 +35,12 @@ const thread = (id: string, overrides: Partial<FakeThread> = {}): FakeThread => 
   ...overrides,
 });
 
-/** A read model and a Git whose HEAD per folder the test sets. */
+/**
+ * A read model and a Git whose HEAD per folder the test sets. The root is canonical as F5
+ * stores worktree paths: the native realpath also expands a Windows short name (`RUNNER~1`).
+ */
 const world = (threads: FakeThread[]) => {
-  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "f5-observed-")));
+  const root = realpathSync.native(mkdtempSync(path.join(tmpdir(), "f5-observed-")));
   const heads = new Map<string, string | null>();
   const commands: Command[] = [];
   const prepared: string[] = [];
