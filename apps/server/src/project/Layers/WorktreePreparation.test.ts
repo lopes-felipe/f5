@@ -174,6 +174,16 @@ const waitForPhase = (receipts: typeof WorktreePreparations.Service, phase: Prep
     throw new Error(`Preparation did not reach ${phase}`);
   });
 
+// The receipt reads `setup_running` from submodule initialization onwards, so
+// that phase alone does not say the script has been started.
+const waitForScriptStart = Effect.gen(function* () {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    if (vi.mocked(startOwnedSetupScript).mock.calls.length > 0) return;
+    yield* Effect.sleep("1 millis");
+  }
+  throw new Error("The setup script was not started");
+});
+
 describe("durable thread worktree preparation", () => {
   it("starts default async scripts without waiting, deduplicates subsequent sends, and records completion", async () => {
     const { run, activity } = fixture();
@@ -314,6 +324,7 @@ describe("durable thread worktree preparation", () => {
         // The agent needs what this script produces, so the send runs it again.
         const preparing = yield* service.prepare(input).pipe(Effect.forkChild);
         yield* waitForPhase(receipts, "setup_running");
+        yield* waitForScriptStart;
         expect(startOwnedSetupScript).toHaveBeenCalledTimes(1);
         expect((yield* receipts.latest(input.worktreePath))?.result).toBe(INTERRUPTED_SCRIPT_RERUN);
         // The server shuts down in the middle of that rerun. The script's own

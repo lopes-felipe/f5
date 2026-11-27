@@ -171,9 +171,10 @@ Each model in a multi-model send gets its own allocation.
 checkout, so a repeated request reuses its receipt and completed preparation never runs twice.
 Recreating a missing checkout initializes submodules and runs the opted-in setup script unless
 setup was explicitly skipped; checkouts older than receipts are never prepared again
-automatically. A restart during a setup script leaves preparation indeterminate, and **Retry**
-asks you to confirm rerunning the script. A changed checkout, repository identity or conflicting
-request is kept for inspection.
+automatically. A restart during a setup script does not hold the thread: a background script is
+reported as interrupted and left for **Rerun setup script**, and a script the agent waits for is
+run again once (see [Worktree setup](#worktree-setup)). A changed checkout, repository identity or
+conflicting request is kept for inspection.
 
 **Kept on disk.** Cancel and rollback keep checkouts with ignored files created by setup (such as
 `.env` or a local database) and report them as retained artifacts. Legacy worktrees with
