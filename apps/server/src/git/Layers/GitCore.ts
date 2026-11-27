@@ -1941,7 +1941,12 @@ const makeGitCore = Effect.gen(function* () {
 
   const materializeWorktreeGroup = (
     group: WorktreeGroupPlan,
-    options: { custom?: boolean; adopt?: boolean } = {},
+    /**
+     * `anyHead` is for repairing a group that already existed: its root may be
+     * on another branch or detached, and is verified as readiness verifies it.
+     * Creating a group leaves it unset, so the root must be on the group's branch.
+     */
+    options: { custom?: boolean; adopt?: boolean; anyHead?: boolean } = {},
   ) =>
     Effect.gen(function* () {
       if (!group.root && !options.custom)
@@ -2040,6 +2045,7 @@ const makeGitCore = Effect.gen(function* () {
         projectRoot: group.projectRoot,
         branch: group.branch,
         threadId: group.threadId,
+        ...(options.anyHead ? { anyHead: true } : {}),
       });
       if (!state?.ready)
         return yield* groupError(group.path, "The worktree group failed verification.");
@@ -2202,7 +2208,9 @@ const makeGitCore = Effect.gen(function* () {
               target,
               "Retry the interrupted approved layout from the setup card.",
             );
-          yield* materializeWorktreeGroup(group, { custom: phase === "done" });
+          // The inspection above allowed the repair with the root on any HEAD;
+          // the check after it must accept the same root.
+          yield* materializeWorktreeGroup(group, { custom: phase === "done", anyHead: true });
           return { recreated: true };
         }
         const result = yield* ensureSingleWorktree(input);

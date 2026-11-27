@@ -124,6 +124,20 @@ it("reconciles an F5-prepared group only when its live branch matches the observ
           }),
         ).toEqual({ recreated: true });
         expect(run(member, "branch", "--show-current")).toBe("new-topic");
+        // The same repair with the root left detached: the nested checkout is
+        // recreated and the repair succeeds the first time, not the second.
+        run(worktree.path, "switch", "-q", "--detach");
+        yield* git.removeWorktree({ cwd: source, path: member });
+        expect(
+          yield* git.ensureWorktree({
+            cwd: project,
+            path: worktree.path,
+            branch: "new-topic",
+            owner: "thread:thread",
+          }),
+        ).toEqual({ recreated: true });
+        expect(run(member, "branch", "--show-current")).toBe("new-topic");
+        expect(run(worktree.path, "branch", "--show-current")).toBe("");
       }).pipe(
         Effect.provide(
           GitCoreTestLive.pipe(
