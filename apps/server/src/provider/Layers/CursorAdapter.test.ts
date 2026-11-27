@@ -1750,6 +1750,72 @@ cursorAdapterHardeningTestLayer("CursorAdapterLive ACP hardening", (it) => {
     }),
   );
 
+  it.effect("sends the shell rules with a stage's request and not again with a steer", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("cursor-guide-steer");
+      const tempDir = yield* scopedTempDir("cursor-guide-steer-");
+      const requestLogPath = path.join(tempDir, "requests.ndjson");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockAgentWrapper({
+          T3_ACP_PROMPT_DELAY_MS: "250",
+          T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+        }),
+      );
+      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      const events: ProviderRuntimeEvent[] = [];
+      const eventFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          events.push(event);
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "unattended-readonly",
+        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+      });
+      const first = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "review the PR",
+          attachments: [],
+          workflowExecutionProfile: "unattended-readonly",
+        })
+        .pipe(Effect.forkChild);
+      while (!events.some((event) => event.type === "turn.started" && event.threadId === threadId))
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 1)));
+      const turnId = events.find(
+        (event) => event.type === "turn.started" && event.threadId === threadId,
+      )!.turnId!;
+      const steer = yield* adapter.steerTurn!({
+        threadId,
+        input: "also check the tests",
+        expectedTurnId: turnId,
+        attachments: [],
+        workflowExecutionProfile: "unattended-readonly",
+      }).pipe(Effect.forkChild);
+      yield* Effect.all([Fiber.join(first), Fiber.join(steer)], { concurrency: "unbounded" });
+      const prompts = (yield* Effect.promise(() => readJsonLines(requestLogPath)))
+        .filter((line) => line.method === "session/prompt")
+        .map((line) =>
+          (line.params as { prompt: ReadonlyArray<{ text?: string }> }).prompt.map(
+            (part) => part.text,
+          ),
+        );
+      // The steer joins a turn that already carries the rules.
+      assert.deepEqual(prompts, [
+        ["review the PR", READ_ONLY_SHELL_GUIDE],
+        ["also check the tests"],
+      ]);
+      yield* adapter.stopSession(threadId);
+      yield* Fiber.interrupt(eventFiber);
+    }),
+  );
+
   it.effect("serializes overlapping sends and completes each turn exactly once", () =>
     Effect.gen(function* () {
       const adapter = yield* CursorAdapter;

@@ -44,7 +44,7 @@ function rawInputValues(record: Record<string, unknown>, keys: ReadonlySet<strin
 }
 
 /** How a provider titles an MCP tool call: `mcp__server__tool`, `MCP: server / tool`, `Run mcp_server_tool`. */
-const MCP_TITLE_PREFIX = /^\s*(?:Run\s+)?mcp(?:__|[_:/.])|^\s*MCP:/i;
+const MCP_TITLE_PREFIX = /^\s*(?:Run\s+)?mcp[_:/.]/i;
 const MCP_TITLE_MENTION = /\bmcp(?:__|[_:/.])/i;
 
 /**
@@ -55,6 +55,13 @@ const MCP_TITLE_MENTION = /\bmcp(?:__|[_:/.])/i;
  * anywhere, except on a shell command: its title is the command's own text, so
  * `rg x src/mcp/tools.ts` would read as an MCP call. There only a title that starts with a
  * provider's MCP form counts, and the command is otherwise classified as the command it is.
+ *
+ * That rests on an assumption: Cursor and Antigravity put the MCP form first in the title of
+ * every MCP call (the three forms above are the ones recorded from them). An MCP tool that
+ * takes a `command` argument, is reported as `execute` with no server key, and is titled some
+ * other way would be classified as the shell command it carries, and run when that command
+ * only reads. A read-only session is given no MCP server but F5's own, so no such tool exists
+ * there today; a provider that starts titling MCP calls differently needs its form added here.
  */
 export function acpMcpToolCall(toolCall: AcpReadOnlyWorkflowToolCall): boolean {
   const record = rawInputRecord(toolCall.rawInput);
@@ -196,4 +203,23 @@ export function acpReadOnlyWorkflowVerdict(
  */
 export function acpReadOnlyRefusalDetail(subject: string | undefined, reason: string): string {
   return subject ? `${subject} (${reason})` : reason;
+}
+
+/**
+ * The detail of a refused computer-control request. Its inputs are never shown, so every such
+ * refusal reads the same and two of them can't be told apart.
+ */
+export const ACP_HIDDEN_TOOL_INPUTS_DETAIL = "Tool inputs hidden while computer control is enabled";
+
+/**
+ * A refused request's parameters without the tool call's id, for the detail of a request that
+ * names no command, path or URL. The id is new on every request, and a stage counts how often
+ * the same operation was refused by comparing details.
+ */
+export function acpRequestWithoutToolCallId(params: unknown): unknown {
+  if (typeof params !== "object" || params === null || Array.isArray(params)) return params;
+  const { toolCall, ...rest } = params as { readonly toolCall?: unknown };
+  if (typeof toolCall !== "object" || toolCall === null || Array.isArray(toolCall)) return params;
+  const { toolCallId: _toolCallId, ...call } = toolCall as { readonly toolCallId?: unknown };
+  return { ...rest, toolCall: call };
 }

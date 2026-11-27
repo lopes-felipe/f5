@@ -36,6 +36,8 @@ const promptResponseText = process.env.T3_ACP_PROMPT_RESPONSE_TEXT;
  */
 const silentRejectedPrompts =
   Number.parseInt(process.env.T3_ACP_SILENT_REJECTED_PROMPTS ?? "0", 10) || 0;
+const preambleChunksBeforePermission =
+  Number.parseInt(process.env.T3_ACP_PREAMBLE_CHUNKS_BEFORE_PERMISSION ?? "0", 10) || 0;
 let toolCallPrompts = 0;
 const promptDelayMs = Math.max(
   0,
@@ -1033,6 +1035,17 @@ const program = Effect.gen(function* () {
               : (process.env.T3_ACP_PERMISSION_COMMAND ?? "cat server/package.json");
           const permissionKind = process.env.T3_ACP_PERMISSION_KIND;
           const antigravityShaped = process.env.T3_ACP_PERMISSION_ANTIGRAVITY_SHAPE === "1";
+          // A preamble written right before asking: these notifications are still queued in the
+          // client when the permission request arrives.
+          for (let chunk = 0; chunk < preambleChunksBeforePermission; chunk++) {
+            yield* agent.client.sessionUpdate({
+              sessionId: requestedSessionId,
+              update: {
+                sessionUpdate: "agent_message_chunk",
+                content: { type: "text", text: `preamble ${chunk} ` },
+              },
+            });
+          }
           const permission = yield* agent.client.requestPermission({
             sessionId: requestedSessionId,
             toolCall: {
