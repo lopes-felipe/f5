@@ -65,8 +65,6 @@ describe("classifyReadOnlyShellCommand", () => {
     "{ git status; } > out",
     "(git status; touch x)",
     "if [ -d x ]; then git log; elif true; then git push; fi",
-    "for f in a b; do cat $f; done",
-    "for f in a b; do cat a; done",
     "while true; do echo x; done",
     "until false; do echo x; done",
     "case x in x) echo x;; esac",
@@ -147,7 +145,6 @@ describe("classifyReadOnlyShellCommand", () => {
     // git grep opens matches in a program with -O, also inside a group or abbreviated
     "git grep -iO'touch /tmp/x' hello",
     "git grep --open-files='touch /tmp/x' hello",
-    "git grep hello",
     // Commands that never exit
     "tail -f log.txt",
     "tail -nF 5 log.txt",
@@ -200,10 +197,12 @@ describe("classifyReadOnlyShellCommand", () => {
       ["git show $1", "arguments must be literal: no substitutions or special expansions"],
       ["SHA=abc; git show ${SHA:-HEAD}", "no substitutions or special expansions"],
       ["SHA=abc; git show ${#SHA}", "no substitutions or special expansions"],
-      // Set only conditionally, inside a compound, or for one command.
-      ["git status && SHA=abc; git show $SHA", "variables must be set on their own"],
-      ["if true; then SHA=abc; fi; git show $SHA", "variables must be set on their own"],
-      ["{ SHA=abc; }; git show $SHA", "variables must be set on their own"],
+      // Set inside a compound, after `||`, in a pipe, or for one command.
+      ["if true; then SHA=abc; fi; git show $SHA", "variables must be set at the top level"],
+      ["{ SHA=abc; }; git show $SHA", "variables must be set at the top level"],
+      ["git status || SHA=abc; git show $SHA", "variables must be set at the top level"],
+      ["true && git status || SHA=abc && git show $SHA", "variables must be set at the top level"],
+      ["git status | SHA=abc; git show $SHA", "variables must be set at the top level"],
       ["SHA=abc git show $SHA", "setting SHA is not allowed"],
       ["git show $SHA; SHA=abc", "$SHA is not set earlier in this command"],
       ["echo $SHA | SHA=abc", "$SHA is not set earlier in this command"],
@@ -289,7 +288,7 @@ describe("classifyReadOnlyShellCommand", () => {
   });
 
   it.each([
-    ["for f in a b; do cat a; done", "For commands are not allowed"],
+    ["while true; do cat a; done", "While commands are not allowed"],
     ["[[ -d x ]]", "TestCommand commands are not allowed"],
     ["! git status", "Negation commands are not allowed"],
     ["time git status", "Time commands are not allowed"],
@@ -337,6 +336,173 @@ describe("classifyReadOnlyShellCommand", () => {
     expect(classifyReadOnlyShellCommand(elifChain(33))).toEqual({
       readOnly: false,
       reason: "too many `elif` clauses",
+    });
+  });
+
+  describe("commands reviewers run", () => {
+    // Each allowance sits next to the form of the same command that writes or runs a program.
+    it.each([
+      "git show abc:src/a.ts | nl -ba | sed -n '160,690p'",
+      "shasum -a 256 package.json",
+      "gh api 'repos/o/r/contents/a.go?ref=abc' --jq .content | base64 -d | nl -ba",
+      "base64 -D -i encoded.txt",
+      "sed -n '240,280p;370,470p' file.ts",
+      "sed -n -e 1,5p -e '$p' file.ts",
+      "sed -n '/^diff --git/,/^@@/p' patch.diff",
+      "sed -n '/export function start/,$p' src/a.ts",
+      "sed -nE '/a|b/I,20p' file.ts",
+      "git grep -n -E 'start|stop' abc -- apps packages",
+      "git grep -n -e alpha -e beta refs/remotes/pr/1 -- src",
+      "git --no-lazy-fetch -C repo log --first-parent --format='%h %s' -8 abc",
+      "git --no-replace-objects --literal-pathspecs -P log -1",
+      "git --version",
+      "git branch",
+      "git branch -a --contains abc",
+      "git branch -avv --no-merged HEAD",
+      "git branch -r --points-at=abc --sort=-committerdate --format='%(refname)'",
+      "git branch -a --list '*991*' 'pr/*'",
+      "git branch --show-current -v",
+      "git tag",
+      "git tag --contains abc",
+      "git tag -l 'v1.*' -n3 --sort=-creatordate",
+      "git remote",
+      "git worktree list --porcelain",
+      "git stash list",
+    ])("allows %s", (command) => {
+      expect(classifyReadOnlyShellCommand(command)).toEqual({ readOnly: true });
+    });
+
+    it.each([
+      ["base64 -o out.bin in.txt", "`base64 -o` writes a file"],
+      ["base64 -Do out.bin", "`base64 -o` writes a file"],
+      ["base64 --output=out.bin in.txt", "`base64 -o` writes a file"],
+      ["base64 --out out.bin in.txt", "`base64 -o` writes a file"],
+      ["sed -n '1w out.txt' f", "`sed` may only print lines"],
+      ["sed -n '1e touch x' f", "`sed` may only print lines"],
+      ["sed -n '1p;w out.txt' f", "`sed` may only print lines"],
+      ["sed -n '1r /etc/passwd' f", "`sed` may only print lines"],
+      ["sed -n 's/a/b/pw out' f", "`sed` may only print lines"],
+      ["sed -n '/a/{p;w out\n}' f", "`sed` may only print lines"],
+      ["sed -n -e 1p -e 'w out' f", "`sed` may only print lines"],
+      ["sed -n --expression='1e id' f", "`sed` may only print lines"],
+      ["sed -e 1p f", "`sed` is only allowed as"],
+      ["sed -n -f script.sed f", "`sed -f` is not allowed"],
+      ["sed -n -i 1p f", "`sed -i` is not allowed"],
+      ["sed -n -e", "`sed -e` needs a script"],
+      ["git grep -O hello", "flags that write or execute"],
+      ["git grep -nO hello", "`git grep -O` opens files in a program"],
+      ["git grep -iOless hello", "`git grep -O` opens files in a program"],
+      ["git grep --open-files-in-pager=less hello", "flags that write or execute"],
+      ["git grep --textconv hello", "flags that write or execute"],
+      ["git -c core.pager=less log", "`git -c` is not allowed"],
+      ["git --exec-path=/tmp log", "`git --exec-path=/tmp` is not allowed"],
+      ["git --version log", "`git --version` is not allowed"],
+      ["git branch new", "`git branch` is only allowed for listing"],
+      ["git branch --contains abc new", "`git branch` is only allowed for listing"],
+      ["git branch --sort=refname new", "`git branch` is only allowed for listing"],
+      ["git branch -d old", "`git branch` is only allowed for listing"],
+      ["git branch -av -D old", "`git branch` is only allowed for listing"],
+      ["git branch --list -m old new", "`git branch` is only allowed for listing"],
+      ["git branch --contains", "`git branch` is only allowed for listing"],
+      ["git branch --cont abc", "`git branch` is only allowed for listing"],
+      // `cmd NAME=value` is an argument like any other.
+      ["git branch topic=1", "`git branch` is only allowed for listing"],
+      ["uniq in=1 out=2", "`uniq INPUT OUTPUT` writes a file"],
+      ["git tag v1", "`git tag` is only allowed for listing"],
+      ["git tag -a v1 -m x", "`git tag` is only allowed for listing"],
+      ["git tag -v v1", "`git tag` is only allowed for listing"],
+      ["git tag -d v1", "`git tag` is only allowed for listing"],
+      ["git tag --contains abc v2", "`git tag` is only allowed for listing"],
+      ["git remote show origin", "`git remote` is only allowed bare"],
+      ["git remote update", "`git remote` is only allowed bare"],
+      ["git worktree add ../x", "`git worktree` is only allowed as `git worktree list`"],
+      ["git worktree list --expire=now extra", "`git worktree` is only allowed as"],
+      ["git worktree prune", "`git worktree` is only allowed as `git worktree list`"],
+      ["git stash", "`git stash` is only allowed as `git stash list`"],
+      ["git stash pop", "`git stash` is only allowed as `git stash list`"],
+      ["git stash list --output=x", "flags that write or execute"],
+      ["git fetch origin", "`git fetch` is not on the read-only allowlist"],
+      ["git ls-remote origin", "`git ls-remote` is not on the read-only allowlist"],
+    ])("refuses %s", (command, reason) => {
+      const verdict = classifyReadOnlyShellCommand(command);
+      expect(verdict.readOnly).toBe(false);
+      expect(verdict.readOnly === false && verdict.reason).toContain(reason);
+    });
+  });
+
+  describe("variables set after `&&`", () => {
+    it.each([
+      // The most common shape Claude reviewers write.
+      "cd repo && F=src/a.ts; git show abc:$F | head -40",
+      'cd repo && P=origin/pr-1; git grep -n start "${P}" -- src | head -3; git show "${P}:x.ts"',
+      // Certainly set for the rest of its own chain.
+      "cd repo && SHA=abc && git show $SHA",
+      "cd repo && A=1 && B=2; echo $A $B",
+      // Set again unconditionally, or to the value it certainly has.
+      "cd repo && SHA=abc; SHA=def; git show $SHA",
+      "SHA=abc; cd repo && SHA=abc; git show $SHA",
+      // Unset, the argument is dropped and the command still only reads.
+      "cd repo && N=20; head -n $N file.ts",
+    ])("allows %j", (command) => {
+      expect(classifyReadOnlyShellCommand(command)).toEqual({ readOnly: true });
+    });
+
+    it.each([
+      // Unset, `$R` vanishes and `notes.txt` becomes the sed script.
+      ["cd repo && R=1,5p; sed -n $R notes.txt", "$R is set after `&&`, so it may be unset here"],
+      ['cd repo && R=1,5; sed -n "${R}p" notes.txt', "$R is set after `&&`"],
+      // Unset, `-C` takes `log` as its directory and `--version` follows.
+      ["cd a && D=repo; git -C $D log", "$D is set after `&&`"],
+      ["cd a && L=--list; git branch $L topic", "$L is set after `&&`"],
+      ["cd a && SHA=abc; cd b && SHA=def; git show $SHA", "SHA is already set"],
+      ["SHA=abc; cd b && SHA=def; git show $SHA", "SHA is already set"],
+      ["cd a && A=x; B=$A/y; cat $B", "B is built from $A, which may be unset here"],
+      ["cd a && A=1 && B=2 && C=3 && D=4; echo $A $B $C $D", "too many variables set after `&&`"],
+      // The value is still what gets classified.
+      ["cd a && F=--output=/tmp/x; git diff $F", "`git diff` flags that write or execute"],
+    ])("refuses %j", (command, reason) => {
+      const verdict = classifyReadOnlyShellCommand(command);
+      expect(verdict.readOnly).toBe(false);
+      expect(verdict.readOnly === false && verdict.reason).toContain(reason);
+    });
+  });
+
+  describe("for loops over literal words", () => {
+    it.each([
+      "for f in a.ts b.ts; do git show abc:$f | head -3; done",
+      "for f in a b; do cat a; done",
+      'for f in src/a.ts "docs/b c.md"; do echo "== $f"; wc -l "$f"; done',
+      "REV=abc; for f in a.ts b.ts; do git show ${REV}:$f | grep -n start; done | head",
+      'for d in apps packages; do for e in ts tsx; do rg --files -g "*.$e" $d | wc -l; done; done',
+      "for f in a b; do if test -f $f; then cat $f; fi; done 2>/dev/null",
+    ])("allows %s", (command) => {
+      expect(classifyReadOnlyShellCommand(command)).toEqual({ readOnly: true });
+    });
+
+    it.each([
+      ["for f in *.md; do cat $f; done", "`for` is only allowed over literal words"],
+      ["for f in changes/*/*.md; do cat $f; done", "`for` is only allowed over literal words"],
+      ["for f in a{1,2}; do cat $f; done", "`for` is only allowed over literal words"],
+      ["for f in ~/x; do cat $f; done", "`for` is only allowed over literal words"],
+      ["for f in $(ls); do cat $f; done", "`for` is only allowed over literal words"],
+      ["L='a b'; for f in $L; do cat $f; done", "`for` is only allowed over literal words"],
+      ["for f; do cat $f; done", "`for` is only allowed over literal words"],
+      ["for f in a b; do rm $f; done", "`rm` is not on the read-only allowlist"],
+      ["for f in a.ts --output=x; do git diff $f; done", "flags that write or execute"],
+      ["for f in a b; do cat $f > $f.bak; done", "redirection targets must be literal"],
+      ["for f in a 'b c'; do cat $f; done", 'quote "$f"'],
+      ["for f in a b; do X=$f; cat $X; done", "variables must be set at the top level"],
+      ["for PATH in a b; do ls; done", "looping over PATH is not allowed"],
+      ["for f in a b; do cat $f; done; cat $f", "$f is not set earlier in this command"],
+      [
+        "for a in 1 2; do for b in 1 2; do for c in 1 2; do echo $a$b$c; done; done; done",
+        "`for` loops are nested too deeply",
+      ],
+      [`for f in ${"x ".repeat(65)}; do cat $f; done`, "`for` lists are limited to 64 words"],
+    ])("refuses %s", (command, reason) => {
+      const verdict = classifyReadOnlyShellCommand(command);
+      expect(verdict.readOnly).toBe(false);
+      expect(verdict.readOnly === false && verdict.reason).toContain(reason);
     });
   });
 

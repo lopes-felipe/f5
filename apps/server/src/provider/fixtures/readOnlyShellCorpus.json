@@ -1,0 +1,648 @@
+[
+  {
+    "command": "git show 4ab5719:apps/server/src/open.ts | nl -ba | sed -n '330,540p'",
+    "readOnly": true
+  },
+  {
+    "command": "git show 477c9b4:apps/web/src/profileState.ts | nl -ba",
+    "readOnly": true
+  },
+  {
+    "command": "git show 1de18709:scripts/build-cli-archive.ts | nl -ba | sed -n '145,265p'; git show 1de18709:apps/server/src/main.ts | nl -ba | sed -n '220,385p'",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && H=099735a4b8e0; git show \"${H}:apps/server/src/codex/CodexOAuthManager.ts\" | sed -n 140,290p",
+    "readOnly": true
+  },
+  {
+    "command": "git grep -n -E 'requirementPrompt|attachments: \\[\\]' 7e3ab925 -- apps/server/src/workflow | head -100",
+    "readOnly": true
+  },
+  {
+    "command": "git grep -n -E 'createAntigravityAccountProcess|profileAccountProcesses' 7fde5794 -- apps/server/src",
+    "readOnly": true
+  },
+  {
+    "command": "git grep -n -E 'test:full|upstream-ports:check|fmt:check' 925adca9a -- .github/workflows package.json",
+    "readOnly": true
+  },
+  {
+    "command": "git grep -n -E 'otherProfiles|repositorySharingWarnings' 477c9b4 -- apps/server/src apps/web/src | head -100",
+    "readOnly": true
+  },
+  {
+    "command": "git show 58c8af421:apps/server/src/serverLayers.ts | nl -ba | sed -n '205,385p'; git grep -n 'McpAppServiceLive' 58c8af421 -- apps/server/src",
+    "readOnly": true
+  },
+  {
+    "command": "git show b9dd703:apps/desktop/src/vm/vmSupervisor.ts | nl -ba | sed -n '250,510p' && git show b9dd703:apps/desktop/src/vm/guestImage.ts | nl -ba | sed -n '120,295p'",
+    "readOnly": true
+  },
+  {
+    "command": "git show 3c06caa:changes/README.md | nl -ba | head -30",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && git show d49061d8f663:apps/web/src/wsRequestScheduler.ts | sed -n '1,260p'",
+    "readOnly": true
+  },
+  {
+    "command": "nl -ba apps/server/src/provider/acp/AntigravityAcpSupport.ts | sed -n '38,285p'; nl -ba apps/server/src/profiles/ProviderAccountService.ts | sed -n '92,235p'",
+    "readOnly": true
+  },
+  {
+    "command": "git show 24af5ad50c32e57485fc7f68dee8a38d1d6bd904:apps/desktop/vm-guest/tests/test_guest_tools.py | nl -ba | rg -n 'def test|archive|egress'",
+    "readOnly": true
+  },
+  {
+    "command": "git show 930cf120:apps/web/src/hooks/useTheme.ts | nl -ba; git show 930cf120:apps/web/src/hooks/useMigrateClientSettings.ts | nl -ba | sed -n '70,330p'",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && git grep -n \"readOnlyEnforcement\" 2e8a986512 -- apps/server/src | grep -v \"\\.test\\.ts\" | head -40",
+    "readOnly": true
+  },
+  {
+    "command": "git grep -n 'supportsThreadCatalog' 5fd24957d230773e9605e0cbad1fe8bfd125dcb2 -- apps/server/src",
+    "readOnly": true
+  },
+  {
+    "command": "git show 3c06caa:docs/providers/antigravity.md | nl -ba | rg -C 8 'exfiltration|allowlist'",
+    "readOnly": true
+  },
+  {
+    "command": "git grep -n -E 'AUTH_COOKIE_NAME|auth/bootstrap|auth/session' 477c9b4 -- apps/desktop/src/main.ts apps/web/src apps/server/src/serverAuth.ts | head -110",
+    "readOnly": true
+  },
+  {
+    "command": "git grep -n -E 'usage\\.summary|usageGetSummary|usageSummary' 1bcf836 -- apps/server/src/wsServer.ts apps/server/src/auth apps/web/src/components/usage",
+    "readOnly": true
+  },
+  {
+    "command": "nl -ba apps/server/src/git/githubApi.ts | sed -n '577,790p'",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && H=58c8af421c; git show \"${H}:apps/server/src/provider/mcpReconcile.ts\" | sed -n 60,135p; git show \"${H}:apps/server/src/provider/codexMcpObservation.ts\" | sed -n 1,60p",
+    "readOnly": true
+  },
+  {
+    "command": "git show 477c9b4:apps/server/src/profiles/RepositorySharing.ts | nl -ba | sed -n '1,145p'; git show 477c9b4:packages/shared/src/profileIdentity.ts | nl -ba",
+    "readOnly": true
+  },
+  {
+    "command": "git show 2edb0ff3:apps/server/src/project/Layers/WorktreeSetup.ts | nl -ba | rg -n -C 9 'layout|group|discoverProject'",
+    "readOnly": true
+  },
+  {
+    "command": "git grep -n -e 'previewWebviewConfig' -e 'backgroundThrottling' 1bcf836 -- apps/desktop apps/web/src | head -100",
+    "readOnly": true
+  },
+  {
+    "command": "git show 2edb0ff3:apps/server/src/checkpointing/Diffs.ts | nl -ba | sed -n '1,230p'; git grep -n -e 'rename from' -e 'parsePatchFiles' 2edb0ff3 -- apps/web/src",
+    "readOnly": true
+  },
+  {
+    "command": "git show 4ab5719:packages/shared/src/commandSummary.ts | nl -ba | tail -375",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && F=/tmp/scratch/WorkflowService.ts; grep -n 'reviewRetries' $F | head -20",
+    "readOnly": true
+  },
+  {
+    "command": "nl -ba apps/web/src/hooks/useSettings.ts | sed -n '1,245p'; rg -n 'useAppSettings|decode|normalizePersisted|persist' apps/web/src/appSettings.ts",
+    "readOnly": true
+  },
+  {
+    "command": "git show 640e1672:apps/web/src/components/workflow/workflowSlots.ts | nl -ba && git show 640e1672:packages/shared/src/workflowProviders.ts | nl -ba",
+    "readOnly": true
+  },
+  {
+    "command": "git show c61e736d:apps/server/src/provider/Layers/CursorProvider.ts | nl -ba | sed -n '375,429p' && git grep -n 'discoverCursorModelsViaAcp(' c61e736d -- apps/server/src",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && git grep -n \"switchWorkspace\" 2edb0ff3de -- apps/server/src/wsServer.ts | head -5",
+    "readOnly": true
+  },
+  {
+    "command": "git show 4ec484e:apps/server/src/wsServer.ts | sed -n '2270,2420p'",
+    "readOnly": true
+  },
+  {
+    "command": "git show 1de18709:docs/vm-profiles.md | nl -ba | sed -n '34,84p'; git show 1de18709:apps/desktop/vm-guest/image.json",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && H=a05ef51adc74070ce9f980680548e8df10faa357; git show \"${H}:apps/server/src/terminal/Layers/Manager.ts\" | grep -n \"onData\\|Queue\\.\\|drain\\|pending\" | head -40",
+    "readOnly": true
+  },
+  {
+    "command": "git show 930cf120:apps/server/src/wsServer.ts | nl -ba | sed -n '2760,2880p'; git grep -n -E 'create.*Protocol|protocol.handle\\(|registerBufferProtocol|loadURL\\(' 930cf120 -- apps/desktop/src | head -95",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && R=review/pr922; git show \"${R}:apps/server/src/wsServer.ts\" | sed -n 8225,8260p; git show \"${R}:apps/server/src/wsServer.ts\" | sed -n 4334,4375p",
+    "readOnly": true
+  },
+  {
+    "command": "git show 7fde5794:apps/server/src/provider/claudeApprovalPresentation.ts | nl -ba | sed -n '1,110p' && git grep -n -E 'derivePendingApprovals' 7fde5794 -- apps/web/src/session-logic.ts",
+    "readOnly": true
+  },
+  {
+    "command": "gh api -H 'Accept: application/vnd.github.raw+json' 'repos/openai/codex/contents/codex-rs/tui/src/hooks_rpc.rs?ref=rust-v0.170.0' | nl -ba | sed -n '12,98p'",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && git grep -n \"contextValue\" ae462caffb9a -- apps/web/src | head;",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && F=/tmp/scratch/CR.ts; sed -n 2450,2620p $F",
+    "readOnly": true
+  },
+  {
+    "command": "git show adb1536a:apps/web/src/routes/-_chat.index.tsx | nl -ba; git show adb1536a:apps/web/src/hooks/useSettings.ts | nl -ba",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && git show 39ecc9de88a3:apps/server/src/observability/Attributes.ts | sed -n 30,70p; git grep -n \"attributes\" 39ecc9de88a3 -- apps/server/src/observability/OtlpExport.ts | head",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && F=\"7a32304481:apps/server/src/prHub/Layers/PrHubService.ts\"; git show \"$F\" | sed -n 900,1010p; git show \"$F\" | sed -n 1085,1120p",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && H=b843ae6ccc; git show \"${H}:scripts/build-desktop-artifact.ts\" | sed -n 560,660p; echo ----; git show \"${H}:scripts/build-desktop-artifact.ts\" | sed -n 800,900p",
+    "readOnly": true
+  },
+  {
+    "command": "git grep -n -e 'groupedEntries' -e 'buildWorkLogEntries' 1bcf836 -- apps/web/src | head -80",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && P=87c3eb14403b62261ce8b0a43ce25132f0abc1e8; git show \"${P}:apps/server/src/orchestration/workflowBehavior.ts\" | sed -n 60,195p",
+    "readOnly": true
+  },
+  {
+    "command": "git show 477c9b4:apps/desktop/vm-guest/rootfs/opt/f5/bin/f5-guest | nl -ba | sed -n '31,45p'; git show 477c9b4:packages/shared/src/profilePaths.ts | nl -ba | head -110",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && F=/tmp/scratch/ca.ts; sed -n '4885,4920p' $F",
+    "readOnly": true
+  },
+  {
+    "command": "git show 2de3762:apps/server/src/provider/codexInventory.ts | nl -ba | sed -n '25,132p;255,370p'; git grep -n -E 'batchWriteConfig|listHooks' 2de3762 -- apps/server/src/codex",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && git show d49061d8f663:apps/server/src/wsServer.ts | sed -n '7640,7700p'; git show d49061d8f663:apps/web/src/lib/sendThreadReply.ts | sed -n '100,200p'",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && F=/tmp/scratch/CR.ts; sed -n 795,860p $F; echo ----; sed -n 2370,2450p $F",
+    "readOnly": true
+  },
+  {
+    "command": "git show 9a1fa524:apps/server/src/main.ts | sed -n '110,345p'; git show 9a1fa524:apps/server/src/profiles/ProfileRegistryStore.ts | sed -n '40,310p'",
+    "readOnly": true
+  },
+  {
+    "command": "git grep -n -e '<GitActionsControl' -e '<DiffPanel' 2edb0ff3 -- apps/web/src",
+    "readOnly": true
+  },
+  {
+    "command": "git grep -n -E 'profileId|cookie' 477c9b4 -- apps/server/src/serverAuth.ts apps/desktop/src | rg -i 'cookie|serverAuth' | head -140",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && git grep -n \"makeGrokAdapter\" bf3e29661ecc -- apps/server/src | grep -v test | head",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && git grep -n -A25 \"function selectPermissionOptionId\" 3d7344b1fb -- apps/server/src | head -40",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && git show 62d5788f9d:apps/web/src/components/PreviewPanel.tsx | sed -n 1340,1480p; git grep -n \"taggedAutomationError\" 62d5788f9d -- apps/desktop/src | head -5",
+    "readOnly": true
+  },
+  {
+    "command": "git show 2edb0ff3:apps/server/src/project/worktreeRepositoryPaths.ts | nl -ba | sed -n '48,221p'; git grep -n 'function withWorktreeLifecycleLock\\|const withWorktreeLifecycleLock' 2edb0ff3",
+    "readOnly": true
+  },
+  {
+    "command": "git grep -n -E 'profileId' 477c9b4 -- apps/web/src | rg -i 'scratch|auth|connect|project' | head -130",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && F=\"7a32304481:apps/server/src/prHub/Layers/PrHubService.ts\"; git show \"$F\" | grep -n \"withPrAccount\\|GitHubCredentialScope\\|generation\" | head -60",
+    "readOnly": true
+  },
+  {
+    "command": "git show 1ea72504:apps/server/src/project/worktreeReadiness.ts && git show 1ea72504:apps/server/src/orchestration/Layers/OrchestrationEngine.ts | nl -ba | sed -n '628,799p'",
+    "readOnly": true
+  },
+  {
+    "command": "git grep -n 'cursorConfigDir' 1bcf836 -- apps/server/src/profiles; git show 1bcf836:apps/server/src/provider/Layers/CursorAdapter.ts | nl -ba | sed -n '532,562p'",
+    "readOnly": true
+  },
+  {
+    "command": "nl -ba apps/server/src/orchestration/codeReviewPost.ts | sed -n '185,317p'; nl -ba apps/server/src/prHub/Layers/PrHubReviewOperations.ts | sed -n '220,266p'; nl -ba scripts/check-changelog.ts | sed -n '118,143p'",
+    "readOnly": true
+  },
+  {
+    "command": "git grep -n -E 'WorkflowDefinition\\.ts|BUILTIN_WORKFLOW_DEFINITIONS|readActivePlanningWorkflow|upsertPlanningWorkflowRecord|transitionStagePendingStart' 0a97216 -- apps packages",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && git cat-file -t 654c9acdb264c83dcbdeb9793da00469560839ca && git show 654c9acdb264:apps/server/src/mcp/pullRequestMcpRuntime.ts | sed -n '250,320p;380,445p'",
+    "readOnly": true
+  },
+  {
+    "command": "git grep -n -E 'watchAntigravityPromptOutcome|readAntigravityChildWork|isAntigravityNativeReaders' 9c4b2a8f6ca46848824f751fe0ce0996a57f5f6d -- apps/server/src | cut -d: -f2-",
+    "readOnly": true
+  },
+  {
+    "command": "gh api 'repos/lima-vm/lima/contents/cmd/limactl/disk.go?ref=v2.3.0' --jq .content | base64 -D | rg -n -A8 -B5 'format|NewDisk'",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && H=f0fbe8383e7c6c5bcb0b510e66ed8f33569e466d; git show \"${H}:apps/desktop/src/cliCommand.ts\" | sed -n 55,92p; git show \"${H}:apps/web/src/themeBoot.ts\" | grep -n \"colorScheme\\|color-scheme\\|dark\" | head",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && R=adb1536a; git show \"$R:apps/web/src/components/onboarding/HomeEmptyStatePanel.tsx\" | sed -n 140,360p; echo ----; git show \"$R:apps/web/src/hooks/useCopyToClipboard.ts\" | sed -n 60,140p",
+    "readOnly": false,
+    "reason": "write ${R} with braces before `:`: zsh reads $R:… as a modifier or subscript"
+  },
+  {
+    "command": "cd /work/repo && H=fe627579130566b6c8f0a0e7ae391c316bd2b435; git grep -n \"sideChat\" \"${H}\" -- apps/server/src packages/contracts/src | grep -v \"\\.test\\.ts\" | head -30",
+    "readOnly": true
+  },
+  {
+    "command": "gh api 'repos/lima-vm/lima/contents/cmd/limactl/main.go?ref=v2.3.0' --jq .content | base64 -d | rg -n -C 5 'Exit|Execute'",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && H=152c58c81d387d89d49270525992bd12dc6a43af; git show \"${H}:packages/contracts/src/settings.ts\" | sed -n '90,300p'",
+    "readOnly": true
+  },
+  {
+    "command": "gh api repos/o/r/contents/scripts/coordinate-releases.ts?ref=e0d368d83c6d910ce72ce644972366a3082cd6a8 --jq '.content' | base64 -d",
+    "readOnly": true
+  },
+  {
+    "command": "git show 17c81c150982f1966a863b571995b95cd29534ae:apps/server/src/wsServer.ts | nl -ba | rg 'switchGitWorkspace|gitCheckout|gitRunStacked'",
+    "readOnly": true
+  },
+  {
+    "command": "git grep -nE 'expectedVersion|disabledCommonServers' 099735a4b8e012ad601a941c23acd6e1fd42d5c3 -- apps/server/src/mcp | cut -c 42- | head -130",
+    "readOnly": true
+  },
+  {
+    "command": "git grep -nE 'onServerWelcome|mcpStatusUpdated|refetchOnReconnect' 099735a4b8e012ad601a941c23acd6e1fd42d5c3 -- apps/web/src/wsNativeApi.ts apps/web/src/queryClient.ts apps/web/src/routes apps/web/src/lib/ws* | cut -c 42-",
+    "readOnly": true
+  },
+  {
+    "command": "git grep -nE 'reason: .*hub|publish.*StatusUpdated|resolve.*Server' 099735a4b8e012ad601a941c23acd6e1fd42d5c3 -- apps/server/src/mcp/hub/McpHubAuthService.ts apps/server/src/mcp/hub/McpHubOAuthService.ts | cut -c 42-",
+    "readOnly": true
+  },
+  {
+    "command": "git grep -nE 'mcpHubOAuth|McpHubOAuth|signOutHubServer|startHubSignIn' 099735a4b8e012ad601a941c23acd6e1fd42d5c3 -- apps/server/src | cut -c 42- | rg -v '\\.test' | head -75",
+    "readOnly": true
+  },
+  {
+    "command": "git show 925adca9a:apps/server/src/provider/acp/AntigravityEditLocation.ts | nl -ba && git grep -n -E 'makeAntigravityToolNormalizer|normalizeToolCall|antigravity.*ormaliz' 925adca9a -- apps/server/src",
+    "readOnly": true
+  },
+  {
+    "command": "git grep -n -E 'display.*diff|patch parser|parsePatch' 925adca9a -- apps/web/src | rg 'File|Diff|Patch' | head -70",
+    "readOnly": true
+  },
+  {
+    "command": "git grep -n -E 'getMcpAppToolInfo|sessionIdentity.*approved|McpAppToolInfo' 58c8af421 -- apps/web/src | head -55; git show 58c8af421:apps/server/src/mcp/hub/McpHubUpstream.ts | nl -ba | sed -n '316,341p'",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && git status -sb | head -5 && git log --oneline -3 && git branch -a --list '*991*' | head; git for-each-ref --format='%(refname) %(objectname:short)' refs/remotes/origin | head -40",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && R=1ea72504ad41399c852a17f340babef7ead17bd2; git show \"${R}:apps/server/src/prHub/forgeHub.ts\" | sed -n 300,360p",
+    "readOnly": true
+  },
+  {
+    "command": "git show 930cf120:apps/web/index.html | nl -ba; git grep -n -E 'script-src|unsafe-eval|mcpAppAllowAttribute|htmlRenderDocument' 930cf120 -- apps/web/src apps/server/src | head -120",
+    "readOnly": true
+  },
+  {
+    "command": "git grep -n -E 'clearThreadDraft:|draftThreadsByThreadId|WorkspaceDraft' 1bcf836 -- apps/web/src/composerDraftStore.ts | tail -40",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && git grep -n -i \"searchThread\\|findThreadSearchOccurrences\\|threadFindText\" ae462caffb9a -- apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts packages/shared/src | head -20",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && git grep -n \"retryFailedReads\\|identityForSnapshot\" 22134ea3e7 -- apps/server/src | grep -v \"\\.test\\.\"",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && git grep -n \"storageInvalidated\" 2bf3550a6a -- apps/web/src apps/server/src | grep -v \"\\.test\\.\" | head -12",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && git grep -n \"ServerSettingsPatch\" c417cbf6 -- apps/server/src packages/contracts/src | grep -v \"test\\|settings.ts:\" | head",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && F=/tmp/scratch/INV.ts; sed -n 2290,2345p $F; sed -n 880,915p $F",
+    "readOnly": true
+  },
+  {
+    "command": "git show 899694f767:apps/server/src/workflowPlatform.ts | nl -ba | sed -n '123,208p;1218,1269p'; git show 899694f767:apps/server/src/orchestration/workflowRecordBuilders.ts | nl -ba | rg -C 5 'crossReviews|additionalBranches'",
+    "readOnly": true
+  },
+  {
+    "command": "git grep -n -E 'layout.*(script|command)|managed group|worktree group' 17c81c150982f1966a863b571995b95cd29534ae -- 'apps/server/src/**/*.test.ts'",
+    "readOnly": true
+  },
+  {
+    "command": "git grep -n -e 'getServerHttpOrigin()' -e 'ATTACHMENT_PROFILE_QUOTA_BYTES' 7e3ab925 -- apps/web/src apps/server/src packages/contracts/src | head -90",
+    "readOnly": true
+  },
+  {
+    "command": "git show 7e3ab925:packages/contracts/src/attachmentUpload.ts | nl -ba | head -65; git grep -n 'type.*Api\\|attachments: {' 7e3ab925 -- apps/web/src/nativeApi.ts",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && git show b9735209af:apps/desktop/src/appIcon.ts | sed -n 1,260p",
+    "readOnly": true
+  },
+  {
+    "command": "cd /tmp/scratch && sed -n 8296,8470p wsServer.ts",
+    "readOnly": true
+  },
+  {
+    "command": "git status --short --branch && git rev-parse HEAD && git remote -v",
+    "readOnly": true
+  },
+  {
+    "command": "git cat-file -t 640e1672cf8c817594076fa279810bb6bd71bc05 && git cat-file -t f0a9602e4d992073e2fb51873827c48877e6f2e4",
+    "readOnly": true
+  },
+  {
+    "command": "cd /tmp/scratch && sed -n 1120,1145p pi.ts; sed -n 1050,1062p pi.ts",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && git show ae462caffb9a:apps/web/src/index.css | sed -n 1140,1170p; git show ae462caffb9a:apps/web/src/index.css | sed -n 1228,1270p",
+    "readOnly": true
+  },
+  {
+    "command": "git rev-parse HEAD && git status --short && git remote -v",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && git show upstream/main:packages/shared/src/shell.ts | sed -n 580,665p",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && git show \"adb1536a:apps/web/src/hooks/useSettings.ts\" | sed -n 150,260p",
+    "readOnly": true
+  },
+  {
+    "command": "gh pr diff 761 --repo o/r",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && grep -n \"cursor\" packages/contracts/src/model.ts | head -40",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && gh pr checks 894 2>&1 | grep -v codesign | head -20",
+    "readOnly": true
+  },
+  {
+    "command": "git cat-file -t 1de18709 && git cat-file -t 9961f86f && git merge-base 9961f86f 1de18709",
+    "readOnly": true
+  },
+  {
+    "command": "git diff d6fda059 f0fbe838 -- apps/web",
+    "readOnly": true
+  },
+  {
+    "command": "git cat-file -t 58c8af421c2a2285f89ed429ab1d623a407f24f4 && git merge-base 099735a4b8e012ad601a941c23acd6e1fd42d5c3 58c8af421c2a2285f89ed429ab1d623a407f24f4",
+    "readOnly": true
+  },
+  {
+    "command": "git show 4ec484e:apps/web/src/orchestration/eventRouter.ts | rg -n 'replay|merge|sequence'",
+    "readOnly": true
+  },
+  {
+    "command": "git status --short; git branch --show-current; git rev-parse HEAD; git remote -v",
+    "readOnly": true
+  },
+  {
+    "command": "git diff f84f519d2e 899694f767 -- apps/server/src/upstreamPorts apps/web/src/components/upstream",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && git show b9735209af:apps/desktop/src/appIcon.ts | cat -n",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && git show 2edb0ff3de:apps/server/src/git/Layers/GitCore.ts | grep -n \"projectIdentity\" | head -10",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && gh pr view 898 --json title,body,headRefName,headRefOid,baseRefName,files,commits && git rev-parse HEAD",
+    "readOnly": true
+  },
+  {
+    "command": "gh pr diff https://github.com/o/r/pull/952",
+    "readOnly": true
+  },
+  {
+    "command": "git diff f6a44a6...1bcf836 -- apps/desktop/src/main.ts apps/desktop/src/preview/PreviewRuntime.ts apps/desktop/src/preview/previewWake.ts",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && gh pr view 838 --json title,body,headRefName,headRefOid,baseRefName,files,state && git rev-parse HEAD",
+    "readOnly": true
+  },
+  {
+    "command": "git show 6f3f0d46ea98 --format=fuller --stat",
+    "readOnly": true
+  },
+  {
+    "command": "cd /work/repo && H=099735a4b8e0; git show $H:apps/server/src/mcp/McpRuntimeService.ts | sed -n 380,470p",
+    "readOnly": false,
+    "reason": "write ${H} with braces before `:`: zsh reads $H:… as a modifier or subscript"
+  },
+  {
+    "command": "bun lint",
+    "readOnly": false,
+    "reason": "`bun` is not on the read-only allowlist"
+  },
+  {
+    "command": "git show --stat 134ab31276df || /opt/homebrew/bin/gh api repos/o/upstream/commits/134ab31276df --jq '[.commit.message, [.files[].filename]]'",
+    "readOnly": false,
+    "reason": "programs must be named without a path"
+  },
+  {
+    "command": "gh api --allow-escape-sequences repos/o/r/actions/jobs/138596358501/logs | rg -a -i 'FAIL |failed|AssertionError|TypeError|ReferenceError' | tail -50",
+    "readOnly": false,
+    "reason": "`gh api --allow-escape-sequences` is not allowed"
+  },
+  {
+    "command": "git fetch upstream main",
+    "readOnly": false,
+    "reason": "`git fetch` is not on the read-only allowlist"
+  },
+  {
+    "command": "curl -L -s https://registry.npmjs.org/@pierre/diffs/-/diffs-1.5.2.tgz | tar -xzOf - package/dist/components/CodeView.js | rg -n -C 7 'onLineNumberClick|annotationSide'",
+    "readOnly": false,
+    "reason": "`curl` is not on the read-only allowlist"
+  },
+  {
+    "command": "cd /work/repo && S() { git show \"origin/pr791:$1\"; }; S apps/web/src/components/prHub/PrQueueTable.tsx | sed -n '160,195p'; echo ==; S apps/server/src/prHub/forgeHub.ts | sed -n '384,440p'",
+    "readOnly": false,
+    "reason": "Function commands are not allowed"
+  },
+  {
+    "command": "cd /work/repo && git show pr/846:apps/server/src/orchestration/Layers/CodeReviewWorkflowService.ts > /tmp/scratch/CR.ts; F=/tmp/scratch/CR.ts; sed -n 1090,1290p $F",
+    "readOnly": false,
+    "reason": "output may only be redirected to /dev/null"
+  },
+  {
+    "command": "rg -n 'with.*Lock|Semaphore|forEach\\(|concurrency:|retry|context.*budget' apps/server/src/orchestration/Layers/{WorkflowService,CodeReviewWorkflowService,InvestigationWorkflowService}.ts",
+    "readOnly": false,
+    "reason": "arguments must be literal: no command substitutions or other expansions"
+  },
+  {
+    "command": "gh pr checks 941 --repo o/r | awk -F '\\t' '$1 == \"static\" || $1 == \"test\" || $1 == \"desktop\" || $1 == \"Changelog\" || $1 ~ /windows-build|update-rehearsal/'",
+    "readOnly": false,
+    "reason": "`awk` is not on the read-only allowlist"
+  },
+  {
+    "command": "GITHUB_REPOSITORY=o/r PR_NUMBER=951 node scripts/check-changelog.ts",
+    "readOnly": false,
+    "reason": "setting GITHUB_REPOSITORY is not allowed"
+  },
+  {
+    "command": "git show b1508672a63c && git rev-parse upstream/main && git ls-remote upstream refs/heads/main && gh pr view 16694 --repo o/upstream --json mergeCommit,commits",
+    "readOnly": false,
+    "reason": "`git ls-remote` is not on the read-only allowlist"
+  },
+  {
+    "command": "cd /work/repo && S=/tmp/scratch; git show 87c3eb1440:apps/server/src/orchestration/Layers/WorkflowService.ts > $S/ws.ts; sed -n '2585,2640p;2790,2830p' $S/ws.ts; echo ----; sed -n '7255,7290p' $S/ws.ts",
+    "readOnly": false,
+    "reason": "redirection targets must be literal"
+  },
+  {
+    "command": "cd /work/repo && for f in changes/*/*.md; do n=$(wc -l <\"$f\"); [ \"$n\" -gt 1 ] && echo \"$f $n\"; done | head; ls changes; ls scripts | grep -i change; gh pr checks 779 2>/dev/null | head -20",
+    "readOnly": false,
+    "reason": "`for` is only allowed over literal words: `for f in a.ts b.ts; do …; done`"
+  },
+  {
+    "command": "ls -la && git reflog -18 --all --oneline && rg --files --hidden -g '*antigravity*' -g '!node_modules' -g '!.git'",
+    "readOnly": false,
+    "reason": "`git reflog` is not on the read-only allowlist"
+  },
+  {
+    "command": "review_dir=$(mktemp -d /tmp/f5-neon-review.XXXXXX) && git archive 1b2d9e7a63 | tar -x -C \"$review_dir\" && print -r -- \"$review_dir\" && cd \"$review_dir\" && bun install --frozen-lockfile --ignore-scripts",
+    "readOnly": false,
+    "reason": "setting review_dir is not allowed: write the value literally instead"
+  },
+  {
+    "command": "node -p 'JSON.stringify(Object.fromEntries(Object.entries(require(\"./package.json\").scripts).filter(([k])=>/^(fmt|lint|typecheck|test:full|upstream-ports:check)$/.test(k))))'",
+    "readOnly": false,
+    "reason": "`node` is not on the read-only allowlist"
+  },
+  {
+    "command": "GIT_DIR=/work/repo/.git bun run upstream-ports:check",
+    "readOnly": false,
+    "reason": "setting GIT_DIR is not allowed"
+  },
+  {
+    "command": "cd /work/repo && D=/tmp/scratch && mkdir -p $D && gh pr diff 791 > $D/pr791.diff 2>/dev/null; wc -l $D/pr791.diff; git fetch origin pull/791/head:refs/remotes/origin/pr791 2>&1 | tail -1; git rev-parse origin/pr791",
+    "readOnly": false,
+    "reason": "`mkdir` is not on the read-only allowlist"
+  },
+  {
+    "command": "command -v codex && codex --version",
+    "readOnly": false,
+    "reason": "`codex` is not on the read-only allowlist"
+  },
+  {
+    "command": "cd /work/repo && git log -8 --format='%h %ae %s' origin/main; git config user.email; gh repo view o/r --json visibility",
+    "readOnly": false,
+    "reason": "`git config` is not on the read-only allowlist"
+  },
+  {
+    "command": "cd /work/repo && git grep -n -E \"runMigrations|MigrationsLive|repairUnreleasedScheduledTaskMigrations\\(|runIncrementalMigrations\" pr/889 -- 'apps/server/src/**/*.ts' ':!*test.ts' | sed 's/^pr\\/889://'",
+    "readOnly": false,
+    "reason": "`sed` is only allowed as `sed -n '<lines or /regex/>p'`"
+  },
+  {
+    "command": "git show --stat 0ea3c0243fb5 && git show --format= --name-only 0ea3c0243fb5 | xargs git log --first-parent --oneline c00f1172eed4..upstream/main -- && git ls-remote upstream refs/heads/main",
+    "readOnly": false,
+    "reason": "`xargs` is not on the read-only allowlist"
+  },
+  {
+    "command": "for i in 1 2 3 4; do child=$(pgrep -P 98646 | head -1); if [ -n \"$child\" ]; then lsof -a -p \"$child\" -d cwd; fi; sleep 0.3; done",
+    "readOnly": false,
+    "reason": "variables must be set at the top level, on their own or in an `&&` chain, not inside `if`, `{ }`, `( )`, a loop, a pipe or after `||`: or write the value literally"
+  },
+  {
+    "command": "cd /work/repo/apps/server && ls node_modules/.bin/vitest >/dev/null 2>&1 && env -i HOME=\"$HOME\" PATH=\"$PATH\" TMPDIR=/private/tmp node_modules/.bin/vitest run src/git/githubApi.test.ts 2>&1 | tail -15",
+    "readOnly": false,
+    "reason": "$HOME is not set earlier in this command: set HOME=value before using it, or write the value literally"
+  },
+  {
+    "command": "cd /work/worktree && git status --short | head && ls node_modules >/dev/null 2>&1 && echo has_node_modules; cd apps/web && timeout 300 npx vitest run src/lib/prHubReactQuery.test.ts 2>&1 | tail -15",
+    "readOnly": false,
+    "reason": "`timeout` is not on the read-only allowlist"
+  },
+  {
+    "command": "python3 -c 'import pathlib,re; s=pathlib.Path(\"apps/server/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs\").read_text(); [print(s[m.start()-170:m.end()+135]) for m in re.finditer(r\"\\bTI\\b\",s)]'",
+    "readOnly": false,
+    "reason": "`python3` is not on the read-only allowlist"
+  },
+  {
+    "command": "npm view effect time --json 2>/dev/null | grep -E '\"4\\.1\\.[0-9]+\"'",
+    "readOnly": false,
+    "reason": "`npm` is not on the read-only allowlist"
+  },
+  {
+    "command": "cd /work/repo && git show cb0553ea3941:packages/shared/src/markdownMath.test.ts | grep -n \"PATH\\|HOME\\|\\\\$5\\|currency\\|space\\|whitespace\" | head -30; git show cb0553ea3941:packages/shared/src/markdownMath.ts | head -67",
+    "readOnly": false,
+    "reason": "arguments must be literal: no substitutions or special expansions"
+  },
+  {
+    "command": "cd /work/repo && R=review/pr922; F=\"${R}:apps/server/src/provider/Layers/ClaudeAdapter.ts\"; git show \"$F\" | grep -n \"queryEnvironment\\b\\|queryEnvironment =\\|processEnvironment\" | head -30",
+    "readOnly": false,
+    "reason": "F is built from $R, which may be unset here: set R on a line of its own first"
+  },
+  {
+    "command": "cd /tmp && agent --version 2>&1 | head -3; agent --help 2>&1 | head -120",
+    "readOnly": false,
+    "reason": "`agent` is not on the read-only allowlist"
+  },
+  {
+    "command": "S=/tmp/scratch/pr770; cd $S/run && sed -i '' 's/\"x:\\/\\/\"\\*3000:/\"xs3000\":/' p.ts && bun p.ts",
+    "readOnly": false,
+    "reason": "`sed -i` is not allowed"
+  },
+  {
+    "command": "bash -c 'cd /nonexistent-f5-review-directory || true && pwd'; bash -c 'echo \"-n\"; printf \"first\\nsecond\\n\"'; git cat-file -e HEAD:missing && git status --porcelain=v1 --untracked-files=no",
+    "readOnly": false,
+    "reason": "`bash` is not on the read-only allowlist"
+  }
+]
