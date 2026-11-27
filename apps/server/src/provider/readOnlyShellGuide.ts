@@ -2,7 +2,8 @@
  * What a model is told, before it runs anything, about the shell in a read-only workflow stage
  * that F5's classifier enforces (`readOnlyWorkflowShell.ts`). Codex, Cursor and Antigravity are
  * only told "rejected" when F5 refuses a command, with no reason, so without this they guess,
- * and a stage fails once it keeps guessing wrong.
+ * and a stage fails once it keeps guessing wrong. Claude is told the reason, but only after it
+ * has spent a call finding out.
  *
  * The examples are data so that `readOnlyShellGuide.test.ts` can run each one through the
  * classifier: the guide can't promise a command the classifier refuses, or warn against one it
@@ -30,9 +31,9 @@ export const READ_ONLY_SHELL_GUIDE_EXAMPLES = {
 const bullets = (commands: ReadonlyArray<string>) =>
   commands.map((command) => `  ${command}`).join("\n");
 
-export const READ_ONLY_SHELL_GUIDE = `# Read-Only Shell Rules
+const guide = (whatARefusalSays: string) => `# Read-Only Shell Rules
 
-F5 checks every shell command in this stage and runs only the ones it can tell just read. A refused command did not run, and you are told "rejected" without a reason. Do not retry it or ask again: rewrite it in a form below, or go on without that result.
+F5 checks every shell command in this stage and runs only the ones it can tell just read. A refused command did not run, and ${whatARefusalSays}. Do not retry it or ask again: rewrite it in a form below, or go on without that result.
 
 Runs:
 - Reading and searching: cat, head, tail, nl, wc, ls, stat, file, find, fd, rg, grep, diff, cmp, sort, uniq, cut, tr, jq, shasum, base64 -d, and \`sed -n\` with print commands only.
@@ -49,3 +50,9 @@ Refused:
 - Network: \`git fetch\`, \`git ls-remote\`, \`curl\`. Read remote state with \`gh\` or F5's forge tools.
 - A program named with a path (\`/usr/bin/grep\`): use the bare name.
 ${bullets(READ_ONLY_SHELL_GUIDE_EXAMPLES.refused)}`;
+
+/** For Codex, Cursor and Antigravity, whose approval protocols carry no reason back. */
+export const READ_ONLY_SHELL_GUIDE = guide('you are told "rejected" without a reason');
+
+/** For Claude, which reads the classifier's reason in the denial of its tool call. */
+export const READ_ONLY_SHELL_GUIDE_WITH_REASONS = guide("the refusal says why");

@@ -20,7 +20,7 @@ import {
   SHARED_ASSISTANT_CONTRACT_VERSION,
   splitUtf8Chunks,
 } from "./sharedAssistantContract";
-import { READ_ONLY_SHELL_GUIDE } from "./readOnlyShellGuide.ts";
+import { READ_ONLY_SHELL_GUIDE, READ_ONLY_SHELL_GUIDE_WITH_REASONS } from "./readOnlyShellGuide.ts";
 
 describe("buildCodexAdditionalContext", () => {
   it("uses tool availability in Default mode instead of claiming questions are unavailable", () => {
@@ -447,6 +447,15 @@ describe("sharedAssistantContract", () => {
     expect(attended).toContain("# Workflow Read-Only Host Contract");
     expect(attended).toContain("Clarifying questions are supported");
     expect(attended).not.toContain("No user reply path exists");
+    // F5's classifier decides every Claude shell command in a stage, and Claude reads why.
+    expect(attended).toContain(READ_ONLY_SHELL_GUIDE_WITH_REASONS);
+    expect(attended.indexOf("# Read-Only Shell Rules")).toBeGreaterThan(
+      attended.indexOf("# Workflow Read-Only Host Contract"),
+    );
+    expect(attended).not.toContain("without a reason");
+    expect(buildClaudeAssistantInstructions({ interactionMode: "plan" })).not.toContain(
+      "# Read-Only Shell Rules",
+    );
 
     const unattended = codexInstructionsText({
       interactionMode: "plan",
@@ -580,7 +589,7 @@ describe("sharedAssistantContract", () => {
   it("exposes stable version metadata", () => {
     expect(SHARED_ASSISTANT_CONTRACT_VERSION).toBe("v8");
     expect(CODEX_SUPPLEMENT_VERSION).toBe("v4");
-    expect(CLAUDE_SUPPLEMENT_VERSION).toBe("v14");
+    expect(CLAUDE_SUPPLEMENT_VERSION).toBe("v15");
     expect(buildInstructionProfile({ provider: "codex" })).toEqual({
       contractVersion: "v8",
       providerSupplementVersion: "v4",
@@ -588,7 +597,7 @@ describe("sharedAssistantContract", () => {
     });
     expect(buildInstructionProfile({ provider: "claudeAgent" })).toEqual({
       contractVersion: "v8",
-      providerSupplementVersion: "v14",
+      providerSupplementVersion: "v15",
       strategy: "claude.append_system_prompt",
     });
   });

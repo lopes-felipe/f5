@@ -1636,14 +1636,16 @@ describe("ClaudeAdapter agent browser", () => {
       const hook = options.hooks!.PreToolUse!.at(-1)!.hooks[0]!;
       const canUseTool = options.canUseTool!;
       const sdk = { name: "f5_preview", source: "sdk" };
-      // Read-only stages run in plan mode: the hook leaves non-edit tools to native
-      // evaluation, which escalates them to canUseTool and its workflow policy.
-      const hookResponse = yield* Effect.promise(() =>
-        hook(preToolUse("mcp__f5_preview__preview_click", sdk), undefined, {
-          signal: new AbortController().signal,
-        }),
-      );
-      assert.equal("hookSpecificOutput" in hookResponse, false);
+      // The hook decides MCP tools itself: an allow rule for one would otherwise run it
+      // before canUseTool is asked.
+      const hookDecision = (tool: string) =>
+        Effect.promise(() =>
+          hook(preToolUse(`mcp__f5_preview__${tool}`, sdk), undefined, {
+            signal: new AbortController().signal,
+          }),
+        );
+      assert.equal("hookSpecificOutput" in (yield* hookDecision("preview_click")), true);
+      assert.equal("hookSpecificOutput" in (yield* hookDecision("preview_snapshot")), false);
       const decide = (toolName: string, input: Record<string, unknown> = {}, mcpServer = sdk) =>
         Effect.promise(() =>
           canUseTool(
@@ -3049,7 +3051,7 @@ describe("ClaudeAdapterLive", () => {
   });
 
   it.effect(
-    "refuses read-only stages where a trusted folder's committed settings allow writes",
+    "starts read-only stages whatever a folder's allow rules say, but not past a command setting",
     () => {
       const root = mkdtempSync(path.join(os.tmpdir(), "f5-claude-ro-config-"));
       const repo = path.join(root, "repo");
@@ -3062,6 +3064,10 @@ describe("ClaudeAdapterLive", () => {
         JSON.stringify({ projects: { [repo]: { hasTrustDialogAccepted: true } } }),
       );
       const settingsFile = path.join(repo, ".claude", "settings.json");
+      // The mandatory hook refuses these before an allow rule applies, so they block nothing.
+      const allowRules = { permissions: { allow: ["Write", "Bash(python3:*)", "Bash(touch:*)"] } };
+      writeFileSync(settingsFile, JSON.stringify(allowRules));
+      execFileSync("git", ["-C", repo, "add", ".claude/settings.json"]);
       const harness = makeHarness({
         processEnvironment: { ...process.env, CLAUDE_CONFIG_DIR: configDir, HOME: root },
       });
@@ -3074,14 +3080,21 @@ describe("ClaudeAdapterLive", () => {
           cwd: repo,
           workflowExecutionProfile: "unattended-readonly",
         });
-        writeFileSync(settingsFile, JSON.stringify({ permissions: { allow: ["Write"] } }));
-        execFileSync("git", ["-C", repo, "add", ".claude/settings.json"]);
+        yield* adapter.sendTurn({ threadId: session.threadId, input: "Review", attachments: [] });
 
+        // A setting that runs a program outside tool calls never reaches the hook.
+        writeFileSync(
+          settingsFile,
+          JSON.stringify({
+            ...allowRules,
+            statusLine: { type: "command", command: "./status.sh" },
+          }),
+        );
         const turnError = yield* adapter
           .sendTurn({ threadId: session.threadId, input: "Review", attachments: [] })
           .pipe(Effect.flip);
         assert.ok(Schema.is(ProviderAdapterValidationError)(turnError));
-        assert.include(turnError.message, `${settingsFile} allows \`Write\``);
+        assert.include(turnError.message, `${settingsFile} sets \`statusLine\``);
         yield* adapter.stopSession(THREAD_ID);
 
         const startError = yield* adapter
@@ -3625,7 +3638,73 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect("leaves Bash to native plan-mode evaluation in read-only workflows", () => {
+  it.effect("refuses a writing shell command in the mandatory hook and records why", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const events: ProviderRuntimeEvent[] = [];
+      const listener = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          events.push(event);
+        }),
+      ).pipe(Effect.forkChild);
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "unattended-readonly",
+      });
+      const hook = harness.getLastCreateQueryInput()!.options.hooks!.PreToolUse!.at(-1)!.hooks[0]!;
+      // An allow rule such as `Bash(touch:*)` would run this before canUseTool is asked.
+      const response = yield* Effect.promise(() =>
+        hook(
+          {
+            hook_event_name: "PreToolUse",
+            session_id: "native",
+            cwd: "/tmp",
+            transcript_path: "/tmp/transcript",
+            tool_name: "Bash",
+            tool_input: { command: "touch marker" },
+            tool_use_id: "workflow-bash-write-hook",
+          },
+          undefined,
+          { signal: new AbortController().signal },
+        ),
+      );
+      assert.ok("hookSpecificOutput" in response);
+      const output = response.hookSpecificOutput;
+      assert.equal(output?.hookEventName, "PreToolUse");
+      if (output?.hookEventName === "PreToolUse") {
+        assert.equal(output.permissionDecision, "deny");
+        assert.include(
+          output.permissionDecisionReason ?? "",
+          "`touch` is not on the read-only allowlist",
+        );
+      }
+      yield* Effect.promise(() =>
+        vi.waitFor(() =>
+          assert.ok(
+            events.some(
+              (event) => event.type === "request.resolved" && event.payload.decision === "decline",
+            ),
+          ),
+        ),
+      );
+      const opened = events.filter((event) => event.type === "request.opened");
+      assert.equal(opened.length, 1);
+      const payload = opened[0]?.type === "request.opened" ? opened[0].payload : undefined;
+      // Counted toward the stage's refusal limit, with the reason the timeline shows.
+      assert.equal(payload?.autoDeclined, true);
+      assert.include(payload?.detail ?? "", "touch marker");
+      assert.include(payload?.detail ?? "", "(`touch` is not on the read-only allowlist)");
+      yield* Fiber.interrupt(listener);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("passes a reading shell command through the mandatory hook", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
@@ -5012,9 +5091,15 @@ describe("ClaudeAdapterLive", () => {
       const read = yield* Effect.promise(() =>
         canUseTool("Read", { file_path: "src/a.ts" }, options),
       );
+      const shellReads = yield* Effect.all(
+        ["rg -n workflow src", "git show HEAD:README.md | nl -ba"].map((command) =>
+          Effect.promise(() => canUseTool("Bash", { command }, options)),
+        ),
+      );
       const shellProbes = yield* Effect.all(
         [
-          "rg -n workflow src",
+          "touch pwned",
+          "python3 -c 'print(1)'",
           "cat README.md & touch pwned",
           "git status & rm -rf ./src",
           "cat `touch pwned`",
@@ -5030,10 +5115,20 @@ describe("ClaudeAdapterLive", () => {
         canUseTool("AskUserQuestion", { questions: [] }, options),
       );
       assert.equal(read?.behavior, "allow");
+      assert.deepEqual(
+        shellReads.map((result) => result?.behavior),
+        ["allow", "allow"],
+      );
       assert.equal(
         shellProbes.every((result) => result?.behavior === "deny"),
         true,
       );
+      const refused = shellProbes[0];
+      assert.equal(refused?.behavior, "deny");
+      if (refused?.behavior === "deny") {
+        assert.include(refused.message, "`touch` is not on the read-only allowlist");
+        assert.include(refused.message, "Do not retry it");
+      }
       assert.equal(misleadingMcp?.behavior, "deny");
       assert.equal(webSearch?.behavior, "deny");
       assert.equal(question?.behavior, "deny");

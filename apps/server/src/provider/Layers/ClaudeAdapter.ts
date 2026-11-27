@@ -89,6 +89,7 @@ import { randomUUID } from "node:crypto";
 import {
   CLAUDE_PLAN_MODE_EDIT_DENIAL,
   claudeMandatoryPolicyOptions,
+  claudeReadOnlyShellRefusal,
   evaluateClaudeMandatoryPolicy,
   isClaudePlanModeWorkspaceEdit,
   type McpToolProvenance,
@@ -249,7 +250,6 @@ import {
 import { hasClaudeManagedMcpConfig } from "../claudeInventory.ts";
 import {
   assertReadOnlyProjectConfig,
-  claudeGlobalConfigFile,
   findClaudeProjectConfigConflict,
 } from "../readOnlyProjectConfig.ts";
 import { ClaudeAdapter, type ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
@@ -5487,28 +5487,25 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       );
 
     /**
-     * Refuses a read-only stage whose committed Claude settings would run commands, or allow
-     * writes or commands, past F5's read-only checks (readOnlyProjectConfig.ts). Project hooks are
-     * switched off with `disableAllHooks` instead.
+     * Refuses a read-only stage whose committed Claude settings would run a command outside its
+     * tool calls, or change what an approved one runs (readOnlyProjectConfig.ts). Allow rules
+     * need no check: the mandatory hook decides shell commands, MCP tools and edits before Claude
+     * Code applies them. Project hooks are switched off with `disableAllHooks`.
      */
     const assertClaudeReadOnlyWorkspace = (
       cwd: string | undefined,
       environment: NodeJS.ProcessEnv,
       operation: "startSession" | "sendTurn",
-    ) => {
-      const homeDir = environment.HOME?.trim() || NodeOS.homedir();
-      const stageCwd = cwd ?? process.cwd();
-      return assertReadOnlyProjectConfig({
+    ) =>
+      assertReadOnlyProjectConfig({
         provider: PROVIDER,
         providerName: "Claude",
         operation,
         find: () =>
-          findClaudeProjectConfigConflict(stageCwd, {
-            homeDir,
-            configFile: claudeGlobalConfigFile(environment, homeDir, stageCwd),
+          findClaudeProjectConfigConflict(cwd ?? process.cwd(), {
+            homeDir: environment.HOME?.trim() || NodeOS.homedir(),
           }),
       });
-    };
 
     const startSessionUnlocked: ClaudeAdapterShape["startSession"] = (input) => {
       let disposeComputer: (() => void) | undefined;
@@ -6244,22 +6241,26 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               }
 
               if (input.workflowExecutionProfile) {
-                if (
-                  !evaluateClaudeMandatoryPolicy(
-                    {
-                      workflowExecutionProfile: input.workflowExecutionProfile,
-                      allowReadOnlyMcpTool,
-                    },
-                    toolName,
-                    callbackOptions.mcpServer,
-                    toolInput,
-                  )
-                ) {
+                // The same policy the mandatory hook applies to shell and MCP tools; a shell
+                // command F5's read-only classifier accepts runs, like on the other providers.
+                const denial = evaluateClaudeMandatoryPolicy(
+                  {
+                    workflowExecutionProfile: input.workflowExecutionProfile,
+                    allowReadOnlyMcpTool,
+                  },
+                  toolName,
+                  callbackOptions.mcpServer,
+                  toolInput,
+                );
+                if (!denial) {
                   return { behavior: "allow", updatedInput: toolInput } satisfies PermissionResult;
                 }
                 const requestId = ApprovalRequestId.makeUnsafe(yield* Random.nextUUIDv4);
                 const requestType = classifyRequestType(toolName);
-                const detail = summarizeToolRequest(toolName, toolInput);
+                // What was asked, then why: `<command> (<reason>)`, as on the other providers.
+                const shellRefusal = claudeReadOnlyShellRefusal(toolName, toolInput);
+                const subject = summarizeToolRequest(toolName, toolInput);
+                const detail = shellRefusal ? `${subject} (${shellRefusal})` : subject;
                 const stamp = yield* makeEventStamp(context);
                 yield* offerRuntimeEvent({
                   type: "request.opened",
@@ -6305,10 +6306,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                     providerItemId: callbackOptions.toolUseID,
                   }),
                 });
-                return {
-                  behavior: "deny",
-                  message: `Tool '${toolName}' is not permitted in a read-only workflow stage.`,
-                } satisfies PermissionResult;
+                return { behavior: "deny", message: denial } satisfies PermissionResult;
               }
               const removalDenial = claudeRemovalSafetyDenial(
                 toolName,

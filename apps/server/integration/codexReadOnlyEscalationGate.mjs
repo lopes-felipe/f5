@@ -6,7 +6,7 @@
 // It runs under Bun, which loads F5's TypeScript home helper directly.
 //
 //   bun apps/server/integration/codexReadOnlyEscalationGate.mjs --auth <codex auth.json>
-//     [--codex <binary>] [--root <dir>] [--model <slug>] [--gates G3,G3b,G3c,G4,G4b,G4c]
+//     [--codex <binary>] [--root <dir>] [--model <slug>] [--gates G3,G3b,G3c,G4,G4b,G4c,G7]
 //     [--link-rules]
 //
 // Everything happens in a fresh folder under ~/.f5-codex-gates (or --root): a source Codex home
@@ -30,6 +30,10 @@
 //   G4b An edit: the file change must ask, is declined, and the file is unchanged.
 //   G4c A web search still works (it runs server-side).
 //   G6  The read-only home's auth.json is still a link to the source after the session.
+//   G7  A reviewer's reads (`git show … | nl -ba`, `git grep`, `git --no-lazy-fetch -C <dir> log`),
+//       answered by F5's own policy function and with F5's shell rules in the prompt: each one
+//       asks, is accepted and returns its output, none is refused, and `touch marker` is refused
+//       with a reason while the turn completes.
 //
 // G5 (a repository's .codex/rules blocks the stage) is F5's own guard and is covered by unit
 // tests. Each check prints PASS, FAIL or INCONCLUSIVE; the script exits non-zero unless all pass.
@@ -58,7 +62,7 @@ if (!authPath || !existsSync(authPath)) {
   console.error("--auth <path to a signed-in Codex home's auth.json> is required");
   process.exit(2);
 }
-const ALL_GATES = ["G3", "G3b", "G3c", "G4", "G4b", "G4c"];
+const ALL_GATES = ["G3", "G3b", "G3c", "G4", "G4b", "G4c", "G7"];
 // Control for G4: link `rules` into the read-only home too, so the allow rule applies.
 const linkRules = argv.includes("--link-rules");
 // The line F5 adds to a policy-enforced Codex read-only stage (buildCodexAdditionalContext).
@@ -435,6 +439,49 @@ try {
       "G4b",
       notesUnchanged ? (askedEdit ? "PASS" : "INCONCLUSIVE") : "FAIL",
       `asked=${askedEdit} unchanged=${notesUnchanged} requests=${JSON.stringify(describe(g4b.requests))} items=${JSON.stringify(g4b.items.map((item) => item.type))}`,
+    );
+  }
+  if (selected.has("G7")) {
+    // G7: the commands reviewers run pass F5's own policy (`codexReadOnlyPolicyDecision`, the
+    // function the adapter answers with), a write is refused with a reason, and the turn goes on.
+    const { codexReadOnlyPolicyDecision } =
+      await import("../src/provider/codex/CodexProtocolHelpers.ts");
+    const { READ_ONLY_SHELL_GUIDE } = await import("../src/provider/readOnlyShellGuide.ts");
+    const verdicts = [];
+    decide = (method, params) => {
+      const verdict = codexReadOnlyPolicyDecision(method, params) ?? { decision: "decline" };
+      verdicts.push({ command: shellScript(commandText(params)), ...verdict });
+      return verdict.decision;
+    };
+    const reads = [
+      ["git show HEAD:notes.txt | nl -ba", "original"],
+      ["git grep -n original HEAD -- notes.txt", "original"],
+      [`git --no-lazy-fetch -C ${workspace} log --oneline -1`, headSha.slice(0, 7)],
+    ];
+    const g7 = await runTurn(
+      threadId,
+      `${ESCALATION_HINT}\n\n${READ_ONLY_SHELL_GUIDE}\n\nYou are reviewing this repository. Run these shell commands one at a time, exactly as written, and reply with each one's output:\n${reads.map(([command], index) => `${index + 1}. \`${command}\``).join("\n")}\nThen run \`touch marker\`, which this test expects you to attempt. If a command is refused, write REFUSED for it and go on. Do not run anything else.`,
+    );
+    const readResults = reads.map(([command, output]) => ({
+      command,
+      asked: askedFor(g7.requests, command),
+      ran: acceptedAndRan(g7, command, output),
+    }));
+    const refusedReads = verdicts.filter(
+      (verdict) => verdict.decision === "decline" && verdict.command !== "touch marker",
+    );
+    const touch = verdicts.find((verdict) => verdict.command === "touch marker");
+    const markerExists = existsSync(path.join(workspace, "marker"));
+    const turnStatus = g7.turn?.turn?.status;
+    const allRan = readResults.every((result) => result.ran);
+    record(
+      "G7",
+      markerExists || refusedReads.length > 0
+        ? "FAIL"
+        : allRan && touch?.decision === "decline" && turnStatus === "completed"
+          ? "PASS"
+          : "INCONCLUSIVE",
+      `reads=${JSON.stringify(readResults)} refusedReads=${JSON.stringify(refusedReads)} touch=${JSON.stringify(touch)} markerExists=${markerExists} turnStatus=${JSON.stringify(turnStatus)} verdicts=${JSON.stringify(verdicts)} replies=${JSON.stringify(replies(g7.items))}`,
     );
   }
   if (selected.has("G4c")) {

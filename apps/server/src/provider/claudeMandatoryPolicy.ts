@@ -6,6 +6,8 @@ import {
   type PreToolUseHookInput,
 } from "@anthropic-ai/claude-agent-sdk";
 
+import { classifyReadOnlyShellCommand } from "./readOnlyWorkflowShell.ts";
+
 /** Native delegation names in the certified Claude runtime. Task* CRUD is not delegation. */
 export const CLAUDE_DELEGATION_TOOLS = ["Agent", "Task"];
 const DELEGATION_ALIASES = new Set(["agent", "task", "subagent", "spawn_agent"]);
@@ -59,6 +61,45 @@ export interface ClaudeMandatoryPolicy {
   readonly failClosed?: boolean | undefined;
 }
 
+/** Built-in tools that run a shell command; a rename in the SDK's BUILTIN_TOOL_NAMES fails CI. */
+export const CLAUDE_SHELL_COMMAND_TOOLS = ["Bash", "Monitor", "PowerShell"] as const;
+const SHELL_COMMAND_TOOLS = new Set<string>(
+  CLAUDE_SHELL_COMMAND_TOOLS.map((name) => name.toLowerCase()),
+);
+
+/** A shell tool, or one an MCP server provides: what an allow rule could widen in plan mode. */
+function isShellOrMcpTool(toolName: string, mcpServer: McpToolProvenance | undefined): boolean {
+  const name = toolName.trim().toLowerCase();
+  return SHELL_COMMAND_TOOLS.has(name) || name.startsWith("mcp__") || mcpServer !== undefined;
+}
+
+/**
+ * Why a read-only workflow stage refuses this call to a shell tool, as F5's read-only shell
+ * classifier puts it, or undefined when the command only reads or the tool runs no command.
+ * `Bash` and `Monitor` run a POSIX shell command; a PowerShell script can't be checked.
+ */
+export function claudeReadOnlyShellRefusal(
+  toolName: string,
+  toolInput: unknown,
+): string | undefined {
+  const name = toolName.trim().toLowerCase();
+  if (!SHELL_COMMAND_TOOLS.has(name)) return undefined;
+  if (name === "powershell")
+    return "PowerShell commands can't be checked in a read-only stage: use the Bash tool";
+  const command =
+    toolInput && typeof toolInput === "object"
+      ? (toolInput as { readonly command?: unknown }).command
+      : undefined;
+  if (typeof command !== "string" || command.trim().length === 0)
+    return "the command to run was not reported";
+  const verdict = classifyReadOnlyShellCommand(command);
+  return verdict.readOnly ? undefined : verdict.reason;
+}
+
+/** What Claude is told when a read-only stage refuses a shell command. */
+const readOnlyShellDenial = (reason: string) =>
+  `F5 refused this command, so it did not run: ${reason}. This workflow stage is read-only. Do not retry it: rewrite it as a command that only reads (see the Read-Only Shell Rules), or go on without that result.`;
+
 export function evaluateClaudeMandatoryPolicy(
   policy: ClaudeMandatoryPolicy,
   toolName: string,
@@ -87,6 +128,11 @@ export function evaluateClaudeMandatoryPolicy(
       ].includes(name)
     )
       return;
+    // F5 decides every shell command with the classifier the other providers' stages use.
+    if (SHELL_COMMAND_TOOLS.has(name)) {
+      const refusal = claudeReadOnlyShellRefusal(toolName, toolInput);
+      return refusal === undefined ? undefined : readOnlyShellDenial(refusal);
+    }
     if (policy.allowReadOnlyMcpTool?.(toolName, mcpServer, toolInput)) return;
     // Interactive questions retain the host's existing answer transport.
     if (name === "askuserquestion" && policy.workflowExecutionProfile === "attended-readonly")
@@ -133,9 +179,14 @@ function targetsPlansDirectory(
 
 /**
  * The subset of the policy enforced before Claude's native permission check.
- * Read-only stages run in plan mode, so everything else (Bash, MCP, web, and
- * delegation tools) is left to native evaluation, which escalates anything it
- * does not consider read-only to `canUseTool` and its full policy.
+ *
+ * In a read-only stage that is workspace edits, shell commands and MCP tools: Claude Code
+ * applies a `permissions.allow` rule before it asks `canUseTool`, so a rule in the repository's
+ * or your own settings (`Bash(python3:*)`, `mcp__server__tool`) would otherwise run without F5
+ * seeing the call. A hook denial comes first and no allow rule overrides it.
+ *
+ * Web and delegation tools are left to native plan-mode evaluation, which escalates anything
+ * it does not consider read-only to `canUseTool` and its full policy.
  */
 export function evaluateClaudeMandatoryHookPolicy(
   policy: ClaudeMandatoryPolicy,
@@ -156,6 +207,7 @@ export function evaluateClaudeMandatoryHookPolicy(
   const name = toolName.trim().toLowerCase();
   if (policy.subagentsEnabled === false && DELEGATION_ALIASES.has(name)) return reason;
   if (name === "exitplanmode" || name === "askuserquestion") return reason;
+  if (isShellOrMcpTool(toolName, context?.mcpServer)) return reason;
   return isClaudePlanModeWorkspaceEdit(toolName, context?.toolInput, {
     plansDirectory: policy.plansDirectory,
     cwd: context?.cwd,
@@ -203,11 +255,18 @@ export function claudeMandatoryPolicyOptions(
             async (input, _toolUseId, { signal }) => {
               if (input.hook_event_name !== "PreToolUse") return {};
               const toolName = canonicalClaudeToolName(input.tool_name);
-              let reason = evaluateClaudeMandatoryHookPolicy(policy, toolName, {
-                toolInput: input.tool_input,
-                cwd: input.cwd,
-                mcpServer: input.mcp_server,
-              });
+              let reason: string | undefined;
+              try {
+                reason = evaluateClaudeMandatoryHookPolicy(policy, toolName, {
+                  toolInput: input.tool_input,
+                  cwd: input.cwd,
+                  mcpServer: input.mcp_server,
+                });
+              } catch {
+                // An older CLI treats a hook that throws as "no decision" and would go on to
+                // its allow rules, so the denial has to come from here.
+                reason = "F5 could not verify that this tool is allowed.";
+              }
               if (!reason && policy.evaluateDynamic) {
                 try {
                   reason = await policy.evaluateDynamic(toolName, input.mcp_server, {

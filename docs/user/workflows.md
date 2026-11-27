@@ -146,7 +146,12 @@ shows the template, cost and per-step context.
       **sandboxed**, and the thread shows a configuration warning saying so. In the desktop app
       shell commands then fail, and the stage reads pull requests and files through F5's forge
       tools.
-  - Claude runs in Plan mode, where Claude Code decides which commands only read.
+  - Claude runs in Plan mode and is always **policy-enforced**. F5 decides every shell command
+    with its read-only allowlist (see
+    [shell commands in policy-enforced stages](#shell-commands-in-policy-enforced-stages)) and
+    refuses file edits and every MCP tool except its own read-only ones. Allow rules in your
+    Claude settings (`permissions.allow`) can't widen that: F5 answers before Claude Code applies
+    them. PowerShell commands are refused; Claude uses its Bash tool.
   - OpenCode and Pi run with their write tools turned off.
   - Antigravity runs only on a certified runtime (see
     [Antigravity](../providers/antigravity.md#read-only-workflow-turns)).
@@ -185,9 +190,9 @@ shows the template, cost and per-step context.
 
 ### Shell commands in policy-enforced stages
 
-Where no sandbox holds a read-only stage (Cursor, and Codex and Antigravity in the macOS desktop
-app), F5 reads every shell command the model asks to run and approves it only when it can tell
-the command just reads. It refuses anything it can't follow, so a refusal doesn't mean the
+Where no sandbox holds a read-only stage (Cursor, Claude, and Codex and Antigravity in the macOS
+desktop app), F5 reads every shell command the model asks to run and approves it only when it can
+tell the command just reads. It refuses anything it can't follow, so a refusal doesn't mean the
 command was harmful.
 
 - **Runs:**
@@ -220,7 +225,8 @@ Reviewers that want to run tests or scripts need a stage that isn't read-only.
 
 - **The model is told the rules first.** Codex, Cursor and Antigravity only hear "rejected" when
   F5 refuses a command, without a reason. So a policy-enforced stage starts with a short list of
-  what runs and what doesn't, and is told not to retry a refused command.
+  what runs and what doesn't, and is told not to retry a refused command. Claude gets the same
+  list, and each refusal also tells it F5's reason.
 - **The thread shows why.** A refusal appears in the timeline as "Command refused in a read-only
   stage", with the command and F5's reason, for example
   ``touch marker (`touch` is not on the read-only allowlist)``.
@@ -240,22 +246,26 @@ to the repository root (only the stage's folder outside a repository), skipping 
 except for Codex (see above), and checks again before every turn. A file another process adds mid-turn isn't caught until the
 next turn. Normal threads are unaffected.
 
-| Provider    | Turned off                                                                                   | Refused when the repository has                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| ----------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Claude      | All hooks, your own included; MCP servers other than F5's (`.mcp.json` and your Claude ones) | A committed `.claude/settings.json` or `settings.local.json` that sets a command setting (`apiKeyHelper`, `awsAuthRefresh`, `awsCredentialExport`, `otelHeadersHelper`, `statusLine`), an `env` variable outside a short list of token and timeout limits, or a `permissions.defaultMode` that skips asking; and, in a folder Claude Code trusts, one whose `permissions.allow` lets Claude write, call an MCP tool, or run a command outside F5's read-only list (a `prefix:*` rule passes only for a single program F5 reads with any arguments, such as `cat:*`) |
-| Codex       | Your `rules` folder (see above)                                                              | A non-empty `.codex/rules/*.rules` file                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| Cursor      | Your allowlist and approval mode (see above)                                                 | A `.cursor/cli.json` that sets anything but deny rules; a `.cursor/hooks.json` with hooks; a `.cursor/mcp.json` with servers                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| OpenCode    | The repository's whole OpenCode config, `AGENTS.md` included, on the server F5 starts        | Only with an external server (**Server URL** set), which loaded it already: a plugin in `.opencode/plugin/` or `.opencode/plugins/`; or, in `opencode.json`, `opencode.jsonc` or `.opencode/opencode.json`, a `plugin` entry, an enabled local `mcp` server, or an `lsp` or `formatter` entry with its own `command`                                                                                                                                                                                                                                                |
-| Pi          | Nothing                                                                                      | An extension Pi would load from `.pi/extensions/` (a `.ts` or `.js` file, or a folder with `index.ts`, `index.js` or `package.json`), or `packages` or `extensions` in `.pi/settings.json`                                                                                                                                                                                                                                                                                                                                                                          |
-| Antigravity | Nothing                                                                                      | A `.agents/hooks.json` (or `_agents/hooks.json`) that defines hooks                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Provider    | Turned off                                                                                   | Refused when the repository has                                                                                                                                                                                                                                                                                      |
+| ----------- | -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Claude      | All hooks, your own included; MCP servers other than F5's (`.mcp.json` and your Claude ones) | A committed `.claude/settings.json` or `settings.local.json` that sets a command setting (`apiKeyHelper`, `awsAuthRefresh`, `awsCredentialExport`, `otelHeadersHelper`, `statusLine`), an `env` variable outside a short list of token and timeout limits, or a `permissions.defaultMode` that skips asking          |
+| Codex       | Your `rules` folder (see above)                                                              | A non-empty `.codex/rules/*.rules` file                                                                                                                                                                                                                                                                              |
+| Cursor      | Your allowlist and approval mode (see above)                                                 | A `.cursor/cli.json` that sets anything but deny rules; a `.cursor/hooks.json` with hooks; a `.cursor/mcp.json` with servers                                                                                                                                                                                         |
+| OpenCode    | The repository's whole OpenCode config, `AGENTS.md` included, on the server F5 starts        | Only with an external server (**Server URL** set), which loaded it already: a plugin in `.opencode/plugin/` or `.opencode/plugins/`; or, in `opencode.json`, `opencode.jsonc` or `.opencode/opencode.json`, a `plugin` entry, an enabled local `mcp` server, or an `lsp` or `formatter` entry with its own `command` |
+| Pi          | Nothing                                                                                      | An extension Pi would load from `.pi/extensions/` (a `.ts` or `.js` file, or a folder with `index.ts`, `index.js` or `package.json`), or `packages` or `extensions` in `.pi/settings.json`                                                                                                                           |
+| Antigravity | Nothing                                                                                      | A `.agents/hooks.json` (or `_agents/hooks.json`) that defines hooks                                                                                                                                                                                                                                                  |
 
 Any of these JSON files that F5 can't read as strict JSON also blocks the stage, and so does a
-check F5 can't finish: a folder it can't read, a git that can't say whether a settings file is
-committed, or a Claude config (`.claude.json`) that exists but can't be read. Claude Code ignores
-a repository's allow rules in a folder it doesn't trust, so those are checked only in trusted
-folders. Outside a git repository every Claude settings file counts as the repository's. Claude's
+check F5 can't finish: a folder it can't read, or a git that can't say whether a settings file is
+committed. Outside a git repository every Claude settings file counts as the repository's. Claude's
 project instructions (`CLAUDE.md`) and Antigravity's rules still load, since they only add
 instructions.
+
+Allow rules in Claude settings (`permissions.allow`), the repository's or your own, neither block
+a Claude stage nor widen it. F5 refuses a write, a command outside its list, or another MCP tool
+in a hook that Claude Code runs before it looks at allow rules. With a custom Claude binary older
+than 2.1.317, Claude Code can't be told to block a call when that hook fails to answer, so use the
+bundled runtime or a newer binary for stages on code you don't trust.
 
 An external OpenCode server can't be fully isolated: it already loaded the workspace before F5
 checks it, and its built-in LSP servers and formatters can still run tools the repository
