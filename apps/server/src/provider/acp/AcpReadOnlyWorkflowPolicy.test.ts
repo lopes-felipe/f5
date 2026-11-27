@@ -5,12 +5,41 @@ import {
   acpReadOnlyRefusalDetail,
   acpReadOnlyWorkflowDecision,
   acpReadOnlyWorkflowVerdict,
+  acpRequestWithoutToolCallId,
 } from "./AcpReadOnlyWorkflowPolicy.ts";
 
 const decide = (
   toolCall: Parameters<typeof acpReadOnlyWorkflowDecision>[0]["toolCall"],
   computerRequest = false,
 ) => acpReadOnlyWorkflowDecision({ toolCall, computerRequest });
+
+const reasonOf = (toolCall: Parameters<typeof acpReadOnlyWorkflowVerdict>[0]["toolCall"]) => {
+  const verdict = acpReadOnlyWorkflowVerdict({ toolCall, computerRequest: false });
+  return verdict.decision === "deny" ? verdict.reason : undefined;
+};
+
+describe("acpRequestWithoutToolCallId", () => {
+  it("drops only the tool call's id, so a repeated request reads the same", () => {
+    const request = (toolCallId: string) => ({
+      sessionId: "s1",
+      toolCall: { toolCallId, kind: "other", title: "Do something", rawInput: { a: 1 } },
+      options: [{ optionId: "reject-once", kind: "reject_once" }],
+    });
+    expect(acpRequestWithoutToolCallId(request("call-1"))).toEqual({
+      sessionId: "s1",
+      toolCall: { kind: "other", title: "Do something", rawInput: { a: 1 } },
+      options: [{ optionId: "reject-once", kind: "reject_once" }],
+    });
+    expect(JSON.stringify(acpRequestWithoutToolCallId(request("call-1")))).toBe(
+      JSON.stringify(acpRequestWithoutToolCallId(request("call-2"))),
+    );
+  });
+
+  it("returns anything that isn't a request with a tool call as it is", () => {
+    for (const value of [undefined, null, "text", [1], { sessionId: "s1" }, { toolCall: "x" }])
+      expect(acpRequestWithoutToolCallId(value)).toBe(value);
+  });
+});
 
 describe("acpReadOnlyWorkflowDecision", () => {
   it("allows fetch, search, read and think tools", () => {
@@ -96,6 +125,30 @@ describe("acpReadOnlyWorkflowDecision", () => {
     expect(
       decide({ kind: "execute", title: "ls", rawInput: { command: "ls", ServerName: "github" } }),
     ).toBe("deny");
+  });
+
+  it.each([
+    ["Cursor", "mcp__github__run_command"],
+    ["Antigravity, permission request", "MCP: github / run_command"],
+    ["Antigravity, tool call", "Run mcp_github_run_command"],
+  ])("refuses an MCP tool that carries a command, as %s titles it", (_provider, title) => {
+    // The assumption `acpMcpToolCall` documents: each provider puts its MCP form first in the
+    // title. A provider that changes its form must fail here, not run the tool's command.
+    for (const rawInput of [{ command: "ls" }, { CommandLine: "ls" }])
+      expect(reasonOf({ kind: "execute", title, rawInput })).toBe(
+        "only F5's read-only tools may be called over MCP in a read-only stage",
+      );
+  });
+
+  it("classifies an execute request by its command when the title has no MCP form first", () => {
+    // The documented limit of the title check: nothing but a server key or the title's start
+    // tells an MCP tool with a `command` argument from a shell command.
+    const title = "github: run (mcp_shell_run)";
+    expect(decide({ kind: "execute", title, rawInput: { command: "ls" } })).toBe("allow");
+    expect(decide({ kind: "execute", title, rawInput: { command: "rm x" } })).toBe("deny");
+    expect(decide({ kind: "execute", title, rawInput: { command: "ls", server: "github" } })).toBe(
+      "deny",
+    );
   });
 
   it("says why it refused", () => {

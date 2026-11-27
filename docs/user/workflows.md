@@ -233,8 +233,10 @@ Reviewers that want to run tests or scripts need a stage that isn't read-only.
   going. The stage fails when the model asks for the same refused operation three times, or is
   refused fifteen times in one turn, on any provider.
 - **Antigravity ends its turn when a command is refused.** When it does so without writing a
-  reply, F5 tells it what was refused and why, and asks it to finish, inside the same turn. After
-  two such follow-ups without a reply the stage fails and names the refused command.
+  reply, F5 tells it what was refused and why, and asks it to finish, inside the same turn. A
+  model that tries a different command each time keeps getting the explanation, up to the limit
+  of fifteen refusals. The stage fails when two follow-ups in a row end on a command F5 had
+  already explained. The failure gives F5's reason, and the thread lists the refused commands.
 
 ### Repository config in read-only stages
 

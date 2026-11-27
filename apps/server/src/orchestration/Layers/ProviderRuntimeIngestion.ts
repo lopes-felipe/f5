@@ -11,6 +11,7 @@ import { registerShutdown, AcceptedShutdownWork } from "../../shutdown.ts";
 import { tryWithProviderThreadAccess } from "../../provider/providerThreadAccess.ts";
 import { readPersistedSessionGeneration } from "../../provider/sessionCapabilities.ts";
 import { redactProviderFailureText } from "../../provider/failureText.ts";
+import { ACP_HIDDEN_TOOL_INPUTS_DETAIL } from "../../provider/acp/AcpReadOnlyWorkflowPolicy.ts";
 import { CodexMcpEventBus } from "../../codex/CodexMcpEventBus.ts";
 import { isPreparedComputerEvent } from "../../provider/prepareAutomationRuntimeEvent";
 import { computerToolHeading } from "@t3tools/shared/computerAction";
@@ -341,6 +342,19 @@ const profileViolationDetail = (detail: string | undefined): string => {
   const tail = trimmed.slice(-PROFILE_VIOLATION_DETAIL_TAIL_CHARS);
   return `${trimmed.slice(0, PROFILE_VIOLATION_DETAIL_CHARS - PROFILE_VIOLATION_DETAIL_TAIL_CHARS)}…${tail}`;
 };
+/**
+ * What makes two refused requests "the same operation": the request type and what was asked,
+ * as the adapter recorded it (`<command> (<reason>)`). Undefined when the detail doesn't say
+ * what was asked: refused computer-control requests all carry one fixed text, and three
+ * different ones are not a model stuck on one operation.
+ */
+const autoDeclinedOperationKey = (
+  requestType: string,
+  detail: string | undefined,
+): string | undefined =>
+  !detail?.trim() || detail === ACP_HIDDEN_TOOL_INPUTS_DETAIL
+    ? undefined
+    : `${requestType}\n${detail}`;
 // Tool items that never complete are evicted oldest first past this many.
 const MAX_TRACKED_TOOL_UPDATES = 512;
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
@@ -2855,8 +2869,15 @@ const make = Effect.gen(function* () {
   const MAX_AUTO_DECLINED_REQUESTS_PER_TURN = 15;
   const MAX_REPEATS_OF_AN_AUTO_DECLINED_REQUEST = 3;
 
-  /** Counts a refusal; `repeats` is how often this same operation was refused this turn. */
-  const countAutoDeclinedRequest = (threadId: ThreadId, turnId: TurnId, operation: string) =>
+  /**
+   * Counts a refusal; `repeats` is how often this same operation was refused this turn. A
+   * refusal with no `operation` key can't be compared with another, so it only adds to the count.
+   */
+  const countAutoDeclinedRequest = (
+    threadId: ThreadId,
+    turnId: TurnId,
+    operation: string | undefined,
+  ) =>
     Effect.sync(() => {
       const existing = autoDeclinedRequestCounts.get(threadId);
       const entry =
@@ -2864,8 +2885,8 @@ const make = Effect.gen(function* () {
           ? existing
           : { turnId, count: 0, byOperation: new Map<string, number>() };
       entry.count += 1;
-      const repeats = (entry.byOperation.get(operation) ?? 0) + 1;
-      entry.byOperation.set(operation, repeats);
+      const repeats = operation === undefined ? 1 : (entry.byOperation.get(operation) ?? 0) + 1;
+      if (operation !== undefined) entry.byOperation.set(operation, repeats);
       autoDeclinedRequestCounts.set(threadId, entry);
       return { count: entry.count, repeats };
     });
@@ -5326,7 +5347,7 @@ const make = Effect.gen(function* () {
         const declined = yield* countAutoDeclinedRequest(
           thread.id,
           profiledTurnId,
-          `${event.payload.requestType}\n${event.payload.detail ?? ""}`,
+          autoDeclinedOperationKey(event.payload.requestType, event.payload.detail),
         );
         // The raw command or URL stays out of the server log; it is in the thread's activity.
         yield* Effect.logInfo("read-only workflow stage attempted a refused operation", {

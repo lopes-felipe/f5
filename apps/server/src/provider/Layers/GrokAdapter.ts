@@ -153,9 +153,14 @@ import {
 import {
   promptWithReadOnlyRefusalFollowUps,
   readOnlyRefusalFailureText,
+  type ReadOnlyRefusal,
 } from "../acp/AcpReadOnlyRefusalFollowUp.ts";
-import { acpReadOnlyRefusalDetail } from "../acp/AcpReadOnlyWorkflowPolicy.ts";
-import { READ_ONLY_SHELL_GUIDE } from "../readOnlyShellGuide.ts";
+import {
+  ACP_HIDDEN_TOOL_INPUTS_DETAIL,
+  acpReadOnlyRefusalDetail,
+  acpRequestWithoutToolCallId,
+} from "../acp/AcpReadOnlyWorkflowPolicy.ts";
+import { acpReadOnlyShellGuide } from "../readOnlyShellGuide.ts";
 import {
   AntigravityModelUnavailableError,
   AntigravityModeUnavailableError,
@@ -354,11 +359,11 @@ interface GrokSessionContext {
    */
   antigravityTrailingText: (AntigravityTurnNotice & { readonly turnId: TurnId }) | undefined;
   /**
-   * Antigravity read-only stages: what F5 refused since the last prompt was sent (as recorded in
-   * the thread), and whether the agent has written text since the latest one. Antigravity ends
-   * its turn on a refusal, so the prompt loop explains it (AcpReadOnlyRefusalFollowUp).
+   * Antigravity read-only stages: what F5 refused since the last prompt was sent, and whether
+   * the agent has written text since the latest one. Antigravity ends its turn on a refusal, so
+   * the prompt loop explains it (AcpReadOnlyRefusalFollowUp).
    */
-  antigravityReadOnlyRefusals: string[];
+  antigravityReadOnlyRefusals: ReadOnlyRefusal[];
   antigravityRepliedSinceRefusal: boolean;
   /** Antigravity: private-format readers are certified for the runtime this session launched. */
   readonly antigravityNativeReaders: boolean;
@@ -1514,9 +1519,14 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                         : "Antigravity offered no way to approve it once";
                     const deniedRequest = parsePermissionRequest(params);
                     if (live && !computerRequest) {
-                      live.antigravityReadOnlyRefusals.push(
-                        acpReadOnlyRefusalDetail(deniedRequest.detail, refusalReason),
-                      );
+                      // Text the agent wrote before asking is still queued for the event
+                      // stream, while this request is answered at once. Let the stream catch up
+                      // first, or that text would count as a reply to this refusal.
+                      yield* live.acp.awaitEventBarrier;
+                      live.antigravityReadOnlyRefusals.push({
+                        operation: deniedRequest.detail,
+                        reason: refusalReason,
+                      });
                       live.antigravityRepliedSinceRefusal = false;
                     }
                     // Persisted like an asked request, so a large `rawOutput` or `content` is
@@ -1533,10 +1543,12 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                         permissionRequest: deniedRequest,
                         // What was asked, then why F5 refused it: the model is only told no.
                         detail: computerRequest
-                          ? "Tool inputs hidden while computer control is enabled"
+                          ? ACP_HIDDEN_TOOL_INPUTS_DETAIL
                           : acpReadOnlyRefusalDetail(
                               deniedRequest.detail ??
-                                encodeJsonStringForDiagnostics(deniedParams)?.slice(0, 2000) ??
+                                encodeJsonStringForDiagnostics(
+                                  acpRequestWithoutToolCallId(deniedParams),
+                                )?.slice(0, 2000) ??
                                 "[unserializable params]",
                               refusalReason,
                             ),
@@ -2501,15 +2513,21 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               const attachmentContext = buildProviderAttachmentRuntimeContext(
                 input.resolvedAttachments ?? [],
               );
+              // F5 answers every command of a read-only stage with its classifier, and the
+              // agent is only told "rejected". ACP has no instruction channel, so the rules go
+              // in the prompt.
+              const shellGuide =
+                PROVIDER === "antigravity"
+                  ? acpReadOnlyShellGuide({
+                      workflowExecutionProfile: ctx.antigravityWorkflowProfile,
+                      steering: steeringTurnId !== undefined,
+                      hasText: Boolean(text),
+                    })
+                  : undefined;
               const promptParts: Array<EffectAcpSchema.ContentBlock> = [
                 ...(text ? [{ type: "text" as const, text }] : []),
                 ...(attachmentContext ? [{ type: "text" as const, text: attachmentContext }] : []),
-                // F5 answers every command of a read-only stage with its classifier, and the
-                // agent is only told "rejected". ACP has no instruction channel, so the rules go
-                // in the prompt.
-                ...(PROVIDER === "antigravity" && ctx.antigravityWorkflowProfile && text
-                  ? [{ type: "text" as const, text: READ_ONLY_SHELL_GUIDE }]
-                  : []),
+                ...(shellGuide ? [{ type: "text" as const, text: shellGuide }] : []),
                 ...imagePromptParts,
               ];
               if (PROVIDER === "antigravity") {
@@ -2687,11 +2705,13 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     prepared.context.antigravityRepliedSinceRefusal = false;
                     return state;
                   },
-                  fail: (refusal) =>
+                  // F5's reason only: this error reaches the server log, and the refused
+                  // command can carry anything the model wrote.
+                  fail: (reason) =>
                     new ProviderAdapterRequestError({
                       provider: PROVIDER,
                       method: "session/prompt",
-                      detail: readOnlyRefusalFailureText(providerLabel, refusal),
+                      detail: readOnlyRefusalFailureText(providerLabel, reason),
                     }),
                 })
               : sendPrompt(prepared.promptParts);

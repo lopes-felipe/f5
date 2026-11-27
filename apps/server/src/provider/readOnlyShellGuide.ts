@@ -51,3 +51,23 @@ Refused:
 - Network: \`git fetch\`, \`git ls-remote\`, \`curl\`. Read remote state with \`gh\` or F5's forge tools.
 - A program named with a path (\`/usr/bin/grep\`): use the bare name.
 ${bullets(READ_ONLY_SHELL_GUIDE_EXAMPLES.refused)}`;
+
+/**
+ * The rules as a block of an ACP stage prompt, or undefined. Cursor and Antigravity have no
+ * instruction channel, so the rules travel with the request (Codex gets them as a context
+ * entry, `buildReadOnlyShellGuide`).
+ *
+ * - Both adapters answer every command of a profiled turn with the classifier, whether or not
+ *   the provider also sandboxes it, so the enforcement mode doesn't matter here.
+ * - A steer joins a turn that already carries the rules.
+ * - A prompt with no text of its own (attachments only) gets nothing appended.
+ */
+export function acpReadOnlyShellGuide(input: {
+  readonly workflowExecutionProfile: unknown;
+  readonly steering: boolean;
+  readonly hasText: boolean;
+}): string | undefined {
+  return input.workflowExecutionProfile && !input.steering && input.hasText
+    ? READ_ONLY_SHELL_GUIDE
+    : undefined;
+}

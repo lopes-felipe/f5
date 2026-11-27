@@ -755,9 +755,9 @@ function buildWorkflowHostContract(
 
 /**
  * The shell rules for a read-only stage that F5's command classifier enforces (`policy`), or
- * undefined: a sandboxed stage runs whatever its sandbox lets through. Codex gets it as a context
- * entry; Cursor and Antigravity, which have no instruction channel, as a block of the stage
- * prompt.
+ * undefined: a sandboxed Codex stage runs whatever its sandbox lets through. Only Codex uses
+ * this, as a context entry. Cursor and Antigravity classify every command in either mode and
+ * have no instruction channel, so their gate is `acpReadOnlyShellGuide`.
  */
 export function buildReadOnlyShellGuide(
   input: Pick<SharedInstructionInput, "workflowExecutionProfile" | "readOnlyEnforcement">,
