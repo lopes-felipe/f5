@@ -23,6 +23,7 @@ import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import type { CursorAdapterShape } from "../Services/CursorAdapter.ts";
 import { makeCursorAdapter } from "./CursorAdapter.ts";
+import { READ_ONLY_SHELL_GUIDE } from "../readOnlyShellGuide.ts";
 import { TurnAcceptanceSignal } from "../deliveryAttemptContext.ts";
 
 // Test-local service tag so the rest of the file can keep using `yield* CursorAdapter`.
@@ -1787,6 +1788,72 @@ cursorAdapterHardeningTestLayer("CursorAdapterLive ACP hardening", (it) => {
     }),
   );
 
+  it.effect("sends the shell rules with a stage's request and not again with a steer", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("cursor-guide-steer");
+      const tempDir = yield* scopedTempDir("cursor-guide-steer-");
+      const requestLogPath = path.join(tempDir, "requests.ndjson");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockAgentWrapper({
+          T3_ACP_PROMPT_DELAY_MS: "250",
+          T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+        }),
+      );
+      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      const events: ProviderRuntimeEvent[] = [];
+      const eventFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          events.push(event);
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "unattended-readonly",
+        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+      });
+      const first = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "review the PR",
+          attachments: [],
+          workflowExecutionProfile: "unattended-readonly",
+        })
+        .pipe(Effect.forkChild);
+      while (!events.some((event) => event.type === "turn.started" && event.threadId === threadId))
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 1)));
+      const turnId = events.find(
+        (event) => event.type === "turn.started" && event.threadId === threadId,
+      )!.turnId!;
+      const steer = yield* adapter.steerTurn!({
+        threadId,
+        input: "also check the tests",
+        expectedTurnId: turnId,
+        attachments: [],
+        workflowExecutionProfile: "unattended-readonly",
+      }).pipe(Effect.forkChild);
+      yield* Effect.all([Fiber.join(first), Fiber.join(steer)], { concurrency: "unbounded" });
+      const prompts = (yield* Effect.promise(() => readJsonLines(requestLogPath)))
+        .filter((line) => line.method === "session/prompt")
+        .map((line) =>
+          (line.params as { prompt: ReadonlyArray<{ text?: string }> }).prompt.map(
+            (part) => part.text,
+          ),
+        );
+      // The steer joins a turn that already carries the rules.
+      assert.deepEqual(prompts, [
+        ["review the PR", READ_ONLY_SHELL_GUIDE],
+        ["also check the tests"],
+      ]);
+      yield* adapter.stopSession(threadId);
+      yield* Fiber.interrupt(eventFiber);
+    }),
+  );
+
   it.effect("serializes overlapping sends and completes each turn exactly once", () =>
     Effect.gen(function* () {
       const adapter = yield* CursorAdapter;
@@ -1921,7 +1988,9 @@ cursorAdapterHardeningTestLayer("CursorAdapterLive ACP hardening", (it) => {
           makeMockAgentWrapper({
             T3_ACP_EMIT_TOOL_CALLS: "1",
             T3_ACP_PERMISSION_REQUEST_COUNT: "2",
-            T3_ACP_PERMISSION_COMMAND: "gh pr view 743438 --repo x/y --json title",
+            // A path under `src/mcp/` is not an MCP tool call: the command is what gets checked.
+            T3_ACP_PERMISSION_COMMAND:
+              "git log --oneline -3 -- apps/server/src/mcp/OrchestratorMcpService.test.ts",
             T3_ACP_SECOND_PERMISSION_COMMAND: "rm -rf build",
             T3_ACP_REQUEST_LOG_PATH: requestLogPath,
           }),
@@ -1949,7 +2018,19 @@ cursorAdapterHardeningTestLayer("CursorAdapterLive ACP hardening", (it) => {
         const denied = opened[0];
         assert.ok(denied?.type === "request.opened");
         assert.equal(denied.payload.autoDeclined, true);
-        assert.include(denied.payload.detail ?? "", "rm -rf build");
+        // What was asked and why it was refused: Cursor itself is only told "rejected".
+        assert.equal(
+          denied.payload.detail,
+          "rm -rf build (`rm` is not on the read-only allowlist)",
+        );
+        // So the stage is told the rules up front, after its own prompt.
+        const prompts = (yield* Effect.promise(() => readJsonLines(requestLogPath)))
+          .filter((line) => line.method === "session/prompt")
+          .map((line) => (line.params as { prompt: ReadonlyArray<{ text?: string }> }).prompt);
+        assert.deepEqual(
+          prompts.map((parts) => parts.map((part) => part.text)),
+          [["review the PR", READ_ONLY_SHELL_GUIDE]],
+        );
         assert.ok(
           events.some(
             (event) =>

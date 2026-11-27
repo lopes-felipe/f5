@@ -4,13 +4,44 @@ import {
   acpExecuteCommand,
   acpExecuteDirectory,
   acpReadOnlyGitRefusal,
+  acpReadOnlyRefusalDetail,
   acpReadOnlyWorkflowDecision,
+  acpReadOnlyWorkflowVerdict,
+  acpRequestWithoutToolCallId,
 } from "./AcpReadOnlyWorkflowPolicy.ts";
 
 const decide = (
   toolCall: Parameters<typeof acpReadOnlyWorkflowDecision>[0]["toolCall"],
   computerRequest = false,
 ) => acpReadOnlyWorkflowDecision({ toolCall, computerRequest });
+
+const reasonOf = (toolCall: Parameters<typeof acpReadOnlyWorkflowVerdict>[0]["toolCall"]) => {
+  const verdict = acpReadOnlyWorkflowVerdict({ toolCall, computerRequest: false });
+  return verdict.decision === "deny" ? verdict.reason : undefined;
+};
+
+describe("acpRequestWithoutToolCallId", () => {
+  it("drops only the tool call's id, so a repeated request reads the same", () => {
+    const request = (toolCallId: string) => ({
+      sessionId: "s1",
+      toolCall: { toolCallId, kind: "other", title: "Do something", rawInput: { a: 1 } },
+      options: [{ optionId: "reject-once", kind: "reject_once" }],
+    });
+    expect(acpRequestWithoutToolCallId(request("call-1"))).toEqual({
+      sessionId: "s1",
+      toolCall: { kind: "other", title: "Do something", rawInput: { a: 1 } },
+      options: [{ optionId: "reject-once", kind: "reject_once" }],
+    });
+    expect(JSON.stringify(acpRequestWithoutToolCallId(request("call-1")))).toBe(
+      JSON.stringify(acpRequestWithoutToolCallId(request("call-2"))),
+    );
+  });
+
+  it("returns anything that isn't a request with a tool call as it is", () => {
+    for (const value of [undefined, null, "text", [1], { sessionId: "s1" }, { toolCall: "x" }])
+      expect(acpRequestWithoutToolCallId(value)).toBe(value);
+  });
+});
 
 describe("acpReadOnlyWorkflowDecision", () => {
   it("allows fetch, search, read and think tools", () => {
@@ -57,6 +88,101 @@ describe("acpReadOnlyWorkflowDecision", () => {
     expect(decide({ kind: "read", title: "mcp__github__get_issue" })).toBe("deny");
     expect(decide({ kind: "execute", rawInput: { command: "ls", serverName: "x" } })).toBe("deny");
     expect(decide({ kind: "read", title: "screenshot" }, true)).toBe("deny");
+  });
+
+  it("classifies a shell command that only mentions an MCP name as the command it is", () => {
+    // Recorded on 2026-11-26: a command's title is its own text, so a path under `src/mcp/`
+    // read as an MCP tool call and was refused.
+    for (const command of [
+      "git log --oneline -3 -- apps/server/src/mcp/OrchestratorMcpService.test.ts",
+      "rg -n 'mcp__github__get_issue' docs",
+      "git show abc:apps/server/src/mcp_tools.ts | head",
+      "cat mcp.json",
+    ]) {
+      expect(decide({ kind: "execute", title: command, rawInput: { command } })).toBe("allow");
+      expect(decide({ kind: "execute", title: command, rawInput: { CommandLine: command } })).toBe(
+        "allow",
+      );
+    }
+    // It is still classified: mentioning MCP doesn't make a write read-only.
+    const write = "rm apps/server/src/mcp/x.ts";
+    expect(decide({ kind: "execute", title: write, rawInput: { command: write } })).toBe("deny");
+  });
+
+  it("still treats a call titled as an MCP tool as one, whatever its kind", () => {
+    for (const title of [
+      "Run mcp_github_get_issue",
+      "mcp__github__get_issue",
+      "MCP: github / get_issue",
+      "  mcp_github_get_issue",
+    ]) {
+      // With a command string too: the title's own form says what is being called.
+      expect(decide({ kind: "execute", title, rawInput: { command: "ls" } })).toBe("deny");
+      expect(decide({ kind: "other", title })).toBe("deny");
+    }
+    // Without a command string the title is all there is, so a mention anywhere counts.
+    expect(decide({ kind: "read", title: "Read via mcp__github__get_file" })).toBe("deny");
+    expect(decide({ kind: "execute", title: "Call mcp__github__get_file" })).toBe("deny");
+    // A server key marks MCP even on a command that only reads.
+    expect(
+      decide({ kind: "execute", title: "ls", rawInput: { command: "ls", ServerName: "github" } }),
+    ).toBe("deny");
+  });
+
+  it.each([
+    ["Cursor", "mcp__github__run_command"],
+    ["Antigravity, permission request", "MCP: github / run_command"],
+    ["Antigravity, tool call", "Run mcp_github_run_command"],
+  ])("refuses an MCP tool that carries a command, as %s titles it", (_provider, title) => {
+    // The assumption `acpMcpToolCall` documents: each provider puts its MCP form first in the
+    // title. A provider that changes its form must fail here, not run the tool's command.
+    for (const rawInput of [{ command: "ls" }, { CommandLine: "ls" }])
+      expect(reasonOf({ kind: "execute", title, rawInput })).toBe(
+        "only F5's read-only tools may be called over MCP in a read-only stage",
+      );
+  });
+
+  it("classifies an execute request by its command when the title has no MCP form first", () => {
+    // The documented limit of the title check: nothing but a server key or the title's start
+    // tells an MCP tool with a `command` argument from a shell command.
+    const title = "github: run (mcp_shell_run)";
+    expect(decide({ kind: "execute", title, rawInput: { command: "ls" } })).toBe("allow");
+    expect(decide({ kind: "execute", title, rawInput: { command: "rm x" } })).toBe("deny");
+    expect(decide({ kind: "execute", title, rawInput: { command: "ls", server: "github" } })).toBe(
+      "deny",
+    );
+  });
+
+  it("says why it refused", () => {
+    const reason = (
+      toolCall: Parameters<typeof acpReadOnlyWorkflowVerdict>[0]["toolCall"],
+      computerRequest = false,
+    ) => {
+      const verdict = acpReadOnlyWorkflowVerdict({ toolCall, computerRequest });
+      return verdict.decision === "deny" ? verdict.reason : undefined;
+    };
+    expect(reason({ kind: "execute", title: "touch x", rawInput: { command: "touch x" } })).toBe(
+      "`touch` is not on the read-only allowlist",
+    );
+    expect(
+      reason({ kind: "execute", title: "ls", rawInput: { command: "ls", BypassSandbox: true } }),
+    ).toContain("outside the sandbox");
+    expect(reason({ kind: "execute", title: "`git status`" })).toContain("was not reported");
+    expect(reason({ kind: "edit", title: "Edit a.ts" })).toBe(
+      "edit operations are not allowed in a read-only stage",
+    );
+    expect(reason({ title: "tool" })).toBe("the operation has no kind");
+    expect(reason({ kind: "other", title: "Run mcp_github_get_issue" })).toContain(
+      "only F5's read-only tools",
+    );
+    expect(reason({ kind: "read", title: "screenshot" }, true)).toContain("computer control");
+    expect(reason({ kind: "read", title: "Read a.ts" })).toBeUndefined();
+    expect(acpReadOnlyRefusalDetail("touch x", "`touch` is not on the read-only allowlist")).toBe(
+      "touch x (`touch` is not on the read-only allowlist)",
+    );
+    expect(acpReadOnlyRefusalDetail(undefined, "the operation has no kind")).toBe(
+      "the operation has no kind",
+    );
   });
 
   it("allows only F5's read-only thread server among MCP calls, by its generated name", () => {

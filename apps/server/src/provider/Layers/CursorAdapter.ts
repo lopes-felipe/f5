@@ -80,10 +80,14 @@ import {
 } from "../Errors.ts";
 import { acpPermissionOutcome, mapAcpToAdapterError } from "../acp/AcpAdapterSupport.ts";
 import {
+  ACP_HIDDEN_TOOL_INPUTS_DETAIL,
   acpReadOnlyGitRefusal,
-  acpReadOnlyWorkflowDecision,
+  acpReadOnlyRefusalDetail,
+  acpReadOnlyWorkflowVerdict,
+  acpRequestWithoutToolCallId,
 } from "../acp/AcpReadOnlyWorkflowPolicy.ts";
 import { appendGitConfigPairs } from "../../git/gitConfigEnvironment.ts";
+import { acpReadOnlyShellGuide } from "../readOnlyShellGuide.ts";
 import { type AcpSessionRuntimeShape } from "../acp/AcpSessionRuntime.ts";
 import {
   makeAcpAssistantItemEvent,
@@ -1423,16 +1427,15 @@ export function makeCursorAdapter(
                   // and web fetch. Read-only operations run once; anything else is refused here
                   // and recorded, and the model is told no and keeps working.
                   const computerRequest = Boolean(catalogs.classify(params.toolCall));
+                  const verdict = acpReadOnlyWorkflowVerdict({
+                    toolCall: params.toolCall,
+                    computerRequest,
+                    f5ThreadServerName: catalogs.readOnlyThreadServerName(),
+                  });
                   // A command the policy allows can still run a program a repository's Git
-                  // config names; the reason is recorded with the refusal.
+                  // config names; that reason is recorded with the refusal like any other.
                   let gitRefusal: string | undefined;
-                  if (
-                    acpReadOnlyWorkflowDecision({
-                      toolCall: params.toolCall,
-                      computerRequest,
-                      f5ThreadServerName: catalogs.readOnlyThreadServerName(),
-                    }) === "allow"
-                  ) {
+                  if (verdict.decision === "allow") {
                     gitRefusal = yield* Effect.promise(() =>
                       acpReadOnlyGitRefusal(readOnlyGitGuard, params.toolCall),
                     );
@@ -1443,6 +1446,10 @@ export function makeCursorAdapter(
                     if (allowOnce !== undefined)
                       return { outcome: { outcome: "selected" as const, optionId: allowOnce } };
                   }
+                  const refusalReason =
+                    verdict.decision === "deny"
+                      ? verdict.reason
+                      : (gitRefusal ?? "Cursor offered no way to approve it once");
                   const permissionRequest = parsePermissionRequest(params);
                   const deniedRequestId = RuntimeRequestId.make(crypto.randomUUID());
                   yield* offerRuntimeEvent(
@@ -1453,11 +1460,14 @@ export function makeCursorAdapter(
                       turnId: ctx?.activeTurnId,
                       requestId: deniedRequestId,
                       permissionRequest,
+                      // What was asked, then why F5 refused it: the model is only told no.
                       detail: computerRequest
-                        ? "Tool inputs hidden while computer control is enabled"
-                        : `${permissionRequest.detail ?? JSON.stringify(params).slice(0, 2000)}${
-                            gitRefusal === undefined ? "" : ` (${gitRefusal})`
-                          }`,
+                        ? ACP_HIDDEN_TOOL_INPUTS_DETAIL
+                        : acpReadOnlyRefusalDetail(
+                            permissionRequest.detail ??
+                              JSON.stringify(acpRequestWithoutToolCallId(params)).slice(0, 2000),
+                            refusalReason,
+                          ),
                       args: params,
                       source: "acp.jsonrpc",
                       method: "session/request_permission",
@@ -2013,6 +2023,14 @@ export function makeCursorAdapter(
             if (attachmentContext) {
               promptParts.push({ type: "text", text: attachmentContext });
             }
+            // F5 answers every command of a read-only stage with its classifier, and Cursor is
+            // only told "rejected". ACP has no instruction channel, so the rules go in the prompt.
+            const shellGuide = acpReadOnlyShellGuide({
+              workflowExecutionProfile: input.workflowExecutionProfile,
+              steering,
+              hasText: promptParts.length > 0,
+            });
+            if (shellGuide) promptParts.push({ type: "text", text: shellGuide });
             if (input.attachments && input.attachments.length > 0) {
               for (const attachment of input.attachments) {
                 switch (attachment.type) {
