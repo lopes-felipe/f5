@@ -1,6 +1,6 @@
 /**
  * Keeps Cursor's own settings from letting commands past F5 in read-only workflow stages.
- * Cursor's ACP server runs no sandbox (docs/reviews/cursor-live-gates.md), so F5's command policy
+ * Cursor's ACP server runs no sandbox (docs/reviews/read-only-live-gates.md), so F5's command policy
  * is the only control, and it only sees commands Cursor asks about. Cursor runs these without
  * asking:
  *
@@ -24,10 +24,16 @@
  * applied server-side and stay out of F5's reach.
  */
 import { randomUUID } from "node:crypto";
-import { constants as fsConstants } from "node:fs";
 import * as nodeFs from "node:fs/promises";
 import * as nodePath from "node:path";
 
+import {
+  checkProjectJson,
+  hasEntries,
+  isDirectory,
+  pathExists as exists,
+  type ReadOnlyProjectConfigConflict,
+} from "../readOnlyProjectConfig.ts";
 import { cursorCliConfigDir } from "./CursorNativeSessions.ts";
 
 export { cursorCliConfigDir };
@@ -140,48 +146,6 @@ export async function prepareCursorReadOnlyEnvironment(input: {
   return { ...input.environment, CURSOR_CONFIG_DIR: directory };
 }
 
-/** Project config files larger than this are refused rather than read. */
-const MAX_PROJECT_CONFIG_BYTES = 256 * 1024;
-
-type ProjectJson =
-  | { readonly kind: "absent" }
-  | { readonly kind: "parsed"; readonly value: unknown }
-  | { readonly kind: "unsafe"; readonly reason: string };
-
-/**
- * A repository-controlled JSON file, read so that it can't hang or mislead F5: only a regular
- * file (opened non-blocking, so a FIFO can't stall startup) within the size limit, parsed as
- * strict JSON. Anything F5 can't read with certainty is unsafe, since the CLI might still read it
- * (for example as JSON with comments).
- */
-async function readProjectJson(file: string): Promise<ProjectJson> {
-  let handle: nodeFs.FileHandle;
-  try {
-    handle = await nodeFs.open(file, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT" || code === "ENOTDIR") return { kind: "absent" };
-    return { kind: "unsafe", reason: `can't be read (${code ?? "unknown error"})` };
-  }
-  try {
-    const stats = await handle.stat();
-    if (!stats.isFile()) return { kind: "unsafe", reason: "is not a regular file" };
-    if (stats.size > MAX_PROJECT_CONFIG_BYTES)
-      return { kind: "unsafe", reason: `is larger than ${MAX_PROJECT_CONFIG_BYTES} bytes` };
-    const text = await handle.readFile("utf8");
-    try {
-      return { kind: "parsed", value: JSON.parse(text) as unknown };
-    } catch {
-      return { kind: "unsafe", reason: "isn't strict JSON, so F5 can't tell what Cursor reads" };
-    }
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    return { kind: "unsafe", reason: `can't be read (${code ?? "unknown error"})` };
-  } finally {
-    await handle.close().catch(() => undefined);
-  }
-}
-
 /**
  * Why a project `.cursor/cli.json` would let commands run without asking F5, or undefined.
  * Only deny rules, an empty allowlist and `approvalMode: "allowlist"` are accepted: any other
@@ -209,9 +173,6 @@ function cliConfigConflict(config: unknown): string | undefined {
   return undefined;
 }
 
-const hasEntries = (value: unknown) =>
-  isRecord(value) ? Object.keys(value).length > 0 : Array.isArray(value) && value.length > 0;
-
 function hooksConflict(config: unknown): string | undefined {
   if (!isRecord(config)) return "isn't a JSON object";
   return hasEntries(config.hooks) ? "defines hooks, which run shell commands" : undefined;
@@ -224,34 +185,12 @@ function mcpConflict(config: unknown): string | undefined {
     : undefined;
 }
 
-async function checkProjectFile(
+const checkProjectFile = (
   file: string,
   conflict: (config: unknown) => string | undefined,
-): Promise<CursorProjectConfigConflict | undefined> {
-  const read = await readProjectJson(file);
-  if (read.kind === "absent") return undefined;
-  const reason = read.kind === "unsafe" ? read.reason : conflict(read.value);
-  return reason === undefined ? undefined : { file, reason };
-}
+): Promise<CursorProjectConfigConflict | undefined> => checkProjectJson(file, "Cursor", conflict);
 
-async function isDirectory(path: string): Promise<boolean> {
-  return nodeFs.stat(path).then(
-    (stats) => stats.isDirectory(),
-    () => false,
-  );
-}
-
-async function exists(path: string): Promise<boolean> {
-  return nodeFs.lstat(path).then(
-    () => true,
-    () => false,
-  );
-}
-
-export interface CursorProjectConfigConflict {
-  readonly file: string;
-  readonly reason: string;
-}
+export type CursorProjectConfigConflict = ReadOnlyProjectConfigConflict;
 
 /**
  * The first project file that would let Cursor act without asking F5, or undefined.
