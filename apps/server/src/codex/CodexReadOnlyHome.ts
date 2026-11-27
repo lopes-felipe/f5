@@ -2,7 +2,7 @@
  * Keeps Codex's execution-policy rules from letting commands past F5 in read-only workflow stages.
  *
  * Codex runs a command that matches an `allow` rule in a `.rules` file outside its sandbox and
- * without asking anyone (docs/reviews/cursor-live-gates.md, "Codex read-only escalation", G4
+ * without asking anyone (docs/reviews/read-only-live-gates.md, "Codex read-only escalation", G4
  * control). It loads rules from `$CODEX_HOME/rules` and from a project's `.codex/rules`, so either
  * would bypass F5's read-only policy in every enforcement mode.
  *
@@ -32,6 +32,7 @@ import {
   hasKnownFileIdentity,
   normalizeWindowsLinkPath,
 } from "../provider/Drivers/CodexHomeLayout.ts";
+import type { ReadOnlyProjectConfigConflict } from "../provider/readOnlyProjectConfig.ts";
 
 /**
  * Entries of the instance's home a read-only stage never sees, matched without case: on a
@@ -354,10 +355,7 @@ export async function materializeCodexReadOnlyHome(input: {
   }
 }
 
-export interface CodexProjectRulesConflict {
-  readonly file: string;
-  readonly reason: string;
-}
+export type CodexProjectRulesConflict = ReadOnlyProjectConfigConflict;
 
 /**
  * Codex's project-root marker with the default `[".git"]` markers, which read-only stages pin: a
@@ -382,6 +380,8 @@ async function isProjectRoot(directory: string): Promise<boolean> {
 export async function findCodexProjectRulesConflict(
   cwd: string,
 ): Promise<CodexProjectRulesConflict | undefined> {
+  // Not the shared `projectDirectories`: that skips the home folder and treats any `.git` as the
+  // root, while Codex loads `~/.codex` as a project layer here and needs `HEAD` in a `.git` folder.
   const ancestors: string[] = [];
   for (let directory = nodePath.resolve(cwd); ; ) {
     ancestors.push(directory);

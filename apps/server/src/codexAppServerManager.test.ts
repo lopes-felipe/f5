@@ -1457,7 +1457,7 @@ describe("startSession", () => {
 
   it.each([
     // An organisation that forbids `untrusted` (MDM requirements.toml), exactly as Codex 0.170
-    // reported it in gate G1 (docs/reviews/cursor-live-gates.md).
+    // reported it in gate G1 (docs/reviews/read-only-live-gates.md).
     [
       {
         allowedApprovalPolicies: ["on-request", "never"],

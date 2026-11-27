@@ -1110,6 +1110,9 @@ it.effect.each([
       });
       yield* codex.stopAll();
       yield* provider.sendTurn({ threadId, input: "resume", attachments: [] });
+      // Wait for the expected lines, then a moment more for one that shouldn't come.
+      for (let attempt = 0; attempt < 100 && seen.length < lines.length; attempt++)
+        yield* sleep(20);
       yield* sleep(20);
       // The recovered start asks for the recorded request again.
       assert.equal(codex.startSession.mock.calls.length, 2);
