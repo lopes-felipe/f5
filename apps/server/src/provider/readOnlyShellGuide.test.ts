@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { READ_ONLY_SHELL_GUIDE, READ_ONLY_SHELL_GUIDE_EXAMPLES } from "./readOnlyShellGuide.ts";
+import {
+  READ_ONLY_SHELL_GUIDE,
+  READ_ONLY_SHELL_GUIDE_EXAMPLES,
+  READ_ONLY_SHELL_GUIDE_WITH_REASONS,
+} from "./readOnlyShellGuide.ts";
 import { classifyReadOnlyShellCommand } from "./readOnlyWorkflowShell.ts";
 
 describe("READ_ONLY_SHELL_GUIDE", () => {
@@ -80,6 +84,16 @@ describe("READ_ONLY_SHELL_GUIDE", () => {
     "/usr/bin/grep x a",
   ])("refuses %s", (command) => {
     expect(classifyReadOnlyShellCommand(command).readOnly).toBe(false);
+  });
+
+  it("differs for Claude only in what a refusal tells the model", () => {
+    const withoutIntro = (text: string) =>
+      text.replace(/A refused command did not run, and [^.]+\./, "");
+    expect(READ_ONLY_SHELL_GUIDE_WITH_REASONS).toContain("the refusal says why");
+    expect(READ_ONLY_SHELL_GUIDE).toContain('you are told "rejected" without a reason');
+    expect(withoutIntro(READ_ONLY_SHELL_GUIDE_WITH_REASONS)).toBe(
+      withoutIntro(READ_ONLY_SHELL_GUIDE),
+    );
   });
 
   it("fits in one Codex context entry", () => {

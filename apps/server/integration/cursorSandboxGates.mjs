@@ -31,6 +31,13 @@
 //   C6  The same launch with the allowlist in the repository's .cursor/cli.json instead: records
 //       whether Cursor honours it over ACP. F5 refuses such repositories either way. C6 always
 //       runs with C5, its control: a clean workspace under the same override must ask F5.
+//   C7  The same launch, with every permission request answered by F5's own read-only policy
+//       (`acpReadOnlyWorkflowVerdict`) and F5's shell rules in the prompt, as a stage gets them:
+//       `gh api … | base64 -d | nl -ba` and a command with `src/mcp/` in a path run, `touch
+//       marker` is refused with a reason, and a read after it still runs. Not part of the
+//       default set, because the policy loads only under Bun:
+//         bun apps/server/integration/cursorSandboxGates.mjs --gates C7
+//       It works from an agent's shell too, since nothing in it needs Cursor's sandbox.
 //
 // Each check is PASS, FAIL or INCONCLUSIVE. A write counts as blocked only when its tool call was
 // seen, nothing changed, and the output shows a sandbox denial; a step the model skipped or that
@@ -65,7 +72,9 @@ const rootParent =
   rootFlag >= 0 && argv[rootFlag + 1]
     ? path.resolve(argv[rootFlag + 1])
     : path.join(homedir(), ".f5-cursor-gates");
-const ALL_GATES = ["C2", "C3", "C4", "C5", "C6"];
+const DEFAULT_GATES = ["C2", "C3", "C4", "C5", "C6"];
+// C7 loads F5's ACP policy, which only Bun can import, so it runs only when asked for.
+const ALL_GATES = [...DEFAULT_GATES, "C7"];
 const requested = gatesFlag >= 0 ? (argv[gatesFlag + 1] ?? "").split(",").filter(Boolean) : [];
 const unknownGates = requested.filter((gate) => !ALL_GATES.includes(gate));
 if (gatesFlag >= 0 && (requested.length === 0 || unknownGates.length > 0)) {
@@ -81,7 +90,7 @@ const selected =
     ? ALL_GATES.filter(
         (gate) => requested.includes(gate) || (gate === "C5" && requested.includes("C6")),
       )
-    : ALL_GATES;
+    : DEFAULT_GATES;
 // A flag's value is only excluded when the flag is present.
 const flagValueIndexes = new Set(
   [rootFlag, gatesFlag].filter((index) => index >= 0).map((index) => index + 1),
@@ -432,6 +441,113 @@ if (report.gates.C5a && report.gates.C5a.verdict !== "PASS")
   console.log(
     "\nC5a didn't show the allowlist entry working, so C5 proves nothing. Check the allowlist format.",
   );
+
+// ── C7: F5's own policy answers a reviewer's commands ───────────────────────
+if (selected.includes("C7")) {
+  console.log("C7 (F5's read-only policy answers every request):");
+  let policy;
+  try {
+    policy = {
+      ...(await import("../src/provider/acp/AcpReadOnlyWorkflowPolicy.ts")),
+      ...(await import("../src/provider/acp/AcpRuntimeModel.ts")),
+      ...(await import("../src/provider/readOnlyShellGuide.ts")),
+    };
+  } catch (error) {
+    report.gates.C7 = { verdict: "INCONCLUSIVE", error: String(error).slice(0, 300) };
+    console.log("   verdict: INCONCLUSIVE (F5's policy didn't load; run this gate with bun)");
+  }
+  if (policy) {
+    const workspace = makeWorkspace("C7");
+    mkdirSync(path.join(workspace, "src", "mcp"), { recursive: true });
+    writeFileSync(path.join(workspace, "src", "mcp", "tool.ts"), "export const tool = 1;\n");
+    git(workspace, "add", ".");
+    git(workspace, "commit", "-qm", "add tool");
+    // What must come back: a public file through gh, and a path that mentions `mcp/`.
+    const READS = [
+      [
+        "gh api repos/cli/cli/contents/README.md --jq .content | base64 -d | nl -ba | head -3",
+        /GitHub CLI/,
+      ],
+      ["rg -n export src/mcp/tool.ts", /export const tool/],
+    ];
+    const WRITE = "touch marker";
+    const AFTER = ["git log --oneline -1", /add tool/];
+    const session = await acpSession(workspace, {
+      planMode: true,
+      sandbox: false,
+      steps: [...READS.map(([command]) => command), WRITE, AFTER[0]].map(
+        (command) => `\`${command}\``,
+      ),
+      // gh keeps its sign-in outside the fixture HOME.
+      extraEnv: {
+        CURSOR_CONFIG_DIR: readOnlyConfigDir,
+        GH_CONFIG_DIR: process.env.GH_CONFIG_DIR ?? path.join(homedir(), ".config", "gh"),
+      },
+      guide: policy.READ_ONLY_SHELL_GUIDE,
+      // Cursor's request carries no rawInput: the command came in the call's earlier `tool_call`
+      // update, and F5's ACP runtime fills it in from there before the adapter decides.
+      decide: (params, known) =>
+        policy.acpReadOnlyWorkflowVerdict({
+          toolCall: policy.withTrackedPermissionToolCall(
+            params,
+            known && {
+              toolCallId: known.id,
+              ...(known.kind ? { kind: known.kind } : {}),
+              data: { rawInput: known.rawInput, title: known.title },
+            },
+          ).toolCall,
+          computerRequest: false,
+        }),
+    });
+    const callsFor = (command) =>
+      session.toolCalls.filter((call) => commandText(call).includes(command));
+    const ran = ([command, output]) =>
+      callsFor(command).some((call) => call.status === "completed" && output.test(call.output));
+    const requestsFor = (command) =>
+      session.permissionRequests.filter((request) => commandText(request).includes(command));
+    const reads = READS.map((read) => ({
+      command: read[0],
+      ran: ran(read),
+      answers: requestsFor(read[0]).map((request) => request.answered),
+    }));
+    const refusedReads = session.permissionRequests.filter(
+      (request) =>
+        request.answered.startsWith("refused") &&
+        [...READS, AFTER].some(([command]) => commandText(request).includes(command)),
+    );
+    const write = requestsFor(WRITE).map((request) => request.answered);
+    const markerExists = existsSync(path.join(workspace, "marker"));
+    const afterRan = ran(AFTER);
+    const writeRefused = write.length > 0 && write.every((answer) => answer.startsWith("refused"));
+    const verdict =
+      markerExists || refusedReads.length > 0
+        ? "FAIL"
+        : session.summary.error
+          ? "INCONCLUSIVE"
+          : reads.every((read) => read.ran) && writeRefused && afterRan
+            ? "PASS"
+            : "INCONCLUSIVE";
+    report.gates.C7 = {
+      verdict,
+      reads,
+      write,
+      markerExists,
+      readAfterRefusal: afterRan,
+      permissionRequests: session.permissionRequests,
+      ...session.summary,
+    };
+    console.log(`   verdict: ${verdict}`);
+    for (const read of reads)
+      console.log(
+        `   ${read.command.slice(0, 70)}: ${read.ran ? "ran" : "did not run"} (${read.answers.join(", ") || "not asked"})`,
+      );
+    console.log(
+      `   ${WRITE}: ${write.join(", ") || "not asked"}; marker ${markerExists ? "exists" : "absent"}`,
+    );
+    console.log(`   ${AFTER[0]} after the refusal: ${afterRan ? "ran" : "did not run"}`);
+    if (session.summary.error) console.log(`   session: ${session.summary.error}`);
+  }
+}
 finish();
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -535,7 +651,14 @@ function isExpectedFixtureCall(toolCall, expectedCommands, knownCall) {
   return candidates.some((command) => command !== "" && expectedCommands.has(command));
 }
 
-function acpSession(workspace, { planMode, steps, sandbox = true, extraEnv = {} }) {
+/**
+ * One ACP session that runs `steps`. Permission requests are answered "allow once" for the
+ * fixture's own steps and refused otherwise, unless `decide` answers them: it gets the request
+ * and the call's earlier `tool_call` update, and returns F5's verdict (`{ decision: "allow" }` or
+ * `{ decision: "deny", reason }`).
+ * `guide` is sent as a second block of the prompt, the way a read-only stage gets F5's shell rules.
+ */
+function acpSession(workspace, { planMode, steps, sandbox = true, extraEnv = {}, decide, guide }) {
   const expectedCommands = new Set(
     steps.flatMap((step) => {
       const match = /^`([^`]+)`$/.exec(step);
@@ -612,11 +735,14 @@ function acpSession(workspace, { planMode, steps, sandbox = true, extraEnv = {} 
         const options = Array.isArray(params.options) ? params.options : [];
         // Only the fixture's own steps are approved: a model that strays must not touch files or
         // credentials outside the fixtures with this operator's account.
-        const expected = isExpectedFixtureCall(
-          params.toolCall,
-          expectedCommands,
-          toolCalls.get(params.toolCall?.toolCallId),
-        );
+        const verdict = decide?.(params, toolCalls.get(params.toolCall?.toolCallId));
+        const expected = verdict
+          ? verdict.decision === "allow"
+          : isExpectedFixtureCall(
+              params.toolCall,
+              expectedCommands,
+              toolCalls.get(params.toolCall?.toolCallId),
+            );
         const choice = options.find(
           (option) => option.kind === (expected ? "allow_once" : "reject_once"),
         );
@@ -626,7 +752,7 @@ function acpSession(workspace, { planMode, steps, sandbox = true, extraEnv = {} 
           ...params,
           options: options.map(({ kind, optionId, name }) => ({ kind, optionId, name })),
           answered: !expected
-            ? "refused (not a fixture step)"
+            ? `refused (${verdict?.decision === "deny" ? verdict.reason : "not a fixture step"})`
             : choice
               ? "allow once"
               : "cancelled (no allow_once option)",
@@ -700,6 +826,7 @@ function acpSession(workspace, { planMode, steps, sandbox = true, extraEnv = {} 
                 ...steps.map((step, index) => `${index + 1}. ${step}`),
               ].join("\n"),
             },
+            ...(guide ? [{ type: "text", text: guide }] : []),
           ],
         });
         settle();
