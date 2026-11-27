@@ -13,6 +13,11 @@
   },
   {
     "command": "cd /work/repo && H=099735a4b8e0; git show \"${H}:apps/server/src/codex/CodexOAuthManager.ts\" | sed -n 140,290p",
+    "readOnly": false,
+    "reason": "$H was set after `&&`, which may not have run, so its value here is unknown: set H before the chain (`H=…; cd … && …`) or on a line of its own"
+  },
+  {
+    "command": "H=099735a4b8e0; cd /work/repo && git show \"${H}:apps/server/src/codex/CodexOAuthManager.ts\" | sed -n 140,290p",
     "readOnly": true
   },
   {
@@ -85,6 +90,11 @@
   },
   {
     "command": "cd /work/repo && H=58c8af421c; git show \"${H}:apps/server/src/provider/mcpReconcile.ts\" | sed -n 60,135p; git show \"${H}:apps/server/src/provider/codexMcpObservation.ts\" | sed -n 1,60p",
+    "readOnly": false,
+    "reason": "$H was set after `&&`, which may not have run, so its value here is unknown: set H before the chain (`H=…; cd … && …`) or on a line of its own"
+  },
+  {
+    "command": "H=58c8af421c; cd /work/repo && git show \"${H}:apps/server/src/provider/mcpReconcile.ts\" | sed -n 60,135p; git show \"${H}:apps/server/src/provider/codexMcpObservation.ts\" | sed -n 1,60p",
     "readOnly": true
   },
   {
@@ -109,6 +119,11 @@
   },
   {
     "command": "cd /work/repo && F=/tmp/scratch/WorkflowService.ts; grep -n 'reviewRetries' $F | head -20",
+    "readOnly": false,
+    "reason": "$F was set after `&&`, which may not have run, so its value here is unknown: set F before the chain (`F=…; cd … && …`) or on a line of its own"
+  },
+  {
+    "command": "F=/tmp/scratch/WorkflowService.ts; cd /work/repo && grep -n 'reviewRetries' $F | head -20",
     "readOnly": true
   },
   {
@@ -137,6 +152,11 @@
   },
   {
     "command": "cd /work/repo && H=a05ef51adc74070ce9f980680548e8df10faa357; git show \"${H}:apps/server/src/terminal/Layers/Manager.ts\" | grep -n \"onData\\|Queue\\.\\|drain\\|pending\" | head -40",
+    "readOnly": false,
+    "reason": "$H was set after `&&`, which may not have run, so its value here is unknown: set H before the chain (`H=…; cd … && …`) or on a line of its own"
+  },
+  {
+    "command": "H=a05ef51adc74070ce9f980680548e8df10faa357; cd /work/repo && git show \"${H}:apps/server/src/terminal/Layers/Manager.ts\" | grep -n \"onData\\|Queue\\.\\|drain\\|pending\" | head -40",
     "readOnly": true
   },
   {
@@ -145,6 +165,11 @@
   },
   {
     "command": "cd /work/repo && R=review/pr922; git show \"${R}:apps/server/src/wsServer.ts\" | sed -n 8225,8260p; git show \"${R}:apps/server/src/wsServer.ts\" | sed -n 4334,4375p",
+    "readOnly": false,
+    "reason": "$R was set after `&&`, which may not have run, so its value here is unknown: set R before the chain (`R=…; cd … && …`) or on a line of its own"
+  },
+  {
+    "command": "R=review/pr922; cd /work/repo && git show \"${R}:apps/server/src/wsServer.ts\" | sed -n 8225,8260p; git show \"${R}:apps/server/src/wsServer.ts\" | sed -n 4334,4375p",
     "readOnly": true
   },
   {
@@ -161,6 +186,11 @@
   },
   {
     "command": "cd /work/repo && F=/tmp/scratch/CR.ts; sed -n 2450,2620p $F",
+    "readOnly": false,
+    "reason": "$F was set after `&&`, which may not have run, so its value here is unknown: set F before the chain (`F=…; cd … && …`) or on a line of its own"
+  },
+  {
+    "command": "F=/tmp/scratch/CR.ts; cd /work/repo && sed -n 2450,2620p $F",
     "readOnly": true
   },
   {
@@ -173,10 +203,20 @@
   },
   {
     "command": "cd /work/repo && F=\"7a32304481:apps/server/src/prHub/Layers/PrHubService.ts\"; git show \"$F\" | sed -n 900,1010p; git show \"$F\" | sed -n 1085,1120p",
+    "readOnly": false,
+    "reason": "$F was set after `&&`, which may not have run, so its value here is unknown: set F before the chain (`F=…; cd … && …`) or on a line of its own"
+  },
+  {
+    "command": "F=\"7a32304481:apps/server/src/prHub/Layers/PrHubService.ts\"; cd /work/repo && git show \"$F\" | sed -n 900,1010p; git show \"$F\" | sed -n 1085,1120p",
     "readOnly": true
   },
   {
     "command": "cd /work/repo && H=b843ae6ccc; git show \"${H}:scripts/build-desktop-artifact.ts\" | sed -n 560,660p; echo ----; git show \"${H}:scripts/build-desktop-artifact.ts\" | sed -n 800,900p",
+    "readOnly": false,
+    "reason": "$H was set after `&&`, which may not have run, so its value here is unknown: set H before the chain (`H=…; cd … && …`) or on a line of its own"
+  },
+  {
+    "command": "H=b843ae6ccc; cd /work/repo && git show \"${H}:scripts/build-desktop-artifact.ts\" | sed -n 560,660p; echo ----; git show \"${H}:scripts/build-desktop-artifact.ts\" | sed -n 800,900p",
     "readOnly": true
   },
   {
@@ -185,6 +225,11 @@
   },
   {
     "command": "cd /work/repo && P=87c3eb14403b62261ce8b0a43ce25132f0abc1e8; git show \"${P}:apps/server/src/orchestration/workflowBehavior.ts\" | sed -n 60,195p",
+    "readOnly": false,
+    "reason": "$P was set after `&&`, which may not have run, so its value here is unknown: set P before the chain (`P=…; cd … && …`) or on a line of its own"
+  },
+  {
+    "command": "P=87c3eb14403b62261ce8b0a43ce25132f0abc1e8; cd /work/repo && git show \"${P}:apps/server/src/orchestration/workflowBehavior.ts\" | sed -n 60,195p",
     "readOnly": true
   },
   {
@@ -193,6 +238,11 @@
   },
   {
     "command": "cd /work/repo && F=/tmp/scratch/ca.ts; sed -n '4885,4920p' $F",
+    "readOnly": false,
+    "reason": "$F was set after `&&`, which may not have run, so its value here is unknown: set F before the chain (`F=…; cd … && …`) or on a line of its own"
+  },
+  {
+    "command": "F=/tmp/scratch/ca.ts; cd /work/repo && sed -n '4885,4920p' $F",
     "readOnly": true
   },
   {
@@ -205,6 +255,11 @@
   },
   {
     "command": "cd /work/repo && F=/tmp/scratch/CR.ts; sed -n 795,860p $F; echo ----; sed -n 2370,2450p $F",
+    "readOnly": false,
+    "reason": "$F was set after `&&`, which may not have run, so its value here is unknown: set F before the chain (`F=…; cd … && …`) or on a line of its own"
+  },
+  {
+    "command": "F=/tmp/scratch/CR.ts; cd /work/repo && sed -n 795,860p $F; echo ----; sed -n 2370,2450p $F",
     "readOnly": true
   },
   {
@@ -241,6 +296,11 @@
   },
   {
     "command": "cd /work/repo && F=\"7a32304481:apps/server/src/prHub/Layers/PrHubService.ts\"; git show \"$F\" | grep -n \"withPrAccount\\|GitHubCredentialScope\\|generation\" | head -60",
+    "readOnly": false,
+    "reason": "$F was set after `&&`, which may not have run, so its value here is unknown: set F before the chain (`F=…; cd … && …`) or on a line of its own"
+  },
+  {
+    "command": "F=\"7a32304481:apps/server/src/prHub/Layers/PrHubService.ts\"; cd /work/repo && git show \"$F\" | grep -n \"withPrAccount\\|GitHubCredentialScope\\|generation\" | head -60",
     "readOnly": true
   },
   {
@@ -273,6 +333,11 @@
   },
   {
     "command": "cd /work/repo && H=f0fbe8383e7c6c5bcb0b510e66ed8f33569e466d; git show \"${H}:apps/desktop/src/cliCommand.ts\" | sed -n 55,92p; git show \"${H}:apps/web/src/themeBoot.ts\" | grep -n \"colorScheme\\|color-scheme\\|dark\" | head",
+    "readOnly": false,
+    "reason": "$H was set after `&&`, which may not have run, so its value here is unknown: set H before the chain (`H=…; cd … && …`) or on a line of its own"
+  },
+  {
+    "command": "H=f0fbe8383e7c6c5bcb0b510e66ed8f33569e466d; cd /work/repo && git show \"${H}:apps/desktop/src/cliCommand.ts\" | sed -n 55,92p; git show \"${H}:apps/web/src/themeBoot.ts\" | grep -n \"colorScheme\\|color-scheme\\|dark\" | head",
     "readOnly": true
   },
   {
@@ -282,6 +347,11 @@
   },
   {
     "command": "cd /work/repo && H=fe627579130566b6c8f0a0e7ae391c316bd2b435; git grep -n \"sideChat\" \"${H}\" -- apps/server/src packages/contracts/src | grep -v \"\\.test\\.ts\" | head -30",
+    "readOnly": false,
+    "reason": "$H was set after `&&`, which may not have run, so its value here is unknown: set H before the chain (`H=…; cd … && …`) or on a line of its own"
+  },
+  {
+    "command": "H=fe627579130566b6c8f0a0e7ae391c316bd2b435; cd /work/repo && git grep -n \"sideChat\" \"${H}\" -- apps/server/src packages/contracts/src | grep -v \"\\.test\\.ts\" | head -30",
     "readOnly": true
   },
   {
@@ -290,6 +360,11 @@
   },
   {
     "command": "cd /work/repo && H=152c58c81d387d89d49270525992bd12dc6a43af; git show \"${H}:packages/contracts/src/settings.ts\" | sed -n '90,300p'",
+    "readOnly": false,
+    "reason": "$H was set after `&&`, which may not have run, so its value here is unknown: set H before the chain (`H=…; cd … && …`) or on a line of its own"
+  },
+  {
+    "command": "H=152c58c81d387d89d49270525992bd12dc6a43af; cd /work/repo && git show \"${H}:packages/contracts/src/settings.ts\" | sed -n '90,300p'",
     "readOnly": true
   },
   {
@@ -334,6 +409,11 @@
   },
   {
     "command": "cd /work/repo && R=1ea72504ad41399c852a17f340babef7ead17bd2; git show \"${R}:apps/server/src/prHub/forgeHub.ts\" | sed -n 300,360p",
+    "readOnly": false,
+    "reason": "$R was set after `&&`, which may not have run, so its value here is unknown: set R before the chain (`R=…; cd … && …`) or on a line of its own"
+  },
+  {
+    "command": "R=1ea72504ad41399c852a17f340babef7ead17bd2; cd /work/repo && git show \"${R}:apps/server/src/prHub/forgeHub.ts\" | sed -n 300,360p",
     "readOnly": true
   },
   {
@@ -362,6 +442,11 @@
   },
   {
     "command": "cd /work/repo && F=/tmp/scratch/INV.ts; sed -n 2290,2345p $F; sed -n 880,915p $F",
+    "readOnly": false,
+    "reason": "$F was set after `&&`, which may not have run, so its value here is unknown: set F before the chain (`F=…; cd … && …`) or on a line of its own"
+  },
+  {
+    "command": "F=/tmp/scratch/INV.ts; cd /work/repo && sed -n 2290,2345p $F; sed -n 880,915p $F",
     "readOnly": true
   },
   {
@@ -628,7 +713,7 @@
   {
     "command": "cd /work/repo && R=review/pr922; F=\"${R}:apps/server/src/provider/Layers/ClaudeAdapter.ts\"; git show \"$F\" | grep -n \"queryEnvironment\\b\\|queryEnvironment =\\|processEnvironment\" | head -30",
     "readOnly": false,
-    "reason": "F is built from $R, which may be unset here: set R on a line of its own first"
+    "reason": "$R was set after `&&`, which may not have run, so its value here is unknown: set R before the chain (`R=…; cd … && …`) or on a line of its own"
   },
   {
     "command": "cd /tmp && agent --version 2>&1 | head -3; agent --help 2>&1 | head -120",
