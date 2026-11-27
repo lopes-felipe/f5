@@ -462,6 +462,7 @@ import { ElicitationPanel } from "./chat/ElicitationPanel";
 import { NextTurnQueuePanel, NextTurnQueueSync } from "./chat/NextTurnQueuePanel";
 import {
   canRerunWorktreeSetupScript,
+  canStopWorktreeSetupScript,
   shouldShowWorktreeSetupCard,
   WorktreeSetupCard,
 } from "./chat/WorktreeSetupCard";
@@ -8430,6 +8431,12 @@ export default memo(function ChatView({
         onRerunScript={
           canRerunWorktreeSetupScript(worktreeSetup)
             ? () => void runWorktreeSetupAction("rerunScript")
+            : null
+        }
+        // The server stops only the script when the setup itself has finished.
+        onStopScript={
+          canStopWorktreeSetupScript(worktreeSetup)
+            ? () => void runWorktreeSetupAction("cancel")
             : null
         }
       />

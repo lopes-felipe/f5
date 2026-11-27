@@ -32,13 +32,22 @@ message back as a draft.
 Setup carries on by itself where it can:
 
 - If F5 restarts before the agent started, setup resumes from where it stopped. Checkout and
-  submodules that already finished are not repeated.
+  submodules that already finished are not repeated; submodules that were cut off are
+  initialized again.
 - A background setup script that a restart cut off is not run again, because F5 cannot tell how
   far it got. The card marks it "interrupted by a restart", the agent starts regardless, and
   **Rerun setup script** runs it again when you want. With **Agent waits** on, F5 reruns the
   script once by itself; a second interruption fails the setup and waits for **Retry**.
+- A setup that resumes by itself never runs a setup command you edited in the meantime. It
+  stops and waits for **Retry**, which is what accepts the new command.
+- In a project made of several repositories, a setup script that a restart cut off is never
+  run again unasked: a background script is left alone, and with **Agent waits** on the setup
+  waits for **Retry**. **Rerun setup script** is not available there; run the script in a
+  terminal.
 - **Rerun setup script** also appears after a setup script fails. It runs the script in the
   worktree the agent is already using, without holding the thread.
+- **Stop script** stops a setup script that is still running after the agent started, including
+  one you asked to run again. The agent keeps the worktree.
 - If another F5 window is using the repository, checkout waits and tries again up to three
   times before the setup fails.
 

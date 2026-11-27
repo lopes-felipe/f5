@@ -12,6 +12,8 @@ import {
   INTERRUPTED_SCRIPT_RERUN,
   PreparationError,
   SETUP_SCRIPT_INTERRUPTED,
+  SETUP_SCRIPT_STOPPED,
+  SUBMODULES_INITIALIZING,
   WorktreePreparations,
   needsPreparation,
 } from "../../persistence/Services/WorktreePreparations.ts";
@@ -38,6 +40,12 @@ export const makeWorktreePreparationService = Effect.gen(function* () {
     string,
     { fingerprint: string; done: Deferred.Deferred<void, PreparationError> }
   >();
+  /**
+   * The setup scripts this service is running, by checkout. A script stays
+   * listed until its outcome is written to the receipt, so "not listed" means
+   * nothing more will be written for it.
+   */
+  const scripts = new Map<string, { readonly kill: Effect.Effect<void>; stopped: boolean }>();
   const canonical = (path: string) =>
     Effect.tryPromise({
       try: () => canonicalWorktreePath(path),
@@ -210,12 +218,16 @@ export const makeWorktreePreparationService = Effect.gen(function* () {
             // script is left alone: the failure is reported and does not hold
             // the turn. A script the agent waits for is run again, once,
             // because the agent needs what it produces.
+            // A restart during submodule initialization cut off no script: the
+            // initialization is done again below and the script runs as usual.
+            const scriptCutOff =
+              receipt.phase === "setup_indeterminate" && receipt.result !== SUBMODULES_INITIALIZING;
             const interruptedRerun =
-              receipt.phase === "setup_indeterminate" &&
+              scriptCutOff &&
               !input.retry &&
               script?.async === false &&
               receipt.result !== INTERRUPTED_SCRIPT_RERUN;
-            if (receipt.phase === "setup_indeterminate" && !input.retry && !interruptedRerun) {
+            if (scriptCutOff && !input.retry && !interruptedRerun) {
               yield* withWorktreeLifecycleLock(
                 path,
                 receipts.update(receipt, {
@@ -231,16 +243,21 @@ export const makeWorktreePreparationService = Effect.gen(function* () {
               receipts.update(receipt, {
                 phase: "setup_running",
                 error: null,
-                result: interruptedRerun ? INTERRUPTED_SCRIPT_RERUN : null,
+                // Submodules first; the mark is replaced before the script starts.
+                result: SUBMODULES_INITIALIZING,
                 setupIdentity: script?.command ?? null,
               }),
             );
             preparingOperationId = operationId;
-            const finish = (result: import("effect").Exit.Exit<void, unknown>) =>
+            const finish = (result: import("effect").Exit.Exit<void, unknown>, stopped = false) =>
               Effect.gen(function* () {
                 const interrupted =
-                  result._tag === "Failure" && Cause.hasInterruptsOnly(result.cause);
-                const error = result._tag === "Failure" ? Cause.pretty(result.cause) : null;
+                  !stopped && result._tag === "Failure" && Cause.hasInterruptsOnly(result.cause);
+                const error = stopped
+                  ? SETUP_SCRIPT_STOPPED
+                  : result._tag === "Failure"
+                    ? Cause.pretty(result.cause)
+                    : null;
                 const latest = yield* receipts.latest(path);
                 if (latest?.operationId === operationId && latest.phase === "setup_running")
                   yield* receipts.update(latest, {
@@ -252,7 +269,15 @@ export const makeWorktreePreparationService = Effect.gen(function* () {
                     error: interrupted
                       ? "Setup was interrupted. Explicit retry acknowledges possible external effects."
                       : error,
-                    result: JSON.stringify({ path, outputTail }),
+                    // A shutdown is an interruption too. The marks say what was
+                    // running and whether the script was already run again
+                    // once, and the next start decides by them: keep them.
+                    result:
+                      interrupted &&
+                      (latest.result === INTERRUPTED_SCRIPT_RERUN ||
+                        latest.result === SUBMODULES_INITIALIZING)
+                        ? latest.result
+                        : JSON.stringify({ path, outputTail }),
                   });
                 yield* report(error);
               });
@@ -272,6 +297,13 @@ export const makeWorktreePreparationService = Effect.gen(function* () {
               yield* finish(Exit.void);
               return;
             }
+            // The submodules are in place: from here an interruption cuts off the script.
+            receipt = yield* withWorktreeLifecycleLock(
+              path,
+              receipts.update(receipt, {
+                result: interruptedRerun ? INTERRUPTED_SCRIPT_RERUN : null,
+              }),
+            );
             const process = yield* startOwnedSetupScript({
               command: script.command,
               cwd: path,
@@ -285,6 +317,8 @@ export const makeWorktreePreparationService = Effect.gen(function* () {
               },
             });
             ownedScript = process;
+            const live = { kill: process.kill, stopped: false };
+            scripts.set(path, live);
             const completion = process.exit.pipe(
               Effect.onInterrupt(() => process.kill),
               Effect.flatMap((code) =>
@@ -297,7 +331,17 @@ export const makeWorktreePreparationService = Effect.gen(function* () {
                       }),
                     ),
               ),
-              Effect.onExit((result) => finish(result).pipe(Effect.ignoreCause({ log: true }))),
+              Effect.onExit((result) =>
+                finish(result, live.stopped).pipe(
+                  Effect.ignoreCause({ log: true }),
+                  // Unlisted only once the outcome is written, or could not be.
+                  Effect.andThen(
+                    Effect.sync(() => {
+                      if (scripts.get(path) === live) scripts.delete(path);
+                    }),
+                  ),
+                ),
+              ),
             );
             if (script.async ?? true) {
               receipt = yield* receipts.update(receipt, { result: '{"async":true}' });
@@ -319,7 +363,11 @@ export const makeWorktreePreparationService = Effect.gen(function* () {
               Effect.gen(function* () {
                 if (exit._tag === "Failure") {
                   // A failure between spawn and background handoff must not orphan the process.
-                  if (ownedScript && !scriptHandedOff) yield* ownedScript.kill;
+                  if (ownedScript && !scriptHandedOff) {
+                    yield* ownedScript.kill;
+                    // Its completion never started, so nothing else unlists it.
+                    scripts.delete(path);
+                  }
                   const latest = yield* receipts.latest(path);
                   if (
                     latest?.operationId === preparingOperationId &&
@@ -359,6 +407,20 @@ export const makeWorktreePreparationService = Effect.gen(function* () {
     prepare,
     needsPreparation: (path) =>
       canonical(path).pipe(Effect.flatMap(receipts.latest), Effect.map(needsPreparation)),
+    scriptRunning: (path) =>
+      canonical(path).pipe(
+        Effect.map((checkout) => scripts.has(checkout)),
+        Effect.orElseSucceed(() => false),
+      ),
+    stopScript: (path) =>
+      Effect.gen(function* () {
+        const live = scripts.get(yield* canonical(path));
+        if (!live) return false;
+        // Its own completion records the stop on the receipt.
+        live.stopped = true;
+        yield* live.kill;
+        return true;
+      }).pipe(Effect.orElseSucceed(() => false)),
     startup: Effect.gen(function* () {
       yield* receipts.reconcile;
       // Startup runs before admitting requests. Reclaim only inactive reservations

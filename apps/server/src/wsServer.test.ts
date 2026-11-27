@@ -1007,6 +1007,8 @@ describe("WebSocket Server", () => {
           Layer.succeed(WorktreePreparation, {
             prepare: () => Effect.void,
             needsPreparation: () => Effect.succeed(false),
+            scriptRunning: () => Effect.succeed(false),
+            stopScript: () => Effect.succeed(false),
             startBackground: () => Effect.void,
             startup: Effect.void,
           }),
@@ -1435,6 +1437,8 @@ describe("WebSocket Server", () => {
         Layer.succeed(WorktreePreparation, {
           prepare: () => Effect.void,
           needsPreparation: () => Effect.succeed(false),
+          scriptRunning: () => Effect.succeed(false),
+          stopScript: () => Effect.succeed(false),
           startBackground: () => Effect.void,
           startup: Effect.void,
         }),

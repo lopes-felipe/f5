@@ -8,6 +8,8 @@ import { OrchestrationEngineService } from "../../orchestration/Services/Orchest
 import {
   INTERRUPTED_SCRIPT_RERUN,
   SETUP_SCRIPT_INTERRUPTED,
+  SETUP_SCRIPT_STOPPED,
+  SUBMODULES_INITIALIZING,
   WorktreePreparations,
   type PreparationPhase,
 } from "../../persistence/Services/WorktreePreparations.ts";
@@ -314,17 +316,66 @@ describe("durable thread worktree preparation", () => {
         yield* waitForPhase(receipts, "setup_running");
         expect(startOwnedSetupScript).toHaveBeenCalledTimes(1);
         expect((yield* receipts.latest(input.worktreePath))?.result).toBe(INTERRUPTED_SCRIPT_RERUN);
-        // A second restart, in the middle of that rerun. The mark survives it.
-        yield* service.startup;
+        // The server shuts down in the middle of that rerun. The script's own
+        // completion writes the receipt, before any startup reconciles it, and
+        // the mark has to survive that write.
         yield* Fiber.interrupt(preparing);
         const interruptedAgain = (yield* receipts.latest(input.worktreePath))!;
         expect(interruptedAgain.phase).toBe("setup_indeterminate");
         expect(interruptedAgain.result).toBe(INTERRUPTED_SCRIPT_RERUN);
+        yield* service.startup;
+        expect((yield* receipts.latest(input.worktreePath))?.result).toBe(INTERRUPTED_SCRIPT_RERUN);
         // Not a third run: it is reported, and the turn is not held.
         yield* service.prepare(input);
         expect(startOwnedSetupScript).toHaveBeenCalledTimes(1);
         expect((yield* receipts.latest(input.worktreePath))?.phase).toBe("setup_failed");
         yield* Deferred.succeed(exited, 0);
+      }),
+    );
+  });
+  it("does not take a restart during submodule initialization for a script that was cut off", async () => {
+    await fixture({ phase: "setup_running" }).run(({ service, receipts, exited }) =>
+      Effect.gen(function* () {
+        // What a checkout records while its submodules are being initialized.
+        yield* receipts.update((yield* receipts.latest(input.worktreePath))!, {
+          result: SUBMODULES_INITIALIZING,
+        });
+        yield* service.startup;
+        const cutOff = (yield* receipts.latest(input.worktreePath))!;
+        expect(cutOff.phase).toBe("setup_indeterminate");
+        expect(cutOff.result).toBe(SUBMODULES_INITIALIZING);
+        // The script never ran, so nothing is left alone: the submodules are
+        // initialized again and the background script starts as on a first run.
+        yield* service.prepare(input);
+        expect(startOwnedSetupScript).toHaveBeenCalledTimes(1);
+        const running = (yield* receipts.latest(input.worktreePath))!;
+        expect(running.phase).toBe("setup_running");
+        expect(running.result).toBe('{"async":true}');
+        yield* Deferred.succeed(exited, 0);
+        yield* waitForPhase(receipts, "completed");
+      }),
+    );
+  });
+  it("stops a running script when asked, and records it as stopped", async () => {
+    const { run, killed } = fixture();
+    await run(({ service, receipts }) =>
+      Effect.gen(function* () {
+        expect(yield* service.stopScript(input.worktreePath)).toBe(false);
+        yield* service.prepare(input);
+        expect(yield* service.scriptRunning(input.worktreePath)).toBe(true);
+        expect(yield* service.stopScript(input.worktreePath)).toBe(true);
+        expect(killed).toHaveBeenCalledTimes(1);
+        yield* waitForPhase(receipts, "setup_failed");
+        // A stop is a decision, not an interruption: it holds no later send,
+        // and the script is unlisted once that is written.
+        expect((yield* receipts.latest(input.worktreePath))?.error).toBe(SETUP_SCRIPT_STOPPED);
+        for (let attempt = 0; attempt < 200; attempt++) {
+          if (!(yield* service.scriptRunning(input.worktreePath))) break;
+          yield* Effect.sleep("1 millis");
+        }
+        expect(yield* service.scriptRunning(input.worktreePath)).toBe(false);
+        yield* service.prepare(input);
+        expect(startOwnedSetupScript).toHaveBeenCalledTimes(1);
       }),
     );
   });

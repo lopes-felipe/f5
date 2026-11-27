@@ -14,6 +14,17 @@ export interface PrepareThreadWorktree {
 export interface WorktreePreparationShape {
   readonly needsPreparation: (path: string) => Effect.Effect<boolean, PreparationError>;
   readonly prepare: (input: PrepareThreadWorktree) => Effect.Effect<void, PreparationError>;
+  /**
+   * Whether a setup script started by `prepare` is still running in the
+   * checkout. False once its outcome is on the receipt, or could not be written.
+   */
+  readonly scriptRunning: (path: string) => Effect.Effect<boolean>;
+  /**
+   * Stops the setup script running in the checkout, if one is. The receipt
+   * records it as stopped, which holds no later send. Resolves to whether a
+   * script was running.
+   */
+  readonly stopScript: (path: string) => Effect.Effect<boolean>;
   readonly startBackground: (
     input: PrepareThreadWorktree,
     notify: () => Effect.Effect<void>,

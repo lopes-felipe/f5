@@ -31,6 +31,8 @@ export interface WorktreeSetupCardProps {
   readonly onWorkLocally: (() => void) | null;
   /** Runs the setup script again in a worktree the agent is already using. */
   readonly onRerunScript?: (() => void) | null | undefined;
+  /** Stops the setup script of a finished setup; the agent keeps the worktree. */
+  readonly onStopScript?: (() => void) | null | undefined;
   readonly variant?: ComposerPanelVariant | undefined;
   /** Opens a collapsible (warnings-only) setup expanded, as in its status-strip popover. */
   readonly defaultExpanded?: boolean | undefined;
@@ -123,6 +125,18 @@ export function canRerunWorktreeSetupScript(snapshot: WorktreeSetupSnapshot): bo
   if (snapshot.phase !== "done" || snapshot.worktreePath === null) return false;
   const status = snapshot.stages.find((stage) => stage.id === "setup-script")?.status;
   return status === "failed" || status === "warning";
+}
+
+/**
+ * A finished setup whose script is still running, in the background or because
+ * it was asked for again, can have that script stopped. Nothing else is
+ * cancelled: the agent is already working in the worktree.
+ */
+export function canStopWorktreeSetupScript(snapshot: WorktreeSetupSnapshot): boolean {
+  return (
+    snapshot.phase === "done" &&
+    snapshot.stages.find((stage) => stage.id === "setup-script")?.status === "running"
+  );
 }
 
 /**
@@ -291,7 +305,11 @@ export function WorktreeSetupCard(props: WorktreeSetupCardProps) {
           {snapshot.error}
         </p>
       ) : null}
-      {props.onCancel || props.onRetry || props.onWorkLocally || props.onRerunScript ? (
+      {props.onCancel ||
+      props.onRetry ||
+      props.onWorkLocally ||
+      props.onRerunScript ||
+      props.onStopScript ? (
         <div className="mt-2 flex flex-wrap gap-1.5">
           {props.onRetry ? (
             <Button type="button" size="xs" disabled={props.busy} onClick={props.onRetry}>
@@ -307,6 +325,17 @@ export function WorktreeSetupCard(props: WorktreeSetupCardProps) {
               onClick={props.onRerunScript}
             >
               Rerun setup script
+            </Button>
+          ) : null}
+          {props.onStopScript ? (
+            <Button
+              type="button"
+              size="xs"
+              variant="ghost"
+              disabled={props.busy}
+              onClick={props.onStopScript}
+            >
+              Stop script
             </Button>
           ) : null}
           {props.onWorkLocally ? (

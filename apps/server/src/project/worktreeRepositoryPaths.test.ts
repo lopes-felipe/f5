@@ -4,6 +4,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  realpath,
   rename,
   rm,
   symlink,
@@ -25,6 +26,8 @@ import { GitCore } from "../git/Services/GitCore.ts";
 import { GitServiceLive } from "../git/Layers/GitService.ts";
 import { GitCoreTestLive } from "../git/testLayers.ts";
 import { assertWorktreeReady, readWorktreeState } from "./worktreeReadiness.ts";
+import { acquireInstanceLock } from "../profiles/InstanceLock.ts";
+import { RepositoryBusyError, repositoryLockPath } from "./Layers/WorktreeLifecycleCoordinator.ts";
 
 const run = (cwd: string, ...args: string[]) =>
   execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -357,6 +360,17 @@ it("prepares and resumes an isolated workspace for a plain project folder", asyn
           selected: [external],
           layoutCreate: `"${process.execPath}" -e "require('node:fs').appendFileSync(require('node:path').join(process.env.T3_WORKTREE_PROJECT_PATH, 'stamp'), 'once')"`,
         };
+        // Another F5 window holds the repository for a moment. The refusal is
+        // recognisable as that, so a first send can wait and try again, and the
+        // layout command is not taken for one that started and was cut off.
+        const { baseDir } = yield* ServerConfig;
+        const held = yield* Effect.promise(async () =>
+          acquireInstanceLock(repositoryLockPath(baseDir, await realpath(project))),
+        );
+        const busy = yield* Effect.result(git.prepareWorktreeGroup!(custom));
+        held.release();
+        expect(busy._tag).toBe("Failure");
+        expect(busy._tag === "Failure" && busy.failure.cause).toBeInstanceOf(RepositoryBusyError);
         yield* git.prepareWorktreeGroup!(custom);
         yield* git.prepareWorktreeGroup!(custom);
         expect(yield* Effect.promise(() => readFile(path.join(customPath, "stamp"), "utf8"))).toBe(
@@ -388,10 +402,11 @@ it("prepares and resumes an isolated workspace for a plain project folder", asyn
         });
       }).pipe(
         Effect.provide(
-          GitCoreTestLive.pipe(
-            Layer.provide(ServerConfig.layerTest(project, { prefix: "f5-wt-" })),
-            Layer.provide(GitServiceLive),
-            Layer.provide(NodeServices.layer),
+          Layer.provideMerge(
+            GitCoreTestLive.pipe(Layer.provide(GitServiceLive), Layer.provide(NodeServices.layer)),
+            ServerConfig.layerTest(project, { prefix: "f5-wt-" }).pipe(
+              Layer.provide(NodeServices.layer),
+            ),
           ),
         ),
       ),

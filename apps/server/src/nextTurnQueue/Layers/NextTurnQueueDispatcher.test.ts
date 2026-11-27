@@ -764,6 +764,8 @@ for (const scenario of [
         ? {
             startup: Effect.void,
             needsPreparation: () => Effect.succeed(true),
+            scriptRunning: () => Effect.succeed(false),
+            stopScript: () => Effect.succeed(false),
             prepare: () =>
               Effect.die("Preparation scripts must never run on the dispatcher shard."),
             startBackground: () =>
