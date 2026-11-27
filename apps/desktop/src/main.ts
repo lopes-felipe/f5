@@ -256,6 +256,7 @@ import {
   claimRecentInstall,
 } from "./updateMachine";
 import { normalizeDesktopUpdateReleaseNotes } from "./updateReleaseNotes";
+import { f5GitHubFeedOptions } from "./updateGitHubProvider";
 import { isArm64HostRunningIntelBuild, resolveDesktopRuntimeInfo } from "./runtimeArch";
 import { formatErrorMessage, loadPreviewURL } from "./previewNavigationErrors";
 import { PreviewRuntime, type PreviewTabEntry } from "./preview/PreviewRuntime";
@@ -3161,6 +3162,21 @@ function updatePreferencesPath(): string {
   return Path.join(app.getPath("userData"), "update-preferences.json");
 }
 
+/**
+ * Swap the stock GitHub provider for one that skips feed entries whose update files are
+ * not published (a draft's bare tag), so one stray tag can't break every beta check.
+ */
+function installF5GitHubFeed(): void {
+  try {
+    const options = f5GitHubFeedOptions(
+      FS.readFileSync(Path.join(process.resourcesPath, "app-update.yml"), "utf8"),
+    );
+    if (options) autoUpdater.setFeedURL(options);
+  } catch (error) {
+    console.warn("[desktop-updater] Keeping the stock update feed provider:", error);
+  }
+}
+
 async function configureAutoUpdater(): Promise<void> {
   const preferencesPath = updatePreferencesPath();
   const channel = initializeUpdatePreferences(preferencesPath, app.getVersion());
@@ -3184,6 +3200,7 @@ async function configureAutoUpdater(): Promise<void> {
       (process.execPath.startsWith("/Volumes/") || process.execPath.includes("/AppTranslocation/")),
   });
   const enabled = disabledReason === null;
+  if (enabled) installF5GitHubFeed();
   setUpdateState({
     ...createInitialDesktopUpdateState(app.getVersion(), desktopRuntimeInfo),
     enabled,

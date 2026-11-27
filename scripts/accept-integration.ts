@@ -6,7 +6,8 @@
  *
  * Install the draft's DMG first. The runner hashes the DMG, mounts it read-only, verifies
  * both bundles' signatures and requires the installed app to have the same cdhash and
- * version, reads the certifying records at the remote tag's commit, then walks the
+ * version, reads the certifying records at the remote tag's commit (or, for a tagless
+ * draft, the source commit the draft records), then walks the
  * checklist for the record the runtime would use: observed checks are measured
  * here, the rest are confirmed by the operator. It writes the report even on failure;
  * `promote-release.ts` accepts only an all-passed report for the same artifact digest.
@@ -39,7 +40,7 @@ import {
   type BundleIo,
 } from "./lib/integration-acceptance.ts";
 import { startMutationServer } from "./lib/mutation-fixture.ts";
-import { remoteTagCommit } from "./lib/release-promotion.ts";
+import { promotionSource, remoteTagCommit } from "./lib/release-promotion.ts";
 import { loadCandidate } from "./release/candidate-store.ts";
 import { candidateDmgSource } from "./release/release-candidate.ts";
 import { stat } from "node:fs/promises";
@@ -119,18 +120,30 @@ const sourceCommit = candidate
       (await stat(artifact)).size,
       artifactSha256,
     )
-  : remoteTagCommit(tag, {
-      local: (name) => run("git", ["rev-list", "-n", "1", name]).trim(),
-      remote: (name) =>
-        run("git", [
-          "ls-remote",
-          "--tags",
-          "origin",
-          "refs/tags/" + name,
-          "refs/tags/" + name + "^{}",
-        ]),
-    });
-if (candidate) run("git", ["fetch", "origin", sourceCommit]);
+  : promotionSource(tag, {
+      tagExists: () =>
+        run("git", ["ls-remote", "--tags", "origin", "refs/tags/" + tag]).trim() !== "",
+      remoteTagCommit: () =>
+        remoteTagCommit(tag, {
+          local: (name) => run("git", ["rev-list", "-n", "1", name]).trim(),
+          remote: (name) =>
+            run("git", [
+              "ls-remote",
+              "--tags",
+              "origin",
+              "refs/tags/" + name,
+              "refs/tags/" + name + "^{}",
+            ]),
+        }),
+      // Publishers create drafts without a tag; the draft records its source commit.
+      release: () => {
+        const view = JSON.parse(
+          run("gh", ["release", "view", tag, "--json", "isDraft,targetCommitish"]),
+        ) as { isDraft: boolean; targetCommitish?: string };
+        return { draft: view.isDraft, target_commitish: view.targetCommitish };
+      },
+    }).commit;
+run("git", ["fetch", "origin", sourceCommit]);
 const mount = await mkdtemp(join(tmpdir(), "f5-accept-"));
 try {
   run("hdiutil", [
