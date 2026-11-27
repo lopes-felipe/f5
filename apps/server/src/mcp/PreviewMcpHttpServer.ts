@@ -44,19 +44,23 @@ import {
   INTEGRATION_TOOL_TIMEOUT_SEC,
   type IntegrationProxySession,
 } from "./IntegrationProxyCatalog.ts";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+  type CallToolResult,
+  type Tool,
+} from "@modelcontextprotocol/sdk/types.js";
 import {
   asObject,
   isAllowedHostHeader,
   isLoopbackAddress,
-  jsonRpcError,
-  jsonRpcSuccess,
   readBearerToken,
   readRequestBody,
   writeEmpty,
   writeJson,
-  type JsonRpcRequest,
-  type JsonRpcResponse,
 } from "./jsonRpcHttp.ts";
+import { McpHttpConnections } from "./McpHttpConnections.ts";
 import {
   callPreviewTool,
   chooseServerName,
@@ -77,7 +81,8 @@ import {
 const MCP_ENDPOINT_PATH = "/mcp/preview";
 const PREVIEW_MCP_SERVER_NAME = "__f5_preview";
 const PREVIEW_MCP_ENV_PREFIX = "F5_PREVIEW_MCP_TOKEN_";
-const MCP_PROTOCOL_VERSION = "2024-11-05";
+/** A client rarely holds more than one connection per credential; reconnects replace it. */
+const MAX_CONNECTIONS_PER_CREDENTIAL = 4;
 /** One call waits `INTERACTION_WAIT_MS` at most, then returns pending; the card stays open. */
 const INTERACTION_TOOL_TIMEOUT_SEC = INTERACTION_WAIT_MS / 1000 + 60;
 const INTERACTION_GUIDANCE =
@@ -90,6 +95,13 @@ const CATALOG_PATHS: Record<McpCatalog, string> = {
   thread: "/mcp/thread",
   integration: "/mcp/integration",
   interaction: "/mcp/interaction",
+};
+const CATALOG_SERVER_NAMES: Record<McpCatalog, string> = {
+  preview: "F5 Preview",
+  computer: "F5 Computer",
+  thread: "F5 Thread",
+  integration: "F5 Integration",
+  interaction: "F5 Interaction",
 };
 
 interface PreviewMcpSessionScope {
@@ -108,7 +120,8 @@ interface PreviewMcpSessionScope {
   interaction?: InteractionSession;
   /** In-flight `ask_user_question` calls, by invocation key. */
   readonly interactionCalls: Map<string, AbortController>;
-  rpcIncarnation?: string;
+  /** The MCP connections clients opened with this credential. */
+  readonly connections: McpHttpConnections;
 }
 
 export interface PreviewMcpSessionConfig {
@@ -245,144 +258,49 @@ function nextEnvVarName(): string {
   return `${PREVIEW_MCP_ENV_PREFIX}${randomUUID().replaceAll("-", "_").toUpperCase()}`;
 }
 
-function handleRpcRequest(input: {
-  readonly request: JsonRpcRequest;
-  readonly token: string;
-  readonly catalog: McpCatalog;
-  readonly threadAccess?: ThreadToolAccess;
-  readonly integration?: IntegrationProxySession;
-  /** Scopes a client JSON-RPC id to this MCP connection. */
-  readonly invocationKey: (id: string) => string;
-  /** In-flight interaction calls by invocation key, aborted by `notifications/cancelled`. */
-  readonly interactionCalls: Map<string, AbortController>;
-  /** Aborts when the HTTP client goes away before the reply. */
-  readonly connectionSignal: AbortSignal;
-  readonly callTool: (
-    token: string,
-    name: string,
-    rawArguments: unknown,
-    invocationId?: string,
-    meta?: unknown,
-    signal?: AbortSignal,
-  ) => Promise<McpToolResult>;
-}): Promise<JsonRpcResponse | null> {
-  const { request } = input;
-  if (request.id === undefined && request.method?.startsWith("notifications/")) {
-    // Calls are keyed by the client's JSON-RPC id, so a client cancellation reaches the
-    // proxied child (and starts the bounded drain) instead of being dropped.
-    if (request.method === "notifications/cancelled") {
-      const requestId = asObject(request.params).requestId;
-      if (requestId !== undefined) {
-        const key = input.invocationKey(JSON.stringify(requestId));
-        if (input.catalog === "integration") input.integration?.cancelCall(key);
-        if (input.catalog === "interaction") input.interactionCalls.get(key)?.abort();
-      }
-    }
-    return Promise.resolve(null);
+/** The tools a session's catalog lists. */
+async function catalogTools(scope: PreviewMcpSessionScope): Promise<ReadonlyArray<unknown>> {
+  switch (scope.catalog) {
+    case "integration":
+      return ((await scope.integration?.listTools()) ?? []).map((tool) => ({
+        name: tool.name,
+        ...(tool.description ? { description: tool.description } : {}),
+        inputSchema: tool.inputSchema,
+        ...(tool.annotations ? { annotations: tool.annotations } : {}),
+      }));
+    case "interaction":
+      return [ASK_USER_QUESTION_TOOL, WAIT_FOR_USER_ANSWER_TOOL];
+    case "thread":
+      return threadToolDefinitions(scope.threadAccess).map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        inputSchema: threadToolInputJsonSchema(tool),
+        annotations: { ...tool.annotations, title: tool.title },
+      }));
+    case "computer":
+      return COMPUTER_TOOL_DEFINITIONS.map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        inputSchema: computerToolInputJsonSchema(tool),
+        annotations: tool.annotations,
+      }));
+    case "preview":
+      return PREVIEW_MCP_TOOL_LIST;
   }
-  if (typeof request.method !== "string") {
-    return Promise.resolve(jsonRpcError(request.id, -32600, "Invalid JSON-RPC request."));
-  }
+}
 
-  switch (request.method) {
-    case "initialize":
-      return Promise.resolve(
-        jsonRpcSuccess(request.id, {
-          protocolVersion: MCP_PROTOCOL_VERSION,
-          ...(input.catalog === "computer" ? { instructions: COMPUTER_GUIDANCE } : {}),
-          ...(input.catalog === "interaction" ? { instructions: INTERACTION_GUIDANCE } : {}),
-          capabilities: {
-            tools: {},
-          },
-          serverInfo: {
-            name:
-              input.catalog === "thread"
-                ? "F5 Thread"
-                : input.catalog === "computer"
-                  ? "F5 Computer"
-                  : input.catalog === "integration"
-                    ? "F5 Integration"
-                    : input.catalog === "interaction"
-                      ? "F5 Interaction"
-                      : "F5 Preview",
-            version: "0.0.0",
-          },
-        }),
-      );
-    case "ping":
-      return Promise.resolve(jsonRpcSuccess(request.id, {}));
-    case "tools/list":
-      if (input.catalog === "integration")
-        return (input.integration?.listTools() ?? Promise.resolve([])).then((tools) =>
-          jsonRpcSuccess(request.id, {
-            tools: tools.map((tool) => ({
-              name: tool.name,
-              ...(tool.description ? { description: tool.description } : {}),
-              inputSchema: tool.inputSchema,
-              ...(tool.annotations ? { annotations: tool.annotations } : {}),
-            })),
-          }),
-        );
-      if (input.catalog === "interaction")
-        return Promise.resolve(
-          jsonRpcSuccess(request.id, {
-            tools: [ASK_USER_QUESTION_TOOL, WAIT_FOR_USER_ANSWER_TOOL],
-          }),
-        );
-      return Promise.resolve(
-        jsonRpcSuccess(request.id, {
-          tools:
-            input.catalog === "thread"
-              ? threadToolDefinitions(input.threadAccess ?? "full").map((tool) => ({
-                  name: tool.name,
-                  description: tool.description,
-                  inputSchema: threadToolInputJsonSchema(tool),
-                  annotations: { ...tool.annotations, title: tool.title },
-                }))
-              : input.catalog === "computer"
-                ? COMPUTER_TOOL_DEFINITIONS.map((tool) => ({
-                    name: tool.name,
-                    description: tool.description,
-                    inputSchema: computerToolInputJsonSchema(tool),
-                    annotations: tool.annotations,
-                  }))
-                : PREVIEW_MCP_TOOL_LIST,
-        }),
-      );
-    case "tools/call": {
-      const params = asObject(request.params);
-      const name = typeof params.name === "string" ? params.name : "";
-      const invocationId =
-        request.id === undefined ? undefined : input.invocationKey(JSON.stringify(request.id));
-      let signal: AbortSignal | undefined;
-      let release = () => {};
-      if (input.catalog === "interaction") {
-        const controller = new AbortController();
-        const abort = () => controller.abort();
-        input.connectionSignal.addEventListener("abort", abort, { once: true });
-        if (input.connectionSignal.aborted) controller.abort();
-        if (invocationId !== undefined) input.interactionCalls.set(invocationId, controller);
-        signal = controller.signal;
-        release = () => {
-          input.connectionSignal.removeEventListener("abort", abort);
-          if (invocationId !== undefined && input.interactionCalls.get(invocationId) === controller)
-            input.interactionCalls.delete(invocationId);
-        };
-      }
-      return input
-        .callTool(input.token, name, params.arguments, invocationId, params._meta, signal)
-        .then((result) => jsonRpcSuccess(request.id, result))
-        .finally(release);
-    }
-    case "resources/list":
-      return Promise.resolve(jsonRpcSuccess(request.id, { resources: [] }));
-    case "prompts/list":
-      return Promise.resolve(jsonRpcSuccess(request.id, { prompts: [] }));
-    default:
-      return Promise.resolve(
-        jsonRpcError(request.id, -32601, `Unknown MCP method: ${request.method}`),
-      );
-  }
+/**
+ * A call's key: its connection and the client's JSON-RPC id, so a late cancel from an
+ * earlier connection never names a live call on a newer one.
+ */
+function catalogCallKey(sessionId: string | undefined, requestId: unknown): string {
+  return `${sessionId}:${JSON.stringify(requestId)}`;
+}
+
+/** Cancels an integration call (the proxy drains its child) or ends an interaction wait. */
+function cancelCatalogCall(scope: PreviewMcpSessionScope, key: string): void {
+  if (scope.catalog === "integration") scope.integration?.cancelCall(key);
+  if (scope.catalog === "interaction") scope.interactionCalls.get(key)?.abort();
 }
 
 export const makePreviewMcpHttpServer = Effect.gen(function* () {
@@ -401,6 +319,54 @@ export const makePreviewMcpHttpServer = Effect.gen(function* () {
   let expectedHostPort: number | null = null;
   const mounts = new Map<string, McpPrefixHandler>();
   const runLog = Effect.runPromiseWith(yield* Effect.services<never>());
+
+  /** One connection's SDK server; it negotiates the protocol version with the client. */
+  const createCatalogServer = (scope: PreviewMcpSessionScope, token: string): Server => {
+    const instructions =
+      scope.catalog === "computer"
+        ? COMPUTER_GUIDANCE
+        : scope.catalog === "interaction"
+          ? INTERACTION_GUIDANCE
+          : undefined;
+    const server = new Server(
+      { name: CATALOG_SERVER_NAMES[scope.catalog], version: "0.0.0" },
+      { capabilities: { tools: {} }, ...(instructions ? { instructions } : {}) },
+    );
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({
+      tools: (await catalogTools(scope)) as Tool[],
+    }));
+    server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+      const key = catalogCallKey(extra.sessionId, extra.requestId);
+      let signal = extra.signal;
+      let release = () => {};
+      if (scope.catalog === "interaction") {
+        // Ends on the client's cancel, its hang-up, or the credential's revocation.
+        const controller = new AbortController();
+        const abort = () => controller.abort();
+        extra.signal.addEventListener("abort", abort, { once: true });
+        scope.interactionCalls.set(key, controller);
+        signal = controller.signal;
+        release = () => {
+          extra.signal.removeEventListener("abort", abort);
+          if (scope.interactionCalls.get(key) === controller) scope.interactionCalls.delete(key);
+        };
+      }
+      try {
+        const result = await callTool(
+          token,
+          request.params.name,
+          request.params.arguments,
+          key,
+          request.params._meta,
+          signal,
+        );
+        return { ...result, content: [...result.content] } satisfies CallToolResult;
+      } finally {
+        release();
+      }
+    });
+    return server;
+  };
 
   const server = http.createServer((request, response) => {
     void (async () => {
@@ -431,7 +397,7 @@ export const makePreviewMcpHttpServer = Effect.gen(function* () {
         writeJson(response, 404, { error: "not_found" });
         return;
       }
-      if (request.method !== "POST") {
+      if (request.method !== "POST" && request.method !== "GET" && request.method !== "DELETE") {
         writeJson(response, 405, { error: "method_not_allowed" });
         return;
       }
@@ -448,14 +414,16 @@ export const makePreviewMcpHttpServer = Effect.gen(function* () {
       }
 
       let body: unknown;
-      try {
-        body = await readRequestBody(request);
-      } catch (cause) {
-        writeJson(response, 400, {
-          error: "invalid_json",
-          message: cause instanceof Error ? cause.message : String(cause),
-        });
-        return;
+      if (request.method === "POST") {
+        try {
+          body = await readRequestBody(request);
+        } catch (cause) {
+          writeJson(response, 400, {
+            error: "invalid_json",
+            message: cause instanceof Error ? cause.message : String(cause),
+          });
+          return;
+        }
       }
 
       const scope = sessionsByToken.get(token);
@@ -464,74 +432,47 @@ export const makePreviewMcpHttpServer = Effect.gen(function* () {
         writeJson(response, 401, { error: "invalid_mcp_credential" });
         return;
       }
-      const requests = Array.isArray(body) ? body : [body];
-      if (catalog === "computer") {
-        const initializes = requests.some((entry) => asObject(entry).method === "initialize");
-        if (initializes) {
-          scope.rpcIncarnation = randomUUID();
-          scope.geometry.clear();
-          scope.geometry = new ComputerToolGeometry();
-          scope.computerScope?.resetConnection();
-          response.setHeader("Mcp-Session-Id", scope.rpcIncarnation);
-        } else if (
-          scope.rpcIncarnation &&
-          request.headers["mcp-session-id"] !== scope.rpcIncarnation
-        ) {
-          writeJson(response, 404, { error: "expired_mcp_session" });
-          return;
-        }
-      } else if (catalog === "integration" || catalog === "interaction") {
-        // Each connection gets its own id space, so a late `notifications/cancelled` from a
-        // previous connection can never name a live call after the client reconnects.
-        if (requests.some((entry) => asObject(entry).method === "initialize")) {
-          scope.rpcIncarnation = randomUUID();
-          response.setHeader("Mcp-Session-Id", scope.rpcIncarnation);
-        }
-      }
-      const requestIncarnation = request.headers["mcp-session-id"];
-      const incarnation =
-        (catalog === "integration" || catalog === "interaction") &&
-        typeof requestIncarnation === "string"
-          ? requestIncarnation
-          : (scope.rpcIncarnation ?? scope.automationSessionId);
-      // A question can wait a long time; a client that hangs up stops waiting for it.
-      const connection = new AbortController();
-      response.once("close", () => {
-        if (!response.writableFinished) connection.abort();
-      });
-      const results = (
-        await Promise.all(
-          requests.map((entry) =>
-            handleRpcRequest({
-              request: asObject(entry) as JsonRpcRequest,
-              token,
-              catalog,
-              threadAccess: scope.threadAccess,
-              ...(scope.integration ? { integration: scope.integration } : {}),
-              invocationKey: (id) => `${incarnation}:${id}`,
-              // Per credential, so one session can never cancel another's call.
-              interactionCalls: scope.interactionCalls,
-              connectionSignal: connection.signal,
-              callTool,
-            }),
-          ),
-        )
-      ).filter((entry): entry is JsonRpcResponse => entry !== null);
-
-      if (Array.isArray(body)) {
-        if (results.length === 0) {
-          writeEmpty(response, 202);
-          return;
-        }
-        writeJson(response, 200, results);
+      if (body === undefined) {
+        await scope.connections.handle(request, response);
         return;
       }
-      const result = results[0];
-      if (!result) {
+      const header = request.headers["mcp-session-id"];
+      const sessionId = typeof header === "string" ? header : undefined;
+      const messages = Array.isArray(body) ? body : [body];
+      // F5 handles cancellations itself and still answers the call (an interaction wait
+      // with its pending result, an integration call once its child stops). The SDK would
+      // drop that reply and leave the client's HTTP request open.
+      const forwarded = messages.filter((message) => {
+        const entry = asObject(message);
+        if (entry.method !== "notifications/cancelled" || entry.id !== undefined) return true;
+        const requestId = asObject(entry.params).requestId;
+        if (sessionId && requestId !== undefined)
+          cancelCatalogCall(scope, catalogCallKey(sessionId, requestId));
+        return false;
+      });
+      if (forwarded.length === 0) {
         writeEmpty(response, 202);
         return;
       }
-      writeJson(response, 200, result);
+      if (catalog === "interaction" && sessionId) {
+        // A question can wait a long time; a client that hangs up stops waiting for it.
+        const keys = forwarded.flatMap((message) => {
+          const entry = asObject(message);
+          return entry.method === "tools/call" && entry.id !== undefined
+            ? [catalogCallKey(sessionId, entry.id)]
+            : [];
+        });
+        if (keys.length > 0)
+          response.once("close", () => {
+            if (response.writableFinished) return;
+            for (const key of keys) scope.interactionCalls.get(key)?.abort();
+          });
+      }
+      await scope.connections.handle(
+        request,
+        response,
+        Array.isArray(body) ? forwarded : forwarded[0],
+      );
     })().catch((cause) => {
       writeJson(response, 500, {
         error: "internal_error",
@@ -627,7 +568,7 @@ export const makePreviewMcpHttpServer = Effect.gen(function* () {
       const generation =
         computerScope?.generation ?? `${input.provider ?? "codex"}:${randomUUID()}`;
       const geometry = computerScope?.geometry ?? new ComputerToolGeometry();
-      sessionsByToken.set(token, {
+      const scope: PreviewMcpSessionScope = {
         threadId: input.threadId,
         ...(input.providerInstanceId ? { providerInstanceId: input.providerInstanceId } : {}),
         automationSessionId: generation,
@@ -639,7 +580,24 @@ export const makePreviewMcpHttpServer = Effect.gen(function* () {
         ...(catalog === "interaction" ? { interaction: input.interaction! } : {}),
         interactionCalls: new Map(),
         issuedAt: new Date().toISOString(),
-      });
+        connections: new McpHttpConnections({
+          createServer: () => createCatalogServer(scope, token),
+          maxConnections: MAX_CONNECTIONS_PER_CREDENTIAL,
+          ...(catalog === "computer"
+            ? {
+                // One computer connection at a time: a new one expires the old and starts
+                // over, so element references from the old connection never resolve.
+                onInitialized: (sessionId: string) => {
+                  scope.connections.closeOthers(sessionId);
+                  scope.geometry.clear();
+                  scope.geometry = new ComputerToolGeometry();
+                  scope.computerScope?.resetConnection();
+                },
+              }
+            : {}),
+        }),
+      };
+      sessionsByToken.set(token, scope);
       tokenByEnvVar.set(envVarName, token);
 
       let disposed = false;
@@ -655,6 +613,7 @@ export const makePreviewMcpHttpServer = Effect.gen(function* () {
             call.abort();
           sessionsByToken.delete(storedToken);
         }
+        void scope.connections.close();
         computerScope?.dispose();
         // Credential revocation tears the proxied child down (SIGTERM, then SIGKILL).
         if (catalog === "integration") void input.integration!.dispose();

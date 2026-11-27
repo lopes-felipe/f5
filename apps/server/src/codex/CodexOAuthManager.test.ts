@@ -5,6 +5,7 @@ import { CODEX_MCP_OAUTH_LOGIN_TIMEOUT_SEC } from "@t3tools/shared/codexOAuthTim
 import { Effect, Layer, ManagedRuntime, Stream } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { CODEX_ADMIN_HUB_CONFIG_VERSION } from "../mcp/hub/nativeHubOptions.ts";
 import { ProjectMcpConfigService } from "../mcp/ProjectMcpConfigService.ts";
 import * as ProviderAccountProbes from "../profiles/ProviderAccountService.ts";
 import type { ProviderServiceShape } from "../provider/Services/ProviderService.ts";
@@ -263,9 +264,7 @@ describe("CodexOAuthManager", () => {
     });
   });
 
-  it("passes stored OAuth callback settings into the Codex OAuth control client", async () => {
-    // Settings forwarding must not depend on another local login's port.
-    // ProviderAccountService tests cover actual port ownership separately.
+  it("signs in Codex's own servers without F5's servers or their callback settings", async () => {
     const probe = vi.spyOn(ProviderAccountProbes, "assertOAuthPortAvailable").mockResolvedValue();
     const client = new FakeOauthClient();
     let capturedInput: CodexOauthClientAccessInput | undefined;
@@ -304,10 +303,13 @@ describe("CodexOAuthManager", () => {
       );
 
       expect(pending.status).toBe("pending");
-      expect(probe).toHaveBeenCalledExactlyOnceWith(3118);
-      expect(capturedInput?.mcpOAuthCallbackPort).toBe(3118);
-      expect(capturedInput?.mcpOAuthCallbackUrl).toBe("https://callback.example.test/callback");
+      expect(probe).not.toHaveBeenCalled();
+      expect(capturedInput?.mcpServers).toEqual({});
+      expect(capturedInput?.mcpEffectiveConfigVersion).toBe(CODEX_ADMIN_HUB_CONFIG_VERSION);
+      expect(capturedInput?.mcpOAuthCallbackPort).toBeUndefined();
+      expect(capturedInput?.mcpOAuthCallbackUrl).toBeUndefined();
     });
+    probe.mockRestore();
   });
 
   it("marks pending OAuth login failed when the control client exits", async () => {
