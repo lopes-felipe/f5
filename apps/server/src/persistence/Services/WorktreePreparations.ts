@@ -24,6 +24,37 @@ export const WorktreeGroupPlan = Schema.Struct({
 });
 export type WorktreeGroupPlan = typeof WorktreeGroupPlan.Type;
 
+/** What a receipt and the timeline say about a setup script that a restart cut off. */
+export const SETUP_SCRIPT_INTERRUPTED =
+  "The setup script was interrupted by a restart and was not run again.";
+/**
+ * `result` of a receipt whose script is being run again, unasked, after a
+ * restart cut it off. A second interruption finds the mark and does not rerun.
+ */
+export const INTERRUPTED_SCRIPT_RERUN = '{"rerun":true}';
+/**
+ * `result` of a receipt while the checkout's submodules are being initialized.
+ * The phase is `setup_running` then too, so this is what tells a restart that
+ * cut off the initialization from one that cut off the setup script: the
+ * script has not run, and the initialization is simply done again.
+ */
+export const SUBMODULES_INITIALIZING = '{"submodules":"initializing"}';
+/** `error` of a receipt whose submodule initialization failed or was stopped. */
+export const SUBMODULES_UNFINISHED = "Submodule initialization did not finish. Retry preparation.";
+/** `error` of a receipt whose setup script the user stopped. */
+export const SETUP_SCRIPT_STOPPED = "The setup script was stopped before it finished.";
+
+/** Whether a receipt says the checkout's submodules still have to be initialized. */
+export const submodulesUnfinished = (receipt: {
+  readonly phase: string;
+  readonly result: string | null;
+  readonly error: string | null;
+}) =>
+  receipt.phase === "allocated" ||
+  ((receipt.phase === "setup_running" || receipt.phase === "setup_indeterminate") &&
+    receipt.result === SUBMODULES_INITIALIZING) ||
+  (receipt.phase === "setup_failed" && receipt.error === SUBMODULES_UNFINISHED);
+
 export type PreparationPhase =
   | "allocated"
   | "checkout_created"

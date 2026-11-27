@@ -1508,6 +1508,8 @@ export interface NativeApi {
     cancel: (input: WorktreeSetupActionInput) => Promise<WorktreeSetupActionResult>;
     retry: (input: WorktreeSetupActionInput) => Promise<WorktreeSetupActionResult>;
     workLocally: (input: WorktreeSetupActionInput) => Promise<WorktreeSetupActionResult>;
+    /** Runs the setup script again after it failed or a restart cut it off. */
+    rerunScript: (input: WorktreeSetupActionInput) => Promise<WorktreeSetupActionResult>;
     onUpdated: (callback: (payload: WorktreeSetupUpdatedPayload) => void) => () => void;
   };
   globalSearch: {

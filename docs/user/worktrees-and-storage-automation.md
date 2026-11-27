@@ -25,8 +25,31 @@ submodules, running the project setup script and starting the agent. The message
 checkout and submodules are ready. Setup scripts run in the background unless you enable **Agent
 waits**; a failed script is reported on the card and the agent still starts.
 
-From the card you can **Cancel**, **Retry** after a failure, **Work locally** to send the message
-in the project root instead, or **Discard** a failed setup to get your message back as a draft.
+While setup runs, the card offers **Cancel**. If setup fails, it offers **Retry**, **Continue in
+Local** to send the message in the project folder instead, and **Discard message** to get your
+message back as a draft.
+
+Setup carries on by itself where it can:
+
+- If F5 restarts before the agent started, setup resumes from where it stopped. Checkout and
+  submodules that already finished are not repeated; submodules that were cut off are
+  initialized again.
+- A background setup script that a restart cut off is not run again, because F5 cannot tell how
+  far it got. The card marks it "interrupted by a restart", the agent starts regardless, and
+  **Rerun setup script** runs it again when you want. With **Agent waits** on, F5 reruns the
+  script once by itself; a second interruption fails the setup and waits for **Retry**.
+- A setup that resumes by itself never runs a setup command you edited in the meantime. It
+  stops and waits for **Retry**, which is what accepts the new command.
+- In a project made of several repositories, a setup script that a restart cut off is never
+  run again unasked: a background script is left alone, and with **Agent waits** on the setup
+  waits for **Retry**. **Rerun setup script** is not available there; run the script in a
+  terminal.
+- **Rerun setup script** also appears after a setup script fails. It runs the script in the
+  worktree the agent is already using, without holding the thread.
+- **Stop script** stops a setup script that is still running after the agent started, including
+  one you asked to run again. The agent keeps the worktree.
+- If another F5 window is using the repository, checkout waits and tries again up to three
+  times before the setup fails.
 
 ## Automatic cleanup
 
@@ -148,9 +171,10 @@ Each model in a multi-model send gets its own allocation.
 checkout, so a repeated request reuses its receipt and completed preparation never runs twice.
 Recreating a missing checkout initializes submodules and runs the opted-in setup script unless
 setup was explicitly skipped; checkouts older than receipts are never prepared again
-automatically. A restart during a setup script leaves preparation indeterminate, and **Retry**
-asks you to confirm rerunning the script. A changed checkout, repository identity or conflicting
-request is kept for inspection.
+automatically. A restart during a setup script does not hold the thread: a background script is
+reported as interrupted and left for **Rerun setup script**, and a script the agent waits for is
+run again once (see [Worktree setup](#worktree-setup)). A changed checkout, repository identity or
+conflicting request is kept for inspection.
 
 **Kept on disk.** Cancel and rollback keep checkouts with ignored files created by setup (such as
 `.env` or a local database) and report them as retained artifacts. Legacy worktrees with

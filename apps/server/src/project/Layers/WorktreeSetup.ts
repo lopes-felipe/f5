@@ -10,6 +10,11 @@ import { buildGeneratedWorktreeBranchName } from "../../git/worktreeBranchNames.
 import { resolveTemporaryWorktreeBranch } from "../../git/temporaryWorktreeBranch.ts";
 import { isTemporaryWorktreeBranch, canonicalWorktreePath } from "../../git/worktreePaths.ts";
 import {
+  INTERRUPTED_SCRIPT_RERUN,
+  SETUP_SCRIPT_INTERRUPTED,
+  SUBMODULES_INITIALIZING,
+  SUBMODULES_UNFINISHED,
+  submodulesUnfinished,
   WorktreePreparations,
   type PreparationError,
 } from "../../persistence/Services/WorktreePreparations.ts";
@@ -62,6 +67,7 @@ import {
   Layer,
   Option,
   PubSub,
+  Schedule,
   Schema,
   Semaphore,
   Stream,
@@ -88,6 +94,7 @@ import {
 } from "../Services/WorktreeSetup.ts";
 import { WorktreeSetupGate } from "../Services/WorktreeSetupGate.ts";
 import {
+  RepositoryBusyError,
   withRepositoryLifecycleLock,
   withWorktreeLifecycleLock,
   type RepositoryLifecycleError,
@@ -97,12 +104,43 @@ import {
 const PUSH_INTERVAL_MS = 100;
 const PERSIST_INTERVAL_MS = 500;
 const TURN_ACCEPT_POLL_MS = 250;
+const SCRIPT_RERUN_POLL_MS = 500;
 
 const SETUP_INTERRUPTED_BY_RESTART =
   "Worktree setup was interrupted by a server restart. Nothing was removed.";
+/** The stage detail for a setup script that a restart cut off. */
+const SCRIPT_INTERRUPTED_DETAIL = "interrupted by a restart";
+/** First delay of the busy-repository retries. */
+const REPOSITORY_BUSY_RETRY_MS = 1_000;
+
+/**
+ * Another F5 window or a background job holds the repository for a moment.
+ * The lock already waits half a second; a first send is worth three more
+ * tries, further apart, before it fails and asks for a retry by hand.
+ */
+const retryWhileRepositoryBusy = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  effect.pipe(
+    Effect.retry({
+      times: 3,
+      schedule: Schedule.exponential(`${REPOSITORY_BUSY_RETRY_MS} millis`),
+      while: (error) =>
+        error instanceof RepositoryBusyError ||
+        (error as { cause?: unknown } | null)?.cause instanceof RepositoryBusyError,
+    }),
+  );
 
 interface Tracked {
   snapshot: WorktreeSetupSnapshot;
+  /**
+   * This run picks up a setup that a restart cut off. Nobody asked for it, so
+   * it does not acknowledge what an interrupted script may have done.
+   */
+  resumed: boolean;
+  /**
+   * The setup script was running when the restart cut this setup off. A
+   * worktree group without a checkout of its own has no receipt to say so.
+   */
+  scriptCutOff: boolean;
   fiber: Fiber.Fiber<void, never> | null;
   script: OwnedSetupScript | null;
   naming: Fiber.Fiber<string | null, never> | null;
@@ -252,6 +290,12 @@ export const makeWorktreeSetup = Effect.gen(function* () {
   const runFork = Effect.runForkWith(services);
 
   const tracked = new Map<ThreadId, Tracked>();
+  /**
+   * The server is stopping and is about to stop the setup scripts itself. A
+   * script that ends this way did not fail: its setup stays as it was, and the
+   * next start reports the script as interrupted.
+   */
+  let shuttingDown = false;
   const persistLocks = new Map<ThreadId, Semaphore.Semaphore>();
 
   const persistLock = (threadId: ThreadId) => {
@@ -390,6 +434,8 @@ export const makeWorktreeSetup = Effect.gen(function* () {
     if (previous?.persistTimer) clearTimeout(previous.persistTimer);
     const entry: Tracked = {
       snapshot,
+      resumed: false,
+      scriptCutOff: false,
       fiber: null,
       script: null,
       naming: null,
@@ -518,6 +564,7 @@ export const makeWorktreeSetup = Effect.gen(function* () {
   const runSetup = (threadId: ThreadId, token: string): Effect.Effect<void> =>
     Effect.gen(function* () {
       let initial = tracked.get(threadId)!.snapshot;
+      const resumed = tracked.get(threadId)!.resumed;
       let request = initial.request;
       const started = Date.now();
       const project = yield* projectFor(request.projectCwd);
@@ -574,9 +621,13 @@ export const makeWorktreeSetup = Effect.gen(function* () {
       const namingEntry = tracked.get(threadId);
       if (namingEntry) namingEntry.naming = naming;
       let worktreePath = initial.worktreePath;
+      // The checkout is there but its submodules were never finished: a restart
+      // or a failure came between the two. They are initialized below.
+      let submodulesPending = false;
       if (!plainGroup && worktreePath && existsSync(worktreePath)) {
         const receipt = yield* git.readWorktreePreparation(worktreePath);
         if (receipt && receipt.owner === `thread:${threadId}`) {
+          submodulesPending = submodulesUnfinished(receipt);
           const inspected = yield* git.inspectCheckout(worktreePath);
           if (
             !receipt.baseOid ||
@@ -623,17 +674,23 @@ export const makeWorktreeSetup = Effect.gen(function* () {
           const destination = worktreePath;
           yield* commit(threadId, (snapshot) => ({ ...snapshot, worktreePath: destination }), true);
           update(threadId, (snapshot) => stageStatus(snapshot, "checkout", "running"));
-          yield* git.prepareWorktreeGroup({
-            ...(layoutCreate ? { layoutCreate, retryLayout: initial.generation > 1 } : {}),
-            projectId: project.id,
-            threadId,
-            projectRoot: request.projectCwd,
-            path: destination,
-            branch: request.branch,
-            baseBranch: request.baseBranch,
-            repositories: nestedRepositories.map((repository) => repository.path),
-            selected: selectedRepositories.map((repository) => repository.path),
-          });
+          yield* git
+            .prepareWorktreeGroup({
+              // Only a retry the user asked for vouches for a layout script
+              // that may already have run.
+              ...(layoutCreate
+                ? { layoutCreate, retryLayout: initial.generation > 1 && !resumed }
+                : {}),
+              projectId: project.id,
+              threadId,
+              projectRoot: request.projectCwd,
+              path: destination,
+              branch: request.branch,
+              baseBranch: request.baseBranch,
+              repositories: nestedRepositories.map((repository) => repository.path),
+              selected: selectedRepositories.map((repository) => repository.path),
+            })
+            .pipe(retryWhileRepositoryBusy);
           yield* commit(
             threadId,
             (snapshot) => stageStatus({ ...snapshot, createdWorktree: true }, "checkout", "done"),
@@ -662,12 +719,55 @@ export const makeWorktreeSetup = Effect.gen(function* () {
           ));
         if (alreadyPrepared) {
           update(threadId, (snapshot) =>
-            ["fetch", "checkout", "submodules"].reduce(
+            ["fetch", "checkout", ...(submodulesPending ? [] : ["submodules"])].reduce(
               (next, id) =>
                 stageStatus(next, id as WorktreeSetupStageId, "skipped", "already prepared"),
               snapshot,
             ),
           );
+          if (submodulesPending && worktreePath !== null) {
+            const checkout = worktreePath;
+            const revision = initial.checkoutSha ?? initial.baseSha;
+            // With no setting to read, initialize them: the stage only skips
+            // submodules a setting turned off.
+            const policy =
+              (revision
+                ? yield* resolveSubmodules(project?.id ?? null, request.projectCwd, revision)
+                : undefined) ?? "recursive";
+            // Marked as the first attempt was, so another restart is read the same way.
+            const pending = yield* preparations.latest(
+              yield* Effect.promise(() => canonicalWorktreePath(checkout)),
+            );
+            const marked = pending
+              ? yield* preparations.update(pending, {
+                  phase: "setup_running",
+                  result: SUBMODULES_INITIALIZING,
+                  error: null,
+                })
+              : null;
+            update(threadId, (snapshot) => stageStatus(snapshot, "submodules", "running"));
+            // Initializing again is safe: Git skips the submodules that are in place.
+            const initialized = yield* git
+              .initializeWorktreeSubmodules(checkout, policy)
+              .pipe(Effect.exit);
+            if (marked) {
+              const latest = yield* preparations.latest(marked.path);
+              if (latest?.operationId === marked.operationId && latest.phase === "setup_running")
+                yield* preparations.update(
+                  latest,
+                  initialized._tag === "Success"
+                    ? { phase: "checkout_created", result: null, error: null }
+                    : { phase: "setup_failed", result: null, error: SUBMODULES_UNFINISHED },
+                );
+            }
+            if (initialized._tag === "Failure") {
+              const failure = Cause.squash(initialized.cause);
+              return yield* new WorktreeSetupError({
+                message: `Submodules could not be initialized. ${failure instanceof Error ? failure.message : String(failure)}`,
+              });
+            }
+            update(threadId, (snapshot) => stageStatus(snapshot, "submodules", "done"));
+          }
         } else {
           update(threadId, (snapshot) => stageStatus(snapshot, "fetch", "running"));
           const base = yield* resolveWorktreeBase(git, {
@@ -761,7 +861,8 @@ export const makeWorktreeSetup = Effect.gen(function* () {
                   : null,
               });
             }),
-          );
+            // A busy repository is refused before anything above runs.
+          ).pipe(retryWhileRepositoryBusy);
           if (worktreePath === null)
             return yield* new WorktreeSetupError({
               message: "The worktree path was not allocated.",
@@ -777,68 +878,72 @@ export const makeWorktreeSetup = Effect.gen(function* () {
             return yield* new WorktreeSetupError({
               message: `Branch \`${checkoutBranch}\` already exists. Inspect the retained preparation before retrying.`,
             });
-          yield* git.createWorktree({
-            cwd: request.projectCwd,
-            branch: branchExists ? checkoutBranch : request.baseBranch,
-            ...(branchExists ? {} : { baseRefName: baseSha, newBranch: checkoutBranch }),
-            preparation: {
-              owner: `thread:${threadId}`,
-              operationId: existingReceipt?.operationId ?? initial.operationId,
-              namingIntent: creationIntent,
-              runSetupScript: request.runSetupScript,
-              setupIdentity: project
-                ? (setupProjectScript(project.scripts)?.command ?? null)
-                : null,
-            },
-            path: worktreePath,
-            ...(submodules !== undefined ? { submodules } : {}),
-            progress: {
-              onWorktreeClaimed: (path) =>
-                update(threadId, (snapshot) => ({
-                  ...snapshot,
-                  worktreePath: path,
-                  createdWorktree: true,
-                  createdBranch: snapshot.createdBranch || !branchExists,
-                })),
-              onCheckoutProgress: ({ percent, completed, total }) => {
-                checkoutTotal = total;
-                update(threadId, (snapshot) =>
-                  withStage(snapshot, "checkout", (stage) => ({
-                    ...stage,
-                    percent,
-                    detail: `${completed.toLocaleString("en-US")} / ${total.toLocaleString("en-US")} files`,
-                  })),
-                );
+          yield* git
+            .createWorktree({
+              cwd: request.projectCwd,
+              branch: branchExists ? checkoutBranch : request.baseBranch,
+              ...(branchExists ? {} : { baseRefName: baseSha, newBranch: checkoutBranch }),
+              preparation: {
+                owner: `thread:${threadId}`,
+                operationId: existingReceipt?.operationId ?? initial.operationId,
+                namingIntent: creationIntent,
+                runSetupScript: request.runSetupScript,
+                setupIdentity: project
+                  ? (setupProjectScript(project.scripts)?.command ?? null)
+                  : null,
               },
-              onSubmodulesStarted: () =>
-                update(threadId, (snapshot) =>
-                  stageStatus(
-                    stageStatus(
-                      snapshot,
-                      "checkout",
-                      "done",
-                      checkoutTotal === null
-                        ? null
-                        : `${checkoutTotal.toLocaleString("en-US")} files`,
-                    ),
-                    "submodules",
-                    "running",
-                  ),
-                ),
-              onSubmoduleLine: (line) => {
-                const submodulePath = /Submodule path '([^']+)'/.exec(line)?.[1];
-                if (submodulePath)
+              path: worktreePath,
+              ...(submodules !== undefined ? { submodules } : {}),
+              progress: {
+                onWorktreeClaimed: (path) =>
+                  update(threadId, (snapshot) => ({
+                    ...snapshot,
+                    worktreePath: path,
+                    createdWorktree: true,
+                    createdBranch: snapshot.createdBranch || !branchExists,
+                  })),
+                onCheckoutProgress: ({ percent, completed, total }) => {
+                  checkoutTotal = total;
                   update(threadId, (snapshot) =>
-                    withStage(snapshot, "submodules", (stage) => ({
+                    withStage(snapshot, "checkout", (stage) => ({
                       ...stage,
-                      detail: clamp(submodulePath, WORKTREE_SETUP_DETAIL_MAX_LENGTH),
+                      percent,
+                      detail: `${completed.toLocaleString("en-US")} / ${total.toLocaleString("en-US")} files`,
                     })),
                   );
+                },
+                onSubmodulesStarted: () =>
+                  update(threadId, (snapshot) =>
+                    stageStatus(
+                      stageStatus(
+                        snapshot,
+                        "checkout",
+                        "done",
+                        checkoutTotal === null
+                          ? null
+                          : `${checkoutTotal.toLocaleString("en-US")} files`,
+                      ),
+                      "submodules",
+                      "running",
+                    ),
+                  ),
+                onSubmoduleLine: (line) => {
+                  const submodulePath = /Submodule path '([^']+)'/.exec(line)?.[1];
+                  if (submodulePath)
+                    update(threadId, (snapshot) =>
+                      withStage(snapshot, "submodules", (stage) => ({
+                        ...stage,
+                        detail: clamp(submodulePath, WORKTREE_SETUP_DETAIL_MAX_LENGTH),
+                      })),
+                    );
+                },
+                onSubmodulesFinished: ({ status, detail }) =>
+                  update(threadId, (snapshot) =>
+                    stageStatus(snapshot, "submodules", status, detail),
+                  ),
               },
-              onSubmodulesFinished: ({ status, detail }) =>
-                update(threadId, (snapshot) => stageStatus(snapshot, "submodules", status, detail)),
-            },
-          });
+            })
+            .pipe(retryWhileRepositoryBusy);
           request = { ...request, branch: checkoutBranch, namingIntent: creationIntent };
           yield* commit(threadId, (snapshot) => ({ ...snapshot, request }), true);
           const checkoutSha = yield* git.resolveCommit(worktreePath, "HEAD");
@@ -879,7 +984,9 @@ export const makeWorktreeSetup = Effect.gen(function* () {
           yield* withWorktreeLifecycleLock(
             worktreePath,
             git.prepareWorktreeGroup({
-              ...(layoutCreate ? { layoutCreate, retryLayout: initial.generation > 1 } : {}),
+              ...(layoutCreate
+                ? { layoutCreate, retryLayout: initial.generation > 1 && !resumed }
+                : {}),
               rooted: true,
               projectId: project.id,
               threadId,
@@ -942,30 +1049,64 @@ export const makeWorktreeSetup = Effect.gen(function* () {
         });
         receipt = yield* preparations.update(adopted, { phase: "checkout_created" });
       }
-      if (receipt && receipt.phase === "setup_indeterminate") {
-        // Retrying the setup action explicitly acknowledges possible external script effects.
-        receipt = yield* preparations.update(receipt, { phase: "checkout_created" });
-      }
-      const alreadyCompleted = receipt?.phase === "completed" || receipt?.phase === "skipped";
       const requestedScript =
         request.runSetupScript && project ? setupProjectScript(project.scripts) : null;
+      // A restart cut the script off. A retry the user asked for acknowledges
+      // what the script may already have done and runs it again. A run that
+      // resumed on its own does not: a background script is left alone (the
+      // agent starts, the stage carries a warning and the card offers to rerun
+      // it), and a script the agent waits for is run again, once.
+      const unattended =
+        receipt?.phase === "setup_indeterminate" &&
+        receipt.result !== SUBMODULES_INITIALIZING &&
+        resumed;
+      const agentWaits = requestedScript?.async === false;
+      if (unattended && agentWaits && receipt?.result === INTERRUPTED_SCRIPT_RERUN)
+        return yield* new WorktreeSetupError({
+          message: "The setup script was interrupted twice. Retry to run it again.",
+        });
+      // An earlier resume already left the script alone and the server stopped
+      // again before the agent started: it is still left alone.
+      const leftAlone =
+        resumed && receipt?.phase === "setup_failed" && receipt.error === SETUP_SCRIPT_INTERRUPTED;
+      // A group without a checkout of its own has no receipt, so nothing counts
+      // its reruns: a script a restart cut off is never run again unasked.
+      const groupScriptCutOff =
+        plainGroup === true && resumed && tracked.get(threadId)?.scriptCutOff === true;
+      if (groupScriptCutOff && agentWaits)
+        return yield* new WorktreeSetupError({
+          message: "The setup script was interrupted by a restart. Retry to run it again.",
+        });
+      const leaveInterrupted = (unattended && !agentWaits) || leftAlone || groupScriptCutOff;
+      if (receipt && receipt.phase === "setup_indeterminate")
+        receipt = yield* preparations.update(
+          receipt,
+          leaveInterrupted
+            ? { phase: "setup_failed", error: SETUP_SCRIPT_INTERRUPTED }
+            : { phase: "checkout_created" },
+        );
+      const alreadyCompleted = receipt?.phase === "completed" || receipt?.phase === "skipped";
       if (
         receipt &&
         !alreadyCompleted &&
         requestedScript &&
         receipt.setupIdentity !== null &&
         receipt?.setupIdentity !== requestedScript.command &&
-        initial.generation < 2
+        // Only a retry the user asked for accepts a different command. A setup
+        // that resumed on its own is a retry by generation, but nobody saw the
+        // new command. A script that is left alone runs nothing either way.
+        (initial.generation < 2 || resumed) &&
+        !leaveInterrupted
       )
         return yield* new WorktreeSetupError({
           message:
             "The setup script changed. Inspect the retained preparation before retrying with a different script.",
         });
-      if (receipt && !alreadyCompleted)
+      if (receipt && !alreadyCompleted && !leaveInterrupted)
         receipt = yield* preparations.update(receipt, {
           phase: "setup_running",
           error: null,
-          result: null,
+          result: unattended ? INTERRUPTED_SCRIPT_RERUN : null,
           setupIdentity: requestedScript?.command ?? null,
         });
       const finishReceipt = (code: number | null) =>
@@ -990,10 +1131,28 @@ export const makeWorktreeSetup = Effect.gen(function* () {
         );
       // Setup script, as an owned process.
       const script =
-        !alreadyCompleted && request.runSetupScript && project
+        !alreadyCompleted && !leaveInterrupted && request.runSetupScript && project
           ? setupProjectScript(project.scripts)
           : null;
-      if (script === null) {
+      if (leaveInterrupted) {
+        update(threadId, (snapshot) =>
+          stageStatus(
+            requestedScript
+              ? {
+                  ...snapshot,
+                  setupScript: {
+                    name: requestedScript.name,
+                    command: requestedScript.command,
+                    async: true,
+                  },
+                }
+              : snapshot,
+            "setup-script",
+            "warning",
+            SCRIPT_INTERRUPTED_DETAIL,
+          ),
+        );
+      } else if (script === null) {
         yield* finishReceipt(0);
         update(threadId, (snapshot) =>
           stageStatus(
@@ -1005,15 +1164,20 @@ export const makeWorktreeSetup = Effect.gen(function* () {
         );
       } else {
         const async = script.async ?? true;
-        update(threadId, (snapshot) =>
-          stageStatus(
-            {
-              ...snapshot,
-              setupScript: { name: script.name, command: script.command, async },
-            },
-            "setup-script",
-            "running",
-          ),
+        // Written before the script starts: after a restart this is what says
+        // a script may have run, where no receipt does.
+        yield* commit(
+          threadId,
+          (snapshot) =>
+            stageStatus(
+              {
+                ...snapshot,
+                setupScript: { name: script.name, command: script.command, async },
+              },
+              "setup-script",
+              "running",
+            ),
+          true,
         );
         const owned = yield* startOwnedSetupScript({
           command: script.command,
@@ -1033,6 +1197,8 @@ export const makeWorktreeSetup = Effect.gen(function* () {
         const entry = tracked.get(threadId);
         if (entry) entry.script = owned;
         const completion = owned.exit.pipe(
+          // Stopped by the shutdown: record nothing and wait to be interrupted.
+          Effect.flatMap((code) => (shuttingDown ? Effect.never : Effect.succeed(code))),
           Effect.tap(finishReceipt),
           Effect.flatMap((code) =>
             Effect.sync(() =>
@@ -1419,7 +1585,11 @@ export const makeWorktreeSetup = Effect.gen(function* () {
             Schema.is(WorktreeSetupError)(error)
               ? error
               : new WorktreeSetupError({
-                  message: `Branch \`${branch}\` already has a preparation reservation: ${error.message}`,
+                  // A busy repository says nothing about the branch name.
+                  message:
+                    error instanceof RepositoryBusyError
+                      ? error.message
+                      : `Branch \`${branch}\` already has a preparation reservation: ${error.message}`,
                   code: BOOTSTRAP_THREAD_NOT_CREATED_ERROR_CODE,
                 }),
           ),
@@ -1625,6 +1795,17 @@ export const makeWorktreeSetup = Effect.gen(function* () {
       const entry = yield* load(threadId);
       if (!entry) return null;
       const snapshot = entry.snapshot;
+      // The setup is finished and only its script is still running, in the
+      // background or because it was asked for again: stop the script. The
+      // agent keeps the worktree, and the script's own completion reports it.
+      if (
+        snapshot.phase === "done" &&
+        snapshot.stages.some((stage) => stage.id === "setup-script" && stage.status === "running")
+      ) {
+        if (entry.script) yield* entry.script.kill;
+        if (snapshot.worktreePath) yield* preparation.stopScript(snapshot.worktreePath);
+        return entry.snapshot;
+      }
       if (snapshot.phase !== "running") {
         return yield* discard(entry);
       }
@@ -1697,7 +1878,11 @@ export const makeWorktreeSetup = Effect.gen(function* () {
       return settled;
     });
 
-  const retry = (threadId: ThreadId) =>
+  /**
+   * Runs the setup again from where its receipts say it stopped. `resumed` is
+   * the server picking up a setup a restart cut off; without it the user asked.
+   */
+  const retry = (threadId: ThreadId, resumed = false) =>
     Effect.gen(function* () {
       if (Option.isSome(transitions)) {
         const active = yield* transitions.value
@@ -1708,6 +1893,8 @@ export const makeWorktreeSetup = Effect.gen(function* () {
       }
       const entry = yield* load(threadId);
       if (!entry) return yield* failFor("No worktree setup to retry.");
+      // Asking for the retry acknowledges whatever an interrupted script did.
+      if (!resumed) entry.scriptCutOff = false;
       const snapshot = entry.snapshot;
       if (snapshot.phase === "running") return snapshot;
       if (snapshot.agentStarted || snapshot.phase === "done") {
@@ -1741,6 +1928,7 @@ export const makeWorktreeSetup = Effect.gen(function* () {
       }
       const operationId = crypto.randomUUID();
       const startedAt = nowIso();
+      entry.resumed = resumed;
       entry.snapshot = {
         ...snapshot,
         worktreePath: nextPath,
@@ -1922,14 +2110,155 @@ export const makeWorktreeSetup = Effect.gen(function* () {
       return yield* finishLocalHandoff(threadId);
     }).pipe(Effect.mapError((error) => failFor(error.message)));
 
+  /** A script that a restart cut off becomes a reported failure, which holds no send. */
+  const releaseInterruptedScript = (worktreePath: string) =>
+    Effect.gen(function* () {
+      const receipt = yield* preparations.latest(
+        yield* Effect.promise(() => canonicalWorktreePath(worktreePath)),
+      );
+      if (receipt?.phase === "setup_indeterminate")
+        yield* preparations.update(receipt, {
+          phase: "setup_failed",
+          error: SETUP_SCRIPT_INTERRUPTED,
+        });
+    }).pipe(Effect.ignoreCause({ log: true }));
+
+  /**
+   * Runs the setup script again in a worktree whose setup already finished,
+   * after the script failed or a restart cut it off. Asking for it is the
+   * acknowledgement that the earlier run may have had effects of its own.
+   */
+  const rerunScript = (threadId: ThreadId) =>
+    Effect.gen(function* () {
+      const entry = yield* load(threadId);
+      if (!entry) return yield* failFor("No worktree setup to run again.");
+      const snapshot = entry.snapshot;
+      const worktreePath = snapshot.worktreePath;
+      const stage = snapshot.stages.find((candidate) => candidate.id === "setup-script");
+      if (
+        snapshot.phase !== "done" ||
+        worktreePath === null ||
+        (stage?.status !== "warning" && stage?.status !== "failed")
+      )
+        return yield* failFor("There is no interrupted or failed setup script to run again.");
+      const thread = (yield* engine.getReadModel()).threads.find(
+        (candidate) => candidate.id === threadId && candidate.deletedAt === null,
+      );
+      const receiptPath = yield* Effect.promise(() => canonicalWorktreePath(worktreePath));
+      if (
+        !thread ||
+        thread.worktreePath === null ||
+        thread.branch === null ||
+        (yield* Effect.promise(() => canonicalWorktreePath(thread.worktreePath!))) !== receiptPath
+      )
+        return yield* failFor("This thread is no longer in the worktree that was set up.");
+      // Say so when there is nothing to run, instead of reporting a run that never happened.
+      const project = (yield* engine.getReadModel()).projects.find(
+        (candidate) => candidate.id === thread.projectId && candidate.deletedAt === null,
+      );
+      if (!project || !setupProjectScript(project.scripts))
+        return yield* failFor("This project has no setup script to run.");
+      const recorded = yield* preparations
+        .latest(receiptPath)
+        .pipe(Effect.mapError((error) => failFor(error.message)));
+      // A worktree group without a checkout of its own keeps no receipt.
+      if (!recorded)
+        return yield* failFor(
+          "This worktree keeps no record of its setup, so the script cannot be run again from here. Run it in a terminal.",
+        );
+      if (!recorded.runSetupScript)
+        return yield* failFor("The setup script was skipped for this worktree.");
+      if (recorded.phase === "completed" || recorded.phase === "skipped")
+        return yield* failFor("The setup script already finished in this worktree.");
+      if (recorded.phase === "setup_running")
+        return yield* failFor("The setup script is already running in this worktree.");
+      const input = {
+        threadId,
+        projectId: thread.projectId,
+        worktreePath,
+        branch: thread.branch,
+        retry: true,
+      };
+      const running = yield* commit(threadId, (current) =>
+        withStage(stageStatus(current, "setup-script", "running", null), "setup-script", (row) => ({
+          ...row,
+          startedAt: nowIso(),
+          tail: [],
+        })),
+      );
+      yield* Effect.gen(function* () {
+        const outcome = yield* preparation.prepare(input).pipe(Effect.exit);
+        // A background script is handed off, so its receipt says when it ends.
+        // The wait lasts only while the script is really running: a receipt
+        // that was never updated must not keep this polling.
+        let receipt = yield* preparations.latest(receiptPath);
+        while (
+          receipt?.phase === "setup_running" &&
+          (yield* preparation.scriptRunning(receiptPath))
+        ) {
+          yield* Effect.sleep(`${SCRIPT_RERUN_POLL_MS} millis`);
+          receipt = yield* preparations.latest(receiptPath);
+        }
+        // The script is unlisted after its outcome is written: read that.
+        receipt = yield* preparations.latest(receiptPath);
+        // The server is stopping. The stage stays as it is, and the next start
+        // reports the script as interrupted by a restart.
+        if (shuttingDown) return;
+        if (receipt?.phase === "setup_indeterminate") {
+          yield* releaseInterruptedScript(worktreePath);
+          yield* commit(threadId, (current) =>
+            stageStatus(current, "setup-script", "warning", SCRIPT_INTERRUPTED_DETAIL),
+          );
+          return;
+        }
+        // The script ended and its outcome could not be written. Record one,
+        // so the receipt does not refuse every later run.
+        if (receipt?.phase === "setup_running")
+          receipt = yield* preparations.update(receipt, {
+            phase: "setup_failed",
+            error: "The setup script ended without reporting how it finished.",
+          });
+        const failure =
+          outcome._tag === "Failure"
+            ? Cause.squash(outcome.cause)
+            : receipt?.phase === "completed" || receipt?.phase === "skipped"
+              ? null
+              : (receipt?.error ?? "The setup script failed.");
+        const reason =
+          failure === null ? null : failure instanceof Error ? failure.message : String(failure);
+        const tail = Option.getOrElse(
+          Schema.decodeUnknownOption(
+            Schema.fromJsonString(Schema.Struct({ outputTail: Schema.Array(Schema.String) })),
+          )(receipt?.result),
+          () => ({ outputTail: [] as ReadonlyArray<string> }),
+        ).outputTail;
+        yield* commit(threadId, (current) =>
+          withStage(
+            stageStatus(
+              current,
+              "setup-script",
+              reason === null ? "done" : "failed",
+              reason === null ? null : (reason.split("\n")[0] ?? reason),
+            ),
+            "setup-script",
+            (row) => ({ ...row, tail: tail.slice(-WORKTREE_SETUP_TAIL_LINES) }),
+          ),
+        );
+      }).pipe(Effect.ignoreCause({ log: true }), Effect.forkIn(scope));
+      return running;
+    });
+
   const startup: WorktreeSetupShape["startup"] = Effect.gen(function* () {
     // Owned setup scripts run in their own process group; stop them with the server.
     yield* Effect.addFinalizer(() =>
-      Effect.forEach(
-        [...tracked.values()],
-        (entry) => (entry.script ? entry.script.kill : Effect.void),
-        { discard: true, concurrency: "unbounded" },
-      ),
+      Effect.suspend(() => {
+        shuttingDown = true;
+        return Effect.forEach(
+          [...tracked.values()],
+          (entry) => (entry.script ? entry.script.kill : Effect.void),
+          { discard: true, concurrency: "unbounded" },
+        );
+      }),
     );
     yield* preparation.startup;
     const rows = yield* sql
@@ -1941,7 +2270,13 @@ export const makeWorktreeSetup = Effect.gen(function* () {
     for (const row of rows) {
       const decoded = Option.getOrNull(decodeSnapshotJson(row.payload));
       if (decoded && (yield* finishLocalHandoff(row.threadId))) continue;
-      if (decoded === null || decoded.phase !== "running" || tracked.has(row.threadId)) continue;
+      if (decoded === null || tracked.has(row.threadId)) continue;
+      const scriptWasRunning = decoded.stages.some(
+        (stage) => stage.id === "setup-script" && stage.status === "running",
+      );
+      // A finished setup whose script was being run again when the server stopped.
+      const rerunCutOff = decoded.phase === "done" && scriptWasRunning;
+      if (decoded.phase !== "running" && !rerunCutOff) continue;
       const order = yield* nextGeneration(row.threadId);
       track({
         ...decoded,
@@ -1949,16 +2284,36 @@ export const makeWorktreeSetup = Effect.gen(function* () {
         sequence: Math.max(order.sequence, decoded.sequence),
       });
       yield* persistNow(row.threadId, true);
-      if (decoded.agentStarted) {
-        yield* commit(row.threadId, (snapshot) =>
-          settle(
-            stageStatus(snapshot, "setup-script", "warning", "stopped by a server restart"),
-            "done",
-            null,
-          ),
-        );
+      if (decoded.agentStarted || rerunCutOff) {
+        // The agent is already working; only a background script can have
+        // been cut off. Say so, and stop its receipt from holding later sends.
+        if (scriptWasRunning && decoded.worktreePath)
+          yield* releaseInterruptedScript(decoded.worktreePath);
+        yield* commit(row.threadId, (snapshot) => {
+          const marked = scriptWasRunning
+            ? stageStatus(snapshot, "setup-script", "warning", SCRIPT_INTERRUPTED_DETAIL)
+            : snapshot;
+          return rerunCutOff ? marked : settle(marked, "done", null);
+        });
         continue;
       }
+      // The agent has not started, so nothing is lost by carrying on: the
+      // receipts say which steps are done, and those are not repeated.
+      const entry = tracked.get(row.threadId);
+      if (entry) {
+        entry.snapshot = settle(entry.snapshot, "failed", SETUP_INTERRUPTED_BY_RESTART);
+        entry.scriptCutOff = scriptWasRunning;
+      }
+      const resumed = yield* retry(row.threadId, true).pipe(
+        Effect.as(true),
+        Effect.catch((error) =>
+          Effect.logWarning("worktree setup could not resume after a restart", {
+            threadId: row.threadId,
+            message: error.message,
+          }).pipe(Effect.as(false)),
+        ),
+      );
+      if (resumed) continue;
       yield* commit(row.threadId, (snapshot) =>
         settle(snapshot, "failed", SETUP_INTERRUPTED_BY_RESTART),
       );
@@ -2024,8 +2379,9 @@ export const makeWorktreeSetup = Effect.gen(function* () {
     start,
     get,
     cancel: serialized(cancel),
-    retry: serialized(retry),
+    retry: serialized((threadId) => retry(threadId)),
     workLocally: serialized(workLocally),
+    rerunScript: serialized(rerunScript),
     ordering,
     changes: Stream.fromPubSub(changes),
     startup,

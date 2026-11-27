@@ -12,7 +12,7 @@ import { QUIESCENCE_WAIT_TIMEOUT_MS, STALE_PENDING_TURN_MS } from "./constants.t
 import type { WorktreeSetupGateState } from "../project/Services/WorktreeSetupGate.ts";
 
 export const WORKTREE_SETUP_INTERRUPTED_DETAIL =
-  "Worktree setup was interrupted before the agent started. Retry, work locally, or discard.";
+  "Worktree setup was interrupted before the agent started. Retry, continue in Local, or discard the message.";
 
 export function hasActiveThreadTurn(
   runningTurn: unknown | null,

@@ -2799,7 +2799,8 @@ export const createServer = Effect.fn(function* (
       ).pipe(Effect.forkIn(subscriptionsScope));
 
       // Before the queue dispatcher starts, so a setup that was running at
-      // shutdown is already recorded as failed when its queue is examined.
+      // shutdown has already resumed, or been recorded as failed when it could
+      // not, by the time its queue is examined.
       yield* Deferred.succeed(orchestrationPrepared, undefined);
       yield* Effect.tryPromise(waitForActivation).pipe(
         Effect.mapError(

@@ -22,6 +22,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { parseCleanupSafetyStatus } from "../cleanupSafety.ts";
 import { basename, dirname, relative } from "node:path";
 import {
+  SUBMODULES_INITIALIZING,
+  SUBMODULES_UNFINISHED,
   WorktreePreparations,
   type WorktreePreparationReceipt,
   type WorktreeGroupPlan,
@@ -58,6 +60,7 @@ import {
   withRepositoryLifecycleLock,
   repositoryIdentityHash,
   pathContains,
+  RepositoryBusyError,
 } from "../../project/Layers/WorktreeLifecycleCoordinator.ts";
 import {
   parseRemoteFetchUrls,
@@ -1782,8 +1785,21 @@ const makeGitCore = Effect.gen(function* () {
       ),
     );
 
-  const groupError = (path: string, detail: string) =>
-    createGitCommandError("GitCore.worktreeGroup", path, [], detail);
+  /**
+   * `from` is the error being reported again. A repository that is only busy
+   * stays recognisable as the cause, so the caller can wait and try again
+   * instead of failing a worktree group on a lock held for a moment.
+   */
+  const groupError = (path: string, detail: string, from?: unknown) => {
+    const inner = (from as { readonly cause?: unknown } | null | undefined)?.cause;
+    const busy =
+      from instanceof RepositoryBusyError
+        ? from
+        : inner instanceof RepositoryBusyError
+          ? inner
+          : undefined;
+    return createGitCommandError("GitCore.worktreeGroup", path, [], detail, busy);
+  };
   const listProjectRepositoryRoots: NonNullable<GitCoreShape["listProjectRepositoryRoots"]> = (
     id,
   ) =>
@@ -1807,7 +1823,7 @@ const makeGitCore = Effect.gen(function* () {
       if (checkout.canonicalRoot !== path)
         return yield* groupError(path, "Choose the repository root.");
       yield* preparations.setProjectRepositoryRoot(input.projectId, path, true);
-    }).pipe(Effect.mapError((error) => groupError(input.path, error.message)));
+    }).pipe(Effect.mapError((error) => groupError(input.path, error.message, error)));
 
   const inspectWorktreeGroup = (
     input: Parameters<NonNullable<GitCoreShape["inspectWorktreeGroup"]>>[0],
@@ -1907,7 +1923,7 @@ const makeGitCore = Effect.gen(function* () {
           return { ready: false, recoverable: false };
       }
       return { ready, recoverable };
-    }).pipe(Effect.mapError((error) => groupError(input.path, error.message)));
+    }).pipe(Effect.mapError((error) => groupError(input.path, error.message, error)));
 
   const prepareObservedWorktreeBranch: NonNullable<
     GitCoreShape["prepareObservedWorktreeBranch"]
@@ -1982,15 +1998,15 @@ const makeGitCore = Effect.gen(function* () {
           if (branchNameFromHeadRef(head.trim()) !== input.branch)
             return yield* groupError(checkoutPath, "The observed checkout branch changed.");
         }
-      }).pipe(Effect.mapError((error) => groupError(path, error.message)));
+      }).pipe(Effect.mapError((error) => groupError(path, error.message, error)));
       const commit = Effect.gen(function* () {
         for (const receipt of receipts) {
           yield* preparations.update(receipt, { branch: input.branch });
         }
         if (group) yield* preparations.updateGroupBranch(group, input.branch);
-      }).pipe(Effect.mapError((error) => groupError(path, error.message)));
+      }).pipe(Effect.mapError((error) => groupError(path, error.message, error)));
       return { verifyBranch, commit };
-    }).pipe(Effect.mapError((error) => groupError(input.path, error.message)));
+    }).pipe(Effect.mapError((error) => groupError(input.path, error.message, error)));
 
   const materializeWorktreeGroup = (
     group: WorktreeGroupPlan,
@@ -2119,12 +2135,18 @@ const makeGitCore = Effect.gen(function* () {
           group.path,
           "Retry explicitly to rerun an interrupted layout command.",
         );
-      yield* preparations.setGroupLayoutPhase(group.path, "running");
-      yield* fileSystem.makeDirectory(group.path, { recursive: true });
+      // The layout is marked as running only once the repository is held: a
+      // refusal because another window has it must not look like a command
+      // that was cut off, which only an explicit retry may run again.
+      const layoutCreate = options.layoutCreate;
       yield* withRepositoryLifecycleLock(
         baseDir,
         group.projectRoot,
-        runApprovedWorktreeLayout(group, options.layoutCreate, options.baseBranch),
+        Effect.gen(function* () {
+          yield* preparations.setGroupLayoutPhase(group.path, "running");
+          yield* fileSystem.makeDirectory(group.path, { recursive: true });
+          yield* runApprovedWorktreeLayout(group, layoutCreate, options.baseBranch);
+        }),
       );
       yield* materializeWorktreeGroup(group, { custom: true, adopt: true });
       yield* preparations.setGroupLayoutPhase(group.path, "done");
@@ -2226,7 +2248,7 @@ const makeGitCore = Effect.gen(function* () {
         yield* preparations.saveGroup(group);
         yield* prepareWorktreeGroupLayout(group, input);
       }),
-    ).pipe(Effect.mapError((error) => groupError(input.path, error.message)));
+    ).pipe(Effect.mapError((error) => groupError(input.path, error.message, error)));
 
   const ensureWorktree: GitCoreShape["ensureWorktree"] = (input) =>
     withWorktreeLifecycleLock(
@@ -3480,7 +3502,14 @@ const makeGitCore = Effect.gen(function* () {
           .update(receipt, { phase: "checkout_created", createdCheckout: true })
           .pipe(
             // Submodule initialization runs outside locks but still owns the checkout.
-            Effect.flatMap((created) => preparations.update(created, { phase: "setup_running" })),
+            // The mark says what is running, so a restart during it is not
+            // taken for a setup script that was cut off.
+            Effect.flatMap((created) =>
+              preparations.update(created, {
+                phase: "setup_running",
+                result: SUBMODULES_INITIALIZING,
+              }),
+            ),
             Effect.mapError((error) =>
               createGitCommandError("GitCore.createWorktree", input.cwd, [], error.message, error),
             ),
@@ -3548,9 +3577,7 @@ const makeGitCore = Effect.gen(function* () {
       yield* initializeSubmodules(worktreePath, input.submodules, input.progress).pipe(
         Effect.onExit((exit) =>
           exit._tag === "Failure"
-            ? finishInitialization(
-                "Submodule initialization did not finish. Retry preparation.",
-              ).pipe(Effect.ignoreCause({ log: true }))
+            ? finishInitialization(SUBMODULES_UNFINISHED).pipe(Effect.ignoreCause({ log: true }))
             : Effect.void,
         ),
       );
@@ -4213,7 +4240,7 @@ const makeGitCore = Effect.gen(function* () {
       if (
         !(yield* fileSystem
           .exists(path)
-          .pipe(Effect.mapError((error) => groupError(path, error.message))))
+          .pipe(Effect.mapError((error) => groupError(path, error.message, error))))
       )
         return;
       const checkout = yield* inspectCheckout(path);
@@ -4241,7 +4268,7 @@ const makeGitCore = Effect.gen(function* () {
       const target = yield* canonicalPath(resolvePath(input.cwd, input.path));
       const group = yield* preparations
         .getGroup(target)
-        .pipe(Effect.mapError((error) => groupError(target, error.message)));
+        .pipe(Effect.mapError((error) => groupError(target, error.message, error)));
       const memberIgnoredFiles = (path: string) =>
         scopeIgnoredFilesRemovalPolicy(relative(target, path), input.ignoredFiles);
       const runLayoutRemoval =
@@ -4250,7 +4277,7 @@ const makeGitCore = Effect.gen(function* () {
               baseDir,
               group.projectRoot,
               runApprovedWorktreeLayout(group, input.layoutRemove, ""),
-            ).pipe(Effect.mapError((error) => groupError(target, error.message)))
+            ).pipe(Effect.mapError((error) => groupError(target, error.message, error)))
           : null;
       if (group && !group.root) {
         const managed = yield* managedWorktreesRoots;
@@ -4262,7 +4289,7 @@ const makeGitCore = Effect.gen(function* () {
         for (const member of group.members) {
           const owner = yield* preparations
             .latest(member.path)
-            .pipe(Effect.mapError((error) => groupError(target, error.message)));
+            .pipe(Effect.mapError((error) => groupError(target, error.message, error)));
           if (
             !owner ||
             owner.owner !== nestedWorktreeOwner(target) ||
@@ -4286,7 +4313,7 @@ const makeGitCore = Effect.gen(function* () {
         )
           yield* runLayoutRemoval;
         yield* Effect.tryPromise(() => cleanPlainWorktreeLayout(group, false)).pipe(
-          Effect.mapError((error) => groupError(target, error.message)),
+          Effect.mapError((error) => groupError(target, error.message, error)),
         );
         for (const member of group.members)
           yield* removeWorktree({
@@ -4295,11 +4322,11 @@ const makeGitCore = Effect.gen(function* () {
             ...(input.ignoredFiles ? { ignoredFiles: memberIgnoredFiles(member.path)! } : {}),
           });
         yield* Effect.tryPromise(() => cleanPlainWorktreeLayout(group, true)).pipe(
-          Effect.mapError((error) => groupError(target, error.message)),
+          Effect.mapError((error) => groupError(target, error.message, error)),
         );
         yield* preparations
           .deleteGroup(group)
-          .pipe(Effect.mapError((error) => groupError(target, error.message)));
+          .pipe(Effect.mapError((error) => groupError(target, error.message, error)));
         return;
       }
       const entry = (yield* listWorktrees(input.cwd)).find(
@@ -4775,7 +4802,7 @@ const makeGitCore = Effect.gen(function* () {
     readWorktreeGroup: (path) =>
       canonicalPath(path).pipe(
         Effect.flatMap(preparations.getGroup),
-        Effect.mapError((error) => groupError(path, error.message)),
+        Effect.mapError((error) => groupError(path, error.message, error)),
       ),
     isValidBranchName,
     resolveAvailableBranchName,

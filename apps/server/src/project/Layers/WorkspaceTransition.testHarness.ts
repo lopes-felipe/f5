@@ -189,6 +189,8 @@ export function createWorkspaceTransitionFixture() {
             return {
               startup: Effect.void,
               needsPreparation: () => Effect.succeed(false),
+              scriptRunning: () => Effect.succeed(false),
+              stopScript: () => Effect.succeed(false),
               startBackground: () => Effect.void,
               prepare: ({ worktreePath }) =>
                 Effect.gen(function* () {

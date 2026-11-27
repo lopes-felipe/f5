@@ -484,6 +484,7 @@ export const RPC_METHOD_POLICY = {
   "worktrees.threadState": MUTATION_RT,
 
   "worktreeSetup.cancel": STOP_RT,
+  "worktreeSetup.rerunScript": MUTATION_RT,
   "worktreeSetup.retry": MUTATION_RT,
   "worktreeSetup.subscribe": MUTATION_RT,
   "worktreeSetup.workLocally": MUTATION_RT,

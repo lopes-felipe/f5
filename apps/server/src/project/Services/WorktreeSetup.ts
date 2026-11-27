@@ -57,11 +57,23 @@ export interface WorktreeSetupShape {
     threadId: ThreadId,
     expectedOperationId: string,
   ) => Effect.Effect<WorktreeSetupSnapshot | null, WorktreeSetupError>;
+  /**
+   * Run the setup script again in a worktree that is already in use, after it
+   * failed or a restart cut it off. The agent is not held while it runs.
+   */
+  readonly rerunScript: (
+    threadId: ThreadId,
+    expectedOperationId: string,
+  ) => Effect.Effect<WorktreeSetupSnapshot | null, WorktreeSetupError>;
   readonly ordering: (
     threadId: ThreadId,
   ) => Effect.Effect<{ generation: number; sequence: number }, WorktreeSetupError>;
   readonly changes: Stream.Stream<WorktreeSetupUpdatedPayload>;
-  /** Startup reconciliation: a setup that was running when the server stopped becomes failed. */
+  /**
+   * Startup reconciliation. A setup that was running when the server stopped
+   * resumes when its agent had not started. A setup script that was cut off is
+   * never run again unasked unless the agent waits for it.
+   */
   readonly startup: Effect.Effect<void, never, Scope.Scope>;
 }
 

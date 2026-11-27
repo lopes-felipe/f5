@@ -37,6 +37,10 @@ the same value is carried as `workspace` on the next-turn-queue snapshot, replac
 `useProjectFolder` or `cancel`, and no longer takes `expectedQueueRevision`: the server reads
 the queue under its own lock.
 
+Version 52 adds `worktreeSetup.rerunScript`, which runs a finished setup's failed or interrupted
+setup script again in the worktree the agent is already using. It takes the same input as the
+other `worktreeSetup` actions and returns the setup snapshot.
+
 Version 50 makes workspace switches settle themselves. `worktrees.previewTransitionRecovery`
 and `worktrees.resolveTransition` are removed, the `workspace_switch_failed` queue reason is
 no longer sent, and a transition snapshot is never left in `needs_recovery` (the phase still
