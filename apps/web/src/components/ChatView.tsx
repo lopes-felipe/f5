@@ -5713,10 +5713,9 @@ export default memo(function ChatView({
       }
     }
     // Chosen MCP resources are read now, so the message carries their current contents.
+    // Side chats never carry resource context, so they skip the read (and its failures).
     let mcpResourceParts: McpResourceContextPart[] = [];
-    const mcpResourceReferences = pendingSideQuestion
-      ? []
-      : uniqueMcpResourceReferences(promptForSend);
+    const mcpResourceReferences = sideChatCommand ? [] : uniqueMcpResourceReferences(promptForSend);
     if (mcpResourceReferences.length > 0) {
       try {
         const reads = await Promise.all(

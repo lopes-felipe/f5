@@ -20,11 +20,7 @@ import {
   type McpGetComposerPromptResult,
   type McpReadComposerResourceResult,
 } from "@t3tools/contracts";
-import {
-  MCP_COMPOSER_IMAGE_MIME_TYPES,
-  markdownFence,
-  truncateUtf8,
-} from "@t3tools/shared/mcpComposer";
+import { markdownFence, mcpComposerImageMimeType, truncateUtf8 } from "@t3tools/shared/mcpComposer";
 
 import type { McpHubComposerServer } from "./McpHub.ts";
 
@@ -202,13 +198,9 @@ export function shapeResourceContents(
       continue;
     }
     const blob = "blob" in item && typeof item.blob === "string" ? item.blob : undefined;
-    const mimeType = item.mimeType?.toLowerCase();
-    if (
-      blob &&
-      mimeType &&
-      MCP_COMPOSER_IMAGE_MIME_TYPES.has(mimeType) &&
-      blob.length <= MAX_IMAGE_BASE64_LENGTH
-    ) {
+    // Same normalization as the composer menu, so a type with parameters is still an image.
+    const mimeType = mcpComposerImageMimeType(item.mimeType);
+    if (blob && mimeType && blob.length <= MAX_IMAGE_BASE64_LENGTH) {
       contents.push({ kind: "image", uri: item.uri, mimeType, data: blob });
       continue;
     }

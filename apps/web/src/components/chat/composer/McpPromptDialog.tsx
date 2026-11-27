@@ -41,18 +41,30 @@ export function McpPromptDialog(props: {
   const formId = useId();
   const completionTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const completionSequence = useRef(0);
+  /** The open prompt; an insertion that finishes for another one never closes it. */
+  const activeRequest = useRef(request);
 
-  // A new prompt starts from an empty form.
+  // A new prompt starts from an empty form, and the last prompt's pending or in-flight
+  // suggestions can no longer land in it.
   useEffect(() => {
+    activeRequest.current = request;
+    clearTimeout(completionTimer.current);
+    completionSequence.current += 1;
     setValues({});
     setSuggestions({});
     setSubmitting(false);
   }, [request]);
   useEffect(() => () => clearTimeout(completionTimer.current), []);
 
+  // Argument names come from the server; read only entries the form set, never inherited
+  // properties such as `constructor`.
+  const valueOf = (name: string) => (Object.hasOwn(values, name) ? values[name] : undefined);
+  const suggestionsOf = (name: string) =>
+    Object.hasOwn(suggestions, name) ? (suggestions[name] ?? []) : [];
+
   const prompt = request?.prompt;
   const missing = prompt?.arguments.some(
-    (argument) => argument.required && !values[argument.name]?.trim(),
+    (argument) => argument.required && !valueOf(argument.name)?.trim(),
   );
 
   const requestCompletion = (argument: string, value: string, filled: Record<string, string>) => {
@@ -85,7 +97,9 @@ export function McpPromptDialog(props: {
       const filled = Object.fromEntries(
         Object.entries(values).filter(([, value]) => value.trim().length > 0),
       );
-      if (await props.onInsert(filled)) props.onOpenChange(false);
+      // Closes only the prompt that was submitted; if another opened meanwhile, it stays.
+      if ((await props.onInsert(filled)) && activeRequest.current === request)
+        props.onOpenChange(false);
     } finally {
       setSubmitting(false);
     }
@@ -117,7 +131,7 @@ export function McpPromptDialog(props: {
             {prompt?.arguments.map((argument) => {
               const inputId = `${formId}-${argument.name}`;
               const listId = `${inputId}-suggestions`;
-              const options = suggestions[argument.name] ?? [];
+              const options = suggestionsOf(argument.name);
               return (
                 <div key={argument.name} className="grid gap-1.5">
                   <Label htmlFor={inputId}>
@@ -129,7 +143,7 @@ export function McpPromptDialog(props: {
                   <Input
                     id={inputId}
                     list={options.length > 0 ? listId : undefined}
-                    value={values[argument.name] ?? ""}
+                    value={valueOf(argument.name) ?? ""}
                     autoComplete="off"
                     onChange={(event) => {
                       const value = event.currentTarget.value;
@@ -138,7 +152,7 @@ export function McpPromptDialog(props: {
                       requestCompletion(argument.name, value, next);
                     }}
                     onFocus={() =>
-                      requestCompletion(argument.name, values[argument.name] ?? "", values)
+                      requestCompletion(argument.name, valueOf(argument.name) ?? "", values)
                     }
                   />
                   {options.length > 0 ? (

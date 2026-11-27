@@ -255,8 +255,9 @@ export function draftFromCatalog(choice: McpCatalogDraft): ServerDraft {
   const headers = server.type !== "stdio" ? rows(server.headers) : undefined;
   return {
     ...draft,
-    // Lines keep `<placeholder>` arguments readable for editing.
-    ...(server.type === "stdio" && server.args && server.args.every((arg) => !arg.includes("\n"))
+    // Lines keep `<placeholder>` arguments readable for editing. An argument holding a line
+    // break (`\r` or `\n`, as the line parser splits on `\r?\n`) keeps the JSON format.
+    ...(server.type === "stdio" && server.args && server.args.every((arg) => !/[\r\n]/u.test(arg))
       ? { args: server.args.join("\n"), argsFormat: "lines" as const }
       : {}),
     ...(env !== undefined ? { env } : {}),

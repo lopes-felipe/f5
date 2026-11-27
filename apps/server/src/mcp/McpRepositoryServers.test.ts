@@ -126,8 +126,72 @@ it.effect("lists .mcp.json servers as needing approval and runs only approved de
           serverName: "docs",
           trusted: false,
         });
-        assert.deepStrictEqual(revoked.withdrawn, []);
+        // A revoked name stays withdrawn, so the settings event the revoke publishes still
+        // cuts off sessions using it, even once the file is missing.
+        assert.deepStrictEqual(revoked.withdrawn, ["docs"]);
         assert.deepStrictEqual(repository.trustedProjects(), []);
+        yield* Effect.promise(() => rm(path.join(root, ".mcp.json")));
+        assert.deepStrictEqual((yield* repository.readLayer(projectId)).withdrawn, ["docs"]);
+
+        // Approving it again clears the revoke.
+        yield* Effect.promise(() =>
+          writeFile(
+            path.join(root, ".mcp.json"),
+            file({ docs: { command: "npx", args: ["-y", "docs-mcp"] } }),
+          ),
+        );
+        const again = yield* repository.setTrust({
+          projectId,
+          serverName: "docs",
+          trusted: true,
+          definitionHash: docs.definitionHash,
+        });
+        assert.deepStrictEqual(again.withdrawn, []);
+      }),
+    );
+  }).pipe(Effect.scoped),
+);
+
+it.effect("checks concurrent approvals against the limit one at a time", () =>
+  Effect.gen(function* () {
+    const root = yield* Effect.promise(() => mkdtemp(path.join(tmpdir(), "f5-mcp-repo-")));
+    yield* Effect.addFinalizer(() =>
+      Effect.promise(() => rm(root, { recursive: true, force: true })),
+    );
+    yield* Effect.promise(() =>
+      writeFile(path.join(root, ".mcp.json"), file({ a: { command: "a" }, b: { command: "b" } })),
+    );
+    yield* run(
+      root,
+      Effect.gen(function* () {
+        const repository = yield* makeMcpRepositoryServers;
+        const [a, b] = (yield* repository.readLayer(projectId)).entries;
+        // A limit of one approved server, checked slowly enough for the two to overlap.
+        const approvalIssue = (layer: { readonly approved: object }) =>
+          Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 20))).pipe(
+            Effect.as(Object.keys(layer.approved).length >= 1 ? "limit reached" : undefined),
+          );
+        const results = yield* Effect.all(
+          [a!, b!].map((entry) =>
+            Effect.result(
+              repository.setTrust({
+                projectId,
+                serverName: entry.name,
+                trusted: true,
+                definitionHash: entry.definitionHash,
+                approvalIssue,
+              }),
+            ),
+          ),
+          { concurrency: "unbounded" },
+        );
+        assert.deepStrictEqual(
+          results.map((result) => result._tag),
+          ["Success", "Failure"],
+        );
+        assert.deepStrictEqual(Object.keys((yield* repository.readLayer(projectId)).approved), [
+          "a",
+        ]);
       }),
     );
   }).pipe(Effect.scoped),

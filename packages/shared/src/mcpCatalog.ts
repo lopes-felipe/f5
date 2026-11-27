@@ -35,6 +35,12 @@ export interface McpCatalogDraft {
   readonly secretKeys: ReadonlyArray<string>;
   /** Values the entry needs that F5 could not fill, for the user to complete. */
   readonly needsInput: ReadonlyArray<string>;
+  /**
+   * Launcher options the listing asked for (its runtime arguments, such as `-v /data:/data`)
+   * that F5 left out: anyone can publish a listing, and npx, uvx and docker would run
+   * these as their own options. The user adds back the ones they trust.
+   */
+  readonly leftOutOptions: ReadonlyArray<string>;
 }
 
 const PACKAGE_LABELS: Record<McpCatalogPackage["registryType"], string> = {
@@ -128,18 +134,22 @@ function packageServer(
   description: string | undefined,
   secretKeys: string[],
   needsInput: string[],
+  leftOutOptions: string[],
 ): McpServerDefinition {
   // A leading dash would make the package name an option of the launcher.
   if (pkg.identifier.startsWith("-"))
     throw new Error(`'${pkg.identifier}' is not a package name F5 can run.`);
   const env = collectInputs(pkg.environmentVariables, secretKeys, needsInput);
   const base = BASE_RUNTIME_WORDS[pkg.registryType];
-  // Listings often repeat the launcher's own words (`run`, `-i`, `--rm`, `-y`): drop an
-  // argument that is exactly one of them, never a word that is another flag's value.
-  const runtime = pkg.runtimeArguments.flatMap((argument) => {
-    const words = argumentWords(argument, needsInput);
-    return words.length === 1 && base.includes(words[0]!) ? [] : words;
-  });
+  // Runtime arguments go before the package, where the launcher reads them as its own
+  // options (`npx --call <command>`, `docker run --privileged -v /:/host`). Only the
+  // launcher's own words (`run`, `-i`, `--rm`, `-y`), which listings often repeat, are
+  // accepted; every other one is left out and listed for the user to add back.
+  for (const argument of pkg.runtimeArguments) {
+    const words = argumentWords(argument, []);
+    if (words.length === 0 || (words.length === 1 && base.includes(words[0]!))) continue;
+    leftOutOptions.push(words.join(" "));
+  }
   // A container sees only the variables passed to it.
   const containerEnv =
     pkg.registryType === "oci" ? Object.keys(env ?? {}).flatMap((name) => ["-e", name]) : [];
@@ -155,7 +165,6 @@ function packageServer(
         : pkg.identifier;
   const args = [
     ...base,
-    ...runtime,
     ...containerEnv,
     target,
     ...pkg.packageArguments.flatMap((argument) => argumentWords(argument, needsInput)),
@@ -174,6 +183,7 @@ function packageServer(
 export function mcpCatalogDraft(entry: McpCatalogEntry, choice: McpCatalogChoice): McpCatalogDraft {
   const secretKeys: string[] = [];
   const needsInput: string[] = [];
+  const leftOutOptions: string[] = [];
   const description = describe(entry);
   let server: McpServerDefinition;
   if (choice.kind === "remote") {
@@ -190,7 +200,7 @@ export function mcpCatalogDraft(entry: McpCatalogEntry, choice: McpCatalogChoice
   } else {
     const pkg = entry.packages[choice.index];
     if (!pkg) throw new Error("That package is no longer listed for this server.");
-    server = packageServer(pkg, description, secretKeys, needsInput);
+    server = packageServer(pkg, description, secretKeys, needsInput, leftOutOptions);
   }
-  return { name: mcpCatalogServerName(entry), server, secretKeys, needsInput };
+  return { name: mcpCatalogServerName(entry), server, secretKeys, needsInput, leftOutOptions };
 }

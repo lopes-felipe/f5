@@ -130,6 +130,8 @@ describe("composer resources", () => {
           { uri: "doc://b", text: "ghijkl" },
           { uri: "img://c", mimeType: "IMAGE/PNG", blob: "iVBORw0KGgo=" },
           { uri: "bin://d", mimeType: "application/pdf", blob: "JVBERi0=" },
+          { uri: "img://e", mimeType: "image/jpeg; charset=binary", blob: "/9j/" },
+          { uri: "img://f", mimeType: "image/svg+xml", blob: "PHN2Zz4=" },
         ],
       },
       8,
@@ -139,8 +141,9 @@ describe("composer resources", () => {
         { kind: "text", uri: "doc://a", mimeType: "text/plain", text: "abcdef", truncated: false },
         { kind: "text", uri: "doc://b", text: "gh", truncated: true },
         { kind: "image", uri: "img://c", mimeType: "image/png", data: "iVBORw0KGgo=" },
+        { kind: "image", uri: "img://e", mimeType: "image/jpeg", data: "/9j/" },
       ],
-      omitted: 1,
+      omitted: 2,
     });
   });
 });

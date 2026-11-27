@@ -1,6 +1,36 @@
 import { describe, expect, it } from "vitest";
 import type { McpServerDefinition } from "@t3tools/contracts";
-import { createEmptyDraft, decodeDraftServer, draftFromServer, rebaseDraft } from "./mcpDraft";
+import {
+  createEmptyDraft,
+  decodeDraftServer,
+  draftFromCatalog,
+  draftFromServer,
+  rebaseDraft,
+} from "./mcpDraft";
+
+describe("catalog drafts", () => {
+  const catalog = (args: string[]) =>
+    draftFromCatalog({
+      name: "notes",
+      server: { type: "stdio", command: "npx", args },
+      secretKeys: [],
+      needsInput: [],
+      leftOutOptions: [],
+    });
+
+  it("lists plain arguments one per line and keeps line breaks inside one through Save", () => {
+    expect(catalog(["-y", "<root>"]).argsFormat).toBe("lines");
+    for (const args of [
+      ["--label\r", "next"],
+      ["two\nlines", "next"],
+    ]) {
+      const draft = catalog(args);
+      expect(draft.argsFormat).not.toBe("lines");
+      const { server } = decodeDraftServer(draft);
+      expect(server.type === "stdio" ? server.args : undefined).toEqual(args);
+    }
+  });
+});
 
 describe("legacy server names", () => {
   const legacy: McpServerDefinition = { type: "stdio", command: "node" };

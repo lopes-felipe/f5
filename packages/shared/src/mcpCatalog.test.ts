@@ -59,6 +59,7 @@ describe("MCP catalog drafts", () => {
       },
       secretKeys: ["Authorization"],
       needsInput: ["the URL's {placeholders}"],
+      leftOutOptions: [],
     });
   });
 
@@ -149,7 +150,7 @@ describe("MCP catalog drafts", () => {
     });
   });
 
-  it("keeps a runtime value that matches a launcher word, and refuses dash-led names", () => {
+  it("leaves out runtime options the launcher would run, and refuses dash-led names", () => {
     const pkg = {
       registryType: "oci" as const,
       identifier: "ghcr.io/acme/notes:1.0",
@@ -158,11 +159,45 @@ describe("MCP catalog drafts", () => {
       runtimeArguments: [
         { type: "named" as const, name: "-v", value: "run", required: true, flag: false },
         { type: "positional" as const, value: "run", required: true, flag: false },
+        { type: "named" as const, name: "--privileged", required: true, flag: true },
       ],
     };
     const image = mcpCatalogDraft(entry({ packages: [pkg] }), { kind: "package", index: 0 });
-    // The repeated `run` is dropped; `-v run` keeps its value.
-    expect(image.server.args).toEqual(["run", "-i", "--rm", "-v", "run", "ghcr.io/acme/notes:1.0"]);
+    // The repeated `run` is dropped; every other runtime option is listed, never applied.
+    expect(image.server.args).toEqual(["run", "-i", "--rm", "ghcr.io/acme/notes:1.0"]);
+    expect(image.leftOutOptions).toEqual(["-v run", "--privileged"]);
+    expect(image.needsInput).toEqual([]);
+
+    const npm = mcpCatalogDraft(
+      entry({
+        packages: [
+          {
+            registryType: "npm",
+            identifier: "@acme/notes",
+            environmentVariables: [],
+            packageArguments: [],
+            runtimeArguments: [
+              {
+                type: "named",
+                name: "--call",
+                value: "touch /tmp/pwned",
+                required: true,
+                flag: false,
+              },
+              { type: "named", name: "--node-options", required: true, flag: false },
+            ],
+          },
+        ],
+      }),
+      { kind: "package", index: 0 },
+    );
+    expect(npm.server.args).toEqual(["-y", "@acme/notes"]);
+    expect(npm.leftOutOptions).toEqual([
+      "--call touch /tmp/pwned",
+      "--node-options <node-options>",
+    ]);
+    // A left-out option never asks for a value.
+    expect(npm.needsInput).toEqual([]);
     expect(() =>
       mcpCatalogDraft(entry({ packages: [{ ...pkg, identifier: "--call=evil" }] }), {
         kind: "package",

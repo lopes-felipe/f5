@@ -9,12 +9,20 @@ import { useInfiniteQuery } from "@tanstack/react-query";
 import { ExternalLinkIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 
+import { isWebUrl } from "../../../browser/webUrl";
 import { ensureNativeApi } from "../../../nativeApi";
 import { Button } from "../../ui/button";
 import { Input } from "../../ui/input";
 import { readErrorMessage } from "./mcpSettingsHelpers";
 
 const SEARCH_DEBOUNCE_MS = 350;
+
+/** The listing's repository or website, only as an http(s) link. */
+function sourceUrl(entry: McpCatalogEntry): string | undefined {
+  return [entry.repositoryUrl, entry.websiteUrl].find(
+    (url): url is string => url !== undefined && isWebUrl(url),
+  );
+}
 
 /**
  * Searches the official MCP Registry. F5 only asks the registry when this panel is
@@ -75,10 +83,10 @@ export function McpCatalogPanel(props: { onChoose: (draft: McpCatalogDraft) => v
               {entry.version ? (
                 <span className="text-muted-foreground text-xs">{entry.version}</span>
               ) : null}
-              {entry.repositoryUrl || entry.websiteUrl ? (
+              {sourceUrl(entry) ? (
                 <a
                   className="ml-auto inline-flex items-center gap-1 text-muted-foreground text-xs hover:text-foreground"
-                  href={entry.repositoryUrl || entry.websiteUrl}
+                  href={sourceUrl(entry)}
                   target="_blank"
                   rel="noreferrer"
                 >

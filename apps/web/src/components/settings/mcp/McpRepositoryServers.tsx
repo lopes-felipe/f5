@@ -129,8 +129,10 @@ export function McpRepositoryServers(props: { projectId: ProjectId }) {
       setReviewing(null);
     } catch (cause) {
       setError(readErrorMessage(cause, "The approval could not be changed."));
-      // The file may have changed under the dialog; show what is there now.
+      // The file may have changed under the dialog; show what is there now. The review
+      // closes, so approving again starts from the refreshed definition and its hash.
       await query.refetch();
+      setReviewing(null);
     } finally {
       setBusy(false);
     }
