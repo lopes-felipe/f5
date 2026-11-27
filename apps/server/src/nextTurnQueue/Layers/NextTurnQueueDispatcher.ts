@@ -8,6 +8,7 @@ import {
 } from "../../persistence/Services/WorkspaceTransitions.ts";
 import { WorktreePreparation } from "../../project/Services/WorktreePreparation.ts";
 import { assertWorktreeReady, WorktreeInspectionError } from "../../project/worktreeReadiness.ts";
+import { syncObservedBranch } from "../../project/observedBranch.ts";
 import { readProjectSettings } from "../../project/projectSettings.ts";
 import { hasNativeOperationReservation } from "../../provider/nativeOperations.ts";
 import { ServerSecretStore } from "../../auth/Services/ServerSecretStore.ts";
@@ -355,15 +356,26 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
         worktreeExists: thread?.branch ? null : worktreeExists,
         worktreeSetup: yield* readWorktreeSetupGate(item.threadId, queue.state.worktreeBlockToken),
       });
-      if (gate.kind !== "ready" || !thread?.worktreePath) return gate;
+      // A new turn starts on whatever branch its folder is on; record it first so
+      // the turn, its checkpoint and the picker agree. A steer joins a turn that
+      // is already running there, and that turn's end records the branch.
+      const followFolder =
+        recreate && expectedTurnId === undefined
+          ? syncObservedBranch({ engine, git }, item.threadId)
+          : Effect.succeed(false);
+      if (gate.kind !== "ready") return gate;
+      if (!thread?.worktreePath) {
+        if (thread) yield* followFolder;
+        return gate;
+      }
       const model = yield* engine.getReadModel();
       const project = model.projects.find((entry) => entry.id === thread.projectId);
       if (!project) return { kind: "autoPause" as const, reasonCode: "worktree_missing" as const };
-      const steeringActiveTurn =
-        expectedTurnId !== undefined &&
-        Option.getOrNull(sessionOption)?.activeTurnId === expectedTurnId;
       return yield* Effect.gen(function* () {
-        const readiness = yield* assertWorktreeReady(
+        // Fails only when the folder is gone and cannot be recreated, or holds
+        // something that is not this repository's worktree. The branch the
+        // folder is on is never a reason to hold a turn.
+        yield* assertWorktreeReady(
           git,
           {
             projectCwd: project.workspaceRoot,
@@ -371,34 +383,7 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
             branch: thread.branch,
           },
           !requireExisting,
-          { allowBranchDrift: steeringActiveTurn },
         );
-        // The live turn keeps running in the drifted checkout; the recorded
-        // branch is neither needed nor recreatable for this steer.
-        if (readiness?.branchDrift) {
-          if (recreate || requireExisting) inspectionRetries.delete(item.threadId);
-          return gate;
-        }
-        const group =
-          thread.worktreePath && git.inspectWorktreeGroup
-            ? yield* git.inspectWorktreeGroup({
-                projectRoot: project.workspaceRoot,
-                path: thread.worktreePath,
-                branch: thread.branch,
-                threadId: thread.threadId,
-              })
-            : null;
-        if (
-          !group &&
-          thread.branch &&
-          !(yield* git.branchExists(project.workspaceRoot, thread.branch))
-        ) {
-          return {
-            kind: "autoPause" as const,
-            reasonCode: "worktree_missing" as const,
-            detail: `Worktree branch ${thread.branch} is missing.`,
-          };
-        }
         if (recreate && thread.branch) {
           const ensured = yield* git.ensureWorktree({
             owner: `thread:${thread.threadId}`,
@@ -435,6 +420,7 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
           }
         }
         if (recreate || requireExisting) inspectionRetries.delete(item.threadId);
+        yield* followFolder;
         return gate;
       }).pipe(
         Effect.catch((error) => {

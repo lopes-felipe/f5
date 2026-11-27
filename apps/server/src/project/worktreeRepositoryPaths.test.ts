@@ -24,7 +24,7 @@ import { ServerConfig } from "../config.ts";
 import { GitCore } from "../git/Services/GitCore.ts";
 import { GitServiceLive } from "../git/Layers/GitService.ts";
 import { GitCoreTestLive } from "../git/testLayers.ts";
-import { assertWorktreeReady } from "./worktreeReadiness.ts";
+import { assertWorktreeReady, readWorktreeState } from "./worktreeReadiness.ts";
 
 const run = (cwd: string, ...args: string[]) =>
   execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -71,35 +71,96 @@ it("reconciles an F5-prepared group only when its live branch matches the observ
           repositories: [source],
           selected: [source],
         });
-        run(worktree.path, "switch", "-qc", "new-topic");
+        // A root the agent left detached or on another branch is still this
+        // group's folder: ready to send in, with nothing to recreate. Only a
+        // caller confirming the recorded branch sees the difference.
+        const ready = { projectCwd: project, worktreePath: worktree.path, branch: "feature" };
+        const strict = { ...input, branch: "feature" };
+        for (const args of [
+          ["switch", "-q", "--detach"],
+          ["switch", "-qc", "new-topic"],
+        ]) {
+          run(worktree.path, ...args);
+          yield* assertWorktreeReady(git, ready);
+          expect((yield* readWorktreeState(git, ready)).registration).toBe("matching");
+          expect(
+            yield* git.ensureWorktree({
+              cwd: project,
+              path: worktree.path,
+              branch: "feature",
+              owner: "thread:thread",
+            }),
+          ).toEqual({ recreated: false });
+          expect(yield* git.inspectWorktreeGroup!(strict)).toEqual({
+            ready: false,
+            recoverable: false,
+          });
+        }
         const member = path.join(worktree.path, "service");
-        run(member, "switch", "-qc", "new-topic");
-        const observe = (branch: string) =>
-          git.prepareObservedWorktreeBranch!({ ...input, previousBranch: "feature", branch });
-        expect((yield* observe("stale-topic").pipe(Effect.result))._tag).toBe("Failure");
+        const observe = (previousBranch: string, branch: string) =>
+          git.prepareObservedWorktreeBranch!({ ...input, previousBranch, branch });
+        const repair = (branch: string) =>
+          git.ensureWorktree({
+            cwd: project,
+            path: worktree.path,
+            branch,
+            owner: "thread:thread",
+          });
+        expect((yield* observe("feature", "stale-topic").pipe(Effect.result))._tag).toBe("Failure");
         expect((yield* git.readWorktreeGroup!(worktree.path))?.branch).toBe("feature");
-        const prepared = yield* observe("new-topic");
-        run(member, "switch", "-q", "feature");
-        expect((yield* prepared.verifyBranch.pipe(Effect.result))._tag).toBe("Failure");
-        run(member, "switch", "-q", "new-topic");
-        yield* prepared.verifyBranch;
-        yield* prepared.commit;
+        // The group follows its root. The member stayed on `feature`: it keeps
+        // its own record, and a repair brings it back on that branch.
+        const rootOnly = (yield* observe("feature", "new-topic"))!;
+        yield* rootOnly.verifyBranch;
+        yield* rootOnly.commit;
         expect((yield* git.readWorktreeGroup!(worktree.path))?.branch).toBe("new-topic");
-        yield* assertWorktreeReady(git, {
+        const onNewTopic = {
           projectCwd: project,
           worktreePath: worktree.path,
           branch: "new-topic",
+        };
+        yield* assertWorktreeReady(git, onNewTopic);
+        yield* git.removeWorktree({ cwd: source, path: member });
+        expect(yield* repair("new-topic")).toEqual({ recreated: true });
+        expect(run(member, "branch", "--show-current")).toBe("feature");
+        yield* assertWorktreeReady(git, onNewTopic);
+        // Root and member move together: the member's record moves with the group.
+        run(worktree.path, "switch", "-qc", "next-topic");
+        run(member, "switch", "-qc", "next-topic");
+        const prepared = (yield* observe("new-topic", "next-topic"))!;
+        run(member, "switch", "-q", "feature");
+        expect((yield* prepared.verifyBranch.pipe(Effect.result))._tag).toBe("Failure");
+        run(member, "switch", "-q", "next-topic");
+        yield* prepared.verifyBranch;
+        yield* prepared.commit;
+        expect((yield* git.readWorktreeGroup!(worktree.path))?.branch).toBe("next-topic");
+        yield* assertWorktreeReady(git, {
+          projectCwd: project,
+          worktreePath: worktree.path,
+          branch: "next-topic",
         });
         yield* git.removeWorktree({ cwd: source, path: member });
+        expect(yield* repair("next-topic")).toEqual({ recreated: true });
+        expect(run(member, "branch", "--show-current")).toBe("next-topic");
+        // The same repair with the root left detached: the nested checkout is
+        // recreated and the repair succeeds the first time, not the second.
+        run(worktree.path, "switch", "-q", "--detach");
+        yield* git.removeWorktree({ cwd: source, path: member });
+        expect(yield* repair("next-topic")).toEqual({ recreated: true });
+        expect(run(member, "branch", "--show-current")).toBe("next-topic");
+        expect(run(worktree.path, "branch", "--show-current")).toBe("");
+        // A group whose folder and branch are both gone is missing, not a
+        // folder that belongs to something else.
+        yield* Effect.promise(() => rm(worktree.path, { recursive: true, force: true }));
+        run(project, "worktree", "prune");
+        run(project, "branch", "-qD", "next-topic");
         expect(
-          yield* git.ensureWorktree({
-            cwd: project,
-            path: worktree.path,
-            branch: "new-topic",
-            owner: "thread:thread",
+          yield* readWorktreeState(git, {
+            projectCwd: project,
+            worktreePath: worktree.path,
+            branch: "next-topic",
           }),
-        ).toEqual({ recreated: true });
-        expect(run(member, "branch", "--show-current")).toBe("new-topic");
+        ).toMatchObject({ registration: "none", directoryExists: false, branchExists: false });
       }).pipe(
         Effect.provide(
           GitCoreTestLive.pipe(
@@ -218,6 +279,17 @@ it("prepares and resumes an isolated workspace for a plain project folder", asyn
           worktreePath: worktree,
           branch: "feature",
         });
+        // One member on another branch is not the group on another branch:
+        // there is nothing to record, and nothing has failed.
+        expect(
+          yield* git.prepareObservedWorktreeBranch!({
+            projectRoot: project,
+            path: worktree,
+            threadId: "thread",
+            previousBranch: "feature",
+            branch: "web-feature",
+          }),
+        ).toBeNull();
         yield* Effect.promise(() => writeFile(path.join(webCheckout, "app.txt"), "dirty"));
         const refused = yield* git
           .removeWorktree({ cwd: project, path: worktree })

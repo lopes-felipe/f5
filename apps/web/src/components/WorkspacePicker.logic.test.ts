@@ -358,6 +358,21 @@ describe("workspaceTriggerLabel", () => {
         state: { kind: "worktree", path: "/wt/route", branch: "fix/route" },
       }),
     ).toBe("fix/route · missing");
+    // The thread follows the folder: the label is the branch HEAD is on now.
+    expect(
+      workspaceTriggerLabel({
+        ...base,
+        liveBranch: "agent/next",
+        state: { kind: "worktree", path: "/wt/route", branch: "fix/route" },
+      }),
+    ).toBe("agent/next");
+    expect(
+      workspaceTriggerLabel({
+        ...base,
+        liveBranch: null,
+        state: { kind: "worktree", path: "/wt/route", branch: "fix/route" },
+      }),
+    ).toBe("fix/route · detached");
     expect(
       workspaceTriggerLabel({
         ...base,

@@ -8,6 +8,7 @@ import {
   AGENT_BRIDGE_TURN_SUBMITTED_ACTIVITY_KIND,
   PROVIDER_CONTEXT_HANDOFF_ACTIVITY_KIND,
   SCHEDULED_TASK_TURN_SUBMITTED_ACTIVITY_KIND,
+  WORKSPACE_BRANCH_CHANGED_ACTIVITY_KIND,
   ApprovalRequestId,
   ProviderApprovalOption,
   ProviderApprovalPresentation,
@@ -761,6 +762,8 @@ const ALWAYS_VISIBLE_KINDS = new Set([
   SCHEDULED_TASK_TURN_SUBMITTED_ACTIVITY_KIND,
   // "Context handed off from … to …" marks where a provider switch happened.
   PROVIDER_CONTEXT_HANDOFF_ACTIVITY_KIND,
+  // "Now on … (was …)" belongs to no turn and marks where the folder changed branch.
+  WORKSPACE_BRANCH_CHANGED_ACTIVITY_KIND,
 ]);
 
 function inferWorkLogStatus(

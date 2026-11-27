@@ -11,9 +11,7 @@ import { useNextTurnQueueStore } from "../../nextTurnQueueStore";
 
 /** The original branch can come back only when it still exists and nothing else took the path. */
 export const canRecreateOriginal = (data: WorktreesThreadStateResult) =>
-  data.branchExists &&
-  (data.registration === "matching" ||
-    (!data.directoryExists && data.registration !== "otherBranch"));
+  data.branchExists && (data.registration === "matching" || !data.directoryExists);
 
 /**
  * What the main "recreate" action does for this state, or why there is none.
@@ -27,12 +25,12 @@ export type RecreatePlan =
 export function recreatePlan(data: WorktreesThreadStateResult | undefined): RecreatePlan {
   if (!data) return { action: null, reason: "Checking the worktree…" };
   if (canRecreateOriginal(data)) return { action: "recreate" };
-  // The path now holds a checkout registered to another branch; its files are kept.
-  if (data.branchExists && data.directoryExists && data.registration === "otherBranch")
+  // The path now holds something that is not this repository's worktree; it is kept.
+  if (data.registration === "foreign")
     return {
       action: null,
       reason:
-        "This checkout no longer matches the recorded worktree. Choose another workspace to continue.",
+        "The recorded folder no longer belongs to this repository. Choose another workspace to continue.",
     };
   if (!data.defaultBranch) return { action: null, reason: "No default branch to recreate from." };
   return { action: "recreateFromBase", base: data.defaultBranch };
@@ -69,9 +67,6 @@ export function useWorktreeRecovery(
     queryFn: () => ensureNativeApi().worktrees.threadState({ threadId: threadId! }),
     enabled: threadId !== null && options.enabled !== false,
     staleTime: 30_000,
-    // Committing or stashing in a terminal changes no query input, so keep a
-    // drift banner's "Switch back" availability current while it is shown.
-    refetchInterval: (query) => (query.state.data?.branchDriftOnly ? 5_000 : false),
   });
   const mutation = useMutation({
     mutationKey: recoverKey(threadId),

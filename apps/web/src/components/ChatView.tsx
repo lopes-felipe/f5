@@ -342,7 +342,6 @@ import {
   useWorktreeRepositoryChoices,
   WorktreeRepositoryPicker,
 } from "./RepositoryPicker";
-import { useChatViewBranchDriftGuard } from "./ChatViewBranchDriftGuard";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import {
   selectSurfaceHeaderState,
@@ -702,7 +701,6 @@ export default memo(function ChatView({
   const { resolvedTheme } = useTheme();
   const { revision: themePaletteRevision } = useResolvedThemePalette(resolvedTheme);
   const queryClient = useQueryClient();
-  const { guardBranchDrift, branchDriftDialog } = useChatViewBranchDriftGuard(threadId);
   const {
     composerDraft,
     prompt,
@@ -5754,27 +5752,6 @@ export default memo(function ChatView({
     }
     const threadIdForSend = activeThread.id;
     const isFirstMessage = !isServerThread || activeThread.messages.length === 0;
-    if (!sideChatCommand && isServerThread && !isFirstMessage && activeThread.branch && gitCwd) {
-      let proceed = false;
-      try {
-        proceed = await guardBranchDrift({
-          cwd: gitCwd,
-          threadId: threadIdForSend,
-          recordedBranch: activeThread.branch,
-          worktreePath: activeThread.worktreePath,
-        });
-      } catch (error) {
-        toastManager.add({
-          type: "error",
-          title: "Could not verify the current branch.",
-          description: error instanceof Error ? error.message : "Try sending again.",
-        });
-      }
-      if (!proceed) {
-        sendInFlightRef.current = false;
-        return;
-      }
-    }
     // Always request worktree preparation on the first send in worktree mode,
     // even if the client cache shows a non-null `worktreePath`. The client
     // cache can be stale after preload/restore, and the server has the
@@ -6480,18 +6457,6 @@ export default memo(function ChatView({
 
       const threadIdForSend = activeThread.id;
       const replyTo = useComposerDraftStore.getState().draftsByThreadId[threadId]?.replyTo ?? null;
-      if (activeThread.branch && gitCwd) {
-        const proceed = await guardBranchDrift({
-          cwd: gitCwd,
-          threadId: threadIdForSend,
-          recordedBranch: activeThread.branch,
-          worktreePath: activeThread.worktreePath,
-        });
-        if (!proceed) return;
-        // Branch-drift confirmation is asynchronous. Another submit may have
-        // acquired the shared send lock while this one was waiting.
-        if (sendInFlightRef.current) return;
-      }
       const messageIdForSend = newMessageId();
       const messageCreatedAt = new Date().toISOString();
       const { text: rewrittenText, skillCall } = rewriteComposerRuntimeSkillInvocationForSend({
@@ -6649,8 +6614,6 @@ export default memo(function ChatView({
       composerMatchesClearedState,
       dispatchPendingTurnStartCommand,
       draftThread,
-      gitCwd,
-      guardBranchDrift,
       hasPendingTurnDispatch,
       isConnecting,
       isServerThread,
@@ -9294,8 +9257,6 @@ export default memo(function ChatView({
               />
             </Suspense>
           ) : null}
-
-          {branchDriftDialog}
 
           {isServerThread ? (
             <McpPromptDialog

@@ -1,3 +1,4 @@
+import { mkdir } from "node:fs/promises";
 import * as path from "node:path";
 import { Deferred, Effect, Fiber } from "effect";
 import { afterEach, expect, it } from "vitest";
@@ -67,48 +68,50 @@ it("checks identity without status scans and verifies existing worktrees while t
       expect(failed).toBeInstanceOf(WorktreeInspectionError);
       expect(failed.message).toContain("retry");
       expect(yield* readWorktreeState(core, input, false)).toMatchObject({
-        checkoutBranch: "ready",
-        branchDriftOnly: false,
+        registration: "matching",
+        headBranch: "ready",
       });
+      // The folder is the identity: a branch the agent switched to is still ready.
       git(target, "checkout", "-q", "-b", "agent-branch");
-      expect(yield* assertWorktreeReady(core, input).pipe(Effect.flip)).toBeInstanceOf(
-        WorktreeNotReadyError,
-      );
+      yield* assertWorktreeReady(core, input);
       expect(yield* readWorktreeState(core, input, false)).toMatchObject({
-        registration: "otherBranch",
-        checkoutBranch: "agent-branch",
-        branchDriftOnly: true,
+        registration: "matching",
+        headBranch: "agent-branch",
       });
-      // Steers into the live turn tolerate drift; new turns do not.
-      expect(yield* assertWorktreeReady(core, input, false, { allowBranchDrift: true })).toEqual({
-        branchDrift: true,
-      });
+      expect(yield* core.ensureWorktree({ cwd: repo.root, path: target, branch: "ready" })).toEqual(
+        { recreated: false },
+      );
       git(target, "checkout", "-q", "--detach");
-      expect(yield* assertWorktreeReady(core, input).pipe(Effect.flip)).toBeInstanceOf(
+      yield* assertWorktreeReady(core, input);
+      expect(yield* readWorktreeState(core, input, false)).toMatchObject({
+        registration: "matching",
+        headBranch: null,
+      });
+      // Another repository's checkout at the recorded path is foreign, never ready.
+      const elsewhere = { ...core, resolveCommonDir: () => Effect.succeed("/elsewhere/.git") };
+      expect(yield* readWorktreeState(elsewhere, input, false)).toMatchObject({
+        registration: "foreign",
+        headBranch: null,
+      });
+      expect(yield* assertWorktreeReady(elsewhere, input, true).pipe(Effect.flip)).toBeInstanceOf(
         WorktreeNotReadyError,
       );
-      expect(yield* readWorktreeState(core, input, false)).toMatchObject({
-        checkoutBranch: null,
-        branchDriftOnly: true,
-      });
-      // A foreign repository at the recorded path is never treated as drift.
+      // So is a plain folder nobody registered, without asking Git about it.
+      const plain = { ...input, worktreePath: path.join(config.worktreesDir, "plain") };
+      yield* Effect.promise(() => mkdir(plain.worktreePath));
       expect(
-        yield* readWorktreeState(
-          { ...core, resolveCommonDir: () => Effect.succeed("/elsewhere/.git") },
-          input,
-          false,
-        ),
-      ).toMatchObject({ branchDriftOnly: false });
+        yield* readWorktreeState({ ...core, inspectCheckoutIdentity: unexpected }, plain, false),
+      ).toMatchObject({ registration: "foreign", directoryExists: true });
       const missing = { ...input, worktreePath: path.join(config.worktreesDir, "missing") };
       expect(yield* readWorktreeState(core, missing, false)).toMatchObject({
         directoryExists: false,
-        branchDriftOnly: false,
+        registration: "none",
       });
-      expect(
-        yield* assertWorktreeReady(core, missing, false, { allowBranchDrift: true }).pipe(
-          Effect.flip,
-        ),
-      ).toBeInstanceOf(WorktreeNotReadyError);
+      // A missing folder is ready only where recreation is allowed.
+      yield* assertWorktreeReady(core, missing, true);
+      expect(yield* assertWorktreeReady(core, missing, false).pipe(Effect.flip)).toBeInstanceOf(
+        WorktreeNotReadyError,
+      );
     }).pipe(Effect.provide(automationLayer(world, {}, "f5-readiness-state-")), Effect.scoped),
   );
 });

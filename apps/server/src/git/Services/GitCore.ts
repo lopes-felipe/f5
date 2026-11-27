@@ -222,8 +222,21 @@ export interface GitCoreShape extends MoveSnapshotOperations {
     path: string;
     branch: string | null;
     threadId?: string;
+    /**
+     * Judge an existing root checkout by where it is and which repository it
+     * belongs to, not by the branch HEAD is on. For readiness only: a caller
+     * that confirms the checkout is on `branch` must leave this unset.
+     */
+    anyHead?: boolean;
   }) => Effect.Effect<{ ready: boolean; recoverable: boolean } | null, GitCommandError>;
-  /** Inspect an observed checkout before preparing the metadata transaction's writes. */
+  /**
+   * Inspect an observed checkout before preparing the metadata transaction's writes.
+   *
+   * A worktree group with a root follows its root: members that are on the
+   * branch move with it, the others keep their own record. A group made of
+   * members alone moves once all of them are on the branch; until then this
+   * resolves to `null`, which means there is nothing to record.
+   */
   readonly prepareObservedWorktreeBranch?: (input: {
     projectRoot: string;
     path: string;
@@ -234,7 +247,7 @@ export interface GitCoreShape extends MoveSnapshotOperations {
     {
       verifyBranch: Effect.Effect<void, GitCommandError>;
       commit: Effect.Effect<void, GitCommandError>;
-    },
+    } | null,
     GitCommandError
   >;
   /** Await refreshes admitted for an owned checkout before releasing its files. */

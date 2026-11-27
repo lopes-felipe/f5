@@ -165,9 +165,6 @@ function WorktreeSettings() {
 function SyncSettings() {
   const { settings, defaults, updateSettings } = useSettingsRouteContext();
   const autoPullDefaultBranch = useSettings((unified) => unified.autoPullDefaultBranch);
-  const followWorktreeBranchChanges = useSettings(
-    (settings) => settings.followWorktreeBranchChanges,
-  );
   const autoLinkShellCreatedMergeRequests = useSettings(
     (unified) => unified.autoLinkShellCreatedMergeRequests,
   );
@@ -238,26 +235,6 @@ function SyncSettings() {
                   title: "Could not save auto-pull",
                   description: errorMessage(error),
                 }),
-              )
-            }
-          />
-        }
-      />
-      <SettingsRow
-        title="Follow worktree branch switches"
-        description="Update a conversation’s recorded branch when its worktree switches branches. Shared worktrees still use workspace recovery."
-        control={
-          <Switch
-            aria-label="Follow worktree branch switches"
-            checked={followWorktreeBranchChanges}
-            onCheckedChange={(value) =>
-              void updateServerSettings({ followWorktreeBranchChanges: value }).catch(
-                (error: unknown) =>
-                  toastManager.add({
-                    type: "error",
-                    title: "Could not save worktree branch setting",
-                    description: errorMessage(error),
-                  }),
               )
             }
           />

@@ -43,11 +43,8 @@ import {
   formatInPlaceSwitchBlockers,
   inPlaceSwitchBlockers,
 } from "../worktreeClaims.ts";
-import {
-  canonicalWorkspace,
-  inspectAttachableWorkspace,
-  isProjectCheckout,
-} from "../workspaceAttachment.ts";
+import { canonicalWorkspace, inspectAttachableWorkspace } from "../workspaceAttachment.ts";
+import { syncObservedCheckout } from "../observedBranch.ts";
 import { WorkspaceWriteContext } from "../workspaceTransitionContext.ts";
 import { WorktreePreparation } from "../Services/WorktreePreparation.ts";
 import { WorktreeSetupGate } from "../Services/WorktreeSetupGate.ts";
@@ -165,11 +162,7 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
         return yield* Effect.fail(new Error("Workspace usage could not be verified."));
       const foreign = usage.threadIds.filter((id) => id !== record.threadId);
       if (inPlace) {
-        const { project } = yield* context(record.threadId);
-        const blockers = inPlaceSwitchBlockers(usage, {
-          requester: record.threadId,
-          projectCheckout: yield* isProjectCheckout(yield* engine.getReadModel(), path, project.id),
-        });
+        const blockers = inPlaceSwitchBlockers(usage, { requester: record.threadId });
         if (blockers.length) {
           const model = yield* engine.getReadModel();
           return yield* Effect.fail(
@@ -753,6 +746,19 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
       );
       if (completed.intent === "move_to_new_worktree")
         return yield* locked(completed, releaseMoveRef(completed));
+      // Idle threads that share the worktree follow it now. Left to the next
+      // status read, one of them could recreate a removed folder on the old branch.
+      if (
+        (completed.intent === "checkout_branch" ||
+          completed.intent === "create_branch_and_checkout") &&
+        completed.result?.worktreePath &&
+        completed.result.branch
+      )
+        yield* syncObservedCheckout(
+          { engine, git },
+          completed.result.worktreePath,
+          completed.result.branch,
+        ).pipe(Effect.ignore);
       return completed;
     });
   const resumeMissingPause = (record: WorkspaceTransitionSnapshot) =>

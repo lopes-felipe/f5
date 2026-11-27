@@ -55,19 +55,16 @@ Use **Recreate now** (the branch still exists), **Recreate from the default bran
 or **Continue in Local** (the project folder). The thread header offers the same choices:
 **Recreate worktree**, with **Recreate from `<default branch>`** and **Continue in Local** in its
 menu. An archived thread's header shows **Worktree removed** instead; unarchive the thread to
-recreate it. A checkout found on a different branch is kept untouched and blocked until you
-restore the branch or choose a recovery action.
+recreate it. A recorded folder that no longer belongs to this repository is kept untouched, and
+the thread waits until you choose another workspace.
 
-When the thread's own worktree only switched branches (for example, the agent ran `git checkout`),
-the banner names both branches. **Use `<branch>`** points the thread at the branch the worktree is
-on now, and works while a turn is running. **Switch back to `<branch>`** checks out the recorded
-branch again, like any in-place branch switch. It needs a clean worktree on a branch (not a
-detached HEAD), no Git operation in progress, no running or pending turn, and no other
-conversation, terminal, or profile using the checkout. If the agent switched to a regular branch
-during a turn, the thread follows that branch automatically when the turn ends. Recreate and
-project checkout move under **More options**. Messages steered into the
-running turn, including answers to its questions, are still delivered because that turn keeps
-working in the same folder. New turns wait until the branch is resolved.
+A thread follows its folder, not a branch. When the agent runs `git checkout`, a rebase leaves a
+detached HEAD, or you switch branches in a terminal, nothing is blocked and nothing asks: the next
+message is sent, the workspace picker shows the branch the folder is on now (or
+`<branch> · detached`), and the timeline notes "Now on `<branch>` (was `<branch>`)". A switch made
+during a turn is recorded once, when the turn ends. Local threads follow the project folder the
+same way when their own turn starts or ends. To go back, use **Switch branch here…** in the
+picker. The branch a thread last saw is what a removed worktree is recreated from.
 
 ## Auto-pull and backups
 
@@ -167,14 +164,11 @@ conversations already use it, and picking the row is the confirmation.
 
 Changing a branch in place is blocked only by live use: another conversation's running or
 pending turn, queued work, worktree setup or workspace transition, an agent session that is
-starting or running, an open terminal (yours included), or another profile's reference. In the
-project folder, idle and archived local conversations do not block it; they show whatever branch
-the folder is on. A new turn waits for a switch that is already under way and then starts on the
-new branch. A managed worktree keeps the stricter rule, because its conversations record a
-branch: any other conversation using it, or an open agent session, also blocks the switch. The
-same applies to a conversation that records a worktree at a path that is also a project's folder.
-A refused switch names the conversations and what they are doing; use a separate worktree
-instead.
+starting or running, an open terminal (yours included), or another profile's reference. Idle and
+archived conversations never block it, in the project folder or in a worktree: they follow
+whatever branch their folder is on. A new turn waits for a switch that is already under way and
+then starts on the new branch. A refused switch names the conversations and what they are doing;
+use a separate worktree instead.
 
 Interrupted switches keep their checkout and block sending until resolved. Choose
 **Inspect workspace** to see the actual branch, commit, and path. **Accept inspected

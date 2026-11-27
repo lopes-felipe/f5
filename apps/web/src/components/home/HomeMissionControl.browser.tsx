@@ -2223,22 +2223,17 @@ describe("HomeMissionControl", () => {
       }
     });
 
-    it("asks before sending to a thread whose branch changed under it", async () => {
+    it("sends to a thread whose folder is on another branch without asking", async () => {
       const thread: Thread = { ...DONE_THREAD, branch: "feature/queue" };
       const view = await renderHome([thread]);
       try {
         const box = page.getByRole("textbox", { name: "Reply" });
         await box.fill("Continue");
         await userEvent.keyboard("{Enter}");
-        const dialog = page.getByRole("dialog", { name: "Thread branch changed" });
-        await expect.element(dialog).toHaveTextContent("feature/queue");
-        expect(listBranches).toHaveBeenCalledWith({ cwd: PROJECT_B.cwd });
-        // Keys under the dialog are not Home's.
-        await userEvent.keyboard("e");
-        await dialog.getByRole("button", { name: "Cancel send" }).click();
-        await expect.element(box).toHaveValue("Continue");
-        expect(submitTurn).not.toHaveBeenCalled();
-        expect(dispatchCommand).not.toHaveBeenCalled();
+        await vi.waitFor(() => expect(submitTurn).toHaveBeenCalledTimes(1));
+        expect(submittedCommand().message.text).toBe("Continue");
+        // The server records the folder's branch; nothing is asked first.
+        await expect.element(page.getByRole("dialog")).not.toBeInTheDocument();
       } finally {
         await view.cleanup();
       }

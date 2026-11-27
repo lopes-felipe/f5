@@ -461,11 +461,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
     );
     const workspaceGit = yield* Effect.serviceOption(GitCore);
     const workspaceSql = yield* Effect.serviceOption(SqlClient.SqlClient);
-    const checkWorkspace = (
-      threadId: ThreadId,
-      sessionCwd?: string,
-      options: { readonly allowBranchDrift?: boolean } = {},
-    ) =>
+    const checkWorkspace = (threadId: ThreadId, sessionCwd?: string) =>
       Effect.gen(function* () {
         if (Option.isNone(workspaceSql)) return;
         const switching =
@@ -534,7 +530,6 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             branch: row.branch,
           },
           false,
-          options,
         );
       }).pipe(
         Effect.mapError(
@@ -2658,9 +2653,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                 "Provider output is incomplete. Review history recovery before starting another turn.",
             });
           const sessionCwd = readPersistedCwd(deliveryBinding.value.runtimePayload);
-          const admit = checkWorkspace(input.threadId, sessionCwd, {
-            allowBranchDrift: input.expectedTurnId !== undefined,
-          }).pipe(
+          const admit = checkWorkspace(input.threadId, sessionCwd).pipe(
             Effect.mapError(
               (error) =>
                 new ProviderTurnDeliveryError({

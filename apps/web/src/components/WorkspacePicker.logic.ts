@@ -354,6 +354,12 @@ export function workspaceTriggerLabel(input: {
   readonly activeThreadBranch: string | null;
   readonly projectBranch: string | null;
   readonly checkoutMissing: boolean;
+  /**
+   * The branch the worktree's HEAD is on right now: null when detached,
+   * undefined while unknown. The thread follows it; its recorded branch is only
+   * the last one seen there.
+   */
+  readonly liveBranch?: string | null | undefined;
 }): string {
   if (input.creatingWorktree)
     return input.activeThreadBranch
@@ -365,8 +371,11 @@ export function workspaceTriggerLabel(input: {
     case "newWorktree":
       return input.state.base ? `New worktree · from ${input.state.base}` : "New worktree";
     case "worktree": {
-      const name = input.state.branch ?? input.state.path.split(/[\\/]/).filter(Boolean).at(-1);
-      return input.checkoutMissing ? `${name} · missing` : (name ?? "Worktree");
+      const recorded =
+        input.state.branch ?? input.state.path.split(/[\\/]/).filter(Boolean).at(-1) ?? "Worktree";
+      if (input.checkoutMissing) return `${recorded} · missing`;
+      if (input.liveBranch === null) return `${recorded} · detached`;
+      return input.liveBranch ?? recorded;
     }
   }
 }

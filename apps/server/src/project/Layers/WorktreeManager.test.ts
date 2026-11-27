@@ -546,78 +546,21 @@ describe("WorktreeManager safety and recovery", { timeout: 60_000 }, () => {
     );
   });
 
-  it("adopts the branch a drifted worktree switched to, even during a turn", async () => {
-    const { repo, world, run, notified } = await fixture();
-    const threadId = ThreadId.makeUnsafe("drift-adopt");
-    world.queueStates.set(threadId, {
-      revision: 4,
-      paused: true,
-      pauseReasonCode: "worktree_missing",
-      worktreeBlockToken: null,
-    });
-    await run((manager, root) =>
-      Effect.gen(function* () {
-        const target = path.join(root, "drift-adopt");
-        git(repo.root, "worktree", "add", "-q", "-b", "recorded", target, "main");
-        world.threads.push({
-          ...thread({ id: threadId, projectId: "p", branch: "recorded", worktreePath: target }),
-          session: { status: "running", activeTurnId: "live-turn" },
-        } as never);
-        git(target, "checkout", "-q", "-b", "agent-branch");
-        const state = yield* manager.threadState({ threadId });
-        expect(state).toMatchObject({
-          branchDriftOnly: true,
-          checkoutBranch: "agent-branch",
-          checkoutDirty: false,
-          // The end-of-turn checkpoint sync would re-record this branch.
-          followsCheckoutAtTurnEnd: true,
-        });
-        const adopted = yield* manager.recover({
-          threadId,
-          action: "adoptCheckoutBranch",
-          expectedQueueRevision: 4,
-        });
-        expect(world.threads.find((entry) => entry.id === threadId)?.branch).toBe("agent-branch");
-        expect(adopted).toMatchObject({ registration: "matching", branchDriftOnly: false });
-        expect(world.queueStates.get(threadId)?.paused).toBe(false);
-        expect(notified).toContain(threadId);
-      }),
-    );
-  });
-
-  it("refuses branch repairs on a detached HEAD or once the checkout matches again", async () => {
+  it("reports a worktree as intact on another branch or a detached HEAD", async () => {
     const { repo, world, run } = await fixture();
-    const threadId = ThreadId.makeUnsafe("drift-detached");
+    const threadId = ThreadId.makeUnsafe("moved-branch");
     await run((manager, root) =>
       Effect.gen(function* () {
-        const target = path.join(root, "drift-detached");
+        const target = path.join(root, "moved-branch");
         git(repo.root, "worktree", "add", "-q", "-b", "recorded", target, "main");
         world.threads.push(
           thread({ id: threadId, projectId: "p", branch: "recorded", worktreePath: target }),
         );
-        const recover = (action: "adoptCheckoutBranch" | "restoreRecordedBranch") =>
-          manager
-            .recover({
-              threadId,
-              action,
-              expectedQueueRevision: world.queueStates.get(threadId)?.revision ?? 0,
-            })
-            .pipe(
-              Effect.flip,
-              Effect.map((error) => error.message),
-            );
+        const intact = { registration: "matching", directoryExists: true, recovery: "none" };
+        git(target, "checkout", "-q", "-b", "agent-branch");
+        expect(yield* manager.threadState({ threadId })).toMatchObject(intact);
         git(target, "checkout", "-q", "--detach");
-        // Commits made on a detached HEAD would become unreachable after a checkout.
-        expect(yield* recover("adoptCheckoutBranch")).toContain("detached HEAD");
-        expect(yield* recover("restoreRecordedBranch")).toContain("detached HEAD");
-        git(target, "checkout", "-q", "-b", "t3code/1234abcd");
-        // Temporary branches are renamed later, so the turn-end sync leaves them alone.
-        expect(yield* manager.threadState({ threadId })).toMatchObject({
-          branchDriftOnly: true,
-          followsCheckoutAtTurnEnd: false,
-        });
-        git(target, "checkout", "-q", "recorded");
-        expect(yield* recover("adoptCheckoutBranch")).toContain("no longer only differs by branch");
+        expect(yield* manager.threadState({ threadId })).toMatchObject(intact);
       }),
     );
   });

@@ -3062,9 +3062,7 @@ const make = Effect.gen(function* () {
           retryable: false,
           detail: "Unknown project",
         });
-      // A thread without a project has no checkout to be ready. sendTurn rejects the
-      // steer unless `expectedTurnId` is still the live turn, which keeps running in
-      // its checkout even if that switched branches.
+      // A thread without a project has no checkout to be ready.
       if (!isScratchProject(project))
         yield* assertWorktreeReady(
           git,
@@ -3074,7 +3072,6 @@ const make = Effect.gen(function* () {
             branch: thread.branch,
           },
           false,
-          { allowBranchDrift: true },
         ).pipe(Effect.mapError(toProviderTurnDeliveryError));
       const mcpAppContext = yield* appContextForTurn(
         thread.id,

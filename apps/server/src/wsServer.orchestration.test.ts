@@ -1541,10 +1541,6 @@ describe("WebSocket Server", () => {
         });
         expect(switched.error).toMatchObject({ code: "WorkspaceRequiresNewWorktree" });
 
-        const settings = await sendRequest(ws, WS_METHODS.serverUpdateSettings, {
-          followWorktreeBranchChanges: true,
-        });
-        expect(settings.error).toBeUndefined();
         const observedThread = async () => {
           const model = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot);
           return (model.result as OrchestrationReadModel).threads.find(
