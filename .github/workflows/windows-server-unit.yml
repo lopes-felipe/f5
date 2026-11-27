@@ -1,0 +1,67 @@
+name: Windows server unit (on demand)
+# CI runs the Windows server-unit shards on main pushes, nightly and dispatch, not on
+# pull requests. Dispatch this workflow on a branch to run only those shards before
+# merging a change that is sensitive to Windows process, path or filesystem behaviour:
+#
+#   gh workflow run windows-server-unit.yml --ref <branch>
+#
+# It has no `CI result` job on purpose: a run of this subset must never satisfy the
+# required check. The job mirrors ci.yml's windows-server-unit; a policy test keeps
+# the two identical.
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  VITEST_MAX_WORKERS: "2"
+concurrency:
+  group: windows-server-unit-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  windows-server-unit:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Configure Git line endings
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        id: install
+      - name: Set diagnostic paths
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          printf 'F5_CI_REPORT_DIR=%s/ci-reports/%s\n' "$RUNNER_TEMP" "$GITHUB_JOB" >> "$GITHUB_ENV"
+          printf 'F5_CI_ARTIFACT_DIR=%s/ci-artifacts/%s\n' "$RUNNER_TEMP" "$GITHUB_JOB" >> "$GITHUB_ENV"
+      - name: Prepare report directory
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          node scripts/ci-test-summary.ts --prepare
+      - name: Server unit shard
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          F5_CI_SUITE_ID: "server-unit-${{ matrix.shard }}"
+          # Per-file storage accounting evidence for the Windows logical-byte gap.
+        run: |
+          bun run test:server:shard --shard=${{ matrix.shard }}/3
+      - name: Summarize test reports
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node scripts/ci-test-summary.ts server-unit-${{ matrix.shard }}
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reports-${{ github.job }}-${{ runner.os }}-${{ strategy.job-index }}-${{ github.run_attempt }}
+          path: ${{ env.F5_CI_REPORT_DIR || format('{0}/ci-reports/{1}', runner.temp, github.job) }}
+          retention-days: 7
+          if-no-files-found: ignore
+      - uses: ./.github/actions/assert-clean-worktree
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
