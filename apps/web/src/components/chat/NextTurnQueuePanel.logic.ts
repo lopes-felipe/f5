@@ -192,7 +192,7 @@ export function describeQueueBlockedState(
     case "worktree_setup":
       return "Waiting for the worktree setup to finish.";
     case "worktree_setup_failed":
-      return fallback ?? "Worktree setup failed. Retry it, work locally, or discard.";
+      return fallback ?? "Worktree setup failed. Retry, continue in Local, or discard the message.";
     case "worktree_setup_cancelled":
       return fallback ?? "Worktree setup was cancelled.";
     case "worktree_setup_cancelled_kept":

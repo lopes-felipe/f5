@@ -24,10 +24,13 @@ import { COMPOSER_TRAY_PANEL_CLASS_NAME, type ComposerPanelVariant } from "./com
 export interface WorktreeSetupCardProps {
   readonly snapshot: WorktreeSetupSnapshot;
   readonly busy: boolean;
-  /** Stops a running setup, or discards a settled one. Null hides the action. */
+  /** Stops a running setup, or discards a settled one and its message. Null hides the action. */
   readonly onCancel: (() => void) | null;
   readonly onRetry: (() => void) | null;
+  /** Sends the waiting message in the project folder instead. */
   readonly onWorkLocally: (() => void) | null;
+  /** Runs the setup script again in a worktree the agent is already using. */
+  readonly onRerunScript?: (() => void) | null | undefined;
   readonly variant?: ComposerPanelVariant | undefined;
   /** Opens a collapsible (warnings-only) setup expanded, as in its status-strip popover. */
   readonly defaultExpanded?: boolean | undefined;
@@ -94,8 +97,9 @@ export function worktreeSetupHeadline(snapshot: WorktreeSetupSnapshot): string {
 
 /**
  * Whether the card still has something to say: setup is running, a settled
- * setup still holds its queued first turn (so Retry, Work locally and Discard
- * apply), or a finished setup carries a script failure or warning.
+ * setup still holds its queued first turn (so Retry, Continue in Local and
+ * Discard message apply), or a finished setup carries a script failure or
+ * warning, or is running its script again.
  */
 export function shouldShowWorktreeSetupCard(
   snapshot: WorktreeSetupSnapshot,
@@ -103,9 +107,22 @@ export function shouldShowWorktreeSetupCard(
 ): boolean {
   if (snapshot.phase === "running") return true;
   if (snapshot.phase === "done") {
-    return snapshot.stages.some((stage) => stage.status === "failed" || stage.status === "warning");
+    return snapshot.stages.some(
+      (stage) =>
+        stage.status === "failed" || stage.status === "warning" || stage.status === "running",
+    );
   }
   return context.firstTurnQueued;
+}
+
+/**
+ * A finished setup whose script failed, or was cut off by a restart, can run
+ * it again. The agent is not held: it is already working in the worktree.
+ */
+export function canRerunWorktreeSetupScript(snapshot: WorktreeSetupSnapshot): boolean {
+  if (snapshot.phase !== "done" || snapshot.worktreePath === null) return false;
+  const status = snapshot.stages.find((stage) => stage.id === "setup-script")?.status;
+  return status === "failed" || status === "warning";
 }
 
 /**
@@ -274,17 +291,22 @@ export function WorktreeSetupCard(props: WorktreeSetupCardProps) {
           {snapshot.error}
         </p>
       ) : null}
-      {props.onCancel || props.onRetry || props.onWorkLocally ? (
+      {props.onCancel || props.onRetry || props.onWorkLocally || props.onRerunScript ? (
         <div className="mt-2 flex flex-wrap gap-1.5">
           {props.onRetry ? (
+            <Button type="button" size="xs" disabled={props.busy} onClick={props.onRetry}>
+              Retry
+            </Button>
+          ) : null}
+          {props.onRerunScript ? (
             <Button
               type="button"
               size="xs"
               variant="outline"
               disabled={props.busy}
-              onClick={props.onRetry}
+              onClick={props.onRerunScript}
             >
-              Retry
+              Rerun setup script
             </Button>
           ) : null}
           {props.onWorkLocally ? (
@@ -295,7 +317,7 @@ export function WorktreeSetupCard(props: WorktreeSetupCardProps) {
               disabled={props.busy}
               onClick={props.onWorkLocally}
             >
-              Work locally
+              Continue in Local
             </Button>
           ) : null}
           {props.onCancel ? (
@@ -306,7 +328,7 @@ export function WorktreeSetupCard(props: WorktreeSetupCardProps) {
               disabled={props.busy}
               onClick={props.onCancel}
             >
-              {running ? "Cancel setup" : "Discard"}
+              {running ? "Cancel" : "Discard message"}
             </Button>
           ) : null}
         </div>

@@ -6,6 +6,8 @@ import { GitCore } from "../../git/Services/GitCore.ts";
 import { makeFakeGitCore } from "../../git/testDoubles.ts";
 import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
 import {
+  INTERRUPTED_SCRIPT_RERUN,
+  SETUP_SCRIPT_INTERRUPTED,
   WorktreePreparations,
   type PreparationPhase,
 } from "../../persistence/Services/WorktreePreparations.ts";
@@ -267,15 +269,59 @@ describe("durable thread worktree preparation", () => {
       }),
     );
   });
-  it("requires acknowledgment after restart during an async script", async () => {
+  it("leaves a background script that a restart cut off alone, without holding the turn, until it is asked for", async () => {
+    const { run, activity } = fixture({ phase: "setup_running" });
+    await run(({ service, receipts, exited }) =>
+      Effect.gen(function* () {
+        yield* service.startup;
+        expect((yield* receipts.latest(input.worktreePath))?.phase).toBe("setup_indeterminate");
+        // The next send prepares without a retry: the script may have had
+        // effects outside the worktree, so it is not run again on its own.
+        yield* service.prepare(input);
+        expect(startOwnedSetupScript).not.toHaveBeenCalled();
+        const reported = (yield* receipts.latest(input.worktreePath))!;
+        expect(reported.phase).toBe("setup_failed");
+        expect(reported.error).toBe(SETUP_SCRIPT_INTERRUPTED);
+        expect(activity).toHaveBeenCalledWith(
+          expect.objectContaining({
+            activity: expect.objectContaining({
+              tone: "error",
+              payload: expect.objectContaining({ error: SETUP_SCRIPT_INTERRUPTED }),
+            }),
+          }),
+        );
+        // A reported failure does not hold later sends either.
+        yield* service.prepare(input);
+        expect(startOwnedSetupScript).not.toHaveBeenCalled();
+        // Asking for it acknowledges what the first run may have done.
+        yield* service.prepare({ ...input, retry: true });
+        expect(startOwnedSetupScript).toHaveBeenCalledTimes(1);
+        yield* Deferred.succeed(exited, 0);
+        yield* waitForPhase(receipts, "completed");
+      }),
+    );
+  });
+  it("runs a script the agent waits for again after a restart, but only once", async () => {
     await fixture({ phase: "setup_running", async: false }).run(({ service, receipts, exited }) =>
       Effect.gen(function* () {
         yield* service.startup;
         expect((yield* receipts.latest(input.worktreePath))?.phase).toBe("setup_indeterminate");
-        expect((yield* service.prepare(input).pipe(Effect.exit))._tag).toBe("Failure");
+        // The agent needs what this script produces, so the send runs it again.
+        const preparing = yield* service.prepare(input).pipe(Effect.forkChild);
+        yield* waitForPhase(receipts, "setup_running");
+        expect(startOwnedSetupScript).toHaveBeenCalledTimes(1);
+        expect((yield* receipts.latest(input.worktreePath))?.result).toBe(INTERRUPTED_SCRIPT_RERUN);
+        // A second restart, in the middle of that rerun. The mark survives it.
+        yield* service.startup;
+        yield* Fiber.interrupt(preparing);
+        const interruptedAgain = (yield* receipts.latest(input.worktreePath))!;
+        expect(interruptedAgain.phase).toBe("setup_indeterminate");
+        expect(interruptedAgain.result).toBe(INTERRUPTED_SCRIPT_RERUN);
+        // Not a third run: it is reported, and the turn is not held.
+        yield* service.prepare(input);
+        expect(startOwnedSetupScript).toHaveBeenCalledTimes(1);
+        expect((yield* receipts.latest(input.worktreePath))?.phase).toBe("setup_failed");
         yield* Deferred.succeed(exited, 0);
-        yield* service.prepare({ ...input, retry: true });
-        expect((yield* receipts.latest(input.worktreePath))?.phase).toBe("completed");
       }),
     );
   });

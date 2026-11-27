@@ -774,6 +774,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.worktreeSetupCancel, WorktreeSetupActionInput),
   tagRequestBody(WS_METHODS.worktreeSetupRetry, WorktreeSetupActionInput),
   tagRequestBody(WS_METHODS.worktreeSetupWorkLocally, WorktreeSetupActionInput),
+  tagRequestBody(WS_METHODS.worktreeSetupRerunScript, WorktreeSetupActionInput),
   tagRequestBody(WS_METHODS.globalSearchQuery, GlobalSearchQueryInput),
   tagRequestBody(WS_METHODS.workflowPlatformListTemplates, Schema.Struct({})),
   WorkflowPlatformCreateRunInput.mapMembers(

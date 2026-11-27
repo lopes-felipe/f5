@@ -197,6 +197,7 @@ export const WS_METHODS = {
   worktreeSetupCancel: "worktreeSetup.cancel",
   worktreeSetupRetry: "worktreeSetup.retry",
   worktreeSetupWorkLocally: "worktreeSetup.workLocally",
+  worktreeSetupRerunScript: "worktreeSetup.rerunScript",
 
   // Cross-project full-text search
   globalSearchQuery: "globalSearch.query",

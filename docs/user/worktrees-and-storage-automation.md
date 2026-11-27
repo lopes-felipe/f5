@@ -25,8 +25,22 @@ submodules, running the project setup script and starting the agent. The message
 checkout and submodules are ready. Setup scripts run in the background unless you enable **Agent
 waits**; a failed script is reported on the card and the agent still starts.
 
-From the card you can **Cancel**, **Retry** after a failure, **Work locally** to send the message
-in the project root instead, or **Discard** a failed setup to get your message back as a draft.
+While setup runs, the card offers **Cancel**. If setup fails, it offers **Retry**, **Continue in
+Local** to send the message in the project folder instead, and **Discard message** to get your
+message back as a draft.
+
+Setup carries on by itself where it can:
+
+- If F5 restarts before the agent started, setup resumes from where it stopped. Checkout and
+  submodules that already finished are not repeated.
+- A background setup script that a restart cut off is not run again, because F5 cannot tell how
+  far it got. The card marks it "interrupted by a restart", the agent starts regardless, and
+  **Rerun setup script** runs it again when you want. With **Agent waits** on, F5 reruns the
+  script once by itself; a second interruption fails the setup and waits for **Retry**.
+- **Rerun setup script** also appears after a setup script fails. It runs the script in the
+  worktree the agent is already using, without holding the thread.
+- If another F5 window is using the repository, checkout waits and tries again up to three
+  times before the setup fails.
 
 ## Automatic cleanup
 

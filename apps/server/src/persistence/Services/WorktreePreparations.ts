@@ -24,6 +24,15 @@ export const WorktreeGroupPlan = Schema.Struct({
 });
 export type WorktreeGroupPlan = typeof WorktreeGroupPlan.Type;
 
+/** What a receipt and the timeline say about a setup script that a restart cut off. */
+export const SETUP_SCRIPT_INTERRUPTED =
+  "The setup script was interrupted by a restart and was not run again.";
+/**
+ * `result` of a receipt whose script is being run again, unasked, after a
+ * restart cut it off. A second interruption finds the mark and does not rerun.
+ */
+export const INTERRUPTED_SCRIPT_RERUN = '{"rerun":true}';
+
 export type PreparationPhase =
   | "allocated"
   | "checkout_created"

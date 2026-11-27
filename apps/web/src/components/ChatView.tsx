@@ -460,7 +460,11 @@ import { UserInputAttachments } from "./chat/UserInputAttachments";
 import { AsyncUserInputPanel } from "./chat/AsyncUserInputPanel";
 import { ElicitationPanel } from "./chat/ElicitationPanel";
 import { NextTurnQueuePanel, NextTurnQueueSync } from "./chat/NextTurnQueuePanel";
-import { shouldShowWorktreeSetupCard, WorktreeSetupCard } from "./chat/WorktreeSetupCard";
+import {
+  canRerunWorktreeSetupScript,
+  shouldShowWorktreeSetupCard,
+  WorktreeSetupCard,
+} from "./chat/WorktreeSetupCard";
 import { useWorktreeSetup } from "../hooks/useWorktreeSetup";
 import { runFanOut, toggleFanOutModel, type FanOutAttempt, type FanOutModel } from "./chat/fanOut";
 
@@ -2922,7 +2926,7 @@ export default memo(function ChatView({
   const [worktreeSetupBusy, setWorktreeSetupBusy] = useState(false);
   const createProjectDraftThread = useCreateProjectBackedDraftThread();
   const runWorktreeSetupAction = useCallback(
-    async (action: "cancel" | "retry" | "workLocally") => {
+    async (action: "cancel" | "retry" | "workLocally" | "rerunScript") => {
       const api = readNativeApi();
       if (!api || !worktreeSetup) return;
       const setupThreadId = worktreeSetup.threadId;
@@ -8415,10 +8419,18 @@ export default memo(function ChatView({
             ? () => void runWorktreeSetupAction("retry")
             : null
         }
+        // A running setup offers only Cancel; the other ways out follow a setup that stopped.
         onWorkLocally={
-          worktreeSetup.agentStarted || worktreeSetup.phase === "done"
+          worktreeSetup.agentStarted ||
+          worktreeSetup.phase === "done" ||
+          worktreeSetup.phase === "running"
             ? null
             : () => void runWorktreeSetupAction("workLocally")
+        }
+        onRerunScript={
+          canRerunWorktreeSetupScript(worktreeSetup)
+            ? () => void runWorktreeSetupAction("rerunScript")
+            : null
         }
       />
     ) : null;

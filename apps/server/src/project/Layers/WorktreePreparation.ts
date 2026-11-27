@@ -9,7 +9,9 @@ import { canonicalWorktreePath } from "../../git/worktreePaths.ts";
 import { NextTurnQueueStore } from "../../nextTurnQueue/Services/NextTurnQueueStore.ts";
 import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
 import {
+  INTERRUPTED_SCRIPT_RERUN,
   PreparationError,
+  SETUP_SCRIPT_INTERRUPTED,
   WorktreePreparations,
   needsPreparation,
 } from "../../persistence/Services/WorktreePreparations.ts";
@@ -133,15 +135,6 @@ export const makeWorktreePreparationService = Effect.gen(function* () {
               ),
             );
             if (!receipt || receipt.phase === "completed" || receipt.phase === "skipped") return;
-            if (receipt.phase === "setup_indeterminate" && !input.retry)
-              return yield* new PreparationError({
-                message:
-                  receipt.error ??
-                  "Explicitly retry interrupted setup; scripts may have external effects.",
-                path,
-                operationId: receipt.operationId,
-                recoveryRequired: true,
-              });
             if (receipt.phase === "setup_failed" && !input.retry) return; // Reported failure does not block a turn.
             if (receipt.phase === "setup_running")
               return yield* new PreparationError({
@@ -170,17 +163,7 @@ export const makeWorktreePreparationService = Effect.gen(function* () {
                 path,
                 recoveryRequired: true,
               });
-            receipt = yield* withWorktreeLifecycleLock(
-              path,
-              receipts.update(receipt, {
-                phase: "setup_running",
-                error: null,
-                result: null,
-                setupIdentity: script?.command ?? null,
-              }),
-            );
             const operationId = receipt.operationId;
-            preparingOperationId = operationId;
             const outputTail: string[] = [];
             const report = (error: string | null, started = false) =>
               Effect.gen(function* () {
@@ -217,6 +200,37 @@ export const makeWorktreePreparationService = Effect.gen(function* () {
                   createdAt,
                 });
               });
+            // A restart cut the script off, and nobody asked for it to run again.
+            // It may have had effects outside the worktree, so a background
+            // script is left alone: the failure is reported and does not hold
+            // the turn. A script the agent waits for is run again, once,
+            // because the agent needs what it produces.
+            const interruptedRerun =
+              receipt.phase === "setup_indeterminate" &&
+              !input.retry &&
+              script?.async === false &&
+              receipt.result !== INTERRUPTED_SCRIPT_RERUN;
+            if (receipt.phase === "setup_indeterminate" && !input.retry && !interruptedRerun) {
+              yield* withWorktreeLifecycleLock(
+                path,
+                receipts.update(receipt, {
+                  phase: "setup_failed",
+                  error: SETUP_SCRIPT_INTERRUPTED,
+                }),
+              );
+              yield* report(SETUP_SCRIPT_INTERRUPTED);
+              return;
+            }
+            receipt = yield* withWorktreeLifecycleLock(
+              path,
+              receipts.update(receipt, {
+                phase: "setup_running",
+                error: null,
+                result: interruptedRerun ? INTERRUPTED_SCRIPT_RERUN : null,
+                setupIdentity: script?.command ?? null,
+              }),
+            );
+            preparingOperationId = operationId;
             const finish = (result: import("effect").Exit.Exit<void, unknown>) =>
               Effect.gen(function* () {
                 const interrupted =

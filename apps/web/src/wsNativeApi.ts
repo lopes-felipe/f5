@@ -1008,6 +1008,7 @@ export function createWsNativeApi(): NativeApi {
       cancel: requestMethod(WS_METHODS.worktreeSetupCancel),
       retry: requestMethod(WS_METHODS.worktreeSetupRetry),
       workLocally: requestMethod(WS_METHODS.worktreeSetupWorkLocally),
+      rerunScript: requestMethod(WS_METHODS.worktreeSetupRerunScript),
       onUpdated: (callback) => {
         worktreeSetupUpdatedListeners.add(callback);
         return () => {
