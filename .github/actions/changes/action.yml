@@ -5,7 +5,8 @@ inputs:
     description: >-
       App whose sources this job's checks never read: web (apps/web and apps/marketing)
       or server (apps/server). A pull request changing only that app skips the job.
-      Empty or unknown values run the job for every code change.
+      Empty or unknown values run the job for every code change. GitHub compares
+      expression strings without regard to case, so `Web` means `web`.
     default: ""
 outputs:
   heavy:
@@ -28,9 +29,11 @@ runs:
     # fixture serves the real asset headers); scripts/ci-change-scopes.test.ts keeps
     # the list complete. Evaluated in a step because the inputs context is only
     # guaranteed there. The job is skipped only for a known app whose filters found
-    # nothing it reads.
+    # nothing it reads. The filter reads the pull request files API, which stops at
+    # 3,000 files; a pull request that large could hide a path outside the app, so
+    # it runs every job.
     - id: verdict
       shell: bash
       env:
-        HEAVY: ${{ github.event_name != 'pull_request' || (steps.paths.outputs.code == 'true' && !((inputs.unaffected_by == 'web' && steps.paths.outputs.outside_web != 'true') || (inputs.unaffected_by == 'server' && steps.paths.outputs.outside_server != 'true' && steps.paths.outputs.server_read_by_web != 'true'))) }}
+        HEAVY: ${{ github.event_name != 'pull_request' || github.event.pull_request.changed_files >= 3000 || (steps.paths.outputs.code == 'true' && !((inputs.unaffected_by == 'web' && steps.paths.outputs.outside_web != 'true') || (inputs.unaffected_by == 'server' && steps.paths.outputs.outside_server != 'true' && steps.paths.outputs.server_read_by_web != 'true'))) }}
       run: echo "heavy=$HEAVY" >> "$GITHUB_OUTPUT"
