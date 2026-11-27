@@ -20,6 +20,28 @@ describe("MCP feature data", () => {
       }).GitHub?.enabled,
     ).toBe(false);
   });
+  it("layers approved repository servers between common and project, with opt-outs", () => {
+    const merged = mergeMcpServerLayers({
+      common: {
+        Docs: { type: "stdio", command: "common-docs" },
+        search: { type: "stdio", command: "common-search" },
+      },
+      repository: {
+        docs: { type: "stdio", command: "repo-docs" },
+        lint: { type: "stdio", command: "repo-lint" },
+        Build: { type: "stdio", command: "repo-build" },
+      },
+      project: { build: { type: "stdio", command: "project-build" } },
+      disabledCommon: ["LINT"],
+    });
+    // A repository server replaces a common one of any spelling; a project one replaces it.
+    expect(merged).toEqual({
+      search: { type: "stdio", command: "common-search" },
+      docs: { type: "stdio", command: "repo-docs" },
+      lint: { type: "stdio", command: "repo-lint", enabled: false },
+      build: { type: "stdio", command: "project-build" },
+    });
+  });
   it("imports lossless TOML with inline tables, multiline strings, arrays, and OAuth inheritance", () => {
     const parsed = parseMcpImport(`mcp_oauth_callback_port = 3140
 [mcp_servers.remote]

@@ -1,5 +1,6 @@
 import { PROVIDER_SEND_TURN_MAX_INPUT_CHARS, type ThreadId } from "@t3tools/contracts";
 import { isImageOnlyBootstrapPrompt } from "@t3tools/shared/composerSendText";
+import { stripTrailingMcpResourceContext } from "@t3tools/shared/mcpComposer";
 import { getMessageTextMaxChars } from "@t3tools/shared/providerInput";
 import { extractTrailingAttachedFiles } from "./attachedFiles";
 
@@ -40,8 +41,19 @@ export interface ParsedTerminalContextEntry {
 
 export const INLINE_TERMINAL_CONTEXT_PLACEHOLDER = "\uFFFC";
 
-const TRAILING_TERMINAL_CONTEXT_BLOCK_PATTERN =
-  /\n*<terminal_context>\n([\s\S]*?)\n<\/terminal_context>\s*$/;
+const TERMINAL_CONTEXT_OPEN = "<terminal_context>\n";
+const TRAILING_TERMINAL_CONTEXT_CLOSE_PATTERN = /\n<\/terminal_context>\s*$/;
+
+/**
+ * Where the trailing terminal block opens, or -1. Its own lines are headers (`- …:`),
+ * indented body lines or blank, never a bare tag, so it opens at the last bare tag before
+ * the closing one; an earlier tag (such as one inside resource text) is left alone.
+ */
+function trailingTerminalContextStart(head: string): number {
+  const inner = head.lastIndexOf(`\n${TERMINAL_CONTEXT_OPEN}`);
+  if (inner >= 0) return inner + 1;
+  return head.startsWith(TERMINAL_CONTEXT_OPEN) ? 0 : -1;
+}
 
 export function normalizeTerminalContextText(text: string): string {
   return text.replace(/\r\n/g, "\n").replace(/^\n+|\n+$/g, "");
@@ -227,8 +239,12 @@ export function appendTerminalContextsToPrompt(
 }
 
 export function extractTrailingTerminalContexts(prompt: string): ExtractedTerminalContexts {
-  const match = TRAILING_TERMINAL_CONTEXT_BLOCK_PATTERN.exec(prompt);
-  if (!match) {
+  const close = TRAILING_TERMINAL_CONTEXT_CLOSE_PATTERN.exec(prompt);
+  // The block's newline before its closing tag also ends an empty body.
+  const head = close ? prompt.slice(0, close.index + 1) : "";
+  const start = close ? trailingTerminalContextStart(head) : -1;
+  // The opening tag's newline cannot also be the closing tag's.
+  if (!close || start < 0 || start + TERMINAL_CONTEXT_OPEN.length > head.length - 1) {
     return {
       promptText: prompt,
       contextCount: 0,
@@ -236,8 +252,10 @@ export function extractTrailingTerminalContexts(prompt: string): ExtractedTermin
       contexts: [],
     };
   }
-  const promptText = prompt.slice(0, match.index).replace(/\n+$/, "");
-  const parsedContexts = parseTerminalContextEntries(match[1] ?? "");
+  const promptText = prompt.slice(0, start).replace(/\n+$/, "");
+  const parsedContexts = parseTerminalContextEntries(
+    head.slice(start + TERMINAL_CONTEXT_OPEN.length, -1),
+  );
   return {
     promptText,
     contextCount: parsedContexts.length,
@@ -257,13 +275,15 @@ export function deriveDisplayedUserMessageState(prompt: string): DisplayedUserMe
     isImageOnlyBootstrapPrompt(prompt) ? "" : prompt,
   );
   const extractedContexts = extractTrailingTerminalContexts(extractedAttachedFiles.promptText);
+  // MCP resource contents read on send stay out of the bubble; the chips name them.
+  const visibleText = stripTrailingMcpResourceContext(extractedContexts.promptText);
   const copyText = buildDisplayedUserMessageCopyText({
-    visibleText: extractedContexts.promptText,
+    visibleText,
     contexts: extractedContexts.contexts,
     attachedFilePaths: extractedAttachedFiles.filePaths,
   });
   return {
-    visibleText: extractedContexts.promptText,
+    visibleText,
     copyText,
     contextCount: extractedContexts.contextCount,
     previewTitle: extractedContexts.previewTitle,

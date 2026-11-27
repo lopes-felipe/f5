@@ -289,6 +289,21 @@ import type {
   McpGetThreadServersRequest,
   McpSetThreadServerEnabledRequest,
   McpThreadServersResult,
+  McpListComposerPromptsRequest,
+  McpListComposerPromptsResult,
+  McpGetComposerPromptRequest,
+  McpGetComposerPromptResult,
+  McpCompleteComposerPromptRequest,
+  McpCompleteComposerPromptResult,
+  McpListComposerResourcesRequest,
+  McpListComposerResourcesResult,
+  McpReadComposerResourceRequest,
+  McpReadComposerResourceResult,
+  McpSearchCatalogRequest,
+  McpSearchCatalogResult,
+  McpGetRepositoryServersRequest,
+  McpSetRepositoryServerTrustRequest,
+  McpRepositoryServersResult,
   McpGetProviderStatusRequest,
   McpGetEffectiveConfigRequest,
   McpGetProjectConfigRequest,
@@ -1381,6 +1396,33 @@ export interface NativeApi {
     setThreadServerEnabled: (
       input: McpSetThreadServerEnabledRequest,
     ) => Promise<McpThreadServersResult>;
+    listComposerPrompts: (
+      input: McpListComposerPromptsRequest,
+      context?: NativeRequestContext,
+    ) => Promise<McpListComposerPromptsResult>;
+    getComposerPrompt: (input: McpGetComposerPromptRequest) => Promise<McpGetComposerPromptResult>;
+    completeComposerPrompt: (
+      input: McpCompleteComposerPromptRequest,
+      context?: NativeRequestContext,
+    ) => Promise<McpCompleteComposerPromptResult>;
+    listComposerResources: (
+      input: McpListComposerResourcesRequest,
+      context?: NativeRequestContext,
+    ) => Promise<McpListComposerResourcesResult>;
+    readComposerResource: (
+      input: McpReadComposerResourceRequest,
+    ) => Promise<McpReadComposerResourceResult>;
+    searchCatalog: (
+      input: McpSearchCatalogRequest,
+      context?: NativeRequestContext,
+    ) => Promise<McpSearchCatalogResult>;
+    getRepositoryServers: (
+      input: McpGetRepositoryServersRequest,
+      context?: NativeRequestContext,
+    ) => Promise<McpRepositoryServersResult>;
+    setRepositoryServerTrust: (
+      input: McpSetRepositoryServerTrustRequest,
+    ) => Promise<McpRepositoryServersResult>;
     onStatusUpdated: (callback: (payload: McpStatusUpdatedPayload) => void) => () => void;
   };
   storage: {

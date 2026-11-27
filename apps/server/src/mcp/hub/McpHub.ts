@@ -19,6 +19,7 @@ import type {
 } from "@t3tools/contracts";
 import { stableMcpServersJson } from "@t3tools/shared/mcpConfig";
 import { filterEnabledMcpServers } from "@t3tools/shared/mcpTranslation";
+import { mcpServerNameKey } from "@t3tools/shared/mcpValidation";
 import {
   describeMcpInterpolationSkip,
   interpolateMcpServers,
@@ -188,15 +189,23 @@ export interface McpHubShape {
     threadId: ThreadId,
     serverName: string,
   ) => McpHubSessionServer | undefined;
+  /**
+   * Every hub server a conversation's live session uses, by name, for the composer's
+   * prompts and resources. Empty when the conversation has no live session.
+   */
+  readonly sessionServers?: (threadId: ThreadId) => ReadonlyMap<string, McpHubComposerServer>;
   /** Projects with live sessions (`undefined` for sessions without a project). */
   readonly attachedProjects?: () => ReadonlyArray<ProjectId | undefined>;
   /**
    * Applies saved tool policy to every live session of `projectId` (or of no project),
    * without Apply or a restart: Ask and Allow changes take effect on the next call.
+   * Servers named in `withdrawn` (`.mcp.json` name keys no longer approved) that the
+   * saved config no longer has are cut off from those sessions at once.
    */
   readonly refreshToolPolicies?: (
     projectId: ProjectId | undefined,
     servers: McpProjectServersConfig,
+    withdrawn?: ReadonlyArray<string>,
   ) => void;
   /**
    * The account environment of a live session using the server (in the project when
@@ -213,6 +222,12 @@ export interface McpHubShape {
 export type McpHubSessionServer = Pick<
   McpHubSlot,
   "binding" | "appListTools" | "appCallTool" | "appReadResource"
+>;
+
+/** One conversation's hub server, as the composer uses it. */
+export type McpHubComposerServer = Pick<
+  McpHubSlot,
+  "listPrompts" | "getPrompt" | "complete" | "listResources" | "readResource"
 >;
 
 export class McpHub extends ServiceMap.Service<McpHub, McpHubShape>()("t3/mcp/hub/McpHub") {}
@@ -289,6 +304,14 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
     released.add(entry.upstream);
   };
   const slots = new Map<string, McpHubSlot>();
+  /**
+   * Per live slot, by slot id: the connection hash it is bound to (`undefined` once
+   * unbound) and a way to unbind it.
+   */
+  const detachers = new Map<
+    string,
+    { readonly boundHash: () => string | undefined; readonly detach: () => void }
+  >();
   const upstreams = new Map<string, UpstreamEntry>();
   const changed = new Set<string>();
   let flushTimer: ReturnType<typeof setTimeout> | undefined;
@@ -472,6 +495,14 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
       const record: AttachedSlot = { slot, entry: undefined, hash: hashDefinition(definition) };
       bindEntry(input, record, entry);
       records.set(serverName, record);
+      detachers.set(id, {
+        boundHash: () => (record.entry ? record.hash : undefined),
+        detach: () => {
+          if (disposed || !record.entry) return;
+          unbindEntry(record);
+          record.slot.rebind(undefined);
+        },
+      });
       const endpoint: McpHubEndpoint = {
         serverName,
         url: `${listener!.baseUrl}${MCP_HUB_PATH_PREFIX}${id}`,
@@ -578,6 +609,7 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
         await Promise.allSettled(
           [...records.values()].map(async (record) => {
             slots.delete(record.slot.id);
+            detachers.delete(record.slot.id);
             const entry = record.entry;
             if (entry) entry.users.delete(record.slot.id);
             await record.slot.close();
@@ -657,6 +689,7 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
     if (flushTimer) clearTimeout(flushTimer);
     const allSlots = [...slots.values()];
     slots.clear();
+    detachers.clear();
     const allUpstreams = [...upstreams.values()];
     upstreams.clear();
     await Promise.allSettled(allSlots.map((slot) => slot.close()));
@@ -685,6 +718,14 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
     return match;
   };
 
+  const sessionServers = (threadId: ThreadId) => {
+    const matches = new Map<string, McpHubSlot>();
+    // Slots are kept in issue order, so the newest bound endpoint per name wins.
+    for (const slot of slots.values())
+      if (slot.threadId === threadId && slot.upstream) matches.set(slot.serverName, slot);
+    return matches;
+  };
+
   const attachedProjects = () => [
     ...new Set([...slots.values()].map((slot) => slot.sessionProjectId)),
   ];
@@ -692,11 +733,26 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
   const refreshToolPolicies = (
     projectId: ProjectId | undefined,
     servers: McpProjectServersConfig,
+    withdrawn: ReadonlyArray<string> = [],
   ) => {
-    for (const slot of slots.values()) {
+    const withdrawnKeys = new Set(withdrawn.map(mcpServerNameKey));
+    for (const slot of [...slots.values()]) {
       if (slot.sessionProjectId !== projectId) continue;
       const definition = servers[slot.serverName];
-      if (definition) slot.setToolPolicy(definition);
+      const binding = detachers.get(slot.id);
+      // A revoked or changed repository server is a trust decision, not a connection
+      // edit: it stops serving live sessions instead of waiting for Apply. A slot with a
+      // withdrawn name keeps serving only while it is bound to exactly the saved
+      // definition (an applied project override); one still bound to the repository's
+      // definition is cut off even when an unapplied override or a common server now
+      // has the name.
+      if (
+        binding &&
+        withdrawnKeys.has(mcpServerNameKey(slot.serverName)) &&
+        (!definition || binding.boundHash() !== hashDefinition(definition))
+      )
+        binding.detach();
+      else if (definition) slot.setToolPolicy(definition);
     }
   };
 
@@ -718,6 +774,7 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
     oauthStorage: options.oauthStorage,
     reconnectOAuth,
     sessionServer,
+    sessionServers,
     attachedProjects,
     refreshToolPolicies,
     accountEnvironment,
@@ -749,10 +806,15 @@ export const McpHubLive = Layer.effect(
     if (bus && configService) {
       const savedServers = (projectId: ProjectId | undefined) =>
         projectId
-          ? configService
-              .readEffectiveStoredConfig(projectId)
-              .pipe(Effect.map((config) => config.servers))
-          : configService.readCommonStoredConfig().pipe(Effect.map((config) => config.servers));
+          ? configService.readEffectiveStoredConfig(projectId).pipe(
+              Effect.map((config) => ({
+                servers: config.servers,
+                withdrawn: config.withdrawnRepositoryServers ?? [],
+              })),
+            )
+          : configService
+              .readCommonStoredConfig()
+              .pipe(Effect.map((config) => ({ servers: config.servers, withdrawn: [] })));
       const refresh = (event: McpStatusUpdatedPayload) =>
         Effect.forEach(
           (hub.attachedProjects?.() ?? []).filter(
@@ -762,7 +824,9 @@ export const McpHubLive = Layer.effect(
           ),
           (projectId) =>
             savedServers(projectId).pipe(
-              Effect.map((servers) => hub.refreshToolPolicies?.(projectId, servers)),
+              Effect.map(({ servers, withdrawn }) =>
+                hub.refreshToolPolicies?.(projectId, servers, withdrawn),
+              ),
               Effect.catch(() => Effect.void),
             ),
           { discard: true },

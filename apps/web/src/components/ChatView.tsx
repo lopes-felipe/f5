@@ -140,6 +140,7 @@ import {
 } from "@t3tools/contracts";
 import {
   getMessageTextLengthIssue,
+  getMessageTextMaxChars,
   getThreadReferenceLimitIssue,
 } from "@t3tools/shared/providerInput";
 import { formatByteSize } from "@t3tools/shared/byteSize";
@@ -484,6 +485,27 @@ import { EMPTY_QUEUE_THREAD_STATE, useNextTurnQueueStore } from "../nextTurnQueu
 const EMPTY_FAN_OUT: ReadonlyArray<FanOutModel> = [];
 
 import { ComposerCommandItem } from "./chat/ComposerCommandMenu";
+import { McpPromptDialog, type McpPromptRequest } from "./chat/composer/McpPromptDialog";
+import { MCP_COMPOSER_RESOURCE_TEXT_BYTES } from "@t3tools/contracts";
+import {
+  fitMcpResourceContext,
+  formatMcpResourceContext,
+  formatMcpResourceReference,
+  type McpResourceContextPart,
+  neutralizeMcpResourceReferences,
+  uniqueMcpResourceReferences,
+} from "@t3tools/shared/mcpComposer";
+import {
+  mcpComposerPromptsQueryOptions,
+  mcpComposerResourcesQueryOptions,
+} from "../lib/mcpReactQuery";
+import {
+  isMcpImageResource,
+  mcpPromptMenuItems,
+  mcpResourceImageFiles,
+  mcpResourceMenuItems,
+  mcpResourceTextParts,
+} from "../lib/mcpComposerMenu";
 
 import { getComposerReasoningStep } from "./chat/composerProviderState";
 
@@ -837,6 +859,22 @@ export default memo(function ChatView({
     return state.isOpen && state.surfaces.some((surface) => surface.id === "plan");
   });
   const [workflowImplementDialogOpen, setWorkflowImplementDialogOpen] = useState(false);
+  const [mcpPromptRequest, setMcpPromptRequest] = useState<McpPromptRequest | null>(null);
+  // Set every render; the memoized menu handler calls through these.
+  const mcpComposerActionsRef = useRef<{
+    insertMcpPrompt: (
+      request: McpPromptRequest,
+      values: Record<string, string>,
+    ) => Promise<boolean>;
+    attachMcpResourceImage: (serverName: string, uri: string, label: string) => Promise<void>;
+  } | null>(null);
+  const readComposerSnapshotRef = useRef<() => { value: string; expandedCursor: number }>(() => ({
+    value: "",
+    expandedCursor: 0,
+  }));
+  const applyPromptReplacementRef = useRef<
+    (rangeStart: number, rangeEnd: number, replacement: string) => boolean
+  >(() => false);
 
   // Tracks whether the user explicitly dismissed the sidebar for the active turn.
   const planSidebarDismissedForTurnRef = useRef<string | null>(null);
@@ -2733,6 +2771,19 @@ export default memo(function ChatView({
       limit: 80,
     }),
   );
+  // MCP prompts and resources come from the conversation's live hub servers, read on demand.
+  const mcpComposerPromptsQuery = useQuery(
+    mcpComposerPromptsQueryOptions({
+      threadId: isServerThread ? threadId : null,
+      enabled: composerTriggerKind === "slash-command" && !composerTrigger?.inline,
+    }),
+  );
+  const mcpComposerResourcesQuery = useQuery(
+    mcpComposerResourcesQueryOptions({
+      threadId: isServerThread ? threadId : null,
+      enabled: isPathTrigger,
+    }),
+  );
   const composerMenuItems = useMemo<ComposerCommandItem[]>(() => {
     if (!composerTrigger || (composerTrigger.kind === "skill" && selectedProvider !== "codex"))
       return [];
@@ -2752,6 +2803,7 @@ export default memo(function ChatView({
             }) as ComposerCommandItem,
         ),
         ...composerModelMentionItems(providerStatuses, composerTrigger.query),
+        ...mcpResourceMenuItems(mcpComposerResourcesQuery.data?.servers, composerTrigger.query),
       ];
     }
 
@@ -2765,7 +2817,10 @@ export default memo(function ChatView({
     });
     return composerTrigger.kind === "skill" || composerTrigger.inline
       ? items.filter((item) => item.type === "skill")
-      : items;
+      : [
+          ...items,
+          ...mcpPromptMenuItems(mcpComposerPromptsQuery.data?.servers, composerTrigger.query),
+        ];
   }, [
     activeProject?.skills,
     selectedProviderSnapshot?.skills,
@@ -2774,6 +2829,8 @@ export default memo(function ChatView({
     selectedProvider,
     workspaceEntriesQuery.data,
     providerStatuses,
+    mcpComposerPromptsQuery.data,
+    mcpComposerResourcesQuery.data,
   ]);
   const dismissedComposerPromptRef = useRef<string | null>(null);
   const composerMenuOpen =
@@ -4746,6 +4803,72 @@ export default memo(function ChatView({
     setThreadError(destinationThreadId, latestFailure?.message ?? null);
   };
 
+  /** Fetches an MCP prompt and puts its text at the caret for review; it is never sent from here. */
+  const insertMcpPrompt = async (
+    request: McpPromptRequest,
+    values: Record<string, string>,
+  ): Promise<boolean> => {
+    try {
+      const result = await ensureNativeApi().mcp.getComposerPrompt({
+        threadId,
+        serverName: request.serverName,
+        name: request.prompt.name,
+        ...(Object.keys(values).length > 0 ? { arguments: values } : {}),
+      });
+      if (result.omitted > 0)
+        toastManager.add({
+          type: "warning",
+          title: `Left out ${result.omitted === 1 ? "one part" : `${result.omitted} parts`} of the prompt`,
+          description: "Images, audio and binary content cannot go into the composer.",
+        });
+      if (!result.text.trim()) {
+        toastManager.add({ type: "warning", title: "The prompt returned no text." });
+        return true;
+      }
+      const snapshot = readComposerSnapshotRef.current();
+      const at = snapshot.expandedCursor;
+      const before = snapshot.value.slice(0, at);
+      const separator = before.length > 0 && !/\s$/.test(before) ? " " : "";
+      // A server's prompt can never make F5 read another resource on send.
+      return applyPromptReplacementRef.current(
+        at,
+        at,
+        `${separator}${neutralizeMcpResourceReferences(result.text)}`,
+      );
+    } catch (error) {
+      toastManager.add({
+        type: "error",
+        title: `Could not get /${request.serverName}:${request.prompt.name}`,
+        description: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    }
+  };
+
+  /** An image resource goes through the image attachment path as soon as it is chosen. */
+  const attachMcpResourceImage = async (serverName: string, uri: string, label: string) => {
+    try {
+      const read = await ensureNativeApi().mcp.readComposerResource({ threadId, serverName, uri });
+      const files = mcpResourceImageFiles(read, label);
+      if (files.length === 0) {
+        toastManager.add({
+          type: "warning",
+          title: "This resource has no image F5 can attach.",
+          description: "Only PNG, JPEG, GIF and WebP images are attached.",
+        });
+        return;
+      }
+      await addComposerImages(files);
+    } catch (error) {
+      toastManager.add({
+        type: "error",
+        title: `Could not read ${label} from ${serverName}`,
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+  mcpComposerActionsRef.current = { insertMcpPrompt, attachMcpResourceImage };
+
   const addComposerFileAttachments = (files: File[]) => {
     if (!activeThreadId || !activeProject || files.length === 0) return;
     if (isPendingTurnDispatchBlocked) return;
@@ -5589,6 +5712,46 @@ export default memo(function ChatView({
         return;
       }
     }
+    // Chosen MCP resources are read now, so the message carries their current contents.
+    // Side chats never carry resource context, so they skip the read (and its failures).
+    let mcpResourceParts: McpResourceContextPart[] = [];
+    const mcpResourceReferences = sideChatCommand ? [] : uniqueMcpResourceReferences(promptForSend);
+    if (mcpResourceReferences.length > 0) {
+      try {
+        const reads = await Promise.all(
+          mcpResourceReferences.map(async (reference) =>
+            mcpResourceTextParts(
+              reference.serverName,
+              await api.mcp.readComposerResource({
+                threadId: activeThread.id,
+                serverName: reference.serverName,
+                uri: reference.uri,
+              }),
+            ),
+          ),
+        );
+        mcpResourceParts = fitMcpResourceContext(
+          reads.flatMap((read) => read.parts),
+          MCP_COMPOSER_RESOURCE_TEXT_BYTES,
+        );
+        const omitted = reads.reduce((total, read) => total + read.omitted, 0);
+        if (omitted > 0)
+          toastManager.add({
+            type: "warning",
+            title: `Left out ${omitted === 1 ? "one binary part" : `${omitted} binary parts`} of the MCP resources`,
+            description:
+              "Only text is added to the message. Choose an image resource to attach it.",
+          });
+      } catch (error) {
+        toastManager.add({
+          type: "error",
+          title: "An MCP resource could not be read.",
+          description: error instanceof Error ? error.message : "Try sending again.",
+        });
+        sendInFlightRef.current = false;
+        return;
+      }
+    }
     const threadIdForSend = activeThread.id;
     const isFirstMessage = !isServerThread || activeThread.messages.length === 0;
     if (!sideChatCommand && isServerThread && !isFirstMessage && activeThread.branch && gitCwd) {
@@ -5702,14 +5865,40 @@ export default memo(function ChatView({
         projectSkills: activeProject?.skills,
         providerSkills: selectedProviderSnapshot?.skills,
       });
+    const attachedFilesReserve =
+      appendAttachedFilesToPrompt("", composerFilePathsSnapshot).length +
+      (composerFilePathsSnapshot.length > 0 ? 2 : 0);
+    // Resource text gets what the rest of the message leaves, so a large resource is
+    // cut with a note instead of blocking the send.
+    const mcpResourceContext = (() => {
+      if (sideChatCommand || mcpResourceParts.length === 0) return "";
+      const rest = appendTerminalContextsToPrompt(
+        rewrittenPromptForSend,
+        composerTerminalContextsSnapshot,
+        Number.MAX_SAFE_INTEGER,
+      );
+      const replyReserve = replyToForSend
+        ? serializeAssistantResponseContext(replyToForSend).length + 2
+        : 0;
+      return formatMcpResourceContext(
+        mcpResourceParts,
+        getMessageTextMaxChars(rest, sendLimits.maxInputChars) -
+          rest.length -
+          2 -
+          attachedFilesReserve -
+          replyReserve,
+      );
+    })();
     // Rewrite provider-specific runtime skill syntax before any send-time
     // context helpers append extra text ahead of the user's leading token.
     const messageTextWithContexts = appendTerminalContextsToPrompt(
-      sideChatCommand ? (sideChatCommand[1] ?? "") : rewrittenPromptForSend,
+      sideChatCommand
+        ? (sideChatCommand[1] ?? "")
+        : mcpResourceContext
+          ? `${rewrittenPromptForSend.trim()}\n\n${mcpResourceContext}`
+          : rewrittenPromptForSend,
       composerTerminalContextsSnapshot,
-      sendLimits.maxInputChars -
-        appendAttachedFilesToPrompt("", composerFilePathsSnapshot).length -
-        (composerFilePathsSnapshot.length > 0 ? 2 : 0),
+      sendLimits.maxInputChars - attachedFilesReserve,
     );
     const messageTextForSend = appendAttachedFilesToPrompt(
       messageTextWithContexts,
@@ -7235,6 +7424,8 @@ export default memo(function ChatView({
       terminalContextIds: composerTerminalContexts.map((context) => context.id),
     };
   }, [composerCursor, composerTerminalContexts]);
+  readComposerSnapshotRef.current = readComposerSnapshot;
+  applyPromptReplacementRef.current = applyPromptReplacement;
 
   const resolveActiveComposerTrigger = useCallback((): {
     snapshot: { value: string; cursor: number; expandedCursor: number };
@@ -7342,6 +7533,45 @@ export default memo(function ChatView({
         if (applied) {
           setComposerHighlightedItemId(null);
         }
+        return;
+      }
+      if (item.type === "mcp-resource") {
+        const expectedText = snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd);
+        if (isMcpImageResource(item)) {
+          if (!applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", { expectedText }))
+            return;
+          setComposerHighlightedItemId(null);
+          void mcpComposerActionsRef.current?.attachMcpResourceImage(
+            item.serverName,
+            item.resource.uri,
+            item.label,
+          );
+          return;
+        }
+        const replacement = `${formatMcpResourceReference(item.serverName, item.resource)} `;
+        const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
+          snapshot.value,
+          trigger.rangeEnd,
+          replacement,
+        );
+        const applied = applyPromptReplacement(
+          trigger.rangeStart,
+          replacementRangeEnd,
+          replacement,
+          { expectedText: snapshot.value.slice(trigger.rangeStart, replacementRangeEnd) },
+        );
+        if (applied) setComposerHighlightedItemId(null);
+        return;
+      }
+      if (item.type === "mcp-prompt") {
+        const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", {
+          expectedText: snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd),
+        });
+        if (!applied) return;
+        setComposerHighlightedItemId(null);
+        const request = { serverName: item.serverName, prompt: item.prompt };
+        if (item.prompt.arguments.length > 0) setMcpPromptRequest(request);
+        else void mcpComposerActionsRef.current?.insertMcpPrompt(request, {});
         return;
       }
       if (item.type === "skill") {
@@ -9066,6 +9296,21 @@ export default memo(function ChatView({
           ) : null}
 
           {branchDriftDialog}
+
+          {isServerThread ? (
+            <McpPromptDialog
+              threadId={threadId}
+              request={mcpPromptRequest}
+              onOpenChange={(open) => {
+                if (!open) setMcpPromptRequest(null);
+              }}
+              onInsert={(values) =>
+                mcpPromptRequest
+                  ? insertMcpPrompt(mcpPromptRequest, values)
+                  : Promise.resolve(false)
+              }
+            />
+          ) : null}
 
           {expandedImage && (
             <ExpandedImageDialog
