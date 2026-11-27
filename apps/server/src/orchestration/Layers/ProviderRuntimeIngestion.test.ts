@@ -2242,6 +2242,55 @@ describe("ProviderRuntimeIngestion", () => {
     },
   );
 
+  it.each([
+    { reason: "worktree_missing", released: true },
+    { reason: "manual_pause", released: false },
+  ] as const)(
+    "releases the pause an older version left on a worktree that is on another branch: %o",
+    async ({ reason, released }) => {
+      const harness = await createHarness({ startIngestion: false });
+      const threadId = asThreadId("thread-1");
+      const worktree = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "drifted-worktree-")));
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.makeUnsafe("drifted-worktree"),
+          threadId,
+          branch: "feature",
+          worktreePath: worktree,
+        }),
+      );
+      // The folder is this repository's worktree, on a branch the thread does not record.
+      const git = makeFakeGitCore({
+        listWorktrees: () =>
+          Effect.succeed([
+            { path: worktree, canonicalPath: worktree, branch: "agent-branch", isMain: false },
+          ] as never),
+        inspectCheckoutIdentity: () =>
+          Effect.succeed({
+            canonicalRoot: worktree,
+            commonDir: worktree,
+            branch: "agent-branch",
+          } as never),
+        resolveCommonDir: () => Effect.succeed(worktree),
+      });
+      const setPaused = vi.fn(() => Effect.void);
+      await Effect.runPromise(
+        cleanupStaleWorktrees(harness.engine).pipe(
+          Effect.provideService(NextTurnQueueStore, {
+            setPaused,
+            listByThread: () =>
+              Effect.succeed({ state: { paused: true, revision: 7, pauseReasonCode: reason } }),
+          } as never),
+          Effect.provide(Layer.mergeAll(Layer.succeed(GitCore, git.service), NodeServices.layer)),
+        ),
+      );
+      expect(setPaused.mock.calls).toEqual(
+        released ? [[{ threadId, paused: false, expectedRevision: 7 }]] : [],
+      );
+    },
+  );
+
   it.each(["no-branch", "no-project", "deleted-project"] as const)(
     "clears missing worktree references only for deleted projects: %s",
     async (scenario) => {

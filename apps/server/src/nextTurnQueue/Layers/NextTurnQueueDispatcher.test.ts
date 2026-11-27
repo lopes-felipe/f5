@@ -37,6 +37,9 @@ import { NextTurnQueueDispatcherLive } from "./NextTurnQueueDispatcher.ts";
 import { NextTurnQueueStoreLive } from "./NextTurnQueueStore.ts";
 
 const dispatched: CommandId[] = [];
+// The branch observer follows only a thread whose project is known to be live.
+// Most tests here leave it out of the read model, so they see no branch writes.
+let liveProject = false;
 // Provider delivery rows keyed by command id, and the unresolved delivery that
 // the repository's supersession rule reports per thread.
 const deliveryRows = new Map<string, ReturnType<typeof deliveryRow>>();
@@ -114,7 +117,11 @@ const makeDependencies = (
         Effect.succeed({
           threads: resumeThread ? [resumeThread] : [],
           projects: [
-            { id: ProjectId.makeUnsafe("queue-dispatcher-project"), workspaceRoot: process.cwd() },
+            {
+              id: ProjectId.makeUnsafe("queue-dispatcher-project"),
+              workspaceRoot: process.cwd(),
+              ...(liveProject ? { deletedAt: null } : {}),
+            },
           ],
         }),
       streamDomainEvents: domainEvents,
@@ -942,6 +949,100 @@ for (const steering of [true, false]) {
     }).pipe(
       Effect.provide(makeTestLayer(git.service, target, thread)),
       Effect.ensuring(Effect.promise(() => fs.rm(target, { recursive: true, force: true }))),
+    );
+  });
+}
+
+// The engine reads the recorded branch when the turn starts, so the turn, its
+// checkpoint and the picker agree only if the record is written first.
+for (const scenario of [
+  "a new turn in a worktree",
+  "a steer in a worktree",
+  "a new turn in the project folder",
+] as const) {
+  it.effect(`records the branch the folder is on before the turn starts: ${scenario}`, () => {
+    const steering = scenario === "a steer in a worktree";
+    const local = scenario === "a new turn in the project folder";
+    const target = path.join(os.tmpdir(), `f5-follow-${crypto.randomUUID()}`);
+    const threadId = ThreadId.makeUnsafe(`queue-follow-${scenario.replaceAll(" ", "-")}`);
+    const liveTurn = TurnId.makeUnsafe("live-turn");
+    const thread = {
+      id: threadId,
+      projectId: ProjectId.makeUnsafe("queue-dispatcher-project"),
+      deletedAt: null,
+      archivedAt: null,
+      // The record says `feature`; the folder is on `agent-branch`.
+      branch: "feature",
+      worktreePath: local ? null : target,
+      latestTurn: null,
+      pendingUserInputs: [],
+      session: {
+        threadId,
+        providerInstanceId: "codex",
+        status: steering ? "running" : "ready",
+        activeTurnId: steering ? liveTurn : null,
+        lastError: null,
+        updatedAt: new Date().toISOString(),
+      },
+    } as unknown as OrchestrationThread;
+    const git = makeFakeGitCore({
+      listWorktrees: () =>
+        Effect.promise(async () => [
+          {
+            path: target,
+            canonicalPath: await canonicalWorktreePath(target),
+            branch: "agent-branch",
+            headSha: "abc123",
+            bare: false,
+            detached: false,
+            locked: null,
+            prunable: null,
+            isMain: false,
+          },
+        ]),
+      inspectCheckout: () =>
+        Effect.promise(async () => ({
+          canonicalRoot: await canonicalWorktreePath(target),
+          commonDir: await canonicalWorktreePath(`${process.cwd()}/.git`),
+          branch: "agent-branch",
+        })) as never,
+    });
+    return Effect.gen(function* () {
+      dispatched.length = 0;
+      liveProject = true;
+      yield* Effect.promise(() => fs.mkdir(target, { recursive: true }));
+      const dispatcher = yield* NextTurnQueueDispatcher;
+      const store = yield* NextTurnQueueStore;
+      yield* seedThread(threadId);
+      yield* insert(71, threadId);
+      if (steering) {
+        const sql = yield* SqlClient.SqlClient;
+        const item = (yield* store.listByThread(threadId)).items[0]!;
+        yield* sql`UPDATE next_turn_queue SET command_json = ${JSON.stringify({
+          ...item.command,
+          expectedTurnId: liveTurn,
+        })} WHERE item_id = ${item.itemId}`;
+      }
+      yield* dispatcher.notify(threadId);
+      yield* dispatcher.drain;
+      const written = dispatched.map((commandId) =>
+        commandId.startsWith("server:workspace-branch-note:")
+          ? "note"
+          : commandId.startsWith("server:workspace-branch:")
+            ? "branch"
+            : "turn",
+      );
+      // A steer joins a turn that is already running there; that turn's end
+      // records the branch.
+      assert.deepEqual(written, steering ? ["turn"] : ["branch", "note", "turn"]);
+    }).pipe(
+      Effect.provide(makeTestLayer(git.service, local ? null : target, thread)),
+      Effect.ensuring(
+        Effect.promise(() => {
+          liveProject = false;
+          return fs.rm(target, { recursive: true, force: true });
+        }),
+      ),
     );
   });
 }

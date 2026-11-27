@@ -1838,7 +1838,9 @@ const makeGitCore = Effect.gen(function* () {
         if (destination.kind === "missing" || destination.kind === "empty") {
           ready = false;
           const receipt = yield* preparations.latest(member.path);
-          const branch = yield* branchExists(member.source, group.branch);
+          // A member is recreated on the branch its own receipt records: it may
+          // not have moved with the root.
+          const branch = yield* branchExists(member.source, receipt?.branch ?? group.branch);
           recoverable &&= branch ? receipt?.owner === nestedWorktreeOwner(target) : !receipt;
           continue;
         }
@@ -1854,7 +1856,9 @@ const makeGitCore = Effect.gen(function* () {
           Option.isNone(checkout) ||
           checkout.value.commonDir !== member.identity ||
           checkout.value.canonicalRoot !== member.path ||
-          (observedGroup !== undefined && checkout.value.branch !== group.branch)
+          // A group with a root follows its root; only a group made of members
+          // alone has to be on the observed branch as a whole.
+          (observedGroup !== undefined && !group.root && checkout.value.branch !== group.branch)
         )
           return { ready: false, recoverable: false };
         const registered = yield* listWorktrees(member.source);
@@ -1880,10 +1884,22 @@ const makeGitCore = Effect.gen(function* () {
       const checkoutPaths = !group || group.root ? [path] : [];
       const receipts: WorktreePreparationReceipt[] = [];
       if (group) {
-        if (
-          group.branch !== input.previousBranch ||
-          !(yield* inspectWorktreeGroup(input, { ...group, branch: input.branch }))?.ready
-        )
+        if (group.branch !== input.previousBranch)
+          return yield* groupError(path, "The worktree group does not match the observed branch.");
+        const memberBranches = new Map<string, string | null>();
+        for (const member of group.members)
+          memberBranches.set(
+            member.path,
+            yield* inspectCheckoutIdentity(member.path).pipe(
+              Effect.map((checkout) => checkout.branch),
+              Effect.orElseSucceed(() => null),
+            ),
+          );
+        // A group made of members alone moves once every member is on the
+        // branch. Until then there is nothing to record, and nothing has failed.
+        if (!group.root && [...memberBranches.values()].some((branch) => branch !== input.branch))
+          return null;
+        if (!(yield* inspectWorktreeGroup(input, { ...group, branch: input.branch }))?.ready)
           return yield* groupError(path, "The worktree group does not match the observed branch.");
         for (const member of group.members) {
           const receipt = yield* preparations.latest(member.path);
@@ -1897,6 +1913,9 @@ const makeGitCore = Effect.gen(function* () {
               !(receipt.phase === "checkout_created" && !receipt.runSetupScript))
           )
             return yield* groupError(member.path, "The worktree preparation changed.");
+          // A member that stayed behind keeps its receipt, which is the branch
+          // it is recreated on.
+          if (memberBranches.get(member.path) !== input.branch) continue;
           checkoutPaths.push(member.path);
           if (receipt.branch !== input.branch) receipts.push(receipt);
         }
@@ -2010,13 +2029,12 @@ const makeGitCore = Effect.gen(function* () {
           continue;
         }
         const prior = yield* preparations.latest(member.path);
-        const existing = yield* branchExists(member.source, group.branch);
-        if (
-          existing &&
-          (prior?.owner !== owner ||
-            prior.repositoryIdentity !== member.identity ||
-            prior.branch !== group.branch)
-        )
+        const ours = prior?.owner === owner && prior.repositoryIdentity === member.identity;
+        // A member this group created comes back on the branch its receipt
+        // records, which is not the root's when the root moved on without it.
+        const memberBranch = ours && prior ? prior.branch : group.branch;
+        const existing = yield* branchExists(member.source, memberBranch);
+        if (existing && !ours)
           return yield* groupError(member.path, "The planned branch belongs to another checkout.");
         if (destination.kind === "empty") yield* Effect.tryPromise(() => rmdir(member.path));
         yield* fileSystem.makeDirectory(dirname(member.path), { recursive: true });
@@ -2024,7 +2042,7 @@ const makeGitCore = Effect.gen(function* () {
           yield* ensureSingleWorktree({
             cwd: member.source,
             path: member.path,
-            branch: group.branch,
+            branch: memberBranch,
             owner,
           });
         } else {
@@ -2032,11 +2050,11 @@ const makeGitCore = Effect.gen(function* () {
             cwd: member.source,
             path: member.path,
             branch: member.baseOid,
-            newBranch: group.branch,
+            newBranch: memberBranch,
             baseRefName: member.baseOid,
             preparation: { owner, runSetupScript: false, setupIdentity: null },
           });
-          if (created.worktree.branch !== group.branch)
+          if (created.worktree.branch !== memberBranch)
             return yield* groupError(member.path, "The planned branch changed during checkout.");
         }
       }

@@ -5,6 +5,7 @@ import { ThreadId } from "@t3tools/contracts";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import {
+  observedCheckoutCandidates,
   syncObservedBranch,
   syncObservedCheckout,
   WORKSPACE_BRANCH_CHANGED_ACTIVITY_KIND,
@@ -214,5 +215,102 @@ describe("syncObservedCheckout", () => {
       "first: Now on agent-branch (was recorded)",
       "second: Now on agent-branch (was recorded)",
     ]);
+  });
+
+  it("looks only at worktrees whose folder name is part of the observed path", () => {
+    const threads = [
+      thread("match", { worktreePath: "/managed/project-1234/topic", branch: "recorded" }),
+      thread("current", { worktreePath: "/managed/project-1234/topic", branch: "agent-branch" }),
+      thread("other", { worktreePath: "/managed/project-1234/other", branch: "recorded" }),
+      thread("gone", { worktreePath: "/managed/project-1234/topic", deletedAt: "then" }),
+      thread("local"),
+    ];
+    const ids = (paths: string[]) =>
+      observedCheckoutCandidates(threads, paths, "agent-branch").map((entry) => entry.id);
+    // The worktree itself, the same folder through a linked parent, and a
+    // checkout nested inside it (a worktree group's member).
+    expect(ids(["/managed/project-1234/topic"])).toEqual(["match"]);
+    expect(ids(["/link/topic", "/managed/project-1234/topic"])).toEqual(["match"]);
+    expect(ids(["/managed/project-1234/topic/service"])).toEqual(["match"]);
+    // A project folder is not at or below any worktree: nothing is resolved on disk.
+    expect(ids(["/Users/someone/dev/project"])).toEqual([]);
+  });
+
+  describe("worktree groups", () => {
+    const grouped = (rooted: boolean, prepared: "ready" | "partial") => {
+      const w = world([]);
+      const groupPath = path.join(w.root, "group");
+      const member = path.join(groupPath, "service");
+      const owner = thread("owner", { worktreePath: groupPath, branch: "recorded" });
+      const prepare: string[] = [];
+      const deps = {
+        ...w.deps,
+        engine: {
+          ...w.deps.engine,
+          getReadModel: () =>
+            Effect.succeed({
+              threads: [owner],
+              projects: [{ id: "p", workspaceRoot: w.root, deletedAt: null }],
+            }),
+          dispatch: (command: Command) =>
+            Effect.sync(() => {
+              w.commands.push(command);
+              if (command.type === "thread.meta.update" && command.branch !== undefined)
+                owner.branch = command.branch;
+              return { sequence: w.commands.length };
+            }),
+        },
+        git: {
+          ...w.deps.git,
+          readWorktreeGroup: () =>
+            Effect.succeed({
+              threadId: owner.id,
+              members: [{ path: member }],
+              ...(rooted ? { root: { identity: "repo", baseOid: "abc" } } : {}),
+            }),
+          prepareObservedWorktreeBranch: (input: { path: string }) =>
+            Effect.sync(() => {
+              prepare.push(input.path);
+              return prepared === "ready"
+                ? { verifyBranch: Effect.void, commit: Effect.void }
+                : null;
+            }),
+        },
+      } as unknown as ObservedBranchDeps;
+      return { w, deps, owner, member, groupPath, prepare };
+    };
+
+    it("leaves a rooted group alone when only a member moved", async () => {
+      const g = grouped(true, "ready");
+      // The thread's folder is the root, and the root has not moved.
+      await Effect.runPromise(syncObservedCheckout(g.deps, g.member, "agent-branch"));
+      expect(g.prepare).toEqual([]);
+      expect(g.owner.branch).toBe("recorded");
+      expect(g.w.notes()).toEqual([]);
+    });
+
+    it("moves a rooted group with its root", async () => {
+      const g = grouped(true, "ready");
+      await Effect.runPromise(syncObservedCheckout(g.deps, g.groupPath, "agent-branch"));
+      expect(g.owner.branch).toBe("agent-branch");
+      expect(g.w.notes()).toEqual(["owner: Now on agent-branch (was recorded)"]);
+    });
+
+    it("records nothing, and fails nothing, while a group of members is only partly on the branch", async () => {
+      const g = grouped(false, "partial");
+      // A failure here would be retried every 30 seconds for as long as the
+      // members stay apart.
+      await Effect.runPromise(syncObservedCheckout(g.deps, g.member, "agent-branch"));
+      expect(g.prepare).toEqual([g.groupPath]);
+      expect(g.owner.branch).toBe("recorded");
+      expect(g.w.notes()).toEqual([]);
+    });
+
+    it("moves a group of members once all of them are on the branch", async () => {
+      const g = grouped(false, "ready");
+      await Effect.runPromise(syncObservedCheckout(g.deps, g.member, "agent-branch"));
+      expect(g.owner.branch).toBe("agent-branch");
+      expect(g.w.notes()).toEqual(["owner: Now on agent-branch (was recorded)"]);
+    });
   });
 });

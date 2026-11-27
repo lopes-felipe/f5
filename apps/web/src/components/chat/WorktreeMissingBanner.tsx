@@ -90,7 +90,10 @@ export function WorktreeMissingBanner({
           ) : (
             <Button
               size="sm"
-              disabled={transitionDisabled || !data.defaultBranch}
+              // A folder that belongs to something else is never recreated over.
+              disabled={
+                transitionDisabled || !data.defaultBranch || data.registration === "foreign"
+              }
               onClick={() => void recover("recreateFromBase")}
             >
               Recreate from {data.defaultBranch ?? "default branch"}
