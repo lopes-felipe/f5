@@ -1,1 +1,0 @@
-- Added reusable focus restoration on panel close (`useRestoreFocusOnClose`) wired into `RightPanelSheet`, polite screen-reader status announcements for workflow phase and terminal transitions (`WorkflowStatusAnnouncer`), Arrow/Home/End keyboard navigation across workflow board step cards, and `motion-safe:` reduced-motion guards on onboarding spinner icons.
